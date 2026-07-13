@@ -18,7 +18,7 @@
             "displayName": "macOS Debug",
             "inherits": "base",
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "AERO_ENABLE_SANITIZERS": "ON" }
         },
         {
             "name": "macos-release",
@@ -32,7 +32,7 @@
             "displayName": "Windows Debug",
             "inherits": "base",
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "AERO_ENABLE_SANITIZERS": "ON" }
         },
         {
             "name": "windows-release",
@@ -46,7 +46,7 @@
             "displayName": "Linux Debug",
             "inherits": "base",
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "AERO_ENABLE_SANITIZERS": "ON" }
         },
         {
             "name": "linux-release",
@@ -63,5 +63,20 @@
         { "name": "windows-release", "configurePreset": "windows-release", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" } },
         { "name": "linux-debug",     "configurePreset": "linux-debug",     "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" } },
         { "name": "linux-release",   "configurePreset": "linux-release",   "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" } }
+    ],
+    "testPresets": [
+        {
+            "name": "test-base",
+            "hidden": true,
+            "output": { "outputOnFailure": true },
+            "execution": { "noTestsAction": "error" },
+            "environment": { "UBSAN_OPTIONS": "print_stacktrace=1" }
+        },
+        { "name": "macos-debug",     "configurePreset": "macos-debug",     "inherits": "test-base", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" } },
+        { "name": "macos-release",   "configurePreset": "macos-release",   "inherits": "test-base", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" } },
+        { "name": "windows-debug",   "configurePreset": "windows-debug",   "inherits": "test-base", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" } },
+        { "name": "windows-release", "configurePreset": "windows-release", "inherits": "test-base", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" } },
+        { "name": "linux-debug",     "configurePreset": "linux-debug",     "inherits": "test-base", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" } },
+        { "name": "linux-release",   "configurePreset": "linux-release",   "inherits": "test-base", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" } }
     ]
 }
