@@ -1,5 +1,7 @@
 # 🎮 Aero Engine
 
+[![CI](https://github.com/MichaelBallen97/aero-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/MichaelBallen97/aero-engine/actions/workflows/ci.yml)
+
 > An open-source, cross-platform 3D graphics engine with an editor and TypeScript **or** C++ scripting.
 > **MIT licensed. Solo development. Start: July 2026.**
 

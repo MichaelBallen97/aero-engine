@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One in-flight run per branch/PR; new pushes cancel the old run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege — this workflow only reads the repo.
+permissions:
+  contents: read
+
+jobs:
+  # Fast guard: the pinned vcpkg submodule and the manifest baseline must not drift.
+  vcpkg-baseline:
+    name: vcpkg baseline invariant
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (gitlink only — no submodule contents needed)
+        uses: actions/checkout@v4
+      - name: Submodule SHA must equal builtin-baseline
+        shell: bash
+        run: |
+          submodule_sha="$(git rev-parse 'HEAD:vcpkg')"
+          baseline="$(jq -r '.["builtin-baseline"]' vcpkg.json)"
+          echo "submodule gitlink   : $submodule_sha"
+          echo "vcpkg.json baseline : $baseline"
+          if [ "$submodule_sha" != "$baseline" ]; then
+            echo "::error file=vcpkg.json::vcpkg submodule SHA ($submodule_sha) != builtin-baseline ($baseline). Bump them together in one commit."
+            exit 1
+          fi
+
+  build:
+    name: ${{ matrix.name }}
+    needs: vcpkg-baseline        # don't spend build minutes if the pin is broken
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false            # one OS failing must not cancel the others
+      matrix:
+        include:
+          - name: Linux (GCC)
+            os: ubuntu-24.04
+            preset: linux
+            vcpkg_cache: ~/.cache/vcpkg/archives
+          - name: macOS (AppleClang)
+            os: macos-15
+            preset: macos
+            vcpkg_cache: ~/.cache/vcpkg/archives
+          - name: Windows (MSVC)
+            os: windows-2022
+            preset: windows
+            vcpkg_cache: ~/AppData/Local/vcpkg/archives
+    steps:
+      - name: Checkout with vcpkg submodule
+        uses: actions/checkout@v4
+        with:
+          submodules: true         # required — the toolchain lives in the submodule
+
+      - name: Install SDL3 system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxft-dev libxext-dev libwayland-dev \
+            libxkbcommon-dev libegl1-mesa-dev libibus-1.0-dev
+
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1   # optional hardening: pin to a full commit SHA (§5 step 7)
+        with:
+          arch: x64
+
+      - name: Cache vcpkg binary archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.vcpkg_cache }}
+          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.os }}-
+
+      - name: Configure & build — Debug
+        shell: bash                 # -eo pipefail: a failed configure aborts before build
+        run: |
+          cmake --preset ${{ matrix.preset }}-debug
+          cmake --build --preset ${{ matrix.preset }}-debug
+
+      - name: Configure & build — Release
+        shell: bash
+        run: |
+          cmake --preset ${{ matrix.preset }}-release
+          cmake --build --preset ${{ matrix.preset }}-release
