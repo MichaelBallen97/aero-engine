@@ -80,6 +80,15 @@ jobs:
         with:
           arch: x64
 
+      - name: Remove MSYS link shadow (Windows)
+        if: runner.os == 'Windows'
+        # Git Bash ships /usr/bin/link, which shadows MSVC's link.exe under
+        # shell:bash (documented in the ilammy/msvc-dev-cmd README). 0.1.4
+        # adds the repo's first linked target, so the shadow can bite starting
+        # here. -f: succeed even if a future image drops the file.
+        shell: bash
+        run: rm -f /usr/bin/link
+
       - name: Cache vcpkg binary archives
         uses: actions/cache@v4
         with:
@@ -94,8 +103,16 @@ jobs:
           cmake --preset ${{ matrix.preset }}-debug
           cmake --build --preset ${{ matrix.preset }}-debug
 
+      - name: Test — Debug (ASan/UBSan)
+        shell: bash
+        run: ctest --preset ${{ matrix.preset }}-debug
+
       - name: Configure & build — Release
         shell: bash
         run: |
           cmake --preset ${{ matrix.preset }}-release
           cmake --build --preset ${{ matrix.preset }}-release
+
+      - name: Test — Release
+        shell: bash
+        run: ctest --preset ${{ matrix.preset }}-release
