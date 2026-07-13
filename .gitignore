@@ -21,3 +21,4 @@ desktop.ini
 
 # ---- Claude Code local state ----
 .claude/settings.local.json
+.claude/agents/
