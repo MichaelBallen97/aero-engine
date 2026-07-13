@@ -18,6 +18,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ADR-001 mitigation #3: ASan/UBSan on every Debug CI build. OFF by default;
+# each *-debug preset turns it on. Per-compiler mapping: cmake/sanitizers.cmake.
+option(AERO_ENABLE_SANITIZERS "Build all project targets with ASan (+ UBSan where the compiler has it)" OFF)
+include(cmake/sanitizers.cmake)
+
+# docs/04 testing strategy: doctest suites run through ctest (test presets).
+enable_testing()
+
 # Layer order = dependency order (docs/03). The golden rule is physical here:
 # nothing under engine/ or runtime/ may ever reference editor/.
 add_subdirectory(engine)

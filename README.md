@@ -42,11 +42,12 @@ git clone --recurse-submodules https://github.com/MichaelBallen97/aero-engine.gi
 cd aero-engine
 cmake --preset macos-debug        # or windows-debug / linux-debug on those hosts
 cmake --build --preset macos-debug
+ctest --preset macos-debug        # unit tests (Debug runs under ASan/UBSan)
 ```
 
 Already cloned without `--recurse-submodules`? Run `git submodule update --init`.
 
-The first configure bootstraps [vcpkg](https://github.com/microsoft/vcpkg) (a pinned git submodule) and compiles the dependencies from source — expect a few minutes and network access. There are no build targets yet (Phase 0 in progress); a successful configure is the current smoke test.
+The first configure bootstraps [vcpkg](https://github.com/microsoft/vcpkg) (a pinned git submodule) and compiles the dependencies from source — expect a few minutes and network access. The unit-test runner `aero_tests` (doctest) is the first build target — `ctest` above runs it. Debug presets build with ASan/UBSan (Windows: ASan only). Engine targets arrive with Phase 0's `core` epic.
 
 On Linux, SDL3 needs system dev packages first — X11 + Wayland libraries, plus autotools + libltdl-dev that vcpkg uses to build some transitive deps from source:
 `sudo apt install libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxft-dev libwayland-dev wayland-protocols libdecor-0-dev libxkbcommon-dev libegl1-mesa-dev libibus-1.0-dev autoconf autoconf-archive automake libtool libltdl-dev`
@@ -73,6 +74,6 @@ On Linux, SDL3 needs system dev packages first — X11 + Wayland libraries, plus
 
 ## Status
 
-Planning complete. Phase 0 (Foundations & First Triangle) not yet started.
+Planning complete. Phase 0 (Foundations & First Triangle) in progress — epic 0.1 (build & CI bootstrap).
 
 Live task tracking lives in Notion — [**Aero Engine — Build Tracker**](https://app.notion.com/p/39b120678cf1810dbd89cd87ca594ed2) (Phases → Epics → Tasks/subtasks). These docs are the source of truth for scope and architecture; Notion tracks execution.

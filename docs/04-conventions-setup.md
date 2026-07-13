@@ -10,7 +10,7 @@ These are enforced, not encouraged:
 
 1. **Handles, not pointers** for every resource. No raw owning pointers cross a subsystem boundary.
 2. **Never manual `new`/`delete`.** RAII, `std::unique_ptr`/`std::vector`, standard containers.
-3. **ASan + UBSan run in CI on every commit**, on all three OSes.
+3. **ASan + UBSan run in CI on every commit**, on all three OSes (Windows: ASan only — MSVC has no UBSan).
 4. **No third-party type crosses the engine's public API** (project rule #3), enforced by CI tests (below).
 
 ---
