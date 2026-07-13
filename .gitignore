@@ -1,0 +1,23 @@
+# ---- Build output (out-of-source only; never committed — docs/04) ----
+/build/
+/out/
+cmake-build-*/
+
+# ---- vcpkg (manifest mode, arrives 0.1.2) ----
+vcpkg_installed/
+
+# ---- Generated & cooked output (docs/04: never committed; .meta files ARE committed) ----
+*.pak
+
+# ---- OS noise ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- IDE / tooling ----
+.idea/
+.vscode/
+.cache/
+
+# ---- Claude Code local state ----
+.claude/settings.local.json

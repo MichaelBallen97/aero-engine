@@ -1,0 +1,66 @@
+{
+    "version": 8,
+    "$schema": "https://cmake.org/cmake/help/latest/_downloads/3e2d73bff478d88a7de0de736ba5e361/schema.json",
+    "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "macos-debug",
+            "displayName": "macOS Debug",
+            "inherits": "base",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+        },
+        {
+            "name": "macos-release",
+            "displayName": "macOS Release",
+            "inherits": "base",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+        },
+        {
+            "name": "windows-debug",
+            "displayName": "Windows Debug",
+            "inherits": "base",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+        },
+        {
+            "name": "windows-release",
+            "displayName": "Windows Release",
+            "inherits": "base",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+        },
+        {
+            "name": "linux-debug",
+            "displayName": "Linux Debug",
+            "inherits": "base",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+        },
+        {
+            "name": "linux-release",
+            "displayName": "Linux Release",
+            "inherits": "base",
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+        }
+    ],
+    "buildPresets": [
+        { "name": "macos-debug",     "configurePreset": "macos-debug",     "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" } },
+        { "name": "macos-release",   "configurePreset": "macos-release",   "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" } },
+        { "name": "windows-debug",   "configurePreset": "windows-debug",   "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" } },
+        { "name": "windows-release", "configurePreset": "windows-release", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" } },
+        { "name": "linux-debug",     "configurePreset": "linux-debug",     "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" } },
+        { "name": "linux-release",   "configurePreset": "linux-release",   "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" } }
+    ]
+}

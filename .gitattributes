@@ -1,0 +1,10 @@
+# Normalize everything to LF in the repo and on checkout, except Windows scripts.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary asset types (extended as asset work lands in Phase 3+)
+*.png binary
+*.jpg binary
+*.ktx2 binary
+*.glb binary
