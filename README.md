@@ -48,8 +48,8 @@ Already cloned without `--recurse-submodules`? Run `git submodule update --init`
 
 The first configure bootstraps [vcpkg](https://github.com/microsoft/vcpkg) (a pinned git submodule) and compiles the dependencies from source — expect a few minutes and network access. There are no build targets yet (Phase 0 in progress); a successful configure is the current smoke test.
 
-On Linux, SDL3 needs system dev packages first (plus autotools, which vcpkg uses to build some transitive deps from source):
-`sudo apt install libx11-dev libxft-dev libxext-dev libwayland-dev libxkbcommon-dev libegl1-mesa-dev libibus-1.0-dev autoconf autoconf-archive automake libtool`
+On Linux, SDL3 needs system dev packages first (plus autotools + libltdl-dev, which vcpkg uses to build some transitive deps from source):
+`sudo apt install libx11-dev libxft-dev libxext-dev libwayland-dev libxkbcommon-dev libegl1-mesa-dev libibus-1.0-dev autoconf autoconf-archive automake libtool libltdl-dev`
 
 ---
 

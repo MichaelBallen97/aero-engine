@@ -62,14 +62,14 @@ jobs:
 
       - name: Install SDL3 system dependencies (Linux)
         if: runner.os == 'Linux'
-        # libx*/wayland/egl/ibus = SDL3's own Linux deps. autotools = build tools vcpkg needs to
-        # compile transitive deps via autoreconf (SDL3 → dbus[systemd] → libsystemd → libxcrypt, libmount, …).
+        # libx*/wayland/egl/ibus = SDL3's own Linux deps. autotools + libltdl-dev = build prereqs
+        # vcpkg needs to compile transitive deps (SDL3 → dbus[systemd] → libsystemd → libxcrypt, libmount, …).
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libx11-dev libxft-dev libxext-dev libwayland-dev \
             libxkbcommon-dev libegl1-mesa-dev libibus-1.0-dev \
-            autoconf autoconf-archive automake libtool
+            autoconf autoconf-archive automake libtool libltdl-dev
 
       - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows'
