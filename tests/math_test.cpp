@@ -5,12 +5,19 @@
 // our math against the very backend that implements it would be partly circular. Every
 // expectation below is a hand-computed literal or an algebraic identity.
 //
-// AC-9(i): aero_tests links aero::core but NOT glm::glm. That this TU compiles at all is a
-// permanent, free regression test that no public math header pulls GLM in.
+// AC-9(i): aero_tests links aero::core but NOT glm::glm — that omission is intentional style, but
+// it is NOT a compile-time guarantee that no public math header pulls GLM in. aero_tests also
+// links doctest::doctest, which (via vcpkg's shared per-triplet include/ directory) exports GLM's
+// headers to this TU regardless of what aero_core links; a probe TU with aero_tests' exact flags
+// plus `#include <glm/vec3.hpp>` compiles clean here. The real compile-time boundary holds only
+// for engine-layer targets that link no vcpkg package directly (verified with a throwaway probe
+// linking only aero::core — see docs/02-adrs.md's ADR-005 implementation note and risk R12 in
+// docs/08-risks.md). Inside tests/, the textual grep guard (0.2.3) is the enforcement.
 #include <aero/core/math.hpp>
 
 #include <doctest/doctest.h>
 
+#include <limits>
 #include <type_traits>
 
 // docs/04 forbids `using namespace` in HEADERS; this is a test TU. Free functions live in
@@ -339,6 +346,22 @@ TEST_CASE("math: quaternion algebra and rotation sense") {
     CHECK(approxEquals(q * conjugate(q), Quat::identity()));
 }
 
+TEST_CASE("math: Hamilton product operand order matches D8's convention (a*b applies b first)") {
+    // quat.hpp:37-38: "(a * b) applies b first, then a" — the same right-to-left convention as
+    // Mat4's operator* (D8). Every assertion in the previous test case is ORDER-SYMMETRIC
+    // (q*i==q, i*q==q, q*conjugate(q)==identity all hold under either operand order), so a
+    // transposed operator* (returning b*a) would leave the whole suite green. Two NON-COMMUTING
+    // rotations are required to actually pin the order — this is the quat-path analogue of the
+    // Mat4 operand-order proof already covered above (transformPoint(t*s, ...)).
+    const Quat a = fromAxisAngle(Vec3::unitX(), HALF_PI);
+    const Quat b = fromAxisAngle(Vec3::unitY(), HALF_PI);
+    const Vec3 v = Vec3::unitZ();
+
+    // (a * b) applies b first, then a -- so (a * b) * v must equal a * (b * v), NOT b * (a * v).
+    CHECK(approxEquals((a * b) * v, a * (b * v)));
+    CHECK_FALSE(approxEquals((a * b) * v, b * (a * v)));  // the two orders genuinely differ
+}
+
 TEST_CASE("math: quaternion <-> matrix round-trip handles double cover (AC-5, E8)") {
     const Quat q = normalize(Quat{0.2f, 0.3f, 0.4f, 0.5f});
 
@@ -394,6 +417,17 @@ TEST_CASE("math: slerp endpoints and degenerate cases") {
     CHECK(approxEquals(lerp(a, b, 0.0f), a));
     CHECK(approxEquals(lerp(a, b, 1.0f), b));
     CHECK(length(lerp(a, b, 0.3f)) == doctest::Approx(1.0f));
+
+    // E8 double-cover / shorter-arc branch: dot(a, b) here is +0.7071 (both endpoints), so
+    // `dot(a, b) < 0.0f` in lerp()'s body never fires for any assertion above — deleting that
+    // branch would leave the suite green. -b is the SAME rotation as b (double cover), so
+    // lerp(a, -b, t) must trace the SAME interpolated rotation as lerp(a, b, t): the branch picks
+    // the shorter of the two arcs (to -b vs to b) instead of blindly lerping toward whichever sign
+    // was passed in. Compare via rotated vectors, not raw quaternion components, since the
+    // intermediate lerp() *output* quaternion itself is allowed to differ in sign.
+    const Quat negB{-b.x, -b.y, -b.z, -b.w};
+    const Vec3 v = Vec3::unitX();
+    CHECK(approxEquals(lerp(a, negB, 0.5f) * v, lerp(a, b, 0.5f) * v));
 }
 
 TEST_CASE("math: compose -> decompose -> compose round-trip (AC-5, the deliverable's own words)") {
@@ -435,8 +469,13 @@ TEST_CASE("math: decompose handles mirrored (negative-scale) matrices (AC-5, D9)
     Trs out;
     REQUIRE(decompose(m, out));
 
-    // D9 puts the flip on X (matching glm::decompose), so an X-mirrored input round-trips its
-    // COMPONENTS exactly — sign included.
+    // D9 puts the flip on X — Aero's OWN convention, not glm::decompose's: glm's implementation
+    // (glm/gtx/matrix_decompose.inl:130-137) negates ALL THREE scale components on det<0, so for
+    // this exact input glm would report scale (-2,-3,-4) where Aero reports (-2,+3,+4). Both are
+    // legitimate independent choices (either makes the normalized 3x3 proper, det +1); this
+    // engine picks "flip X only" and this test is what pins that choice — do not "align with
+    // glm::decompose" on the strength of a comment, it would break this assertion.
+    // An X-mirrored input round-trips its COMPONENTS exactly — sign included.
     CHECK(out.scale.x < 0.0f);
     CHECK(approxEquals(out.translation, trs.translation, MATRIX_EPSILON));
     CHECK(approxEquals(out.scale, trs.scale, MATRIX_EPSILON));
@@ -460,16 +499,60 @@ TEST_CASE("math: decompose handles mirrored (negative-scale) matrices (AC-5, D9)
 
 TEST_CASE("math: decompose reports failure and leaves `out` untouched (D9)") {
     // docs/04: no exceptions across the public API — an explicit status, never a throw.
-    const Mat4 degenerate = scaling(Vec3{1.0f, 0.0f, 1.0f});  // a collapsed Y axis
+    // Each of the three axes is exercised independently — a collapsed axis is unrecoverable
+    // regardless of which column it lives in, and this guarantees no axis-specific bug hides
+    // behind the other two being well-formed.
+    const Mat4 collapsedX = scaling(Vec3{0.0f, 1.0f, 1.0f});
+    const Mat4 collapsedY = scaling(Vec3{1.0f, 0.0f, 1.0f});
+    const Mat4 collapsedZ = scaling(Vec3{1.0f, 1.0f, 0.0f});
 
-    Trs out;
-    out.translation = Vec3{9.0f, 9.0f, 9.0f};  // sentinel: must survive the failed call
-    const Trs before = out;
+    for (const Mat4& degenerate : {collapsedX, collapsedY, collapsedZ}) {
+        Trs out;
+        out.translation = Vec3{9.0f, 9.0f, 9.0f};  // sentinel: must survive the failed call
+        const Trs before = out;
 
-    CHECK_FALSE(decompose(degenerate, out));
-    CHECK(approxEquals(out.translation, before.translation));
-    CHECK(approxEquals(out.scale, before.scale));
-    CHECK(approxEquals(out.rotation, before.rotation));
+        CHECK_FALSE(decompose(degenerate, out));
+        CHECK(approxEquals(out.translation, before.translation));
+        CHECK(approxEquals(out.scale, before.scale));
+        CHECK(approxEquals(out.rotation, before.rotation));
+    }
+}
+
+TEST_CASE("math: decompose rejects NaN/Inf columns instead of reporting false success") {
+    // REAL BUG this test guards against: for a NaN matrix, every ORDERED comparison against
+    // EPSILON is false, so a `<=` guard (`sxRaw <= EPSILON`) does NOT catch it — NaN silently
+    // passes as "not degenerate". determinant(m) < 0.0f is then also false for NaN, so the
+    // negative-determinant branch is skipped, sx becomes NaN, and decompose() used to return
+    // TRUE with a NaN rotation/translation written into `out` — reported as SUCCESS with garbage
+    // data, exactly the "guess instead of report" failure D9's own comment disclaims. The fix is
+    // the negated guard `!(sxRaw > EPSILON)`, which IS true for NaN (every comparison with NaN,
+    // including `>`, is false, so its negation is true) and correctly rejects it.
+    //
+    // Inf needs a SEPARATE check: `Inf > EPSILON` is true (unlike NaN comparisons), so the
+    // ordered-comparison guard alone lets an infinite-length column through as "not degenerate".
+    // The division that follows (e.g. c1 / sy where sy == Inf) then computes Inf / Inf
+    // component-wise, which IS NaN by IEEE 754 — corrupting the rotation the same way the NaN
+    // case would have. decompose() therefore also requires `std::isfinite()` on each axis length.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+
+    Mat4 nanMatrix = Mat4::identity();
+    nanMatrix.columns[0] = Vec4{nan, 0.0f, 0.0f, 0.0f};  // NaN in the X-scale column
+
+    Mat4 infMatrix = Mat4::identity();
+    infMatrix.columns[1] = Vec4{0.0f, inf, 0.0f, 0.0f};  // Inf in the Y-scale column
+
+    for (const Mat4& bad : {nanMatrix, infMatrix}) {
+        Trs out;
+        out.translation = Vec3{9.0f, 9.0f, 9.0f};  // sentinel: must survive the failed call
+        out.scale = Vec3{9.0f, 9.0f, 9.0f};
+        const Trs before = out;
+
+        CHECK_FALSE(decompose(bad, out));
+        CHECK(approxEquals(out.translation, before.translation));
+        CHECK(approxEquals(out.scale, before.scale));
+        CHECK(approxEquals(out.rotation, before.rotation));
+    }
 }
 
 TEST_CASE("math: perspective maps near->0 and far->1 in NDC (AC-6, D4 — THE depth convention)") {
