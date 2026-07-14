@@ -5,6 +5,7 @@
 // (AERO_ENABLE_PROFILING=ON → aero::profiling defines AERO_PROFILING_ENABLED). Tracy is dev-builds-only.
 // Macros are statement-level: use at the top of a braced scope, not after a braceless if/for.
 
+// clang-format off
 #if defined(AERO_PROFILING_ENABLED)
     #include <tracy/Tracy.hpp>
     #define AERO_PROFILE_ZONE                          ZoneScoped                 // scope, auto-named by function
@@ -25,3 +26,4 @@
     #define AERO_PROFILE_MESSAGE(text)                 ((void)0)
     #define AERO_PROFILE_SET_THREAD_NAME(name)         ((void)0)
 #endif
+// clang-format on
