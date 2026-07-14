@@ -117,6 +117,8 @@ using MeshHandle    = Handle<struct MeshTag>;
 - **Trivial serialization.** A handle is a `uint64`. No pointers to fix up on load
 - **Cache-friendly.** Resources live in contiguous arrays, not scattered on the heap
 
+Implemented at task 0.2.1: `engine::Handle<Tag>` (`engine/core/include/aero/core/handle.hpp`) and the generational pool that mints/validates it, `engine::SlotMap<T, Tag>` (`engine/core/include/aero/core/slot_map.hpp`).
+
 ---
 
 ## Asset flow
