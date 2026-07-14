@@ -7,8 +7,9 @@ find_package(doctest CONFIG REQUIRED)
 add_executable(aero_tests
     test_main.cpp
     sanity_test.cpp
+    profiler_test.cpp
 )
-target_link_libraries(aero_tests PRIVATE doctest::doctest)
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling)
 
 # Single ctest entry; doctest prints per-TEST_CASE detail on failure. Per-case
 # registration (doctest_discover_tests) can be adopted later without churn.

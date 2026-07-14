@@ -23,6 +23,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(AERO_ENABLE_SANITIZERS "Build all project targets with ASan (+ UBSan where the compiler has it)" OFF)
 include(cmake/sanitizers.cmake)
 
+# Tracy profiler (docs/01, docs/03; task 0.1.5). DEV-BUILDS-ONLY: OFF by default; the *-release presets
+# turn it on. cmake/profiling.cmake defines aero::profiling (wrappers in engine/core/include/aero/core).
+option(AERO_ENABLE_PROFILING "Link the Tracy client and activate profiling macros (dev builds only)" OFF)
+include(cmake/profiling.cmake)
+
 # docs/04 testing strategy: doctest suites run through ctest (test presets).
 enable_testing()
 

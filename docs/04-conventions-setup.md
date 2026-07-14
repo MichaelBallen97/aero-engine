@@ -80,7 +80,7 @@ Runtime binaries for each platform are built and archived by CI (this is what ma
 
 - **Editor/IDE:** VSCode (matches the TypeScript-scripting audience) or CLion; both drive CMake presets.
 - **Toolchains:** Clang (macOS/Linux), MSVC (Windows), GCC (Linux secondary). The **Mac is the only machine that can build/sign macOS + iOS**.
-- **Profiling:** Tracy client wired from Phase 0; profile early, not after.
+- **Profiling:** Tracy client wired from Phase 0 (task 0.1.5); profile early, not after. Dev-builds-only, gated by `AERO_ENABLE_PROFILING` (default OFF, ON in the three `*-release` presets); wrapper header `engine/core/include/aero/core/profiler.hpp` exposes backend-agnostic `AERO_PROFILE_*` macros (`AERO_PROFILE_ZONE`, `AERO_PROFILE_ZONE_NAMED`, `AERO_PROFILE_FRAME_MARK`, …) that no-op when profiling is off.
 - **Blender:** installed locally for the `.blend` → glTF import path (auto-detected, or point the editor at the path).
 
 ---
