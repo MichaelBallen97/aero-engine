@@ -52,6 +52,10 @@ The first configure bootstraps [vcpkg](https://github.com/microsoft/vcpkg) (a pi
 On Linux, SDL3 needs system dev packages first — X11 + Wayland libraries, plus autotools + libltdl-dev that vcpkg uses to build some transitive deps from source:
 `sudo apt install libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxft-dev libwayland-dev wayland-protocols libdecor-0-dev libxkbcommon-dev libegl1-mesa-dev libibus-1.0-dev autoconf autoconf-archive automake libtool libltdl-dev`
 
+### Profiling
+
+The three `*-release` presets build with the [Tracy](https://github.com/wolfpld/tracy) client wired in (dev-builds-only — never in Debug, never in the shipped runtime). Download the [Tracy Profiler GUI v0.13.1](https://github.com/wolfpld/tracy/releases) separately (it is not built by vcpkg), run a Release build of `aero_tests`, and connect to see the live zones. With no profiler attached the client idles and the process exits promptly; set `TRACY_NO_EXIT=1` to hold a short-lived run open long enough to connect manually.
+
 ---
 
 ## Documentation
