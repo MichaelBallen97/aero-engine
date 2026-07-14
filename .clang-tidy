@@ -1,0 +1,53 @@
+# .clang-tidy — Aero Engine lint (docs/04 style + naming; task 0.1.6).
+# Enforced in CI by a clang-tidy step on the Linux Debug lane, reusing that lane's
+# build/linux-debug/compile_commands.json: clang-tidy 18, --warnings-as-errors='*'.
+# The check set is a curated, high-signal STARTING POINT that must pass clean on the
+# current tree; readability-identifier-naming mechanically enforces the docs/04 names.
+# WarningsAsErrors is empty here (local/editor runs warn); CI supplies the flag.
+# Run locally with LLVM 18 after a configure:
+#   clang-tidy-18 -p build/macos-debug --warnings-as-errors='*' $(git ls-files 'tests/*.cpp')
+---
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  misc-*,
+  modernize-*,
+  readability-identifier-naming,
+  readability-misleading-indentation,
+  readability-duplicate-include,
+  readability-redundant-control-flow,
+  readability-redundant-declaration,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -modernize-return-braced-init-list,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  -bugprone-easily-swappable-parameters
+HeaderFilterRegex: '.*/(engine|runtime|editor|tools|tests)/.*'
+FormatStyle: file
+WarningsAsErrors: ''
+CheckOptions:
+  # ---- docs/04 naming law, mechanically enforced (readability-identifier-naming) ----
+  # Types -> PascalCase (clang-tidy spells PascalCase as "CamelCase").
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.UnionCase: CamelCase
+  readability-identifier-naming.TypeAliasCase: CamelCase
+  readability-identifier-naming.TypedefCase: CamelCase
+  # Template *type* parameters are types -> PascalCase (D8 sanctioned extension).
+  readability-identifier-naming.TemplateParameterCase: CamelCase
+  # Functions / variables -> camelCase (clang-tidy "camelBack").
+  readability-identifier-naming.FunctionCase: camelBack
+  readability-identifier-naming.VariableCase: camelBack
+  readability-identifier-naming.ParameterCase: camelBack
+  readability-identifier-naming.MemberCase: camelBack
+  # Compile-time constants -> SCREAMING_SNAKE_CASE.
+  readability-identifier-naming.ConstexprVariableCase: UPPER_CASE
+  readability-identifier-naming.ClassConstantCase: UPPER_CASE
+  # Namespaces -> lower_case (engine, engine::render).
+  readability-identifier-naming.NamespaceCase: lower_case
+  # Macros -> SCREAMING_SNAKE_CASE (AERO_PROFILE_*).
+  readability-identifier-naming.MacroDefinitionCase: UPPER_CASE

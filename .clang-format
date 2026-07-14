@@ -1,0 +1,40 @@
+# .clang-format — Aero Engine C++ formatting (docs/04 style; task 0.1.6).
+# Enforced in CI by the `lint` job: clang-format 18, --dry-run --Werror over the
+# tracked C/C++ sources. BasedOnStyle Google, overridden to the docs/04 house style
+# (4-space indent, 120 cols, pointer-left). Run locally with LLVM 18:
+#   git ls-files -z '*.cpp' '*.hpp' '*.h' '*.cc' '*.cxx' '*.hxx' '*.inl' \
+#     | xargs -0 -r clang-format-18 --dry-run --Werror
+# The macro table in engine/core/include/aero/core/profiler.hpp is deliberately
+# hand-aligned and fenced with `// clang-format off/on`.
+---
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++20
+ColumnLimit: 120
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AccessModifierOffset: -4          # public:/private: sit at the class's own indent
+IndentPPDirectives: BeforeHash    # matches profiler.hpp's indented `#if/#include`
+NamespaceIndentation: None
+FixNamespaceComments: true        # keep the `} // namespace` the tree already uses
+PointerAlignment: Left            # Type* p — pin it (Google *derives* from the file)
+DerivePointerAlignment: false
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Engine's own public headers first (<aero/...>) — listed before the generic
+  # third-party rule so it wins the "first matching category" tie-break.
+  - Regex: '^<aero/'
+    Priority: 1
+  # Local project headers ("...").
+  - Regex: '^"'
+    Priority: 2
+  # Third-party angle-includes with a path (<doctest/...>, <tracy/...>, <SDL3/...>).
+  - Regex: '^<[^/]+/'
+    Priority: 3
+  # C++ standard library (angle-include, no path separator).
+  - Regex: '^<[^/]+>'
+    Priority: 4
+InsertNewlineAtEOF: true
+LineEnding: LF
