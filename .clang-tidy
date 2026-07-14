@@ -38,7 +38,9 @@ CheckOptions:
   readability-identifier-naming.TypeAliasCase: CamelCase
   readability-identifier-naming.TypedefCase: CamelCase
   # Template *type* parameters are types -> PascalCase (D8 sanctioned extension).
-  readability-identifier-naming.TemplateParameterCase: CamelCase
+  # Type-only (TypeTemplateParameterCase), NOT the umbrella TemplateParameterCase:
+  # non-type/value template params are a docs/04-silent category, left unenforced (D8).
+  readability-identifier-naming.TypeTemplateParameterCase: CamelCase
   # Functions / variables -> camelCase (clang-tidy "camelBack").
   readability-identifier-naming.FunctionCase: camelBack
   readability-identifier-naming.VariableCase: camelBack
