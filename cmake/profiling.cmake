@@ -9,7 +9,8 @@ add_library(aero_profiling INTERFACE)
 add_library(aero::profiling ALIAS aero_profiling)
 
 # Permanent home of the wrapper header (a core service like log/time; engine/core's compiled
-# library lands at 0.2.1). Exposed to every consumer as <aero/core/profiler.hpp>, in all configs.
+# library lands at 0.2.4 — logging is the first core service that needs a .cpp). Exposed to
+# every consumer as <aero/core/profiler.hpp>, in all configs.
 target_include_directories(aero_profiling INTERFACE ${CMAKE_SOURCE_DIR}/engine/core/include)
 
 if(AERO_ENABLE_PROFILING)

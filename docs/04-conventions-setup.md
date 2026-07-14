@@ -71,6 +71,7 @@ Matrix across **macOS + Windows + Ubuntu**. Every push/PR runs:
 3. Unit tests (doctest)
 4. The five architecture-guard tests above (each activates once its owning task lands)
 5. `clang-format` / `clang-tidy` check
+6. Task-local boundary check: no spdlog/fmt types in public engine headers (0.2.4)
 
 Runtime binaries for each platform are built and archived by CI (this is what makes TS-project export instant — see [ADR-008](./02-adrs.md#adr-008--per-project-language-choice-and-the-two-export-models)).
 
@@ -81,6 +82,7 @@ Runtime binaries for each platform are built and archived by CI (this is what ma
 - **Editor/IDE:** VSCode (matches the TypeScript-scripting audience) or CLion; both drive CMake presets.
 - **Toolchains:** Clang (macOS/Linux), MSVC (Windows), GCC (Linux secondary). The **Mac is the only machine that can build/sign macOS + iOS**.
 - **Profiling:** Tracy client wired from Phase 0 (task 0.1.5); profile early, not after. Dev-builds-only, gated by `AERO_ENABLE_PROFILING` (default OFF, ON in the three `*-release` presets); wrapper header `engine/core/include/aero/core/profiler.hpp` exposes backend-agnostic `AERO_PROFILE_*` macros (`AERO_PROFILE_ZONE`, `AERO_PROFILE_ZONE_NAMED`, `AERO_PROFILE_FRAME_MARK`, …) that no-op when profiling is off.
+- **Logging:** spdlog wired from Phase 0 (task 0.2.4), hidden entirely behind `engine/core/include/aero/core/log.hpp`'s `AERO_LOG_{TRACE,DEBUG,INFO,WARN,ERROR,CRITICAL}` macros — `AERO_LOG_INFO("window {}x{}", w, h)`. spdlog never appears in a public header; CI enforces that.
 - **Blender:** installed locally for the `.blend` → glTF import path (auto-detected, or point the editor at the path).
 
 ---
