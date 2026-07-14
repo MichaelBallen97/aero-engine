@@ -104,7 +104,9 @@ TEST_CASE("math: vector algebra against hand-computed literals") {
     CHECK(approxEquals(a * 2.0f, Vec3{2.0f, 4.0f, 6.0f}));
     CHECK(approxEquals(2.0f * a, Vec3{2.0f, 4.0f, 6.0f}));
     CHECK(approxEquals(a * b, Vec3{4.0f, 10.0f, 18.0f}));  // componentwise — not dot, not cross
-    CHECK(dot(a, b) == doctest::Approx(32.0f));            // 4 + 10 + 18
+    CHECK(approxEquals(b / a, Vec3{4.0f, 2.5f, 2.0f}));    // componentwise divide
+    CHECK(approxEquals(a / 2.0f, Vec3{0.5f, 1.0f, 1.5f}));
+    CHECK(dot(a, b) == doctest::Approx(32.0f));  // 4 + 10 + 18
     CHECK(length(Vec3{3.0f, 4.0f, 0.0f}) == doctest::Approx(5.0f));
     CHECK(lengthSquared(Vec3{3.0f, 4.0f, 0.0f}) == doctest::Approx(25.0f));
     CHECK(distance(Vec3{1.0f, 0.0f, 0.0f}, Vec3{4.0f, 4.0f, 0.0f}) == doctest::Approx(5.0f));
@@ -171,6 +173,91 @@ TEST_CASE("math: Vec2 and Vec4 mirror Vec3's surface") {
     CHECK(approxEquals(xyz(b), Vec3{1.0f, 2.0f, 3.0f}));
     CHECK(approxEquals(toVec4(Vec3{1.0f, 2.0f, 3.0f}, 4.0f), b));
     CHECK(approxEquals(xyz(toVec4(Vec3{1.0f, 2.0f, 3.0f}, 9.0f)), Vec3{1.0f, 2.0f, 3.0f}));
+}
+
+TEST_CASE("math: Vec2 and Vec4 carry AC-4's FULL op list, not just Vec3's") {
+    // AC-4 enumerates its op list "for vectors" — all three of them, and epic 0.2's DoD wants every
+    // core utility unit-tested. Vec3's instantiation is covered above; these are the Vec2/Vec4 ones.
+    // Verified by llvm-cov: without this case, 24 public Vec2/Vec4 functions have ZERO coverage.
+    CHECK(approxEquals(Vec2::one(), Vec2{1.0f, 1.0f}));
+    CHECK(approxEquals(Vec2::unitX(), Vec2{1.0f, 0.0f}));
+    CHECK(approxEquals(Vec2::unitY(), Vec2{0.0f, 1.0f}));
+
+    const Vec2 a{1.0f, 2.0f};
+    const Vec2 b{4.0f, 8.0f};
+    CHECK(approxEquals(-a, Vec2{-1.0f, -2.0f}));
+    CHECK(approxEquals(b - a, Vec2{3.0f, 6.0f}));
+    CHECK(approxEquals(a * b, Vec2{4.0f, 16.0f}));  // componentwise
+    CHECK(approxEquals(b / a, Vec2{4.0f, 4.0f}));   // componentwise
+    CHECK(approxEquals(2.0f * a, Vec2{2.0f, 4.0f}));
+    CHECK(approxEquals(b / 2.0f, Vec2{2.0f, 4.0f}));
+    CHECK(lengthSquared(Vec2{3.0f, 4.0f}) == doctest::Approx(25.0f));
+    CHECK(distance(Vec2{1.0f, 0.0f}, Vec2{4.0f, 4.0f}) == doctest::Approx(5.0f));
+    CHECK(approxEquals(normalizeOrZero(Vec2{3.0f, 4.0f}), Vec2{0.6f, 0.8f}));
+    CHECK(approxEquals(normalizeOrZero(Vec2::zero()), Vec2::zero()));  // D15's safe variant
+
+    Vec2 acc2 = a;
+    acc2 += b;
+    CHECK(approxEquals(acc2, Vec2{5.0f, 10.0f}));
+    acc2 -= b;
+    CHECK(approxEquals(acc2, a));
+    acc2 *= 2.0f;
+    CHECK(approxEquals(acc2, Vec2{2.0f, 4.0f}));
+    acc2 /= 2.0f;
+    CHECK(approxEquals(acc2, a));
+
+    CHECK(approxEquals(Vec4::one(), Vec4{1.0f, 1.0f, 1.0f, 1.0f}));
+    CHECK(approxEquals(Vec4::unitX(), Vec4{1.0f, 0.0f, 0.0f, 0.0f}));
+    CHECK(approxEquals(Vec4::unitY(), Vec4{0.0f, 1.0f, 0.0f, 0.0f}));
+    CHECK(approxEquals(Vec4::unitZ(), Vec4{0.0f, 0.0f, 1.0f, 0.0f}));
+    CHECK(approxEquals(Vec4::unitW(), Vec4{0.0f, 0.0f, 0.0f, 1.0f}));
+
+    const Vec4 c{1.0f, 2.0f, 3.0f, 4.0f};
+    const Vec4 d{2.0f, 4.0f, 6.0f, 8.0f};
+    CHECK(approxEquals(-c, Vec4{-1.0f, -2.0f, -3.0f, -4.0f}));
+    CHECK(approxEquals(c + c, d));
+    CHECK(approxEquals(d - c, c));
+    CHECK(approxEquals(c * d, Vec4{2.0f, 8.0f, 18.0f, 32.0f}));  // componentwise
+    CHECK(approxEquals(d / c, Vec4{2.0f, 2.0f, 2.0f, 2.0f}));    // componentwise
+    CHECK(approxEquals(2.0f * c, d));
+    CHECK(approxEquals(d / 2.0f, c));
+    CHECK(approxEquals(lerp(c, d, 0.5f), Vec4{1.5f, 3.0f, 4.5f, 6.0f}));
+    CHECK(lengthSquared(c) == doctest::Approx(30.0f));
+    CHECK(distance(Vec4::zero(), Vec4{1.0f, 2.0f, 2.0f, 4.0f}) == doctest::Approx(5.0f));
+    CHECK(length(normalizeOrZero(c)) == doctest::Approx(1.0f));
+    CHECK(approxEquals(normalizeOrZero(Vec4::zero()), Vec4::zero()));  // D15's safe variant
+
+    Vec4 acc4 = c;
+    acc4 += c;
+    CHECK(approxEquals(acc4, d));
+    acc4 -= c;
+    CHECK(approxEquals(acc4, c));
+    acc4 *= 2.0f;
+    CHECK(approxEquals(acc4, d));
+    acc4 /= 2.0f;
+    CHECK(approxEquals(acc4, c));
+}
+
+TEST_CASE("math: Mat3::zero() and Mat4::zero() are genuinely all-zero (D13/D14)") {
+    // D14 makes the DEFAULT identity, so zero() is the explicit opt-in — and the easy one to get
+    // wrong, because `return {};` here would silently hand back IDENTITY and look plausible.
+    // Nothing else in this file exercises it (verified by llvm-cov).
+    const Mat4 z4 = Mat4::zero();
+    CHECK(approxEquals(z4.columns[0], Vec4::zero()));
+    CHECK(approxEquals(z4.columns[1], Vec4::zero()));
+    CHECK(approxEquals(z4.columns[2], Vec4::zero()));
+    CHECK(approxEquals(z4.columns[3], Vec4::zero()));
+    CHECK_FALSE(z4 == Mat4::identity());
+    CHECK(determinant(z4) == doctest::Approx(0.0f));  // degenerate: collapses all geometry
+    CHECK(approxEquals(transformDirection(z4, Vec3::one()), Vec3::zero()));
+
+    const Mat3 z3 = Mat3::zero();
+    CHECK(approxEquals(z3.columns[0], Vec3::zero()));
+    CHECK(approxEquals(z3.columns[1], Vec3::zero()));
+    CHECK(approxEquals(z3.columns[2], Vec3::zero()));
+    CHECK_FALSE(z3 == Mat3::identity());
+    CHECK(determinant(z3) == doctest::Approx(0.0f));
+    CHECK(approxEquals(z3 * Vec3::one(), Vec3::zero()));
 }
 
 TEST_CASE("math: Mat4 algebra and round-trips (AC-5)") {
@@ -269,6 +356,28 @@ TEST_CASE("math: quaternion <-> matrix round-trip handles double cover (AC-5, E8
     CHECK(approxEquals(transformPoint(toMat4(q), v), q * v, MATRIX_EPSILON));
 }
 
+TEST_CASE("math: approxEquals(Quat, Quat) accepts +/-q, and is not a rubber stamp (E8)") {
+    // E8 is load-bearing, and until this case existed NOTHING proved it: every other Quat
+    // comparison in this file happens to pass via the same-SIGN branch (GLM's quat_cast returns +q
+    // for the value used above), so `return same || negated;` could have been cut down to
+    // `return same;` with the whole suite still green — and E8's protection would have silently
+    // evaporated, leaving a future test to "fail" on correct code.
+    const Quat q = normalize(Quat{0.2f, 0.3f, 0.4f, 0.5f});
+    const Quat negQ{-q.x, -q.y, -q.z, -q.w};
+
+    CHECK(approxEquals(q, negQ));  // q and -q are the SAME rotation — double cover
+    CHECK(approxEquals(negQ, q));  // and the relation is symmetric
+
+    // Proof they really are the same rotation, established independently of approxEquals itself.
+    const Vec3 v{1.0f, 2.0f, 3.0f};
+    CHECK(approxEquals(negQ * v, q * v, MATRIX_EPSILON));
+
+    // ...but it must not accept everything: genuinely different rotations still compare unequal
+    // under BOTH signs, or the double-cover tolerance would be hiding real regressions.
+    CHECK_FALSE(approxEquals(fromAxisAngle(Vec3::unitY(), HALF_PI), fromAxisAngle(Vec3::unitX(), HALF_PI)));
+    CHECK_FALSE(approxEquals(q, Quat::identity()));
+}
+
 TEST_CASE("math: slerp endpoints and degenerate cases") {
     const Quat a = Quat::identity();
     const Quat b = fromAxisAngle(Vec3::unitY(), HALF_PI);
@@ -307,6 +416,46 @@ TEST_CASE("math: compose -> decompose -> compose round-trip (AC-5, the deliverab
     // The identity TRS composes to the identity matrix.
     const Trs identityTrs;
     CHECK(approxEquals(compose(identityTrs), Mat4::identity()));
+}
+
+TEST_CASE("math: decompose handles mirrored (negative-scale) matrices (AC-5, D9)") {
+    // Covers decompose()'s negative-determinant branch — the `determinant(m) < 0 ? -sxRaw : sxRaw`
+    // ternary, which had ZERO coverage (verified by llvm-cov) because every other decompose test
+    // uses positive scale. Without the sign flip the normalized 3x3 is IMPROPER (det -1) and
+    // quat_cast hands back a garbage rotation. The Phase-2 inspector hits this the first time a
+    // user types a negative number into a scale field.
+    Trs trs;
+    trs.translation = Vec3{1.0f, -2.0f, 3.0f};
+    trs.rotation = fromAxisAngle(normalize(Vec3{1.0f, 2.0f, 3.0f}), radians(35.0f));
+    trs.scale = Vec3{-2.0f, 3.0f, 4.0f};  // X mirrored — the axis D9's convention flips
+
+    const Mat4 m = compose(trs);
+    REQUIRE(determinant(m) < 0.0f);  // an odd number of mirrored axes
+
+    Trs out;
+    REQUIRE(decompose(m, out));
+
+    // D9 puts the flip on X (matching glm::decompose), so an X-mirrored input round-trips its
+    // COMPONENTS exactly — sign included.
+    CHECK(out.scale.x < 0.0f);
+    CHECK(approxEquals(out.translation, trs.translation, MATRIX_EPSILON));
+    CHECK(approxEquals(out.scale, trs.scale, MATRIX_EPSILON));
+    CHECK(approxEquals(out.rotation, trs.rotation, MATRIX_EPSILON));
+    CHECK(approxEquals(compose(out), m, MATRIX_EPSILON));
+
+    // A mirror on a DIFFERENT axis is not uniquely recoverable — TRS cannot distinguish "flip Y"
+    // from "flip X and rotate", and the convention always reports the flip on X. So the components
+    // legitimately differ; what MUST hold is that the MATRIX round-trips and the handedness
+    // (determinant sign) survives. Asserting component equality here would be asserting a falsehood.
+    Trs yMirrored = trs;
+    yMirrored.scale = Vec3{2.0f, -3.0f, 4.0f};
+    const Mat4 my = compose(yMirrored);
+    REQUIRE(determinant(my) < 0.0f);
+
+    Trs outY;
+    REQUIRE(decompose(my, outY));
+    CHECK(approxEquals(compose(outY), my, MATRIX_EPSILON));
+    CHECK(determinant(compose(outY)) < 0.0f);
 }
 
 TEST_CASE("math: decompose reports failure and leaves `out` untouched (D9)") {
