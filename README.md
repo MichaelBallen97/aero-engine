@@ -56,6 +56,15 @@ On Linux, SDL3 needs system dev packages first — X11 + Wayland libraries, plus
 
 The three `*-release` presets build with the [Tracy](https://github.com/wolfpld/tracy) client wired in (dev-builds-only — never in Debug, never in the shipped runtime). Download the [Tracy Profiler GUI v0.13.1](https://github.com/wolfpld/tracy/releases) separately (it is not built by vcpkg), run a Release build of `aero_tests`, and connect to see the live zones. With no profiler attached the client idles and the process exits promptly; set `TRACY_NO_EXIT=1` to hold a short-lived run open long enough to connect manually.
 
+### Code style
+
+`.clang-format` and `.clang-tidy` at the repo root encode the [docs/04](./docs/04-conventions-setup.md) C++ style and naming law, pinned to **LLVM 18**. CI enforces both: a fast `lint` job runs clang-format over every tracked C/C++ source, and a step on the Linux Debug lane runs clang-tidy over the first-party translation units. Run the same checks locally with `brew install llvm@18` (Homebrew's keg installs unversioned `clang-format`/`clang-tidy` binaries — add `$(brew --prefix llvm@18)/bin` to `PATH`, or call the full path, since apt's `-18`-suffixed names aren't used on macOS):
+
+```bash
+git ls-files -z '*.cpp' '*.hpp' '*.h' '*.cc' '*.cxx' '*.hxx' '*.inl' | xargs -0 -r clang-format --dry-run --Werror
+git ls-files -z '*.cpp' | xargs -0 -r -n1 clang-tidy -p build/macos-debug --warnings-as-errors='*'
+```
+
 ---
 
 ## Documentation

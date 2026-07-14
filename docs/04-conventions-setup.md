@@ -22,7 +22,7 @@ These are enforced, not encouraged:
 - **Namespaces:** everything under `engine::`; subsystem sub-namespaces (`engine::render`, `engine::rhi`, …) as needed.
 - **Headers:** `#pragma once`. Public headers expose only engine types — never `glm`, `SDL`, `entt`, `miniaudio`, or other third-party types.
 - **Errors:** no exceptions across public API boundaries; prefer explicit result/status types and asserts in debug. Handles return invalid rather than throw.
-- **Formatting:** `clang-format` (config committed); enforced in CI. `clang-tidy` for lint.
+- **Formatting:** `clang-format` (config committed); enforced in CI. `clang-tidy` for lint. `.clang-format`/`.clang-tidy` live at the repo root, pinned to **LLVM 18** (`clang-format-18`/`clang-tidy-18`; task 0.1.6). The docs/04 naming law above is machine-enforced by `readability-identifier-naming`. Enforcement is split for speed: a standalone `lint` CI job runs `clang-format --dry-run --Werror` over every tracked C/C++ source (no build); a step on the Linux Debug lane runs `clang-tidy --warnings-as-errors='*'` over the first-party `.cpp` translation units, reusing that lane's compile-commands database.
 - **No `using namespace` in headers.**
 
 ---

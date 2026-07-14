@@ -34,6 +34,25 @@ jobs:
             exit 1
           fi
 
+  lint:
+    name: Format & lint configs
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (no submodules — clang-format needs only the sources)
+        uses: actions/checkout@v4
+
+      - name: Install clang-format 18
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18
+
+      - name: clang-format — all tracked C/C++ sources must be formatted
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files -z '*.cpp' '*.hpp' '*.h' '*.cc' '*.cxx' '*.hxx' '*.inl' \
+            | xargs -0 -r clang-format-18 --dry-run --Werror
+
   build:
     name: ${{ matrix.name }}
     needs: vcpkg-baseline        # don't spend build minutes if the pin is broken
@@ -72,7 +91,8 @@ jobs:
             libxi-dev libxss-dev libxtst-dev libxft-dev \
             libwayland-dev wayland-protocols libdecor-0-dev libxkbcommon-dev \
             libegl1-mesa-dev libibus-1.0-dev \
-            autoconf autoconf-archive automake libtool libltdl-dev
+            autoconf autoconf-archive automake libtool libltdl-dev \
+            clang-tidy-18
 
       - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows'
@@ -102,6 +122,16 @@ jobs:
         run: |
           cmake --preset ${{ matrix.preset }}-debug
           cmake --build --preset ${{ matrix.preset }}-debug
+
+      - name: clang-tidy — first-party TUs (Linux, reuses the Debug compile DB)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only .cpp are translation units; the compile DB from linux-debug carries
+          # their exact flags. profiler.hpp is linted transitively via profiler_test.cpp.
+          git ls-files -z '*.cpp' \
+            | xargs -0 -r -n1 clang-tidy-18 -p build/linux-debug --warnings-as-errors='*'
 
       - name: Test — Debug (ASan/UBSan)
         shell: bash

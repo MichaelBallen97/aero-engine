@@ -25,3 +25,7 @@ desktop.ini
 # ---- Claude Code local state ----
 .claude/settings.local.json
 .claude/agents/
+
+# ---- Planning docs (specs & plans) — kept local-only, never on the remote ----
+docs/plans/
+docs/specs/
