@@ -25,7 +25,7 @@
             "displayName": "macOS Release",
             "inherits": "base",
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "AERO_ENABLE_PROFILING": "ON" }
         },
         {
             "name": "windows-debug",
@@ -39,7 +39,7 @@
             "displayName": "Windows Release",
             "inherits": "base",
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "AERO_ENABLE_PROFILING": "ON" }
         },
         {
             "name": "linux-debug",
@@ -53,7 +53,7 @@
             "displayName": "Linux Release",
             "inherits": "base",
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "AERO_ENABLE_PROFILING": "ON" }
         }
     ],
     "buildPresets": [

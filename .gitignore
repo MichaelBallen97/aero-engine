@@ -9,6 +9,9 @@ vcpkg_installed/
 # ---- Generated & cooked output (docs/04: never committed; .meta files ARE committed) ----
 *.pak
 
+# ---- Tracy profiler captures (task 0.1.5; dev-builds-only, never committed) ----
+*.tracy
+
 # ---- OS noise ----
 .DS_Store
 Thumbs.db

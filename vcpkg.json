@@ -13,6 +13,7 @@
             "features": [
                 { "name": "vulkan", "platform": "linux" }
             ]
-        }
+        },
+        "tracy"
     ]
 }
