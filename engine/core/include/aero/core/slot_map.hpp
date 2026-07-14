@@ -121,8 +121,9 @@ private:
     }
 
     // Shared validation for get()/contains()/remove(): a handle maps to its live slot, or nullptr.
-    // Uses .value() (the checked accessor) at the call sites, so the optional is never accessed
-    // unchecked.
+    // Postcondition: a non-null return guarantees the slot is occupied (its optional is engaged), so
+    // get() dereferences it via &*slot->value behind an inline has_value() guard — the access stays
+    // checked for clang-tidy.
     Slot* resolve(HandleType handle) noexcept {
         if (handle.index >= slots.size()) {
             return nullptr;
