@@ -53,13 +53,20 @@ struct LogState {
     std::shared_ptr<const LogCallback> callback;
 };
 
-// Immortal by design (spec D12): never destroyed, so late logging cannot touch a destroyed
-// object. It stays reachable from this function-local static pointer for the whole process,
-// so LeakSanitizer (Linux Debug lane) does not report it — LSan flags only unreachable
-// blocks. The magic static makes construction thread-safe.
+// Immortal by design (spec D12): the union's destructor deliberately does NOT destroy `value`,
+// so late logging can never touch a destroyed object. Static storage, so LSan has nothing to
+// report (spec E5's concern disappears — there is no heap block at all) and docs/04's
+// "never manual new/delete" law holds (code review Gap 4: this replaces a prior
+// `new LogState()`, the only manual new in the first-party tree).
+union ImmortalLogState {
+    ImmortalLogState() : value() {}
+    ~ImmortalLogState() {}  // intentionally empty: `value` is never destroyed
+    LogState value;
+};
+
 LogState& state() {
-    static auto* instance = new LogState();
-    return *instance;
+    static ImmortalLogState instance;  // magic static => thread-safe construction
+    return instance.value;
 }
 
 }  // namespace
@@ -125,10 +132,23 @@ void logWrite(LogLevel level, const LogLocation& location, std::string_view mess
         callback = logState.callback;
     }
 
+    // Gap 1 fix: our pattern's "%s:%#" drives spdlog's short_filename_formatter, which guards
+    // only on spdlog::source_loc::empty() (line <= 0) -- NOT on a null filename. A LogLocation
+    // with file == nullptr (e.g. a hand-built LogLocation{.line = 42}, unlike the AERO_LOG_*
+    // macros, which always fill __FILE__) would reach std::strrchr(nullptr, '/') inside spdlog
+    // and SEGV. Substituting a fully-empty source_loc{} makes empty() true, so spdlog's
+    // formatter skips %s/%# entirely instead of dereferencing the null filename. `function` is
+    // NOT guarded the same way, but the pattern above has no %! (function) conversion, so a
+    // null `function` is currently inert; if the pattern ever adds %!, extend this same
+    // null-check to `location.function` before that lands.
+    const bool hasFile = location.file != nullptr;
+    const spdlog::source_loc sourceLoc =
+        hasFile ? spdlog::source_loc{location.file, static_cast<int>(location.line), location.function}
+                : spdlog::source_loc{};
+
     // The non-formatting overload (logger.h:115): `message` is written verbatim, so braces
     // inside it are never reinterpreted as a format string and cannot throw.
-    logger->log(spdlog::source_loc{location.file, static_cast<int>(location.line), location.function},
-                toSpdlogLevel(level), spdlog::string_view_t{message.data(), message.size()});
+    logger->log(sourceLoc, toSpdlogLevel(level), spdlog::string_view_t{message.data(), message.size()});
 
     // Invoked OUTSIDE the lock (spec D9): a callback that logs cannot deadlock.
     if (callback && *callback) {

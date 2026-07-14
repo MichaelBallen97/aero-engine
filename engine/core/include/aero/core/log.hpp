@@ -88,6 +88,17 @@ using LogCallback = std::function<void(const LogRecord&)>;
 // the console sink. Pass {} to clear. The callback MAY BE INVOKED FROM ANY THREAD and must
 // be thread-safe. It is invoked outside the internal lock, so it may log without
 // deadlocking (mind unbounded recursion).
+//
+// Lifetime after detaching (code review Gap 2): setLogCallback({}) and shutdownLogging() only
+// clear the STORED callback -- they do NOT wait for an invocation that is already in flight on
+// another thread. A record that passed the level check just before the detach may still be
+// mid-callback when detach() returns, because the callback is invoked outside the lock (by
+// design -- see above). This means detaching does NOT guarantee the callback's captured state
+// may now be safely destroyed: the caller must keep anything the callback captures (e.g. a
+// `this` pointer) alive until it is independently certain no in-flight record can still be
+// executing, or synchronize that externally. There is deliberately no drain/join here (out of
+// this task's scope); a future consumer that needs one (e.g. a Phase 2 editor console panel
+// destroying itself right after detaching) must add it at the call site or ask for one.
 void setLogCallback(LogCallback callback);
 
 namespace detail {
