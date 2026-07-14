@@ -87,6 +87,10 @@ TEST_CASE("log: records below the runtime level never reach the callback") {
 // OWN record.level individually, which such a swap fails immediately. AERO_LOG_TRACE/DEBUG are
 // bracketed on AERO_LOG_ACTIVE_LEVEL (E8): they compile to nothing in the *-release presets, so
 // asserting them unconditionally would fail Release, not catch a bug.
+//
+// Each macro is emitted DIRECTLY rather than through a lambda: AERO_LOG_LOCATION() captures
+// __func__, which inside a lambda expands to the closure's operator() instead of the enclosing
+// function -- clang-tidy's bugprone-lambda-function-name flags that, and CI runs it as an error.
 TEST_CASE("log: each macro's record carries its own, correct LogLevel") {
     const LogFixture fixture;
     engine::setLogLevel(engine::LogLevel::Trace);
@@ -94,23 +98,30 @@ TEST_CASE("log: each macro's record carries its own, correct LogLevel") {
     std::vector<engine::LogLevel> captured;
     engine::setLogCallback([&captured](const engine::LogRecord& record) { captured.push_back(record.level); });
 
-    const auto captureOne = [&captured](auto&& emit) {
-        captured.clear();
-        emit();
-        REQUIRE(captured.size() == 1);
-        return captured.front();
-    };
-
+    // Emit one record per compiled-in macro, in ascending severity, and build the expected
+    // sequence alongside so the two stay in lockstep across the E8 brackets.
+    std::vector<engine::LogLevel> expected;
 #if AERO_LOG_ACTIVE_LEVEL <= AERO_LOG_LEVEL_TRACE
-    CHECK(captureOne([] { AERO_LOG_TRACE("trace"); }) == engine::LogLevel::Trace);
+    AERO_LOG_TRACE("trace");
+    expected.push_back(engine::LogLevel::Trace);
 #endif
 #if AERO_LOG_ACTIVE_LEVEL <= AERO_LOG_LEVEL_DEBUG
-    CHECK(captureOne([] { AERO_LOG_DEBUG("debug"); }) == engine::LogLevel::Debug);
+    AERO_LOG_DEBUG("debug");
+    expected.push_back(engine::LogLevel::Debug);
 #endif
-    CHECK(captureOne([] { AERO_LOG_INFO("info"); }) == engine::LogLevel::Info);
-    CHECK(captureOne([] { AERO_LOG_WARN("warn"); }) == engine::LogLevel::Warn);
-    CHECK(captureOne([] { AERO_LOG_ERROR("error"); }) == engine::LogLevel::Error);
-    CHECK(captureOne([] { AERO_LOG_CRITICAL("critical"); }) == engine::LogLevel::Critical);
+    AERO_LOG_INFO("info");
+    expected.push_back(engine::LogLevel::Info);
+    AERO_LOG_WARN("warn");
+    expected.push_back(engine::LogLevel::Warn);
+    AERO_LOG_ERROR("error");
+    expected.push_back(engine::LogLevel::Error);
+    AERO_LOG_CRITICAL("critical");
+    expected.push_back(engine::LogLevel::Critical);
+
+    REQUIRE(captured.size() == expected.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        CHECK(captured[index] == expected[index]);
+    }
 }
 
 // Proves D5's choice of the non-formatting spdlog overload: a message that already contains
