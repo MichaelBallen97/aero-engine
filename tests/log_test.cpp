@@ -28,6 +28,12 @@ struct Captured {
     std::uint32_t line = 0;
 };
 
+// A named free function so __func__ has a stable, assertable spelling. AERO_LOG_* captures
+// __func__ at the CALL SITE, so a record raised here must name this function rather than
+// anything inside the logging implementation. It lives outside a TEST_CASE because a
+// TEST_CASE body's own __func__ is a doctest-generated name.
+void emitInfoFromNamedFunction() { AERO_LOG_INFO("raised from a named function"); }
+
 }  // namespace
 
 TEST_CASE("log: the runtime level gates records") {
@@ -163,4 +169,113 @@ TEST_CASE("log: logging after shutdownLogging lazily reinitialises") {
     AERO_LOG_INFO("logging after shutdown must not crash");
 
     engine::shutdownLogging();  // idempotent
+}
+
+// AC-6 names file, function AND line, but the call-site case above asserts only file and line.
+// __func__ is captured by a different macro argument than __FILE__/__LINE__, so it can be wrong
+// on its own.
+TEST_CASE("log: the callback receives the call-site function name") {
+    const LogFixture fixture;
+    std::string function;
+    engine::setLogCallback([&function](const engine::LogRecord& record) {
+        // Guarded: LogLocation::function is a raw pointer, and std::string{nullptr} is UB.
+        function = record.location.function != nullptr ? record.location.function : "<null>";
+    });
+
+    emitInfoFromNamedFunction();
+
+    // find(), not ==: __func__'s exact spelling is implementation-defined. Clang, GCC and MSVC
+    // all embed the bare name, but none of them promise the absence of decoration.
+    CHECK(function.find("emitInfoFromNamedFunction") != std::string::npos);
+}
+
+// detail::logWrite is the header's documented entry point for a message whose text is only
+// known at runtime (std::format_string needs a compile-time-constant format), and it is what
+// every AERO_LOG_* call ultimately funnels into. Nothing else covers it directly.
+TEST_CASE("log: logWrite delivers a runtime-built message and re-checks the level") {
+    const LogFixture fixture;
+    std::vector<Captured> records;
+    engine::setLogCallback([&records](const engine::LogRecord& record) {
+        records.push_back({record.level, std::string{record.message}, record.location.file, record.location.line});
+    });
+
+    // Long enough to defeat std::string's small-string optimisation, so LogRecord::message
+    // views heap memory: were the callback ever invoked after the caller's buffer died, ASan
+    // would fault here rather than silently comparing freed bytes. This guards the lifetime
+    // contract that the planned std::format_to optimisation would most easily break.
+    const std::string runtimeBuilt = "runtime-built " + std::string(64, 'x');
+    const engine::LogLocation location{"synthetic.cpp", "syntheticFunction", 4242};
+
+    engine::detail::logWrite(engine::LogLevel::Warn, location, runtimeBuilt);
+
+    REQUIRE(records.size() == 1);
+    CHECK(records[0].level == engine::LogLevel::Warn);
+    CHECK(records[0].message == runtimeBuilt);
+    CHECK(records[0].file == "synthetic.cpp");
+    CHECK(records[0].line == 4242);
+
+    // The documented re-check, exercised at the strictest floor: a direct caller is filtered
+    // exactly as a macro call would be, so Off silences even Critical end-to-end.
+    engine::setLogLevel(engine::LogLevel::Off);
+    engine::detail::logWrite(engine::LogLevel::Critical, location, runtimeBuilt);
+    CHECK(records.size() == 1);
+}
+
+// The compile-time gate and the runtime default are driven by the same NDEBUG condition and
+// must not drift apart. static_assert, not CHECK: a wrong default must fail the BUILD. The
+// "lazily reinitialises" case compares logLevel() against DEFAULT_LOG_LEVEL — the same constant
+// on both sides — so it cannot catch a wrong value; these can.
+TEST_CASE("log: DEFAULT_LOG_LEVEL and AERO_LOG_ACTIVE_LEVEL follow the NDEBUG split") {
+#if defined(NDEBUG)
+    static_assert(engine::DEFAULT_LOG_LEVEL == engine::LogLevel::Info, "NDEBUG builds default to Info");
+    static_assert(AERO_LOG_ACTIVE_LEVEL == AERO_LOG_LEVEL_INFO, "NDEBUG builds gate at Info");
+#else
+    static_assert(engine::DEFAULT_LOG_LEVEL == engine::LogLevel::Trace, "debug builds default to Trace");
+    static_assert(AERO_LOG_ACTIVE_LEVEL == AERO_LOG_LEVEL_TRACE, "debug builds gate at Trace");
+#endif
+
+    // logEnabled() is a `>=` against the floor, so both ends of the enum are boundaries: Trace
+    // admits everything, Off admits nothing. The existing level case covers Warn and Off only.
+    const LogFixture fixture;
+    engine::setLogLevel(engine::LogLevel::Trace);
+    CHECK(engine::logEnabled(engine::LogLevel::Trace));
+    CHECK(engine::logEnabled(engine::LogLevel::Critical));
+    engine::setLogLevel(engine::LogLevel::Off);
+    CHECK_FALSE(engine::logEnabled(engine::LogLevel::Trace));
+}
+
+// shutdownLogging()'s contract is "flushes, clears the callback, releases the logger, resets
+// the level". Callback-clearing was only implicitly covered: a stale callback holds a dangling
+// capture, so ASan would fault in a LATER case — a confusing failure far from the cause.
+TEST_CASE("log: shutdownLogging clears the callback") {
+    const LogFixture fixture;
+    std::atomic<int> count{0};
+    engine::setLogCallback([&count](const engine::LogRecord&) { count.fetch_add(1); });
+    AERO_LOG_INFO("delivered");
+    REQUIRE(count.load() == 1);
+
+    engine::shutdownLogging();
+    // Re-init only to keep the console quiet (the lazy reinit would restore console=true); it
+    // must not resurrect the cleared callback.
+    engine::initLogging(engine::LogConfig{.level = engine::LogLevel::Trace, .console = false});
+    AERO_LOG_INFO("must not reach the cleared callback");
+
+    CHECK(count.load() == 1);
+}
+
+// initLogging()'s default argument is what a subsystem calls when it wants the engine defaults.
+// Every other case passes an explicit config, so this is the only cover for the default-argument
+// path, for LogConfig's own defaults, and for D12's "last call wins".
+TEST_CASE("log: initLogging() applies LogConfig's defaults") {
+    const LogFixture fixture;
+    static_assert(engine::LogConfig{}.level == engine::DEFAULT_LOG_LEVEL, "LogConfig defaults to the engine level");
+    static_assert(engine::LogConfig{}.console, "LogConfig defaults to a console sink");
+
+    // Move the level off the default first, so the assertion below cannot pass trivially.
+    engine::setLogLevel(engine::LogLevel::Off);
+    REQUIRE(engine::logLevel() == engine::LogLevel::Off);
+
+    engine::initLogging();  // default argument; re-init is allowed and the last call wins
+
+    CHECK(engine::logLevel() == engine::DEFAULT_LOG_LEVEL);
 }
