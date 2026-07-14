@@ -80,6 +80,39 @@ TEST_CASE("log: records below the runtime level never reach the callback") {
     CHECK(count.load() == 2);
 }
 
+// Regression (code review Gap 3): the level-gating test above only counts records, so it never
+// notices if a macro is wired to the WRONG LogLevel -- e.g. swapping the enums in
+// AERO_LOG_ERROR/AERO_LOG_CRITICAL's definitions still passes it (Critical(5) >= Error(4) and
+// Error(4) >= Error(4) both admit the record, so count stays 2). This case asserts each macro's
+// OWN record.level individually, which such a swap fails immediately. AERO_LOG_TRACE/DEBUG are
+// bracketed on AERO_LOG_ACTIVE_LEVEL (E8): they compile to nothing in the *-release presets, so
+// asserting them unconditionally would fail Release, not catch a bug.
+TEST_CASE("log: each macro's record carries its own, correct LogLevel") {
+    const LogFixture fixture;
+    engine::setLogLevel(engine::LogLevel::Trace);
+
+    std::vector<engine::LogLevel> captured;
+    engine::setLogCallback([&captured](const engine::LogRecord& record) { captured.push_back(record.level); });
+
+    const auto captureOne = [&captured](auto&& emit) {
+        captured.clear();
+        emit();
+        REQUIRE(captured.size() == 1);
+        return captured.front();
+    };
+
+#if AERO_LOG_ACTIVE_LEVEL <= AERO_LOG_LEVEL_TRACE
+    CHECK(captureOne([] { AERO_LOG_TRACE("trace"); }) == engine::LogLevel::Trace);
+#endif
+#if AERO_LOG_ACTIVE_LEVEL <= AERO_LOG_LEVEL_DEBUG
+    CHECK(captureOne([] { AERO_LOG_DEBUG("debug"); }) == engine::LogLevel::Debug);
+#endif
+    CHECK(captureOne([] { AERO_LOG_INFO("info"); }) == engine::LogLevel::Info);
+    CHECK(captureOne([] { AERO_LOG_WARN("warn"); }) == engine::LogLevel::Warn);
+    CHECK(captureOne([] { AERO_LOG_ERROR("error"); }) == engine::LogLevel::Error);
+    CHECK(captureOne([] { AERO_LOG_CRITICAL("critical"); }) == engine::LogLevel::Critical);
+}
+
 // Proves D5's choice of the non-formatting spdlog overload: a message that already contains
 // braces must survive verbatim and must not be reparsed as a format string.
 TEST_CASE("log: braces in a formatted message are not reinterpreted") {
@@ -169,6 +202,39 @@ TEST_CASE("log: logging after shutdownLogging lazily reinitialises") {
     AERO_LOG_INFO("logging after shutdown must not crash");
 
     engine::shutdownLogging();  // idempotent
+}
+
+// Regression (code review Gap 1): a LogLocation with a null `file` used to SEGV inside
+// spdlog's pattern formatter (our "%s:%#" drives short_filename_formatter, which guards only
+// on source_loc::empty() -- line <= 0 -- not on a null filename, so it reached
+// std::strrchr(nullptr, '/')). The AERO_LOG_* macros always fill __FILE__ via
+// AERO_LOG_LOCATION(), so they can never trigger this; a hand-built LogLocation reaching
+// detail::logWrite directly (as this case does) can. console = true is REQUIRED to reach the
+// bug: every LogFixture case uses console = false (zero sinks), so sink_it_ -- and therefore
+// the pattern formatter -- never runs. This is the ONLY case in the suite that exercises the
+// real console sink's formatting path end-to-end, which is exactly why the crash escaped every
+// other test. Deliberately does not use LogFixture: it needs console = true and its own
+// teardown. Prints one line to stdout (hidden by outputOnFailure unless this fails).
+TEST_CASE("log: a null LogLocation::file does not crash the console sink") {
+    engine::initLogging(engine::LogConfig{.level = engine::LogLevel::Trace, .console = true});
+
+    std::vector<Captured> records;
+    engine::setLogCallback([&records](const engine::LogRecord& record) {
+        records.push_back({record.level, std::string{record.message},
+                           record.location.file != nullptr ? record.location.file : "", record.location.line});
+    });
+
+    // file == nullptr, function == nullptr, line == 42: exactly the shape that used to reach
+    // spdlog's short_filename_formatter and dereference a null pointer.
+    engine::detail::logWrite(engine::LogLevel::Error, engine::LogLocation{.line = 42}, "hello");
+
+    REQUIRE(records.size() == 1);
+    CHECK(records[0].level == engine::LogLevel::Error);
+    CHECK(records[0].message == "hello");
+    CHECK(records[0].file.empty());
+    CHECK(records[0].line == 42);
+
+    engine::shutdownLogging();
 }
 
 // AC-6 names file, function AND line, but the call-site case above asserts only file and line.
