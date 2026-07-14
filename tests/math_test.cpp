@@ -1,0 +1,396 @@
+// Aero Engine — math surface tests (task 0.2.2, ADR-005).
+//
+// D18: these tests deliberately do NOT include GLM. /tests sits outside core/math, so including
+// GLM here would be the exact violation task 0.2.3's guard exists to catch — and cross-validating
+// our math against the very backend that implements it would be partly circular. Every
+// expectation below is a hand-computed literal or an algebraic identity.
+//
+// AC-9(i): aero_tests links aero::core but NOT glm::glm. That this TU compiles at all is a
+// permanent, free regression test that no public math header pulls GLM in.
+#include <aero/core/math.hpp>
+
+#include <doctest/doctest.h>
+
+#include <type_traits>
+
+// docs/04 forbids `using namespace` in HEADERS; this is a test TU. Free functions live in
+// engine:: too (D12), so ADL would find dot(a, b) unqualified regardless.
+using namespace engine;
+
+namespace {
+// EPSILON is tuned for a handful of accumulated float32 ops. Matrix inversion, quat_cast and the
+// projections accumulate more, so they get an explicit looser tolerance (E11).
+constexpr float MATRIX_EPSILON = 1e-4f;
+}  // namespace
+
+TEST_CASE("math: layout and trait invariants (AC-11)") {
+    // Mirrors the headers' static_asserts as executable documentation of WHY they matter: data()
+    // (the GPU upload path, D8) and ADR-004 serialization both rest on them.
+    static_assert(std::is_trivially_copyable_v<Vec2>);
+    static_assert(std::is_trivially_copyable_v<Vec3>);
+    static_assert(std::is_trivially_copyable_v<Vec4>);
+    static_assert(std::is_trivially_copyable_v<Mat3>);
+    static_assert(std::is_trivially_copyable_v<Mat4>);
+    static_assert(std::is_trivially_copyable_v<Quat>);
+
+    static_assert(std::is_standard_layout_v<Mat3>);
+    static_assert(std::is_standard_layout_v<Mat4>);
+
+    static_assert(sizeof(Vec2) == 8);
+    static_assert(sizeof(Vec3) == 12);
+    static_assert(sizeof(Vec4) == 16);
+    static_assert(sizeof(Mat3) == 36);
+    static_assert(sizeof(Mat4) == 64);
+    static_assert(sizeof(Quat) == 16);
+
+    // D14 keeps the types AGGREGATES (no user-declared ctors) so designated initializers and
+    // is_trivially_copyable both survive — the latter is what ADR-004 and data() need.
+    static_assert(std::is_aggregate_v<Vec3>);
+    static_assert(std::is_aggregate_v<Mat4>);
+    static_assert(std::is_aggregate_v<Quat>);
+
+    // E4: data() promises 16 contiguous floats in COLUMN-MAJOR order — what the GPU upload path
+    // (0.4.x/0.5.x) memcpy's with no transpose (D8). The static_asserts prove the SIZE; this
+    // proves the ORDER, and that std::array (Deviation #1) did not change it.
+    const Mat4 m = translation(Vec3{1.0f, 2.0f, 3.0f});
+    const float* p = m.data();
+    CHECK(p[0] == doctest::Approx(1.0f));   // columns[0].x
+    CHECK(p[5] == doctest::Approx(1.0f));   // columns[1].y
+    CHECK(p[12] == doctest::Approx(1.0f));  // columns[3].x — translation lives in column 3
+    CHECK(p[13] == doctest::Approx(2.0f));
+    CHECK(p[14] == doctest::Approx(3.0f));
+    CHECK(p[15] == doctest::Approx(1.0f));
+}
+
+TEST_CASE("math: default-constructed values are each type's identity element (D14)") {
+    // A zero Mat4 would silently collapse all geometry to a point — identity is the only sane
+    // default for a transform. Costs a dead store the optimizer removes.
+    const Vec3 v;
+    CHECK(v == Vec3::zero());
+    const Vec2 v2;
+    CHECK(v2 == Vec2::zero());
+    const Vec4 v4;
+    CHECK(v4 == Vec4::zero());
+    const Quat q;
+    CHECK(q == Quat::identity());
+    const Mat3 m3;
+    CHECK(m3 == Mat3::identity());
+    const Mat4 m4;
+    CHECK(m4 == Mat4::identity());
+    CHECK(Quat::identity().w == doctest::Approx(1.0f));  // D7: {x,y,z,w} — w is LAST, and it is 1
+}
+
+TEST_CASE("math: angle helpers and constants (D6 — radians everywhere)") {
+    CHECK(radians(180.0f) == doctest::Approx(PI));
+    CHECK(degrees(PI) == doctest::Approx(180.0f));
+    CHECK(radians(degrees(1.234f)) == doctest::Approx(1.234f));
+    CHECK(TWO_PI == doctest::Approx(2.0f * PI));
+    CHECK(HALF_PI == doctest::Approx(PI * 0.5f));
+    CHECK(approxEquals(1.0f, 1.0f + (EPSILON * 0.5f)));
+    CHECK_FALSE(approxEquals(1.0f, 1.1f));
+
+    // Compile-time usable (E6: no sqrt involved).
+    static_assert(radians(180.0f) > 3.14f);
+    static_assert(approxEquals(degrees(PI), 180.0f, 1e-3f));
+}
+
+TEST_CASE("math: vector algebra against hand-computed literals") {
+    const Vec3 a{1.0f, 2.0f, 3.0f};
+    const Vec3 b{4.0f, 5.0f, 6.0f};
+
+    CHECK(approxEquals(a + b, Vec3{5.0f, 7.0f, 9.0f}));
+    CHECK(approxEquals(b - a, Vec3{3.0f, 3.0f, 3.0f}));
+    CHECK(approxEquals(-a, Vec3{-1.0f, -2.0f, -3.0f}));
+    CHECK(approxEquals(a * 2.0f, Vec3{2.0f, 4.0f, 6.0f}));
+    CHECK(approxEquals(2.0f * a, Vec3{2.0f, 4.0f, 6.0f}));
+    CHECK(approxEquals(a * b, Vec3{4.0f, 10.0f, 18.0f}));  // componentwise — not dot, not cross
+    CHECK(dot(a, b) == doctest::Approx(32.0f));            // 4 + 10 + 18
+    CHECK(length(Vec3{3.0f, 4.0f, 0.0f}) == doctest::Approx(5.0f));
+    CHECK(lengthSquared(Vec3{3.0f, 4.0f, 0.0f}) == doctest::Approx(25.0f));
+    CHECK(distance(Vec3{1.0f, 0.0f, 0.0f}, Vec3{4.0f, 4.0f, 0.0f}) == doctest::Approx(5.0f));
+    CHECK(approxEquals(lerp(a, b, 0.5f), Vec3{2.5f, 3.5f, 4.5f}));
+    CHECK(approxEquals(lerp(a, b, 0.0f), a));
+    CHECK(approxEquals(lerp(a, b, 1.0f), b));
+
+    Vec3 acc = a;
+    acc += b;
+    CHECK(approxEquals(acc, Vec3{5.0f, 7.0f, 9.0f}));
+    acc -= b;
+    CHECK(approxEquals(acc, a));
+    acc *= 2.0f;
+    CHECK(approxEquals(acc, Vec3{2.0f, 4.0f, 6.0f}));
+    acc /= 2.0f;
+    CHECK(approxEquals(acc, a));
+}
+
+TEST_CASE("math: the cross product is RIGHT-HANDED (AC-7, D3)") {
+    // THE handedness statement. RH/Y-up/-Z-forward is glTF's convention — the engine's canonical
+    // asset format — so imported meshes need no flip anywhere in the pipeline (D3). If anyone
+    // ever swaps this to left-handed, THIS is the test that fires.
+    CHECK(approxEquals(cross(Vec3::unitX(), Vec3::unitY()), Vec3::unitZ()));
+    CHECK(approxEquals(cross(Vec3::unitY(), Vec3::unitZ()), Vec3::unitX()));
+    CHECK(approxEquals(cross(Vec3::unitZ(), Vec3::unitX()), Vec3::unitY()));
+
+    const Vec3 a{1.0f, 2.0f, 3.0f};
+    const Vec3 b{4.0f, 5.0f, 6.0f};
+    CHECK(approxEquals(cross(a, b), Vec3{-3.0f, 6.0f, -3.0f}));  // hand-computed
+    CHECK(approxEquals(cross(a, b), -cross(b, a)));              // anticommutative
+    CHECK(dot(cross(a, b), a) == doctest::Approx(0.0f));         // orthogonal to both inputs
+    CHECK(dot(cross(a, b), b) == doctest::Approx(0.0f));
+}
+
+TEST_CASE("math: normalize and normalizeOrZero (D15)") {
+    const Vec3 v{3.0f, 4.0f, 0.0f};
+    CHECK(length(normalize(v)) == doctest::Approx(1.0f));
+    CHECK(approxEquals(normalize(v), Vec3{0.6f, 0.8f, 0.0f}));
+    CHECK(approxEquals(normalizeOrZero(v), normalize(v)));
+
+    // The safe variant branches; the unsafe one does not (it is the hottest op in the engine).
+    CHECK(approxEquals(normalizeOrZero(Vec3::zero()), Vec3::zero()));
+
+    // E7 — DELIBERATELY NOT TESTED: normalize(Vec3::zero()) fires an assert() in Debug, and
+    // doctest has no death tests. An accepted, recorded gap — not an oversight. Callers whose
+    // input may be zero must use normalizeOrZero, which IS tested above.
+}
+
+TEST_CASE("math: Vec2 and Vec4 mirror Vec3's surface") {
+    const Vec2 a{3.0f, 4.0f};
+    CHECK(length(a) == doctest::Approx(5.0f));
+    CHECK(dot(a, Vec2{1.0f, 0.0f}) == doctest::Approx(3.0f));
+    CHECK(approxEquals(normalize(a), Vec2{0.6f, 0.8f}));
+    CHECK(approxEquals(a + Vec2{1.0f, 1.0f}, Vec2{4.0f, 5.0f}));
+    CHECK(approxEquals(lerp(Vec2::zero(), a, 0.5f), Vec2{1.5f, 2.0f}));
+
+    const Vec4 b{1.0f, 2.0f, 3.0f, 4.0f};
+    CHECK(dot(b, b) == doctest::Approx(30.0f));
+    CHECK(approxEquals(b * 2.0f, Vec4{2.0f, 4.0f, 6.0f, 8.0f}));
+    CHECK(length(normalize(b)) == doctest::Approx(1.0f));
+
+    // Size-changing conversions are EXPLICIT ONLY (D10) — no implicit widening or narrowing, so a
+    // Vec3 can never silently become a Vec4 with a fabricated w.
+    CHECK(approxEquals(xyz(b), Vec3{1.0f, 2.0f, 3.0f}));
+    CHECK(approxEquals(toVec4(Vec3{1.0f, 2.0f, 3.0f}, 4.0f), b));
+    CHECK(approxEquals(xyz(toVec4(Vec3{1.0f, 2.0f, 3.0f}, 9.0f)), Vec3{1.0f, 2.0f, 3.0f}));
+}
+
+TEST_CASE("math: Mat4 algebra and round-trips (AC-5)") {
+    const Mat4 t = translation(Vec3{1.0f, 2.0f, 3.0f});
+    const Mat4 s = scaling(Vec3{2.0f, 3.0f, 4.0f});
+    const Mat4 i = Mat4::identity();
+
+    CHECK(approxEquals(t * i, t));
+    CHECK(approxEquals(i * t, t));
+    CHECK(approxEquals((t * s) * i, t * (s * i)));    // associativity
+    CHECK(approxEquals(transpose(transpose(t)), t));  // involution round-trip
+
+    // Round-trip: M * inverse(M) == I. Inversion accumulates error -> looser tolerance (E11).
+    const Mat4 m = t * s;
+    CHECK(approxEquals(m * inverse(m), Mat4::identity(), MATRIX_EPSILON));
+    CHECK(approxEquals(inverse(m) * m, Mat4::identity(), MATRIX_EPSILON));
+
+    CHECK(determinant(Mat4::identity()) == doctest::Approx(1.0f));
+    CHECK(determinant(s) == doctest::Approx(24.0f));  // 2 * 3 * 4
+
+    // transformPoint (w=1) and transformDirection (w=0) differ by EXACTLY the translation.
+    const Vec3 p{5.0f, 6.0f, 7.0f};
+    CHECK(approxEquals(transformPoint(t, p), Vec3{6.0f, 8.0f, 10.0f}));
+    CHECK(approxEquals(transformDirection(t, p), p));  // a direction is never translated
+    CHECK(approxEquals(transformPoint(t, p) - transformDirection(t, p), Vec3{1.0f, 2.0f, 3.0f}));
+
+    // D8: Model = T * R * S applies S FIRST. Scale then translate, not the reverse.
+    CHECK(approxEquals(transformPoint(t * s, Vec3::one()), Vec3{3.0f, 5.0f, 7.0f}));
+
+    // toMat3 lifts out the rotation/scale block and drops the translation.
+    CHECK(approxEquals(toMat3(t), Mat3::identity()));
+}
+
+TEST_CASE("math: Mat3 algebra (the rotation/scale block, no translation)") {
+    const Mat3 i = Mat3::identity();
+    const Quat q = fromAxisAngle(Vec3::unitZ(), HALF_PI);
+    const Mat3 r = toMat3(q);
+
+    CHECK(approxEquals(r * i, r));
+    CHECK(approxEquals(transpose(transpose(r)), r));
+    CHECK(determinant(i) == doctest::Approx(1.0f));
+    CHECK(determinant(r) == doctest::Approx(1.0f));  // a pure rotation preserves volume
+    CHECK(approxEquals(r * inverse(r), Mat3::identity(), MATRIX_EPSILON));
+
+    // A rotation matrix is orthonormal: its inverse IS its transpose.
+    CHECK(approxEquals(inverse(r), transpose(r), MATRIX_EPSILON));
+
+    // +90 deg about +Z takes +X to +Y — right-handed (D3).
+    CHECK(approxEquals(r * Vec3::unitX(), Vec3::unitY(), MATRIX_EPSILON));
+
+    // AC-11: 9 contiguous floats, column-major.
+    Mat3 s;
+    s.columns[0] = Vec3{1.0f, 2.0f, 3.0f};
+    s.columns[1] = Vec3{4.0f, 5.0f, 6.0f};
+    s.columns[2] = Vec3{7.0f, 8.0f, 9.0f};
+    CHECK(s.data()[0] == doctest::Approx(1.0f));
+    CHECK(s.data()[3] == doctest::Approx(4.0f));  // columns[1].x
+    CHECK(s.data()[8] == doctest::Approx(9.0f));  // columns[2].z
+}
+
+TEST_CASE("math: quaternion algebra and rotation sense") {
+    const Quat i = Quat::identity();
+    const Quat q = fromAxisAngle(Vec3::unitY(), HALF_PI);
+
+    CHECK(approxEquals(q * i, q));
+    CHECK(approxEquals(i * q, q));
+    CHECK(length(q) == doctest::Approx(1.0f));  // fromAxisAngle already yields a unit quat
+    CHECK(length(normalize(q)) == doctest::Approx(1.0f));
+    CHECK(approxEquals(normalizeOrIdentity(Quat{0.0f, 0.0f, 0.0f, 0.0f}), Quat::identity()));
+    CHECK(dot(i, i) == doctest::Approx(1.0f));
+
+    // RIGHT-HANDED rotation sense (D3): +90 deg about +Y takes +X to -Z. Hand-derived.
+    CHECK(approxEquals(q * Vec3::unitX(), -Vec3::unitZ()));
+
+    // Rotate, then rotate back by the inverse -> identity (AC-5).
+    const Vec3 v{1.0f, 2.0f, 3.0f};
+    CHECK(approxEquals(inverse(q) * (q * v), v));
+    CHECK(approxEquals(conjugate(q) * (q * v), v));  // == inverse for a UNIT quat
+    CHECK(approxEquals(q * conjugate(q), Quat::identity()));
+}
+
+TEST_CASE("math: quaternion <-> matrix round-trip handles double cover (AC-5, E8)") {
+    const Quat q = normalize(Quat{0.2f, 0.3f, 0.4f, 0.5f});
+
+    // E8 — DOUBLE COVER: q and -q encode the SAME rotation, so quat_cast may legitimately hand
+    // back -q. approxEquals(Quat, Quat) compares BOTH signs; a naive componentwise compare here
+    // would be a flaky test that "fails" on correct code.
+    CHECK(approxEquals(toQuat(toMat3(q)), q, MATRIX_EPSILON));
+
+    // The ROTATION is what must round-trip — sign-independent, so this is the stronger check.
+    const Vec3 v{1.0f, 2.0f, 3.0f};
+    CHECK(approxEquals(toQuat(toMat3(q)) * v, q * v, MATRIX_EPSILON));
+
+    // toMat4(q) is toMat3(q) embedded in the upper-left 3x3, with no translation.
+    CHECK(approxEquals(toMat3(toMat4(q)), toMat3(q), MATRIX_EPSILON));
+    CHECK(approxEquals(transformPoint(toMat4(q), v), q * v, MATRIX_EPSILON));
+}
+
+TEST_CASE("math: slerp endpoints and degenerate cases") {
+    const Quat a = Quat::identity();
+    const Quat b = fromAxisAngle(Vec3::unitY(), HALF_PI);
+
+    CHECK(approxEquals(slerp(a, b, 0.0f), a));
+    CHECK(approxEquals(slerp(a, b, 1.0f), b));
+    CHECK(approxEquals(slerp(a, a, 0.5f), a));
+    CHECK(length(slerp(a, b, 0.3f)) == doctest::Approx(1.0f));
+
+    // Halfway along the arc is HALF the angle — constant angular velocity, slerp's whole point.
+    CHECK(approxEquals(slerp(a, b, 0.5f), fromAxisAngle(Vec3::unitY(), HALF_PI * 0.5f), MATRIX_EPSILON));
+
+    // lerp is the cheap approximation: same endpoints, unit output, different middle.
+    CHECK(approxEquals(lerp(a, b, 0.0f), a));
+    CHECK(approxEquals(lerp(a, b, 1.0f), b));
+    CHECK(length(lerp(a, b, 0.3f)) == doctest::Approx(1.0f));
+}
+
+TEST_CASE("math: compose -> decompose -> compose round-trip (AC-5, the deliverable's own words)") {
+    Trs trs;
+    trs.translation = Vec3{1.0f, -2.0f, 3.0f};
+    trs.rotation = fromAxisAngle(normalize(Vec3{1.0f, 2.0f, 3.0f}), radians(35.0f));
+    trs.scale = Vec3{2.0f, 3.0f, 4.0f};
+
+    const Mat4 m = compose(trs);
+
+    Trs out;
+    REQUIRE(decompose(m, out));
+    CHECK(approxEquals(out.translation, trs.translation, MATRIX_EPSILON));
+    CHECK(approxEquals(out.scale, trs.scale, MATRIX_EPSILON));
+    CHECK(approxEquals(out.rotation, trs.rotation, MATRIX_EPSILON));  // E8: +/-q both accepted
+
+    // The full round-trip: compose(decompose(M)) == M.
+    CHECK(approxEquals(compose(out), m, MATRIX_EPSILON));
+
+    // The identity TRS composes to the identity matrix.
+    const Trs identityTrs;
+    CHECK(approxEquals(compose(identityTrs), Mat4::identity()));
+}
+
+TEST_CASE("math: decompose reports failure and leaves `out` untouched (D9)") {
+    // docs/04: no exceptions across the public API — an explicit status, never a throw.
+    const Mat4 degenerate = scaling(Vec3{1.0f, 0.0f, 1.0f});  // a collapsed Y axis
+
+    Trs out;
+    out.translation = Vec3{9.0f, 9.0f, 9.0f};  // sentinel: must survive the failed call
+    const Trs before = out;
+
+    CHECK_FALSE(decompose(degenerate, out));
+    CHECK(approxEquals(out.translation, before.translation));
+    CHECK(approxEquals(out.scale, before.scale));
+    CHECK(approxEquals(out.rotation, before.rotation));
+}
+
+TEST_CASE("math: perspective maps near->0 and far->1 in NDC (AC-6, D4 — THE depth convention)") {
+    // THE executable statement of D4, and the money test of this task. SDL_GPU's header
+    // (SDL_gpu.h, "Coordinate System") documents: "The lower-left corner has an x,y coordinate of
+    // (-1.0, -1.0). The upper-right corner is (1.0, 1.0). Z values range from [0.0, 1.0] where 0
+    // is the near plane." The RHI is SDL_GPU (docs/03, "sacred"), so the depth range is decided
+    // FOR us by the layer below — hence perspectiveRH_ZO, never the [-1,1] GL convention. If
+    // anyone ever swaps in a [-1,1] projection, THIS test fires.
+    //
+    // Note what is NOT here: no proj[1][1] *= -1 Vulkan Y-flip. SDL's NDC is Y-UP and SDL
+    // converts Vulkan's Y-down NDC internally ("SDL will automatically convert the coordinate
+    // system behind the scenes"), so a flip here would DOUBLE-flip the image. Never add one.
+    //
+    // NEAR_PLANE/FAR_PLANE, not NEAR/FAR: the latter are Windows SDK macros.
+    constexpr float NEAR_PLANE = 0.1f;
+    constexpr float FAR_PLANE = 100.0f;
+    const Mat4 p = perspective(radians(60.0f), 16.0f / 9.0f, NEAR_PLANE, FAR_PLANE);
+
+    // D3: right-handed view space, -Z forward -> points in front of the camera have NEGATIVE z.
+    const Vec4 nearClip = p * Vec4{0.0f, 0.0f, -NEAR_PLANE, 1.0f};
+    const Vec4 farClip = p * Vec4{0.0f, 0.0f, -FAR_PLANE, 1.0f};
+
+    // w == -z_view -> w > 0 in front of the camera, so the perspective divide is well-defined.
+    CHECK(nearClip.w == doctest::Approx(NEAR_PLANE));
+    CHECK(farClip.w == doctest::Approx(FAR_PLANE));
+
+    CHECK(nearClip.z / nearClip.w == doctest::Approx(0.0f));  // near plane -> NDC z = 0
+    CHECK(farClip.z / farClip.w == doctest::Approx(1.0f));    // far  plane -> NDC z = 1
+
+    // Depth increases monotonically away from the camera (what the depth buffer relies on).
+    const Vec4 midClip = p * Vec4{0.0f, 0.0f, -10.0f, 1.0f};
+    CHECK(midClip.z / midClip.w > 0.0f);
+    CHECK(midClip.z / midClip.w < 1.0f);
+}
+
+TEST_CASE("math: ortho maps near->0 and far->1 in NDC (AC-6, D4)") {
+    constexpr float NEAR_PLANE = 0.1f;
+    constexpr float FAR_PLANE = 100.0f;
+    const Mat4 p = ortho(-1.0f, 1.0f, -1.0f, 1.0f, NEAR_PLANE, FAR_PLANE);
+
+    const Vec4 nearClip = p * Vec4{0.0f, 0.0f, -NEAR_PLANE, 1.0f};
+    const Vec4 farClip = p * Vec4{0.0f, 0.0f, -FAR_PLANE, 1.0f};
+
+    CHECK(nearClip.w == doctest::Approx(1.0f));  // orthographic: no divide
+    CHECK(farClip.w == doctest::Approx(1.0f));
+    CHECK(nearClip.z == doctest::Approx(0.0f));
+    CHECK(farClip.z == doctest::Approx(1.0f));
+
+    // X/Y still map to [-1,1] (SDL_gpu.h: lower-left (-1,-1), upper-right (1,1)).
+    const Vec4 corner = p * Vec4{1.0f, 1.0f, -NEAR_PLANE, 1.0f};
+    CHECK(corner.x == doctest::Approx(1.0f));
+    CHECK(corner.y == doctest::Approx(1.0f));
+}
+
+TEST_CASE("math: lookAt puts -Z forward in view space (AC-7, D3)") {
+    const Vec3 eye{0.0f, 0.0f, 5.0f};
+    const Mat4 view = lookAt(eye, Vec3::zero(), Vec3::unitY());
+
+    // The camera sits at +5 on Z looking at the origin, so the origin must land at view-space
+    // z = -5: -Z IS FORWARD (D3, glTF's convention). A left-handed lookAt would give +5.
+    CHECK(approxEquals(transformPoint(view, Vec3::zero()), Vec3{0.0f, 0.0f, -5.0f}, MATRIX_EPSILON));
+
+    // The eye maps to the view-space origin.
+    CHECK(approxEquals(transformPoint(view, eye), Vec3::zero(), MATRIX_EPSILON));
+
+    // A rigid transform: det == +1 (no scale, no mirror), and it round-trips with its inverse.
+    CHECK(determinant(view) == doctest::Approx(1.0f));
+    CHECK(approxEquals(view * inverse(view), Mat4::identity(), MATRIX_EPSILON));
+
+    // Distances are preserved.
+    CHECK(distance(transformPoint(view, Vec3::zero()), transformPoint(view, Vec3::unitX())) == doctest::Approx(1.0f));
+}
