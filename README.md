@@ -91,6 +91,6 @@ git ls-files -z '*.cpp' | xargs -0 -r -n1 clang-tidy -p build/macos-debug --warn
 
 ## Status
 
-Planning complete. Phase 0 (Foundations & First Triangle) in progress — epic 0.1 (build & CI bootstrap) done; epic 0.2 (`core`) under way, with `aero::core` (logging, task 0.2.4) as the first engine target.
+Planning complete. Phase 0 (Foundations & First Triangle) in progress — epic 0.1 (build & CI bootstrap) done; epic 0.2 (`core`) under way — `aero::core` arrived with 0.2.1 (handles) and became the first *compiled* engine target with 0.2.4 (logging).
 
 Live task tracking lives in Notion — [**Aero Engine — Build Tracker**](https://app.notion.com/p/39b120678cf1810dbd89cd87ca594ed2) (Phases → Epics → Tasks/subtasks). These docs are the source of truth for scope and architecture; Notion tracks execution.
