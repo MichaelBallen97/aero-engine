@@ -8,8 +8,10 @@ add_executable(aero_tests
     test_main.cpp
     sanity_test.cpp
     profiler_test.cpp
+    handle_test.cpp
+    slot_map_test.cpp
 )
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling)
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core)
 
 # Single ctest entry; doctest prints per-TEST_CASE detail on failure. Per-case
 # registration (doctest_discover_tests) can be adopted later without churn.
