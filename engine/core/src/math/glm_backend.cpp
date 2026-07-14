@@ -4,9 +4,14 @@
 //
 // ADR-005 in practice: the public math headers (engine/core/include/aero/core/math/*.hpp) are
 // GLM-free and self-contained; this TU implements only the ops where GLM earns its keep. CMake
-// links glm::glm PRIVATE, so GLM's include directory never propagates to any consumer —
-// `#include <glm/...>` anywhere else in the repo is a COMPILE ERROR, not a convention someone has
-// to remember (see engine/core/CMakeLists.txt). Task 0.2.3's guard is defence in depth on top.
+// links glm::glm PRIVATE, so GLM's include directory never propagates to any ENGINE-LAYER
+// consumer that links no vcpkg package directly — `#include <glm/...>` there is a COMPILE ERROR,
+// not a convention someone has to remember (see engine/core/CMakeLists.txt; verified with a
+// throwaway probe target linking only aero::core). This does NOT extend to tests/: vcpkg installs
+// every port into one shared per-triplet include/ directory, so aero_tests inherits GLM's headers
+// via doctest::doctest regardless of this PRIVATE link (docs/02-adrs.md's ADR-005 implementation
+// note, risk R12 in docs/08-risks.md). Task 0.2.3's grep-based guard covers tests/ and any other
+// target that links a vcpkg package directly.
 //
 // THE RTM SWAP (ADR-005 / docs/08) REPLACES THIS FILE AND NOTHING ELSE. Every public header and
 // every consumer is untouched by construction. ADR-005's exit door is exactly one file wide —
@@ -33,6 +38,7 @@
 #include <glm/matrix.hpp>                 // inverse, determinant
 
 #include <cassert>
+#include <cmath>
 #include <cstring>
 
 namespace engine {
@@ -58,6 +64,19 @@ Quat fromGlm(const glm::quat& q) { return {q.x, q.y, q.z, q.w}; }
 // Matrices are plain column-major float blocks in both worlds (D8); make_mat3/make_mat4 and
 // value_ptr are documented, stable, order-unambiguous GLM APIs. Rests on Mat3/Mat4's
 // static_asserts (no padding, standard layout) — if those ever broke, the build breaks first.
+//
+// fromGlm(mat3/mat4) below memcpy's sizeof(Mat3)/sizeof(Mat4) bytes out of the glm::mat object —
+// which silently assumes sizeof(glm::mat3) == sizeof(Mat3) and likewise for mat4. That is true
+// today (D5 forbids every GLM_FORCE_* macro), but GLM_FORCE_DEFAULT_ALIGNED_GENTYPES pads
+// glm::mat3 to 48 bytes (12 floats, one padding column) instead of 36 — a memcpy under that macro
+// would silently corrupt every Mat3. This is the same structural risk Deviation #3 closed for
+// quaternions (glm::quat::wxyz() instead of the raw ctor); pin it here too so a future
+// GLM_FORCE_* edit breaks the BUILD instead of corrupting geometry at runtime.
+static_assert(sizeof(glm::mat3) == sizeof(Mat3),
+              "GLM mat3 layout changed (GLM_FORCE_DEFAULT_ALIGNED_GENTYPES?) — memcpy in fromGlm "
+              "would corrupt");
+static_assert(sizeof(glm::mat4) == sizeof(Mat4), "GLM mat4 layout changed — memcpy in fromGlm would corrupt");
+
 glm::mat3 toGlm(const Mat3& m) { return glm::make_mat3(m.data()); }
 glm::mat4 toGlm(const Mat4& m) { return glm::make_mat4(m.data()); }
 
@@ -108,11 +127,28 @@ bool decompose(const Mat4& m, Trs& out) {
 
     // A degenerate axis makes the rotation unrecoverable — report it, never guess. `out` is left
     // untouched (docs/04: explicit status, no exceptions across the public API).
-    if (sxRaw <= EPSILON || sy <= EPSILON || sz <= EPSILON) return false;
+    //
+    // NOTE the negation (`!(x > EPSILON)`, not `x <= EPSILON`): for NaN every ordered comparison
+    // is false, so `NaN <= EPSILON` is ALSO false, and a `<=` guard would let a NaN column through
+    // as if it were a valid, large scale — decompose() would then report SUCCESS with a NaN
+    // rotation and translation silently entering the scene graph. `!(NaN > EPSILON)` is true, so
+    // the negated form correctly rejects NaN.
+    //
+    // std::isfinite() is ALSO required, separately: an infinite (but not NaN) column, e.g.
+    // {0, INFINITY, 0}, has length() == +Inf, and `Inf > EPSILON` is TRUE — the ordered-comparison
+    // guard alone does NOT catch it. The division two lines below (c1 / sy) then computes
+    // Inf / Inf component-wise, which IS NaN by IEEE 754, silently corrupting the rotation the
+    // same way the NaN case would have. Both checks are required; neither alone is sufficient.
+    if (!std::isfinite(sxRaw) || !(sxRaw > EPSILON) ||  //
+        !std::isfinite(sy) || !(sy > EPSILON) ||        //
+        !std::isfinite(sz) || !(sz > EPSILON)) {
+        return false;
+    }
 
-    // A negative determinant means an odd number of axes are mirrored. The convention (matching
-    // glm::decompose and every engine that models TRS) is to put the flip on X — which makes the
-    // normalized 3x3 below a PROPER rotation (det +1), as quat_cast requires.
+    // A negative determinant means an odd number of axes are mirrored. Aero's own convention
+    // (not glm::decompose's — see the comment on the test that checks this) is to put the flip
+    // on X — which makes the normalized 3x3 below a PROPER rotation (det +1), as quat_cast
+    // requires.
     const float sx = determinant(m) < 0.0f ? -sxRaw : sxRaw;
 
     // NB: every local here is const — clang-tidy's misc-const-correctness is enabled and CI runs
