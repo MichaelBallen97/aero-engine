@@ -195,6 +195,21 @@ namespace engine {
 - ❌ A thin indirection layer to maintain
 - ⚠️ Requires discipline: a single `#include <glm/glm.hpp>` outside `core/math` breaks the guarantee. **A CI test verifies this.**
 
+### Implementation note (task 0.2.2)
+
+`Vec2/3/4`, `Mat3/4`, `Quat` landed in `engine/core/include/aero/core/math/`, reachable via the umbrella `<aero/core/math.hpp>`. GLM is confined to the single TU `engine/core/src/math/glm_backend.cpp` and linked `PRIVATE` in `engine/core/CMakeLists.txt` — the RTM exit door this ADR describes is now exactly one file wide. This task pins engine-wide conventions every later shader, camera, importer, and physics wrapper inherits:
+
+- **Right-handed, Y-up, −Z forward** world/view space (glTF 2.0's convention).
+- **Clip-space depth Z ∈ [0,1], 0 = near** (SDL_GPU's documented NDC). **Never** `proj[1][1] *= -1` — SDL converts Vulkan's NDC internally.
+- **Column-major storage, column-vector math** (`M * v`, `Model = T * R * S`) ⟹ GPU upload is a memcpy, no transpose.
+- **Radians** everywhere; the editor converts at the UI boundary.
+- **`Quat{x, y, z, w}`**, identity `(0,0,0,1)` — glTF's accessor order; conversion to GLM goes through `glm::quat::wxyz()` only (GLM's own ctor argument order is `#ifdef`-dependent — `wxyz()` is not).
+- Deferred on purpose: Euler angles (the Phase-2 inspector owns the order convention), `lookRotation`, integer/double vectors, SIMD alignment.
+
+**The compile-time boundary, and its one documented limitation.** The `PRIVATE` link is verified to make `#include <glm/...>` a hard compile error (`fatal error: 'glm/vec3.hpp' file not found`) for **engine-layer targets that link only `aero::core`** — confirmed empirically with a throwaway probe target linking nothing but `aero::core`. **But** vcpkg installs every port into one shared, flat, per-triplet directory (`vcpkg_installed/<triplet>/include/{glm,doctest,SDL3,tracy,...}`), and every vcpkg CONFIG package's `INTERFACE_INCLUDE_DIRECTORIES` points at that same shared root — not a private, per-package directory. Consequently, **any target that links a vcpkg CONFIG package directly** (e.g. `tests/` → `doctest::doctest`) inherits the whole shared root and *can* resolve `<glm/...>`, independent of whether it also links `aero::core`. Inside `tests/`, the compile-level boundary does **not** hold; the textual grep guard (0.2.3) is the only enforcement there. See risk **R12** in `docs/08-risks.md` for the project-wide consequence.
+
+**Handoff to 0.2.3.** `aero_tests` compiling while linking `aero::core` but not `glm::glm` (AC-9(i) in the 0.2.2 plan) is a **weaker** regression test than it looks: because `aero_tests` inherits vcpkg's shared include root via `doctest::doctest`, a public math header *could* start including GLM and `aero_tests` would still compile. The robust, permanent version of that check is a tiny engine-layer target that links only `aero::core`, includes `<aero/core/math.hpp>`, and links nothing else vcpkg-provided — 0.2.3 should adopt exactly that alongside its grep guard, since a compile-time guard is strictly stronger than grep for the symbol-leak case.
+
 ---
 
 ## ADR-006 — Audio: own abstraction, miniaudio backend
