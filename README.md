@@ -47,7 +47,7 @@ ctest --preset macos-debug        # unit tests (Debug runs under ASan/UBSan)
 
 Already cloned without `--recurse-submodules`? Run `git submodule update --init`.
 
-The first configure bootstraps [vcpkg](https://github.com/microsoft/vcpkg) (a pinned git submodule) and compiles the dependencies from source — expect a few minutes and network access. The unit-test runner `aero_tests` (doctest) is the first build target — `ctest` above runs it. Debug presets build with ASan/UBSan (Windows: ASan only). Engine targets arrive with Phase 0's `core` epic.
+The first configure bootstraps [vcpkg](https://github.com/microsoft/vcpkg) (a pinned git submodule) and compiles the dependencies from source — expect a few minutes and network access. The unit-test runner `aero_tests` (doctest) is the first build target — `ctest` above runs it. Debug presets build with ASan/UBSan (Windows: ASan only). Engine targets arrived with Phase 0's `core` epic — `aero::core` (logging, task 0.2.4) is the first compiled one.
 
 On Linux, SDL3 needs system dev packages first — X11 + Wayland libraries, plus autotools + libltdl-dev that vcpkg uses to build some transitive deps from source:
 `sudo apt install libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxft-dev libwayland-dev wayland-protocols libdecor-0-dev libxkbcommon-dev libegl1-mesa-dev libibus-1.0-dev autoconf autoconf-archive automake libtool libltdl-dev`
@@ -55,6 +55,10 @@ On Linux, SDL3 needs system dev packages first — X11 + Wayland libraries, plus
 ### Profiling
 
 The three `*-release` presets build with the [Tracy](https://github.com/wolfpld/tracy) client wired in (dev-builds-only — never in Debug, never in the shipped runtime). Download the [Tracy Profiler GUI v0.13.1](https://github.com/wolfpld/tracy/releases) separately (it is not built by vcpkg), run a Release build of `aero_tests`, and connect to see the live zones. With no profiler attached the client idles and the process exits promptly; set `TRACY_NO_EXIT=1` to hold a short-lived run open long enough to connect manually.
+
+### Logging
+
+Log through `<aero/core/log.hpp>`'s `AERO_LOG_{TRACE,DEBUG,INFO,WARN,ERROR,CRITICAL}` macros — `AERO_LOG_INFO("window {}x{}", w, h)`. Messages are `std::format`-checked at compile time. Levels below `AERO_LOG_ACTIVE_LEVEL` (Trace in Debug, Info in Release) compile away entirely; `engine::setLogLevel()` filters the rest at runtime. spdlog is the backend and never appears in a public header — CI enforces that.
 
 ### Code style
 
@@ -87,6 +91,6 @@ git ls-files -z '*.cpp' | xargs -0 -r -n1 clang-tidy -p build/macos-debug --warn
 
 ## Status
 
-Planning complete. Phase 0 (Foundations & First Triangle) in progress — epic 0.1 (build & CI bootstrap).
+Planning complete. Phase 0 (Foundations & First Triangle) in progress — epic 0.1 (build & CI bootstrap) done; epic 0.2 (`core`) under way — `aero::core` arrived with 0.2.1 (handles) and became the first *compiled* engine target with 0.2.4 (logging).
 
 Live task tracking lives in Notion — [**Aero Engine — Build Tracker**](https://app.notion.com/p/39b120678cf1810dbd89cd87ca594ed2) (Phases → Epics → Tasks/subtasks). These docs are the source of truth for scope and architecture; Notion tracks execution.

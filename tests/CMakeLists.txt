@@ -10,6 +10,7 @@ add_executable(aero_tests
     profiler_test.cpp
     handle_test.cpp
     slot_map_test.cpp
+    log_test.cpp
 )
 target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core)
 

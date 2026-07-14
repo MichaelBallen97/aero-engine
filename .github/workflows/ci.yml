@@ -53,6 +53,21 @@ jobs:
           git ls-files -z '*.cpp' '*.hpp' '*.h' '*.cc' '*.cxx' '*.hxx' '*.inl' \
             | xargs -0 -r clang-format-18 --dry-run --Werror
 
+      - name: Boundary — no spdlog/fmt types in public engine headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Task 0.2.4's deliverable: "no spdlog types in public headers". vcpkg installs every
+          # dependency into ONE flat include dir that lands on the compile line (-isystem) of any
+          # target linking any vcpkg package, so linking spdlog PRIVATE cannot enforce this —
+          # a leaked #include would still compile. This grep is the actual enforcement.
+          # Matches backend includes and qualified uses; 'format'/'std::format' do NOT match.
+          if git grep -n -E '(#[[:space:]]*include[[:space:]]*<(spdlog|fmt)/)|(\b(spdlog|fmt)::)' \
+               -- 'engine/*/include/*'; then
+            echo "::error::A third-party logging backend leaked into a public engine header (task 0.2.4; docs/04 boundary rule). Keep spdlog/fmt inside engine/core/src/log.cpp."
+            exit 1
+          fi
+
   build:
     name: ${{ matrix.name }}
     needs: vcpkg-baseline        # don't spend build minutes if the pin is broken
