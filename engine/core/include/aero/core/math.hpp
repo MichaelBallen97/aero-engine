@@ -5,9 +5,14 @@
 //
 // ADR-005 in one line: the engine owns its math types; the backend is swappable. GLM is a PRIVATE
 // implementation detail of aero::core — it lives behind engine/core/src/math/glm_backend.cpp and is
-// linked PRIVATE, so no GLM header is reachable from here or from any consumer. That is not a
-// convention: `#include <glm/...>` outside that one TU is a COMPILE ERROR (see
-// engine/core/CMakeLists.txt), and task 0.2.3's CI guard is defence in depth on top of it.
+// linked PRIVATE, so no GLM header is reachable from here or from any consumer that links no vcpkg
+// package directly (see engine/core/CMakeLists.txt) — `#include <glm/...>` is a COMPILE ERROR there.
+// This holds for every ENGINE-LAYER target (verified with a throwaway probe target linking only
+// aero::core), which is the boundary this comment is about. It does NOT hold inside tests/: vcpkg
+// installs every port into one shared per-triplet include/ directory, so aero_tests inherits GLM's
+// headers via doctest::doctest regardless of aero_core's PRIVATE link (see docs/02-adrs.md's
+// ADR-005 implementation note and risk R12 in docs/08-risks.md). Task 0.2.3's grep-based CI guard
+// is the enforcement for tests/ and any other target that links a vcpkg package directly.
 //
 // ENGINE-WIDE CONVENTIONS PINNED BY THESE TYPES (docs/02 ADR-005 implementation note). Every
 // shader, camera, importer, and physics wrapper inherits them — do not change one locally:
