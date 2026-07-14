@@ -172,3 +172,22 @@ TEST_CASE("SlotMap: reserve preserves logical contents") {
 TEST_CASE("SlotMap: a distinct Tag yields a distinct handle type") {
     static_assert(!std::is_same_v<engine::SlotMap<int, TagA>::HandleType, engine::SlotMap<int, TagB>::HandleType>);
 }
+
+TEST_CASE("SlotMap: contains reports true for a live handle and get is mutable") {
+    engine::SlotMap<int> map;
+    const auto h = map.insert(10);
+    CHECK(map.contains(h));  // positive contains() path (the other cases only exercise rejection)
+    REQUIRE(map.get(h) != nullptr);
+    *map.get(h) = 55;  // write through the non-const pointer, then read it back
+    CHECK(*map.get(h) == 55);
+    CHECK(map.contains(h));  // still live after mutation
+}
+
+TEST_CASE("SlotMap: a freshly constructed pool is empty") {
+    const engine::SlotMap<int> map;  // never inserted into (edge case #12)
+    CHECK(map.size() == 0);
+    CHECK(map.empty());
+    const engine::SlotMap<int>::HandleType any{3, 1};
+    CHECK(map.get(any) == nullptr);  // const get() overload, rejection path on an empty pool
+    CHECK_FALSE(map.contains(any));
+}
