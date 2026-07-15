@@ -1,13 +1,17 @@
 # engine/core/ — the zero-dependency foundation layer (docs/03: handles, math, log, jobs, time, VFS).
 # core sits at the bottom of the layer order and depends on NOTHING above it.
 #
-# Created as an INTERFACE library by 0.2.1 (Handle and SlotMap are templates); converted to STATIC
-# by 0.2.4 (logging, the first core service that needs a translation unit) and extended by 0.2.2
-# (math, GLM backend) in the same round — both append their sources to the list below. 0.2.5
-# appends its own in turn.
+# Created as an INTERFACE library by 0.2.1 (Handle and SlotMap are templates); converted to STATIC by
+# 0.2.4 (logging, the first core service that needs a translation unit) and extended by 0.2.2 (math,
+# GLM backend) in the same round. 0.2.5 (jobs) appends src/jobs.cpp and its enkiTS backend. 0.2.6
+# (time & VFS) appends src/vfs.cpp — VFS needs a TU for its std::filesystem/std::fstream
+# implementation. time is header-only (std::chrono::steady_clock in the header) and adds no source.
+# 0.2.6 adds NO third-party dependency: <chrono>/<filesystem>/<fstream> are standard library, so there
+# is no new find_package, no new PRIVATE backend, and no boundary guard (contrast math/GLM and
+# log/spdlog).
 #
-# BOUNDARY RULE: every third-party backend stays PRIVATE — no dependency's headers may reach
-# a consumer of aero::core.
+# BOUNDARY RULE: every third-party backend stays PRIVATE — no dependency's headers may reach a
+# consumer of aero::core.
 
 find_package(spdlog CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
@@ -20,6 +24,7 @@ add_library(aero_core STATIC
     src/log.cpp
     src/math/glm_backend.cpp
     src/jobs.cpp
+    src/vfs.cpp
 )
 add_library(aero::core ALIAS aero_core)
 

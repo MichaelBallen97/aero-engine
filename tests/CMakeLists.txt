@@ -13,6 +13,8 @@ add_executable(aero_tests
     log_test.cpp
     math_test.cpp
     jobs_test.cpp
+    time_test.cpp
+    vfs_test.cpp
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
