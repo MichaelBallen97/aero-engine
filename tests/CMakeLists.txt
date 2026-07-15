@@ -12,6 +12,7 @@ add_executable(aero_tests
     slot_map_test.cpp
     log_test.cpp
     math_test.cpp
+    jobs_test.cpp
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
@@ -54,3 +55,21 @@ add_test(NAME aero_tests COMMAND aero_tests)
 # That is the only way this guard can rot, so it is the one thing to never "simplify".
 add_library(aero_math_boundary_probe OBJECT math_boundary_probe.cpp)
 target_link_libraries(aero_math_boundary_probe PRIVATE aero::core)
+
+# ---------------------------------------------------------------------------------------------
+# The jobs-boundary COMPILE-TIME guard (task 0.2.5; docs/04 boundary rule).
+#
+# Same mechanism as aero_math_boundary_probe above, for a different backend: aero::core links
+# enkiTS::enkiTS PRIVATE, so a target linking ONLY aero::core never sees vcpkg's shared per-triplet
+# include/ directory and cannot resolve <TaskScheduler.h>. A leaked enkiTS include in a public header
+# is therefore a compile error the moment it is written.
+#
+# A separate target from the math probe on purpose: each guard names its own backend, so a failure
+# says which boundary broke. A future task may consolidate both into one aero_core_boundary_probe as
+# 0.2.6 adds time/VFS headers — do NOT do that here; it is churn on a guard that just landed.
+#
+# DO NOT ADD ANY OTHER LINK LIBRARY — not doctest, not aero::profiling, not enkiTS::enkiTS. Any of
+# them restores the shared vcpkg include root and silently reduces this guard to a no-op while CI
+# stays green.
+add_library(aero_jobs_boundary_probe OBJECT jobs_boundary_probe.cpp)
+target_link_libraries(aero_jobs_boundary_probe PRIVATE aero::core)
