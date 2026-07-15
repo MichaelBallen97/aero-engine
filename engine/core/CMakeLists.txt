@@ -11,10 +11,15 @@
 
 find_package(spdlog CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
+# NOTE: the vcpkg PORT is `enkits` (lowercase, as in vcpkg.json) but the CMake PACKAGE is `enkiTS`
+# (mixed case) and the target is enkiTS::enkiTS. See vcpkg/ports/enkits/usage. Getting the case
+# wrong fails at configure time, not build time.
+find_package(enkiTS CONFIG REQUIRED)
 
 add_library(aero_core STATIC
     src/log.cpp
     src/math/glm_backend.cpp
+    src/jobs.cpp
 )
 add_library(aero::core ALIAS aero_core)
 
@@ -23,12 +28,14 @@ add_library(aero::core ALIAS aero_core)
 # not INTERFACE: the target now compiles its own sources, which need this root on their own
 # compile line too — a STATIC library with INTERFACE-only includes fails to find its own headers.
 # aero::profiling exposes this same root and CMake de-duplicates the path, so linking both stays
-# harmless. core deliberately does NOT link aero::profiling (spec 0.2.4 D11) — a consumer linking
-# only aero::core still gets profiler.hpp, whose macros no-op without AERO_PROFILING_ENABLED.
+# harmless. core DOES link aero::profiling as of task 0.2.5 (PRIVATE — see the link line below);
+# a consumer linking only aero::core still gets profiler.hpp from this root, whose macros no-op
+# without AERO_PROFILING_ENABLED.
 target_include_directories(aero_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-# PRIVATE is load-bearing for BOTH backends: spdlog is an implementation detail of src/log.cpp,
-# glm is an implementation detail of src/math/glm_backend.cpp, and neither's headers may reach a
+# PRIVATE is load-bearing for EVERY backend: spdlog is an implementation detail of src/log.cpp,
+# glm is an implementation detail of src/math/glm_backend.cpp, enkiTS is an implementation detail
+# of src/jobs.cpp, and none of their headers may reach a
 # consumer's compile line. For a STATIC library CMake still propagates PRIVATE as
 # $<LINK_ONLY:...>, so the final executable links both archives while nobody inherits their
 # headers — that is correct and not a leak.
@@ -42,6 +49,19 @@ target_include_directories(aero_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # note and risk R12 in docs/08-risks.md). The CI grep in the `lint` job (task 0.2.4, spec 3.8, for
 # spdlog/fmt; .github/scripts/check-math-boundary.sh, task 0.2.3, for glm) is what enforces the
 # boundary everywhere else.
-# Flipping either of these to PUBLIC would silently reopen the boundary engine-wide — do not
+# Flipping any of these to PUBLIC would silently reopen the boundary engine-wide — do not
 # "simplify" it.
-target_link_libraries(aero_core PRIVATE spdlog::spdlog glm::glm)
+#
+# aero::profiling is PRIVATE too, and that keyword is doing MORE work here than it looks (task
+# 0.2.5, spec D7). aero::profiling is an INTERFACE library that, in Release, carries
+# Tracy::TracyClient and therefore vcpkg's shared per-triplet include/ root as a usage requirement.
+# PRIVATE means:
+#   * src/jobs.cpp DOES get AERO_PROFILING_ENABLED and Tracy's headers (a target's own PRIVATE
+#     usage requirements apply to its own compile line) — that is what makes AERO_PROFILE_* live;
+#   * consumers do NOT — CMake propagates a PRIVATE link on a STATIC lib as $<LINK_ONLY:...>,
+#     which carries the archive but explicitly discards usage requirements.
+# Flipping this one to PUBLIC would put vcpkg's shared include root back on the compile line of
+# every aero::core consumer — including tests/math_boundary_probe.cpp, whose entire guarantee
+# (task 0.2.3) is that it CANNOT resolve <glm/...>. That would silently reduce 0.2.3's guard to a
+# no-op while leaving CI green. Verified empirically at 0.2.5 (spec §6.1). Do not "simplify" this.
+target_link_libraries(aero_core PRIVATE spdlog::spdlog glm::glm enkiTS::enkiTS aero::profiling)

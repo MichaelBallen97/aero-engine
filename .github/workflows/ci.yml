@@ -72,6 +72,37 @@ jobs:
         shell: bash
         run: bash .github/scripts/check-math-boundary.sh
 
+      - name: Boundary — no enkiTS types in public engine headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Task 0.2.5's boundary: "no enkiTS type in a public engine header". Both spellings are
+          # real and must be caught. enkiTS installs its headers to include/enkiTS/ and its exported
+          # target puts include/enkiTS (not include/) on a consumer's compile line, so:
+          #   <TaskScheduler.h>          resolves only for a target linking enkiTS::enkiTS;
+          #   <enkiTS/TaskScheduler.h>   resolves for ANY target linking ANY vcpkg package, because
+          #                              vcpkg installs every port into ONE flat include/ root that
+          #                              lands on that target's compile line (-isystem) — risk R12.
+          # The second is why linking enkiTS PRIVATE cannot enforce this on its own: a leaked
+          # #include would still compile in tests/. This grep reaches where the compile-time probe
+          # (tests/jobs_boundary_probe.cpp) cannot.
+          #
+          # The namespace arm is spelled (^|[^a-zA-Z0-9_])enki:: and NOT \benki:: on purpose.
+          # `git grep -E` delegates to the SYSTEM POSIX ERE engine: glibc accepts \b as a GNU
+          # extension, but BSD libc (macOS) does not — there \b degrades to a literal 'b', so
+          # \benki:: only ever matches "benki::" and the arm is silently vacuous. The lint job runs
+          # on Linux, where \b would work, but a guard that no-ops the moment anyone runs it locally
+          # or the runner changes is exactly the silent-green rot this task's probes exist to
+          # prevent. The bracket form is an exact equivalent and is portable everywhere.
+          # (Verified 2026-07-15: it catches `enki::` at line start / after a space, `<`, or `(`,
+          # and rejects `benki::`, `myenki::`, `x_enki::`, and the word "enkiTS" in prose — which
+          # jobs.hpp's comments legitimately use.)
+          if git grep -n -E '(#[[:space:]]*include[[:space:]]*<enkiTS/)|(#[[:space:]]*include[[:space:]]*<(TaskScheduler|TaskScheduler_c|LockLessMultiReadPipe)\.h>)|((^|[^a-zA-Z0-9_])enki::)' \
+               -- 'engine/*/include/*'; then
+            echo "::error::enkiTS leaked into a public engine header (task 0.2.5; docs/04 boundary rule). Keep enkiTS inside engine/core/src/jobs.cpp."
+            exit 1
+          fi
+
   build:
     name: ${{ matrix.name }}
     needs: vcpkg-baseline        # don't spend build minutes if the pin is broken
