@@ -1,0 +1,6 @@
+# tests/ — doctest test TUs. bugprone-unchecked-optional-access cannot model doctest's
+# REQUIRE()/CHECK() assertion macros as guards, so it false-positives on the standard
+# `REQUIRE(opt.has_value()); use(*opt);` idiom (llvm/llvm-project#62548). Disable just
+# that one check for test TUs; it stays fully active for engine/runtime/editor/tools code.
+InheritParentConfig: true
+Checks: '-bugprone-unchecked-optional-access'
