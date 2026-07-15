@@ -193,7 +193,7 @@ namespace engine {
 - ✅ If profiling shows GLM costs, swap the backend to **RTM** (SIMD-first, SSE + NEON, engine-designed) without touching another line
 - ✅ The exit door is open **by design, not by luck**
 - ❌ A thin indirection layer to maintain
-- ⚠️ Requires discipline: a single `#include <glm/glm.hpp>` outside `core/math` breaks the guarantee. **A CI test verifies this: `.github/scripts/check-math-boundary.sh` (the `lint` job) plus the compile-time probe `tests/math_boundary_probe.cpp` (task 0.2.3).**
+- ⚠️ Requires discipline: a single `#include <glm/glm.hpp>` outside `engine/core/src/math/glm_backend.cpp` breaks the guarantee. **A CI test verifies this: `.github/scripts/check-math-boundary.sh` (the `lint` job) plus the compile-time probe `tests/math_boundary_probe.cpp` (task 0.2.3).** The exit door is exactly one file wide — the public headers under `engine/core/include/aero/core/math/` are GLM-free, so "outside `core/math`" would understate the rule.
 
 ### Implementation note (task 0.2.2)
 

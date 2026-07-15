@@ -45,7 +45,7 @@ Load-bearing decisions (rationale in `docs/02-adrs.md` — settled ADRs are not 
 - Headers: `#pragma once`; public headers expose only engine types; no `using namespace` in headers.
 - Errors: no exceptions across public API boundaries — explicit result/status types, asserts in debug; handles return invalid rather than throw.
 - Git: trunk-based; short-lived feature branches merged to `main` via PR even solo; `main` is always green. Conventional-commit style (`feat:`, `fix:`, `refactor:`, `docs:`, `build:`, `ci:`, `test:`), imperative mood. Phases and releases are tagged. `.meta` files are committed; cooked/build output is gitignored. **Do not add a `Co-Authored-By` trailer to commits.**
-- CI (GitHub Actions, macOS + Windows + Ubuntu, from commit #1): Debug build with ASan/UBSan + Release build, codegen steps, doctest unit tests, the five architecture-guard tests (math-boundary — no `<glm/...>` outside `core/math` —, RHI-boundary, golden-rule, audio-boundary, runtime-purity; each created by its owning task, see `docs/04`), and format/lint checks.
+- CI (GitHub Actions, macOS + Windows + Ubuntu, from commit #1): Debug build with ASan/UBSan + Release build, codegen steps, doctest unit tests, the five architecture-guard tests (math-boundary — no `<glm/...>` outside `engine/core/src/math/glm_backend.cpp`, the single allowlisted file; **not** the looser "outside `core/math`", which would license GLM in the public math headers —, RHI-boundary, golden-rule, audio-boundary, runtime-purity; each created by its owning task, see `docs/04`), and format/lint checks.
 
 ## Scope discipline
 
