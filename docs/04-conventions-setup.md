@@ -72,6 +72,7 @@ Matrix across **macOS + Windows + Ubuntu**. Every push/PR runs:
 4. The five architecture-guard tests above (each activates once its owning task lands)
 5. `clang-format` / `clang-tidy` check
 6. Task-local boundary check: no spdlog/fmt types in public engine headers (0.2.4)
+7. Task-local boundary check: no enkiTS types in public engine headers (0.2.5; `lint`-job grep + the `aero_jobs_boundary_probe` compile-time probe)
 
 Runtime binaries for each platform are built and archived by CI (this is what makes TS-project export instant — see [ADR-008](./02-adrs.md#adr-008--per-project-language-choice-and-the-two-export-models)).
 
