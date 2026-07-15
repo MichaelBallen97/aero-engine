@@ -62,7 +62,15 @@ jobs:
           # target linking any vcpkg package, so linking spdlog PRIVATE cannot enforce this —
           # a leaked #include would still compile. This grep is the actual enforcement.
           # Matches backend includes and qualified uses; 'format'/'std::format' do NOT match.
-          if git grep -n -E '(#[[:space:]]*include[[:space:]]*<(spdlog|fmt)/)|(\b(spdlog|fmt)::)' \
+          #
+          # The namespace arm is spelled (^|[^a-zA-Z0-9_]) and NOT \b on purpose — see the enkiTS
+          # step below for the full reasoning. In short: `git grep -E` delegates to the SYSTEM POSIX
+          # ERE engine, and \b is a GNU extension that BSD libc (macOS) degrades to a literal 'b',
+          # making the arm silently vacuous there. This step shipped with \b at 0.2.4 and was fixed
+          # once 0.2.5 discovered it. It was never broken in CI (this job runs on Linux/glibc), but
+          # it could not fire for anyone running it locally on a Mac, and it would have rotted to a
+          # no-op — green — the day the runner image changed.
+          if git grep -n -E '(#[[:space:]]*include[[:space:]]*<(spdlog|fmt)/)|((^|[^a-zA-Z0-9_])(spdlog|fmt)::)' \
                -- 'engine/*/include/*'; then
             echo "::error::A third-party logging backend leaked into a public engine header (task 0.2.4; docs/04 boundary rule). Keep spdlog/fmt inside engine/core/src/log.cpp."
             exit 1
