@@ -42,7 +42,7 @@ Three ways to sequence a solo engine build were considered:
 
 **Epics:**
 - **0.1 Build & CI bootstrap** — CMake + presets + vcpkg manifest; GitHub Actions ×3 OS; ASan/UBSan; doctest; Tracy wired
-- **0.2 `core`** — `Handle<T>`, math types (GLM backend) + the CI test that fails if `glm` leaks past `core/math`, spdlog logging, enkiTS jobs, time, VFS
+- **0.2 `core`** — `Handle<T>`, math types (GLM backend) + the CI test that fails if `glm` leaks past `engine/core/src/math/glm_backend.cpp`, spdlog logging, enkiTS jobs, time, VFS
 - **0.3 `platform`** — SDL3 window, input, audio device
 - **0.4 `rhi` + `tools/shaderc`** — SDL_GPU wrapper; HLSL → SDL_shadercross pipeline
 - **0.5 `render` v0** — swapchain, clear, upload + draw a textured cube

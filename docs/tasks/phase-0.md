@@ -82,9 +82,9 @@ Subtasks:
 
 ### 0.2.3 Math-boundary CI guard · P0 · S · depends: 0.2.2
 **Goal:** enforce ADR-005 mechanically — a single leaked `<glm/...>` include is a build failure, not a review comment.
-**Deliverable:** CI-wired script that fails when `#include <glm/...>` appears outside `core/math`.
+**Deliverable:** CI-wired script that fails when `#include <glm/...>` appears outside `engine/core/src/math/glm_backend.cpp`, the single allowlisted file.
 Subtasks:
-- Script that fails if `#include <glm/...>` appears outside `core/math`; wire into CI
+- Script that fails if `#include <glm/...>` appears outside `engine/core/src/math/glm_backend.cpp`; wire into CI (plus a compile-time probe target covering the public headers)
 
 ### 0.2.4 Logging (spdlog) · P1 · S · depends: 0.1.4
 **Goal:** one logging API for the whole engine, spdlog hidden behind it.
