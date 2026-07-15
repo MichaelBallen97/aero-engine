@@ -4,6 +4,9 @@
 // boundary (project boundary rule). All macros compile to nothing unless the build enables profiling
 // (AERO_ENABLE_PROFILING=ON → aero::profiling defines AERO_PROFILING_ENABLED). Tracy is dev-builds-only.
 // Macros are statement-level: use at the top of a braced scope, not after a braceless if/for.
+// AERO_PROFILE_ZONE_NAME renames the ENCLOSING zone at runtime and therefore requires an
+// AERO_PROFILE_ZONE/AERO_PROFILE_ZONE_NAMED in the same scope — on its own it does not compile.
+// Tracy copies the text, so a stack buffer is safe.
 
 // clang-format off
 #if defined(AERO_PROFILING_ENABLED)
@@ -11,6 +14,7 @@
     #define AERO_PROFILE_ZONE                          ZoneScoped                 // scope, auto-named by function
     #define AERO_PROFILE_ZONE_NAMED(name)              ZoneScopedN(name)          // scope, literal name
     #define AERO_PROFILE_ZONE_NAMED_COLOR(name, color) ZoneScopedNC(name, color)  // name + 0xRRGGBB
+    #define AERO_PROFILE_ZONE_NAME(txt, size)          ZoneName(txt, size)        // rename enclosing zone (runtime)
     #define AERO_PROFILE_FRAME_MARK                    FrameMark                  // once per frame
     #define AERO_PROFILE_FRAME_MARK_NAMED(name)        FrameMarkNamed(name)
     #define AERO_PROFILE_PLOT(name, value)             TracyPlot(name, value)     // numeric graph
@@ -20,6 +24,7 @@
     #define AERO_PROFILE_ZONE                          ((void)0)
     #define AERO_PROFILE_ZONE_NAMED(name)              ((void)0)
     #define AERO_PROFILE_ZONE_NAMED_COLOR(name, color) ((void)0)
+    #define AERO_PROFILE_ZONE_NAME(txt, size)          ((void)0)
     #define AERO_PROFILE_FRAME_MARK                    ((void)0)
     #define AERO_PROFILE_FRAME_MARK_NAMED(name)        ((void)0)
     #define AERO_PROFILE_PLOT(name, value)             ((void)0)
