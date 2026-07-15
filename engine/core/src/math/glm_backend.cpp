@@ -10,8 +10,10 @@
 // throwaway probe target linking only aero::core). This does NOT extend to tests/: vcpkg installs
 // every port into one shared per-triplet include/ directory, so aero_tests inherits GLM's headers
 // via doctest::doctest regardless of this PRIVATE link (docs/02-adrs.md's ADR-005 implementation
-// note, risk R12 in docs/08-risks.md). Task 0.2.3's grep-based guard covers tests/ and any other
-// target that links a vcpkg package directly.
+// note, risk R12 in docs/08-risks.md). .github/scripts/check-math-boundary.sh (task 0.2.3, run by
+// the `lint` job) covers tests/ and any other target that links a vcpkg package directly. THIS
+// FILE is that script's ALLOWED_FILE — renaming or moving it requires editing the guard too, and
+// the guard's canary self-test will trip (exit 2) until you do, by design.
 //
 // THE RTM SWAP (ADR-005 / docs/08) REPLACES THIS FILE AND NOTHING ELSE. Every public header and
 // every consumer is untouched by construction. ADR-005's exit door is exactly one file wide —

@@ -25,7 +25,9 @@ add_executable(aero_tests
 # public math header pulling GLM in would NOT necessarily fail to compile here — this target does
 # NOT prove the compile-time boundary the way an engine-layer target linking only aero::core does
 # (verified with exactly that probe). See docs/02-adrs.md's ADR-005 implementation note and risk
-# R12 in docs/08-risks.md; the textual grep guard (0.2.3) is the real enforcement for tests/.
+# R12 in docs/08-risks.md; .github/scripts/check-math-boundary.sh (task 0.2.3, run by the `lint`
+# job) is the real enforcement for tests/. The sibling aero_math_boundary_probe target below (also
+# 0.2.3) covers the public math headers at compile time instead.
 target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core)
 
 # Single ctest entry; doctest prints per-TEST_CASE detail on failure. Per-case
