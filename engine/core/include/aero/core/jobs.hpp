@@ -122,12 +122,16 @@ public:
     // `count == 0` returns immediately. `grainSize` is the minimum partition size — enkiTS's "grain
     // size": raise it until one partition is worth at least ~10k clock cycles, or scheduling
     // overhead dominates. The last partition may be smaller than `grainSize`.
+    // `grainSize` MUST be >= 1. Asserted in debug; a 0 reaches enkiTS's partitioner as a divisor
+    // and faults the process in release.
     void parallelFor(std::uint32_t count, JobParallelFunction fn, std::uint32_t grainSize = 1);
 
     // Wire the graph's dependencies and queue it. Non-blocking.
     // Returns false (having done nothing) if the graph is already submitted, or if its edges contain
-    // a CYCLE — which is refused rather than queued because a cycle does not crash, it hangs wait()
-    // forever (nothing in the cycle is ever reachable from the start node).
+    // a CYCLE. A cycle is refused rather than queued because enkiTS does not defend against one:
+    // reachable from a root it is unbounded mutual recursion while dependencies are initialized —
+    // a stack-overflow crash, not a hang — and unreachable it silently never runs while wait()
+    // returns early. Neither is survivable, so submit() rejects the graph instead.
     bool submit(JobGraph& graph);
 
     // Block until every job in `graph` has completed. The calling thread runs jobs while it waits.

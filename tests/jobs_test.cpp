@@ -169,11 +169,15 @@ TEST_CASE("jobs: wait() waits for BOTH roots of a multi-root graph") {
     engine::JobSystem system;
     system.initialize();
 
-    // AC-6 — THE case that fails without D8's implicit start node. Two INDEPENDENT roots with
-    // deliberately UNEQUAL chain lengths (1 vs 8, the long one doing real work): a submit() that
-    // queued roots one at a time could let the short chain complete and fire the finish sentinel
-    // before the long chain was even queued, so wait() would return with longTailRan still false.
-    // Equal-length chains would let a broken wait() pass by luck.
+    // AC-6 — wait() returns only after BOTH roots' subtrees complete. Two INDEPENDENT roots with
+    // deliberately UNEQUAL chain lengths (1 vs 8, the long one doing real work), so that a wait()
+    // which tracked only one subtree would return with longTailRan still false; equal-length chains
+    // would let such a bug pass by luck.
+    //
+    // This case does NOT discriminate D8's start node — bypassing that node leaves it passing, even
+    // at a 12x chain gap, because `finish` counts its leaf dependencies rather than racing them (see
+    // JobGraphStart in jobs.cpp). It guards the property AC-6 actually states, which is worth having
+    // on its own.
     std::atomic<bool> shortTailRan{false};
     std::atomic<bool> longTailRan{false};
     std::atomic<std::uint64_t> sink{0};

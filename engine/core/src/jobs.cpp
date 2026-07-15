@@ -88,16 +88,23 @@ struct JobNode final : enki::ITaskSet {
 
 // The implicit start node (spec D8). Its body is empty ON PURPOSE — queueing it is the entire job.
 //
-// Every user root depends on this, so submit() is ONE AddTaskSetToPipe call. That matters because
-// AddTaskSetToPipe runs InitDependencies SYNCHRONOUSLY on the calling thread, walking the whole
-// downstream graph and marking every transitive dependent (including `finish`) not-complete BEFORE
-// it dispatches any work. By the time submit() returns, wait() cannot return early. Without this
-// node, submit() would queue each root in turn — and root A's entire subtree could complete and fire
-// the finish sentinel before root B was even queued.
+// Every user root depends on this, so submit() is ONE AddTaskSetToPipe call regardless of how many
+// roots the graph has. Two things follow, and only the second is why this node must exist:
 //
-// (enkiTS's own example/Dependencies.cpp launches its graph from a task instead, and consequently
-// has to add a second dependency onto the launcher to plug precisely this race — its comment says
-// so. Queueing the root directly from the submitting thread avoids needing that.)
+//   * AddTaskSetToPipe runs InitDependencies SYNCHRONOUSLY on the calling thread, marking the whole
+//     downstream graph — `finish` included — not-complete before it dispatches any work. So by the
+//     time submit() returns, wait() cannot observe a not-yet-started graph as already finished.
+//   * THE LOAD-BEARING REASON: an EMPTY graph has no leaves, so `finish` would have no dependencies
+//     at all and would report complete before submit() ever ran. Depending it on `start` gives every
+//     graph, empty or not, one uniform rule and one dispatch (E2).
+//
+// WHAT THIS NODE IS *NOT* FOR — spec D8 claims that without it, root A's subtree could complete and
+// fire `finish` before root B was queued. THAT RACE DOES NOT EXIST, and D8's rationale is wrong on
+// this point (verified against v1.12 and by bypassing the node: the multi-root test still passes,
+// even with a 12x chain-length gap). submit() wires `finish` to EVERY leaf before it queues
+// anything, so finish.m_DependenciesCount == leaves.size() from the outset, and TaskComplete fires a
+// dependent only when its completed-count reaches that total. Root A's subtree reaching 1-of-N
+// cannot fire `finish` — this is a counter, not a race, and queueing order is irrelevant to it.
 struct JobGraphStart final : enki::ITaskSet {
     void ExecuteRange(enki::TaskSetPartition, std::uint32_t) override {}
 };
