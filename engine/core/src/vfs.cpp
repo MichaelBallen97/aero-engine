@@ -19,7 +19,9 @@ constexpr std::string_view SCHEME = "res://";
 
 // Turn "res://a/./b/../c" into "a/c". Returns nullopt when the path is not addressable:
 //   * it does not start with "res://"
-//   * it contains a backslash or a NUL (a virtual path is always '/'-separated and NUL-free)
+//   * it contains a backslash, a NUL, or a ':' (a virtual path is always '/'-separated, NUL-free,
+//     and colon-free — a ':' has no legitimate role and would otherwise let a Windows drive-relative
+//     path escape the mount root, see resolveWithin())
 //   * a ".." segment would escape above the root
 // The result has no scheme, no leading/trailing '/', and no "."/".." segments; "" is the root
 // itself. Normalizing HERE — before any backend sees the path — is what makes a "../" escape and a
@@ -29,7 +31,12 @@ std::optional<std::string> normalizeVirtualPath(std::string_view path) {
         return std::nullopt;
     }
     const std::string_view rel = path.substr(SCHEME.size());
-    if (rel.find('\\') != std::string_view::npos || rel.find('\0') != std::string_view::npos) {
+    // A virtual path is portable and '/'-separated. Reject '\' and NUL, and reject ':' — after the
+    // scheme, a ':' can only introduce a Windows drive-relative root ("C:foo", which is NOT
+    // is_absolute() yet replaces the mount root via operator/=) or an NTFS alternate-data-stream; it
+    // has no legitimate role in a res:// path. (SCHEME's own "://" is already stripped from `rel`.)
+    if (rel.find('\\') != std::string_view::npos || rel.find('\0') != std::string_view::npos ||
+        rel.find(':') != std::string_view::npos) {
         return std::nullopt;
     }
 
@@ -114,7 +121,10 @@ bool hasDotDotSegment(std::string_view relPath) {
 // no symlinks).
 std::optional<std::filesystem::path> resolveWithin(const std::filesystem::path& root, std::string_view relPath) {
     const std::filesystem::path relative = pathFromUtf8(relPath);
-    if (relative.is_absolute() || hasDotDotSegment(relPath)) {
+    // has_root_name() catches a Windows drive-relative path ("C:foo"): it has a root-name but no
+    // root-directory, so is_absolute() is false, yet root / "C:foo" replaces the root when the drives
+    // differ. is_absolute() still catches "C:\foo" and POSIX "/foo"; hasDotDotSegment() catches "..".
+    if (relative.is_absolute() || relative.has_root_name() || hasDotDotSegment(relPath)) {
         return std::nullopt;
     }
     return root / relative;

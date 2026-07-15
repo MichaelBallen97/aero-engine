@@ -158,9 +158,12 @@ TEST_CASE("VFS: a directory path is not a readable file") {
     vfs.mount(backendFor(dir));
     CHECK_FALSE(vfs.exists("res://folder"));
     CHECK_FALSE(vfs.readFile("res://folder").has_value());
+    CHECK_FALSE(vfs.fileSize("res://folder").has_value());
 }
 
 TEST_CASE("VFS: malformed virtual paths are rejected") {
+    using namespace std::string_view_literals;
+
     const TempDir dir;
     dir.write("f.txt", "x");
     engine::VirtualFileSystem vfs;
@@ -169,6 +172,39 @@ TEST_CASE("VFS: malformed virtual paths are rejected") {
     CHECK_FALSE(vfs.readFile("file://f.txt").has_value());    // wrong scheme
     CHECK_FALSE(vfs.readFile("res://a\\b.txt").has_value());  // backslash
     CHECK_FALSE(vfs.exists("user://save.dat"));               // reserved, unimplemented
+    // A literal preserves the embedded NUL; a bare C-string would truncate at it.
+    CHECK_FALSE(vfs.readFile("res://a\0b"sv).has_value());  // embedded NUL
+}
+
+TEST_CASE("VFS: Windows drive-relative / colon paths are rejected") {
+    const TempDir dir;
+    dir.write("f.txt", "x");
+    engine::VirtualFileSystem vfs;
+    vfs.mount(backendFor(dir));
+    CHECK_FALSE(vfs.readFile("res://C:Windows/win.ini").has_value());  // Windows drive-relative escape
+    CHECK_FALSE(vfs.exists("res://C:secret"));
+    CHECK_FALSE(vfs.readFile("res://a:b.txt").has_value());  // any ':' (drive / NTFS ADS)
+}
+
+#ifndef _WIN32
+TEST_CASE("VFS: a colon path is rejected even when it names a real file (POSIX)") {
+    const TempDir dir;
+    dir.write("weird:name.txt", "nope");  // legal on POSIX, illegal on Windows
+    engine::VirtualFileSystem vfs;
+    vfs.mount(backendFor(dir));
+    CHECK_FALSE(vfs.readFile("res://weird:name.txt").has_value());  // rejected by normalize, not read
+}
+#endif
+
+TEST_CASE("VFS: mount(nullptr) is ignored; an unaddressable prefix mounts nothing") {
+    const TempDir dir;
+    dir.write("f.txt", "x");
+    engine::VirtualFileSystem vfs;
+    vfs.mount(nullptr);  // no crash, still absent
+    CHECK_FALSE(vfs.exists("res://f.txt"));
+    vfs.mount("bad\\prefix", backendFor(dir));  // an unaddressable prefix mounts nothing
+    CHECK_FALSE(vfs.exists("res://f.txt"));
+    CHECK_FALSE(vfs.exists("res://bad\\prefix/f.txt"));
 }
 
 TEST_CASE("VFS: later mounts overlay earlier ones, with fall-through") {
