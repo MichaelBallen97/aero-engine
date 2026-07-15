@@ -1,9 +1,9 @@
 // Aero Engine — math surface tests (task 0.2.2, ADR-005).
 //
 // D18: these tests deliberately do NOT include GLM. /tests sits outside core/math, so including
-// GLM here would be the exact violation task 0.2.3's guard exists to catch — and cross-validating
-// our math against the very backend that implements it would be partly circular. Every
-// expectation below is a hand-computed literal or an algebraic identity.
+// GLM here would be the exact violation .github/scripts/check-math-boundary.sh (task 0.2.3) exists
+// to catch — and cross-validating our math against the very backend that implements it would be
+// partly circular. Every expectation below is a hand-computed literal or an algebraic identity.
 //
 // AC-9(i): aero_tests links aero::core but NOT glm::glm — that omission is intentional style, but
 // it is NOT a compile-time guarantee that no public math header pulls GLM in. aero_tests also
@@ -12,7 +12,8 @@
 // plus `#include <glm/vec3.hpp>` compiles clean here. The real compile-time boundary holds only
 // for engine-layer targets that link no vcpkg package directly (verified with a throwaway probe
 // linking only aero::core — see docs/02-adrs.md's ADR-005 implementation note and risk R12 in
-// docs/08-risks.md). Inside tests/, the textual grep guard (0.2.3) is the enforcement.
+// docs/08-risks.md). Inside tests/, .github/scripts/check-math-boundary.sh (task 0.2.3, run by
+// the `lint` job) is the enforcement.
 #include <aero/core/math.hpp>
 
 #include <doctest/doctest.h>

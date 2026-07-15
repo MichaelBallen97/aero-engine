@@ -40,7 +40,8 @@ target_include_directories(aero_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # a hard compile error for engine-layer targets that link no vcpkg package directly (proven with a
 # throwaway probe target linking only aero::core — see docs/02-adrs.md's ADR-005 implementation
 # note and risk R12 in docs/08-risks.md). The CI grep in the `lint` job (task 0.2.4, spec 3.8, for
-# spdlog/fmt; task 0.2.3, not yet built, for glm) is what enforces the boundary everywhere else.
+# spdlog/fmt; .github/scripts/check-math-boundary.sh, task 0.2.3, for glm) is what enforces the
+# boundary everywhere else.
 # Flipping either of these to PUBLIC would silently reopen the boundary engine-wide — do not
 # "simplify" it.
 target_link_libraries(aero_core PRIVATE spdlog::spdlog glm::glm)

@@ -11,8 +11,11 @@
 // aero::core), which is the boundary this comment is about. It does NOT hold inside tests/: vcpkg
 // installs every port into one shared per-triplet include/ directory, so aero_tests inherits GLM's
 // headers via doctest::doctest regardless of aero_core's PRIVATE link (see docs/02-adrs.md's
-// ADR-005 implementation note and risk R12 in docs/08-risks.md). Task 0.2.3's grep-based CI guard
-// is the enforcement for tests/ and any other target that links a vcpkg package directly.
+// ADR-005 implementation note and risk R12 in docs/08-risks.md). .github/scripts/check-math-
+// boundary.sh (task 0.2.3, run by the `lint` job) is the enforcement for tests/ and any other
+// target that links a vcpkg package directly. The permanent compile-time probe
+// tests/math_boundary_probe.cpp (also 0.2.3) enforces this exact header set at compile time by
+// linking only aero::core, so a leaked GLM include here fails the build directly.
 //
 // ENGINE-WIDE CONVENTIONS PINNED BY THESE TYPES (docs/02 ADR-005 implementation note). Every
 // shader, camera, importer, and physics wrapper inherits them — do not change one locally:

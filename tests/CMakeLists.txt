@@ -25,9 +25,32 @@ add_executable(aero_tests
 # public math header pulling GLM in would NOT necessarily fail to compile here — this target does
 # NOT prove the compile-time boundary the way an engine-layer target linking only aero::core does
 # (verified with exactly that probe). See docs/02-adrs.md's ADR-005 implementation note and risk
-# R12 in docs/08-risks.md; the textual grep guard (0.2.3) is the real enforcement for tests/.
+# R12 in docs/08-risks.md; .github/scripts/check-math-boundary.sh (task 0.2.3, run by the `lint`
+# job) is the real enforcement for tests/. The sibling aero_math_boundary_probe target below (also
+# 0.2.3) covers the public math headers at compile time instead.
 target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core)
 
 # Single ctest entry; doctest prints per-TEST_CASE detail on failure. Per-case
 # registration (doctest_discover_tests) can be adopted later without churn.
 add_test(NAME aero_tests COMMAND aero_tests)
+
+# ---------------------------------------------------------------------------------------------
+# The math-boundary COMPILE-TIME guard (task 0.2.3; docs/02-adrs.md:211).
+#
+# OBJECT, not an executable: compiling is the whole assertion, so there is nothing to link or run
+# and no ctest entry to register. It builds as part of `all`, so every preset on every CI lane
+# enforces it for free.
+#
+# THE LINK LINE IS THE TEST. aero::core links glm::glm PRIVATE, so a target that links ONLY
+# aero::core never sees vcpkg's shared per-triplet include/ directory and cannot resolve
+# <glm/...>. That is exactly what makes a leaked GLM include in a PUBLIC math header a compile
+# error here (verified 2026-07-15: with GLM installed in the shared root, this flag set still
+# reports `fatal error: 'glm/vec3.hpp' file not found`, while aero_tests' flag set compiles it
+# clean — risk R12, docs/08-risks.md).
+#
+# DO NOT ADD ANY OTHER LINK LIBRARY. Not doctest::doctest, not aero::profiling (it links Tracy —
+# a vcpkg package — in Release), not glm::glm. Any one of them puts the shared vcpkg include root
+# back on this compile line and silently reduces this guard to a no-op WITHOUT turning CI red.
+# That is the only way this guard can rot, so it is the one thing to never "simplify".
+add_library(aero_math_boundary_probe OBJECT math_boundary_probe.cpp)
+target_link_libraries(aero_math_boundary_probe PRIVATE aero::core)

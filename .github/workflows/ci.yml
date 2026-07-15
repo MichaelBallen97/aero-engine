@@ -68,6 +68,10 @@ jobs:
             exit 1
           fi
 
+      - name: Boundary — no GLM outside the math backend
+        shell: bash
+        run: bash .github/scripts/check-math-boundary.sh
+
   build:
     name: ${{ matrix.name }}
     needs: vcpkg-baseline        # don't spend build minutes if the pin is broken
