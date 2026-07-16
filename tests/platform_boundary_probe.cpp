@@ -1,4 +1,5 @@
-// Aero Engine — the platform SDL-boundary COMPILE-TIME guard (task 0.3.1).
+// Aero Engine — the platform SDL/miniaudio-boundary COMPILE-TIME guard (task 0.3.1; miniaudio added
+// 0.3.3).
 //
 // THIS FILE ASSERTS BY EXISTING. It is not a doctest suite and has no TEST_CASE: the assertion is
 // that it COMPILES. Its target (aero_platform_boundary_probe, tests/CMakeLists.txt) links ONLY
@@ -46,3 +47,10 @@ static_assert(engine::platform::Event{}.type == engine::platform::EventType::Non
 static_assert(std::is_trivially_copyable_v<engine::platform::Event>);                // D8 invariant
 static_assert(std::is_nothrow_default_constructible_v<engine::platform::InputState>);
 static_assert(std::is_default_constructible_v<engine::platform::InputState>);
+
+// ---- task 0.3.3 audio surface ----
+static_assert(engine::platform::AudioDeviceConfig{}.sampleRate == 48000U);
+static_assert(engine::platform::AudioDeviceConfig{}.channels == 2U);
+static_assert(!engine::platform::AudioDeviceConfig{}.headless);
+static_assert(!std::is_copy_constructible_v<engine::platform::AudioDevice>);  // move-only RAII
+static_assert(std::is_move_constructible_v<engine::platform::AudioDevice>);

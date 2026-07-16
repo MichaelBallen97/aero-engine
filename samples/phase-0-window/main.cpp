@@ -27,6 +27,15 @@ int main() {
     AERO_LOG_INFO("window {}x{} (framebuffer {}x{})", window.size().width, window.size().height,
                   window.pixelSize().width, window.pixelSize().height);
 
+    // task 0.3.3 — open a silent audio device (real backend), completing Epic 0.3's DoD: this one app
+    // now does window + events + input + audio. Non-fatal: a machine with no audio still gets a window.
+    std::optional<engine::platform::AudioDevice> audio = engine::platform::AudioDevice::open();
+    if (audio) {
+        AERO_LOG_INFO("audio device opened: {} Hz, {} ch (silent)", audio->sampleRate(), audio->channels());
+    } else {
+        AERO_LOG_WARN("no audio device available — continuing without sound");
+    }
+
     engine::FrameClock clock;
     bool running = true;
     while (running) {

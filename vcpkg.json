@@ -10,6 +10,7 @@
         "doctest",
         "enkits",
         "glm",
+        "miniaudio",
         {
             "name": "sdl3",
             "features": [

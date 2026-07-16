@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Aero Engine — the platform SDL-boundary architecture guard (task 0.3.1; docs/04's guard table).
+# Aero Engine — the platform SDL/miniaudio-boundary architecture guard (task 0.3.1; miniaudio added
+# 0.3.3; docs/04's guard table).
 #
-# Rule #3 (boundary rule): no SDL type may cross a public engine header. engine/platform links
-# SDL3 PRIVATE, confined to engine/platform/src/platform.cpp; tests/platform_boundary_probe.cpp is
-# the compile-time half of the guard. This script is the textual half, reaching where the probe
-# cannot (vcpkg's shared per-triplet include/ root still resolves <SDL3/...> for any target linking
-# any vcpkg package -- risk R12, docs/08-risks.md).
+# Rule #3 (boundary rule): no SDL or miniaudio type may cross a public engine header. engine/platform
+# links SDL3 PRIVATE (confined to engine/platform/src/platform.cpp) and miniaudio PRIVATE (confined to
+# engine/platform/src/{audio_device.cpp, miniaudio_impl.c}); tests/platform_boundary_probe.cpp is the
+# compile-time half of the guard for both backends. This script is the textual half, reaching where the
+# probe cannot (vcpkg's shared per-triplet include/ root still resolves <SDL3/...> / <miniaudio.h> for
+# any target linking any vcpkg package -- risk R12, docs/08-risks.md).
 #
 # WHY A SCRIPT, NOT A ONE-LINE `git grep` (deviation from the plan's §3.17 draft, logged in the
 # 0.3.1 implementation report): SDL has no namespace, so a real SDL identifier (SDL_Init, SDL_GPU,
@@ -42,9 +44,19 @@ readonly INCLUDE_RE='^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]SDL3/'
 # actual `SDL_Window* leak;` declaration does.
 readonly IDENTIFIER_RE='(^|[^a-zA-Z0-9_])SDL_'
 
+# A real #include of the miniaudio header (flat: the vcpkg port installs include/miniaudio.h).
+readonly MA_INCLUDE_RE='^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]miniaudio\.h'
+# A real miniaudio identifier used as CODE. Lowercase ma_ is the entire public type/function/enum
+# surface (ma_device, ma_context, ma_result, ma_format_f32, ...); MA_-macros never appear in an API
+# signature, so matching ma_ (not MA_) avoids false hits on ALL_CAPS first-party macros. Bracket
+# boundary, NOT \b (BSD grep degrades \b to a literal 'b' -- posix-ere-word-boundary-trap), applied
+# AFTER stripping // comments, so "wraps a ma_device" in prose is fine but `ma_device* leak;` is not.
+readonly MA_IDENTIFIER_RE='(^|[^a-zA-Z0-9_])ma_'
+
 # Every public engine header -- the only surface the boundary rule governs (docs/04: "public headers
 # expose only engine types"). Deliberately narrower than the clang-format file set: this guard has no
-# opinion on engine/platform/src/platform.cpp, which is SDL's one legitimate home.
+# opinion on engine/platform/src/platform.cpp, which is SDL's one legitimate home, nor on
+# engine/platform/src/{audio_device.cpp,miniaudio_impl.c}, which are miniaudio's.
 readonly HEADER_GLOB='engine/*/include/*'
 
 cd "$(git rev-parse --show-toplevel)"
@@ -71,6 +83,18 @@ if printf '// verified SDL_init.h:81\n' | sed 's|//.*||' | grep -qE "$IDENTIFIER
   echo "::error::Comment-stripping in $0 is broken -- a pure comment line still matches." >&2
   exit 2
 fi
+if ! printf '#include <miniaudio.h>\n' | grep -qE "$MA_INCLUDE_RE"; then
+  echo "::error::MA_INCLUDE_RE in $0 no longer matches a real miniaudio include -- it is vacuous." >&2
+  exit 2
+fi
+if ! printf 'ma_device* leak;\n' | grep -qE "$MA_IDENTIFIER_RE"; then
+  echo "::error::MA_IDENTIFIER_RE in $0 no longer matches a real miniaudio identifier -- vacuous." >&2
+  exit 2
+fi
+if printf '// wraps a ma_device\n' | sed 's|//.*||' | grep -qE "$MA_IDENTIFIER_RE"; then
+  echo "::error::Comment-stripping in $0 is broken -- a pure comment line still matches." >&2
+  exit 2
+fi
 
 # --- The guard. ----------------------------------------------------------------------------
 violations=""
@@ -78,7 +102,10 @@ while IFS= read -r -d '' file; do
   # Line-numbered, comment-stripped view of this file: strip `// ...` before applying
   # IDENTIFIER_RE, so a documentation citation of a real SDL name never trips the guard, while an
   # actual SDL_-prefixed declaration (never legitimately preceded by `//` on the same line) does.
-  hits="$(nl -ba -w1 -s: "$file" | sed -E 's|//.*||' | grep -E "$IDENTIFIER_RE" || true)"
+  # Line-numbered, comment-stripped view reused for both identifier checks (SDL then miniaudio).
+  stripped="$(nl -ba -w1 -s: "$file" | sed -E 's|//.*||')"
+
+  hits="$(printf '%s\n' "$stripped" | grep -E "$IDENTIFIER_RE" || true)"
   if [ -n "$hits" ]; then
     while IFS= read -r hit; do
       n="${hit%%:*}"
@@ -96,21 +123,39 @@ while IFS= read -r -d '' file; do
 "
     done <<< "$inc_hits"
   fi
+
+  # task 0.3.3: the same two checks for miniaudio, reusing the same comment-stripped/raw views.
+  ma_hits="$(printf '%s\n' "$stripped" | grep -E "$MA_IDENTIFIER_RE" || true)"
+  if [ -n "$ma_hits" ]; then
+    while IFS= read -r hit; do
+      n="${hit%%:*}"
+      violations="${violations}${file}:${n}: miniaudio identifier leaked into a public engine header
+"
+    done <<< "$ma_hits"
+  fi
+  ma_inc_hits="$(grep -nE "$MA_INCLUDE_RE" "$file" || true)"
+  if [ -n "$ma_inc_hits" ]; then
+    while IFS= read -r hit; do
+      n="${hit%%:*}"
+      violations="${violations}${file}:${n}: miniaudio header included from a public engine header
+"
+    done <<< "$ma_inc_hits"
+  fi
 done < <(git ls-files -z -- "$HEADER_GLOB")
 
 if [ -n "$violations" ]; then
-  echo "SDL leaked into a public engine header -- task 0.3.1 / docs/04 boundary rule:" >&2
+  echo "SDL/miniaudio leaked into a public engine header -- task 0.3.1/0.3.3 / docs/04 boundary rule:" >&2
   echo "$violations" >&2
   echo "" >&2
-  echo "Keep SDL inside engine/platform/src/platform.cpp." >&2
+  echo "Keep SDL inside engine/platform/src/platform.cpp; keep miniaudio inside engine/platform/src/{audio_device.cpp, miniaudio_impl.c}." >&2
   if [ -n "${GITHUB_ACTIONS:-}" ]; then
     while IFS= read -r v; do
       [ -z "$v" ] && continue
       f="${v%%:*}"; rest="${v#*:}"; n="${rest%%:*}"
-      echo "::error file=${f},line=${n}::SDL leaked into a public engine header (task 0.3.1; docs/04 boundary rule). Keep SDL inside engine/platform/src/platform.cpp."
+      echo "::error file=${f},line=${n}::SDL/miniaudio leaked into a public engine header (task 0.3.1/0.3.3; docs/04 boundary rule). Keep SDL inside engine/platform/src/platform.cpp; keep miniaudio inside engine/platform/src/{audio_device.cpp, miniaudio_impl.c}."
     done <<< "$violations"
   fi
   exit 1
 fi
 
-echo "platform-boundary guard: OK -- ${scanned} tracked public headers scanned; SDL confined to engine/platform/src/platform.cpp"
+echo "platform-boundary guard: OK -- ${scanned} tracked public headers scanned; SDL confined to engine/platform/src/platform.cpp, miniaudio confined to engine/platform/src/{audio_device.cpp, miniaudio_impl.c}"
