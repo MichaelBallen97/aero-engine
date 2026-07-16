@@ -111,6 +111,25 @@ jobs:
             exit 1
           fi
 
+      - name: Boundary — no SDL types in public engine headers
+        shell: bash
+        # Task 0.3.1's boundary: "no SDL type in a public engine header". A plain grep (the
+        # spdlog/enkiTS precedent above) does NOT work for SDL: SDL has no namespace, so a real SDL
+        # identifier (SDL_Init, SDL_GPU, SDL_Window, ...) is textually indistinguishable from that
+        # same identifier cited in a documentation comment — and this codebase already cites exact
+        # SDL identifiers in prose for traceability (e.g. math.hpp's "SDL_GPU's documented NDC",
+        # time.hpp's "SDL_GetTicks", this task's own context.hpp citing "SDL_init.h:81"). A bare
+        # `(^|[^a-zA-Z0-9_])SDL_` grep fires on ALL of those — verified during 0.3.1 implementation:
+        # it already matched on main before this task added a single line, entirely from pre-existing
+        # math/time comments, which would have made this step permanently red. spdlog/enkiTS don't
+        # have this problem because `spdlog::`/`enki::`/`TaskScheduler.h` essentially never appear in
+        # first-party prose. check-platform-boundary.sh strips `//` line comments before applying the
+        # identifier check (mirroring check-math-boundary.sh's script-not-one-liner precedent for a
+        # boundary that needs more nuance than a single grep line), so a real leak (an actual
+        # `#include <SDL3/...>` or an actual `SDL_Window*` declaration) still fails the build, while a
+        # documentation citation does not.
+        run: bash .github/scripts/check-platform-boundary.sh
+
   build:
     name: ${{ matrix.name }}
     needs: vcpkg-baseline        # don't spend build minutes if the pin is broken

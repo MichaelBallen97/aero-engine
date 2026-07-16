@@ -3,3 +3,4 @@
 # GOLDEN RULE: nothing in this tree may ever depend on editor/.
 
 add_subdirectory(core)
+add_subdirectory(platform)
