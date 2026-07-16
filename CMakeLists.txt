@@ -38,7 +38,4 @@ add_subdirectory(runtime)
 add_subdirectory(editor)
 add_subdirectory(tools)
 add_subdirectory(tests)
-
-# Proves the vcpkg toolchain resolves manifest dependencies end-to-end.
-# TEMPORARY at root: moves into engine/platform when its target lands (0.3.1).
-find_package(SDL3 CONFIG REQUIRED)
+add_subdirectory(samples)   # validation apps (docs/03); first populated by 0.3.1's phase-0-window

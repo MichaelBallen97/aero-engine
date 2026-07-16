@@ -2,6 +2,13 @@
 
 find_package(doctest CONFIG REQUIRED)
 
+# aero_tests links SDL3::SDL3 EXPLICITLY (not merely transitively via aero::platform) so the
+# white-box pump test (platform_event_test.cpp) can #include <SDL3/SDL.h> and push synthetic SDL
+# events through the real Context::pollEvent. Tests are OUTSIDE the boundary rule — docs/04 governs
+# engine PUBLIC headers, not test TUs. This does not touch the boundary probes below (separate
+# targets, each linking only its own engine library).
+find_package(SDL3 CONFIG REQUIRED)
+
 # One runner for the whole project: test TUs register TEST_CASEs, test_main.cpp
 # only generates main(). This is the repo's first compiled+linked target.
 add_executable(aero_tests
@@ -15,6 +22,8 @@ add_executable(aero_tests
     jobs_test.cpp
     time_test.cpp
     vfs_test.cpp
+    platform_test.cpp
+    platform_event_test.cpp
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
@@ -31,7 +40,7 @@ add_executable(aero_tests
 # R12 in docs/08-risks.md; .github/scripts/check-math-boundary.sh (task 0.2.3, run by the `lint`
 # job) is the real enforcement for tests/. The sibling aero_math_boundary_probe target below (also
 # 0.2.3) covers the public math headers at compile time instead.
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core)
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform SDL3::SDL3)
 
 # Single ctest entry; doctest prints per-TEST_CASE detail on failure. Per-case
 # registration (doctest_discover_tests) can be adopted later without churn.
@@ -75,3 +84,18 @@ target_link_libraries(aero_math_boundary_probe PRIVATE aero::core)
 # stays green.
 add_library(aero_jobs_boundary_probe OBJECT jobs_boundary_probe.cpp)
 target_link_libraries(aero_jobs_boundary_probe PRIVATE aero::core)
+
+# ---------------------------------------------------------------------------------------------
+# The platform SDL-boundary COMPILE-TIME guard (task 0.3.1; docs/04 boundary rule).
+#
+# Same mechanism as the math/jobs probes, for SDL: aero::platform links SDL3 PRIVATE, so a target
+# linking ONLY aero::platform never sees vcpkg's shared per-triplet include/ directory and cannot
+# resolve <SDL3/...>. A leaked SDL include in a public platform header is therefore a compile error
+# the moment it is written. (This CORRECTS the 0.2.5 handoff note that platform "must be greps":
+# the probe works here exactly as for glm — spec D8.)
+#
+# DO NOT ADD ANY OTHER LINK LIBRARY — not doctest, not SDL3::SDL3, not aero::profiling. Any of them
+# restores the shared vcpkg include root and silently reduces this guard to a no-op while CI stays
+# green. That is the only way this guard can rot.
+add_library(aero_platform_boundary_probe OBJECT platform_boundary_probe.cpp)
+target_link_libraries(aero_platform_boundary_probe PRIVATE aero::platform)
