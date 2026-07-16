@@ -13,6 +13,7 @@
 
 #include <aero/platform/platform.hpp>
 
+#include <cstdint>
 #include <type_traits>
 
 // Instantiate the public surface via constexpr-value + type-trait asserts. NO sizeof(T) > 0 /
@@ -33,3 +34,15 @@ static_assert(std::is_move_constructible_v<engine::platform::Window>);
 static_assert(std::is_default_constructible_v<engine::platform::WindowConfig>);
 static_assert(std::is_default_constructible_v<engine::platform::ContextConfig>);
 static_assert(std::is_default_constructible_v<engine::platform::WindowSize>);
+
+// ---- task 0.3.2 input surface ----
+static_assert(engine::platform::Key::A != engine::platform::Key::B);
+static_assert(static_cast<int>(engine::platform::MouseButton::Left) == 0);
+static_assert(engine::platform::KeyMods{}.bits == 0);
+static_assert(!engine::platform::KeyMods{}.shift());
+static_assert(engine::platform::KeyMods{static_cast<std::uint16_t>(engine::platform::KeyMod::LeftCtrl)}.ctrl());
+static_assert(engine::platform::MousePosition{}.x == 0.0f);
+static_assert(engine::platform::Event{}.type == engine::platform::EventType::None);  // union: default arm ok
+static_assert(std::is_trivially_copyable_v<engine::platform::Event>);                // D8 invariant
+static_assert(std::is_nothrow_default_constructible_v<engine::platform::InputState>);
+static_assert(std::is_default_constructible_v<engine::platform::InputState>);

@@ -93,3 +93,11 @@ TEST_CASE("move-assigning onto an engaged Window does not use-after-free") {
     CHECK(a->id().valid());
     CHECK(a->id() == bId);
 }
+
+TEST_CASE("a fresh Context has empty input state and newFrame is callable") {
+    engine::platform::Context ctx{{.headless = true}};
+    CHECK_FALSE(ctx.input().keyDown(engine::platform::Key::W));
+    CHECK(ctx.input().mousePosition().x == doctest::Approx(0.0f));
+    ctx.newFrame();  // no-op on empty state; must be callable
+    CHECK_FALSE(ctx.input().keyPressed(engine::platform::Key::W));
+}

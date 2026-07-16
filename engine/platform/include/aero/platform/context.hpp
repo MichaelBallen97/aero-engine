@@ -9,6 +9,7 @@
 // its state is a bool and a std::thread::id.
 
 #include <aero/platform/event.hpp>
+#include <aero/platform/input.hpp>
 #include <aero/platform/window.hpp>
 
 #include <optional>
@@ -43,16 +44,26 @@ public:
     // on the thread that constructed this Context (the main thread); asserted in debug.
     [[nodiscard]] std::optional<Window> createWindow(const WindowConfig& config = {});
 
-    // Pull the next translated event, draining and DISCARDING any backend event 0.3.1 does not model
-    // (input lands in 0.3.2). Returns false when the queue is empty. Must be called on the Context's
-    // thread; asserted in debug. Drive it as:
+    // Pull the next translated event, draining and DISCARDING any backend event still unmodeled (e.g.
+    // gamepad, text input). Also folds keyboard/mouse events into input() as it translates them (task
+    // 0.3.2). Returns false when the queue is empty. Must be called on the Context's thread; asserted
+    // in debug. Drive it as:
     //     platform::Event ev;
     //     while (ctx.pollEvent(ev)) { /* handle ev */ }
     bool pollEvent(Event& out);
 
+    // Advance input to a new frame: clears this-frame key/button edges and the per-frame mouse
+    // motion/wheel deltas; held state (keyDown) and the last mouse position persist. Call ONCE at the
+    // top of each frame, before the pollEvent drain loop (see input.hpp). Inert Context: harmless.
+    void newFrame() noexcept { inputState.newFrame(); }
+
+    // The current input snapshot, updated by pollEvent as it translates events. Read-only to callers.
+    [[nodiscard]] const InputState& input() const noexcept { return inputState; }
+
 private:
     bool initialized = false;
     std::thread::id ownerThread;  // the main thread; pollEvent/createWindow must run here
+    InputState inputState;        // folded by pollEvent (src/platform.cpp); frame-reset by newFrame()
 };
 
 }  // namespace engine::platform

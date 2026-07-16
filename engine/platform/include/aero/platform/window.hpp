@@ -30,13 +30,8 @@ struct WindowConfig {
     bool hidden = false;  // create without showing it (tests); call show() to reveal it later
 };
 
-// A discrete 2D window size, in points or pixels depending on the getter. A local value type: the
-// engine's float Vec2 (core/math) is the wrong tool for integer window dimensions.
-struct WindowSize {
-    std::int32_t width = 0;
-    std::int32_t height = 0;
-    bool operator==(const WindowSize&) const = default;
-};
+// WindowSize (the logical/pixel size value type) moved to <aero/platform/event.hpp> in task 0.3.2 so
+// it can double as the resize event payload; it arrives transitively via this header's event.hpp include.
 
 class Window {
 public:

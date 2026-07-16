@@ -11,6 +11,7 @@ find_package(SDL3 CONFIG REQUIRED)   # package SDL3, target SDL3::SDL3
 
 add_library(aero_platform STATIC
     src/platform.cpp
+    src/input.cpp   # task 0.3.2 — InputState fold (SDL-free)
 )
 add_library(aero::platform ALIAS aero_platform)
 

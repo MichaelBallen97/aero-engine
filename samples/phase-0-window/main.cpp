@@ -30,6 +30,7 @@ int main() {
     engine::FrameClock clock;
     bool running = true;
     while (running) {
+        ctx.newFrame();  // task 0.3.2: reset per-frame input edges/deltas before draining
         engine::platform::Event ev;
         while (ctx.pollEvent(ev)) {
             switch (ev.type) {
@@ -38,11 +39,25 @@ int main() {
                     running = false;
                     break;
                 case engine::platform::EventType::WindowPixelSizeChanged:
-                    AERO_LOG_INFO("framebuffer resized to {}x{}", ev.width, ev.height);
+                    AERO_LOG_INFO("framebuffer resized to {}x{}", ev.size.width, ev.size.height);
+                    break;
+                case engine::platform::EventType::KeyDown:
+                    AERO_LOG_INFO("key down: code {} (repeat={})", static_cast<int>(ev.key.code), ev.key.repeat);
+                    break;
+                case engine::platform::EventType::MouseButtonDown:
+                    AERO_LOG_INFO("click button {} at {:.0f},{:.0f}", static_cast<int>(ev.mouseButton.button),
+                                  ev.mouseButton.x, ev.mouseButton.y);
+                    break;
+                case engine::platform::EventType::MouseWheel:
+                    AERO_LOG_INFO("wheel {:.1f},{:.1f}", ev.mouseWheel.x, ev.mouseWheel.y);
                     break;
                 default:
                     break;
             }
+        }
+        // Polled-state style: Escape quits. (Held/edge state is available via ctx.input() too.)
+        if (ctx.input().keyDown(engine::platform::Key::Escape)) {
+            running = false;
         }
         clock.tick();
         AERO_PROFILE_FRAME_MARK;

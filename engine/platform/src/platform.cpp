@@ -20,30 +20,269 @@ namespace {
 // maintained in every config so it stays balanced — one relaxed atomic per construct/destruct.
 std::atomic<int> liveContexts{0};
 
-// SDL → engine translation. Returns nullopt for events 0.3.1 does not model (they are drained and
-// dropped by the caller). Reads the flattened SDL3 window-event fields: e.window.{windowID,data1,
-// data2} (verified SDL_events.h:142-152; SDL_EVENT_WINDOW_RESIZED reports "data1xdata2").
+// These pin the engine-side Key contiguity that fromScancode's offset math relies on: reorder Key and
+// the build fails HERE, rather than silently mis-mapping a run of keys.
+static_assert(static_cast<int>(Key::Z) - static_cast<int>(Key::A) == 25);
+static_assert(static_cast<int>(Key::Num9) - static_cast<int>(Key::Num1) == 8);
+static_assert(static_cast<int>(Key::F12) - static_cast<int>(Key::F1) == 11);
+static_assert(static_cast<int>(Key::Kp9) - static_cast<int>(Key::Kp1) == 8);
+
+// SDL physical scancode -> engine Key (D1/D9). SDL's contiguous runs map by offset; the irregular keys
+// are explicit. An unmapped scancode returns Key::Unknown, and translate() drops that event.
+Key fromScancode(SDL_Scancode sc) {
+    if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) {
+        return static_cast<Key>(static_cast<int>(Key::A) + (sc - SDL_SCANCODE_A));
+    }
+    if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9) {  // SDL orders 1..9 then 0
+        return static_cast<Key>(static_cast<int>(Key::Num1) + (sc - SDL_SCANCODE_1));
+    }
+    if (sc >= SDL_SCANCODE_F1 && sc <= SDL_SCANCODE_F12) {
+        return static_cast<Key>(static_cast<int>(Key::F1) + (sc - SDL_SCANCODE_F1));
+    }
+    if (sc >= SDL_SCANCODE_KP_1 && sc <= SDL_SCANCODE_KP_9) {  // SDL orders KP_1..KP_9 then KP_0
+        return static_cast<Key>(static_cast<int>(Key::Kp1) + (sc - SDL_SCANCODE_KP_1));
+    }
+    switch (sc) {
+        case SDL_SCANCODE_0:
+            return Key::Num0;
+        case SDL_SCANCODE_KP_0:
+            return Key::Kp0;
+        case SDL_SCANCODE_RETURN:
+            return Key::Enter;
+        case SDL_SCANCODE_ESCAPE:
+            return Key::Escape;
+        case SDL_SCANCODE_BACKSPACE:
+            return Key::Backspace;
+        case SDL_SCANCODE_TAB:
+            return Key::Tab;
+        case SDL_SCANCODE_SPACE:
+            return Key::Space;
+        case SDL_SCANCODE_DELETE:
+            return Key::Delete;
+        case SDL_SCANCODE_INSERT:
+            return Key::Insert;
+        case SDL_SCANCODE_HOME:
+            return Key::Home;
+        case SDL_SCANCODE_END:
+            return Key::End;
+        case SDL_SCANCODE_PAGEUP:
+            return Key::PageUp;
+        case SDL_SCANCODE_PAGEDOWN:
+            return Key::PageDown;
+        case SDL_SCANCODE_LEFT:
+            return Key::Left;
+        case SDL_SCANCODE_RIGHT:
+            return Key::Right;
+        case SDL_SCANCODE_UP:
+            return Key::Up;
+        case SDL_SCANCODE_DOWN:
+            return Key::Down;
+        case SDL_SCANCODE_LSHIFT:
+            return Key::LeftShift;
+        case SDL_SCANCODE_RSHIFT:
+            return Key::RightShift;
+        case SDL_SCANCODE_LCTRL:
+            return Key::LeftCtrl;
+        case SDL_SCANCODE_RCTRL:
+            return Key::RightCtrl;
+        case SDL_SCANCODE_LALT:
+            return Key::LeftAlt;
+        case SDL_SCANCODE_RALT:
+            return Key::RightAlt;
+        case SDL_SCANCODE_LGUI:
+            return Key::LeftGui;
+        case SDL_SCANCODE_RGUI:
+            return Key::RightGui;
+        case SDL_SCANCODE_CAPSLOCK:
+            return Key::CapsLock;
+        case SDL_SCANCODE_MINUS:
+            return Key::Minus;
+        case SDL_SCANCODE_EQUALS:
+            return Key::Equals;
+        case SDL_SCANCODE_LEFTBRACKET:
+            return Key::LeftBracket;
+        case SDL_SCANCODE_RIGHTBRACKET:
+            return Key::RightBracket;
+        case SDL_SCANCODE_BACKSLASH:
+            return Key::Backslash;
+        case SDL_SCANCODE_SEMICOLON:
+            return Key::Semicolon;
+        case SDL_SCANCODE_APOSTROPHE:
+            return Key::Apostrophe;
+        case SDL_SCANCODE_GRAVE:
+            return Key::Grave;
+        case SDL_SCANCODE_COMMA:
+            return Key::Comma;
+        case SDL_SCANCODE_PERIOD:
+            return Key::Period;
+        case SDL_SCANCODE_SLASH:
+            return Key::Slash;
+        case SDL_SCANCODE_KP_ENTER:
+            return Key::KpEnter;
+        case SDL_SCANCODE_KP_PLUS:
+            return Key::KpPlus;
+        case SDL_SCANCODE_KP_MINUS:
+            return Key::KpMinus;
+        case SDL_SCANCODE_KP_MULTIPLY:
+            return Key::KpMultiply;
+        case SDL_SCANCODE_KP_DIVIDE:
+            return Key::KpDivide;
+        case SDL_SCANCODE_KP_PERIOD:
+            return Key::KpPeriod;
+        case SDL_SCANCODE_PRINTSCREEN:
+            return Key::PrintScreen;
+        case SDL_SCANCODE_SCROLLLOCK:
+            return Key::ScrollLock;
+        case SDL_SCANCODE_PAUSE:
+            return Key::Pause;
+        default:
+            return Key::Unknown;
+    }
+}
+
+// SDL mouse button -> engine MouseButton. Explicit: SDL's MIDDLE==2 and RIGHT==3, so an arithmetic
+// (button-1) map would swap them. An unknown button returns MouseButton::Count (event dropped).
+MouseButton fromSdlButton(std::uint8_t button) {
+    switch (button) {
+        case SDL_BUTTON_LEFT:
+            return MouseButton::Left;
+        case SDL_BUTTON_RIGHT:
+            return MouseButton::Right;
+        case SDL_BUTTON_MIDDLE:
+            return MouseButton::Middle;
+        case SDL_BUTTON_X1:
+            return MouseButton::X1;
+        case SDL_BUTTON_X2:
+            return MouseButton::X2;
+        default:
+            return MouseButton::Count;
+    }
+}
+
+// SDL modifier bitmask -> engine KeyMods. Accumulate in `unsigned` and narrow once (a per-bit `|=`
+// on a uint16 would trip bugprone-narrowing-conversions under --warnings-as-errors).
+KeyMods fromSdlMod(SDL_Keymod mod) {
+    unsigned bits = 0;
+    auto set = [&](SDL_Keymod sdlBit, KeyMod engineBit) {
+        if ((mod & sdlBit) != 0) {
+            bits |= static_cast<unsigned>(engineBit);
+        }
+    };
+    set(SDL_KMOD_LSHIFT, KeyMod::LeftShift);
+    set(SDL_KMOD_RSHIFT, KeyMod::RightShift);
+    set(SDL_KMOD_LCTRL, KeyMod::LeftCtrl);
+    set(SDL_KMOD_RCTRL, KeyMod::RightCtrl);
+    set(SDL_KMOD_LALT, KeyMod::LeftAlt);
+    set(SDL_KMOD_RALT, KeyMod::RightAlt);
+    set(SDL_KMOD_LGUI, KeyMod::LeftGui);
+    set(SDL_KMOD_RGUI, KeyMod::RightGui);
+    set(SDL_KMOD_CAPS, KeyMod::CapsLock);
+    set(SDL_KMOD_NUM, KeyMod::NumLock);
+    return KeyMods{static_cast<std::uint16_t>(bits)};
+}
+
+// SDL → engine translation. Returns nullopt for events not modeled (they are drained and dropped by
+// the caller). Reads the flattened SDL3 window-event fields: e.window.{windowID,data1,data2}
+// (verified SDL_events.h:142-152; SDL_EVENT_WINDOW_RESIZED reports "data1xdata2"). Event is a tagged
+// union (task 0.3.2), so every case builds the event field-by-field rather than via aggregate {,,,}.
 std::optional<Event> translate(const SDL_Event& e) {
     switch (e.type) {
-        case SDL_EVENT_QUIT:
-            return Event{EventType::Quit, {}, 0, 0};
-        case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-            return Event{EventType::WindowClose, WindowId{e.window.windowID}, 0, 0};
-        case SDL_EVENT_WINDOW_RESIZED:
-            return Event{EventType::WindowResized, WindowId{e.window.windowID}, e.window.data1, e.window.data2};
-        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-            return Event{EventType::WindowPixelSizeChanged, WindowId{e.window.windowID}, e.window.data1,
-                         e.window.data2};
-        case SDL_EVENT_WINDOW_FOCUS_GAINED:
-            return Event{EventType::WindowFocusGained, WindowId{e.window.windowID}, 0, 0};
-        case SDL_EVENT_WINDOW_FOCUS_LOST:
-            return Event{EventType::WindowFocusLost, WindowId{e.window.windowID}, 0, 0};
-        case SDL_EVENT_WINDOW_MINIMIZED:
-            return Event{EventType::WindowMinimized, WindowId{e.window.windowID}, 0, 0};
-        case SDL_EVENT_WINDOW_RESTORED:
-            return Event{EventType::WindowRestored, WindowId{e.window.windowID}, 0, 0};
+        case SDL_EVENT_QUIT: {
+            Event ev;
+            ev.type = EventType::Quit;
+            return ev;
+        }
+        case SDL_EVENT_WINDOW_CLOSE_REQUESTED: {
+            Event ev;
+            ev.type = EventType::WindowClose;
+            ev.window = WindowId{e.window.windowID};
+            return ev;
+        }
+        case SDL_EVENT_WINDOW_RESIZED: {
+            Event ev;
+            ev.type = EventType::WindowResized;
+            ev.window = WindowId{e.window.windowID};
+            ev.size = WindowSize{e.window.data1, e.window.data2};  // logical/points
+            return ev;
+        }
+        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: {
+            Event ev;
+            ev.type = EventType::WindowPixelSizeChanged;
+            ev.window = WindowId{e.window.windowID};
+            ev.size = WindowSize{e.window.data1, e.window.data2};  // framebuffer/pixels
+            return ev;
+        }
+        case SDL_EVENT_WINDOW_FOCUS_GAINED: {
+            Event ev;
+            ev.type = EventType::WindowFocusGained;
+            ev.window = WindowId{e.window.windowID};
+            return ev;
+        }
+        case SDL_EVENT_WINDOW_FOCUS_LOST: {
+            Event ev;
+            ev.type = EventType::WindowFocusLost;
+            ev.window = WindowId{e.window.windowID};
+            return ev;
+        }
+        case SDL_EVENT_WINDOW_MINIMIZED: {
+            Event ev;
+            ev.type = EventType::WindowMinimized;
+            ev.window = WindowId{e.window.windowID};
+            return ev;
+        }
+        case SDL_EVENT_WINDOW_RESTORED: {
+            Event ev;
+            ev.type = EventType::WindowRestored;
+            ev.window = WindowId{e.window.windowID};
+            return ev;
+        }
+        // ---- input (task 0.3.2) ----
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_KEY_UP: {
+            const Key code = fromScancode(e.key.scancode);
+            if (code == Key::Unknown) {
+                return std::nullopt;  // physical key outside the curated set — dropped (D9)
+            }
+            Event ev;
+            ev.type = (e.type == SDL_EVENT_KEY_DOWN) ? EventType::KeyDown : EventType::KeyUp;
+            ev.window = WindowId{e.key.windowID};
+            ev.key = KeyData{code, fromSdlMod(e.key.mod), e.key.repeat};
+            return ev;
+        }
+        case SDL_EVENT_MOUSE_MOTION: {
+            Event ev;
+            ev.type = EventType::MouseMoved;
+            ev.window = WindowId{e.motion.windowID};
+            ev.mouseMotion = MouseMotionData{e.motion.x, e.motion.y, e.motion.xrel, e.motion.yrel};
+            return ev;
+        }
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP: {
+            const MouseButton button = fromSdlButton(e.button.button);
+            if (button == MouseButton::Count) {
+                return std::nullopt;  // button outside Left/Right/Middle/X1/X2 — dropped
+            }
+            Event ev;
+            ev.type = (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) ? EventType::MouseButtonDown : EventType::MouseButtonUp;
+            ev.window = WindowId{e.button.windowID};
+            ev.mouseButton = MouseButtonData{button, e.button.x, e.button.y, e.button.clicks};
+            return ev;
+        }
+        case SDL_EVENT_MOUSE_WHEEL: {
+            float x = e.wheel.x;
+            float y = e.wheel.y;
+            if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {  // natural scrolling: undo the flip (D14)
+                x = -x;
+                y = -y;
+            }
+            Event ev;
+            ev.type = EventType::MouseWheel;
+            ev.window = WindowId{e.wheel.windowID};
+            ev.mouseWheel = MouseWheelData{x, y};
+            return ev;
+        }
         default:
-            return std::nullopt;  // input & everything else: drained, not surfaced (0.3.2 handles input)
+            return std::nullopt;  // still-unmodeled events (display, text, gamepad…) are drained, dropped
     }
 }
 
@@ -171,11 +410,11 @@ bool Context::pollEvent(Event& out) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {  // SDL_PollEvent implicitly pumps (SDL_events.h:1088)
         if (std::optional<Event> ev = translate(e)) {
+            inputState.process(*ev);  // task 0.3.2: fold key/mouse/focus into the polled state
             out = *ev;
             return true;  // a modeled event: hand it out
         }
-        // else: unmodeled (input, etc.) — already dequeued, so keep draining. This is what makes the
-        // caller's `while (pollEvent(e))` terminate when the SDL queue empties, dropping input for now.
+        // else: still-unmodeled — already dequeued, keep draining.
     }
     return false;
 }
