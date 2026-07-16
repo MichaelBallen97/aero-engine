@@ -24,7 +24,8 @@ add_executable(aero_tests
     vfs_test.cpp
     platform_test.cpp
     platform_event_test.cpp
-    input_test.cpp   # task 0.3.2 — black-box InputState (no SDL)
+    input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
+    audio_device_test.cpp # task 0.3.3 — black-box AudioDevice, null backend (no hardware)
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional

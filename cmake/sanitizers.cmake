@@ -17,6 +17,7 @@ if(MSVC)
     # add_link_options() lands after the built-in Debug link flags.
     add_compile_options(/fsanitize=address)
     string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_DEBUG   "${CMAKE_C_FLAGS_DEBUG}")   # task 0.3.3: miniaudio_impl.c
     add_link_options(/INCREMENTAL:NO)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     # AppleClang matches "Clang". -fno-sanitize-recover=all is load-bearing:
