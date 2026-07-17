@@ -225,6 +225,11 @@ jobs:
         shell: bash
         env:
           AERO_REQUIRE_GPU: ${{ matrix.require_gpu }}   # a missing GPU is a FAILURE, not a skip (spec D7)
+          # Evidence-gated LSan suppressions (spec D16, exercised by PR #16's first GPU run): SDL's
+          # x11 video-init and Vulkan-probe internals leak per init cycle; tests/lsan.supp names the
+          # four observed third-party frames. Linux-only — the one lane where LSan runs; empty
+          # elsewhere. First-party leak detection stays fully on.
+          LSAN_OPTIONS: ${{ runner.os == 'Linux' && format('suppressions={0}/tests/lsan.supp', github.workspace) || '' }}
         run: ${{ matrix.ctest_launcher }} ctest --preset ${{ matrix.preset }}-debug
 
       - name: Configure & build — Release

@@ -1,0 +1,28 @@
+# Aero Engine — LeakSanitizer suppressions (task 0.4.2, spec D16: evidence-gated, never pre-seeded).
+#
+# Scope: wired ONLY into the Debug ctest step's LSAN_OPTIONS for Linux (.github/workflows/ci.yml) —
+# the one lane where LSan runs. First-party leak detection stays fully ON: every entry below names a
+# specific THIRD-PARTY allocation origin observed on the first GPU-backed CI run (PR #16, run
+# 29599267631). There, doctest reported 227/227 SUCCESS and LSan then flagged ~3.1 MB in 57,584
+# allocations, all rooted in SDL3's x11 video-driver init and SDL_GPU's Vulkan probe
+# (lavapipe/loader frames) — zero allocation sites in engine/ or tests/ code; engine frames appear
+# only as mid-stack call sites (Context::Context -> SDL_Init, Device::create ->
+# SDL_CreateGPUDeviceWithProperties). Surfaced now because 0.4.2's gated tests are the first thing
+# on this lane to init a REAL video driver (x11 under Xvfb); the pre-0.4.2 suite was dummy-driver
+# only and never touched these paths.
+#
+# Rules for this file (spec D16): add an entry ONLY with observed CI evidence, one commented entry
+# per observed frame; never suppress module-wide (e.g. leak:SDL) — that would blind LSan to real
+# engine leaks whose allocations happen inside SDL (a forgotten SDL_ReleaseGPU* would allocate
+# under SDL_CreateGPUBuffer et al., which stay unsuppressed).
+
+# SDL3's x11 video driver retains keyboard/XKB tables per init cycle (SDL_x11keyboard.c:166/:177).
+leak:X11_InitKeyboard
+# SDL3's x11 video init retains XRandR mode / content-scale data (SDL_x11modes.c, reached from
+# X11_VideoInit, SDL_x11video.c:448 — this entry covers those stacks via any-frame matching).
+leak:X11_VideoInit
+# SDL_GPU's Vulkan backend probe retains loader/lavapipe allocations from instance/physical-device
+# enumeration (SDL_gpu_vulkan.c:12362/:12709), reached via both VULKAN_PrepareDriver and
+# VULKAN_CreateDevice.
+leak:VULKAN_INTERNAL_DeterminePhysicalDevice
+leak:VULKAN_INTERNAL_PrepareVulkan
