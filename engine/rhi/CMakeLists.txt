@@ -3,13 +3,15 @@
 # ever cross these public headers (project rule #3); enforcement machinery arrives in 0.4.5
 # (grep script + compile-time probe, mirroring platform's pair).
 #
-# Task 0.4.1 ships the SURFACE: headers + the backend-independent format utilities. Device's member
-# functions are declared but NOT defined here — src/sdl_gpu_backend.cpp (task 0.4.2) defines them.
-# Until then, odr-using any Device member is a link error by design.
+# Task 0.4.1 shipped the SURFACE: headers + the backend-independent format utilities. Task 0.4.2
+# lands the backend: src/sdl_gpu_backend.cpp is the ONE TU in the whole repo that includes
+# <SDL3/SDL_gpu.h> and defines every Device member.
+
+find_package(SDL3 CONFIG REQUIRED)
 
 add_library(aero_rhi STATIC
     src/format.cpp
-    # src/sdl_gpu_backend.cpp   # task 0.4.2 — the ONE TU that includes <SDL3/SDL_gpu.h>
+    src/sdl_gpu_backend.cpp  # task 0.4.2 — the ONE TU that includes <SDL3/SDL_gpu.h>
 )
 add_library(aero::rhi ALIAS aero_rhi)
 
@@ -22,8 +24,10 @@ target_include_directories(aero_rhi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # Neither propagates any vcpkg header (their backends are PRIVATE to them), so a future probe target
 # linking only aero::rhi still cannot resolve <SDL3/...> — R12's good case, same as platform's probe.
 #
-# Task 0.4.2 adds: PRIVATE SDL3::SDL3 aero::profiling. Keep both PRIVATE forever — flipping SDL3 to
-# PUBLIC reopens the boundary engine-wide (see engine/platform/CMakeLists.txt's warning).
+# PRIVATE forever (see engine/platform/CMakeLists.txt's warning): $<LINK_ONLY:> keeps SDL's headers
+# and vcpkg's shared include root off consumers — that is what will make 0.4.5's probe a real guard.
+# aero::platform_internal carries only the native-window seam header (task 0.4.2, §3.1).
 target_link_libraries(aero_rhi
     PUBLIC aero::core aero::platform
+    PRIVATE SDL3::SDL3 aero::profiling aero::platform_internal
 )
