@@ -28,6 +28,8 @@ add_executable(aero_tests
     audio_device_test.cpp # task 0.3.3 — black-box AudioDevice, null backend (no hardware)
     rhi_types_test.cpp    # task 0.4.1 — handle/desc/flag vocabulary (compile-time heavy, no GPU)
     rhi_format_test.cpp   # task 0.4.1 — format classification/size/toString (no GPU)
+    rhi_device_test.cpp   # task 0.4.2 — tiers 0-1: lifecycle/resources/uploads/frame-flow/render-pass
+    rhi_swapchain_test.cpp # task 0.4.2 — tier 2: real visible window, claim/acquire/present
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
