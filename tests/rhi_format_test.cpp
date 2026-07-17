@@ -8,6 +8,11 @@
 #include <doctest/doctest.h>
 
 #include <cstdint>
+// <ostream> is load-bearing on MSVC: doctest stringifies the std::string_view operands of the
+// toString CHECKs below via the stdlib's operator<<(std::ostream&, std::string_view), which MS STL
+// defines inline in <string_view> against an INCOMPLETE std::basic_ostream — only <ostream> completes
+// it. libc++/libstdc++ are self-sufficient, so the gap only surfaces on the Windows lane.
+#include <ostream>
 #include <type_traits>
 
 using engine::rhi::hasStencilComponent;
