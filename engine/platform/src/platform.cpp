@@ -2,6 +2,7 @@
 #include <aero/core/profiler.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
+#include <aero/platform/internal/native_window.hpp>
 #include <aero/platform/window.hpp>
 
 #include <SDL3/SDL.h>  // the ONLY place SDL is included in engine/ (boundary rule)
@@ -347,6 +348,11 @@ void Window::setTitle(std::string_view title) {
 void Window::setSize(std::int32_t width, std::int32_t height) { SDL_SetWindowSize(impl->window, width, height); }
 void Window::show() { SDL_ShowWindow(impl->window); }
 void Window::hide() { SDL_HideWindow(impl->window); }
+
+// The native-window seam (task 0.4.2): hands engine::rhi's backend TU the SDL_Window* it needs for
+// SDL_ClaimWindowForGPUDevice, without widening window.hpp's public surface. window.impl->window is
+// never null on a live (not moved-from) Window — the caller contract every other Window member shares.
+SDL_Window* internal::NativeWindowAccessor::get(const Window& window) noexcept { return window.impl->window; }
 
 // ---- Context --------------------------------------------------------------------------------
 

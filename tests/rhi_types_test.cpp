@@ -360,6 +360,20 @@ TEST_CASE("rhi flags: ColorWriteMask::All is exactly R|G|B|A") {
 }
 
 // -------------------------------------------------------------------------------------------
+// Group G — backend limit constants (task 0.4.2, D5): verified against the pinned SDL_GPU's
+// internal caps (SDL_sysgpu.h). Plain static_asserts + CHECK(true), the file's house pattern.
+// -------------------------------------------------------------------------------------------
+
+TEST_CASE("rhi limits: the D5 backend constants match the verified SDL_GPU caps") {
+    static_assert(MAX_COLOR_ATTACHMENTS == 8);
+    static_assert(MAX_VERTEX_BUFFER_SLOTS == 16);
+    static_assert(MAX_VERTEX_ATTRIBUTES == 16);
+    static_assert(MAX_PUSH_UNIFORM_SLOTS == 4);
+    static_assert(MAX_FRAGMENT_SAMPLER_SLOTS == 16);
+    CHECK(true);
+}
+
+// -------------------------------------------------------------------------------------------
 // Group F — Device class shape via type traits only (AC-5). No member is ever called, addressed,
 // or captured — that would odr-use it and fail to link (Device's members are declared, not
 // defined, until task 0.4.2).

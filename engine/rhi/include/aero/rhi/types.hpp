@@ -169,6 +169,17 @@ enum class ColorWriteMask : std::uint8_t {
     return (flags & bit) != ColorWriteMask::None;
 }
 
+// --- backend limits (task 0.4.2; verified against the pinned SDL_GPU's internal caps) -----------
+// Engine-owned constants; the backend validates against THESE, so exceeding one is a logged
+// creation/record failure, never backend UB. Values verified at SDL 3.4.12 src/gpu/SDL_sysgpu.h
+// (MAX_COLOR_TARGET_BINDINGS / MAX_VERTEX_BUFFERS / MAX_VERTEX_ATTRIBUTES /
+// MAX_UNIFORM_BUFFERS_PER_STAGE / MAX_TEXTURE_SAMPLERS_PER_STAGE).
+inline constexpr std::uint32_t MAX_COLOR_ATTACHMENTS = 8;
+inline constexpr std::uint32_t MAX_VERTEX_BUFFER_SLOTS = 16;
+inline constexpr std::uint32_t MAX_VERTEX_ATTRIBUTES = 16;
+inline constexpr std::uint32_t MAX_PUSH_UNIFORM_SLOTS = 4;
+inline constexpr std::uint32_t MAX_FRAGMENT_SAMPLER_SLOTS = 16;
+
 // --- POD value types ----------------------------------------------------------------------------
 
 // A size in PIXELS (texel space). The swapchain's Extent2D comes from acquisition and is the

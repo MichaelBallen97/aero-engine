@@ -142,14 +142,20 @@ jobs:
             os: ubuntu-24.04
             preset: linux
             vcpkg_cache: ~/.cache/vcpkg/archives
+            ctest_launcher: xvfb-run -a  # D6: GPU device creation needs a REAL video driver (x11)
+            require_gpu: 1               # task 0.4.2 (D7): a missing GPU device is a FAILURE, not a skip
           - name: macOS (AppleClang)
             os: macos-15
             preset: macos
             vcpkg_cache: ~/.cache/vcpkg/archives
+            ctest_launcher: ""
+            require_gpu: 1
           - name: Windows (MSVC)
             os: windows-2022
             preset: windows
             vcpkg_cache: ~/AppData/Local/vcpkg/archives
+            ctest_launcher: ""
+            require_gpu: 1
     steps:
       - name: Checkout with vcpkg submodule
         uses: actions/checkout@v4
@@ -161,6 +167,10 @@ jobs:
         # SDL3's Linux build deps for the enabled x11 + wayland features (X11 extension libs,
         # wayland-protocols, libdecor, egl, ibus — per SDL3 README-linux), plus autotools + libltdl-dev
         # that vcpkg needs to build transitive deps (SDL3 → dbus[systemd] → libsystemd → libxcrypt, libmount, …).
+        # task 0.4.2: mesa-vulkan-drivers + libvulkan1 give SDL_GPU's Vulkan backend a software ICD
+        # (lavapipe) on these GPU-less runners — the standard headless-GPU CI pattern; xvfb gives D6's
+        # required REAL video driver (dummy has no Vulkan/Metal surface support) and a displayable
+        # window for the tier-2 swapchain tests.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -169,7 +179,8 @@ jobs:
             libwayland-dev wayland-protocols libdecor-0-dev libxkbcommon-dev \
             libegl1-mesa-dev libibus-1.0-dev \
             autoconf autoconf-archive automake libtool libltdl-dev \
-            clang-tidy-18
+            clang-tidy-18 \
+            mesa-vulkan-drivers libvulkan1 xvfb
 
       - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows'
@@ -212,7 +223,14 @@ jobs:
 
       - name: Test — Debug (ASan/UBSan)
         shell: bash
-        run: ctest --preset ${{ matrix.preset }}-debug
+        env:
+          AERO_REQUIRE_GPU: ${{ matrix.require_gpu }}   # a missing GPU is a FAILURE, not a skip (spec D7)
+          # Evidence-gated LSan suppressions (spec D16, exercised by PR #16's first GPU run): SDL's
+          # x11 video-init and Vulkan-probe internals leak per init cycle; tests/lsan.supp names the
+          # four observed third-party frames. Linux-only — the one lane where LSan runs; empty
+          # elsewhere. First-party leak detection stays fully on.
+          LSAN_OPTIONS: ${{ runner.os == 'Linux' && format('suppressions={0}/tests/lsan.supp', github.workspace) || '' }}
+        run: ${{ matrix.ctest_launcher }} ctest --preset ${{ matrix.preset }}-debug
 
       - name: Configure & build — Release
         shell: bash
@@ -222,4 +240,6 @@ jobs:
 
       - name: Test — Release
         shell: bash
-        run: ctest --preset ${{ matrix.preset }}-release
+        env:
+          AERO_REQUIRE_GPU: ${{ matrix.require_gpu }}   # a missing GPU is a FAILURE, not a skip (spec D7)
+        run: ${{ matrix.ctest_launcher }} ctest --preset ${{ matrix.preset }}-release

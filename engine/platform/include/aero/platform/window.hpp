@@ -15,6 +15,10 @@
 #include <string>
 #include <string_view>
 
+namespace engine::platform::internal {
+struct NativeWindowAccessor;  // engine-internal (engine/platform/internal/); not part of the API
+}  // namespace engine::platform::internal
+
 namespace engine::platform {
 
 class Context;
@@ -59,7 +63,12 @@ public:
 
 private:
     friend class Context;  // the only maker of Windows
-    struct Impl;           // holds the SDL_Window*; defined in src/platform.cpp
+    // Grants engine/rhi's backend TU access to the native window handle through the NON-INSTALLED
+    // internal header <aero/platform/internal/native_window.hpp> (task 0.4.2). SDL-free by
+    // construction: only the accessor STRUCT is named here; the SDL type appears only in that
+    // internal header and the TUs that already speak SDL.
+    friend struct internal::NativeWindowAccessor;
+    struct Impl;  // holds the SDL_Window*; defined in src/platform.cpp
     explicit Window(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl;
 };

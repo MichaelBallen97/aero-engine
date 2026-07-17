@@ -50,8 +50,13 @@ class Device {
 public:
     // Create the process's GPU device. nullopt (+ ERROR log) if no usable GPU/driver exists, if the
     // requested DriverPreference is unavailable, or if a Device already lives (one-per-process).
-    // Requires a live platform::Context (any mode — headless Contexts are fine for device-only use;
-    // windows/swapchains obviously need a real one).
+    // Requires a live platform::Context. NOTE (verified at SDL 3.4.12, task 0.4.2): the Context's
+    // VIDEO DRIVER gates which GPU backends exist — SDL's Metal and Vulkan backends require a
+    // video driver that can create surfaces, which the headless (dummy) driver cannot, so under
+    // ContextConfig{.headless=true} creation FAILS (nullopt + ERROR) on macOS and Linux and
+    // happens to succeed only on Windows/D3D12. Portable code — including anything that will ever
+    // draw — must use a real-video Context for GPU work; the headless failure is graceful, never
+    // a crash.
     [[nodiscard]] static std::optional<Device> create(const DeviceDesc& desc = {});
 
     ~Device();
