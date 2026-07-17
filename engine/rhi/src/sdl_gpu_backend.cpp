@@ -27,6 +27,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -223,7 +224,6 @@ constexpr SDL_GPUCompareOp toSdl(CompareOp op) noexcept {
         case CompareOp::GreaterOrEqual:
             return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
         case CompareOp::Always:
-            return SDL_GPU_COMPAREOP_ALWAYS;
         default:
             return SDL_GPU_COMPAREOP_ALWAYS;
     }
@@ -322,7 +322,6 @@ constexpr SDL_GPUFilter toSdl(Filter filter) noexcept {
         case Filter::Nearest:
             return SDL_GPU_FILTER_NEAREST;
         case Filter::Linear:
-            return SDL_GPU_FILTER_LINEAR;
         default:
             return SDL_GPU_FILTER_LINEAR;
     }
@@ -333,7 +332,6 @@ constexpr SDL_GPUSamplerMipmapMode toSdl(MipmapMode mode) noexcept {
         case MipmapMode::Nearest:
             return SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
         case MipmapMode::Linear:
-            return SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
         default:
             return SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
     }
@@ -396,7 +394,6 @@ constexpr SDL_GPULoadOp toSdl(LoadOp op) noexcept {
         case LoadOp::Clear:
             return SDL_GPU_LOADOP_CLEAR;
         case LoadOp::DontCare:
-            return SDL_GPU_LOADOP_DONT_CARE;
         default:
             return SDL_GPU_LOADOP_DONT_CARE;
     }
@@ -407,7 +404,6 @@ constexpr SDL_GPUStoreOp toSdl(StoreOp op) noexcept {
         case StoreOp::Store:
             return SDL_GPU_STOREOP_STORE;
         case StoreOp::DontCare:
-            return SDL_GPU_STOREOP_DONT_CARE;
         default:
             return SDL_GPU_STOREOP_DONT_CARE;
     }
@@ -744,67 +740,80 @@ struct Device::Impl {
 // forced submits and no release races an in-flight buffer (D4 makes racing safe anyway; this makes
 // it quiet).
 Device::Impl::~Impl() {
-    assert(std::this_thread::get_id() == ownerThread && "~Device (Impl teardown) off the owning thread");
+    // The no-throw contract (docs/04) enforced rather than documented — the jobs.cpp precedent:
+    // noexcept + an explicit std::terminate(), NOT a rethrow (a rethrow inside an (implicitly)
+    // noexcept destructor also terminates, but trips bugprone-exception-escape). Nothing here is
+    // expected to throw (SlotMap's ops are noexcept; AERO_LOG_* could theoretically allocate), but
+    // teardown must never let an exception unwind past a destructor.
+    try {
+        assert(std::this_thread::get_id() == ownerThread && "~Device (Impl teardown) off the owning thread");
 
-    const std::vector<CommandBufferHandle> leaked = liveCommandBuffers;
-    for (const CommandBufferHandle cmdHandle : leaked) {
-        CommandBufferSlot* cmdSlot = commandBuffers.get(cmdHandle);
-        assert(cmdSlot != nullptr && "rhi: liveCommandBuffers references a handle missing from the pool");
-        if (cmdSlot == nullptr) {
-            continue;  // internal invariant violated — skip defensively rather than crash in Release
-        }
-        if (cmdSlot->openPass.valid()) {
-            PassSlot* passSlot = renderPasses.get(cmdSlot->openPass);
-            if (passSlot != nullptr) {
-                AERO_LOG_ERROR("rhi: ~Device force-ending an open render pass on a leaked command buffer");
-                SDL_EndGPURenderPass(passSlot->pass);
-                renderPasses.remove(cmdSlot->openPass);
+        const std::vector<CommandBufferHandle> leaked = liveCommandBuffers;
+        for (const CommandBufferHandle cmdHandle : leaked) {
+            CommandBufferSlot* cmdSlot = commandBuffers.get(cmdHandle);
+            assert(cmdSlot != nullptr && "rhi: liveCommandBuffers references a handle missing from the pool");
+            if (cmdSlot == nullptr) {
+                continue;  // internal invariant violated — skip defensively rather than crash in Release
             }
+            if (cmdSlot->openPass.valid()) {
+                PassSlot* passSlot = renderPasses.get(cmdSlot->openPass);
+                if (passSlot != nullptr) {
+                    AERO_LOG_ERROR("rhi: ~Device force-ending an open render pass on a leaked command buffer");
+                    SDL_EndGPURenderPass(passSlot->pass);
+                    renderPasses.remove(cmdSlot->openPass);
+                }
+            }
+            const bool swapchainAcquired = !cmdSlot->acquiredImages.empty();
+            AERO_LOG_ERROR("rhi: ~Device disposing a leaked, un-submitted command buffer ({})",
+                           swapchainAcquired ? "submitting (D10)" : "cancelling");
+            if (swapchainAcquired) {
+                SDL_SubmitGPUCommandBuffer(cmdSlot->cmd);
+            } else {
+                SDL_CancelGPUCommandBuffer(cmdSlot->cmd);
+            }
+            for (const AcquiredImage& acquired : cmdSlot->acquiredImages) {
+                textures.remove(acquired.texture);
+            }
+            commandBuffers.remove(cmdHandle);
         }
-        const bool swapchainAcquired = !cmdSlot->acquiredImages.empty();
-        AERO_LOG_ERROR("rhi: ~Device disposing a leaked, un-submitted command buffer ({})",
-                       swapchainAcquired ? "submitting (D10)" : "cancelling");
-        if (swapchainAcquired) {
-            SDL_SubmitGPUCommandBuffer(cmdSlot->cmd);
-        } else {
-            SDL_CancelGPUCommandBuffer(cmdSlot->cmd);
+        liveCommandBuffers.clear();
+
+        SDL_WaitForGPUIdle(device);
+
+        if (swapchains.size() > 0) {
+            AERO_LOG_WARN("rhi: ~Device releasing {} leaked swapchain(s)", swapchains.size());
         }
-        for (const AcquiredImage& acquired : cmdSlot->acquiredImages) {
-            textures.remove(acquired.texture);
+        swapchains.clear();
+        if (pipelines.size() > 0) {
+            AERO_LOG_WARN("rhi: ~Device releasing {} leaked graphics pipeline(s)", pipelines.size());
         }
-        commandBuffers.remove(cmdHandle);
-    }
-    liveCommandBuffers.clear();
+        pipelines.clear();
+        if (shaders.size() > 0) {
+            AERO_LOG_WARN("rhi: ~Device releasing {} leaked shader(s)", shaders.size());
+        }
+        shaders.clear();
+        if (samplers.size() > 0) {
+            AERO_LOG_WARN("rhi: ~Device releasing {} leaked sampler(s)", samplers.size());
+        }
+        samplers.clear();
+        if (textures.size() > 0) {
+            AERO_LOG_WARN("rhi: ~Device releasing {} leaked texture(s)", textures.size());
+        }
+        textures.clear();
+        if (buffers.size() > 0) {
+            AERO_LOG_WARN("rhi: ~Device releasing {} leaked buffer(s)", buffers.size());
+        }
+        buffers.clear();
 
-    SDL_WaitForGPUIdle(device);
-
-    if (swapchains.size() > 0) {
-        AERO_LOG_WARN("rhi: ~Device releasing {} leaked swapchain(s)", swapchains.size());
+        SDL_DestroyGPUDevice(device);
+        liveDevices.fetch_sub(1, std::memory_order_relaxed);
+    } catch (const std::exception& e) {
+        AERO_LOG_CRITICAL("rhi: ~Device teardown escaped an exception: {} — terminating", e.what());
+        std::terminate();
+    } catch (...) {
+        AERO_LOG_CRITICAL("rhi: ~Device teardown escaped a non-std exception — terminating");
+        std::terminate();
     }
-    swapchains.clear();
-    if (pipelines.size() > 0) {
-        AERO_LOG_WARN("rhi: ~Device releasing {} leaked graphics pipeline(s)", pipelines.size());
-    }
-    pipelines.clear();
-    if (shaders.size() > 0) {
-        AERO_LOG_WARN("rhi: ~Device releasing {} leaked shader(s)", shaders.size());
-    }
-    shaders.clear();
-    if (samplers.size() > 0) {
-        AERO_LOG_WARN("rhi: ~Device releasing {} leaked sampler(s)", samplers.size());
-    }
-    samplers.clear();
-    if (textures.size() > 0) {
-        AERO_LOG_WARN("rhi: ~Device releasing {} leaked texture(s)", textures.size());
-    }
-    textures.clear();
-    if (buffers.size() > 0) {
-        AERO_LOG_WARN("rhi: ~Device releasing {} leaked buffer(s)", buffers.size());
-    }
-    buffers.clear();
-
-    SDL_DestroyGPUDevice(device);
-    liveDevices.fetch_sub(1, std::memory_order_relaxed);
 }
 
 // --- special members (C-2: the AudioDevice/Window precedent — teardown lives in ~Impl, never
@@ -941,6 +950,678 @@ bool Device::waitIdle() {
     }
     assert(std::this_thread::get_id() == impl->ownerThread && "Device::waitIdle off the owning thread");
     return SDL_WaitForGPUIdle(impl->device);
+}
+
+// --- the E8 + D5 validation table (§3.5) -----------------------------------------------------
+// One file-local helper per desc, logging the specific violation at ERROR and returning bool.
+// Tests assert the RESULT (invalid handle / false), never log text. C-6: pipeline structure is
+// validated BEFORE any shader handle is resolved, so the whole battery is testable today with
+// never-valid shader handles (0.4.4 owns the positive path).
+namespace {
+
+bool validateDesc(const BufferDesc& desc) {
+    if (desc.usage == BufferUsage::None) {
+        AERO_LOG_ERROR("rhi: createBuffer: usage must have at least one bit set");
+        return false;
+    }
+    if (desc.size == 0) {
+        AERO_LOG_ERROR("rhi: createBuffer: size must be > 0");
+        return false;
+    }
+    return true;
+}
+
+// floor(log2(max(width, height))) + 1 — the standard full mip-chain length.
+std::uint32_t mipCap(std::uint32_t width, std::uint32_t height) noexcept {
+    std::uint32_t maxDim = std::max(width, height);
+    std::uint32_t levels = 1;
+    while (maxDim > 1) {
+        maxDim >>= 1U;
+        ++levels;
+    }
+    return levels;
+}
+
+bool validateDesc(const TextureDesc& desc) {
+    if (desc.format == TextureFormat::Invalid || desc.format == TextureFormat::Count) {
+        AERO_LOG_ERROR("rhi: createTexture: format must not be Invalid/Count");
+        return false;
+    }
+    if (desc.usage == TextureUsage::None) {
+        AERO_LOG_ERROR("rhi: createTexture: usage must have at least one bit set");
+        return false;
+    }
+    if (desc.width == 0 || desc.height == 0) {
+        AERO_LOG_ERROR("rhi: createTexture: width and height must be > 0");
+        return false;
+    }
+    const std::uint32_t cap = mipCap(desc.width, desc.height);
+    if (desc.mipLevels == 0 || desc.mipLevels > cap) {
+        AERO_LOG_ERROR("rhi: createTexture: mipLevels {} out of range [1,{}] for {}x{}", desc.mipLevels, cap,
+                       desc.width, desc.height);
+        return false;
+    }
+    if (desc.sampleCount != SampleCount::One) {
+        if (desc.mipLevels > 1) {
+            AERO_LOG_ERROR("rhi: createTexture: sampleCount > One requires mipLevels == 1 (E11)");
+            return false;
+        }
+        if (!has(desc.usage, TextureUsage::ColorTarget) && !has(desc.usage, TextureUsage::DepthStencilTarget)) {
+            AERO_LOG_ERROR("rhi: createTexture: sampleCount > One requires a ColorTarget/DepthStencilTarget usage");
+            return false;
+        }
+    }
+    const bool depth = isDepthFormat(desc.format);
+    if (depth && has(desc.usage, TextureUsage::ColorTarget)) {
+        AERO_LOG_ERROR("rhi: createTexture: a depth format cannot have ColorTarget usage");
+        return false;
+    }
+    if (!depth && has(desc.usage, TextureUsage::DepthStencilTarget)) {
+        AERO_LOG_ERROR("rhi: createTexture: a color format cannot have DepthStencilTarget usage");
+        return false;
+    }
+    return true;
+}
+
+bool validateDesc(const SamplerDesc& desc) {
+    if (desc.maxLod < desc.minLod) {
+        AERO_LOG_ERROR("rhi: createSampler: maxLod ({}) must be >= minLod ({})", desc.maxLod, desc.minLod);
+        return false;
+    }
+    if (desc.enableAnisotropy && desc.maxAnisotropy < 1.0F) {
+        AERO_LOG_ERROR("rhi: createSampler: maxAnisotropy must be >= 1 when enableAnisotropy is set");
+        return false;
+    }
+    return true;
+}
+
+bool validateDesc(const ShaderDesc& desc, ShaderFormat deviceFormat) {
+    if (desc.bytecode.empty()) {
+        AERO_LOG_ERROR("rhi: createShader: bytecode must be non-empty");
+        return false;
+    }
+    if (desc.format != deviceFormat) {
+        // E20: rejected here so pipelines only ever see native-format shaders.
+        AERO_LOG_ERROR("rhi: createShader: shader format does not match Device::shaderFormat() (E20)");
+        return false;
+    }
+    return true;
+}
+
+bool validatePipelineStructure(const GraphicsPipelineDesc& desc) {
+    if (desc.colorTargets.empty() || desc.colorTargets.size() > MAX_COLOR_ATTACHMENTS) {
+        AERO_LOG_ERROR("rhi: createGraphicsPipeline: colorTargets.size() ({}) must be in [1,{}]",
+                       desc.colorTargets.size(), MAX_COLOR_ATTACHMENTS);
+        return false;
+    }
+    for (const ColorTargetDesc& target : desc.colorTargets) {
+        if (target.format == TextureFormat::Invalid || target.format == TextureFormat::Count) {
+            AERO_LOG_ERROR("rhi: createGraphicsPipeline: a colorTargets entry has an Invalid format");
+            return false;
+        }
+    }
+    if (desc.vertexBuffers.size() > MAX_VERTEX_BUFFER_SLOTS) {
+        AERO_LOG_ERROR("rhi: createGraphicsPipeline: vertexBuffers.size() ({}) exceeds {}", desc.vertexBuffers.size(),
+                       MAX_VERTEX_BUFFER_SLOTS);
+        return false;
+    }
+    if (desc.vertexAttributes.size() > MAX_VERTEX_ATTRIBUTES) {
+        AERO_LOG_ERROR("rhi: createGraphicsPipeline: vertexAttributes.size() ({}) exceeds {}",
+                       desc.vertexAttributes.size(), MAX_VERTEX_ATTRIBUTES);
+        return false;
+    }
+    for (const VertexAttribute& attribute : desc.vertexAttributes) {
+        bool slotDeclared = false;
+        for (const VertexBufferLayout& layout : desc.vertexBuffers) {
+            if (layout.slot == attribute.bufferSlot) {
+                slotDeclared = true;
+                break;
+            }
+        }
+        if (!slotDeclared) {
+            AERO_LOG_ERROR("rhi: createGraphicsPipeline: attribute location {} references undeclared bufferSlot {}",
+                           attribute.location, attribute.bufferSlot);
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < desc.vertexAttributes.size(); ++i) {
+        for (std::size_t j = i + 1; j < desc.vertexAttributes.size(); ++j) {
+            if (desc.vertexAttributes[i].location == desc.vertexAttributes[j].location) {
+                AERO_LOG_ERROR("rhi: createGraphicsPipeline: duplicate attribute location {}",
+                               desc.vertexAttributes[i].location);
+                return false;
+            }
+        }
+    }
+    for (const VertexAttribute& attribute : desc.vertexAttributes) {
+        for (const VertexBufferLayout& layout : desc.vertexBuffers) {
+            if (layout.slot == attribute.bufferSlot && layout.pitch == 0) {
+                AERO_LOG_ERROR("rhi: createGraphicsPipeline: referenced layout (slot {}) has pitch == 0", layout.slot);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+// --- resources -------------------------------------------------------------------------------
+
+BufferHandle Device::createBuffer(const BufferDesc& desc) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createBuffer: called on a moved-from Device");
+        return {};
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::createBuffer off the owning thread");
+    if (!validateDesc(desc)) {
+        return {};
+    }
+    SDL_GPUBufferCreateInfo createInfo{};
+    createInfo.usage = toSdl(desc.usage);
+    createInfo.size = desc.size;
+    createInfo.props = 0;
+    SDL_GPUBuffer* const buffer = SDL_CreateGPUBuffer(impl->device, &createInfo);
+    if (buffer == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createBuffer: SDL_CreateGPUBuffer failed: {}", SDL_GetError());
+        return {};
+    }
+    return impl->buffers.insert(BufferSlot{impl->device, buffer, desc.usage, desc.size});
+}
+
+void Device::destroyBuffer(BufferHandle buffer) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::destroyBuffer: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::destroyBuffer off the owning thread");
+    if (!impl->buffers.remove(buffer)) {
+        AERO_LOG_ERROR("rhi: Device::destroyBuffer: stale or invalid handle (logged no-op)");
+    }
+}
+
+TextureHandle Device::createTexture(const TextureDesc& desc) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createTexture: called on a moved-from Device");
+        return {};
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::createTexture off the owning thread");
+    if (!validateDesc(desc)) {
+        return {};
+    }
+    SDL_GPUTextureCreateInfo createInfo{};
+    createInfo.type = SDL_GPU_TEXTURETYPE_2D;
+    createInfo.format = toSdl(desc.format);
+    createInfo.usage = toSdl(desc.usage);
+    createInfo.width = desc.width;
+    createInfo.height = desc.height;
+    createInfo.layer_count_or_depth = 1;
+    createInfo.num_levels = desc.mipLevels;
+    createInfo.sample_count = toSdl(desc.sampleCount);
+    createInfo.props = 0;
+    SDL_GPUTexture* const texture = SDL_CreateGPUTexture(impl->device, &createInfo);
+    if (texture == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createTexture: SDL_CreateGPUTexture failed: {}", SDL_GetError());
+        return {};
+    }
+    return impl->textures.insert(TextureSlot{impl->device, texture, desc.format, desc.usage,
+                                             Extent2D{desc.width, desc.height}, desc.mipLevels, desc.sampleCount,
+                                             false});
+}
+
+void Device::destroyTexture(TextureHandle texture) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::destroyTexture: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::destroyTexture off the owning thread");
+    const TextureSlot* slot = impl->textures.get(texture);
+    if (slot != nullptr && slot->swapchainOwned) {
+        AERO_LOG_ERROR("rhi: Device::destroyTexture: refusing to destroy a swapchain-acquired texture directly");
+        return;
+    }
+    if (!impl->textures.remove(texture)) {
+        AERO_LOG_ERROR("rhi: Device::destroyTexture: stale or invalid handle (logged no-op)");
+    }
+}
+
+SamplerHandle Device::createSampler(const SamplerDesc& desc) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createSampler: called on a moved-from Device");
+        return {};
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::createSampler off the owning thread");
+    if (!validateDesc(desc)) {
+        return {};
+    }
+    SDL_GPUSamplerCreateInfo createInfo{};
+    createInfo.min_filter = toSdl(desc.minFilter);
+    createInfo.mag_filter = toSdl(desc.magFilter);
+    createInfo.mipmap_mode = toSdl(desc.mipmapMode);
+    createInfo.address_mode_u = toSdl(desc.addressU);
+    createInfo.address_mode_v = toSdl(desc.addressV);
+    createInfo.address_mode_w = toSdl(desc.addressW);
+    createInfo.mip_lod_bias = desc.mipLodBias;
+    createInfo.max_anisotropy = desc.maxAnisotropy;
+    createInfo.compare_op = toSdl(desc.compareOp);
+    createInfo.min_lod = desc.minLod;
+    createInfo.max_lod = desc.maxLod;
+    createInfo.enable_anisotropy = desc.enableAnisotropy;
+    createInfo.enable_compare = desc.enableCompare;
+    createInfo.props = 0;
+    SDL_GPUSampler* const sampler = SDL_CreateGPUSampler(impl->device, &createInfo);
+    if (sampler == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createSampler: SDL_CreateGPUSampler failed: {}", SDL_GetError());
+        return {};
+    }
+    return impl->samplers.insert(SamplerSlot{impl->device, sampler});
+}
+
+void Device::destroySampler(SamplerHandle sampler) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::destroySampler: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::destroySampler off the owning thread");
+    if (!impl->samplers.remove(sampler)) {
+        AERO_LOG_ERROR("rhi: Device::destroySampler: stale or invalid handle (logged no-op)");
+    }
+}
+
+ShaderHandle Device::createShader(const ShaderDesc& desc) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createShader: called on a moved-from Device");
+        return {};
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::createShader off the owning thread");
+    if (!validateDesc(desc, impl->shaderFormat)) {
+        return {};
+    }
+    // C-8: entryPoint is NT-copied — string_view is not guaranteed NUL-terminated.
+    const std::string entryPoint{desc.entryPoint};
+    SDL_GPUShaderCreateInfo createInfo{};
+    createInfo.code_size = desc.bytecode.size();
+    createInfo.code = reinterpret_cast<const Uint8*>(desc.bytecode.data());
+    createInfo.entrypoint = entryPoint.c_str();
+    createInfo.format = toSdl(desc.format);
+    createInfo.stage = toSdl(desc.stage);
+    createInfo.num_samplers = desc.samplerCount;
+    createInfo.num_storage_textures = desc.storageTextureCount;
+    createInfo.num_storage_buffers = desc.storageBufferCount;
+    createInfo.num_uniform_buffers = desc.uniformBufferCount;
+    createInfo.props = 0;
+    SDL_GPUShader* const shader = SDL_CreateGPUShader(impl->device, &createInfo);
+    if (shader == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createShader: SDL_CreateGPUShader failed: {}", SDL_GetError());
+        return {};
+    }
+    return impl->shaders.insert(ShaderSlot{impl->device, shader, desc.stage});
+}
+
+void Device::destroyShader(ShaderHandle shader) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::destroyShader: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::destroyShader off the owning thread");
+    if (!impl->shaders.remove(shader)) {
+        AERO_LOG_ERROR("rhi: Device::destroyShader: stale or invalid handle (logged no-op)");
+    }
+}
+
+GraphicsPipelineHandle Device::createGraphicsPipeline(const GraphicsPipelineDesc& desc) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createGraphicsPipeline: called on a moved-from Device");
+        return {};
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::createGraphicsPipeline off the owning thread");
+    // C-6: structure before handle-liveness — testable today with never-valid shader handles.
+    if (!validatePipelineStructure(desc)) {
+        return {};
+    }
+
+    const ShaderSlot* const vertexShader = impl->shaders.get(desc.vertexShader);
+    if (vertexShader == nullptr || vertexShader->stage != ShaderStage::Vertex) {
+        AERO_LOG_ERROR("rhi: Device::createGraphicsPipeline: vertexShader is invalid or not a Vertex-stage shader");
+        return {};
+    }
+    const ShaderSlot* const fragmentShader = impl->shaders.get(desc.fragmentShader);
+    if (fragmentShader == nullptr || fragmentShader->stage != ShaderStage::Fragment) {
+        AERO_LOG_ERROR("rhi: Device::createGraphicsPipeline: fragmentShader is invalid or not a Fragment-stage shader");
+        return {};
+    }
+
+    std::array<SDL_GPUVertexBufferDescription, MAX_VERTEX_BUFFER_SLOTS> vertexBufferDescs{};
+    for (std::size_t i = 0; i < desc.vertexBuffers.size(); ++i) {
+        const VertexBufferLayout& layout = desc.vertexBuffers[i];
+        vertexBufferDescs[i].slot = layout.slot;
+        vertexBufferDescs[i].pitch = layout.pitch;
+        vertexBufferDescs[i].input_rate = toSdl(layout.inputRate);
+        vertexBufferDescs[i].instance_step_rate = 0;  // reserved (§3.4)
+    }
+    std::array<SDL_GPUVertexAttribute, MAX_VERTEX_ATTRIBUTES> vertexAttributes{};
+    for (std::size_t i = 0; i < desc.vertexAttributes.size(); ++i) {
+        const VertexAttribute& attribute = desc.vertexAttributes[i];
+        vertexAttributes[i].location = attribute.location;
+        vertexAttributes[i].buffer_slot = attribute.bufferSlot;
+        vertexAttributes[i].format = toSdl(attribute.format);
+        vertexAttributes[i].offset = attribute.offset;
+    }
+    std::array<SDL_GPUColorTargetDescription, MAX_COLOR_ATTACHMENTS> colorTargets{};
+    for (std::size_t i = 0; i < desc.colorTargets.size(); ++i) {
+        const ColorTargetDesc& target = desc.colorTargets[i];
+        const BlendState& blend = target.blend;
+        SDL_GPUColorTargetDescription& out = colorTargets[i];
+        out.format = toSdl(target.format);
+        out.blend_state.src_color_blendfactor = toSdl(blend.srcColorFactor);
+        out.blend_state.dst_color_blendfactor = toSdl(blend.dstColorFactor);
+        out.blend_state.color_blend_op = toSdl(blend.colorOp);
+        out.blend_state.src_alpha_blendfactor = toSdl(blend.srcAlphaFactor);
+        out.blend_state.dst_alpha_blendfactor = toSdl(blend.dstAlphaFactor);
+        out.blend_state.alpha_blend_op = toSdl(blend.alphaOp);
+        out.blend_state.color_write_mask = toSdl(blend.writeMask);
+        out.blend_state.enable_blend = blend.enableBlend;
+        // SDL's separate bool is collapsed into the engine's writeMask sentinel (§3.5).
+        out.blend_state.enable_color_write_mask = blend.writeMask != ColorWriteMask::All;
+        out.blend_state.padding1 = 0;
+        out.blend_state.padding2 = 0;
+    }
+
+    SDL_GPUGraphicsPipelineCreateInfo createInfo{};
+    createInfo.vertex_shader = vertexShader->shader;
+    createInfo.fragment_shader = fragmentShader->shader;
+    createInfo.vertex_input_state.vertex_buffer_descriptions = vertexBufferDescs.data();
+    createInfo.vertex_input_state.num_vertex_buffers = static_cast<Uint32>(desc.vertexBuffers.size());
+    createInfo.vertex_input_state.vertex_attributes = vertexAttributes.data();
+    createInfo.vertex_input_state.num_vertex_attributes = static_cast<Uint32>(desc.vertexAttributes.size());
+    createInfo.primitive_type = toSdl(desc.primitiveType);
+    createInfo.rasterizer_state.fill_mode = toSdl(desc.rasterizer.fillMode);
+    createInfo.rasterizer_state.cull_mode = toSdl(desc.rasterizer.cullMode);
+    createInfo.rasterizer_state.front_face = toSdl(desc.rasterizer.frontFace);
+    createInfo.rasterizer_state.depth_bias_constant_factor = desc.rasterizer.depthBiasConstant;
+    createInfo.rasterizer_state.depth_bias_clamp = desc.rasterizer.depthBiasClamp;
+    createInfo.rasterizer_state.depth_bias_slope_factor = desc.rasterizer.depthBiasSlope;
+    createInfo.rasterizer_state.enable_depth_bias = desc.rasterizer.enableDepthBias;
+    createInfo.rasterizer_state.enable_depth_clip = desc.rasterizer.enableDepthClip;
+    createInfo.rasterizer_state.padding1 = 0;
+    createInfo.rasterizer_state.padding2 = 0;
+    createInfo.multisample_state.sample_count = toSdl(desc.sampleCount);
+    createInfo.multisample_state.sample_mask = 0;      // reserved (§3.4)
+    createInfo.multisample_state.enable_mask = false;  // reserved (§3.4)
+    createInfo.multisample_state.enable_alpha_to_coverage = false;
+    createInfo.multisample_state.padding2 = 0;
+    createInfo.multisample_state.padding3 = 0;
+    createInfo.depth_stencil_state.compare_op = toSdl(desc.depthStencil.compareOp);
+    createInfo.depth_stencil_state.back_stencil_state.fail_op = toSdl(desc.depthStencil.backStencil.failOp);
+    createInfo.depth_stencil_state.back_stencil_state.pass_op = toSdl(desc.depthStencil.backStencil.passOp);
+    createInfo.depth_stencil_state.back_stencil_state.depth_fail_op = toSdl(desc.depthStencil.backStencil.depthFailOp);
+    createInfo.depth_stencil_state.back_stencil_state.compare_op = toSdl(desc.depthStencil.backStencil.compareOp);
+    createInfo.depth_stencil_state.front_stencil_state.fail_op = toSdl(desc.depthStencil.frontStencil.failOp);
+    createInfo.depth_stencil_state.front_stencil_state.pass_op = toSdl(desc.depthStencil.frontStencil.passOp);
+    createInfo.depth_stencil_state.front_stencil_state.depth_fail_op =
+        toSdl(desc.depthStencil.frontStencil.depthFailOp);
+    createInfo.depth_stencil_state.front_stencil_state.compare_op = toSdl(desc.depthStencil.frontStencil.compareOp);
+    createInfo.depth_stencil_state.compare_mask = desc.depthStencil.stencilCompareMask;
+    createInfo.depth_stencil_state.write_mask = desc.depthStencil.stencilWriteMask;
+    createInfo.depth_stencil_state.enable_depth_test = desc.depthStencil.enableDepthTest;
+    createInfo.depth_stencil_state.enable_depth_write = desc.depthStencil.enableDepthWrite;
+    createInfo.depth_stencil_state.enable_stencil_test = desc.depthStencil.enableStencilTest;
+    createInfo.depth_stencil_state.padding1 = 0;
+    createInfo.depth_stencil_state.padding2 = 0;
+    createInfo.depth_stencil_state.padding3 = 0;
+    createInfo.target_info.color_target_descriptions = colorTargets.data();
+    createInfo.target_info.num_color_targets = static_cast<Uint32>(desc.colorTargets.size());
+    createInfo.target_info.depth_stencil_format = toSdl(desc.depthStencilFormat);
+    // SDL's separate bool is collapsed into the engine's Invalid sentinel (§3.4).
+    createInfo.target_info.has_depth_stencil_target = desc.depthStencilFormat != TextureFormat::Invalid;
+    createInfo.target_info.padding1 = 0;
+    createInfo.target_info.padding2 = 0;
+    createInfo.target_info.padding3 = 0;
+    createInfo.props = 0;
+
+    SDL_GPUGraphicsPipeline* const pipeline = SDL_CreateGPUGraphicsPipeline(impl->device, &createInfo);
+    if (pipeline == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createGraphicsPipeline: SDL_CreateGPUGraphicsPipeline failed: {}", SDL_GetError());
+        return {};
+    }
+    return impl->pipelines.insert(PipelineSlot{impl->device, pipeline});
+}
+
+void Device::destroyGraphicsPipeline(GraphicsPipelineHandle pipeline) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::destroyGraphicsPipeline: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::destroyGraphicsPipeline off the owning thread");
+    if (!impl->pipelines.remove(pipeline)) {
+        AERO_LOG_ERROR("rhi: Device::destroyGraphicsPipeline: stale or invalid handle (logged no-op)");
+    }
+}
+
+void Device::setDebugName(BufferHandle buffer, std::string_view name) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::setDebugName(Buffer): called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::setDebugName(Buffer) off the owning thread");
+    const BufferSlot* const slot = impl->buffers.get(buffer);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::setDebugName(Buffer): stale or invalid handle (logged no-op)");
+        return;
+    }
+    const std::string nameCopy{name};  // NT-copy: string_view isn't guaranteed NUL-terminated
+    SDL_SetGPUBufferName(impl->device, slot->buffer, nameCopy.c_str());
+}
+
+void Device::setDebugName(TextureHandle texture, std::string_view name) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::setDebugName(Texture): called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::setDebugName(Texture) off the owning thread");
+    const TextureSlot* const slot = impl->textures.get(texture);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::setDebugName(Texture): stale or invalid handle (logged no-op)");
+        return;
+    }
+    if (slot->swapchainOwned) {
+        // C-8: SDL documents no contract for naming swapchain images — a logged no-op.
+        AERO_LOG_ERROR("rhi: Device::setDebugName(Texture): refusing to name a swapchain-acquired texture");
+        return;
+    }
+    const std::string nameCopy{name};
+    SDL_SetGPUTextureName(impl->device, slot->texture, nameCopy.c_str());
+}
+
+// --- uploads (D14: blocking transfer-buffer + copy-pass + submit + fence-wait round trip) -----
+
+bool Device::uploadBuffer(BufferHandle buffer, std::uint32_t dstOffset, std::span<const std::byte> data) {
+    AERO_PROFILE_ZONE_NAMED("rhi::Device::uploadBuffer");
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadBuffer: called on a moved-from Device");
+        return false;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::uploadBuffer off the owning thread");
+    const BufferSlot* const slot = impl->buffers.get(buffer);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadBuffer: stale or invalid handle");
+        return false;
+    }
+    if (data.empty()) {
+        AERO_LOG_ERROR("rhi: Device::uploadBuffer: data must be non-empty");
+        return false;
+    }
+    // C-10: 64-bit-safe arithmetic — no narrowing, no overflow.
+    const std::uint64_t size64 = slot->size;
+    const std::uint64_t offset64 = dstOffset;
+    const std::uint64_t dataSize64 = data.size();
+    if (offset64 > size64 || dataSize64 > size64 - offset64) {
+        AERO_LOG_ERROR("rhi: Device::uploadBuffer: dstOffset({}) + data.size({}) exceeds buffer size ({})", dstOffset,
+                       data.size(), slot->size);
+        return false;
+    }
+
+    SDL_GPUTransferBufferCreateInfo transferInfo{};
+    transferInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    transferInfo.size = static_cast<Uint32>(data.size());
+    transferInfo.props = 0;
+    SDL_GPUTransferBuffer* const transferBuffer = SDL_CreateGPUTransferBuffer(impl->device, &transferInfo);
+    if (transferBuffer == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadBuffer: SDL_CreateGPUTransferBuffer failed: {}", SDL_GetError());
+        return false;
+    }
+    void* const mapped = SDL_MapGPUTransferBuffer(impl->device, transferBuffer, false);
+    if (mapped == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadBuffer: SDL_MapGPUTransferBuffer failed: {}", SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    std::memcpy(mapped, data.data(), data.size());
+    SDL_UnmapGPUTransferBuffer(impl->device, transferBuffer);
+
+    SDL_GPUCommandBuffer* const cmd = SDL_AcquireGPUCommandBuffer(impl->device);
+    if (cmd == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadBuffer: SDL_AcquireGPUCommandBuffer failed: {}", SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    SDL_GPUCopyPass* const copyPass = SDL_BeginGPUCopyPass(cmd);
+    if (copyPass == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadBuffer: SDL_BeginGPUCopyPass failed: {}", SDL_GetError());
+        SDL_CancelGPUCommandBuffer(cmd);
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    SDL_GPUTransferBufferLocation source{};
+    source.transfer_buffer = transferBuffer;
+    source.offset = 0;
+    SDL_GPUBufferRegion destination{};
+    destination.buffer = slot->buffer;
+    destination.offset = dstOffset;
+    destination.size = static_cast<Uint32>(data.size());
+    SDL_UploadToGPUBuffer(copyPass, &source, &destination, false);  // cycle=false (D11): nothing contends
+    SDL_EndGPUCopyPass(copyPass);
+
+    SDL_GPUFence* const fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadBuffer: SDL_SubmitGPUCommandBufferAndAcquireFence failed: {}",
+                       SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    const bool waited = SDL_WaitForGPUFences(impl->device, true, &fence, 1);
+    if (!waited) {
+        // E26: the wait failing does not un-submit the work — still release fence + transfer buffer.
+        AERO_LOG_ERROR("rhi: Device::uploadBuffer: SDL_WaitForGPUFences failed: {}", SDL_GetError());
+    }
+    SDL_ReleaseGPUFence(impl->device, fence);
+    SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+    return waited;
+}
+
+bool Device::uploadTexture(TextureHandle texture, std::uint32_t mipLevel, std::span<const std::byte> data) {
+    AERO_PROFILE_ZONE_NAMED("rhi::Device::uploadTexture");
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: called on a moved-from Device");
+        return false;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::uploadTexture off the owning thread");
+    const TextureSlot* const slot = impl->textures.get(texture);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: stale or invalid handle");
+        return false;
+    }
+    if (slot->swapchainOwned) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: swapchain-acquired textures are write-only (E6)");
+        return false;
+    }
+    if (mipLevel >= slot->mipLevels) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: mipLevel {} >= mipLevels {}", mipLevel, slot->mipLevels);
+        return false;
+    }
+    const std::uint32_t texelSize = texelBlockSize(slot->format);
+    if (texelSize == 0) {
+        // Depth formats (and Invalid) are not CPU-uploadable (format.hpp).
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: format {} is not CPU-uploadable", toString(slot->format));
+        return false;
+    }
+    if (data.empty()) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: data must be non-empty");
+        return false;
+    }
+    // E10: validate against the MIP's extent, not the base.
+    const std::uint32_t mipWidth = std::max<std::uint32_t>(1U, slot->extent.width >> mipLevel);
+    const std::uint32_t mipHeight = std::max<std::uint32_t>(1U, slot->extent.height >> mipLevel);
+    const std::uint64_t expectedBytes = std::uint64_t{texelSize} * mipWidth * mipHeight;
+    if (data.size() != expectedBytes) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: data.size() ({}) != expected ({}) for {}x{}@{}B/texel", data.size(),
+                       expectedBytes, mipWidth, mipHeight, texelSize);
+        return false;
+    }
+
+    SDL_GPUTransferBufferCreateInfo transferInfo{};
+    transferInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    transferInfo.size = static_cast<Uint32>(data.size());
+    transferInfo.props = 0;
+    SDL_GPUTransferBuffer* const transferBuffer = SDL_CreateGPUTransferBuffer(impl->device, &transferInfo);
+    if (transferBuffer == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: SDL_CreateGPUTransferBuffer failed: {}", SDL_GetError());
+        return false;
+    }
+    void* const mapped = SDL_MapGPUTransferBuffer(impl->device, transferBuffer, false);
+    if (mapped == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: SDL_MapGPUTransferBuffer failed: {}", SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    std::memcpy(mapped, data.data(), data.size());
+    SDL_UnmapGPUTransferBuffer(impl->device, transferBuffer);
+
+    SDL_GPUCommandBuffer* const cmd = SDL_AcquireGPUCommandBuffer(impl->device);
+    if (cmd == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: SDL_AcquireGPUCommandBuffer failed: {}", SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    SDL_GPUCopyPass* const copyPass = SDL_BeginGPUCopyPass(cmd);
+    if (copyPass == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: SDL_BeginGPUCopyPass failed: {}", SDL_GetError());
+        SDL_CancelGPUCommandBuffer(cmd);
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    SDL_GPUTextureTransferInfo source{};
+    source.transfer_buffer = transferBuffer;
+    source.offset = 0;
+    source.pixels_per_row = mipWidth;   // explicit — never relying on 0-means-packed
+    source.rows_per_layer = mipHeight;  // explicit
+    SDL_GPUTextureRegion region{};
+    region.texture = slot->texture;
+    region.mip_level = mipLevel;
+    region.layer = 0;
+    region.x = 0;
+    region.y = 0;
+    region.z = 0;
+    region.w = mipWidth;
+    region.h = mipHeight;
+    region.d = 1;
+    SDL_UploadToGPUTexture(copyPass, &source, &region, false);  // cycle=false (D11)
+    SDL_EndGPUCopyPass(copyPass);
+
+    SDL_GPUFence* const fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: SDL_SubmitGPUCommandBufferAndAcquireFence failed: {}",
+                       SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    const bool waited = SDL_WaitForGPUFences(impl->device, true, &fence, 1);
+    if (!waited) {
+        AERO_LOG_ERROR("rhi: Device::uploadTexture: SDL_WaitForGPUFences failed: {}", SDL_GetError());  // E26
+    }
+    SDL_ReleaseGPUFence(impl->device, fence);
+    SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+    return waited;
 }
 
 }  // namespace engine::rhi
