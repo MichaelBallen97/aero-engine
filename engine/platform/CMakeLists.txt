@@ -61,3 +61,13 @@ target_link_libraries(aero_platform
     PUBLIC  aero::core
     PRIVATE SDL3::SDL3 aero::profiling
 )
+
+# The INTERNAL native-handle seam (task 0.4.2): a header-only INTERFACE target exposing
+# engine/platform/internal/ to the ONE consumer allowed to see native handles — aero_rhi's backend
+# TU (linked PRIVATE there). It is not installed, not in aero_platform's PUBLIC include path, and
+# outside the engine/*/include/* glob the boundary script scans. aero_platform itself needs the
+# directory PRIVATE only to compile the accessor's definition in src/platform.cpp.
+add_library(aero_platform_internal INTERFACE)
+add_library(aero::platform_internal ALIAS aero_platform_internal)
+target_include_directories(aero_platform_internal INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/internal)
+target_include_directories(aero_platform PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal)
