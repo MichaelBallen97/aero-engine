@@ -26,6 +26,8 @@ add_executable(aero_tests
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
     audio_device_test.cpp # task 0.3.3 — black-box AudioDevice, null backend (no hardware)
+    rhi_types_test.cpp    # task 0.4.1 — handle/desc/flag vocabulary (compile-time heavy, no GPU)
+    rhi_format_test.cpp   # task 0.4.1 — format classification/size/toString (no GPU)
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
@@ -42,7 +44,7 @@ add_executable(aero_tests
 # R12 in docs/08-risks.md; .github/scripts/check-math-boundary.sh (task 0.2.3, run by the `lint`
 # job) is the real enforcement for tests/. The sibling aero_math_boundary_probe target below (also
 # 0.2.3) covers the public math headers at compile time instead.
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform SDL3::SDL3)
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::rhi SDL3::SDL3)
 
 # Single ctest entry; doctest prints per-TEST_CASE detail on failure. Per-case
 # registration (doctest_discover_tests) can be adopted later without churn.
