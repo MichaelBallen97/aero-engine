@@ -1624,4 +1624,662 @@ bool Device::uploadTexture(TextureHandle texture, std::uint32_t mipLevel, std::s
     return waited;
 }
 
+// --- frame flow (D7) --------------------------------------------------------------------------
+
+CommandBufferHandle Device::acquireCommandBuffer() {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::acquireCommandBuffer: called on a moved-from Device");
+        return {};
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::acquireCommandBuffer off the owning thread");
+    SDL_GPUCommandBuffer* const cmd = SDL_AcquireGPUCommandBuffer(impl->device);
+    if (cmd == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::acquireCommandBuffer: SDL_AcquireGPUCommandBuffer failed: {}", SDL_GetError());
+        return {};
+    }
+    CommandBufferSlot slot{};
+    slot.cmd = cmd;
+    const CommandBufferHandle handle = impl->commandBuffers.insert(std::move(slot));
+    impl->liveCommandBuffers.push_back(handle);
+    return handle;
+}
+
+std::optional<SwapchainTexture> Device::acquireSwapchainTexture(CommandBufferHandle cmd, SwapchainHandle swapchain) {
+    AERO_PROFILE_ZONE_NAMED("rhi::Device::acquireSwapchainTexture");  // the vsync pacing point
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::acquireSwapchainTexture: called on a moved-from Device");
+        return std::nullopt;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::acquireSwapchainTexture off the owning thread");
+    CommandBufferSlot* cmdSlot = impl->commandBuffers.get(cmd);
+    if (cmdSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::acquireSwapchainTexture: stale or invalid command buffer handle");
+        return std::nullopt;
+    }
+    const SwapchainSlot* const swapchainSlot = impl->swapchains.get(swapchain);
+    if (swapchainSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::acquireSwapchainTexture: stale or invalid swapchain handle");
+        return std::nullopt;
+    }
+
+    SDL_GPUTexture* texture = nullptr;
+    Uint32 width = 0;
+    Uint32 height = 0;
+    const bool ok =
+        SDL_WaitAndAcquireGPUSwapchainTexture(cmdSlot->cmd, swapchainSlot->window, &texture, &width, &height);
+    if (!ok) {
+        AERO_LOG_ERROR("rhi: Device::acquireSwapchainTexture: SDL_WaitAndAcquireGPUSwapchainTexture failed: {}",
+                       SDL_GetError());
+        return std::nullopt;
+    }
+    if (texture == nullptr) {
+        return std::nullopt;  // E1: not an error (e.g. minimized) — caller must submit()/cancel()
+    }
+
+    TextureSlot textureSlot{
+        impl->device,     texture, swapchainSlot->format, TextureUsage::ColorTarget, Extent2D{width, height}, 1,
+        SampleCount::One, true};
+    const TextureHandle textureHandle = impl->textures.insert(std::move(textureSlot));
+    // E28: textures is a DIFFERENT pool than commandBuffers, so cmdSlot survives the insert above —
+    // re-fetched anyway per the pointer-instability discipline (never assume across a mint).
+    cmdSlot = impl->commandBuffers.get(cmd);
+    assert(cmdSlot != nullptr && "rhi: command buffer vanished mid-acquire — internal invariant violated");
+    if (cmdSlot == nullptr) {
+        return std::nullopt;
+    }
+    cmdSlot->acquiredImages.push_back(AcquiredImage{textureHandle, swapchain});
+    return SwapchainTexture{textureHandle, Extent2D{width, height}};
+}
+
+bool Device::submit(CommandBufferHandle cmd) {
+    AERO_PROFILE_ZONE_NAMED("rhi::Device::submit");
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::submit: called on a moved-from Device");
+        return false;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::submit off the owning thread");
+    CommandBufferSlot* const cmdSlot = impl->commandBuffers.get(cmd);
+    if (cmdSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::submit: stale or invalid command buffer handle");
+        return false;
+    }
+    if (cmdSlot->openPass.valid()) {
+        // E5: force-end, then submit anyway — refusing would strand the SDL command buffer.
+        const PassSlot* const passSlot = impl->renderPasses.get(cmdSlot->openPass);
+        if (passSlot != nullptr) {
+            AERO_LOG_ERROR("rhi: Device::submit: a render pass was still open — force-ending it (E5)");
+            SDL_EndGPURenderPass(passSlot->pass);
+            impl->renderPasses.remove(cmdSlot->openPass);
+        }
+    }
+    SDL_GPUCommandBuffer* const sdlCmd = cmdSlot->cmd;
+    for (const AcquiredImage& acquired : cmdSlot->acquiredImages) {
+        impl->textures.remove(acquired.texture);
+    }
+    impl->commandBuffers.remove(cmd);
+    impl->forgetCommandBuffer(cmd);
+    // E29: handles invalidated BEFORE the SDL result is inspected — a failed submit cannot strand
+    // transients.
+    const bool result = SDL_SubmitGPUCommandBuffer(sdlCmd);
+    if (!result) {
+        AERO_LOG_ERROR("rhi: Device::submit: SDL_SubmitGPUCommandBuffer failed: {}", SDL_GetError());
+    }
+    return result;
+}
+
+bool Device::cancel(CommandBufferHandle cmd) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::cancel: called on a moved-from Device");
+        return false;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::cancel off the owning thread");
+    CommandBufferSlot* const cmdSlot = impl->commandBuffers.get(cmd);
+    if (cmdSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::cancel: stale or invalid command buffer handle");
+        return false;
+    }
+    if (cmdSlot->openPass.valid()) {
+        const PassSlot* const passSlot = impl->renderPasses.get(cmdSlot->openPass);
+        if (passSlot != nullptr) {
+            AERO_LOG_ERROR("rhi: Device::cancel: a render pass was still open — force-ending it");
+            SDL_EndGPURenderPass(passSlot->pass);
+            impl->renderPasses.remove(cmdSlot->openPass);
+        }
+    }
+    const bool swapchainAcquired = !cmdSlot->acquiredImages.empty();
+    SDL_GPUCommandBuffer* const sdlCmd = cmdSlot->cmd;
+    for (const AcquiredImage& acquired : cmdSlot->acquiredImages) {
+        impl->textures.remove(acquired.texture);
+    }
+    impl->commandBuffers.remove(cmd);
+    impl->forgetCommandBuffer(cmd);
+
+    if (swapchainAcquired) {
+        // D10: cancel is illegal after a successful swapchain acquire (SDL's only legal disposal is
+        // submit) — loudly logged, the buffer is still consumed, and the caller's contract was
+        // violated.
+        AERO_LOG_ERROR("rhi: Device::cancel: illegal after a swapchain acquire — submitting instead (D10)");
+        SDL_SubmitGPUCommandBuffer(sdlCmd);
+        return false;
+    }
+    const bool result = SDL_CancelGPUCommandBuffer(sdlCmd);
+    if (!result) {
+        AERO_LOG_ERROR("rhi: Device::cancel: SDL_CancelGPUCommandBuffer failed: {}", SDL_GetError());
+    }
+    return result;
+}
+
+void Device::pushVertexUniforms(CommandBufferHandle cmd, std::uint32_t slot, std::span<const std::byte> data) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::pushVertexUniforms: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::pushVertexUniforms off the owning thread");
+    const CommandBufferSlot* const cmdSlot = impl->commandBuffers.get(cmd);
+    if (cmdSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::pushVertexUniforms: stale or invalid command buffer handle");
+        return;
+    }
+    if (slot >= MAX_PUSH_UNIFORM_SLOTS) {
+        AERO_LOG_ERROR("rhi: Device::pushVertexUniforms: slot {} >= {}", slot, MAX_PUSH_UNIFORM_SLOTS);
+        return;
+    }
+    if (data.empty()) {
+        AERO_LOG_ERROR("rhi: Device::pushVertexUniforms: data must be non-empty");
+        return;
+    }
+    SDL_PushGPUVertexUniformData(cmdSlot->cmd, slot, data.data(), static_cast<Uint32>(data.size()));
+}
+
+void Device::pushFragmentUniforms(CommandBufferHandle cmd, std::uint32_t slot, std::span<const std::byte> data) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::pushFragmentUniforms: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::pushFragmentUniforms off the owning thread");
+    const CommandBufferSlot* const cmdSlot = impl->commandBuffers.get(cmd);
+    if (cmdSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::pushFragmentUniforms: stale or invalid command buffer handle");
+        return;
+    }
+    if (slot >= MAX_PUSH_UNIFORM_SLOTS) {
+        AERO_LOG_ERROR("rhi: Device::pushFragmentUniforms: slot {} >= {}", slot, MAX_PUSH_UNIFORM_SLOTS);
+        return;
+    }
+    if (data.empty()) {
+        AERO_LOG_ERROR("rhi: Device::pushFragmentUniforms: data must be non-empty");
+        return;
+    }
+    SDL_PushGPUFragmentUniformData(cmdSlot->cmd, slot, data.data(), static_cast<Uint32>(data.size()));
+}
+
+// --- render pass recording (D8, spec §3.4) ------------------------------------------------------
+
+RenderPassHandle Device::beginRenderPass(CommandBufferHandle cmd, const RenderPassDesc& desc) {
+    AERO_PROFILE_ZONE_NAMED("rhi::Device::beginRenderPass");
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::beginRenderPass: called on a moved-from Device");
+        return {};
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::beginRenderPass off the owning thread");
+    CommandBufferSlot* cmdSlot = impl->commandBuffers.get(cmd);
+    if (cmdSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::beginRenderPass: stale or invalid command buffer handle");
+        return {};
+    }
+    if (cmdSlot->openPass.valid()) {
+        // E4: SDL forbids nested/overlapping passes.
+        AERO_LOG_ERROR("rhi: Device::beginRenderPass: a render pass is already open on this command buffer (E4)");
+        return {};
+    }
+    if (desc.colorAttachments.empty() || desc.colorAttachments.size() > MAX_COLOR_ATTACHMENTS) {
+        AERO_LOG_ERROR("rhi: Device::beginRenderPass: colorAttachments.size() ({}) must be in [1,{}]",
+                       desc.colorAttachments.size(), MAX_COLOR_ATTACHMENTS);
+        return {};
+    }
+
+    // Resolve + validate every attachment BEFORE building any SDL struct (structure-then-liveness).
+    std::array<TextureSlot*, MAX_COLOR_ATTACHMENTS> colorSlots{};
+    for (std::size_t i = 0; i < desc.colorAttachments.size(); ++i) {
+        TextureSlot* const slot = impl->textures.get(desc.colorAttachments[i].texture);
+        if (slot == nullptr) {
+            AERO_LOG_ERROR("rhi: Device::beginRenderPass: a color attachment handle is stale or invalid");
+            return {};
+        }
+        if (!slot->swapchainOwned && !has(slot->usage, TextureUsage::ColorTarget)) {
+            AERO_LOG_ERROR("rhi: Device::beginRenderPass: a color attachment texture lacks ColorTarget usage");
+            return {};
+        }
+        colorSlots[i] = slot;
+    }
+    const Extent2D firstExtent = colorSlots[0]->extent;
+    const SampleCount firstSamples = colorSlots[0]->sampleCount;
+    for (std::size_t i = 1; i < desc.colorAttachments.size(); ++i) {
+        if (colorSlots[i]->extent != firstExtent) {
+            AERO_LOG_ERROR("rhi: Device::beginRenderPass: color attachments have mismatched extents");
+            return {};
+        }
+        if (colorSlots[i]->sampleCount != firstSamples) {
+            AERO_LOG_ERROR("rhi: Device::beginRenderPass: color attachments have mismatched sample counts");
+            return {};
+        }
+    }
+
+    TextureSlot* depthSlot = nullptr;
+    if (desc.depthStencil.has_value()) {
+        depthSlot = impl->textures.get(desc.depthStencil->texture);
+        if (depthSlot == nullptr) {
+            AERO_LOG_ERROR("rhi: Device::beginRenderPass: the depth attachment handle is stale or invalid");
+            return {};
+        }
+        if (!has(depthSlot->usage, TextureUsage::DepthStencilTarget)) {
+            AERO_LOG_ERROR("rhi: Device::beginRenderPass: the depth attachment lacks DepthStencilTarget usage");
+            return {};
+        }
+        if (depthSlot->extent != firstExtent) {
+            AERO_LOG_ERROR(
+                "rhi: Device::beginRenderPass: the depth attachment's extent does not match the color targets");
+            return {};
+        }
+        if (depthSlot->sampleCount != firstSamples) {
+            AERO_LOG_ERROR(
+                "rhi: Device::beginRenderPass: the depth attachment's sample count does not match the color "
+                "targets");
+            return {};
+        }
+    }
+
+    std::array<SDL_GPUColorTargetInfo, MAX_COLOR_ATTACHMENTS> colorInfos{};
+    for (std::size_t i = 0; i < desc.colorAttachments.size(); ++i) {
+        const ColorAttachment& attachment = desc.colorAttachments[i];
+        SDL_GPUColorTargetInfo& info = colorInfos[i];
+        info.texture = colorSlots[i]->texture;
+        info.mip_level = 0;
+        info.layer_or_depth_plane = 0;
+        info.clear_color = SDL_FColor{attachment.clearColor.r, attachment.clearColor.g, attachment.clearColor.b,
+                                      attachment.clearColor.a};
+        info.load_op = toSdl(attachment.loadOp);
+        info.store_op = toSdl(attachment.storeOp);
+        info.resolve_texture = nullptr;
+        info.resolve_mip_level = 0;
+        info.resolve_layer = 0;
+        // D11: cycle iff the load op discards prior contents and the texture isn't swapchain-owned
+        // (externally owned per-frame images are never contended — nothing to cycle).
+        info.cycle = (attachment.loadOp != LoadOp::Load) && !colorSlots[i]->swapchainOwned;
+        info.cycle_resolve_texture = false;
+        info.padding1 = 0;
+        info.padding2 = 0;
+    }
+
+    SDL_GPUDepthStencilTargetInfo depthInfo{};
+    const SDL_GPUDepthStencilTargetInfo* depthInfoPtr = nullptr;
+    if (desc.depthStencil.has_value()) {
+        const DepthStencilAttachment& depth = *desc.depthStencil;
+        depthInfo.texture = depthSlot->texture;
+        depthInfo.clear_depth = depth.clearDepth;
+        depthInfo.load_op = toSdl(depth.depthLoadOp);
+        depthInfo.store_op = toSdl(depth.depthStoreOp);
+        depthInfo.stencil_load_op = toSdl(depth.stencilLoadOp);
+        depthInfo.stencil_store_op = toSdl(depth.stencilStoreOp);
+        // D11 (SDL's own documented rule): cycle iff ANY load op is not LOAD and not swapchain-owned.
+        depthInfo.cycle =
+            (depth.depthLoadOp != LoadOp::Load || depth.stencilLoadOp != LoadOp::Load) && !depthSlot->swapchainOwned;
+        depthInfo.clear_stencil = depth.clearStencil;
+        depthInfo.mip_level = 0;
+        depthInfo.layer = 0;
+        depthInfoPtr = &depthInfo;
+    }
+
+    SDL_GPURenderPass* const pass = SDL_BeginGPURenderPass(
+        cmdSlot->cmd, colorInfos.data(), static_cast<Uint32>(desc.colorAttachments.size()), depthInfoPtr);
+    if (pass == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::beginRenderPass: SDL_BeginGPURenderPass failed: {}", SDL_GetError());
+        return {};
+    }
+    const RenderPassHandle handle = impl->renderPasses.insert(PassSlot{pass, cmd, false});
+    // E28: renderPasses is a DIFFERENT pool than commandBuffers, so cmdSlot survives — re-fetched
+    // anyway per the pointer-instability discipline.
+    cmdSlot = impl->commandBuffers.get(cmd);
+    assert(cmdSlot != nullptr && "rhi: command buffer vanished mid-beginRenderPass — internal invariant violated");
+    if (cmdSlot != nullptr) {
+        cmdSlot->openPass = handle;
+    }
+    return handle;
+}
+
+void Device::endRenderPass(RenderPassHandle pass) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::endRenderPass: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::endRenderPass off the owning thread");
+    const PassSlot* const passSlot = impl->renderPasses.get(pass);
+    if (passSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::endRenderPass: stale or invalid render pass handle");
+        return;
+    }
+    SDL_EndGPURenderPass(passSlot->pass);
+    CommandBufferSlot* const cmdSlot = impl->commandBuffers.get(passSlot->owner);
+    if (cmdSlot != nullptr) {
+        cmdSlot->openPass = RenderPassHandle{};
+    }
+    impl->renderPasses.remove(pass);
+}
+
+void Device::bindGraphicsPipeline(RenderPassHandle pass, GraphicsPipelineHandle pipeline) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindGraphicsPipeline: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::bindGraphicsPipeline off the owning thread");
+    PassSlot* const passSlot = impl->renderPasses.get(pass);
+    if (passSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindGraphicsPipeline: stale or invalid render pass handle");
+        return;
+    }
+    const PipelineSlot* const pipelineSlot = impl->pipelines.get(pipeline);
+    if (pipelineSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindGraphicsPipeline: stale or invalid pipeline handle");
+        return;
+    }
+    SDL_BindGPUGraphicsPipeline(passSlot->pass, pipelineSlot->pipeline);
+    passSlot->pipelineBound = true;
+}
+
+void Device::setViewport(RenderPassHandle pass, const Viewport& viewport) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::setViewport: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::setViewport off the owning thread");
+    const PassSlot* const passSlot = impl->renderPasses.get(pass);
+    if (passSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::setViewport: stale or invalid render pass handle");
+        return;
+    }
+    SDL_GPUViewport sdlViewport{};
+    sdlViewport.x = viewport.x;
+    sdlViewport.y = viewport.y;
+    sdlViewport.w = viewport.width;
+    sdlViewport.h = viewport.height;
+    sdlViewport.min_depth = viewport.minDepth;
+    sdlViewport.max_depth = viewport.maxDepth;
+    SDL_SetGPUViewport(passSlot->pass, &sdlViewport);
+}
+
+void Device::setScissor(RenderPassHandle pass, const Rect& scissor) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::setScissor: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::setScissor off the owning thread");
+    const PassSlot* const passSlot = impl->renderPasses.get(pass);
+    if (passSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::setScissor: stale or invalid render pass handle");
+        return;
+    }
+    SDL_Rect sdlRect{};
+    sdlRect.x = scissor.x;
+    sdlRect.y = scissor.y;
+    sdlRect.w = static_cast<int>(scissor.width);
+    sdlRect.h = static_cast<int>(scissor.height);
+    SDL_SetGPUScissor(passSlot->pass, &sdlRect);
+}
+
+void Device::bindVertexBuffer(RenderPassHandle pass, std::uint32_t slot, BufferHandle buffer, std::uint32_t offset) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindVertexBuffer: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::bindVertexBuffer off the owning thread");
+    const PassSlot* const passSlot = impl->renderPasses.get(pass);
+    if (passSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindVertexBuffer: stale or invalid render pass handle");
+        return;
+    }
+    if (slot >= MAX_VERTEX_BUFFER_SLOTS) {
+        AERO_LOG_ERROR("rhi: Device::bindVertexBuffer: slot {} >= {}", slot, MAX_VERTEX_BUFFER_SLOTS);
+        return;
+    }
+    const BufferSlot* const bufferSlot = impl->buffers.get(buffer);
+    if (bufferSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindVertexBuffer: stale or invalid buffer handle");
+        return;
+    }
+    if (!has(bufferSlot->usage, BufferUsage::Vertex)) {
+        AERO_LOG_ERROR("rhi: Device::bindVertexBuffer: buffer lacks Vertex usage");
+        return;
+    }
+    SDL_GPUBufferBinding binding{};
+    binding.buffer = bufferSlot->buffer;
+    binding.offset = offset;
+    SDL_BindGPUVertexBuffers(passSlot->pass, slot, &binding, 1);
+}
+
+void Device::bindIndexBuffer(RenderPassHandle pass, BufferHandle buffer, IndexType indexType, std::uint32_t offset) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindIndexBuffer: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::bindIndexBuffer off the owning thread");
+    const PassSlot* const passSlot = impl->renderPasses.get(pass);
+    if (passSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindIndexBuffer: stale or invalid render pass handle");
+        return;
+    }
+    const BufferSlot* const bufferSlot = impl->buffers.get(buffer);
+    if (bufferSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindIndexBuffer: stale or invalid buffer handle");
+        return;
+    }
+    if (!has(bufferSlot->usage, BufferUsage::Index)) {
+        AERO_LOG_ERROR("rhi: Device::bindIndexBuffer: buffer lacks Index usage");
+        return;
+    }
+    SDL_GPUBufferBinding binding{};
+    binding.buffer = bufferSlot->buffer;
+    binding.offset = offset;
+    SDL_BindGPUIndexBuffer(passSlot->pass, &binding, toSdl(indexType));
+}
+
+void Device::bindFragmentSamplers(RenderPassHandle pass, std::uint32_t firstSlot,
+                                  std::span<const TextureSamplerBinding> bindings) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindFragmentSamplers: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::bindFragmentSamplers off the owning thread");
+    const PassSlot* const passSlot = impl->renderPasses.get(pass);
+    if (passSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::bindFragmentSamplers: stale or invalid render pass handle");
+        return;
+    }
+    if (firstSlot + bindings.size() > MAX_FRAGMENT_SAMPLER_SLOTS) {
+        AERO_LOG_ERROR("rhi: Device::bindFragmentSamplers: firstSlot({}) + bindings.size({}) exceeds {}", firstSlot,
+                       bindings.size(), MAX_FRAGMENT_SAMPLER_SLOTS);
+        return;
+    }
+    std::array<SDL_GPUTextureSamplerBinding, MAX_FRAGMENT_SAMPLER_SLOTS> sdlBindings{};
+    for (std::size_t i = 0; i < bindings.size(); ++i) {
+        const TextureSamplerBinding& binding = bindings[i];
+        const TextureSlot* const textureSlot = impl->textures.get(binding.texture);
+        if (textureSlot == nullptr) {
+            AERO_LOG_ERROR("rhi: Device::bindFragmentSamplers: a texture handle is stale or invalid");
+            return;
+        }
+        if (!has(textureSlot->usage, TextureUsage::Sampler) || textureSlot->swapchainOwned) {
+            // E6: swapchain images are write-only.
+            AERO_LOG_ERROR(
+                "rhi: Device::bindFragmentSamplers: a texture lacks Sampler usage or is swapchain-owned (E6)");
+            return;
+        }
+        const SamplerSlot* const samplerSlot = impl->samplers.get(binding.sampler);
+        if (samplerSlot == nullptr) {
+            AERO_LOG_ERROR("rhi: Device::bindFragmentSamplers: a sampler handle is stale or invalid");
+            return;
+        }
+        sdlBindings[i].texture = textureSlot->texture;
+        sdlBindings[i].sampler = samplerSlot->sampler;
+    }
+    SDL_BindGPUFragmentSamplers(passSlot->pass, firstSlot, sdlBindings.data(), static_cast<Uint32>(bindings.size()));
+}
+
+void Device::draw(RenderPassHandle pass, std::uint32_t vertexCount, std::uint32_t instanceCount,
+                  std::uint32_t firstVertex, std::uint32_t firstInstance) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::draw: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::draw off the owning thread");
+    const PassSlot* const passSlot = impl->renderPasses.get(pass);
+    if (passSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::draw: stale or invalid render pass handle");
+        return;
+    }
+    if (!passSlot->pipelineBound) {
+        AERO_LOG_ERROR("rhi: Device::draw: no graphics pipeline bound (logged no-op)");
+        return;
+    }
+    SDL_DrawGPUPrimitives(passSlot->pass, vertexCount, instanceCount, firstVertex, firstInstance);
+}
+
+void Device::drawIndexed(RenderPassHandle pass, std::uint32_t indexCount, std::uint32_t instanceCount,
+                         std::uint32_t firstIndex, std::int32_t vertexOffset, std::uint32_t firstInstance) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::drawIndexed: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::drawIndexed off the owning thread");
+    const PassSlot* const passSlot = impl->renderPasses.get(pass);
+    if (passSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::drawIndexed: stale or invalid render pass handle");
+        return;
+    }
+    if (!passSlot->pipelineBound) {
+        AERO_LOG_ERROR("rhi: Device::drawIndexed: no graphics pipeline bound (logged no-op)");
+        return;
+    }
+    SDL_DrawGPUIndexedPrimitives(passSlot->pass, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+}
+
+// --- swapchain (D8) --------------------------------------------------------------------------
+
+SwapchainHandle Device::createSwapchain(const platform::Window& window, const SwapchainDesc& desc) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::createSwapchain: called on a moved-from Device");
+        return {};
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::createSwapchain off the owning thread");
+    SDL_Window* const sdlWindow = platform::internal::NativeWindowAccessor::get(window);
+    if (!SDL_ClaimWindowForGPUDevice(impl->device, sdlWindow)) {
+        AERO_LOG_ERROR("rhi: Device::createSwapchain: SDL_ClaimWindowForGPUDevice failed: {}", SDL_GetError());
+        return {};
+    }
+    if (desc.presentMode != PresentMode::Vsync) {
+        // Fail, never downgrade: query support first, then apply — any failure after the claim
+        // releases it (no half-claimed windows).
+        if (!SDL_WindowSupportsGPUPresentMode(impl->device, sdlWindow, toSdl(desc.presentMode))) {
+            AERO_LOG_ERROR(
+                "rhi: Device::createSwapchain: present mode not supported by this window/device (fail, not "
+                "downgrade)");
+            SDL_ReleaseWindowFromGPUDevice(impl->device, sdlWindow);
+            return {};
+        }
+        if (!SDL_SetGPUSwapchainParameters(impl->device, sdlWindow, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                                           toSdl(desc.presentMode))) {
+            AERO_LOG_ERROR("rhi: Device::createSwapchain: SDL_SetGPUSwapchainParameters failed: {}", SDL_GetError());
+            SDL_ReleaseWindowFromGPUDevice(impl->device, sdlWindow);
+            return {};
+        }
+    }
+    const SDL_GPUTextureFormat sdlFormat = SDL_GetGPUSwapchainTextureFormat(impl->device, sdlWindow);
+    const TextureFormat format = fromSdlSwapchainFormat(sdlFormat);
+    if (format == TextureFormat::Invalid) {
+        // E30: unreachable in v0's SDR-only world; hardening against future SDL changes. Creation
+        // still succeeds — the window is claimed and presentable, only typed rendering is blocked.
+        AERO_LOG_ERROR("rhi: Device::createSwapchain: unexpected swapchain format ({})", static_cast<int>(sdlFormat));
+    }
+    return impl->swapchains.insert(SwapchainSlot{impl->device, sdlWindow, format, desc.presentMode});
+}
+
+void Device::destroySwapchain(SwapchainHandle swapchain) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::destroySwapchain: called on a moved-from Device");
+        return;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::destroySwapchain off the owning thread");
+    if (!impl->swapchains.contains(swapchain)) {
+        AERO_LOG_ERROR("rhi: Device::destroySwapchain: stale or invalid handle (logged no-op)");
+        return;
+    }
+    // D15: refuse while any live command buffer holds an acquire from this swapchain.
+    for (const CommandBufferHandle cmdHandle : impl->liveCommandBuffers) {
+        const CommandBufferSlot* const cmdSlot = impl->commandBuffers.get(cmdHandle);
+        if (cmdSlot == nullptr) {
+            continue;
+        }
+        for (const AcquiredImage& acquired : cmdSlot->acquiredImages) {
+            if (acquired.source == swapchain) {
+                AERO_LOG_ERROR(
+                    "rhi: Device::destroySwapchain: refused — a live command buffer holds an acquire from it "
+                    "(D15)");
+                return;
+            }
+        }
+    }
+    impl->swapchains.remove(swapchain);
+}
+
+TextureFormat Device::swapchainFormat(SwapchainHandle swapchain) const {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::swapchainFormat: called on a moved-from Device");
+        return TextureFormat::Invalid;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::swapchainFormat off the owning thread");
+    const SwapchainSlot* const slot = impl->swapchains.get(swapchain);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::swapchainFormat: stale or invalid handle");
+        return TextureFormat::Invalid;
+    }
+    return slot->format;
+}
+
+bool Device::supportsPresentMode(SwapchainHandle swapchain, PresentMode mode) const {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::supportsPresentMode: called on a moved-from Device");
+        return false;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::supportsPresentMode off the owning thread");
+    const SwapchainSlot* const slot = impl->swapchains.get(swapchain);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::supportsPresentMode: stale or invalid handle");
+        return false;
+    }
+    return SDL_WindowSupportsGPUPresentMode(impl->device, slot->window, toSdl(mode));
+}
+
+bool Device::setPresentMode(SwapchainHandle swapchain, PresentMode mode) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::setPresentMode: called on a moved-from Device");
+        return false;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::setPresentMode off the owning thread");
+    SwapchainSlot* const slot = impl->swapchains.get(swapchain);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::setPresentMode: stale or invalid handle");
+        return false;
+    }
+    if (mode != PresentMode::Vsync && !SDL_WindowSupportsGPUPresentMode(impl->device, slot->window, toSdl(mode))) {
+        // Never downgrades — fails instead.
+        AERO_LOG_ERROR("rhi: Device::setPresentMode: unsupported present mode requested");
+        return false;
+    }
+    if (!SDL_SetGPUSwapchainParameters(impl->device, slot->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, toSdl(mode))) {
+        AERO_LOG_ERROR("rhi: Device::setPresentMode: SDL_SetGPUSwapchainParameters failed: {}", SDL_GetError());
+        return false;
+    }
+    slot->mode = mode;
+    return true;
+}
+
 }  // namespace engine::rhi
