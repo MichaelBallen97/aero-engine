@@ -49,7 +49,7 @@ Grounded against current sources, not memory:
 **Third pass — versions verified July 12–13, 2026** (GitHub releases/commits): SDL3 **3.4.12** · SDL_shadercross **3.0.0-preview2** (unchanged since April — R4 stands) · Jolt **5.6.0** · quickjs-ng **0.15.1** · EnTT **3.16.0** · Box2D **3.1.1** · Dear ImGui **1.92.8** (docking) · ImGuizmo (active, July 2026) · **doctest 2.5.3** (July 2026 — maintainership resumed in 2024–25 with a steady release cadence; the "is doctest abandoned?" concern was investigated and is resolved) · miniaudio **0.11.25** · fastgltf **0.9.0** (0.10+ will require C++20 — compatible) · ufbx **0.23.0** · Tracy **0.13.1** · spdlog **1.17.0** · KTX-Software **4.4.2** · enkiTS (active; repo lives at `dougbinks/enkiTS`) · GLM (maintenance mode, as assumed — RTM swap path designed, ADR-005) · tinyobjloader, msdf-atlas-gen (active). Verdict: **keep everything; zero swaps.**
 
 - **SDL3 GPU API** is merged and part of official SDL3; **compute shaders are supported** (`SDL_BeginGPUComputePass`). No ray tracing or mesh shaders — the maintainers have stated these are not near-future items. This ceiling is accepted (see limits below).
-- **SDL_shadercross** is still **preview** (v3.0.0-preview2, April 2026), actively maintained; it wraps DirectX Shader Compiler (HLSL→SPIR-V, DXIL) and SPIRV-Cross (→MSL/HLSL). Kept behind `tools/shaderc` so we can fall back to raw DXC + SPIRV-Cross if a preview bug blocks us.
+- **SDL_shadercross** is still **preview** (v3.0.0-preview2, April 2026), actively maintained; it wraps DirectX Shader Compiler (HLSL→SPIR-V, DXIL) and SPIRV-Cross (→MSL/HLSL). Kept behind `tools/shaderc` so we can fall back to raw DXC + SPIRV-Cross if a preview bug blocks us. **Consumption note (task 0.4.3):** it is built **from pinned source at the exact commit the vcpkg baseline's own `sdl3-shadercross` port pins** (`1ca46e0e…`), not installed via vcpkg — that port depends unconditionally on `directx-dxc`, which vcpkg marks unsupported on `arm64-osx` (a real dry-run proves it), so `tools/shaderc/bootstrap.cmake` builds the vendored (DXC-from-source) configuration upstream's own CI already tests on macOS, identically on all three hosts.
 - **quickjs-ng** ships releases roughly every 2 months, 40+ contributors, 400+ PRs, tests across 50+ OS/build/sanitizer configs, and uses a **CMake build** with proper Windows support — decisive over Bellard's original for a 3-OS CMake+vcpkg build with sanitizers in CI.
 - **C++26 static reflection (P2996)** was voted into C++26 (Sofia feature freeze, June 2025) but is only partially implemented in Clang/GCC trunk and **not in MSVC** as of 2026. Libclang code-gen remains correct for a cross-compiler build today; a migration path to native `std::meta` is designed in (see [ADR-004](./02-adrs.md#adr-004--reflection-by-code-generation)).
 
@@ -81,6 +81,9 @@ The project is **MIT**. Every linked dependency must be permissive-compatible.
 | Tracy | BSD-3 | ⚠️ Dev builds only |
 | KTX / Basis Universal | Apache-2.0 | ✅ Yes |
 | libclang / LLVM | Apache-2.0 + LLVM exception | 🔧 Build-time only (`reflect-gen`) |
+| SDL_shadercross | Zlib | 🔧 Build-time only (`shaderc`) |
+| DirectXShaderCompiler | LLVM Release License (UIUC/NCSA-style, permissive) | 🔧 Build-time only (`shaderc`) |
+| SPIRV-Cross / SPIRV-Tools / SPIRV-Headers | Apache-2.0 | 🔧 Build-time only (`shaderc`) |
 | esbuild / swc | MIT / Apache-2.0 | 🔧 Build-time only |
 | Blender | GPL | 🔧 **Invoked as an external process only** — not linked, does not contaminate |
 
