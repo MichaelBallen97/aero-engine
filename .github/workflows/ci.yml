@@ -142,18 +142,21 @@ jobs:
             os: ubuntu-24.04
             preset: linux
             vcpkg_cache: ~/.cache/vcpkg/archives
+            shadercross_cache: ~/.cache/aero-engine/shadercross  # task 0.4.3
             ctest_launcher: xvfb-run -a  # D6: GPU device creation needs a REAL video driver (x11)
             require_gpu: 1               # task 0.4.2 (D7): a missing GPU device is a FAILURE, not a skip
           - name: macOS (AppleClang)
             os: macos-15
             preset: macos
             vcpkg_cache: ~/.cache/vcpkg/archives
+            shadercross_cache: ~/.cache/aero-engine/shadercross  # task 0.4.3
             ctest_launcher: ""
             require_gpu: 1
           - name: Windows (MSVC)
             os: windows-2022
             preset: windows
             vcpkg_cache: ~/AppData/Local/vcpkg/archives
+            shadercross_cache: ~/AppData/Local/aero-engine/shadercross  # task 0.4.3
             ctest_launcher: ""
             require_gpu: 1
     steps:
@@ -204,6 +207,14 @@ jobs:
           key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-${{ matrix.os }}-
+
+      - name: Cache shader toolchain (task 0.4.3)
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.shadercross_cache }}
+          key: shadercross-${{ runner.os }}-1ca46e0ef7a9
+          # No restore-keys: a SHA bump must rebuild the toolchain from scratch, never resurrect a
+          # stale one under a partial key match.
 
       - name: Configure & build — Debug
         shell: bash                 # -eo pipefail: a failed configure aborts before build
