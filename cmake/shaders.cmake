@@ -73,9 +73,13 @@ function(aero_add_shaders TARGET)
             OUTPUT "${spv}" "${msl}" "${dxil}" "${json}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${out_dir}"
             # D8: LLVM-family tools leak by design at process exit; ASan's leak detector would fail
-            # every shader compile on third-party frames we can't fix. Scoped to this invocation only
-            # -- UBSan and ASan memory-error detection stay fully live in aero_shaderc's own code.
-            COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0
+            # every shader compile on third-party frames we can't fix. new_delete_type_mismatch=0 is
+            # the same class: GCC's libasan (Linux) aborts on a benign new/delete size mismatch INSIDE
+            # the uninstrumented vendored DXC (libdxcompiler) that AppleClang's ASan does not flag --
+            # neither is our bug, both are in third-party code we build uninstrumented (Release sub-build).
+            # Scoped to this invocation only -- UBSan and ASan memory-error detection stay fully live in
+            # aero_shaderc's own code.
+            COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0:new_delete_type_mismatch=0
                     "$<TARGET_FILE:aero_shaderc>"
                     --input "${src_abs}"
                     --stage "${stage}"

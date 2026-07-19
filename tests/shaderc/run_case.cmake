@@ -25,13 +25,15 @@ file(MAKE_DIRECTORY "${WORK_DIR}")
 set(SHADERS_DIR "${SOURCE_DIR}/shaders")
 set(FIXTURES_DIR "${SOURCE_DIR}/tests/shaderc/fixtures")
 
-# Runs aero_shaderc once. D8: ASAN_OPTIONS=detect_leaks=0 scoped to this one process, matching the
-# build-time custom-command wrapping in cmake/shaders.cmake -- LLVM-family tools leak by design at
-# exit; UBSan and ASan memory-error detection stay live in aero_shaderc's own code either way.
+# Runs aero_shaderc once. D8: ASAN_OPTIONS scoped to this one process, matching the build-time
+# custom-command wrapping in cmake/shaders.cmake -- detect_leaks=0 (LLVM tools leak by design at exit)
+# plus new_delete_type_mismatch=0 (GCC's libasan aborts on a benign new/delete mismatch inside the
+# uninstrumented vendored DXC that AppleClang does not flag); UBSan and ASan memory-error detection
+# stay live in aero_shaderc's own code either way.
 function(aero_run_tool)
     cmake_parse_arguments(RT "" "OUT_RESULT;OUT_STDOUT;OUT_STDERR" "ARGS" ${ARGN})
     execute_process(
-        COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0 "${TOOL}" ${RT_ARGS}
+        COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0:new_delete_type_mismatch=0 "${TOOL}" ${RT_ARGS}
         RESULT_VARIABLE _aero_result
         OUTPUT_VARIABLE _aero_stdout
         ERROR_VARIABLE _aero_stderr

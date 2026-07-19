@@ -33,8 +33,12 @@ target_link_libraries(aero_shaderc PRIVATE SDL3_shadercross::SDL3_shadercross)
 # find_package(SDL3 CONFIG REQUIRED) again for the white-box pump test).
 if(_aero_sdl3_already_dynamic)
     # Our own project's SDL3 is already dynamic (only true for x64-windows among our 3 hosts today) —
-    # reuse the SAME already-resolved target directly; AERO_SHADERCROSS_SDL3_PREFIX == the normal
-    # vcpkg prefix in this branch, so there is nothing new to point at.
+    # reuse the SAME SDL3 the engine uses. find_package Config mode reuses the cached SDL3_DIR from
+    # engine/platform's earlier resolution (no PATHS here — this is the ONE case where we WANT the
+    # project's SDL3, so reusing the cache is correct and idempotent, and does not clobber it). This is
+    # required because imported targets like SDL3::SDL3 are directory-scoped: engine/'s find_package does
+    # NOT make the target visible in this sibling tools/ scope, so it must be re-imported here.
+    find_package(SDL3 CONFIG REQUIRED)
     target_link_libraries(aero_shaderc PRIVATE SDL3::SDL3)
 else()
     # arm64-osx / x64-linux default to a static-only SDL3 build; bootstrap.cmake acquired a private
