@@ -33,6 +33,7 @@ add_executable(aero_tests
     shader_loader_test.cpp       # task 0.4.4 — tier-0: parseShaderMetadata + selectArtifact (no GPU)
     rhi_shader_pipeline_test.cpp # task 0.4.4 — tier-1 (gated): load → valid pipeline on real GPU
     render_clear_test.cpp # task 0.5.1 — tier-0 config default + tier-2 clear/resize/move/leak
+    render_cube_test.cpp   # task 0.5.2 — tier-0 mesh invariants + tier-2 textured-cube draw pipeline
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional

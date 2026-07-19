@@ -1,16 +1,19 @@
 #pragma once
-// Aero Engine — render Renderer (task 0.5.1). The smallest real renderer: it owns one window's
-// swapchain and drives the per-frame begin -> clear -> present cycle over the RHI. It DRAWS NOTHING
-// in v0; the open render pass is exposed on Frame so task 0.5.2 (textured cube) records draws into it
-// with no change to this API. No third-party type appears here (rule #3) — every member is an engine
-// type, so there is no pimpl (unlike platform/rhi, which bury SDL/miniaudio).
+// Aero Engine — render Renderer (task 0.5.1; depth added task 0.5.2). The smallest real renderer: it
+// owns one window's swapchain (and, optionally, a self-resizing depth target) and drives the
+// per-frame begin -> clear -> present cycle over the RHI. Task 0.5.2 records draws into the open pass
+// exposed on Frame, with no change to this API. No third-party type appears here (rule #3) — every
+// member is an engine type, so there is no pimpl (unlike platform/rhi, which bury SDL/miniaudio).
 //
 // LIFETIME CONTRACTS:
 //   * The rhi::Device and the platform::Window passed to create() MUST outlive the Renderer.
-//   * ~Renderer destroys the swapchain; declare the Renderer AFTER (inner to) the Device and Window
-//     so RAII tears the swapchain down first (see samples/phase-0-clear).
+//   * ~Renderer destroys the swapchain and (when config.depth) the owned depth texture; declare the
+//     Renderer AFTER (inner to) the Device and Window so RAII tears both down first (see
+//     samples/phase-0-clear).
 //   * A Frame must NOT outlive its Renderer, and each beginFrame() must be matched by exactly one
 //     endFrame() (or the Frame is dropped and disposed with a WARN).
+//   * The depth target (when enabled) is Renderer-lifetime state, owned and resized alongside the
+//     swapchain — never per-frame state (task 0.5.2's D5-of-0.5.1 preservation).
 //
 // ERROR MODEL (docs/04, mirrors rhi): nothing throws. create() returns nullopt (+ ERROR) on failure;
 // beginFrame() returns nullopt on a non-presentable window (minimized) WITHOUT logging an error
@@ -36,6 +39,10 @@ namespace engine::render {
 // cannot honor makes create() FAIL (nullopt), never a silent downgrade (rhi swapchain contract).
 struct RendererConfig {
     rhi::PresentMode presentMode = rhi::PresentMode::Vsync;  // 0.5.x gate mode
+    // When true, the Renderer creates/owns/resizes a depth target (auto-picked format) and beginFrame
+    // clears it to 1.0 each frame — needed for correct 3D (the cube, task 0.5.2). Default false keeps
+    // the pure clear-pass behavior (task 0.5.1). See depthFormat().
+    bool depth = false;
 };
 
 // One in-flight frame: a command buffer with a swapchain image acquired onto it and an OPEN render
@@ -103,11 +110,24 @@ public:
     // One of the four SDR 8-bit formats. Invalid on a moved-from Renderer.
     [[nodiscard]] rhi::TextureFormat colorFormat() const noexcept;
 
+    // The depth target's format, or Invalid when config.depth was false. What a depth-testing
+    // pipeline's GraphicsPipelineDesc.depthStencilFormat must equal (task 0.5.2's cube). Fixed at
+    // create(); one of D32Float / D24Unorm / D16Unorm (auto-picked for this device).
+    [[nodiscard]] rhi::TextureFormat depthFormat() const noexcept;
+
 private:
-    Renderer(rhi::Device* device, rhi::SwapchainHandle swapchain) noexcept;
+    Renderer(rhi::Device* device, rhi::SwapchainHandle swapchain, rhi::TextureFormat depthFormat) noexcept;
 
     rhi::Device* device = nullptr;     // non-owning; outlives the Renderer (contract)
     rhi::SwapchainHandle swapchain{};  // owned: ~Renderer destroys it. No per-frame state lives here.
+
+    // Depth target (only when config.depth). OWNED like the swapchain: created lazily at the first
+    // beginFrame extent, recreated when the acquired swapchain extent changes, destroyed by ~Renderer.
+    // depthFormatValue is Invalid iff depth was not requested. This is Renderer-lifetime state, not
+    // per-frame state (D5 of 0.5.1 stands): both it and the swapchain resize off the acquired extent.
+    rhi::TextureFormat depthFormatValue = rhi::TextureFormat::Invalid;
+    rhi::TextureHandle depthTexture{};  // invalid until the first depth-enabled beginFrame
+    rhi::Extent2D depthExtent{};        // the size depthTexture was created at (resize trigger)
 };
 
 }  // namespace engine::render
