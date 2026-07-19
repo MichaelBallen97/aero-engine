@@ -32,6 +32,7 @@ add_executable(aero_tests
     rhi_swapchain_test.cpp # task 0.4.2 — tier 2: real visible window, claim/acquire/present
     shader_loader_test.cpp       # task 0.4.4 — tier-0: parseShaderMetadata + selectArtifact (no GPU)
     rhi_shader_pipeline_test.cpp # task 0.4.4 — tier-1 (gated): load → valid pipeline on real GPU
+    render_clear_test.cpp # task 0.5.1 — tier-0 config default + tier-2 clear/resize/move/leak
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
@@ -48,7 +49,7 @@ add_executable(aero_tests
 # R12 in docs/08-risks.md; .github/scripts/check-math-boundary.sh (task 0.2.3, run by the `lint`
 # job) is the real enforcement for tests/. The sibling aero_math_boundary_probe target below (also
 # 0.2.3) covers the public math headers at compile time instead.
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::rhi SDL3::SDL3)
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::render aero::rhi SDL3::SDL3)
 
 # Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,
 # in build/<preset>/shaders). aero_shaders exists ONLY when AERO_SHADER_TOOLS is ON (cmake/shaders.cmake),
