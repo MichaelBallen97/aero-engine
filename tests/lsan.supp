@@ -15,6 +15,18 @@
 # per observed frame; never suppress module-wide (e.g. leak:SDL) — that would blind LSan to real
 # engine leaks whose allocations happen inside SDL (a forgotten SDL_ReleaseGPU* would allocate
 # under SDL_CreateGPUBuffer et al., which stay unsuppressed).
+#
+# The two lavapipe entries at the bottom (leak:libvulkan_lvp, leak:libLLVM) are deliberate,
+# narrowly-justified exceptions to "never module-wide". They are admissible where leak:SDL is not,
+# for two reasons: (1) their leak frames NEVER symbolize to a function/source name — the driver
+# stack is unmapped before exit, so the module path is the ONLY matchable token (see those entries
+# and tests/vulkan_stack_pin.cpp); and (2) they do not create a realistic first-party blind spot:
+# every engine GPU resource is pool-tracked and released by ~Device before LSan runs (the "~Device
+# releasing N leaked ..." safety net), so no engine leak survives inside the driver at exit, and
+# CPU-side engine leaks never touch these modules at all (leak:libLLVM in particular can only ever
+# match Mesa's shader-codegen backend, which no engine allocation path reaches). If a future
+# dbgsym-enabled run yields the specific worker-thread FUNCTION name, tighten to that name and drop
+# the module scope.
 
 # SDL3's x11 video driver retains keyboard/XKB tables per init cycle (SDL_x11keyboard.c:166/:177).
 leak:X11_InitKeyboard
@@ -26,3 +38,21 @@ leak:X11_VideoInit
 # VULKAN_CreateDevice.
 leak:VULKAN_INTERNAL_DeterminePhysicalDevice
 leak:VULKAN_INTERNAL_PrepareVulkan
+
+# Mesa/lavapipe worker-thread pool (task 0.5.2). The first texture-sampling fragment shader the cube
+# test compiles+runs spins up a fixed lavapipe pool (one thread per core = 4 on the CI runner); each
+# worker calloc's a ~56-byte per-thread struct never freed at exit (224 B / 4 allocations). NOT the
+# rasterizer pool (LP_NUM_THREADS=0 left the count unchanged, run 29679720635) and NOT the disk-cache
+# writer pool (MESA_SHADER_CACHE_DISABLE likewise, run 29680407602) — a different, non-disableable
+# pool. SDL loads/UNLOADS libvulkan.so.1 per Device lifecycle, and this Ubuntu loader unmaps the ICD
+# (libvulkan_lvp.so) + its libLLVM with it, so by teardown they read <unknown module> at LSan-time;
+# LD_PRELOAD to keep them mapped is impossible (aborts the ASan runtime), and pinning only the loader
+# did not stop the ICD unmap (run 29681929403). So tests/vulkan_stack_pin.cpp dlopens the ICD ITSELF
+# with RTLD_NODELETE IN-PROCESS — that mapping then survives every dlclose, so the frames resolve to
+# real module names and these two entries match (LSan matches suppressions against function/file/
+# module names). The pool lives in libvulkan_lvp.so and/or its libLLVM codegen backend (the leak split
+# across two load bases with identical offsets); both are covered — a still-red run would NAME the true
+# module in the log. Runs 29679001505 / 29679720635 / 29680407602 / 29681071731 / 29681929403. See the
+# module-wide-exception rationale in the header.
+leak:libvulkan_lvp
+leak:libLLVM

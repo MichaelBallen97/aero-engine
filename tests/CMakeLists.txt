@@ -13,6 +13,7 @@ find_package(SDL3 CONFIG REQUIRED)
 # only generates main(). This is the repo's first compiled+linked target.
 add_executable(aero_tests
     test_main.cpp
+    vulkan_stack_pin.cpp  # task 0.5.2 — Linux/LSan-only: pin the Vulkan loader stack mapped (no-op elsewhere)
     sanity_test.cpp
     profiler_test.cpp
     handle_test.cpp
@@ -50,7 +51,9 @@ add_executable(aero_tests
 # R12 in docs/08-risks.md; .github/scripts/check-math-boundary.sh (task 0.2.3, run by the `lint`
 # job) is the real enforcement for tests/. The sibling aero_math_boundary_probe target below (also
 # 0.2.3) covers the public math headers at compile time instead.
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::render aero::rhi SDL3::SDL3)
+# ${CMAKE_DL_LIBS} (libdl on Linux, empty elsewhere): vulkan_stack_pin.cpp calls dlopen/dlerror
+# directly to keep the Vulkan driver stack mapped for LSan (task 0.5.2).
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::render aero::rhi SDL3::SDL3 ${CMAKE_DL_LIBS})
 
 # Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,
 # in build/<preset>/shaders). aero_shaders exists ONLY when AERO_SHADER_TOOLS is ON (cmake/shaders.cmake),
