@@ -121,6 +121,26 @@ add_library(aero_platform_boundary_probe OBJECT platform_boundary_probe.cpp)
 target_link_libraries(aero_platform_boundary_probe PRIVATE aero::platform)
 
 # ---------------------------------------------------------------------------------------------
+# The RHI SDL_GPU-boundary COMPILE-TIME guard (task 0.4.5; ADR-002 "the sacred wrapper").
+#
+# Same mechanism as the math/jobs/platform probes, for SDL_GPU: aero::rhi links SDL3 PRIVATE (and its
+# PUBLIC deps aero::core/aero::platform propagate no vcpkg header), so a target linking ONLY aero::rhi
+# never sees vcpkg's shared per-triplet include/ directory and cannot resolve <SDL3/SDL_gpu.h>. A
+# leaked SDL include in a public rhi header is therefore a compile error the moment it is written
+# (verified 2026-07-19: rhi.hpp's whole surface compiles with only aero::rhi/aero::core includes,
+# while a seeded <SDL3/SDL_gpu.h> reports 'file not found' -- risk R12, docs/08-risks.md).
+#
+# The textual grep guard .github/scripts/check-rhi-boundary.sh (also 0.4.5, run by the `lint` job) is
+# the enforcement that reaches tests/ and every engine/runtime .cpp, where R12 breaks this compile
+# boundary. This probe holds the public-header half.
+#
+# DO NOT ADD ANY OTHER LINK LIBRARY -- not doctest, not SDL3::SDL3, not aero::profiling (Tracy, a
+# vcpkg package, in Release). Any of them restores the shared vcpkg include root and silently reduces
+# this guard to a no-op while CI stays green. That is the only way this guard can rot.
+add_library(aero_rhi_boundary_probe OBJECT rhi_boundary_probe.cpp)
+target_link_libraries(aero_rhi_boundary_probe PRIVATE aero::rhi)
+
+# ---------------------------------------------------------------------------------------------
 # The shaderc end-to-end CTest suite (task 0.4.3; spec D9/§3.6) -- a net-new harness (no prior
 # cmake -P / external-binary add_test precedent in this repo). Each case runs the REAL aero_shaderc
 # binary through tests/shaderc/run_case.cmake, which is what actually asserts exit codes -- several

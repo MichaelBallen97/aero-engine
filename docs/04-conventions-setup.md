@@ -34,7 +34,7 @@ Automated tests that fail the build if an invariant is broken. Every guard has a
 | Guard | Fails when… | Created by |
 |---|---|---|
 | **Math-boundary guard** | any `#include <glm/...>` appears outside `engine/core/src/math/glm_backend.cpp` (plus a compile-time probe target for public headers) | [0.2.3](./tasks/phase-0.md) |
-| **RHI-boundary guard** | an SDL_GPU type appears in a public engine header | [0.4.5](./tasks/phase-0.md) |
+| **RHI-boundary guard** | an SDL_GPU token appears anywhere in `engine/`/`runtime/` outside `engine/rhi/src/sdl_gpu_backend.cpp` (plus a compile-time probe target for public headers) | [0.4.5](./tasks/phase-0.md) |
 | **Golden-rule guard** | any `#include` under `/engine` or `/runtime` references `/editor` | [2.1.2](./tasks/phase-2.md) |
 | **Audio-boundary guard** | a miniaudio type appears in a public engine header | [3.7.3](./tasks/phase-3.md) |
 | **Runtime-purity guard** | the runtime binary links ImGui, Assimp, or libclang | [5.2.2](./tasks/phase-5.md) |
