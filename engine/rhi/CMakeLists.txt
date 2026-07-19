@@ -12,6 +12,7 @@ find_package(SDL3 CONFIG REQUIRED)
 add_library(aero_rhi STATIC
     src/format.cpp
     src/sdl_gpu_backend.cpp  # task 0.4.2 — the ONE TU that includes <SDL3/SDL_gpu.h>
+    src/shader_loader.cpp    # task 0.4.4 — SDL-free: VFS + Device API + hand-rolled schema-1 parser
 )
 add_library(aero::rhi ALIAS aero_rhi)
 

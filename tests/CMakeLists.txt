@@ -30,6 +30,8 @@ add_executable(aero_tests
     rhi_format_test.cpp   # task 0.4.1 — format classification/size/toString (no GPU)
     rhi_device_test.cpp   # task 0.4.2 — tiers 0-1: lifecycle/resources/uploads/frame-flow/render-pass
     rhi_swapchain_test.cpp # task 0.4.2 — tier 2: real visible window, claim/acquire/present
+    shader_loader_test.cpp       # task 0.4.4 — tier-0: parseShaderMetadata + selectArtifact (no GPU)
+    rhi_shader_pipeline_test.cpp # task 0.4.4 — tier-1 (gated): load → valid pipeline on real GPU
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
@@ -47,6 +49,18 @@ add_executable(aero_tests
 # job) is the real enforcement for tests/. The sibling aero_math_boundary_probe target below (also
 # 0.2.3) covers the public math headers at compile time instead.
 target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::rhi SDL3::SDL3)
+
+# Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,
+# in build/<preset>/shaders). aero_shaders exists ONLY when AERO_SHADER_TOOLS is ON (cmake/shaders.cmake),
+# and tests/ is add_subdirectory'd AFTER shaders/ (root CMakeLists.txt), so the target is in scope here.
+# INVARIANT: AERO_SHADERS_DIR must always equal aero_add_shaders' OUTPUT_DIR (default
+# ${CMAKE_BINARY_DIR}/shaders, used unchanged by shaders/CMakeLists.txt) -- move both together.
+if(AERO_SHADER_TOOLS)
+    add_dependencies(aero_tests aero_shaders)  # artifacts built before ctest runs
+    target_compile_definitions(aero_tests PRIVATE
+        AERO_SHADER_TOOLS_ENABLED=1
+        AERO_SHADERS_DIR="${CMAKE_BINARY_DIR}/shaders")  # MUST match aero_add_shaders' default OUTPUT_DIR (F9)
+endif()
 
 # Single ctest entry; doctest prints per-TEST_CASE detail on failure. Per-case
 # registration (doctest_discover_tests) can be adopted later without churn.
