@@ -105,3 +105,35 @@ target_link_libraries(aero_jobs_boundary_probe PRIVATE aero::core)
 # green. That is the only way this guard can rot.
 add_library(aero_platform_boundary_probe OBJECT platform_boundary_probe.cpp)
 target_link_libraries(aero_platform_boundary_probe PRIVATE aero::platform)
+
+# ---------------------------------------------------------------------------------------------
+# The shaderc end-to-end CTest suite (task 0.4.3; spec D9/§3.6) -- a net-new harness (no prior
+# cmake -P / external-binary add_test precedent in this repo). Each case runs the REAL aero_shaderc
+# binary through tests/shaderc/run_case.cmake, which is what actually asserts exit codes -- several
+# cases are NEGATIVE (the tool is expected to exit non-zero), and a raw `add_test(COMMAND
+# aero_shaderc ...)` would treat any non-zero exit as a ctest FAILURE regardless of whether that was
+# the expected behavior (see run_case.cmake's own header comment).
+#
+# No doctest TU for the tool, and no tool code links into aero_tests (spec D9) -- a CLI's honest test
+# is its process boundary: argv in, exit code + files out.
+#
+# Gated on AERO_SHADER_TOOLS: when OFF, aero_shaderc is never built and these tests must not be
+# registered (spec E18) -- the ctest count visibly shrinking is deliberate, not a bug.
+if(AERO_SHADER_TOOLS)
+    set(_aero_shaderc_cases
+        help vert_happy frag_happy reflect_ubo subset_msl include_dir defines
+        bad_syntax missing_input bad_stage unknown_flag double_include determinism
+    )
+    foreach(_aero_case IN LISTS _aero_shaderc_cases)
+        add_test(
+            NAME shaderc.${_aero_case}
+            COMMAND "${CMAKE_COMMAND}"
+                    -DTOOL=$<TARGET_FILE:aero_shaderc>
+                    -DCASE=${_aero_case}
+                    -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+                    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/shaderc/${_aero_case}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/shaderc/run_case.cmake
+        )
+    endforeach()
+    unset(_aero_shaderc_cases)
+endif()

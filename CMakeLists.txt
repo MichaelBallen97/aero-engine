@@ -30,6 +30,12 @@ include(cmake/sanitizers.cmake)
 option(AERO_ENABLE_PROFILING "Link the Tracy client and activate profiling macros (dev builds only)" OFF)
 include(cmake/profiling.cmake)
 
+# tools/shaderc (task 0.4.3): HLSL -> SPIR-V/MSL/DXIL, offline, at build time (docs/04). Default ON;
+# OFF is the escape hatch for constrained/offline dev machines (never set OFF in CI, spec E18) — the
+# function must be defined before any add_subdirectory() calls it (shaders/CMakeLists.txt, below).
+option(AERO_SHADER_TOOLS "Bootstrap SDL_shadercross and compile shaders/ during the build" ON)
+include(cmake/shaders.cmake)
+
 # docs/04 testing strategy: doctest suites run through ctest (test presets).
 enable_testing()
 
@@ -39,5 +45,6 @@ add_subdirectory(engine)
 add_subdirectory(runtime)
 add_subdirectory(editor)
 add_subdirectory(tools)
+add_subdirectory(shaders)  # task 0.4.3; must follow tools/ (aero_shaderc) and cmake/shaders.cmake
 add_subdirectory(tests)
 add_subdirectory(samples)   # validation apps (docs/03); first populated by 0.3.1's phase-0-window
