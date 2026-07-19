@@ -60,30 +60,50 @@ rhi::CommandBufferHandle Frame::commandBuffer() const noexcept { return cmd; }
 
 // --- Renderer ---------------------------------------------------------------------------------
 
-Renderer::Renderer(rhi::Device* device, rhi::SwapchainHandle swapchain) noexcept
-    : device(device), swapchain(swapchain) {}
+Renderer::Renderer(rhi::Device* device, rhi::SwapchainHandle swapchain, rhi::TextureFormat depthFormat) noexcept
+    : device(device), swapchain(swapchain), depthFormatValue(depthFormat) {}
 
-Renderer::Renderer(Renderer&& other) noexcept : device(other.device), swapchain(other.swapchain) {
+Renderer::Renderer(Renderer&& other) noexcept
+    : device(other.device),
+      swapchain(other.swapchain),
+      depthFormatValue(other.depthFormatValue),
+      depthTexture(other.depthTexture),
+      depthExtent(other.depthExtent) {
     other.device = nullptr;
     other.swapchain = {};
+    other.depthTexture = {};
 }
 
 Renderer& Renderer::operator=(Renderer&& other) noexcept {
     if (this != &other) {
-        if (device != nullptr && swapchain.valid()) {
-            device->destroySwapchain(swapchain);  // never orphan our own swapchain (0.3.1 lesson)
+        if (device != nullptr) {
+            if (depthTexture.valid()) {
+                device->destroyTexture(depthTexture);  // never orphan our own depth texture
+            }
+            if (swapchain.valid()) {
+                device->destroySwapchain(swapchain);  // never orphan our own swapchain (0.3.1 lesson)
+            }
         }
         device = other.device;
         swapchain = other.swapchain;
+        depthFormatValue = other.depthFormatValue;
+        depthTexture = other.depthTexture;
+        depthExtent = other.depthExtent;
         other.device = nullptr;
         other.swapchain = {};
+        other.depthTexture = {};
     }
     return *this;
 }
 
 Renderer::~Renderer() {
-    if (device != nullptr && swapchain.valid()) {
-        device->destroySwapchain(swapchain);
+    if (device != nullptr) {
+        if (depthTexture.valid()) {
+            device->destroyTexture(depthTexture);
+        }
+        if (swapchain.valid()) {
+            device->destroySwapchain(swapchain);
+        }
     }
 }
 
@@ -94,7 +114,24 @@ std::optional<Renderer> Renderer::create(rhi::Device& device, const platform::Wi
         AERO_LOG_ERROR("render::Renderer::create — swapchain creation failed");
         return std::nullopt;
     }
-    return Renderer{&device, swapchain};
+
+    rhi::TextureFormat depthFormat = rhi::TextureFormat::Invalid;
+    if (config.depth) {
+        for (const rhi::TextureFormat f :
+             {rhi::TextureFormat::D32Float, rhi::TextureFormat::D24Unorm, rhi::TextureFormat::D16Unorm}) {
+            if (device.supportsTextureFormat(f, rhi::TextureUsage::DepthStencilTarget)) {
+                depthFormat = f;
+                break;
+            }
+        }
+        if (depthFormat == rhi::TextureFormat::Invalid) {
+            AERO_LOG_ERROR("render::Renderer::create — no supported depth format");
+            device.destroySwapchain(swapchain);  // don't leak the swapchain we just made
+            return std::nullopt;
+        }
+    }
+
+    return Renderer{&device, swapchain, depthFormat};
 }
 
 std::optional<Frame> Renderer::beginFrame(const rhi::Color& clearColor) {
@@ -109,8 +146,29 @@ std::optional<Frame> Renderer::beginFrame(const rhi::Color& clearColor) {
         device->cancel(cmd);  // no acquire happened -> cancel is legal; NOT an error (minimized)
         return std::nullopt;
     }
+
     const rhi::ColorAttachment color{.texture = acquired->texture, .clearColor = clearColor};
-    const rhi::RenderPassHandle pass = device->beginRenderPass(cmd, {.colorAttachments = {&color, 1}});
+    rhi::RenderPassDesc desc{.colorAttachments = {&color, 1}};
+    if (depthFormatValue != rhi::TextureFormat::Invalid) {
+        if (!depthTexture.valid() || depthExtent != acquired->extent) {
+            if (depthTexture.valid()) {
+                device->destroyTexture(depthTexture);  // resize: safe (the backend defers the free)
+            }
+            depthTexture = device->createTexture({.format = depthFormatValue,
+                                                  .usage = rhi::TextureUsage::DepthStencilTarget,
+                                                  .width = acquired->extent.width,
+                                                  .height = acquired->extent.height});
+            depthExtent = acquired->extent;
+            if (!depthTexture.valid()) {
+                AERO_LOG_ERROR("render::beginFrame — depth texture creation failed");
+                device->submit(cmd);  // image already acquired: submit to dispose
+                return std::nullopt;
+            }
+        }
+        desc.depthStencil = rhi::DepthStencilAttachment{.texture = depthTexture};  // Clear -> DontCare, clearDepth 1.0
+    }
+
+    const rhi::RenderPassHandle pass = device->beginRenderPass(cmd, desc);
     if (!pass.valid()) {
         AERO_LOG_ERROR("render::beginFrame — beginRenderPass failed");
         device->submit(cmd);  // image already acquired: submit to dispose (cancel is illegal now)
@@ -134,5 +192,7 @@ bool Renderer::endFrame(Frame frame) {
 rhi::TextureFormat Renderer::colorFormat() const noexcept {
     return device != nullptr ? device->swapchainFormat(swapchain) : rhi::TextureFormat::Invalid;
 }
+
+rhi::TextureFormat Renderer::depthFormat() const noexcept { return depthFormatValue; }
 
 }  // namespace engine::render
