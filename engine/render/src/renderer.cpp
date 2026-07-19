@@ -13,28 +13,32 @@ namespace engine::render {
 
 Frame::Frame(rhi::Device* device, rhi::CommandBufferHandle cmd, rhi::RenderPassHandle pass,
              rhi::Extent2D extent) noexcept
-    : device_(device), cmd_(cmd), pass_(pass), extent_(extent), live_(true) {}
+    : device(device), cmd(cmd), renderPass(pass), pixelExtent(extent), live(true) {}
 
 Frame::Frame(Frame&& other) noexcept
-    : device_(other.device_), cmd_(other.cmd_), pass_(other.pass_), extent_(other.extent_), live_(other.live_) {
-    other.device_ = nullptr;
-    other.cmd_ = {};
-    other.pass_ = {};
-    other.live_ = false;
+    : device(other.device),
+      cmd(other.cmd),
+      renderPass(other.renderPass),
+      pixelExtent(other.pixelExtent),
+      live(other.live) {
+    other.device = nullptr;
+    other.cmd = {};
+    other.renderPass = {};
+    other.live = false;
 }
 
 Frame& Frame::operator=(Frame&& other) noexcept {
     if (this != &other) {
         disposeIfLive();  // never leak the frame we are overwriting
-        device_ = other.device_;
-        cmd_ = other.cmd_;
-        pass_ = other.pass_;
-        extent_ = other.extent_;
-        live_ = other.live_;
-        other.device_ = nullptr;
-        other.cmd_ = {};
-        other.pass_ = {};
-        other.live_ = false;
+        device = other.device;
+        cmd = other.cmd;
+        renderPass = other.renderPass;
+        pixelExtent = other.pixelExtent;
+        live = other.live;
+        other.device = nullptr;
+        other.cmd = {};
+        other.renderPass = {};
+        other.live = false;
     }
     return *this;
 }
@@ -42,44 +46,44 @@ Frame& Frame::operator=(Frame&& other) noexcept {
 Frame::~Frame() { disposeIfLive(); }
 
 void Frame::disposeIfLive() noexcept {
-    if (live_ && device_ != nullptr && cmd_.valid()) {
+    if (live && device != nullptr && cmd.valid()) {
         AERO_LOG_WARN("render::Frame dropped without endFrame — disposing the frame");
-        device_->endRenderPass(pass_);  // logged no-op if already ended; submit would force-end anyway
-        device_->submit(cmd_);          // dispose the swapchain image so it never starves (E5)
+        device->endRenderPass(renderPass);  // logged no-op if already ended; submit would force-end anyway
+        device->submit(cmd);                // dispose the swapchain image so it never starves (E5)
     }
-    live_ = false;
+    live = false;
 }
 
-rhi::Extent2D Frame::extent() const noexcept { return extent_; }
-rhi::RenderPassHandle Frame::pass() const noexcept { return pass_; }
-rhi::CommandBufferHandle Frame::commandBuffer() const noexcept { return cmd_; }
+rhi::Extent2D Frame::extent() const noexcept { return pixelExtent; }
+rhi::RenderPassHandle Frame::pass() const noexcept { return renderPass; }
+rhi::CommandBufferHandle Frame::commandBuffer() const noexcept { return cmd; }
 
 // --- Renderer ---------------------------------------------------------------------------------
 
 Renderer::Renderer(rhi::Device* device, rhi::SwapchainHandle swapchain) noexcept
-    : device_(device), swapchain_(swapchain) {}
+    : device(device), swapchain(swapchain) {}
 
-Renderer::Renderer(Renderer&& other) noexcept : device_(other.device_), swapchain_(other.swapchain_) {
-    other.device_ = nullptr;
-    other.swapchain_ = {};
+Renderer::Renderer(Renderer&& other) noexcept : device(other.device), swapchain(other.swapchain) {
+    other.device = nullptr;
+    other.swapchain = {};
 }
 
 Renderer& Renderer::operator=(Renderer&& other) noexcept {
     if (this != &other) {
-        if (device_ != nullptr && swapchain_.valid()) {
-            device_->destroySwapchain(swapchain_);  // never orphan our own swapchain (0.3.1 lesson)
+        if (device != nullptr && swapchain.valid()) {
+            device->destroySwapchain(swapchain);  // never orphan our own swapchain (0.3.1 lesson)
         }
-        device_ = other.device_;
-        swapchain_ = other.swapchain_;
-        other.device_ = nullptr;
-        other.swapchain_ = {};
+        device = other.device;
+        swapchain = other.swapchain;
+        other.device = nullptr;
+        other.swapchain = {};
     }
     return *this;
 }
 
 Renderer::~Renderer() {
-    if (device_ != nullptr && swapchain_.valid()) {
-        device_->destroySwapchain(swapchain_);
+    if (device != nullptr && swapchain.valid()) {
+        device->destroySwapchain(swapchain);
     }
 }
 
@@ -95,40 +99,40 @@ std::optional<Renderer> Renderer::create(rhi::Device& device, const platform::Wi
 
 std::optional<Frame> Renderer::beginFrame(const rhi::Color& clearColor) {
     AERO_PROFILE_ZONE;
-    const rhi::CommandBufferHandle cmd = device_->acquireCommandBuffer();
+    const rhi::CommandBufferHandle cmd = device->acquireCommandBuffer();
     if (!cmd.valid()) {
         AERO_LOG_ERROR("render::beginFrame — acquireCommandBuffer failed");
         return std::nullopt;
     }
-    const std::optional<rhi::SwapchainTexture> acquired = device_->acquireSwapchainTexture(cmd, swapchain_);
+    const std::optional<rhi::SwapchainTexture> acquired = device->acquireSwapchainTexture(cmd, swapchain);
     if (!acquired.has_value()) {
-        device_->cancel(cmd);  // no acquire happened -> cancel is legal; NOT an error (minimized)
+        device->cancel(cmd);  // no acquire happened -> cancel is legal; NOT an error (minimized)
         return std::nullopt;
     }
     const rhi::ColorAttachment color{.texture = acquired->texture, .clearColor = clearColor};
-    const rhi::RenderPassHandle pass = device_->beginRenderPass(cmd, {.colorAttachments = {&color, 1}});
+    const rhi::RenderPassHandle pass = device->beginRenderPass(cmd, {.colorAttachments = {&color, 1}});
     if (!pass.valid()) {
         AERO_LOG_ERROR("render::beginFrame — beginRenderPass failed");
-        device_->submit(cmd);  // image already acquired: submit to dispose (cancel is illegal now)
+        device->submit(cmd);  // image already acquired: submit to dispose (cancel is illegal now)
         return std::nullopt;
     }
-    return Frame{device_, cmd, pass, acquired->extent};
+    return Frame{device, cmd, pass, acquired->extent};
 }
 
 bool Renderer::endFrame(Frame frame) {
-    if (!frame.live_) {
+    if (!frame.live) {
         AERO_LOG_ERROR("render::endFrame — frame is inert (moved-from or already ended)");
         return false;
     }
     AERO_PROFILE_ZONE;
-    frame.device_->endRenderPass(frame.pass_);          // operate through the frame's own device_ (C-note)
-    const bool ok = frame.device_->submit(frame.cmd_);  // presents the cleared image
-    frame.live_ = false;                                // consumed — the by-value parameter's dtor is now a no-op
+    frame.device->endRenderPass(frame.renderPass);    // operate through the frame's own device (C-note)
+    const bool ok = frame.device->submit(frame.cmd);  // presents the cleared image
+    frame.live = false;                               // consumed — the by-value parameter's dtor is now a no-op
     return ok;
 }
 
 rhi::TextureFormat Renderer::colorFormat() const noexcept {
-    return device_ != nullptr ? device_->swapchainFormat(swapchain_) : rhi::TextureFormat::Invalid;
+    return device != nullptr ? device->swapchainFormat(swapchain) : rhi::TextureFormat::Invalid;
 }
 
 }  // namespace engine::render

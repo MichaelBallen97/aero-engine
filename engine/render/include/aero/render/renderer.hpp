@@ -64,11 +64,14 @@ private:
     Frame(rhi::Device* device, rhi::CommandBufferHandle cmd, rhi::RenderPassHandle pass, rhi::Extent2D extent) noexcept;
     void disposeIfLive() noexcept;  // dtor + move-assign share this (C1)
 
-    rhi::Device* device_ = nullptr;   // non-owning; the Device outlives the Frame (contract)
-    rhi::CommandBufferHandle cmd_{};  // invalid on a moved-from / already-ended frame
-    rhi::RenderPassHandle pass_{};
-    rhi::Extent2D extent_{};
-    bool live_ = false;  // true between construction and endFrame(); gates disposeIfLive()
+    // Members are plain camelBack, no trailing underscore (docs/04 / .clang-tidy MemberCase); where a
+    // name would collide with an accessor, the member takes a distinct name (pass()->renderPass,
+    // extent()->pixelExtent), matching FrameClock (frameCount()->frames).
+    rhi::Device* device = nullptr;   // non-owning; the Device outlives the Frame (contract)
+    rhi::CommandBufferHandle cmd{};  // invalid on a moved-from / already-ended frame
+    rhi::RenderPassHandle renderPass{};
+    rhi::Extent2D pixelExtent{};
+    bool live = false;  // true between construction and endFrame(); gates disposeIfLive()
 };
 
 class Renderer {
@@ -103,8 +106,8 @@ public:
 private:
     Renderer(rhi::Device* device, rhi::SwapchainHandle swapchain) noexcept;
 
-    rhi::Device* device_ = nullptr;     // non-owning; outlives the Renderer (contract)
-    rhi::SwapchainHandle swapchain_{};  // owned: ~Renderer destroys it. No per-frame state lives here.
+    rhi::Device* device = nullptr;     // non-owning; outlives the Renderer (contract)
+    rhi::SwapchainHandle swapchain{};  // owned: ~Renderer destroys it. No per-frame state lives here.
 };
 
 }  // namespace engine::render

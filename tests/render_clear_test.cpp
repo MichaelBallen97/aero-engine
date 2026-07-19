@@ -171,7 +171,7 @@ TEST_CASE("render clear: R-5 dropped frame is disposed, loop recovers") {
     REQUIRE(renderer.has_value());
 
     {
-        std::optional<Frame> dropped = renderer->beginFrame(Color{0.9F, 0.1F, 0.1F, 1.0F});
+        const std::optional<Frame> dropped = renderer->beginFrame(Color{0.9F, 0.1F, 0.1F, 1.0F});
         REQUIRE(dropped.has_value());
         // Leave scope WITHOUT endFrame: ~Frame disposes (submit) + logs one WARN (expected).
     }

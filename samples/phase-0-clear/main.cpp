@@ -63,7 +63,7 @@ int main() {
         }
 
         clock.tick();
-        const float t = static_cast<float>(clock.totalSeconds());
+        const auto t = static_cast<float>(clock.totalSeconds());
         const engine::rhi::Color sky{0.5F + 0.5F * std::sin(t), 0.35F, 0.6F, 1.0F};  // gentle pulse
 
         if (std::optional<engine::render::Frame> frame = renderer->beginFrame(sky)) {
