@@ -31,6 +31,21 @@
 # thread-local error state — proven empirically with a throwaway consumer probe (mixing a static and
 # a dynamic SDL3 in one process would silently read the WRONG error string). This stays entirely
 # inside tools/shaderc/ and touches none of the plan's untouchables.
+#
+# CORRECTED REALITY vs. the spec's F6 ("the built SDL3_shadercross shared library is self-contained,
+# no dxcompiler runtime file"): that is EMPIRICALLY FALSE at this pin. `cmake --install` genuinely
+# installs `libdxcompiler`, `libdxil`, and `libspirv-cross-c-shared` as real, separate shared objects
+# alongside `libSDL3_shadercross` in the prefix's `lib/` (proven by inspecting the installed prefix and
+# `otool -L`/`ldd` on the installed library — it is dynamically linked against its siblings, not
+# statically self-contained). The toolchain is therefore self-contained only at the PREFIX level (every
+# sibling a given library needs lives in that same prefix's `lib/`), never at the single-file level —
+# each installed `.dylib`/`.so` must be able to locate its siblings in that same directory at load time.
+# macOS gets this for free (Step 5's rpath story below + `aero_shaderc`'s own `BUILD_RPATH`, since dyld
+# resolves a dependent dylib's `@rpath` against the *main executable's* `LC_RPATH`). Linux's
+# `DT_RUNPATH` is **not** transitive the same way — it only resolves the immediate object's own direct
+# deps — so `libSDL3_shadercross.so` needs its OWN `$ORIGIN`-relative `DT_RUNPATH` baked in at its own
+# install time to find `libdxcompiler.so`/`libspirv-cross-c-shared.so` beside it; Step 5 sets that via
+# `CMAKE_INSTALL_RPATH=$ORIGIN` on the Linux sub-configure (code-review finding, task 0.4.3).
 
 # --- Step 1: resolve the per-user cache root + the pinned-commit prefix. ------------------------
 
@@ -91,6 +106,10 @@ endif()
 # so it is available on BOTH the warm short-circuit and the cold path without ever invoking vcpkg on
 # a warm configure (AC-14: a warm reconfigure must stay network-free and near-instant).
 set(_aero_sdl3_already_dynamic FALSE)
+# SDL3sharedTargets.cmake is the file vcpkg's sdl3 port installs only for a dynamic-linkage triplet
+# build (verified on disk at this pin: present for a private arm64-osx-dynamic install, absent for the
+# static-default arm64-osx/x64-linux triplets) — code review confirmed this detection is correct and
+# x64-windows (already dynamic) never falls through to the nonexistent "x64-windows-dynamic" triplet.
 if(EXISTS "${_aero_vcpkg_prefix}/share/sdl3/SDL3sharedTargets.cmake")
     set(_aero_sdl3_already_dynamic TRUE)
 endif()
@@ -101,12 +120,28 @@ else()
     set(AERO_SHADERCROSS_SDL3_PREFIX "${_aero_prefix}-sdl3-dynamic/${_aero_dynamic_triplet}")
 endif()
 
+# Code-review finding 3: the warm-short-circuit stamp (below) lives inside ${_aero_prefix} and only
+# ever attests to THAT directory's contents — it says nothing about the sibling private dynamic-SDL3
+# prefix AERO_SHADERCROSS_SDL3_PREFIX also points at (a SEPARATE directory tree, ${_aero_prefix}-sdl3-
+# dynamic). If that sibling is deleted by hand (or never existed because the triplet configuration
+# changed) while the stamp file survives, a warm short-circuit would hand the includer a dangling
+# prefix. Checked once, up front, and folded into BOTH warm-check conditions below; SDL3Config.cmake
+# is present in every vcpkg SDL3 install (the already-dynamic branch above already depends on files
+# under this same share/sdl3/ directory existing, so this check is free/consistent either way).
+if(EXISTS "${AERO_SHADERCROSS_SDL3_PREFIX}/share/sdl3/SDL3Config.cmake")
+    set(_aero_sdl3_prefix_ok TRUE)
+else()
+    set(_aero_sdl3_prefix_ok FALSE)
+endif()
+
 # The stamp's comparison line: bumping either the pinned SHA (above) or any sub-build option below
 # invalidates every existing prefix on next configure. The generator and the dynamic-SDL3 acquisition
 # strategy are included because a stale build tree / a stale private-SDL3 prefix from a different
-# generator or a different fix revision cannot be reused in place.
+# generator or a different fix revision cannot be reused in place. LINUXRPATH=1 (code review): a prefix
+# built before the Linux $ORIGIN install-rpath fix (Step 5) lacks it on its installed libraries and
+# must be rebuilt, not silently reused warm.
 set(_aero_option_set
-    "SHARED=ON;STATIC=OFF;CLI=ON;VENDORED=ON;BUILD_TYPE=Release;GENERATOR=${CMAKE_GENERATOR};SDL3DYNAMIC=2")
+    "SHARED=ON;STATIC=OFF;CLI=ON;VENDORED=ON;BUILD_TYPE=Release;GENERATOR=${CMAKE_GENERATOR};SDL3DYNAMIC=2;LINUXRPATH=1")
 string(MD5 _aero_option_hash "${_aero_option_set}")
 set(_aero_stamp_expected "${_aero_shadercross_sha}:${_aero_option_hash}")
 
@@ -114,7 +149,7 @@ set(_aero_stamp_expected "${_aero_shadercross_sha}:${_aero_option_hash}")
 if(EXISTS "${_aero_stamp_file}")
     file(READ "${_aero_stamp_file}" _aero_stamp_content)
     string(REGEX MATCH "^[^\n]*" _aero_stamp_line "${_aero_stamp_content}")
-    if(_aero_stamp_line STREQUAL "${_aero_stamp_expected}")
+    if(_aero_stamp_line STREQUAL "${_aero_stamp_expected}" AND _aero_sdl3_prefix_ok)
         message(STATUS "shadercross toolchain: warm at ${_aero_prefix}")
         set(AERO_SHADERCROSS_PREFIX "${_aero_prefix}")
         return()
@@ -139,10 +174,17 @@ if(NOT _aero_lock_result STREQUAL "0")
 endif()
 
 # Double-checked: a concurrent configure may have finished the build while we waited for the lock.
+# _aero_sdl3_prefix_ok is re-checked fresh here too (not just reused from before the lock wait) —
+# a concurrent configure could have finished populating the sibling prefix while we waited.
+if(EXISTS "${AERO_SHADERCROSS_SDL3_PREFIX}/share/sdl3/SDL3Config.cmake")
+    set(_aero_sdl3_prefix_ok TRUE)
+else()
+    set(_aero_sdl3_prefix_ok FALSE)
+endif()
 if(EXISTS "${_aero_stamp_file}")
     file(READ "${_aero_stamp_file}" _aero_stamp_content2)
     string(REGEX MATCH "^[^\n]*" _aero_stamp_line2 "${_aero_stamp_content2}")
-    if(_aero_stamp_line2 STREQUAL "${_aero_stamp_expected}")
+    if(_aero_stamp_line2 STREQUAL "${_aero_stamp_expected}" AND _aero_sdl3_prefix_ok)
         message(STATUS "shadercross toolchain: warm at ${_aero_prefix} (built by a concurrent configure)")
         set(AERO_SHADERCROSS_PREFIX "${_aero_prefix}")
         return()
@@ -224,6 +266,26 @@ set(_aero_extra_sub_configure_args)
 if(APPLE AND EXISTS "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk")
     list(APPEND _aero_extra_sub_configure_args
         "-DCMAKE_OSX_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk")
+endif()
+
+# Linux-only, conditional (code-review finding, task 0.4.3): the installed `libSDL3_shadercross.so`
+# is a real runtime dependent of its installed vendored siblings (`libdxcompiler.so`,
+# `libspirv-cross-c-shared.so`, `libdxil.so`) in the SAME prefix `lib/` — this is the "corrected
+# reality" noted at the top of this file (spec F6's "self-contained" claim does not hold at this pin).
+# On macOS this resolves for free: dyld resolves a dependent dylib's bare `@rpath` reference against
+# the *loading executable's* `LC_RPATH` (aero_shaderc's own `BUILD_RPATH`, tools/shaderc/CMakeLists.txt),
+# and that lookup is effectively transitive for our one-hop dependency graph. Linux's ELF equivalent,
+# `DT_RUNPATH`, is explicitly NOT transitive — it resolves only the DIRECT dependencies of the object
+# that carries it, so `libSDL3_shadercross.so`'s own `DT_RUNPATH` (or lack of one) is what governs
+# whether IT can find `libdxcompiler.so` etc., not `aero_shaderc`'s. Baking `$ORIGIN` into every library
+# THIS sub-build installs (via the global `CMAKE_INSTALL_RPATH`, which `install(TARGETS ...)` uses as
+# the default installed RPATH unless a target sets its own) makes each installed `.so` resolve its own
+# siblings via ITS OWN directory — exactly closing that non-transitivity gap, with no
+# `--disable-new-dtags` needed (we WANT `DT_RUNPATH`, which correctly does not leak to further
+# transitive consumers). `libSDL3.so` is unaffected either way: `aero_shaderc` links it directly by raw
+# path (tools/shaderc/CMakeLists.txt), never as a transitive dependency of `libSDL3_shadercross.so`.
+if(UNIX AND NOT APPLE)
+    list(APPEND _aero_extra_sub_configure_args "-DCMAKE_INSTALL_RPATH=$ORIGIN")
 endif()
 
 _aero_shadercross_run("sub-configure"
