@@ -130,6 +130,16 @@ jobs:
         # documentation citation does not.
         run: bash .github/scripts/check-platform-boundary.sh
 
+      - name: Boundary — no SDL_GPU outside the rhi backend
+        shell: bash
+        # Task 0.4.5 (ADR-002, the sacred wrapper): SDL_GPU is reachable from exactly one TU,
+        # engine/rhi/src/sdl_gpu_backend.cpp. Like check-platform-boundary.sh this is a script, not a
+        # one-line grep, because SDL has no namespace and this codebase cites SDL_GPU identifiers in
+        # first-party comments -- the script strips `//` comments before the identifier check. Unlike
+        # the platform guard it scans engine/ + runtime/ SOURCES (not just public headers) with a
+        # single allowlisted file: the sacred-wrapper invariant governs .cpp too, not only headers.
+        run: bash .github/scripts/check-rhi-boundary.sh
+
   build:
     name: ${{ matrix.name }}
     needs: vcpkg-baseline        # don't spend build minutes if the pin is broken

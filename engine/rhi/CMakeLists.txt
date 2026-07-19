@@ -1,7 +1,9 @@
 # engine/rhi/ — the RHI: the engine's own rendering vocabulary over SDL_GPU (ADR-002, docs/03).
 # THE SACRED WRAPPER: this is the escape hatch for the v3-v4 ray-tracing path. No SDL_GPU type may
-# ever cross these public headers (project rule #3); enforcement machinery arrives in 0.4.5
-# (grep script + compile-time probe, mirroring platform's pair).
+# ever cross these public headers (project rule #3); enforcement machinery is
+# `.github/scripts/check-rhi-boundary.sh` + the compile-time probe `tests/rhi_boundary_probe.cpp`
+# (task 0.4.5, landed) — mirrors the math pair (repo-wide scan + one allowlisted file), not
+# platform's header-only one.
 #
 # Task 0.4.1 shipped the SURFACE: headers + the backend-independent format utilities. Task 0.4.2
 # lands the backend: src/sdl_gpu_backend.cpp is the ONE TU in the whole repo that includes
@@ -26,7 +28,8 @@ target_include_directories(aero_rhi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # linking only aero::rhi still cannot resolve <SDL3/...> — R12's good case, same as platform's probe.
 #
 # PRIVATE forever (see engine/platform/CMakeLists.txt's warning): $<LINK_ONLY:> keeps SDL's headers
-# and vcpkg's shared include root off consumers — that is what will make 0.4.5's probe a real guard.
+# and vcpkg's shared include root off consumers — that is what makes `tests/rhi_boundary_probe.cpp`
+# a real guard (task 0.4.5, landed).
 # aero::platform_internal carries only the native-window seam header (task 0.4.2, §3.1).
 target_link_libraries(aero_rhi
     PUBLIC aero::core aero::platform
