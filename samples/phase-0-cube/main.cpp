@@ -1,10 +1,14 @@
-// Aero Engine — Phase 0 textured cube (task 0.5.2). Opens a window + GPU device + a depth-enabled
-// engine::render::Renderer, uploads a unit cube (24 verts / 36 indices) + a procedural checkerboard
-// texture, and draws it with an MVP transform each frame — the canonical hello-world of the whole stack:
-// geometry, uniforms, texture, depth, draw. STATIC in 0.5.2 (fixed 3/4 rotation, three faces visible);
-// 0.5.3 makes it spin, adds an fps HUD, and validates 60fps on all 3 OSes. Built in CI (compile-proof,
-// 3 OSes); NOT run there (needs a real GPU + visible window) — run it by hand: SEE the cube, drag-resize
-// it (aspect tracks, no stretch), Esc quits. Requires AERO_SHADER_TOOLS=ON (cooked cube shaders).
+// Aero Engine — Phase 0 gate artifact: the spinning textured cube (task 0.5.3, finalizing 0.5.2). Opens
+// a window + GPU device + a depth-enabled engine::render::Renderer, uploads a unit cube (24 verts / 36
+// indices) + a procedural checkerboard texture, and draws it every frame with a time-based MVP transform
+// — the canonical hello-world of the whole stack: geometry, uniforms, texture, depth, draw, animation.
+// STATIC in 0.5.2 (fixed 3/4 rotation); 0.5.3 makes it SPIN (elapsed-time angle, vsync-paced — never
+// uncapped), adds a live fps counter (window title + a 1 Hz log line, both from FrameClock::fps()), and
+// prints an objective 60fps gate verdict (fps_gate.hpp) at exit. CI builds this on all 3 OSes
+// (compile-proof only — no vsync/display there); the actual 60fps gate is a human on-hardware sign-off,
+// recorded per-OS in VALIDATION.md. macOS is validated; Windows/Linux are tracked pending. Run it by
+// hand: watch it spin, drag-resize it (aspect tracks, no stretch), Esc quits and prints the verdict.
+// Requires AERO_SHADER_TOOLS=ON (cooked cube shaders).
 #include <aero/core/log.hpp>
 #include <aero/core/math.hpp>
 #include <aero/core/profiler.hpp>
@@ -16,19 +20,27 @@
 #include <aero/rhi/shader_loader.hpp>
 
 #include "cube_mesh.hpp"
+#include "fps_gate.hpp"
 
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <thread>
 
 #ifdef AERO_CUBE_SHADERS_DIR
 
 namespace {
+
+constexpr float ROTATION_RAD_PER_SEC = 0.6F;   // ~one revolution / 10.5 s — calm, clearly visible
+constexpr float TWO_PI = 6.283185307179586F;   // wrap the spin angle so the float stays small
+constexpr double TITLE_UPDATE_SECONDS = 0.25;  // <= 4 Hz title refresh (no thrash/flicker)
+constexpr double LOG_INTERVAL_SECONDS = 1.0;   // 1 Hz fps log line
 
 // The real sample logic, split out of main() (docs/04: no exceptions across a public API boundary —
 // main() is this sample's outermost one; std::vector/std::string/etc. can theoretically throw
@@ -113,11 +125,14 @@ int runSample() {
         return 1;
     }
 
-    // --- fixed camera + model (static 0.5.2; 0.5.3 makes the angle time-based) ----------------
+    // --- fixed camera + spin axis (0.5.3: the model angle is now time-based, recomputed per frame) ---
     const Mat4 view = lookAt(Vec3{0.0F, 0.0F, 2.5F}, Vec3{0.0F, 0.0F, 0.0F}, Vec3{0.0F, 1.0F, 0.0F});
-    const Mat4 model = toMat4(fromAxisAngle(normalize(Vec3{0.35F, 1.0F, 0.18F}), 0.7F));  // 3 faces visible
+    const Vec3 spinAxis = normalize(Vec3{0.35F, 1.0F, 0.18F});  // tilted => the tumble shows several faces
 
     FrameClock clock;
+    cube::FpsGate gate;
+    double lastTitleAt = 0.0;
+    double lastLogAt = 0.0;
     bool running = true;
     while (running) {
         ctx.newFrame();
@@ -131,6 +146,8 @@ int runSample() {
             running = false;
         }
         clock.tick();
+        const float angle = std::fmod(static_cast<float>(clock.totalSeconds()) * ROTATION_RAD_PER_SEC, TWO_PI);
+        const Mat4 model = toMat4(fromAxisAngle(spinAxis, angle));
 
         const rhi::Color sky{0.08F, 0.10F, 0.14F, 1.0F};
         if (std::optional<render::Frame> frame = renderer->beginFrame(sky)) {
@@ -147,10 +164,22 @@ int runSample() {
             device->bindFragmentSamplers(pass, 0, std::span{&bind, 1});
             device->drawIndexed(pass, 36);
 
-            renderer->endFrame(std::move(*frame));
+            if (renderer->endFrame(std::move(*frame))) {
+                const double now = monotonicSeconds();
+                gate.recordPresent(now);
+                if (now - lastTitleAt >= TITLE_UPDATE_SECONDS) {
+                    window->setTitle("Aero — Phase 0 Cube · " + std::to_string(std::lround(clock.fps())) + " fps");
+                    lastTitleAt = now;
+                }
+                if (now - lastLogAt >= LOG_INTERVAL_SECONDS) {
+                    AERO_LOG_INFO("fps {:.1f} · dt {:.2f} ms", clock.fps(), clock.deltaSeconds() * 1000.0F);
+                    lastLogAt = now;
+                }
+            }
         } else {
             // Not presentable (minimized): beginFrame returns immediately (no vsync wait on a nullopt
             // acquire), so idle a beat to avoid pegging a core until restore (AC-7). Mirrors phase-0-clear.
+            gate.noteInterruption();  // break the interval chain so the next present skips the idle gap
             std::this_thread::sleep_for(std::chrono::milliseconds(4));
         }
         AERO_PROFILE_FRAME_MARK;
@@ -162,7 +191,11 @@ int runSample() {
     device->destroyTexture(tex);
     device->destroyBuffer(ibuf);
     device->destroyBuffer(vbuf);
+    const cube::GateSummary gateSummary = gate.summary();
     AERO_LOG_INFO("closing after {} frames, {:.1f}s", clock.frameCount(), clock.totalSeconds());
+    AERO_LOG_INFO("60fps gate: {} — avg {:.1f} fps, worst {:.1f} fps over {} frames",
+                  cube::toString(gateSummary.verdict), gateSummary.avgFps, gateSummary.worstFps, gateSummary.samples);
+    AERO_LOG_INFO("record this run in samples/phase-0-cube/VALIDATION.md (this OS + your display refresh)");
     return 0;
 }
 
