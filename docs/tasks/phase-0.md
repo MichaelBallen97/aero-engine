@@ -196,6 +196,8 @@ Subtasks:
 - Rotate over time; vsync; fps counter
 - **Validate the gate on all 3 OSes**
 
+> **Status (2026-07-19):** code landed — the cube spins (time-based rotation), shows an fps counter (window title + 1 Hz log), and prints an objective verdict via sample-local `fps_gate.hpp`; sample-only, zero engine change. **macOS validated PASS** (avg 60.0 / worst 47.5 fps, MacBook Pro M1 Pro @ 60 Hz; vsync-locked, never uncapped — see `samples/phase-0-cube/VALIDATION.md`). **Windows/Linux pending** a real-hardware run ⇒ **Phase 0 gate OPEN**, closed later by a code-free follow-up that fills the two remaining ledger rows.
+
 ---
 
 **Phase gate:** Spinning textured cube @60fps on mac/win/linux; CI green (ASan/UBSan) from commit #1.
