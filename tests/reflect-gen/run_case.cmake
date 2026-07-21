@@ -202,6 +202,106 @@ elseif(CASE STREQUAL "determinism")
         message(FATAL_ERROR "case 'determinism': two runs over the same input+flags produced different stdout")
     endif()
 
+elseif(CASE STREQUAL "components_basic")
+    aero_run_tool(ARGS --components "${FIXTURES_DIR}/component_basic.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "component Transform")
+    aero_expect_stdout_contains("${out}" "field position : engine::Vec3 [vec3]")
+    aero_expect_stdout_contains("${out}" "field rotation : engine::Quat [quat]")
+    aero_expect_stdout_contains("${out}" "field mass : float [primitive]")
+    aero_expect_stdout_contains("${out}" "field hitPoints : int [primitive]")
+    aero_expect_stdout_contains("${out}" "field active : bool [primitive]")
+    # non-component sibling, static member, and method must NOT be collected
+    foreach(_absent "NotAComponent" "field SCHEMA_VERSION" "field lengthSquared")
+        string(FIND "${out}" "${_absent}" _idx)
+        if(NOT _idx EQUAL -1)
+            message(FATAL_ERROR "case 'components_basic': '${_absent}' must not appear, got:\n${out}")
+        endif()
+    endforeach()
+    # declaration order (AC-9): position before rotation before mass
+    string(FIND "${out}" "field position" _p)
+    string(FIND "${out}" "field rotation" _r)
+    string(FIND "${out}" "field mass" _m)
+    if(NOT (_p LESS _r AND _r LESS _m))
+        message(FATAL_ERROR "case 'components_basic': fields not in declaration order:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "components_categories")
+    aero_run_tool(ARGS --components "${FIXTURES_DIR}/component_basic.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "[vec3]")
+    aero_expect_stdout_contains("${out}" "[quat]")
+    aero_expect_stdout_contains("${out}" "[primitive]")
+
+elseif(CASE STREQUAL "components_unsupported")
+    aero_run_tool(ARGS --components "${FIXTURES_DIR}/component_unsupported.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "field velocity : engine::Vec4 [unsupported]")
+    aero_expect_stderr_contains("${err}" "velocity")
+    aero_expect_stderr_contains("${err}" "subset")
+
+elseif(CASE STREQUAL "components_multi")
+    aero_run_tool(ARGS --components "${FIXTURES_DIR}/component_multi.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "component Player")
+    aero_expect_stdout_contains("${out}" "component engine::demo::Light")
+    aero_expect_stdout_contains("${out}" "field color : engine::Vec3 [vec3]")
+    aero_expect_stdout_contains("${out}" "field intensity : double [primitive]")
+
+elseif(CASE STREQUAL "components_none")
+    # plain_component.hpp uses the LITERAL [[engine::component]] → no annotate cursor → zero components
+    # (F1/E1). The injected -DAERO_REFLECT_PARSE is inert here; the unknown-attribute WARNING on stderr
+    # is expected and not asserted. Self-contained → bare -std=c++20.
+    aero_run_tool(ARGS --components "${FIXTURES_DIR}/plain_component.hpp" -- -std=c++20
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    string(FIND "${out}" "component " _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'components_none': literal attr must detect ZERO components, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "components_tag")
+    # zero-field tag component: detected, NO field lines (E3/AC-9). Self-contained → bare -std=c++20.
+    aero_run_tool(ARGS --components "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "component Tag")
+    string(FIND "${out}" "field " _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'components_tag': a zero-field component must list no fields, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "components_determinism")
+    aero_run_tool(ARGS --components "${FIXTURES_DIR}/component_basic.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result1 OUT_STDOUT out1)
+    aero_expect_exit("${result1}" 0)
+    aero_run_tool(ARGS --components "${FIXTURES_DIR}/component_basic.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result2 OUT_STDOUT out2)
+    aero_expect_exit("${result2}" 0)
+    if(NOT out1 STREQUAL out2)
+        message(FATAL_ERROR "case 'components_determinism': two runs produced different stdout")
+    endif()
+
+elseif(CASE STREQUAL "components_bad_syntax")
+    # AC-10 under --components: a malformed TU still exits 2. The parse + diagnostics + verdict path is
+    # shared with walk-mode and runs regardless of the detection dispatch. Mirrors bad_syntax.
+    file(WRITE "${WORK_DIR}/bad.hpp" "struct { ) Broken")
+    aero_run_tool(ARGS --components "${WORK_DIR}/bad.hpp" -- -x c++ -std=c++20 OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_stderr_nonempty("${err}")
+
+elseif(CASE STREQUAL "components_missing_input")
+    # AC-10 under --components: an unreadable <input> exits 3 (isReadableFile precedes the dispatch).
+    aero_run_tool(ARGS --components "${WORK_DIR}/nope.hpp" -- -std=c++20 OUT_RESULT result OUT_STDOUT out)
+    aero_expect_exit("${result}" 3)
+    if(NOT out STREQUAL "")
+        message(FATAL_ERROR "case 'components_missing_input': expected nothing on stdout, got:\n${out}")
+    endif()
+
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")
 endif()

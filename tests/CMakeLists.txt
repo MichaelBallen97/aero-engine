@@ -297,7 +297,10 @@ if(AERO_REFLECT_TOOLS)
 
     set(_aero_reflect_cases
         help version walk_plain parse_engine_header engine_types all_flag
-        annotation_visible bad_syntax missing_input no_input unknown_flag double_input determinism)
+        annotation_visible bad_syntax missing_input no_input unknown_flag double_input determinism
+        components_basic components_categories components_unsupported components_multi
+        components_none components_tag components_determinism
+        components_bad_syntax components_missing_input)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"

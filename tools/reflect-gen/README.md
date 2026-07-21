@@ -1,10 +1,10 @@
 # tools/reflect-gen
 
 `aero_reflect_gen` — a first-party CLI that links system libclang (the stable C API, LLVM 18),
-parses a translation unit given on its command line, walks the resulting AST, and reports what it
-saw. This is the harness rung of Epic 1.1 (ADR-004: reflection is the spine) — it stops at *parse +
-walk*; 1.1.2 teaches it to recognize `[[engine::component]]` and collect fields, 1.1.3 emits
-`entt::meta` registration, 1.1.4 makes codegen a first-class incremental build step.
+parses a translation unit given on its command line, and either walks the resulting AST or (task
+1.1.2, `--components`) detects `engine::component`-annotated structs/classes and collects their
+fields. This is Epic 1.1's harness (ADR-004: reflection is the spine); 1.1.3 emits `entt::meta`
+registration from the detected model, 1.1.4 makes codegen a first-class incremental build step.
 
 ## Why system-discovered LLVM 18 (and not vcpkg, and not a pinned download)
 
@@ -75,6 +75,80 @@ aero_reflect_gen [--all] [--main-file-only] [--version] [--help] <input> [-- <cl
 from the build itself (1.1.4 — this task's tests feed a hand-verified, per-OS flag set via
 `-- <clang args>`); recognize `[[engine::component]]` as anything other than an unrecognized,
 warned-about attribute (1.1.2); emit `entt::meta` registration or any other generated output (1.1.3).
+
+## Component detection (`--components`)
+
+With `--components`, `aero_reflect_gen` **detects** every `struct`/`class` definition carrying the
+`engine::component` annotation, **collects** its data members in declaration order, **classifies**
+each against ADR-004's minimal subset (primitives + `Vec3`/`Quat`), and reports the result as a
+deterministic listing to stdout — instead of the raw AST walk. `--main-file-only`/`--all` still
+govern which cursors are considered, exactly as for the walk.
+
+### Why a macro, not the literal `[[engine::component]]`
+
+A bare `[[engine::component]]` is an *unrecognized* attribute: Clang parses it and then **discards**
+it — there is no attribute cursor left to find in the AST, only a `-Wunknown-attributes` warning
+(this is exactly what the `annotation_visible` test case keys on). So the annotation is authored
+through the **`AERO_COMPONENT` macro**:
+
+```cpp
+#if defined(AERO_REFLECT_PARSE)
+  #define AERO_COMPONENT [[clang::annotate("engine::component")]]
+#else
+  #define AERO_COMPONENT
+#endif
+```
+
+Under `aero_reflect_gen`'s own parse, `AERO_REFLECT_PARSE` is **auto-injected** as
+`-DAERO_REFLECT_PARSE=1` at the front of every invocation's clang args (no caller needs to pass it),
+so `AERO_COMPONENT` expands to `[[clang::annotate("engine::component")]]` — a first-class
+`CXCursor_AnnotateAttr` AST node the tool can find. Under the real compiler (where
+`AERO_REFLECT_PARSE` is never defined), the same macro expands to **nothing**: zero attribute, zero
+warning, zero runtime cost. The macro currently lives at `tests/reflect-gen/fixtures/aero_reflect.hpp`
+(a tests-local home, kept out of `engine/` so this task's footprint is tools+tests only); it moves to
+a permanent `engine/reflect/` public header when the first real component is authored in engine code
+(task 1.3.2).
+
+### Detection rule
+
+A component is a `CXCursor_StructDecl` **or** `CXCursor_ClassDecl` that (a) is a definition, and (b)
+has a **direct-child** `CXCursor_AnnotateAttr` whose spelling is exactly `engine::component`. Its
+fields are its non-static data members (`CXCursor_FieldDecl`) in declaration order — static members,
+methods, and nested types are excluded. Its qualified name is built by walking
+`clang_getCursorSemanticParent` (namespaces and enclosing records) and joining with `::` (e.g.
+`engine::demo::Light`).
+
+### Field classification
+
+Each field's type is canonicalized (`clang_getCanonicalType`, so a `using`/typedef alias still
+resolves) before classification:
+
+| Canonical type | Category |
+|---|---|
+| `bool`, the char family, `short`/`int`/`long`/`long long` (signed and unsigned), `float`, `double`, `long double` | `primitive` |
+| `engine::Vec3` | `vec3` |
+| `engine::Quat` | `quat` |
+| anything else (`engine::Vec4`, `engine::Mat4`, `std::string`, a nested struct, a pointer, an array, …) | `unsupported` |
+
+An `unsupported` field is **not** an error: it is still collected and listed, tagged `[unsupported]`,
+and a warning naming it is printed to stderr — the exit code stays **0**. Detection is a lenient
+*harness*; codegen policy (task 1.1.3) may later choose to reject, skip, or stub an unsupported field,
+but detection itself always surfaces what it saw rather than silently dropping it or aborting the
+whole translation unit.
+
+### Output format
+
+One `component <qualified-name> @<line>:<col>` line per detected record, followed by its `field
+<name> : <type-spelling> [<category>]` lines (indented two spaces); a component with zero fields
+prints only its `component` line. Nothing but the listing goes to stdout — diagnostics and
+unsupported-field warnings stay on stderr, matching the tool's existing stream discipline. Example:
+
+```
+component Transform @6:24
+  field position : engine::Vec3 [vec3]
+  field rotation : engine::Quat [quat]
+  field mass : float [primitive]
+```
 
 ## Local troubleshooting
 

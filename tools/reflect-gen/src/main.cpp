@@ -29,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -50,7 +51,7 @@ void printUsage(std::ostream& out) {
     out << "aero_reflect_gen " << TOOL_VERSION << " -- libclang parse+walk harness (task 1.1.1)\n"
         << "\n"
         << "Usage:\n"
-        << "  aero_reflect_gen [--all] [--main-file-only] <input> [-- <clang args>...]\n"
+        << "  aero_reflect_gen [--all] [--main-file-only] [--components] <input> [-- <clang args>...]\n"
         << "  aero_reflect_gen --version\n"
         << "  aero_reflect_gen --help\n"
         << "\n"
@@ -58,6 +59,7 @@ void printUsage(std::ostream& out) {
         << "  -- <clang args>...   Forwarded verbatim to libclang (-std=, -I, -isysroot, -D, ...).\n"
         << "  --main-file-only     (default) Limit the AST walk to cursors physically in <input>.\n"
         << "  --all                Include cursors from every included header (wins if both given).\n"
+        << "  --components         List detected engine::component structs/classes and fields, not the raw AST walk.\n"
         << "  --version            Print the tool version and clang_getClangVersion(); exit 0.\n"
         << "  --help               Print this usage; exit 0.\n"
         << "\n"
@@ -84,6 +86,7 @@ struct Args {
     std::string input;
     bool wantAll = false;
     bool wantMainFileOnly = false;
+    bool wantComponents = false;
     bool wantHelp = false;
     bool wantVersion = false;
     std::vector<const char*> clangArgs;  // everything after `--`, forwarded verbatim (points into argv)
@@ -124,6 +127,8 @@ std::optional<Args> parseArgs(int argc, char** argv) {
             args.wantAll = true;
         } else if (token == "--main-file-only") {
             args.wantMainFileOnly = true;
+        } else if (token == "--components") {
+            args.wantComponents = true;
         } else if (!token.empty() && token.front() == '-') {
             std::cerr << "aero_reflect_gen: error: unknown flag '" << token << "'\n";
             return std::nullopt;
@@ -249,6 +254,165 @@ CXChildVisitResult visitCursor(CXCursor cursor, CXCursor /*parent*/, CXClientDat
     return CXChildVisit_Continue;
 }
 
+// ---- task 1.1.2: reflection model (spec D9) -------------------------------------------------------
+enum class FieldCategory : std::uint8_t { Primitive, Vec3, Quat, Unsupported };
+
+struct Field {
+    std::string name;
+    std::string typeName;
+    FieldCategory category = FieldCategory::Unsupported;
+};
+
+struct Component {
+    std::string qualifiedName;
+    unsigned line = 0;
+    unsigned column = 0;
+    std::vector<Field> fields;
+};
+
+// Strip a leading elaborated-type keyword ("struct "/"class ") a record spelling may carry under
+// MSVC-compat libclang, so the reported type name is host-invariant (no-op on macOS/Linux). Applied to
+// BOTH the canonical spelling (classification) and the as-written spelling (display) so they never
+// disagree, and to pre-empt the Windows verify-at-implementation point (spec Sec 3.9).
+std::string stripElaboratedKeyword(std::string spelling) {
+    constexpr std::string_view STRUCT_KW = "struct ";
+    constexpr std::string_view CLASS_KW = "class ";
+    if (spelling.starts_with(STRUCT_KW)) {
+        spelling.erase(0, STRUCT_KW.size());
+    } else if (spelling.starts_with(CLASS_KW)) {
+        spelling.erase(0, CLASS_KW.size());
+    }
+    return spelling;
+}
+
+// Classify a field's type against ADR-004's minimal subset. Match on the CANONICAL type so a
+// using/typedef alias still resolves (D6). The builtin range [CXType_Bool, CXType_LongDouble] is the
+// whole fundamental-arithmetic set (bool, char family, short/int/long/long long signed+unsigned,
+// float, double, long double) -- verified F4.
+FieldCategory classifyField(CXType fieldType) {
+    const CXType canonical = clang_getCanonicalType(fieldType);
+    if (canonical.kind >= CXType_Bool && canonical.kind <= CXType_LongDouble) {
+        return FieldCategory::Primitive;
+    }
+    const std::string spelling = stripElaboratedKeyword(toStdString(clang_getTypeSpelling(canonical)));
+    if (spelling == "engine::Vec3") {
+        return FieldCategory::Vec3;
+    }
+    if (spelling == "engine::Quat") {
+        return FieldCategory::Quat;
+    }
+    return FieldCategory::Unsupported;
+}
+
+std::string_view categoryTag(FieldCategory category) {
+    switch (category) {
+        case FieldCategory::Primitive:
+            return "primitive";
+        case FieldCategory::Vec3:
+            return "vec3";
+        case FieldCategory::Quat:
+            return "quat";
+        case FieldCategory::Unsupported:
+            return "unsupported";
+    }
+    return "unsupported";  // unreachable; satisfies -Wreturn-type
+}
+
+// One-level child visit: does this record carry the component annotate marker? (F2)
+CXChildVisitResult annotateMarkerVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientData clientData) {
+    if (clang_getCursorKind(cursor) == CXCursor_AnnotateAttr &&
+        toStdString(clang_getCursorSpelling(cursor)) == "engine::component") {
+        *static_cast<bool*>(clientData) = true;
+        return CXChildVisit_Break;
+    }
+    return CXChildVisit_Continue;  // stay at direct-child level (presence, not recursion)
+}
+
+bool hasComponentAnnotation(CXCursor record) {
+    bool found = false;
+    clang_visitChildren(record, annotateMarkerVisitor, &found);
+    return found;
+}
+
+// Qualified name via the semantic-parent walk (namespaces + enclosing records), joined with "::".
+std::string buildQualifiedName(CXCursor cursor) {
+    std::vector<std::string> parts;
+    parts.push_back(toStdString(clang_getCursorSpelling(cursor)));
+    CXCursor parent = clang_getCursorSemanticParent(cursor);
+    while (clang_Cursor_isNull(parent) == 0 && clang_getCursorKind(parent) != CXCursor_TranslationUnit) {
+        std::string name = toStdString(clang_getCursorSpelling(parent));
+        if (!name.empty()) {  // skip anonymous namespaces
+            parts.push_back(std::move(name));
+        }
+        parent = clang_getCursorSemanticParent(parent);
+    }
+    std::reverse(parts.begin(), parts.end());  // was built innermost-first; join outermost-first
+    std::string result;
+    for (const auto& part : parts) {
+        if (!result.empty()) {
+            result += "::";
+        }
+        result += part;
+    }
+    return result;
+}
+
+// Collect a component's non-static data members (FieldDecl only -> excludes statics/methods/nested,
+// E11) in declaration/source order (AC-9).
+CXChildVisitResult fieldVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientData clientData) {
+    if (clang_getCursorKind(cursor) == CXCursor_FieldDecl) {
+        auto* fields = static_cast<std::vector<Field>*>(clientData);
+        const CXType type = clang_getCursorType(cursor);
+        fields->push_back(Field{
+            .name = toStdString(clang_getCursorSpelling(cursor)),
+            .typeName = stripElaboratedKeyword(toStdString(clang_getTypeSpelling(type))),  // as-written
+            .category = classifyField(type),                                               // canonical classify
+        });
+    }
+    return CXChildVisit_Continue;
+}
+
+struct DetectState {
+    bool allFiles = false;
+    std::vector<Component>* components = nullptr;
+};
+
+CXChildVisitResult detectVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientData clientData) {
+    auto* state = static_cast<DetectState*>(clientData);
+    const CXSourceLocation location = clang_getCursorLocation(cursor);
+    if (!state->allFiles && clang_Location_isFromMainFile(location) == 0) {
+        return CXChildVisit_Continue;  // F5: skip non-main-file subtrees (the ~400 stdlib records)
+    }
+    const CXCursorKind kind = clang_getCursorKind(cursor);
+    const bool isRecord = (kind == CXCursor_StructDecl || kind == CXCursor_ClassDecl);
+    if (isRecord && clang_isCursorDefinition(cursor) != 0 && hasComponentAnnotation(cursor)) {
+        Component component;
+        component.qualifiedName = buildQualifiedName(cursor);
+        clang_getSpellingLocation(location, nullptr, &component.line, &component.column, nullptr);
+        clang_visitChildren(cursor, fieldVisitor, &component.fields);
+        state->components->push_back(std::move(component));
+        return CXChildVisit_Continue;  // flat model: don't descend into a detected component
+    }
+    return CXChildVisit_Recurse;  // descend into namespaces / non-component records to find nested (E4)
+}
+
+// Stdout = listing only; warnings to stderr (1.1.1 stream discipline). Source-order traversal =>
+// deterministic (AC-7).
+void emitComponents(const std::vector<Component>& components) {
+    for (const Component& component : components) {
+        std::cout << "component " << component.qualifiedName << " @" << component.line << ':' << component.column
+                  << '\n';
+        for (const Field& field : component.fields) {
+            std::cout << "  field " << field.name << " : " << field.typeName << " [" << categoryTag(field.category)
+                      << "]\n";
+            if (field.category == FieldCategory::Unsupported) {  // lenient: warn, never fail (D7)
+                std::cerr << "aero_reflect_gen: warning: " << component.qualifiedName << '.' << field.name << " : "
+                          << field.typeName << " is not in the reflectable subset (primitives + Vec3/Quat)\n";
+            }
+        }
+    }
+}
+
 }  // namespace
 
 ExitCode runMain(int argc, char** argv) {
@@ -277,10 +441,17 @@ ExitCode runMain(int argc, char** argv) {
     // --- step 3/8: CXIndex, RAII-disposed on every path (declared before the TU guard on purpose) --
     const IndexGuard indexGuard(clang_createIndex(0, 0));
 
-    // --- step 4: parse ------------------------------------------------------------------------------
+    // --- step 4: parse (inject the reflection marker at the FRONT, D3) -----------------------------
+    // AERO_COMPONENT expands to clang::annotate iff AERO_REFLECT_PARSE is defined; define it for THIS
+    // tool's parse so no caller manages it. Verified inert for the literal-attr fixtures (AC-8).
+    std::vector<const char*> effectiveArgs;
+    effectiveArgs.reserve(args.clangArgs.size() + 1);
+    effectiveArgs.push_back("-DAERO_REFLECT_PARSE=1");
+    effectiveArgs.insert(effectiveArgs.end(), args.clangArgs.begin(), args.clangArgs.end());
+
     CXTranslationUnit tu = clang_parseTranslationUnit(
-        indexGuard.get(), args.input.c_str(), args.clangArgs.data(), static_cast<int>(args.clangArgs.size()), nullptr,
-        0, CXTranslationUnit_SkipFunctionBodies | CXTranslationUnit_KeepGoing);
+        indexGuard.get(), args.input.c_str(), effectiveArgs.data(), static_cast<int>(effectiveArgs.size()), nullptr, 0,
+        CXTranslationUnit_SkipFunctionBodies | CXTranslationUnit_KeepGoing);
     if (tu == nullptr) {
         std::cerr << "aero_reflect_gen: error: failed to parse '" << args.input << "'\n";
         return ExitCode::ParseError;
@@ -297,9 +468,16 @@ ExitCode runMain(int argc, char** argv) {
         clang_disposeDiagnostic(diagnostic);
     }
 
-    // --- step 6: AST walk -- stdout only -------------------------------------------------------------
-    WalkState state{.depth = 0, .allFiles = args.wantAll};
-    clang_visitChildren(clang_getTranslationUnitCursor(tu), visitCursor, &state);
+    // --- step 6: detection (--components) or the AST walk -- stdout only ---------------------------
+    if (args.wantComponents) {
+        std::vector<Component> components;
+        DetectState detect{.allFiles = args.wantAll, .components = &components};
+        clang_visitChildren(clang_getTranslationUnitCursor(tu), detectVisitor, &detect);
+        emitComponents(components);
+    } else {
+        WalkState state{.depth = 0, .allFiles = args.wantAll};
+        clang_visitChildren(clang_getTranslationUnitCursor(tu), visitCursor, &state);
+    }
 
     // --- step 7: verdict ------------------------------------------------------------------------------
     return (maxSeverity >= static_cast<int>(CXDiagnostic_Error)) ? ExitCode::ParseError : ExitCode::Success;
