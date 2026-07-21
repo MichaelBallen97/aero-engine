@@ -55,6 +55,15 @@ function(aero_expect_exit actual expected)
     endif()
 endfunction()
 
+# Like aero_expect_exit, but on a mismatch ALSO dumps the tool's captured stderr. The header-parsing
+# cases otherwise swallow it, and the WHY of a parse failure (a clang / MSVC-STL diagnostic) lives
+# there -- without this, a lane's parse regression reads only as "expected 0, got 2" with no cause.
+function(aero_expect_exit_or_dump actual expected err)
+    if(NOT actual EQUAL expected)
+        message(FATAL_ERROR "case '${CASE}': expected exit ${expected}, got ${actual}\n--- tool stderr ---\n${err}\n--- end tool stderr ---")
+    endif()
+endfunction()
+
 function(aero_expect_stdout_contains out needle)
     string(FIND "${out}" "${needle}" _idx)
     if(_idx EQUAL -1)
@@ -109,7 +118,7 @@ elseif(CASE STREQUAL "parse_engine_header")
     # newer-MSVC version warning on Windows). Keep only a defensive check that no error-severity line
     # slipped through despite exit 0 (which would be a real tool bug, not a portability artifact).
     aero_run_tool(ARGS "${HANDLE_HPP}" -- ${CLANG_ARGS} OUT_RESULT result OUT_STDERR err)
-    aero_expect_exit("${result}" 0)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
     string(FIND "${err}" "error:" _idx_err)
     if(NOT _idx_err EQUAL -1)
         message(FATAL_ERROR "case 'parse_engine_header': exit 0, but an error-severity diagnostic appeared "
@@ -118,17 +127,17 @@ elseif(CASE STREQUAL "parse_engine_header")
 
 elseif(CASE STREQUAL "engine_types")
     aero_run_tool(ARGS "${FIXTURES_DIR}/engine_component.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
-        OUT_RESULT result OUT_STDOUT out)
-    aero_expect_exit("${result}" 0)
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
     aero_expect_stdout_contains("${out}" "Demo")
 
 elseif(CASE STREQUAL "all_flag")
     aero_run_tool(ARGS "${FIXTURES_DIR}/engine_component.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
-        OUT_RESULT result_default OUT_STDOUT out_default)
-    aero_expect_exit("${result_default}" 0)
+        OUT_RESULT result_default OUT_STDOUT out_default OUT_STDERR err_default)
+    aero_expect_exit_or_dump("${result_default}" 0 "${err_default}")
     aero_run_tool(ARGS "${FIXTURES_DIR}/engine_component.hpp" --all -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
-        OUT_RESULT result_all OUT_STDOUT out_all)
-    aero_expect_exit("${result_all}" 0)
+        OUT_RESULT result_all OUT_STDOUT out_all OUT_STDERR err_all)
+    aero_expect_exit_or_dump("${result_all}" 0 "${err_all}")
 
     string(LENGTH "${out_default}" _len_default)
     string(LENGTH "${out_all}" _len_all)
@@ -149,7 +158,7 @@ elseif(CASE STREQUAL "all_flag")
 elseif(CASE STREQUAL "annotation_visible")
     aero_run_tool(ARGS "${FIXTURES_DIR}/engine_component.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
         OUT_RESULT result OUT_STDERR err)
-    aero_expect_exit("${result}" 0)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
     # F5 (verified live, 2026-07-21): clang-18's actual diagnostic text is "unknown attribute
     # 'component' ignored" -- the scoped-attribute vendor namespace ("engine::") is NOT included in the
     # quoted attribute name, unlike the spec's illustrative quote. "unknown attribute" is the reliably

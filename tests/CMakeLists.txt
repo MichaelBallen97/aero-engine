@@ -261,6 +261,14 @@ if(AERO_REFLECT_TOOLS)
     # Linux: clang-18 auto-detects the Ubuntu-24.04 GCC-13 toolchain -- no extra flag needed (the Linux
     # CI lane parses handle.hpp and the engine headers green with bare -std=c++20 + -resource-dir).
     if(WIN32)
+        # The windows-2022 runner's MSVC STL (14.44.x) hard-#errors "STL1000: Unexpected compiler
+        # version" in <yvals_core.h> when parsed by a Clang older than it expects. clang-18 is older
+        # than that STL's baseline, so even <cstdint> (which pulls <yvals_core.h>) fails to parse --
+        # exit 2, verified on CI 2026-07-21 (ref actions/runner-images#8153).
+        # _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH is MSVC's documented escape hatch that disables that
+        # version guard: harmless everywhere, load-bearing on this lane.
+        list(APPEND _aero_reflect_clang_args -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
+
         # Windows/MSVC: unlike Linux/macOS, libclang does NOT reliably resolve the MSVC C++ stdlib +
         # Windows-SDK headers on its own here -- verified on CI (2026-07-21): the four cases that pull a
         # standard header (parse_engine_header / engine_types / all_flag / annotation_visible) fail
