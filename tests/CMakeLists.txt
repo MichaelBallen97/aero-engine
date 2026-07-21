@@ -300,7 +300,9 @@ if(AERO_REFLECT_TOOLS)
         annotation_visible bad_syntax missing_input no_input unknown_flag double_input determinism
         components_basic components_categories components_unsupported components_multi
         components_none components_tag components_determinism
-        components_bad_syntax components_missing_input)
+        components_bad_syntax components_missing_input
+        emit_basic emit_output_file emit_unsupported emit_multi emit_tag
+        emit_none emit_determinism emit_bad_syntax emit_missing_input)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -312,5 +314,31 @@ if(AERO_REFLECT_TOOLS)
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/reflect-gen/run_case.cmake)
     endforeach()
     unset(_aero_reflect_cases)
+
+    # --- task 1.1.3: build-time entt::meta generation + the runtime proof target (spec D8/D9) -------------
+    # F5: aero_reflect_gen is built by THIS build, so it does not exist at configure time — generation MUST be
+    # a build-time add_custom_command(DEPENDS aero_reflect_gen ...), never a configure-time execute_process.
+    find_package(EnTT CONFIG REQUIRED)   # vcpkg entt -> EnTT::EnTT (header-only; confirmed in step 0)
+
+    set(_aero_reflect_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/reflect-generated")
+    set(_aero_reflect_gen_src "${_aero_reflect_gen_dir}/component_codegen.meta.gen.cpp")
+    set(_aero_reflect_fixture "${CMAKE_CURRENT_SOURCE_DIR}/reflect-gen/fixtures/component_codegen.hpp")
+
+    add_custom_command(
+        OUTPUT  "${_aero_reflect_gen_src}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_aero_reflect_gen_dir}"
+        COMMAND aero_reflect_gen --emit-meta "${_aero_reflect_fixture}"
+                -o "${_aero_reflect_gen_src}" -- ${_aero_reflect_clang_args}
+                -I "${CMAKE_SOURCE_DIR}/engine/core/include"
+        DEPENDS aero_reflect_gen "${_aero_reflect_fixture}"
+        COMMENT "reflect-gen: emitting entt::meta registration for component_codegen.hpp"
+        VERBATIM)
+
+    add_executable(aero_reflect_meta_test reflect-gen/meta_test.cpp "${_aero_reflect_gen_src}")
+    target_link_libraries(aero_reflect_meta_test PRIVATE doctest::doctest EnTT::EnTT aero::core)
+    target_include_directories(aero_reflect_meta_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/reflect-gen/fixtures")  # engine/core/include arrives via aero::core (PUBLIC)
+    add_test(NAME aero_reflect_meta_test COMMAND aero_reflect_meta_test)
+
     unset(_aero_reflect_clang_args)
 endif()
