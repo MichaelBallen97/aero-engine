@@ -176,3 +176,107 @@ if(AERO_SHADER_TOOLS)
     endforeach()
     unset(_aero_shaderc_cases)
 endif()
+
+# ---------------------------------------------------------------------------------------------
+# The reflect-gen end-to-end CTest suite (task 1.1.1; plan/spec D9/§3.6) -- mirrors the shaderc
+# harness immediately above: each case runs the REAL aero_reflect_gen binary through
+# tests/reflect-gen/run_case.cmake, which is what actually asserts exit codes -- several cases are
+# NEGATIVE (bad_syntax=2, missing_input=3, unknown_flag/double_input=1), and a raw
+# `add_test(COMMAND aero_reflect_gen ...)` would treat any non-zero exit as a ctest FAILURE
+# regardless of whether that was the expected behavior (see run_case.cmake's own header comment).
+#
+# No doctest TU for the tool, and no tool code links into aero_tests (spec D9) -- a CLI's honest test
+# is its process boundary: argv in, exit code + stdout/stderr out.
+#
+# Gated on AERO_REFLECT_TOOLS: when OFF, aero_reflect_gen is never built and these tests must not be
+# registered -- the ctest count visibly shrinking is deliberate (AC-10), not a bug.
+if(AERO_REFLECT_TOOLS)
+    # Per-OS clang flags libclang needs to find the C++ stdlib/SDK and its OWN builtin headers (spec
+    # F4). Computed once here, where CMAKE_OSX_SYSROOT and AERO_LLVM_ROOT (a cache variable set by
+    # tools/reflect-gen/CMakeLists.txt, which add_subdirectory(tools) already ran before
+    # add_subdirectory(tests), root CMakeLists.txt) are both known; passed to the driver as a ;-list.
+    set(_aero_reflect_clang_args -std=c++20)
+
+    # -resource-dir: found while de-risking this task locally -- NOT anticipated by the plan/spec.
+    # aero_reflect_gen is a standalone executable living OUTSIDE the LLVM install prefix, so libclang's
+    # internal driver cannot locate its own resource directory (the compiler-builtin headers, e.g.
+    # stdarg.h -- normally found relative to a REAL clang binary's own path) purely from argv[0]. Without
+    # this flag, EVERY parse that includes anything -- even <cstdint> alone -- fails with
+    # "'stdarg.h' file not found" and a cascade of "unknown type name ..." diagnostics, regardless of
+    # -isysroot (verified: parse_engine_header fails exit 2 without it, exit 0 with it, isysroot held
+    # constant). This is the standard LLVM install-tree layout (<prefix>/lib/clang/<major>/include) on
+    # every platform's package (Homebrew, apt, the official Windows installer), so it is applied
+    # unconditionally on all OSes, not just macOS.
+    if(EXISTS "${AERO_LLVM_ROOT}/lib/clang/18")
+        list(APPEND _aero_reflect_clang_args -resource-dir "${AERO_LLVM_ROOT}/lib/clang/18")
+    else()
+        file(GLOB _aero_reflect_resource_dirs LIST_DIRECTORIES true "${AERO_LLVM_ROOT}/lib/clang/*")
+        if(_aero_reflect_resource_dirs)
+            list(GET _aero_reflect_resource_dirs 0 _aero_reflect_resource_dir)
+            message(STATUS "reflect-gen tests: LLVM 18's usual resource dir layout is absent; falling "
+                           "back to ${_aero_reflect_resource_dir}")
+            list(APPEND _aero_reflect_clang_args -resource-dir "${_aero_reflect_resource_dir}")
+            unset(_aero_reflect_resource_dir)
+        else()
+            message(WARNING "reflect-gen tests: could not find a clang resource directory under "
+                            "${AERO_LLVM_ROOT}/lib/clang -- parses that include any standard header will "
+                            "fail. Check AERO_LLVM_ROOT.")
+        endif()
+        unset(_aero_reflect_resource_dirs)
+    endif()
+
+    if(APPLE)
+        message(STATUS "reflect-gen tests: CMAKE_OSX_SYSROOT = ${CMAKE_OSX_SYSROOT}")
+        # macOS-local contingency (plan C.1) -- REFINED after verifying live on this dev machine
+        # (2026-07-21): gating this branch on "CMAKE_OSX_SYSROOT is truthy" (the literal C.1 wording)
+        # turns out to be unsafe for THIS repo/machine combination -- CMAKE_OSX_SYSROOT is EMPTY here in
+        # practice (CMake's Darwin platform initialization does not always repopulate it on an
+        # incremental reconfigure of an existing build tree once compiler-ABI detection is already
+        # cached), which would silently skip -isysroot entirely rather than "use the raw default" as
+        # C.1 assumed. And even when CMAKE_OSX_SYSROOT (or clang's own auto-detected default) IS
+        # populated, that default is Xcode's MacOSX26.sdk, too new for clang-18's libc++ headers on a
+        # real parse (engine_types/parse_engine_header fail with libc++-internal errors even with
+        # -resource-dir fixed). So this ALWAYS tries the pinned macosx15.4 SDK first, on every configure
+        # -- not conditionally only when CMAKE_OSX_SYSROOT happens to already be set -- falling back to
+        # CMAKE_OSX_SYSROOT (if non-empty) and then to omitting -isysroot (with a loud WARNING, never
+        # silently) if neither resolves. CI's macos-15 runner ships a matching 15.x SDK already, so the
+        # pinned attempt is expected to succeed there too (verify-at-implementation, spec §3.8).
+        execute_process(COMMAND xcrun --sdk macosx15.4 --show-sdk-path
+                        OUTPUT_VARIABLE _aero_reflect_sysroot
+                        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET
+                        RESULT_VARIABLE _aero_reflect_sysroot_result)
+        if(_aero_reflect_sysroot_result EQUAL 0 AND EXISTS "${_aero_reflect_sysroot}")
+            message(STATUS "reflect-gen tests: pinning -isysroot to ${_aero_reflect_sysroot}")
+            list(APPEND _aero_reflect_clang_args -isysroot "${_aero_reflect_sysroot}")
+        elseif(CMAKE_OSX_SYSROOT)
+            list(APPEND _aero_reflect_clang_args -isysroot "${CMAKE_OSX_SYSROOT}")
+        else()
+            message(WARNING "reflect-gen tests: could not resolve a macOS SDK (neither the pinned "
+                            "macosx15.4 SDK via xcrun, nor CMAKE_OSX_SYSROOT) -- parses of headers that "
+                            "pull in libc++ may fail on clang's own auto-detected default SDK")
+        endif()
+        unset(_aero_reflect_sysroot)
+        unset(_aero_reflect_sysroot_result)
+    endif()
+    # Linux: clang-18 auto-detects the Ubuntu-24.04 GCC-13 toolchain; Windows: clang auto-detects MSVC
+    # under the msvc-dev-cmd environment the CI lane already sets up. Neither needs an extra flag today
+    # (verify-at-implementation, spec §3.8) -- append here if a real CI parse ever needs one.
+
+    message(STATUS "reflect-gen tests: CLANG_ARGS = ${_aero_reflect_clang_args}")
+
+    set(_aero_reflect_cases
+        help version walk_plain parse_engine_header engine_types all_flag
+        annotation_visible bad_syntax missing_input unknown_flag double_input determinism)
+    foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
+        add_test(NAME reflect-gen.${_aero_reflect_case}
+            COMMAND "${CMAKE_COMMAND}"
+                    -DTOOL=$<TARGET_FILE:aero_reflect_gen>
+                    -DCASE=${_aero_reflect_case}
+                    -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+                    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/reflect-gen/${_aero_reflect_case}
+                    "-DCLANG_ARGS=${_aero_reflect_clang_args}"
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/reflect-gen/run_case.cmake)
+    endforeach()
+    unset(_aero_reflect_cases)
+    unset(_aero_reflect_clang_args)
+endif()
