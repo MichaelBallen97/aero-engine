@@ -191,109 +191,9 @@ endif()
 # Gated on AERO_REFLECT_TOOLS: when OFF, aero_reflect_gen is never built and these tests must not be
 # registered -- the ctest count visibly shrinking is deliberate (AC-10), not a bug.
 if(AERO_REFLECT_TOOLS)
-    # Per-OS clang flags libclang needs to find the C++ stdlib/SDK and its OWN builtin headers (spec
-    # F4). Computed once here, where CMAKE_OSX_SYSROOT and AERO_LLVM_ROOT (a cache variable set by
-    # tools/reflect-gen/CMakeLists.txt, which add_subdirectory(tools) already ran before
-    # add_subdirectory(tests), root CMakeLists.txt) are both known; passed to the driver as a ;-list.
-    set(_aero_reflect_clang_args -std=c++20)
-
-    # -resource-dir: found while de-risking this task locally -- NOT anticipated by the plan/spec.
-    # aero_reflect_gen is a standalone executable living OUTSIDE the LLVM install prefix, so libclang's
-    # internal driver cannot locate its own resource directory (the compiler-builtin headers, e.g.
-    # stdarg.h -- normally found relative to a REAL clang binary's own path) purely from argv[0]. Without
-    # this flag, EVERY parse that includes anything -- even <cstdint> alone -- fails with
-    # "'stdarg.h' file not found" and a cascade of "unknown type name ..." diagnostics, regardless of
-    # -isysroot (verified: parse_engine_header fails exit 2 without it, exit 0 with it, isysroot held
-    # constant). This is the standard LLVM install-tree layout (<prefix>/lib/clang/<major>/include) on
-    # every platform's package (Homebrew, apt, the official Windows installer), so it is applied
-    # unconditionally on all OSes, not just macOS.
-    if(EXISTS "${AERO_LLVM_ROOT}/lib/clang/18")
-        list(APPEND _aero_reflect_clang_args -resource-dir "${AERO_LLVM_ROOT}/lib/clang/18")
-    else()
-        file(GLOB _aero_reflect_resource_dirs LIST_DIRECTORIES true "${AERO_LLVM_ROOT}/lib/clang/*")
-        if(_aero_reflect_resource_dirs)
-            list(GET _aero_reflect_resource_dirs 0 _aero_reflect_resource_dir)
-            message(STATUS "reflect-gen tests: LLVM 18's usual resource dir layout is absent; falling "
-                           "back to ${_aero_reflect_resource_dir}")
-            list(APPEND _aero_reflect_clang_args -resource-dir "${_aero_reflect_resource_dir}")
-            unset(_aero_reflect_resource_dir)
-        else()
-            message(WARNING "reflect-gen tests: could not find a clang resource directory under "
-                            "${AERO_LLVM_ROOT}/lib/clang -- parses that include any standard header will "
-                            "fail. Check AERO_LLVM_ROOT.")
-        endif()
-        unset(_aero_reflect_resource_dirs)
-    endif()
-
-    if(APPLE)
-        message(STATUS "reflect-gen tests: CMAKE_OSX_SYSROOT = ${CMAKE_OSX_SYSROOT}")
-        # macOS-local contingency (plan C.1) -- REFINED after verifying live on this dev machine
-        # (2026-07-21): gating this branch on "CMAKE_OSX_SYSROOT is truthy" (the literal C.1 wording)
-        # turns out to be unsafe for THIS repo/machine combination -- CMAKE_OSX_SYSROOT is EMPTY here in
-        # practice (CMake's Darwin platform initialization does not always repopulate it on an
-        # incremental reconfigure of an existing build tree once compiler-ABI detection is already
-        # cached), which would silently skip -isysroot entirely rather than "use the raw default" as
-        # C.1 assumed. And even when CMAKE_OSX_SYSROOT (or clang's own auto-detected default) IS
-        # populated, that default is Xcode's MacOSX26.sdk, too new for clang-18's libc++ headers on a
-        # real parse (engine_types/parse_engine_header fail with libc++-internal errors even with
-        # -resource-dir fixed). So this ALWAYS tries the pinned macosx15.4 SDK first, on every configure
-        # -- not conditionally only when CMAKE_OSX_SYSROOT happens to already be set -- falling back to
-        # CMAKE_OSX_SYSROOT (if non-empty) and then to omitting -isysroot (with a loud WARNING, never
-        # silently) if neither resolves. CI's macos-15 runner ships a matching 15.x SDK already, so the
-        # pinned attempt is expected to succeed there too (verify-at-implementation, spec §3.8).
-        execute_process(COMMAND xcrun --sdk macosx15.4 --show-sdk-path
-                        OUTPUT_VARIABLE _aero_reflect_sysroot
-                        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET
-                        RESULT_VARIABLE _aero_reflect_sysroot_result)
-        if(_aero_reflect_sysroot_result EQUAL 0 AND EXISTS "${_aero_reflect_sysroot}")
-            message(STATUS "reflect-gen tests: pinning -isysroot to ${_aero_reflect_sysroot}")
-            list(APPEND _aero_reflect_clang_args -isysroot "${_aero_reflect_sysroot}")
-        elseif(CMAKE_OSX_SYSROOT)
-            list(APPEND _aero_reflect_clang_args -isysroot "${CMAKE_OSX_SYSROOT}")
-        else()
-            message(WARNING "reflect-gen tests: could not resolve a macOS SDK (neither the pinned "
-                            "macosx15.4 SDK via xcrun, nor CMAKE_OSX_SYSROOT) -- parses of headers that "
-                            "pull in libc++ may fail on clang's own auto-detected default SDK")
-        endif()
-        unset(_aero_reflect_sysroot)
-        unset(_aero_reflect_sysroot_result)
-    endif()
-    # Linux: clang-18 auto-detects the Ubuntu-24.04 GCC-13 toolchain -- no extra flag needed (the Linux
-    # CI lane parses handle.hpp and the engine headers green with bare -std=c++20 + -resource-dir).
-    if(WIN32)
-        # The windows-2022 runner's MSVC STL (14.44.x) hard-#errors "STL1000: Unexpected compiler
-        # version" in <yvals_core.h> when parsed by a Clang older than it expects. clang-18 is older
-        # than that STL's baseline, so even <cstdint> (which pulls <yvals_core.h>) fails to parse --
-        # exit 2, verified on CI 2026-07-21 (ref actions/runner-images#8153).
-        # _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH is MSVC's documented escape hatch that disables that
-        # version guard: harmless everywhere, load-bearing on this lane.
-        list(APPEND _aero_reflect_clang_args -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
-
-        # Windows/MSVC: unlike Linux/macOS, libclang does NOT reliably resolve the MSVC C++ stdlib +
-        # Windows-SDK headers on its own here -- verified on CI (2026-07-21): the four cases that pull a
-        # standard header (parse_engine_header / engine_types / all_flag / annotation_visible) fail
-        # "'cstdint' file not found" (exit 2) while the self-contained walk_plain floor and every
-        # usage/negative case pass. The MSVC dev-environment step (ilammy/msvc-dev-cmd) runs before this
-        # configure and exports %INCLUDE% with every MSVC + Windows-SDK include directory; forward each
-        # as an explicit -I so libclang's header search is deterministic rather than dependent on its own
-        # MSVC auto-detection. This is the plan's pre-decided Windows contingency (D10 / §S6 / §3.8, ii).
-        if(DEFINED ENV{INCLUDE})
-            file(TO_CMAKE_PATH "$ENV{INCLUDE}" _aero_reflect_msvc_includes)  # ;-list, native -> forward slashes
-            foreach(_inc IN LISTS _aero_reflect_msvc_includes)
-                if(_inc AND IS_DIRECTORY "${_inc}")
-                    list(APPEND _aero_reflect_clang_args -I "${_inc}")
-                endif()
-            endforeach()
-            unset(_aero_reflect_msvc_includes)
-        else()
-            message(WARNING "reflect-gen tests: %INCLUDE% is unset at configure time -- the MSVC dev "
-                            "environment step must run before this configure, or the full-stdlib parse "
-                            "cases (parse_engine_header / engine_types / all_flag / annotation_visible) "
-                            "will fail to find <cstdint> et al.")
-        endif()
-    endif()
-
-    message(STATUS "reflect-gen tests: CLANG_ARGS = ${_aero_reflect_clang_args}")
+    # AERO_REFLECT_CLANG_ARGS (the per-OS libclang parse flags) and AERO_LLVM_ROOT are now owned by
+    # cmake/reflect.cmake (task 1.1.4, D2), included at ROOT scope before add_subdirectory(tests) runs
+    # — both are already set here with no local computation needed.
 
     set(_aero_reflect_cases
         help version walk_plain parse_engine_header engine_types all_flag
@@ -302,7 +202,9 @@ if(AERO_REFLECT_TOOLS)
         components_none components_tag components_determinism
         components_bad_syntax components_missing_input
         emit_basic emit_output_file emit_unsupported emit_multi emit_tag
-        emit_none emit_determinism emit_bad_syntax emit_missing_input)
+        emit_none emit_determinism emit_bad_syntax emit_missing_input
+        depfile_basic depfile_requires_output depfile_requires_emit
+        depfile_parse_fail depfile_space_escape depfile_determinism)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -310,35 +212,30 @@ if(AERO_REFLECT_TOOLS)
                     -DCASE=${_aero_reflect_case}
                     -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
                     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/reflect-gen/${_aero_reflect_case}
-                    "-DCLANG_ARGS=${_aero_reflect_clang_args}"
+                    "-DCLANG_ARGS=${AERO_REFLECT_CLANG_ARGS}"
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/reflect-gen/run_case.cmake)
     endforeach()
     unset(_aero_reflect_cases)
 
-    # --- task 1.1.3: build-time entt::meta generation + the runtime proof target (spec D8/D9) -------------
-    # F5: aero_reflect_gen is built by THIS build, so it does not exist at configure time — generation MUST be
-    # a build-time add_custom_command(DEPENDS aero_reflect_gen ...), never a configure-time execute_process.
-    find_package(EnTT CONFIG REQUIRED)   # vcpkg entt -> EnTT::EnTT (header-only; confirmed in step 0)
-
-    set(_aero_reflect_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/reflect-generated")
-    set(_aero_reflect_gen_src "${_aero_reflect_gen_dir}/component_codegen.meta.gen.cpp")
-    set(_aero_reflect_fixture "${CMAKE_CURRENT_SOURCE_DIR}/reflect-gen/fixtures/component_codegen.hpp")
-
-    add_custom_command(
-        OUTPUT  "${_aero_reflect_gen_src}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_aero_reflect_gen_dir}"
-        COMMAND aero_reflect_gen --emit-meta "${_aero_reflect_fixture}"
-                -o "${_aero_reflect_gen_src}" -- ${_aero_reflect_clang_args}
-                -I "${CMAKE_SOURCE_DIR}/engine/core/include"
-        DEPENDS aero_reflect_gen "${_aero_reflect_fixture}"
-        COMMENT "reflect-gen: emitting entt::meta registration for component_codegen.hpp"
-        VERBATIM)
-
-    add_executable(aero_reflect_meta_test reflect-gen/meta_test.cpp "${_aero_reflect_gen_src}")
+    # --- task 1.1.4: the module's first real consumer (replaces the 1.1.3 hand-wired block, D12) ---
+    find_package(EnTT CONFIG REQUIRED)   # EnTT::EnTT (header-only) — unchanged from 1.1.3
+    add_executable(aero_reflect_meta_test reflect-gen/meta_test.cpp)
     target_link_libraries(aero_reflect_meta_test PRIVATE doctest::doctest EnTT::EnTT aero::core)
-    target_include_directories(aero_reflect_meta_test PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/reflect-gen/fixtures")  # engine/core/include arrives via aero::core (PUBLIC)
+    target_include_directories(aero_reflect_meta_test PRIVATE reflect-gen/fixtures)  # meta_test.cpp's own #includes
+    aero_reflect_generate(aero_reflect_meta_test
+        HEADERS reflect-gen/fixtures/component_codegen.hpp
+                reflect-gen/fixtures/component_wiring.hpp
+        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include")   # aero::core PUBLIC dir — not target-derivable (D9)
     add_test(NAME aero_reflect_meta_test COMMAND aero_reflect_meta_test)
 
-    unset(_aero_reflect_clang_args)
+    # --- task 1.1.4: the end-to-end incremental-build proof (spec D13) ---
+    get_target_property(_aero_entt_include EnTT::EnTT INTERFACE_INCLUDE_DIRECTORIES)   # V4
+    add_test(NAME reflect-gen.incremental_e2e
+        COMMAND "${CMAKE_COMMAND}"
+                -DTOOL=$<TARGET_FILE:aero_reflect_gen>
+                -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/reflect-gen/incremental_e2e
+                -DAERO_LLVM_ROOT=${AERO_LLVM_ROOT}
+                "-DENTT_INCLUDE=${_aero_entt_include}"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/reflect-gen/incremental_e2e.cmake)
 endif()
