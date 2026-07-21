@@ -474,6 +474,17 @@ elseif(CASE STREQUAL "depfile_determinism")
         message(FATAL_ERROR "case 'depfile_determinism': two depfiles differ:\n---a---\n${_a}\n---b---\n${_b}")
     endif()
 
+elseif(CASE STREQUAL "depfile_unwritable")
+    # AC-2: an unwritable --depfile exits 3 with a stderr message. A non-existent PARENT dir (nope/) is
+    # the portable, deterministic way to force the ofstream open to fail — no chmod/permission trick
+    # (Linux CI runs as root and would bypass a permission bit). -o is writable, so it succeeds first;
+    # only the depfile open fails, exercising writeDepfile's exit-3 path (the -o mirror, V5).
+    aero_run_tool(ARGS --emit-meta "${FIXTURES_DIR}/component_tag.hpp"
+        -o "${WORK_DIR}/out.cpp" --depfile "${WORK_DIR}/nope/out.d"
+        -- -std=c++20 OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 3)
+    aero_expect_stderr_contains("${err}" "depfile")   # the depfile path failed, not -o
+
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")
 endif()

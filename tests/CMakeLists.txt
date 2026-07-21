@@ -204,7 +204,8 @@ if(AERO_REFLECT_TOOLS)
         emit_basic emit_output_file emit_unsupported emit_multi emit_tag
         emit_none emit_determinism emit_bad_syntax emit_missing_input
         depfile_basic depfile_requires_output depfile_requires_emit
-        depfile_parse_fail depfile_space_escape depfile_determinism)
+        depfile_parse_fail depfile_space_escape depfile_determinism
+        depfile_unwritable)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
