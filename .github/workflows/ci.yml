@@ -209,9 +209,14 @@ jobs:
         # task 1.1.1: pinned to match the other two lanes' LLVM 18 line (D2). AERO_LLVM_ROOT is
         # exported for the configure steps (plan C.2) as belt-and-suspenders on top of the
         # $ENV{ProgramFiles}/LLVM default, in case choco's install location ever drifts from it.
+        # --allow-downgrade: the windows-2022 runner ships a newer LLVM preinstalled (20.1.8 as of
+        # 2026-07), so choco refuses to install the pinned older 18.1.8 over it without this flag
+        # (choco's own error names it). This is the plan's pre-decided Windows contingency
+        # (D10/§S6) -- keep the LLVM 18 pin rather than let the Windows lane parse with a different
+        # frontend than Linux/macOS and the repo's own clang-tidy-18.
         shell: bash
         run: |
-          choco install llvm --version=18.1.8 -y
+          choco install llvm --version=18.1.8 -y --allow-downgrade
           echo "AERO_LLVM_ROOT=C:\Program Files\LLVM" >> "$GITHUB_ENV"
 
       - name: Set up MSVC environment (Windows)
