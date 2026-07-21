@@ -8,15 +8,22 @@
 // resolve.hpp/meta.hpp -- so this TU consolidates to the umbrella header per the plan's documented
 // fallback (spec §3.6). The assertions below are unaffected either way.
 #include "component_codegen.hpp"
+#include "component_wiring.hpp"
 
 #include <entt/entt.hpp>
 
-// Forward-declared here; DEFINED by the GENERATED component_codegen.meta.gen.cpp that the add_custom_command in
-// tests/CMakeLists.txt builds from component_codegen.hpp (name = aero_reflect_register_<stem>, D3/D7).
-// The snake_case name is the frozen cross-boundary contract (spec D3/D7) between hand-written and
-// generated code -- not a C++-style identifier subject to docs/04's camelCase law.
+// Forward-declared here; DEFINED by the GENERATED component_codegen.meta.gen.cpp that
+// aero_reflect_generate() (task 1.1.4, cmake/reflect.cmake) builds from component_codegen.hpp
+// (name = aero_reflect_register_<stem>, D3/D7). The snake_case name is the frozen cross-boundary
+// contract (spec D3/D7) between hand-written and generated code -- not a C++-style identifier
+// subject to docs/04's camelCase law.
 // NOLINTNEXTLINE(readability-identifier-naming)
 void aero_reflect_register_component_codegen();
+
+// Forward-declared here; DEFINED by the GENERATED aero_reflect_meta_test.aggregator.gen.cpp (task
+// 1.1.4, D4) that calls every per-header register function (both above) in HEADERS-list order.
+// NOLINTNEXTLINE(readability-identifier-naming)
+void aero_reflect_register_all_aero_reflect_meta_test();
 
 TEST_CASE("generated entt::meta registration reflects the component and its supported fields") {
     using namespace entt::literals;
@@ -42,4 +49,27 @@ TEST_CASE("generated entt::meta registration reflects the component and its supp
     CHECK(count == 5);
 
     entt::meta_reset();  // release the global meta context (LSan hygiene, spec §3.11 item 2)
+}
+
+TEST_CASE("the generated aggregator registers every header's components in one call") {
+    using namespace entt::literals;
+    aero_reflect_register_all_aero_reflect_meta_test();  // ONE call registers BOTH headers
+
+    auto sample = entt::resolve<ReflectSample>();
+    auto wiring = entt::resolve<ReflectWiring>();
+    REQUIRE(static_cast<bool>(sample));
+    REQUIRE(static_cast<bool>(wiring));
+    CHECK(static_cast<bool>(entt::resolve("ReflectWiring"_hs)));
+    CHECK(static_cast<bool>(wiring.data("target"_hs)));
+    CHECK(static_cast<bool>(wiring.data("speed"_hs)));
+    CHECK(static_cast<bool>(wiring.data("gear"_hs)));
+    CHECK(static_cast<bool>(wiring.data("engaged"_hs)));
+    std::size_t count = 0;
+    for (auto&& d : wiring.data()) {
+        (void)d;
+        ++count;
+    }
+    CHECK(count == 4);
+
+    entt::meta_reset();  // per-case hygiene, matching the 1.1.3 case
 }

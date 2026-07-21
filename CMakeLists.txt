@@ -38,9 +38,11 @@ include(cmake/shaders.cmake)
 
 # tools/reflect-gen (task 1.1.1): system-discovered libclang 18 harness — parses a translation unit
 # and walks its AST (ADR-004, R2). Default ON; OFF is the escape hatch for constrained/offline dev
-# machines (never set OFF in CI), mirroring AERO_SHADER_TOOLS. No cmake/*.cmake module in 1.1.1 —
-# discovery lives inline in tools/reflect-gen/CMakeLists.txt (spec D3).
+# machines (never set OFF in CI), mirroring AERO_SHADER_TOOLS.
 option(AERO_REFLECT_TOOLS "Discover system libclang and build tools/reflect-gen" ON)
+include(cmake/reflect.cmake)   # task 1.1.4: aero_reflect_generate() + AERO_LLVM_ROOT discovery + the
+                               # per-OS AERO_REFLECT_CLANG_ARGS, at ROOT scope so any add_subdirectory
+                               # call site (engine/ for 1.3.2) sees them on a fresh configure (D2).
 
 # docs/04 testing strategy: doctest suites run through ctest (test presets).
 enable_testing()
