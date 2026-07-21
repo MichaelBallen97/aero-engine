@@ -36,6 +36,12 @@ include(cmake/profiling.cmake)
 option(AERO_SHADER_TOOLS "Bootstrap SDL_shadercross and compile shaders/ during the build" ON)
 include(cmake/shaders.cmake)
 
+# tools/reflect-gen (task 1.1.1): system-discovered libclang 18 harness — parses a translation unit
+# and walks its AST (ADR-004, R2). Default ON; OFF is the escape hatch for constrained/offline dev
+# machines (never set OFF in CI), mirroring AERO_SHADER_TOOLS. No cmake/*.cmake module in 1.1.1 —
+# discovery lives inline in tools/reflect-gen/CMakeLists.txt (spec D3).
+option(AERO_REFLECT_TOOLS "Discover system libclang and build tools/reflect-gen" ON)
+
 # docs/04 testing strategy: doctest suites run through ctest (test presets).
 enable_testing()
 
