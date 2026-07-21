@@ -9,26 +9,8 @@ if(NOT AERO_REFLECT_TOOLS)
     return()
 endif()
 
-# --- discover libclang 18 (spec D3) --------------------------------------------------------------
-# Default hint per OS; overridable via -DAERO_LLVM_ROOT=... or $ENV{AERO_LLVM_ROOT} (plan C.2 — the
-# Windows CI lane exports the env var because `cmake --preset ...` gives no -D injection point without
-# editing CMakePresets.json). Keg-only llvm@18 is NOT on PATH on macOS (spec F1) — discovery must use
-# the prefix as a hint, never bare find_program/PATH search.
-if(DEFINED AERO_LLVM_ROOT)
-    # Already set (a cache entry from a prior configure, or an explicit -D on the command line): leave it.
-elseif(DEFINED ENV{AERO_LLVM_ROOT})
-    set(AERO_LLVM_ROOT "$ENV{AERO_LLVM_ROOT}" CACHE PATH "LLVM 18 install prefix for libclang")
-elseif(APPLE)
-    execute_process(COMMAND brew --prefix llvm@18 OUTPUT_VARIABLE _aero_brew_llvm
-                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-    set(AERO_LLVM_ROOT "${_aero_brew_llvm}" CACHE PATH "LLVM 18 install prefix for libclang")
-    unset(_aero_brew_llvm)
-elseif(UNIX)
-    set(AERO_LLVM_ROOT "/usr/lib/llvm-18" CACHE PATH "LLVM 18 install prefix for libclang")
-else()
-    set(AERO_LLVM_ROOT "$ENV{ProgramFiles}/LLVM" CACHE PATH "LLVM 18 install prefix for libclang")
-endif()
-message(STATUS "aero_reflect_gen: AERO_LLVM_ROOT = ${AERO_LLVM_ROOT}")
+# AERO_LLVM_ROOT is discovered at root-include time by cmake/reflect.cmake (task 1.1.4, D2); it is a
+# CACHE PATH set before add_subdirectory(tools), so it is guaranteed set here.
 
 # Preferred: the CMake config package (an imported `libclang` target carrying include dir + location +
 # a version match, in one shot). QUIET so the fallback below can run without a scary first-pass error.
