@@ -101,11 +101,19 @@ elseif(CASE STREQUAL "walk_plain")
 elseif(CASE STREQUAL "parse_engine_header")
     # The real, unmodified engine header -- AC-4's "parses engine headers" proof. No -I needed:
     # handle.hpp's only include is <cstdint> (plan C.1).
+    #
+    # AC-4 requires exit 0 with zero ERROR/FATAL diagnostics; exit 0 already encodes exactly that (the
+    # tool exits 2 on any error/fatal diagnostic, spec D4). Benign WARNINGS on stderr are explicitly
+    # allowed by AC-4 and must NOT fail this case -- a stricter empty-stderr assertion would spuriously
+    # red a lane whose libclang emits a harmless driver/toolchain note while still exiting 0 (e.g. a
+    # newer-MSVC version warning on Windows). Keep only a defensive check that no error-severity line
+    # slipped through despite exit 0 (which would be a real tool bug, not a portability artifact).
     aero_run_tool(ARGS "${HANDLE_HPP}" -- ${CLANG_ARGS} OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 0)
-    if(NOT err STREQUAL "")
-        message(FATAL_ERROR "case 'parse_engine_header': expected ZERO diagnostics parsing an unmodified "
-                            "engine header, got stderr:\n${err}")
+    string(FIND "${err}" "error:" _idx_err)
+    if(NOT _idx_err EQUAL -1)
+        message(FATAL_ERROR "case 'parse_engine_header': exit 0, but an error-severity diagnostic appeared "
+                            "on stderr parsing an unmodified engine header:\n${err}")
     endif()
 
 elseif(CASE STREQUAL "engine_types")
@@ -167,6 +175,13 @@ elseif(CASE STREQUAL "unknown_flag")
 
 elseif(CASE STREQUAL "double_input")
     aero_run_tool(ARGS a.hpp b.hpp OUT_RESULT result)
+    aero_expect_exit("${result}" 1)
+
+elseif(CASE STREQUAL "no_input")
+    # AC-2's "missing <input> -> exit 1" usage error: a recognized flag but NO positional <input>
+    # token. Distinct from `missing_input`, which passes a NON-EXISTENT file path (a real positional
+    # argument) and so reaches the I/O path -> exit 3.
+    aero_run_tool(ARGS --main-file-only OUT_RESULT result)
     aero_expect_exit("${result}" 1)
 
 elseif(CASE STREQUAL "determinism")
