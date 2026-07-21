@@ -184,6 +184,9 @@ jobs:
         # (lavapipe) on these GPU-less runners — the standard headless-GPU CI pattern; xvfb gives D6's
         # required REAL video driver (dummy has no Vulkan/Metal surface support) and a displayable
         # window for the tier-2 swapchain tests.
+        # task 1.1.1: libclang-18-dev + llvm-18-dev give tools/reflect-gen system libclang (the C API +
+        # headers + the CMake config packages) at the AERO_LLVM_ROOT default (/usr/lib/llvm-18) — no
+        # env override needed on this lane.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -192,8 +195,29 @@ jobs:
             libwayland-dev wayland-protocols libdecor-0-dev libxkbcommon-dev \
             libegl1-mesa-dev libibus-1.0-dev \
             autoconf autoconf-archive automake libtool libltdl-dev \
-            clang-tidy-18 \
+            clang-tidy-18 libclang-18-dev llvm-18-dev \
             mesa-vulkan-drivers libvulkan1 xvfb
+
+      - name: Install LLVM 18 (macOS)
+        if: runner.os == 'macOS'
+        # task 1.1.1: tools/reflect-gen's system-libclang discovery hints brew --prefix llvm@18
+        # (AERO_LLVM_ROOT's macOS default) — idempotent; the macos-15 image may already carry it.
+        run: brew install llvm@18
+
+      - name: Install LLVM 18 (Windows)
+        if: runner.os == 'Windows'
+        # task 1.1.1: pinned to match the other two lanes' LLVM 18 line (D2). AERO_LLVM_ROOT is
+        # exported for the configure steps (plan C.2) as belt-and-suspenders on top of the
+        # $ENV{ProgramFiles}/LLVM default, in case choco's install location ever drifts from it.
+        # --allow-downgrade: the windows-2022 runner ships a newer LLVM preinstalled (20.1.8 as of
+        # 2026-07), so choco refuses to install the pinned older 18.1.8 over it without this flag
+        # (choco's own error names it). This is the plan's pre-decided Windows contingency
+        # (D10/§S6) -- keep the LLVM 18 pin rather than let the Windows lane parse with a different
+        # frontend than Linux/macOS and the repo's own clang-tidy-18.
+        shell: bash
+        run: |
+          choco install llvm --version=18.1.8 -y --allow-downgrade
+          echo "AERO_LLVM_ROOT=C:\Program Files\LLVM" >> "$GITHUB_ENV"
 
       - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows'
