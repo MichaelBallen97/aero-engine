@@ -258,9 +258,32 @@ if(AERO_REFLECT_TOOLS)
         unset(_aero_reflect_sysroot)
         unset(_aero_reflect_sysroot_result)
     endif()
-    # Linux: clang-18 auto-detects the Ubuntu-24.04 GCC-13 toolchain; Windows: clang auto-detects MSVC
-    # under the msvc-dev-cmd environment the CI lane already sets up. Neither needs an extra flag today
-    # (verify-at-implementation, spec §3.8) -- append here if a real CI parse ever needs one.
+    # Linux: clang-18 auto-detects the Ubuntu-24.04 GCC-13 toolchain -- no extra flag needed (the Linux
+    # CI lane parses handle.hpp and the engine headers green with bare -std=c++20 + -resource-dir).
+    if(WIN32)
+        # Windows/MSVC: unlike Linux/macOS, libclang does NOT reliably resolve the MSVC C++ stdlib +
+        # Windows-SDK headers on its own here -- verified on CI (2026-07-21): the four cases that pull a
+        # standard header (parse_engine_header / engine_types / all_flag / annotation_visible) fail
+        # "'cstdint' file not found" (exit 2) while the self-contained walk_plain floor and every
+        # usage/negative case pass. The MSVC dev-environment step (ilammy/msvc-dev-cmd) runs before this
+        # configure and exports %INCLUDE% with every MSVC + Windows-SDK include directory; forward each
+        # as an explicit -I so libclang's header search is deterministic rather than dependent on its own
+        # MSVC auto-detection. This is the plan's pre-decided Windows contingency (D10 / §S6 / §3.8, ii).
+        if(DEFINED ENV{INCLUDE})
+            file(TO_CMAKE_PATH "$ENV{INCLUDE}" _aero_reflect_msvc_includes)  # ;-list, native -> forward slashes
+            foreach(_inc IN LISTS _aero_reflect_msvc_includes)
+                if(_inc AND IS_DIRECTORY "${_inc}")
+                    list(APPEND _aero_reflect_clang_args -I "${_inc}")
+                endif()
+            endforeach()
+            unset(_aero_reflect_msvc_includes)
+        else()
+            message(WARNING "reflect-gen tests: %INCLUDE% is unset at configure time -- the MSVC dev "
+                            "environment step must run before this configure, or the full-stdlib parse "
+                            "cases (parse_engine_header / engine_types / all_flag / annotation_visible) "
+                            "will fail to find <cstdint> et al.")
+        endif()
+    endif()
 
     message(STATUS "reflect-gen tests: CLANG_ARGS = ${_aero_reflect_clang_args}")
 
