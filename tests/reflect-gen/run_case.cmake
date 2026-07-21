@@ -410,6 +410,70 @@ elseif(CASE STREQUAL "emit_missing_input")
         message(FATAL_ERROR "case 'emit_missing_input': expected nothing on stdout, got:\n${out}")
     endif()
 
+elseif(CASE STREQUAL "depfile_basic")
+    # Same flag shape as the landed 1.1.3 build command; aero_reflect.hpp resolves includer-relative.
+    aero_run_tool(ARGS --emit-meta "${FIXTURES_DIR}/component_codegen.hpp"
+        -o "${WORK_DIR}/out.cpp" --depfile "${WORK_DIR}/out.d"
+        -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_file_contains("${WORK_DIR}/out.cpp" "entt::meta_factory<ReflectSample>")   # sanity
+    aero_expect_file_contains("${WORK_DIR}/out.d" "out.cpp")             # rule target
+    aero_expect_file_contains("${WORK_DIR}/out.d" "component_codegen.hpp")
+    aero_expect_file_contains("${WORK_DIR}/out.d" "aero_reflect.hpp")    # direct
+    aero_expect_file_contains("${WORK_DIR}/out.d" "math.hpp")            # direct
+    aero_expect_file_contains("${WORK_DIR}/out.d" "math/constants.hpp")  # TRANSITIVE (depth 2, F2/AC-3)
+
+elseif(CASE STREQUAL "depfile_requires_output")
+    aero_run_tool(ARGS --emit-meta "${FIXTURES_DIR}/component_codegen.hpp" --depfile "${WORK_DIR}/out.d"
+        -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" OUT_RESULT result)
+    aero_expect_exit("${result}" 1)
+    if(EXISTS "${WORK_DIR}/out.d")
+        message(FATAL_ERROR "case 'depfile_requires_output': --depfile without -o must not write a depfile")
+    endif()
+
+elseif(CASE STREQUAL "depfile_requires_emit")
+    aero_run_tool(ARGS --components "${FIXTURES_DIR}/component_codegen.hpp" -o "${WORK_DIR}/o.cpp"
+        --depfile "${WORK_DIR}/out.d" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" OUT_RESULT result)
+    aero_expect_exit("${result}" 1)
+    if(EXISTS "${WORK_DIR}/out.d" OR EXISTS "${WORK_DIR}/o.cpp")
+        message(FATAL_ERROR "case 'depfile_requires_emit': --depfile without --emit-meta must write nothing")
+    endif()
+
+elseif(CASE STREQUAL "depfile_parse_fail")
+    file(WRITE "${WORK_DIR}/bad.hpp" "struct { ) Broken")
+    aero_run_tool(ARGS --emit-meta "${WORK_DIR}/bad.hpp" -o "${WORK_DIR}/out.cpp" --depfile "${WORK_DIR}/out.d"
+        -- -x c++ -std=c++20 OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    if(EXISTS "${WORK_DIR}/out.cpp" OR EXISTS "${WORK_DIR}/out.d")
+        message(FATAL_ERROR "case 'depfile_parse_fail': parse failure must leave NEITHER file (D8)")
+    endif()
+
+elseif(CASE STREQUAL "depfile_space_escape")
+    # component_tag.hpp is self-contained (bare -std=c++20, no sysroot) so the only -I is the space dir.
+    file(COPY "${FIXTURES_DIR}/component_tag.hpp" "${FIXTURES_DIR}/aero_reflect.hpp"
+        DESTINATION "${WORK_DIR}/dir with space")
+    aero_run_tool(ARGS --emit-meta "${WORK_DIR}/dir with space/component_tag.hpp"
+        -o "${WORK_DIR}/out.cpp" --depfile "${WORK_DIR}/out.d"
+        -- -std=c++20 -I "${WORK_DIR}/dir with space" OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_file_contains("${WORK_DIR}/out.d" "dir\\ with\\ space")   # backslash-escaped space (D7)
+
+elseif(CASE STREQUAL "depfile_determinism")
+    # SAME -o path both runs (identical target token by construction), two DIFFERENT --depfile paths.
+    aero_run_tool(ARGS --emit-meta "${FIXTURES_DIR}/component_codegen.hpp"
+        -o "${WORK_DIR}/out.cpp" --depfile "${WORK_DIR}/a.d"
+        -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" OUT_RESULT r1)
+    aero_expect_exit("${r1}" 0)
+    aero_run_tool(ARGS --emit-meta "${FIXTURES_DIR}/component_codegen.hpp"
+        -o "${WORK_DIR}/out.cpp" --depfile "${WORK_DIR}/b.d"
+        -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" OUT_RESULT r2)
+    aero_expect_exit("${r2}" 0)
+    file(READ "${WORK_DIR}/a.d" _a)
+    file(READ "${WORK_DIR}/b.d" _b)
+    if(NOT _a STREQUAL _b)
+        message(FATAL_ERROR "case 'depfile_determinism': two depfiles differ:\n---a---\n${_a}\n---b---\n${_b}")
+    endif()
+
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")
 endif()
