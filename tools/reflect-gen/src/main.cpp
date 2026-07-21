@@ -26,6 +26,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -51,8 +52,8 @@ void printUsage(std::ostream& out) {
     out << "aero_reflect_gen " << TOOL_VERSION << " -- libclang parse+walk harness (task 1.1.1)\n"
         << "\n"
         << "Usage:\n"
-        << "  aero_reflect_gen [--all] [--main-file-only] [--components] [--emit-meta] [-o <file>] <input> "
-        << "[-- <clang args>...]\n"
+        << "  aero_reflect_gen [--all] [--main-file-only] [--components] [--emit-meta] [-o <file>] "
+        << "[--depfile <file>] <input> [-- <clang args>...]\n"
         << "  aero_reflect_gen --version\n"
         << "  aero_reflect_gen --help\n"
         << "\n"
@@ -63,6 +64,8 @@ void printUsage(std::ostream& out) {
         << "  --components         List detected engine::component structs/classes and fields, not the raw AST walk.\n"
         << "  --emit-meta          Emit entt::meta registration C++ for detected components, instead of the AST walk.\n"
         << "  -o <file>            Write --emit-meta output to <file> (default: stdout).\n"
+        << "  --depfile <file>     With --emit-meta + -o: write a Makefile-format depfile of the parse's "
+        << "#include closure.\n"
         << "  --version            Print the tool version and clang_getClangVersion(); exit 0.\n"
         << "  --help               Print this usage; exit 0.\n"
         << "\n"
@@ -93,8 +96,9 @@ struct Args {
     bool wantEmitMeta = false;  // task 1.1.3: emit entt::meta registration instead of walking
     bool wantHelp = false;
     bool wantVersion = false;
-    std::optional<std::string> outputPath;  // task 1.1.3: -o <file>; nullopt => stdout
-    std::vector<const char*> clangArgs;     // everything after `--`, forwarded verbatim (points into argv)
+    std::optional<std::string> outputPath;   // task 1.1.3: -o <file>; nullopt => stdout
+    std::optional<std::string> depfilePath;  // task 1.1.4: --depfile <file>; requires --emit-meta + -o (D6)
+    std::vector<const char*> clangArgs;      // everything after `--`, forwarded verbatim (points into argv)
 };
 
 // Hand-rolled argv parse (D4 flow step 1; no getopt -- Windows has none). Any usage violation prints
@@ -142,6 +146,12 @@ std::optional<Args> parseArgs(int argc, char** argv) {
                 return std::nullopt;
             }
             args.outputPath = std::string(argv[++i]);  // the for-loop's ++i then skips past the operand
+        } else if (token == "--depfile") {             // NEW — consumes the NEXT token (mirrors -o)
+            if (i + 1 >= argc) {
+                std::cerr << "aero_reflect_gen: error: '--depfile' requires a file path\n";
+                return std::nullopt;  // missing operand => usage error (exit 1)
+            }
+            args.depfilePath = std::string(argv[++i]);  // last-wins on repeat (F4 parity, free)
         } else if (!token.empty() && token.front() == '-') {
             std::cerr << "aero_reflect_gen: error: unknown flag '" << token << "'\n";
             return std::nullopt;
@@ -162,6 +172,15 @@ std::optional<Args> parseArgs(int argc, char** argv) {
         std::cerr << "aero_reflect_gen: error: missing <input>\n";
         return std::nullopt;
     }
+
+    // D6: a depfile's make-rule target IS the -o path, so --depfile is meaningful ONLY with
+    // --emit-meta AND -o. Fail fast (exit 1) BEFORE any filesystem work rather than write a rule for
+    // a phantom target. (E6 / depfile_requires_* cases.)
+    if (args.depfilePath && (!args.wantEmitMeta || !args.outputPath)) {
+        std::cerr << "aero_reflect_gen: error: --depfile requires --emit-meta and -o\n";
+        return std::nullopt;
+    }
+
     return args;
 }
 
@@ -489,6 +508,64 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
     out << "}\n";
 }
 
+// ---- task 1.1.4: --depfile (Makefile-format include-closure depfile, D7) -------------------------
+
+// CXInclusionVisitor (clang-c/Index.h): invoked once per file in the TU's #include closure. Appends
+// each included file's name to the caller's set, absolute + lexically-normal + forward-slash so the
+// paths ninja will stat are the paths the parse saw (D7/E12). Empty names (rare) are skipped.
+void inclusionVisitor(CXFile includedFile, CXSourceLocation* /*stack*/, unsigned /*len*/, CXClientData clientData) {
+    auto* deps = static_cast<std::set<std::string>*>(clientData);
+    const std::string name = toStdString(clang_getFileName(includedFile));
+    if (!name.empty()) {
+        deps->insert(fs::absolute(name).lexically_normal().generic_string());
+    }
+}
+
+// Escape a path for a Makefile dep list: space -> "\ ", '#' -> "\#", '$' -> "$$" (D7). Backslashes
+// cannot appear post-generic_string(); UNC/drive-colon paths pass through verbatim (E12).
+std::string escapeDepfilePath(const std::string& path) {
+    std::string result;
+    result.reserve(path.size());
+    for (const char c : path) {
+        if (c == ' ') {
+            result += "\\ ";
+        } else if (c == '#') {
+            result += "\\#";
+        } else if (c == '$') {
+            result += "$$";
+        } else {
+            result.push_back(c);
+        }
+    }
+    return result;
+}
+
+// Emit one Makefile rule "<abs -o path>: <sorted deduped escaped abs deps>". Deps = the input file
+// plus every clang_getInclusions() file (system/SDK/resource headers INCLUDED — the -MD convention,
+// D7). std::set gives dedupe+sort in one step => deterministic per machine (AC-3). Text mode, trunc.
+// Returns false on any open/write failure (caller emits the diagnostic + exit 3, V5). Called ONLY
+// after the -o write fully succeeded and ONLY on a clean parse (D8) -- both guaranteed upstream.
+bool writeDepfile(CXTranslationUnit tu, const std::string& inputPath, const std::string& outputPath,
+                  const std::string& depfilePath) {
+    std::set<std::string> deps;
+    clang_getInclusions(tu, inclusionVisitor, &deps);
+    deps.insert(fs::absolute(inputPath).lexically_normal().generic_string());  // belt-and-suspenders
+
+    const std::string target = escapeDepfilePath(fs::absolute(outputPath).lexically_normal().generic_string());
+
+    std::ofstream out(depfilePath, std::ios::trunc);  // TEXT mode, like -o (byte-consistent)
+    if (!out) {
+        return false;
+    }
+    out << target << ':';
+    for (const std::string& dep : deps) {
+        out << ' ' << escapeDepfilePath(dep);
+    }
+    out << '\n';
+    out.flush();
+    return static_cast<bool>(out);
+}
+
 }  // namespace
 
 ExitCode runMain(int argc, char** argv) {
@@ -563,6 +640,16 @@ ExitCode runMain(int argc, char** argv) {
                 if (!out) {
                     std::cerr << "aero_reflect_gen: error: failed writing output file '" << *args.outputPath << "'\n";
                     return ExitCode::IoError;
+                }
+                // NEW (D6/D7/D8): the depfile's target IS the -o path, so it is written here, only
+                // after -o fully succeeded. parseArgs rejected --depfile without --emit-meta+-o (D6);
+                // the enclosing `maxSeverity < Error` gate ensured a clean parse (D8) => no stale
+                // depfile can appear on a parse failure. `tu` (line 528) is still in scope.
+                if (args.depfilePath.has_value()) {
+                    if (!writeDepfile(tu, args.input, *args.outputPath, *args.depfilePath)) {
+                        std::cerr << "aero_reflect_gen: error: failed writing depfile '" << *args.depfilePath << "'\n";
+                        return ExitCode::IoError;
+                    }
                 }
             } else {
                 emitMeta(components, args.input, std::cout);

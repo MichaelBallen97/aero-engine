@@ -50,7 +50,7 @@ what it produces, that migration stays local to this one tool.
 ## The frozen CLI contract (extended, never broken, by 1.1.2–1.1.4)
 
 ```
-aero_reflect_gen [--all] [--main-file-only] [--version] [--help] <input> [-- <clang args>...]
+aero_reflect_gen [--all] [--main-file-only] [--version] [--help] [--depfile <file>] <input> [-- <clang args>...]
 ```
 
 - `<input>` — the translation unit to parse (the first non-flag token before `--`; a second is a
@@ -206,21 +206,71 @@ void aero_reflect_register_component_basic() {
 - **Deterministic**: no addresses, timestamps, or absolute paths appear (the `#include` is always
   a file basename) — two runs over the same input+flags produce byte-identical output.
 
+### Depfiles (`--depfile`)
+
+With `--emit-meta` **and** `-o <file>`, `--depfile <file>` additionally writes a **Makefile-format**
+depfile listing the parse's full `#include` closure — the standard `-MD` convention, so a build
+system (`add_custom_command(... DEPFILE ...)`, task 1.1.4) can trigger a real incremental rebuild the
+moment any transitively-included header changes, not just the top-level component header itself.
+
+The depfile is a single rule: `<abs -o path>: <dep> <dep> ...` — the target is the `-o` path
+(absolute, forward-slash, lexically normal); the deps are every file `clang_getInclusions()` visited
+during the parse (the component header itself, its own includes, and every system/SDK/compiler
+resource header transitively pulled in), plus `<input>` itself as a belt-and-suspenders entry, all
+absolute + forward-slash + lexically normal, deduplicated and sorted (`std::set`) so two runs over
+the same input+flags produce a byte-identical depfile on the same machine. Paths are escaped per the
+Makefile dependency-list convention: a literal space becomes `\ `, `#` becomes `\#`, `$` becomes `$$`
+(backslashes cannot appear in the paths this tool emits, since they are always `generic_string()`-ed
+forward-slash first).
+
+**Machine-local exemption:** unlike the generated `.cpp` (byte-identical across machines, see above),
+a depfile is **not** required to be portable across machines — like a compiler's own `.d` output, it
+necessarily embeds this machine's absolute SDK/resource-directory paths. Determinism here means "two
+runs on the *same* machine with the *same* flags produce the same depfile," not "the depfile is the
+same on every OS."
+
+**Validation (D6):** `--depfile` is meaningful only in terms of a make-rule *target*, which is always
+the `-o` path — so it requires **both** `--emit-meta` and `-o`; passing `--depfile` without either is
+a usage error (exit `1`), checked before any filesystem work. **Gating (D8):** exactly like `-o`
+itself, the depfile is written only after a **clean parse** (no error/fatal diagnostics) and only
+after the `-o` write has fully succeeded — a parse failure or `-o` I/O failure leaves **no** depfile
+behind, never a stale or partial one. A depfile I/O failure (cannot open/write `<file>`) is exit `3`,
+mirroring `-o`'s own I/O-error path.
+
 ### Build-time generation, not configure-time
 
 `aero_reflect_gen` is itself built by this same build, so it does not exist at CMake **configure**
 time — generation is therefore always a build-time `add_custom_command(... DEPENDS
-aero_reflect_gen ...)`, never a configure-time `execute_process`. `tests/CMakeLists.txt` hand-wires
-one such command (for the `component_codegen.hpp` fixture, feeding it the same per-OS clang-arg
-flags the rest of the `reflect-gen` ctest suite already computes) plus the runtime proof target
-`aero_reflect_meta_test` — the first Epic 1.1 doctest target, which calls the generated register
-function and asserts against `entt::resolve<T>()`/`entt::resolve("Id"_hs)`. Generalizing this into
-a reusable, incremental `aero_reflect_components()` CMake function (auto-discovering annotated
-headers, one generated TU per header, real incremental rebuilds) is task **1.1.4** — this task's
-wiring is intentionally hand-verified and single-fixture, not yet a public build API.
+aero_reflect_gen ... DEPFILE ...)`, never a configure-time `execute_process`. `cmake/reflect.cmake`
+(task 1.1.4) owns this end-to-end via `aero_reflect_generate(<target> HEADERS <hdr>... [INCLUDE_DIRS
+<dir>...] [DEFINES <NAME[=VAL]>...] [AGGREGATOR <name>])`:
 
-`entt` (3.16.0, the pinned vcpkg baseline) is the runtime consumer of this generated output —
-`find_package(EnTT CONFIG REQUIRED)` → `EnTT::EnTT`, header-only.
+- **`HEADERS`** is an explicit list of component headers — no glob, no auto-discovery-by-scan (D3):
+  the build graph must be knowable from the call site alone, not from what happens to exist on disk.
+- Each header gets its own `add_custom_command(... DEPFILE ...)`, producing one generated
+  `<stem>.meta.gen.cpp` (plus its `.d` depfile) under
+  `${CMAKE_CURRENT_BINARY_DIR}/reflect-generated/<target>/` (D5) — a directory scoped per *target*, so
+  two targets reflecting headers with the same stem never collide.
+- **`INCLUDE_DIRS`/`DEFINES`** add extra parse `-I`/`-D` flags the target's own `INCLUDE_DIRECTORIES`/
+  `COMPILE_DEFINITIONS` genexes can't reach on their own — most commonly a linked library's `PUBLIC`
+  include directory, which propagates to the *compile* but not to this configure-time-evaluated parse
+  (D9).
+- A machine-generated **aggregator** TU (`<target>.aggregator.gen.cpp`) forward-declares and calls
+  every per-header register function, in **`HEADERS`-list order** (D4/D15), inside one explicitly
+  named function — `aero_reflect_register_all_<target>` by default, or the `AGGREGATOR` override.
+  Never static-init auto-registration (same D4 rationale as the per-header functions themselves): a
+  caller must invoke it explicitly.
+- Calling `aero_reflect_generate` twice on the same target, or with an empty `HEADERS`, or before the
+  target exists, is a configure-time `FATAL_ERROR` (D18/E3/E7) — not a silent no-op.
+- **`-DAERO_REFLECT_TOOLS=OFF`**: the function becomes a defined, harmless no-op (a `STATUS` line,
+  then `return()`) — no generated sources, no depfile, no aggregator (D11/E15). Callers that need the
+  registration to exist must gate themselves.
+
+`tests/CMakeLists.txt`'s `aero_reflect_meta_test` — the first Epic 1.1 doctest target — is the real
+consumer: two fixtures (`component_codegen.hpp`, `component_wiring.hpp`) reflected in one
+`aero_reflect_generate()` call, with a single TEST_CASE proving the generated aggregator registers
+both in one call. `entt` (3.16.0, the pinned vcpkg baseline) is the runtime consumer of the generated
+output — `find_package(EnTT CONFIG REQUIRED)` → `EnTT::EnTT`, header-only.
 
 ## Local troubleshooting
 
