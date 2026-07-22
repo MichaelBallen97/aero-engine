@@ -63,8 +63,8 @@ void printUsage(std::ostream& out) {
         << "  --all                Include cursors from every included header (wins if both given).\n"
         << "  --components         List detected engine::component structs/classes and fields, not the raw AST walk.\n"
         << "  --emit-meta          Emit entt::meta registration C++ for detected components, instead of the AST walk.\n"
-        << "  --emit-json          Emit JSON serializers (aeroWriteJson per component) to stdout or -o. Mutually "
-        << "exclusive with --emit-meta.\n"
+        << "  --emit-json          Emit JSON serializers (aeroWriteJson + aeroReadJson per component) to stdout or "
+        << "-o. Mutually exclusive with --emit-meta.\n"
         << "  -o <file>            Write --emit-meta/--emit-json output to <file> (default: stdout).\n"
         << "  --depfile <file>     With -o and one of --emit-meta/--emit-json: write a Makefile-format depfile of "
         << "the parse's #include closure.\n"
@@ -531,11 +531,14 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
     out << "}\n";
 }
 
-// ---- task 1.2.1: --emit-json (per-component JSON serializers, D4/D9) --------------------------------
-// Emits, per detected component T, a free function `void aeroWriteJson(engine::JsonWriter&, const T&)` that writes
-// an object of T's SUPPORTED public data members via engine::reflect::writeJson(writer, value.field). Unsupported
-// fields emit a `// skipped:` comment + the same stderr warning emitMeta uses; exit stays 0 (lenient, D4). The
-// function is wrapped in the component's namespace so ADL resolves for namespaced components (D7).
+// ---- task 1.2.1/1.2.2: --emit-json (per-component JSON serializer PAIR, D2/D4/D9) ---------------------
+// Emits, per detected component T, BOTH a writer `void aeroWriteJson(engine::JsonWriter&, const T&)`
+// (task 1.2.1, unchanged) and a reader `bool aeroReadJson(const engine::JsonValue&, T&)` (task 1.2.2,
+// new) into the SAME generated TU, wrapped in the component's namespace so ADL resolves for namespaced
+// components (D7). Serialization is one consumer (ADR-004) whose halves must never version-skew —
+// putting both in one artifact makes a write-only or stale-read build unrepresentable (D2). Unsupported
+// fields emit a `// skipped:` comment in BOTH functions; the writer pass still owns the one stderr
+// warning per field (D9 -- the reader pass emits no second warning, AC-2).
 void emitJson(const std::vector<Component>& components, const std::string& inputPath, std::ostream& out) {
     const std::string basename = fs::path(inputPath).filename().string();
 
@@ -552,10 +555,13 @@ void emitJson(const std::vector<Component>& components, const std::string& input
 
     for (const Component& component : components) {
         const auto [ns, typeName] = splitQualifiedName(component.qualifiedName);
+        const std::string& qualifiedName = component.qualifiedName;
         out << "\n";
         if (!ns.empty()) {
             out << "namespace " << ns << " {\n";
         }
+
+        // --- the writer (task 1.2.1, byte-identical) -------------------------------------------------
         out << "void aeroWriteJson(engine::JsonWriter& writer, const " << typeName << "& value) {\n";
         out << "    writer.beginObject();\n";
         // Pass 1: supported fields (uniform line; overload resolution routes primitive/Vec3/Quat).
@@ -569,12 +575,51 @@ void emitJson(const std::vector<Component>& components, const std::string& input
         for (const Field& field : component.fields) {
             if (field.category == FieldCategory::Unsupported) {
                 out << "    // skipped: " << field.name << " (" << field.typeName << " — unsupported)\n";
-                std::cerr << "aero_reflect_gen: warning: " << component.qualifiedName << '.' << field.name << " : "
+                std::cerr << "aero_reflect_gen: warning: " << qualifiedName << '.' << field.name << " : "
                           << field.typeName << " is not in the reflectable subset (primitives + Vec3/Quat)\n";
             }
         }
         out << "    writer.endObject();\n";
         out << "}\n";
+
+        // --- the reader (task 1.2.2, new; D9) --------------------------------------------------------
+        out << "\n";
+        out << "bool aeroReadJson(const engine::JsonValue& json, " << typeName << "& value) {\n";
+        out << "    if (!engine::reflect::expectObject(json, \"" << qualifiedName << "\")) {\n";
+        out << "        return false;\n";
+        out << "    }\n";
+        out << "    bool ok = true;\n";
+        // Pass 1: supported fields, source order. `&& ok` on the RIGHT so every field is attempted even
+        // after an earlier one fails (best-effort, AC-11) -- `ok && readField(...)` would short-circuit.
+        for (const Field& field : component.fields) {
+            if (field.category != FieldCategory::Unsupported) {
+                out << "    ok = engine::reflect::readField(json, \"" << qualifiedName << "\", \"" << field.name
+                    << "\", value." << field.name << ") && ok;\n";
+            }
+        }
+        // Pass 2: the SAME `// skipped:` comment as the writer -- no second stderr warning (AC-2, the
+        // writer pass above already warned once per field).
+        for (const Field& field : component.fields) {
+            if (field.category == FieldCategory::Unsupported) {
+                out << "    // skipped: " << field.name << " (" << field.typeName << " — unsupported)\n";
+            }
+        }
+        // warnUnknownKeys: supported field names only, source order; {} for a tag (AC-4).
+        out << "    engine::reflect::warnUnknownKeys(json, \"" << qualifiedName << "\", {";
+        bool firstKnownKey = true;
+        for (const Field& field : component.fields) {
+            if (field.category != FieldCategory::Unsupported) {
+                if (!firstKnownKey) {
+                    out << ", ";
+                }
+                out << "\"" << field.name << "\"";
+                firstKnownKey = false;
+            }
+        }
+        out << "});\n";
+        out << "    return ok;\n";
+        out << "}\n";
+
         if (!ns.empty()) {
             out << "}  // namespace " << ns << "\n";
         }
