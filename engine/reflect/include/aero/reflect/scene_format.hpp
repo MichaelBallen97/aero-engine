@@ -65,17 +65,24 @@ struct SceneParseResult {
 // Text convenience: parseJson (position-carrying errors) then the DOM overload.
 [[nodiscard]] SceneParseResult parseScene(std::string_view text, const JsonParseConfig& config = {});
 
-// The same semantic checks parseScene runs, for hand-built documents (the editor's pre-save hook).
-// Engaged == invalid. writeScene does NOT call this (pure emission) — callers wanting the round-trip
-// guarantee run it first.
+// The same semantic checks parseScene runs, for hand-built documents (the editor's pre-save hook) --
+// PLUS one check parseScene can never trigger: a duplicate component type on one entity (the JSON
+// object form of "components" collapses that before the scene layer ever sees it; only a hand-built
+// std::vector can still violate the <=1-component-per-type invariant, D2). Engaged == invalid.
+// writeScene does NOT call this (pure emission) — callers wanting the round-trip guarantee run it
+// first.
 [[nodiscard]] std::optional<SceneError> validateScene(const SceneDocument& scene);
 
 // Emit the document through any writer config. Debug-asserts each payload isObject() (programmer
 // misuse); performs NO graph validation. Canonical key order + omission rules per docs/09.
 void writeScene(JsonWriter& writer, const SceneDocument& scene);
 
-// Canonical form: default (pretty, 2-space) writer + ONE trailing '\n'. Byte-stable fixpoint:
-// writeSceneText(*parseScene(writeSceneText(d)).document) == writeSceneText(d).
+// Canonical form: default (pretty, 2-space) writer + ONE trailing '\n'. Byte-stable fixpoint over
+// ENVELOPE-valid documents (validateScene(d) == nullopt):
+//   writeSceneText(*parseScene(writeSceneText(d)).document) == writeSceneText(d).
+// Payload-internal shapes are out of scope for this guarantee: duplicate keys *inside* a payload
+// object, and payloads nested deeper than JsonParseConfig::maxDepth (256), will not round-trip --
+// neither can occur in a real payload, since aeroWriteJson cannot produce either.
 [[nodiscard]] std::string writeSceneText(const SceneDocument& scene);
 
 }  // namespace engine

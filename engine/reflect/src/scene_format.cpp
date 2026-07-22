@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -64,6 +65,13 @@ std::string componentNameMessage(std::size_t index, std::uint64_t id) {
 std::string payloadMessage(std::size_t index, std::uint64_t id, std::string_view type, std::string_view found) {
     return std::format("entities[{}] (id {}): component \"{}\" payload must be an object (found {})", index, id, type,
                        found);
+}
+
+// validateScene-ONLY (see its doc comment): parseScene can never emit this line, because the JSON
+// object form of "components" collapses a duplicate key (last-wins) before the scene layer ever
+// sees it -- only a hand-built SceneDocument can still carry two records of the same type.
+std::string duplicateComponentTypeMessage(std::size_t index, std::uint64_t id, std::string_view type) {
+    return std::format("entities[{}] (id {}): duplicate component type \"{}\"", index, id, type);
 }
 
 // ---- pass 1: envelope + per-entity structure, file order, fail-fast --------------------------------
@@ -314,18 +322,25 @@ std::optional<SceneError> validateScene(const SceneDocument& scene) {
     for (std::size_t i = 0; i < scene.entities.size(); ++i) {
         const SceneEntityRecord& entity = scene.entities[i];
         if (entity.id == 0) {
-            return sceneError(idMessage(i, "0"));
+            return sceneError(idMessage(i, "\"0\""));  // quoted lexeme, matching foundDetail's form (D12)
         }
         const auto [seen, inserted] = idToIndex.emplace(entity.id, i);
         if (!inserted) {
             return sceneError(duplicateIdMessage(i, entity.id, seen->second));
         }
+        // Lookup-only, scoped to this entity, never iterated (AC-11 determinism holds regardless of
+        // unordered_set's iteration order, because iteration order is never observed).
+        std::unordered_set<std::string_view> seenTypes;
+        seenTypes.reserve(entity.components.size());
         for (const SceneComponentRecord& component : entity.components) {
             if (component.type.empty()) {
                 return sceneError(componentNameMessage(i, entity.id));
             }
             if (!component.value.isObject()) {
                 return sceneError(payloadMessage(i, entity.id, component.type, jsonKindName(component.value.kind())));
+            }
+            if (!seenTypes.insert(component.type).second) {
+                return sceneError(duplicateComponentTypeMessage(i, entity.id, component.type));
             }
         }
     }
