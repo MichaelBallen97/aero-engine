@@ -65,12 +65,12 @@ struct SceneParseResult {
 // Text convenience: parseJson (position-carrying errors) then the DOM overload.
 [[nodiscard]] SceneParseResult parseScene(std::string_view text, const JsonParseConfig& config = {});
 
-// The same semantic checks parseScene runs, for hand-built documents (the editor's pre-save hook) --
-// PLUS one check parseScene can never trigger: a duplicate component type on one entity (the JSON
-// object form of "components" collapses that before the scene layer ever sees it; only a hand-built
-// std::vector can still violate the <=1-component-per-type invariant, D2). Engaged == invalid.
-// writeScene does NOT call this (pure emission) — callers wanting the round-trip guarantee run it
-// first.
+// The same semantic checks parseScene runs, for hand-built documents (the editor's pre-save hook).
+// Both paths enforce the <=1-component-per-type invariant (D2): parseScene rejects a duplicate
+// "components" key (reachable only from a hand-built DOM — the JSON object form collapses duplicates
+// last-wins before the scene layer sees text input), and validateScene re-checks it for hand-built
+// std::vectors that never went through parseScene. Engaged == invalid. writeScene does NOT call this
+// (pure emission) — callers wanting the round-trip guarantee run it first.
 [[nodiscard]] std::optional<SceneError> validateScene(const SceneDocument& scene);
 
 // Emit the document through any writer config. Debug-asserts each payload isObject() (programmer

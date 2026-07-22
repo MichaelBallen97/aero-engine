@@ -34,6 +34,7 @@ void aeroWriteJson(engine::JsonWriter&, const ReflectSample&);
 void aeroWriteJson(engine::JsonWriter&, const ReflectWiring&);
 void aeroWriteJson(engine::JsonWriter&, const ReflectLimits&);
 void aeroWriteJson(engine::JsonWriter&, const Tag&);
+void aeroWriteJson(engine::JsonWriter&, const Player&);
 namespace engine::demo {
 void aeroWriteJson(engine::JsonWriter&, const Light&);
 }
@@ -42,6 +43,7 @@ bool aeroReadJson(const engine::JsonValue&, ReflectSample&);
 bool aeroReadJson(const engine::JsonValue&, ReflectWiring&);
 bool aeroReadJson(const engine::JsonValue&, ReflectLimits&);
 bool aeroReadJson(const engine::JsonValue&, Tag&);
+bool aeroReadJson(const engine::JsonValue&, Player&);
 namespace engine::demo {
 bool aeroReadJson(const engine::JsonValue&, Light&);
 }
@@ -194,7 +196,7 @@ TEST_CASE("every emitted float/double lexeme round-trips bit-exactly (writer-sid
     CHECK(parsedMass == s.mass);
 }
 
-TEST_CASE("JsonWriter units: escaping, nesting, arrays, bool/int/null, non-finite, compact (AC-11)") {
+TEST_CASE("JsonWriter units: escaping, nesting, arrays, bool/int/null, non-finite, compact, indent widths (AC-11)") {
     using engine::JsonWriter;
     using engine::JsonWriterConfig;
     // escaping
@@ -246,6 +248,32 @@ TEST_CASE("JsonWriter units: escaping, nesting, arrays, bool/int/null, non-finit
         w.endObject();
         CHECK(w.str() == "{}");
     }
+    // non-default indent widths; a negative width clamps to 0 instead of wrapping the size_t
+    // multiply in writeIndent() into a throwing append (1.2 audit follow-up)
+    {
+        JsonWriter w{JsonWriterConfig{.indentWidth = 4}};
+        w.beginObject();
+        w.key("a");
+        w.value(1LL);
+        w.endObject();
+        CHECK(w.str() == "{\n    \"a\": 1\n}");
+    }
+    {
+        JsonWriter w{JsonWriterConfig{.indentWidth = 0}};
+        w.beginObject();
+        w.key("a");
+        w.value(1LL);
+        w.endObject();
+        CHECK(w.str() == "{\n\"a\": 1\n}");
+    }
+    {
+        JsonWriter w{JsonWriterConfig{.indentWidth = -3}};
+        w.beginObject();
+        w.key("a");
+        w.value(1LL);
+        w.endObject();
+        CHECK(w.str() == "{\n\"a\": 1\n}");  // identical to indentWidth 0
+    }
 }
 
 // ---- task 1.2.2: engine::parseJson / engine::JsonValue (the reader half) ----------------------------
@@ -253,27 +281,69 @@ TEST_CASE("JsonWriter units: escaping, nesting, arrays, bool/int/null, non-finit
 TEST_CASE(
     "parser: accept battery -- scalars, nesting, escapes, surrogate pairs, compact/pretty, CRLF, BOM, "
     "dup keys (AC-7)") {
-    // every scalar kind at the root
-    CHECK(engine::parseJson("null").value->isNull());
-    CHECK(*engine::parseJson("true").value->asBool());
-    CHECK_FALSE(*engine::parseJson("false").value->asBool());
-    CHECK(*engine::parseJson("42").value->asI64() == 42);
-    CHECK(*engine::parseJson("-3.5").value->asF64() == -3.5);
-    CHECK(*engine::parseJson("\"hi\"").value->asString() == "hi");
+    // every scalar kind at the root (REQUIRE-then-deref: a regression fails cleanly instead of
+    // dereferencing an empty optional -- 1.2 audit D4 pass; the tests-local .clang-tidy disables
+    // bugprone-unchecked-optional-access, so the guard has to be a runtime one)
+    {
+        const engine::JsonParseResult r = engine::parseJson("null");
+        REQUIRE(r.ok());
+        CHECK(r.value->isNull());
+    }
+    {
+        const engine::JsonParseResult r = engine::parseJson("true");
+        REQUIRE(r.ok());
+        const auto b = r.value->asBool();
+        REQUIRE(b.has_value());
+        CHECK(*b);
+    }
+    {
+        const engine::JsonParseResult r = engine::parseJson("false");
+        REQUIRE(r.ok());
+        const auto b = r.value->asBool();
+        REQUIRE(b.has_value());
+        CHECK_FALSE(*b);
+    }
+    {
+        const engine::JsonParseResult r = engine::parseJson("42");
+        REQUIRE(r.ok());
+        CHECK(r.value->asI64() == 42);
+    }
+    {
+        const engine::JsonParseResult r = engine::parseJson("-3.5");
+        REQUIRE(r.ok());
+        CHECK(r.value->asF64() == -3.5);
+    }
+    {
+        const engine::JsonParseResult r = engine::parseJson("\"hi\"");
+        REQUIRE(r.ok());
+        const auto s = r.value->asString();
+        REQUIRE(s.has_value());
+        CHECK(*s == "hi");
+    }
 
-    // nested objects/arrays
+    // nested objects/arrays (pointer chain bound and REQUIREd link by link -- D4 pass)
     {
         const engine::JsonParseResult r = engine::parseJson(R"({"a":[1,{"b":2}]})");
         REQUIRE(r.ok());
-        CHECK(*r.value->find("a")->at(0)->asI64() == 1);
-        CHECK(*r.value->find("a")->at(1)->find("b")->asI64() == 2);
+        const engine::JsonValue* a = r.value->find("a");
+        REQUIRE(a != nullptr);
+        const engine::JsonValue* first = a->at(0);
+        REQUIRE(first != nullptr);
+        CHECK(first->asI64() == 1);
+        const engine::JsonValue* second = a->at(1);
+        REQUIRE(second != nullptr);
+        const engine::JsonValue* b = second->find("b");
+        REQUIRE(b != nullptr);
+        CHECK(b->asI64() == 2);
     }
 
     // full escape set incl. \uXXXX
     {
         const engine::JsonParseResult r = engine::parseJson(R"("\"\\\/\b\f\n\r\tA")");
         REQUIRE(r.ok());
-        CHECK(*r.value->asString() == "\"\\/\b\f\n\r\tA");
+        const auto s = r.value->asString();
+        REQUIRE(s.has_value());
+        CHECK(*s == "\"\\/\b\f\n\r\tA");
     }
     // REAL \uXXXX escapes (literal backslash-u text the parser must decode) exercising appendUtf8's
     // 2-byte, 3-byte, and (via a genuine surrogate PAIR) 4-byte branches -- lexHex4 + the
@@ -283,19 +353,25 @@ TEST_CASE(
     {
         const engine::JsonParseResult r2 = engine::parseJson(jsonUnicodeToken({"00e9"}));  // U+00E9, 2-byte
         REQUIRE(r2.ok());
-        CHECK(*r2.value->asString() == "\xC3\xA9");
+        const auto s = r2.value->asString();
+        REQUIRE(s.has_value());
+        CHECK(*s == "\xC3\xA9");
     }
     {
         const engine::JsonParseResult r3 = engine::parseJson(jsonUnicodeToken({"20ac"}));  // U+20AC, 3-byte
         REQUIRE(r3.ok());
-        CHECK(*r3.value->asString() == "\xE2\x82\xAC");
+        const auto s = r3.value->asString();
+        REQUIRE(s.has_value());
+        CHECK(*s == "\xE2\x82\xAC");
     }
     {
         // U+1F600 "grinning face": no single \uXXXX can name it (UTF-16 has no codepoint that high),
         // so a genuine high+low surrogate PAIR is the only way JSON can express it.
         const engine::JsonParseResult r4 = engine::parseJson(jsonUnicodeToken({"d83d", "de00"}));
         REQUIRE(r4.ok());
-        CHECK(*r4.value->asString() == "\xF0\x9F\x98\x80");
+        const auto s = r4.value->asString();
+        REQUIRE(s.has_value());
+        CHECK(*s == "\xF0\x9F\x98\x80");
     }
     // malformed \u escapes: an invalid low surrogate, a high surrogate with no following \u escape,
     // and a bad hex digit -- all rejected (AC-7)
@@ -310,17 +386,23 @@ TEST_CASE(
     {
         const engine::JsonParseResult r5 = engine::parseJson(R"("é")");  // 2-byte, passthrough
         REQUIRE(r5.ok());
-        CHECK(*r5.value->asString() == "\xC3\xA9");
+        const auto s = r5.value->asString();
+        REQUIRE(s.has_value());
+        CHECK(*s == "\xC3\xA9");
     }
     {
         const engine::JsonParseResult r6 = engine::parseJson(R"("€")");  // 3-byte, passthrough
         REQUIRE(r6.ok());
-        CHECK(*r6.value->asString() == "\xE2\x82\xAC");
+        const auto s = r6.value->asString();
+        REQUIRE(s.has_value());
+        CHECK(*s == "\xE2\x82\xAC");
     }
     {
         const engine::JsonParseResult r7 = engine::parseJson(R"("😀")");  // 4-byte, passthrough
         REQUIRE(r7.ok());
-        CHECK(*r7.value->asString() == "\xF0\x9F\x98\x80");
+        const auto s = r7.value->asString();
+        REQUIRE(s.has_value());
+        CHECK(*s == "\xF0\x9F\x98\x80");
     }
 
     // writer-escaped control chars recovered byte-for-byte through the REAL writer
@@ -334,7 +416,9 @@ TEST_CASE(
         w.value(std::string_view(original));
         const engine::JsonParseResult r = engine::parseJson(w.str());
         REQUIRE(r.ok());
-        CHECK(*r.value->asString() == original);
+        const auto s = r.value->asString();
+        REQUIRE(s.has_value());
+        CHECK(*s == original);
     }
 
     // compact and pretty input; CRLF; a single leading UTF-8 BOM
@@ -348,7 +432,9 @@ TEST_CASE(
         const engine::JsonParseResult r = engine::parseJson(R"({"a":1,"a":2})");
         REQUIRE(r.ok());
         CHECK(r.value->size() == 1);
-        CHECK(*r.value->find("a")->asI64() == 2);
+        const engine::JsonValue* a = r.value->find("a");
+        REQUIRE(a != nullptr);
+        CHECK(a->asI64() == 2);
     }
 }
 
@@ -382,11 +468,32 @@ TEST_CASE("parser: reject battery -- malformed input, positions pinned for a few
     CHECK_FALSE(engine::parseJson(R"({"a":1,})").ok());       // trailing comma (object)
     CHECK_FALSE(engine::parseJson("{\"a\":1 // c\n}").ok());  // comment
 
-    // a few exact line/column pins
+    // exact position pins: 1-based line, 1-based byte column, 0-based offset (the json_reader.hpp
+    // contract; values derived from the input bytes -- 1.2 audit D8 pass, previously only `line`
+    // was ever pinned)
     {
         const engine::JsonParseResult r = engine::parseJson("{\"a\":1,\n  \"b\" 2}");
         REQUIRE_FALSE(r.ok());
+        CHECK(r.error.message == "expected ':' after object key");
         CHECK(r.error.line == 2);
+        CHECK(r.error.column == 7);   // the '2' is byte 7 of line 2 ("  \"b\" 2}")
+        CHECK(r.error.offset == 14);  // and byte 14 (0-based) of the whole input
+    }
+    {
+        const engine::JsonParseResult r = engine::parseJson(R"({"a" 1})");
+        REQUIRE_FALSE(r.ok());
+        CHECK(r.error.message == "expected ':' after object key");
+        CHECK(r.error.line == 1);
+        CHECK(r.error.column == 6);
+        CHECK(r.error.offset == 5);
+    }
+    {
+        const engine::JsonParseResult r = engine::parseJson("[\n1,\n x]");
+        REQUIRE_FALSE(r.ok());
+        CHECK(r.error.message == "unexpected character at start of value");
+        CHECK(r.error.line == 3);
+        CHECK(r.error.column == 2);
+        CHECK(r.error.offset == 6);
     }
     {
         const engine::JsonParseResult r = engine::parseJson("01");
@@ -460,31 +567,37 @@ TEST_CASE("JsonValue accessors: kind checks + asI64/asU64 exactness + asF32/asF6
         CHECK_FALSE(r.value->asI64().has_value());
     }
     // the F4 regression pin: 7.038531e-26 must read back bit-equal to strtof's own value
+    // (inner optionals bound + REQUIREd before every deref from here on -- 1.2 audit D4 pass)
     {
         const engine::JsonParseResult r = engine::parseJson("7.038531e-26");
         REQUIRE(r.ok());
-        const float viaDom = *r.value->asF32();
+        const auto viaDom = r.value->asF32();
+        REQUIRE(viaDom.has_value());
         const float viaStrtof = std::strtof("7.038531e-26", nullptr);
-        CHECK(std::bit_cast<std::uint32_t>(viaDom) == std::bit_cast<std::uint32_t>(viaStrtof));
+        CHECK(std::bit_cast<std::uint32_t>(*viaDom) == std::bit_cast<std::uint32_t>(viaStrtof));
     }
     // -0 sign preservation
     {
         const engine::JsonParseResult r = engine::parseJson("-0");
         REQUIRE(r.ok());
-        CHECK(std::signbit(*r.value->asF32()));
+        const auto negZero = r.value->asF32();
+        REQUIRE(negZero.has_value());
+        CHECK(std::signbit(*negZero));
     }
     // subnormal bit-exactness (float and double)
     {
         const engine::JsonParseResult r = engine::parseJson("1e-45");
         REQUIRE(r.ok());
-        CHECK(std::bit_cast<std::uint32_t>(*r.value->asF32()) ==
-              std::bit_cast<std::uint32_t>(std::strtof("1e-45", nullptr)));
+        const auto viaDom = r.value->asF32();
+        REQUIRE(viaDom.has_value());
+        CHECK(std::bit_cast<std::uint32_t>(*viaDom) == std::bit_cast<std::uint32_t>(std::strtof("1e-45", nullptr)));
     }
     {
         const engine::JsonParseResult r = engine::parseJson("5e-324");
         REQUIRE(r.ok());
-        CHECK(std::bit_cast<std::uint64_t>(*r.value->asF64()) ==
-              std::bit_cast<std::uint64_t>(std::strtod("5e-324", nullptr)));
+        const auto viaDom = r.value->asF64();
+        REQUIRE(viaDom.has_value());
+        CHECK(std::bit_cast<std::uint64_t>(*viaDom) == std::bit_cast<std::uint64_t>(std::strtod("5e-324", nullptr)));
     }
     // overflow -> nullopt; underflow -> accepted as 0.0
     {
@@ -496,13 +609,13 @@ TEST_CASE("JsonValue accessors: kind checks + asI64/asU64 exactness + asF32/asF6
     {
         const engine::JsonParseResult r = engine::parseJson("1e-999");
         REQUIRE(r.ok());
-        CHECK(*r.value->asF64() == 0.0);
+        CHECK(r.value->asF64() == 0.0);
     }
     // integer-lexeme floats
     {
         const engine::JsonParseResult r = engine::parseJson("1");
         REQUIRE(r.ok());
-        CHECK(*r.value->asF32() == 1.0F);
+        CHECK(r.value->asF32() == 1.0F);
     }
 }
 
@@ -764,6 +877,21 @@ TEST_CASE("round-trip: namespaced engine::demo::Light (ADL) + ReflectWiring (uns
     CHECK(bitEqual(wireRestored.target.x, wireOriginal.target.x));
     CHECK(wireRestored.gear == wireOriginal.gear);
     CHECK(wireRestored.engaged == wireOriginal.engaged);
+}
+
+TEST_CASE("round-trip: global-namespace Player from the multi-component header (AC-10)") {
+    // Before the 1.2 audit (D7), Player's generated pair was compile-proven only -- Light exercised
+    // the namespaced half of component_multi.hpp, but nothing round-tripped the global-namespace
+    // half at runtime.
+    Player original{};
+    original.position = {4.0F, -8.5F, 12.25F};
+    original.score = -1234;
+    Player restored{};
+    CHECK(roundTrip(original, restored));
+    CHECK(bitEqual(restored.position.x, original.position.x));
+    CHECK(bitEqual(restored.position.y, original.position.y));
+    CHECK(bitEqual(restored.position.z, original.position.z));
+    CHECK(restored.score == original.score);
 }
 
 // component_tag.hpp is the fifth aero_reflect_json_test HEADERS entry (review fix): a REAL generated

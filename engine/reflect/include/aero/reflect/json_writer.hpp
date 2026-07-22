@@ -7,7 +7,7 @@
 namespace engine {
 
 struct JsonWriterConfig {
-    int indentWidth = 2;  // spaces per level when pretty
+    int indentWidth = 2;  // spaces per level when pretty; negative clamps to 0
     bool pretty = true;   // false => compact single line
 };
 

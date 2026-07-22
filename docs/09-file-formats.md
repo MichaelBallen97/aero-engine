@@ -91,7 +91,9 @@ makes task 1.4.2's instantiation order deterministic (file order).
 Duplicate component keys in raw text (the same type name appearing twice in one `"components"`
 object) collapse **last-wins**, at the JSON layer, before the scene layer ever sees them — inherited
 JSON-parser tolerance (documented, not a bug; the scene layer has no way to detect this after the
-fact).
+fact). A **hand-built DOM** (`parseScene(const JsonValue&)` on a root the JSON parser did not
+produce) is the one place two members can still share a key — there `parseScene` rejects the
+duplicate outright (section 2.6), so no path yields two records of one type on one entity.
 
 ### 2.4 Canonicalization notes
 
@@ -207,16 +209,17 @@ text.
 | Entity | `entities[<i>] (id <id>): "components" must be an object (found <kind>)` |
 | Component | `entities[<i>] (id <id>): component name must be a non-empty string` |
 | Component | `entities[<i>] (id <id>): component "<type>" payload must be an object (found <kind>)` |
-| Component | `entities[<i>] (id <id>): duplicate component type "<type>"` (`validateScene`-only, see note) |
+| Component | `entities[<i>] (id <id>): duplicate component type "<type>"` (see note) |
 | Hierarchy | `entities[<i>] (id <id>): parent <p> does not reference any entity id in this scene` |
 | Hierarchy | `entities[<i>] (id <id>): parent chain is cyclic` |
 
-**Note (duplicate component type):** this line can only come from `validateScene`, never from
-`parseScene`. The JSON object form of `"components"` already collapses a duplicate key (last-wins,
-section 2.3) before the scene layer ever sees the document, so `parseScene` cannot observe two
-records of the same type on one entity. `validateScene` runs the same semantic checks over a
-hand-built (not-yet-serialized) `SceneDocument` — e.g. a future editor pre-save hook — where that
-invariant can still be violated, and reports it here.
+**Note (duplicate component type):** text input can never trip this line in `parseScene` — the JSON
+object form of `"components"` already collapses a duplicate key (last-wins, section 2.3) before the
+scene layer sees the document. It fires in exactly two places: `parseScene(const JsonValue&)` over a
+**hand-built DOM** whose `"components"` object carries two members with the same key (the JSON
+parser cannot produce that shape), and `validateScene` over a hand-built (not-yet-serialized)
+`SceneDocument` — e.g. a future editor pre-save hook — whose `std::vector` carries two records of
+one type. Both paths enforce the same ≤1-component-per-type invariant.
 
 Success-only warnings (document order, `"scene: "`-prefixed):
 

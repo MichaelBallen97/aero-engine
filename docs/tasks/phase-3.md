@@ -92,6 +92,13 @@ Subtasks:
 **Goal:** source assets → per-platform runtime binaries; deterministic by construction.
 **Definition of Done:** meshes and textures cook to GPU-ready formats; cooking the same input twice is byte-identical (CI-proven).
 
+> **Note (Epic 1.2 close-out audit, 2026-07-23):** binary serialization of reflected components /
+> cooked binary scenes belongs to this cooker pipeline (docs/01 "binary in runtime"; phase-1 "binary
+> is the cooker's job, Phase 3+"), but no 3.3.x task carries it yet — v0 cooks meshes and textures
+> only. When Phase 3 planning opens, either assign it a task number here (numbering is append-only)
+> or explicitly re-scope it to a later cooker rev. ADR-004's artifact table points here, not at
+> reflect-gen.
+
 ### 3.3.1 Mesh cook → GPU buffers · P0 · M · depends: 3.2.1
 **Goal:** runtime never parses glTF — it memory-maps cooked buffers.
 **Deliverable:** interleaved/indexed vertex data plus computed AABBs (consumed by frustum culling, 3.6.1).
