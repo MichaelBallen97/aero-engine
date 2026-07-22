@@ -30,6 +30,18 @@ void writeJson(JsonWriter& w, T v) {
     }
 }
 
+// ---- task 1.2.3: generic DOM re-emission (D9) ------------------------------------------------------
+//
+// Write any parsed JsonValue back out through a JsonWriter. ITERATIVE (misc-no-recursion is live).
+// Numbers CANONICALIZE: integral-form lexemes -> exact i64/u64; "-0" preserved as -0; everything else
+// -> shortest-round-trip double; a value that rounds to +/-inf (e.g. 1e999) -> null, mirroring the
+// writer's own non-finite policy one layer down. Strings are re-escaped by JsonWriter's rules, so a
+// \uXXXX input normalizes to raw UTF-8. The output is a canonicalization FIXPOINT: re-emitting it
+// reproduces it byte-for-byte, which is what makes the scene format's write-parse-write idempotence
+// guarantee (docs/09) hold. Needed because writeScene must re-emit component payloads it does not
+// interpret; useful on its own for future tools and editor copy/paste.
+void writeJson(JsonWriter& w, const JsonValue& v);
+
 // ---- task 1.2.2: the read half (spec §3.8, D10) ---------------------------------------------------
 //
 // DECLARATION ORDER IS LOAD-BEARING (N2, proven): every readJson overload -- the five leaves AND the
