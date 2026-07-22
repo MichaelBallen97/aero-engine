@@ -25,7 +25,13 @@ void appendUnicodeEscape(std::string& out, unsigned char c) {
 
 }  // namespace
 
-JsonWriter::JsonWriter(JsonWriterConfig cfg) : config(cfg) {}
+JsonWriter::JsonWriter(JsonWriterConfig cfg) : config(cfg) {
+    // A negative width would wrap to a huge count in writeIndent()'s size_t multiply and make
+    // std::string::append throw — clamping keeps the no-exceptions contract (docs/04).
+    if (config.indentWidth < 0) {
+        config.indentWidth = 0;
+    }
+}
 
 void JsonWriter::writeIndent() {
     if (!config.pretty) {

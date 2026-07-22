@@ -194,7 +194,7 @@ TEST_CASE("every emitted float/double lexeme round-trips bit-exactly (writer-sid
     CHECK(parsedMass == s.mass);
 }
 
-TEST_CASE("JsonWriter units: escaping, nesting, arrays, bool/int/null, non-finite, compact (AC-11)") {
+TEST_CASE("JsonWriter units: escaping, nesting, arrays, bool/int/null, non-finite, compact, indent widths (AC-11)") {
     using engine::JsonWriter;
     using engine::JsonWriterConfig;
     // escaping
@@ -245,6 +245,32 @@ TEST_CASE("JsonWriter units: escaping, nesting, arrays, bool/int/null, non-finit
         w.beginObject();
         w.endObject();
         CHECK(w.str() == "{}");
+    }
+    // non-default indent widths; a negative width clamps to 0 instead of wrapping the size_t
+    // multiply in writeIndent() into a throwing append (1.2 audit follow-up)
+    {
+        JsonWriter w{JsonWriterConfig{.indentWidth = 4}};
+        w.beginObject();
+        w.key("a");
+        w.value(1LL);
+        w.endObject();
+        CHECK(w.str() == "{\n    \"a\": 1\n}");
+    }
+    {
+        JsonWriter w{JsonWriterConfig{.indentWidth = 0}};
+        w.beginObject();
+        w.key("a");
+        w.value(1LL);
+        w.endObject();
+        CHECK(w.str() == "{\n\"a\": 1\n}");
+    }
+    {
+        JsonWriter w{JsonWriterConfig{.indentWidth = -3}};
+        w.beginObject();
+        w.key("a");
+        w.value(1LL);
+        w.endObject();
+        CHECK(w.str() == "{\n\"a\": 1\n}");  // identical to indentWidth 0
     }
 }
 
