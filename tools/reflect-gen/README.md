@@ -304,6 +304,14 @@ before any parse. `--depfile` works exactly as it does for `--emit-meta`: it req
 consumer whose two halves must never version-skew; one artifact makes a write-only or stale-read
 build unrepresentable.
 
+**Only namespace-scoped components are emitted** (1.2 audit follow-up): a component nested inside a
+struct/class (or any other non-namespace scope) is still *detected* — and still registered by
+`--emit-meta`, whose fully-qualified template argument needs no namespace wrapping — but
+`--emit-json` skips it whole with a `// skipped component: <name> (not at namespace scope — …)`
+comment plus one stderr warning (exit stays `0`): the serializer pair must live in the component's
+namespace for ADL, and a class-scope component has no namespace to wrap it in (`namespace
+engine::Outer` where `Outer` is a class does not compile).
+
 ### The generated file's shape
 
 ```cpp

@@ -726,6 +726,25 @@ elseif(CASE STREQUAL "components_longdouble")
     aero_expect_stdout_contains("${out}" "[primitive]")
     aero_expect_stderr_contains("${err}" "weird")
 
+elseif(CASE STREQUAL "json_nested_skip")
+    # 1.2 audit finding 1: a component nested inside a class is detected (1.1.2 E4) but --emit-json
+    # must SKIP it — wrapping it in `namespace engine::NestedOuter` would name a class and the
+    # generated TU could not compile. The namespace-scope sibling in the same header still emits.
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_nested.hpp" -- -std=c++20
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "// skipped component: engine::NestedOuter::NestedInner")
+    aero_expect_stdout_contains("${out}" "namespace engine {")
+    aero_expect_stdout_contains("${out}" "void aeroWriteJson(engine::JsonWriter& writer, const NestedSibling& value)")
+    aero_expect_stdout_contains("${out}" "bool aeroReadJson(const engine::JsonValue& json, NestedSibling& value)")
+    aero_expect_stderr_contains("${err}" "not at namespace scope")
+    foreach(_absent "namespace engine::NestedOuter" "NestedInner& value" "value.hp")
+        string(FIND "${out}" "${_absent}" _idx)
+        if(NOT _idx EQUAL -1)
+            message(FATAL_ERROR "case 'json_nested_skip': '${_absent}' must not appear, got:\n${out}")
+        endif()
+    endforeach()
+
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")
 endif()

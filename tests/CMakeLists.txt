@@ -211,7 +211,8 @@ if(AERO_REFLECT_TOOLS)
         json_none json_determinism json_depfile json_bad_syntax json_missing_input
         json_mutually_exclusive
         json_reader_basic json_reader_unsupported json_reader_multi json_reader_tag
-        json_reader_none json_reader_limits components_longdouble)
+        json_reader_none json_reader_limits components_longdouble
+        json_nested_skip)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"

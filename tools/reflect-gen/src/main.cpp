@@ -310,6 +310,7 @@ struct Component {
     std::string qualifiedName;
     unsigned line = 0;
     unsigned column = 0;
+    bool atNamespaceScope = true;  // false => nested in a record/function; --emit-json skips it
     std::vector<Field> fields;
 };
 
@@ -424,6 +425,22 @@ std::string buildQualifiedName(CXCursor cursor) {
     return result;
 }
 
+// True when every semantic ancestor up to the translation unit is a namespace. A component nested
+// inside a record (or a function) cannot be emitted by --emit-json: the "namespace" prefix its
+// qualified name would produce names a struct/class, so the generated TU cannot compile (1.2 audit,
+// finding 1). Detection still reports such components (1.1.2 E4) and --emit-meta still registers them
+// (a fully-qualified template argument needs no namespace wrapping); only the JSON emitter skips.
+bool isNamespaceScoped(CXCursor cursor) {
+    CXCursor parent = clang_getCursorSemanticParent(cursor);
+    while (clang_Cursor_isNull(parent) == 0 && clang_getCursorKind(parent) != CXCursor_TranslationUnit) {
+        if (clang_getCursorKind(parent) != CXCursor_Namespace) {
+            return false;
+        }
+        parent = clang_getCursorSemanticParent(parent);
+    }
+    return true;
+}
+
 // Collect a component's non-static data members (FieldDecl only -> excludes statics/methods/nested,
 // E11) in declaration/source order (AC-9).
 CXChildVisitResult fieldVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientData clientData) {
@@ -455,6 +472,7 @@ CXChildVisitResult detectVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientD
     if (isRecord && clang_isCursorDefinition(cursor) != 0 && hasComponentAnnotation(cursor)) {
         Component component;
         component.qualifiedName = buildQualifiedName(cursor);
+        component.atNamespaceScope = isNamespaceScoped(cursor);
         clang_getSpellingLocation(location, nullptr, &component.line, &component.column, nullptr);
         clang_visitChildren(cursor, fieldVisitor, &component.fields);
         state->components->push_back(std::move(component));
@@ -562,7 +580,9 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
 // components (D7). Serialization is one consumer (ADR-004) whose halves must never version-skew —
 // putting both in one artifact makes a write-only or stale-read build unrepresentable (D2). Unsupported
 // fields emit a `// skipped:` comment in BOTH functions; the writer pass still owns the one stderr
-// warning per field (D9 -- the reader pass emits no second warning, AC-2).
+// warning per field (D9 -- the reader pass emits no second warning, AC-2). A component that is not at
+// namespace scope is skipped whole, with a `// skipped component:` comment + one stderr warning (1.2
+// audit, finding 1): its namespace wrapper would name a record and the TU would not compile.
 void emitJson(const std::vector<Component>& components, const std::string& inputPath, std::ostream& out) {
     const std::string basename = fs::path(inputPath).filename().string();
 
@@ -578,6 +598,13 @@ void emitJson(const std::vector<Component>& components, const std::string& input
     }
 
     for (const Component& component : components) {
+        if (!component.atNamespaceScope) {  // see isNamespaceScoped (1.2 audit, finding 1)
+            out << "\n// skipped component: " << component.qualifiedName
+                << " (not at namespace scope — unsupported by --emit-json)\n";
+            std::cerr << "aero_reflect_gen: warning: " << component.qualifiedName
+                      << " is not at namespace scope; --emit-json emits only namespace-scoped components\n";
+            continue;
+        }
         const auto [ns, typeName] = splitQualifiedName(component.qualifiedName);
         const std::string& qualifiedName = component.qualifiedName;
         out << "\n";
