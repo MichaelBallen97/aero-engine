@@ -16,6 +16,11 @@
 #include <cstdint>
 #include <format>
 #include <optional>
+// <ostream> is required by MSVC, not by libc++ (the 0.4.1 trap): doctest stringifies a failing
+// CHECK(std::string == std::string_view) through operator<<, and MSVC's <__msvc_string_view.hpp>
+// overload needs a COMPLETE std::ostream. Omitting it builds clean on macOS/Linux and fails only
+// on the Windows lane with errors pointing inside the STL headers.
+#include <ostream>
 #include <string>
 #include <string_view>
 #include <type_traits>
