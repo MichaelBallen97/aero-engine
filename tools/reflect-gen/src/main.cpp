@@ -329,13 +329,37 @@ std::string stripElaboratedKeyword(std::string spelling) {
 }
 
 // Classify a field's type against ADR-004's minimal subset. Match on the CANONICAL type so a
-// using/typedef alias still resolves (D6). The builtin range [CXType_Bool, CXType_LongDouble] is the
-// whole fundamental-arithmetic set (bool, char family, short/int/long/long long signed+unsigned,
-// float, double, long double) -- verified F4.
+// using/typedef alias still resolves (D6). Task 1.2.2 (D11) replaces the old whole-builtin-range test
+// with an EXPLICIT whitelist of the 18 CXTypeKinds serialize.hpp can actually widen/narrow: the old
+// range [CXType_Bool, CXType_LongDouble] (21 kinds) also admitted `long double`, `__int128`, and
+// `unsigned __int128`, for which the writer/reader have no viable overload (ambiguous float/double
+// resolution for long double; std::is_integral_v<__int128> is false under strict -std=c++20) -- a
+// component carrying one of those three used to generate NON-COMPILING code (F10). Those three now
+// fall through to Unsupported like any other out-of-subset type, uniformly across all four consumers.
 FieldCategory classifyField(CXType fieldType) {
     const CXType canonical = clang_getCanonicalType(fieldType);
-    if (canonical.kind >= CXType_Bool && canonical.kind <= CXType_LongDouble) {
-        return FieldCategory::Primitive;
+    switch (canonical.kind) {
+        case CXType_Bool:
+        case CXType_Char_U:
+        case CXType_UChar:
+        case CXType_Char16:
+        case CXType_Char32:
+        case CXType_UShort:
+        case CXType_UInt:
+        case CXType_ULong:
+        case CXType_ULongLong:
+        case CXType_Char_S:
+        case CXType_SChar:
+        case CXType_WChar:
+        case CXType_Short:
+        case CXType_Int:
+        case CXType_Long:
+        case CXType_LongLong:
+        case CXType_Float:
+        case CXType_Double:
+            return FieldCategory::Primitive;
+        default:
+            break;
     }
     const std::string spelling = stripElaboratedKeyword(toStdString(clang_getTypeSpelling(canonical)));
     if (spelling == "engine::Vec3") {
