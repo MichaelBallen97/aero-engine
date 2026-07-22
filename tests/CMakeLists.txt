@@ -208,7 +208,9 @@ if(AERO_REFLECT_TOOLS)
         depfile_unwritable
         json_basic json_output_file json_unsupported json_multi json_tag
         json_none json_determinism json_depfile json_bad_syntax json_missing_input
-        json_mutually_exclusive)
+        json_mutually_exclusive
+        json_reader_basic json_reader_unsupported json_reader_multi json_reader_tag
+        json_reader_none json_reader_limits components_longdouble)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -251,6 +253,9 @@ if(AERO_REFLECT_TOOLS)
         HEADERS reflect-gen/fixtures/component_codegen.hpp
                 reflect-gen/fixtures/component_wiring.hpp
                 reflect-gen/fixtures/component_multi.hpp
+                reflect-gen/fixtures/component_limits.hpp   # task 1.2.2 — the D12 numeric-edge fixture
+                reflect-gen/fixtures/component_tag.hpp      # task 1.2.2 review fix — a REAL generated
+                                                             # zero-field aeroReadJson, proven end-to-end
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include")     # aero::core PUBLIC dir — parse needs it (D9)
     add_test(NAME aero_reflect_json_test COMMAND aero_reflect_json_test)
 endif()
