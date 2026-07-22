@@ -169,6 +169,13 @@ The original draft dismissed C++26 static reflection as "years away." That is no
 
 **This is the best-return investment in the whole project.**
 
+### Implementation note (task 1.2.1)
+
+The JSON serialization consumer landed: `tools/reflect-gen --emit-json` emits, per detected component, a free
+`aeroWriteJson(engine::JsonWriter&, const T&)` function against a hand-rolled `engine::reflect` runtime
+(`engine/reflect` — `JsonWriter` + per-leaf-type `writeJson` overloads, `std::to_chars`-backed, no third-party
+JSON library). Read-side deserialization and the scene-on-disk schema are 1.2.2/1.2.3.
+
 ---
 
 ## ADR-005 — Math: own types, swappable backend
