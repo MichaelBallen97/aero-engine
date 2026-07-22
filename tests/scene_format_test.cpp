@@ -442,10 +442,19 @@ TEST_CASE("scene: parent battery") {
     CHECK(contains(threeCycle.message, "parent chain is cyclic"));
     CHECK(contains(threeCycle.message, "entities[0]"));
 
-    const engine::SceneError hanging = parseFail(
-        R"({"version": 1, "entities": [{"id": 1, "parent": 2}, {"id": 2, "parent": 1}, {"id": 3, "parent": 1}]})");
-    CHECK(contains(hanging.message, "parent chain is cyclic"));
-    CHECK(contains(hanging.message, "entities[0]"));
+    // entities[0] (id 3) hangs OFF the 1<->2 cycle without being ON it: its own chain (3 -> 1 -> 2 ->
+    // 1) revisits id 1 without ever revisiting id 3 itself -- so this is NOT the same shape as the
+    // two-cycle case above, which asserts on an entity that IS part of its own cycle.
+    const engine::SceneError hangingFirst = parseFail(
+        R"({"version": 1, "entities": [{"id": 3, "parent": 1}, {"id": 1, "parent": 2}, {"id": 2, "parent": 1}]})");
+    CHECK(hangingFirst.message == "entities[0] (id 3): parent chain is cyclic");
+
+    // A cycle discovered at start > 0, AFTER an earlier walk has already memoized an acyclic chain
+    // (entities[0]/[1] terminate at a root and get marked WalkState::Acyclic) -- the one arrangement
+    // that actually exercises the memo rather than always starting a fresh walk at index 0.
+    const engine::SceneError afterMemo = parseFail(R"({"version": 1, "entities": [{"id": 1}, {"id": 2, "parent": 1}, )"
+                                                   R"({"id": 3, "parent": 4}, {"id": 4, "parent": 3}]})");
+    CHECK(afterMemo.message == "entities[2] (id 3): parent chain is cyclic");
 
     const std::string forwardRefText = R"({"version": 1, "entities": [{"id": 1, "parent": 2}, {"id": 2}]})";
     const engine::SceneDocument forward = parseOk(forwardRefText);
@@ -524,6 +533,28 @@ TEST_CASE("scene: components battery") {
     const std::string t1 = engine::writeSceneText(orderedDoc);
     const std::string t2 = engine::writeSceneText(parseOk(t1));
     CHECK(t1 == t2);
+}
+
+TEST_CASE("scene: parseScene(const JsonValue&) called directly -- the DOM primitive (D8)") {
+    // Every other case reaches parseScene through the text overload; D8 designates the DOM overload
+    // "the primitive", so it needs its own direct call. This fixture doubles as D11 catalog coverage
+    // for "scene root must be a JSON object (found <kind>)" (scene_format.cpp:76), the one line no
+    // other test exercises.
+    const engine::SceneParseResult result = engine::parseScene(engine::JsonValue::array({}));
+    CHECK_FALSE(result.ok());
+    CHECK(result.error.message == "scene root must be a JSON object (found array)");
+    CHECK(result.error.line == 0);
+    CHECK(result.error.column == 0);
+    CHECK(result.error.offset == 0);
+}
+
+TEST_CASE("scene: D11 catalog coverage -- entities key/kind, name kind") {
+    // Three more catalog lines (scene_format.cpp:96, :99, :134-135) with no prior direct coverage.
+    CHECK(contains(parseFail(R"({"version": 1})").message, "missing required key \"entities\""));
+    CHECK(contains(parseFail(R"({"version": 1, "entities": {}})").message,
+                   "\"entities\" must be an array (found object)"));
+    CHECK(parseFail(sceneWithEntity(R"({"id": 1, "name": 5})")).message ==
+          "entities[0] (id 1): \"name\" must be a string (found number)");
 }
 
 TEST_CASE("scene: unknown keys tolerated and stripped") {
@@ -636,6 +667,11 @@ TEST_CASE("validateScene battery") {
     const std::optional<engine::SceneError> zeroIdError = engine::validateScene(zeroId);
     REQUIRE(zeroIdError.has_value());
     CHECK(contains(zeroIdError->message, "\"id\" must be an integer >= 1"));
+    // D12: the DOM path (foundDetail) quotes a Number's lexeme -- "(found \"0\")", never bare
+    // "(found 0)". validateScene must render the identical catalog form, proven by an exact
+    // cross-path comparison against the DOM path's own message for the equivalent input.
+    CHECK(contains(zeroIdError->message, "(found \"0\")"));
+    CHECK(zeroIdError->message == parseFail(sceneWithEntity(R"({"id": 0})")).message);
 
     engine::SceneDocument dupIds;
     dupIds.entities.push_back(engine::SceneEntityRecord{.id = 1});
@@ -665,6 +701,21 @@ TEST_CASE("validateScene battery") {
     const std::optional<engine::SceneError> emptyTypeError = engine::validateScene(emptyType);
     REQUIRE(emptyTypeError.has_value());
     CHECK(contains(emptyTypeError->message, "component name must be a non-empty string"));
+
+    // Gap ruled by Michael: two records of the same component type on one entity validate clean
+    // today but break the write<->parse fixpoint (JSON object keys collapse last-wins on reload) --
+    // parseScene itself can never build this document (D4/F3), so only a hand-built one exercises it.
+    engine::SceneEntityRecord withDuplicateComponentType;
+    withDuplicateComponentType.id = 1;
+    withDuplicateComponentType.components.push_back(
+        engine::SceneComponentRecord{.type = "engine::Transform", .value = engine::JsonValue::object({})});
+    withDuplicateComponentType.components.push_back(
+        engine::SceneComponentRecord{.type = "engine::Transform", .value = engine::JsonValue::object({})});
+    engine::SceneDocument duplicateComponentType;
+    duplicateComponentType.entities.push_back(std::move(withDuplicateComponentType));
+    const std::optional<engine::SceneError> dupTypeError = engine::validateScene(duplicateComponentType);
+    REQUIRE(dupTypeError.has_value());
+    CHECK(dupTypeError->message == R"(entities[0] (id 1): duplicate component type "engine::Transform")");
 
     engine::SceneEntityRecord withArrayPayload;
     withArrayPayload.id = 1;
