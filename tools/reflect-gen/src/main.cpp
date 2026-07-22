@@ -561,8 +561,8 @@ void emitJson(const std::vector<Component>& components, const std::string& input
         // Pass 1: supported fields (uniform line; overload resolution routes primitive/Vec3/Quat).
         for (const Field& field : component.fields) {
             if (field.category != FieldCategory::Unsupported) {
-                out << "    writer.key(\"" << field.name << "\");  "
-                    << "engine::reflect::writeJson(writer, value." << field.name << ");\n";
+                out << "    writer.key(\"" << field.name << "\");  ";
+                out << "engine::reflect::writeJson(writer, value." << field.name << ");\n";
             }
         }
         // Pass 2: unsupported fields — skip comment + the SAME stderr warning emitMeta/emitComponents emit.
