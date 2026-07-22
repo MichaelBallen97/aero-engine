@@ -553,6 +553,35 @@ TEST_CASE("scene: parseScene(const JsonValue&) called directly -- the DOM primit
     CHECK(result.error.offset == 0);
 }
 
+TEST_CASE("scene: parseScene(const JsonValue&) rejects a duplicate component key on a hand-built DOM") {
+    // Text input can never trip this line -- the JSON layer collapses duplicate object keys
+    // last-wins (docs/09 section 2.3) -- so a hand-built root is the one shape whose "components"
+    // object can carry two members with the same key. Before the 1.2 audit fix (finding 3a) this
+    // silently produced two records of one type, violating the <=1-per-type invariant task 1.4.2's
+    // loader will assume; now it is rejected with the shared catalog line.
+    using engine::JsonMember;
+    using engine::JsonValue;
+    auto num = [](std::string_view lexeme) { return JsonValue::number(std::string(lexeme)); };
+
+    const JsonValue components = JsonValue::object({
+        JsonMember{.key = "engine::Transform", .value = JsonValue::object({})},
+        JsonMember{.key = "engine::Transform", .value = JsonValue::object({})},
+    });
+    const JsonValue entity = JsonValue::object({
+        JsonMember{.key = "id", .value = num("1")},
+        JsonMember{.key = "components", .value = components},
+    });
+    const JsonValue root = JsonValue::object({
+        JsonMember{.key = "version", .value = num("1")},
+        JsonMember{.key = "entities", .value = JsonValue::array({entity})},
+    });
+
+    const engine::SceneParseResult result = engine::parseScene(root);
+    CHECK_FALSE(result.ok());
+    CHECK(result.error.message == R"(entities[0] (id 1): duplicate component type "engine::Transform")");
+    CHECK(result.error.line == 0);  // scene-stage error: position stays zero (D8)
+}
+
 TEST_CASE("scene: D11 catalog coverage -- entities key/kind, name kind") {
     // Three more catalog lines (scene_format.cpp:96, :99, :134-135) with no prior direct coverage.
     CHECK(contains(parseFail(R"({"version": 1})").message, "missing required key \"entities\""));

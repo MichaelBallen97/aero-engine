@@ -67,9 +67,12 @@ std::string payloadMessage(std::size_t index, std::uint64_t id, std::string_view
                        found);
 }
 
-// validateScene-ONLY (see its doc comment): parseScene can never emit this line, because the JSON
-// object form of "components" collapses a duplicate key (last-wins) before the scene layer ever
-// sees it -- only a hand-built SceneDocument can still carry two records of the same type.
+// Emitted by BOTH the extract pass and validateScene (1.2 audit, finding 3a). TEXT-parsed scenes can
+// still never trip it in extract -- the JSON object form of "components" collapses a duplicate key
+// (last-wins) before the scene layer sees it -- but a HAND-BUILT DOM handed to
+// parseScene(const JsonValue&) can carry two members with the same key; extract rejects that instead
+// of silently producing two records of one type. validateScene keeps its own check for hand-built
+// SceneDocuments that never went through parseScene (the editor pre-save path).
 std::string duplicateComponentTypeMessage(std::size_t index, std::uint64_t id, std::string_view type) {
     return std::format("entities[{}] (id {}): duplicate component type \"{}\"", index, id, type);
 }
@@ -161,12 +164,20 @@ std::optional<SceneError> extract(const JsonValue& root, SceneDocument& out,
                                               record.id, jsonKindName(components->kind())));
             }
             record.components.reserve(components->members().size());
+            // Lookup-only, scoped to this entity, never iterated (same determinism argument as
+            // validateScene's twin set). Unreachable from TEXT input (the JSON layer collapses
+            // duplicate keys last-wins); it bites only on a hand-built DOM (finding 3a).
+            std::unordered_set<std::string_view> seenTypes;
+            seenTypes.reserve(components->members().size());
             for (const JsonMember& member : components->members()) {
                 if (member.key.empty()) {
                     return sceneError(componentNameMessage(i, record.id));
                 }
                 if (!member.value.isObject()) {
                     return sceneError(payloadMessage(i, record.id, member.key, jsonKindName(member.value.kind())));
+                }
+                if (!seenTypes.insert(member.key).second) {
+                    return sceneError(duplicateComponentTypeMessage(i, record.id, member.key));
                 }
                 // JsonValue is value-semantic (F3): this COPIES the payload subtree out of the DOM, so
                 // the document has no lifetime coupling to the caller's parse tree (E-move/copy).
