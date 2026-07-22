@@ -152,7 +152,7 @@ struct [[engine::component]] Transform {
 | Generated artifact | Consumer |
 |---|---|
 | `entt::meta` registration | Runtime |
-| Serialization readers/writers (JSON + binary) | Scenes, prefabs |
+| Serialization readers/writers (JSON — binary is the Phase 3+ cooker pipeline's, not a reflect-gen output; see the Epic 3.3 note in docs/tasks/phase-3.md) | Scenes, prefabs |
 | quickjs-ng bindings | Scripting |
 | **`.d.ts` files** | TypeScript autocomplete in VSCode |
 
