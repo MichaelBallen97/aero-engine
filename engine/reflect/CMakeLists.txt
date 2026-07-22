@@ -4,6 +4,7 @@
 # boundary guard: the boundary rule is satisfied by construction.
 add_library(aero_reflect STATIC
     src/json_writer.cpp
+    src/json_value.cpp    # task 1.2.2 — the JsonValue DOM + number conversion
     src/serialize.cpp
 )
 add_library(aero::reflect ALIAS aero_reflect)
