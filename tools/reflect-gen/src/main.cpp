@@ -52,7 +52,7 @@ void printUsage(std::ostream& out) {
     out << "aero_reflect_gen " << TOOL_VERSION << " -- libclang parse+walk harness (task 1.1.1)\n"
         << "\n"
         << "Usage:\n"
-        << "  aero_reflect_gen [--all] [--main-file-only] [--components] [--emit-meta] [-o <file>] "
+        << "  aero_reflect_gen [--all] [--main-file-only] [--components] [--emit-meta] [--emit-json] [-o <file>] "
         << "[--depfile <file>] <input> [-- <clang args>...]\n"
         << "  aero_reflect_gen --version\n"
         << "  aero_reflect_gen --help\n"
@@ -63,9 +63,11 @@ void printUsage(std::ostream& out) {
         << "  --all                Include cursors from every included header (wins if both given).\n"
         << "  --components         List detected engine::component structs/classes and fields, not the raw AST walk.\n"
         << "  --emit-meta          Emit entt::meta registration C++ for detected components, instead of the AST walk.\n"
-        << "  -o <file>            Write --emit-meta output to <file> (default: stdout).\n"
-        << "  --depfile <file>     With --emit-meta + -o: write a Makefile-format depfile of the parse's "
-        << "#include closure.\n"
+        << "  --emit-json          Emit JSON serializers (aeroWriteJson per component) to stdout or -o. Mutually "
+        << "exclusive with --emit-meta.\n"
+        << "  -o <file>            Write --emit-meta/--emit-json output to <file> (default: stdout).\n"
+        << "  --depfile <file>     With -o and one of --emit-meta/--emit-json: write a Makefile-format depfile of "
+        << "the parse's #include closure.\n"
         << "  --version            Print the tool version and clang_getClangVersion(); exit 0.\n"
         << "  --help               Print this usage; exit 0.\n"
         << "\n"
@@ -94,6 +96,7 @@ struct Args {
     bool wantMainFileOnly = false;
     bool wantComponents = false;
     bool wantEmitMeta = false;  // task 1.1.3: emit entt::meta registration instead of walking
+    bool wantEmitJson = false;  // task 1.2.1: emit JSON serializers (mutually exclusive with --emit-meta, D8)
     bool wantHelp = false;
     bool wantVersion = false;
     std::optional<std::string> outputPath;   // task 1.1.3: -o <file>; nullopt => stdout
@@ -140,6 +143,8 @@ std::optional<Args> parseArgs(int argc, char** argv) {
             args.wantComponents = true;
         } else if (token == "--emit-meta") {
             args.wantEmitMeta = true;
+        } else if (token == "--emit-json") {  // NEW (task 1.2.1)
+            args.wantEmitJson = true;
         } else if (token == "-o") {
             if (i + 1 >= argc) {  // bounds check: missing operand => usage error
                 std::cerr << "aero_reflect_gen: error: '-o' requires a file path\n";
@@ -173,11 +178,17 @@ std::optional<Args> parseArgs(int argc, char** argv) {
         return std::nullopt;
     }
 
-    // D6: a depfile's make-rule target IS the -o path, so --depfile is meaningful ONLY with
-    // --emit-meta AND -o. Fail fast (exit 1) BEFORE any filesystem work rather than write a rule for
-    // a phantom target. (E6 / depfile_requires_* cases.)
-    if (args.depfilePath && (!args.wantEmitMeta || !args.outputPath)) {
-        std::cerr << "aero_reflect_gen: error: --depfile requires --emit-meta and -o\n";
+    // D8: --emit-json and --emit-meta each emit a DIFFERENT artifact to one -o; requesting both is meaningless.
+    if (args.wantEmitMeta && args.wantEmitJson) {
+        std::cerr << "aero_reflect_gen: error: --emit-json and --emit-meta are mutually exclusive\n";
+        return std::nullopt;  // usage error (exit 1)
+    }
+
+    // D6: a depfile's make-rule target IS the -o path, so --depfile is meaningful ONLY with -o AND
+    // exactly one emit mode (mutual-exclusion above already rejects both). Fail fast (exit 1) BEFORE
+    // any filesystem work rather than write a rule for a phantom target. (E6 / depfile_requires_* cases.)
+    if (args.depfilePath && (!args.outputPath || !(args.wantEmitMeta || args.wantEmitJson))) {
+        std::cerr << "aero_reflect_gen: error: --depfile requires -o and --emit-meta or --emit-json\n";
         return std::nullopt;
     }
 
@@ -463,6 +474,18 @@ std::string sanitizeIdentifier(std::string_view stem) {
     return result;
 }
 
+// Split a qualified name at its LAST "::" into {namespace, unqualifiedType}. "engine::demo::Light" ->
+// {"engine::demo", "Light"}; "Player" -> {"", "Player"}. Used by --emit-json to wrap each serializer in its
+// component's namespace so ADL resolves (D7). (--emit-meta did not need this — it used the fully-qualified name
+// as a template argument.)
+std::pair<std::string, std::string> splitQualifiedName(const std::string& qualifiedName) {
+    const std::string::size_type pos = qualifiedName.rfind("::");
+    if (pos == std::string::npos) {
+        return {std::string{}, qualifiedName};
+    }
+    return {qualifiedName.substr(0, pos), qualifiedName.substr(pos + 2)};
+}
+
 // Serialize the detected components as a compilable entt::meta registration TU (D7). Writes generated
 // C++ to `out`; unsupported fields become a `// skipped:` line + the SAME stderr warning 1.1.2 emits
 // (D4). No addresses, timestamps, or absolute paths (source #include is a basename) => byte-identical
@@ -506,6 +529,56 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
         }
     }
     out << "}\n";
+}
+
+// ---- task 1.2.1: --emit-json (per-component JSON serializers, D4/D9) --------------------------------
+// Emits, per detected component T, a free function `void aeroWriteJson(engine::JsonWriter&, const T&)` that writes
+// an object of T's SUPPORTED public data members via engine::reflect::writeJson(writer, value.field). Unsupported
+// fields emit a `// skipped:` comment + the same stderr warning emitMeta uses; exit stays 0 (lenient, D4). The
+// function is wrapped in the component's namespace so ADL resolves for namespaced components (D7).
+void emitJson(const std::vector<Component>& components, const std::string& inputPath, std::ostream& out) {
+    const std::string basename = fs::path(inputPath).filename().string();
+
+    out << "// GENERATED by aero_reflect_gen --emit-json — DO NOT EDIT.\n";
+    out << "// source: " << basename << "\n";
+    out << "#include <aero/reflect/serialize.hpp>\n";
+    out << "\n";
+    out << "#include \"" << basename << "\"\n";
+
+    if (components.empty()) {
+        out << "\n// no engine::component annotations detected\n";
+        return;
+    }
+
+    for (const Component& component : components) {
+        const auto [ns, typeName] = splitQualifiedName(component.qualifiedName);
+        out << "\n";
+        if (!ns.empty()) {
+            out << "namespace " << ns << " {\n";
+        }
+        out << "void aeroWriteJson(engine::JsonWriter& writer, const " << typeName << "& value) {\n";
+        out << "    writer.beginObject();\n";
+        // Pass 1: supported fields (uniform line; overload resolution routes primitive/Vec3/Quat).
+        for (const Field& field : component.fields) {
+            if (field.category != FieldCategory::Unsupported) {
+                out << "    writer.key(\"" << field.name << "\");  ";
+                out << "engine::reflect::writeJson(writer, value." << field.name << ");\n";
+            }
+        }
+        // Pass 2: unsupported fields — skip comment + the SAME stderr warning emitMeta/emitComponents emit.
+        for (const Field& field : component.fields) {
+            if (field.category == FieldCategory::Unsupported) {
+                out << "    // skipped: " << field.name << " (" << field.typeName << " — unsupported)\n";
+                std::cerr << "aero_reflect_gen: warning: " << component.qualifiedName << '.' << field.name << " : "
+                          << field.typeName << " is not in the reflectable subset (primitives + Vec3/Quat)\n";
+            }
+        }
+        out << "    writer.endObject();\n";
+        out << "}\n";
+        if (!ns.empty()) {
+            out << "}  // namespace " << ns << "\n";
+        }
+    }
 }
 
 // ---- task 1.1.4: --depfile (Makefile-format include-closure depfile, D7) -------------------------
@@ -621,8 +694,35 @@ ExitCode runMain(int argc, char** argv) {
         clang_disposeDiagnostic(diagnostic);
     }
 
-    // --- step 6: emit (--emit-meta) / detect (--components) / walk -- stdout|-o for emit, stdout else ------
-    if (args.wantEmitMeta) {
+    // --- step 6: emit (--emit-json/--emit-meta) / detect (--components) / walk -- stdout|-o for emit, stdout else --
+    if (args.wantEmitJson) {                                       // NEW leading branch (task 1.2.1)
+        if (maxSeverity < static_cast<int>(CXDiagnostic_Error)) {  // same clean-parse gate
+            std::vector<Component> components;
+            DetectState detect{.allFiles = args.wantAll, .components = &components};
+            clang_visitChildren(clang_getTranslationUnitCursor(tu), detectVisitor, &detect);
+            if (args.outputPath.has_value()) {
+                std::ofstream out(*args.outputPath, std::ios::trunc);
+                if (!out) {
+                    std::cerr << "aero_reflect_gen: error: cannot open output file '" << *args.outputPath << "'\n";
+                    return ExitCode::IoError;
+                }
+                emitJson(components, args.input, out);
+                out.flush();
+                if (!out) {
+                    std::cerr << "aero_reflect_gen: error: failed writing output file '" << *args.outputPath << "'\n";
+                    return ExitCode::IoError;
+                }
+                if (args.depfilePath.has_value()) {  // reuses writeDepfile verbatim (F1)
+                    if (!writeDepfile(tu, args.input, *args.outputPath, *args.depfilePath)) {
+                        std::cerr << "aero_reflect_gen: error: failed writing depfile '" << *args.depfilePath << "'\n";
+                        return ExitCode::IoError;
+                    }
+                }
+            } else {
+                emitJson(components, args.input, std::cout);
+            }
+        }
+    } else if (args.wantEmitMeta) {  // was `if` — body UNCHANGED
         // Generate ONLY for a clean parse: on error/fatal diagnostics fall through to the exit-2 verdict
         // (step 7) WITHOUT running detection or opening -o, so a parse failure leaves NO output file (AC-8).
         if (maxSeverity < static_cast<int>(CXDiagnostic_Error)) {

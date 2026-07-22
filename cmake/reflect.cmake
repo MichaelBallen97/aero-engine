@@ -205,3 +205,96 @@ ${_aero_calls}}
     list(REMOVE_DUPLICATES _aero_header_dirs)
     target_include_directories(${TARGET} PRIVATE ${_aero_header_dirs})   # so each generated TU finds its header (F6)
 endfunction()
+
+# aero_reflect_generate_json(<target>
+#     HEADERS <hdr>...            # component headers to parse (explicit list, D3)
+#     [INCLUDE_DIRS <dir>...]     # extra parse -I's (e.g. aero::core's PUBLIC dir — not target-derivable, D9)
+#     [DEFINES <NAME[=VAL]>...])  # extra parse -D's
+# Sibling of aero_reflect_generate (task 1.2.1, D10): emits per-header <stem>.json.gen.cpp via --emit-json, wired
+# incrementally (DEPFILE). NO aggregator (serialization has no register-at-startup concept, D7). Distinct
+# AERO_REFLECT_JSON_WIRED property so a target may use BOTH generators. Reuses AERO_LLVM_ROOT/AERO_REFLECT_CLANG_ARGS.
+function(aero_reflect_generate_json TARGET)
+    if(NOT AERO_REFLECT_TOOLS)
+        message(STATUS "aero_reflect_generate_json(${TARGET}): skipped (AERO_REFLECT_TOOLS=OFF) — no JSON codegen")
+        return()   # defined no-op (D11)
+    endif()
+
+    set(options)
+    set(oneValueArgs)                         # DELTA 4: no AGGREGATOR
+    set(multiValueArgs HEADERS INCLUDE_DIRS DEFINES)
+    cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+    if(NOT TARGET ${TARGET})
+        message(FATAL_ERROR "aero_reflect_generate_json(${TARGET}): no such target — call AFTER "
+                            "add_executable/add_library(${TARGET} ...) in the SAME CMakeLists.txt")
+    endif()
+    if(NOT ARG_HEADERS)
+        message(FATAL_ERROR "aero_reflect_generate_json(${TARGET}): HEADERS must list >=1 component header")
+    endif()
+    get_target_property(_aero_json_wired ${TARGET} AERO_REFLECT_JSON_WIRED)      # DELTA 2: distinct property
+    if(_aero_json_wired)
+        message(FATAL_ERROR "aero_reflect_generate_json(${TARGET}): called twice — pass the full HEADERS list once")
+    endif()
+    set_target_properties(${TARGET} PROPERTIES AERO_REFLECT_JSON_WIRED TRUE)
+
+    if(DEFINED AERO_REFLECT_GEN_EXECUTABLE)
+        set(_aero_tool "${AERO_REFLECT_GEN_EXECUTABLE}")
+        set(_aero_tool_dep "")
+    elseif(TARGET aero_reflect_gen)
+        set(_aero_tool "$<TARGET_FILE:aero_reflect_gen>")
+        set(_aero_tool_dep aero_reflect_gen)
+    else()
+        message(FATAL_ERROR "aero_reflect_generate_json(${TARGET}): set AERO_REFLECT_GEN_EXECUTABLE or "
+                            "define aero_reflect_gen before calling")
+    endif()
+
+    set(_aero_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/reflect-generated/${TARGET}")   # shared per-target dir (D5)
+
+    set(_aero_extra_args)
+    foreach(_dir IN LISTS ARG_INCLUDE_DIRS)
+        list(APPEND _aero_extra_args -I "${_dir}")
+    endforeach()
+    foreach(_def IN LISTS ARG_DEFINES)
+        list(APPEND _aero_extra_args -D "${_def}")
+    endforeach()
+
+    set(_aero_gen_sources)
+    set(_aero_header_dirs)
+    set(_aero_seen_ids)
+    foreach(_hdr IN LISTS ARG_HEADERS)
+        get_filename_component(_hdr_abs "${_hdr}" ABSOLUTE)
+        get_filename_component(_hdr_name "${_hdr_abs}" NAME)
+        get_filename_component(_hdr_dir "${_hdr_abs}" DIRECTORY)
+        string(REGEX REPLACE "\\.[^.]*$" "" _stem "${_hdr_name}")     # strip LAST ext only (F5)
+        string(MAKE_C_IDENTIFIER "${_stem}" _id)
+        if(_id IN_LIST _aero_seen_ids)
+            message(FATAL_ERROR "aero_reflect_generate_json(${TARGET}): two HEADERS share stem/id '${_id}'")
+        endif()
+        list(APPEND _aero_seen_ids "${_id}")
+
+        set(_out "${_aero_gen_dir}/${_stem}.json.gen.cpp")           # DELTA 3: .json.gen.cpp
+        set(_dep "${_out}.d")
+
+        add_custom_command(
+            OUTPUT  "${_out}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${_aero_gen_dir}"
+            COMMAND "${_aero_tool}" --emit-json "${_hdr_abs}" -o "${_out}" --depfile "${_dep}"    # DELTA 3: --emit-json
+                    -- ${AERO_REFLECT_CLANG_ARGS}
+                       ${_aero_extra_args}
+                       -I "${_hdr_dir}"
+                       "$<$<BOOL:$<TARGET_PROPERTY:${TARGET},INCLUDE_DIRECTORIES>>:-I$<JOIN:$<TARGET_PROPERTY:${TARGET},INCLUDE_DIRECTORIES>,;-I>>"
+                       "$<$<BOOL:$<TARGET_PROPERTY:${TARGET},COMPILE_DEFINITIONS>>:-D$<JOIN:$<TARGET_PROPERTY:${TARGET},COMPILE_DEFINITIONS>,;-D>>"
+            DEPFILE "${_dep}"
+            DEPENDS ${_aero_tool_dep} "${_hdr_abs}"
+            COMMENT "reflect-gen: ${_stem}.json.gen.cpp (${TARGET})"
+            COMMAND_EXPAND_LISTS VERBATIM)
+
+        list(APPEND _aero_gen_sources "${_out}")
+        list(APPEND _aero_header_dirs "${_hdr_dir}")
+    endforeach()
+
+    # DELTA 4: no aggregator TU.
+    target_sources(${TARGET} PRIVATE ${_aero_gen_sources})
+    list(REMOVE_DUPLICATES _aero_header_dirs)
+    target_include_directories(${TARGET} PRIVATE ${_aero_header_dirs})
+endfunction()
