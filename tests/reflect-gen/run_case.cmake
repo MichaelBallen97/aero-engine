@@ -596,6 +596,136 @@ elseif(CASE STREQUAL "json_mutually_exclusive")
         OUT_RESULT result)
     aero_expect_exit("${result}" 1)
 
+elseif(CASE STREQUAL "json_reader_basic")
+    # task 1.2.2 (AC-1): --emit-json now ALSO emits aeroReadJson beside the unchanged aeroWriteJson.
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_basic.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "bool aeroReadJson(const engine::JsonValue& json, Transform& value)")
+    aero_expect_stdout_contains("${out}" "engine::reflect::expectObject(json, \"Transform\")")
+    aero_expect_stdout_contains("${out}"
+        "engine::reflect::readField(json, \"Transform\", \"position\", value.position)")
+    aero_expect_stdout_contains("${out}"
+        "engine::reflect::readField(json, \"Transform\", \"rotation\", value.rotation)")
+    aero_expect_stdout_contains("${out}" "engine::reflect::readField(json, \"Transform\", \"mass\", value.mass)")
+    aero_expect_stdout_contains("${out}"
+        "engine::reflect::readField(json, \"Transform\", \"hitPoints\", value.hitPoints)")
+    aero_expect_stdout_contains("${out}" "engine::reflect::readField(json, \"Transform\", \"active\", value.active)")
+    aero_expect_stdout_contains("${out}" "engine::reflect::warnUnknownKeys(json, \"Transform\"")
+    aero_expect_stdout_contains("${out}" "return ok;")
+    foreach(_absent "SCHEMA_VERSION" "lengthSquared" "NotAComponent")
+        string(FIND "${out}" "${_absent}" _idx)
+        if(NOT _idx EQUAL -1)
+            message(FATAL_ERROR "case 'json_reader_basic': '${_absent}' must not appear, got:\n${out}")
+        endif()
+    endforeach()
+
+elseif(CASE STREQUAL "json_reader_unsupported")
+    # AC-2: the reader skips the same unsupported field, with NO second stderr warning (the writer
+    # pass above it already warned once) -- and the field is absent from warnUnknownKeys' list too.
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_unsupported.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}"
+        "engine::reflect::readField(json, \"Transform\", \"position\", value.position)")
+    aero_expect_stdout_contains("${out}" "engine::reflect::readField(json, \"Transform\", \"mass\", value.mass)")
+    aero_expect_stdout_contains("${out}" "// skipped: velocity (engine::Vec4 — unsupported)")
+    string(FIND "${out}" "value.velocity" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'json_reader_unsupported': value.velocity must not appear, got:\n${out}")
+    endif()
+    string(FIND "${out}" "warnUnknownKeys(json, \"Transform\", {\"position\", \"mass\"})" _idx_wuk)
+    if(_idx_wuk EQUAL -1)
+        message(FATAL_ERROR "case 'json_reader_unsupported': expected warnUnknownKeys with only "
+                            "position/mass, got:\n${out}")
+    endif()
+    # exactly ONE stderr mention of velocity (the writer pass; the reader pass emits no second warning)
+    string(FIND "${err}" "velocity" _idx_first)
+    if(_idx_first EQUAL -1)
+        message(FATAL_ERROR "case 'json_reader_unsupported': expected 'velocity' on stderr, got:\n${err}")
+    endif()
+    math(EXPR _after "${_idx_first} + 1")
+    string(SUBSTRING "${err}" ${_after} -1 _err_rest)
+    string(FIND "${_err_rest}" "velocity" _idx_second)
+    if(NOT _idx_second EQUAL -1)
+        message(FATAL_ERROR "case 'json_reader_unsupported': 'velocity' appeared MORE than once on "
+                            "stderr (reader pass must not re-warn), got:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "json_reader_multi")
+    # AC-3: a namespaced component gets an ADL-resolvable reader in ITS OWN namespace, name string qualified.
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_multi.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "bool aeroReadJson(const engine::JsonValue& json, Player& value)")
+    aero_expect_stdout_contains("${out}" "namespace engine::demo {")
+    aero_expect_stdout_contains("${out}" "bool aeroReadJson(const engine::JsonValue& json, Light& value)")
+    aero_expect_stdout_contains("${out}" "\"engine::demo::Light\"")
+
+elseif(CASE STREQUAL "json_reader_tag")
+    # AC-4: a zero-field tag emits expectObject + an empty warnUnknownKeys list, and NO readField line.
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "engine::reflect::expectObject(json, \"Tag\")")
+    aero_expect_stdout_contains("${out}" "engine::reflect::warnUnknownKeys(json, \"Tag\", {})")
+    string(FIND "${out}" "readField(" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'json_reader_tag': a zero-field tag must emit no readField( line, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "json_reader_none")
+    # AC-4: zero detected components -> no aeroReadJson (and still no aeroWriteJson).
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/plain_component.hpp" -- -std=c++20
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "// no engine::component annotations detected")
+    string(FIND "${out}" "aeroReadJson" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'json_reader_none': must emit no aeroReadJson, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "json_reader_limits")
+    # AC-5: the D11 whitelist -- `weird` (long double) is skipped in BOTH generated functions, so the
+    # "// skipped: weird ..." comment appears TWICE (once per function body).
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_limits.hpp" -- ${CLANG_ARGS}
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "engine::reflect::readField(json, \"ReflectLimits\", \"big\", value.big)")
+    aero_expect_stdout_contains("${out}" "engine::reflect::readField(json, \"ReflectLimits\", \"huge\", value.huge)")
+    aero_expect_stdout_contains("${out}" "engine::reflect::readField(json, \"ReflectLimits\", \"small\", value.small)")
+    aero_expect_stdout_contains("${out}" "engine::reflect::readField(json, \"ReflectLimits\", \"tiny\", value.tiny)")
+    aero_expect_stdout_contains("${out}"
+        "engine::reflect::readField(json, \"ReflectLimits\", \"precise\", value.precise)")
+    string(FIND "${out}" "// skipped: weird (long double — unsupported)" _idx_first)
+    if(_idx_first EQUAL -1)
+        message(FATAL_ERROR "case 'json_reader_limits': expected the skip comment at least once, got:\n${out}")
+    endif()
+    math(EXPR _after "${_idx_first} + 1")
+    string(SUBSTRING "${out}" ${_after} -1 _out_rest)
+    string(FIND "${_out_rest}" "// skipped: weird (long double — unsupported)" _idx_second)
+    if(_idx_second EQUAL -1)
+        message(FATAL_ERROR "case 'json_reader_limits': expected the skip comment TWICE (writer + "
+                            "reader), got only once:\n${out}")
+    endif()
+    string(FIND "${out}" "value.weird" _idx_weird)
+    if(NOT _idx_weird EQUAL -1)
+        message(FATAL_ERROR "case 'json_reader_limits': value.weird must not appear, got:\n${out}")
+    endif()
+    aero_expect_stderr_contains("${err}" "weird")
+
+elseif(CASE STREQUAL "components_longdouble")
+    # AC-5: --components tags `weird` as [unsupported] with the literal (host-invariant) spelling
+    # "long double" -- and `big`/[primitive] still show up as separate substrings (1.1.2 host-invariance
+    # lesson: never assert a full "field <name> : <type>" line for a host-varying integral spelling).
+    aero_run_tool(ARGS --components "${FIXTURES_DIR}/component_limits.hpp" -- ${CLANG_ARGS}
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "field weird : long double [unsupported]")
+    aero_expect_stdout_contains("${out}" "field big")
+    aero_expect_stdout_contains("${out}" "[primitive]")
+    aero_expect_stderr_contains("${err}" "weird")
+
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")
 endif()

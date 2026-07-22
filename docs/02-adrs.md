@@ -169,12 +169,21 @@ The original draft dismissed C++26 static reflection as "years away." That is no
 
 **This is the best-return investment in the whole project.**
 
-### Implementation note (task 1.2.1)
+### Implementation note (tasks 1.2.1/1.2.2)
 
-The JSON serialization consumer landed: `tools/reflect-gen --emit-json` emits, per detected component, a free
-`aeroWriteJson(engine::JsonWriter&, const T&)` function against a hand-rolled `engine::reflect` runtime
-(`engine/reflect` — `JsonWriter` + per-leaf-type `writeJson` overloads, `std::to_chars`-backed, no third-party
-JSON library). Read-side deserialization and the scene-on-disk schema are 1.2.2/1.2.3.
+The JSON serialization consumer landed, both halves: `tools/reflect-gen --emit-json` emits, per detected
+component, a free `aeroWriteJson(engine::JsonWriter&, const T&)` function (task 1.2.1) AND a free
+`bool aeroReadJson(const engine::JsonValue&, T&)` function (task 1.2.2) into the same generated TU, against a
+hand-rolled `engine::reflect` runtime (`engine/reflect` — `JsonWriter` + a strict iterative RFC 8259 parser
+(`engine::parseJson`) producing an immutable `engine::JsonValue` DOM + per-leaf-type `writeJson`/`readJson`
+overloads, `std::to_chars`/lexeme-exact-at-target-precision-backed, no third-party JSON library). Task 1.2.2
+also closed a latent 1.2.1 defect: the reflectable primitive subset is now an explicit 18-`CXTypeKind`
+whitelist (`long double`/`__int128`/`unsigned __int128` excluded — no viable serializer overload existed for
+them). **Epic 1.2's Definition of Done — "any reflected component round-trips component → JSON → component
+byte-equal, proven by tests" — is now proven** (`aero_reflect_json_test`, all 3 OSes, Debug+Release, under
+ASan/UBSan/LSan): per-field bit equality plus re-serialization byte equality, over primitives, `Vec3`/`Quat`,
+64-bit integer extremes, a namespaced component, and the NaN/null corner. The scene-on-disk schema (entity
+model, version field) remains 1.2.3.
 
 ---
 
