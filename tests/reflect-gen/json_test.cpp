@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -118,6 +119,28 @@ std::string extractNumber(const std::string& text, const std::string& key) {
         ++end;
     }
     return text.substr(start, end - start);
+}
+
+// Builds the JSON text  "\uXXXX..."  (real quotes, real backslashes) from 4-hex-digit code units,
+// plus an optional trailing suffix inside the quotes.
+//
+// This CANNOT be written as a source string literal, because the three lanes disagree irreconcilably:
+//   - a raw literal   R"("\ud83d")"    -- MSVC forms universal-character-names inside raw string
+//     literals and rejects a lone surrogate: "C3850: a universal-character-name specifies an invalid
+//     character". Clang/GCC accept it, so a raw literal reds ONLY Windows.
+//   - an escaped one  "\"\\ud83d\""    -- clang-tidy's modernize-raw-string-literal (live under this
+//     repo's .clang-tidy) rewrites it back into the raw form, so it reds ONLY the Linux lint lane.
+// Char literals are invisible to both checks, so assembling the token is the one portable option.
+std::string jsonUnicodeToken(std::initializer_list<std::string_view> codeUnits, std::string_view suffix = {}) {
+    std::string token(1, '"');
+    for (const std::string_view unit : codeUnits) {
+        token += '\\';
+        token += 'u';
+        token += unit;
+    }
+    token += suffix;
+    token += '"';
+    return token;
 }
 
 // std::strtof (NOT std::from_chars<float>) -- floating-point std::from_chars is unavailable in the pinned
@@ -255,28 +278,30 @@ TEST_CASE(
     // REAL \uXXXX escapes (literal backslash-u text the parser must decode) exercising appendUtf8's
     // 2-byte, 3-byte, and (via a genuine surrogate PAIR) 4-byte branches -- lexHex4 + the
     // high/low-surrogate recombination path in lexString, none of which a raw-byte literal reaches.
+    // Tokens come from jsonUnicodeToken() because NEITHER source literal form is portable here
+    // (see that helper's comment).
     {
-        const engine::JsonParseResult r2 = engine::parseJson(R"("\u00e9")");  // U+00E9, 2-byte UTF-8
+        const engine::JsonParseResult r2 = engine::parseJson(jsonUnicodeToken({"00e9"}));  // U+00E9, 2-byte
         REQUIRE(r2.ok());
         CHECK(*r2.value->asString() == "\xC3\xA9");
     }
     {
-        const engine::JsonParseResult r3 = engine::parseJson(R"("\u20ac")");  // U+20AC, 3-byte UTF-8
+        const engine::JsonParseResult r3 = engine::parseJson(jsonUnicodeToken({"20ac"}));  // U+20AC, 3-byte
         REQUIRE(r3.ok());
         CHECK(*r3.value->asString() == "\xE2\x82\xAC");
     }
     {
         // U+1F600 "grinning face": no single \uXXXX can name it (UTF-16 has no codepoint that high),
         // so a genuine high+low surrogate PAIR is the only way JSON can express it.
-        const engine::JsonParseResult r4 = engine::parseJson(R"("\ud83d\ude00")");
+        const engine::JsonParseResult r4 = engine::parseJson(jsonUnicodeToken({"d83d", "de00"}));
         REQUIRE(r4.ok());
         CHECK(*r4.value->asString() == "\xF0\x9F\x98\x80");
     }
     // malformed \u escapes: an invalid low surrogate, a high surrogate with no following \u escape,
     // and a bad hex digit -- all rejected (AC-7)
-    CHECK_FALSE(engine::parseJson(R"("\ud83dA")").ok());  // high surrogate followed by a plain char
-    CHECK_FALSE(engine::parseJson(R"("\ud83dx")").ok());  // high surrogate, no backslash at all
-    CHECK_FALSE(engine::parseJson(R"("\u00zz")").ok());   // 'z' is not a hex digit
+    CHECK_FALSE(engine::parseJson(jsonUnicodeToken({"d83d"}, "A")).ok());  // invalid low surrogate
+    CHECK_FALSE(engine::parseJson(jsonUnicodeToken({"d83d"}, "x")).ok());  // no second \u escape
+    CHECK_FALSE(engine::parseJson(jsonUnicodeToken({"00zz"})).ok());       // 'z' is not a hex digit
 
     // raw SOURCE-EMBEDDED UTF-8 (D7 tolerance 3: non-key string content is not UTF-8-validated, so a
     // multi-byte sequence the parser never decoded as an escape passes straight through byte-for-
@@ -332,9 +357,9 @@ TEST_CASE("parser: reject battery -- malformed input, positions pinned for a few
     CHECK_FALSE(engine::parseJson("   ").ok());
     CHECK_FALSE(engine::parseJson("{} garbage").ok());
     CHECK_FALSE(engine::parseJson("\"unterminated").ok());
-    CHECK_FALSE(engine::parseJson(R"("\z")").ok());      // bad escape
-    CHECK_FALSE(engine::parseJson(R"("\ud800")").ok());  // lone high surrogate
-    CHECK_FALSE(engine::parseJson(R"("\udc00")").ok());  // lone low surrogate
+    CHECK_FALSE(engine::parseJson(R"("\z")").ok());                   // bad escape
+    CHECK_FALSE(engine::parseJson(jsonUnicodeToken({"d800"})).ok());  // lone high surrogate
+    CHECK_FALSE(engine::parseJson(jsonUnicodeToken({"dc00"})).ok());  // lone low surrogate
     {
         std::string raw;
         raw += '"';

@@ -4,9 +4,11 @@
 parses a translation unit given on its command line, and either walks the resulting AST, (task
 1.1.2, `--components`) detects `engine::component`-annotated structs/classes and collects their
 fields, (task 1.1.3, `--emit-meta`) emits `entt::meta` registration C++ from that detected model,
-or (task 1.2.1, `--emit-json`) emits per-component JSON serializer C++ against the `engine::reflect`
-runtime. This is Epic 1.1's harness (ADR-004: reflection is the spine) plus Epic 1.2's write half
-(serialization); 1.1.4 makes codegen a first-class incremental build step.
+or (tasks 1.2.1/1.2.2, `--emit-json`) emits a per-component JSON serializer PAIR — `aeroWriteJson`
++ `aeroReadJson` — against the `engine::reflect` runtime. This is Epic 1.1's harness (ADR-004:
+reflection is the spine) plus Epic 1.2's full JSON serialization loop (write + read + the
+component -> JSON -> component byte-equal round-trip); 1.1.4 makes codegen a first-class incremental
+build step.
 
 ## Why system-discovered LLVM 18 (and not vcpkg, and not a pinned download)
 
@@ -128,10 +130,21 @@ resolves) before classification:
 
 | Canonical type | Category |
 |---|---|
-| `bool`, the char family, `short`/`int`/`long`/`long long` (signed and unsigned), `float`, `double`, `long double` | `primitive` |
+| `bool`, the char family, `short`/`int`/`long`/`long long` (signed and unsigned), `float`, `double` | `primitive` |
 | `engine::Vec3` | `vec3` |
 | `engine::Quat` | `quat` |
-| anything else (`engine::Vec4`, `engine::Mat4`, `std::string`, a nested struct, a pointer, an array, …) | `unsupported` |
+| anything else (`long double`, `__int128`/`unsigned __int128`, `engine::Vec4`, `engine::Mat4`, `std::string`, a nested struct, a pointer, an array, …) | `unsupported` |
+
+**The primitive whitelist is an explicit 18-kind list (task 1.2.2, D11), not "the whole builtin-arithmetic
+range."** The range `[CXType_Bool, CXType_LongDouble]` actually spans 21 `CXTypeKind`s; `classifyField`
+tests membership in exactly those 18, deliberately EXCLUDING `long double`, `__int128`, and
+`unsigned __int128`. Those three are deliberately unsupported: `engine/reflect/serialize.hpp` has no
+viable overload for any of them (`long double` is ambiguous between the `float`/`double` overloads;
+`std::is_integral_v<__int128>` is false under strict `-std=c++20`), so a component carrying one used to
+generate **non-compiling** `.json.gen.cpp`/`.meta.gen.cpp` code before this fix — the whitelist closes
+that hole uniformly across all four reflection consumers (`--components`, `--emit-meta`, `--emit-json`,
+and the future quickjs-ng/`.d.ts` consumers). No game component needs 80-bit or 128-bit fields; "expand
+on demand" applies if one ever does, with a real per-type design rather than an ambiguous overload.
 
 An `unsupported` field is **not** an error: it is still collected and listed, tagged `[unsupported]`,
 and a warning naming it is printed to stderr — the exit code stays **0**. Detection is a lenient
@@ -273,7 +286,7 @@ consumer: two fixtures (`component_codegen.hpp`, `component_wiring.hpp`) reflect
 both in one call. `entt` (3.16.0, the pinned vcpkg baseline) is the runtime consumer of the generated
 output — `find_package(EnTT CONFIG REQUIRED)` → `EnTT::EnTT`, header-only.
 
-## JSON writer codegen (`--emit-json`)
+## JSON serializer codegen (`--emit-json`) — writer + reader
 
 With `--emit-json`, `aero_reflect_gen` runs the **same detection walk** as `--components`/
 `--emit-meta`, then serializes the resulting `Component`/`Field` model as a compilable JSON
@@ -284,6 +297,12 @@ exclusive** — one `-o` holds one artifact, and requesting both is a usage erro
 before any parse. `--depfile` works exactly as it does for `--emit-meta`: it requires `-o` and
 **one** of `--emit-meta`/`--emit-json`, and is written only after a clean parse and only after the
 `-o` write has fully succeeded.
+
+**Task 1.2.2 extended the emitted TU to hold BOTH halves of the pair** — per component, the writer
+`aeroWriteJson` (task 1.2.1, byte-identical) immediately followed by a reader `aeroReadJson` (task
+1.2.2, new) — rather than adding a second CLI flag or CMake function. Serialization is one ADR-004
+consumer whose two halves must never version-skew; one artifact makes a write-only or stale-read
+build unrepresentable.
 
 ### The generated file's shape
 
@@ -303,26 +322,52 @@ void aeroWriteJson(engine::JsonWriter& writer, const Transform& value) {
     writer.key("active");  engine::reflect::writeJson(writer, value.active);
     writer.endObject();
 }
+
+bool aeroReadJson(const engine::JsonValue& json, Transform& value) {
+    if (!engine::reflect::expectObject(json, "Transform")) {
+        return false;
+    }
+    bool ok = true;
+    ok = engine::reflect::readField(json, "Transform", "position", value.position) && ok;
+    ok = engine::reflect::readField(json, "Transform", "rotation", value.rotation) && ok;
+    ok = engine::reflect::readField(json, "Transform", "mass", value.mass) && ok;
+    ok = engine::reflect::readField(json, "Transform", "hitPoints", value.hitPoints) && ok;
+    ok = engine::reflect::readField(json, "Transform", "active", value.active) && ok;
+    engine::reflect::warnUnknownKeys(json, "Transform", {"position", "rotation", "mass", "hitPoints", "active"});
+    return ok;
+}
 ```
 
-- **One free function per detected component**: `void aeroWriteJson(engine::JsonWriter&, const T&)`.
-  Every supported field becomes one uniform `writer.key("field"); engine::reflect::writeJson(writer,
-  value.field);` line — overload resolution in `engine/reflect` routes primitive/`Vec3`/`Quat`
-  automatically, so the emitter never branches on field category except supported-vs-skipped.
+- **One free function PAIR per detected component**: `void aeroWriteJson(engine::JsonWriter&, const
+  T&)` and `bool aeroReadJson(const engine::JsonValue&, T&)`. Every supported field becomes one
+  uniform writer line and one uniform `readField` line — overload resolution in `engine/reflect`
+  routes primitive/`Vec3`/`Quat` automatically, so the emitter never branches on field category
+  except supported-vs-skipped.
 - **Namespace-wrapped for ADL**: if the component's qualified name has a namespace (e.g.
-  `engine::demo::Light`), the generated function is wrapped in `namespace engine::demo { ... }` so
-  ordinary argument-dependent lookup resolves `aeroWriteJson(writer, light)` at the call site — a
-  caller need only forward-declare it in the same namespace (no registry, no `#include` of the
+  `engine::demo::Light`), BOTH generated functions are wrapped in `namespace engine::demo { ... }` so
+  ordinary argument-dependent lookup resolves `aeroWriteJson`/`aeroReadJson` at the call site — a
+  caller need only forward-declare them in the same namespace (no registry, no `#include` of the
   generated file required at the call site).
 - **No aggregator, no register-at-startup concept** (unlike `--emit-meta`/`aero_reflect_generate()`):
   serialization is called directly by name, per type, wherever it is needed — there is nothing to
   auto-register.
-- **Unsupported fields are skipped, not fatal**: each becomes a `// skipped: <name> (<type> —
-  unsupported)` comment, plus the same stderr warning `--components`/`--emit-meta` already emit. The
-  exit code stays `0`.
-- **A zero-field (tag) component** emits `beginObject()`/`endObject()` with no `key()` line in
-  between (`{}`). **Zero detected components** emits only a
-  `// no engine::component annotations detected` comment — no `aeroWriteJson` at all.
+- **The reader's contract (D9)**: a non-object root WARNs and returns `false` (value untouched);
+  otherwise every supported field is attempted with NO short-circuit (`ok = readField(...) && ok;` —
+  the `&& ok` on the RIGHT), so best-effort application means one bad field never blocks the rest. A
+  **missing key** leaves that field untouched and does not fail the read (schema evolution — a
+  component gaining a field must not brick year-old scene files); a **present-but-unreadable** field
+  logs one WARN naming `<QualifiedName>.<field>` and forces the overall result `false` (already-applied
+  fields stay applied). **Unknown keys** each log one WARN (`ignoring unknown key "..."`) but never
+  fail the read. `null` reads back as a **quiet NaN** for `float`/`double` targets (the mirror of the
+  writer's non-finite -> `null`); `null` into anything else fails.
+- **Unsupported fields are skipped in BOTH functions, not fatal**: each becomes a `// skipped: <name>
+  (<type> — unsupported)` comment (appearing once per function, so twice per field per file) — but
+  only ONE stderr warning per run (the writer pass; the reader pass emits no second warning for the
+  same field).
+- **A zero-field (tag) component** emits a writer with no `key()` line (`{}`) and a reader with no
+  `readField(` line, just `expectObject` + an empty `warnUnknownKeys(json, "Tag", {})`. **Zero
+  detected components** emits only a `// no engine::component annotations detected` comment — no
+  `aeroWriteJson`/`aeroReadJson` at all.
 - **Deterministic**: no addresses, timestamps, or absolute paths appear — two runs over the same
   input+flags produce byte-identical output.
 
@@ -340,6 +385,19 @@ the boundary rule by construction:
   `float`, `double`, `Vec3` (`{"x":..,"y":..,"z":..}`), `Quat` (`{"x":..,"y":..,"z":..,"w":..}`), and
   a constrained template covering every other integral type (widened by signedness so `to_chars`
   never sees a character type; `bool` is excluded so it binds its own exact overload instead).
+- **`engine::JsonValue`/`engine::parseJson`** (`<aero/reflect/json_value.hpp>` /
+  `<aero/reflect/json_reader.hpp>`, task 1.2.2) — a strict, iterative, depth-capped RFC 8259 parser
+  producing an immutable DOM. Numbers are stored as the **validated lexeme** and converted at access
+  time at the target's precision (`asF32`/`asF64`/`asI64`/`asU64`) — never pre-parsed to a `double`,
+  which would lose a ULP on some `float` lexemes and cannot hold the full `uint64_t` range. Three
+  documented tolerances beyond strict RFC 8259: a single leading UTF-8 BOM is skipped; duplicate
+  object keys are last-wins; non-key string content is not UTF-8-validated. `JsonParseResult` carries
+  either the parsed `JsonValue` or a `JsonParseError` (message + 1-based line/column + 0-based byte
+  offset) — no exceptions, no logging (the caller, e.g. an editor console, owns presentation).
+- **`engine::reflect::readJson`** (`<aero/reflect/serialize.hpp>`) — the read-side mirror of
+  `writeJson`: leaf overloads for `bool`/`float`/`double`/`Vec3`/`Quat` plus the integral template,
+  all silent and pure; `readField`/`expectObject`/`warnUnknownKeys` carry the D9 tolerance policy and
+  are the only three things in `engine/reflect` that log (via `AERO_LOG_WARN`).
 - `engine/reflect`'s `aero_reflect` STATIC library builds **unconditionally** — it is real engine
   code, independent of `AERO_REFLECT_TOOLS` — so it is usable by hand-written code today, not only by
   generated code.
@@ -357,8 +415,10 @@ aggregator TU** (D7 above — there is nothing to register at startup). It track
 
 `tests/CMakeLists.txt`'s `aero_reflect_json_test` — a sibling of `aero_reflect_meta_test`, but
 linking `aero::reflect` instead of `EnTT::EnTT` (serialization is `entt::meta`-independent) — is the
-real consumer: three fixtures reflected in one `aero_reflect_generate_json()` call, proving the exact,
-ordered, round-trippable JSON shape end-to-end.
+real consumer: four fixtures (the fourth, `component_limits.hpp`, added at task 1.2.2 to pin 64-bit
+integer exactness, narrow-integral range checks, and the D11 whitelist skip) reflected in one
+`aero_reflect_generate_json()` call, proving the exact, ordered, round-trippable JSON shape —
+component -> JSON -> component, byte-equal — end-to-end (Epic 1.2's Definition of Done).
 
 ## Local troubleshooting
 
