@@ -205,7 +205,10 @@ if(AERO_REFLECT_TOOLS)
         emit_none emit_determinism emit_bad_syntax emit_missing_input
         depfile_basic depfile_requires_output depfile_requires_emit
         depfile_parse_fail depfile_space_escape depfile_determinism
-        depfile_unwritable)
+        depfile_unwritable
+        json_basic json_output_file json_unsupported json_multi json_tag
+        json_none json_determinism json_depfile json_bad_syntax json_missing_input
+        json_mutually_exclusive)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -239,4 +242,15 @@ if(AERO_REFLECT_TOOLS)
                 -DAERO_LLVM_ROOT=${AERO_LLVM_ROOT}
                 "-DENTT_INCLUDE=${_aero_entt_include}"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/reflect-gen/incremental_e2e.cmake)
+
+    # --- task 1.2.1: the JSON writer runtime proof (sibling of aero_reflect_meta_test; NO EnTT — D4/D11) ---
+    add_executable(aero_reflect_json_test reflect-gen/json_test.cpp)
+    target_link_libraries(aero_reflect_json_test PRIVATE doctest::doctest aero::reflect aero::core)
+    target_include_directories(aero_reflect_json_test PRIVATE reflect-gen/fixtures)   # component_*.hpp + aero_reflect.hpp
+    aero_reflect_generate_json(aero_reflect_json_test
+        HEADERS reflect-gen/fixtures/component_codegen.hpp
+                reflect-gen/fixtures/component_wiring.hpp
+                reflect-gen/fixtures/component_multi.hpp
+        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include")     # aero::core PUBLIC dir — parse needs it (D9)
+    add_test(NAME aero_reflect_json_test COMMAND aero_reflect_json_test)
 endif()

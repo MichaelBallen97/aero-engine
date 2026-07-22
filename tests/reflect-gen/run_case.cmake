@@ -485,6 +485,117 @@ elseif(CASE STREQUAL "depfile_unwritable")
     aero_expect_exit("${result}" 3)
     aero_expect_stderr_contains("${err}" "depfile")   # the depfile path failed, not -o
 
+elseif(CASE STREQUAL "json_basic")
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_basic.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "#include <aero/reflect/serialize.hpp>")
+    aero_expect_stdout_contains("${out}" "void aeroWriteJson(engine::JsonWriter& writer, const Transform& value)")
+    aero_expect_stdout_contains("${out}" "writer.beginObject();")
+    aero_expect_stdout_contains("${out}" "writer.key(\"position\");")
+    aero_expect_stdout_contains("${out}" "engine::reflect::writeJson(writer, value.position);")
+    aero_expect_stdout_contains("${out}" "writer.key(\"rotation\");")
+    aero_expect_stdout_contains("${out}" "writer.key(\"mass\");")
+    aero_expect_stdout_contains("${out}" "writer.key(\"hitPoints\");")
+    aero_expect_stdout_contains("${out}" "writer.key(\"active\");")
+    aero_expect_stdout_contains("${out}" "writer.endObject();")
+    foreach(_absent "SCHEMA_VERSION" "lengthSquared" "NotAComponent")
+        string(FIND "${out}" "${_absent}" _idx)
+        if(NOT _idx EQUAL -1)
+            message(FATAL_ERROR "case 'json_basic': '${_absent}' must not appear, got:\n${out}")
+        endif()
+    endforeach()
+
+elseif(CASE STREQUAL "json_output_file")
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_basic.hpp" -o "${WORK_DIR}/out.cpp"
+        -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    if(NOT out STREQUAL "")
+        message(FATAL_ERROR "case 'json_output_file': stdout must be empty with -o, got:\n${out}")
+    endif()
+    aero_expect_file_contains("${WORK_DIR}/out.cpp" "const Transform& value")
+    aero_expect_file_contains("${WORK_DIR}/out.cpp" "engine::reflect::writeJson(writer, value.position);")
+
+elseif(CASE STREQUAL "json_unsupported")
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_unsupported.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "engine::reflect::writeJson(writer, value.position);")
+    aero_expect_stdout_contains("${out}" "engine::reflect::writeJson(writer, value.mass);")
+    aero_expect_stdout_contains("${out}" "// skipped: velocity")
+    aero_expect_stderr_contains("${err}" "velocity")
+    aero_expect_stderr_contains("${err}" "reflectable subset")
+    string(FIND "${out}" "value.velocity" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'json_unsupported': value.velocity must not be serialized")
+    endif()
+
+elseif(CASE STREQUAL "json_multi")
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_multi.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "const Player& value")
+    aero_expect_stdout_contains("${out}" "namespace engine::demo {")
+    aero_expect_stdout_contains("${out}" "const Light& value")
+
+elseif(CASE STREQUAL "json_tag")
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "const Tag& value")
+    aero_expect_stdout_contains("${out}" "writer.beginObject();")
+    aero_expect_stdout_contains("${out}" "writer.endObject();")
+    string(FIND "${out}" "writer.key(" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'json_tag': a zero-field tag must emit no writer.key( line")
+    endif()
+
+elseif(CASE STREQUAL "json_none")
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/plain_component.hpp" -- -std=c++20
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "// no engine::component annotations detected")
+    string(FIND "${out}" "aeroWriteJson" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'json_none': must emit no aeroWriteJson")
+    endif()
+
+elseif(CASE STREQUAL "json_determinism")
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_codegen.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT r1 OUT_STDOUT o1)
+    aero_expect_exit("${r1}" 0)
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_codegen.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT r2 OUT_STDOUT o2)
+    aero_expect_exit("${r2}" 0)
+    if(NOT o1 STREQUAL o2)
+        message(FATAL_ERROR "case 'json_determinism': two --emit-json runs differ")
+    endif()
+
+elseif(CASE STREQUAL "json_depfile")
+    aero_run_tool(ARGS --emit-json "${FIXTURES_DIR}/component_tag.hpp" -o "${WORK_DIR}/o.cpp"
+        --depfile "${WORK_DIR}/o.d" -- -std=c++20 OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_file_contains("${WORK_DIR}/o.d" "o.cpp")             # abs -o target
+    aero_expect_file_contains("${WORK_DIR}/o.d" "component_tag.hpp")
+
+elseif(CASE STREQUAL "json_bad_syntax")
+    file(WRITE "${WORK_DIR}/bad.hpp" "struct { ) Broken")
+    aero_run_tool(ARGS --emit-json "${WORK_DIR}/bad.hpp" -o "${WORK_DIR}/out.cpp" -- -x c++ -std=c++20
+        OUT_RESULT result)
+    aero_expect_exit("${result}" 2)
+    if(EXISTS "${WORK_DIR}/out.cpp")
+        message(FATAL_ERROR "case 'json_bad_syntax': parse failure must write no -o file (AC-8)")
+    endif()
+
+elseif(CASE STREQUAL "json_missing_input")
+    aero_run_tool(ARGS --emit-json "${WORK_DIR}/nope.hpp" -- -std=c++20 OUT_RESULT result)
+    aero_expect_exit("${result}" 3)
+
+elseif(CASE STREQUAL "json_mutually_exclusive")
+    aero_run_tool(ARGS --emit-json --emit-meta "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
+        OUT_RESULT result)
+    aero_expect_exit("${result}" 1)
+
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")
 endif()
