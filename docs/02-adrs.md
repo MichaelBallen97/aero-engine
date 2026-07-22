@@ -169,7 +169,7 @@ The original draft dismissed C++26 static reflection as "years away." That is no
 
 **This is the best-return investment in the whole project.**
 
-### Implementation note (tasks 1.2.1/1.2.2)
+### Implementation note (tasks 1.2.1/1.2.2/1.2.3)
 
 The JSON serialization consumer landed, both halves: `tools/reflect-gen --emit-json` emits, per detected
 component, a free `aeroWriteJson(engine::JsonWriter&, const T&)` function (task 1.2.1) AND a free
@@ -184,6 +184,11 @@ byte-equal, proven by tests" — is now proven** (`aero_reflect_json_test`, all 
 ASan/UBSan/LSan): per-field bit equality plus re-serialization byte equality, over primitives, `Vec3`/`Quat`,
 64-bit integer extremes, a namespaced component, and the NaN/null corner. The scene-on-disk schema (entity
 model, version field) remains 1.2.3.
+
+Task 1.2.3 froze the scene-on-disk schema — `{"version": 1, "entities": [...]}` with per-entity
+`id`/`name`/`parent`/`components`, normative in [docs/09](./09-file-formats.md) and enforced by
+`engine::parseScene`/`validateScene`/`writeSceneText` in `aero_reflect`; component payloads stay opaque
+there, and scene **loading** (name→type dispatch + instantiation) remains 1.4.2.
 
 ---
 

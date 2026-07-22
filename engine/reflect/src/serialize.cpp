@@ -1,8 +1,12 @@
 #include <aero/core/log.hpp>
 #include <aero/reflect/serialize.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <optional>
+#include <string_view>
+#include <vector>
 
 namespace engine::reflect {
 
@@ -144,5 +148,104 @@ void warnBadField(std::string_view componentName, std::string_view fieldName, co
 }
 
 }  // namespace detail
+
+// ---- task 1.2.3: the generic DOM re-emitter (D9) ------------------------------------------------
+
+namespace {
+
+// One open container while re-emitting: the value being walked plus the index of its next child.
+struct EmitFrame {
+    const JsonValue* value = nullptr;
+    std::size_t index = 0;
+};
+
+// Canonicalize a Number lexeme through JsonWriter's TYPED value() overloads -- the writer has no
+// raw-lexeme API and stays frozen (spec section 4-F). This classification is a FIXPOINT: its own
+// output always re-classifies to the same bytes.
+void writeNumberValue(JsonWriter& w, const JsonValue& v) {
+    const std::string_view lexeme = v.numberLexeme();
+    if (lexeme == "-0") {
+        w.value(-0.0);  // sign-preserving: asI64("-0") yields 0 and would drop the '-'
+        return;
+    }
+    // Integral form == no '.', 'e' or 'E' -- exactly the DOM's own rule (json_value.cpp asI64/asU64).
+    if (lexeme.find_first_of(".eE") == std::string_view::npos) {
+        if (const std::optional<std::int64_t> signedValue = v.asI64()) {
+            w.value(static_cast<long long>(*signedValue));  // explicit cast: N1
+            return;
+        }
+        if (const std::optional<std::uint64_t> unsignedValue = v.asU64()) {
+            w.value(static_cast<unsigned long long>(*unsignedValue));  // explicit cast: N1
+            return;
+        }
+        // Integral form beyond u64 falls through to the double path (lossy, documented in docs/09).
+    }
+    if (const std::optional<double> realValue = v.asF64()) {
+        w.value(*realValue);
+        return;
+    }
+    w.valueNull();  // rounds to +/-inf (e.g. 1e999): the writer's own non-finite policy, one layer down
+}
+
+}  // namespace
+
+void writeJson(JsonWriter& w, const JsonValue& v) {
+    std::vector<EmitFrame> stack;
+    const JsonValue* pending = &v;
+    while (true) {
+        if (pending != nullptr) {
+            const JsonValue& current = *pending;
+            pending = nullptr;
+            switch (current.kind()) {
+                case JsonKind::Null:
+                    w.valueNull();
+                    break;
+                case JsonKind::Bool:
+                    w.value(current.asBool().value_or(false));  // value_or, not *: N2
+                    break;
+                case JsonKind::Number:
+                    writeNumberValue(w, current);
+                    break;
+                case JsonKind::String:
+                    w.value(current.asString().value_or(std::string_view{}));  // N2
+                    break;
+                case JsonKind::Array:
+                    w.beginArray();
+                    stack.push_back(EmitFrame{.value = &current, .index = 0});
+                    break;
+                case JsonKind::Object:
+                    w.beginObject();
+                    stack.push_back(EmitFrame{.value = &current, .index = 0});
+                    break;
+            }
+            continue;
+        }
+        if (stack.empty()) {
+            return;
+        }
+        EmitFrame& top = stack.back();
+        if (top.value->kind() == JsonKind::Array) {
+            const std::vector<JsonValue>& elements = top.value->elements();
+            if (top.index < elements.size()) {
+                pending = &elements[top.index];
+                ++top.index;
+                continue;
+            }
+            w.endArray();
+            stack.pop_back();
+            continue;
+        }
+        const std::vector<JsonMember>& members = top.value->members();
+        if (top.index < members.size()) {
+            const JsonMember& member = members[top.index];
+            ++top.index;
+            w.key(member.key);
+            pending = &member.value;
+            continue;
+        }
+        w.endObject();
+        stack.pop_back();
+    }
+}
 
 }  // namespace engine::reflect

@@ -31,6 +31,15 @@ struct JsonMember;  // { std::string key; JsonValue value; } — defined after J
 // Immutable after construction (D4): the parser builds children bottom-up, then wraps them via the
 // array()/object() factories. Accessors are CHECKED, never asserting — untrusted input must never
 // fire an assert (D16); a kind mismatch returns std::nullopt / nullptr / an empty static container.
+//
+// The NOLINT below covers the COMPILER-GENERATED special members only. JsonValue holds
+// std::vector<JsonValue> / std::vector<JsonMember>, so its implicit copy/move/destroy are mutually
+// recursive by construction — libstdc++ routes std::variant's copy through a visit chain, which
+// misc-no-recursion reports (libc++ structures it differently, so this is invisible on macOS).
+// That is inherent to a recursive tree type, not the hand-written recursion the check exists to
+// police: the parser, the DOM re-emitter and the scene parent-chain walk are all deliberately
+// iterative and remain fully checked. Task 1.2.3 was the first code to copy a JsonValue.
+// NOLINTNEXTLINE(misc-no-recursion)
 class JsonValue {
 public:
     JsonValue() = default;  // Null
@@ -69,6 +78,7 @@ private:
     std::variant<std::monostate, bool, JsonNumber, std::string, std::vector<JsonValue>, std::vector<JsonMember>> data;
 };
 
+// NOLINTNEXTLINE(misc-no-recursion) — see the note on JsonValue: implicit special members only.
 struct JsonMember {
     std::string key;
     JsonValue value;

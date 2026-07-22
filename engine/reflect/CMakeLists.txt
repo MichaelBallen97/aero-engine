@@ -7,6 +7,7 @@ add_library(aero_reflect STATIC
     src/json_value.cpp    # task 1.2.2 — the JsonValue DOM + number conversion
     src/json_reader.cpp   # task 1.2.2 — the iterative parser
     src/serialize.cpp
+    src/scene_format.cpp  # task 1.2.3 — scene-file format v1 (the document layer)
 )
 add_library(aero::reflect ALIAS aero_reflect)
 
