@@ -18,7 +18,7 @@
 | **Math** | Own types in `core/math`, **GLM** backend | GLM exposed, RTM direct | ADR-005. Swap to RTM without touching the engine |
 | **ECS** | **EnTT** | flecs, classic scene graph | De-facto C++ standard. `entt::meta` gives the reflection runtime |
 | **Reflection** | **Code-gen with libclang** → `entt::meta` | Manual registration, macros, C++26 static reflection | ADR-004. From Phase 1 |
-| **Serialization** | JSON (text, git-mergeable) in editor; binary in runtime | Binary only | Own `engine::JsonWriter`/`engine::parseJson` (`std::to_chars`/hand-rolled iterative parser), **no third-party JSON library**; generated per-field by reflection (tasks 1.2.1/1.2.2 — write + read, round-trip-proven). Binary is the cooker's, Phase 3+ |
+| **Serialization** | JSON (text, git-mergeable) in editor; binary in runtime | Binary only | Own `engine::JsonWriter`/`engine::parseJson` (`std::to_chars`/hand-rolled iterative parser), **no third-party JSON library**; generated per-field by reflection (tasks 1.2.1/1.2.2 — write + read, round-trip-proven). Binary is the cooker's, Phase 3+ + scene schema v1 (task 1.2.3, [docs/09](./09-file-formats.md)) |
 | **Physics 3D** | **Jolt** | PhysX, Bullet | Modern, deterministic, cross-platform, AAA-proven |
 | **Physics 2D** | **Box2D v3** | Chipmunk | SIMD rewrite by Erin Catto. Phase 7 |
 | **Audio** | Own abstraction → **miniaudio** backend | FMOD, Wwise, SoLoud, SDL audio | ADR-006. FMOD/Wwise excluded by license |
