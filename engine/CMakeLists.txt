@@ -6,3 +6,4 @@ add_subdirectory(core)
 add_subdirectory(platform)
 add_subdirectory(rhi)        # task 0.4.1
 add_subdirectory(render)     # task 0.5.1
+add_subdirectory(reflect)    # task 1.2.1 — reflection/serialization runtime
