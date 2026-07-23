@@ -239,7 +239,8 @@ if(AERO_REFLECT_TOOLS)
         json_mutually_exclusive
         json_reader_basic json_reader_unsupported json_reader_multi json_reader_tag
         json_reader_none json_reader_limits components_longdouble
-        json_nested_skip)
+        json_nested_skip
+        components_engine_transform)   # task 1.3.2 — the REAL tool over the REAL engine header
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -255,12 +256,19 @@ if(AERO_REFLECT_TOOLS)
     # --- task 1.1.4: the module's first real consumer (replaces the 1.1.3 hand-wired block, D12) ---
     find_package(EnTT CONFIG REQUIRED)   # EnTT::EnTT (header-only) — unchanged from 1.1.3
     add_executable(aero_reflect_meta_test reflect-gen/meta_test.cpp)
-    target_link_libraries(aero_reflect_meta_test PRIVATE doctest::doctest EnTT::EnTT aero::core)
+    # aero::scene (task 1.3.2) supplies the COMPILE-side include roots for the generated
+    # transform.meta.gen.cpp: scene (its own header), reflect (annotations.hpp) and core (math.hpp),
+    # all via aero_scene's PUBLIC chain. The INCLUDE_DIRS below supply the PARSE side, which is a
+    # separate problem — a linked library's interface include dirs are not target-derivable.
+    target_link_libraries(aero_reflect_meta_test PRIVATE doctest::doctest EnTT::EnTT aero::scene aero::core)
     target_include_directories(aero_reflect_meta_test PRIVATE reflect-gen/fixtures)  # meta_test.cpp's own #includes
     aero_reflect_generate(aero_reflect_meta_test
         HEADERS reflect-gen/fixtures/component_codegen.hpp
                 reflect-gen/fixtures/component_wiring.hpp
-        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include")   # aero::core PUBLIC dir — not target-derivable (D9)
+                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp  # 1.3.2 — the REAL header
+        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"      # aero::core PUBLIC dir (D9)
+                     "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2 — parse: entity.hpp
+                     "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2 — parse: annotations.hpp
     add_test(NAME aero_reflect_meta_test COMMAND aero_reflect_meta_test)
 
     # --- task 1.1.4: the end-to-end incremental-build proof (spec D13) ---
@@ -276,7 +284,7 @@ if(AERO_REFLECT_TOOLS)
 
     # --- task 1.2.1: the JSON writer runtime proof (sibling of aero_reflect_meta_test; NO EnTT — D4/D11) ---
     add_executable(aero_reflect_json_test reflect-gen/json_test.cpp)
-    target_link_libraries(aero_reflect_json_test PRIVATE doctest::doctest aero::reflect aero::core)
+    target_link_libraries(aero_reflect_json_test PRIVATE doctest::doctest aero::reflect aero::scene aero::core)
     target_include_directories(aero_reflect_json_test PRIVATE reflect-gen/fixtures)   # component_*.hpp + aero_reflect.hpp
     aero_reflect_generate_json(aero_reflect_json_test
         HEADERS reflect-gen/fixtures/component_codegen.hpp
@@ -285,6 +293,9 @@ if(AERO_REFLECT_TOOLS)
                 reflect-gen/fixtures/component_limits.hpp   # task 1.2.2 — the D12 numeric-edge fixture
                 reflect-gen/fixtures/component_tag.hpp      # task 1.2.2 review fix — a REAL generated
                                                              # zero-field aeroReadJson, proven end-to-end
-        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include")     # aero::core PUBLIC dir — parse needs it (D9)
+                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp  # 1.3.2 — the REAL header
+        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
+                     "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2
+                     "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2
     add_test(NAME aero_reflect_json_test COMMAND aero_reflect_json_test)
 endif()

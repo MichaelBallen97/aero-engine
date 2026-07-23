@@ -9,6 +9,7 @@
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/json_writer.hpp>
 #include <aero/reflect/serialize.hpp>
+#include <aero/scene/transform.hpp>
 
 #include "component_codegen.hpp"
 #include "component_limits.hpp"
@@ -38,6 +39,9 @@ void aeroWriteJson(engine::JsonWriter&, const Player&);
 namespace engine::demo {
 void aeroWriteJson(engine::JsonWriter&, const Light&);
 }
+namespace engine {
+void aeroWriteJson(engine::JsonWriter&, const Transform&);
+}  // namespace engine
 
 bool aeroReadJson(const engine::JsonValue&, ReflectSample&);
 bool aeroReadJson(const engine::JsonValue&, ReflectWiring&);
@@ -47,6 +51,9 @@ bool aeroReadJson(const engine::JsonValue&, Player&);
 namespace engine::demo {
 bool aeroReadJson(const engine::JsonValue&, Light&);
 }
+namespace engine {
+bool aeroReadJson(const engine::JsonValue&, Transform&);
+}  // namespace engine
 
 TEST_CASE("generated serializer emits exact, ordered JSON (AC-10)") {
     ReflectSample s{};
@@ -993,4 +1000,73 @@ TEST_CASE(
         CHECK(restored.mass == original.mass);
         CHECK(restored.hitPoints == original.hitPoints);
     }
+}
+
+TEST_CASE("round-trip: engine::Transform -- the first REAL engine component (task 1.3.2, AC-11)") {
+    engine::Transform t{};
+    t.position = {1.5F, -2.25F, 3.75F};
+    t.rotation = {0.5F, -0.5F, 0.5F, 0.5F};  // a unit quaternion, exactly representable
+    t.scale = {2.0F, 4.0F, 0.125F};
+
+    engine::JsonWriter w;
+    aeroWriteJson(w, t);
+
+    const std::string expected =
+        "{\n"
+        "  \"position\": {\n"
+        "    \"x\": 1.5,\n"
+        "    \"y\": -2.25,\n"
+        "    \"z\": 3.75\n"
+        "  },\n"
+        "  \"rotation\": {\n"
+        "    \"x\": 0.5,\n"
+        "    \"y\": -0.5,\n"
+        "    \"z\": 0.5,\n"
+        "    \"w\": 0.5\n"
+        "  },\n"
+        "  \"scale\": {\n"
+        "    \"x\": 2,\n"
+        "    \"y\": 4,\n"
+        "    \"z\": 0.125\n"
+        "  }\n"
+        "}";  // no trailing newline
+    CHECK(w.str() == expected);
+    CHECK(w.str().find("parent") == std::string::npos);  // hierarchy is NOT payload data (D4)
+
+    // write -> parse -> read, bit-equal on all ten floats.
+    const engine::JsonParseResult parsed = engine::parseJson(w.str());
+    REQUIRE(parsed.ok());
+    engine::Transform back{};
+    REQUIRE(aeroReadJson(*parsed.value, back));
+    CHECK(back == t);  // Transform's exact defaulted operator==
+
+    // Re-serializing the read-back value reproduces the bytes.
+    engine::JsonWriter w2;
+    aeroWriteJson(w2, back);
+    CHECK(w2.str() == expected);
+
+    // A default Transform round-trips too, and its payload is the identity transform.
+    const engine::Transform def{};
+    engine::JsonWriter wd;
+    aeroWriteJson(wd, def);
+    CHECK(wd.str().find("\"w\": 1") != std::string::npos);  // Quat's identity default
+    CHECK(wd.str().find("\"x\": 1") != std::string::npos);  // scale's one() default
+    const engine::JsonParseResult pd = engine::parseJson(wd.str());
+    REQUIRE(pd.ok());
+    engine::Transform backDef{};
+    backDef.scale = {9.0F, 9.0F, 9.0F};  // deliberately non-default before the read
+    REQUIRE(aeroReadJson(*pd.value, backDef));
+    CHECK(backDef == def);
+
+    // SCHEMA EVOLUTION (E-partial-payload): a payload that omits `scale` -- docs/09's own crate
+    // example -- leaves the field untouched, so the NSDMI default survives. This is the whole point
+    // of `Vec3 scale = Vec3::one();` living in the header.
+    const engine::JsonParseResult partial =
+        engine::parseJson(R"({"position":{"x":1,"y":2,"z":3},"rotation":{"x":0,"y":0,"z":0,"w":1}})");
+    REQUIRE(partial.ok());
+    engine::Transform fresh{};
+    REQUIRE(aeroReadJson(*partial.value, fresh));
+    CHECK(fresh.position == engine::Vec3{1.0F, 2.0F, 3.0F});
+    CHECK(fresh.rotation == engine::Quat::identity());
+    CHECK(fresh.scale == engine::Vec3::one());  // untouched -> the default survived
 }

@@ -25,7 +25,10 @@ file(MAKE_DIRECTORY "${WORK_DIR}")
 
 set(FIXTURES_DIR "${SOURCE_DIR}/tests/reflect-gen/fixtures")
 set(ENGINE_INCLUDE "${SOURCE_DIR}/engine/core/include")
+set(SCENE_INCLUDE "${SOURCE_DIR}/engine/scene/include")       # task 1.3.2
+set(REFLECT_INCLUDE "${SOURCE_DIR}/engine/reflect/include")   # task 1.3.2
 set(HANDLE_HPP "${ENGINE_INCLUDE}/aero/core/handle.hpp")
+set(TRANSFORM_HPP "${SCENE_INCLUDE}/aero/scene/transform.hpp")  # task 1.3.2
 
 # Runs aero_reflect_gen once. Spec D8/C.6: ASAN_OPTIONS scoped to this one process --
 # detect_leaks=0 only (libclang leaks by design at process exit: global initializers, the CXIndex
@@ -744,6 +747,65 @@ elseif(CASE STREQUAL "json_nested_skip")
             message(FATAL_ERROR "case 'json_nested_skip': '${_absent}' must not appear, got:\n${out}")
         endif()
     endforeach()
+
+elseif(CASE STREQUAL "components_engine_transform")
+    # Task 1.3.2 (AC-9): the REAL tool over the REAL engine header. Two proofs in one case —
+    #   (1) the ANTI-DRIFT guard for the promoted AERO_COMPONENT macro
+    #       (engine/reflect/include/aero/reflect/annotations.hpp): if the macro's expansion, the
+    #       annotate string "engine::component", or the tool's matcher ever drift apart, this reds;
+    #   (2) the scene-layer "parses engine headers" proof, one layer above 1.1.1's
+    #       parse_engine_header (which parses engine/core's handle.hpp).
+    # engine::Transform is the first component whose fields are ENTIRELY inside the reflectable
+    # subset, so zero unsupported fields and zero tool warnings are the assertion, not an accident.
+    #
+    # The as-written type spelling is bare "Vec3"/"Quat" (NOT "engine::Vec3"/"engine::Quat") --
+    # pinned by Step 0's pre-flight run over the real header: fieldVisitor prints the AS-WRITTEN
+    # spelling, and transform.hpp writes bare Vec3/Quat inside `namespace engine` (N3/R-a).
+    aero_run_tool(ARGS --components "${TRANSFORM_HPP}" -- ${CLANG_ARGS}
+        -I "${ENGINE_INCLUDE}" -I "${SCENE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "component engine::Transform")
+    aero_expect_stdout_contains("${out}" "field position : Vec3 [vec3]")
+    aero_expect_stdout_contains("${out}" "field rotation : Quat [quat]")
+    aero_expect_stdout_contains("${out}" "field scale : Vec3 [vec3]")
+
+    # declaration order: position -> rotation -> scale
+    string(FIND "${out}" "field position" _p)
+    string(FIND "${out}" "field rotation" _r)
+    string(FIND "${out}" "field scale" _s)
+    if(NOT (_p LESS _r AND _r LESS _s))
+        message(FATAL_ERROR "case 'components_engine_transform': fields not in declaration order:\n${out}")
+    endif()
+
+    # EXACTLY ONE component: the header's World forward declaration, free functions and
+    # scene::detail namespace must produce nothing (main-file-only detection).
+    string(FIND "${out}" "component " _first)
+    math(EXPR _after "${_first} + 1")
+    string(SUBSTRING "${out}" ${_after} -1 _rest)
+    string(FIND "${_rest}" "component " _second)
+    if(NOT _second EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_transform': expected exactly ONE component, got:\n${out}")
+    endif()
+
+    # ZERO unsupported fields, and ZERO tool warnings. NOTE the assertion is on the TOOL's own
+    # warning prefix, not on a bare "warning:": libclang's formatted diagnostics also land on stderr
+    # and a benign per-lane driver note must not red this case (the 1.1.1 parse_engine_header
+    # lesson). The error-severity check below is that case's defensive check, kept in spirit.
+    string(FIND "${out}" "[unsupported]" _idx_unsupported)
+    if(NOT _idx_unsupported EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_transform': engine::Transform must have NO "
+                            "unsupported field -- it is the reflection spine's zero-skip proof:\n${out}")
+    endif()
+    string(FIND "${err}" "aero_reflect_gen: warning:" _idx_warn)
+    if(NOT _idx_warn EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_transform': expected a warning-free parse, got:\n${err}")
+    endif()
+    string(FIND "${err}" "error:" _idx_err)
+    if(NOT _idx_err EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_transform': exit 0, but an error-severity "
+                            "diagnostic appeared parsing an unmodified engine header:\n${err}")
+    endif()
 
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")
