@@ -69,3 +69,39 @@ static_assert(std::is_move_constructible_v<engine::World>);
 static_assert(std::is_move_assignable_v<engine::World>);
 static_assert(std::is_nothrow_move_constructible_v<engine::World>);
 static_assert(engine::World::MAX_QUERY_TYPES == 8U);
+
+// ---- task 1.3.2 ----------------------------------------------------------------------------------
+// The new headers reach this TU through the umbrella (scene.hpp gained transform.hpp), so a leaked
+// third-party include in transform.hpp or annotations.hpp fails HERE, on a link line that is still
+// exactly `aero::scene`. aero::scene now also propagates aero::reflect PUBLIC — which links no vcpkg
+// package and wraps no third-party type — so this guard's strength is unchanged.
+
+// Transform's layout contract (the same four assertions the header carries, re-asserted on a link
+// line that proves the header compiles standalone).
+static_assert(std::is_trivially_copyable_v<engine::Transform>);
+static_assert(std::is_standard_layout_v<engine::Transform>);
+static_assert(std::is_aggregate_v<engine::Transform>);
+static_assert(sizeof(engine::Transform) == 10 * sizeof(float));
+
+namespace {
+// Declared, NEVER defined, and only ever named inside decltype/noexcept — no odr-use, nothing to
+// link. This is std::declval by hand, minus the <utility> include — noexcept on each, matching
+// std::declval's own noexcept specification, so the noexcept(...) checks below see through to the
+// CALLEE's own exception specification instead of tripping on these helpers' (unspecified) one.
+const engine::World& constWorld() noexcept;
+engine::World& mutableWorld() noexcept;
+constexpr engine::Entity NULL_ENTITY{};
+const engine::Transform& someTransform() noexcept;
+}  // namespace
+
+// The hierarchy API's shape and its noexcept contract.
+static_assert(std::is_same_v<decltype(mutableWorld().setParent(NULL_ENTITY, NULL_ENTITY)), bool>);
+static_assert(std::is_same_v<decltype(constWorld().parent(NULL_ENTITY)), engine::Entity>);
+static_assert(noexcept(constWorld().parent(NULL_ENTITY)));
+static_assert(std::is_same_v<decltype(constWorld().childCount(NULL_ENTITY)), std::size_t>);
+static_assert(noexcept(constWorld().childCount(NULL_ENTITY)));
+
+// The matrix functions' shape (free functions, deliberately not World members — World stays
+// component-agnostic).
+static_assert(std::is_same_v<decltype(engine::localMatrix(someTransform())), engine::Mat4>);
+static_assert(std::is_same_v<decltype(engine::worldMatrix(constWorld(), NULL_ENTITY)), engine::Mat4>);
