@@ -142,6 +142,17 @@ struct World::Impl {
             return;
         }
         auto& list = parentNode->children;
+        // destroy()'s descent always unlinks the element lastChildOf() just handed back — i.e. the
+        // BACK of the list — so check that first and pop it: O(1), no search. Without this fast
+        // path the search below makes destroying a node with N direct children O(N^2), which a flat
+        // scene (the shape docs/09 encodes, and what an editor "select root, Delete" produces)
+        // reaches immediately. setParent's general case — and `entity` itself in destroy(), which
+        // may sit mid-list in its own parent's vector — falls through to the ordered find+erase
+        // that keeps sibling order intact.
+        if (!list.empty() && list.back() == child) {
+            list.pop_back();
+            return;
+        }
         const auto it = std::find(list.begin(), list.end(), child);
         if (it != list.end()) {
             list.erase(it);

@@ -101,7 +101,7 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 - `engine::Transform` (task 1.3.2) is the engine's **first reflected component** — `position`/`rotation`/`scale`, annotated with `AERO_COMPONENT` from the new `<aero/reflect/annotations.hpp>` (promoted out of the test fixtures), registered as `"engine::Transform"` in **every World by construction** through `engine::scene::detail::registerBuiltinComponents`, which `World`'s constructor calls.
 - The **parent/child hierarchy is entity-level World state**, not component data — mirroring `docs/09`'s entity-level `parent` key, which any entity may carry with or without components. `setParent`/`parent`/`childCount`/`eachChild` enforce a **forest** (cycles rejected at the API), and `destroy()` destroys the **whole subtree**, which is what makes "a live entity's parent is always live" a structural invariant rather than a convention.
 - `worldMatrix(world, entity)` composes on demand, iteratively, up the parent chain (`world = M_root · … · M_parent · M_local`); an entity or ancestor without a `Transform` contributes identity. **No caching** — the deferral is recorded in `docs/08`.
-- One sentence: the reflection claim is proven mechanically over the real header (a `--components` process case plus generated `entt::meta` and JSON artifacts compiled into the two gated test targets), while the engine itself compiles no generated code.
+- The reflection claim is proven mechanically over the real header (a `--components` process case plus generated `entt::meta` and JSON artifacts compiled into the two gated test targets), while the engine itself compiles no generated code.
 
 ---
 

@@ -538,8 +538,20 @@ TEST_CASE("scene: clear resets the hierarchy and the World stays reusable") {
     CHECK(w.childCount(root) == 0);
     CHECK(w.componentTypeCount() == typesBefore);
 
+    // The two CHECKs above are answered by World's liveness guard BEFORE any hierarchy state is
+    // consulted, so they hold whether or not clear() emptied the node storage — they cannot fail.
+    // These can: recycle every slot that carried a HierarchyNode and prove the fresh entities
+    // inherit nothing, before any setParent runs.
     const Entity a = w.create();
     const Entity b = w.create();
+    const Entity c = w.create();
+    CHECK(w.parent(a) == Entity{});
+    CHECK(w.childCount(a) == 0);
+    CHECK(w.parent(b) == Entity{});
+    CHECK(w.childCount(b) == 0);
+    CHECK(w.parent(c) == Entity{});
+    CHECK(w.childCount(c) == 0);
+
     CHECK(w.setParent(b, a));
     CHECK(w.parent(b) == a);
     CHECK(w.childCount(a) == 1);
