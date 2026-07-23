@@ -45,6 +45,12 @@ struct Velocity {
     float y = 0.0F;
     float z = 0.0F;
 };
+// Third non-empty component, deliberately laid on a NON-NESTING subset (every 3rd entity) so that a
+// query's lead storage is not a subset of every other queried storage — the only shape that reaches
+// advanceQuery's rejection sweep. See TEST_CASE "scene: each<T> and each<T,U>".
+struct Health {
+    float hp = 0.0F;
+};
 struct Marker {};  // empty/tag component
 struct Big {
     std::array<std::uint8_t, 64> bytes{};  // size/alignment independence
@@ -72,6 +78,7 @@ World makeWorld() {
     World world;
     registerComponent<Position>(world, "test::Position");
     registerComponent<Velocity>(world, "test::Velocity");
+    registerComponent<Health>(world, "test::Health");
     registerComponent<Marker>(world, "test::Marker");
     registerComponent<Big>(world, "test::Big");
     registerComponent<Counted>(world, "test::Counted");
@@ -88,7 +95,42 @@ World makeWorld() {
 static_assert(std::is_empty_v<Marker>);
 static_assert(!std::is_empty_v<Position>);
 
+// An optimizer barrier. Round-tripping a pointer through volatile storage stops the compiler from
+// reasoning that two distinct objects have distinct addresses and constant-folding the comparison,
+// so a check written through this observes the address the LINKER actually assigned.
+const void* opaque(const void* p) {
+    const void* volatile v = p;
+    return v;
+}
+
 }  // namespace
+
+// The anchor-identity guard. componentTypeId<T>() is the address of a per-type anchor byte, and the
+// whole component API is keyed on it: if two types ever share an id, add<B>() writes a B into A's
+// storage — type-confused memory corruption.
+//
+// This MUST be a runtime check. A static_assert cannot see it: the compiler runs before the linker,
+// and the hazard is identical-COMDAT-folding at LINK time (MSVC defaults to /OPT:REF,ICF,LBR on any
+// link without /DEBUG — i.e. every Release link). engine/scene/include/aero/scene/component.hpp keeps
+// the anchor NON-const precisely so it lands in writable data, which ICF will not fold; this case is
+// what fails if that ever regresses.
+TEST_CASE("scene: distinct component types have distinct ids") {
+    const std::array<ComponentTypeId, 6> ids{componentTypeId<Position>(), componentTypeId<Velocity>(),
+                                             componentTypeId<Health>(),   componentTypeId<Marker>(),
+                                             componentTypeId<Big>(),      componentTypeId<Counted>()};
+
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        CHECK(ids[i].valid());
+        for (std::size_t j = i + 1; j < ids.size(); ++j) {
+            // Compared through the barrier: this is the linker's answer, not the compiler's.
+            CHECK(opaque(ids[i].value) != opaque(ids[j].value));
+        }
+    }
+
+    // The same type always answers with the same id, in this TU and across the layer's own TUs.
+    CHECK(opaque(componentTypeId<Position>().value) == opaque(ids[0].value));
+    CHECK(componentTypeId<Position>() == ids[0]);
+}
 
 TEST_CASE("scene: entity create/alive/destroy") {
     World w;  // no registration needed for entity-only operations
@@ -129,6 +171,29 @@ TEST_CASE("scene: destroyed handles stay rejected after recycling") {
     CHECK(!w.remove<Position>(a));
     CHECK(w.add<Position>(a) == nullptr);  // on the recycled slot: the STALE handle is rejected
     CHECK(w.alive(recycled));
+
+    // The dangerous configuration, and the only one that tells a real generation check apart from an
+    // implementation that ignores the generation entirely: the recycled twin now actually HOLDS a
+    // Position, so every rejection below has to come from the handle rather than from an empty
+    // storage — and the live component has to survive the stale operations untouched.
+    REQUIRE(w.add<Position>(recycled, Position{7.0F, 8.0F, 9.0F}) != nullptr);
+    CHECK(w.componentCount<Position>() == 1);
+    CHECK(w.get<Position>(a) == nullptr);
+    CHECK(!w.has<Position>(a));
+    // remove must not erase the live twin's component; add must not overwrite it.
+    CHECK(!w.remove<Position>(a));
+    CHECK(w.add<Position>(a) == nullptr);
+    // The same three rejections through the type-erased primitives the loader (1.4.2) will use.
+    CHECK(w.getRaw(componentTypeId<Position>(), a) == nullptr);
+    CHECK(!w.hasRaw(componentTypeId<Position>(), a));
+    CHECK(!w.removeRaw(componentTypeId<Position>(), a));
+    CHECK(w.componentCount<Position>() == 1);
+
+    const auto* live = w.get<Position>(recycled);
+    REQUIRE(live != nullptr);
+    CHECK(live->x == 7.0F);
+    CHECK(live->y == 8.0F);
+    CHECK(live->z == 9.0F);
 }
 
 TEST_CASE("scene: entityCount tracks the live set") {
@@ -391,6 +456,10 @@ TEST_CASE("scene: each<T> and each<T,U>") {
         if (i % 2 == 0) {
             REQUIRE(w.add<Velocity>(e, Velocity{}) != nullptr);
         }
+        // Every 3rd, so Health interleaves with Velocity instead of nesting inside it.
+        if (i % 3 == 0) {
+            REQUIRE(w.add<Health>(e, Health{static_cast<float>(i) * 10.0F}) != nullptr);
+        }
         if (i % 5 == 0) {
             w.add<Marker>(e);
         }
@@ -420,6 +489,68 @@ TEST_CASE("scene: each<T> and each<T,U>") {
     std::sort(orderA.begin(), orderA.end());
     std::sort(orderB.begin(), orderB.end());
     CHECK(orderA == orderB);  // the SET is identical regardless of argument order
+
+    // ---- the intersection filter itself ---------------------------------------------------------
+    // Every query above has a lead storage (the smallest) that is a strict subset of every other
+    // queried storage, so the rejection sweep inside the query never has anything to reject. Health
+    // is the case that does: it sits on every 3rd entity, Velocity on every 2nd, so entities 3, 9
+    // and 15 hold Health and NO Velocity — exactly what a missing sweep would leak. The intersection
+    // is the 4 entities divisible by 6, a count that matches no individual storage size
+    // (P=20, V=10, H=7), so "yield the lead storage whole" cannot pass either.
+    CHECK(w.componentCount<Position>() == 20);
+    CHECK(w.componentCount<Velocity>() == 10);
+    CHECK(w.componentCount<Health>() == 7);
+
+    const auto byIndex = [](Entity lhs, Entity rhs) { return lhs.index < rhs.index; };
+
+    std::vector<Entity> expectedTriple;  // i % 6 == 0 -> 0, 6, 12, 18
+    std::vector<Entity> expectedHealth;  // i % 3 == 0 -> 0, 3, 6, 9, 12, 15, 18
+    for (std::size_t i = 0; i < es.size(); ++i) {
+        if (i % 3 == 0) {
+            expectedHealth.push_back(es[i]);
+        }
+        if (i % 6 == 0) {
+            expectedTriple.push_back(es[i]);
+        }
+    }
+    REQUIRE(expectedTriple.size() == 4);
+    REQUIRE(expectedHealth.size() == 7);
+
+    // Lead = Health (7 entries, the smallest), and it is NOT a subset of Velocity: the sweep must
+    // skip 3, 9 and 15. The IDENTITIES are asserted, not just the count, so a wrong-subset
+    // regression cannot pass on a coincidental tally.
+    std::vector<Entity> velHealth;
+    w.each<Velocity, Health>([&](Entity e, Velocity&, Health&) { velHealth.push_back(e); });
+    std::sort(velHealth.begin(), velHealth.end(), byIndex);
+    CHECK(velHealth.size() == 4);
+    CHECK(velHealth == expectedTriple);
+
+    // The same query with the lead FIRST in the pack (lead index 0), so the sweep's skip-the-lead
+    // step is exercised at the other end of the argument list.
+    std::vector<Entity> healthVel;
+    w.each<Health, Velocity>([&](Entity e, Health&, Velocity&) { healthVel.push_back(e); });
+    std::sort(healthVel.begin(), healthVel.end(), byIndex);
+    CHECK(healthVel.size() == 4);
+    CHECK(healthVel == expectedTriple);
+
+    // Three types at once, with a cross-pool consistency check: hp was stored as 10x Position.x, so
+    // a mis-ordered slot fill shows up as a value mismatch rather than a count mismatch.
+    std::vector<Entity> triple;
+    w.each<Position, Velocity, Health>([&](Entity e, Position& p, Velocity&, Health& h) {
+        triple.push_back(e);
+        CHECK(h.hp == p.x * 10.0F);
+    });
+    std::sort(triple.begin(), triple.end(), byIndex);
+    CHECK(triple.size() == 4);
+    CHECK(triple == expectedTriple);
+
+    // The control: Health IS a subset of Position, so nothing is rejected and all 7 Health holders
+    // are visited. Proves the sweep filters rather than dropping entities unconditionally.
+    std::vector<Entity> healthPos;
+    w.each<Health, Position>([&](Entity e, Health&, Position&) { healthPos.push_back(e); });
+    std::sort(healthPos.begin(), healthPos.end(), byIndex);
+    CHECK(healthPos.size() == 7);
+    CHECK(healthPos == expectedHealth);
 
     // Mutation through the reference.
     const Entity known = es[0];
@@ -522,9 +653,36 @@ TEST_CASE("scene: registration table") {
     CHECK(renamed == id);
     CHECK(w.componentTypeName(id) == std::string_view{"test::Position"});
 
-    // Duplicate NAME on a NEW id: findComponentType keeps resolving to the FIRST registrant.
-    registerComponent<Velocity>(w, "test::Position");
+    // An ALREADY-REGISTERED type asked for under another type's name. This is still the existing-id
+    // branch (WARN, registration unchanged) — NOT the duplicate-name branch — because Velocity is
+    // already in this World's table. Pinned non-tautologically: the call must hand back Velocity's
+    // own id, must not rename it, and must not grow the table.
+    const ComponentTypeId velRenamed = registerComponent<Velocity>(w, "test::Position");
+    CHECK(velRenamed == velId);
+    CHECK(w.componentTypeName(velId) == std::string_view{"test::Velocity"});
+    CHECK(w.componentTypeCount() == 2);
     CHECK(w.findComponentType("test::Position") == id);
+    CHECK(w.findComponentType("test::Velocity") == velId);
+
+    // Duplicate NAME on a genuinely NEW id — the OTHER branch. Big has never been registered in this
+    // World, so it IS appended, under a name that is already taken: the table grows, the new type
+    // answers to that duplicate name, and findComponentType keeps resolving the name to the FIRST
+    // registrant.
+    const ComponentTypeId bigId = registerComponent<Big>(w, "test::Position");
+    CHECK(bigId.valid());
+    CHECK(bigId == componentTypeId<Big>());
+    CHECK(!(bigId == id));
+    CHECK(w.registered(bigId));
+    CHECK(w.componentTypeCount() == 3);
+    CHECK(w.componentTypeName(bigId) == std::string_view{"test::Position"});
+    CHECK(w.findComponentType("test::Position") == id);
+    CHECK(w.findComponentType("test::Velocity") == velId);
+
+    // The appended type is fully usable despite sharing a name — the duplicate is a label clash, not
+    // a registration failure.
+    const Entity eb = w.create();
+    REQUIRE(w.add<Big>(eb) != nullptr);
+    CHECK(w.componentCount<Big>() == 1);
 }
 
 TEST_CASE("scene: move semantics and the inert moved-from World") {
