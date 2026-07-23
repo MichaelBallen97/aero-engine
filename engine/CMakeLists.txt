@@ -7,3 +7,4 @@ add_subdirectory(platform)
 add_subdirectory(rhi)        # task 0.4.1
 add_subdirectory(render)     # task 0.5.1
 add_subdirectory(reflect)    # task 1.2.1 — reflection/serialization runtime
+add_subdirectory(scene)      # task 1.3.1 — the EnTT-backed world
