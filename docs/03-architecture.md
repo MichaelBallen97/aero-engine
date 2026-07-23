@@ -94,6 +94,12 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 
 ---
 
+### The scene layer (task 1.3.1)
+
+`engine::World` wraps an EnTT registry; no entt type crosses a public scene header (project rule #3), enforced by `.github/scripts/check-scene-boundary.sh` (the textual half, scanning every public engine header) plus `tests/scene_boundary_probe.cpp` (the compile-time half, linking `aero::scene` alone). `engine::Entity` is `Handle<EntityTag>` over a **64-bit** ECS identifier — 32-bit index + 32-bit generation, so staleness detection is `SlotMap`-grade (the default 32-bit ECS identifier would give 12-bit versions and alias a stale handle after 4096 recycles of one slot). The public component API is the **type-erased façade**: templates whose bodies `static_cast` over six non-template primitives (`addRaw`/`getRaw`×2/`hasRaw`/`removeRaw`/`countRaw`), because creating a typed storage is a template in EnTT and cannot be instantiated from an entt-free header. The one operation that genuinely needs entt on the creation side lives behind the **registration seam**, `engine::scene::internal::registerComponent<T>(world, name)` in `engine/scene/internal/.../world_access.hpp`, shipped through the `aero::scene_internal` INTERFACE target (the 0.4.2 `aero::platform_internal` pattern). Registration is **per-World**, and the name is the durable identity that `docs/09`'s component keys resolve through (`World::findComponentType`). Task 1.3.2 authors the first built-in component (`engine::Transform`) on top of this layer; task 1.4.2 is the loader that consumes `addRaw` + `findComponentType` to bring a JSON scene to life.
+
+---
+
 ## Handles, not pointers
 
 Mitigation #1 of ADR-001. Applies to **everything**: entities, textures, meshes, materials, sounds, scripts.

@@ -74,6 +74,7 @@ Matrix across **macOS + Windows + Ubuntu**. Every push/PR runs:
 6. Task-local boundary check: no spdlog/fmt types in public engine headers (0.2.4)
 7. Task-local boundary check: no enkiTS types in public engine headers (0.2.5; `lint`-job grep + the `aero_jobs_boundary_probe` compile-time probe)
 8. Task-local boundary check: no SDL types in public engine headers (0.3.1; `lint`-job step running `.github/scripts/check-platform-boundary.sh` — a script, not a bare grep, because SDL's un-namespaced identifiers collide with legitimate documentation prose that cites them — + the `aero_platform_boundary_probe` compile-time probe)
+9. Task-local boundary check: no entt types in public engine headers (1.3.1; `lint`-job step running `.github/scripts/check-scene-boundary.sh` — a script, not a bare grep, because the scene headers cite `entt::basic_registry` in documentation prose — + the `aero_scene_boundary_probe` compile-time probe, which links `aero::scene` alone)
 
 Runtime binaries for each platform are built and archived by CI (this is what makes TS-project export instant — see [ADR-008](./02-adrs.md#adr-008--per-project-language-choice-and-the-two-export-models)).
 
