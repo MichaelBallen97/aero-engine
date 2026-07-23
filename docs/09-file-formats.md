@@ -122,7 +122,9 @@ Minimal (an empty scene):
 }
 ```
 
-Full (fictional component names — real ones arrive at task 1.3.2; the envelope never resolves them):
+Full (`engine::Transform` is now the real generated payload shape, task 1.3.2 — the example's bytes are
+already correct; `engine::Camera`/`demo::Marker` stay illustrative until task 1.3.3; the envelope never
+resolves any of them):
 
 ```json
 {

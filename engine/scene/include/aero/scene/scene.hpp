@@ -8,4 +8,5 @@
 
 #include <aero/scene/component.hpp>
 #include <aero/scene/entity.hpp>
+#include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>

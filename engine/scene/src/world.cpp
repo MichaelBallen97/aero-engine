@@ -18,14 +18,17 @@
 #include <aero/core/log.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/scene/internal/world_access.hpp>
+#include <aero/scene/transform.hpp>  // task 1.3.2 — scene::detail::registerBuiltinComponents
 #include <aero/scene/world.hpp>
 
+#include <algorithm>  // task 1.3.2 — std::find (ordered child unlink)
 #include <cstddef>
 #include <deque>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <vector>  // task 1.3.2 — HierarchyNode::children
 
 namespace engine {
 namespace {
@@ -35,6 +38,20 @@ using scene::internal::fromEntt;
 using scene::internal::Registry;
 using scene::internal::SceneEntity;
 using scene::internal::toEntt;
+
+// The hierarchy's backing storage (task 1.3.2): a TU-LOCAL component type the registry owns. It is
+// created directly on the registry and NEVER bound into the public registration table, so
+// registered() / findComponentType() / componentTypeCount() / countRaw() cannot see it, and the type
+// itself cannot escape this file. Its per-entity lifetime is therefore the registry's own: destroy()
+// and clear() drop nodes along with every other storage, and no manual bookkeeping can drift.
+//
+// A node exists only for an entity that has a parent OR children. Detaching back to a root leaves an
+// empty node behind — bytes, not behaviour: it is invisible through every public API
+// (parent() == Entity{}, childCount() == 0) and dies with its entity.
+struct HierarchyNode {
+    Entity parent{};               // Entity{} == root
+    std::vector<Entity> children;  // direct children, in ATTACH ORDER (ordered erase — determinism)
+};
 
 }  // namespace
 
@@ -47,6 +64,11 @@ struct World::Impl {
     };
 
     Registry registry;
+    // The hierarchy storage, created once here and cached for the Impl's whole life (task 1.3.2).
+    // A registry pool pointer is stable across every later create/destroy/clear AND across a registry
+    // move — the same property Registration::storage below already rests on — so caching it keeps
+    // every hierarchy query a plain deref and means no const query path ever has to CREATE a storage.
+    ErasedStorage* hierarchy = &registry.storage<HierarchyNode>();
     // deque, NOT vector: componentTypeName() hands out a std::string_view into a record, and a deque
     // never invalidates references to existing elements on push_back.
     std::deque<Registration> registrations;
@@ -61,9 +83,84 @@ struct World::Impl {
     [[nodiscard]] bool aliveInternal(Entity entity) const noexcept {
         return entity.valid() && registry.valid(toEntt(entity));
     }
+
+    // nodeOf / parentOf / lastChildOf are const AND noexcept and allocate nothing: `hierarchy`
+    // already exists. They hand back a MUTABLE node from a const Impl on purpose — the same shape
+    // getRaw() uses, and the same shallow-constness property that lets a const World reach a
+    // non-const Registry.
+    //
+    // NEVER cache a HierarchyNode* across a registry.destroy(): the node storage is swap-and-pop, so
+    // destroying one entity RELOCATES another node. Every caller below re-resolves by Entity handle.
+    [[nodiscard]] HierarchyNode* nodeOf(Entity entity) const noexcept {
+        const SceneEntity ee = toEntt(entity);
+        // value() is only defined when contains() — an assert-abort in Debug otherwise.
+        return hierarchy->contains(ee) ? static_cast<HierarchyNode*>(hierarchy->value(ee)) : nullptr;
+    }
+
+    [[nodiscard]] Entity parentOf(Entity entity) const noexcept {
+        const HierarchyNode* node = nodeOf(entity);
+        return node == nullptr ? Entity{} : node->parent;
+    }
+
+    // The LAST direct child of `entity`, or false when there is no node or no children. The "last"
+    // choice is what makes destroy()'s descent O(1) per step: unlinking the back of a vector never
+    // shifts anything.
+    [[nodiscard]] bool lastChildOf(Entity entity, Entity& out) const noexcept {
+        const HierarchyNode* node = nodeOf(entity);
+        if (node == nullptr || node->children.empty()) {
+            return false;
+        }
+        out = node->children.back();
+        return true;
+    }
+
+    // Creates the node if absent. push(ee, nullptr) DEFAULT-constructs (verified at the pinned entt).
+    // The ERASED primitives are used here rather than the typed storage's emplace/get, so this file
+    // keeps relying only on the entt surface task 1.3.1 already pinned. The ONLY allocating helper —
+    // and it is deliberately unreachable from destroy() (M1).
+    [[nodiscard]] HierarchyNode& ensureNode(Entity entity) {
+        const SceneEntity ee = toEntt(entity);
+        if (!hierarchy->contains(ee)) {
+            hierarchy->push(ee, nullptr);
+        }
+        return *static_cast<HierarchyNode*>(hierarchy->value(ee));
+    }
+
+    // Detaches `child` from whatever parent it currently has: ORDERED erase from that parent's
+    // children (std::find + vector::erase, never swap-and-pop — sibling order is part of eachChild's
+    // contract) plus clearing the child's own parent link. A no-op when there is no node or no
+    // parent. ALLOCATES NOTHING: erasing from a vector of a trivially-copyable element neither
+    // reallocates nor throws, which is what lets destroy() stay noexcept (M1).
+    void unlinkFromParent(Entity child) noexcept {
+        HierarchyNode* node = nodeOf(child);
+        if (node == nullptr || !node->parent.valid()) {
+            return;
+        }
+        HierarchyNode* parentNode = nodeOf(node->parent);
+        node->parent = Entity{};
+        if (parentNode == nullptr) {
+            return;
+        }
+        auto& list = parentNode->children;
+        // destroy()'s descent always unlinks the element lastChildOf() just handed back — i.e. the
+        // BACK of the list — so check that first and pop it: O(1), no search. Without this fast
+        // path the search below makes destroying a node with N direct children O(N^2), which a flat
+        // scene (the shape docs/09 encodes, and what an editor "select root, Delete" produces)
+        // reaches immediately. setParent's general case — and `entity` itself in destroy(), which
+        // may sit mid-list in its own parent's vector — falls through to the ordered find+erase
+        // that keeps sibling order intact.
+        if (!list.empty() && list.back() == child) {
+            list.pop_back();
+            return;
+        }
+        const auto it = std::find(list.begin(), list.end(), child);
+        if (it != list.end()) {
+            list.erase(it);
+        }
+    }
 };
 
-World::World() : impl(std::make_unique<Impl>()) {}
+World::World() : impl(std::make_unique<Impl>()) { scene::detail::registerBuiltinComponents(*this); }
 World::~World() = default;
 World::World(World&&) noexcept = default;
 World& World::operator=(World&&) noexcept = default;
@@ -88,9 +185,28 @@ bool World::destroy(Entity entity) noexcept {
     if (!impl->aliveInternal(entity)) {
         return false;
     }
-    // The version_type return is discarded on purpose (N8: not [[nodiscard]], unlike create()).
-    impl->registry.destroy(toEntt(entity));
-    return true;
+    // Post-order subtree destruction with O(1) scratch and NO allocation (this member is
+    // noexcept). Descend to the deepest last child, destroy that leaf, step back to its parent,
+    // repeat: every iteration destroys exactly one entity, so it terminates in exactly
+    // subtree-size iterations, and a child is always destroyed before its parent.
+    //
+    // NEVER cache a HierarchyNode* across the destroy below: the node storage is swap-and-pop, so
+    // destroying one entity RELOCATES another node. Every step re-resolves by Entity handle.
+    Entity cur = entity;
+    for (;;) {
+        Entity child{};
+        while (impl->lastChildOf(cur, child)) {  // re-resolves cur's node on every call
+            cur = child;
+        }
+        // Read the parent BEFORE unlinking — unlinkFromParent clears cur's own parent link.
+        const Entity up = (cur == entity) ? Entity{} : impl->parentOf(cur);
+        impl->unlinkFromParent(cur);          // ordered erase from up's children; no allocation
+        impl->registry.destroy(toEntt(cur));  // also erases cur's HierarchyNode
+        if (cur == entity) {
+            return true;
+        }
+        cur = up;
+    }
 }
 
 bool World::alive(Entity entity) const noexcept { return impl != nullptr && impl->aliveInternal(entity); }
@@ -114,7 +230,9 @@ void World::clear() noexcept {
         return;
     }
     // Registrations and their cached storage pointers survive (F11): registry.clear() empties every
-    // pool and the entity storage but does not drop the pools themselves.
+    // pool and the entity storage but does not drop the pools themselves. That includes the
+    // hierarchy storage (task 1.3.2), so every parent/child link vanishes with the entities and the
+    // World is immediately reusable — re-parenting after clear() works with no re-registration.
     impl->registry.clear();
 }
 
@@ -130,6 +248,82 @@ bool World::nextEntity(std::size_t& cursor, Entity& out) const noexcept {
         return false;
     }
     out = fromEntt(es.data()[cursor]);
+    ++cursor;
+    return true;
+}
+
+// ---- hierarchy (task 1.3.2) -----------------------------------------------------------------
+
+bool World::setParent(Entity child, Entity parent) {
+    AERO_PROFILE_ZONE;
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("scene: {} on a moved-from World", "setParent");
+        return false;
+    }
+    if (!impl->aliveInternal(child)) {
+        AERO_LOG_ERROR("scene: setParent on a dead or null child (index {}, generation {})", child.index,
+                       child.generation);
+        return false;
+    }
+    if (parent.valid() && !impl->aliveInternal(parent)) {
+        AERO_LOG_ERROR("scene: setParent to a dead parent (index {}, generation {})", parent.index, parent.generation);
+        return false;
+    }
+    if (child == parent) {
+        AERO_LOG_ERROR("scene: setParent cannot parent an entity to itself (index {})", child.index);
+        return false;
+    }
+    // Walk UP the new parent's ancestor chain: if `child` is on it, `parent` is already a descendant
+    // of `child` and the link would close a cycle. O(depth), iterative, and it covers the direct case
+    // (A->B then B->A) and every deeper one uniformly.
+    for (Entity ancestor = parent; ancestor.valid(); ancestor = impl->parentOf(ancestor)) {
+        if (ancestor == child) {
+            AERO_LOG_ERROR("scene: setParent would create a cycle (child index {}, parent index {})", child.index,
+                           parent.index);
+            return false;
+        }
+    }
+    const Entity current = impl->parentOf(child);
+    if (current == parent) {
+        return true;  // silent no-op; sibling position is deliberately left untouched
+    }
+    impl->unlinkFromParent(child);  // no-op when child has no node or is already a root
+    // Two statements, each using its reference immediately: ensureNode may insert, and an insert may
+    // move elements, so no reference is held across the second call.
+    impl->ensureNode(child).parent = parent;
+    if (parent.valid()) {
+        impl->ensureNode(parent).children.push_back(child);
+    }
+    return true;
+}
+
+Entity World::parent(Entity child) const noexcept {
+    if (impl == nullptr || !impl->aliveInternal(child)) {
+        return Entity{};
+    }
+    // Live-or-null by the subtree-destroy invariant: nothing can observe a dead parent here.
+    return impl->parentOf(child);
+}
+
+std::size_t World::childCount(Entity parent) const noexcept {
+    if (impl == nullptr || !impl->aliveInternal(parent)) {
+        return 0;
+    }
+    const HierarchyNode* node = impl->nodeOf(parent);
+    return node == nullptr ? 0 : node->children.size();
+}
+
+bool World::nextChild(Entity parent, std::size_t& cursor, Entity& out) const noexcept {
+    if (impl == nullptr || !impl->aliveInternal(parent)) {
+        return false;
+    }
+    // The node is resolved on every call rather than cached across the walk — the same shape
+    // nextEntity uses, and the reason eachChild's callback must not mutate the World.
+    const HierarchyNode* node = impl->nodeOf(parent);
+    if (node == nullptr || cursor >= node->children.size()) {
+        return false;
+    }
+    out = node->children[cursor];
     ++cursor;
     return true;
 }

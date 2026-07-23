@@ -616,11 +616,11 @@ TEST_CASE("scene: registration table") {
     CHECK(w.registered(id));
     CHECK(w.componentTypeName(id) == std::string_view{"test::Position"});
     CHECK(w.findComponentType("test::Position") == id);
-    CHECK(w.componentTypeCount() == 1);
+    CHECK(w.componentTypeCount() == 2);  // 2, not 1: World seeds engine::Transform (task 1.3.2)
 
     const ComponentTypeId again = registerComponent<Position>(w, "test::Position");
     CHECK(again == id);
-    CHECK(w.componentTypeCount() == 1);
+    CHECK(w.componentTypeCount() == 2);  // still 2 — re-registration is idempotent
 
     const Entity e = w.create();
     REQUIRE(w.add<Position>(e) != nullptr);
@@ -628,7 +628,7 @@ TEST_CASE("scene: registration table") {
     CHECK(w.componentCount<Position>() == 1);  // storage untouched by re-registration
 
     const ComponentTypeId velId = registerComponent<Velocity>(w, "test::Velocity");
-    CHECK(w.componentTypeCount() == 2);
+    CHECK(w.componentTypeCount() == 3);  // Transform + Position + Velocity
     CHECK(w.findComponentType("test::Position") == id);
     CHECK(w.findComponentType("test::Velocity") == velId);
 
@@ -660,7 +660,7 @@ TEST_CASE("scene: registration table") {
     const ComponentTypeId velRenamed = registerComponent<Velocity>(w, "test::Position");
     CHECK(velRenamed == velId);
     CHECK(w.componentTypeName(velId) == std::string_view{"test::Velocity"});
-    CHECK(w.componentTypeCount() == 2);
+    CHECK(w.componentTypeCount() == 3);  // unchanged by the existing-id WARN branch
     CHECK(w.findComponentType("test::Position") == id);
     CHECK(w.findComponentType("test::Velocity") == velId);
 
@@ -673,7 +673,7 @@ TEST_CASE("scene: registration table") {
     CHECK(bigId == componentTypeId<Big>());
     CHECK(!(bigId == id));
     CHECK(w.registered(bigId));
-    CHECK(w.componentTypeCount() == 3);
+    CHECK(w.componentTypeCount() == 4);  // + Big, appended under a duplicate name
     CHECK(w.componentTypeName(bigId) == std::string_view{"test::Position"});
     CHECK(w.findComponentType("test::Position") == id);
     CHECK(w.findComponentType("test::Velocity") == velId);

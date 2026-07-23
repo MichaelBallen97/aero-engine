@@ -85,9 +85,19 @@ public:
     // ERROR — moved-from is the only failure mode create() has.
     [[nodiscard]] Entity create();
 
-    // Destroys `entity`: erases it from every component storage it appears in (running each
-    // component's destructor) and invalidates the handle permanently. Returns false — silently — for
-    // an already-dead or null entity; returns false plus one ERROR on a moved-from World.
+    // Destroys `entity` AND EVERY DESCENDANT (task 1.3.2): the whole subtree dies, children before
+    // parents, deterministically. Each of them is erased from every component storage it appears in
+    // (running each component's destructor) and its handle is invalidated permanently. `entity` is
+    // unlinked from its own parent's child list first, so surviving siblings keep their order.
+    //
+    // This is the Unity/Godot semantic, and it is what establishes the hierarchy's no-stale-parent
+    // invariant below: a parent can only die through destroy(), which takes its children with it, or
+    // through clear(), which takes everyone. entityCount() drops by the SUBTREE size; the return
+    // value reports only `entity` itself — true iff it was alive and is now destroyed. Returns false,
+    // silently, for an already-dead or null entity; false plus one ERROR on a moved-from World.
+    //
+    // The subtree walk uses CONSTANT scratch and allocates nothing, at any subtree size or depth —
+    // so the noexcept below is honest, not a bargain.
     bool destroy(Entity entity) noexcept;
 
     // Null check AND liveness: true only for a non-null entity this World actually still holds.
@@ -113,6 +123,46 @@ public:
     // on a moved-from World.
     template <typename Fn>
     void eachEntity(Fn&& fn) const;
+
+    // ---- hierarchy (task 1.3.2) ---------------------------------------------------------------
+    // Entity-level parent/child links, owned by the World — NOT component data. This mirrors the
+    // FILE format (docs/09-file-formats.md), where `parent` is an entity-level key that any entity
+    // may carry with or without any component, and it is what lets the World enforce the invariant a
+    // public field never could: the graph is a FOREST by construction, and every mutation that would
+    // close a cycle is rejected here, loudly.
+    //
+    // LOAD-BEARING INVARIANT: a live entity's parent is always live, or none. destroy() takes the
+    // whole subtree with it and clear() takes everyone, so no API can ever observe a stale parent
+    // link and nothing downstream has to defend against one.
+
+    // Links `child` under `parent`, APPENDING it to that parent's child list; parent == Entity{}
+    // detaches `child` to a root. Re-attaching to the CURRENT parent — or detaching an entity that is
+    // already a root — is a silent `true` no-op that does NOT reorder siblings.
+    //
+    // Returns false plus one ERROR, leaving the World unchanged, for: a moved-from World; a dead or
+    // null `child`; a dead non-null `parent`; child == parent; and any link that would close a cycle
+    // (`parent` is `child`, or lies in `child`'s subtree — an O(depth) walk-up check). May allocate,
+    // exactly like add<T>().
+    bool setParent(Entity child, Entity parent);
+
+    // `child`'s parent, or Entity{} for a root, a never-parented entity, a dead or null handle, or a
+    // moved-from World. Silent in every case — polling a hierarchy after a subtree was destroyed is a
+    // normal pattern, not an error (see alive()).
+    [[nodiscard]] Entity parent(Entity child) const noexcept;
+
+    // How many DIRECT children `parent` currently has — not the subtree size. 0 on every rejection,
+    // silently.
+    [[nodiscard]] std::size_t childCount(Entity parent) const noexcept;
+
+    // Visits every DIRECT child of `parent` exactly once, as fn(Entity), in ATTACH ORDER. Order is
+    // preserved across unrelated detaches (ordered erase), which makes iteration deterministic — but
+    // sibling INDICES are not a public concept and nothing may depend on them; no sibling-order API
+    // is offered. The callback must not mutate this World (create/destroy an entity, add/remove a
+    // component, register a type, or call setParent) — the same contract each<Ts...>() states below,
+    // for the same reason. READING is fine, including worldMatrix(). Zero children means zero
+    // invocations, silently, including on a moved-from World.
+    template <typename Fn>
+    void eachChild(Entity parent, Fn&& fn) const;
 
     // ---- components (entt-free templates over the raw primitives) -----------------------------
 
@@ -211,6 +261,7 @@ private:
     [[nodiscard]] bool beginQuery(const ComponentTypeId* ids, std::size_t count, QueryCursor& cursor) const noexcept;
     [[nodiscard]] bool advanceQuery(QueryCursor& cursor, void** slots) const noexcept;
     [[nodiscard]] bool nextEntity(std::size_t& cursor, Entity& out) const noexcept;
+    [[nodiscard]] bool nextChild(Entity parent, std::size_t& cursor, Entity& out) const noexcept;
 
     struct Impl;
     std::unique_ptr<Impl> impl;
@@ -222,6 +273,15 @@ void World::eachEntity(Fn&& fn) const {
     Entity entity{};
     while (nextEntity(cursor, entity)) {
         fn(entity);
+    }
+}
+
+template <typename Fn>
+void World::eachChild(Entity parent, Fn&& fn) const {
+    std::size_t cursor = 0;
+    Entity child{};
+    while (nextChild(parent, cursor, child)) {
+        fn(child);
     }
 }
 
