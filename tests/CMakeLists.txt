@@ -37,6 +37,7 @@ add_executable(aero_tests
     render_cube_test.cpp   # task 0.5.2 — tier-0 mesh invariants + tier-2 textured-cube draw pipeline
     scene_format_test.cpp # task 1.2.3 — scene format v1: envelope/version/hierarchy + canonical round-trip
     scene_test.cpp        # task 1.3.1 — engine::World over EnTT: entities, components, queries, registration
+    transform_test.cpp    # task 1.3.2 — engine::Transform, the World-owned forest, world matrices
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
