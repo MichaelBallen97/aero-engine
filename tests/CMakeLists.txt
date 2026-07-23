@@ -36,6 +36,7 @@ add_executable(aero_tests
     render_clear_test.cpp # task 0.5.1 — tier-0 config default + tier-2 clear/resize/move/leak
     render_cube_test.cpp   # task 0.5.2 — tier-0 mesh invariants + tier-2 textured-cube draw pipeline
     scene_format_test.cpp # task 1.2.3 — scene format v1: envelope/version/hierarchy + canonical round-trip
+    scene_test.cpp        # task 1.3.1 — engine::World over EnTT: entities, components, queries, registration
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
@@ -54,7 +55,12 @@ add_executable(aero_tests
 # 0.2.3) covers the public math headers at compile time instead.
 # ${CMAKE_DL_LIBS} (libdl on Linux, empty elsewhere): vulkan_stack_pin.cpp calls dlopen/dlerror
 # directly to keep the Vulkan driver stack mapped for LSan (task 0.5.2).
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::reflect aero::render aero::rhi SDL3::SDL3 ${CMAKE_DL_LIBS})
+#
+# aero::scene_internal is linked here (and ONLY here, besides its own target) because scene_test.cpp
+# calls registerComponent<T>() through the internal seam — tests sit OUTSIDE the boundary rule (the
+# note above, :5-9). The compile-time guard for the scene/EnTT boundary lives in the separate
+# aero_scene_boundary_probe target below, which links aero::scene ALONE.
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::reflect aero::render aero::rhi aero::scene aero::scene_internal SDL3::SDL3 ${CMAKE_DL_LIBS})
 
 # Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,
 # in build/<preset>/shaders). aero_shaders exists ONLY when AERO_SHADER_TOOLS is ON (cmake/shaders.cmake),
