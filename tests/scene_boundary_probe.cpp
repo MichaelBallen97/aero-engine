@@ -41,12 +41,23 @@ static_assert(engine::Entity{1U, 1U} == engine::Entity{1U, 1U});
 static_assert(!(engine::Entity{1U, 1U} == engine::Entity{1U, 2U}));  // generation is part of identity
 static_assert(!(engine::Entity{1U, 1U} == engine::Entity{2U, 1U}));  // so is the index
 
-// ComponentTypeId — value semantics, default-invalid, per-type distinct (M1).
+// ComponentTypeId — value semantics and default-invalid. These are the only properties of it that
+// ARE compile-time facts.
+//
+// Per-type DISTINCTNESS is deliberately not asserted here, and cannot be: an id is the address of a
+// vague-linkage anchor, so its value is settled by the LINKER, not the compiler. GCC enforces
+// exactly that — it refuses to constant-fold such an address, because identical-COMDAT folding may
+// still merge two of them (which is why the anchor is non-const; see component.hpp). Asserting
+// distinctness here would therefore be both non-portable and unable to observe the failure it
+// claims to guard. It is asserted at RUNTIME instead, by tests/scene_test.cpp's
+// "scene: distinct component types have distinct ids".
 static_assert(std::is_trivially_copyable_v<engine::ComponentTypeId>);
 static_assert(!engine::ComponentTypeId{}.valid());
-static_assert(engine::componentTypeId<ProbePosition>().valid());
-static_assert(engine::componentTypeId<ProbePosition>() == engine::componentTypeId<ProbePosition>());
-static_assert(!(engine::componentTypeId<ProbePosition>() == engine::componentTypeId<ProbeVelocity>()));
+// Unevaluated contexts: they pin the signature and instantiate the template over a plain struct
+// (so the header must compile for a real component shape) without naming an anchor's address.
+static_assert(std::is_same_v<decltype(engine::componentTypeId<ProbePosition>()), engine::ComponentTypeId>);
+static_assert(std::is_same_v<decltype(engine::componentTypeId<ProbeVelocity>()), engine::ComponentTypeId>);
+static_assert(noexcept(engine::componentTypeId<ProbePosition>()));
 
 // World — force the class COMPLETE via traits that also assert its move-only contract. (Its members
 // are odr-usable at LINK time only; naming a trait needs the complete type, which is exactly what

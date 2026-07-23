@@ -34,6 +34,9 @@ namespace scene::detail {
 //
 // A compile-time guard cannot catch this (the compiler runs before the linker folds), so the
 // runtime guard lives in tests/scene_test.cpp's "distinct component types have distinct ids" case.
+// GCC agrees, and enforces it: it refuses to constant-fold the address of a vague-linkage object
+// precisely because the linker may merge it, which is why componentTypeId<T>() below is NOT
+// constexpr. A component id is a LINK-time property; treat it as a runtime value.
 template <typename T>
 struct ComponentTypeTag {
     static char anchor;
@@ -54,9 +57,12 @@ struct ComponentTypeId {
 };
 
 // The id of T. Always valid; identical for the same T everywhere in one program; distinct for
-// distinct types. constexpr so compile-time guards (tests/scene_boundary_probe.cpp) can assert it.
+// distinct types. Deliberately NOT constexpr — see the anchor note above: the value is only settled
+// at LINK time, and GCC correctly refuses to constant-fold it. Identity is asserted at runtime by
+// tests/scene_test.cpp; only type-independent properties (default-invalid, trivially copyable) are
+// asserted at compile time by tests/scene_boundary_probe.cpp.
 template <typename T>
-[[nodiscard]] constexpr ComponentTypeId componentTypeId() noexcept {
+[[nodiscard]] ComponentTypeId componentTypeId() noexcept {
     static_assert(std::is_same_v<T, std::remove_cvref_t<T>>, "component type must be a plain value type");
     static_assert(std::is_object_v<T>, "a component must be an object type");
     return ComponentTypeId{&scene::detail::ComponentTypeTag<T>::anchor};
