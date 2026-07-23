@@ -4,7 +4,8 @@
 find_package(EnTT CONFIG REQUIRED)   # package EnTT, target EnTT::EnTT (header-only)
 
 add_library(aero_scene STATIC
-    src/world.cpp   # the ONE TU besides internal/.../world_access.hpp where EnTT is visible
+    src/world.cpp      # the ONE TU besides internal/.../world_access.hpp where EnTT is visible
+    src/transform.cpp  # task 1.3.2 — engine::Transform's matrices + the builtin-registration hook
 )
 add_library(aero::scene ALIAS aero_scene)
 
@@ -15,6 +16,12 @@ target_include_directories(aero_scene PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
 target_include_directories(aero_scene PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal)
 
 # aero::core PUBLIC — entity.hpp surfaces Handle<Tag>, and world.cpp logs through <aero/core/log.hpp>.
+# aero::reflect PUBLIC (task 1.3.2) — transform.hpp, a PUBLIC header, includes
+# <aero/reflect/annotations.hpp> for AERO_COMPONENT, so consumers need that include root propagated.
+# The edge is downward-legal (docs/03 draws scene ABOVE reflect) and costs the boundary guard nothing:
+# aero_reflect wraps NO third-party type (std + engine::Vec3/Quat only) and links no vcpkg package, so
+# it propagates ZERO vcpkg include roots and tests/scene_boundary_probe.cpp stays a real guard.
+#
 # core's own third-party backends are PRIVATE-to-core, so this propagates NO vcpkg header.
 #
 # EnTT::EnTT and aero::profiling are PRIVATE forever. For a STATIC library CMake propagates a PRIVATE
@@ -24,7 +31,7 @@ target_include_directories(aero_scene PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/intern
 # docs/08-risks.md). Flipping EnTT to PUBLIC would reopen the boundary engine-wide — do not
 # "simplify" it. (Same reasoning as engine/platform/ and engine/rhi/.)
 target_link_libraries(aero_scene
-    PUBLIC  aero::core
+    PUBLIC  aero::core aero::reflect
     PRIVATE EnTT::EnTT aero::profiling
 )
 
