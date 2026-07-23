@@ -190,6 +190,20 @@ Task 1.2.3 froze the scene-on-disk schema — `{"version": 1, "entities": [...]}
 `engine::parseScene`/`validateScene`/`writeSceneText` in `aero_reflect`; component payloads stay opaque
 there, and scene **loading** (name→type dispatch + instantiation) remains 1.4.2.
 
+### Implementation note (task 1.3.2)
+
+The first real annotated component landed in **engine code**: `engine::Transform`
+(`engine/scene/include/aero/scene/transform.hpp`). `AERO_COMPONENT` was promoted from
+`tests/reflect-gen/fixtures/aero_reflect.hpp` to the new public header
+`<aero/reflect/annotations.hpp>` — the frozen macro/string contract with `tools/reflect-gen`'s detector
+is unchanged, only its home moved. `engine::Transform`'s three fields (`position`/`rotation`/`scale`)
+are entirely inside ADR-004's minimal subset, so detection, `--emit-meta` and `--emit-json` all run
+clean over the shipped header in CI on three OSes, with zero skips and zero warnings — proven by a new
+process-boundary case (`reflect-gen.components_engine_transform`) plus the generated `entt::meta` and
+JSON artifacts compiled into `aero_reflect_meta_test`/`aero_reflect_json_test`. The engine itself
+registers the type by hand through the scene layer's internal seam and never compiles generated code,
+so `-DAERO_REFLECT_TOOLS=OFF` changes nothing about the engine's behaviour.
+
 ---
 
 ## ADR-005 — Math: own types, swappable backend
