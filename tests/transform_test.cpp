@@ -97,7 +97,7 @@ TEST_CASE("transform: every World seeds engine::Transform by construction") {
 
     // add/get/has/remove/each/addRaw all work with NO explicit registration call.
     const Entity e = w.create();
-    Transform* added = w.add<Transform>(e, Transform{Vec3{1.0F, 2.0F, 3.0F}, Quat::identity(), Vec3::one()});
+    auto* added = w.add<Transform>(e, Transform{Vec3{1.0F, 2.0F, 3.0F}, Quat::identity(), Vec3::one()});
     REQUIRE(added != nullptr);
     CHECK(added->position == Vec3{1.0F, 2.0F, 3.0F});
     CHECK(w.has<Transform>(e));
@@ -119,7 +119,7 @@ TEST_CASE("transform: every World seeds engine::Transform by construction") {
 
     // Two independent Worlds: each seeds its OWN table and storage.
     World a;
-    World b;
+    const World b;
     CHECK(a.componentTypeCount() == 1);
     CHECK(b.componentTypeCount() == 1);
     const Entity ea = a.create();
@@ -176,7 +176,7 @@ TEST_CASE("transform: the component behaves like any other through World") {
     World w;
     const Entity e = w.create();
 
-    Transform* first = w.add<Transform>(e, Transform{Vec3{1.0F, 0.0F, 0.0F}, Quat::identity(), Vec3::one()});
+    auto* first = w.add<Transform>(e, Transform{Vec3{1.0F, 0.0F, 0.0F}, Quat::identity(), Vec3::one()});
     REQUIRE(first != nullptr);
     first->position = Vec3{2.0F, 0.0F, 0.0F};
     const Transform* reread = w.get<Transform>(e);
@@ -201,7 +201,7 @@ TEST_CASE("transform: the component behaves like any other through World") {
     CHECK(count == 1);
 
     const World& cw = w;
-    const Transform* viaConst = cw.get<Transform>(e2);
+    const auto* viaConst = cw.get<Transform>(e2);
     REQUIRE(viaConst != nullptr);
     CHECK(*viaConst == Transform{});
 }
@@ -240,7 +240,7 @@ TEST_CASE("scene: re-attaching to the current parent is a silent no-op that pres
     REQUIRE(w.setParent(c, p));
     CHECK(collectChildren(w, p) == std::vector<Entity>{a, b, c});
 
-    CHECK(w.setParent(b, p));  // already b's parent
+    CHECK(w.setParent(b, p));                                      // already b's parent
     CHECK(collectChildren(w, p) == std::vector<Entity>{a, b, c});  // unchanged -- no move to the back
 
     const Entity root = w.create();
@@ -286,12 +286,10 @@ TEST_CASE("scene: eachChild yields direct children only, in attach order") {
 
     // Nested eachChild over a DIFFERENT parent, inside an outer eachChild, works.
     std::vector<Entity> nested;
-    w.eachChild(p, [&](Entity child) {
-        w.eachChild(child, [&](Entity grandchild) { nested.push_back(grandchild); });
-    });
+    w.eachChild(p, [&](Entity child) { w.eachChild(child, [&](Entity grandchild) { nested.push_back(grandchild); }); });
     CHECK(nested == std::vector<Entity>{g1, g2});
 
-    CHECK(collectChildren(w, g1).empty());     // a leaf
+    CHECK(collectChildren(w, g1).empty());  // a leaf
     CHECK(collectChildren(w, Entity{}).empty());
     const Entity dead = w.create();
     REQUIRE(w.destroy(dead));
@@ -333,7 +331,7 @@ TEST_CASE("scene: setParent rejection matrix") {
     mw.emplace();
     const Entity mp = mw->create();
     const Entity mc = mw->create();
-    World movedTo = std::move(*mw);
+    const World movedTo = std::move(*mw);
     CHECK(movedTo.entityCount() == 2);  // the moved-TO World owns both entities
     CHECK_FALSE(mw->setParent(mc, mp));
 }
@@ -562,32 +560,31 @@ TEST_CASE("transform: worldMatrix composes translation, rotation and scale chain
         REQUIRE(w.setParent(gc, child));
 
         CHECK(engine::approxEquals(engine::transformPoint(engine::worldMatrix(w, gc), Vec3::zero()),
-                                    Vec3{1.0F, 2.0F, 3.0F}));
+                                   Vec3{1.0F, 2.0F, 3.0F}));
     }
 
     SUBCASE("rotation") {
         const Entity parent = w.create();
         const Entity child = w.create();
-        REQUIRE(w.add<Transform>(parent, Transform{Vec3::zero(), engine::fromAxisAngle(Vec3::unitY(),
-                                                                                        engine::radians(90.0F)),
-                                                    Vec3::one()}) != nullptr);
+        REQUIRE(w.add<Transform>(parent,
+                                 Transform{Vec3::zero(), engine::fromAxisAngle(Vec3::unitY(), engine::radians(90.0F)),
+                                           Vec3::one()}) != nullptr);
         REQUIRE(w.add<Transform>(child, Transform{Vec3{1.0F, 0.0F, 0.0F}, Quat::identity(), Vec3::one()}) != nullptr);
         REQUIRE(w.setParent(child, parent));
 
         CHECK(engine::approxEquals(engine::transformPoint(engine::worldMatrix(w, child), Vec3::zero()),
-                                    Vec3{0.0F, 0.0F, -1.0F}));
+                                   Vec3{0.0F, 0.0F, -1.0F}));
     }
 
     SUBCASE("scale") {
         const Entity parent = w.create();
         const Entity child = w.create();
-        REQUIRE(w.add<Transform>(parent, Transform{Vec3::zero(), Quat::identity(), Vec3{2.0F, 2.0F, 2.0F}}) !=
-                nullptr);
+        REQUIRE(w.add<Transform>(parent, Transform{Vec3::zero(), Quat::identity(), Vec3{2.0F, 2.0F, 2.0F}}) != nullptr);
         REQUIRE(w.add<Transform>(child, Transform{Vec3{1.0F, 0.0F, 0.0F}, Quat::identity(), Vec3::one()}) != nullptr);
         REQUIRE(w.setParent(child, parent));
 
         CHECK(engine::approxEquals(engine::transformPoint(engine::worldMatrix(w, child), Vec3::zero()),
-                                    Vec3{2.0F, 0.0F, 0.0F}));
+                                   Vec3{2.0F, 0.0F, 0.0F}));
     }
 
     SUBCASE("full 3-deep TRS chain") {
@@ -632,7 +629,7 @@ TEST_CASE("transform: worldMatrix identity semantics — gaps, roots, missing tr
 
         CHECK(engine::approxEquals(engine::worldMatrix(w, gap), engine::worldMatrix(w, root)));
         CHECK(engine::approxEquals(engine::transformPoint(engine::worldMatrix(w, child), Vec3::zero()),
-                                    Vec3{1.0F, 1.0F, 0.0F}));
+                                   Vec3{1.0F, 1.0F, 0.0F}));
     }
 
     SUBCASE("no Transform and no ancestors -> exactly identity") {
@@ -651,7 +648,7 @@ TEST_CASE("transform: worldMatrix identity semantics — gaps, roots, missing tr
         std::optional<World> mw;
         mw.emplace();
         const Entity e = mw->create();
-        World movedTo = std::move(*mw);
+        const World movedTo = std::move(*mw);
         CHECK(movedTo.entityCount() == 1);  // the moved-TO World owns the entity
         CHECK(engine::worldMatrix(*mw, e) == Mat4::identity());
     }
@@ -687,7 +684,7 @@ TEST_CASE("transform: worldMatrix over a 1000-deep chain is iterative and exact"
     World w;
     const std::vector<Entity> chain = makeChain(w, 1000, Vec3{1.0F, 0.0F, 0.0F});
     CHECK(engine::approxEquals(engine::transformPoint(engine::worldMatrix(w, chain.back()), Vec3::zero()),
-                                Vec3{1000.0F, 0.0F, 0.0F}));
+                               Vec3{1000.0F, 0.0F, 0.0F}));
 
     CHECK(w.destroy(chain.front()));
     CHECK(w.entityCount() == 0);

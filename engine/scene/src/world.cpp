@@ -18,17 +18,17 @@
 #include <aero/core/log.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/scene/internal/world_access.hpp>
-#include <aero/scene/transform.hpp>          // task 1.3.2 — scene::detail::registerBuiltinComponents
+#include <aero/scene/transform.hpp>  // task 1.3.2 — scene::detail::registerBuiltinComponents
 #include <aero/scene/world.hpp>
 
-#include <algorithm>                          // task 1.3.2 — std::find (ordered child unlink)
+#include <algorithm>  // task 1.3.2 — std::find (ordered child unlink)
 #include <cstddef>
 #include <deque>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
-#include <vector>                             // task 1.3.2 — HierarchyNode::children
+#include <vector>  // task 1.3.2 — HierarchyNode::children
 
 namespace engine {
 namespace {
@@ -255,8 +255,7 @@ bool World::setParent(Entity child, Entity parent) {
         return false;
     }
     if (parent.valid() && !impl->aliveInternal(parent)) {
-        AERO_LOG_ERROR("scene: setParent to a dead parent (index {}, generation {})", parent.index,
-                       parent.generation);
+        AERO_LOG_ERROR("scene: setParent to a dead parent (index {}, generation {})", parent.index, parent.generation);
         return false;
     }
     if (child == parent) {

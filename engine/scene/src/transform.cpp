@@ -19,7 +19,7 @@ namespace {
 // The entity's own local matrix, or identity when it carries no Transform — the docs/09
 // component-less-parented-entity case: it attaches at its parent's origin.
 [[nodiscard]] Mat4 localMatrixOf(const World& world, Entity entity) {
-    const Transform* transform = world.get<Transform>(entity);
+    const auto* transform = world.get<Transform>(entity);
     return transform == nullptr ? Mat4::identity() : localMatrix(*transform);
 }
 

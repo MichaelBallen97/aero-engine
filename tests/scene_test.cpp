@@ -616,7 +616,7 @@ TEST_CASE("scene: registration table") {
     CHECK(w.registered(id));
     CHECK(w.componentTypeName(id) == std::string_view{"test::Position"});
     CHECK(w.findComponentType("test::Position") == id);
-    CHECK(w.componentTypeCount() == 2);  // 2, not 1: every World seeds engine::Transform in its constructor (task 1.3.2)
+    CHECK(w.componentTypeCount() == 2);  // 2, not 1: World seeds engine::Transform (task 1.3.2)
 
     const ComponentTypeId again = registerComponent<Position>(w, "test::Position");
     CHECK(again == id);
