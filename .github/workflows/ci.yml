@@ -140,6 +140,19 @@ jobs:
         # single allowlisted file: the sacred-wrapper invariant governs .cpp too, not only headers.
         run: bash .github/scripts/check-rhi-boundary.sh
 
+      - name: Boundary — no entt types in public engine headers
+        shell: bash
+        # Task 1.3.1 (project rule #3, docs/04 boundary check #9): EnTT is the fifth private backend
+        # behind an engine layer (after glm, spdlog/fmt, enkiTS, SDL3/miniaudio, SDL_GPU). Like the
+        # platform and rhi guards this is a SCRIPT, not a bare grep, because the scene headers cite
+        # entt::basic_registry in first-party prose for traceability — the script strips `//` comments
+        # before the identifier check. Its scope is PUBLIC HEADERS ONLY (engine/*/include/*), NOT all
+        # engine sources: docs/03 designates engine/reflect the future "entt::meta runtime", so a
+        # source-scope confinement would outlaw a documented future layer by accident. Widening it is
+        # a separate, deliberate decision (spec §6). The compile-time half is
+        # tests/scene_boundary_probe.cpp, which links aero::scene alone.
+        run: bash .github/scripts/check-scene-boundary.sh
+
   build:
     name: ${{ matrix.name }}
     needs: vcpkg-baseline        # don't spend build minutes if the pin is broken

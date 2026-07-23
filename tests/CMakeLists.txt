@@ -153,6 +153,26 @@ add_library(aero_rhi_boundary_probe OBJECT rhi_boundary_probe.cpp)
 target_link_libraries(aero_rhi_boundary_probe PRIVATE aero::rhi)
 
 # ---------------------------------------------------------------------------------------------
+# The scene EnTT-boundary COMPILE-TIME guard (task 1.3.1; project rule #3).
+#
+# Same mechanism as the math/jobs/platform/rhi probes, for EnTT: aero::scene links EnTT::EnTT PRIVATE
+# (and its only PUBLIC dep, aero::core, propagates no vcpkg header), so a target that links ONLY
+# aero::scene never sees vcpkg's shared per-triplet include/ directory and cannot resolve
+# <entt/entt.hpp>. A leaked entt include in a public scene header is therefore a compile error the
+# moment it is written. EnTT is the FIFTH private flat-root backend this mechanism bites for (after
+# glm, SDL3, miniaudio, SDL_GPU) -- risk R12, docs/08-risks.md.
+#
+# The textual guard .github/scripts/check-scene-boundary.sh (also 1.3.1, run by the `lint` job) is the
+# enforcement that reaches every public engine header; this probe holds the compile-time half.
+#
+# DO NOT ADD ANY OTHER LINK LIBRARY -- not doctest, not aero::profiling (Tracy, a vcpkg package, in
+# Release), not EnTT::EnTT, and ABOVE ALL not aero::scene_internal, which carries EnTT::EnTT INTERFACE
+# BY DESIGN. Any of them restores the shared vcpkg include root and silently reduces this guard to a
+# no-op while CI stays green. That is the only way this guard can rot.
+add_library(aero_scene_boundary_probe OBJECT scene_boundary_probe.cpp)
+target_link_libraries(aero_scene_boundary_probe PRIVATE aero::scene)
+
+# ---------------------------------------------------------------------------------------------
 # The shaderc end-to-end CTest suite (task 0.4.3; spec D9/§3.6) -- a net-new harness (no prior
 # cmake -P / external-binary add_test precedent in this repo). Each case runs the REAL aero_shaderc
 # binary through tests/shaderc/run_case.cmake, which is what actually asserts exit codes -- several
