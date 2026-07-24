@@ -6,6 +6,7 @@ find_package(EnTT CONFIG REQUIRED)   # package EnTT, target EnTT::EnTT (header-o
 add_library(aero_scene STATIC
     src/world.cpp      # the ONE TU besides internal/.../world_access.hpp where EnTT is visible
     src/transform.cpp  # task 1.3.2 — engine::Transform's matrices + the builtin-registration hook
+    src/camera.cpp     # task 1.3.3 — engine::Camera's view/projection matrices
 )
 add_library(aero::scene ALIAS aero_scene)
 
