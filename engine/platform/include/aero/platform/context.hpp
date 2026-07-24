@@ -15,7 +15,9 @@
 #include <optional>
 #include <thread>
 
-namespace engine::platform::internal { struct RawEventAccessor; }  // raw-event seam (task 2.1.1)
+namespace engine::platform::internal {
+struct RawEventAccessor;
+}  // namespace engine::platform::internal
 
 namespace engine::platform {
 

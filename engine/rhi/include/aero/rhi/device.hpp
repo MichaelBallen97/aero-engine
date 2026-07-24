@@ -37,7 +37,9 @@ namespace engine::platform {
 class Window;  // forward-declared on purpose: rhi's one platform type; no include needed for a ref
 }  // namespace engine::platform
 
-namespace engine::rhi::internal { struct NativeDeviceAccessor; }  // engine-internal native seam (task 2.1.1)
+namespace engine::rhi::internal {
+struct NativeDeviceAccessor;
+}  // namespace engine::rhi::internal
 
 namespace engine::rhi {
 
