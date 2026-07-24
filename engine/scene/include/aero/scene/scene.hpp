@@ -9,6 +9,7 @@
 #include <aero/scene/camera.hpp>  // task 1.3.3
 #include <aero/scene/component.hpp>
 #include <aero/scene/entity.hpp>
-#include <aero/scene/light.hpp>  // task 1.3.3
+#include <aero/scene/light.hpp>          // task 1.3.3
+#include <aero/scene/mesh_renderer.hpp>  // task 1.4.1
 #include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>

@@ -31,6 +31,7 @@ set(HANDLE_HPP "${ENGINE_INCLUDE}/aero/core/handle.hpp")
 set(TRANSFORM_HPP "${SCENE_INCLUDE}/aero/scene/transform.hpp")  # task 1.3.2
 set(CAMERA_HPP "${SCENE_INCLUDE}/aero/scene/camera.hpp")  # task 1.3.3
 set(LIGHT_HPP "${SCENE_INCLUDE}/aero/scene/light.hpp")    # task 1.3.3
+set(MESH_RENDERER_HPP "${SCENE_INCLUDE}/aero/scene/mesh_renderer.hpp")  # task 1.4.1
 
 # Runs aero_reflect_gen once. Spec D8/C.6: ASAN_OPTIONS scoped to this one process --
 # detect_leaks=0 only (libclang leaks by design at process exit: global initializers, the CXIndex
@@ -897,6 +898,54 @@ elseif(CASE STREQUAL "components_engine_light")
     string(FIND "${err}" "error:" _idx_err)
     if(NOT _idx_err EQUAL -1)
         message(FATAL_ERROR "case 'components_engine_light': error-severity diagnostic:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "components_engine_mesh_renderer")
+    # Task 1.4.1: the REAL tool over the REAL engine::MeshRenderer header — one component, two
+    # fields in declaration order, exactly one component, zero unsupported/warnings/errors.
+    #
+    # DEVIATION from the plan/spec's stated expectation: the tool prints the AS-WRITTEN type
+    # spelling (clang_getTypeSpelling), not the canonical one — `std::uint32_t primitive` prints
+    # as "std::uint32_t", not "unsigned int" (Camera/Light's fields never exposed this because
+    # their as-written spelling IS their canonical one: bare `float`/`Vec3`). Verified against the
+    # real tool output; fixed here rather than in the tool (1.1.2's classification is by CANONICAL
+    # type — std::uint32_t IS still tagged [primitive], only the printed spelling differs).
+    aero_run_tool(ARGS --components "${MESH_RENDERER_HPP}" -- ${CLANG_ARGS}
+        -I "${ENGINE_INCLUDE}" -I "${SCENE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "component engine::MeshRenderer")
+    aero_expect_stdout_contains("${out}" "field primitive : std::uint32_t [primitive]")
+    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3]")
+
+    # declaration order: primitive -> color
+    string(FIND "${out}" "field primitive" _p)
+    string(FIND "${out}" "field color" _c)
+    if(NOT (_p LESS _c))
+        message(FATAL_ERROR "case 'components_engine_mesh_renderer': fields not in declaration order:\n${out}")
+    endif()
+
+    # exactly ONE component
+    string(FIND "${out}" "component " _first)
+    math(EXPR _after "${_first} + 1")
+    string(SUBSTRING "${out}" ${_after} -1 _rest)
+    string(FIND "${_rest}" "component " _second)
+    if(NOT _second EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_mesh_renderer': expected exactly ONE component:\n${out}")
+    endif()
+
+    # anti-drift: no unsupported field, warning-free, error-free
+    string(FIND "${out}" "[unsupported]" _idx_unsupported)
+    if(NOT _idx_unsupported EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_mesh_renderer': must have NO unsupported field:\n${out}")
+    endif()
+    string(FIND "${err}" "aero_reflect_gen: warning:" _idx_warn)
+    if(NOT _idx_warn EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_mesh_renderer': expected a warning-free parse:\n${err}")
+    endif()
+    string(FIND "${err}" "error:" _idx_err)
+    if(NOT _idx_err EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_mesh_renderer': error-severity diagnostic:\n${err}")
     endif()
 
 else()

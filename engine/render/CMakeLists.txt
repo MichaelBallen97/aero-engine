@@ -6,6 +6,8 @@
 # is no third-party type here for them to catch.
 add_library(aero_render STATIC
     src/renderer.cpp
+    src/forward_renderer.cpp  # task 1.4.1
+    src/primitives.cpp        # task 1.4.1
 )
 add_library(aero::render ALIAS aero_render)
 

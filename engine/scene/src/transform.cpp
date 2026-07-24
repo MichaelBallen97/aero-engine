@@ -11,7 +11,8 @@
 #include <aero/core/profiler.hpp>
 #include <aero/scene/camera.hpp>  // task 1.3.3
 #include <aero/scene/internal/world_access.hpp>
-#include <aero/scene/light.hpp>  // task 1.3.3
+#include <aero/scene/light.hpp>          // task 1.3.3
+#include <aero/scene/mesh_renderer.hpp>  // task 1.4.1
 #include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>
 
@@ -50,6 +51,7 @@ void registerBuiltinComponents(World& world) {
     scene::internal::registerComponent<Camera>(world, "engine::Camera");                      // 1.3.3
     scene::internal::registerComponent<DirectionalLight>(world, "engine::DirectionalLight");  // 1.3.3
     scene::internal::registerComponent<PointLight>(world, "engine::PointLight");              // 1.3.3
+    scene::internal::registerComponent<MeshRenderer>(world, "engine::MeshRenderer");          // 1.4.1
 }
 
 }  // namespace scene::detail
