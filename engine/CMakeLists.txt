@@ -9,3 +9,4 @@ add_subdirectory(render)     # task 0.5.1
 add_subdirectory(reflect)    # task 1.2.1 — reflection/serialization runtime
 add_subdirectory(scene)      # task 1.3.1 — the EnTT-backed world
 add_subdirectory(scene_render)  # task 1.4.1 — the World -> render bridge
+add_subdirectory(scene_serialize)  # task 1.4.2 — the World <-> SceneDocument bridge
