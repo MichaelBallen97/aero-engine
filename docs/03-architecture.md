@@ -102,6 +102,11 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 - The **parent/child hierarchy is entity-level World state**, not component data — mirroring `docs/09`'s entity-level `parent` key, which any entity may carry with or without components. `setParent`/`parent`/`childCount`/`eachChild` enforce a **forest** (cycles rejected at the API), and `destroy()` destroys the **whole subtree**, which is what makes "a live entity's parent is always live" a structural invariant rather than a convention.
 - `worldMatrix(world, entity)` composes on demand, iteratively, up the parent chain (`world = M_root · … · M_parent · M_local`); an entity or ancestor without a `Transform` contributes identity. **No caching** — the deferral is recorded in `docs/08`.
 - The reflection claim is proven mechanically over the real header (a `--components` process case plus generated `entt::meta` and JSON artifacts compiled into the two gated test targets), while the engine itself compiles no generated code.
+- `engine::MeshRenderer` (task 1.4.1) is the 5th built-in — `{uint32 primitive; Vec3 color}`, the reflected "this entity draws a primitive mesh" component, registered alongside `Transform`/`Camera`/`DirectionalLight`/`PointLight`.
+
+### Scene → render bridge (`scene_render`, task 1.4.1)
+
+`engine/scene_render` is a thin composition module that sits *above* both `scene` and `render` (the only code in the tree that sees both) — it turns a `World` into a `render::RenderView` and submits it each frame, which is what keeps `render` scene-free (it never depends on `scene`, upholding the layer rule) and `scene` GPU-free. Its pure half, `scene_render::buildRenderView(World&, RenderViewScratch&, rhi::Extent2D)`, walks the renderable entities (`each<Transform, MeshRenderer>`), resolves the lowest-index `Camera` and lights, and returns a flat `RenderView` — no GPU, tier-0 testable. Its facade, `scene_render::SceneRenderer`, owns a `render::ForwardRenderer` (the scene-free lit-primitive draw engine `render` gained in the same task) and drives `render(World&, Frame&)` once per frame. This is where the Phase-2 editor viewport and Phase-5 runtime will drive rendering.
 
 ---
 
