@@ -7,6 +7,8 @@
 // insufficient during local de-risking: entt::meta_reset() is declared in <entt/meta/factory.hpp>, not
 // resolve.hpp/meta.hpp -- so this TU consolidates to the umbrella header per the plan's documented
 // fallback (spec §3.6). The assertions below are unaffected either way.
+#include <aero/scene/camera.hpp>
+#include <aero/scene/light.hpp>
 #include <aero/scene/transform.hpp>
 
 #include "component_codegen.hpp"
@@ -27,6 +29,16 @@ void aero_reflect_register_component_codegen();
 // frozen snake_case cross-boundary contract as the two declarations above.
 // NOLINTNEXTLINE(readability-identifier-naming)
 void aero_reflect_register_transform();
+
+// Forward-declared here; DEFINED by the GENERATED camera.meta.gen.cpp / light.meta.gen.cpp that
+// aero_reflect_generate() builds from the REAL engine headers engine/scene/include/aero/scene/
+// {camera,light}.hpp (task 1.3.3). aero_reflect_register_light() registers BOTH DirectionalLight
+// and PointLight — one header, one register function (D10). Same frozen snake_case cross-boundary
+// contract as the declarations above.
+// NOLINTNEXTLINE(readability-identifier-naming)
+void aero_reflect_register_camera();
+// NOLINTNEXTLINE(readability-identifier-naming)
+void aero_reflect_register_light();
 
 // Forward-declared here; DEFINED by the GENERATED aero_reflect_meta_test.aggregator.gen.cpp (task
 // 1.1.4, D4) that calls every per-header register function (both above) in HEADERS-list order.
@@ -82,9 +94,33 @@ TEST_CASE("the first REAL engine component reflects: engine::Transform (task 1.3
     entt::meta_reset();
 }
 
+TEST_CASE("the Camera/Light engine components reflect (task 1.3.3)") {
+    using namespace entt::literals;
+    aero_reflect_register_camera();
+    aero_reflect_register_light();  // registers BOTH DirectionalLight and PointLight
+
+    auto cam = entt::resolve<engine::Camera>();
+    REQUIRE(static_cast<bool>(cam));
+    CHECK(static_cast<bool>(entt::resolve("engine::Camera"_hs)));
+    CHECK(static_cast<bool>(cam.data("fovYRadians"_hs)));
+    CHECK(static_cast<bool>(cam.data("nearPlane"_hs)));
+    CHECK(static_cast<bool>(cam.data("farPlane"_hs)));
+
+    auto dir = entt::resolve<engine::DirectionalLight>();
+    REQUIRE(static_cast<bool>(dir));
+    CHECK(static_cast<bool>(dir.data("color"_hs)));
+    CHECK(static_cast<bool>(dir.data("intensity"_hs)));
+
+    auto pt = entt::resolve<engine::PointLight>();
+    REQUIRE(static_cast<bool>(pt));
+    CHECK(static_cast<bool>(pt.data("range"_hs)));
+
+    entt::meta_reset();  // per-case hygiene
+}
+
 TEST_CASE("the generated aggregator registers every header's components in one call") {
     using namespace entt::literals;
-    aero_reflect_register_all_aero_reflect_meta_test();  // ONE call registers ALL THREE headers
+    aero_reflect_register_all_aero_reflect_meta_test();  // ONE call registers every header's components
 
     auto sample = entt::resolve<ReflectSample>();
     auto wiring = entt::resolve<ReflectWiring>();

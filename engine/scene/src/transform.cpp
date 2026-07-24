@@ -9,7 +9,9 @@
 // ancestor walk is a plain LOOP (misc-no-recursion is live) and needs no per-level storage.
 
 #include <aero/core/profiler.hpp>
+#include <aero/scene/camera.hpp>  // task 1.3.3
 #include <aero/scene/internal/world_access.hpp>
+#include <aero/scene/light.hpp>  // task 1.3.3
 #include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>
 
@@ -45,6 +47,9 @@ namespace scene::detail {
 
 void registerBuiltinComponents(World& world) {
     scene::internal::registerComponent<Transform>(world, "engine::Transform");
+    scene::internal::registerComponent<Camera>(world, "engine::Camera");                      // 1.3.3
+    scene::internal::registerComponent<DirectionalLight>(world, "engine::DirectionalLight");  // 1.3.3
+    scene::internal::registerComponent<PointLight>(world, "engine::PointLight");              // 1.3.3
 }
 
 }  // namespace scene::detail
