@@ -1,0 +1,195 @@
+{
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "name": "camera",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 2.5,
+            "z": 6
+          },
+          "rotation": {
+            "x": -0.15643448,
+            "y": -0,
+            "z": -0,
+            "w": 0.98768836
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::Camera": {
+          "fovYRadians": 1.0471976,
+          "nearPlane": 0.1,
+          "farPlane": 100
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "ground",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 8,
+            "y": 1,
+            "z": 8
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 2,
+          "color": {
+            "x": 0.5,
+            "y": 0.5,
+            "z": 0.55
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "name": "cube",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": -1.3,
+            "y": 0.5,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0.17364818,
+            "z": 0,
+            "w": 0.9848077
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 0,
+          "color": {
+            "x": 0.85,
+            "y": 0.35,
+            "z": 0.3
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "name": "sphere",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 1.3,
+            "y": 0.6,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 0.6,
+            "y": 0.6,
+            "z": 0.6
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 1,
+          "color": {
+            "x": 0.3,
+            "y": 0.55,
+            "z": 0.85
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "name": "sun",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": -0.42261827,
+            "y": -0,
+            "z": -0,
+            "w": 0.90630776
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::DirectionalLight": {
+          "color": {
+            "x": 1,
+            "y": 0.96,
+            "z": 0.9
+          },
+          "intensity": 0.9
+        }
+      }
+    },
+    {
+      "id": 6,
+      "name": "lamp",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 2.5,
+            "z": 2
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::PointLight": {
+          "color": {
+            "x": 0.6,
+            "y": 0.8,
+            "z": 1
+          },
+          "intensity": 1,
+          "range": 12
+        }
+      }
+    }
+  ]
+}
