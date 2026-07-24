@@ -67,6 +67,12 @@ the scene is instantiated. Asset-grade, cross-file-stable identity is the future
 job (Phase 2+) — upgrading scene entity ids to something GUID-like, if that is ever needed, is exactly
 the kind of breaking change the version field exists to gate.
 
+The **save** direction (task 1.4.2's `saveWorld`) assigns file ids `1..N` in the `World`'s entity
+iteration order and does **not** persist entity `name`s in Phase 1 — the `World` has no name storage
+yet (a `Name` component is future scope; `std::string` is outside reflect-gen's reflectable subset
+today, so it cannot serialize as a field either). A save therefore emits every entity with an absent
+`name`, which is format-legal: `name` is purely informational (see the table above).
+
 ### 2.3 Components
 
 The member **key** of a `"components"` object is the reflected type's fully-qualified C++ name,

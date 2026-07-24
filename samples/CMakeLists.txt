@@ -5,3 +5,4 @@
 add_subdirectory(phase-0-window)
 add_subdirectory(phase-0-clear)  # task 0.5.1 — first pixels
 add_subdirectory(phase-0-cube)   # task 0.5.2 — textured cube (phase-0 gate artifact)
+add_subdirectory(phase-1-scene)  # task 1.4.2 — load & draw a JSON scene (phase-1 gate artifact)

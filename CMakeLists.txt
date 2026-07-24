@@ -49,10 +49,17 @@ enable_testing()
 
 # Layer order = dependency order (docs/03). The golden rule is physical here:
 # nothing under engine/ or runtime/ may ever reference editor/.
+#
+# tools/ now precedes engine/ (task 1.4.2): engine/scene_serialize is the first ENGINE-tree call site
+# of aero_reflect_generate_json/aero_reflect_generate, both of which require the aero_reflect_gen
+# TARGET to already exist at the point they run (cmake/reflect.cmake's D10 tool-resolution check is
+# a configure-time `if(TARGET aero_reflect_gen)`, not deferred) — tools/ links no engine target
+# (tools/reflect-gen/CMakeLists.txt, tools/shaderc/CMakeLists.txt), so moving it first is safe and
+# does not touch the golden rule (only editor/ may never be depended on, and tools/ is not editor/).
+add_subdirectory(tools)
 add_subdirectory(engine)
 add_subdirectory(runtime)
 add_subdirectory(editor)
-add_subdirectory(tools)
 add_subdirectory(shaders)  # task 0.4.3; must follow tools/ (aero_shaderc) and cmake/shaders.cmake
 add_subdirectory(tests)
 add_subdirectory(samples)   # validation apps (docs/03); first populated by 0.3.1's phase-0-window
