@@ -5,9 +5,11 @@
 // aero::editor_core's engine-typed API only; imgui/SDL3 reach it purely transitively through
 // editor_core's PRIVATE static archive (the glm-in-aero_tests precedent).
 //
-// G6 (window visibility): starts with a HIDDEN 320x180 window -- ImGui_ImplSDL3_InitForSDLGPU +
-// the SDL_GPU swapchain both tolerated a hidden window in local verification (every endFrame()
-// below returned true), so the rhi_swapchain_test visible-window fallback was not needed.
+// G6 (window visibility): uses a small VISIBLE 320x180 window, matching the rhi_swapchain_test
+// precedent that is proven to present on all three CI lanes (macOS Metal, Windows WARP, Linux
+// lavapipe under xvfb). A hidden window presented fine on macOS Metal locally, but hidden-window
+// presentation is unproven on the lavapipe/WARP lanes; since every endFrame() below asserts the
+// frame presented, we take the proven visible path. The brief flash matches rhi_swapchain_test.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <aero/editor/editor_ui.hpp>
 #include <aero/editor/imgui_layer.hpp>
@@ -25,7 +27,7 @@ TEST_CASE("editor: ImGuiLayer init -> frames -> shutdown (GPU-gated smoke test)"
     }
 
     std::optional<engine::platform::Window> window =
-        ctx.createWindow({.title = "editor smoke", .width = 320, .height = 180, .hidden = true});
+        ctx.createWindow({.title = "editor smoke", .width = 320, .height = 180});
     REQUIRE(window.has_value());
 
     std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
@@ -45,6 +47,21 @@ TEST_CASE("editor: ImGuiLayer init -> frames -> shutdown (GPU-gated smoke test)"
         engine::editor::drawEditorUi(ui);
         CHECK(layer->endFrame(engine::rhi::Color{0.1F, 0.1F, 0.12F, 1.0F}));
     }
+
+    // Regression (code-review Gap 1): a panel's close-'X' sets its show flag false. An unbalanced
+    // End() would then over-call ImGui::End() and abort (IM_ASSERT) in the Debug ImGui build. Drive
+    // frames with panels closed -- first some, then all -- to prove End() stays balanced (no crash).
+    ui.showHierarchy = false;
+    ui.showConsole = false;
+    layer->beginFrame();
+    engine::editor::drawEditorUi(ui);
+    CHECK(layer->endFrame(engine::rhi::Color{0.1F, 0.1F, 0.12F, 1.0F}));
+
+    ui.showInspector = false;
+    ui.showViewport = false;
+    layer->beginFrame();
+    engine::editor::drawEditorUi(ui);
+    CHECK(layer->endFrame(engine::rhi::Color{0.1F, 0.1F, 0.12F, 1.0F}));
 
     layer.reset();  // teardown must not crash; LSan (Linux Debug) proves leak-free
 }

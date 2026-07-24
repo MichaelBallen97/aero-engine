@@ -20,6 +20,7 @@
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlgpu3.h>
+#include <memory>
 #include <utility>
 
 namespace engine::editor {
@@ -38,7 +39,7 @@ std::string deriveIniPath() {
         return std::string(base) + "aero_editor.ini";
     }
     if (char* const pref = SDL_GetPrefPath("AeroEngine", "AeroEditor"); pref != nullptr) {
-        std::string path(pref);
+        const std::string path(pref);
         SDL_free(pref);
         return path + "aero_editor.ini";
     }
@@ -69,15 +70,15 @@ std::optional<ImGuiLayer> ImGuiLayer::create(rhi::Device& device, platform::Wind
         return std::nullopt;
     }
 
-    std::string iniPath = deriveIniPath();
-    const bool wantsDefault = !(persistLayout && std::filesystem::exists(iniPath));
+    auto iniPath = std::make_unique<std::string>(deriveIniPath());
+    const bool wantsDefault = !(persistLayout && std::filesystem::exists(*iniPath));
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;  // docking ON, viewports OFF always (D6/AC-10)
     io.ConfigDpiScaleFonts = true;                     // G3: 1.92 docking DPI font auto-scale
-    io.IniFilename = persistLayout ? iniPath.c_str() : nullptr;
+    io.IniFilename = persistLayout ? iniPath->c_str() : nullptr;
 
     ImGui::StyleColorsDark();
     if (const float scale = SDL_GetWindowDisplayScale(win); scale > 0.0F) {
@@ -111,12 +112,12 @@ std::optional<ImGuiLayer> ImGuiLayer::create(rhi::Device& device, platform::Wind
 }
 
 ImGuiLayer::ImGuiLayer(rhi::Device* device, platform::Context* ctx, rhi::SwapchainHandle swapchain,
-                       std::string ownedIniPath, bool wantsDefaultLayout) noexcept
+                       std::unique_ptr<std::string> ownedIniPath, bool wantsDefaultLayout) noexcept
     : device(device),
       ctx(ctx),
       swapchain(swapchain),
       ownedIniPath(std::move(ownedIniPath)),
-      wantsDefaultLayout_(wantsDefaultLayout),
+      defaultLayoutWanted(wantsDefaultLayout),
       live(true) {}
 
 ImGuiLayer::~ImGuiLayer() {
@@ -139,7 +140,7 @@ ImGuiLayer::ImGuiLayer(ImGuiLayer&& other) noexcept
       ctx(other.ctx),
       swapchain(other.swapchain),
       ownedIniPath(std::move(other.ownedIniPath)),
-      wantsDefaultLayout_(other.wantsDefaultLayout_),
+      defaultLayoutWanted(other.defaultLayoutWanted),
       live(other.live) {
     other.live = false;
 }
@@ -160,7 +161,7 @@ ImGuiLayer& ImGuiLayer::operator=(ImGuiLayer&& other) noexcept {
     ctx = other.ctx;
     swapchain = other.swapchain;
     ownedIniPath = std::move(other.ownedIniPath);
-    wantsDefaultLayout_ = other.wantsDefaultLayout_;
+    defaultLayoutWanted = other.defaultLayoutWanted;
     live = other.live;
     other.live = false;
     return *this;
@@ -199,6 +200,6 @@ bool ImGuiLayer::endFrame(const rhi::Color& clearColor) {
     return device->submit(cmd);  // presents
 }
 
-bool ImGuiLayer::wantsDefaultLayout() const noexcept { return wantsDefaultLayout_; }
+bool ImGuiLayer::wantsDefaultLayout() const noexcept { return defaultLayoutWanted; }
 
 }  // namespace engine::editor

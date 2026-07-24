@@ -13,6 +13,7 @@
 #include <aero/rhi/handles.hpp>  // rhi::SwapchainHandle
 #include <aero/rhi/types.hpp>    // rhi::Color
 
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -61,14 +62,17 @@ public:
     [[nodiscard]] bool wantsDefaultLayout() const noexcept;
 
 private:
-    ImGuiLayer(rhi::Device* device, platform::Context* ctx, rhi::SwapchainHandle swapchain, std::string ownedIniPath,
-               bool wantsDefaultLayout) noexcept;
+    ImGuiLayer(rhi::Device* device, platform::Context* ctx, rhi::SwapchainHandle swapchain,
+               std::unique_ptr<std::string> ownedIniPath, bool wantsDefaultLayout) noexcept;
 
     rhi::Device* device = nullptr;
     platform::Context* ctx = nullptr;
     rhi::SwapchainHandle swapchain{};
-    std::string ownedIniPath;  // backs io.IniFilename for the ImGui context's life (D7)
-    bool wantsDefaultLayout_ = false;
+    // Heap-stable backing for io.IniFilename (D7): ImGui stores the ini path by pointer, so it must
+    // keep a fixed address for the context's life even as ImGuiLayer moves. A unique_ptr keeps the
+    // std::string put (only the pointer moves), so io.IniFilename never dangles — SSO paths included.
+    std::unique_ptr<std::string> ownedIniPath;
+    bool defaultLayoutWanted = false;
     bool live = false;  // moved-from inert (Window/Renderer precedent)
 };
 

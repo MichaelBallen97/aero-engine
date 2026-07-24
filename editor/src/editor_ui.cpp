@@ -39,25 +39,37 @@ void drawEditorUi(EditorUiState& state) {
         buildDefaultLayout(dockId);
     }
 
-    if (state.showHierarchy && ImGui::Begin("Hierarchy", &state.showHierarchy)) {
-        ImGui::TextUnformatted("Hierarchy — placeholder (task 2.2.1)");
+    // Begin/End must be paired 1:1 — End() runs iff Begin() was called (imgui.h: "Always call a
+    // matching End() for each Begin() call, regardless of its return value"). Guarding End() inside
+    // the show-check keeps them balanced when a panel's close-'X' sets its show flag false; an
+    // unconditional End() after a short-circuited Begin() would over-call End() and abort (E-panel).
+    if (state.showHierarchy) {
+        if (ImGui::Begin("Hierarchy", &state.showHierarchy)) {
+            ImGui::TextUnformatted("Hierarchy — placeholder (task 2.2.1)");
+        }
+        ImGui::End();
     }
-    ImGui::End();
 
-    if (state.showInspector && ImGui::Begin("Inspector", &state.showInspector)) {
-        ImGui::TextUnformatted("Inspector — placeholder (task 2.2.2)");
+    if (state.showInspector) {
+        if (ImGui::Begin("Inspector", &state.showInspector)) {
+            ImGui::TextUnformatted("Inspector — placeholder (task 2.2.2)");
+        }
+        ImGui::End();
     }
-    ImGui::End();
 
-    if (state.showViewport && ImGui::Begin("Viewport", &state.showViewport)) {
-        ImGui::TextUnformatted("Viewport — placeholder (task 2.2.3)");
+    if (state.showViewport) {
+        if (ImGui::Begin("Viewport", &state.showViewport)) {
+            ImGui::TextUnformatted("Viewport — placeholder (task 2.2.3)");
+        }
+        ImGui::End();
     }
-    ImGui::End();
 
-    if (state.showConsole && ImGui::Begin("Console", &state.showConsole)) {
-        ImGui::TextUnformatted("Console — placeholder (task 2.2.5)");
+    if (state.showConsole) {
+        if (ImGui::Begin("Console", &state.showConsole)) {
+            ImGui::TextUnformatted("Console — placeholder (task 2.2.5)");
+        }
+        ImGui::End();
     }
-    ImGui::End();
 }
 
 }  // namespace engine::editor
