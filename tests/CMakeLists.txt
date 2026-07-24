@@ -38,6 +38,8 @@ add_executable(aero_tests
     scene_format_test.cpp # task 1.2.3 — scene format v1: envelope/version/hierarchy + canonical round-trip
     scene_test.cpp        # task 1.3.1 — engine::World over EnTT: entities, components, queries, registration
     transform_test.cpp    # task 1.3.2 — engine::Transform, the World-owned forest, world matrices
+    camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
+    light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
