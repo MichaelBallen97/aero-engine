@@ -244,7 +244,8 @@ if(AERO_REFLECT_TOOLS)
         json_nested_skip
         components_engine_transform   # task 1.3.2 — the REAL tool over the REAL engine header
         components_engine_camera      # task 1.3.3
-        components_engine_light)      # task 1.3.3
+        components_engine_light       # task 1.3.3
+        components_engine_mesh_renderer)  # task 1.4.1
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -272,6 +273,7 @@ if(AERO_REFLECT_TOOLS)
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp  # 1.3.2 — the REAL header
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp     # 1.3.3
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp      # 1.3.3
+                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp  # 1.4.1
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"      # aero::core PUBLIC dir (D9)
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2 — parse: entity.hpp
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2 — parse: annotations.hpp
@@ -302,6 +304,7 @@ if(AERO_REFLECT_TOOLS)
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp  # 1.3.2 — the REAL header
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp     # 1.3.3
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp      # 1.3.3
+                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp  # 1.4.1
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2
