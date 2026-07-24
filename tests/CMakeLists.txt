@@ -310,4 +310,16 @@ if(AERO_REFLECT_TOOLS)
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2
     add_test(NAME aero_reflect_json_test COMMAND aero_reflect_json_test)
+
+    # --- task 1.4.2: the World <-> SceneDocument bridge's own tier-0 battery (Correction 2, plan) ---
+    # This target LINKS aero::scene_serialize (the generated serializers already compiled INTO that
+    # library by engine/scene_serialize/CMakeLists.txt) — it does NOT call aero_reflect_generate_json
+    # itself and does NOT forward-declare aeroReadJson/aeroWriteJson (contrast aero_reflect_json_test,
+    # which generates into itself because before 1.4.2 there was no shipping consumer).
+    add_executable(aero_scene_serialize_test scene_serialize_test.cpp)
+    target_link_libraries(aero_scene_serialize_test PRIVATE doctest::doctest aero::scene_serialize aero::scene
+                                                             aero::reflect aero::core)
+    target_compile_definitions(aero_scene_serialize_test PRIVATE
+        AERO_PHASE1_SCENE_DIR="${CMAKE_SOURCE_DIR}/samples/phase-1-scene")  # locates the committed file (test 9)
+    add_test(NAME aero_scene_serialize_test COMMAND aero_scene_serialize_test)
 endif()
