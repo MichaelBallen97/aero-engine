@@ -9,4 +9,6 @@ aero_add_shaders(aero_shaders
         triangle.frag.hlsl
         cube.vert.hlsl       # task 0.5.2
         cube.frag.hlsl       # task 0.5.2
+        scene.vert.hlsl      # task 1.4.1
+        scene.frag.hlsl      # task 1.4.1
 )
