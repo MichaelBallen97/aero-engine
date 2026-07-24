@@ -15,6 +15,8 @@
 #include <optional>
 #include <thread>
 
+namespace engine::platform::internal { struct RawEventAccessor; }  // raw-event seam (task 2.1.1)
+
 namespace engine::platform {
 
 struct ContextConfig {
@@ -61,9 +63,15 @@ public:
     [[nodiscard]] const InputState& input() const noexcept { return inputState; }
 
 private:
+    friend struct internal::RawEventAccessor;
     bool initialized = false;
     std::thread::id ownerThread;  // the main thread; pollEvent/createWindow must run here
     InputState inputState;        // folded by pollEvent (src/platform.cpp); frame-reset by newFrame()
+    // Optional observer of the raw backend event stream (task 2.1.1). Void-based so no SDL type
+    // reaches this public header; `sdlEvent` is a const SDL_Event*. Fired for EVERY event in
+    // pollEvent, before translate/discard. Cleared to {nullptr,nullptr} by default.
+    void (*rawEventSink)(void* user, const void* sdlEvent) = nullptr;
+    void* rawEventSinkUser = nullptr;
 };
 
 }  // namespace engine::platform

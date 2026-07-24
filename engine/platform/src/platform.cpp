@@ -2,6 +2,7 @@
 #include <aero/core/profiler.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
+#include <aero/platform/internal/native_event.hpp>
 #include <aero/platform/internal/native_window.hpp>
 #include <aero/platform/window.hpp>
 
@@ -354,6 +355,14 @@ void Window::hide() { SDL_HideWindow(impl->window); }
 // never null on a live (not moved-from) Window — the caller contract every other Window member shares.
 SDL_Window* internal::NativeWindowAccessor::get(const Window& window) noexcept { return window.impl->window; }
 
+// The raw-event observer seam (task 2.1.1): lets the editor's ImGui SDL3 backend see every raw
+// event pollEvent would otherwise translate-and-discard. Void-based (no SDL type crosses even this
+// internal header) — the fire site lives in pollEvent below, before translate/discard.
+void internal::RawEventAccessor::setRawEventSink(Context& ctx, void (*sink)(void*, const void*), void* user) noexcept {
+    ctx.rawEventSink = sink;
+    ctx.rawEventSinkUser = user;
+}
+
 // ---- Context --------------------------------------------------------------------------------
 
 Context::Context(const ContextConfig& config) {
@@ -415,6 +424,9 @@ bool Context::pollEvent(Event& out) {
     assert(std::this_thread::get_id() == ownerThread && "pollEvent() off the main thread");
     SDL_Event e;
     while (SDL_PollEvent(&e)) {  // SDL_PollEvent implicitly pumps (SDL_events.h:1088)
+        if (rawEventSink != nullptr) {
+            rawEventSink(rawEventSinkUser, &e);  // task 2.1.1: tee every raw event to the observer first
+        }
         if (std::optional<Event> ev = translate(e)) {
             inputState.process(*ev);  // task 0.3.2: fold key/mouse/focus into the polled state
             out = *ev;
