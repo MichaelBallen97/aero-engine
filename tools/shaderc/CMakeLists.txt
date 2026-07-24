@@ -25,19 +25,20 @@ target_link_libraries(aero_shaderc PRIVATE SDL3_shadercross::SDL3_shadercross)
 #
 # Deliberately NOT a second find_package(SDL3 ...) call: CMake's find_package Config mode reuses the
 # FIRST successful resolution's cached <Package>_DIR for every later call regardless of a different
-# PATHS/NO_DEFAULT_PATH (verified during implementation — CMake's own documented behavior), and
-# engine/platform already resolved "SDL3" once by the time add_subdirectory(tools) runs. A second call
-# here would therefore silently keep pointing at THAT resolution rather than AERO_SHADERCROSS_SDL3_PREFIX
-# on any host where the two differ, and — worse — permanently clobbering the shared SDL3_DIR cache
-# entry for whatever runs after tools/ in this same configure (tests/CMakeLists.txt calls
-# find_package(SDL3 CONFIG REQUIRED) again for the white-box pump test).
+# PATHS/NO_DEFAULT_PATH (verified during implementation — CMake's own documented behavior). Since task
+# 1.4.2 moved add_subdirectory(tools) BEFORE engine/ (root CMakeLists.txt), a find_package(SDL3) here
+# would be the FIRST "SDL3" resolution of the whole configure, permanently seeding the shared SDL3_DIR
+# cache that engine/platform and tests/ (both run after tools/ now) then reuse — pinning them to
+# AERO_SHADERCROSS_SDL3_PREFIX rather than the project's own SDL3 on any host where the two differ
+# (tests/CMakeLists.txt calls find_package(SDL3 CONFIG REQUIRED) again for the white-box pump test).
 if(_aero_sdl3_already_dynamic)
     # Our own project's SDL3 is already dynamic (only true for x64-windows among our 3 hosts today) —
-    # reuse the SAME SDL3 the engine uses. find_package Config mode reuses the cached SDL3_DIR from
-    # engine/platform's earlier resolution (no PATHS here — this is the ONE case where we WANT the
-    # project's SDL3, so reusing the cache is correct and idempotent, and does not clobber it). This is
-    # required because imported targets like SDL3::SDL3 are directory-scoped: engine/'s find_package does
-    # NOT make the target visible in this sibling tools/ scope, so it must be re-imported here.
+    # resolve the SAME SDL3 the engine uses. With tools/ now ahead of engine/ (task 1.4.2), this is the
+    # first "SDL3" find_package of the configure: it SEEDS the shared SDL3_DIR that engine/platform and
+    # tests/ later reuse (no PATHS here — this is the ONE case where we WANT the project's SDL3, which
+    # the vcpkg toolchain resolves identically regardless of order, so seeding the cache is correct and
+    # idempotent). Required anyway because imported targets like SDL3::SDL3 are directory-scoped:
+    # engine/'s find_package does NOT make the target visible in this sibling tools/ scope.
     find_package(SDL3 CONFIG REQUIRED)
     target_link_libraries(aero_shaderc PRIVATE SDL3::SDL3)
 else()
