@@ -92,6 +92,7 @@ const engine::World& constWorld() noexcept;
 engine::World& mutableWorld() noexcept;
 constexpr engine::Entity NULL_ENTITY{};
 const engine::Transform& someTransform() noexcept;
+const engine::Camera& someCamera() noexcept;
 }  // namespace
 
 // The hierarchy API's shape and its noexcept contract.
@@ -105,3 +106,20 @@ static_assert(noexcept(constWorld().childCount(NULL_ENTITY)));
 // component-agnostic).
 static_assert(std::is_same_v<decltype(engine::localMatrix(someTransform())), engine::Mat4>);
 static_assert(std::is_same_v<decltype(engine::worldMatrix(constWorld(), NULL_ENTITY)), engine::Mat4>);
+
+// ---- task 1.3.3 ----
+static_assert(std::is_trivially_copyable_v<engine::Camera>);
+static_assert(std::is_standard_layout_v<engine::Camera>);
+static_assert(std::is_aggregate_v<engine::Camera>);
+static_assert(sizeof(engine::Camera) == 3 * sizeof(float));
+static_assert(std::is_trivially_copyable_v<engine::DirectionalLight>);
+static_assert(std::is_standard_layout_v<engine::DirectionalLight>);
+static_assert(std::is_aggregate_v<engine::DirectionalLight>);
+static_assert(sizeof(engine::DirectionalLight) == 4 * sizeof(float));
+static_assert(std::is_trivially_copyable_v<engine::PointLight>);
+static_assert(std::is_standard_layout_v<engine::PointLight>);
+static_assert(std::is_aggregate_v<engine::PointLight>);
+static_assert(sizeof(engine::PointLight) == 5 * sizeof(float));
+
+static_assert(std::is_same_v<decltype(engine::projectionMatrix(someCamera(), 1.0f)), engine::Mat4>);
+static_assert(std::is_same_v<decltype(engine::viewMatrix(constWorld(), NULL_ENTITY)), engine::Mat4>);
