@@ -29,6 +29,8 @@ set(SCENE_INCLUDE "${SOURCE_DIR}/engine/scene/include")       # task 1.3.2
 set(REFLECT_INCLUDE "${SOURCE_DIR}/engine/reflect/include")   # task 1.3.2
 set(HANDLE_HPP "${ENGINE_INCLUDE}/aero/core/handle.hpp")
 set(TRANSFORM_HPP "${SCENE_INCLUDE}/aero/scene/transform.hpp")  # task 1.3.2
+set(CAMERA_HPP "${SCENE_INCLUDE}/aero/scene/camera.hpp")  # task 1.3.3
+set(LIGHT_HPP "${SCENE_INCLUDE}/aero/scene/light.hpp")    # task 1.3.3
 
 # Runs aero_reflect_gen once. Spec D8/C.6: ASAN_OPTIONS scoped to this one process --
 # detect_leaks=0 only (libclang leaks by design at process exit: global initializers, the CXIndex
@@ -805,6 +807,96 @@ elseif(CASE STREQUAL "components_engine_transform")
     if(NOT _idx_err EQUAL -1)
         message(FATAL_ERROR "case 'components_engine_transform': exit 0, but an error-severity "
                             "diagnostic appeared parsing an unmodified engine header:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "components_engine_camera")
+    # Task 1.3.3: the REAL tool over the REAL engine::Camera header. Every field is float (the
+    # reflectable subset), so zero unsupported/warnings/errors is the assertion, not an accident.
+    aero_run_tool(ARGS --components "${CAMERA_HPP}" -- ${CLANG_ARGS}
+        -I "${ENGINE_INCLUDE}" -I "${SCENE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "component engine::Camera")
+    aero_expect_stdout_contains("${out}" "field fovYRadians : float [primitive]")
+    aero_expect_stdout_contains("${out}" "field nearPlane : float [primitive]")
+    aero_expect_stdout_contains("${out}" "field farPlane : float [primitive]")
+
+    # declaration order: fovYRadians -> nearPlane -> farPlane
+    string(FIND "${out}" "field fovYRadians" _f)
+    string(FIND "${out}" "field nearPlane" _n)
+    string(FIND "${out}" "field farPlane" _fp)
+    if(NOT (_f LESS _n AND _n LESS _fp))
+        message(FATAL_ERROR "case 'components_engine_camera': fields not in declaration order:\n${out}")
+    endif()
+
+    # exactly ONE component
+    string(FIND "${out}" "component " _first)
+    math(EXPR _after "${_first} + 1")
+    string(SUBSTRING "${out}" ${_after} -1 _rest)
+    string(FIND "${_rest}" "component " _second)
+    if(NOT _second EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_camera': expected exactly ONE component:\n${out}")
+    endif()
+
+    # anti-drift: NO unsupported field, warning-free, error-free
+    string(FIND "${out}" "[unsupported]" _idx_unsupported)
+    if(NOT _idx_unsupported EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_camera': Camera must have NO unsupported field:\n${out}")
+    endif()
+    string(FIND "${err}" "aero_reflect_gen: warning:" _idx_warn)
+    if(NOT _idx_warn EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_camera': expected a warning-free parse:\n${err}")
+    endif()
+    string(FIND "${err}" "error:" _idx_err)
+    if(NOT _idx_err EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_camera': error-severity diagnostic:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "components_engine_light")
+    # Task 1.3.3: the REAL tool over the REAL engine::light header — TWO components,
+    # DirectionalLight declared before PointLight (D9's registration order). No intra-component
+    # field-order check: color/intensity appear in BOTH, so string(FIND ...) would be ambiguous —
+    # the layout static_asserts + the meta/JSON round-trip already pin per-field order.
+    aero_run_tool(ARGS --components "${LIGHT_HPP}" -- ${CLANG_ARGS}
+        -I "${ENGINE_INCLUDE}" -I "${SCENE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "component engine::DirectionalLight")
+    aero_expect_stdout_contains("${out}" "component engine::PointLight")
+    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3]")
+    aero_expect_stdout_contains("${out}" "field intensity : float [primitive]")
+    aero_expect_stdout_contains("${out}" "field range : float [primitive]")
+
+    # both present, DirectionalLight declared before PointLight
+    string(FIND "${out}" "component engine::DirectionalLight" _dl)
+    string(FIND "${out}" "component engine::PointLight" _pl)
+    if(_dl EQUAL -1 OR _pl EQUAL -1 OR NOT (_dl LESS _pl))
+        message(FATAL_ERROR "case 'components_engine_light': expected DirectionalLight before PointLight:\n${out}")
+    endif()
+
+    # exactly TWO components (no stray third)
+    math(EXPR _a1 "${_dl} + 1")
+    string(SUBSTRING "${out}" ${_a1} -1 _r1)
+    string(FIND "${_r1}" "component " _c2)
+    math(EXPR _a2 "${_c2} + 1")
+    string(SUBSTRING "${_r1}" ${_a2} -1 _r2)
+    string(FIND "${_r2}" "component " _c3)
+    if(_c2 EQUAL -1 OR NOT _c3 EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_light': expected exactly TWO components:\n${out}")
+    endif()
+
+    # anti-drift: NO unsupported field, warning-free, error-free (same three checks as camera)
+    string(FIND "${out}" "[unsupported]" _idx_unsupported)
+    if(NOT _idx_unsupported EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_light': a light must have NO unsupported field:\n${out}")
+    endif()
+    string(FIND "${err}" "aero_reflect_gen: warning:" _idx_warn)
+    if(NOT _idx_warn EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_light': expected a warning-free parse:\n${err}")
+    endif()
+    string(FIND "${err}" "error:" _idx_err)
+    if(NOT _idx_err EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_light': error-severity diagnostic:\n${err}")
     endif()
 
 else()

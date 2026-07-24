@@ -9,6 +9,8 @@
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/json_writer.hpp>
 #include <aero/reflect/serialize.hpp>
+#include <aero/scene/camera.hpp>
+#include <aero/scene/light.hpp>
 #include <aero/scene/transform.hpp>
 
 #include "component_codegen.hpp"
@@ -41,6 +43,9 @@ void aeroWriteJson(engine::JsonWriter&, const Light&);
 }
 namespace engine {
 void aeroWriteJson(engine::JsonWriter&, const Transform&);
+void aeroWriteJson(engine::JsonWriter&, const Camera&);            // 1.3.3
+void aeroWriteJson(engine::JsonWriter&, const DirectionalLight&);  // 1.3.3
+void aeroWriteJson(engine::JsonWriter&, const PointLight&);        // 1.3.3
 }  // namespace engine
 
 bool aeroReadJson(const engine::JsonValue&, ReflectSample&);
@@ -53,6 +58,9 @@ bool aeroReadJson(const engine::JsonValue&, Light&);
 }
 namespace engine {
 bool aeroReadJson(const engine::JsonValue&, Transform&);
+bool aeroReadJson(const engine::JsonValue&, Camera&);            // 1.3.3
+bool aeroReadJson(const engine::JsonValue&, DirectionalLight&);  // 1.3.3
+bool aeroReadJson(const engine::JsonValue&, PointLight&);        // 1.3.3
 }  // namespace engine
 
 TEST_CASE("generated serializer emits exact, ordered JSON (AC-10)") {
@@ -1069,4 +1077,33 @@ TEST_CASE("round-trip: engine::Transform -- the first REAL engine component (tas
     CHECK(fresh.position == engine::Vec3{1.0F, 2.0F, 3.0F});
     CHECK(fresh.rotation == engine::Quat::identity());
     CHECK(fresh.scale == engine::Vec3::one());  // untouched -> the default survived
+}
+
+TEST_CASE("round-trip: engine::Camera / DirectionalLight / PointLight (task 1.3.3)") {
+    {
+        engine::Camera original{};
+        original.fovYRadians = engine::radians(75.0F);
+        original.nearPlane = 0.25F;
+        original.farPlane = 250.0F;
+        engine::Camera restored{};
+        REQUIRE(roundTrip(original, restored));  // asserts the byte-equal fixpoint internally
+        CHECK(restored == original);             // exact operator==
+    }
+    {
+        engine::DirectionalLight original{};
+        original.color = {0.9F, 0.8F, 0.7F};
+        original.intensity = 2.5F;
+        engine::DirectionalLight restored{};
+        REQUIRE(roundTrip(original, restored));
+        CHECK(restored == original);
+    }
+    {
+        engine::PointLight original{};
+        original.color = {0.1F, 0.2F, 0.3F};
+        original.intensity = 4.0F;
+        original.range = 42.0F;
+        engine::PointLight restored{};
+        REQUIRE(roundTrip(original, restored));
+        CHECK(restored == original);
+    }
 }
