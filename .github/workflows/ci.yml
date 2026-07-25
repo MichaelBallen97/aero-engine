@@ -153,6 +153,23 @@ jobs:
         # tests/scene_boundary_probe.cpp, which links aero::scene alone.
         run: bash .github/scripts/check-scene-boundary.sh
 
+      - name: Golden rule — /engine and /runtime must never reference /editor
+        shell: bash
+        # Task 2.1.2 (project rule #1, docs/00 / docs/03; docs/04 guard table). Like the platform,
+        # rhi and scene guards this is a SCRIPT, not a bare grep: engine/ + runtime/ already carry 22
+        # first-party PROSE citations of the word "editor" (all // or # comments), so a bare token
+        # grep is permanently red -- the script strips `//` comments before the namespace check. Two
+        # arms: an #include whose path contains `editor` as a whole PATH SEGMENT (the relative-escape
+        # form is the only include form that compiles today -- editor/include is on no engine compile
+        # line), and an `engine::editor` / `namespace editor` spelling used as CODE (the
+        # forward-declaration hole, which no include scan can see).
+        #
+        # This is the TEXTUAL half only. The LINK and INCLUDE-DIRECTORY half is
+        # cmake/golden_rule.cmake's aero_assert_golden_rule(), which runs inside every `build` lane's
+        # configure -- not here. An engine target linking an editor target is a textbook rule-#1
+        # violation that is invisible to any #include scan.
+        run: bash .github/scripts/check-golden-rule.sh
+
   build:
     name: ${{ matrix.name }}
     needs: vcpkg-baseline        # don't spend build minutes if the pin is broken
