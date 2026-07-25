@@ -35,7 +35,7 @@ Automated tests that fail the build if an invariant is broken. Every guard has a
 |---|---|---|
 | **Math-boundary guard** | any `#include <glm/...>` appears outside `engine/core/src/math/glm_backend.cpp` (plus a compile-time probe target for public headers) | [0.2.3](./tasks/phase-0.md) |
 | **RHI-boundary guard** | an SDL_GPU token appears anywhere in `engine/`/`runtime/` outside `engine/rhi/src/sdl_gpu_backend.cpp` (plus a compile-time probe target for public headers) | [0.4.5](./tasks/phase-0.md) |
-| **Golden-rule guard** | any `#include` under `/engine` or `/runtime` references `/editor` | [2.1.2](./tasks/phase-2.md) |
+| **Golden-rule guard** | any `#include` under `/engine` or `/runtime` references `/editor`, or any CMake target under `/engine` or `/runtime` transitively links an `/editor` target or carries `/editor` on its include path (a `lint`-job script plus a configure-time CMake assertion) | [2.1.2](./tasks/phase-2.md) |
 | **Audio-boundary guard** | a miniaudio type appears in a public engine header | [3.7.3](./tasks/phase-3.md) |
 | **Runtime-purity guard** | the runtime binary links ImGui, Assimp, or libclang | [5.2.2](./tasks/phase-5.md) |
 
@@ -75,6 +75,7 @@ Matrix across **macOS + Windows + Ubuntu**. Every push/PR runs:
 7. Task-local boundary check: no enkiTS types in public engine headers (0.2.5; `lint`-job grep + the `aero_jobs_boundary_probe` compile-time probe)
 8. Task-local boundary check: no SDL types in public engine headers (0.3.1; `lint`-job step running `.github/scripts/check-platform-boundary.sh` — a script, not a bare grep, because SDL's un-namespaced identifiers collide with legitimate documentation prose that cites them — + the `aero_platform_boundary_probe` compile-time probe)
 9. Task-local boundary check: no entt types in public engine headers (1.3.1; `lint`-job step running `.github/scripts/check-scene-boundary.sh` — a script, not a bare grep, because the scene headers cite `entt::basic_registry` in documentation prose — + the `aero_scene_boundary_probe` compile-time probe, which links `aero::scene` alone)
+10. Golden-rule check: nothing under `/engine` or `/runtime` may reference `/editor` (2.1.2; two surfaces — a `lint`-job step running `.github/scripts/check-golden-rule.sh` for the textual half, a script rather than a bare grep because 22 first-party comments under `engine/` legitimately say "editor", and `cmake/golden_rule.cmake`'s `aero_assert_golden_rule()` at the end of the root `CMakeLists.txt` for the link/include-directory half, which runs in every configure on every lane; both proved red-on-violation by the hermetic ctest cases `golden-rule.include_scan_e2e` and `golden-rule.link_graph_e2e`)
 
 Runtime binaries for each platform are built and archived by CI (this is what makes TS-project export instant — see [ADR-008](./02-adrs.md#adr-008--per-project-language-choice-and-the-two-export-models)).
 
