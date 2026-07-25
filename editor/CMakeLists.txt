@@ -9,6 +9,7 @@ find_package(SDL3  CONFIG REQUIRED)    # editor speaks SDL/SDL_GPU directly (far
 add_library(aero_editor_core STATIC
     src/imgui_layer.cpp
     src/panel_registry.cpp
+    src/placeholder_panel.cpp
     src/editor_ui.cpp
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
