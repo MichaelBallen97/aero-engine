@@ -35,6 +35,15 @@
 # used `#import`) until 5.2.x populates the runtime tree; it is fixed now, before it can ever bite, and
 # pinned by two new self-test probes below (angle + relative-escape forms) so it can never regress.
 #
+# ACCEPTED RESIDUAL (plan risk #10) -- BLOCK COMMENTS. The include arm runs on the RAW file (D5) and
+# has NO block-comment (`/* ... */`) stripping, unlike the namespace arm's `//`-stripping (D6). A
+# directive sitting alone on its own line inside a block comment, e.g.
+#     /* #include <aero/editor/x.hpp> */
+# still matches INCLUDE_RE and is reported as a violation. This is DELIBERATE and ACCEPTED: the failure
+# direction is a FALSE POSITIVE on dead/commented-out code, never a silent miss -- the guard fails safe.
+# Do NOT "fix" this into block-comment stripping; that would open a real hole (a live #include hidden
+# inside a spurious `/* ... */` wrapper would then silently pass).
+#
 # WHY THE NAMESPACE ARM EXISTS (D6 / F16). The editor's namespace is `engine::editor`, and this
 # codebase already uses cross-layer FORWARD DECLARATION as a technique in live code
 # (imgui_layer.hpp / editor_ui.hpp forward-declare `namespace engine::rhi` / `engine::platform`).
@@ -169,7 +178,8 @@ if ! printf 'namespace editor {\n' | grep -qE "$IDENTIFIER_RE"; then
   exit 2
 fi
 
-# --- Self-test group 5: negative probes (all 6 must NOT match) + the stripping proof. --------------
+# --- Self-test group 5: negative probes (all 7 must NOT match) + the stripping proof. --------------
+# (fix, post-review Gap 5: this comment previously said "all 6" -- 4 include-arm + 3 namespace-arm = 7.)
 # Include arm.
 if printf '#include <aero/core/text_editor.hpp>\n' | grep -qE "$INCLUDE_RE"; then
   echo "::error::golden-rule guard: INCLUDE_RE over-matches a substring ('text_editor.hpp' is not a path segment) -- fix the regex." >&2
