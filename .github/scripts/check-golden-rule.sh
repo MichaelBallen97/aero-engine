@@ -27,6 +27,14 @@
 # `editor` as a whole path segment anywhere in the path (never just a prefix) -- and why
 # `text_editor.hpp` / `editor_support/` must stay legal.
 #
+# (fix, post-review Gap 3) THE INCLUDE ARM ALSO MATCHES `#import`, NOT JUST `#include`. `.m`/`.mm` are
+# already in c_family() below precisely because Phase 5 ships iOS/Android runtime entry points into
+# this very tree (D4), and `#import` is the Objective-C/Objective-C++ include directive -- functionally
+# identical to `#include` for this guard's purpose, just spelled differently. Zero `.m`/`.mm` files
+# exist today, so this was latent (undetected by any of the 14 original self-test probes, none of which
+# used `#import`) until 5.2.x populates the runtime tree; it is fixed now, before it can ever bite, and
+# pinned by two new self-test probes below (angle + relative-escape forms) so it can never regress.
+#
 # WHY THE NAMESPACE ARM EXISTS (D6 / F16). The editor's namespace is `engine::editor`, and this
 # codebase already uses cross-layer FORWARD DECLARATION as a technique in live code
 # (imgui_layer.hpp / editor_ui.hpp forward-declare `namespace engine::rhi` / `engine::platform`).
@@ -57,12 +65,14 @@ readonly SCAN_ROOTS=('engine' 'runtime')
 # D8's inverted canary directory -- see the header comment above.
 readonly CANARY_DIR='editor/include/aero/editor'
 
-# Arm 1 -- an #include whose path contains `editor` as a whole PATH SEGMENT, applied to the RAW file
-# (D5): a real directive is never inside a comment in this codebase's style, and the
-# ^[[:space:]]*# anchor independently defeats a `//`-prefixed citation (F4 probe 8). The optional
-# group `([^">]*/)?` MUST end in '/' -- that terminal slash is what keeps text_editor.hpp and
-# editor_support/ legal.
-readonly INCLUDE_RE='^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]([^">]*/)?editor/'
+# Arm 1 -- an #include OR #import whose path contains `editor` as a whole PATH SEGMENT, applied to the
+# RAW file (D5): a real directive is never inside a comment in this codebase's style, and the
+# ^[[:space:]]*# anchor independently defeats a `//`-prefixed citation (F4 probe 8). `import` sits
+# beside `include` (fix, post-review Gap 3) because `#import` is the Objective-C/Objective-C++ include
+# directive and .m/.mm are already in c_family() for exactly this reason (D4). The optional group
+# `([^">]*/)?` MUST end in '/' -- that terminal slash is what keeps text_editor.hpp and editor_support/
+# legal.
+readonly INCLUDE_RE='^[[:space:]]*#[[:space:]]*(include|import)[[:space:]]*[<"]([^">]*/)?editor/'
 
 # Arm 2 -- an editor namespace named as CODE, applied AFTER stripping `//` comments (D6): this arm
 # has NO anchor, so stripping is mandatory, not defence-in-depth -- a comment citing
@@ -117,7 +127,7 @@ if ! printf '#include <aero/editor/%s>\n' "$canary_base" | grep -qE "$INCLUDE_RE
   exit 2
 fi
 
-# --- Self-test group 4: positive probes (all 7 must MATCH). ----------------------------------------
+# --- Self-test group 4: positive probes (all 9 must MATCH). ----------------------------------------
 # Include arm.
 if ! printf '#include <aero/editor/imgui_layer.hpp>\n' | grep -qE "$INCLUDE_RE"; then
   echo "::error::golden-rule guard: INCLUDE_RE no longer matches the canonical absolute form -- cannot self-verify." >&2
@@ -133,6 +143,16 @@ if ! printf '#include <editor/foo.hpp>\n' | grep -qE "$INCLUDE_RE"; then
 fi
 if ! printf '  #  include   "aero/editor/x.hpp"\n' | grep -qE "$INCLUDE_RE"; then
   echo "::error::golden-rule guard: INCLUDE_RE no longer tolerates odd spacing -- cannot self-verify." >&2
+  exit 2
+fi
+# (fix, post-review Gap 3) #import -- the Objective-C/Objective-C++ include directive; .m/.mm are
+# already in c_family() precisely because Phase 5 ships iOS/Android runtime entry points into this tree.
+if ! printf '#import <aero/editor/module.hpp>\n' | grep -qE "$INCLUDE_RE"; then
+  echo "::error::golden-rule guard: INCLUDE_RE no longer matches the #import directive (Objective-C) -- cannot self-verify." >&2
+  exit 2
+fi
+if ! printf '#import "../../editor/include/aero/editor/editor_ui.hpp"\n' | grep -qE "$INCLUDE_RE"; then
+  echo "::error::golden-rule guard: INCLUDE_RE no longer matches the #import relative-escape form -- cannot self-verify." >&2
   exit 2
 fi
 # Namespace arm.
