@@ -61,13 +61,13 @@ the visual gate below, which needs a human's eyes and hands.
 
 | OS | Status | Date | Machine / GPU | Window opens | Panels dockable (mouse) | Rearrange persists (mouse, actual restart) | First-run default layout | HiDPI crisp | Clean quit | Notes |
 |----|--------|------|----------------|---------------|---------------------------|-----------------------------------------------|----------------------------|--------------|------------|-------|
-| macOS | ⏳ mechanically verified only | 2026-07-25 | MacBook Pro (Apple M1 Pro), Metal backend | PASS (non-interactive launch; window opened, logged Metal device) | pending human visual confirmation | pending human visual confirmation (mechanical ini round-trip PASS; no mouse drag performed) | PASS (DockBuilder split observed in the saved ini: Hierarchy/Inspector/Console/Viewport) | pending human visual confirmation | PASS (SIGTERM-equivalent kill; no crash; ini written cleanly) | GPU smoke test (`aero_editor_imgui_test`) green under `AERO_REQUIRE_GPU=1`. |
+| macOS | ✅ PASS | 2026-07-25 | MacBook Pro (Apple M1 Pro), Metal backend | PASS | PASS (human: drag out / redock / split / tab by mouse) | PASS (human: rearranged, quit, relaunched — arrangement restored) | PASS (DockBuilder split observed in the saved ini, and confirmed visually) | PASS (human: Retina, crisp) | PASS | GPU smoke test (`aero_editor_imgui_test`) green under `AERO_REQUIRE_GPU=1`. Human visual pass performed against the current 2.1.3 binary (5 panels + menu bar), per the note in step 3. |
 | Windows | ⏳ pending | — | — | — | — | — | — | — | — | needs native run (D3D12) |
 | Linux | ⏳ pending | — | — | — | — | — | — | — | — | needs native run (real Vulkan; NOT lavapipe/CI) |
 
-**Task 2.1.1 gate status: OPEN** — closes only when all three rows above are ✅ across every
-column, including the mouse-driven visual checks a human must confirm (mirrors the Phase 0/1
-gates' code-free Windows/Linux follow-up precedent, 0.5.3/1.4.2).
+**Task 2.1.1 gate status: OPEN — macOS ✅, Windows/Linux pending.** The mouse-driven visual half is
+confirmed on macOS (2026-07-25); the gate closes when the Windows and Linux rows are filled by a
+code-free on-hardware follow-up (the Phase 0/1 precedent, 0.5.3/1.4.2).
 
 ---
 
@@ -147,10 +147,13 @@ machine.
 
 | OS | Status | Date | Machine / GPU | Menu bar (3 menus, labels) | Disabled items + tooltips | View toggles / close-'X' sync | First-run layout (Console+Assets tabbed) | Reset Layout | Esc does NOT quit | Quits: close box / File>Exit / ⌘-Ctrl+Q | Layout persists (real restart) | Unfocused throttle visible | HiDPI crisp | Notes |
 |----|--------|------|---------------|-----------------------------|----------------------------|-------------------------------|-------------------------------------------|--------------|--------------------|--------------------------------------------|--------------------------------|-----------------------------|--------------|-------|
-| macOS | ⏳ mechanically verified only | 2026-07-25 | MacBook Pro (Apple M1 Pro), Metal | pending human | pending human | pending human | PASS (`Console` and `Assets` share `DockId=0x00000006` at tab indices 0/1 in the saved ini — same node ⇒ tabbed) | pending human | pending human | pending human / pending human / pending human | PASS (mechanical ini round-trip) | pending human | pending human | Both editor ctest targets green; `editor: shell ready (5 panels, layout: default)` then `layout: restored` observed, ini byte-identical across runs. The **fourth** quit path (`EventType::Quit`, exercised via SIGTERM) exits cleanly with no crash and no ASan report — but that is *not* the close box, so all three human quit paths above remain unverified. |
+| macOS | ✅ PASS | 2026-07-25 | MacBook Pro (Apple M1 Pro), Metal | PASS | PASS (tooltips name 2.5.1 / 2.4.1) | PASS (both directions; close-'X' clears the checkbox) | PASS (`Console` and `Assets` share `DockId=0x00000006` at tab indices 0/1 in the saved ini — same node ⇒ tabbed; confirmed visually) | PASS (rebuilds in the frame it is clicked) | PASS (Esc does nothing) | PASS / PASS / PASS | PASS (real restart) | PASS (visible drop when unfocused, recovers on refocus) | PASS (Retina, crisp) | Both editor ctest targets green; `editor: shell ready (5 panels, layout: default)` then `layout: restored` observed, ini byte-identical across runs. All four AC-6 quit paths now covered: the three human ones here plus `EventType::Quit` (SIGTERM), which exits with no crash and no ASan report. |
 | Windows | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | needs native run (D3D12) |
 | Linux | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | needs native run (real Vulkan; NOT lavapipe/CI) |
 
-**Task 2.1.3 gate status: OPEN** — closes only when all three rows are ✅ across every column.
-**Epic 2.1 closes with it** (2.1.1's table above must be complete too), mirroring the Phase 0/1
-gates' code-free on-hardware follow-up precedent (0.5.3, 1.4.2).
+**Task 2.1.3 gate status: OPEN — macOS ✅, Windows/Linux pending.** Every human column passed on
+macOS (2026-07-25): the menu bar and its disabled-item tooltips, View toggles and close-'X' sync,
+Console+Assets tabbed, `Reset Layout`, Esc not quitting, all three human quit paths, layout
+persistence across a real restart, the unfocused throttle, and HiDPI crispness.
+**Epic 2.1 closes when both tables' Windows and Linux rows are filled** by a code-free on-hardware
+follow-up (the Phase 0/1 precedent, 0.5.3/1.4.2) — no code change is expected to be needed.
