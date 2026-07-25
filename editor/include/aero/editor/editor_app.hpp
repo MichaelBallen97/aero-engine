@@ -1,0 +1,85 @@
+#pragma once
+// Aero Engine — EditorApp: the editor's application shell (task 2.1.3, D1/D4/D11). ImGui-FREE BY
+// RULE (D9/AC-3) — this header exposes engine + std types only. Owns the ImGui host, the panel
+// registry, and the frame clock, and turns the loop into a callable tick() (run() is
+// `while (tick()) {}`), which is what makes it drivable N-frames-at-a-time from a test.
+
+#include <aero/core/time.hpp>
+#include <aero/editor/imgui_layer.hpp>
+#include <aero/editor/panel_registry.hpp>
+#include <aero/rhi/types.hpp>
+
+#include <cstdint>
+#include <optional>
+
+namespace engine::editor {
+
+struct EditorAppConfig {
+    rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
+    bool persistLayout = true;                         // -> ImGuiLayer (imgui.ini); false in tests
+    bool registerDefaultPanels = true;                 // the five 2.2.x placeholders (D8)
+    // Frame-rate ceiling applied ONLY while the window has no keyboard focus (D4). <= 0 disables the
+    // throttle entirely — what the GPU smoke test uses so its frames stay unpaced + deterministic.
+    float unfocusedFrameCapHz = 20.0F;
+};
+
+// Sleep applied when the window is not presentable (minimized) — inherited verbatim from 2.1.1.
+inline constexpr std::uint32_t MINIMIZED_SLEEP_MS = 4;
+
+// PURE pacing policy (D4), exposed for tier-0 testing. Order of precedence is load-bearing:
+// minimized beats unfocused (E12).
+//   !presented                         -> MINIMIZED_SLEEP_MS
+//   focused, or capHz <= 0             -> 0        (vsync paces us)
+//   otherwise                          -> max(0, round(1000 / capHz) - frameElapsedMs)
+[[nodiscard]] std::uint32_t framePaceSleepMs(bool presented, bool focused, float unfocusedCapHz,
+                                             float frameElapsedMs) noexcept;
+
+class EditorApp {
+public:
+    // nullopt (+ ERROR, already logged by ImGuiLayer) when the ImGui host cannot be created. The
+    // device, window and ctx MUST outlive the app (the ImGuiLayer contract, D1).
+    [[nodiscard]] static std::optional<EditorApp> create(rhi::Device& device, platform::Window& window,
+                                                         platform::Context& ctx, const EditorAppConfig& config = {});
+
+    ~EditorApp() = default;
+    EditorApp(EditorApp&&) noexcept = default;
+    EditorApp& operator=(EditorApp&&) noexcept = default;
+    EditorApp(const EditorApp&) = delete;
+    EditorApp& operator=(const EditorApp&) = delete;
+
+    // One full editor frame: input newFrame -> event drain -> clock tick -> ImGui frame (menu bar,
+    // dockspace, panels) -> present -> pace. Returns false once a quit has been requested, and is
+    // idempotent after that (further calls return false without drawing — E10).
+    bool tick();
+
+    // tick() until it returns false. Returns the process exit code (0).
+    int run();
+
+    [[nodiscard]] PanelRegistry& panels() noexcept;
+    [[nodiscard]] const PanelRegistry& panels() const noexcept;
+    [[nodiscard]] const FrameClock& clock() const noexcept;
+    [[nodiscard]] bool focused() const noexcept;
+    // True when the LAST tick() actually presented (false when the window was minimized). This is
+    // what the GPU smoke test asserts — tick()'s own bool means "still running", not "presented".
+    [[nodiscard]] bool presentedLastFrame() const noexcept;
+
+    void requestQuit() noexcept;
+    void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
+
+private:
+    EditorApp(ImGuiLayer layer, platform::Context& ctx, const EditorAppConfig& config);
+
+    ImGuiLayer layer;
+    platform::Context* ctx;
+    EditorAppConfig config;
+    PanelRegistry registry;
+    FrameClock frameClock;
+    bool running = true;
+    bool windowFocused = true;        // a freshly created+shown window normally has focus; a stale false
+                                      // would only cost one throttled frame before the first focus event
+    bool applyDefaultLayout = false;  // seeded from ImGuiLayer::wantsDefaultLayout(); also set by
+                                      // View > Reset Layout / requestLayoutReset()
+    bool presented = false;
+};
+
+}  // namespace engine::editor

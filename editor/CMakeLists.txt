@@ -8,7 +8,10 @@ find_package(SDL3  CONFIG REQUIRED)    # editor speaks SDL/SDL_GPU directly (far
 
 add_library(aero_editor_core STATIC
     src/imgui_layer.cpp
-    src/editor_ui.cpp
+    src/panel_registry.cpp
+    src/editor_app.cpp
+    src/shell_ui.cpp
+    src/placeholder_panel.cpp
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

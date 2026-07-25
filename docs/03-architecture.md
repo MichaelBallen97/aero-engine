@@ -114,9 +114,21 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 
 ---
 
-### The editor layer opens (task 2.1.1)
+### The editor layer opens (tasks 2.1.1–2.1.3)
 
 Epic 2.1 populates `/editor` for the first time: `aero_editor_core` hosts Dear ImGui (docking) directly on `engine::rhi::Device` and `engine::platform::Window`/`Context`, and `aero_editor` is the thin executable. Two non-installed internal seams, cloned from the `aero::platform_internal` pattern, hand the editor the few native handles it cannot synthesize any other way: `aero::rhi_internal` (`NativeDeviceAccessor`, exposing the SDL_GPU device/command-buffer/render-pass as `void*` — never a typed SDL_GPU spelling, which the rhi-boundary guard would reject) and a generic, void-based raw-event observer on `Context` (`RawEventAccessor`), which feeds ImGui's SDL3 backend every event the engine's own pump would otherwise translate-and-discard. Both seams keep the engine naming nothing ImGui — the editor is the only linker of `imgui::imgui`, PRIVATE to `aero_editor_core`, so it never reaches `/engine` or `/runtime` at compile time. The golden-rule CI guard that locks this down structurally is task 2.1.2.
+
+Task 2.1.3 turns that bootstrap into the shell every later panel plugs into: `engine::editor::Panel`
+is the polymorphic panel interface, `PanelRegistry` owns the panels and knows their registration
+order and visibility, and `EditorApp` owns the ImGui host + registry + frame clock and exposes the
+whole editor loop as a callable `tick()` (`run()` is `while (tick()) {}`), which is what makes the
+loop drivable from a test. The registry — never the panel — calls `ImGui::Begin`/`End` around
+`Panel::onDraw()`, so an unbalanced `End()` is structurally impossible; the first-run and
+`View > Reset Layout` dock layout is data-driven from each panel's `defaultDockSlot()`, so
+registering a panel in 2.2.x needs no layout-code edit. The three public editor headers
+(`panel.hpp`, `panel_registry.hpp`, `editor_app.hpp`) expose engine + std types only — every ImGui
+entry point lives in `editor/src/` (`shell_ui.cpp`, `placeholder_panel.cpp`), src-private by
+placement.
 
 ---
 
