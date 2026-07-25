@@ -361,3 +361,13 @@ else()
     message(STATUS "golden-rule: include_scan_e2e SKIPPED (Windows, or bash/git not found) -- the "
                    "guard itself still runs in CI's lint job on Linux")
 endif()
+
+# All three lanes: pure CMake, spawns no shell, creates no git repo. Six nested configures (clean + 5
+# seams) prove both violation arms and all three self-verify arms of aero_assert_golden_rule.
+# The `editor` segment in WORK_DIR is LOAD-BEARING -- it is the hermetic proof of D10 (a repo checked
+# out under a directory literally named `editor` must still configure clean). Do not "tidy" it away.
+add_test(NAME golden-rule.link_graph_e2e COMMAND ${CMAKE_COMMAND}
+    -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/golden-rule/link_probe
+    -DAERO_REPO_ROOT=${CMAKE_SOURCE_DIR}
+    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/golden-rule-scratch/editor/link-graph
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/golden-rule/link_graph_e2e.cmake)
