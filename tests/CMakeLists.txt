@@ -337,3 +337,27 @@ if(AERO_REFLECT_TOOLS)
         AERO_PHASE1_SCENE_DIR="${CMAKE_SOURCE_DIR}/samples/phase-1-scene")  # locates the committed file (test 9)
     add_test(NAME aero_scene_serialize_test COMMAND aero_scene_serialize_test)
 endif()
+
+# ---------------------------------------------------------------------------------------------
+# task 2.1.2 -- hermetic proofs that the golden-rule guards actually go RED. Ungated (D15): the
+# guards depend on neither codegen nor shaders (the aero_editor_imgui_test precedent above). Neither
+# case writes inside the repo tree; both use distinct scratch roots, so ctest -j is safe.
+find_program(AERO_BASH_EXECUTABLE bash)
+find_package(Git QUIET)      # NOT previously in scope anywhere -- verified; this is its first use
+
+# NOT WIN32 (D16): the script never runs on Windows in CI at all (the lint job is ubuntu-24.04-only),
+# and this case's real value-add -- proving the regexes + `nl | sed` comment-stripping behave under
+# BSD userland -- comes from the macOS lane. Git Bash is an MSYS2/GNU userland, so Windows would
+# re-prove what Linux already proves, against three failure modes that cannot be verified from this
+# dev machine (see spec D16). No coverage of the invariant is lost.
+if(NOT WIN32 AND AERO_BASH_EXECUTABLE AND GIT_EXECUTABLE)
+    add_test(NAME golden-rule.include_scan_e2e COMMAND ${CMAKE_COMMAND}
+        -DSCRIPT=${CMAKE_SOURCE_DIR}/.github/scripts/check-golden-rule.sh
+        -DBASH=${AERO_BASH_EXECUTABLE}
+        -DGIT=${GIT_EXECUTABLE}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/golden-rule-scratch/include-scan
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/golden-rule/include_scan_e2e.cmake)
+else()
+    message(STATUS "golden-rule: include_scan_e2e SKIPPED (Windows, or bash/git not found) -- the "
+                   "guard itself still runs in CI's lint job on Linux")
+endif()

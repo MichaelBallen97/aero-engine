@@ -103,7 +103,7 @@ fi
 # --- Self-test group 2: the inverted canary is present. --------------------------------------------
 canary_files="$(git ls-files -- "$CANARY_DIR")"
 if [ -z "$canary_files" ]; then
-  echo "::error::golden-rule guard: no tracked files under '$CANARY_DIR' -- was the editor tree renamed? Cannot self-verify." >&2
+  echo "::error::golden-rule guard: no tracked files under '$CANARY_DIR' -- was the editor tree renamed? cannot self-verify." >&2
   exit 2
 fi
 canary_first="$(printf '%s\n' "$canary_files" | head -n1)"
