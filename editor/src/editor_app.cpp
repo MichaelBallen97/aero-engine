@@ -64,7 +64,8 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
 
 bool EditorApp::tick() {
     if (!running) {
-        return false;  // idempotent after quit (E10) — calls no ImGui function
+        presented = false;  // nothing reached the screen this tick — keep presentedLastFrame() honest
+        return false;       // idempotent after quit (E10) — calls no ImGui function
     }
     const double frameStart = monotonicSeconds();
 
@@ -87,7 +88,8 @@ bool EditorApp::tick() {
         }
     }
     if (!running) {
-        return false;  // quit before any ImGui call (D11) — no NewFrame means nothing to balance
+        presented = false;  // as above: no frame was presented, so don't report a stale true
+        return false;       // quit before any ImGui call (D11) — no NewFrame means nothing to balance
     }
     frameClock.tick();
 

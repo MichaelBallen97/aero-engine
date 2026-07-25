@@ -21,6 +21,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cstdint>
 #include <optional>
 
 TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke test)") {
@@ -74,10 +75,16 @@ TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke
     app->requestLayoutReset();
     REQUIRE(app->tick());
 
-    // E10: idempotent after quit -- the second tick() draws nothing and still returns false.
+    // E10: idempotent after quit -- and it must draw NOTHING, not merely return false. The return
+    // value alone cannot tell the two apart: with both `if (!running) return false;` guards removed,
+    // a full frame would draw, present, and still `return running;` == false. frameClock only
+    // advances inside a drawn frame, so pinning frameCount() is what actually proves the early exit.
+    const std::uint64_t framesBeforeQuit = app->clock().frameCount();
     app->requestQuit();
     CHECK(app->tick() == false);
     CHECK(app->tick() == false);
+    CHECK(app->clock().frameCount() == framesBeforeQuit);
+    CHECK_FALSE(app->presentedLastFrame());  // no frame reached the screen after the quit
 
     app.reset();  // teardown must not crash; LSan (Linux Debug) proves leak-free
 }

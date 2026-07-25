@@ -235,12 +235,29 @@ TEST_CASE("editor: const overloads compile and agree") {
     const engine::editor::PanelRegistry& constRegistry = registry;
     CHECK(&constRegistry.panelAt(0) == &registry.panelAt(0));
     CHECK(constRegistry.find("A") == registry.find("A"));
-    CHECK(constRegistry.visible("A") == registry.visible("A"));
+
+    // visible() is const-only (there is no non-const overload to compare against), so assert it
+    // TRACKS state through the const reference rather than comparing the one overload with itself
+    // -- a `constRegistry.visible("A") == registry.visible("A")` CHECK is tautological and would
+    // pass even against a visible() that always returned false.
+    CHECK(constRegistry.visible("A"));
+    registry.setVisibleAt(0, false);
+    CHECK_FALSE(constRegistry.visible("A"));
+    registry.setVisibleAt(0, true);
+    CHECK(constRegistry.visible("A"));
 }
 
 TEST_CASE("editor: registry move leaves the source empty and preserves addresses") {
     static_assert(std::is_nothrow_move_constructible_v<engine::editor::PanelRegistry>);
     static_assert(std::is_nothrow_move_assignable_v<engine::editor::PanelRegistry>);
+
+    // E15/R7: EditorApp's defaulted noexcept moves must stay real. Under [dcl.fct.def.default]/3 an
+    // explicitly-defaulted noexcept move whose implicit definition would be potentially-throwing is
+    // DELETED, and EditorApp::create()'s `return app;` needs the move -- so a regression here is a
+    // compile error at the create() site. These pin it at the declaration instead, where the
+    // diagnostic names the actual contract.
+    static_assert(std::is_nothrow_move_constructible_v<engine::editor::EditorApp>);
+    static_assert(std::is_nothrow_move_assignable_v<engine::editor::EditorApp>);
 
     // Wrapped in std::optional (the transform_test.cpp/rhi_device_test.cpp precedent): moving *source
     // rather than a bare local, and reading the moved-from state back through source-> afterward, is
