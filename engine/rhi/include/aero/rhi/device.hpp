@@ -37,6 +37,10 @@ namespace engine::platform {
 class Window;  // forward-declared on purpose: rhi's one platform type; no include needed for a ref
 }  // namespace engine::platform
 
+namespace engine::rhi::internal {
+struct NativeDeviceAccessor;
+}  // namespace engine::rhi::internal
+
 namespace engine::rhi {
 
 // What acquireSwapchainTexture yields: a transient texture handle plus its REAL pixel size — during
@@ -214,6 +218,7 @@ public:
                      std::uint32_t firstIndex = 0, std::int32_t vertexOffset = 0, std::uint32_t firstInstance = 0);
 
 private:
+    friend struct internal::NativeDeviceAccessor;  // native-handle seam (engine/rhi/internal/, task 2.1.1)
     struct Impl;  // the ONLY place SDL_GPU exists (src/sdl_gpu_backend.cpp, task 0.4.2)
     explicit Device(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl;

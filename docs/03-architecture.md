@@ -114,6 +114,12 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 
 ---
 
+### The editor layer opens (task 2.1.1)
+
+Epic 2.1 populates `/editor` for the first time: `aero_editor_core` hosts Dear ImGui (docking) directly on `engine::rhi::Device` and `engine::platform::Window`/`Context`, and `aero_editor` is the thin executable. Two non-installed internal seams, cloned from the `aero::platform_internal` pattern, hand the editor the few native handles it cannot synthesize any other way: `aero::rhi_internal` (`NativeDeviceAccessor`, exposing the SDL_GPU device/command-buffer/render-pass as `void*` — never a typed SDL_GPU spelling, which the rhi-boundary guard would reject) and a generic, void-based raw-event observer on `Context` (`RawEventAccessor`), which feeds ImGui's SDL3 backend every event the engine's own pump would otherwise translate-and-discard. Both seams keep the engine naming nothing ImGui — the editor is the only linker of `imgui::imgui`, PRIVATE to `aero_editor_core`, so it never reaches `/engine` or `/runtime` at compile time. The golden-rule CI guard that locks this down structurally is task 2.1.2.
+
+---
+
 ## Handles, not pointers
 
 Mitigation #1 of ADR-001. Applies to **everything**: entities, textures, meshes, materials, sounds, scripts.

@@ -16,6 +16,7 @@
 #include <aero/core/slot_map.hpp>
 #include <aero/platform/internal/native_window.hpp>
 #include <aero/platform/window.hpp>
+#include <aero/rhi/internal/native_device.hpp>
 #include <aero/rhi/rhi.hpp>
 
 #include <SDL3/SDL.h>
@@ -2280,6 +2281,32 @@ bool Device::setPresentMode(SwapchainHandle swapchain, PresentMode mode) {
     }
     slot->mode = mode;
     return true;
+}
+
+// --- engine::rhi::internal::NativeDeviceAccessor (task 2.1.1) --------------------------------
+// void*-returning accessors for the editor's ImGui SDL_GPU backend (native_device.hpp). This TU is
+// the ONE place SDL_GPU exists, so it may cast freely; the header itself names no SDL type.
+void* internal::NativeDeviceAccessor::device(const Device& d) noexcept {
+    if (d.impl == nullptr) {
+        return nullptr;
+    }
+    return static_cast<void*>(d.impl->device);  // SDL_GPUDevice* -> void*
+}
+
+void* internal::NativeDeviceAccessor::commandBuffer(const Device& d, CommandBufferHandle h) noexcept {
+    if (d.impl == nullptr) {
+        return nullptr;
+    }
+    const CommandBufferSlot* const slot = d.impl->commandBuffers.get(h);
+    return slot != nullptr ? static_cast<void*>(slot->cmd) : nullptr;
+}
+
+void* internal::NativeDeviceAccessor::renderPass(const Device& d, RenderPassHandle h) noexcept {
+    if (d.impl == nullptr) {
+        return nullptr;
+    }
+    const PassSlot* const slot = d.impl->renderPasses.get(h);
+    return slot != nullptr ? static_cast<void*>(slot->pass) : nullptr;
 }
 
 }  // namespace engine::rhi

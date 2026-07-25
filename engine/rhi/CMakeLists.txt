@@ -35,3 +35,13 @@ target_link_libraries(aero_rhi
     PUBLIC aero::core aero::platform
     PRIVATE SDL3::SDL3 aero::profiling aero::platform_internal
 )
+
+# The INTERNAL native-device seam (task 2.1.1; the aero::platform_internal precedent). Header-only
+# INTERFACE target exposing engine/rhi/internal/ to the ONE consumer allowed to reach the native
+# SDL_GPU handles — the editor's ImGui backend (linked PRIVATE there). Not installed; carries NO
+# vcpkg header (void* + handles.hpp only). aero_rhi needs the dir PRIVATE to compile the accessor
+# definitions in sdl_gpu_backend.cpp. NEVER link it into a boundary probe.
+add_library(aero_rhi_internal INTERFACE)
+add_library(aero::rhi_internal ALIAS aero_rhi_internal)
+target_include_directories(aero_rhi_internal INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/internal)
+target_include_directories(aero_rhi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal)

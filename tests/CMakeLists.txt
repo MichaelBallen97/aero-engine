@@ -83,6 +83,20 @@ endif()
 add_test(NAME aero_tests COMMAND aero_tests)
 
 # ---------------------------------------------------------------------------------------------
+# task 2.1.1 — the editor's ImGui host smoke test. Standalone, gated at RUNTIME by AERO_REQUIRE_GPU
+# (rhi_test_support.hpp). NOT inside if(AERO_REFLECT_TOOLS)/if(AERO_SHADER_TOOLS): the editor depends
+# on neither (AC-9). ImGui-free at source — drives editor_core's engine-typed API; imgui/SDL3 reach it
+# only transitively through editor_core's PRIVATE static archive. vulkan_stack_pin.cpp + ${CMAKE_DL_LIBS}
+# give the lavapipe LSan pin on the Linux Debug lane (F9), like every GPU-drawing test.
+add_executable(aero_editor_imgui_test
+    editor/imgui_layer_test.cpp
+    vulkan_stack_pin.cpp)
+target_link_libraries(aero_editor_imgui_test PRIVATE
+    doctest::doctest aero::editor_core aero::rhi aero::platform aero::core ${CMAKE_DL_LIBS})
+target_include_directories(aero_editor_imgui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # tests/ for rhi_test_support.hpp
+add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
+
+# ---------------------------------------------------------------------------------------------
 # The math-boundary COMPILE-TIME guard (task 0.2.3; docs/02-adrs.md:211).
 #
 # OBJECT, not an executable: compiling is the whole assertion, so there is nothing to link or run

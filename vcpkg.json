@@ -11,6 +11,10 @@
         "enkits",
         "entt",
         "glm",
+        {
+            "name": "imgui",
+            "features": [ "docking-experimental", "sdl3-binding", "sdlgpu3-binding" ]
+        },
         "miniaudio",
         {
             "name": "sdl3",
