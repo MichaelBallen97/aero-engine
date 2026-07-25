@@ -13,6 +13,20 @@ if(NOT PROBE_SEED_NO_CONSUMERS)
     target_link_libraries(probe_platform INTERFACE probe::core)
     target_link_libraries(probe_rhi      INTERFACE probe::platform)
 
+    # (fix, post-review Gap 1) A real, UNSEEDED include directory on the clean fixture, so step 5's
+    # resolved-path comparison actually EXECUTES in the negative direction on every configure --
+    # including case 1 (clean), which is registered from a WORK_DIR containing a literal `editor` path
+    # segment (tests/CMakeLists.txt). Before this line the clean case's three consumers were bare
+    # INTERFACE libraries with ZERO include directories, so step 5's foreach(_gr_entry IN LISTS
+    # _gr_dirs) loop body never ran at all for the clean case -- a naive substring match on the word
+    # "editor" (which step 5 does NOT do; see cmake/golden_rule.cmake) would have passed this fixture
+    # not because the comparison is correct but because the comparison never RAN. This is what makes
+    # the D10 "not a substring match" claim (CLAUDE.md state note) a proven fact rather than an
+    # untested aspiration. The directory need not exist on disk -- step 5 uses
+    # get_filename_component(... ABSOLUTE), never REALPATH, exactly so a seeded/probe path need not
+    # resolve to a real file.
+    target_include_directories(probe_core INTERFACE "${CMAKE_SOURCE_DIR}/engine/include")
+
     # Spec correction C2: seed the DEEPEST target, so probe_platform reaches the editor at distance 2
     # and probe_rhi at distance 3 -- the driver asserts on probe_rhi, a finding only a real traversal
     # can produce. Seeding probe_rhi (the spec's own sketch) would be a one-hop DIRECT edge and would
