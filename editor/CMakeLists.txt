@@ -12,7 +12,6 @@ add_library(aero_editor_core STATIC
     src/editor_app.cpp
     src/shell_ui.cpp
     src/placeholder_panel.cpp
-    src/editor_ui.cpp
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
