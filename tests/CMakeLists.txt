@@ -97,6 +97,26 @@ target_include_directories(aero_editor_imgui_test PRIVATE ${CMAKE_CURRENT_SOURCE
 add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 
 # ---------------------------------------------------------------------------------------------
+# task 2.1.3 — the editor shell's tier-0 tests: panel registry, pacing policy, panel defaults. NO
+# GPU, no window, no ImGui context — so it is NOT gated by AERO_REQUIRE_GPU and needs neither
+# vulkan_stack_pin.cpp nor ${CMAKE_DL_LIBS} (nothing here loads Vulkan). Like aero_editor_imgui_test
+# above, it lives OUTSIDE every AERO_*_TOOLS gate: the editor depends on neither codegen nor shaders.
+#
+# THIS IS NOT A BOUNDARY PROBE, AND MUST NEVER BE MISTAKEN FOR ONE. The TU never includes an ImGui
+# header — that is hygiene (2.1.3 D9), not enforcement: this target links doctest::doctest, which
+# puts vcpkg's shared per-triplet include/ root on the compile line, and imgui.h lives FLAT in it,
+# so a leaked <imgui.h> in a public editor header WOULD still compile here (risk R12, docs/08 — the
+# same limitation documented for GLM and aero_tests at :51-59 above; verified by seeding exactly
+# that during 2.1.3 and reverting). The "public editor headers stay ImGui-free" rule is held by
+# review and by FILE PLACEMENT (every ImGui entry point lives in editor/src/, not editor/include/).
+# 2.1.3's D12 was re-examined against this fact and DELIBERATELY RE-AFFIRMED: no editor-side probe
+# target ships, because project rule #3 governs the ENGINE's public API and the editor is on its far
+# side by design. Do not "fix" this by adding link libraries here or a probe target elsewhere.
+add_executable(aero_editor_shell_test editor/shell_test.cpp)
+target_link_libraries(aero_editor_shell_test PRIVATE doctest::doctest aero::editor_core aero::core)
+add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
+
+# ---------------------------------------------------------------------------------------------
 # The math-boundary COMPILE-TIME guard (task 0.2.3; docs/02-adrs.md:211).
 #
 # OBJECT, not an executable: compiling is the whole assertion, so there is nothing to link or run
