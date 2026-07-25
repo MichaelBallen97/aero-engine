@@ -42,9 +42,12 @@ the visual gate below, which needs a human's eyes and hands.
    <os>-debug && cmake --build --preset <os>-debug`.
 2. **Delete any existing ini** (`<basePath>/aero_editor.ini`, next to the built exe) to see the
    first-run default layout, then run `aero_editor`.
-3. **Look at the window**: "Aero Editor" titled, a full-window dockspace with 4 panels —
-   Hierarchy (left), Inspector (right), Console (bottom), Viewport (center) — each a one-line
-   placeholder ("... — placeholder (task 2.2.x)").
+3. **Look at the window**: "Aero Editor" titled, a full-window dockspace with panels, each a
+   one-line placeholder ("... — placeholder (task 2.2.x)"). **Note:** task 2.1.3 changed what the
+   binary registers — the current build ships **5** panels (Hierarchy left, Inspector right,
+   Viewport center, and Console + Assets **tabbed together** at the bottom) and a File/Edit/View
+   menu bar. The 2.1.1 rows below were originally written against a 4-panel, menu-bar-less build;
+   validate what the current binary registers, not the historical list.
 4. **Drag a tab out, redock it, split a panel, tab two panels together** — confirm all four
    operations work smoothly by mouse.
 5. **Rearrange, then quit** (the window close box, `File > Exit`, or ⌘/Ctrl+Q — **Esc no longer
@@ -95,6 +98,11 @@ machine.
   (`Hierarchy`/`Inspector`/`Viewport`/`Console`/`Assets`) — proving the data-driven DockBuilder
   layout actually built and ImGui saved it. A second launch logs `layout: restored` and leaves the
   ini byte-identical.
+- **Console+Assets tabbing is proven from that same ini, not merely inferred from both being
+  present:** two windows are tabbed iff they share one `DockId`, and the saved tree has
+  `[Window][Console] DockId=0x00000006,0` beside `[Window][Assets] DockId=0x00000006,1` — the same
+  node at tab indices 0 and 1. (Five panels each *having* a dock entry would also be true if the
+  builder had put them in five separate nodes, so the entry list alone does not establish this.)
 - No mouse or keyboard interaction was performed; every row marked "pending" below needs a human.
 
 ## Known-and-expected, NOT a defect
@@ -139,7 +147,7 @@ machine.
 
 | OS | Status | Date | Machine / GPU | Menu bar (3 menus, labels) | Disabled items + tooltips | View toggles / close-'X' sync | First-run layout (Console+Assets tabbed) | Reset Layout | Esc does NOT quit | Quits: close box / File>Exit / ⌘-Ctrl+Q | Layout persists (real restart) | Unfocused throttle visible | HiDPI crisp | Notes |
 |----|--------|------|---------------|-----------------------------|----------------------------|-------------------------------|-------------------------------------------|--------------|--------------------|--------------------------------------------|--------------------------------|-----------------------------|--------------|-------|
-| macOS | ⏳ mechanically verified only | 2026-07-2X | MacBook Pro (Apple M1 Pro), Metal | pending human | pending human | pending human | PASS (observed in the saved ini) | pending human | pending human | PASS (kill; no crash) / pending human / pending human | PASS (mechanical ini round-trip) | pending human | pending human | Both editor ctest targets green; `editor: shell ready (5 panels, layout: default)` observed. |
+| macOS | ⏳ mechanically verified only | 2026-07-25 | MacBook Pro (Apple M1 Pro), Metal | pending human | pending human | pending human | PASS (`Console` and `Assets` share `DockId=0x00000006` at tab indices 0/1 in the saved ini — same node ⇒ tabbed) | pending human | pending human | pending human / pending human / pending human | PASS (mechanical ini round-trip) | pending human | pending human | Both editor ctest targets green; `editor: shell ready (5 panels, layout: default)` then `layout: restored` observed, ini byte-identical across runs. The **fourth** quit path (`EventType::Quit`, exercised via SIGTERM) exits cleanly with no crash and no ASan report — but that is *not* the close box, so all three human quit paths above remain unverified. |
 | Windows | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | needs native run (D3D12) |
 | Linux | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | needs native run (real Vulkan; NOT lavapipe/CI) |
 
