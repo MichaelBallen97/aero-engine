@@ -11,7 +11,7 @@ This is what makes it possible for the runtime to go to 5 platforms and the edit
 **It is the rule most hobby engines break.**
 
 ### How it is verified automatically
-A CI test that fails if any `#include` under `/engine` or `/runtime` points to `/editor`, or if the runtime binary links ImGui, Assimp, or libclang.
+A CI test that fails if any `#include` under `/engine` or `/runtime` points to `/editor`, **if any CMake target under `/engine` or `/runtime` transitively links an `/editor` target or carries `/editor` on its include path,** or if the runtime binary links ImGui, Assimp, or libclang.
 
 ---
 
