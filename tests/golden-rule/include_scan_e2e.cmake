@@ -70,9 +70,12 @@ endfunction()
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}/src")
 
-# A minimal tree mirroring the real layout: one engine source (non-empty scan set, self-test 1) and
-# the editor's public-header dir (the D8 inverted canary, self-tests 2-3).
+# A minimal tree mirroring the real layout: one engine source AND one runtime source (fix, post-review
+# Gap 4 -- see stage 3 below: the real tree's runtime/ is legitimately EMPTY today (F7), so nothing had
+# ever hermetically proven the scan actually WALKS runtime/, as opposed to SCAN_ROOTS merely NAMING it)
+# and the editor's public-header dir (the D8 inverted canary, self-tests 2-3).
 _gr_write("engine/core/src/clean.cpp"                "#include <aero/core/log.hpp>\n")
+_gr_write("runtime/entry/clean.cpp"                  "#include <cstdio>\n")
 _gr_write("editor/include/aero/editor/editor_ui.hpp" "#pragma once\n")
 
 execute_process(COMMAND "${GIT}" init -q .   WORKING_DIRECTORY "${WORK_DIR}/src")
@@ -82,35 +85,51 @@ execute_process(COMMAND "${GIT}" add -A      WORKING_DIRECTORY "${WORK_DIR}/src"
 _gr_run("stage 1 (clean)" 0 "${BASH}" "${SCRIPT}")
 _gr_expect_substr("stage 1" "${_gr_out}" "golden-rule guard: OK" TRUE)
 
-# --- Stage 2: the relative escape (row 2 -- the form that actually compiles today) -> exit 1. ------
+# --- Stage 2: the relative escape under engine/ (row 2 -- the form that actually compiles today) ---
+# -> exit 1.
 _gr_seed("engine/core/src/leak.cpp" "#include \"../../../editor/include/aero/editor/editor_ui.hpp\"\n")
-_gr_run("stage 2 (relative escape)" 1 "${BASH}" "${SCRIPT}")
+_gr_run("stage 2 (relative escape, engine/)" 1 "${BASH}" "${SCRIPT}")
 _gr_expect_substr("stage 2" "${_gr_out}" "engine/core/src/leak.cpp:1" TRUE)
 _gr_expect_substr("stage 2" "${_gr_out}" ": #include reaches into /editor" TRUE)
 
-# --- Stage 3: the forward-declaration hole (row 3 -- invisible to any include scan) -> exit 1. -----
-_gr_seed("engine/core/src/leak.cpp" "namespace engine::editor { class ImGuiLayer; }\n")
-_gr_run("stage 3 (forward declaration)" 1 "${BASH}" "${SCRIPT}")
-_gr_expect_substr("stage 3" "${_gr_out}" ": editor namespace named in engine code" TRUE)
-
-# --- Stage 4: comment-only citation -> exit 0. The false-positive proof, and (on macOS) the only
-# automated proof that the nl | sed comment-stripping pipeline behaves under BSD userland. -----------
-_gr_seed("engine/core/src/leak.cpp" "// see engine::editor::ImGuiLayer\n// #include <aero/editor/editor_ui.hpp>\n")
-_gr_run("stage 4 (comment-only, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
-_gr_expect_substr("stage 4" "${_gr_out}" "golden-rule guard: OK" TRUE)
-
-# --- Stage 5: seed removed -> exit 0. Proves removal restores green ("then cleaned"). ---------------
-file(REMOVE "${WORK_DIR}/src/engine/core/src/leak.cpp")
+# --- Stage 3 (fix, post-review Gap 4): the IDENTICAL violation under runtime/ -> exit 1. This is the
+# hermetic proof SCAN_ROOTS actually covers runtime/, not just names it: replacing
+# SCAN_ROOTS=('engine' 'runtime') with ('engine') left every stage in this file fully green before this
+# fix (runtime/ contributed nothing to seed a violation against), while the real guard's own
+# "OK -- N tracked engine/runtime sources scanned" message would have silently become a lie the moment
+# 5.2.1 populates runtime/ with a real source. Cleaned up immediately after asserting so stages 4-7 see
+# exactly the tree shape they were written against (only the engine/ leak file present).
+_gr_seed("runtime/entry/leak.cpp" "#include \"../../editor/include/aero/editor/editor_ui.hpp\"\n")
+_gr_run("stage 3 (relative escape, runtime/)" 1 "${BASH}" "${SCRIPT}")
+_gr_expect_substr("stage 3" "${_gr_out}" "runtime/entry/leak.cpp:1" TRUE)
+_gr_expect_substr("stage 3" "${_gr_out}" ": #include reaches into /editor" TRUE)
+file(REMOVE "${WORK_DIR}/src/runtime/entry/leak.cpp")
 execute_process(COMMAND "${GIT}" add -A WORKING_DIRECTORY "${WORK_DIR}/src")
-_gr_run("stage 5 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 4 (was stage 3): the forward-declaration hole (row 3 -- invisible to any include scan) ---
+# -> exit 1.
+_gr_seed("engine/core/src/leak.cpp" "namespace engine::editor { class ImGuiLayer; }\n")
+_gr_run("stage 4 (forward declaration)" 1 "${BASH}" "${SCRIPT}")
+_gr_expect_substr("stage 4" "${_gr_out}" ": editor namespace named in engine code" TRUE)
+
+# --- Stage 5 (was stage 4): comment-only citation -> exit 0. The false-positive proof, and (on macOS)
+# the only automated proof that the nl | sed comment-stripping pipeline behaves under BSD userland. ---
+_gr_seed("engine/core/src/leak.cpp" "// see engine::editor::ImGuiLayer\n// #include <aero/editor/editor_ui.hpp>\n")
+_gr_run("stage 5 (comment-only, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
 _gr_expect_substr("stage 5" "${_gr_out}" "golden-rule guard: OK" TRUE)
 
-# --- Stage 6: canary deleted -> exit 2. Vacuity refusal, distinct from both 0 and 1. `clean.cpp`
-# stays tracked, so the scan set is still non-empty -- it is genuinely self-test 2 (canary present)
-# that fires here, not self-test 1. --------------------------------------------------------------
+# --- Stage 6 (was stage 5): seed removed -> exit 0. Proves removal restores green ("then cleaned"). -
+file(REMOVE "${WORK_DIR}/src/engine/core/src/leak.cpp")
+execute_process(COMMAND "${GIT}" add -A WORKING_DIRECTORY "${WORK_DIR}/src")
+_gr_run("stage 6 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+_gr_expect_substr("stage 6" "${_gr_out}" "golden-rule guard: OK" TRUE)
+
+# --- Stage 7 (was stage 6): canary deleted -> exit 2. Vacuity refusal, distinct from both 0 and 1.
+# `clean.cpp` (both engine/ and runtime/) stays tracked, so the scan set is still non-empty -- it is
+# genuinely self-test 2 (canary present) that fires here, not self-test 1. --------------------------
 file(REMOVE_RECURSE "${WORK_DIR}/src/editor")
 execute_process(COMMAND "${GIT}" add -A WORKING_DIRECTORY "${WORK_DIR}/src")
-_gr_run("stage 6 (canary deleted)" 2 "${BASH}" "${SCRIPT}")
-_gr_expect_substr("stage 6" "${_gr_out}" "cannot self-verify" TRUE)
+_gr_run("stage 7 (canary deleted)" 2 "${BASH}" "${SCRIPT}")
+_gr_expect_substr("stage 7" "${_gr_out}" "cannot self-verify" TRUE)
 
 message(STATUS "golden-rule.include_scan_e2e: OK")
