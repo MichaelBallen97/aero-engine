@@ -65,14 +65,38 @@ endfunction()
 # _aero_gr_resolve_entry(<entry> <out-var>) — a raw LINK_LIBRARIES / INTERFACE_LINK_LIBRARIES entry
 # arrives UNEXPANDED, with generator expressions intact (F9): aero_core links aero::profiling PRIVATE,
 # which materialises on the interface as `$<LINK_ONLY:aero::profiling>` — a string, not a target name.
-# Extract identifier-ish tokens and ask if(TARGET ...) of each rather than parsing generator-expression
-# grammar; tokens that are not targets (raw library names like `m`, `-framework CoreAudio` fragments,
-# bare paths) are silently dropped — only targets can be under a forbidden/consumer tree. De-alias via
-# ALIASED_TARGET (documented-safe on an alias target; NOTFOUND on a non-alias, which if() treats as
-# false, so the non-alias branch is the normal path).
+#
+# (fix, post-review Gap 2) A plain identifier-token extraction over the RAW genex text is wrong: the
+# token class [A-Za-z0-9_:+.-]+ itself contains ':', so it swallows the genex HEAD together with its
+# payload -- e.g. "$<LINK_ONLY:pr::ed>" tokenises to "LINK_ONLY:pr::ed" (one token, not a target) and
+# "$<$<CONFIG:Debug>:pr::ed>" tokenises to "CONFIG:Debug" + ":pr::ed" (neither a target, the second with
+# a stray leading ':'). Both evade if(TARGET ...) entirely and the entry is silently dropped -- exactly
+# the same failure shape task 2.1.2 already fixed once for the boundary-rule's own $<LINK_ONLY:> case,
+# just not for every genex shape, contrary to this comment's own former claim.
+#
+# The fix iteratively UNWRAPS the innermost, non-nested "$<IDENT:content>" shell (content containing no
+# further '<'/'>') to its bare content, and repeats until a pass makes no change. This converges for
+# ARBITRARY nesting depth with no recursion (CMake's regex engine has none): the first pass on
+# "$<$<CONFIG:Debug>:pr::ed>" unwraps the truly-innermost "$<CONFIG:Debug>" to "Debug", leaving
+# "$<Debug:pr::ed>"; the second pass unwraps THAT (a now-innermost, non-nested shell) to "pr::ed"; the
+# third pass finds nothing left to unwrap and the loop stops. Only then do we extract identifier-ish
+# tokens and ask if(TARGET ...) of each; tokens that are not targets (raw library names like `m`,
+# `-framework CoreAudio` fragments, bare paths) are silently dropped — only targets can be under a
+# forbidden/consumer tree. De-alias via ALIASED_TARGET (documented-safe on an alias target; NOTFOUND on
+# a non-alias, which if() treats as false, so the non-alias branch is the normal path).
 function(_aero_gr_resolve_entry entry out_var)
     set(result "")
-    string(REGEX MATCHALL "[A-Za-z0-9_:+.-]+" _gr_toks "${entry}")
+
+    set(_gr_plain "${entry}")
+    while(TRUE)
+        string(REGEX REPLACE "\\$<[A-Za-z0-9_]+:([^<>]*)>" "\\1" _gr_plain_next "${_gr_plain}")
+        if(_gr_plain_next STREQUAL _gr_plain)
+            break()
+        endif()
+        set(_gr_plain "${_gr_plain_next}")
+    endwhile()
+
+    string(REGEX MATCHALL "[A-Za-z0-9_:+.-]+" _gr_toks "${_gr_plain}")
     foreach(_gr_tok IN LISTS _gr_toks)
         if(TARGET ${_gr_tok})
             get_target_property(_gr_alias ${_gr_tok} ALIASED_TARGET)
