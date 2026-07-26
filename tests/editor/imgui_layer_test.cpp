@@ -13,9 +13,12 @@
 // presented, we take the proven visible path. The brief flash matches rhi_swapchain_test.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <aero/editor/editor_app.hpp>
+#include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/selection.hpp>
 #include <aero/platform/platform.hpp>
 #include <aero/rhi/device.hpp>
+#include <aero/scene/world.hpp>
 
 #include "rhi_test_support.hpp"
 
@@ -23,6 +26,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke test)") {
     engine::platform::Context ctx;
@@ -87,4 +91,81 @@ TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke
     CHECK_FALSE(app->presentedLastFrame());  // no frame reached the screen after the quit
 
     app.reset();  // teardown must not crash; LSan (Linux Debug) proves leak-free
+}
+
+TEST_CASE("editor: the Hierarchy panel draws a seeded scene and survives edits (task 2.2.1)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    // AC-18: the default config seeds three entities.
+    CHECK(app->world().entityCount() == 3);
+    CHECK(app->panels().count() == 5);
+    CHECK(app->selection().empty());
+
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // Build a two-level tree BEHIND the panel's back and keep ticking: phase 1 must reconcile it in
+    // one frame (E27), and the expanded/leaf paths must both draw without unbalancing TreePop (I3).
+    engine::World& world = app->world();
+    const engine::Entity parent = engine::editor::createEntity(world, {}, "Parent");
+    const engine::Entity child = engine::editor::createEntity(world, parent, "Child");
+    REQUIRE(parent.valid());
+    REQUIRE(child.valid());
+    app->selection().set(child);  // a SELECTED row exercises the _Selected flag path
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    // Destroy the subtree behind its back: prune + reconcile must leave no dead handle anywhere.
+    REQUIRE(world.destroy(parent));
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    CHECK(app->selection().empty());  // the pruned selection followed the deletion (I5)
+
+    // Duplicate through the same seam the panel uses, then keep drawing.
+    const std::vector<engine::Entity> copies = engine::editor::duplicateEntities(world, app->selection().entities());
+    CHECK(copies.empty());  // empty selection -> no-op (E13)
+    REQUIRE(app->tick());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: seedDefaultScene = false yields an empty tree (AC-18)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy empty", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = false, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    CHECK(app->world().entityCount() == 0);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());  // an EMPTY tree must draw cleanly too
+        CHECK(app->presentedLastFrame());
+    }
+    app.reset();
 }

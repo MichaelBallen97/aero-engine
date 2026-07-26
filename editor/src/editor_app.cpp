@@ -8,6 +8,7 @@
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
 
+#include "hierarchy_panel.hpp"
 #include "placeholder_panel.hpp"
 #include "shell_ui.hpp"
 
@@ -50,7 +51,7 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     app.applyDefaultLayout = app.layer.wantsDefaultLayout();
 
     if (config.registerDefaultPanels) {
-        app.registry.emplace<PlaceholderPanel>("Hierarchy", DockSlot::Left, "Hierarchy — placeholder (task 2.2.1)");
+        app.registry.emplace<HierarchyPanel>();  // task 2.2.1 -- was a PlaceholderPanel
         app.registry.emplace<PlaceholderPanel>("Inspector", DockSlot::Right, "Inspector — placeholder (task 2.2.2)");
         app.registry.emplace<PlaceholderPanel>("Viewport", DockSlot::Center, "Viewport — placeholder (task 2.2.3)");
         app.registry.emplace<PlaceholderPanel>("Console", DockSlot::Bottom, "Console — placeholder (task 2.2.5)");
