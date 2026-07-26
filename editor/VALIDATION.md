@@ -93,7 +93,9 @@ machine.
 - `AERO_REQUIRE_GPU=1 ctest --preset macos-debug -R aero_editor` passes both editor targets.
 - Launched `aero_editor` non-interactively (`( aero_editor & pid=$!; sleep 3; kill $pid )`) after
   deleting `build/macos-debug/editor/aero_editor.ini`: the log line
-  `editor: shell ready (5 panels, layout: default)` appears, the ini is written, and it contains a
+  `editor: shell ready (5 panels, 0 entities, layout: default)` appears (task 2.2.1 widened the log
+  line with an entity count; at 2.1.3's own validation time it read `layout: default` with no entity
+  count, since the World/seeding did not exist yet), the ini is written, and it contains a
   real `[Docking][Data]` tree with entries for all five panel names
   (`Hierarchy`/`Inspector`/`Viewport`/`Console`/`Assets`) — proving the data-driven DockBuilder
   layout actually built and ImGui saved it. A second launch logs `layout: restored` and leaves the
@@ -157,3 +159,95 @@ Console+Assets tabbed, `Reset Layout`, Esc not quitting, all three human quit pa
 persistence across a real restart, the unfocused throttle, and HiDPI crispness.
 **Epic 2.1 closes when both tables' Windows and Linux rows are filled** by a code-free on-hardware
 follow-up (the Phase 0/1 precedent, 0.5.3/1.4.2) — no code change is expected to be needed.
+
+# Task 2.2.1 — hierarchy panel
+
+Task 2.2.1's deliverable: the `"Hierarchy"` placeholder is replaced by a real panel that renders the
+live `World`'s entity forest and lets the user create / delete / duplicate / rename / reparent
+entities and multi-select, with the `Selection` shared for 2.2.2/2.2.3 to read later. CI proves the
+structural half automatically (`aero_editor_shell_test`'s new `tests/editor/hierarchy_test.cpp` TU
+covers `Selection`, `entity_ops`, `RootOrder` and `seedDefaultScene` at tier-0 on every lane in both
+configs with no GPU; `aero_editor_imgui_test` now drives the REAL `HierarchyPanel` over the seeded
+three-entity scene through `EditorApp::tick()` — create → 3 presented frames → a two-level tree built
+behind the panel's back → a selected row → a subtree destroyed behind its back → an empty-selection
+duplicate no-op → quit → teardown — on real Metal/D3D12/lavapipe under `AERO_REQUIRE_GPU=1`; an
+unbalanced `TreePop`/`PopID` would abort via `IM_ASSERT` in the Debug ImGui build, so a green run *is*
+the I3 mechanical proof). It **cannot** prove the mouse- and keyboard-driven half: the inline rename
+`InputText` gesture (F2 / double-click / Enter / Escape), drag-and-drop reparenting and the "no drop
+highlight on an illegal drop" rule (AC-15 — the ONE acceptance criterion with no mechanical proof at
+all, closed only by sabotage S5 below plus a human), Shift/Ctrl+click multi-select by mouse, and the
+context menu. That half needs a person at the machine.
+
+## What was mechanically verified (this implementation pass, macOS, Apple M1 Pro / Metal)
+
+- `aero_editor_core`, `aero_editor`, `aero_editor_shell_test` and `aero_editor_imgui_test` build
+  clean on `macos-debug` and `macos-release`; `ctest` is green at **83** entries on both — no new
+  ctest entry was registered (both new TUs ride existing targets, exactly as planned).
+- `AERO_REQUIRE_GPU=1 ctest --preset macos-debug -R aero_editor` passes both editor targets;
+  `aero_editor_imgui_test` now runs 3 `TEST_CASE`s (was 1), including the two new task-2.2.1 cases.
+- `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` (fresh configure): `ctest -N` is **5** (was 5),
+  `aero_editor` still builds, and `aero_editor_shell_test` — including every `hierarchy_test.cpp`
+  case — is green: the structural proof the editor's scene layer depends on neither codegen nor
+  shaders (2.1.3 AC-9 preserved).
+- Launched `aero_editor` non-interactively after deleting the ini: the log line
+  `editor: shell ready (5 panels, 3 entities, layout: default)` appears (the seeded Main
+  Camera/Directional Light/Cube), the ini gains `[Docking][Data]` entries for all five panels as
+  before, and a **zero-ERROR grep** over the run's log
+  (`scene: setParent|scene: setName on a dead|scene: copyComponent`) returns nothing — proving the
+  panel's steady-state draw makes no rejected `World` call.
+- All six §V3 sabotage proofs were performed and reverted (see the implementation report): S1 (the
+  D17 remove-before-read ordering) reds the AC-5b case while AC-5a stays green, confirming the C1
+  correction; S2 (drop `topMost` from `duplicateEntities`) reds the E9 case; S3 (hardcode the
+  registration-table walk) reds the D4/AC-13 value assertion; S4 (make `RootOrder::reconcile` a
+  plain rescan) reds the AC-16 case; S6 (`#include <imgui.h>` in `panel_context.hpp`) still compiles
+  cleanly in `aero_editor_shell_test`, re-documenting R12 as D24 predicts. S5 (AC-15's "no drop
+  highlight") has no mechanical proof and is recorded below as human-pending.
+- No mouse or keyboard interaction was performed; every row marked "pending" below needs a human.
+
+## Known-and-expected, NOT a defect
+
+- **Duplicated entities keep their source name verbatim** (D20) — no `" (1)"` suffixing. Two rows
+  with the same label is expected; row identity is the ID stack (index+generation), never the text.
+- **Context-menu Delete/Duplicate on a row outside the current selection acts on that row alone**;
+  on a row inside the selection, it acts on the whole selection — mirroring the drag rule (E16). This
+  is the plan's own default (§O-2), not a bug.
+- **Entity ordering within a parent is not user-controllable** (D14) — children draw in attach order,
+  and there is deliberately no way to reorder siblings in this task.
+
+## How to validate one OS (for the pending rows)
+
+1. **Build**, delete `build/<os>-debug/editor/aero_editor.ini`, run `aero_editor`.
+2. **Seeded scene**: the Hierarchy panel lists exactly *Main Camera*, *Directional Light*, *Cube*.
+3. **Rename**: F2 on a selected row, and double-click on a row — both open an inline field seeded
+   with the current name. Enter commits; clicking away commits; **Escape leaves the name
+   unchanged**; committing an empty string falls the label back to `Entity <index>`.
+4. **Create**: right-click a row → *Create Empty* (a new root, selected) and *Create Child* (indented
+   under the primary, with an expander appearing on the parent). Right-click empty space →
+   *Create Empty*.
+5. **Indentation**: the child sits one level in, under its parent, with an expander only on entities
+   that have children.
+6. **Reparent**: drag a row onto another — it becomes that entity's child. Drag it onto empty space —
+   it returns to the root list. **Drag a parent onto its own child and confirm NO drop highlight
+   appears at all** (AC-15, sabotage S5's target) and that nothing is logged.
+7. **Multi-select**: click, Ctrl/Cmd+click, Shift+click across depths; confirm the range follows the
+   rows **as displayed**. Press Delete (and Backspace) — every selected subtree disappears.
+8. **Duplicate**: Ctrl/Cmd+D and the context menu; confirm the copy carries the name, the children in
+   the same order, and (via the still-placeholder Inspector, or by eye in the viewport once 2.2.3
+   lands) its components.
+9. **Delete while renaming**: begin a rename, then press Delete via another route — the field closes
+   cleanly (E24).
+10. **Root order**: create A, B, C; delete B; confirm A and C do **not** reorder (AC-16).
+11. **Quit and relaunch**: the layout persists and the panel is still docked left.
+12. **Record the row below.**
+
+## Validation table
+
+| OS | Status | Date | Machine / GPU | Seeded scene (3 entities) | Rename (F2/dbl-click/Enter/Esc) | Create Empty/Child | Indentation + expander | Reparent (drag) | No drop highlight on illegal drop (AC-15) | Multi-select + Delete | Duplicate (name+children+components) | Delete-while-renaming | Root order stable | Layout persists | Notes |
+|----|--------|------|---------------|----------------------------|-----------------------------------|----------------------|---------------------------|--------------------|-----------------------------------------------|--------------------------|------------------------------------------|---------------------------|---------------------|-------------------|-------|
+| macOS | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | — | mechanical proof complete (see above); mouse/keyboard pass not yet performed |
+| Windows | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | — | needs native run (D3D12) |
+| Linux | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | — | needs native run (real Vulkan; NOT lavapipe/CI) |
+
+**Task 2.2.1 gate status: OPEN — mechanical proof complete on macOS; the mouse/keyboard human pass
+(all three OSes) is pending a code-free on-hardware follow-up** (the 0.5.3/1.4.2/2.1.1/2.1.3
+precedent) — no code change is expected to be needed.
