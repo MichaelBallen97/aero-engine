@@ -103,6 +103,17 @@ void HierarchyPanel::onDraw(PanelContext& context) {
     if (rangeAnchor.valid() && !world.alive(rangeAnchor)) {
         rangeAnchor = {};  // E19
     }
+    // The deferred multi-select-drag candidate (E24-style safety net): a dead entity can never be
+    // released over legitimately, and a MISSED release -- the row it names stopped drawing (a
+    // collapsed ancestor) before mouse-up ever reached drawRow's RELEASE check -- must not leave this
+    // armed forever. `!IsMouseReleased` excludes the one frame drawRow's own RELEASE check still needs
+    // it: reconcile runs before the tree walk (phase order, D12), so clearing it here on the actual
+    // release frame would race the check that is about to consume it this same frame.
+    if (deferredSelectTarget.valid() &&
+        (!world.alive(deferredSelectTarget) ||
+         (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseReleased(ImGuiMouseButton_Left)))) {
+        deferredSelectTarget = {};
+    }
     rows.clear();
     childArena.clear();
     stack.clear();
@@ -221,17 +232,58 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
     }
 
     // -- click / double-click ---------------------------------------------------------------------
-    // IsItemToggledOpen() guards the arrow: with _OpenOnArrow a click on the arrow also reports
-    // IsItemClicked, and expanding a node must not change the selection.
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen()) {
+    // The PRESS half: engine::editor::clickSelectionAction (selection.hpp) is the pure decision --
+    // IsItemToggledOpen() (the arrow guard) and io.KeyCtrl/KeyShift are simply gathered here and
+    // handed to it, so the whole matrix (incl. the arrow guard) is provable at tier-0 with no ImGui
+    // context (hierarchy_test.cpp). A plain click on an ALREADY-selected row resolves to None here ON
+    // PURPOSE -- it is deferred to the RELEASE check below, which is what keeps a same-press multi-drag
+    // (E16/AC-15) from ever seeing its selection collapsed to one row (the bug this closes).
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
         const ImGuiIO& io = ImGui::GetIO();  // io.KeyCtrl is Cmd on macOS automatically (imgui.h:2683)
-        if (io.KeyShift) {
-            pending = PendingAction{.kind = ActionKind::Range, .target = entity};
-        } else if (io.KeyCtrl) {
-            pending = PendingAction{.kind = ActionKind::Toggle, .target = entity};
-        } else {
+        const bool arrowToggled = ImGui::IsItemToggledOpen();
+        const ClickSelectionAction action =
+            clickSelectionAction(selection.contains(entity), io.KeyCtrl, io.KeyShift, arrowToggled,
+                                 /*dragOccurred=*/false, ClickPhase::Press);
+        switch (action) {
+            case ClickSelectionAction::None:
+                // Only the deferred candidate (a plain click on an already-selected row) arms here --
+                // the arrow guard also resolves to None but must never arm it (a click that only
+                // toggled the arrow open/closed is not the start of a click-or-drag gesture at all).
+                if (!arrowToggled) {
+                    deferredSelectTarget = entity;
+                }
+                break;
+            case ClickSelectionAction::Select:
+                pending = PendingAction{.kind = ActionKind::Select, .target = entity};
+                break;
+            case ClickSelectionAction::Toggle:
+                pending = PendingAction{.kind = ActionKind::Toggle, .target = entity};
+                break;
+            case ClickSelectionAction::Range:
+                pending = PendingAction{.kind = ActionKind::Range, .target = entity};
+                break;
+        }
+    }
+    // The RELEASE half: resolves the ONE candidate armed above, on whatever later frame the mouse
+    // button actually comes back up. `GetDragDropPayload() != nullptr` is the PUBLIC-API drag signal
+    // (ImGui::IsDragDropActive() is internal-only, declared in imgui_internal.h, which this TU does not
+    // include) -- and it is accurate here specifically because this function unconditionally calls
+    // BeginDragDropSource() + SetDragDropPayload() every frame for every row above: the payload is live
+    // the instant this row's own press crosses ImGui's drag threshold, and per imgui.cpp's own "Elapse
+    // payload" bookkeeping (EndFrame), it is NOT cleared until the frame AFTER release even when
+    // delivered -- so it is still live for this exact check on the release frame itself, and stays live
+    // whether the drop landed on a different row (legal) or back on this same row (illegal self-drop,
+    // AC-15/E14) -- deliberately: a real drag must never collapse the selection either way, even if it
+    // lands back where it started. Consumed unconditionally: one release resolves (or discards) one
+    // press.
+    if (deferredSelectTarget == entity && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        const bool hoveredNow = ImGui::IsItemHovered();
+        const bool dragOccurred = ImGui::GetDragDropPayload() != nullptr;
+        if (hoveredNow && clickSelectionAction(/*alreadySelected=*/true, false, false, false, dragOccurred,
+                                               ClickPhase::Release) == ClickSelectionAction::Select) {
             pending = PendingAction{.kind = ActionKind::Select, .target = entity};
         }
+        deferredSelectTarget = {};
     }
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         pending = PendingAction{.kind = ActionKind::BeginRename, .target = entity};  // AC-14

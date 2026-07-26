@@ -74,4 +74,27 @@ std::size_t Selection::prune(const World& world) {
     return before - items.size();
 }
 
+ClickSelectionAction clickSelectionAction(bool alreadySelected, bool ctrlOrCmd, bool shift, bool arrowToggled,
+                                          bool dragOccurred, ClickPhase phase) noexcept {
+    if (arrowToggled) {
+        return ClickSelectionAction::None;  // expanding/collapsing a row never touches selection
+    }
+    if (phase == ClickPhase::Press) {
+        if (shift) {
+            return ClickSelectionAction::Range;
+        }
+        if (ctrlOrCmd) {
+            return ClickSelectionAction::Toggle;
+        }
+        return alreadySelected ? ClickSelectionAction::None : ClickSelectionAction::Select;
+    }
+    // ClickPhase::Release -- only ever asked for a plain click's deferred candidate (a Ctrl/Shift press
+    // resolves fully at PRESS and never arms a deferred candidate); dragOccurred is what actually gates
+    // the commit.
+    if (ctrlOrCmd || shift || !alreadySelected) {
+        return ClickSelectionAction::None;
+    }
+    return dragOccurred ? ClickSelectionAction::None : ClickSelectionAction::Select;
+}
+
 }  // namespace engine::editor
