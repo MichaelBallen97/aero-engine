@@ -1,6 +1,8 @@
 #pragma once
 // Aero Engine -- the reflection-driven inspector's read model (task 2.2.2). PUBLIC and entt-free
-// (2.1.3 D9); the entt::meta walk lives in editor/src/inspector_model.cpp.
+// (2.1.3 D9); the entt::meta walk lives in editor/src/inspector_model.cpp. See component_ops.hpp's
+// header comment for how "entt-free" is actually verified (a comment-stripped grep, not a bare one --
+// review finding 9): this file's own O1 note below cites `entt::` types in prose too.
 
 #include <aero/editor/component_ops.hpp>  // FieldValue, FieldKind
 #include <aero/scene/entity.hpp>

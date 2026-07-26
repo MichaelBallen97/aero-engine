@@ -5,7 +5,14 @@
 // commands WRAP these four functions and the panel's call sites move, not the logic.
 //
 // ENTT-FREE BY RULE, like every header under editor/include (2.1.3 D9). The entt::meta walk lives in
-// editor/src/component_ops.cpp; enforcement is file placement + review, exactly as for ImGui (R12).
+// editor/src/component_ops.cpp; enforcement is file placement + review, exactly as for ImGui (R12) --
+// there is no compile-time probe for this header, only manual review (a probe would be vacuous by
+// construction, per 2.1.2's own reasoning for why the golden rule has none either). The literal
+// `git grep -n 'entt::\|EnTT' -- editor/include/` is NOT empty (review finding 9) -- this file and
+// inspector_model.hpp both cite `entt::`/`EnTT` in PROSE (this comment, the constness note below, the
+// D8 clamp note). The real check strips comments first, the same way the boundary scripts do
+// (nl -ba -w1 -s: <file> | sed -E 's|//.*||'), and THAT output is empty: no line of actual code in
+// either public header ever names an entt:: type.
 #include <aero/core/math.hpp>  // engine::Vec3, engine::Quat
 #include <aero/scene/entity.hpp>
 #include <aero/scene/world.hpp>  // engine::ComponentTypeId (a value type -- needs the definition)
