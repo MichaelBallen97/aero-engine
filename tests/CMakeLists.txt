@@ -370,6 +370,22 @@ if(AERO_REFLECT_TOOLS)
     target_compile_definitions(aero_scene_serialize_test PRIVATE
         AERO_PHASE1_SCENE_DIR="${CMAKE_SOURCE_DIR}/samples/phase-1-scene")  # locates the committed file (test 9)
     add_test(NAME aero_scene_serialize_test COMMAND aero_scene_serialize_test)
+
+    # --- task 2.2.2: the inspector's tier-0 battery + the zero-per-component-code proof (D18) ---
+    # GATED: unlike aero_editor_shell_test, this target compiles GENERATED meta for its own fixture.
+    # aero::scene_internal is here for the SAME reason aero_tests and aero_editor_shell_test link it:
+    # the fixture is registered through engine::scene::internal::registerComponent<T>. Tier-0: no GPU,
+    # no window, no ImGui context, no AERO_REQUIRE_GPU, no vulkan_stack_pin.cpp, no ${CMAKE_DL_LIBS}.
+    add_executable(aero_editor_inspector_test editor/inspector_test.cpp)
+    target_link_libraries(aero_editor_inspector_test PRIVATE
+        doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core)
+    target_include_directories(aero_editor_inspector_test PRIVATE editor/fixtures)
+    aero_reflect_generate(aero_editor_inspector_test
+        HEADERS editor/fixtures/inspector_probe.hpp
+        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
+                     "${CMAKE_SOURCE_DIR}/engine/scene/include"
+                     "${CMAKE_SOURCE_DIR}/engine/reflect/include")
+    add_test(NAME aero_editor_inspector_test COMMAND aero_editor_inspector_test)
 endif()
 
 # ---------------------------------------------------------------------------------------------

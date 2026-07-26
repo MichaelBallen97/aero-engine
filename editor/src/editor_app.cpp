@@ -8,6 +8,7 @@
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
 
+#include "editor_reflection.hpp"
 #include "hierarchy_panel.hpp"
 #include "placeholder_panel.hpp"
 #include "shell_ui.hpp"
@@ -40,6 +41,7 @@ EditorApp::EditorApp(ImGuiLayer layer, platform::Context& ctx, const EditorAppCo
 
 std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window& window, platform::Context& ctx,
                                            const EditorAppConfig& config) {
+    registerEditorReflection();  // task 2.2.2 -- unconditional, once-per-process, before ImGuiLayer
     std::optional<ImGuiLayer> layer = ImGuiLayer::create(device, window, ctx, config.persistLayout);
     if (!layer) {
         return std::nullopt;  // ImGuiLayer already logged the reason
