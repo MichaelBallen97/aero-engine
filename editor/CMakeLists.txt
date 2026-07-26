@@ -20,6 +20,7 @@ add_library(aero_editor_core STATIC
     src/inspector_model.cpp     # task 2.2.2 -- the meta walk (entt-using, ImGui-free, const World&)
     src/meta_utils.cpp          # task 2.2.2 -- the ONE 17-type map, shared by the two above
     src/editor_reflection.cpp   # task 2.2.2 -- the D16 bootstrap (tools-ON/OFF via one #if)
+    src/text_input.cpp          # task 2.2.2 -- inputTextString, promoted verbatim from hierarchy_panel.cpp
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

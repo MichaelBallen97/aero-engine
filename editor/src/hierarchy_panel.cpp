@@ -4,6 +4,8 @@
 #include <aero/editor/selection.hpp>
 #include <aero/scene/world.hpp>
 
+#include "text_input.hpp"
+
 #include <algorithm>
 #include <cfloat>  // FLT_MIN -- the "align to the right edge" idiom
 #include <cstddef>
@@ -18,43 +20,6 @@ namespace engine::editor {
 namespace {
 
 constexpr const char* ENTITY_PAYLOAD_TYPE = "AERO_ENTITY";  // <= 32 chars (ImGui's own limit)
-
-// -- a src-private std::string InputText wrapper, replacing vcpkg's prebuilt imgui_stdlib -------
-// vcpkg's imguid.lib ships imgui_stdlib.cpp.obj built WITHOUT ASan; on the Windows Debug lane
-// MSVC's ASan turns on std::string/std::vector container annotations in every TU we compile
-// (annotate_string/annotate_vector = 1), so linking against that prebuilt object is an ODR-class
-// mismatch (LNK2038). Reimplementing the ~20-line resize-callback trick here (behaviour identical
-// to misc/cpp/imgui_stdlib.cpp: unbounded length, no truncation) means the prebuilt object is never
-// referenced, so the mismatch cannot occur. Deliberately NOT in `namespace ImGui` -- that would
-// reopen the exact duplicate-symbol risk this fix removes.
-struct InputTextResizeUserData {
-    std::string* str = nullptr;
-    ImGuiInputTextCallback chainCallback = nullptr;
-    void* chainUserData = nullptr;
-};
-
-int inputTextResizeCallback(ImGuiInputTextCallbackData* data) {
-    auto* userData = static_cast<InputTextResizeUserData*>(data->UserData);
-    if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
-        std::string* str = userData->str;
-        IM_ASSERT(data->Buf == str->data());
-        str->resize(static_cast<std::size_t>(data->BufTextLen));
-        data->Buf = str->data();  // non-const std::string::data() (C++17) -- no cast needed
-    } else if (userData->chainCallback != nullptr) {
-        data->UserData = userData->chainUserData;
-        return userData->chainCallback(data);
-    }
-    return 0;
-}
-
-// Mirrors ImGui::InputText(const char*, std::string*, ...) from misc/cpp/imgui_stdlib.cpp.
-bool inputTextString(const char* label, std::string& str, ImGuiInputTextFlags flags) {
-    IM_ASSERT((flags & ImGuiInputTextFlags_CallbackResize) == 0);
-    flags |= ImGuiInputTextFlags_CallbackResize;
-
-    InputTextResizeUserData cbUserData{.str = &str};
-    return ImGui::InputText(label, str.data(), str.capacity() + 1, flags, inputTextResizeCallback, &cbUserData);
-}
 
 // Every moved row must be legally reparentable, or the drop is not offered at all (E14/AC-15).
 // `moved` is ALREADY topMost()-filtered by the caller (engine::editor::reparentTargets) -- the same
