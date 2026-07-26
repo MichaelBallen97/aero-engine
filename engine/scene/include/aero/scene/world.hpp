@@ -164,6 +164,31 @@ public:
     template <typename Fn>
     void eachChild(Entity parent, Fn&& fn) const;
 
+    // ---- names (task 2.2.1) --------------------------------------------------------------------
+    // An entity-level, optional, purely informational label -- NOT component data, for the same
+    // reason the parent link above is not: docs/09-file-formats.md carries `name` at ENTITY level, so
+    // the runtime model matches the file. Names are never unique, never validated, never interpreted,
+    // and never enter the component-type registry (componentTypeCount() does not move -- D1/F12).
+
+    // Sets (or replaces) `entity`'s name. An EMPTY name CLEARS it -- docs/09's "" == absent. Returns
+    // false plus one ERROR, leaving the World unchanged, for a moved-from World or a dead/null
+    // entity. May allocate, exactly like setParent -- so it is NOT noexcept.
+    bool setName(Entity entity, std::string_view name);
+
+    // `entity`'s name, or an EMPTY view for an unnamed entity, a dead or null handle, or a moved-from
+    // World. Silent in every case -- polling a name is a normal pattern, not an error (see alive()).
+    //
+    // LIFETIME -- the view points into World-owned storage and is invalidated by ANY of:
+    //   * setName() on THIS entity (the stored string is reassigned);
+    //   * setName(other, "") -- CLEARING ANOTHER entity's name erases a record from the shared name
+    //     storage, which swap-and-pops and may RELOCATE this entity's stored string. For a short
+    //     (SSO) name the characters live inside the string object, so the view dangles;
+    //   * destroy() of ANY named entity, and clear() (the same relocation, wholesale);
+    //   * a move of this World, and ~World.
+    // Copy it into a std::string before doing anything else with this World -- the same rule
+    // addRaw()'s aliasing warning states below.
+    [[nodiscard]] std::string_view name(Entity entity) const noexcept;
+
     // ---- components (entt-free templates over the raw primitives) -----------------------------
 
     // Ensures `entity` holds a T equal to `value`. If T is already present on `entity`, the OLD

@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -751,4 +752,126 @@ TEST_CASE("scene: move semantics and the inert moved-from World") {
         CHECK(Counted::live() == 1);
     }
     CHECK(Counted::live() == 0);
+}
+
+// ---- task 2.2.1: entity names -----------------------------------------------------------------
+
+TEST_CASE("scene: entity names round-trip (2.2.1 AC-1)") {
+    World w;
+    const Entity a = w.create();
+    const Entity b = w.create();
+
+    CHECK(w.name(a).empty());                     // unnamed
+    CHECK(w.setName(a, "Main Camera"));
+    CHECK(w.name(a) == std::string_view{"Main Camera"});
+    CHECK(w.name(b).empty());                     // no cross-talk
+
+    CHECK(w.setName(a, "Renamed"));               // overwrite (in place)
+    CHECK(w.name(a) == std::string_view{"Renamed"});
+
+    CHECK(w.setName(a, ""));                      // "" CLEARS (E2)
+    CHECK(w.name(a).empty());
+    CHECK(w.setName(a, ""));                      // idempotent
+    CHECK(w.name(a).empty());
+
+    CHECK(w.setName(b, "  \t "));                 // whitespace is stored verbatim (E21)
+    CHECK(w.name(b) == std::string_view{"  \t "});
+
+    // Duplicates are legal (docs/09, E23).
+    const Entity c = w.create();
+    CHECK(w.setName(b, "dup"));
+    CHECK(w.setName(c, "dup"));
+    CHECK(w.name(b) == w.name(c));
+    CHECK(!(b == c));
+}
+
+TEST_CASE("scene: setName rejections are loud, name() is silent (2.2.1 AC-1/E1)") {
+    World w;
+    const Entity live = w.create();
+    const Entity dead = w.create();
+    REQUIRE(w.destroy(dead));
+
+    CHECK_FALSE(w.setName(dead, "x"));            // ERROR logged (not asserted -- the 0.2.4 deferral)
+    CHECK_FALSE(w.setName(Entity{}, "x"));
+    CHECK(w.name(dead).empty());                  // silent
+    CHECK(w.name(Entity{}).empty());              // silent
+
+    // A rejected setName leaves the World untouched.
+    CHECK(w.setName(live, "kept"));
+    CHECK_FALSE(w.setName(Entity{}, "other"));
+    CHECK(w.name(live) == std::string_view{"kept"});
+
+    // A moved-from World: setName ERRORs and returns false; name() is silent and empty.
+    std::optional<World> src;
+    src.emplace();
+    const Entity e = src->create();
+    REQUIRE(src->setName(e, "before"));
+    const World moved = std::move(*src);
+    CHECK_FALSE(src->setName(e, "after"));
+    CHECK(src->name(e).empty());
+    CHECK(moved.name(e) == std::string_view{"before"});   // the moved-TO owns it
+}
+
+TEST_CASE("scene: a name dies with its entity and never haunts a recycled slot (2.2.1 AC-2/E3)") {
+    World w;
+    const Entity first = w.create();
+    REQUIRE(w.setName(first, "doomed"));
+    REQUIRE(w.destroy(first));
+
+    const Entity recycled = w.create();           // the slot comes back with a new generation
+    CHECK(recycled.index == first.index);
+    CHECK(!(recycled == first));
+    CHECK(w.name(recycled).empty());              // AC-2 -- the registry erased the record
+
+    // Subtree destroy takes descendants' names too.
+    const Entity parent = w.create();
+    const Entity child = w.create();
+    REQUIRE(w.setParent(child, parent));
+    REQUIRE(w.setName(parent, "parent"));
+    REQUIRE(w.setName(child, "child"));
+    REQUIRE(w.destroy(parent));
+    CHECK(w.name(child).empty());
+
+    // clear() drops every name and leaves the World reusable.
+    const Entity survivor = w.create();
+    REQUIRE(w.setName(survivor, "gone soon"));
+    w.clear();
+    const Entity afterClear = w.create();
+    CHECK(w.name(afterClear).empty());
+    CHECK(w.setName(afterClear, "fresh"));
+    CHECK(w.name(afterClear) == std::string_view{"fresh"});
+}
+
+TEST_CASE("scene: names at scale, with no cross-talk (2.2.1 AC-1)") {
+    World w;
+    std::vector<Entity> es;
+    es.reserve(1000);
+    for (int i = 0; i < 1000; ++i) {
+        const Entity e = w.create();
+        // Long enough to exceed libc++'s SSO buffer, so every record owns a heap allocation and ASan
+        // sees any lifetime mistake.
+        REQUIRE(w.setName(e, "entity-with-a-deliberately-long-name-" + std::to_string(i)));
+        es.push_back(e);
+    }
+    for (std::size_t i = 0; i < es.size(); ++i) {
+        CHECK(w.name(es[i]) == "entity-with-a-deliberately-long-name-" + std::to_string(i));
+    }
+    // Clearing one name must not corrupt any other (the swap-and-pop relocation path).
+    REQUIRE(w.setName(es[10], ""));
+    CHECK(w.name(es[10]).empty());
+    for (std::size_t i = 0; i < es.size(); ++i) {
+        if (i != 10) {
+            CHECK(w.name(es[i]) == "entity-with-a-deliberately-long-name-" + std::to_string(i));
+        }
+    }
+}
+
+TEST_CASE("scene: names do not enter the component-type registry (2.2.1 AC-6/I8)") {
+    World w;
+    CHECK(w.componentTypeCount() == 5);           // Transform, Camera, DirectionalLight, PointLight, MeshRenderer
+    const Entity e = w.create();
+    REQUIRE(w.setName(e, "named"));
+    CHECK(w.componentTypeCount() == 5);           // unchanged -- D1/F12
+    CHECK(!w.findComponentType("engine::EntityName").valid());
+    CHECK(!w.findComponentType("EntityName").valid());
 }
