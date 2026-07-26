@@ -100,7 +100,8 @@ bool EditorApp::tick() {
 
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout, .quitRequested = false};
-    drawShellUi(registry, ui);                   // menu bar -> dockspace -> panels
+    PanelContext panelContext{sceneWorld, sceneSelection};  // rebuilt per frame (D7)
+    drawShellUi(registry, panelContext, ui);      // menu bar -> dockspace -> panels
     applyDefaultLayout = ui.applyDefaultLayout;  // drawShellUi clears it once consumed, and re-sets
                                                  // it for View > Reset Layout
     presented = layer.endFrame(config.clearColor);
