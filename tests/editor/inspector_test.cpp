@@ -4,8 +4,8 @@
 // (`git grep InspectorProbe -- editor/` is empty).
 //
 // GATED (unlike aero_editor_shell_test): this target compiles GENERATED entt::meta for its own
-// fixture. Tier-0 -- no GPU, no window, no ImGui context; must pass identically with
-// AERO_REQUIRE_GPU set or unset (it builds none of Context/Window/Device/EditorApp/ImGui).
+// fixture. Tier-0 -- no GPU, no on-screen surface, no UI-layer bootstrap; must pass identically
+// with AERO_REQUIRE_GPU set or unset (it builds none of the platform/RHI/UI-shell machinery).
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/inspector_model.hpp>
@@ -49,7 +49,7 @@ void aero_reflect_register_all_aero_editor_inspector_test();
 // normal, hand-written function with external linkage, defined in editor/src/editor_reflection.cpp
 // and compiled into aero::editor_core -- this target links that library, so calling it here pulls
 // in the REAL aggregator for the 4 built-in headers (transform/camera/light/mesh_renderer.hpp),
-// exactly as EditorApp::create() does. Only the AC-12 drift-pin case below calls it.
+// the same one the shipping bootstrap calls. Only the AC-12 drift-pin case below calls it.
 namespace engine::editor {
 void registerEditorReflection();
 }  // namespace engine::editor
