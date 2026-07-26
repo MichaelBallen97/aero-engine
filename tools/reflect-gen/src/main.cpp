@@ -22,6 +22,9 @@
 #include <clang-c/Index.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -485,8 +488,63 @@ struct FieldAnnotations {
     std::vector<std::string> diagnostics;  // deferred: judged after classification (D7)
 };
 
+// annotations.hpp:26-28's documented grammar, checked directly rather than trusted to strtod (which
+// is a "how much of this can I parse as a double" oracle, not a "is this a C++ numeric literal"
+// oracle -- it happily accepts "inf", "infinity", "nan", "nan(chars)" and out-of-range magnitudes
+// that then get emitted verbatim into generated code). AFTER the trailing f/F/l/L suffix strip:
+// optional leading sign, then EITHER a hex-integer form (0x/0X + hex digits, no hex-float p-exponent
+// -- AERO_RANGE never needed one) OR a decimal form (digits, at most one '.', an optional e/E
+// exponent with its own optional sign) -- and nothing else. No letters outside x/X (hex marker) and
+// e/E (decimal exponent) survive this check, which is what rejects "inf"/"infinity"/"nan" by
+// CONSTRUCTION rather than by the accidental trailing-suffix-strip mangling this used to rely on.
+bool looksLikeNumericLiteral(std::string_view token) {
+    if (token.empty()) {
+        return false;
+    }
+    std::size_t i = 0;
+    if (token[i] == '+' || token[i] == '-') {
+        ++i;
+    }
+    if (i >= token.size()) {
+        return false;
+    }
+    if (token[i] == '0' && i + 1 < token.size() && (token[i + 1] == 'x' || token[i + 1] == 'X')) {
+        std::size_t j = i + 2;
+        if (j >= token.size()) {
+            return false;  // "0x" with no digits
+        }
+        for (; j < token.size(); ++j) {
+            if (std::isxdigit(static_cast<unsigned char>(token[j])) == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+    bool sawDigit = false;
+    bool sawDot = false;
+    bool sawExp = false;
+    for (; i < token.size(); ++i) {
+        const char c = token[i];
+        if (c >= '0' && c <= '9') {
+            sawDigit = true;
+        } else if (c == '.' && !sawDot && !sawExp) {
+            sawDot = true;
+        } else if ((c == 'e' || c == 'E') && !sawExp && sawDigit) {
+            sawExp = true;
+            if (i + 1 < token.size() && (token[i + 1] == '+' || token[i + 1] == '-')) {
+                ++i;
+            }
+        } else {
+            return false;  // anything else (incl. any other letter) is not this grammar
+        }
+    }
+    return sawDigit;
+}
+
 // One numeric literal token as AERO_RANGE stringized it: optional sign, optional ONE trailing f/F/l/L.
-// strtod is the oracle -- it accepts 0, -1, 1e-3, 0x10, 3.1241 and rejects `lo`, `1 + 2`, `'a'`, "".
+// strtod is the MAGNITUDE oracle once the grammar above has already accepted the token's shape; its
+// own ERANGE/non-finite result is what catches "0:1e400" (an ill-formed out-of-range literal that
+// overflows to +-HUGE_VAL).
 std::optional<std::string> parseRangeToken(std::string token) {
     if (!token.empty()) {
         const char last = token.back();
@@ -494,14 +552,18 @@ std::optional<std::string> parseRangeToken(std::string token) {
             token.pop_back();
         }
     }
-    if (token.empty()) {
+    if (!looksLikeNumericLiteral(token)) {
         return std::nullopt;
     }
     const char* begin = token.c_str();
     char* end = nullptr;
-    (void)std::strtod(begin, &end);
+    errno = 0;
+    const double parsed = std::strtod(begin, &end);
     if (end != begin + token.size()) {
         return std::nullopt;  // must consume the WHOLE token
+    }
+    if (errno == ERANGE || !std::isfinite(parsed)) {
+        return std::nullopt;  // out-of-range or non-finite -- never emitted verbatim
     }
     return token;
 }

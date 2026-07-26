@@ -292,8 +292,9 @@ if(AERO_REFLECT_TOOLS)
         components_engine_light       # task 1.3.3
         components_engine_mesh_renderer   # task 1.4.1
         # task 2.2.2: field annotations (AERO_RANGE/AERO_COLOR) and the std::string category
-        annotations_components annotations_meta annotations_malformed annotations_misapplied
-        annotations_unknown annotations_determinism string_components string_meta string_json)
+        annotations_components annotations_meta annotations_malformed annotations_nonfinite
+        annotations_misapplied annotations_unknown annotations_determinism
+        string_components string_meta string_json)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"

@@ -959,7 +959,10 @@ elseif(CASE STREQUAL "annotations_components")
     aero_expect_stdout_contains("${out}" "field speed : float [primitive] [range 0.0:10.0]")
     aero_expect_stdout_contains("${out}" "field level : std::uint32_t [primitive] [range 0:2]")
     aero_expect_stdout_contains("${out}" "field tint : engine::Vec3 [vec3] [color]")
-    # the five dropped fields print with NO tag suffix -- the trailing \n proves no suffix followed
+    # The negative-into-unsigned case (review finding 1): a syntactically valid negative bound on an
+    # UNSIGNED destination is ACCEPTED, never rejected by the tool's own parse.
+    aero_expect_stdout_contains("${out}" "field negativeUnsigned : std::uint32_t [primitive] [range -1:5]")
+    # the dropped fields print with NO tag suffix -- the trailing \n proves no suffix followed
     aero_expect_stdout_contains("${out}" "field badRange : float [primitive]\n")
     aero_expect_stdout_contains("${out}" "field rangedVec : engine::Vec3 [vec3]\n")
     aero_expect_stdout_contains("${out}" "field coloredFloat : float [primitive]\n")
@@ -974,10 +977,15 @@ elseif(CASE STREQUAL "annotations_meta")
         ".custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = true, .rangeMin = 0.0, .rangeMax = 10.0, .color = false})")
     aero_expect_stdout_contains("${out}"
         ".data<&Annotated::tint>(\"tint\"_hs, \"tint\")\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = false, .rangeMin = 0.0, .rangeMax = 0.0, .color = true})")
-    # NO .custom mentions the six dropped/foreign fields -- proven by these seven .data<> lines
+    # The negative-into-unsigned case (review finding 1): -1 is a syntactically valid literal, so
+    # negativeUnsigned gets a REAL custom, verbatim (never re-formatted) -- the runtime seam's
+    # clampRangeUint64, not the tool's parse, is what makes sense of a negative min at read time.
+    aero_expect_stdout_contains("${out}"
+        ".data<&Annotated::negativeUnsigned>(\"negativeUnsigned\"_hs, \"negativeUnsigned\")\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = true, .rangeMin = -1, .rangeMax = 5, .color = false})")
+    # NO .custom mentions the nine dropped/foreign fields -- proven by these nine .data<> lines
     # running CONSECUTIVELY with nothing (i.e. no .custom<>) inserted between any of them.
     aero_expect_stdout_contains("${out}"
-        ".data<&Annotated::badRange>(\"badRange\"_hs, \"badRange\")\n        .data<&Annotated::inverted>(\"inverted\"_hs, \"inverted\")\n        .data<&Annotated::rangedVec>(\"rangedVec\"_hs, \"rangedVec\")\n        .data<&Annotated::rangedBool>(\"rangedBool\"_hs, \"rangedBool\")\n        .data<&Annotated::coloredFloat>(\"coloredFloat\"_hs, \"coloredFloat\")\n        .data<&Annotated::typo>(\"typo\"_hs, \"typo\")\n        .data<&Annotated::foreign>(\"foreign\"_hs, \"foreign\");")
+        ".data<&Annotated::badRange>(\"badRange\"_hs, \"badRange\")\n        .data<&Annotated::inverted>(\"inverted\"_hs, \"inverted\")\n        .data<&Annotated::nonFiniteHigh>(\"nonFiniteHigh\"_hs, \"nonFiniteHigh\")\n        .data<&Annotated::nonFiniteLow>(\"nonFiniteLow\"_hs, \"nonFiniteLow\")\n        .data<&Annotated::outOfRange>(\"outOfRange\"_hs, \"outOfRange\")\n        .data<&Annotated::rangedVec>(\"rangedVec\"_hs, \"rangedVec\")\n        .data<&Annotated::rangedBool>(\"rangedBool\"_hs, \"rangedBool\")\n        .data<&Annotated::coloredFloat>(\"coloredFloat\"_hs, \"coloredFloat\")\n        .data<&Annotated::typo>(\"typo\"_hs, \"typo\")\n        .data<&Annotated::foreign>(\"foreign\"_hs, \"foreign\");")
 
 elseif(CASE STREQUAL "annotations_malformed")
     aero_run_tool(ARGS --components "${ANNOTATIONS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
@@ -987,6 +995,20 @@ elseif(CASE STREQUAL "annotations_malformed")
     aero_expect_stderr_contains("${err}" "range bounds must be numeric literals")
     aero_expect_stderr_contains("${err}" "Annotated.inverted")
     aero_expect_stderr_contains("${err}" "range min is greater than max")
+
+elseif(CASE STREQUAL "annotations_nonfinite")
+    # Review finding 1: strtod alone accepted "inf"/"infinity"/"nan" and silently overflowed an
+    # out-of-range literal. All three must warn + drop + exit 0, exactly like badRange/inverted --
+    # never emitted verbatim into generated code (proven by annotations_meta's consecutive-.data check).
+    aero_run_tool(ARGS --components "${ANNOTATIONS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stderr_contains("${err}" "Annotated.nonFiniteHigh")
+    aero_expect_stderr_contains("${err}" "Annotated.nonFiniteLow")
+    aero_expect_stderr_contains("${err}" "Annotated.outOfRange")
+    aero_expect_stdout_contains("${out}" "field nonFiniteHigh : float [primitive]\n")
+    aero_expect_stdout_contains("${out}" "field nonFiniteLow : float [primitive]\n")
+    aero_expect_stdout_contains("${out}" "field outOfRange : float [primitive]\n")
 
 elseif(CASE STREQUAL "annotations_misapplied")
     aero_run_tool(ARGS --components "${ANNOTATIONS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
