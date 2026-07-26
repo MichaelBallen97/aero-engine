@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -125,10 +126,10 @@ TEST_CASE("inspector: model lists present components in registration order, fiel
     const engine::editor::ComponentEntry& probeEntry = model.components[1];
     CHECK(probeEntry.name == "InspectorProbe");
     REQUIRE(probeEntry.hasFields);
-    REQUIRE(probeEntry.fields.size() == 10);
+    REQUIRE(probeEntry.fields.size() == 12);
 
-    const std::vector<std::string> expectedOrder{"speed",   "tint", "label", "gear", "tiny",
-                                                 "enabled", "aim",  "mass",  "tick", "glyph"};
+    const std::vector<std::string> expectedOrder{"speed", "tint", "label", "gear",  "tiny",         "enabled",
+                                                 "aim",   "mass", "tick",  "glyph", "clampedRange", "hugeRange"};
     for (std::size_t i = 0; i < expectedOrder.size(); ++i) {
         CHECK(probeEntry.fields[i].name == expectedOrder[i]);
     }
@@ -147,7 +148,7 @@ TEST_CASE("inspector: model over InspectorProbe -- every field's kind, range and
     buildInspectorModel(world, e, model);
     REQUIRE(model.components.size() == 1);
     const std::vector<engine::editor::FieldEntry>& fields = model.components[0].fields;
-    REQUIRE(fields.size() == 10);
+    REQUIRE(fields.size() == 12);
 
     const engine::editor::FieldEntry& speed = findField(fields, "speed");
     CHECK(speed.kind == FieldKind::Float);
@@ -180,6 +181,22 @@ TEST_CASE("inspector: model over InspectorProbe -- every field's kind, range and
     const engine::editor::FieldEntry& mass = findField(fields, "mass");
     CHECK(mass.kind == FieldKind::Float);
     CHECK_FALSE(mass.hasRange);
+
+    // Review finding 2's coverage pins: both carry a range whose bounds are OUTSIDE their own
+    // destination's domain (a negative min on an unsigned field; a magnitude far too large for a
+    // 16-bit destination) -- the model build itself must not UB just by reading the annotation's
+    // raw doubles back (that only happens on a WRITE, covered by the seam round-trip case below).
+    const engine::editor::FieldEntry& clampedRange = findField(fields, "clampedRange");
+    CHECK(clampedRange.kind == FieldKind::UInt);
+    CHECK(clampedRange.hasRange);
+    CHECK(clampedRange.rangeMin == doctest::Approx(-10.0));
+    CHECK(clampedRange.rangeMax == doctest::Approx(-5.0));
+
+    const engine::editor::FieldEntry& hugeRange = findField(fields, "hugeRange");
+    CHECK(hugeRange.kind == FieldKind::Int);
+    CHECK(hugeRange.hasRange);
+    CHECK(hugeRange.rangeMin == doctest::Approx(1e300));
+    CHECK(hugeRange.rangeMax == doctest::Approx(2e300));
 
     entt::meta_reset();
 }
@@ -285,6 +302,34 @@ TEST_CASE("inspector: width clamp on tiny -- 300 reads 255 (S5)") {
     entt::meta_reset();
 }
 
+TEST_CASE(
+    "inspector: range bounds outside the destination's own domain do not UB the write path "
+    "(review finding 2)") {
+    // Debug builds compile with -fsanitize=undefined, and static_cast<uint64_t>(-1.0) /
+    // static_cast<int64_t>(1e300) are BOTH undefined behaviour ([conv.fpint]) -- this case's whole
+    // point is to reach the exact branch that used to perform that cast unconditionally. A green run
+    // under ASan/UBSan is the proof; there is no return value that could distinguish "clamped
+    // correctly" from "the sanitizer merely didn't trip this time."
+    World world;
+    aero_reflect_register_all_aero_editor_inspector_test();
+    const ComponentTypeId probeId = registerProbe(world);
+    const Entity e = world.create();
+    world.addRaw(probeId, e, nullptr);
+
+    // clampedRange's range is WHOLLY NEGATIVE (-10..-5) on an unsigned field: every non-negative
+    // write exceeds rangeMax, which clampRangeUint64 used to cast via std::floor(rangeMax) with NO
+    // guard (only the rangeMin <= 0.0 branch was guarded -- the asymmetry the review caught). The
+    // clamped result saturates to 0 (T's own lowest), not -5.
+    CHECK(writeThenRead<std::uint64_t>(world, e, probeId, "clampedRange", 7) == 0);
+
+    // hugeRange's range (1e300..2e300) exceeds int64_t's own domain entirely: every write's widened
+    // int64 falls below rangeMin, which clampRangeInt64 used to cast via std::ceil(rangeMin) with NO
+    // guard at all. The clamped result saturates to int16_t's own max, not a garbage truncation.
+    CHECK(writeThenRead<std::int64_t>(world, e, probeId, "hugeRange", 42) == std::numeric_limits<std::int16_t>::max());
+
+    entt::meta_reset();
+}
+
 TEST_CASE("inspector: seam rejections -- kind mismatch, unknown field, unregistered id, dead/null entity (AC-7)") {
     World world;
     aero_reflect_register_all_aero_editor_inspector_test();
@@ -369,13 +414,13 @@ TEST_CASE("inspector: model scratch is reused across builds -- content equal, ca
     InspectorModel model;
     buildInspectorModel(world, e, model);
     REQUIRE(model.components.size() == 1);
-    REQUIRE(model.components[0].fields.size() == 10);
+    REQUIRE(model.components[0].fields.size() == 12);
     const std::size_t componentCapacity = model.components.capacity();
     const std::size_t fieldCapacity = model.components[0].fields.capacity();
 
     buildInspectorModel(world, e, model);
     CHECK(model.components.size() == 1);
-    CHECK(model.components[0].fields.size() == 10);
+    CHECK(model.components[0].fields.size() == 12);
     CHECK(model.components.capacity() == componentCapacity);
     CHECK(model.components[0].fields.capacity() == fieldCapacity);
 

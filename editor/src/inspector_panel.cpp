@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <imgui.h>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -26,6 +27,29 @@ namespace {
 std::string_view shortComponentName(std::string_view fullName) {
     const std::size_t pos = fullName.rfind("::");
     return pos == std::string_view::npos ? fullName : fullName.substr(pos + 2);
+}
+
+// Review finding 2: clamp `v` into T's representable domain BEFORE casting -- a raw
+// static_cast<uint64_t>(-1.0) or static_cast<int64_t>(1e300) is UNDEFINED BEHAVIOUR ([conv.fpint]),
+// and field.rangeMin/rangeMax are ARBITRARY annotation-authored doubles (a negative bound on an
+// unsigned field is legitimate syntax -- see component_annotations.hpp's negativeUnsigned), evaluated
+// unconditionally below regardless of field.hasRange. The mirror of meta_utils.cpp's
+// doubleToClamped -- duplicated rather than shared, since meta_utils.hpp pulls in <entt/entt.hpp> and
+// this ImGui TU must stay entt-free by file placement (D1).
+template <typename T>
+T doubleToClamped(double v) {
+    if (v != v) {  // NaN
+        return T{0};
+    }
+    const double lo = static_cast<double>(std::numeric_limits<T>::lowest());
+    const double hi = static_cast<double>(std::numeric_limits<T>::max());
+    if (v <= lo) {
+        return std::numeric_limits<T>::lowest();
+    }
+    if (v >= hi) {
+        return std::numeric_limits<T>::max();
+    }
+    return static_cast<T>(v);
 }
 
 std::array<float, 3> toArray(Vec3 v) { return {v.x, v.y, v.z}; }
@@ -164,8 +188,8 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
         }
         case FieldKind::Int: {
             std::int64_t v = std::get<std::int64_t>(field.value);
-            const auto lo = static_cast<std::int64_t>(field.rangeMin);
-            const auto hi = static_cast<std::int64_t>(field.rangeMax);
+            const auto lo = doubleToClamped<std::int64_t>(field.rangeMin);
+            const auto hi = doubleToClamped<std::int64_t>(field.rangeMax);
             const float speed = dragSpeed(field.hasRange, field.rangeMin, field.rangeMax, 1.0F);
             const ImGuiSliderFlags flags = field.hasRange ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
             if (ImGui::DragScalar("##v", ImGuiDataType_S64, &v, speed, field.hasRange ? &lo : nullptr,
@@ -176,8 +200,8 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
         }
         case FieldKind::UInt: {
             std::uint64_t v = std::get<std::uint64_t>(field.value);
-            const auto lo = static_cast<std::uint64_t>(field.rangeMin);
-            const auto hi = static_cast<std::uint64_t>(field.rangeMax);
+            const auto lo = doubleToClamped<std::uint64_t>(field.rangeMin);
+            const auto hi = doubleToClamped<std::uint64_t>(field.rangeMax);
             const float speed = dragSpeed(field.hasRange, field.rangeMin, field.rangeMax, 1.0F);
             const ImGuiSliderFlags flags = field.hasRange ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
             if (ImGui::DragScalar("##v", ImGuiDataType_U64, &v, speed, field.hasRange ? &lo : nullptr,
