@@ -63,7 +63,7 @@ constexpr const char* ENTITY_PAYLOAD_TYPE = "AERO_ENTITY";  // <= 32 chars (ImGu
 }  // namespace
 
 void HierarchyPanel::onDraw(PanelContext& context) {
-    World& world = context.world;
+    const World& world = context.world;
 
     // -- phase 1: reconcile (FIRST, so the panel is correct when something ELSE changed the World --
     //    2.5.1's load, 2.4.2's undo, a future script). prune() only knows about Selection, which is
@@ -106,7 +106,7 @@ void HierarchyPanel::onDraw(PanelContext& context) {
 }
 
 void HierarchyPanel::drawTree(PanelContext& context) {
-    World& world = context.world;
+    const World& world = context.world;
     const std::span<const Entity> rootList = roots.entities();
     // Seed BACK-TO-FRONT so the LIFO stack pops the roots in display order.
     for (std::size_t i = rootList.size(); i > 0; --i) {
@@ -152,8 +152,8 @@ void HierarchyPanel::drawTree(PanelContext& context) {
 }
 
 bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
-    World& world = context.world;
-    Selection& selection = context.selection;
+    const World& world = context.world;
+    const Selection& selection = context.selection;
 
     // D22: key the ID on index AND generation, via two PushID(int) calls -- performance-no-int-to-ptr
     // rules out the usual TreeNodeEx((void*)(intptr_t)id, ...) idiom (F17). Keying on the NAME would

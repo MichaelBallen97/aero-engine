@@ -889,7 +889,7 @@ TEST_CASE("scene: names do not enter the component-type registry (2.2.1 AC-6/I8)
 // ---- task 2.2.1: the registration-table walk --------------------------------------------------
 
 TEST_CASE("scene: componentTypeAt walks the registration table in order (2.2.1 AC-3)") {
-    World w = makeWorld();
+    const World w = makeWorld();
     const std::size_t count = w.componentTypeCount();
     REQUIRE(count > 5);  // 5 builtins + makeWorld's fixtures
 
@@ -1023,8 +1023,8 @@ TEST_CASE("scene: copyComponent removes the destination BEFORE reading the sourc
     // Payload::text is a std::string LONGER THAN libc++'s SSO buffer, so the move genuinely empties
     // the source. With the correct order the destination gets the full text; with the read hoisted
     // above the remove it gets "" (and, under ASan, a heap-use-after-free first).
-    const std::string LONG_TEXT = "the-source-payload-that-must-survive-a-relocation";
-    REQUIRE(LONG_TEXT.size() > 23);  // past libc++'s SSO capacity -> a real heap allocation
+    const std::string longText = "the-source-payload-that-must-survive-a-relocation";
+    REQUIRE(longText.size() > 23);  // past libc++'s SSO capacity -> a real heap allocation
 
     World w = makeWorld();
     const ComponentTypeId payloadId = componentTypeId<Payload>();
@@ -1039,15 +1039,15 @@ TEST_CASE("scene: copyComponent removes the destination BEFORE reading the sourc
     }
     // Nothing has been erased, so packed order == insertion order and the LAST insert is last.
     const Entity source = w.create();
-    REQUIRE(w.add<Payload>(source, Payload{LONG_TEXT}) != nullptr);
+    REQUIRE(w.add<Payload>(source, Payload{longText}) != nullptr);
     const Entity destination = es[7];  // occupied, and NOT the last element
     REQUIRE(w.has<Payload>(destination));
 
     CHECK(w.copyComponent(payloadId, source, destination));
 
     REQUIRE(w.get<Payload>(destination) != nullptr);
-    CHECK(w.get<Payload>(destination)->text == LONG_TEXT);  // <- RED if the read is hoisted (S1)
+    CHECK(w.get<Payload>(destination)->text == longText);  // <- RED if the read is hoisted (S1)
     REQUIRE(w.get<Payload>(source) != nullptr);
-    CHECK(w.get<Payload>(source)->text == LONG_TEXT);  // the source survives, wherever it moved
-    CHECK(w.componentCount<Payload>() == 1201);        // overwrite, not insert
+    CHECK(w.get<Payload>(source)->text == longText);  // the source survives, wherever it moved
+    CHECK(w.componentCount<Payload>() == 1201);       // overwrite, not insert
 }
