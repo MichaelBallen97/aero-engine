@@ -70,6 +70,12 @@ private:
     std::string renameBuffer;
     Entity renaming{};
     Entity rangeAnchor{};
+    // The bugfix (multi-select drag, task 2.2.1): a plain click's REPLACE on an ALREADY-selected row is
+    // deferred here at mouse-DOWN rather than applied immediately, so a drag begun from that same press
+    // still reads the untouched selection (engine::editor::clickSelectionAction, selection.hpp). Set by
+    // drawRow's PRESS check; consumed (and always cleared) by drawRow's RELEASE check on a LATER frame,
+    // or defensively dropped in phase 1 if that release is ever missed (E24-style: see onDraw).
+    Entity deferredSelectTarget{};
     // Review round 2, Gap 2: the just-created/duplicated entity a collapsed ancestor must open to
     // reveal. `revealTarget` is set by applyPending and consumed (turned into `revealPath`, the
     // ancestor chain, then cleared) by the VERY NEXT drawTree -- one frame after creation, since the

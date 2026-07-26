@@ -178,6 +178,126 @@ TEST_CASE("editor: Selection's shape and noexcept contract") {
     static_assert(noexcept(s.entities()));
 }
 
+// ---- clickSelectionAction (bugfix: multi-select drag, task 2.2.1) -------------------------------
+//
+// The regression this closes: the Hierarchy panel used to replace the WHOLE selection with a single
+// row the instant IsItemClicked() fired -- the mouse-DOWN edge -- so pressing down on an
+// already-selected row to BEGIN a multi-row drag collapsed the selection to that one row before
+// BeginDragDropSource ever saw it. This function is the pure decision the panel's click/release
+// sequencing now defers to; hierarchy_panel.cpp itself is src-private and ImGui-bound and cannot be
+// driven from a tier-0 test (matching the walkForest / resolveCreateChildParent precedent, review
+// round 2, Gaps 1 and 5) -- but no test that drives reparentTargets() directly could ever have caught
+// this bug in the first place, since the defect was entirely in the panel's SEQUENCING, not in any
+// function reparentTargets() touches. Hence: extract the decision, don't test the symptom.
+
+TEST_CASE("editor: clickSelectionAction's shape and noexcept contract") {
+    using engine::editor::ClickPhase;
+    using engine::editor::clickSelectionAction;
+    static_assert(noexcept(clickSelectionAction(false, false, false, false, false, ClickPhase::Press)));
+}
+
+TEST_CASE(
+    "editor: clickSelectionAction — PRESS: Ctrl/Shift resolve immediately; a plain click on an "
+    "already-selected row defers (None)") {
+    using engine::editor::ClickPhase;
+    using engine::editor::clickSelectionAction;
+    using engine::editor::ClickSelectionAction;
+    constexpr ClickPhase PRESS = ClickPhase::Press;
+
+    SUBCASE("unselected + plain -> Select (safe to apply immediately: nothing to collapse)") {
+        CHECK(clickSelectionAction(false, false, false, false, false, PRESS) == ClickSelectionAction::Select);
+    }
+    SUBCASE(
+        "selected + plain -> None (THE fix: deferred to RELEASE, so a same-press drag still reads "
+        "the whole selection)") {
+        CHECK(clickSelectionAction(true, false, false, false, false, PRESS) == ClickSelectionAction::None);
+    }
+    SUBCASE("Ctrl/Cmd -> Toggle, regardless of prior selection state (unaffected by the fix)") {
+        CHECK(clickSelectionAction(false, true, false, false, false, PRESS) == ClickSelectionAction::Toggle);
+        CHECK(clickSelectionAction(true, true, false, false, false, PRESS) == ClickSelectionAction::Toggle);
+    }
+    SUBCASE("Shift -> Range, regardless of prior selection state (unaffected by the fix)") {
+        CHECK(clickSelectionAction(false, false, true, false, false, PRESS) == ClickSelectionAction::Range);
+        CHECK(clickSelectionAction(true, false, true, false, false, PRESS) == ClickSelectionAction::Range);
+    }
+    SUBCASE("Shift beats Ctrl when (implausibly) both are held, matching the panel's own if/else order") {
+        CHECK(clickSelectionAction(false, true, true, false, false, PRESS) == ClickSelectionAction::Range);
+    }
+    SUBCASE("the arrow-toggle guard takes precedence over every other input, on PRESS") {
+        CHECK(clickSelectionAction(false, false, false, true, false, PRESS) == ClickSelectionAction::None);
+        CHECK(clickSelectionAction(true, false, false, true, false, PRESS) == ClickSelectionAction::None);
+        CHECK(clickSelectionAction(false, true, false, true, false, PRESS) == ClickSelectionAction::None);
+        CHECK(clickSelectionAction(false, false, true, true, false, PRESS) == ClickSelectionAction::None);
+    }
+}
+
+TEST_CASE("editor: clickSelectionAction — RELEASE: commits the deferred replace iff no drag occurred") {
+    using engine::editor::ClickPhase;
+    using engine::editor::clickSelectionAction;
+    using engine::editor::ClickSelectionAction;
+    constexpr ClickPhase RELEASE = ClickPhase::Release;
+
+    SUBCASE("selected + plain + no drag -> Select (a press+release with no movement still commits)") {
+        CHECK(clickSelectionAction(true, false, false, false, false, RELEASE) == ClickSelectionAction::Select);
+    }
+    SUBCASE(
+        "selected + plain + a drag occurred -> None (never collapse the selection after a real "
+        "drag, whether the drop landed elsewhere or back on the source row itself)") {
+        CHECK(clickSelectionAction(true, false, false, false, true, RELEASE) == ClickSelectionAction::None);
+    }
+    SUBCASE(
+        "RELEASE is only ever asked for a plain click's deferred candidate -- Ctrl/Shift never arm "
+        "one (they resolve fully at PRESS), so the function must not select if they are somehow "
+        "still set here") {
+        CHECK(clickSelectionAction(true, true, false, false, false, RELEASE) == ClickSelectionAction::None);
+        CHECK(clickSelectionAction(true, false, true, false, false, RELEASE) == ClickSelectionAction::None);
+    }
+    SUBCASE(
+        "defensive: !alreadySelected never arms a deferred candidate either (PRESS already fires "
+        "Select immediately in that case), so RELEASE must not select here") {
+        CHECK(clickSelectionAction(false, false, false, false, false, RELEASE) == ClickSelectionAction::None);
+    }
+    SUBCASE("the arrow-toggle guard takes precedence on RELEASE too") {
+        CHECK(clickSelectionAction(true, false, false, true, false, RELEASE) == ClickSelectionAction::None);
+    }
+}
+
+TEST_CASE("editor: multi-select drag survives the press -- the end-to-end regression (task 2.2.1 fix)") {
+    // The exact bug: dragging a row that is PART OF a multi-selection used to collapse the selection to
+    // that one row on mouse-DOWN, before the drag's own drop-time read of it. reparentTargets() itself
+    // was always correct (review round 2, Gap 4's own test above proves it) -- the defect was entirely
+    // in what the SELECTION held by the time reparentTargets() was asked.
+    using engine::editor::ClickPhase;
+    using engine::editor::clickSelectionAction;
+    using engine::editor::ClickSelectionAction;
+    using engine::editor::reparentTargets;
+    World w;
+    const Entity a = w.create();
+    const Entity b = w.create();
+    const Entity c = w.create();
+    const Entity grabbed = b;  // the row physically pressed to start the drag -- part of the selection
+    Selection selection;
+    selection.setAll(std::vector<Entity>{a, b, c});
+    REQUIRE(selection.count() == 3);
+
+    // The OLD (buggy) sequencing: PRESS unconditionally replaced the selection with the grabbed row,
+    // exactly what a bare `IsItemClicked() -> selection.set(entity)` did. Pinned here as the regression
+    // this fix closes, NOT as current panel behaviour.
+    Selection oldSequencing = selection;
+    oldSequencing.set(grabbed);
+    CHECK(reparentTargets(w, oldSequencing.entities(), grabbed) == std::vector<Entity>{grabbed});
+
+    // The NEW sequencing: PRESS on an already-selected row resolves to None -- the panel applies
+    // NOTHING for None, so `selection` is untouched by the time the drop reads it.
+    const ClickSelectionAction pressAction = clickSelectionAction(
+        /*alreadySelected=*/selection.contains(grabbed), false, false, false, false, ClickPhase::Press);
+    REQUIRE(pressAction == ClickSelectionAction::None);
+    REQUIRE(selection.count() == 3);  // still whole -- nothing was applied for None
+
+    // Drop time: reparentTargets() now sees the WHOLE selection, exactly the fix's contract.
+    CHECK(reparentTargets(w, selection.entities(), grabbed) == std::vector<Entity>{a, b, c});
+}
+
 // ---- PanelContext (AC-8/D7) ----------------------------------------------------------------------
 
 TEST_CASE("editor: PanelContext binds references, it does not copy (D7)") {
