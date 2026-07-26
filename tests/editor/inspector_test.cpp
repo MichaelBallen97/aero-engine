@@ -459,7 +459,20 @@ TEST_CASE("inspector: hasFields is false for a runtime-registered, meta-less typ
     CHECK(model.components[0].fields.empty());
 }
 
-TEST_CASE("inspector: model scratch is reused across builds -- content equal, capacity retained (D15)") {
+TEST_CASE(
+    "inspector: model scratch is reused in place across builds -- an injected over-reservation "
+    "survives (D15, review finding 7)") {
+    // Plain capacity() equality (the original shape of this case) CANNOT discriminate: clear() +
+    // push_back(fresh ComponentEntry{}) retains the OUTER vector's own capacity too, and a fresh
+    // INNER `fields` vector regrowing from empty to 12 elements lands on the SAME deterministic
+    // capacity every time (std::vector's own growth factor), so the exact implementation D15
+    // exists to forbid would still pass a bare capacity comparison. Manually over-reserving past
+    // anything a same-shape rebuild would naturally need, THEN checking the reservation survived
+    // a second build, does discriminate: a clear()-and-rebuild implementation destroys and
+    // recreates each ComponentEntry (and its OWN `fields` vector) from scratch every call, which
+    // would throw the injected reservation away; the in-place index-based overwrite this class
+    // actually uses only ever .clear()s (never destroys) an existing slot's own vector, so the
+    // reservation -- and the buffer address itself -- survive.
     World world;
     aero_reflect_register_all_aero_editor_inspector_test();
     const ComponentTypeId probeId = registerProbe(world);
@@ -470,12 +483,21 @@ TEST_CASE("inspector: model scratch is reused across builds -- content equal, ca
     buildInspectorModel(world, e, model);
     REQUIRE(model.components.size() == 1);
     REQUIRE(model.components[0].fields.size() == 12);
+
+    model.components.reserve(64);
+    model.components[0].fields.reserve(512);
+    const void* componentsData = model.components.data();
+    const void* fieldsData = model.components[0].fields.data();
     const std::size_t componentCapacity = model.components.capacity();
     const std::size_t fieldCapacity = model.components[0].fields.capacity();
+    REQUIRE(componentCapacity >= 64);
+    REQUIRE(fieldCapacity >= 512);
 
     buildInspectorModel(world, e, model);
     CHECK(model.components.size() == 1);
     CHECK(model.components[0].fields.size() == 12);
+    CHECK(model.components.data() == componentsData);
+    CHECK(model.components[0].fields.data() == fieldsData);
     CHECK(model.components.capacity() == componentCapacity);
     CHECK(model.components[0].fields.capacity() == fieldCapacity);
 
