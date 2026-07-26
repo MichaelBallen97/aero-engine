@@ -88,8 +88,12 @@ T narrowFromInt64(std::int64_t v) {
     } else if constexpr (std::is_same_v<T, bool>) {
         return v != 0;
     } else if constexpr (std::is_signed_v<T>) {
-        const auto lo = static_cast<std::int64_t>(std::numeric_limits<T>::lowest());
-        const auto hi = static_cast<std::int64_t>(std::numeric_limits<T>::max());
+        // The intermediate `long long` cast (rather than a direct T -> int64_t cast) is what keeps
+        // this clean under bugprone-signed-char-misuse when T is `signed char`: the checker flags a
+        // DIRECT signed-char -> wide-int conversion as a common sign-extension bug pattern, even
+        // though widening a genuinely negative lowest() value is exactly what is wanted here.
+        const auto lo = static_cast<std::int64_t>(static_cast<long long>(std::numeric_limits<T>::lowest()));
+        const auto hi = static_cast<std::int64_t>(static_cast<long long>(std::numeric_limits<T>::max()));
         return static_cast<T>(std::clamp<std::int64_t>(v, lo, hi));
     } else {
         if (v < 0) {
@@ -117,8 +121,8 @@ T narrowFromUint64(std::uint64_t v) {
 // Only used for T in {float, double} (the Float kind's own destination types).
 template <typename T>
 T narrowFromDouble(double v) {
-    const double lo = static_cast<double>(std::numeric_limits<T>::lowest());
-    const double hi = static_cast<double>(std::numeric_limits<T>::max());
+    const auto lo = static_cast<double>(std::numeric_limits<T>::lowest());
+    const auto hi = static_cast<double>(std::numeric_limits<T>::max());
     return static_cast<T>(std::clamp(v, lo, hi));  // NaN passes through -- both comparisons false
 }
 

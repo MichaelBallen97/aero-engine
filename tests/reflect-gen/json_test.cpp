@@ -1145,7 +1145,7 @@ TEST_CASE("round-trip: engine::Camera / DirectionalLight / PointLight (task 1.3.
 
 TEST_CASE("round-trip: engine::demo::Labelled -- the std::string category, generated (task 2.2.2, AC-3)") {
     engine::demo::Labelled original{};
-    original.label = "hello \"world\"\\";
+    original.label = R"(hello "world"\)";
     original.notes = "line one\nline two";
     original.weight = 12.5F;
     original.slot = 3;

@@ -13,7 +13,7 @@ std::int64_t clampRangeInt64(std::int64_t v, bool hasRange, double rangeMin, dou
     if (!hasRange) {
         return v;
     }
-    const double d = static_cast<double>(v);
+    const auto d = static_cast<double>(v);
     if (d < rangeMin) {
         return static_cast<std::int64_t>(std::ceil(rangeMin));
     }
@@ -27,7 +27,7 @@ std::uint64_t clampRangeUint64(std::uint64_t v, bool hasRange, double rangeMin, 
     if (!hasRange) {
         return v;
     }
-    const double d = static_cast<double>(v);
+    const auto d = static_cast<double>(v);
     if (d < rangeMin) {
         return rangeMin <= 0.0 ? std::uint64_t{0} : static_cast<std::uint64_t>(std::ceil(rangeMin));
     }
