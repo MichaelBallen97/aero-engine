@@ -112,8 +112,18 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # 2.1.3's D12 was re-examined against this fact and DELIBERATELY RE-AFFIRMED: no editor-side probe
 # target ships, because project rule #3 governs the ENGINE's public API and the editor is on its far
 # side by design. Do not "fix" this by adding link libraries here or a probe target elsewhere.
-add_executable(aero_editor_shell_test editor/shell_test.cpp)
-target_link_libraries(aero_editor_shell_test PRIVATE doctest::doctest aero::editor_core aero::core)
+#
+# task 2.2.1: this target gains editor/hierarchy_test.cpp, plus aero::scene and aero::scene_internal
+# on its link line. aero::scene_internal is here for the SAME reason aero_tests links it (:63-66):
+# hierarchy_test.cpp registers a TEST-LOCAL component through
+# engine::scene::internal::registerComponent<T> to prove duplicate is generic over the registration
+# table (AC-13/E12) -- a component no line of editor code has ever heard of. Tests sit OUTSIDE the
+# boundary rule; the compile-time guard for scene/EnTT is aero_scene_boundary_probe, which links
+# aero::scene ALONE and is untouched by this line. The target stays TIER-0: aero_scene_internal is a
+# header-only INTERFACE target and nothing here builds a GPU, a window or an ImGui context (AC-19).
+add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp)
+target_link_libraries(aero_editor_shell_test PRIVATE
+    doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
 
 # ---------------------------------------------------------------------------------------------

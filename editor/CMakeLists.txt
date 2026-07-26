@@ -12,11 +12,18 @@ add_library(aero_editor_core STATIC
     src/editor_app.cpp
     src/shell_ui.cpp
     src/placeholder_panel.cpp
+    src/selection.cpp        # task 2.2.1
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(aero_editor_core
-    PUBLIC  aero::rhi aero::platform aero::core
+    # aero::scene is PUBLIC because panel_context.hpp / editor_app.hpp surface engine::World and
+    # engine::Entity in PUBLIC editor headers (task 2.2.1). It propagates NO vcpkg include path:
+    # aero_scene links EnTT::EnTT PRIVATE (task 1.3.1) and its PUBLIC deps (aero::core, aero::reflect)
+    # link no vcpkg package either -- the same property tests/scene_boundary_probe.cpp rests on. It is
+    # also NOT gated on AERO_REFLECT_TOOLS (only engine/scene_serialize is), so the tools-OFF build and
+    # the ungated tier-0 shell test both survive (2.1.3 AC-9 preserved).
+    PUBLIC  aero::rhi aero::platform aero::scene aero::core
     PRIVATE aero::profiling imgui::imgui SDL3::SDL3 aero::platform_internal aero::rhi_internal
 )
 
