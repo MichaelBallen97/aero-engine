@@ -364,7 +364,8 @@ field, driven entirely by generated `entt::meta` — so a brand-new `[[engine::c
 working UI with zero editor code. New field-level annotations (`AERO_RANGE`/`AERO_COLOR`) and the
 `std::string` reflectable category are proven end-to-end. CI proves the structural/mechanical half
 automatically: the new gated `aero_editor_inspector_test` (tier-0, no GPU) drives the model builder
-and the seam over `InspectorProbe` — a fixture no editor source names — covering model
+and the seam over the D18 proof fixture (`tests/editor/fixtures/inspector_probe.hpp`) — a component
+type no editor source names — covering model
 ordering/filtering, every field kind's range/colour metadata, the `const World&` compile-time pin, the
 17-arithmetic-type coverage pins (`long`/`char16_t`), seam round-trips and rejections, the range and
 width clamps, `addComponent`/`removeComponent` semantics, a meta-less runtime-registered type, scratch
@@ -401,7 +402,7 @@ prior editor task in this ledger has recorded.
 - All **seven** §V3 sabotage proofs were performed and reverted (see the implementation report): S1
   (reverse the `.data` emission order) reds `aero_reflect_meta_test`'s order pin; S2 (drop the range
   clamp) reds the range-clamp case while the width clamp still passes; S3 (hardcode the walk to the
-  five built-ins) reds the `InspectorProbe` model case; S4 (stop emitting `.custom`) reds both
+  five built-ins) reds the D18 proof fixture's model case; S4 (stop emitting `.custom`) reds both
   `reflect-gen.annotations_meta` and `aero_reflect_meta_test`'s runtime custom assertions; S5 (replace
   the saturating narrow with a plain `static_cast`) reds the `300 → 255` width-clamp case ALONE — the
   `−1 → 0` line stayed green even unclamped, confirming it is coverage, never proof (the 2.2.1 C1
