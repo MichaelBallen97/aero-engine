@@ -194,7 +194,7 @@ Needs a native run (D3D12). No checks recorded yet.
 
 Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
 
-**Task 2.1.3 gate status: OPEN — macOS ✅, Windows/Linux pending.** Every human column passed on
+**Task 2.1.3 gate status: OPEN — macOS ✅, Windows/Linux pending.** Every human check passed on
 macOS (2026-07-25): the menu bar and its disabled-item tooltips, View toggles and close-'X' sync,
 Console+Assets tabbed, `Reset Layout`, Esc not quitting, all three human quit paths, layout
 persistence across a real restart, the unfocused throttle, and HiDPI crispness.
@@ -314,9 +314,32 @@ appending ` — PASS` (or FAIL) and what you observed to each line.
 - **Root order stable**
 - **Layout persists**
 
-### macOS — ⏳ pending
+### macOS — ✅ PASS (2026-07-26)
 
-Mechanical proof complete (see above); the mouse/keyboard pass has not yet been performed.
+Machine: MacBook Pro (Apple M1 Pro), Metal. Human mouse/keyboard pass against `2b25435`.
+
+- **Seeded scene (3 entities)** — PASS
+- **Rename (F2 / dbl-click / Enter / Esc)** — PASS
+- **Create Empty / Create Child** — PASS
+- **Indentation + expander** — PASS
+- **Reparent (drag, single row)** — PASS
+- **Reparent (drag, multi-selection — the whole selection moves, subtrees intact)** — PASS
+- **No drop highlight on an illegal drop (AC-15)** — PASS
+- **Multi-select + Delete** — PASS
+- **Duplicate (name + children + components)** — PASS
+- **Delete-while-renaming** — PASS
+- **Root order stable** — PASS
+- **Layout persists** — PASS
+
+Notes: this pass closes **AC-15**, the one acceptance criterion with no mechanical proof at all
+(sabotage S5's target — the absence of a drop highlight cannot be asserted without synthesized
+mouse input). It also confirms the multi-select drag fix (PR #44) in the gesture that exposed the
+original defect.
+
+**The multi-select drag row is the reason this pass matters.** That defect shipped past a green
+3-OS CI matrix, a high-rigor code review, and 44 tier-0 cases, and was found by hand here — because
+every automated layer drove `reparentTargets()` directly instead of the press → drag → drop gesture
+that reaches it. Treat the remaining pending OSes as real verification, not paperwork.
 
 ### Windows — ⏳ pending
 
@@ -326,6 +349,7 @@ Needs a native run (D3D12). No checks recorded yet.
 
 Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
 
-**Task 2.2.1 gate status: OPEN — mechanical proof complete on macOS; the mouse/keyboard human pass
-(all three OSes) is pending a code-free on-hardware follow-up** (the 0.5.3/1.4.2/2.1.1/2.1.3
-precedent) — no code change is expected to be needed.
+**Task 2.2.1 gate status: OPEN — macOS ✅ (2026-07-26, all twelve checks), Windows/Linux pending.**
+Every human check passed on macOS, including AC-15 and the post-fix multi-select drag. The gate
+closes when the Windows and Linux records are filled by a code-free on-hardware follow-up (the
+0.5.3/1.4.2/2.1.1/2.1.3 precedent) — no code change is expected to be needed.
