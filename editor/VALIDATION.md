@@ -280,25 +280,33 @@ context menu. That half needs a person at the machine.
    appears at all** (AC-15, sabotage S5's target) and that nothing is logged.
 7. **Multi-select**: click, Ctrl/Cmd+click, Shift+click across depths; confirm the range follows the
    rows **as displayed**. Press Delete (and Backspace) — every selected subtree disappears.
-8. **Duplicate**: Ctrl/Cmd+D and the context menu; confirm the copy carries the name, the children in
+8. **Multi-select drag** — this one shipped broken in 2.2.1 and was found by hand, not by CI, so
+   test it deliberately: select three rows, then press and drag **one of the already-selected rows**
+   onto a new parent.
+   **All three must move**, each keeping its own children. Pressing down on a selected row must not
+   collapse the selection to that row — that collapse is what made this look unsupported. Then press
+   and *release* on a selected row **without** moving the mouse: that one still must collapse the
+   selection to just it (a plain click is still a plain click).
+9. **Duplicate**: Ctrl/Cmd+D and the context menu; confirm the copy carries the name, the children in
    the same order, and (via the still-placeholder Inspector, or by eye in the viewport once 2.2.3
    lands) its components.
-9. **Delete while renaming**: begin a rename, then press Delete via another route — the field closes
-   cleanly (E24).
-10. **Root order**: create A, B, C; delete B; confirm A and C do **not** reorder (AC-16).
-11. **Quit and relaunch**: the layout persists and the panel is still docked left.
-12. **Record your results below.**
+10. **Delete while renaming**: begin a rename, then press Delete via another route — the field closes
+    cleanly (E24).
+11. **Root order**: create A, B, C; delete B; confirm A and C do **not** reorder (AC-16).
+12. **Quit and relaunch**: the layout persists and the panel is still docked left.
+13. **Record your results below.**
 
 ## Validation records
 
-Each OS records the same eleven checks. Copy this checklist into the OS's section below as you go,
+Each OS records the same twelve checks. Copy this checklist into the OS's section below as you go,
 appending ` — PASS` (or FAIL) and what you observed to each line.
 
 - **Seeded scene (3 entities)**
 - **Rename (F2 / dbl-click / Enter / Esc)**
 - **Create Empty / Create Child**
 - **Indentation + expander**
-- **Reparent (drag)**
+- **Reparent (drag, single row)**
+- **Reparent (drag, multi-selection — the whole selection moves, subtrees intact)**
 - **No drop highlight on an illegal drop (AC-15)**
 - **Multi-select + Delete**
 - **Duplicate (name + children + components)**
