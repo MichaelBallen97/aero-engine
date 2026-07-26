@@ -479,6 +479,54 @@ std::size_t World::countRaw(ComponentTypeId id) const noexcept {
     return reg == nullptr ? 0 : reg->storage->size();
 }
 
+bool World::copyComponent(ComponentTypeId id, Entity from, Entity to) {
+    AERO_PROFILE_ZONE;
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("scene: {} on a moved-from World", "copyComponent");
+        return false;
+    }
+    if (!impl->aliveInternal(from) || !impl->aliveInternal(to)) {
+        AERO_LOG_ERROR("scene: copyComponent with a dead or null entity (from index {}, to index {})", from.index,
+                       to.index);
+        return false;
+    }
+    const Impl::Registration* reg = impl->find(id);
+    if (reg == nullptr) {
+        AERO_LOG_ERROR("scene: component type is not registered in this world (id {})", id.value);
+        return false;
+    }
+    ErasedStorage& s = *reg->storage;
+    const SceneEntity src = toEntt(from);
+    const SceneEntity dst = toEntt(to);
+    if (!s.contains(src)) {
+        return false;  // SILENT: a miss is the normal answer in a copy-everything loop
+    }
+    if (src == dst) {
+        return true;  // self-copy: nothing to do -- and the remove below would destroy the very
+    }                 // element the push is about to read (E5)
+    if (reg->emptyType) {
+        // A tag storage has no payload at all (page_size == 0 at the pinned entt), so value() must
+        // never be called on it. Presence is the whole state.
+        if (!s.contains(dst)) {
+            s.push(dst, nullptr);
+        }
+        return true;  // E6
+    }
+    // REMOVE FIRST -- this is D17, and it is the whole reason this function is a World member.
+    // remove() swap-and-pops: it MOVES the storage's last element into the erased slot and destroys
+    // the old last, so it can RELOCATE the element at `src`. push() only grows the paged payload,
+    // which allocates a new page and never relocates an existing one. Reading value(src) before the
+    // remove would hand push() a pointer to a moved-from, destroyed element whenever the removal
+    // relocated the source (F10). Do not "simplify" these three statements into two.
+    if (s.contains(dst)) {
+        s.remove(dst);
+    }
+    s.push(dst, s.value(src));  // value(src) is read AFTER the only relocating call
+    // Belt-and-braces behind add<T>()'s static_assert, exactly like addRaw's M5: the type-erased
+    // insert silently stores nothing for a non-copy-constructible element.
+    return s.contains(dst);
+}
+
 bool World::beginQuery(const ComponentTypeId* ids, std::size_t count, QueryCursor& cursor) const noexcept {
     AERO_PROFILE_ZONE;
     if (impl == nullptr || ids == nullptr || count == 0 || count > MAX_QUERY_TYPES) {
@@ -557,6 +605,14 @@ ComponentTypeId World::findComponentType(std::string_view name) const noexcept {
         }
     }
     return {};
+}
+
+ComponentTypeId World::componentTypeAt(std::size_t index) const noexcept {
+    if (impl == nullptr || index >= impl->registrations.size()) {
+        return {};
+    }
+    // deque::operator[] is O(1); registrations is never reordered, only appended (see bind()).
+    return impl->registrations[index].id;
 }
 
 std::string_view World::componentTypeName(ComponentTypeId id) const noexcept {

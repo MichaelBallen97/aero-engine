@@ -21,6 +21,7 @@
 #include <aero/scene/scene.hpp>  // the umbrella: component + entity + world
 
 #include <cstddef>
+#include <string_view>
 #include <type_traits>
 
 namespace {
@@ -129,3 +130,28 @@ static_assert(sizeof(engine::MeshRenderer) == 4 * sizeof(float));
 
 static_assert(std::is_same_v<decltype(engine::projectionMatrix(someCamera(), 1.0f)), engine::Mat4>);
 static_assert(std::is_same_v<decltype(engine::viewMatrix(constWorld(), NULL_ENTITY)), engine::Mat4>);
+
+// ---- task 2.2.1 ----------------------------------------------------------------------------------
+// The three new World members' shape and noexcept contract, asserted on a link line that is still
+// exactly `aero::scene`. Each declval-equivalent helper below is itself declared NOEXCEPT for the
+// 1.3.2 reason: the noexcept operator considers the WHOLE expression, so a potentially-throwing
+// helper call makes every noexcept(...) test read false regardless of the callee's own specification.
+
+namespace {
+std::string_view someName() noexcept;
+constexpr engine::ComponentTypeId NULL_TYPE_ID{};
+}  // namespace
+
+static_assert(std::is_same_v<decltype(mutableWorld().setName(NULL_ENTITY, someName())), bool>);
+// setName ALLOCATES (it assigns a std::string), so it is deliberately NOT noexcept -- pinned in the
+// negative direction so a future "tidy-up" that adds noexcept has to justify itself here first.
+static_assert(!noexcept(mutableWorld().setName(NULL_ENTITY, someName())));
+
+static_assert(std::is_same_v<decltype(constWorld().name(NULL_ENTITY)), std::string_view>);
+static_assert(noexcept(constWorld().name(NULL_ENTITY)));
+
+static_assert(std::is_same_v<decltype(constWorld().componentTypeAt(std::size_t{0})), engine::ComponentTypeId>);
+static_assert(noexcept(constWorld().componentTypeAt(std::size_t{0})));
+
+static_assert(std::is_same_v<decltype(mutableWorld().copyComponent(NULL_TYPE_ID, NULL_ENTITY, NULL_ENTITY)), bool>);
+static_assert(!noexcept(mutableWorld().copyComponent(NULL_TYPE_ID, NULL_ENTITY, NULL_ENTITY)));

@@ -244,6 +244,12 @@ public:
     // deliberately, so a UI "Add Component" menu built by walking the table is deterministic.
     [[nodiscard]] ComponentTypeId findComponentType(std::string_view name) const noexcept;
 
+    // The `index`-th registered type, in REGISTRATION order -- the deterministic walk
+    // findComponentType's comment above already promises. Returns ComponentTypeId{} SILENTLY for
+    // index >= componentTypeCount() and for a moved-from World: this is the loop bound of a UI menu
+    // (an editor "duplicate entity" or "Add Component"), not a programmer-error path.
+    [[nodiscard]] ComponentTypeId componentTypeAt(std::size_t index) const noexcept;
+
     // The name a type was registered under. The returned view is into World-owned storage and stays
     // valid until ~World. An unregistered id (including ComponentTypeId{}) returns an empty view,
     // silently.
@@ -267,6 +273,21 @@ public:
     [[nodiscard]] bool hasRaw(ComponentTypeId id, Entity entity) const noexcept;
     bool removeRaw(ComponentTypeId id, Entity entity) noexcept;
     [[nodiscard]] std::size_t countRaw(ComponentTypeId id) const noexcept;
+
+    // Copies component `id` from `from` to `to`, overwriting any existing component of that type on
+    // `to`. This is the type-erased deep-copy primitive an editor's "duplicate entity" needs, and it
+    // lives HERE, not in the caller, because the only correct ordering of the underlying
+    // erase/insert pair depends on storage internals this class owns (see world.cpp -- the
+    // destination is removed BEFORE the source pointer is read).
+    //
+    // Returns true on success, and true (a no-op) when from == to and the component is present.
+    // Returns false SILENTLY when `from` does not hold the component -- a miss is the normal answer
+    // in a "copy everything this entity has" loop, not an error. That silence takes precedence over
+    // the from == to case: copyComponent(id, e, e) on an entity WITHOUT the component is a silent
+    // false, not a true.
+    // Returns false plus one ERROR for a moved-from World, a dead or null `from`/`to`, or an
+    // unregistered id.
+    bool copyComponent(ComponentTypeId id, Entity from, Entity to);
 
     // Upper bound on how many component types a single each<Ts...>() call may query at once. Raising
     // it is a one-constant change with no API break.
