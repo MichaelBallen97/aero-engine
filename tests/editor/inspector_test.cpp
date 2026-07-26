@@ -13,6 +13,7 @@
 #include <aero/scene/transform.hpp>
 
 #include "inspector_probe.hpp"
+#include "inspector_tag.hpp"
 
 #include <doctest/doctest.h>
 #include <entt/entt.hpp>
@@ -401,6 +402,38 @@ TEST_CASE(
     CHECK(engine::editor::removeComponent(world, e, probeId));
     CHECK_FALSE(world.hasRaw(probeId, e));
     CHECK_FALSE(engine::editor::removeComponent(world, e, probeId));  // idempotent-false
+
+    entt::meta_reset();
+}
+
+TEST_CASE(
+    "inspector: a zero-field, meta-registered tag component -- addComponent's nullptr-on-success "
+    "signal and the model's (no fields) branch (E13, review finding 6)") {
+    // InspectorProbe (10-12 fields) and the five built-ins (all field-bearing) leave two things
+    // unexercised: addComponent's documented raison d'etre -- a tag's addRaw returns nullptr ON
+    // SUCCESS too, so hasRaw AFTERWARDS is the only correct signal (component_ops.cpp) -- and the
+    // model's hasFields == true / fields.empty() combination (distinct from the E4 case below, where
+    // hasFields == false because the type carries no entt::meta at ALL).
+    World world;
+    aero_reflect_register_all_aero_editor_inspector_test();
+    const ComponentTypeId tagId = registerComponent<InspectorTag>(world, "InspectorTag");
+    REQUIRE(tagId.valid());
+    const Entity e = world.create();
+
+    CHECK_FALSE(world.hasRaw(tagId, e));
+    CHECK(engine::editor::addComponent(world, e, tagId));  // succeeds despite addRaw returning nullptr
+    CHECK(world.hasRaw(tagId, e));
+    CHECK_FALSE(engine::editor::addComponent(world, e, tagId));  // refuses -- already present (D10)
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    CHECK(model.components[0].name == "InspectorTag");
+    CHECK(model.components[0].hasFields);  // meta IS registered -- distinct from the E4 case
+    CHECK(model.components[0].fields.empty());
+
+    CHECK(engine::editor::removeComponent(world, e, tagId));
+    CHECK_FALSE(world.hasRaw(tagId, e));
 
     entt::meta_reset();
 }

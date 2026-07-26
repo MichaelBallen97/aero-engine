@@ -383,6 +383,7 @@ if(AERO_REFLECT_TOOLS)
     target_include_directories(aero_editor_inspector_test PRIVATE editor/fixtures)
     aero_reflect_generate(aero_editor_inspector_test
         HEADERS editor/fixtures/inspector_probe.hpp
+                editor/fixtures/inspector_tag.hpp  # review finding 6 -- the zero-field tag proof
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")
