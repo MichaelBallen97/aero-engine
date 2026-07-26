@@ -309,6 +309,27 @@ TEST_CASE("editor: createEntity gives a Transform, an optional name and an optio
     CHECK(w.entityCount() == before);          // ...and leaves NO orphan behind
 }
 
+TEST_CASE("editor: resolveCreateChildParent follows Section O-2 (review round 2, Gap 5)") {
+    using engine::editor::resolveCreateChildParent;
+    World w;
+    const Entity primary = w.create();
+    const Entity sibling = w.create();   // also selected, alongside `primary`
+    const Entity outsider = w.create();  // NOT in the selection
+
+    const std::vector<Entity> selection{primary, sibling};
+
+    // Right-clicking a row OUTSIDE the selection acts on that row alone (the Delete/Duplicate rule,
+    // extended here) -- the child goes under `outsider`, never under `primary`.
+    CHECK(resolveCreateChildParent(selection, primary, outsider) == outsider);
+    // Right-clicking a row INSIDE the selection falls back to the primary.
+    CHECK(resolveCreateChildParent(selection, primary, primary) == primary);
+    CHECK(resolveCreateChildParent(selection, primary, sibling) == primary);
+    // No specific row (a future keyboard-invoked CreateChild, `rightClicked` invalid) -> the primary.
+    CHECK(resolveCreateChildParent(selection, primary, Entity{}) == primary);
+    // An empty selection: any right-clicked row is trivially "outside" it.
+    CHECK(resolveCreateChildParent(std::span<const Entity>{}, Entity{}, outsider) == outsider);
+}
+
 TEST_CASE("editor: destroyEntities takes whole subtrees, once each (AC-12/E8/E13)") {
     using engine::editor::destroyEntities;
     World w;

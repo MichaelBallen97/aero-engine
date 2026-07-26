@@ -76,6 +76,12 @@ Entity createEntity(World& world, Entity parent, std::string_view name) {
     return created;
 }
 
+Entity resolveCreateChildParent(std::span<const Entity> selection, Entity primary, Entity rightClicked) {
+    const bool outsideSelection =
+        rightClicked.valid() && std::find(selection.begin(), selection.end(), rightClicked) == selection.end();
+    return outsideSelection ? rightClicked : primary;
+}
+
 std::size_t destroyEntities(World& world, std::span<const Entity> entities) {
     const std::vector<Entity> roots = topMost(world, entities);  // D19/E8
     std::size_t destroyed = 0;

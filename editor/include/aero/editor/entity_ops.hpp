@@ -45,6 +45,14 @@ void entityLabel(const World& world, Entity entity, std::string& out);
 // Entity{} on failure (a moved-from World, or a dead `parent`).
 Entity createEntity(World& world, Entity parent = {}, std::string_view name = {});
 
+// Resolves the parent a context-menu *Create Child* should use, per Section O-2's consistency
+// extension (review round 2, Gap 5): a right-click on a row OUTSIDE the current `selection` acts on
+// that row alone -- the same rule Delete and Duplicate already follow -- so it becomes the parent
+// directly; a right-click INSIDE the selection, or CreateChild invoked with no specific row
+// (`rightClicked` invalid), falls back to `primary`. This deliberately overrides AC-11's literal
+// "creates under the primary" wording in favour of that later, more general rule.
+[[nodiscard]] Entity resolveCreateChildParent(std::span<const Entity> selection, Entity primary, Entity rightClicked);
+
 // Destroys `entities` -- each with its whole subtree (World::destroy's own semantic). Filters
 // through topMost() first, then skips anything an earlier subtree already took. Returns the number
 // of subtree ROOTS destroyed.

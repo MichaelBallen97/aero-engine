@@ -319,7 +319,11 @@ void HierarchyPanel::applyPending(PanelContext& context) {
             break;
         }
         case ActionKind::CreateChild: {
-            const Entity parent = selection.primary().valid() ? selection.primary() : pending.target;
+            // Section O-2's consistency extension (review round 2, Gap 5): resolveCreateChildParent
+            // makes a right-click on a row OUTSIDE the selection act on that row alone -- Delete and
+            // Duplicate below already follow this rule; CreateChild now does too, so right-clicking
+            // an unselected row never silently creates a child under a DIFFERENT (selected) entity.
+            const Entity parent = resolveCreateChildParent(selection.entities(), selection.primary(), pending.target);
             const Entity created = createEntity(world, parent);
             if (created.valid()) {
                 selection.set(created);

@@ -228,7 +228,9 @@ context menu. That half needs a person at the machine.
    with the current name. Enter commits; clicking away commits; **Escape leaves the name
    unchanged**; committing an empty string falls the label back to `Entity <index>`.
 4. **Create**: right-click a row → *Create Empty* (a new root, selected) and *Create Child* (indented
-   under the primary, with an expander appearing on the parent). Right-click empty space →
+   under the right-clicked row — or the primary, if that row is inside the current selection — with
+   an expander appearing on the parent, which auto-opens on the very next frame so the new row is
+   never hidden behind a collapsed parent, review round 2 Gap 2). Right-click empty space →
    *Create Empty*.
 5. **Indentation**: the child sits one level in, under its parent, with an expander only on entities
    that have children.
