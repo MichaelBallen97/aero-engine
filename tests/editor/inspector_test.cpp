@@ -330,16 +330,32 @@ TEST_CASE(
     entt::meta_reset();
 }
 
-TEST_CASE("inspector: seam rejections -- kind mismatch, unknown field, unregistered id, dead/null entity (AC-7)") {
+TEST_CASE(
+    "inspector: seam rejections -- kind mismatch, unknown field, unregistered id, dead/null "
+    "entity, AND NEVER MUTATE (AC-7, review finding 5)") {
     World world;
     aero_reflect_register_all_aero_editor_inspector_test();
     const ComponentTypeId probeId = registerProbe(world);
     const Entity e = world.create();
     world.addRaw(probeId, e, nullptr);
 
-    // kind mismatch: a Vec3 into a float field -- never mutates.
+    // A known baseline, established BEFORE any rejection attempt -- component_ops.hpp's own
+    // contract promises every rejection "NEVER mutates", so the proof is reading the field back
+    // and asserting it is EXACTLY the baseline, not merely that some LATER good write succeeded
+    // (a good write afterward would silently paper over a mutate-before-validate defect: moving
+    // member.set() above the kind check in ArithmeticWriter would leave a return-value-only
+    // check fully green, since `ok` is still computed correctly afterward -- only re-reading the
+    // field catches the mutation itself).
+    REQUIRE(writeComponentField(world, e, probeId, "speed", FieldValue{double{3.5}}));
+    const std::optional<FieldValue> baseline = readComponentField(world, e, probeId, "speed");
+    REQUIRE(baseline.has_value());
+    REQUIRE(std::holds_alternative<double>(*baseline));
+
+    // kind mismatch: a Vec3 into a float field -- must NEVER mutate.
     CHECK_FALSE(writeComponentField(world, e, probeId, "speed", FieldValue{engine::Vec3{}}));
-    CHECK(writeThenRead<double>(world, e, probeId, "speed", 1.0) == doctest::Approx(1.0));
+    const std::optional<FieldValue> afterKindMismatch = readComponentField(world, e, probeId, "speed");
+    REQUIRE(afterKindMismatch.has_value());
+    CHECK(std::get<double>(*afterKindMismatch) == doctest::Approx(std::get<double>(*baseline)));
 
     // unknown field
     CHECK_FALSE(writeComponentField(world, e, probeId, "nope", FieldValue{1.0}));
@@ -359,6 +375,12 @@ TEST_CASE("inspector: seam rejections -- kind mismatch, unknown field, unregiste
     // null entity
     CHECK_FALSE(writeComponentField(world, Entity{}, probeId, "speed", FieldValue{1.0}));
     CHECK_FALSE(readComponentField(world, Entity{}, probeId, "speed").has_value());
+
+    // Final re-read: "speed" is STILL exactly the baseline -- no rejection attempt above ever
+    // mutated it, regardless of which specific rejection path ran in between.
+    const std::optional<FieldValue> after = readComponentField(world, e, probeId, "speed");
+    REQUIRE(after.has_value());
+    CHECK(std::get<double>(*after) == doctest::Approx(std::get<double>(*baseline)));
 
     entt::meta_reset();
 }
