@@ -353,6 +353,18 @@ TEST_CASE("scene_serialize: the committed samples/phase-1-scene/scene.json (AC-6
     CHECK(primitives[1] == 0);  // cube
     CHECK(primitives[2] == 1);  // sphere
 
+    // task 2.2.1 / F15: the six committed names now survive into the World and back out.
+    std::vector<std::string> names;
+    world.eachEntity([&](Entity e) { names.emplace_back(world.name(e)); });
+    REQUIRE(names.size() == 6);
+    CHECK(names[0] == "camera");
+    CHECK(names[1] == "ground");
+    CHECK(names[2] == "cube");
+    CHECK(names[3] == "sphere");
+    CHECK(names[4] == "sun");
+    CHECK(names[5] == "lamp");
+    CHECK(saveWorldText(world).find(R"("name": "lamp")") != std::string::npos);
+
     // Canonical-form idempotence (docs/09 guarantee 2): write(parse(bytes)) re-parses+re-emits to itself.
     const std::string reemitted = writeSceneText(*parsed.document);
     const SceneParseResult reparsed = parseScene(reemitted);
@@ -373,21 +385,62 @@ TEST_CASE("scene_serialize: dispatch/registration parity (AC-3/D8)") {
     }
 }
 
-TEST_CASE("scene_serialize: names never round-trip (AC-3/D7)") {
+TEST_CASE("scene_serialize: names round-trip (2.2.1 D5, AC-7)") {
+    // The LOAD direction, from a hand-written document. This literal is deliberately NOT canonical
+    // (compact, and an empty Transform payload that save expands), so it is used only to prove the
+    // name is applied and re-emitted -- byte-exact idempotence is proven programmatically below.
     constexpr std::string_view TEXT = R"({
   "version": 1,
   "entities": [
-    {"id": 1, "name": "camera", "components": {"engine::Transform": {}}}
+    {"id": 1, "name": "camera", "components": {"engine::Transform": {}}},
+    {"id": 2, "components": {"engine::Transform": {}}}
   ]
 }
 )";
     World world;
     const SceneLoadResult result = loadSceneText(world, TEXT);
     REQUIRE(!result.error.has_value());
-    CHECK(world.entityCount() == 1);
+    REQUIRE(world.entityCount() == 2);
+
+    const std::vector<Entity> entities = collectEntities(world);
+    REQUIRE(entities.size() == 2);
+    CHECK(world.name(entities[0]) == std::string_view{"camera"});
+    CHECK(world.name(entities[1]).empty());          // absent name stays absent
 
     const SceneDocument doc = saveWorld(world);
-    for (const SceneEntityRecord& rec : doc.entities) {
-        CHECK(rec.name.empty());
-    }
+    REQUIRE(doc.entities.size() == 2);
+    CHECK(doc.entities[0].name == "camera");
+    CHECK(doc.entities[1].name.empty());             // omitted, not ""-emitted -- see the text below
+
+    const std::string text = saveWorldText(world);
+    CHECK(text.find(R"("name": "camera")") != std::string::npos);
+    CHECK(text.find(R"("id": 2,)") != std::string::npos);   // entity 2 has no name key at all
+}
+
+TEST_CASE("scene_serialize: a named World is byte-exactly idempotent (2.2.1 AC-7)") {
+    // Built in code, so there is no hand-written canonical literal to drift (C3).
+    World a;
+    const Entity camera = a.create();
+    REQUIRE(a.setName(camera, "Main Camera"));
+    a.add<Transform>(camera, Transform{.position = {0.0F, 1.0F, 2.0F}});
+    a.add<Camera>(camera, Camera{});
+    const Entity child = a.create();
+    REQUIRE(a.setName(child, "Child With A Long Name"));
+    a.add<Transform>(child, Transform{});
+    REQUIRE(a.setParent(child, camera));
+    const Entity anonymous = a.create();
+    a.add<MeshRenderer>(anonymous, MeshRenderer{});   // deliberately unnamed
+
+    const std::string t1 = saveWorldText(a);
+    World b;
+    REQUIRE(!loadSceneText(b, t1).error.has_value());
+    const std::string t2 = saveWorldText(b);
+    CHECK(t1 == t2);                                  // byte-exact -- names included
+
+    const std::vector<Entity> es = collectEntities(b);
+    REQUIRE(es.size() == 3);
+    CHECK(b.name(es[0]) == std::string_view{"Main Camera"});
+    CHECK(b.name(es[1]) == std::string_view{"Child With A Long Name"});
+    CHECK(b.name(es[2]).empty());
+    CHECK(b.parent(es[1]) == es[0]);                  // hierarchy still round-trips
 }

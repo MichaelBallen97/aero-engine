@@ -44,8 +44,9 @@ struct SceneLoadResult {
 
 // Serialize every LIVE entity of `world` into a SceneDocument: ids 1..N in eachEntity() order,
 // `parent` resolved to the parent's assigned id (0 for roots), each present built-in emitted in
-// registry order via the generated aeroWriteJson. Entity names are NOT stored in the World (D7), so
-// every record's name is empty. A moved-from World yields an empty document.
+// registry order via the generated aeroWriteJson. Entity NAMES round-trip too (task 2.2.1 D5): each
+// record carries World::name(entity), and writeScene omits the `name` key when it is empty
+// (docs/09 §2.2). A moved-from World yields an empty document.
 [[nodiscard]] SceneDocument saveWorld(const World& world);
 
 // saveWorld then writeSceneText — canonical scene text (one trailing '\n').
