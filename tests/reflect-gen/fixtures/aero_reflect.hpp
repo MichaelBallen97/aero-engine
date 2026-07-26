@@ -7,6 +7,10 @@
 // under the real compiler it expands to NOTHING — zero attribute, zero warning, zero runtime cost.
 #if defined(AERO_REFLECT_PARSE)
     #define AERO_COMPONENT [[clang::annotate("engine::component")]]
+    #define AERO_RANGE(minLiteral, maxLiteral) [[clang::annotate("engine::range:" #minLiteral ":" #maxLiteral)]]
+    #define AERO_COLOR [[clang::annotate("engine::color")]]
 #else
     #define AERO_COMPONENT
+    #define AERO_RANGE(minLiteral, maxLiteral)
+    #define AERO_COLOR
 #endif
