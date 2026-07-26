@@ -79,11 +79,15 @@ void InspectorPanel::onDraw(PanelContext& context) {
     pending = PendingAction{};
     const Entity primary = context.selection.primary();
 
-    // -- phase 1: reconcile -- drop any cache whose target no longer resolves (E3) --
-    if (quatCache.active && !context.world.alive(quatCache.entity)) {
+    // -- phase 1: reconcile -- drop any cache whose target no longer resolves (E3), OR whose target
+    // is no longer the PRIMARY selection (review finding 3): a cache surviving only because its own
+    // row happened not to be drawn this frame -- e.g. the user typed into a string field on entity A,
+    // selected entity B (which lacks that field, so nothing in drawField ever runs for it), then
+    // re-selected A -- is exactly the stranding bug. Reconcile must not depend on draw order.
+    if (quatCache.active && (quatCache.entity != primary || !context.world.alive(quatCache.entity))) {
         quatCache = {};
     }
-    if (stringCache.active && !context.world.alive(stringCache.entity)) {
+    if (stringCache.active && (stringCache.entity != primary || !context.world.alive(stringCache.entity))) {
         stringCache = {};
     }
 
@@ -262,17 +266,21 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                 stringCache.buffer = std::get<std::string>(field.value);
             }
             inputTextString("##v", stringCache.buffer, 0);
+            // D14: commit only on deactivation-after-edit, never per-keystroke -- read BEFORE any
+            // cache release below, so the committed text is never a just-reset default.
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                writeComponentField(context.world, primary, entry.typeId, field.name, FieldValue{stringCache.buffer});
+            }
             if (ImGui::IsItemActive()) {
                 stringCache.entity = primary;
                 stringCache.type = entry.typeId;
                 stringCache.field = field.name;
                 stringCache.active = true;
-            }
-            // D14: commit only on deactivation-after-edit, never per-keystroke.
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                writeComponentField(context.world, primary, entry.typeId, field.name, FieldValue{stringCache.buffer});
-            }
-            if (ImGui::IsItemDeactivated()) {
+            } else if (cacheHit) {
+                // Released (matches the Quat arm's release shape, review finding 3): drop
+                // unconditionally rather than relying on IsItemDeactivated() alone, which only fires
+                // when THIS row is drawn -- the same stranding hazard phase 1's reconcile now also
+                // guards against from the other direction.
                 stringCache = {};
             }
             break;
