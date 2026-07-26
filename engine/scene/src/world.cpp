@@ -503,7 +503,7 @@ bool World::copyComponent(ComponentTypeId id, Entity from, Entity to) {
     }
     if (src == dst) {
         return true;  // self-copy: nothing to do -- and the remove below would destroy the very
-    }                 // element the push is about to read (E5)
+    }  // element the push is about to read (E5)
     if (reg->emptyType) {
         // A tag storage has no payload at all (page_size == 0 at the pinned entt), so value() must
         // never be called on it. Presence is the whole state.

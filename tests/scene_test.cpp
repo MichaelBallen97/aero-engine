@@ -771,20 +771,20 @@ TEST_CASE("scene: entity names round-trip (2.2.1 AC-1)") {
     const Entity a = w.create();
     const Entity b = w.create();
 
-    CHECK(w.name(a).empty());                     // unnamed
+    CHECK(w.name(a).empty());  // unnamed
     CHECK(w.setName(a, "Main Camera"));
     CHECK(w.name(a) == std::string_view{"Main Camera"});
-    CHECK(w.name(b).empty());                     // no cross-talk
+    CHECK(w.name(b).empty());  // no cross-talk
 
-    CHECK(w.setName(a, "Renamed"));               // overwrite (in place)
+    CHECK(w.setName(a, "Renamed"));  // overwrite (in place)
     CHECK(w.name(a) == std::string_view{"Renamed"});
 
-    CHECK(w.setName(a, ""));                      // "" CLEARS (E2)
+    CHECK(w.setName(a, ""));  // "" CLEARS (E2)
     CHECK(w.name(a).empty());
-    CHECK(w.setName(a, ""));                      // idempotent
+    CHECK(w.setName(a, ""));  // idempotent
     CHECK(w.name(a).empty());
 
-    CHECK(w.setName(b, "  \t "));                 // whitespace is stored verbatim (E21)
+    CHECK(w.setName(b, "  \t "));  // whitespace is stored verbatim (E21)
     CHECK(w.name(b) == std::string_view{"  \t "});
 
     // Duplicates are legal (docs/09, E23).
@@ -801,10 +801,10 @@ TEST_CASE("scene: setName rejections are loud, name() is silent (2.2.1 AC-1/E1)"
     const Entity dead = w.create();
     REQUIRE(w.destroy(dead));
 
-    CHECK_FALSE(w.setName(dead, "x"));            // ERROR logged (not asserted -- the 0.2.4 deferral)
+    CHECK_FALSE(w.setName(dead, "x"));  // ERROR logged (not asserted -- the 0.2.4 deferral)
     CHECK_FALSE(w.setName(Entity{}, "x"));
-    CHECK(w.name(dead).empty());                  // silent
-    CHECK(w.name(Entity{}).empty());              // silent
+    CHECK(w.name(dead).empty());      // silent
+    CHECK(w.name(Entity{}).empty());  // silent
 
     // A rejected setName leaves the World untouched.
     CHECK(w.setName(live, "kept"));
@@ -819,7 +819,7 @@ TEST_CASE("scene: setName rejections are loud, name() is silent (2.2.1 AC-1/E1)"
     const World moved = std::move(*src);
     CHECK_FALSE(src->setName(e, "after"));
     CHECK(src->name(e).empty());
-    CHECK(moved.name(e) == std::string_view{"before"});   // the moved-TO owns it
+    CHECK(moved.name(e) == std::string_view{"before"});  // the moved-TO owns it
 }
 
 TEST_CASE("scene: a name dies with its entity and never haunts a recycled slot (2.2.1 AC-2/E3)") {
@@ -828,10 +828,10 @@ TEST_CASE("scene: a name dies with its entity and never haunts a recycled slot (
     REQUIRE(w.setName(first, "doomed"));
     REQUIRE(w.destroy(first));
 
-    const Entity recycled = w.create();           // the slot comes back with a new generation
+    const Entity recycled = w.create();  // the slot comes back with a new generation
     CHECK(recycled.index == first.index);
     CHECK(!(recycled == first));
-    CHECK(w.name(recycled).empty());              // AC-2 -- the registry erased the record
+    CHECK(w.name(recycled).empty());  // AC-2 -- the registry erased the record
 
     // Subtree destroy takes descendants' names too.
     const Entity parent = w.create();
@@ -878,10 +878,10 @@ TEST_CASE("scene: names at scale, with no cross-talk (2.2.1 AC-1)") {
 
 TEST_CASE("scene: names do not enter the component-type registry (2.2.1 AC-6/I8)") {
     World w;
-    CHECK(w.componentTypeCount() == 5);           // Transform, Camera, DirectionalLight, PointLight, MeshRenderer
+    CHECK(w.componentTypeCount() == 5);  // Transform, Camera, DirectionalLight, PointLight, MeshRenderer
     const Entity e = w.create();
     REQUIRE(w.setName(e, "named"));
-    CHECK(w.componentTypeCount() == 5);           // unchanged -- D1/F12
+    CHECK(w.componentTypeCount() == 5);  // unchanged -- D1/F12
     CHECK(!w.findComponentType("engine::EntityName").valid());
     CHECK(!w.findComponentType("EntityName").valid());
 }
@@ -891,7 +891,7 @@ TEST_CASE("scene: names do not enter the component-type registry (2.2.1 AC-6/I8)
 TEST_CASE("scene: componentTypeAt walks the registration table in order (2.2.1 AC-3)") {
     World w = makeWorld();
     const std::size_t count = w.componentTypeCount();
-    REQUIRE(count > 5);                                   // 5 builtins + makeWorld's fixtures
+    REQUIRE(count > 5);  // 5 builtins + makeWorld's fixtures
 
     // The first five are the built-ins, in registerBuiltinComponents order.
     CHECK(w.componentTypeName(w.componentTypeAt(0)) == std::string_view{"engine::Transform"});
@@ -909,7 +909,7 @@ TEST_CASE("scene: componentTypeAt walks the registration table in order (2.2.1 A
         CHECK(w.registered(id));
         const std::string_view name = w.componentTypeName(id);
         CHECK(!name.empty());
-        CHECK(w.findComponentType(name).valid());         // resolves (to the FIRST registrant)
+        CHECK(w.findComponentType(name).valid());  // resolves (to the FIRST registrant)
         CHECK(std::find(seen.begin(), seen.end(), id) == seen.end());
         seen.push_back(id);
     }
@@ -943,25 +943,25 @@ TEST_CASE("scene: copyComponent copies, overwrites and tolerates a miss (2.2.1 A
     CHECK(copied->x == 1.0F);
     CHECK(copied->y == 2.0F);
     CHECK(copied->z == 3.0F);
-    CHECK(w.get<Position>(a)->x == 1.0F);                 // the source is untouched
+    CHECK(w.get<Position>(a)->x == 1.0F);  // the source is untouched
 
     // overwrite an EXISTING destination component
     REQUIRE(w.add<Position>(b, Position{9.0F, 9.0F, 9.0F}) != nullptr);
     REQUIRE(w.add<Position>(a, Position{4.0F, 5.0F, 6.0F}) != nullptr);
     CHECK(w.copyComponent(posId, a, b));
     CHECK(w.get<Position>(b)->x == 4.0F);
-    CHECK(w.componentCount<Position>() == 2);             // still exactly two, not three
+    CHECK(w.componentCount<Position>() == 2);  // still exactly two, not three
 
     // an absent source is a SILENT false, and must not create anything on the destination
     CHECK_FALSE(w.copyComponent(velId, a, b));
     CHECK_FALSE(w.has<Velocity>(b));
 
     // empty (tag) component (E6)
-    REQUIRE(w.add<Marker>(a) == nullptr);                 // a tag stores nothing; has<> is the state
+    REQUIRE(w.add<Marker>(a) == nullptr);  // a tag stores nothing; has<> is the state
     REQUIRE(w.has<Marker>(a));
     CHECK(w.copyComponent(tagId, a, b));
     CHECK(w.has<Marker>(b));
-    CHECK(w.copyComponent(tagId, a, b));                  // idempotent: already present
+    CHECK(w.copyComponent(tagId, a, b));  // idempotent: already present
     CHECK(w.has<Marker>(b));
 
     // from == to (E5): true when present, silent false when absent
@@ -978,17 +978,17 @@ TEST_CASE("scene: copyComponent rejections (2.2.1 AC-4)") {
     REQUIRE(w.add<Position>(a, Position{1.0F, 0.0F, 0.0F}) != nullptr);
     REQUIRE(w.destroy(dead));
 
-    CHECK_FALSE(w.copyComponent(posId, dead, a));         // dead source   -> ERROR
-    CHECK_FALSE(w.copyComponent(posId, a, dead));         // dead dest     -> ERROR
-    CHECK_FALSE(w.copyComponent(posId, Entity{}, a));     // null source   -> ERROR
-    CHECK_FALSE(w.copyComponent(posId, a, Entity{}));     // null dest     -> ERROR
-    CHECK_FALSE(w.copyComponent(ComponentTypeId{}, a, a));// unregistered  -> ERROR
+    CHECK_FALSE(w.copyComponent(posId, dead, a));           // dead source   -> ERROR
+    CHECK_FALSE(w.copyComponent(posId, a, dead));           // dead dest     -> ERROR
+    CHECK_FALSE(w.copyComponent(posId, Entity{}, a));       // null source   -> ERROR
+    CHECK_FALSE(w.copyComponent(posId, a, Entity{}));       // null dest     -> ERROR
+    CHECK_FALSE(w.copyComponent(ComponentTypeId{}, a, a));  // unregistered  -> ERROR
     CHECK_FALSE(w.copyComponent(componentTypeId<struct NotRegistered>(), a, a));
 
     std::optional<World> src;
     src.emplace();
     const World moved = std::move(*src);
-    CHECK_FALSE(src->copyComponent(posId, a, a));         // moved-from    -> ERROR
+    CHECK_FALSE(src->copyComponent(posId, a, a));  // moved-from    -> ERROR
 }
 
 TEST_CASE("scene: copyComponent across an EnTT page boundary (2.2.1 AC-5a/E4)") {
@@ -1006,7 +1006,7 @@ TEST_CASE("scene: copyComponent across an EnTT page boundary (2.2.1 AC-5a/E4)") 
     }
     REQUIRE(w.componentCount<Position>() == 1500);
 
-    const Entity fresh = w.create();                       // holds no Position -> no remove happens
+    const Entity fresh = w.create();  // holds no Position -> no remove happens
     CHECK(w.copyComponent(posId, es[0], fresh));
     REQUIRE(w.get<Position>(fresh) != nullptr);
     CHECK(w.get<Position>(fresh)->x == 0.0F);
@@ -1024,7 +1024,7 @@ TEST_CASE("scene: copyComponent removes the destination BEFORE reading the sourc
     // the source. With the correct order the destination gets the full text; with the read hoisted
     // above the remove it gets "" (and, under ASan, a heap-use-after-free first).
     const std::string LONG_TEXT = "the-source-payload-that-must-survive-a-relocation";
-    REQUIRE(LONG_TEXT.size() > 23);   // past libc++'s SSO capacity -> a real heap allocation
+    REQUIRE(LONG_TEXT.size() > 23);  // past libc++'s SSO capacity -> a real heap allocation
 
     World w = makeWorld();
     const ComponentTypeId payloadId = componentTypeId<Payload>();
@@ -1040,7 +1040,7 @@ TEST_CASE("scene: copyComponent removes the destination BEFORE reading the sourc
     // Nothing has been erased, so packed order == insertion order and the LAST insert is last.
     const Entity source = w.create();
     REQUIRE(w.add<Payload>(source, Payload{LONG_TEXT}) != nullptr);
-    const Entity destination = es[7];                       // occupied, and NOT the last element
+    const Entity destination = es[7];  // occupied, and NOT the last element
     REQUIRE(w.has<Payload>(destination));
 
     CHECK(w.copyComponent(payloadId, source, destination));
@@ -1048,6 +1048,6 @@ TEST_CASE("scene: copyComponent removes the destination BEFORE reading the sourc
     REQUIRE(w.get<Payload>(destination) != nullptr);
     CHECK(w.get<Payload>(destination)->text == LONG_TEXT);  // <- RED if the read is hoisted (S1)
     REQUIRE(w.get<Payload>(source) != nullptr);
-    CHECK(w.get<Payload>(source)->text == LONG_TEXT);       // the source survives, wherever it moved
-    CHECK(w.componentCount<Payload>() == 1201);             // overwrite, not insert
+    CHECK(w.get<Payload>(source)->text == LONG_TEXT);  // the source survives, wherever it moved
+    CHECK(w.componentCount<Payload>() == 1201);        // overwrite, not insert
 }

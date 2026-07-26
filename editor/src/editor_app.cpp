@@ -102,9 +102,9 @@ bool EditorApp::tick() {
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout, .quitRequested = false};
     PanelContext panelContext{sceneWorld, sceneSelection};  // rebuilt per frame (D7)
-    drawShellUi(registry, panelContext, ui);      // menu bar -> dockspace -> panels
-    applyDefaultLayout = ui.applyDefaultLayout;  // drawShellUi clears it once consumed, and re-sets
-                                                 // it for View > Reset Layout
+    drawShellUi(registry, panelContext, ui);                // menu bar -> dockspace -> panels
+    applyDefaultLayout = ui.applyDefaultLayout;             // drawShellUi clears it once consumed, and re-sets
+                                                            // it for View > Reset Layout
     presented = layer.endFrame(config.clearColor);
     if (ui.quitRequested) {
         running = false;  // File>Exit / Ctrl+Q: this frame still completed, so Render stays balanced

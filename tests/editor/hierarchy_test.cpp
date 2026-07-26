@@ -130,7 +130,7 @@ TEST_CASE("editor: Selection::setAll replaces wholesale, dedupes and skips nulls
     CHECK(s.count() == 2);
     CHECK(s.contains(a));
     CHECK(s.contains(b));
-    CHECK(s.primary() == a);  // the LAST newly-added survivor
+    CHECK(s.primary() == a);      // the LAST newly-added survivor
     CHECK(s.entities()[0] == b);  // input order preserved
     CHECK(s.entities()[1] == a);
 
@@ -338,11 +338,11 @@ TEST_CASE("editor: canReparent predicts setParent, and reparentEntity never logs
     REQUIRE(w.setParent(aChild, a));
     REQUIRE(w.destroy(dead));
 
-    CHECK(canReparent(w, b, a));               // legal
-    CHECK(canReparent(w, aChild, Entity{}));   // detach is always legal (E17)
-    CHECK(canReparent(w, aChild, a));          // already the parent -> a legal silent no-op (E15)
-    CHECK_FALSE(canReparent(w, a, a));         // self
-    CHECK_FALSE(canReparent(w, a, aChild));    // would close a cycle (E14)
+    CHECK(canReparent(w, b, a));              // legal
+    CHECK(canReparent(w, aChild, Entity{}));  // detach is always legal (E17)
+    CHECK(canReparent(w, aChild, a));         // already the parent -> a legal silent no-op (E15)
+    CHECK_FALSE(canReparent(w, a, a));        // self
+    CHECK_FALSE(canReparent(w, a, aChild));   // would close a cycle (E14)
     CHECK_FALSE(canReparent(w, dead, a));
     CHECK_FALSE(canReparent(w, Entity{}, a));
     CHECK_FALSE(canReparent(w, a, dead));
@@ -404,7 +404,7 @@ TEST_CASE("editor: duplicateEntities deep-copies subtree, name, components and o
     REQUIRE(grandCopies.size() == 1);
     CHECK(w.name(grandCopies[0]) == std::string_view{"Grand"});
 
-    CHECK(w.entityCount() == 8);              // 4 originals + 4 copies
+    CHECK(w.entityCount() == 8);               // 4 originals + 4 copies
     CHECK(childrenOf(w, parent).size() == 2);  // the source is untouched
 }
 

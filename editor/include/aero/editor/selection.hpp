@@ -33,10 +33,10 @@ public:
     [[nodiscard]] std::span<const Entity> entities() const noexcept;
 
     void set(Entity entity);                        // replace with exactly one; Entity{} clears
-    void add(Entity entity);                         // no-op if present; otherwise appended and becomes primary
-    void remove(Entity entity);                      // no-op if absent
-    void toggle(Entity entity);                       // add or remove
-    void setAll(std::span<const Entity> entities);   // replace wholesale (Shift+click ranges)
+    void add(Entity entity);                        // no-op if present; otherwise appended and becomes primary
+    void remove(Entity entity);                     // no-op if absent
+    void toggle(Entity entity);                     // add or remove
+    void setAll(std::span<const Entity> entities);  // replace wholesale (Shift+click ranges)
     void clear() noexcept;
 
     // Drops every dead or null handle. Returns how many were dropped. The primary follows: if it

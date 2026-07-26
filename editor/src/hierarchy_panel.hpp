@@ -36,18 +36,18 @@ private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.
     enum class ActionKind : std::uint8_t {
         None = 0,
-        Select,        // target: the clicked row
-        Toggle,        // target: the ctrl/cmd-clicked row
-        Range,         // target: the shift-clicked row (the anchor is a member)
+        Select,  // target: the clicked row
+        Toggle,  // target: the ctrl/cmd-clicked row
+        Range,   // target: the shift-clicked row (the anchor is a member)
         ClearSelection,
         CreateEmpty,
-        CreateChild,   // target: the parent (the selection primary)
+        CreateChild,  // target: the parent (the selection primary)
         Delete,
         Duplicate,
         BeginRename,   // target: the row to edit
         CommitRename,  // target: the row; renameBuffer holds the new text
         CancelRename,
-        Reparent,      // target: the moved entity, second: the new parent (Entity{} == to root)
+        Reparent,  // target: the moved entity, second: the new parent (Entity{} == to root)
     };
 
     struct PendingAction {

@@ -405,16 +405,16 @@ TEST_CASE("scene_serialize: names round-trip (2.2.1 D5, AC-7)") {
     const std::vector<Entity> entities = collectEntities(world);
     REQUIRE(entities.size() == 2);
     CHECK(world.name(entities[0]) == std::string_view{"camera"});
-    CHECK(world.name(entities[1]).empty());          // absent name stays absent
+    CHECK(world.name(entities[1]).empty());  // absent name stays absent
 
     const SceneDocument doc = saveWorld(world);
     REQUIRE(doc.entities.size() == 2);
     CHECK(doc.entities[0].name == "camera");
-    CHECK(doc.entities[1].name.empty());             // omitted, not ""-emitted -- see the text below
+    CHECK(doc.entities[1].name.empty());  // omitted, not ""-emitted -- see the text below
 
     const std::string text = saveWorldText(world);
     CHECK(text.find(R"("name": "camera")") != std::string::npos);
-    CHECK(text.find(R"("id": 2,)") != std::string::npos);   // entity 2 has no name key at all
+    CHECK(text.find(R"("id": 2,)") != std::string::npos);  // entity 2 has no name key at all
 }
 
 TEST_CASE("scene_serialize: a named World is byte-exactly idempotent (2.2.1 AC-7)") {
@@ -429,18 +429,18 @@ TEST_CASE("scene_serialize: a named World is byte-exactly idempotent (2.2.1 AC-7
     a.add<Transform>(child, Transform{});
     REQUIRE(a.setParent(child, camera));
     const Entity anonymous = a.create();
-    a.add<MeshRenderer>(anonymous, MeshRenderer{});   // deliberately unnamed
+    a.add<MeshRenderer>(anonymous, MeshRenderer{});  // deliberately unnamed
 
     const std::string t1 = saveWorldText(a);
     World b;
     REQUIRE(!loadSceneText(b, t1).error.has_value());
     const std::string t2 = saveWorldText(b);
-    CHECK(t1 == t2);                                  // byte-exact -- names included
+    CHECK(t1 == t2);  // byte-exact -- names included
 
     const std::vector<Entity> es = collectEntities(b);
     REQUIRE(es.size() == 3);
     CHECK(b.name(es[0]) == std::string_view{"Main Camera"});
     CHECK(b.name(es[1]) == std::string_view{"Child With A Long Name"});
     CHECK(b.name(es[2]).empty());
-    CHECK(b.parent(es[1]) == es[0]);                  // hierarchy still round-trips
+    CHECK(b.parent(es[1]) == es[0]);  // hierarchy still round-trips
 }

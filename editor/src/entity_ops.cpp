@@ -1,6 +1,5 @@
-#include <aero/editor/entity_ops.hpp>
-
 #include <aero/core/math.hpp>
+#include <aero/editor/entity_ops.hpp>
 #include <aero/scene/camera.hpp>
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
