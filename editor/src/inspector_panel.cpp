@@ -130,9 +130,16 @@ void InspectorPanel::onDraw(PanelContext& context) {
             }
             anyAbsent = true;
             shortNameScratch = std::string(shortComponentName(context.world.componentTypeName(candidateId)));
+            // Review finding 4: MenuItem derives its ID from its LABEL, and two registered types can
+            // share a short name (e.g. engine::Camera vs a project game::Camera) -- the same D13/E14
+            // discipline drawComponent already applies via PushID(entry.name.c_str()) at :146, just
+            // missing here. Keyed on the loop index, which is stable for the popup's own lifetime
+            // (componentTypeAt's registration order never reorders mid-frame).
+            ImGui::PushID(static_cast<int>(i));
             if (ImGui::MenuItem(shortNameScratch.c_str())) {
                 pending = PendingAction{.kind = ActionKind::AddComponent, .type = candidateId};
             }
+            ImGui::PopID();
         }
         if (!anyAbsent) {
             ImGui::MenuItem("(none)", nullptr, false, false);  // E12: disabled, never omitted
