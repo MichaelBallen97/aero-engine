@@ -84,8 +84,12 @@ generated `aeroReadJson` readers use in their own WARN messages.
 The member **value** is the payload object `aeroWriteJson` emits for that component: one key per
 supported field, in declaration order, with unsupported fields simply absent. This document defines
 the payload shape **by reference** to the generated serializers (tasks 1.2.1/1.2.2) — it does not
-restate field-level shapes. The field-level tolerance policy those generated readers apply, restated
-here for convenience:
+restate field-level shapes. Field kinds reachable through the generated serializers are the
+reflectable subset — JSON numbers for primitives, `{x,y,z}`/`{x,y,z,w}` for `Vec3`/`Quat`, and
+**from task 2.2.2 a JSON string for `std::string`**, escaped by the writer's rules with non-UTF-8
+bytes passed through; purely additive to scene v1 (envelope unchanged, every existing scene byte
+still reads and re-emits identically). The field-level tolerance policy those generated readers
+apply, restated here for convenience:
 
 | Field condition (at load) | Behavior |
 |---|---|

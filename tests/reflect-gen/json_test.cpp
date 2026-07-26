@@ -749,6 +749,38 @@ TEST_CASE("read leaves + readField: null->NaN, strictness, range checks, Vec3/Qu
     }
 }
 
+TEST_CASE("serialize: std::string leaves (task 2.2.2, AC-3)") {
+    SUBCASE("write -> parse -> read round-trip") {
+        const std::vector<std::string> samples{
+            "", "plain", "quote\" back\\slash", "tab\tnewline\n", "ctrl\x01\x1f", "caf\xc3\xa9 utf-8"};
+        for (const std::string& s : samples) {
+            engine::JsonWriter w;
+            engine::reflect::writeJson(w, s);
+            const engine::JsonParseResult parsed = engine::parseJson(w.str());
+            REQUIRE(parsed.ok());
+            std::string out = "untouched";
+            CHECK(engine::reflect::readJson(*parsed.value, out));
+            CHECK(out == s);
+        }
+    }
+    SUBCASE("read rejects non-string kinds and leaves out untouched") {
+        for (const std::string_view text : {"null", "1", "true", "[]", "{}"}) {
+            const engine::JsonParseResult parsed = engine::parseJson(text);
+            REQUIRE(parsed.ok());
+            std::string out = "sentinel";
+            CHECK_FALSE(engine::reflect::readJson(*parsed.value, out));
+            CHECK(out == "sentinel");
+        }
+    }
+    SUBCASE("readField on a missing key returns true and leaves the default") {
+        const engine::JsonParseResult r = engine::parseJson("{}");
+        REQUIRE(r.ok());
+        std::string s = "default";
+        CHECK(engine::reflect::readField(*r.value, "T", "label", s));
+        CHECK(s == "default");
+    }
+}
+
 namespace {
 
 // The D13 round-trip helper: T -> aeroWriteJson -> text -> parseJson -> aeroReadJson -> T2, THEN

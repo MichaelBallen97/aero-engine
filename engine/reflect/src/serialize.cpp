@@ -38,6 +38,8 @@ void writeJson(JsonWriter& w, const Quat& v) {
     w.endObject();
 }
 
+void writeJson(JsonWriter& w, const std::string& v) { w.value(v); }  // -> value(std::string_view)
+
 // ---- task 1.2.2: the read half (D10) ---------------------------------------------------------
 
 bool readJson(const JsonValue& v, bool& out) {
@@ -111,6 +113,17 @@ bool readJson(const JsonValue& v, Quat& out) {
         return false;
     }
     out = Quat{x, y, z, w};
+    return true;
+}
+
+// Task 2.2.2 (D3). No NaN analog for a string, so unlike float/double a `null` here is a genuine
+// rejection -- readField then warns and leaves `out` untouched, rather than writing a sentinel.
+bool readJson(const JsonValue& v, std::string& out) {
+    const std::optional<std::string_view> s = v.asString();
+    if (!s) {
+        return false;  // includes Null: a string field has no NaN analog (D3)
+    }
+    out.assign(s->data(), s->size());
     return true;
 }
 
