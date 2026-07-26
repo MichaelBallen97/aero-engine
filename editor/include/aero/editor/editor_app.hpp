@@ -7,7 +7,9 @@
 #include <aero/core/time.hpp>
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/selection.hpp>
 #include <aero/rhi/types.hpp>
+#include <aero/scene/world.hpp>
 
 #include <cstdint>
 #include <optional>
@@ -18,6 +20,10 @@ struct EditorAppConfig {
     rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
     bool persistLayout = true;                         // -> ImGuiLayer (imgui.ini); false in tests
     bool registerDefaultPanels = true;                 // the five 2.2.x placeholders (D8)
+    // The default new-scene contents (D9): Main Camera + Directional Light + Cube, so a freshly
+    // launched editor is not an empty box and 2.2.3's viewport has something to render. Tests that
+    // want a clean World set it false.
+    bool seedDefaultScene = true;
     // Frame-rate ceiling applied ONLY while the window has no keyboard focus (D4). <= 0 disables the
     // throttle entirely — what the GPU smoke test uses so its frames stay unpaced + deterministic.
     float unfocusedFrameCapHz = 20.0F;
@@ -57,6 +63,14 @@ public:
 
     [[nodiscard]] PanelRegistry& panels() noexcept;
     [[nodiscard]] const PanelRegistry& panels() const noexcept;
+    // The edited scene. EditorApp OWNS it (D6): a World is DOCUMENT state, unlike the
+    // Context/Window/Device that main.cpp injects because they are process-global (2.1.3 D1).
+    [[nodiscard]] World& world() noexcept;
+    [[nodiscard]] const World& world() const noexcept;
+    // The shared entity selection: the hierarchy writes it, 2.2.2's inspector and 2.2.3's viewport
+    // read it, 2.3.2's picking writes it. ONE object, never two.
+    [[nodiscard]] Selection& selection() noexcept;
+    [[nodiscard]] const Selection& selection() const noexcept;
     [[nodiscard]] const FrameClock& clock() const noexcept;
     [[nodiscard]] bool focused() const noexcept;
     // True when the LAST tick() actually presented (false when the window was minimized). This is
@@ -80,6 +94,8 @@ private:
     bool applyDefaultLayout = false;  // seeded from ImGuiLayer::wantsDefaultLayout(); also set by
                                       // View > Reset Layout / requestLayoutReset()
     bool presented = false;
+    World sceneWorld;
+    Selection sceneSelection;
 };
 
 }  // namespace engine::editor

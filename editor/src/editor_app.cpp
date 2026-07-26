@@ -4,6 +4,7 @@
 #include <aero/core/profiler.hpp>
 #include <aero/core/time.hpp>
 #include <aero/editor/editor_app.hpp>
+#include <aero/editor/entity_ops.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
 
@@ -56,9 +57,13 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         app.registry.emplace<PlaceholderPanel>("Assets", DockSlot::Bottom, "Assets — placeholder (task 2.2.4)");
     }
 
+    if (config.seedDefaultScene) {
+        engine::editor::seedDefaultScene(app.sceneWorld);  // fully qualified: the config field shadows
+    }
+
     // This is the evidence the non-interactive launch check greps for (§V5).
-    AERO_LOG_INFO("editor: shell ready ({} panels, layout: {})", app.registry.count(),
-                  app.applyDefaultLayout ? "default" : "restored");
+    AERO_LOG_INFO("editor: shell ready ({} panels, {} entities, layout: {})", app.registry.count(),
+                  app.sceneWorld.entityCount(), app.applyDefaultLayout ? "default" : "restored");
     return app;
 }
 
@@ -120,6 +125,10 @@ int EditorApp::run() {
 
 PanelRegistry& EditorApp::panels() noexcept { return registry; }
 const PanelRegistry& EditorApp::panels() const noexcept { return registry; }
+World& EditorApp::world() noexcept { return sceneWorld; }
+const World& EditorApp::world() const noexcept { return sceneWorld; }
+Selection& EditorApp::selection() noexcept { return sceneSelection; }
+const Selection& EditorApp::selection() const noexcept { return sceneSelection; }
 const FrameClock& EditorApp::clock() const noexcept { return frameClock; }
 bool EditorApp::focused() const noexcept { return windowFocused; }
 bool EditorApp::presentedLastFrame() const noexcept { return presented; }
