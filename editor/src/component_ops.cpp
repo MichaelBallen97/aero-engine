@@ -174,7 +174,18 @@ std::optional<FieldValue> readComponentField(World& world, Entity entity, Compon
         AERO_LOG_ERROR("component_ops: readComponentField -- unknown field '{}.{}'", typeName, field);
         return std::nullopt;
     }
-    return readMemberValue(member, handle);
+    std::optional<FieldValue> result = readMemberValue(member, handle);
+    if (!result.has_value()) {
+        // O2: reflect-gen's whitelist and meta_utils' ArithmeticTypes are kept in lock-step, so this
+        // is unreachable today -- but component_ops.hpp promises every rejection logs (review
+        // finding 8: this branch used to return nullopt silently, the one seam gap that promise
+        // didn't hold), and inspector_model.cpp's readEntryValue already ships the identical
+        // diagnostic for the identical condition, so both consumers of the O2 dispatch table are
+        // audible on drift, not just the model.
+        AERO_LOG_ERROR("component_ops: readComponentField -- '{}.{}' has meta type '{}', which no field editor maps",
+                       typeName, field, member.type().info().name());
+    }
+    return result;
 }
 
 bool writeComponentField(World& world, Entity entity, ComponentTypeId id, std::string_view field,

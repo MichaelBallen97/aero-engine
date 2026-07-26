@@ -15,8 +15,9 @@ namespace {
 
 // Same shape as component_ops.cpp's readMemberValue, but also reports the FieldKind (the model
 // carries both) and whether ANY of the 20 concrete types matched -- the caller logs the O2
-// defensive-skip ERROR on a miss, since this is the ONE place that ships the loud diagnostic
-// (component_ops.cpp's own read path stays silent -- see its own comment).
+// defensive-skip ERROR on a miss. component_ops.cpp's readComponentField logs the identical
+// condition too (review finding 8), so a drift between reflect-gen's whitelist and this dispatch
+// is audible through either seam, not just this one.
 struct DispatchedValue {
     bool matched = false;
     FieldKind kind = FieldKind::Bool;
