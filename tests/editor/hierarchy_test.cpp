@@ -360,6 +360,45 @@ TEST_CASE("editor: canReparent predicts setParent, and reparentEntity never logs
     CHECK(w.childCount(a) == 1);
 }
 
+TEST_CASE("editor: reparentTargets filters a multi-select drag through topMost (review round 2, Gap 4)") {
+    // The regression this closes: dragging a selected PARENT and one of its selected CHILDREN onto an
+    // unrelated target must move the subtree intact -- never split, with the child peeled off into
+    // the target directly instead of staying under the parent.
+    using engine::editor::reparentEntity;
+    using engine::editor::reparentTargets;
+    World w;
+    const Entity parent = w.create();
+    const Entity child = w.create();
+    const Entity target = w.create();
+    const Entity other = w.create();
+    REQUIRE(w.setParent(child, parent));
+
+    // Both `parent` and `child` selected, `parent` is the one physically dragged: the whole selection
+    // moves, but topMost() reduces it to `{parent}` alone -- `child` is COVERED by `parent`.
+    const std::vector<Entity> selection{parent, child};
+    CHECK(reparentTargets(w, selection, parent) == std::vector<Entity>{parent});
+    // Same selection, `child` is the one physically dragged: E16 still pulls in the WHOLE selection
+    // (since `child` is inside it), and topMost() still reduces it to `{parent}` -- dragging by the
+    // child does not change what actually moves.
+    CHECK(reparentTargets(w, selection, child) == std::vector<Entity>{parent});
+
+    // Apply it exactly as applyPending's Reparent arm does, and confirm the subtree moved INTACT:
+    // `parent` is now `target`'s child, and `child` is STILL `parent`'s child -- never re-parented to
+    // `target` directly.
+    for (const Entity e : reparentTargets(w, selection, parent)) {
+        CHECK(reparentEntity(w, e, target));
+    }
+    CHECK(w.parent(parent) == target);
+    CHECK(w.parent(child) == parent);  // never flattened
+    CHECK(w.childCount(parent) == 1);
+    CHECK(w.childCount(target) == 1);
+
+    // Dragging a row OUTSIDE the selection moves only that row (E16), unaffected by Gap 4.
+    CHECK(reparentTargets(w, selection, other) == std::vector<Entity>{other});
+    // An empty selection still resolves to the dragged row alone.
+    CHECK(reparentTargets(w, std::span<const Entity>{}, other) == std::vector<Entity>{other});
+}
+
 TEST_CASE("editor: duplicateEntities deep-copies subtree, name, components and order (AC-13)") {
     using engine::editor::duplicateEntities;
     World w;

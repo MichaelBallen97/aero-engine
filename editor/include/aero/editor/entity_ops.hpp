@@ -63,6 +63,15 @@ std::size_t destroyEntities(World& world, std::span<const Entity> entities);
 // setParent, guarded by canReparent. Never logs on a refusal it can predict.
 bool reparentEntity(World& world, Entity child, Entity parent);
 
+// The set of entities a drag-drop reparent should actually move, given the CURRENT `selection` and
+// the entity the user physically dragged: the whole selection when `dragged` is inside it (E16),
+// otherwise `dragged` alone. ALWAYS filtered through topMost() -- so a selected parent dragged
+// together with one of its own selected children moves as ONE subtree, never split into its parts
+// (D19's consistency extension to the drag-drop path; review round 2, Gap 4). Dead/null handles are
+// dropped (topMost's own contract); order preserved.
+[[nodiscard]] std::vector<Entity> reparentTargets(const World& world, std::span<const Entity> selection,
+                                                  Entity dragged);
+
 // The default new-scene contents (D9). APPENDS to `world` -- clear() it first for a true "new
 // scene" (E32). Reused verbatim by 2.5.1's File > New Scene.
 //   "Main Camera"       Transform{position {0, 1, 5}} + Camera{}

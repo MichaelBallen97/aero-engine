@@ -20,20 +20,10 @@ namespace {
 
 constexpr const char* ENTITY_PAYLOAD_TYPE = "AERO_ENTITY";  // <= 32 chars (ImGui's own limit)
 
-// The rows a drop would move: the whole selection when the dragged row is IN it, otherwise just that
-// row (E16). Dragging an unselected row moves only it -- the least surprising behaviour, and the only
-// one that stays correct given the selection cannot be updated mid-walk (D12).
-[[nodiscard]] std::span<const Entity> movedSet(const Selection& selection, Entity dragged,
-                                               std::vector<Entity>& scratch) {
-    if (selection.contains(dragged)) {
-        return selection.entities();
-    }
-    scratch.clear();
-    scratch.push_back(dragged);
-    return std::span<const Entity>{scratch};
-}
-
 // Every moved row must be legally reparentable, or the drop is not offered at all (E14/AC-15).
+// `moved` is ALREADY topMost()-filtered by the caller (engine::editor::reparentTargets) -- the same
+// set applyPending's Reparent arm will actually move (D19's consistency extension; review round 2,
+// Gap 4), so legality is never checked against a set different from the one that gets applied.
 [[nodiscard]] bool dropLegal(const World& world, std::span<const Entity> moved, Entity target) {
     if (moved.empty()) {
         return false;
@@ -183,7 +173,7 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
     if (ImGui::BeginDragDropTarget()) {
         Entity dragged{};
         if (peekDraggedEntity(dragged)) {
-            const std::span<const Entity> moved = movedSet(selection, dragged, moveScratch);
+            const std::vector<Entity> moved = reparentTargets(world, selection.entities(), dragged);
             // AC-15/E14: AcceptDragDropPayload is NOT CALLED for an illegal drop, so no highlight is
             // drawn and no reparent is attempted -- and World::setParent never logs an ERROR during
             // ordinary dragging.
@@ -268,7 +258,7 @@ void HierarchyPanel::drawVoidTarget(PanelContext& context) {
     if (ImGui::BeginDragDropTarget()) {
         Entity dragged{};
         if (peekDraggedEntity(dragged)) {
-            const std::span<const Entity> moved = movedSet(context.selection, dragged, moveScratch);
+            const std::vector<Entity> moved = reparentTargets(context.world, context.selection.entities(), dragged);
             if (dropLegal(context.world, moved, Entity{}) &&
                 ImGui::AcceptDragDropPayload(ENTITY_PAYLOAD_TYPE) != nullptr) {
                 pending = PendingAction{.kind = ActionKind::Reparent, .target = dragged, .second = Entity{}};
@@ -389,10 +379,14 @@ void HierarchyPanel::applyPending(PanelContext& context) {
             renameFocusPending = false;
             break;
         case ActionKind::Reparent: {
-            const std::span<const Entity> moved = movedSet(selection, pending.target, moveScratch);
-            // Copy before mutating: `moved` may alias Selection's own vector, and reparentEntity does
-            // not touch the Selection today -- but a copy makes that independent of a future change.
-            const std::vector<Entity> targets(moved.begin(), moved.end());
+            // D19's consistency extension to the drag-drop path (review round 2, Gap 4):
+            // reparentTargets() is ALREADY topMost()-filtered -- the exact set `dropLegal` validated
+            // during the hover that produced this action -- so a multi-selected parent+child dragged
+            // together moves as ONE subtree, never split with the child peeled off into the target
+            // directly. reparentTargets() returns a fresh vector (independent of Selection's own
+            // storage), so this is safe even though reparentEntity mutates the World the Selection
+            // reads.
+            const std::vector<Entity> targets = reparentTargets(world, selection.entities(), pending.target);
             for (const Entity e : targets) {
                 reparentEntity(world, e, pending.second);
             }

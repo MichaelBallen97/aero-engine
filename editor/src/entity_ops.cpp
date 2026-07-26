@@ -109,6 +109,14 @@ bool reparentEntity(World& world, Entity child, Entity parent) {
     return world.setParent(child, parent);
 }
 
+std::vector<Entity> reparentTargets(const World& world, std::span<const Entity> selection, Entity dragged) {
+    const bool draggedIsSelected = std::find(selection.begin(), selection.end(), dragged) != selection.end();
+    if (draggedIsSelected) {
+        return topMost(world, selection);  // D19: move the whole selection as one, never split (E16)
+    }
+    return topMost(world, std::vector<Entity>{dragged});  // dragging an unselected row moves only it
+}
+
 std::vector<Entity> duplicateEntities(World& world, std::span<const Entity> entities) {
     struct Pending {
         Entity source;
