@@ -20,8 +20,8 @@ T doubleToClamped(double v) {
     if (v != v) {  // NaN
         return T{0};
     }
-    const double lo = static_cast<double>(std::numeric_limits<T>::lowest());
-    const double hi = static_cast<double>(std::numeric_limits<T>::max());
+    const auto lo = static_cast<double>(std::numeric_limits<T>::lowest());
+    const auto hi = static_cast<double>(std::numeric_limits<T>::max());
     if (v <= lo) {
         return std::numeric_limits<T>::lowest();
     }
