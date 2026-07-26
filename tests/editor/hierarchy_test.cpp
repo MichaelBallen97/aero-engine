@@ -529,20 +529,34 @@ TEST_CASE("editor: RootOrder tracks reparenting and survives a wholesale repopul
 }
 
 TEST_CASE("editor: RootOrder does not mistake a recycled slot for its predecessor") {
+    // Review round 2, Gap 3: `stamp` is only ever grown (in reconcile()'s pass 2) for indices STILL
+    // in `order` after pass 1's dead-entry prune -- so a lone entity, reconciled once then destroyed
+    // and recycled, never actually grows `stamp` past size 0, and the named generation comparison
+    // (`stamp[e.index] == e.generation`) is never reached (short-circuited by `e.index < stamp.size()`
+    // being trivially false both times). `keep` (index 0) survives across BOTH reconciles so its
+    // presence in `order` after pass 1 of the SECOND reconcile grows `stamp` to size 2 in pass 2 --
+    // which incidentally covers `victim`'s lower index (1) too, even though `victim` itself fell out
+    // of `order` (and so was never re-stamped) in that same pass 1. That is what finally makes
+    // `recycled.index < stamp.size()` true for a genuine reason, and puts weight on the actual value
+    // comparison: `stamp[1]` is 0 (never touched this call), which must NOT equal `recycled`'s real
+    // (non-zero) generation for `recycled` to be correctly re-admitted as a NEW root.
     using engine::editor::RootOrder;
     World w;
     RootOrder ro;
-    const Entity first = w.create();
+    const Entity victim = w.create();  // index 0 -- destroyed and recycled below
+    const Entity keep = w.create();    // index 1 -- stays alive through both reconciles
     ro.reconcile(w);
-    REQUIRE(ro.entities().size() == 1);
+    REQUIRE(ro.entities().size() == 2);
 
-    REQUIRE(w.destroy(first));
-    const Entity recycled = w.create();  // same index, new generation
-    REQUIRE(recycled.index == first.index);
-    REQUIRE(!(recycled == first));
+    REQUIRE(w.destroy(victim));
+    const Entity recycled = w.create();  // same index as `victim`, new generation
+    REQUIRE(recycled.index == victim.index);
+    REQUIRE(!(recycled == victim));
+
     ro.reconcile(w);
-    REQUIRE(ro.entities().size() == 1);
-    CHECK(ro.entities()[0] == recycled);  // generation is part of the stamp
+    REQUIRE(ro.entities().size() == 2);
+    CHECK(ro.entities()[0] == keep);      // untouched -- pass 1 preserved its position
+    CHECK(ro.entities()[1] == recycled);  // appended -- generation mismatch correctly re-admits it
 }
 
 // ---- seedDefaultScene ---------------------------------------------------------------------------
