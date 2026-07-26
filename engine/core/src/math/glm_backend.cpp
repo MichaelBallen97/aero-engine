@@ -110,6 +110,11 @@ Mat3 toMat3(Quat q) { return fromGlm(glm::mat3_cast(toGlm(q))); }
 Mat4 toMat4(Quat q) { return fromGlm(glm::mat4_cast(toGlm(q))); }
 Quat toQuat(const Mat3& m) { return fromGlm(glm::quat_cast(toGlm(m))); }
 
+// Task 2.2.2. glm::eulerAngles is vec3(pitch(q), yaw(q), roll(q)); glm::qua's vec3 ctor is its exact
+// inverse (a 20/35/50-degree round trip is bit-identical). The ctor is GLM_EXPLICIT.
+Vec3 eulerAngles(Quat q) { return fromGlm(glm::eulerAngles(toGlm(q))); }
+Quat fromEulerAngles(Vec3 anglesRadians) { return fromGlm(glm::quat(toGlm(anglesRadians))); }
+
 // ---- Transform (transform.hpp) ------------------------------------------------------------
 
 // D8: T * R * S, right-to-left — scale first, then rotate, then translate.
