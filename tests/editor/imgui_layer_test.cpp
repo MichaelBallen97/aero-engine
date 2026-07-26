@@ -12,6 +12,7 @@
 // presentation is unproven on the lavapipe/WARP lanes; since every tick() below asserts the frame
 // presented, we take the proven visible path. The brief flash matches rhi_swapchain_test.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <aero/editor/component_ops.hpp>
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_registry.hpp>
@@ -172,5 +173,65 @@ TEST_CASE("editor: seedDefaultScene = false yields an empty tree (AC-18)") {
         REQUIRE(app->tick());  // an EMPTY tree must draw cleanly too
         CHECK(app->presentedLastFrame());
     }
+    app.reset();
+}
+
+TEST_CASE("editor: the Inspector panel draws a seeded scene and survives structural edits (task 2.2.2, AC-9/AC-14)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    CHECK(world.entityCount() == 3);
+
+    // Find the seeded "Cube" entity (Transform + MeshRenderer) -- exercises every widget path:
+    // Vec3, Quat (via Transform), a ranged uint32 selector and a colour Vec3 (via MeshRenderer).
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+
+    app->selection().set(cube);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // The "(N selected)" multi-select note: select every entity, one more tick.
+    std::vector<engine::Entity> all;
+    world.eachEntity([&](engine::Entity e) { all.push_back(e); });
+    app->selection().setAll(all);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    // Structural edits BEHIND the panel's back, between ticks (E3): the model is rebuilt fresh
+    // every frame (D15), so removing then re-adding a component the panel just drew must not crash.
+    app->selection().set(cube);
+    REQUIRE(app->tick());
+    const engine::ComponentTypeId meshRendererId = world.findComponentType("engine::MeshRenderer");
+    REQUIRE(meshRendererId.valid());
+    CHECK(engine::editor::removeComponent(world, cube, meshRendererId));
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    CHECK(engine::editor::addComponent(world, cube, meshRendererId));
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
     app.reset();
 }

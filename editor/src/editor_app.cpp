@@ -10,6 +10,7 @@
 
 #include "editor_reflection.hpp"
 #include "hierarchy_panel.hpp"
+#include "inspector_panel.hpp"
 #include "placeholder_panel.hpp"
 #include "shell_ui.hpp"
 
@@ -54,7 +55,7 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
 
     if (config.registerDefaultPanels) {
         app.registry.emplace<HierarchyPanel>();  // task 2.2.1 -- was a PlaceholderPanel
-        app.registry.emplace<PlaceholderPanel>("Inspector", DockSlot::Right, "Inspector — placeholder (task 2.2.2)");
+        app.registry.emplace<InspectorPanel>();  // task 2.2.2 -- was a PlaceholderPanel
         app.registry.emplace<PlaceholderPanel>("Viewport", DockSlot::Center, "Viewport — placeholder (task 2.2.3)");
         app.registry.emplace<PlaceholderPanel>("Console", DockSlot::Bottom, "Console — placeholder (task 2.2.5)");
         app.registry.emplace<PlaceholderPanel>("Assets", DockSlot::Bottom, "Assets — placeholder (task 2.2.4)");
