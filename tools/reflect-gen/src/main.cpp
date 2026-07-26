@@ -22,6 +22,7 @@
 #include <clang-c/Index.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -298,12 +299,17 @@ CXChildVisitResult visitCursor(CXCursor cursor, CXCursor /*parent*/, CXClientDat
 }
 
 // ---- task 1.1.2: reflection model (spec D9) -------------------------------------------------------
-enum class FieldCategory : std::uint8_t { Primitive, Vec3, Quat, Unsupported };
+enum class FieldCategory : std::uint8_t { Primitive, Vec3, Quat, String, Unsupported };
 
 struct Field {
     std::string name;
     std::string typeName;
     FieldCategory category = FieldCategory::Unsupported;
+    bool isBool = false;  // Primitive refinement: engine::range never applies to bool (D7)
+    bool hasRange = false;
+    std::string rangeMin;  // validated numeric token, suffix-stripped ("0.0175", "0", "-1")
+    std::string rangeMax;  // stored as TEXT, never re-formatted -- that is what keeps AC-4 byte-stable
+    bool color = false;
 };
 
 struct Component {
@@ -369,8 +375,34 @@ FieldCategory classifyField(CXType fieldType) {
     if (spelling == "engine::Quat") {
         return FieldCategory::Quat;
     }
+    // Task 2.2.2 (D3; plan decision O3, 2026-07-26). std::string, however THIS host's libclang prints
+    // it. Verified against clang 18's default PrintingPolicy (UsePreferredNames=1,
+    // SuppressInlineNamespace=1, SuppressDefaultTemplateArgs=1) plus a live libclang probe:
+    //   macOS/libc++    -> "std::string"             (libc++'s _LIBCPP_PREFERRED_NAME(string))
+    //   Linux/libstdc++ -> "std::basic_string<char>" (inline ns __cxx11 AND default args elided)
+    //   Windows/MS STL  -> "std::basic_string<char>"
+    // The third spelling is belt-and-braces if a host ever stops eliding default args.
+    //
+    // EXACT, NEVER A PREFIX. A prefix would also match
+    // std::basic_string<char, MyTraits, std::pmr::polymorphic_allocator<char>> -- whose non-default
+    // arguments are NOT elided, so it prints with them -- and serialize.hpp has no overload for it:
+    // the generated TU would not compile. That is the long-double/__int128 class of bug the 1.2.2
+    // whitelist rewrite exists to prevent. u8/u16/u32/wstring are excluded for free.
+    //
+    // If a lane ever prints a FOURTH spelling the field falls through to Unsupported -- tagged
+    // [unsupported], one warning, exit 0, never a miscompile -- and reflect-gen.string_components reds
+    // with the observed line dumped. The structural-match escalation (and its trigger condition) is
+    // written out in the task plan's risk R1; do NOT apply it pre-emptively.
+    if (spelling == "std::string" || spelling == "std::basic_string<char>" ||
+        spelling == "std::basic_string<char, std::char_traits<char>, std::allocator<char>>") {
+        return FieldCategory::String;
+    }
     return FieldCategory::Unsupported;
 }
+
+// Task 2.2.2 (D7): whether a field's CANONICAL type is exactly `bool` -- engine::range never applies
+// to a bool field (a checkbox has no numeric range), and this is the oracle fieldVisitor asks.
+bool isBoolField(CXType fieldType) { return clang_getCanonicalType(fieldType).kind == CXType_Bool; }
 
 std::string_view categoryTag(FieldCategory category) {
     switch (category) {
@@ -380,6 +412,8 @@ std::string_view categoryTag(FieldCategory category) {
             return "vec3";
         case FieldCategory::Quat:
             return "quat";
+        case FieldCategory::String:
+            return "string";
         case FieldCategory::Unsupported:
             return "unsupported";
     }
@@ -441,17 +475,137 @@ bool isNamespaceScoped(CXCursor cursor) {
     return true;
 }
 
+// ---- task 2.2.2: field annotation collection (D7) -------------------------------------------------
+
+struct FieldAnnotations {
+    bool color = false;
+    bool hasRange = false;
+    std::string rangeMin;
+    std::string rangeMax;
+    std::vector<std::string> diagnostics;  // deferred: judged after classification (D7)
+};
+
+// One numeric literal token as AERO_RANGE stringized it: optional sign, optional ONE trailing f/F/l/L.
+// strtod is the oracle -- it accepts 0, -1, 1e-3, 0x10, 3.1241 and rejects `lo`, `1 + 2`, `'a'`, "".
+std::optional<std::string> parseRangeToken(std::string token) {
+    if (!token.empty()) {
+        const char last = token.back();
+        if (last == 'f' || last == 'F' || last == 'l' || last == 'L') {
+            token.pop_back();
+        }
+    }
+    if (token.empty()) {
+        return std::nullopt;
+    }
+    const char* begin = token.c_str();
+    char* end = nullptr;
+    (void)std::strtod(begin, &end);
+    if (end != begin + token.size()) {
+        return std::nullopt;  // must consume the WHOLE token
+    }
+    return token;
+}
+
+// "engine::range:<min>:<max>". Exactly one ':' may remain after the prefix -- a numeric literal cannot
+// contain one, so any other arity is malformed by construction.
+bool parseRangePayload(std::string_view payload, FieldAnnotations& out, std::string& reason) {
+    const auto sep = payload.find(':');
+    if (sep == std::string_view::npos || payload.find(':', sep + 1) != std::string_view::npos) {
+        reason = "expected exactly two ':'-separated numeric literals";
+        return false;
+    }
+    const std::optional<std::string> lo = parseRangeToken(std::string{payload.substr(0, sep)});
+    const std::optional<std::string> hi = parseRangeToken(std::string{payload.substr(sep + 1)});
+    if (!lo || !hi) {
+        reason = "range bounds must be numeric literals";
+        return false;
+    }
+    if (std::strtod(lo->c_str(), nullptr) > std::strtod(hi->c_str(), nullptr)) {
+        reason = "range min is greater than max";
+        return false;
+    }
+    out.hasRange = true;
+    out.rangeMin = *lo;
+    out.rangeMax = *hi;
+    return true;
+}
+
+// One-level child visit over a FieldDecl -- the SAME presence pattern as annotateMarkerVisitor
+// (Continue, never Recurse). The AnnotateAttr is the FIRST child, so this is cheap.
+CXChildVisitResult fieldAnnotationVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientData clientData) {
+    if (clang_getCursorKind(cursor) != CXCursor_AnnotateAttr) {
+        return CXChildVisit_Continue;
+    }
+    auto* out = static_cast<FieldAnnotations*>(clientData);
+    const std::string spelling = toStdString(clang_getCursorSpelling(cursor));
+    constexpr std::string_view ENGINE_PREFIX = "engine::";
+    constexpr std::string_view RANGE_PREFIX = "engine::range:";
+    if (spelling == "engine::color") {
+        out->color = true;
+    } else if (spelling.starts_with(RANGE_PREFIX)) {
+        std::string reason;
+        if (!parseRangePayload(std::string_view{spelling}.substr(RANGE_PREFIX.size()), *out, reason)) {
+            out->diagnostics.push_back("malformed engine::range annotation (" + reason + ") -- ignored");
+        }
+    } else if (spelling.starts_with(ENGINE_PREFIX)) {
+        out->diagnostics.push_back("unknown engine:: field annotation '" + spelling + "' -- ignored");
+    }
+    // A non-engine:: annotate belongs to some other tool: ignore SILENTLY (E7).
+    return CXChildVisit_Continue;
+}
+
+// The 2-field state fieldVisitor needs: the field vector to append to, PLUS the owning component's
+// qualified name for its warning messages (E5) -- detectVisitor computes qualifiedName BEFORE calling
+// clang_visitChildren(cursor, fieldVisitor, ...), so a pointer into it outlives the whole walk.
+struct FieldVisitState {
+    std::vector<Field>* fields;
+    const std::string* qualifiedName;
+};
+
 // Collect a component's non-static data members (FieldDecl only -> excludes statics/methods/nested,
-// E11) in declaration/source order (AC-9).
+// E11) in declaration/source order (AC-9), plus any field annotation (task 2.2.2). Applicability is
+// judged AFTER classification (D7): engine::range only on a non-bool Primitive, engine::color only on
+// a Vec3 -- anything else is dropped with a warning naming the field.
 CXChildVisitResult fieldVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientData clientData) {
     if (clang_getCursorKind(cursor) == CXCursor_FieldDecl) {
-        auto* fields = static_cast<std::vector<Field>*>(clientData);
+        auto* state = static_cast<FieldVisitState*>(clientData);
         const CXType type = clang_getCursorType(cursor);
-        fields->push_back(Field{
+        const FieldCategory category = classifyField(type);
+
+        FieldAnnotations annotations;
+        clang_visitChildren(cursor, fieldAnnotationVisitor, &annotations);
+
+        Field field{
             .name = toStdString(clang_getCursorSpelling(cursor)),
             .typeName = stripElaboratedKeyword(toStdString(clang_getTypeSpelling(type))),  // as-written
-            .category = classifyField(type),                                               // canonical classify
-        });
+            .category = category,                                                          // canonical classify
+            .isBool = isBoolField(type),
+        };
+
+        for (const std::string& diagnostic : annotations.diagnostics) {
+            std::cerr << "aero_reflect_gen: warning: " << *state->qualifiedName << '.' << field.name << ": "
+                      << diagnostic << '\n';
+        }
+        if (annotations.hasRange) {
+            if (category == FieldCategory::Primitive && !field.isBool) {
+                field.hasRange = true;
+                field.rangeMin = annotations.rangeMin;
+                field.rangeMax = annotations.rangeMax;
+            } else {
+                std::cerr << "aero_reflect_gen: warning: " << *state->qualifiedName << '.' << field.name
+                          << ": engine::range applies only to numeric scalar fields\n";
+            }
+        }
+        if (annotations.color) {
+            if (category == FieldCategory::Vec3) {
+                field.color = true;
+            } else {
+                std::cerr << "aero_reflect_gen: warning: " << *state->qualifiedName << '.' << field.name
+                          << ": engine::color applies only to Vec3 fields\n";
+            }
+        }
+
+        state->fields->push_back(std::move(field));
     }
     return CXChildVisit_Continue;
 }
@@ -474,7 +628,8 @@ CXChildVisitResult detectVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientD
         component.qualifiedName = buildQualifiedName(cursor);
         component.atNamespaceScope = isNamespaceScoped(cursor);
         clang_getSpellingLocation(location, nullptr, &component.line, &component.column, nullptr);
-        clang_visitChildren(cursor, fieldVisitor, &component.fields);
+        FieldVisitState fieldState{.fields = &component.fields, .qualifiedName = &component.qualifiedName};
+        clang_visitChildren(cursor, fieldVisitor, &fieldState);
         state->components->push_back(std::move(component));
         return CXChildVisit_Continue;  // flat model: don't descend into a detected component
     }
@@ -489,10 +644,18 @@ void emitComponents(const std::vector<Component>& components) {
                   << '\n';
         for (const Field& field : component.fields) {
             std::cout << "  field " << field.name << " : " << field.typeName << " [" << categoryTag(field.category)
-                      << "]\n";
+                      << "]";
+            if (field.hasRange) {
+                std::cout << " [range " << field.rangeMin << ':' << field.rangeMax << "]";
+            }
+            if (field.color) {
+                std::cout << " [color]";
+            }
+            std::cout << '\n';
             if (field.category == FieldCategory::Unsupported) {  // lenient: warn, never fail (D7)
                 std::cerr << "aero_reflect_gen: warning: " << component.qualifiedName << '.' << field.name << " : "
-                          << field.typeName << " is not in the reflectable subset (primitives + Vec3/Quat)\n";
+                          << field.typeName
+                          << " is not in the reflectable subset (primitives + Vec3/Quat/std::string)\n";
             }
         }
     }
@@ -537,11 +700,24 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
     const std::string stem = fs::path(inputPath).stem().string();
     const std::string registerFn = "aero_reflect_register_" + sanitizeIdentifier(stem);
 
+    // Task 2.2.2 (D6): the annotations header is included ONLY when at least one custom will be
+    // emitted, so every annotation-free consumer's generated bytes stay IDENTICAL -- including
+    // reflect-gen.incremental_e2e's nested probe, which compiles generated meta with ONLY the EnTT
+    // include root and would fail to find the header.
+    const bool anyCustom = std::any_of(components.begin(), components.end(), [](const Component& c) {
+        return std::any_of(c.fields.begin(), c.fields.end(), [](const Field& f) {
+            return f.category != FieldCategory::Unsupported && (f.hasRange || f.color);
+        });
+    });
+
     out << "// GENERATED by aero_reflect_gen --emit-meta — DO NOT EDIT.\n"
         << "// source: " << basename << "\n"
         << "#include <entt/meta/factory.hpp>\n"
-        << "#include <entt/core/hashed_string.hpp>\n"
-        << "\n"
+        << "#include <entt/core/hashed_string.hpp>\n";
+    if (anyCustom) {
+        out << "\n#include <aero/reflect/annotations.hpp>\n";
+    }
+    out << "\n"
         << "#include \"" << basename << "\"\n"
         << "\n"
         << "void " << registerFn << "() {\n"
@@ -556,9 +732,17 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
         out << "    entt::meta_factory<" << qn << ">{}\n"
             << "        .type(\"" << qn << "\"_hs, \"" << qn << "\")";
         for (const Field& field : component.fields) {  // pass 1: supported members -> the .data chain
-            if (field.category != FieldCategory::Unsupported) {
-                out << "\n        .data<&" << qn << "::" << field.name << ">(\"" << field.name << "\"_hs, \""
-                    << field.name << "\")";
+            if (field.category == FieldCategory::Unsupported) {
+                continue;
+            }
+            out << "\n        .data<&" << qn << "::" << field.name << ">(\"" << field.name << "\"_hs, \"" << field.name
+                << "\")";
+            if (field.hasRange || field.color) {  // task 2.2.2 (D6): sparse, per member
+                const std::string rangeMin = field.hasRange ? field.rangeMin : "0.0";
+                const std::string rangeMax = field.hasRange ? field.rangeMax : "0.0";
+                out << "\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{"
+                    << ".hasRange = " << (field.hasRange ? "true" : "false") << ", .rangeMin = " << rangeMin
+                    << ", .rangeMax = " << rangeMax << ", .color = " << (field.color ? "true" : "false") << "})";
             }
         }
         out << ";\n";
@@ -566,7 +750,7 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
             if (field.category == FieldCategory::Unsupported) {
                 out << "    // skipped: " << field.name << " (" << field.typeName << " — unsupported)\n";
                 std::cerr << "aero_reflect_gen: warning: " << qn << '.' << field.name << " : " << field.typeName
-                          << " is not in the reflectable subset (primitives + Vec3/Quat)\n";
+                          << " is not in the reflectable subset (primitives + Vec3/Quat/std::string)\n";
             }
         }
     }
@@ -627,7 +811,8 @@ void emitJson(const std::vector<Component>& components, const std::string& input
             if (field.category == FieldCategory::Unsupported) {
                 out << "    // skipped: " << field.name << " (" << field.typeName << " — unsupported)\n";
                 std::cerr << "aero_reflect_gen: warning: " << qualifiedName << '.' << field.name << " : "
-                          << field.typeName << " is not in the reflectable subset (primitives + Vec3/Quat)\n";
+                          << field.typeName
+                          << " is not in the reflectable subset (primitives + Vec3/Quat/std::string)\n";
             }
         }
         out << "    writer.endObject();\n";

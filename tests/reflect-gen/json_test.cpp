@@ -17,6 +17,7 @@
 #include "component_limits.hpp"
 #include "component_multi.hpp"
 #include "component_tag.hpp"
+#include "component_text.hpp"
 #include "component_wiring.hpp"
 
 #include <doctest/doctest.h>
@@ -40,7 +41,8 @@ void aeroWriteJson(engine::JsonWriter&, const Tag&);
 void aeroWriteJson(engine::JsonWriter&, const Player&);
 namespace engine::demo {
 void aeroWriteJson(engine::JsonWriter&, const Light&);
-}
+void aeroWriteJson(engine::JsonWriter&, const Labelled&);  // task 2.2.2
+}  // namespace engine::demo
 namespace engine {
 void aeroWriteJson(engine::JsonWriter&, const Transform&);
 void aeroWriteJson(engine::JsonWriter&, const Camera&);            // 1.3.3
@@ -55,7 +57,8 @@ bool aeroReadJson(const engine::JsonValue&, Tag&);
 bool aeroReadJson(const engine::JsonValue&, Player&);
 namespace engine::demo {
 bool aeroReadJson(const engine::JsonValue&, Light&);
-}
+bool aeroReadJson(const engine::JsonValue&, Labelled&);  // task 2.2.2
+}  // namespace engine::demo
 namespace engine {
 bool aeroReadJson(const engine::JsonValue&, Transform&);
 bool aeroReadJson(const engine::JsonValue&, Camera&);            // 1.3.3
@@ -1138,4 +1141,45 @@ TEST_CASE("round-trip: engine::Camera / DirectionalLight / PointLight (task 1.3.
         REQUIRE(roundTrip(original, restored));
         CHECK(restored == original);
     }
+}
+
+TEST_CASE("round-trip: engine::demo::Labelled -- the std::string category, generated (task 2.2.2, AC-3)") {
+    engine::demo::Labelled original{};
+    original.label = "hello \"world\"\\";
+    original.notes = "line one\nline two";
+    original.weight = 12.5F;
+    original.slot = 3;
+    original.tint = {0.1F, 0.2F, 0.3F};
+
+    engine::JsonWriter w1;
+    aeroWriteJson(w1, original);
+    const std::string text = w1.str();
+    CHECK(text.find(R"("label": "hello \"world\"\\")") != std::string::npos);
+
+    const engine::JsonParseResult parsed = engine::parseJson(text);
+    REQUIRE(parsed.ok());
+    engine::demo::Labelled restored{};
+    REQUIRE(aeroReadJson(*parsed.value, restored));
+    CHECK(restored.label == original.label);
+    CHECK(restored.notes == original.notes);
+    CHECK(bitEqual(restored.weight, original.weight));
+    CHECK(restored.slot == original.slot);
+    CHECK(bitEqual(restored.tint.x, original.tint.x));
+
+    // Re-serializing the read-back value reproduces the SAME bytes (the D13 fixpoint rule).
+    engine::JsonWriter w2;
+    aeroWriteJson(w2, restored);
+    CHECK(w2.str() == text);
+}
+
+TEST_CASE(
+    "round-trip: a null std::string field is rejected, and every OTHER field still applies "
+    "(task 2.2.2, E8)") {
+    const engine::JsonParseResult parsed = engine::parseJson(R"({"label": null, "slot": 3})");
+    REQUIRE(parsed.ok());
+    engine::demo::Labelled value{};
+    value.label = "sentinel";
+    CHECK_FALSE(aeroReadJson(*parsed.value, value));  // false: label failed
+    CHECK(value.label == "sentinel");                 // untouched -- no NaN analog for a string (D3)
+    CHECK(value.slot == 3);                           // best-effort: every OTHER field still applied
 }
