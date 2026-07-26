@@ -15,9 +15,9 @@
 // is --warnings-as-errors in CI (D13/I7).
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel.hpp>
+#include <aero/editor/tree_walk.hpp>
 #include <aero/scene/entity.hpp>
 
-#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -56,16 +56,6 @@ private:
         Entity second{};
     };
 
-    // One node of the explicit draw stack. `childBegin/childNext/childEnd` index into childArena.
-    struct StackEntry {
-        Entity entity{};
-        std::size_t childBegin = 0;
-        std::size_t childNext = 0;
-        std::size_t childEnd = 0;
-        bool open = false;     // TreeNodeEx returned true -> we owe exactly one TreePop (I3)
-        bool entered = false;  // the row has been drawn and its two IDs pushed
-    };
-
     void drawTree(PanelContext& context);
     [[nodiscard]] bool drawRow(PanelContext& context, Entity entity);
     void drawVoidTarget(PanelContext& context);
@@ -73,13 +63,20 @@ private:
 
     RootOrder roots;
     std::vector<Entity> rows;        // this frame's visible rows, in DRAW order (the Shift-range domain)
-    std::vector<Entity> childArena;  // LIFO scratch for expanded nodes' children (D14)
-    std::vector<StackEntry> stack;
+    std::vector<Entity> childArena;  // LIFO scratch for expanded nodes' children (D14), owned by walkForest
+    std::vector<TreeWalkEntry> stack;
     std::vector<Entity> moveScratch;  // the drag-drop moved set, when it is a single unselected row
     std::string labelScratch;
     std::string renameBuffer;
     Entity renaming{};
     Entity rangeAnchor{};
+    // Review round 2, Gap 2: the just-created/duplicated entity a collapsed ancestor must open to
+    // reveal. `revealTarget` is set by applyPending and consumed (turned into `revealPath`, the
+    // ancestor chain, then cleared) by the VERY NEXT drawTree -- one frame after creation, since the
+    // entity does not exist yet during the frame that creates it (drawTree runs before applyPending,
+    // D12's phase order).
+    Entity revealTarget{};
+    std::vector<Entity> revealPath;
     bool renameFocusPending = false;
     PendingAction pending{};
 };

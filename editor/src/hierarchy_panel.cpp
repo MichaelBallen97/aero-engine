@@ -107,48 +107,35 @@ void HierarchyPanel::onDraw(PanelContext& context) {
 
 void HierarchyPanel::drawTree(PanelContext& context) {
     const World& world = context.world;
-    const std::span<const Entity> rootList = roots.entities();
-    // Seed BACK-TO-FRONT so the LIFO stack pops the roots in display order.
-    for (std::size_t i = rootList.size(); i > 0; --i) {
-        stack.push_back(StackEntry{.entity = rootList[i - 1U]});
+
+    // Review round 2, Gap 2: the ancestor chain of `revealTarget` (a just-created/duplicated entity
+    // set by the PREVIOUS frame's applyPending), forced open below so a collapsed parent does not
+    // hide the row the user just asked for. ITERATIVE (misc-no-recursion is --warnings-as-errors on
+    // the Linux lane, D13/I7). Computed here, not in applyPending, so a `revealTarget` that died
+    // before this frame is simply ignored rather than dereferenced.
+    revealPath.clear();
+    if (revealTarget.valid() && world.alive(revealTarget)) {
+        for (Entity cur = world.parent(revealTarget); cur.valid(); cur = world.parent(cur)) {
+            revealPath.push_back(cur);
+        }
     }
+    revealTarget = {};
 
-    while (!stack.empty()) {
-        // INDEX, never a reference: this loop push_back()s into `stack`, which would dangle a
-        // `StackEntry&` on reallocation. (ASan would catch it; a reader would not.)
-        const std::size_t top = stack.size() - 1U;
-
-        if (!stack[top].entered) {
-            stack[top].entered = true;
-            stack[top].open = drawRow(context, stack[top].entity);
-            if (stack[top].open) {
-                stack[top].childBegin = childArena.size();
-                // READ-ONLY inside eachChild (F6): the callback only appends to childArena.
-                world.eachChild(stack[top].entity, [this](Entity c) { childArena.push_back(c); });
-                stack[top].childNext = stack[top].childBegin;
-                stack[top].childEnd = childArena.size();
-            }
-            continue;
-        }
-
-        if (stack[top].open && stack[top].childNext < stack[top].childEnd) {
-            const Entity child = childArena[stack[top].childNext];
-            ++stack[top].childNext;
-            stack.push_back(StackEntry{.entity = child});  // invalidates any reference to stack[top]
-            continue;
-        }
-
-        // Exhausted: unwind. TreePop iff TreeNodeEx returned true -- including for _Leaf nodes, which
-        // ALWAYS return true (imgui.h:1360). The two PopIDs are unconditional. Strict LIFO, so the ID
-        // stack and the arena unwind together (I3/I4).
-        if (stack[top].open) {
+    // The actual walk is the pure, ImGui-free engine::editor::walkForest (review round 2, Gap 1):
+    // `enter` draws the row and reports whether it is open; `unwind` owes ImGui the matching
+    // TreePop/PopID pair (I3) -- TreePop only when `open`, PopID unconditionally, mirroring
+    // TreeNodeEx's own contract (leaf nodes always report `open == true`, imgui.h:1360).
+    const auto enter = [this, &context](Entity e) { return drawRow(context, e); };
+    const auto unwind = [](Entity /*entity*/, bool open) {
+        if (open) {
             ImGui::TreePop();
-            childArena.resize(stack[top].childBegin);
         }
         ImGui::PopID();
         ImGui::PopID();
-        stack.pop_back();
-    }
+    };
+    walkForest(world, roots.entities(), stack, childArena, enter, unwind);
+
+    revealPath.clear();  // consumed -- ImGui's own per-ID storage now remembers the open state
 }
 
 bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
@@ -174,6 +161,13 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
         flags |= ImGuiTreeNodeFlags_Selected;
     }
 
+    // Review round 2, Gap 2: force this row open if it sits on the path to `revealTarget` -- MUST run
+    // before TreeNodeEx, which is the "next" widget call SetNextItemOpen affects. `ImGuiCond_Always`
+    // (not `_Once`/`_FirstUseEver`) so a re-reveal genuinely re-opens a row the user manually closed
+    // in between.
+    if (!revealPath.empty() && std::find(revealPath.begin(), revealPath.end(), entity) != revealPath.end()) {
+        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    }
     // The label goes through the "%s" FORMAT argument, never as the format string: the str_id
     // overload is IM_FMTARGS(3), and an entity named "%s" would otherwise be a format-string bug.
     const bool open = ImGui::TreeNodeEx("##row", flags, "%s", isRenaming ? "" : labelScratch.c_str());
@@ -340,6 +334,7 @@ void HierarchyPanel::applyPending(PanelContext& context) {
             if (created.valid()) {
                 selection.set(created);
                 rangeAnchor = created;
+                revealTarget = created;  // Gap 2: open a collapsed parent to show it, next frame
             }
             break;
         }
@@ -371,6 +366,7 @@ void HierarchyPanel::applyPending(PanelContext& context) {
             if (!created.empty()) {
                 selection.setAll(created);
                 rangeAnchor = selection.primary();
+                revealTarget = rangeAnchor;  // Gap 2: reveal the primary copy too
             }
             break;
         }

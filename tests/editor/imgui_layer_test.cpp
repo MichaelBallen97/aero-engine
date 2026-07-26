@@ -120,13 +120,18 @@ TEST_CASE("editor: the Hierarchy panel draws a seeded scene and survives edits (
     }
 
     // Build a two-level tree BEHIND the panel's back and keep ticking: phase 1 must reconcile it in
-    // one frame (E27), and the expanded/leaf paths must both draw without unbalancing TreePop (I3).
+    // one frame (E27). `parent` draws COLLAPSED here -- nothing in this test ever opens it (no mouse,
+    // no SetNextItemOpen/_DefaultOpen) -- which exercises the closed/non-leaf TreePop-skip path; it
+    // does NOT draw `child` at all, so this does NOT reach the expanded/child-descent path. That pure
+    // stack/arena traversal (exactly-once child visitation, back-to-front root order, the child arena
+    // returning to its pre-call size) is instead proven at tier-0, with no GPU, by
+    // hierarchy_test.cpp's `walkForest` cases (review round 2, Gap 1).
     engine::World& world = app->world();
     const engine::Entity parent = engine::editor::createEntity(world, {}, "Parent");
     const engine::Entity child = engine::editor::createEntity(world, parent, "Child");
     REQUIRE(parent.valid());
     REQUIRE(child.valid());
-    app->selection().set(child);  // a SELECTED row exercises the _Selected flag path
+    app->selection().set(parent);  // `parent` DOES draw (a root) -- exercises _Selected on a real row
     REQUIRE(app->tick());
     CHECK(app->presentedLastFrame());
 

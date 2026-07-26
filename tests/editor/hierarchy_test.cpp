@@ -10,6 +10,7 @@
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/selection.hpp>
+#include <aero/editor/tree_walk.hpp>
 #include <aero/scene/internal/world_access.hpp>  // registerComponent<T> -- the E12/AC-13 proof
 #include <aero/scene/scene.hpp>
 
@@ -17,10 +18,12 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 using engine::Camera;
@@ -557,6 +560,97 @@ TEST_CASE("editor: RootOrder does not mistake a recycled slot for its predecesso
     REQUIRE(ro.entities().size() == 2);
     CHECK(ro.entities()[0] == keep);      // untouched -- pass 1 preserved its position
     CHECK(ro.entities()[1] == recycled);  // appended -- generation mismatch correctly re-admits it
+}
+
+// ---- walkForest (review round 2, Gap 1) -----------------------------------------------------------
+//
+// hierarchy_panel.cpp's drawTree is src-private and ImGui-bound, so it cannot be driven from a tier-0
+// test -- but the pure explicit-stack traversal it delegates to, engine::editor::walkForest, is
+// public, ImGui-free, and engine-typed, which is exactly what makes these cases able to walk a real
+// multi-level forest and pin the invariants a mouse-driven GPU test never reaches (no row is ever
+// actually EXPANDED anywhere else in this codebase's test suite -- see imgui_layer_test.cpp's own
+// updated comment).
+
+TEST_CASE("editor: walkForest visits a 3-level forest exactly once each, front-to-back, depth-first") {
+    using engine::editor::TreeWalkEntry;
+    using engine::editor::walkForest;
+    World w;
+    // Two roots; r0 has two children (c0, c1); c0 has one grandchild (g0) -- three levels.
+    const Entity r0 = w.create();
+    const Entity r1 = w.create();
+    const Entity c0 = w.create();
+    const Entity c1 = w.create();
+    const Entity g0 = w.create();
+    REQUIRE(w.setParent(c0, r0));
+    REQUIRE(w.setParent(c1, r0));
+    REQUIRE(w.setParent(g0, c0));
+
+    const std::vector<Entity> roots{r0, r1};
+    std::vector<TreeWalkEntry> stack;
+    std::vector<Entity> arena;
+    std::vector<Entity> entered;
+    std::vector<Entity> unwound;
+    const std::function<bool(Entity)> enter = [&entered](Entity e) {
+        entered.push_back(e);
+        return true;  // always descend -- ImGui's own _Leaf contract (every node reports `open`)
+    };
+    const std::function<void(Entity, bool)> unwind = [&unwound](Entity e, bool /*open*/) { unwound.push_back(e); };
+
+    walkForest(w, roots, stack, arena, enter, unwind);
+
+    // Depth-first, each node visited EXACTLY once, roots front-to-back (r0 before r1).
+    CHECK(entered == std::vector<Entity>{r0, c0, g0, c1, r1});
+    CHECK(unwound == std::vector<Entity>{g0, c0, c1, r0, r1});  // children unwind before their parent
+    CHECK(arena.empty());  // I4: back to its pre-call size (0) once every pushed node has unwound
+    CHECK(stack.empty());
+}
+
+TEST_CASE("editor: walkForest never descends into a node `enter` declines to open") {
+    using engine::editor::TreeWalkEntry;
+    using engine::editor::walkForest;
+    World w;
+    const Entity r0 = w.create();
+    const Entity c0 = w.create();
+    REQUIRE(w.setParent(c0, r0));
+
+    const std::vector<Entity> roots{r0};
+    std::vector<TreeWalkEntry> stack;
+    std::vector<Entity> arena;
+    std::vector<Entity> entered;
+    std::vector<std::pair<Entity, bool>> unwound;
+    const std::function<bool(Entity)> enter = [&entered](Entity e) {
+        entered.push_back(e);
+        return false;  // never expand
+    };
+    const std::function<void(Entity, bool)> unwind = [&unwound](Entity e, bool open) { unwound.emplace_back(e, open); };
+
+    walkForest(w, roots, stack, arena, enter, unwind);
+
+    CHECK(entered == std::vector<Entity>{r0});  // c0 is never visited -- r0 declined to open
+    REQUIRE(unwound.size() == 1);
+    CHECK(unwound[0] == std::pair<Entity, bool>{r0, false});
+    CHECK(arena.empty());
+    CHECK(stack.empty());
+}
+
+TEST_CASE("editor: walkForest is a no-op over an empty forest") {
+    using engine::editor::TreeWalkEntry;
+    using engine::editor::walkForest;
+    const World w;
+    std::vector<TreeWalkEntry> stack;
+    std::vector<Entity> arena;
+    int calls = 0;
+    const std::function<bool(Entity)> enter = [&calls](Entity) {
+        ++calls;
+        return true;
+    };
+    const std::function<void(Entity, bool)> unwind = [&calls](Entity, bool) { ++calls; };
+
+    walkForest(w, std::span<const Entity>{}, stack, arena, enter, unwind);
+
+    CHECK(calls == 0);
+    CHECK(stack.empty());
+    CHECK(arena.empty());
 }
 
 // ---- seedDefaultScene ---------------------------------------------------------------------------

@@ -166,13 +166,19 @@ Task 2.2.1's deliverable: the `"Hierarchy"` placeholder is replaced by a real pa
 live `World`'s entity forest and lets the user create / delete / duplicate / rename / reparent
 entities and multi-select, with the `Selection` shared for 2.2.2/2.2.3 to read later. CI proves the
 structural half automatically (`aero_editor_shell_test`'s new `tests/editor/hierarchy_test.cpp` TU
-covers `Selection`, `entity_ops`, `RootOrder` and `seedDefaultScene` at tier-0 on every lane in both
-configs with no GPU; `aero_editor_imgui_test` now drives the REAL `HierarchyPanel` over the seeded
-three-entity scene through `EditorApp::tick()` — create → 3 presented frames → a two-level tree built
-behind the panel's back → a selected row → a subtree destroyed behind its back → an empty-selection
-duplicate no-op → quit → teardown — on real Metal/D3D12/lavapipe under `AERO_REQUIRE_GPU=1`; an
-unbalanced `TreePop`/`PopID` would abort via `IM_ASSERT` in the Debug ImGui build, so a green run *is*
-the I3 mechanical proof). It **cannot** prove the mouse- and keyboard-driven half: the inline rename
+covers `Selection`, `entity_ops`, `RootOrder`, `walkForest` and `seedDefaultScene` at tier-0 on every
+lane in both configs with no GPU; `aero_editor_imgui_test` now drives the REAL `HierarchyPanel` over
+the seeded three-entity scene through `EditorApp::tick()` — create → 3 presented frames → a two-level
+tree built behind the panel's back → a selected row → a subtree destroyed behind its back → an
+empty-selection duplicate no-op → quit → teardown — on real Metal/D3D12/lavapipe under
+`AERO_REQUIRE_GPU=1`; an unbalanced `TreePop`/`PopID` would abort via `IM_ASSERT` in the Debug ImGui
+build, so a green run proves I3 for a LEAF row (always `open`) and for a COLLAPSED non-leaf row
+(never opened — nothing in this GPU test ever calls `SetNextItemOpen`/`_DefaultOpen`, and no real
+mouse click reaches it). It does **not** reach the expanded/nested-descent path — no row in this test
+is ever actually open with children below it; that path's own invariants (exactly-once child
+visitation, back-to-front root order, the child arena returning to its pre-call size, I3/I4) are
+instead proven at tier-0, with no GPU, by `hierarchy_test.cpp`'s `walkForest` cases (review round 2,
+Gap 1). It **cannot** prove the mouse- and keyboard-driven half: the inline rename
 `InputText` gesture (F2 / double-click / Enter / Escape), drag-and-drop reparenting and the "no drop
 highlight on an illegal drop" rule (AC-15 — the ONE acceptance criterion with no mechanical proof at
 all, closed only by sabotage S5 below plus a human), Shift/Ctrl+click multi-select by mouse, and the
