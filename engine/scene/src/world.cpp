@@ -53,6 +53,18 @@ struct HierarchyNode {
     std::vector<Entity> children;  // direct children, in ATTACH ORDER (ordered erase — determinism)
 };
 
+// The name storage (task 2.2.1): the SAME TU-local, never-registered pattern HierarchyNode uses
+// above, for the same reason -- docs/09 models `name` at ENTITY level, so a name is entity-level
+// data, not a component. It never enters Impl::registrations, so registered() / findComponentType()
+// / componentTypeAt() / componentTypeCount() / countRaw() / each<Ts...>() cannot see it and no count
+// assertion moves (D1/AC-6). Its per-entity lifetime is the registry's own: destroy() and clear()
+// drop records with every other storage, so AC-2 holds structurally with no teardown code here.
+//
+// A record exists only for an entity with a NON-EMPTY name; setName(e, "") erases it.
+struct EntityName {
+    std::string value;
+};
+
 }  // namespace
 
 struct World::Impl {
@@ -69,6 +81,10 @@ struct World::Impl {
     // move — the same property Registration::storage below already rests on — so caching it keeps
     // every hierarchy query a plain deref and means no const query path ever has to CREATE a storage.
     ErasedStorage* hierarchy = &registry.storage<HierarchyNode>();
+    // The name storage, cached exactly like `hierarchy` above and for the same reason: a registry
+    // pool pointer is stable for the Impl's whole life, so every name query is a plain deref and no
+    // const path ever has to CREATE a storage (task 2.2.1).
+    ErasedStorage* names = &registry.storage<EntityName>();
     // deque, NOT vector: componentTypeName() hands out a std::string_view into a record, and a deque
     // never invalidates references to existing elements on push_back.
     std::deque<Registration> registrations;
@@ -112,6 +128,15 @@ struct World::Impl {
         }
         out = node->children.back();
         return true;
+    }
+
+    // The name record for `entity`, or nullptr. Const AND noexcept for the same shallow-constness
+    // reason nodeOf() is. NEVER cache the result across a setName(other, "") / destroy() / clear():
+    // the name storage is swap-and-pop, so erasing one record RELOCATES another.
+    [[nodiscard]] EntityName* nameOf(Entity entity) const noexcept {
+        const SceneEntity ee = toEntt(entity);
+        // value() is only defined when contains() -- an assert-abort in Debug otherwise.
+        return names->contains(ee) ? static_cast<EntityName*>(names->value(ee)) : nullptr;
     }
 
     // Creates the node if absent. push(ee, nullptr) DEFAULT-constructs (verified at the pinned entt).
@@ -328,6 +353,46 @@ bool World::nextChild(Entity parent, std::size_t& cursor, Entity& out) const noe
     return true;
 }
 
+// ---- names (task 2.2.1) ----------------------------------------------------------------------
+
+bool World::setName(Entity entity, std::string_view name) {
+    AERO_PROFILE_ZONE;
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("scene: {} on a moved-from World", "setName");
+        return false;
+    }
+    if (!impl->aliveInternal(entity)) {
+        AERO_LOG_ERROR("scene: setName on a dead or null entity (index {}, generation {})", entity.index,
+                       entity.generation);
+        return false;
+    }
+    const SceneEntity ee = toEntt(entity);
+    if (name.empty()) {
+        impl->names->remove(ee);  // idempotent; "" == absent (docs/09)
+        return true;
+    }
+    // ASSIGN IN PLACE when a record already exists -- never erase-then-push. remove() swap-and-pops,
+    // which relocates ANOTHER entity's record and would dangle a name() view just handed out. The
+    // in-place path is the only reason setName on one entity cannot invalidate another's view.
+    if (EntityName* existing = impl->nameOf(entity); existing != nullptr) {
+        existing->value.assign(name);
+        return true;
+    }
+    // push(ee, nullptr) DEFAULT-constructs (the ensureNode precedent, verified at the pinned entt):
+    // growing the paged payload allocates a NEW page and never relocates an existing one.
+    impl->names->push(ee, nullptr);
+    static_cast<EntityName*>(impl->names->value(ee))->value.assign(name);
+    return true;
+}
+
+std::string_view World::name(Entity entity) const noexcept {
+    if (impl == nullptr || !impl->aliveInternal(entity)) {
+        return {};
+    }
+    const EntityName* record = impl->nameOf(entity);
+    return record == nullptr ? std::string_view{} : std::string_view{record->value};
+}
+
 // ---- components (the type-erased primitives) -----------------------------------------------
 
 void* World::addRaw(ComponentTypeId id, Entity entity, const void* source) {
@@ -414,6 +479,54 @@ std::size_t World::countRaw(ComponentTypeId id) const noexcept {
     return reg == nullptr ? 0 : reg->storage->size();
 }
 
+bool World::copyComponent(ComponentTypeId id, Entity from, Entity to) {
+    AERO_PROFILE_ZONE;
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("scene: {} on a moved-from World", "copyComponent");
+        return false;
+    }
+    if (!impl->aliveInternal(from) || !impl->aliveInternal(to)) {
+        AERO_LOG_ERROR("scene: copyComponent with a dead or null entity (from index {}, to index {})", from.index,
+                       to.index);
+        return false;
+    }
+    const Impl::Registration* reg = impl->find(id);
+    if (reg == nullptr) {
+        AERO_LOG_ERROR("scene: component type is not registered in this world (id {})", id.value);
+        return false;
+    }
+    ErasedStorage& s = *reg->storage;
+    const SceneEntity src = toEntt(from);
+    const SceneEntity dst = toEntt(to);
+    if (!s.contains(src)) {
+        return false;  // SILENT: a miss is the normal answer in a copy-everything loop
+    }
+    if (src == dst) {
+        return true;  // self-copy: nothing to do -- and the remove below would destroy the very
+    }  // element the push is about to read (E5)
+    if (reg->emptyType) {
+        // A tag storage has no payload at all (page_size == 0 at the pinned entt), so value() must
+        // never be called on it. Presence is the whole state.
+        if (!s.contains(dst)) {
+            s.push(dst, nullptr);
+        }
+        return true;  // E6
+    }
+    // REMOVE FIRST -- this is D17, and it is the whole reason this function is a World member.
+    // remove() swap-and-pops: it MOVES the storage's last element into the erased slot and destroys
+    // the old last, so it can RELOCATE the element at `src`. push() only grows the paged payload,
+    // which allocates a new page and never relocates an existing one. Reading value(src) before the
+    // remove would hand push() a pointer to a moved-from, destroyed element whenever the removal
+    // relocated the source (F10). Do not "simplify" these three statements into two.
+    if (s.contains(dst)) {
+        s.remove(dst);
+    }
+    s.push(dst, s.value(src));  // value(src) is read AFTER the only relocating call
+    // Belt-and-braces behind add<T>()'s static_assert, exactly like addRaw's M5: the type-erased
+    // insert silently stores nothing for a non-copy-constructible element.
+    return s.contains(dst);
+}
+
 bool World::beginQuery(const ComponentTypeId* ids, std::size_t count, QueryCursor& cursor) const noexcept {
     AERO_PROFILE_ZONE;
     if (impl == nullptr || ids == nullptr || count == 0 || count > MAX_QUERY_TYPES) {
@@ -492,6 +605,14 @@ ComponentTypeId World::findComponentType(std::string_view name) const noexcept {
         }
     }
     return {};
+}
+
+ComponentTypeId World::componentTypeAt(std::size_t index) const noexcept {
+    if (impl == nullptr || index >= impl->registrations.size()) {
+        return {};
+    }
+    // deque::operator[] is O(1); registrations is never reordered, only appended (see bind()).
+    return impl->registrations[index].id;
 }
 
 std::string_view World::componentTypeName(ComponentTypeId id) const noexcept {

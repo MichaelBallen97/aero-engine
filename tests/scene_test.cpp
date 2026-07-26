@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -73,6 +74,15 @@ struct Counted {
 int Counted::ctor = 0;
 int Counted::dtor = 0;
 
+// task 2.2.1 / AC-5b: a component whose MOVE EMPTIES its source. Every engine built-in is trivially
+// copyable, which HIDES a wrong remove/read order in copyComponent (a moved-from POD still has the
+// right bytes and its destructor is a no-op). std::string does not: after entt's pop() moves the
+// last element into an erased slot and destroys it, reading the old slot yields "". This type is the
+// only reason sabotage S1 can go red -- do not replace it with a POD.
+struct Payload {
+    std::string text;
+};
+
 // Registers every fixture type. Returns by value; the move is proven safe by TEST_CASE 14.
 World makeWorld() {
     World world;
@@ -82,6 +92,7 @@ World makeWorld() {
     registerComponent<Marker>(world, "test::Marker");
     registerComponent<Big>(world, "test::Big");
     registerComponent<Counted>(world, "test::Counted");
+    registerComponent<Payload>(world, "test::Payload");
     return world;
 }
 
@@ -751,4 +762,292 @@ TEST_CASE("scene: move semantics and the inert moved-from World") {
         CHECK(Counted::live() == 1);
     }
     CHECK(Counted::live() == 0);
+}
+
+// ---- task 2.2.1: entity names -----------------------------------------------------------------
+
+TEST_CASE("scene: entity names round-trip (2.2.1 AC-1)") {
+    World w;
+    const Entity a = w.create();
+    const Entity b = w.create();
+
+    CHECK(w.name(a).empty());  // unnamed
+    CHECK(w.setName(a, "Main Camera"));
+    CHECK(w.name(a) == std::string_view{"Main Camera"});
+    CHECK(w.name(b).empty());  // no cross-talk
+
+    CHECK(w.setName(a, "Renamed"));  // overwrite (in place)
+    CHECK(w.name(a) == std::string_view{"Renamed"});
+
+    CHECK(w.setName(a, ""));  // "" CLEARS (E2)
+    CHECK(w.name(a).empty());
+    CHECK(w.setName(a, ""));  // idempotent
+    CHECK(w.name(a).empty());
+
+    CHECK(w.setName(b, "  \t "));  // whitespace is stored verbatim (E21)
+    CHECK(w.name(b) == std::string_view{"  \t "});
+
+    // Duplicates are legal (docs/09, E23).
+    const Entity c = w.create();
+    CHECK(w.setName(b, "dup"));
+    CHECK(w.setName(c, "dup"));
+    CHECK(w.name(b) == w.name(c));
+    CHECK(!(b == c));
+}
+
+TEST_CASE("scene: setName rejections are loud, name() is silent (2.2.1 AC-1/E1)") {
+    World w;
+    const Entity live = w.create();
+    const Entity dead = w.create();
+    REQUIRE(w.destroy(dead));
+
+    CHECK_FALSE(w.setName(dead, "x"));  // ERROR logged (not asserted -- the 0.2.4 deferral)
+    CHECK_FALSE(w.setName(Entity{}, "x"));
+    CHECK(w.name(dead).empty());      // silent
+    CHECK(w.name(Entity{}).empty());  // silent
+
+    // A rejected setName leaves the World untouched.
+    CHECK(w.setName(live, "kept"));
+    CHECK_FALSE(w.setName(Entity{}, "other"));
+    CHECK(w.name(live) == std::string_view{"kept"});
+
+    // A moved-from World: setName ERRORs and returns false; name() is silent and empty.
+    std::optional<World> src;
+    src.emplace();
+    const Entity e = src->create();
+    REQUIRE(src->setName(e, "before"));
+    const World moved = std::move(*src);
+    CHECK_FALSE(src->setName(e, "after"));
+    CHECK(src->name(e).empty());
+    CHECK(moved.name(e) == std::string_view{"before"});  // the moved-TO owns it
+}
+
+TEST_CASE("scene: a name dies with its entity and never haunts a recycled slot (2.2.1 AC-2/E3)") {
+    World w;
+    const Entity first = w.create();
+    REQUIRE(w.setName(first, "doomed"));
+    REQUIRE(w.destroy(first));
+
+    const Entity recycled = w.create();  // the slot comes back with a new generation
+    CHECK(recycled.index == first.index);
+    CHECK(!(recycled == first));
+    CHECK(w.name(recycled).empty());  // AC-2 -- the registry erased the record
+
+    // Subtree destroy takes descendants' names too.
+    const Entity parent = w.create();
+    const Entity child = w.create();
+    REQUIRE(w.setParent(child, parent));
+    REQUIRE(w.setName(parent, "parent"));
+    REQUIRE(w.setName(child, "child"));
+    REQUIRE(w.destroy(parent));
+    CHECK(w.name(child).empty());
+
+    // clear() drops every name and leaves the World reusable.
+    const Entity survivor = w.create();
+    REQUIRE(w.setName(survivor, "gone soon"));
+    w.clear();
+    const Entity afterClear = w.create();
+    CHECK(w.name(afterClear).empty());
+    CHECK(w.setName(afterClear, "fresh"));
+    CHECK(w.name(afterClear) == std::string_view{"fresh"});
+}
+
+TEST_CASE("scene: names at scale, with no cross-talk (2.2.1 AC-1)") {
+    World w;
+    std::vector<Entity> es;
+    es.reserve(1000);
+    for (int i = 0; i < 1000; ++i) {
+        const Entity e = w.create();
+        // Long enough to exceed libc++'s SSO buffer, so every record owns a heap allocation and ASan
+        // sees any lifetime mistake.
+        REQUIRE(w.setName(e, "entity-with-a-deliberately-long-name-" + std::to_string(i)));
+        es.push_back(e);
+    }
+    for (std::size_t i = 0; i < es.size(); ++i) {
+        CHECK(w.name(es[i]) == "entity-with-a-deliberately-long-name-" + std::to_string(i));
+    }
+    // Clearing one name must not corrupt any other (the swap-and-pop relocation path).
+    REQUIRE(w.setName(es[10], ""));
+    CHECK(w.name(es[10]).empty());
+    for (std::size_t i = 0; i < es.size(); ++i) {
+        if (i != 10) {
+            CHECK(w.name(es[i]) == "entity-with-a-deliberately-long-name-" + std::to_string(i));
+        }
+    }
+}
+
+TEST_CASE("scene: names do not enter the component-type registry (2.2.1 AC-6/I8)") {
+    World w;
+    CHECK(w.componentTypeCount() == 5);  // Transform, Camera, DirectionalLight, PointLight, MeshRenderer
+    const Entity e = w.create();
+    REQUIRE(w.setName(e, "named"));
+    CHECK(w.componentTypeCount() == 5);  // unchanged -- D1/F12
+    CHECK(!w.findComponentType("engine::EntityName").valid());
+    CHECK(!w.findComponentType("EntityName").valid());
+}
+
+// ---- task 2.2.1: the registration-table walk --------------------------------------------------
+
+TEST_CASE("scene: componentTypeAt walks the registration table in order (2.2.1 AC-3)") {
+    const World w = makeWorld();
+    const std::size_t count = w.componentTypeCount();
+    REQUIRE(count > 5);  // 5 builtins + makeWorld's fixtures
+
+    // The first five are the built-ins, in registerBuiltinComponents order.
+    CHECK(w.componentTypeName(w.componentTypeAt(0)) == std::string_view{"engine::Transform"});
+    CHECK(w.componentTypeName(w.componentTypeAt(1)) == std::string_view{"engine::Camera"});
+    CHECK(w.componentTypeName(w.componentTypeAt(2)) == std::string_view{"engine::DirectionalLight"});
+    CHECK(w.componentTypeName(w.componentTypeAt(3)) == std::string_view{"engine::PointLight"});
+    CHECK(w.componentTypeName(w.componentTypeAt(4)) == std::string_view{"engine::MeshRenderer"});
+
+    // Every index round-trips name -> id, and every id is distinct.
+    std::vector<ComponentTypeId> seen;
+    seen.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const ComponentTypeId id = w.componentTypeAt(i);
+        CHECK(id.valid());
+        CHECK(w.registered(id));
+        const std::string_view name = w.componentTypeName(id);
+        CHECK(!name.empty());
+        CHECK(w.findComponentType(name).valid());  // resolves (to the FIRST registrant)
+        CHECK(std::find(seen.begin(), seen.end(), id) == seen.end());
+        seen.push_back(id);
+    }
+
+    // Out of range and moved-from are SILENT ComponentTypeId{} (E7).
+    CHECK(!w.componentTypeAt(count).valid());
+    CHECK(!w.componentTypeAt(count + 100).valid());
+    std::optional<World> src;
+    src.emplace();
+    const World moved = std::move(*src);
+    CHECK(!src->componentTypeAt(0).valid());
+    CHECK(moved.componentTypeAt(0).valid());
+}
+
+// ---- task 2.2.1: the type-erased copy ---------------------------------------------------------
+
+TEST_CASE("scene: copyComponent copies, overwrites and tolerates a miss (2.2.1 AC-4)") {
+    World w = makeWorld();
+    const ComponentTypeId posId = componentTypeId<Position>();
+    const ComponentTypeId velId = componentTypeId<Velocity>();
+    const ComponentTypeId tagId = componentTypeId<Marker>();
+
+    const Entity a = w.create();
+    const Entity b = w.create();
+    REQUIRE(w.add<Position>(a, Position{1.0F, 2.0F, 3.0F}) != nullptr);
+
+    // fresh destination
+    CHECK(w.copyComponent(posId, a, b));
+    const Position* copied = w.get<Position>(b);
+    REQUIRE(copied != nullptr);
+    CHECK(copied->x == 1.0F);
+    CHECK(copied->y == 2.0F);
+    CHECK(copied->z == 3.0F);
+    CHECK(w.get<Position>(a)->x == 1.0F);  // the source is untouched
+
+    // overwrite an EXISTING destination component
+    REQUIRE(w.add<Position>(b, Position{9.0F, 9.0F, 9.0F}) != nullptr);
+    REQUIRE(w.add<Position>(a, Position{4.0F, 5.0F, 6.0F}) != nullptr);
+    CHECK(w.copyComponent(posId, a, b));
+    CHECK(w.get<Position>(b)->x == 4.0F);
+    CHECK(w.componentCount<Position>() == 2);  // still exactly two, not three
+
+    // an absent source is a SILENT false, and must not create anything on the destination
+    CHECK_FALSE(w.copyComponent(velId, a, b));
+    CHECK_FALSE(w.has<Velocity>(b));
+
+    // empty (tag) component (E6)
+    REQUIRE(w.add<Marker>(a) == nullptr);  // a tag stores nothing; has<> is the state
+    REQUIRE(w.has<Marker>(a));
+    CHECK(w.copyComponent(tagId, a, b));
+    CHECK(w.has<Marker>(b));
+    CHECK(w.copyComponent(tagId, a, b));  // idempotent: already present
+    CHECK(w.has<Marker>(b));
+
+    // from == to (E5): true when present, silent false when absent
+    CHECK(w.copyComponent(posId, a, a));
+    CHECK(w.get<Position>(a)->x == 4.0F);
+    CHECK_FALSE(w.copyComponent(velId, a, a));
+}
+
+TEST_CASE("scene: copyComponent rejections (2.2.1 AC-4)") {
+    World w = makeWorld();
+    const ComponentTypeId posId = componentTypeId<Position>();
+    const Entity a = w.create();
+    const Entity dead = w.create();
+    REQUIRE(w.add<Position>(a, Position{1.0F, 0.0F, 0.0F}) != nullptr);
+    REQUIRE(w.destroy(dead));
+
+    CHECK_FALSE(w.copyComponent(posId, dead, a));           // dead source   -> ERROR
+    CHECK_FALSE(w.copyComponent(posId, a, dead));           // dead dest     -> ERROR
+    CHECK_FALSE(w.copyComponent(posId, Entity{}, a));       // null source   -> ERROR
+    CHECK_FALSE(w.copyComponent(posId, a, Entity{}));       // null dest     -> ERROR
+    CHECK_FALSE(w.copyComponent(ComponentTypeId{}, a, a));  // unregistered  -> ERROR
+    CHECK_FALSE(w.copyComponent(componentTypeId<struct NotRegistered>(), a, a));
+
+    std::optional<World> src;
+    src.emplace();
+    const World moved = std::move(*src);
+    CHECK_FALSE(src->copyComponent(posId, a, a));  // moved-from    -> ERROR
+}
+
+TEST_CASE("scene: copyComponent across an EnTT page boundary (2.2.1 AC-5a/E4)") {
+    // The PUSH-GROWTH half: with > ENTT_PACKED_PAGE (1024) live components, inserting the copy
+    // allocates a NEW payload page. That must not invalidate the source pointer read from an
+    // existing page (verified at the pin: assure_at_least allocates, never reallocates).
+    World w = makeWorld();
+    const ComponentTypeId posId = componentTypeId<Position>();
+    std::vector<Entity> es;
+    es.reserve(1500);
+    for (int i = 0; i < 1500; ++i) {
+        const Entity e = w.create();
+        REQUIRE(w.add<Position>(e, Position{static_cast<float>(i), 0.0F, 0.0F}) != nullptr);
+        es.push_back(e);
+    }
+    REQUIRE(w.componentCount<Position>() == 1500);
+
+    const Entity fresh = w.create();  // holds no Position -> no remove happens
+    CHECK(w.copyComponent(posId, es[0], fresh));
+    REQUIRE(w.get<Position>(fresh) != nullptr);
+    CHECK(w.get<Position>(fresh)->x == 0.0F);
+    CHECK(w.get<Position>(es[0])->x == 0.0F);
+    CHECK(w.componentCount<Position>() == 1501);
+}
+
+TEST_CASE("scene: copyComponent removes the destination BEFORE reading the source (2.2.1 AC-5b/D17)") {
+    // THE D17 PROOF, and sabotage S1's target. AC-5a above cannot catch a swapped remove/read order:
+    // its destination is FRESH, so remove() never runs. Here the destination is OCCUPIED and the
+    // source is the LAST element in packed order -- exactly the shape entt's pop() relocates
+    // (storage.hpp: `std::exchange(elem, std::move(other))` then destroy(&other)).
+    //
+    // Payload::text is a std::string LONGER THAN libc++'s SSO buffer, so the move genuinely empties
+    // the source. With the correct order the destination gets the full text; with the read hoisted
+    // above the remove it gets "" (and, under ASan, a heap-use-after-free first).
+    const std::string longText = "the-source-payload-that-must-survive-a-relocation";
+    REQUIRE(longText.size() > 23);  // past libc++'s SSO capacity -> a real heap allocation
+
+    World w = makeWorld();
+    const ComponentTypeId payloadId = componentTypeId<Payload>();
+
+    // Fill past a page boundary so the relocation and the page arithmetic are exercised together.
+    std::vector<Entity> es;
+    es.reserve(1200);
+    for (int i = 0; i < 1200; ++i) {
+        const Entity e = w.create();
+        REQUIRE(w.add<Payload>(e, Payload{"filler-payload-number-" + std::to_string(i)}) != nullptr);
+        es.push_back(e);
+    }
+    // Nothing has been erased, so packed order == insertion order and the LAST insert is last.
+    const Entity source = w.create();
+    REQUIRE(w.add<Payload>(source, Payload{longText}) != nullptr);
+    const Entity destination = es[7];  // occupied, and NOT the last element
+    REQUIRE(w.has<Payload>(destination));
+
+    CHECK(w.copyComponent(payloadId, source, destination));
+
+    REQUIRE(w.get<Payload>(destination) != nullptr);
+    CHECK(w.get<Payload>(destination)->text == longText);  // <- RED if the read is hoisted (S1)
+    REQUIRE(w.get<Payload>(source) != nullptr);
+    CHECK(w.get<Payload>(source)->text == longText);  // the source survives, wherever it moved
+    CHECK(w.componentCount<Payload>() == 1201);       // overwrite, not insert
 }

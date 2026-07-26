@@ -164,6 +164,31 @@ public:
     template <typename Fn>
     void eachChild(Entity parent, Fn&& fn) const;
 
+    // ---- names (task 2.2.1) --------------------------------------------------------------------
+    // An entity-level, optional, purely informational label -- NOT component data, for the same
+    // reason the parent link above is not: docs/09-file-formats.md carries `name` at ENTITY level, so
+    // the runtime model matches the file. Names are never unique, never validated, never interpreted,
+    // and never enter the component-type registry (componentTypeCount() does not move -- D1/F12).
+
+    // Sets (or replaces) `entity`'s name. An EMPTY name CLEARS it -- docs/09's "" == absent. Returns
+    // false plus one ERROR, leaving the World unchanged, for a moved-from World or a dead/null
+    // entity. May allocate, exactly like setParent -- so it is NOT noexcept.
+    bool setName(Entity entity, std::string_view name);
+
+    // `entity`'s name, or an EMPTY view for an unnamed entity, a dead or null handle, or a moved-from
+    // World. Silent in every case -- polling a name is a normal pattern, not an error (see alive()).
+    //
+    // LIFETIME -- the view points into World-owned storage and is invalidated by ANY of:
+    //   * setName() on THIS entity (the stored string is reassigned);
+    //   * setName(other, "") -- CLEARING ANOTHER entity's name erases a record from the shared name
+    //     storage, which swap-and-pops and may RELOCATE this entity's stored string. For a short
+    //     (SSO) name the characters live inside the string object, so the view dangles;
+    //   * destroy() of ANY named entity, and clear() (the same relocation, wholesale);
+    //   * a move of this World, and ~World.
+    // Copy it into a std::string before doing anything else with this World -- the same rule
+    // addRaw()'s aliasing warning states below.
+    [[nodiscard]] std::string_view name(Entity entity) const noexcept;
+
     // ---- components (entt-free templates over the raw primitives) -----------------------------
 
     // Ensures `entity` holds a T equal to `value`. If T is already present on `entity`, the OLD
@@ -219,6 +244,12 @@ public:
     // deliberately, so a UI "Add Component" menu built by walking the table is deterministic.
     [[nodiscard]] ComponentTypeId findComponentType(std::string_view name) const noexcept;
 
+    // The `index`-th registered type, in REGISTRATION order -- the deterministic walk
+    // findComponentType's comment above already promises. Returns ComponentTypeId{} SILENTLY for
+    // index >= componentTypeCount() and for a moved-from World: this is the loop bound of a UI menu
+    // (an editor "duplicate entity" or "Add Component"), not a programmer-error path.
+    [[nodiscard]] ComponentTypeId componentTypeAt(std::size_t index) const noexcept;
+
     // The name a type was registered under. The returned view is into World-owned storage and stays
     // valid until ~World. An unregistered id (including ComponentTypeId{}) returns an empty view,
     // silently.
@@ -242,6 +273,21 @@ public:
     [[nodiscard]] bool hasRaw(ComponentTypeId id, Entity entity) const noexcept;
     bool removeRaw(ComponentTypeId id, Entity entity) noexcept;
     [[nodiscard]] std::size_t countRaw(ComponentTypeId id) const noexcept;
+
+    // Copies component `id` from `from` to `to`, overwriting any existing component of that type on
+    // `to`. This is the type-erased deep-copy primitive an editor's "duplicate entity" needs, and it
+    // lives HERE, not in the caller, because the only correct ordering of the underlying
+    // erase/insert pair depends on storage internals this class owns (see world.cpp -- the
+    // destination is removed BEFORE the source pointer is read).
+    //
+    // Returns true on success, and true (a no-op) when from == to and the component is present.
+    // Returns false SILENTLY when `from` does not hold the component -- a miss is the normal answer
+    // in a "copy everything this entity has" loop, not an error. That silence takes precedence over
+    // the from == to case: copyComponent(id, e, e) on an entity WITHOUT the component is a silent
+    // false, not a true.
+    // Returns false plus one ERROR for a moved-from World, a dead or null `from`/`to`, or an
+    // unregistered id.
+    bool copyComponent(ComponentTypeId id, Entity from, Entity to);
 
     // Upper bound on how many component types a single each<Ts...>() call may query at once. Raising
     // it is a one-constant change with no API break.

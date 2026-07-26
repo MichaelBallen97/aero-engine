@@ -100,6 +100,9 @@ SceneLoadReport loadScene(World& world, const SceneDocument& doc) {
         const Entity entity = world.create();
         idToEntity.emplace(rec.id, entity);
         ++report.entitiesCreated;
+        if (!rec.name.empty()) {  // task 2.2.1 (D5); "" == absent, and setName("") would just clear
+            world.setName(entity, rec.name);
+        }
         for (const SceneComponentRecord& comp : rec.components) {
             const BuiltinComponent* builtin = findBuiltin(comp.type);
             if (builtin == nullptr) {
@@ -154,7 +157,9 @@ SceneDocument saveWorld(const World& world) {
         const Entity entity = order[i];
         SceneEntityRecord rec;
         rec.id = i + 1;  // 1-based, contiguous, file-scoped (docs/09 §2.2)
-        // rec.name stays empty — the World has no name storage (D7).
+        // task 2.2.1 (D5): names round-trip. assign() COPIES immediately -- world.name() hands back a
+        // view into World-owned storage, and writeScene omits the key entirely when it is empty.
+        rec.name.assign(world.name(entity));
         if (const Entity p = world.parent(entity); p != Entity{}) {
             // CORRECTION 1: no std::hash<Entity>/operator< exists, so resolve the parent's file id
             // with a linear scan over the iteration-order vector rather than a Handle-keyed map.

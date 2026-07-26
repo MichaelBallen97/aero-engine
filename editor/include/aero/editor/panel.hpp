@@ -4,6 +4,8 @@
 // registry, EditorApp, the tier-0 shell test). ImGui appears only in the .cpp implementing a panel
 // and in shell_ui.cpp, which owns the Begin/End around onDraw().
 
+#include <aero/editor/panel_context.hpp>
+
 #include <cstdint>
 
 namespace engine::editor {
@@ -51,10 +53,10 @@ public:
     [[nodiscard]] virtual DockSlot defaultDockSlot() const noexcept { return DockSlot::Center; }
     [[nodiscard]] virtual PanelOptions options() const noexcept { return {}; }
 
-    // Draw the contents. Called once per frame while visible, inside the open window. Takes no
-    // arguments in 2.1.3 (D13) — panels capture what they need at construction; 2.2.1 introduces a
-    // PanelContext when there is a World and a selection to pass.
-    virtual void onDraw() = 0;
+    // Draw the contents. Called once per frame while visible, INSIDE the already-open window --
+    // never Begin/End your own window here. `context` is rebuilt by EditorApp every frame and must
+    // not be stored: hold Entity handles, never references into it (task 2.2.1, D7/D8).
+    virtual void onDraw(PanelContext& context) = 0;
 };
 
 }  // namespace engine::editor

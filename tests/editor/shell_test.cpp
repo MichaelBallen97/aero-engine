@@ -7,7 +7,10 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/panel.hpp>
+#include <aero/editor/panel_context.hpp>
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/selection.hpp>
+#include <aero/scene/world.hpp>
 
 #include <doctest/doctest.h>
 
@@ -31,7 +34,7 @@ public:
         : panelId(id), dockSlot(slot) {}
     [[nodiscard]] const char* id() const noexcept override { return panelId; }
     [[nodiscard]] engine::editor::DockSlot defaultDockSlot() const noexcept override { return dockSlot; }
-    void onDraw() override { ++drawCount; }
+    void onDraw(engine::editor::PanelContext& /*context*/) override { ++drawCount; }
     int drawCount = 0;  // public: misc-non-private-member-variables-in-classes is OFF
 
 private:
@@ -45,20 +48,20 @@ class NullIdPanel final : public engine::editor::Panel {
 public:
     ~NullIdPanel() override { ++nullIdDtorCount; }
     [[nodiscard]] const char* id() const noexcept override { return nullptr; }
-    void onDraw() override {}
+    void onDraw(engine::editor::PanelContext& /*context*/) override {}
 };
 
 class EmptyIdPanel final : public engine::editor::Panel {
 public:
     ~EmptyIdPanel() override { ++emptyIdDtorCount; }
     [[nodiscard]] const char* id() const noexcept override { return ""; }
-    void onDraw() override {}
+    void onDraw(engine::editor::PanelContext& /*context*/) override {}
 };
 
 class TypedPanel final : public engine::editor::Panel {
 public:
     [[nodiscard]] const char* id() const noexcept override { return "Typed"; }
-    void onDraw() override {}
+    void onDraw(engine::editor::PanelContext& /*context*/) override {}
     int marker = 7;
 };
 
@@ -67,7 +70,7 @@ public:
 class MinimalPanel final : public engine::editor::Panel {
 public:
     [[nodiscard]] const char* id() const noexcept override { return "Minimal"; }
-    void onDraw() override {}
+    void onDraw(engine::editor::PanelContext& /*context*/) override {}
 };
 
 }  // namespace
@@ -321,4 +324,41 @@ TEST_CASE("editor: DockSlot layout contract") {
     static_assert(static_cast<std::uint8_t>(DockSlot::Left) == 1);
     static_assert(static_cast<std::uint8_t>(DockSlot::Right) == 2);
     static_assert(static_cast<std::uint8_t>(DockSlot::Bottom) == 3);
+}
+
+namespace {
+// Records what the base-class virtual actually received -- the AC-8 forwarding proof.
+class ContextProbePanel final : public engine::editor::Panel {
+public:
+    [[nodiscard]] const char* id() const noexcept override { return "ContextProbe"; }
+    void onDraw(engine::editor::PanelContext& context) override {
+        ++drawCount;
+        seenWorld = &context.world;
+        seenSelection = &context.selection;
+    }
+    int drawCount = 0;
+    const engine::World* seenWorld = nullptr;
+    const engine::editor::Selection* seenSelection = nullptr;
+};
+}  // namespace
+
+TEST_CASE("editor: onDraw receives the caller's World and Selection by reference (AC-8/D7)") {
+    engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::PanelContext context{world, selection};
+
+    ContextProbePanel probe;
+    engine::editor::Panel& asBase = probe;  // through the BASE -- the virtual is what changed
+    asBase.onDraw(context);
+
+    CHECK(probe.drawCount == 1);
+    CHECK(probe.seenWorld == &world);  // the same objects, not copies
+    CHECK(probe.seenSelection == &selection);
+
+    // Non-tautological: a panel that mutates through the context is visible to the owner.
+    const engine::Entity e = world.create();
+    selection.add(e);
+    asBase.onDraw(context);
+    CHECK(probe.drawCount == 2);
+    CHECK(probe.seenSelection->contains(e));
 }

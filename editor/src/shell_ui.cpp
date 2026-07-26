@@ -71,7 +71,7 @@ void drawMenuBar(PanelRegistry& panels, ShellUiState& state) {
 
 // The balanced-End core (E1). Hidden panels `continue` before Begin, so they never call End either;
 // a visible panel's End() is unconditional — Begin's return value only gates onDraw().
-void drawPanels(PanelRegistry& panels) {
+void drawPanels(PanelRegistry& panels, PanelContext& context) {
     for (std::size_t i = 0; i < panels.count(); ++i) {
         bool open = panels.visibleAt(i);
         if (!open) {
@@ -97,7 +97,7 @@ void drawPanels(PanelRegistry& panels) {
                                    // panel's widgets
         }
         if (contentVisible) {
-            panel.onDraw();
+            panel.onDraw(context);
         }
         ImGui::End();                  // ALWAYS — Begin's return value never gates it
         panels.setVisibleAt(i, open);  // the close-'X' wrote through `open` (E2)
@@ -163,7 +163,7 @@ void buildDefaultLayout(ImGuiID dockId, PanelRegistry& panels) {
 
 }  // namespace
 
-void drawShellUi(PanelRegistry& panels, ShellUiState& state) {
+void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& state) {
     drawMenuBar(panels, state);  // FIRST: reserves the viewport work area (F9) and is where Reset
                                  // Layout can still affect THIS frame
     const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
@@ -171,7 +171,7 @@ void drawShellUi(PanelRegistry& panels, ShellUiState& state) {
         state.applyDefaultLayout = false;
         buildDefaultLayout(dockId, panels);  // must run AFTER the dockspace exists this frame (E17)
     }
-    drawPanels(panels);
+    drawPanels(panels, context);
 }
 
 }  // namespace engine::editor

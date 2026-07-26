@@ -68,10 +68,12 @@ job (Phase 2+) — upgrading scene entity ids to something GUID-like, if that is
 the kind of breaking change the version field exists to gate.
 
 The **save** direction (task 1.4.2's `saveWorld`) assigns file ids `1..N` in the `World`'s entity
-iteration order and does **not** persist entity `name`s in Phase 1 — the `World` has no name storage
-yet (a `Name` component is future scope; `std::string` is outside reflect-gen's reflectable subset
-today, so it cannot serialize as a field either). A save therefore emits every entity with an absent
-`name`, which is format-legal: `name` is purely informational (see the table above).
+iteration order. Entity `name`s **do** persist (task 2.2.1): the `World` stores an optional,
+entity-level, purely informational name (`World::setName` / `World::name`) — entity-level exactly
+like `parent`, and deliberately **not** a component, so the runtime model matches this document's.
+A save emits `name` for every entity that has one and omits the key for every entity that does not,
+since `""` ≡ absent (see the table above). Names are never validated, never made unique, and never
+interpreted.
 
 ### 2.3 Components
 

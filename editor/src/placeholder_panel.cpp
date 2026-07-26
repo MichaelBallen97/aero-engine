@@ -14,6 +14,6 @@ const char* PlaceholderPanel::id() const noexcept { return panelId; }
 
 DockSlot PlaceholderPanel::defaultDockSlot() const noexcept { return dockSlot; }
 
-void PlaceholderPanel::onDraw() { ImGui::TextUnformatted(note); }
+void PlaceholderPanel::onDraw(PanelContext& /*context*/) { ImGui::TextUnformatted(note); }
 
 }  // namespace engine::editor

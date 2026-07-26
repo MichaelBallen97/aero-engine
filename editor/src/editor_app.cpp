@@ -4,9 +4,11 @@
 #include <aero/core/profiler.hpp>
 #include <aero/core/time.hpp>
 #include <aero/editor/editor_app.hpp>
+#include <aero/editor/entity_ops.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
 
+#include "hierarchy_panel.hpp"
 #include "placeholder_panel.hpp"
 #include "shell_ui.hpp"
 
@@ -49,16 +51,20 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     app.applyDefaultLayout = app.layer.wantsDefaultLayout();
 
     if (config.registerDefaultPanels) {
-        app.registry.emplace<PlaceholderPanel>("Hierarchy", DockSlot::Left, "Hierarchy — placeholder (task 2.2.1)");
+        app.registry.emplace<HierarchyPanel>();  // task 2.2.1 -- was a PlaceholderPanel
         app.registry.emplace<PlaceholderPanel>("Inspector", DockSlot::Right, "Inspector — placeholder (task 2.2.2)");
         app.registry.emplace<PlaceholderPanel>("Viewport", DockSlot::Center, "Viewport — placeholder (task 2.2.3)");
         app.registry.emplace<PlaceholderPanel>("Console", DockSlot::Bottom, "Console — placeholder (task 2.2.5)");
         app.registry.emplace<PlaceholderPanel>("Assets", DockSlot::Bottom, "Assets — placeholder (task 2.2.4)");
     }
 
+    if (config.seedDefaultScene) {
+        engine::editor::seedDefaultScene(app.sceneWorld);  // fully qualified: the config field shadows
+    }
+
     // This is the evidence the non-interactive launch check greps for (§V5).
-    AERO_LOG_INFO("editor: shell ready ({} panels, layout: {})", app.registry.count(),
-                  app.applyDefaultLayout ? "default" : "restored");
+    AERO_LOG_INFO("editor: shell ready ({} panels, {} entities, layout: {})", app.registry.count(),
+                  app.sceneWorld.entityCount(), app.applyDefaultLayout ? "default" : "restored");
     return app;
 }
 
@@ -95,9 +101,10 @@ bool EditorApp::tick() {
 
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout, .quitRequested = false};
-    drawShellUi(registry, ui);                   // menu bar -> dockspace -> panels
-    applyDefaultLayout = ui.applyDefaultLayout;  // drawShellUi clears it once consumed, and re-sets
-                                                 // it for View > Reset Layout
+    PanelContext panelContext{sceneWorld, sceneSelection};  // rebuilt per frame (D7)
+    drawShellUi(registry, panelContext, ui);                // menu bar -> dockspace -> panels
+    applyDefaultLayout = ui.applyDefaultLayout;             // drawShellUi clears it once consumed, and re-sets
+                                                            // it for View > Reset Layout
     presented = layer.endFrame(config.clearColor);
     if (ui.quitRequested) {
         running = false;  // File>Exit / Ctrl+Q: this frame still completed, so Render stays balanced
@@ -120,6 +127,10 @@ int EditorApp::run() {
 
 PanelRegistry& EditorApp::panels() noexcept { return registry; }
 const PanelRegistry& EditorApp::panels() const noexcept { return registry; }
+World& EditorApp::world() noexcept { return sceneWorld; }
+const World& EditorApp::world() const noexcept { return sceneWorld; }
+Selection& EditorApp::selection() noexcept { return sceneSelection; }
+const Selection& EditorApp::selection() const noexcept { return sceneSelection; }
 const FrameClock& EditorApp::clock() const noexcept { return frameClock; }
 bool EditorApp::focused() const noexcept { return windowFocused; }
 bool EditorApp::presentedLastFrame() const noexcept { return presented; }

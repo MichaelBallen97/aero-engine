@@ -13,7 +13,8 @@ struct ShellUiState {
 };
 
 // Draws the menu bar, the full-viewport dockspace, and every visible panel (Begin/End around
-// onDraw()). See editor_app.cpp's tick() for the frame this runs inside.
-void drawShellUi(PanelRegistry& panels, ShellUiState& state);
+// onDraw()). `context` is forwarded to every panel unchanged (task 2.2.1). See editor_app.cpp's
+// tick() for the frame this runs inside.
+void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& state);
 
 }  // namespace engine::editor

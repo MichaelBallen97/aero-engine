@@ -13,7 +13,7 @@ public:
 
     [[nodiscard]] const char* id() const noexcept override;
     [[nodiscard]] DockSlot defaultDockSlot() const noexcept override;
-    void onDraw() override;
+    void onDraw(PanelContext& context) override;
 
 private:
     const char* panelId;
