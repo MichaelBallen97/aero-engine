@@ -820,7 +820,7 @@ elseif(CASE STREQUAL "components_engine_camera")
         OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
     aero_expect_exit_or_dump("${result}" 0 "${err}")
     aero_expect_stdout_contains("${out}" "component engine::Camera")
-    aero_expect_stdout_contains("${out}" "field fovYRadians : float [primitive]")
+    aero_expect_stdout_contains("${out}" "field fovYRadians : float [primitive] [range 0.0175:3.1241]")  # task 2.2.2
     aero_expect_stdout_contains("${out}" "field nearPlane : float [primitive]")
     aero_expect_stdout_contains("${out}" "field farPlane : float [primitive]")
 
@@ -866,7 +866,7 @@ elseif(CASE STREQUAL "components_engine_light")
     aero_expect_exit_or_dump("${result}" 0 "${err}")
     aero_expect_stdout_contains("${out}" "component engine::DirectionalLight")
     aero_expect_stdout_contains("${out}" "component engine::PointLight")
-    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3]")
+    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3] [color]")  # task 2.2.2, both lights
     aero_expect_stdout_contains("${out}" "field intensity : float [primitive]")
     aero_expect_stdout_contains("${out}" "field range : float [primitive]")
 
@@ -917,8 +917,8 @@ elseif(CASE STREQUAL "components_engine_mesh_renderer")
         OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
     aero_expect_exit_or_dump("${result}" 0 "${err}")
     aero_expect_stdout_contains("${out}" "component engine::MeshRenderer")
-    aero_expect_stdout_contains("${out}" "field primitive : std::uint32_t [primitive]")
-    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3]")
+    aero_expect_stdout_contains("${out}" "field primitive : std::uint32_t [primitive] [range 0:2]")  # task 2.2.2
+    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3] [color]")  # task 2.2.2
 
     # declaration order: primitive -> color
     string(FIND "${out}" "field primitive" _p)
