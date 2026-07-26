@@ -1,4 +1,4 @@
-# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3)
+# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1)
 
 Task 2.1.1's deliverable: an editor window with dockable dummy panels, layout persisted across
 restarts, HiDPI scaling checked on all 3 OSes. CI proves the "builds clean on all 3 OSes, imgui
@@ -36,7 +36,7 @@ the visual gate below, which needs a human's eyes and hands.
   non-interactively) — undock/redock/split/tab-by-mouse and visual font/UI crispness are **not**
   covered by the above and are marked pending below.
 
-## How to validate one OS (for the pending rows)
+## How to validate one OS (for the pending ones)
 
 1. **Build** (`AERO_REFLECT_TOOLS`/`AERO_SHADER_TOOLS` not required — AC-9): `cmake --preset
    <os>-debug && cmake --build --preset <os>-debug`.
@@ -46,7 +46,7 @@ the visual gate below, which needs a human's eyes and hands.
    one-line placeholder ("... — placeholder (task 2.2.x)"). **Note:** task 2.1.3 changed what the
    binary registers — the current build ships **5** panels (Hierarchy left, Inspector right,
    Viewport center, and Console + Assets **tabbed together** at the bottom) and a File/Edit/View
-   menu bar. The 2.1.1 rows below were originally written against a 4-panel, menu-bar-less build;
+   menu bar. The 2.1.1 records below were originally written against a 4-panel, menu-bar-less build;
    validate what the current binary registers, not the historical list.
 4. **Drag a tab out, redock it, split a panel, tab two panels together** — confirm all four
    operations work smoothly by mouse.
@@ -55,18 +55,36 @@ the visual gate below, which needs a human's eyes and hands.
    popups and renames) **and relaunch** — confirm the exact arrangement you left it in comes back.
 6. **On a HiDPI/Retina display**: confirm fonts and widget metrics are crisp — not blurry, not
    rendered at half-size relative to the rest of the desktop.
-7. **Record the row below.**
+7. **Record your results below.**
 
-## Validation table
+## Validation records
 
-| OS | Status | Date | Machine / GPU | Window opens | Panels dockable (mouse) | Rearrange persists (mouse, actual restart) | First-run default layout | HiDPI crisp | Clean quit | Notes |
-|----|--------|------|----------------|---------------|---------------------------|-----------------------------------------------|----------------------------|--------------|------------|-------|
-| macOS | ✅ PASS | 2026-07-25 | MacBook Pro (Apple M1 Pro), Metal backend | PASS | PASS (human: drag out / redock / split / tab by mouse) | PASS (human: rearranged, quit, relaunched — arrangement restored) | PASS (DockBuilder split observed in the saved ini, and confirmed visually) | PASS (human: Retina, crisp) | PASS | GPU smoke test (`aero_editor_imgui_test`) green under `AERO_REQUIRE_GPU=1`. Human visual pass performed against the current 2.1.3 binary (5 panels + menu bar), per the note in step 3. |
-| Windows | ⏳ pending | — | — | — | — | — | — | — | — | needs native run (D3D12) |
-| Linux | ⏳ pending | — | — | — | — | — | — | — | — | needs native run (real Vulkan; NOT lavapipe/CI) |
+### macOS — ✅ PASS (2026-07-25)
+
+Machine: MacBook Pro (Apple M1 Pro), Metal backend.
+
+- **Window opens** — PASS
+- **Panels dockable (mouse)** — PASS (human: drag out / redock / split / tab by mouse)
+- **Rearrange persists (mouse, actual restart)** — PASS (human: rearranged, quit, relaunched —
+  arrangement restored)
+- **First-run default layout** — PASS (DockBuilder split observed in the saved ini, and confirmed
+  visually)
+- **HiDPI crisp** — PASS (human: Retina, crisp)
+- **Clean quit** — PASS
+
+Notes: GPU smoke test (`aero_editor_imgui_test`) green under `AERO_REQUIRE_GPU=1`. Human visual pass
+performed against the current 2.1.3 binary (5 panels + menu bar), per the note in step 3.
+
+### Windows — ⏳ pending
+
+Needs a native run (D3D12). No checks recorded yet.
+
+### Linux — ⏳ pending
+
+Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
 
 **Task 2.1.1 gate status: OPEN — macOS ✅, Windows/Linux pending.** The mouse-driven visual half is
-confirmed on macOS (2026-07-25); the gate closes when the Windows and Linux rows are filled by a
+confirmed on macOS (2026-07-25); the gate closes when the Windows and Linux records are filled by a
 code-free on-hardware follow-up (the Phase 0/1 precedent, 0.5.3/1.4.2).
 
 ---
@@ -105,7 +123,7 @@ machine.
   `[Window][Console] DockId=0x00000006,0` beside `[Window][Assets] DockId=0x00000006,1` — the same
   node at tab indices 0 and 1. (Five panels each *having* a dock entry would also be true if the
   builder had put them in five separate nodes, so the entry list alone does not establish this.)
-- No mouse or keyboard interaction was performed; every row marked "pending" below needs a human.
+- No mouse or keyboard interaction was performed; every OS marked "pending" below needs a human.
 
 ## Known-and-expected, NOT a defect
 
@@ -118,7 +136,7 @@ machine.
   area the menu bar reserved the *previous* frame. Frame 2 onward is correct; it is invisible in a
   running app. Do not "fix" it with a manual `GetFrameHeight()` offset — that double-counts.
 
-## How to validate one OS (for the pending rows)
+## How to validate one OS (for the pending ones)
 
 1. **Build** (`AERO_REFLECT_TOOLS`/`AERO_SHADER_TOOLS` not required): `cmake --preset <os>-debug &&
    cmake --build --preset <os>-debug`.
@@ -143,21 +161,44 @@ machine.
     Monitor / Task Manager / `top` — it must visibly drop (the 20 Hz unfocused cap), then recover
     when the editor is focused again.
 12. **On a HiDPI display**: fonts and widget metrics crisp.
-13. **Record the row below.**
+13. **Record your results below.**
 
-## Validation table
+## Validation records
 
-| OS | Status | Date | Machine / GPU | Menu bar (3 menus, labels) | Disabled items + tooltips | View toggles / close-'X' sync | First-run layout (Console+Assets tabbed) | Reset Layout | Esc does NOT quit | Quits: close box / File>Exit / ⌘-Ctrl+Q | Layout persists (real restart) | Unfocused throttle visible | HiDPI crisp | Notes |
-|----|--------|------|---------------|-----------------------------|----------------------------|-------------------------------|-------------------------------------------|--------------|--------------------|--------------------------------------------|--------------------------------|-----------------------------|--------------|-------|
-| macOS | ✅ PASS | 2026-07-25 | MacBook Pro (Apple M1 Pro), Metal | PASS | PASS (tooltips name 2.5.1 / 2.4.1) | PASS (both directions; close-'X' clears the checkbox) | PASS (`Console` and `Assets` share `DockId=0x00000006` at tab indices 0/1 in the saved ini — same node ⇒ tabbed; confirmed visually) | PASS (rebuilds in the frame it is clicked) | PASS (Esc does nothing) | PASS / PASS / PASS | PASS (real restart) | PASS (visible drop when unfocused, recovers on refocus) | PASS (Retina, crisp) | Both editor ctest targets green; `editor: shell ready (5 panels, layout: default)` then `layout: restored` observed, ini byte-identical across runs. All four AC-6 quit paths now covered: the three human ones here plus `EventType::Quit` (SIGTERM), which exits with no crash and no ASan report. |
-| Windows | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | needs native run (D3D12) |
-| Linux | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | needs native run (real Vulkan; NOT lavapipe/CI) |
+### macOS — ✅ PASS (2026-07-25)
+
+Machine: MacBook Pro (Apple M1 Pro), Metal.
+
+- **Menu bar (3 menus, labels)** — PASS
+- **Disabled items + tooltips** — PASS (tooltips name 2.5.1 / 2.4.1)
+- **View toggles / close-'X' sync** — PASS (both directions; close-'X' clears the checkbox)
+- **First-run layout (Console+Assets tabbed)** — PASS (`Console` and `Assets` share
+  `DockId=0x00000006` at tab indices 0/1 in the saved ini — same node ⇒ tabbed; confirmed visually)
+- **Reset Layout** — PASS (rebuilds in the frame it is clicked)
+- **Esc does NOT quit** — PASS (Esc does nothing)
+- **Quits: close box / File > Exit / ⌘-Ctrl+Q** — PASS / PASS / PASS
+- **Layout persists (real restart)** — PASS
+- **Unfocused throttle visible** — PASS (visible drop when unfocused, recovers on refocus)
+- **HiDPI crisp** — PASS (Retina, crisp)
+
+Notes: both editor ctest targets green; `editor: shell ready (5 panels, layout: default)` then
+`layout: restored` observed, ini byte-identical across runs. All four AC-6 quit paths now covered:
+the three human ones here plus `EventType::Quit` (SIGTERM), which exits with no crash and no ASan
+report.
+
+### Windows — ⏳ pending
+
+Needs a native run (D3D12). No checks recorded yet.
+
+### Linux — ⏳ pending
+
+Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
 
 **Task 2.1.3 gate status: OPEN — macOS ✅, Windows/Linux pending.** Every human column passed on
 macOS (2026-07-25): the menu bar and its disabled-item tooltips, View toggles and close-'X' sync,
 Console+Assets tabbed, `Reset Layout`, Esc not quitting, all three human quit paths, layout
 persistence across a real restart, the unfocused throttle, and HiDPI crispness.
-**Epic 2.1 closes when both tables' Windows and Linux rows are filled** by a code-free on-hardware
+**Epic 2.1 closes when both sections' Windows and Linux records are filled** by a code-free on-hardware
 follow-up (the Phase 0/1 precedent, 0.5.3/1.4.2) — no code change is expected to be needed.
 
 # Task 2.2.1 — hierarchy panel
@@ -208,7 +249,7 @@ context menu. That half needs a person at the machine.
   plain rescan) reds the AC-16 case; S6 (`#include <imgui.h>` in `panel_context.hpp`) still compiles
   cleanly in `aero_editor_shell_test`, re-documenting R12 as D24 predicts. S5 (AC-15's "no drop
   highlight") has no mechanical proof and is recorded below as human-pending.
-- No mouse or keyboard interaction was performed; every row marked "pending" below needs a human.
+- No mouse or keyboard interaction was performed; every OS marked "pending" below needs a human.
 
 ## Known-and-expected, NOT a defect
 
@@ -220,7 +261,7 @@ context menu. That half needs a person at the machine.
 - **Entity ordering within a parent is not user-controllable** (D14) — children draw in attach order,
   and there is deliberately no way to reorder siblings in this task.
 
-## How to validate one OS (for the pending rows)
+## How to validate one OS (for the pending ones)
 
 1. **Build**, delete `build/<os>-debug/editor/aero_editor.ini`, run `aero_editor`.
 2. **Seeded scene**: the Hierarchy panel lists exactly *Main Camera*, *Directional Light*, *Cube*.
@@ -246,15 +287,36 @@ context menu. That half needs a person at the machine.
    cleanly (E24).
 10. **Root order**: create A, B, C; delete B; confirm A and C do **not** reorder (AC-16).
 11. **Quit and relaunch**: the layout persists and the panel is still docked left.
-12. **Record the row below.**
+12. **Record your results below.**
 
-## Validation table
+## Validation records
 
-| OS | Status | Date | Machine / GPU | Seeded scene (3 entities) | Rename (F2/dbl-click/Enter/Esc) | Create Empty/Child | Indentation + expander | Reparent (drag) | No drop highlight on illegal drop (AC-15) | Multi-select + Delete | Duplicate (name+children+components) | Delete-while-renaming | Root order stable | Layout persists | Notes |
-|----|--------|------|---------------|----------------------------|-----------------------------------|----------------------|---------------------------|--------------------|-----------------------------------------------|--------------------------|------------------------------------------|---------------------------|---------------------|-------------------|-------|
-| macOS | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | — | mechanical proof complete (see above); mouse/keyboard pass not yet performed |
-| Windows | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | — | needs native run (D3D12) |
-| Linux | ⏳ pending | — | — | — | — | — | — | — | — | — | — | — | — | — | needs native run (real Vulkan; NOT lavapipe/CI) |
+Each OS records the same eleven checks. Copy this checklist into the OS's section below as you go,
+appending ` — PASS` (or FAIL) and what you observed to each line.
+
+- **Seeded scene (3 entities)**
+- **Rename (F2 / dbl-click / Enter / Esc)**
+- **Create Empty / Create Child**
+- **Indentation + expander**
+- **Reparent (drag)**
+- **No drop highlight on an illegal drop (AC-15)**
+- **Multi-select + Delete**
+- **Duplicate (name + children + components)**
+- **Delete-while-renaming**
+- **Root order stable**
+- **Layout persists**
+
+### macOS — ⏳ pending
+
+Mechanical proof complete (see above); the mouse/keyboard pass has not yet been performed.
+
+### Windows — ⏳ pending
+
+Needs a native run (D3D12). No checks recorded yet.
+
+### Linux — ⏳ pending
+
+Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
 
 **Task 2.2.1 gate status: OPEN — mechanical proof complete on macOS; the mouse/keyboard human pass
 (all three OSes) is pending a code-free on-hardware follow-up** (the 0.5.3/1.4.2/2.1.1/2.1.3
