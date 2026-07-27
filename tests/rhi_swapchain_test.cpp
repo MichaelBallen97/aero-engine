@@ -3,6 +3,7 @@
 // small window flashes for ~a second per ctest run — by design (spec D8): minimized/hidden-window
 // acquire behavior is not verifiable from source, so this tier doesn't gamble on it.
 #include <aero/platform/platform.hpp>
+#include <aero/rhi/internal/native_device.hpp>  // task 2.2.3 -- NativeDeviceAccessor::texture (§O-1)
 #include <aero/rhi/rhi.hpp>
 
 #include "rhi_test_support.hpp"
@@ -223,4 +224,49 @@ TEST_CASE("rhi swapchain: T2-7 non-Vsync fails, never downgrades (C-13)") {
     if (immediateHandle.valid()) {
         dev->destroySwapchain(immediateHandle);
     }
+}
+
+TEST_CASE("rhi swapchain: NativeDeviceAccessor::texture refuses swapchain-owned and stale handles (task 2.2.3)") {
+    engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto dev = Device::create();
+    if (!dev.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto window = ctx.createWindow({.title = "aero rhi test", .width = 320, .height = 180});
+    if (!window.has_value()) {
+        AERO_SKIP_OR_FAIL("no real window available");
+    }
+
+    // 1. non-null for a normal sampleable texture.
+    const TextureHandle normal = dev->createTexture({.format = TextureFormat::RGBA8Unorm,
+                                                     .usage = TextureUsage::Sampler | TextureUsage::ColorTarget,
+                                                     .width = 64,
+                                                     .height = 64});
+    REQUIRE(normal.valid());
+    CHECK(engine::rhi::internal::NativeDeviceAccessor::texture(*dev, normal) != nullptr);
+
+    // 2. NULL for a swapchain-acquired texture -- the write-only refusal, S9's discriminating
+    // assertion. A swapchain acquisition is write-only (device.hpp's acquire contract): handing one
+    // to bindFragmentSamplers -- or to ImGui as an ImTextureID -- would be a silent GPU error. This
+    // is exactly what stops a future reader from "simplifying" the refusal away.
+    const SwapchainHandle sc = dev->createSwapchain(*window);
+    REQUIRE(sc.valid());
+    const CommandBufferHandle cmd = dev->acquireCommandBuffer();
+    REQUIRE(cmd.valid());
+    const std::optional<SwapchainTexture> acquired = dev->acquireSwapchainTexture(cmd, sc);
+    REQUIRE(acquired.has_value());
+    CHECK(engine::rhi::internal::NativeDeviceAccessor::texture(*dev, acquired->texture) == nullptr);
+    CHECK(dev->submit(cmd));  // dispose the acquired image (never `cancel` after an acquire)
+    dev->destroySwapchain(sc);
+
+    // 3. null for a destroyed handle.
+    dev->destroyTexture(normal);
+    CHECK(engine::rhi::internal::NativeDeviceAccessor::texture(*dev, normal) == nullptr);
+
+    // 4. null for a moved-from Device.
+    const Device moved = std::move(*dev);
+    CHECK(engine::rhi::internal::NativeDeviceAccessor::texture(*dev, normal) == nullptr);
 }

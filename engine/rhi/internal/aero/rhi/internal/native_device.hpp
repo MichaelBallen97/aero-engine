@@ -14,8 +14,11 @@
 // handle is live (before submit/cancel resp. before endRenderPass); nullptr on a stale/invalid
 // handle. The client must use them within the same frame flow, exactly like the handles they mirror.
 // Adding an accessor here is a spec-level decision (the platform_internal precedent).
+// `texture(t)` is valid while the TextureHandle is live (until destroyTexture / ~Device) and is
+// nullptr for a stale handle AND for a SWAPCHAIN-ACQUIRED texture -- those are write-only (see
+// device.hpp's acquire contract), so handing one to a sampler would be a silent GPU error.
 
-#include <aero/rhi/handles.hpp>  // CommandBufferHandle, RenderPassHandle
+#include <aero/rhi/handles.hpp>  // CommandBufferHandle, RenderPassHandle, TextureHandle
 
 namespace engine::rhi {
 class Device;
@@ -28,6 +31,8 @@ struct NativeDeviceAccessor {
     [[nodiscard]] static void* commandBuffer(const Device& device, CommandBufferHandle cmd) noexcept;
     // SDL_GPURenderPass* as void*; nullptr if pass is stale/invalid.
     [[nodiscard]] static void* renderPass(const Device& device, RenderPassHandle pass) noexcept;
+    // SDL_GPUTexture* as void*; nullptr for a stale/invalid handle or a swapchain-acquired one.
+    [[nodiscard]] static void* texture(const Device& device, TextureHandle texture) noexcept;
 };
 
 }  // namespace internal

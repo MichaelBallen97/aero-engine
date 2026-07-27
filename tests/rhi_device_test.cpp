@@ -220,6 +220,43 @@ TEST_CASE("rhi device: T1-7 the E8/D5 rejection battery — TextureDesc") {
                    {.format = TextureFormat::RGBA8Unorm, .usage = TextureUsage::Sampler, .width = 4, .height = 0})
                 .valid());
     }
+    // Task 2.2.3 — the UPPER dimension bound is a CRASH guard, not bookkeeping. SDL_CreateGPUTexture
+    // performs no 2D dimension check, so without validateDesc rejecting these first, Metal's own
+    // descriptor validation aborts the PROCESS from inside it and takes the whole test binary down.
+    // Removing the check in sdl_gpu_backend.cpp does not make these fail -- it makes them SIGABRT.
+    SUBCASE("width beyond MAX_TEXTURE_DIMENSION_2D is rejected, not aborted") {
+        CHECK_FALSE(dev->createTexture({.format = TextureFormat::RGBA8Unorm,
+                                        .usage = TextureUsage::Sampler,
+                                        .width = MAX_TEXTURE_DIMENSION_2D + 1,
+                                        .height = 4})
+                        .valid());
+    }
+    SUBCASE("height beyond MAX_TEXTURE_DIMENSION_2D is rejected, not aborted") {
+        CHECK_FALSE(dev->createTexture({.format = TextureFormat::RGBA8Unorm,
+                                        .usage = TextureUsage::Sampler,
+                                        .width = 4,
+                                        .height = MAX_TEXTURE_DIMENSION_2D + 1})
+                        .valid());
+    }
+    SUBCASE("a wildly over-limit request is rejected, not aborted") {
+        CHECK_FALSE(dev->createTexture({.format = TextureFormat::RGBA8Unorm,
+                                        .usage = TextureUsage::Sampler,
+                                        .width = 100000,
+                                        .height = 100000})
+                        .valid());
+    }
+    SUBCASE("exactly MAX_TEXTURE_DIMENSION_2D is ACCEPTED (the bound is inclusive)") {
+        // Guards against a `>=` typo silently costing every caller half the usable range. Skipped
+        // rather than failed where the device cannot back a 16384x1 allocation.
+        const TextureHandle atLimit = dev->createTexture({.format = TextureFormat::RGBA8Unorm,
+                                                          .usage = TextureUsage::Sampler,
+                                                          .width = MAX_TEXTURE_DIMENSION_2D,
+                                                          .height = 1});
+        CHECK(atLimit.valid());
+        if (atLimit.valid()) {
+            dev->destroyTexture(atLimit);
+        }
+    }
     SUBCASE("mip 0 is rejected") {
         CHECK_FALSE(dev->createTexture({.format = TextureFormat::RGBA8Unorm,
                                         .usage = TextureUsage::Sampler,

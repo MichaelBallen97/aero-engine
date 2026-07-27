@@ -22,6 +22,7 @@ add_library(aero_editor_core STATIC
     src/editor_reflection.cpp   # task 2.2.2 -- the D16 bootstrap (tools-ON/OFF via one #if)
     src/text_input.cpp          # task 2.2.2 -- inputTextString, promoted verbatim from hierarchy_panel.cpp
     src/inspector_panel.cpp     # task 2.2.2 -- the reflection-driven Inspector panel
+    src/viewport_panel.cpp      # task 2.2.3 -- the scene rendered to texture inside a panel
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -39,7 +40,12 @@ target_link_libraries(aero_editor_core
     # review, NOT enforcement: this target's consumers link doctest/vcpkg roots, so a leaked
     # <entt/entt.hpp> in a public editor header would still compile (risk R12, docs/08 -- the same
     # limitation 2.1.3 documented for imgui.h and proved by seeding it). Do not "fix" it with a probe.
-    PRIVATE aero::profiling imgui::imgui SDL3::SDL3 EnTT::EnTT
+    # aero::scene_render is PRIVATE (D17): no PUBLIC editor header names a render/scene_render type --
+    # viewport_panel.hpp is src-private. It brings aero::render transitively (PUBLIC on
+    # aero_scene_render) and, like aero::scene, propagates no vcpkg include path. It is NOT gated on
+    # AERO_REFLECT_TOOLS (engine/scene_render/CMakeLists.txt has no gate), so the tools-OFF build and
+    # the ungated tier-0 shell test both survive.
+    PRIVATE aero::profiling imgui::imgui SDL3::SDL3 EnTT::EnTT aero::scene_render
             aero::platform_internal aero::rhi_internal
 )
 
@@ -58,6 +64,15 @@ if(AERO_REFLECT_TOOLS)
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")
     target_compile_definitions(aero_editor_core PRIVATE AERO_EDITOR_REFLECTION=1)
+endif()
+
+if(AERO_SHADER_TOOLS)
+    # Task 2.2.3: the viewport needs the cooked scene.{vert,frag}. Same shape as
+    # samples/phase-1-scene (F22). INVARIANT: AERO_SHADERS_DIR must equal aero_add_shaders'
+    # OUTPUT_DIR -- move both together (tests/CMakeLists.txt records the same rule).
+    add_dependencies(aero_editor_core aero_shaders)
+    target_compile_definitions(aero_editor_core PRIVATE
+        AERO_EDITOR_SHADERS=1 AERO_SHADERS_DIR="${CMAKE_BINARY_DIR}/shaders")
 endif()
 
 add_executable(aero_editor src/main.cpp)

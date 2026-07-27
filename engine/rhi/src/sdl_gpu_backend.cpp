@@ -996,6 +996,15 @@ bool validateDesc(const TextureDesc& desc) {
         AERO_LOG_ERROR("rhi: createTexture: width and height must be > 0");
         return false;
     }
+    // The UPPER bound is a crash guard, not bookkeeping: SDL_CreateGPUTexture has no 2D dimension
+    // check, so an over-limit request reaches the driver and Metal aborts the PROCESS from inside
+    // it -- there is no failure this error model could return at that point. See
+    // MAX_TEXTURE_DIMENSION_2D in types.hpp for the full rationale and the known mobile gap.
+    if (desc.width > MAX_TEXTURE_DIMENSION_2D || desc.height > MAX_TEXTURE_DIMENSION_2D) {
+        AERO_LOG_ERROR("rhi: createTexture: {}x{} exceeds the maximum 2D texture dimension ({})", desc.width,
+                       desc.height, MAX_TEXTURE_DIMENSION_2D);
+        return false;
+    }
     const std::uint32_t cap = mipCap(desc.width, desc.height);
     if (desc.mipLevels == 0 || desc.mipLevels > cap) {
         AERO_LOG_ERROR("rhi: createTexture: mipLevels {} out of range [1,{}] for {}x{}", desc.mipLevels, cap,
@@ -2307,6 +2316,20 @@ void* internal::NativeDeviceAccessor::renderPass(const Device& d, RenderPassHand
     }
     const PassSlot* const slot = d.impl->renderPasses.get(h);
     return slot != nullptr ? static_cast<void*>(slot->pass) : nullptr;
+}
+
+// task 2.2.3: the editor's viewport texture (ImGui ImTextureID). Refuses a swapchain-acquired
+// texture -- those are write-only (device.hpp's acquire contract), so handing one to a sampler
+// would be a silent GPU error.
+void* internal::NativeDeviceAccessor::texture(const Device& d, TextureHandle h) noexcept {
+    if (d.impl == nullptr) {
+        return nullptr;
+    }
+    const TextureSlot* const slot = d.impl->textures.get(h);
+    if (slot == nullptr || slot->swapchainOwned) {
+        return nullptr;  // write-only acquisition: never sampleable (device.hpp's acquire contract)
+    }
+    return static_cast<void*>(slot->texture);
 }
 
 }  // namespace engine::rhi

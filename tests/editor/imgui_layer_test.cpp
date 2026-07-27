@@ -235,3 +235,75 @@ TEST_CASE("editor: the Inspector panel draws a seeded scene and survives structu
     CHECK(app->tick() == false);
     app.reset();
 }
+
+TEST_CASE("editor: the Viewport panel drives resize, hide/show and no-camera without crashing (task 2.2.3)") {
+    // Honest limit: this proves NO CRASH, NO ABORT, NO LEAK, and that frames present. It does NOT
+    // prove the image is correct, crisp, or artifact-free -- no pixel readback exists in this
+    // harness, and lavapipe would not settle the HiDPI question anyway. That half is
+    // editor/VALIDATION.md's, exactly as 2.1.1/2.2.1/2.2.2 recorded for their own interactive halves.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+    CHECK(app->world().entityCount() == 3);
+
+    // 1. Three plain ticks -- proves the offscreen pass, the submit ordering and ImGui's sample of
+    // the texture all survive on real Metal/D3D12-WARP/lavapipe. An unbalanced ImGui call would
+    // IM_ASSERT-abort in the Debug build; a bad ImTextureID would fault inside the backend.
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // 2. Resize -- the mechanical half of AC-4: reallocation, UV recomputation and the barrier path
+    // in one shot.
+    window->setSize(480, 300);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // 3. Hide/show (AC-7): a hidden panel still presents (ImGui's own frame), but records no
+    // offscreen work; re-showing resumes correctly.
+    app->panels().setVisible("Viewport", false);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    app->panels().setVisible("Viewport", true);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // 4. No camera (AC-8): destroy the seeded camera BEHIND the panel's back, between ticks -- no
+    // crash, still presenting.
+    engine::World& world = app->world();
+    engine::Entity mainCamera{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Main Camera") {
+            mainCamera = e;
+        }
+    });
+    REQUIRE(mainCamera.valid());
+    REQUIRE(world.destroy(mainCamera));
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // 5. Teardown clean, no leak WARN (AC-12; LSan on the Linux Debug lane is the mechanism).
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

@@ -180,6 +180,25 @@ inline constexpr std::uint32_t MAX_VERTEX_ATTRIBUTES = 16;
 inline constexpr std::uint32_t MAX_PUSH_UNIFORM_SLOTS = 4;
 inline constexpr std::uint32_t MAX_FRAGMENT_SAMPLER_SLOTS = 16;
 
+// Largest 2D texture dimension createTexture() will accept, on either axis (task 2.2.3).
+//
+// UNLIKE the slot limits above, this one is NOT merely a bookkeeping bound -- it is a CRASH GUARD.
+// SDL_CreateGPUTexture performs NO 2D dimension check at all: SDL 3.4.12's MAX_2D_DIMENSION test
+// exists only on the CUBE / CUBE_ARRAY branches (src/gpu/SDL_gpu.c), and even those are
+// SDL_assert_release, i.e. an abort rather than a graceful NULL. An over-limit 2D request therefore
+// reaches the driver, and Metal's own descriptor validation calls std::abort() from inside
+// SDL_CreateGPUTexture -- UNCONDITIONALLY, independent of DeviceDesc::enableDebugLayer and of
+// MTL_DEBUG_LAYER (both verified). Without this check a single bad width takes the whole process
+// down, which no "returns an invalid handle on failure" error model can express.
+//
+// 16384 is the shared desktop ceiling: Metal's hard max on Apple Silicon and Intel alike, D3D12
+// feature level 11_0+'s required minimum, and what desktop Vulkan drivers report for
+// maxImageDimension2D. KNOWN GAP -- the Phase 5 mobile runtime sits BELOW it (iOS Apple-family-1/2
+// caps at 8192, and some Android devices report 8192 or 4096), and neither this RHI nor SDL_GPU
+// exposes a per-device limit query today. Closing that needs a real capability query, not a bigger
+// constant; until then a mobile over-limit request still aborts.
+inline constexpr std::uint32_t MAX_TEXTURE_DIMENSION_2D = 16384;
+
 // --- POD value types ----------------------------------------------------------------------------
 
 // A size in PIXELS (texel space). The swapchain's Extent2D comes from acquisition and is the

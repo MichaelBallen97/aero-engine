@@ -13,6 +13,7 @@
 #include "inspector_panel.hpp"
 #include "placeholder_panel.hpp"
 #include "shell_ui.hpp"
+#include "viewport_panel.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -54,9 +55,9 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     app.applyDefaultLayout = app.layer.wantsDefaultLayout();
 
     if (config.registerDefaultPanels) {
-        app.registry.emplace<HierarchyPanel>();  // task 2.2.1 -- was a PlaceholderPanel
-        app.registry.emplace<InspectorPanel>();  // task 2.2.2 -- was a PlaceholderPanel
-        app.registry.emplace<PlaceholderPanel>("Viewport", DockSlot::Center, "Viewport — placeholder (task 2.2.3)");
+        app.registry.emplace<HierarchyPanel>();                           // task 2.2.1 -- was a PlaceholderPanel
+        app.registry.emplace<InspectorPanel>();                           // task 2.2.2 -- was a PlaceholderPanel
+        app.viewportPanel = app.registry.emplace<ViewportPanel>(device);  // task 2.2.3 -- was a PlaceholderPanel
         app.registry.emplace<PlaceholderPanel>("Console", DockSlot::Bottom, "Console — placeholder (task 2.2.5)");
         app.registry.emplace<PlaceholderPanel>("Assets", DockSlot::Bottom, "Assets — placeholder (task 2.2.4)");
     }
@@ -108,6 +109,13 @@ bool EditorApp::tick() {
     drawShellUi(registry, panelContext, ui);                // menu bar -> dockspace -> panels
     applyDefaultLayout = ui.applyDefaultLayout;             // drawShellUi clears it once consumed, and re-sets
                                                             // it for View > Reset Layout
+    // D3: the offscreen scene pass runs AFTER the draw walk (only it knows this frame's panel size,
+    // which is what removes the one-frame resize lag) and BEFORE endFrame (ImGui's command buffer is
+    // acquired and submitted there; ours must be submitted first -- F8's ordering guarantee, and F7
+    // leaves the colour texture sampler-readable the instant our pass ends). NOT an ImGui call.
+    if (viewportPanel != nullptr) {
+        viewportPanel->renderScene(sceneWorld);
+    }
     presented = layer.endFrame(config.clearColor);
     if (ui.quitRequested) {
         running = false;  // File>Exit / Ctrl+Q: this frame still completed, so Render stays balanced
