@@ -307,3 +307,106 @@ TEST_CASE("editor: the Viewport panel drives resize, hide/show and no-camera wit
     CHECK(app->tick() == false);
     app.reset();
 }
+
+TEST_CASE("editor: the Asset browser panel draws a real directory tree without unbalancing ImGui (task 2.2.4)") {
+    // Honest limit: this proves NO CRASH, NO ABORT, NO LEAK, and that frames present. It does NOT
+    // prove the listing is CORRECT, that navigation works, or that the tree expands -- no ImGui
+    // input can be synthesised here. The expand/collapse/navigate half is proven at tier-0 by
+    // project_files_test.cpp's buildVisibleTree cases (no ImGui at all) plus editor/VALIDATION.md's
+    // human pass -- exactly as 2.2.1 recorded for walkForest.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assets smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    // projectRoot = "" -> resolveProjectRoot falls back to the process working directory, which for
+    // ctest is the build tree: a real, non-empty directory with real subdirectories and real files.
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .projectRoot = ""});
+    REQUIRE(app.has_value());
+    CHECK(app->panels().count() == 5);
+
+    // LOAD-BEARING (plan C5): "Assets" shares DockSlot::Bottom with "Console", and Console registers
+    // FIRST, so Console is the selected tab and the Assets window is never drawn -- onDraw would
+    // never run and this whole test would prove nothing. Hiding Console leaves Assets alone in that
+    // node, so it becomes the selected tab.
+    app->panels().setVisible("Console", false);
+
+    // 1. Three plain ticks. An unbalanced EndChild, a wrongly-called EndTable or a leaked PushID is
+    // an IM_ASSERT ABORT in the Debug ImGui build, so a green run IS the assertion (AC-11).
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // 2. Hide / re-show. Re-showing makes IsWindowAppearing() true, which drops the cache and forces
+    // a full rescan on that frame (F15/AC-4) -- the D9 refresh path, exercised for real.
+    app->panels().setVisible("Assets", false);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    app->panels().setVisible("Assets", true);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // 3. Shrink the window until the panes have almost no content area (E13/AC-11): BeginChild may
+    // return false and BeginTable may return false. Both asymmetric rules are exercised here, and
+    // this is the only arm on which sabotages S9/S10 have a chance to bite.
+    window->setSize(200, 120);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    window->setSize(480, 300);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // 4. Teardown clean, no leak WARN (LSan on the Linux Debug lane is the mechanism).
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Asset browser draws its error state for an unusable root (task 2.2.4, E1)") {
+    // Proves the D17 degradation path is DRAWN, not merely returned: a missing root must still open,
+    // dock and quit cleanly. A relative literal is used deliberately -- it keeps <filesystem> out of
+    // this GPU TU, and no such directory exists under the ctest working directory (the build tree).
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assets missing-root", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .seedDefaultScene = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectRoot = "aero-nonexistent-root-2.2.4"});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // plan C5, as above
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
