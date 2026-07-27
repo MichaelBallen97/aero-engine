@@ -131,9 +131,10 @@ TEST_CASE("console: sanitizeLogMessage truncates on a UTF-8 boundary") {
     CHECK(truncated.ends_with(TRUNCATION_MARKER));
 
     // A 3-byte UTF-8 sequence (the euro sign) straddling the cap must be dropped WHOLE.
-    const std::string straddling = std::string(MAX_LOG_MESSAGE_BYTES - 1, 'x') + "\xE2\x82\xAC";
+    const std::string capMinusOne(MAX_LOG_MESSAGE_BYTES - 1, 'x');
+    const std::string straddling = capMinusOne + "\xE2\x82\xAC";
     const std::string straddlingResult = sanitizeLogMessage(straddling);
-    const std::string expectedStraddling = std::string(MAX_LOG_MESSAGE_BYTES - 1, 'x') + std::string(TRUNCATION_MARKER);
+    const std::string expectedStraddling = capMinusOne + std::string(TRUNCATION_MARKER);
     CHECK(straddlingResult == expectedStraddling);
 
     // Malformed input: three continuation-looking bytes straddle the cap (at indices MAX-2, MAX-1 and
