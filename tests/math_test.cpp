@@ -18,6 +18,8 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
+#include <cmath>
 #include <limits>
 #include <type_traits>
 
@@ -429,6 +431,78 @@ TEST_CASE("math: slerp endpoints and degenerate cases") {
     const Quat negB{-b.x, -b.y, -b.z, -b.w};
     const Vec3 v = Vec3::unitX();
     CHECK(approxEquals(lerp(a, negB, 0.5f) * v, lerp(a, b, 0.5f) * v));
+}
+
+TEST_CASE("math: eulerAngles / fromEulerAngles round-trip (task 2.2.2, AC-6)") {
+    // C3: the Y (yaw) component comes from asin() and loses precision near the poles. A pure 90°
+    // rotation about Y round-trips as ~89.98022°, ~34x EPSILON. X and Z go through atan2 and stay
+    // exact. This tolerance is NOT a test weakness — it is the documented float-conditioning fact
+    // from the plan's own probe, and asserting X/Z at EPSILON while Y needs a looser bound is the
+    // correct, asymmetric expectation (do not "fix" this into a single shared tolerance).
+    constexpr float POLE_TOLERANCE = 1e-3f;
+    const float half = HALF_PI;
+
+    SUBCASE("identity <-> zeros") {
+        CHECK(approxEquals(eulerAngles(Quat::identity()), Vec3::zero()));
+        CHECK(approxEquals(fromEulerAngles(Vec3::zero()), Quat::identity()));
+    }
+
+    SUBCASE("single axis matches fromAxisAngle") {
+        CHECK(approxEquals(fromEulerAngles(Vec3{half, 0.0f, 0.0f}), fromAxisAngle(Vec3::unitX(), half)));
+        CHECK(approxEquals(fromEulerAngles(Vec3{0.0f, half, 0.0f}), fromAxisAngle(Vec3::unitY(), half)));
+        CHECK(approxEquals(fromEulerAngles(Vec3{0.0f, 0.0f, half}), fromAxisAngle(Vec3::unitZ(), half)));
+    }
+
+    SUBCASE("X and Z recover EXACTLY at 90 degrees; Y does not -- and that is not a bug (C3)") {
+        CHECK(approxEquals(eulerAngles(fromAxisAngle(Vec3::unitX(), half)), Vec3{half, 0.0f, 0.0f}));
+        CHECK(approxEquals(eulerAngles(fromAxisAngle(Vec3::unitX(), -half)), Vec3{-half, 0.0f, 0.0f}));
+        CHECK(approxEquals(eulerAngles(fromAxisAngle(Vec3::unitZ(), half)), Vec3{0.0f, 0.0f, half}));
+        CHECK(approxEquals(eulerAngles(fromAxisAngle(Vec3::unitZ(), -half)), Vec3{0.0f, 0.0f, -half}));
+
+        // Y +/-90: only a LOOSE tolerance recovers it, and the recovered magnitude always
+        // UNDER-shoots (asin's argument is clamped to +/-1 in float before it ever reaches +/-pi/2).
+        const Vec3 yPlus = eulerAngles(fromAxisAngle(Vec3::unitY(), half));
+        const Vec3 yMinus = eulerAngles(fromAxisAngle(Vec3::unitY(), -half));
+        CHECK(approxEquals(yPlus, Vec3{0.0f, half, 0.0f}, POLE_TOLERANCE));
+        CHECK(approxEquals(yMinus, Vec3{0.0f, -half, 0.0f}, POLE_TOLERANCE));
+        CHECK(yPlus.y < half);
+        CHECK(yMinus.y > -half);
+
+        // A non-pole angle recovers at the ordinary EPSILON.
+        CHECK(
+            approxEquals(eulerAngles(fromAxisAngle(Vec3::unitY(), radians(45.0f))), Vec3{0.0f, radians(45.0f), 0.0f}));
+    }
+
+    SUBCASE("quat -> euler -> quat preserves the ROTATION, not necessarily the triplet") {
+        // At the Y pole the reconstructed quaternion's y/w components drift ~1.22e-4 from the
+        // original (measured directly: fromAxisAngle(unitY, HALF_PI) round-trips to a quaternion
+        // differing by 1.2207e-4 in y and w) -- larger than both EPSILON (1e-5) and MATRIX_EPSILON
+        // (1e-4). The dot-product check is the primary, always-tight invariant
+        // (|dot| >= 1 - 1e-5 in every sample, measured); this looser bound on approxEquals is a
+        // secondary, redundant confirmation and must stay loose enough to admit the pole samples.
+        constexpr float ROUNDTRIP_EPSILON = 2e-4f;
+        const std::array<Quat, 8> samples{{
+            Quat::identity(),
+            fromAxisAngle(normalize(Vec3{1.0f, 2.0f, 3.0f}), radians(30.0f)),
+            fromAxisAngle(Vec3::unitY(), radians(179.0f)),
+            fromAxisAngle(Vec3::unitY(), half),
+            fromAxisAngle(Vec3::unitY(), -half),
+            fromAxisAngle(Vec3::unitY(), radians(89.9f)),
+            fromAxisAngle(normalize(Vec3{-2.0f, 1.0f, 0.5f}), radians(120.0f)),
+            normalize(Quat{0.1f, 0.2f, 0.3f, 0.9f}),
+        }};
+        for (const Quat& q : samples) {
+            const Quat back = fromEulerAngles(eulerAngles(q));
+            CHECK(std::abs(dot(q, back)) >= 1.0f - 1e-5f);
+            CHECK(approxEquals(q, back, ROUNDTRIP_EPSILON));  // handles the double cover (E8)
+        }
+    }
+
+    SUBCASE("degrees(radians(x)) == x") {
+        for (const float x : {0.0f, 1.0f, 45.0f, 90.0f, 179.0f, -90.0f, 360.0f}) {
+            CHECK(degrees(radians(x)) == doctest::Approx(x).epsilon(1e-3));
+        }
+    }
 }
 
 TEST_CASE("math: compose -> decompose -> compose round-trip (AC-5, the deliverable's own words)") {

@@ -8,7 +8,9 @@
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
 
+#include "editor_reflection.hpp"
 #include "hierarchy_panel.hpp"
+#include "inspector_panel.hpp"
 #include "placeholder_panel.hpp"
 #include "shell_ui.hpp"
 
@@ -40,6 +42,7 @@ EditorApp::EditorApp(ImGuiLayer layer, platform::Context& ctx, const EditorAppCo
 
 std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window& window, platform::Context& ctx,
                                            const EditorAppConfig& config) {
+    registerEditorReflection();  // task 2.2.2 -- unconditional, once-per-process, before ImGuiLayer
     std::optional<ImGuiLayer> layer = ImGuiLayer::create(device, window, ctx, config.persistLayout);
     if (!layer) {
         return std::nullopt;  // ImGuiLayer already logged the reason
@@ -52,7 +55,7 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
 
     if (config.registerDefaultPanels) {
         app.registry.emplace<HierarchyPanel>();  // task 2.2.1 -- was a PlaceholderPanel
-        app.registry.emplace<PlaceholderPanel>("Inspector", DockSlot::Right, "Inspector — placeholder (task 2.2.2)");
+        app.registry.emplace<InspectorPanel>();  // task 2.2.2 -- was a PlaceholderPanel
         app.registry.emplace<PlaceholderPanel>("Viewport", DockSlot::Center, "Viewport — placeholder (task 2.2.3)");
         app.registry.emplace<PlaceholderPanel>("Console", DockSlot::Bottom, "Console — placeholder (task 2.2.5)");
         app.registry.emplace<PlaceholderPanel>("Assets", DockSlot::Bottom, "Assets — placeholder (task 2.2.4)");

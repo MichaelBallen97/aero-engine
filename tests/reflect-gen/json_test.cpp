@@ -17,6 +17,7 @@
 #include "component_limits.hpp"
 #include "component_multi.hpp"
 #include "component_tag.hpp"
+#include "component_text.hpp"
 #include "component_wiring.hpp"
 
 #include <doctest/doctest.h>
@@ -40,7 +41,8 @@ void aeroWriteJson(engine::JsonWriter&, const Tag&);
 void aeroWriteJson(engine::JsonWriter&, const Player&);
 namespace engine::demo {
 void aeroWriteJson(engine::JsonWriter&, const Light&);
-}
+void aeroWriteJson(engine::JsonWriter&, const Labelled&);  // task 2.2.2
+}  // namespace engine::demo
 namespace engine {
 void aeroWriteJson(engine::JsonWriter&, const Transform&);
 void aeroWriteJson(engine::JsonWriter&, const Camera&);            // 1.3.3
@@ -55,7 +57,8 @@ bool aeroReadJson(const engine::JsonValue&, Tag&);
 bool aeroReadJson(const engine::JsonValue&, Player&);
 namespace engine::demo {
 bool aeroReadJson(const engine::JsonValue&, Light&);
-}
+bool aeroReadJson(const engine::JsonValue&, Labelled&);  // task 2.2.2
+}  // namespace engine::demo
 namespace engine {
 bool aeroReadJson(const engine::JsonValue&, Transform&);
 bool aeroReadJson(const engine::JsonValue&, Camera&);            // 1.3.3
@@ -749,6 +752,38 @@ TEST_CASE("read leaves + readField: null->NaN, strictness, range checks, Vec3/Qu
     }
 }
 
+TEST_CASE("serialize: std::string leaves (task 2.2.2, AC-3)") {
+    SUBCASE("write -> parse -> read round-trip") {
+        const std::vector<std::string> samples{
+            "", "plain", "quote\" back\\slash", "tab\tnewline\n", "ctrl\x01\x1f", "caf\xc3\xa9 utf-8"};
+        for (const std::string& s : samples) {
+            engine::JsonWriter w;
+            engine::reflect::writeJson(w, s);
+            const engine::JsonParseResult parsed = engine::parseJson(w.str());
+            REQUIRE(parsed.ok());
+            std::string out = "untouched";
+            CHECK(engine::reflect::readJson(*parsed.value, out));
+            CHECK(out == s);
+        }
+    }
+    SUBCASE("read rejects non-string kinds and leaves out untouched") {
+        for (const std::string_view text : {"null", "1", "true", "[]", "{}"}) {
+            const engine::JsonParseResult parsed = engine::parseJson(text);
+            REQUIRE(parsed.ok());
+            std::string out = "sentinel";
+            CHECK_FALSE(engine::reflect::readJson(*parsed.value, out));
+            CHECK(out == "sentinel");
+        }
+    }
+    SUBCASE("readField on a missing key returns true and leaves the default") {
+        const engine::JsonParseResult r = engine::parseJson("{}");
+        REQUIRE(r.ok());
+        std::string s = "default";
+        CHECK(engine::reflect::readField(*r.value, "T", "label", s));
+        CHECK(s == "default");
+    }
+}
+
 namespace {
 
 // The D13 round-trip helper: T -> aeroWriteJson -> text -> parseJson -> aeroReadJson -> T2, THEN
@@ -1106,4 +1141,50 @@ TEST_CASE("round-trip: engine::Camera / DirectionalLight / PointLight (task 1.3.
         REQUIRE(roundTrip(original, restored));
         CHECK(restored == original);
     }
+}
+
+TEST_CASE("round-trip: engine::demo::Labelled -- the std::string category, generated (task 2.2.2, AC-3)") {
+    engine::demo::Labelled original{};
+    original.label = R"(hello "world"\)";
+    original.notes = "line one\nline two";
+    original.weight = 12.5F;
+    original.slot = 3;
+    original.tint = {0.1F, 0.2F, 0.3F};
+
+    engine::JsonWriter w1;
+    aeroWriteJson(w1, original);
+    const std::string text = w1.str();
+    // The raw literal is hoisted OUT of the CHECK macro deliberately: MSVC's legacy preprocessor
+    // does not honour raw-string semantics inside a macro argument, so the `\"` sequences below
+    // tokenise as escaped quotes and `world` becomes an invalid literal suffix (C2017/C3688/C2661).
+    // Other raw literals in this file survive inside macros because none of them contains `\"`.
+    const std::string expectedLabel = R"("label": "hello \"world\"\\")";
+    CHECK(text.find(expectedLabel) != std::string::npos);
+
+    const engine::JsonParseResult parsed = engine::parseJson(text);
+    REQUIRE(parsed.ok());
+    engine::demo::Labelled restored{};
+    REQUIRE(aeroReadJson(*parsed.value, restored));
+    CHECK(restored.label == original.label);
+    CHECK(restored.notes == original.notes);
+    CHECK(bitEqual(restored.weight, original.weight));
+    CHECK(restored.slot == original.slot);
+    CHECK(bitEqual(restored.tint.x, original.tint.x));
+
+    // Re-serializing the read-back value reproduces the SAME bytes (the D13 fixpoint rule).
+    engine::JsonWriter w2;
+    aeroWriteJson(w2, restored);
+    CHECK(w2.str() == text);
+}
+
+TEST_CASE(
+    "round-trip: a null std::string field is rejected, and every OTHER field still applies "
+    "(task 2.2.2, E8)") {
+    const engine::JsonParseResult parsed = engine::parseJson(R"({"label": null, "slot": 3})");
+    REQUIRE(parsed.ok());
+    engine::demo::Labelled value{};
+    value.label = "sentinel";
+    CHECK_FALSE(aeroReadJson(*parsed.value, value));  // false: label failed
+    CHECK(value.label == "sentinel");                 // untouched -- no NaN analog for a string (D3)
+    CHECK(value.slot == 3);                           // best-effort: every OTHER field still applied
 }

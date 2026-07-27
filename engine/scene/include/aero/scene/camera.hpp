@@ -5,7 +5,9 @@
 //
 // REFLECTION: every field is float (the reflectable subset), so all three consumers serialize with
 // ZERO skips/warnings — pinned by reflect-gen.components_engine_camera and by the generated
-// meta/JSON artifacts compiled into aero_reflect_meta_test / aero_reflect_json_test.
+// meta/JSON artifacts compiled into aero_reflect_meta_test / aero_reflect_json_test. fovYRadians
+// (task 2.2.2) carries an AERO_RANGE the inspector uses to clamp and slide it; nearPlane/farPlane
+// carry none (D19 — see the field comment below).
 //
 // The projection is RIGHT-HANDED, -Z forward, Y-up, clip Z in [0,1], fovY in RADIANS (ADR-005 /
 // math/transform.hpp). Do NOT Y-flip for Vulkan — SDL_GPU converts behind the scenes.
@@ -28,8 +30,12 @@ class World;
 //
 // nearPlane/farPlane, NOT near/far: <windows.h> #defines near/far as empty macros (D8).
 struct AERO_COMPONENT Camera {
-    float fovYRadians = radians(60.0f);  // vertical field of view, RADIANS (ADR-005 D6)
-    float nearPlane = 0.1f;              // > 0; must be < farPlane (not validated — D11)
+    // Bounds in RADIANS (~1deg..179deg), chosen so the projection never degenerates (fov in
+    // (0, pi)). D17: no unit conversion -- the UI edits radians here (task 2.2.2).
+    float fovYRadians AERO_RANGE(0.0175f, 3.1241f) = radians(60.0f);  // vertical fov, RADIANS (ADR-005 D6)
+    // nearPlane/farPlane get NO range: "min > 0" cannot be expressed by a two-sided bound, and
+    // inventing an upper limit would be false UI (D19). A one-sided grammar is future scope.
+    float nearPlane = 0.1f;  // > 0; must be < farPlane (not validated — D11)
     float farPlane = 100.0f;
 
     bool operator==(const Camera&) const = default;  // EXACT (Transform's E11 rationale)

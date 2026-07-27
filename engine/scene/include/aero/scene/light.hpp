@@ -10,7 +10,9 @@
 // out of the subset, and HDR wants intensity un-clamped anyway.
 //
 // REFLECTION: Vec3 + float(s), all in the subset — zero skips/warnings, pinned by
-// reflect-gen.components_engine_light and the generated meta/JSON artifacts.
+// reflect-gen.components_engine_light and the generated meta/JSON artifacts. Both `color` fields
+// carry an AERO_COLOR (task 2.2.2) so the inspector renders a colour picker; `intensity`/`range`
+// carry no range — honestly unbounded (HDR) or lacking a defensible bound (D19).
 
 #include <aero/core/math.hpp>            // Vec3
 #include <aero/reflect/annotations.hpp>  // AERO_COMPONENT
@@ -22,7 +24,7 @@ namespace engine {
 // An infinitely-distant light with parallel rays (the sun). Direction = the entity's -Z world axis
 // (task 1.4.1). No position, no range — it is everywhere.
 struct AERO_COMPONENT DirectionalLight {
-    Vec3 color = Vec3::one();  // linear RGB; may exceed 1 (HDR); not clamped (plain data)
+    Vec3 color AERO_COLOR = Vec3::one();  // linear RGB; may exceed 1 (HDR); not clamped (plain data)
     float intensity = 1.0f;
 
     bool operator==(const DirectionalLight&) const = default;
@@ -36,7 +38,7 @@ static_assert(sizeof(DirectionalLight) == 4 * sizeof(float));  // 12 + 4, no pad
 // A point light radiating from the entity's world position (task 1.4.1) out to `range`. The
 // falloff curve is the renderer's business (1.4.1); this component carries only the cutoff radius.
 struct AERO_COMPONENT PointLight {
-    Vec3 color = Vec3::one();  // linear RGB (see above)
+    Vec3 color AERO_COLOR = Vec3::one();  // linear RGB (see above)
     float intensity = 1.0f;
     float range = 10.0f;  // world-unit cutoff radius; > 0 by convention (not validated)
 

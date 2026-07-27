@@ -290,7 +290,11 @@ if(AERO_REFLECT_TOOLS)
         components_engine_transform   # task 1.3.2 — the REAL tool over the REAL engine header
         components_engine_camera      # task 1.3.3
         components_engine_light       # task 1.3.3
-        components_engine_mesh_renderer)  # task 1.4.1
+        components_engine_mesh_renderer   # task 1.4.1
+        # task 2.2.2: field annotations (AERO_RANGE/AERO_COLOR) and the std::string category
+        annotations_components annotations_meta annotations_malformed annotations_nonfinite
+        annotations_misapplied annotations_unknown annotations_determinism
+        string_components string_meta string_json)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -350,6 +354,7 @@ if(AERO_REFLECT_TOOLS)
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp     # 1.3.3
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp      # 1.3.3
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp  # 1.4.1
+                reflect-gen/fixtures/component_text.hpp     # task 2.2.2 -- the std::string category
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2
@@ -366,6 +371,23 @@ if(AERO_REFLECT_TOOLS)
     target_compile_definitions(aero_scene_serialize_test PRIVATE
         AERO_PHASE1_SCENE_DIR="${CMAKE_SOURCE_DIR}/samples/phase-1-scene")  # locates the committed file (test 9)
     add_test(NAME aero_scene_serialize_test COMMAND aero_scene_serialize_test)
+
+    # --- task 2.2.2: the inspector's tier-0 battery + the zero-per-component-code proof (D18) ---
+    # GATED: unlike aero_editor_shell_test, this target compiles GENERATED meta for its own fixture.
+    # aero::scene_internal is here for the SAME reason aero_tests and aero_editor_shell_test link it:
+    # the fixture is registered through engine::scene::internal::registerComponent<T>. Tier-0: no GPU,
+    # no window, no ImGui context, no AERO_REQUIRE_GPU, no vulkan_stack_pin.cpp, no ${CMAKE_DL_LIBS}.
+    add_executable(aero_editor_inspector_test editor/inspector_test.cpp)
+    target_link_libraries(aero_editor_inspector_test PRIVATE
+        doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core)
+    target_include_directories(aero_editor_inspector_test PRIVATE editor/fixtures)
+    aero_reflect_generate(aero_editor_inspector_test
+        HEADERS editor/fixtures/inspector_probe.hpp
+                editor/fixtures/inspector_tag.hpp  # review finding 6 -- the zero-field tag proof
+        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
+                     "${CMAKE_SOURCE_DIR}/engine/scene/include"
+                     "${CMAKE_SOURCE_DIR}/engine/reflect/include")
+    add_test(NAME aero_editor_inspector_test COMMAND aero_editor_inspector_test)
 endif()
 
 # ---------------------------------------------------------------------------------------------

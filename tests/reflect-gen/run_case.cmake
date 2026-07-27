@@ -32,6 +32,8 @@ set(TRANSFORM_HPP "${SCENE_INCLUDE}/aero/scene/transform.hpp")  # task 1.3.2
 set(CAMERA_HPP "${SCENE_INCLUDE}/aero/scene/camera.hpp")  # task 1.3.3
 set(LIGHT_HPP "${SCENE_INCLUDE}/aero/scene/light.hpp")    # task 1.3.3
 set(MESH_RENDERER_HPP "${SCENE_INCLUDE}/aero/scene/mesh_renderer.hpp")  # task 1.4.1
+set(ANNOTATIONS_HPP "${FIXTURES_DIR}/component_annotations.hpp")  # task 2.2.2
+set(TEXT_HPP "${FIXTURES_DIR}/component_text.hpp")                # task 2.2.2
 
 # Runs aero_reflect_gen once. Spec D8/C.6: ASAN_OPTIONS scoped to this one process --
 # detect_leaks=0 only (libclang leaks by design at process exit: global initializers, the CXIndex
@@ -818,7 +820,7 @@ elseif(CASE STREQUAL "components_engine_camera")
         OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
     aero_expect_exit_or_dump("${result}" 0 "${err}")
     aero_expect_stdout_contains("${out}" "component engine::Camera")
-    aero_expect_stdout_contains("${out}" "field fovYRadians : float [primitive]")
+    aero_expect_stdout_contains("${out}" "field fovYRadians : float [primitive] [range 0.0175:3.1241]")  # task 2.2.2
     aero_expect_stdout_contains("${out}" "field nearPlane : float [primitive]")
     aero_expect_stdout_contains("${out}" "field farPlane : float [primitive]")
 
@@ -864,7 +866,7 @@ elseif(CASE STREQUAL "components_engine_light")
     aero_expect_exit_or_dump("${result}" 0 "${err}")
     aero_expect_stdout_contains("${out}" "component engine::DirectionalLight")
     aero_expect_stdout_contains("${out}" "component engine::PointLight")
-    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3]")
+    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3] [color]")  # task 2.2.2, both lights
     aero_expect_stdout_contains("${out}" "field intensity : float [primitive]")
     aero_expect_stdout_contains("${out}" "field range : float [primitive]")
 
@@ -915,8 +917,8 @@ elseif(CASE STREQUAL "components_engine_mesh_renderer")
         OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
     aero_expect_exit_or_dump("${result}" 0 "${err}")
     aero_expect_stdout_contains("${out}" "component engine::MeshRenderer")
-    aero_expect_stdout_contains("${out}" "field primitive : std::uint32_t [primitive]")
-    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3]")
+    aero_expect_stdout_contains("${out}" "field primitive : std::uint32_t [primitive] [range 0:2]")  # task 2.2.2
+    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3] [color]")  # task 2.2.2
 
     # declaration order: primitive -> color
     string(FIND "${out}" "field primitive" _p)
@@ -946,6 +948,141 @@ elseif(CASE STREQUAL "components_engine_mesh_renderer")
     string(FIND "${err}" "error:" _idx_err)
     if(NOT _idx_err EQUAL -1)
         message(FATAL_ERROR "case 'components_engine_mesh_renderer': error-severity diagnostic:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "annotations_components")
+    # task 2.2.2 (D22): every field-annotation path, in one process-boundary-only fixture (deliberately
+    # on no HEADERS list -- its misapplied annotations exist to produce warnings, not to compile).
+    aero_run_tool(ARGS --components "${ANNOTATIONS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "field speed : float [primitive] [range 0.0:10.0]")
+    aero_expect_stdout_contains("${out}" "field level : std::uint32_t [primitive] [range 0:2]")
+    aero_expect_stdout_contains("${out}" "field tint : engine::Vec3 [vec3] [color]")
+    # The negative-into-unsigned case (review finding 1): a syntactically valid negative bound on an
+    # UNSIGNED destination is ACCEPTED, never rejected by the tool's own parse.
+    aero_expect_stdout_contains("${out}" "field negativeUnsigned : std::uint32_t [primitive] [range -1:5]")
+    # the dropped fields print with NO tag suffix -- the trailing \n proves no suffix followed
+    aero_expect_stdout_contains("${out}" "field badRange : float [primitive]\n")
+    aero_expect_stdout_contains("${out}" "field rangedVec : engine::Vec3 [vec3]\n")
+    aero_expect_stdout_contains("${out}" "field coloredFloat : float [primitive]\n")
+
+elseif(CASE STREQUAL "annotations_meta")
+    aero_run_tool(ARGS --emit-meta "${ANNOTATIONS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "#include <aero/reflect/annotations.hpp>")
+    aero_expect_stdout_contains("${out}" ".data<&Annotated::speed>(\"speed\"_hs, \"speed\")")
+    aero_expect_stdout_contains("${out}"
+        ".custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = true, .rangeMin = 0.0, .rangeMax = 10.0, .color = false})")
+    aero_expect_stdout_contains("${out}"
+        ".data<&Annotated::tint>(\"tint\"_hs, \"tint\")\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = false, .rangeMin = 0.0, .rangeMax = 0.0, .color = true})")
+    # The negative-into-unsigned case (review finding 1): -1 is a syntactically valid literal, so
+    # negativeUnsigned gets a REAL custom, verbatim (never re-formatted) -- the runtime seam's
+    # clampRangeUint64, not the tool's parse, is what makes sense of a negative min at read time.
+    aero_expect_stdout_contains("${out}"
+        ".data<&Annotated::negativeUnsigned>(\"negativeUnsigned\"_hs, \"negativeUnsigned\")\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = true, .rangeMin = -1, .rangeMax = 5, .color = false})")
+    # NO .custom mentions the nine dropped/foreign fields -- proven by these nine .data<> lines
+    # running CONSECUTIVELY with nothing (i.e. no .custom<>) inserted between any of them.
+    aero_expect_stdout_contains("${out}"
+        ".data<&Annotated::badRange>(\"badRange\"_hs, \"badRange\")\n        .data<&Annotated::inverted>(\"inverted\"_hs, \"inverted\")\n        .data<&Annotated::nonFiniteHigh>(\"nonFiniteHigh\"_hs, \"nonFiniteHigh\")\n        .data<&Annotated::nonFiniteLow>(\"nonFiniteLow\"_hs, \"nonFiniteLow\")\n        .data<&Annotated::outOfRange>(\"outOfRange\"_hs, \"outOfRange\")\n        .data<&Annotated::rangedVec>(\"rangedVec\"_hs, \"rangedVec\")\n        .data<&Annotated::rangedBool>(\"rangedBool\"_hs, \"rangedBool\")\n        .data<&Annotated::coloredFloat>(\"coloredFloat\"_hs, \"coloredFloat\")\n        .data<&Annotated::typo>(\"typo\"_hs, \"typo\")\n        .data<&Annotated::foreign>(\"foreign\"_hs, \"foreign\");")
+
+elseif(CASE STREQUAL "annotations_malformed")
+    aero_run_tool(ARGS --components "${ANNOTATIONS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stderr_contains("${err}" "Annotated.badRange")
+    aero_expect_stderr_contains("${err}" "range bounds must be numeric literals")
+    aero_expect_stderr_contains("${err}" "Annotated.inverted")
+    aero_expect_stderr_contains("${err}" "range min is greater than max")
+
+elseif(CASE STREQUAL "annotations_nonfinite")
+    # Review finding 1: strtod alone accepted "inf"/"infinity"/"nan" and silently overflowed an
+    # out-of-range literal. All three must warn + drop + exit 0, exactly like badRange/inverted --
+    # never emitted verbatim into generated code (proven by annotations_meta's consecutive-.data check).
+    aero_run_tool(ARGS --components "${ANNOTATIONS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stderr_contains("${err}" "Annotated.nonFiniteHigh")
+    aero_expect_stderr_contains("${err}" "Annotated.nonFiniteLow")
+    aero_expect_stderr_contains("${err}" "Annotated.outOfRange")
+    aero_expect_stdout_contains("${out}" "field nonFiniteHigh : float [primitive]\n")
+    aero_expect_stdout_contains("${out}" "field nonFiniteLow : float [primitive]\n")
+    aero_expect_stdout_contains("${out}" "field outOfRange : float [primitive]\n")
+
+elseif(CASE STREQUAL "annotations_misapplied")
+    aero_run_tool(ARGS --components "${ANNOTATIONS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stderr_contains("${err}" "Annotated.rangedVec: engine::range applies only to numeric scalar fields")
+    aero_expect_stderr_contains("${err}" "Annotated.rangedBool: engine::range applies only to numeric scalar fields")
+    aero_expect_stderr_contains("${err}" "Annotated.coloredFloat: engine::color applies only to Vec3 fields")
+
+elseif(CASE STREQUAL "annotations_unknown")
+    aero_run_tool(ARGS --components "${ANNOTATIONS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stderr_contains("${err}" "unknown engine:: field annotation 'engine::rnage:0:1'")
+    string(FIND "${err}" "other::thing" _idx_foreign)
+    if(NOT _idx_foreign EQUAL -1)
+        message(FATAL_ERROR "case 'annotations_unknown': a non-engine:: annotation must be ignored "
+                            "SILENTLY (E7), got:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "annotations_determinism")
+    aero_run_tool(ARGS --emit-meta "${ANNOTATIONS_HPP}" -o "${WORK_DIR}/a.cpp"
+        -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" OUT_RESULT r1)
+    aero_expect_exit("${r1}" 0)
+    aero_run_tool(ARGS --emit-meta "${ANNOTATIONS_HPP}" -o "${WORK_DIR}/b.cpp"
+        -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" OUT_RESULT r2)
+    aero_expect_exit("${r2}" 0)
+    file(READ "${WORK_DIR}/a.cpp" _a)
+    file(READ "${WORK_DIR}/b.cpp" _b)
+    if(NOT _a STREQUAL _b)
+        message(FATAL_ERROR "case 'annotations_determinism': two --emit-meta runs produced different bytes")
+    endif()
+
+elseif(CASE STREQUAL "string_components")
+    # task 2.2.2 (C1/O3): the O3 canary -- a host printing a fourth std::string spelling reds here
+    # with the observed line dumped (aero_expect_stdout_contains prints ${out} on mismatch).
+    aero_run_tool(ARGS --components "${TEXT_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "field label : std::string [string]")
+    string(FIND "${out}" "[unsupported]" _idx_unsupported)
+    if(NOT _idx_unsupported EQUAL -1)
+        message(FATAL_ERROR "case 'string_components': std::string must classify [string], not "
+                            "[unsupported], got:\n${out}")
+    endif()
+    string(FIND "${err}" "aero_reflect_gen: warning:" _idx_warn)
+    if(NOT _idx_warn EQUAL -1)
+        message(FATAL_ERROR "case 'string_components': expected a warning-free parse, got:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "string_meta")
+    # AC-4 negative case: an annotation-free component must include NO conditional
+    # <aero/reflect/annotations.hpp> (the sibling of annotations_meta's positive case).
+    aero_run_tool(ARGS --emit-meta "${TEXT_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" ".data<&engine::demo::Labelled::label>(\"label\"_hs, \"label\")")
+    string(FIND "${out}" "aero/reflect/annotations.hpp" _idx_include)
+    if(NOT _idx_include EQUAL -1)
+        message(FATAL_ERROR "case 'string_meta': an annotation-free component must include no "
+                            "annotations.hpp (D6), got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "string_json")
+    aero_run_tool(ARGS --emit-json "${TEXT_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "writer.key(\"label\");  engine::reflect::writeJson(writer, value.label);")
+    aero_expect_stdout_contains("${out}"
+        "ok = engine::reflect::readField(json, \"engine::demo::Labelled\", \"label\", value.label) && ok;")
+    aero_expect_stdout_contains("${out}" "warnUnknownKeys(json, \"engine::demo::Labelled\", {\"label\"")
+    string(FIND "${out}" "// skipped: label" _idx_skip)
+    if(NOT _idx_skip EQUAL -1)
+        message(FATAL_ERROR "case 'string_json': std::string must not be skipped, got:\n${out}")
     endif()
 
 else()

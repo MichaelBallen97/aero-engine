@@ -4,9 +4,11 @@
 #include <aero/reflect/json_writer.hpp>
 
 #include <concepts>  // std::same_as (N1 -- the spec's include list omits this)
+#include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <type_traits>
 
@@ -17,6 +19,11 @@ void writeJson(JsonWriter& w, float v);
 void writeJson(JsonWriter& w, double v);
 void writeJson(JsonWriter& w, const Vec3& v);  // {"x":..,"y":..,"z":..}
 void writeJson(JsonWriter& w, const Quat& v);  // {"x":..,"y":..,"z":..,"w":..}
+// Task 2.2.2 (D3): std::string joins the reflectable subset. Escaped by JsonWriter::value's own
+// rules; non-UTF-8 bytes pass through (the documented 1.2.2 tolerance). Cannot collide with the
+// JsonValue DOM overload -- JsonValue has NO implicit ctor from std::string (static factories only) --
+// nor with the integral template, which excludes non-integral types.
+void writeJson(JsonWriter& w, const std::string& v);
 
 // Every integral type EXCEPT bool -> a JSON number. Widen by signedness so to_chars never sees a character type
 // (portability, F2) and bool never binds here (it has its own exact overload).
@@ -56,6 +63,10 @@ bool readJson(const JsonValue& v, float& out);   // Number -> target-precision p
 bool readJson(const JsonValue& v, double& out);  // Number -> target-precision parse; Null -> quiet NaN
 bool readJson(const JsonValue& v, Vec3& out);    // Object with x,y,z (each via the float rule)
 bool readJson(const JsonValue& v, Quat& out);    // Object with x,y,z,w (each via the float rule)
+// Task 2.2.2 (D3). String has NO NaN analog, so unlike float/double a JSON `null` here is a BAD field:
+// false (readField then warns), never a sentinel. Missing key stays "silently untouched + true" -- that
+// policy lives in readField, not here.
+bool readJson(const JsonValue& v, std::string& out);
 
 // Every integral type EXCEPT bool, the exact mirror of the write-side widening template: parse via
 // asI64/asU64 by signedness, then range-check against std::numeric_limits<T>.

@@ -112,4 +112,28 @@ Mat3 toMat3(Quat q);
 Mat4 toMat4(Quat q);
 Quat toQuat(const Mat3& m);
 
+// ---- Tait-Bryan euler angles (task 2.2.2, for the editor's rotation UI) -----------------------
+// RADIANS, always: degrees are a UI concern -- call degrees()/radians() at the call site (D17).
+// The triplet is (X = pitch, Y = yaw, Z = roll), and composition is
+//     fromEulerAngles({ax, ay, az})  ==  qZ(az) * qY(ay) * qX(ax)
+// i.e. rotate about X first, then Y, then Z (extrinsic; equivalently intrinsic Z-Y'-X''). This is
+// GLM 1.0.3's convention, verified NUMERICALLY against all three candidate orderings rather than
+// assumed -- do not replace the backend with a hand-rolled formula without re-checking it.
+//
+// fromEulerAngles(eulerAngles(q)) represents the SAME ROTATION as q -- possibly as the negated
+// quaternion (E8's double cover). It is NOT componentwise-equal, and eulerAngles is not injective:
+// the returned triplet is one valid representative.
+//
+// The YAW (Y) component comes from asin() and is confined to [-pi/2, pi/2]. At the gimbal poles
+// (|yaw| == pi/2) the pitch/roll split is not unique, AND float conditioning of asin near +/-1 costs
+// real precision: a pure 90-degree Y rotation round-trips as 89.98 degrees -- ~3.5e-4 rad, 34x
+// EPSILON. The ROTATION stays exact (|dot| == 1); only the triplet drifts. Anything comparing euler
+// triplets near a pole must use a loose tolerance or compare rotations. X and Z go through atan2 and
+// are exact.
+//
+// fromEulerAngles does NOT normalize: GLM's euler ctor is unit only up to float error (measured
+// length 0.99999994). Normalize at the call site when the result is stored.
+[[nodiscard]] Vec3 eulerAngles(Quat q);
+[[nodiscard]] Quat fromEulerAngles(Vec3 anglesRadians);
+
 }  // namespace engine
