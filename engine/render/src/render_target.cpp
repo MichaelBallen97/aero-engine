@@ -47,6 +47,20 @@ namespace {
     return static_cast<std::uint32_t>(std::clamp<std::uint64_t>(requested, std::uint64_t{1}, maxE));
 }
 
+// The real ceiling shared by every desktop 2D-texture backend this engine targets: Metal's hard max
+// is 16384 (Apple Silicon and Intel alike), D3D12 feature level 11_0+ requires 16384, and Vulkan
+// desktop drivers report maxImageDimension2D >= 16384 in practice. RENDER_TARGET_MAX_EXTENT's default
+// (8192) stays comfortably under it (the header's own comment); this guard bites ONLY a caller who
+// deliberately raises RenderTargetConfig::maxExtent past real hardware (R7 in the plan's risk table —
+// exactly what a not-renderable-path test exercises). WITHOUT this pre-check, an over-ceiling
+// createTexture() does not fail gracefully on Metal: the driver's own texture-descriptor validation
+// calls std::abort() from inside SDL_CreateGPUTexture, before this RHI's "invalid handle" error model
+// can ever run — verified empirically on this device and confirmed unconditional (independent of
+// DeviceDesc::enableDebugLayer and the MTL_DEBUG_LAYER environment variable) against Apple's own
+// developer forums. Checking here is what keeps create()/resize()'s documented "nullopt/false +
+// ERROR, never a crash" contract actually true on every backend.
+constexpr std::uint32_t HARDWARE_SAFE_TEXTURE_DIMENSION = 16384;
+
 }  // namespace
 
 rhi::Extent2D nextTargetExtent(rhi::Extent2D requested, rhi::Extent2D current, std::uint32_t quantum,
@@ -176,6 +190,13 @@ bool RenderTarget::allocate(rhi::Extent2D newAllocExtent) {
         depth = {};
     }
     allocExtent = {};
+
+    if (newAllocExtent.width > HARDWARE_SAFE_TEXTURE_DIMENSION ||
+        newAllocExtent.height > HARDWARE_SAFE_TEXTURE_DIMENSION) {
+        AERO_LOG_ERROR("render::RenderTarget::allocate — {}x{} exceeds the real hardware ceiling ({})",
+                       newAllocExtent.width, newAllocExtent.height, HARDWARE_SAFE_TEXTURE_DIMENSION);
+        return false;
+    }
 
     color = device->createTexture({.format = cfg.colorFormat,
                                    .usage = rhi::TextureUsage::Sampler | rhi::TextureUsage::ColorTarget,
