@@ -35,6 +35,9 @@ class Window;  // forward-declared: named only as a create() by-reference parame
 
 namespace engine::render {
 
+class RenderTarget;  // task 2.2.3 -- the OFFSCREEN maker of Frames (render_target.hpp); see the
+                     // friend declaration below for why this header stays otherwise frozen.
+
 // How to create a Renderer. presentMode is baked into the swapchain at create(): a mode the platform
 // cannot honor makes create() FAIL (nullopt), never a silent downgrade (rhi swapchain contract).
 struct RendererConfig {
@@ -67,7 +70,13 @@ public:
     [[nodiscard]] rhi::CommandBufferHandle commandBuffer() const noexcept;
 
 private:
-    friend class Renderer;  // the only maker of Frames; reads these members in endFrame()
+    friend class Renderer;      // the only maker of Frames; reads these members in endFrame()
+    friend class RenderTarget;  // task 2.2.3 -- the OFFSCREEN maker of Frames, same contract, same
+                                // members. This header is otherwise FROZEN (render.hpp:4): D2 chose
+                                // two lines here over growing Frame an "owns the command buffer"
+                                // flag. NEVER befriend a type outside engine::render -- an
+                                // engine::editor name here is the golden rule's exact prohibition
+                                // (spec A4) and check-golden-rule.sh reds on it.
     Frame(rhi::Device* device, rhi::CommandBufferHandle cmd, rhi::RenderPassHandle pass, rhi::Extent2D extent) noexcept;
     void disposeIfLive() noexcept;  // dtor + move-assign share this (C1)
 
