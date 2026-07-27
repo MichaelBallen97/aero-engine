@@ -1,0 +1,74 @@
+---
+paths:
+  - "editor/**"
+  - "tests/editor/**"
+---
+
+# Editor conventions
+
+The editor depends on the engine; **the engine never depends on the editor** (project
+rule #1), enforced by `check-golden-rule.sh` plus `aero_assert_golden_rule()` in
+`cmake/golden_rule.cmake` — an include scan *and* a link-graph walk, because a forward
+declaration or a `target_link_libraries` entry is invisible to any include scan.
+
+## Public editor headers stay ImGui-free and entt-free
+
+Held by **file placement**, not by a guard: every ImGui and EnTT entry point lives in
+`editor/src/`. A probe cannot enforce this (R12 — `aero_editor_shell_test` links
+`doctest`, which puts vcpkg's shared include root on the compile line, so a leaked
+`#include <imgui.h>` in a public header still compiles). Keep new ImGui/entt code in
+`src/`; do not claim guard coverage that does not exist.
+
+`PanelOptions` and friends use **named booleans**, never an `ImGuiWindowFlags`.
+
+## ImGui call balance — asymmetric by API, and an abort if wrong
+
+An unbalanced call is an `IM_ASSERT` **abort** in the Debug build, not a visual glitch.
+
+- `Begin`/`End`, `TreeNodeEx`/`TreePop`, `PushID`/`PopID` are **1:1** — call `End()`
+  regardless of what `Begin()` returned.
+- `BeginMainMenuBar`/`BeginMenu` are the **opposite**: call `End*` only when `Begin*`
+  returned true.
+- `CollapsingHeader` needs no `TreePop` (`NoTreePushOnOpen`).
+
+**The registry calls `Begin`/`End`, never the panel.** A hidden panel `continue`s before
+`Begin`. This makes the unbalanced-`End` class of bug structurally impossible — keep it
+that way.
+
+## Panels
+
+- `PanelRegistry` owns `std::unique_ptr<Panel>`, so a returned `Panel*` is
+  **address-stable** across later `add()` calls. Registration order is draw order is
+  View-menu order.
+- A duplicate `id()` is **rejected** — ImGui silently *merges* two windows sharing a name.
+- **Never mutate the World or the Selection during a draw walk.** Record one pending
+  action and apply it after the walk. Required by both `eachChild`'s contract and
+  ImGui's tree balance.
+- **No recursive functions** — `misc-no-recursion` is `--warnings-as-errors` in CI.
+- The default layout only splits a dock slot at least one registered panel asks for: an
+  empty dock node is not pruned and draws a dead grey rectangle. Node size comes from
+  `GetMainViewport()->WorkSize`, not `->Size` (the menu bar shrinks the work area); the
+  one-frame settle is expected — do not "fix" it with a manual `GetFrameHeight()` offset.
+- Drag-drop payloads: `std::memcpy` into a local, **never a cast** — ImGui's buffer is
+  `alignas(1)` and the Debug lanes run UBSan. Decide drop legality by *peeking* with
+  `GetDragDropPayload()`, so an illegal drop never draws a highlight.
+- Keyboard chords go through `ImGui::Shortcut(..., ImGuiInputFlags_RouteGlobal)`, never
+  `ctx.input()` — the latter has no notion of UI focus, so a focused `InputText` would
+  swallow the chord. `ImGuiMod_Ctrl` maps to Cmd on macOS automatically.
+- `Escape` does **not** quit. Esc is the universal *dismiss* key in an editor.
+- Unimplemented menu items ship `enabled = false` with a tooltip naming the owning task —
+  never a dead handler behind a stub.
+- `<imgui_stdlib.h>` is included **flat**, not under `misc/cpp/` (vcpkg installs it flat).
+
+## Inspector / reflection
+
+The inspector is driven entirely by generated `entt::meta`: a new `[[engine::component]]`
+type must get a working UI with **zero editor changes**. Do not special-case component
+names — walk the registration table. `editor::component_ops` is the seam task 2.4.2 will
+wrap; narrow and clamp in C++ before writing the exact concrete type, never letting EnTT
+convert (it silently wraps `300` into a `uint8_t` as `44`).
+
+Validation is a two-part gate: mechanical/structural (build, ctest, sabotage proofs) and
+a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
+
+Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 entries.
