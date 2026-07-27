@@ -470,7 +470,30 @@ appending ` — PASS` (or FAIL) and what you observed to each line.
 - **Empty selection shows "No entity selected."**
 - **Layout persists**
 
-### macOS — ⏳ pending
+### macOS — ✅ PASS (2026-07-27)
+
+Machine: MacBook Pro (Apple M1 Pro), Metal. Human mouse/keyboard pass against `3c6ef97`.
+
+- **Cube selected — Transform + MeshRenderer listed, tooltip shows full name** — PASS
+- **Transform.position drag + typed entry** — PASS
+- **Transform.rotation drag — no digit jitter while dragging** — PASS
+- **MeshRenderer.color — HDR value > 1 survives** — PASS
+- **MeshRenderer.primitive clamps across its range** — PASS
+- **Add Component lists only absent types; PointLight's defaults appear** — PASS
+- **Remove Component removes cleanly** — PASS
+- **Multi-select shows "(N selected)"** — PASS
+- **Empty selection shows "No entity selected."** — PASS
+- **Layout persists** — PASS
+
+Notes: this pass closes the interactive half of **AC-9** and **AC-10**, plus edge cases **E11**
+(euler pole re-derivation on release, not mid-drag), **E12** and **E19** — none of which has a
+mechanical proof, because each depends on a real drag/click gesture rather than a direct API call.
+
+Two of the checks here are the human half of defects the code review caught by inspection and no
+automated layer could reach: the **rotation-jitter** row exercises the `StringEditCache`/`QuatEditCache`
+reconciliation (review finding 3), and the **Add Component** row exercises the popup's `PushID`
+discipline (review finding 4, which manifests as ImGui's "conflicting ID" overlay rather than a test
+failure). Both behave correctly.
 
 ### Windows — ⏳ pending
 
@@ -480,7 +503,7 @@ Needs a native run (D3D12). No checks recorded yet.
 
 Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
 
-**Task 2.2.2 gate status: OPEN — all three OSes pending a human mouse/keyboard pass.** The mechanical
-half (build, tests, sabotage proofs, non-interactive launch) is green on macOS; no code change is
-expected to be needed once the human passes are recorded (the 0.5.3/1.4.2/2.1.1/2.1.3/2.2.1
-precedent).
+**Task 2.2.2 gate status: macOS PASS; Windows/Linux pending a human mouse/keyboard pass.** The
+mechanical half (build, tests, sabotage proofs, non-interactive launch) is green on all three OSes
+via CI; no code change is expected to be needed once the two remaining human passes are recorded
+(the 0.5.3/1.4.2/2.1.1/2.1.3/2.2.1 precedent).
