@@ -490,6 +490,17 @@ TEST_CASE("editor: the Console panel captures records while HIDDEN (task 2.2.5, 
         engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
     REQUIRE(app.has_value());
 
+    // Warm-up tick, BEFORE the measurement window starts: the Viewport panel initializes LAZILY on
+    // its own first draw (viewport_panel.cpp's ensureInitialized(), called from onDraw()), and under
+    // -DAERO_SHADER_TOOLS=OFF that first draw logs a one-time degradation WARN. Without this tick that
+    // WARN lands inside the very frame used to "settle" Console's visibility below, is queued in the
+    // sink (not yet pumped), and only reaches logRecordCount() on the NEXT pump -- landing squarely
+    // inside this test's own measurement window and reddening the exact-delta assertion on a
+    // tools-OFF configure even though nothing about Console's own behaviour is wrong. One extra tick
+    // here lets any such one-time, panel-order-dependent diagnostic land and get pumped BEFORE
+    // `before` is captured, which is what actually makes the exact-delta assertion sound in every
+    // build configuration, not only the tools-ON one this case happened to be authored against.
+    REQUIRE(app->tick());
     app->panels().setVisible("Console", false);
     REQUIRE(app->tick());  // settle: the panel stops drawing from here on
     const std::size_t before = app->logRecordCount();
