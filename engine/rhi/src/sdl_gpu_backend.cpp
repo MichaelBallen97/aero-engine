@@ -996,6 +996,15 @@ bool validateDesc(const TextureDesc& desc) {
         AERO_LOG_ERROR("rhi: createTexture: width and height must be > 0");
         return false;
     }
+    // The UPPER bound is a crash guard, not bookkeeping: SDL_CreateGPUTexture has no 2D dimension
+    // check, so an over-limit request reaches the driver and Metal aborts the PROCESS from inside
+    // it -- there is no failure this error model could return at that point. See
+    // MAX_TEXTURE_DIMENSION_2D in types.hpp for the full rationale and the known mobile gap.
+    if (desc.width > MAX_TEXTURE_DIMENSION_2D || desc.height > MAX_TEXTURE_DIMENSION_2D) {
+        AERO_LOG_ERROR("rhi: createTexture: {}x{} exceeds the maximum 2D texture dimension ({})", desc.width,
+                       desc.height, MAX_TEXTURE_DIMENSION_2D);
+        return false;
+    }
     const std::uint32_t cap = mipCap(desc.width, desc.height);
     if (desc.mipLevels == 0 || desc.mipLevels > cap) {
         AERO_LOG_ERROR("rhi: createTexture: mipLevels {} out of range [1,{}] for {}x{}", desc.mipLevels, cap,
