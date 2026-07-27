@@ -2309,4 +2309,18 @@ void* internal::NativeDeviceAccessor::renderPass(const Device& d, RenderPassHand
     return slot != nullptr ? static_cast<void*>(slot->pass) : nullptr;
 }
 
+// task 2.2.3: the editor's viewport texture (ImGui ImTextureID). Refuses a swapchain-acquired
+// texture -- those are write-only (device.hpp's acquire contract), so handing one to a sampler
+// would be a silent GPU error.
+void* internal::NativeDeviceAccessor::texture(const Device& d, TextureHandle h) noexcept {
+    if (d.impl == nullptr) {
+        return nullptr;
+    }
+    const TextureSlot* const slot = d.impl->textures.get(h);
+    if (slot == nullptr || slot->swapchainOwned) {
+        return nullptr;  // write-only acquisition: never sampleable (device.hpp's acquire contract)
+    }
+    return static_cast<void*>(slot->texture);
+}
+
 }  // namespace engine::rhi

@@ -64,7 +64,16 @@ add_executable(aero_tests
 # calls registerComponent<T>() through the internal seam — tests sit OUTSIDE the boundary rule (the
 # note above, :5-9). The compile-time guard for the scene/EnTT boundary lives in the separate
 # aero_scene_boundary_probe target below, which links aero::scene ALONE.
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::reflect aero::render aero::rhi aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
+#
+# task 2.2.3: aero::rhi_internal joins this line for the SAME reason aero::scene_internal is here
+# (above) -- rhi_swapchain_test.cpp exercises the internal native-handle seam
+# (rhi::internal::NativeDeviceAccessor::texture, incl. its refusal to hand out a WRITE-ONLY
+# swapchain-acquired texture), and tests sit OUTSIDE the boundary rule. It is a header-only
+# INTERFACE target carrying ONE include directory and no library, no vcpkg root and no SDL, so it
+# cannot weaken any guard. The compile-time guard for rhi/SDL_GPU is aero_rhi_boundary_probe, which
+# links aero::rhi ALONE and is UNTOUCHED by this line -- and engine/rhi/CMakeLists.txt:43's "NEVER
+# link it into a boundary probe" is about exactly those probe targets, not this runner (§O-1).
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
 
 # Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,
 # in build/<preset>/shaders). aero_shaders exists ONLY when AERO_SHADER_TOOLS is ON (cmake/shaders.cmake),
