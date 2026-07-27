@@ -134,10 +134,18 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 #
 # task 2.2.4: this target gains editor/project_files_test.cpp -- tier-0 still holds, and
 # std::filesystem needs no link library (the engine/core precedent), so the link line is unchanged.
+#
+# task 2.2.5: console_model_test.cpp runs std::thread (the LogSink concurrency and R14 stress arms).
+# This target links no threading library today, and the tree's ONLY other find_package(Threads) sits
+# inside engine/platform/CMakeLists.txt's elseif(UNIX) branch -- so on macOS and Windows there is no
+# Threads::Threads anywhere to propagate. Relying on $<LINK_ONLY:> through two static archives is the
+# kind of thing that is green on macOS and red on one CI lane. One explicit link removes the question.
+# This target is NOT a boundary probe, so R12's "exactly one aero:: entry" rule does not apply to it.
+find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
-               editor/project_files_test.cpp)
+               editor/project_files_test.cpp editor/console_model_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
-    doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core)
+    doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
 
 # ---------------------------------------------------------------------------------------------
