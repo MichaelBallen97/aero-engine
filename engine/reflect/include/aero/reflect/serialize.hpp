@@ -4,6 +4,7 @@
 #include <aero/reflect/json_writer.hpp>
 
 #include <concepts>  // std::same_as (N1 -- the spec's include list omits this)
+#include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <optional>

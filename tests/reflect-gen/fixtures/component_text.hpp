@@ -6,6 +6,7 @@
 
 #include "aero_reflect.hpp"
 
+#include <cstdint>
 #include <string>
 
 namespace engine::demo {

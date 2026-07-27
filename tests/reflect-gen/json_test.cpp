@@ -1154,7 +1154,12 @@ TEST_CASE("round-trip: engine::demo::Labelled -- the std::string category, gener
     engine::JsonWriter w1;
     aeroWriteJson(w1, original);
     const std::string text = w1.str();
-    CHECK(text.find(R"("label": "hello \"world\"\\")") != std::string::npos);
+    // The raw literal is hoisted OUT of the CHECK macro deliberately: MSVC's legacy preprocessor
+    // does not honour raw-string semantics inside a macro argument, so the `\"` sequences below
+    // tokenise as escaped quotes and `world` becomes an invalid literal suffix (C2017/C3688/C2661).
+    // Other raw literals in this file survive inside macros because none of them contains `\"`.
+    const std::string expectedLabel = R"("label": "hello \"world\"\\")";
+    CHECK(text.find(expectedLabel) != std::string::npos);
 
     const engine::JsonParseResult parsed = engine::parseJson(text);
     REQUIRE(parsed.ok());
