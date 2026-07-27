@@ -11,7 +11,6 @@ add_library(aero_editor_core STATIC
     src/panel_registry.cpp
     src/editor_app.cpp
     src/shell_ui.cpp
-    src/placeholder_panel.cpp
     src/selection.cpp           # task 2.2.1
     src/entity_ops.cpp          # task 2.2.1
     src/tree_walk.cpp           # task 2.2.1, review round 2 (Gap 1)
@@ -25,6 +24,8 @@ add_library(aero_editor_core STATIC
     src/viewport_panel.cpp      # task 2.2.3 -- the scene rendered to texture inside a panel
     src/project_files.cpp       # task 2.2.4 -- the asset browser's filesystem model (ImGui-free)
     src/asset_browser_panel.cpp # task 2.2.4 -- the read-only project file browser
+    src/console_model.cpp       # task 2.2.5 -- the console panel's log model (ImGui-free)
+    src/console_panel.cpp       # task 2.2.5 -- the log/console panel
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

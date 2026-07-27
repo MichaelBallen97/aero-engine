@@ -12,7 +12,9 @@
 // presentation is unproven on the lavapipe/WARP lanes; since every tick() below asserts the frame
 // presented, we take the proven visible path. The brief flash matches rhi_swapchain_test.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <aero/core/log.hpp>  // AERO_LOG_* + initLogging (cases B and C)
 #include <aero/editor/component_ops.hpp>
+#include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_registry.hpp>
@@ -28,6 +30,21 @@
 #include <cstdint>
 #include <optional>
 #include <vector>
+
+namespace {
+// Case C emits 12 000 records. console=false keeps them out of the suite's output; the destructor
+// restores the engine defaults. initLogging() does NOT clear the callback (log.cpp:81-88 touches only
+// the logger and the level), so this cannot detach the console panel's own sink -- which is exactly
+// what makes it usable here.
+struct QuietTraceLogging {
+    QuietTraceLogging() { engine::initLogging(engine::LogConfig{.level = engine::LogLevel::Trace, .console = false}); }
+    ~QuietTraceLogging() { engine::initLogging(); }
+    QuietTraceLogging(const QuietTraceLogging&) = delete;
+    QuietTraceLogging& operator=(const QuietTraceLogging&) = delete;
+    QuietTraceLogging(QuietTraceLogging&&) = delete;
+    QuietTraceLogging& operator=(QuietTraceLogging&&) = delete;
+};
+}  // namespace
 
 TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke test)") {
     engine::platform::Context ctx;
@@ -406,6 +423,147 @@ TEST_CASE("editor: the Asset browser draws its error state for an unusable root 
         REQUIRE(app->tick());
         CHECK(app->presentedLastFrame());
     }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Console panel draws the engine log stream (task 2.2.5)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    // The D8 registration -- the ONE absolute panel count in the tree (plan C3's proof).
+    CHECK(app->panels().count() == 5);
+
+    // The create()-time records are staged in the sink; only the pump fills the history.
+    CHECK(app->logRecordCount() == 0);
+
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    // The records emitted during create() (D5) landed on the first pump -- AC-2's mechanical half.
+    CHECK(app->logRecordCount() > 0);
+
+    const std::size_t afterFirstTick = app->logRecordCount();
+    AERO_LOG_WARN("console: GPU case A probe warn");
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    const std::size_t afterWarn = app->logRecordCount();
+    CHECK(afterWarn > afterFirstTick);
+
+    AERO_LOG_ERROR("console: GPU case A probe error");
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    CHECK(app->logRecordCount() > afterWarn);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Console panel captures records while HIDDEN (task 2.2.5, AC-6)") {
+    // The D14 discriminator: the pump must live in tick(), never in onDraw. Sabotage S11 moves it and
+    // this test fails immediately.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console hidden", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    // Warm-up tick, BEFORE the measurement window starts: the Viewport panel initializes LAZILY on
+    // its own first draw (viewport_panel.cpp's ensureInitialized(), called from onDraw()), and under
+    // -DAERO_SHADER_TOOLS=OFF that first draw logs a one-time degradation WARN. Without this tick that
+    // WARN lands inside the very frame used to "settle" Console's visibility below, is queued in the
+    // sink (not yet pumped), and only reaches logRecordCount() on the NEXT pump -- landing squarely
+    // inside this test's own measurement window and reddening the exact-delta assertion on a
+    // tools-OFF configure even though nothing about Console's own behaviour is wrong. One extra tick
+    // here lets any such one-time, panel-order-dependent diagnostic land and get pumped BEFORE
+    // `before` is captured, which is what actually makes the exact-delta assertion sound in every
+    // build configuration, not only the tools-ON one this case happened to be authored against.
+    REQUIRE(app->tick());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // settle: the panel stops drawing from here on
+    const std::size_t before = app->logRecordCount();
+    constexpr int PROBE_COUNT = 20;
+    for (int i = 0; i < PROBE_COUNT; ++i) {
+        AERO_LOG_WARN("console: hidden-capture probe {}", i);
+    }
+    REQUIRE(app->tick());
+    // EXACT, not >=. Nothing in engine/ or editor/ logs per frame: there is not a single AERO_LOG_TRACE
+    // or AERO_LOG_DEBUG call site in the first-party tree, and every remaining site is a failure path or
+    // a once-per-lifetime notice. So an extra record here means a real error fired and this SHOULD be
+    // red. With the pump in onDraw instead of tick(), the delta is 0 and this fails immediately.
+    CHECK(app->logRecordCount() - before == static_cast<std::size_t>(PROBE_COUNT));
+    app->panels().setVisible("Console", true);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a full Console ring stays balanced and clipped (task 2.2.5, AC-13)") {
+    const QuietTraceLogging quiet;  // declared BEFORE the app so it outlives it
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console full ring", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    constexpr int BATCH_COUNT = 4;
+    constexpr int BATCH_SIZE = 3000;  // comfortably under DEFAULT_LOG_STAGING_CAPACITY (4096), so
+                                      // NOTHING is dropped at the sink -- this arm is about EVICTION
+    for (int b = 0; b < BATCH_COUNT; ++b) {
+        for (int i = 0; i < BATCH_SIZE; ++i) {
+            AERO_LOG_INFO("console: bulk {} {}", b, i);  // INFO, never TRACE: TRACE compiles out under
+        }  // NDEBUG (log.hpp:137-143) and macos-release
+        REQUIRE(app->tick());  // would then assert on an empty ring
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->logRecordCount() == engine::editor::DEFAULT_LOG_HISTORY_CAPACITY);
+    window->setSize(200, 120);  // BeginChild can return false; the header row clips
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    window->setSize(480, 300);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();

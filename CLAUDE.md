@@ -16,8 +16,8 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 |---|---|
 | **Phase 0** — Foundations & First Triangle | Complete in code. Gate **macOS-PASS**, held **OPEN** pending Windows/Linux on-hardware 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`). |
 | **Phase 1** — Reflection, ECS & Serialization | **COMPLETE** — epics 1.1–1.4 all CLOSED. Gate reached in code, macOS-validated; Windows/Linux render rows pending (`samples/phase-1-scene/VALIDATION.md`). |
-| **Phase 2** — Editor | Epic 2.1 (ImGui integration) **CLOSED in code**, macOS human-validated PASS; Windows/Linux rows pending (`editor/VALIDATION.md`). Epic 2.2 (Core panels) **OPEN** — 2.2.1 Hierarchy, 2.2.2 Inspector, 2.2.3 Viewport and 2.2.4 Asset browser landed, each macOS human-validated PASS with Windows/Linux rows pending. |
-| **Next task** | **2.2.5 Log/console panel** — see `docs/tasks/phase-2.md`. |
+| **Phase 2** — Editor | Epic 2.1 (ImGui integration) **CLOSED in code**, macOS human-validated PASS; Windows/Linux rows pending (`editor/VALIDATION.md`). Epic 2.2 (Core panels) **CLOSED in code** — 2.2.1 Hierarchy, 2.2.2 Inspector, 2.2.3 Viewport, 2.2.4 Asset browser and 2.2.5 Log/console panel all landed; **no `PlaceholderPanel` remains**. 2.2.1–2.2.4 are macOS human-validated PASS with Windows/Linux rows pending; **2.2.5's mechanical/structural pass is green on macOS but its interactive human pass has not yet been performed on any OS** — the gate stays open until at least one lands (`editor/VALIDATION.md`). |
+| **Next task** | **2.3.1 Editor camera** — see `docs/tasks/phase-2.md`. |
 
 Engine layers that exist today, in dependency order: `core` → `platform` → `rhi` → `render` → `reflect` → `scene` → `scene_render` → `scene_serialize`, plus `/editor` (`aero_editor_core` + `aero_editor`) and `/tools` (`reflect-gen`, `shaderc`). `/runtime` is still empty — it arrives in Phase 5.
 

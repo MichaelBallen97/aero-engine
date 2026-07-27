@@ -1,4 +1,4 @@
-# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1, 2.2.2, 2.2.3, 2.2.4)
+# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1, 2.2.2, 2.2.3, 2.2.4, 2.2.5)
 
 Task 2.1.1's deliverable: an editor window with dockable dummy panels, layout persisted across
 restarts, HiDPI scaling checked on all 3 OSes. CI proves the "builds clean on all 3 OSes, imgui
@@ -910,3 +910,191 @@ sabotage proofs, all five guards, clang-format and clang-tidy clean with zero ne
 interactive one (the 18-row human pass above, which is the only proof AC-3 and the `##` fix have).
 The gate closes when the Windows and Linux records land — the 0.5.3/1.4.2/2.1.1/2.1.3/2.2.1/2.2.2/
 2.2.3 precedent.
+
+---
+
+# Task 2.2.5 — log/console panel
+
+Task 2.2.5's deliverable: the `"Console"` placeholder is replaced by a dockable panel showing the
+engine's own log stream **live**, from any thread, whether or not the panel is visible — filterable by
+minimum level and by text, clearable, copyable, bounded in memory, honest about everything it drops.
+Landing it deletes the last `PlaceholderPanel` in the tree and closes Epic 2.2 in code. CI proves the
+structural/mechanical half automatically: the new `tests/editor/console_model_test.cpp` (tier-0, no
+GPU, no window, no ImGui context, riding the existing `aero_editor_shell_test` entry) proves the
+entire sink / ring / filter / formatter surface over **26 `TEST_CASE`s** — including an 8-concurrent-
+producer arm, the R14 shared-ownership proof, a move-assignment case proving an assignment never
+seizes a third scope's installation, and the C1 `Off`-level counter-overflow guard (whose case asserts
+`filter() == LogFilter{}`, the only observable the overflow reaches — `levelCount(Off)` is blind to it
+and no sanitizer fires); and
+`aero_editor_imgui_test` drives the **real** `ConsolePanel` through `EditorApp::tick()` in three new
+cases (the live log stream, hidden-panel capture with an exact-delta assertion, and a full
+10 000-record ring under a window resize), where an unbalanced `EndChild`, a wrongly-called `EndCombo`
+or a leaked `PushID`/`PushStyleColor` is an `IM_ASSERT` **abort** in the Debug build — so a green run
+*is* the balance assertion.
+
+It **cannot** mechanically prove: anything a human has to **look at**, or anything requiring
+**synthesised mouse input**. No ImGui input can be injected in this harness, so Clear/Copy's clipboard
+round-trip, auto-scroll's *feel*, hover-tooltip timing, level/colour/alignment legibility, id-merging
+(sabotage S15's human half) and `"##"`/`%s`/newline-in-message rendering (S14/S16's human half) are all
+**human-only**. It also cannot prove that scrolling a full 10 000-row buffer *feels* smooth (frame time
+has no mechanical signature here), or that a non-ASCII message visibly renders as `?` while still
+filtering and copying byte-exactly. That half needs a person at the machine.
+
+## What was mechanically verified (this implementation pass, macOS, Apple M1 Pro / Metal)
+
+- `aero_editor_core`, `aero_editor`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
+  `aero_editor_inspector_test` and `aero_tests` build clean on `macos-debug` and `macos-release`;
+  `ctest` is green at **94** entries on both, at **every one of the six commit boundaries** —
+  unchanged from 2.2.4, because no step in this task registers a new ctest entry.
+- `AERO_REQUIRE_GPU=1 ctest --preset macos-debug` and `--preset macos-release` both pass in full
+  (94/94), identically with the ratchet unset. `aero_editor_imgui_test` now runs **10** `TEST_CASE`s
+  (was 7); `aero_editor_shell_test` now runs **88** doctest cases — measured at the branch's own
+  baseline of **63** (not the plan's assumed 61; its own grounding notes said to re-measure rather than
+  trust the log, and the re-measurement caught real drift since the 2.2.4 entry was recorded), +25.
+- `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` (fresh configure, rebuilt in place): `ctest -N`
+  is **5** (unchanged), `aero_editor` still builds and launches, and its log carries **exactly two
+  WARN lines and no third** — both pre-existing (2.2.2's reflection-tools line, 2.2.3's shader-tools
+  line) — with, for the first time, the console-sink-attached INFO line preceding both of them. This
+  task adds no tools gate and no new WARN: the console is **fully functional** in that configuration,
+  and both pre-existing WARNs are now visible **inside the panel itself** (the mechanical proof stops
+  at the log line; that they render legibly in the panel is row 12 below).
+- The non-interactive launch proof (`aero_editor`, ini deleted first, run and killed after 4 s):
+  `editor: console log sink attached (4096 staged / 10000 held)` appears, **before** both
+  `editor: assets root '…'` and `editor: shell ready (5 panels, 3 entities, layout: default)` — the
+  D5 ordering claim made mechanical — and **zero** ERROR/CRITICAL lines. A second launch reads
+  `layout: restored` and the `.ini` is **byte-identical** across the two runs, D23/INV-1's proof that
+  `"Console"` still keys the same saved layout entry it has keyed since 2.1.3.
+- All **ten** S1–S10 sabotages were performed against the tier-0 battery, each seed confirmed present
+  via `git diff` **before** trusting the verdict, and reverted (full detail in
+  `docs/10-engineering-log.md`): S1 (raw-pointer capture) reds case 21 deterministically
+  (`use_count()` drops to 1); S2 (unconditional `setLogCallback({})` in `detach()`) reds case 22; S3
+  (drop the control-byte mapping) reds case 3; S4 (drop the message cap) reds case 4; S5 (drop the
+  UTF-8 back-off loop) reds case 4's straddling-sequence assertion; S6 (drop the level test in
+  `matchesFilter`) reds cases 7 and 10; S7 (compare raw bytes, no folding) reds cases 6 and 7; S8
+  (delete the eviction loop) reds cases 9 and 14; S9 (delete the `visibleSeq` front-prune) reds case
+  11's assertion **and** separately triggers an ASan container-overflow abort in the very next
+  `matchesFilter` call — louder than the plan's predicted debug-assert path, same discriminating
+  property; S10 (drop the newest silently, no counter) reds case 17.
+- **S17 (the C1 range-check guard) is reported honestly as NOT mechanically discriminating** in the
+  exact stack-local construction tier-0 case 25 uses, despite the seed being confirmed present via
+  `git diff`: `LogHistory h;` is a plain stack local and `counts` is not its last member, so the
+  out-of-bounds write corrupts the immediately-following member's padding **within the same stack
+  allocation** — neither ASan's stack-redzone protection (which guards the *outer* local variable's
+  boundary, not intra-object member boundaries) nor UBSan's `bounds` check (which does not instrument
+  `std::array::operator[]`'s definition, a system header excluded from sanitizer instrumentation by
+  default) fires. The C1 fix itself is unaffected and still correct — `levelCount(Off)` is guaranteed
+  `0` by its own independent read-side range check regardless of what the write side leaves behind —
+  only the sabotage's mechanical discriminating power in this harness is in question. Recorded here
+  rather than claimed.
+- Sabotages S11, S12 and S13 were performed against the GPU-gated battery and all three discriminated:
+  S11 (pump moved out of `tick()`) reds GPU case B's exact-delta assertion (`0 == 20`); S12
+  (`ImGui::EndChild()` deleted) aborts with *"Must call EndChild() and not End()!"*; S13
+  (`ImGui::EndCombo()` hoisted unconditional) aborts with *"Calling EndCombo() in wrong window!"* — an
+  immediate `IM_ASSERT` abort in the Debug ImGui build, no test even needs to open the combo. S8 was
+  additionally re-run against GPU case C and reds it too (`12003 == 10000`), confirming the eviction
+  property through the real ImGui draw path, not only at tier-0.
+- **S14 is grep-only** (`ImGui::Text(runtimeString)` compiles silently in this codebase — no
+  `-Wformat*`, no clang-tidy format check — so the §V6 INV-6 grep is the only guard) and **S15/S16 are
+  human-only** (ImGui id merging and `"##"` truncation have no mechanical signature in this harness).
+  None of the three is claimed as mechanically covered.
+- `clang-format-18 --dry-run --Werror` and
+  `SDKROOT=$(xcrun --sdk macosx15.4 --show-sdk-path) clang-tidy-18 -p build/macos-debug
+  --warnings-as-errors='*'` are clean over every new/changed TU, with **zero new `NOLINT`s** — every
+  finding raised (`misc-const-correctness`, `performance-unnecessary-copy-initialization`,
+  `bugprone-exception-escape` on `logSourceBasename`, `modernize-avoid-c-arrays` ×2,
+  `bugprone-use-after-move` in the moves test) was fixed with a real code change, never suppressed.
+- All five architecture-guard scripts run green locally with no allowlist change (only
+  `check-math-boundary.sh` sees this diff at all, net +3 files scanned — 188 on `origin/main` → 191
+  here); `git diff origin/main` is
+  **empty** over `engine/`, `runtime/`, `samples/`, `tools/`, `cmake/`, `shaders/`, `.github/` and
+  `vcpkg.json`; the `/vcpkg` submodule SHA is unchanged; `imgui_layer.{hpp,cpp}`, `text_input.{hpp,cpp}`
+  and `main.cpp` are byte-identical — `imgui_layer.{hpp,cpp}` for the **sixth** task running (INV-7).
+- No mouse or keyboard interaction was performed by this implementation pass — every OS below is
+  recorded pending a human, per the established precedent.
+
+## Known-and-expected, NOT a defect
+
+- **E12/F30 — a non-ASCII log message renders as `?` glyphs.** The *bytes* are stored, filtered and
+  copied exactly (`sanitizeLogMessage` passes bytes `>= 0x80` through untouched); the *font* — ImGui's
+  default ProggyClean — carries Basic + Extended Latin only. This is the **second** place a Unicode
+  font's absence visibly costs something (2.2.4's E14/F16 was the first). **Loading a Unicode font is
+  nobody's task yet.**
+- **E28 — the horizontal scroll extent grows as long lines scroll into view.** ImGui's own
+  `ExampleAppLog` behaves identically; deliberately not worked around.
+- **E15 — `shutdownLogging()` called from elsewhere silently stops delivery**, undetectable through the
+  public API. Documented on `LogSinkScope`'s header comment; nothing in the shipped editor calls it.
+- **D22 — filter text, the minimum level and the auto-scroll flag do not persist** across a restart.
+  2.6.1 owns project-scoped settings; a dedicated `imgui.ini` handler for three fields with obvious
+  defaults is not the shape.
+- **D9 — there is no UI control to change the engine's runtime log level.** Lowering the floor cannot
+  recover records already dropped by a stricter one, so it would read as a broken filter; changing the
+  floor is a Handoff, not this task's job.
+- **A `"##"` in a log message displays literally in the row list, never truncated** — the `cd4caab`
+  `"##row"` + `TextUnformatted` idiom, applied here to content far more likely to contain `##` than a
+  2.2.4 filename. Sabotage S16 (reverting to `Selectable(message.c_str())`) is human-only — no
+  mechanical signature exists to catch it — so row 9 below is the only proof.
+
+## How to validate one OS (for the pending ones)
+
+1. **Build**, then run `aero_editor` with no argument. **Console** is the **selected** bottom tab
+   beside Assets and already contains the startup lines (`console log sink attached`, `assets root`,
+   `shell ready`) — AC-2.
+2. The rows match the terminal's own spdlog output line for line, in content and order (F9).
+3. Levels are visually distinct — Trace/Debug dim, Info default, Warn amber, Error red, Critical the
+   brightest red — and **the level column is aligned** across rows.
+4. `Level >=` → `WARN`: Info rows vanish. Back to `TRACE`: they return **in the same order**.
+   `CRITICAL` on a normal session shows an empty list, and the footer **still reads `engine floor
+   TRACE`** — AC-3/AC-9.
+5. Type a substring into `Filter` → only matching rows remain; type it in the **opposite case** → the
+   **same** rows (AC-4). Clear the box → everything returns.
+6. `Clear` empties the panel and zeroes the aged-out/dropped notices. `Copy`, then paste into a text
+   editor → the visible rows with timestamps, padded levels and `(file:line)` (AC-5).
+7. Scroll up while records arrive → the view **stays put**. Scroll back to the bottom → auto-scroll
+   resumes. Untick `Auto-scroll` → the view never moves on its own (AC-5).
+8. Hover a row → a tooltip shows `file:line` after the normal delay. **Two rows with identical text
+   must behave independently** — sabotage S15's human half.
+9. Trigger a message containing `##`, one containing `%s`, and one with an embedded newline (a
+   temporary `AERO_LOG_INFO` in `main.cpp` is the cheapest way, reverted before committing anything):
+   each renders as **exactly one complete row**, nothing hidden, nothing garbled, no crash — S14/S16's
+   human half (AC-8).
+10. Select the **Assets** tab, cause some logging (resize the window, click around), then select
+    Console → the records are **all there, in order** (AC-6).
+11. Exceed 10 000 records (a temporary log loop) → scrolling **stays smooth** and the footer shows the
+    aged-out count (AC-7/AC-13).
+12. Build with `-DAERO_SHADER_TOOLS=OFF -DAERO_REFLECT_TOOLS=OFF` and launch → **the two WARNs are
+    visible in the panel** (AC-2/AC-15b). This is the row §V4 cannot cover.
+13. Shrink the bottom dock node until the panel is a sliver; collapse, undock and redock it → **no
+    crash, no abort**, the footer stays legible or clips cleanly (AC-12).
+14. Quit and relaunch → the panel is **docked where it was**, and the filter / level / auto-scroll are
+    back at their **defaults** (AC-14 / D22, the documented non-persistence).
+15. A **non-ASCII** log message renders as `?` glyphs but **filters and copies byte-exactly** — the
+    documented font-range limitation (E12/F30), not a defect.
+
+### macOS — ⏳ pending
+
+The mechanical/structural pass above ran and is green (build, full ctest on both presets, the
+`AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, the non-interactive launch
+proof with the D5 ordering check, seventeen sabotage proofs each seed-confirmed and reverted, all five
+guards, clang-format and clang-tidy clean with zero new `NOLINT`s). **The 15-row interactive human
+mouse/keyboard pass above has NOT been performed** — this implementation pass had no interactive
+display access — and is recorded pending, not assumed. A human must run it before this row can read
+PASS.
+
+### Windows — ⏳ pending
+
+Needs a native run (D3D12). No checks recorded yet.
+
+### Linux — ⏳ pending
+
+Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
+
+**Task 2.2.5 gate status: mechanically green on macOS — held OPEN pending the human interactive pass
+on all three OSes.** The mechanical/structural half is green end to end on macOS (both presets at
+94/94, the `AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof, the non-interactive launch proof,
+seventeen sabotage proofs, all five guards, clang-format/clang-tidy clean with zero new NOLINTs). The
+interactive half — the 15-row pass above, which is the only proof of AC-2's in-panel WARN visibility,
+AC-5's clipboard/auto-scroll feel, AC-8's `##`/newline rendering, and colour/alignment legibility — is
+**pending on all three OSes**, not just Windows/Linux as the 2.2.1–2.2.4 precedent recorded it: unlike
+those tasks, this implementation pass had no human at the machine at all. Epic 2.2 is **CLOSED in
+code** (no `PlaceholderPanel` remains) but the gate itself stays open until at least one OS's human
+pass lands.
