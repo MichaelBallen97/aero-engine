@@ -1001,7 +1001,8 @@ filtering and copying byte-exactly. That half needs a person at the machine.
   `bugprone-exception-escape` on `logSourceBasename`, `modernize-avoid-c-arrays` ×2,
   `bugprone-use-after-move` in the moves test) was fixed with a real code change, never suppressed.
 - All five architecture-guard scripts run green locally with no allowlist change (only
-  `check-math-boundary.sh` sees this diff at all, net +1 file scanned); `git diff origin/main` is
+  `check-math-boundary.sh` sees this diff at all, net +3 files scanned — 188 on `origin/main` → 191
+  here); `git diff origin/main` is
   **empty** over `engine/`, `runtime/`, `samples/`, `tools/`, `cmake/`, `shaders/`, `.github/` and
   `vcpkg.json`; the `/vcpkg` submodule SHA is unchanged; `imgui_layer.{hpp,cpp}`, `text_input.{hpp,cpp}`
   and `main.cpp` are byte-identical — `imgui_layer.{hpp,cpp}` for the **sixth** task running (INV-7).
