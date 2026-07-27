@@ -313,6 +313,27 @@ void AssetBrowserPanel::drawFooter() {
     if (listing == nullptr) {
         return;
     }
+    // The COUNTS ARE BUILT FIRST AND ALWAYS (review gap 3 / AC-8). They used to live behind an early
+    // return that a selection pre-empted, so clicking any file in a >10 000-entry directory made the
+    // truncation notice VANISH -- which is precisely the "a silent cap reads as 'this is everything'"
+    // failure D12 exists to prevent. A selection now APPENDS to this line; it never replaces it.
+    labelScratch.clear();
+    if (listing->status == ScanStatus::Ok) {
+        labelScratch = std::to_string(listing->entries.size()) + " items";
+        if (listing->skipped > 0) {
+            labelScratch += "  -  " + std::to_string(listing->skipped) + " skipped";  // AC-8/E5
+        }
+        if (listing->truncated) {
+            // AC-8/D12/E8 -- surfaced, never silent. BOTH caps are named because either can fire
+            // (review gap 2), and "showing the first 10000" would be a LIE when the scan cap is what
+            // stopped us: a directory of dotfiles browsed with `Show hidden` off can be truncated
+            // with far fewer than 10 000 entries listed.
+            labelScratch += "  -  truncated (caps: " + std::to_string(MAX_ENTRIES_PER_DIRECTORY) + " listed, " +
+                            std::to_string(MAX_ENTRIES_EXAMINED) + " scanned)";
+        }
+    }
+    // A non-Ok status contributes NOTHING here: the right pane already explains it, and duplicating
+    // the message in the footer was never wanted.
     if (!selectedEntry.empty()) {
         // E10: looked up in the CURRENT listing every frame, so a selection whose file disappeared
         // simply stops rendering. No invalidation pass, no dangling state.
@@ -320,29 +341,18 @@ void AssetBrowserPanel::drawFooter() {
         const auto it = std::find_if(listing->entries.begin(), listing->entries.end(),
                                      [leaf](const FileEntry& e) { return e.name == leaf; });
         if (it != listing->entries.end()) {
-            labelScratch = selectedEntry;
+            if (!labelScratch.empty()) {
+                labelScratch += "   |   ";
+            }
+            labelScratch += selectedEntry;
             if (!it->isDirectory) {
                 labelScratch +=
                     it->sizeKnown ? ("  -  " + formatFileSize(it->size)) : std::string("  -  ") + UNKNOWN_SIZE;
             }
-            ImGui::TextUnformatted(labelScratch.c_str());
-            return;
         }
     }
-    if (listing->status != ScanStatus::Ok) {
-        return;  // the right pane already explains it -- no duplicate message
-    }
-    labelScratch = std::to_string(listing->entries.size()) + " items";
-    if (listing->skipped > 0) {
-        labelScratch += "  -  " + std::to_string(listing->skipped) + " skipped";  // AC-8/E5
-    }
-    if (listing->truncated) {
-        // AC-8/D12/E8 -- surfaced, never silent. BOTH caps are named because either can fire (review
-        // gap 2), and "showing the first 10000" would be a LIE when the scan cap is what stopped us:
-        // a directory of dotfiles browsed with `Show hidden` off can be truncated with far fewer than
-        // 10 000 entries listed.
-        labelScratch += "  -  truncated (caps: " + std::to_string(MAX_ENTRIES_PER_DIRECTORY) + " listed, " +
-                        std::to_string(MAX_ENTRIES_EXAMINED) + " scanned)";
+    if (labelScratch.empty()) {
+        return;  // an unusable directory with nothing selected -- the right pane carries the message
     }
     ImGui::TextUnformatted(labelScratch.c_str());
 }
