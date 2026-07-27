@@ -266,11 +266,19 @@ DirectoryListing listDirectory(std::string_view rootUtf8, std::string_view relPa
     }
 
     const std::filesystem::directory_iterator last;
+    // TWO bounds, both surfaced by the footer and never silent (D12/E8). The first caps what the
+    // listing RETAINS; the second caps what the loop EXAMINES, because hidden-filtered and skipped
+    // entries never grow `entries` and would otherwise let one directory spin unbounded inside a
+    // synchronous per-frame reconcile (review gap 2). Both checks sit at the TOP of the body, so a
+    // directory holding EXACTLY either cap ends naturally with truncated == false, while cap + 1
+    // breaks with truncated == true.
+    std::size_t examined = 0;
     while (it != last) {
-        if (out.entries.size() >= MAX_ENTRIES_PER_DIRECTORY) {
-            out.truncated = true;  // surfaced by the footer, never silent (D12/E8)
+        if (out.entries.size() >= MAX_ENTRIES_PER_DIRECTORY || examined >= MAX_ENTRIES_EXAMINED) {
+            out.truncated = true;
             break;
         }
+        ++examined;
         const std::filesystem::directory_entry& entry = *it;
 
         std::string name = utf8FromPath(entry.path().filename());

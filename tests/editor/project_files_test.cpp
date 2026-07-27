@@ -428,6 +428,34 @@ TEST_CASE("editor: listDirectory caps a huge directory and says so (D12/E8)") {
     CHECK(listing.truncated);
 }
 
+TEST_CASE("editor: listDirectory caps entries EXAMINED, not just retained (review gap 2, D12)") {
+    // The gap: hidden-filtered entries never grow `entries`, so MAX_ENTRIES_PER_DIRECTORY alone
+    // bounded nothing for a directory of dotfiles browsed with `Show hidden` off -- the loop would
+    // iterate every one of them inside a synchronous per-frame reconcile.
+    // MAX_ENTRIES_EXAMINED + 5 HIDDEN files: with includeHidden=false NOTHING is retained, so the
+    // retained cap can never fire and only the examined cap can stop this.
+    const TempDir tmp;
+    const std::size_t total = engine::editor::MAX_ENTRIES_EXAMINED + 5;
+    for (std::size_t i = 0; i < total; ++i) {
+        tmp.write(".h" + std::to_string(i), "");
+    }
+
+    const DirectoryListing filtered = engine::editor::listDirectory(tmp.utf8(), "", false);
+    CHECK(filtered.status == ScanStatus::Ok);
+    CHECK(filtered.entries.empty());                                             // every entry was hidden-filtered...
+    CHECK(filtered.entries.size() < engine::editor::MAX_ENTRIES_PER_DIRECTORY);  // ...so the RETAINED
+                                                                                 // cap cannot have fired
+    CHECK(filtered.truncated);     // the EXAMINED cap did, and it is surfaced (D12) -- never silent
+    CHECK(filtered.skipped == 0);  // a filtered entry is still not an error (case 7's rule holds)
+
+    // And with includeHidden=true the same directory truncates on the retained cap instead, which is
+    // what keeps the two bounds independent rather than one masking the other.
+    const DirectoryListing all = engine::editor::listDirectory(tmp.utf8(), "", true);
+    CHECK(all.status == ScanStatus::Ok);
+    CHECK(all.entries.size() == engine::editor::MAX_ENTRIES_PER_DIRECTORY);
+    CHECK(all.truncated);
+}
+
 TEST_CASE("editor: listDirectory resolves a nested relPath and a trailing separator (§3.3)") {
     const TempDir tmp;
     tmp.makeDir("a/b");

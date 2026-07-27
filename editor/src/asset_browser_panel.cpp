@@ -337,8 +337,12 @@ void AssetBrowserPanel::drawFooter() {
         labelScratch += "  -  " + std::to_string(listing->skipped) + " skipped";  // AC-8/E5
     }
     if (listing->truncated) {
-        // AC-8/D12/E8 -- surfaced, never silent.
-        labelScratch += "  -  showing the first " + std::to_string(MAX_ENTRIES_PER_DIRECTORY) + " (truncated)";
+        // AC-8/D12/E8 -- surfaced, never silent. BOTH caps are named because either can fire (review
+        // gap 2), and "showing the first 10000" would be a LIE when the scan cap is what stopped us:
+        // a directory of dotfiles browsed with `Show hidden` off can be truncated with far fewer than
+        // 10 000 entries listed.
+        labelScratch += "  -  truncated (caps: " + std::to_string(MAX_ENTRIES_PER_DIRECTORY) + " listed, " +
+                        std::to_string(MAX_ENTRIES_EXAMINED) + " scanned)";
     }
     ImGui::TextUnformatted(labelScratch.c_str());
 }

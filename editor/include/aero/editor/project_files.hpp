@@ -63,8 +63,17 @@ struct TreeRow {
                              // per sibling, so the arrow is shown and opens to nothing (E12).
 };
 
-inline constexpr std::size_t MAX_ENTRIES_PER_DIRECTORY = 10000;  // D12
+inline constexpr std::size_t MAX_ENTRIES_PER_DIRECTORY = 10000;  // D12 -- entries RETAINED
 inline constexpr std::size_t MAX_TREE_DEPTH = 32;                // D12/D13 -- bounds a symlink cycle
+// D12's second bound (review gap 2). MAX_ENTRIES_PER_DIRECTORY caps what a listing KEEPS, and hidden-
+// filtered and skipped entries never grow it -- so a directory of 500 000 dotfiles browsed with
+// `Show hidden` off would iterate all 500 000 inside a synchronous per-frame reconcile, which is
+// exactly the "never blocks on a large tree" requirement failing. This caps entries EXAMINED and sets
+// `truncated` the same way, so the bound is surfaced and never silent.
+// STRICTLY GREATER than MAX_ENTRIES_PER_DIRECTORY on purpose: a directory that legitimately holds
+// 10 000 visible entries alongside 10 000 hidden ones still lists in full, and the retained cap stays
+// the bound that fires for an ordinary huge directory. 2x, not more: the scan runs inside a frame.
+inline constexpr std::size_t MAX_ENTRIES_EXAMINED = 2 * MAX_ENTRIES_PER_DIRECTORY;
 
 // ---- pure helpers (no I/O; every one of them is a tier-0 test case) ----
 
