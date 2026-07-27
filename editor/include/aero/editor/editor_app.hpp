@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace engine::editor {
 
@@ -31,6 +32,12 @@ struct EditorAppConfig {
     // Frame-rate ceiling applied ONLY while the window has no keyboard focus (D4). <= 0 disables the
     // throttle entirely — what the GPU smoke test uses so its frames stay unpaced + deterministic.
     float unfocusedFrameCapHz = 20.0F;
+    // Task 2.2.4: the asset browser's root, as UTF-8. EMPTY -> the process working directory,
+    // resolved ONCE at create() by resolveProjectRoot(). aero_editor's optional argv[1] writes this
+    // field. A bad path is NOT validated here (D17): it flows to the panel, which reports it in-panel
+    // and still docks and quits cleanly. Task 2.6.1 replaces this with the opened project's path and
+    // calls AssetBrowserPanel::setRoot().
+    std::string projectRoot;
 };
 
 // Sleep applied when the window is not presentable (minimized) — inherited verbatim from 2.1.1.
@@ -85,7 +92,9 @@ public:
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
 
 private:
-    EditorApp(ImGuiLayer layer, platform::Context& ctx, const EditorAppConfig& config);
+    // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
+    // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
+    EditorApp(ImGuiLayer layer, platform::Context& ctx, EditorAppConfig config);
 
     ImGuiLayer layer;
     platform::Context* ctx;
