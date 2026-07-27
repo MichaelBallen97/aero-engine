@@ -7,7 +7,7 @@
 # directory scope, so no PARENT_SCOPE tricks are needed to export them.
 #
 # Why from source, and why identical on all three hosts: see docs/specs/0.4.3-tools-shaderc.md F1-F5
-# (local-only, gitignored) and the CLAUDE.md 0.4.3 entry. Short version: vcpkg's sdl3-shadercross port
+# (local-only, gitignored) and docs/10-engineering-log.md, task 0.4.3. Short version: vcpkg's sdl3-shadercross port
 # depends unconditionally on directx-dxc, which vcpkg marks unsupported on arm64-osx — a real dry-run
 # proves it. Building upstream's own vendored (DXC-from-source) configuration is the one path their
 # own CI tests on macOS, so it is used symmetrically everywhere: vcpkg.json and the /vcpkg submodule

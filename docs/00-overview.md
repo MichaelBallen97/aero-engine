@@ -96,6 +96,7 @@ The milestone that validates the entire project is **Phase 5**: ship a small, re
 | — | [docs/tasks/](./tasks/) | Full per-phase breakdown — epics → tasks → subtasks, all 9 phases |
 | 08 | [Risks & Open Decisions](./08-risks.md) | Risk register and open decisions |
 | 09 | [File Formats](./09-file-formats.md) | Scene schema v1, canonical form, versioning policy |
+| 10 | [Engineering Log](./10-engineering-log.md) | Per-task build history — what each task shipped, traps found, dead ends never to retry. Descriptive, not normative |
 | — | [Future Roadmap](./future-roadmap.md) | v2 and v3–v4 deferred features |
 
 ---

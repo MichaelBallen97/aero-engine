@@ -21,7 +21,7 @@ if(NOT PROBE_SEED_NO_CONSUMERS)
     # _gr_dirs) loop body never ran at all for the clean case -- a naive substring match on the word
     # "editor" (which step 5 does NOT do; see cmake/golden_rule.cmake) would have passed this fixture
     # not because the comparison is correct but because the comparison never RAN. This is what makes
-    # the D10 "not a substring match" claim (CLAUDE.md state note) a proven fact rather than an
+    # the D10 "not a substring match" claim (docs/10-engineering-log.md, task 2.1.2) a proven fact rather than an
     # untested aspiration. The directory need not exist on disk -- step 5 uses
     # get_filename_component(... ABSOLUTE), never REALPATH, exactly so a seeded/probe path need not
     # resolve to a real file.
