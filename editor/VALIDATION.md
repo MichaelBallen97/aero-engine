@@ -858,10 +858,41 @@ That half needs a person at the machine.
     must **stay visible** in the footer alongside the selection — code-review gap 3. Before the fix,
     clicking a file made the truncation notice disappear.
 
-### macOS — ⏳ pending
+### macOS — ✅ PASS (2026-07-28)
 
-Needs a human mouse/keyboard pass. The mechanical half above is green; no interactive checks are
-recorded yet.
+Machine: MacBook Pro (Apple M1 Pro), Metal. Human mouse/keyboard pass against `c8ab8a0` — i.e.
+against the post-code-review tree, with all four gap fixes in place.
+
+- **1 — bare `aero_editor`: Assets tab beside Console, listing matches `$PWD`** — PASS
+- **2 — `aero_editor <dir>` lists that directory; breadcrumb head shows its name** — PASS
+- **3 — expand two levels; right pane follows; breadcrumb grows and navigates back; each depth
+  visibly indented one step further (C3)** — PASS
+- **4 — `..` on a single click; double-click a directory row enters it (C4)** — PASS
+- **5 — Refresh picks up an out-of-editor change; tab-reselect does too** — PASS
+- **6 — Show hidden on/off round-trips to the identical view** — PASS
+- **7 — sizes match Finder across magnitudes; an unreadable size shows `—`, never `0 B`** — PASS
+- **8 — directories first, then case-insensitive alphabetical** — PASS
+- **9 — splitter width and dock position remembered across a quit/relaunch** — PASS
+- **10 — a ≥ 10 000-file directory scrolls smoothly and reports truncation** — PASS
+- **11 — `aero_editor /definitely/not/here` explains it, names the path, docks and quits cleanly** — PASS
+- **12 — `aero_editor <a regular file>` shows "Not a directory"** — PASS
+- **13 — two same-named directories at different depths both appear (S11's human half)** — PASS
+- **14 — expanding a subdirectory-free directory drops its arrow, loses no other state (C1's human
+  half)** — PASS
+- **15 — `git status` in the browsed tree stays clean** — PASS
+- **16 — `##` names display in full in the tree and the contents table (S14's human half)** — PASS
+- **17 — a broken symlink is listed with `—`, is not counted as skipped, and does not appear in the
+  tree (code-review gap 1)** — PASS
+- **18 — the truncated/skipped counts stay visible while an entry is selected (code-review gap 3)** — PASS
+
+Notes: this pass closes the interactive half of **AC-3** — which had **no** proof of any other kind,
+mechanical or otherwise, and whose spec spelling C4 showed would have been silently dead — plus the
+human halves of **C1**, **C3**, **AC-10**, **AC-12** and **AC-13**.
+
+Rows 16, 17 and 18 are the human halves of three code-review gaps. Row 16 in particular is the
+**only** proof that exists for the `##` fix: sabotage **S14** is green (non-discriminating), because
+`##` truncation is a rendering defect with no mechanical signature in this harness. The breadcrumb's
+`##` behaviour is recorded above as known-and-expected and was **not** treated as a failure here.
 
 ### Windows — ⏳ pending
 
@@ -872,9 +903,10 @@ Needs a native run (D3D12). No checks recorded yet. Rows 7 and 12 are additional
 
 Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
 
-**Task 2.2.4 gate status: OPEN — the mechanical/structural half is green on macOS (both presets at
-94/94, the `AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, three
-non-interactive launch runs, fourteen sabotage proofs, all five guards, clang-format and
-clang-tidy clean with zero new NOLINTs), and the interactive human pass is pending on all three
-OSes.** The gate closes when the three OS records land — the 0.5.3/1.4.2/2.1.1/2.1.3/2.2.1/2.2.2/
+**Task 2.2.4 gate status: macOS-PASS — held OPEN pending the Windows/Linux on-hardware records.**
+Both halves are green on macOS: the mechanical one (both presets at 94/94, the `AERO_REQUIRE_GPU=1`
+rehearsal, the tools-OFF proof with exactly two WARNs, three non-interactive launch runs, fourteen
+sabotage proofs, all five guards, clang-format and clang-tidy clean with zero new NOLINTs) and the
+interactive one (the 18-row human pass above, which is the only proof AC-3 and the `##` fix have).
+The gate closes when the Windows and Linux records land — the 0.5.3/1.4.2/2.1.1/2.1.3/2.2.1/2.2.2/
 2.2.3 precedent.
