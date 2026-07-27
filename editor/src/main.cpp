@@ -8,10 +8,12 @@
 
 #include <exception>
 #include <optional>
+#include <string>
+#include <string_view>
 
 namespace {
 // docs/04: no exceptions across a public API boundary — main() is this executable's outermost one.
-int runEditor() {
+int runEditor(std::string_view rootArg) {
     using namespace engine;  // exe TU (not a header) — docs/04 forbids this only in headers
     platform::Context ctx;
     if (!ctx.valid()) {
@@ -28,7 +30,8 @@ int runEditor() {
         return 1;
     }
     // RAII order ctx -> window -> device -> app is load-bearing: ~EditorApp runs before ~Device/~Window/~Context.
-    std::optional<editor::EditorApp> app = editor::EditorApp::create(*device, *window, ctx);
+    std::optional<editor::EditorApp> app =
+        editor::EditorApp::create(*device, *window, ctx, {.projectRoot = std::string(rootArg)});
     if (!app) {
         AERO_LOG_CRITICAL("editor: EditorApp::create failed");
         return 1;
@@ -37,9 +40,13 @@ int runEditor() {
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // Task 2.2.4: an optional argv[1] is the project directory to browse; bare `aero_editor` browses
+    // the process working directory, so the shipped editor always shows something real. NOT validated
+    // here (D17) -- an unusable path is a PANEL state, and the editor must still open, dock and quit.
+    // Extra arguments are ignored; there is no CLI to speak of yet (2.6.1 owns Open Project).
     try {
-        return runEditor();
+        return runEditor(argc > 1 ? argv[1] : "");
     } catch (const std::exception& e) {
         AERO_LOG_CRITICAL("aero_editor: unexpected exception: {}", e.what());
         return 1;

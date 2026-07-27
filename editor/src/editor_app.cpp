@@ -5,9 +5,11 @@
 #include <aero/core/time.hpp>
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/project_files.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
 
+#include "asset_browser_panel.hpp"
 #include "editor_reflection.hpp"
 #include "hierarchy_panel.hpp"
 #include "inspector_panel.hpp"
@@ -18,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 #include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -38,8 +41,8 @@ std::uint32_t framePaceSleepMs(bool presented, bool focused, float unfocusedCapH
     return static_cast<std::uint32_t>(std::lround(remaining));
 }
 
-EditorApp::EditorApp(ImGuiLayer layer, platform::Context& ctx, const EditorAppConfig& config)
-    : layer(std::move(layer)), ctx(&ctx), config(config) {}
+EditorApp::EditorApp(ImGuiLayer layer, platform::Context& ctx, EditorAppConfig config)
+    : layer(std::move(layer)), ctx(&ctx), config(std::move(config)) {}
 
 std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window& window, platform::Context& ctx,
                                            const EditorAppConfig& config) {
@@ -59,7 +62,9 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         app.registry.emplace<InspectorPanel>();                           // task 2.2.2 -- was a PlaceholderPanel
         app.viewportPanel = app.registry.emplace<ViewportPanel>(device);  // task 2.2.3 -- was a PlaceholderPanel
         app.registry.emplace<PlaceholderPanel>("Console", DockSlot::Bottom, "Console — placeholder (task 2.2.5)");
-        app.registry.emplace<PlaceholderPanel>("Assets", DockSlot::Bottom, "Assets — placeholder (task 2.2.4)");
+        std::string assetsRoot = resolveProjectRoot(config.projectRoot);
+        AERO_LOG_INFO("editor: assets root '{}'", assetsRoot);
+        app.registry.emplace<AssetBrowserPanel>(std::move(assetsRoot));  // task 2.2.4 -- was a PlaceholderPanel
     }
 
     if (config.seedDefaultScene) {

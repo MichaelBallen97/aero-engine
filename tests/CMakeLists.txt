@@ -131,7 +131,11 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # boundary rule; the compile-time guard for scene/EnTT is aero_scene_boundary_probe, which links
 # aero::scene ALONE and is untouched by this line. The target stays TIER-0: aero_scene_internal is a
 # header-only INTERFACE target and nothing here builds a GPU, a window or an ImGui context (AC-19).
-add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp)
+#
+# task 2.2.4: this target gains editor/project_files_test.cpp -- tier-0 still holds, and
+# std::filesystem needs no link library (the engine/core precedent), so the link line is unchanged.
+add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
+               editor/project_files_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
