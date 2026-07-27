@@ -376,6 +376,43 @@ TEST_CASE("editor: listDirectory reports an unreadable directory rather than an 
 #endif
 }
 
+TEST_CASE("editor: listDirectory LISTS a broken symlink instead of skipping it (review gap 1, E6)") {
+    // The spec's E6 premise was wrong: a dangling symlink never reaches file_size(), because
+    // is_directory() fails FIRST ([fs.op.status] sets ec when an element of the path does not exist),
+    // so the entry used to hit ++skipped and vanish from the listing. It must be LISTED as a
+    // size-unknown file -- the panel then renders "—" (AC-6). A broken link you can see beats one
+    // that silently disappears.
+    //
+    // Guarded on create_symlink actually working: Windows needs Developer Mode or admin privileges
+    // for symlink creation, and some filesystems refuse it. A skip is recorded loudly rather than
+    // letting the case pass vacuously (the 2.2.2-S5 lesson).
+    const TempDir tmp;
+    tmp.write("real.txt", "hello");
+    std::error_code ec;
+    std::filesystem::create_symlink("aero-definitely-no-such-target-2.2.4", tmp.path() / "dangling.txt", ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_symlink (Windows needs Developer Mode)");
+    } else {
+        const DirectoryListing listing = engine::editor::listDirectory(tmp.utf8(), "", false);
+        CHECK(listing.status == ScanStatus::Ok);
+        CHECK(listing.skipped == 0);  // a broken link is LISTED, not skipped
+        REQUIRE(listing.entries.size() == 2);
+
+        const std::ptrdiff_t dangling = indexOf(listing, "dangling.txt");
+        REQUIRE(dangling >= 0);
+        const FileEntry& broken = listing.entries[static_cast<std::size_t>(dangling)];
+        CHECK_FALSE(broken.isDirectory);  // never offer to descend into it
+        CHECK_FALSE(broken.sizeKnown);    // -> the panel renders "—", never a "0 B" lie
+        CHECK(broken.size == 0);
+
+        // The healthy sibling is unaffected: the fallback must not swallow real sizes.
+        const std::ptrdiff_t real = indexOf(listing, "real.txt");
+        REQUIRE(real >= 0);
+        CHECK(listing.entries[static_cast<std::size_t>(real)].sizeKnown);
+        CHECK(listing.entries[static_cast<std::size_t>(real)].size == 5);
+    }
+}
+
 TEST_CASE("editor: listDirectory caps a huge directory and says so (D12/E8)") {
     // ~10 005 zero-byte files. The cap check sits at the TOP of the scan loop, so a directory holding
     // exactly MAX_ENTRIES_PER_DIRECTORY entries ends naturally with truncated == false, while MAX + 5

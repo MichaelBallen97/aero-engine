@@ -285,7 +285,29 @@ DirectoryListing listDirectory(std::string_view rootUtf8, std::string_view relPa
             // populated during iteration (F21), so this is typically free.
             const bool isDir = entry.is_directory(entryEc);
             if (entryEc) {
-                ++out.skipped;  // a race, a broken mount -- list the rest, say how many (E5)
+                // The FOLLOWED status failed. E6 CORRECTED (review gap 1): the spec assumed a broken
+                // symlink reached file_size() and rendered "—". It never does -- is_directory() fails
+                // FIRST, because [fs.op.status] sets ec when an element of the path does not exist,
+                // so the dangling link used to hit ++skipped and VANISH from the listing entirely.
+                // Measured on this lane: a dangling symlink gives is_directory ec=ENOENT, file_size
+                // ec=ENOENT, but symlink_status ec=0 type=symlink. That asymmetry IS the discriminator:
+                // symlink_status does NOT follow the link, so it answers for the directory entry
+                // itself. Succeeding there means the entry really is on disk and we simply cannot
+                // classify what it points AT -> list it as a size-unknown FILE, which renders "—"
+                // (AC-6). In an asset browser a broken link you can SEE beats one that silently
+                // disappears. Failing there means the entry itself is gone or unreachable (a race, a
+                // broken mount) -> ++skipped, and the footer says how many (E5).
+                std::error_code linkEc;
+                const std::filesystem::file_status linkStatus = entry.symlink_status(linkEc);
+                if (linkEc || !std::filesystem::exists(linkStatus)) {
+                    ++out.skipped;
+                } else {
+                    FileEntry brokenEntry;
+                    brokenEntry.name = std::move(name);
+                    // isDirectory and sizeKnown both stay false -- deliberately NOT a "0 B" lie, and
+                    // deliberately not a directory (the tree pane must not offer to descend into it).
+                    out.entries.push_back(std::move(brokenEntry));
+                }
             } else {
                 FileEntry fileEntry;
                 fileEntry.name = std::move(name);
@@ -297,8 +319,9 @@ DirectoryListing listDirectory(std::string_view rootUtf8, std::string_view relPa
                         fileEntry.size = static_cast<std::uint64_t>(bytes);
                         fileEntry.sizeKnown = true;
                     }
-                    // on failure both fields stay at their defaults -> the panel renders "—" (AC-6),
-                    // which is also the broken-symlink case (E6). NOT a "0 B" lie.
+                    // on failure both fields stay at their defaults -> the panel renders "—" (AC-6).
+                    // NOT a "0 B" lie. Reachable for a file whose size the OS refuses even though its
+                    // type resolved; the broken-symlink path is the entryEc branch above.
                 }
                 out.entries.push_back(std::move(fileEntry));
             }

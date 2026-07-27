@@ -41,7 +41,9 @@ struct FileEntry {
     std::uint64_t size = 0;  // meaningful ONLY when sizeKnown && !isDirectory
     bool isDirectory = false;
     bool sizeKnown = false;  // false for directories AND for files whose size could not be read --
-                             // which is why this is a flag and not a sentinel 0 (AC-6/E6)
+                             // which is why this is a flag and not a sentinel 0 (AC-6/E6). A BROKEN
+                             // SYMLINK lands here too: isDirectory == false, sizeKnown == false, so it
+                             // is LISTED and renders "—" rather than silently vanishing (review gap 1).
 };
 
 struct DirectoryListing {
