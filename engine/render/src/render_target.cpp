@@ -227,13 +227,25 @@ bool RenderTarget::allocate(rhi::Extent2D newAllocExtent) {
 }
 
 bool RenderTarget::resize(rhi::Extent2D requested) {
+    // A moved-from target has a null device but RETAINS cfg, so `want` below would be non-zero and
+    // allocate() would sail past its own valid() guards straight into device->createTexture() on
+    // nullptr. beginFrame()/colorTexture()/~RenderTarget are all already inert after a move; this
+    // keeps resize() consistent with them (E15).
+    if (device == nullptr) {
+        return false;
+    }
     const rhi::Extent2D clamped{clampAxis(requested.width, cfg.maxExtent), clampAxis(requested.height, cfg.maxExtent)};
     const rhi::Extent2D want = nextTargetExtent(requested, allocExtent, cfg.quantum, cfg.maxExtent);
     bool ok = true;
     if (want != allocExtent) {
         ok = allocate(want);
     }
-    drawRect = clamped;
+    // INV-1 ("textureExtent() >= drawExtent() on both axes, ALWAYS, on every code path"): allocate()
+    // zeroes allocExtent before it can fail, so writing the clamped request unconditionally would
+    // leave a non-zero drawExtent over a zero textureExtent -- and a consumer following the header's
+    // own "uvMax = drawExtent / textureExtent" would divide by zero. A failed resize leaves the
+    // target NOT renderable, which destroyAll() spells as BOTH extents zero; match that exactly.
+    drawRect = ok ? clamped : rhi::Extent2D{};
     return ok;
 }
 

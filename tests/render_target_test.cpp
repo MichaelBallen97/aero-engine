@@ -320,6 +320,11 @@ TEST_CASE("render target: move semantics (E15)") {
     RenderTarget movedTo = std::move(*first);
     CHECK_FALSE(first->colorTexture().valid());  // move-construct: source inert
     CHECK(movedTo.colorTexture() == originalColor);
+    // "Inert" must mean EVERY method, not just colorTexture(). A moved-from target keeps its cfg, so
+    // resize() used to compute a non-zero allocation and dereference the null device inside
+    // allocate() -- UBSan: "member call on null pointer of type 'engine::rhi::Device'".
+    CHECK_FALSE(first->resize({128, 128}));
+    CHECK_FALSE(first->beginFrame(Color{}).has_value());
 
     auto second = RenderTarget::create(*device, {32, 32});
     REQUIRE(second.has_value());
@@ -355,6 +360,11 @@ TEST_CASE("render target: not-renderable path (E8) — forced by RAISING the cei
     CHECK_FALSE(live->resize({100000, 100000}));
     CHECK_FALSE(live->colorTexture().valid());
     CHECK_FALSE(live->beginFrame(Color{}).has_value());
+    // INV-1 holds on the FAILURE path too, not just the happy one. Without this, resize() wrote the
+    // clamped request into drawRect even when allocate() had already zeroed allocExtent, so a
+    // consumer computing the header's own uvMax = drawExtent / textureExtent divided by zero.
+    CHECK(live->textureExtent().width >= live->drawExtent().width);
+    CHECK(live->textureExtent().height >= live->drawExtent().height);
     // `live` still destructs cleanly at scope exit — no ~Device leak WARN (verified by ASan/LSan).
 }
 
