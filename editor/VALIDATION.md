@@ -693,7 +693,8 @@ new cases (a real directory tree with hide/re-show and a 200×120 shrink, and an
 an unbalanced `EndChild`, a wrongly-called `EndTable` or a leaked `PushID` is an `IM_ASSERT` **abort**
 in the Debug build — so a green run *is* the balance assertion.
 
-It **cannot** mechanically prove: anything requiring **synthesised mouse input**. No ImGui input can
+It **cannot** mechanically prove: anything a human has to **look at**, or anything requiring
+**synthesised mouse input**. No ImGui input can
 be injected in this harness, so the breadcrumb, the `..` row, single-click navigation,
 double-click-to-enter, the expand/collapse arrows, the `Show hidden` checkbox, the splitter drag and
 the ImGui-id-merging class of bug (sabotage S11) are all **human-only**. It also cannot prove that
@@ -710,7 +711,8 @@ That half needs a person at the machine.
   unchanged from 2.2.3, because no step in this task registers a new ctest entry.
 - `AERO_REQUIRE_GPU=1 ctest --preset macos-debug` and `--preset macos-release` both pass in full
   (94/94), and identically with the ratchet unset. `aero_editor_imgui_test` now runs **7**
-  `TEST_CASE`s (was 5); `aero_editor_shell_test` now runs **61** doctest cases (was 44).
+  `TEST_CASE`s (was 5); `aero_editor_shell_test` now runs **63** doctest cases (was 44 — 17 from the
+  original series plus 2 from the code-review round).
 - `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` (fresh configure): `ctest -N` is **5**
   (unchanged), `aero_editor` still builds and launches, and its log carries **exactly two WARN lines
   and no third** — both pre-existing (2.2.2's reflection-tools line, 2.2.3's shader-tools line) —
@@ -738,6 +740,18 @@ That half needs a person at the machine.
   (hoist `EndTable()` out of its `if`) **did discriminate on this lane** — abort on *"EndTable()
   call should only be done while in BeginTable() scope!"* on frame 2 of the new case, at the default
   320×180 window — so INV-3's conditional-`EndTable` half is mechanically covered, not review-only.
+- **A code-review round fixed four further defects** (full detail in `docs/10-engineering-log.md`),
+  each with its own re-verified sabotage: **S12** (revert the broken-symlink fix to always-skip) reds
+  the new dangling-symlink case; **S13** (delete the examined-cap term) reds the new examined-cap case
+  while leaving case 9 green, and **S3 re-run** reds both — proving the two caps are independently
+  covered; **S9** and **S10 re-run** against the rewritten draw code still abort. A launch proof
+  against a directory holding `sprites##old`, `sprites##new`, `readme##v2.txt`, a literal `%s.txt` and
+  a dangling symlink produced **zero ERROR/CRITICAL lines and zero ImGui asserts**.
+- **S14 (revert the `##` display fixes) is GREEN and is therefore recorded as NOT discriminating.**
+  `##` truncation is a rendering defect with no mechanical signature in this harness — no pixel
+  readback, no text-extraction API — exactly like S11. Its protections are the upstream-source
+  verification recorded inline in `asset_browser_panel.cpp`, the launch proof above, and **row 16**
+  below. It is not claimed as tested.
 - **S7 is recorded as a Windows-CI-only discriminator, NOT as passed**: seeding `path::string()` in
   place of `u8string()` leaves case 11 green on macOS, because both are UTF-8 there. The MSVC lane is
   where case 11 catches it. **S11 is human-only** (row 13 below) — ImGui id merging has no
@@ -770,12 +784,30 @@ That half needs a person at the machine.
   repo already ships U+2014 through ImGui (`editor_app.cpp`, `inspector_panel.cpp`) and four macOS
   human passes have not flagged it, so it is kept. If a human sees `?`, the fix is a one-character
   swap to ASCII `--` and is **not** a design change.
+- **A directory name containing `##` is truncated IN THE BREADCRUMB ONLY** — `sprites##old` shows as
+  `sprites` there. `ImGui::FindRenderedTextEnd()` stops at the first `##`, and `SmallButton`/`Button`
+  have **no format overload** to bypass it, unlike `TreeNodeEx`. **The tree pane and the contents
+  table — the two places a name is actually read — ARE fixed** and show the full name; navigation is
+  unaffected everywhere, because the ids come from `PushID(i)`, not from the label. Closing the
+  breadcrumb case needs an `InvisibleButton` plus hand-placed draw-list text with its own hover/active
+  styling — disproportionate for a stub. **Deliberately recorded, not fixed** (code-review gap 4);
+  row 16 below looks for it.
 - **E15 — a Windows path over `MAX_PATH`** (> 260 characters) fails to enumerate and shows
   `Cannot read this directory…`. MSVC's `std::filesystem` does not transparently apply the `\\?\`
   prefix. A known limitation of the stub; recorded, not worked around.
 - **No live refresh.** `Refresh` plus tab-reselect (`IsWindowAppearing()` drops the cache) is the
   whole story. A filesystem watcher is **3.1.4**'s deliverable, and its seam already exists:
   `cache.clear(); treeDirty = true;` *is* the entire invalidation.
+- **A broken symlink is LISTED, with `—` for its size** — it is not an error and it does not count
+  toward `skipped`. The spec's E6 assumed such an entry reached `file_size()`; it never does
+  (`is_directory()` fails first), so before the code-review round it silently VANISHED from the
+  listing. It is now listed as a size-unknown *file* — never as a directory, so the tree never offers
+  to descend into it. A broken link you can see beats one that disappears.
+- **A directory can report `truncated` with far fewer than 10 000 entries listed.** There are TWO
+  caps: 10 000 entries **retained** and 20 000 entries **examined**. Hidden-filtered entries grow only
+  the second, so a directory of 500 000 dotfiles browsed with `Show hidden` off lists nothing and says
+  `truncated` — which is correct and deliberate, and why the footer names both caps rather than
+  claiming "showing the first 10000".
 - **Read-only by contract, not by omission.** No create, rename, move, delete or open — and no
   double-click-to-open-a-scene (2.5.1 owns scene I/O). Nothing in the panel or the model mutates the
   disk; `git status` in the browsed tree stays clean no matter how much you click (row 15).
@@ -814,6 +846,17 @@ That half needs a person at the machine.
 14. **Expand a directory that turns out to have no subdirectories** — its arrow disappears, the tree
     does not flicker, and **no other selection or expansion is lost** — sabotage **C1**'s human half.
 15. **`git status` in the browsed tree is clean after all of the above** — the read-only proof.
+16. **Create `readme##v2.txt` and two directories `sprites##old` / `sprites##new`.** In the **tree**
+    and the **contents table** every name must display **in full, including the `##`** — sabotage
+    **S14**'s human half, and the only proof that exists: `##` truncation is a rendering defect with
+    **no** mechanical signature in this harness. In the **breadcrumb** the crumb is expected to show
+    as `sprites` — that one is recorded above as known-and-expected, not a defect.
+17. **Create a broken symlink** (`ln -s no-such-target broken.link`). It must **appear** in the
+    listing with `—` for its size, and the footer must **not** count it as skipped — code-review
+    gap 1. It must not appear in the directory tree.
+18. **Select any file in a directory that reports `truncated`.** The `truncated` / `skipped` counts
+    must **stay visible** in the footer alongside the selection — code-review gap 3. Before the fix,
+    clicking a file made the truncation notice disappear.
 
 ### macOS — ⏳ pending
 
@@ -831,7 +874,7 @@ Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
 
 **Task 2.2.4 gate status: OPEN — the mechanical/structural half is green on macOS (both presets at
 94/94, the `AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, three
-non-interactive launch runs, all eleven sabotage proofs, all five guards, clang-format and
+non-interactive launch runs, fourteen sabotage proofs, all five guards, clang-format and
 clang-tidy clean with zero new NOLINTs), and the interactive human pass is pending on all three
 OSes.** The gate closes when the three OS records land — the 0.5.3/1.4.2/2.1.1/2.1.3/2.2.1/2.2.2/
 2.2.3 precedent.
