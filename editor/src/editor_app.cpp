@@ -15,7 +15,6 @@
 #include "editor_reflection.hpp"
 #include "hierarchy_panel.hpp"
 #include "inspector_panel.hpp"
-#include "placeholder_panel.hpp"
 #include "shell_ui.hpp"
 #include "viewport_panel.hpp"
 

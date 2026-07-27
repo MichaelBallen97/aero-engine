@@ -11,7 +11,6 @@ add_library(aero_editor_core STATIC
     src/panel_registry.cpp
     src/editor_app.cpp
     src/shell_ui.cpp
-    src/placeholder_panel.cpp
     src/selection.cpp           # task 2.2.1
     src/entity_ops.cpp          # task 2.2.1
     src/tree_walk.cpp           # task 2.2.1, review round 2 (Gap 1)
