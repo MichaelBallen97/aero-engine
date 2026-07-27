@@ -628,10 +628,38 @@ OS's section below as you go, appending ` — PASS` (or FAIL) and what you obser
 - **Quit and relaunch**
 - **Non-square panel — no distortion**
 
-### macOS — ⏳ pending
+### macOS — ✅ PASS (2026-07-27)
 
-Mechanical/structural pass is green (this implementation pass, 2026-07-27); the interactive human
-pass has not yet been performed.
+Machine: MacBook Pro (Apple M1 Pro), Metal. Human mouse/keyboard pass against `4e21179`.
+
+- **Lit cube visible on first launch** — PASS
+- **Image fills the dock node** — PASS
+- **Slow window-edge resize — no artifact (S8's human proof)** — PASS
+- **Dock-splitter resize — aspect ratio correct** — PASS
+- **Undock / resize / redock** — PASS
+- **Maximise / restore / minimise / restore** — PASS
+- **HiDPI crisp (S5's human proof)** — PASS
+- **Alpha opaque, no chrome bleed-through (S4's human proof)** — PASS
+- **Live edit (Transform.position) reflected immediately** — PASS
+- **Live structure edits reflected immediately** — PASS
+- **No-camera overlay + single WARN** — PASS
+- **View > Viewport off/on** — PASS
+- **Quit and relaunch** — PASS
+- **Non-square panel — no distortion** — PASS
+
+Notes: this pass closes the three acceptance criteria that have **no mechanical proof available in
+this harness**, and which the implementation deliberately refused to claim automated coverage for —
+each is the human half of a sabotage proof that could not discriminate:
+
+- **HiDPI crispness (S5 / AC-3)** — the highest-value row in the table. Dropping the
+  `× io.DisplayFramebufferScale` factor produces a half-resolution, visibly soft viewport that no
+  test on a 1× surface can see, and that lavapipe could never settle.
+- **Alpha opacity (S4 / E4)** — a 0-alpha clear colour lets the editor's chrome show *through* the
+  viewport wherever no geometry was drawn, because ImGui alpha-blends the image.
+- **Temporal freshness (S8 / AC-4)** — moving `renderScene()` to after `ImGuiLayer::endFrame()`
+  leaves the entire GPU-gated suite green while showing one-frame-stale content. That the automated
+  suite stays green under that seed *is* the recorded finding; only a human eye on a slow resize
+  drag distinguishes it.
 
 ### Windows — ⏳ pending
 
@@ -641,8 +669,8 @@ Needs a native run (D3D12). No checks recorded yet.
 
 Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
 
-**Task 2.2.3 gate status: OPEN — mechanical pass green on macOS; the interactive human pass and all
-three OS records are pending.** The mechanical half (build, full ctest, the tools-OFF proof, the
-`AERO_REQUIRE_GPU=1` rehearsal, the non-interactive launch proof, all nine sabotage proofs) is green;
-the gate closes when the human mouse/keyboard pass is recorded per OS (the 0.5.3/1.4.2/2.1.1/2.1.3/
-2.2.1/2.2.2 precedent) — no code change is expected to be needed.
+**Task 2.2.3 gate status: macOS-PASS — held OPEN pending the Windows/Linux on-hardware records.**
+Both halves are green on macOS: the mechanical one (build, full ctest, the tools-OFF proof, the
+`AERO_REQUIRE_GPU=1` rehearsal, the non-interactive launch proof, all nine sabotage proofs) and the
+interactive human pass recorded above. No code change was needed. The gate closes when the two
+remaining OS records land — the 0.5.3/1.4.2/2.1.1/2.1.3/2.2.1/2.2.2 precedent.
