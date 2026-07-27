@@ -11,6 +11,7 @@
 #include <aero/rhi/types.hpp>
 #include <aero/scene/world.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -20,6 +21,9 @@ namespace engine::editor {
 class ViewportPanel;  // task 2.2.3: src-private (editor/src/viewport_panel.hpp). Only the NAME is
                       // needed here, so this PUBLIC header stays free of viewport_panel.hpp's
                       // engine includes and stays ImGui/entt-free.
+class ConsolePanel;   // task 2.2.5: src-private (editor/src/console_panel.hpp). Only the NAME is
+                      // needed here, so this PUBLIC header stays free of console_panel.hpp and
+                      // therefore of <aero/editor/console_model.hpp> as well.
 
 struct EditorAppConfig {
     rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
@@ -87,6 +91,11 @@ public:
     // True when the LAST tick() actually presented (false when the window was minimized). This is
     // what the GPU smoke test asserts — tick()'s own bool means "still running", not "presented".
     [[nodiscard]] bool presentedLastFrame() const noexcept;
+    // How many log records the Console panel currently holds. 0 when no console panel is registered
+    // (registerDefaultPanels == false, or registration was rejected). Exists for the same reason
+    // presentedLastFrame() does (D16): without it, "records are captured while the panel is HIDDEN"
+    // (AC-6) is mechanically unprovable and would fall entirely to the human pass.
+    [[nodiscard]] std::size_t logRecordCount() const noexcept;
 
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
@@ -113,6 +122,10 @@ private:
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.
     ViewportPanel* viewportPanel = nullptr;
+    // Non-owning; owned by `registry` (unique_ptr -> address-stable, survives an EditorApp move --
+    // F17, the same reason viewportPanel above is legal). Null when registerDefaultPanels == false or
+    // if registration was rejected -- ALWAYS null-check.
+    ConsolePanel* consolePanel = nullptr;
 };
 
 }  // namespace engine::editor

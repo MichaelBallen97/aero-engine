@@ -3,6 +3,7 @@
 #include <aero/core/log.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/time.hpp>
+#include <aero/editor/console_model.hpp>
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/project_files.hpp>
@@ -10,6 +11,7 @@
 #include <aero/platform/event.hpp>
 
 #include "asset_browser_panel.hpp"
+#include "console_panel.hpp"
 #include "editor_reflection.hpp"
 #include "hierarchy_panel.hpp"
 #include "inspector_panel.hpp"
@@ -46,6 +48,17 @@ EditorApp::EditorApp(ImGuiLayer layer, platform::Context& ctx, EditorAppConfig c
 
 std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window& window, platform::Context& ctx,
                                            const EditorAppConfig& config) {
+    // Task 2.2.5 (D5): install the console's log sink BEFORE ANYTHING LOGS, so registerEditorReflection()'s
+    // tools-OFF WARN, ViewportPanel's tools-OFF shader WARN, the assets root and "shell ready" are all
+    // already in the panel the first time it draws (AC-2). A local std::optional, so the
+    // `return std::nullopt` below detaches it by RAII rather than by a cleanup branch. Moved into the
+    // panel at registration.
+    std::optional<LogSinkScope> logScope;
+    if (config.registerDefaultPanels) {
+        logScope.emplace();
+        AERO_LOG_INFO("editor: console log sink attached ({} staged / {} held)", logScope->sink()->stagingCapacity(),
+                      DEFAULT_LOG_HISTORY_CAPACITY);
+    }
     registerEditorReflection();  // task 2.2.2 -- unconditional, once-per-process, before ImGuiLayer
     std::optional<ImGuiLayer> layer = ImGuiLayer::create(device, window, ctx, config.persistLayout);
     if (!layer) {
@@ -61,7 +74,13 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         app.registry.emplace<HierarchyPanel>();                           // task 2.2.1 -- was a PlaceholderPanel
         app.registry.emplace<InspectorPanel>();                           // task 2.2.2 -- was a PlaceholderPanel
         app.viewportPanel = app.registry.emplace<ViewportPanel>(device);  // task 2.2.3 -- was a PlaceholderPanel
-        app.registry.emplace<PlaceholderPanel>("Console", DockSlot::Bottom, "Console — placeholder (task 2.2.5)");
+        // task 2.2.5 -- was a PlaceholderPanel. logScope is engaged exactly when this branch runs (both
+        // guards read the same const config field), but the has_value() test is NOT defensive
+        // programming: bugprone-unchecked-optional-access is --warnings-as-errors on the Linux Debug lane
+        // and cannot be relied on to correlate two separate ifs across an intervening move (plan C3).
+        if (logScope.has_value()) {
+            app.consolePanel = app.registry.emplace<ConsolePanel>(std::move(*logScope));
+        }
         std::string assetsRoot = resolveProjectRoot(config.projectRoot);
         AERO_LOG_INFO("editor: assets root '{}'", assetsRoot);
         app.registry.emplace<AssetBrowserPanel>(std::move(assetsRoot));  // task 2.2.4 -- was a PlaceholderPanel
@@ -108,6 +127,14 @@ bool EditorApp::tick() {
     }
     frameClock.tick();
 
+    // Task 2.2.5 (D14): drain the sink EVERY frame, visible or not -- shell_ui.cpp:74-79 never calls
+    // onDraw for a hidden or tabbed-away panel, and Console shares its dock node with Assets. Not an
+    // ImGui call, and deliberately BEFORE the draw walk so this frame's rows include everything logged
+    // before it; a record emitted DURING a draw lands next frame, which is the only safe ordering (E3).
+    if (consolePanel != nullptr) {
+        consolePanel->pumpLog();
+    }
+
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout, .quitRequested = false};
     PanelContext panelContext{sceneWorld, sceneSelection};  // rebuilt per frame (D7)
@@ -150,6 +177,9 @@ const Selection& EditorApp::selection() const noexcept { return sceneSelection; 
 const FrameClock& EditorApp::clock() const noexcept { return frameClock; }
 bool EditorApp::focused() const noexcept { return windowFocused; }
 bool EditorApp::presentedLastFrame() const noexcept { return presented; }
+std::size_t EditorApp::logRecordCount() const noexcept {
+    return consolePanel != nullptr ? consolePanel->history().size() : std::size_t{0};
+}
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
