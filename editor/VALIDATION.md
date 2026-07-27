@@ -1,4 +1,4 @@
-# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1, 2.2.2, 2.2.3)
+# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1, 2.2.2, 2.2.3, 2.2.4)
 
 Task 2.1.1's deliverable: an editor window with dockable dummy panels, layout persisted across
 restarts, HiDPI scaling checked on all 3 OSes. CI proves the "builds clean on all 3 OSes, imgui
@@ -674,3 +674,164 @@ Both halves are green on macOS: the mechanical one (build, full ctest, the tools
 `AERO_REQUIRE_GPU=1` rehearsal, the non-interactive launch proof, all nine sabotage proofs) and the
 interactive human pass recorded above. No code change was needed. The gate closes when the two
 remaining OS records land — the 0.5.3/1.4.2/2.1.1/2.1.3/2.2.1/2.2.2 precedent.
+
+---
+
+# Task 2.2.4 — asset browser stub
+
+Task 2.2.4's deliverable: the `"Assets"` placeholder is replaced by a dockable, **read-only**
+two-pane browser over the project directory on disk — a directory tree on the left, the current
+directory's contents with sizes on the right, a clickable breadcrumb, `Refresh` and `Show hidden` —
+navigable, sorted, sized, and degrading to a clear in-panel message when the root is unusable. CI
+proves the structural/mechanical half automatically: the new `tests/editor/project_files_test.cpp`
+(tier-0, no GPU, no window, no ImGui context, riding the existing `aero_editor_shell_test` entry)
+proves the entire scan / sort / size-format / tree-walk / root-resolution surface over **17
+`TEST_CASE`s** — including a real temp directory, a 10 005-file cap, a `0000`-mode unreadable
+directory, a non-ASCII filename round-trip and a `MAX_TREE_DEPTH` symlink-cycle bound; and
+`aero_editor_imgui_test` drives the **real** `AssetBrowserPanel` through `EditorApp::tick()` in two
+new cases (a real directory tree with hide/re-show and a 200×120 shrink, and an unusable root), where
+an unbalanced `EndChild`, a wrongly-called `EndTable` or a leaked `PushID` is an `IM_ASSERT` **abort**
+in the Debug build — so a green run *is* the balance assertion.
+
+It **cannot** mechanically prove: anything requiring **synthesised mouse input**. No ImGui input can
+be injected in this harness, so the breadcrumb, the `..` row, single-click navigation,
+double-click-to-enter, the expand/collapse arrows, the `Show hidden` checkbox, the splitter drag and
+the ImGui-id-merging class of bug (sabotage S11) are all **human-only**. It also cannot prove that
+scrolling a 10 000-entry directory *feels* smooth (frame time has no mechanical signature here), that
+the `—` unknown-size glyph actually renders as an em dash rather than `?` with ProggyClean's
+Latin-only range, or that indentation visibly distinguishes depth 0 from depth 1 (the C3 check).
+That half needs a person at the machine.
+
+## What was mechanically verified (this implementation pass, macOS, Apple M1 Pro / Metal)
+
+- `aero_editor_core`, `aero_editor`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
+  `aero_editor_inspector_test` and `aero_tests` build clean on `macos-debug` and `macos-release`;
+  `ctest` is green at **94** entries on both, at **every one of the five commit boundaries** —
+  unchanged from 2.2.3, because no step in this task registers a new ctest entry.
+- `AERO_REQUIRE_GPU=1 ctest --preset macos-debug` and `--preset macos-release` both pass in full
+  (94/94), and identically with the ratchet unset. `aero_editor_imgui_test` now runs **7**
+  `TEST_CASE`s (was 5); `aero_editor_shell_test` now runs **61** doctest cases (was 44).
+- `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` (fresh configure): `ctest -N` is **5**
+  (unchanged), `aero_editor` still builds and launches, and its log carries **exactly two WARN lines
+  and no third** — both pre-existing (2.2.2's reflection-tools line, 2.2.3's shader-tools line) —
+  plus a hit on the new `editor: assets root '…'` INFO line and **zero** ERROR/CRITICAL lines. This
+  task adds no tools gate and no new WARN: the browser is **fully functional** in that configuration.
+- Three non-interactive launches: bare `aero_editor` logs
+  `editor: shell ready (5 panels, 3 entities, layout: default)` and
+  `editor: assets root '<repo root>'`; `aero_editor /tmp` logs `editor: assets root '/tmp'` and
+  `layout: restored`; `aero_editor /definitely/not/here` logs that exact root with **zero
+  ERROR/CRITICAL lines and a 4-line log** — the mechanical proof of D17 (a missing root is a *panel*
+  state, never a startup failure and never a log storm). `aero_editor.ini` is **byte-identical**
+  across the runs, which is D20/INV-1's proof that `"Assets"` still keys the same saved layout entry
+  it has keyed since 2.1.3.
+- All **eleven** mandatory sabotage proofs were performed, each seed confirmed present via
+  `git diff` **before** trusting the verdict, and reverted (full detail in
+  `docs/10-engineering-log.md`): **S1** (drop the `isDirectory` sort key) reds cases 4 and 6;
+  **S2** (raw compare, no case folding) reds case 4 while case 6 stays green as predicted;
+  **S3** (delete the entry cap) reds case 9; **S4** (ignore `includeHidden`) reds case 7;
+  **S5** (`parentOf("assets") == "assets"`) reds case 2; **S6** (delete the `MAX_TREE_DEPTH`
+  conjunct) reds case 14 **by assertion** (41 rows instead of 32) rather than by the hang the plan
+  predicted — case 14's `openDirs` is finite, which makes the verdict deterministic instead of a CI
+  timeout; **S8** (`skip_permission_denied`) reds case 8b, which genuinely ran here (euid 501,
+  macOS, so neither of its two vacuity guards fired); **S9** (delete one `EndChild()`) aborts
+  `aero_editor_imgui_test` with `SIGABRT` on *"Must call EndChild() and not End()!"*; and **S10**
+  (hoist `EndTable()` out of its `if`) **did discriminate on this lane** — abort on *"EndTable()
+  call should only be done while in BeginTable() scope!"* on frame 2 of the new case, at the default
+  320×180 window — so INV-3's conditional-`EndTable` half is mechanically covered, not review-only.
+- **S7 is recorded as a Windows-CI-only discriminator, NOT as passed**: seeding `path::string()` in
+  place of `u8string()` leaves case 11 green on macOS, because both are UTF-8 there. The MSVC lane is
+  where case 11 catches it. **S11 is human-only** (row 13 below) — ImGui id merging has no
+  mechanical signature in this harness. Neither is claimed as covered.
+- `clang-format-18 --dry-run --Werror` and
+  `SDKROOT=$(xcrun --sdk macosx15.4 --show-sdk-path) clang-tidy-18 -p build/macos-debug
+  --warnings-as-errors='*'` are clean over all six new/changed TUs, with **zero new `NOLINT`s** —
+  the two findings raised (`bugprone-exception-escape` on `leafOf`, `modernize-pass-by-value` on
+  `EditorApp`'s private constructor) were fixed, not suppressed.
+- All five architecture-guard scripts run green locally with no allowlist change;
+  `check-math-boundary.sh`'s anti-vacuity scan count grew 184 → 189 and its verdict is unchanged
+  (nothing here includes GLM). `git diff origin/main` is **empty** over `engine/`, `runtime/`,
+  `samples/`, `tools/`, `cmake/`, `shaders/`, `.github/` and `vcpkg.json`; the `/vcpkg` submodule SHA
+  is unchanged; `imgui_layer.{hpp,cpp}` is byte-identical for the **fifth** task running (INV-7).
+- No mouse or keyboard interaction was performed by this implementation pass — every OS below is
+  recorded pending a human, per the established precedent.
+
+## Known-and-expected, NOT a defect
+
+- **E12 — a directory with no subdirectories still shows an expand arrow until it is first opened.**
+  Knowing better beforehand costs one `opendir` per sibling on every tree rebuild. Once a directory
+  has been visited even once, `knownLeaf` removes its arrow **permanently** (the listing stays
+  cached). Documented, **not fixed** — do not "fix" it.
+- **E14/F16 — a non-ASCII filename renders as `?` glyphs.** Two different facts, only the second
+  visible: the *path* is handled correctly end to end (`u8string` in both directions, proven
+  byte-for-byte by tier-0 case 11), while the *font* — ImGui's default ProggyClean — carries Basic +
+  Extended Latin only. **Loading a Unicode font is nobody's task yet**; it is recorded in the
+  engineering log rather than invented as a task.
+- **The `—` unknown-size sentinel may render as `?`** on a lane whose font range lacks U+2014. The
+  repo already ships U+2014 through ImGui (`editor_app.cpp`, `inspector_panel.cpp`) and four macOS
+  human passes have not flagged it, so it is kept. If a human sees `?`, the fix is a one-character
+  swap to ASCII `--` and is **not** a design change.
+- **E15 — a Windows path over `MAX_PATH`** (> 260 characters) fails to enumerate and shows
+  `Cannot read this directory…`. MSVC's `std::filesystem` does not transparently apply the `\\?\`
+  prefix. A known limitation of the stub; recorded, not worked around.
+- **No live refresh.** `Refresh` plus tab-reselect (`IsWindowAppearing()` drops the cache) is the
+  whole story. A filesystem watcher is **3.1.4**'s deliverable, and its seam already exists:
+  `cache.clear(); treeDirty = true;` *is* the entire invalidation.
+- **Read-only by contract, not by omission.** No create, rename, move, delete or open — and no
+  double-click-to-open-a-scene (2.5.1 owns scene I/O). Nothing in the panel or the model mutates the
+  disk; `git status` in the browsed tree stays clean no matter how much you click (row 15).
+- **The `$PWD` default root is a foot-gun in this repository**: launched from the repo root, the tree
+  offers `vcpkg/` and `build/`. Lazy per-directory scanning bounds the work to one directory per
+  click, and the 10 000-entry cap bounds *that* — with the footer saying so. 2.6.1 replaces the
+  default with a real project root.
+
+## How to validate one OS (for the pending ones)
+
+1. **Build**, then run `aero_editor` with **no argument**. The **Assets** tab sits beside Console in
+   the bottom dock; select it; the listing matches the process working directory.
+2. Run `aero_editor <a real project dir>` — it lists that directory instead, and the breadcrumb head
+   shows its name.
+3. **Expand two levels in the tree.** The right pane follows the clicked directory, the breadcrumb
+   grows, and clicking a breadcrumb segment goes back. **Also the C3 check: each depth is visibly
+   indented one step further than its parent — depth 0 and depth 1 must NOT look identical.**
+4. `..` goes up on a **single** click; **double-clicking a directory row enters it** — the C4 check;
+   without `ImGuiSelectableFlags_AllowDoubleClick` this does nothing at all.
+5. Create a file outside the editor → **Refresh** shows it. Hide the Assets tab, create another, then
+   select the tab again → it appears **without** pressing Refresh (`IsWindowAppearing`).
+6. Tick **Show hidden** → dotfiles appear; untick → they vanish; tick/untick returns to the identical
+   view.
+7. Sizes look right against the OS file manager for files of several magnitudes, and **a file whose
+   size cannot be read shows `—` (or `?`), never `0 B`**.
+8. Sort order: **directories first**, then case-insensitive alphabetical.
+9. Drag the pane splitter; quit; relaunch → **the width is remembered** and the panel is still docked
+   where it was.
+10. Point it at a directory with **≥ 10 000 files**: scrolling stays smooth and the truncation note
+    appears in the footer.
+11. `aero_editor /definitely/not/here` → the panel explains it, naming the path; the editor still
+    docks and quits cleanly.
+12. `aero_editor <a regular file>` → the **"Not a directory"** message.
+13. **Two directories with the same name at different depths both appear correctly** — sabotage
+    **S11**'s human half (deleting the row loop's `PushID`/`PopID` merges them into one row).
+14. **Expand a directory that turns out to have no subdirectories** — its arrow disappears, the tree
+    does not flicker, and **no other selection or expansion is lost** — sabotage **C1**'s human half.
+15. **`git status` in the browsed tree is clean after all of the above** — the read-only proof.
+
+### macOS — ⏳ pending
+
+Needs a human mouse/keyboard pass. The mechanical half above is green; no interactive checks are
+recorded yet.
+
+### Windows — ⏳ pending
+
+Needs a native run (D3D12). No checks recorded yet. Rows 7 and 12 are additionally where **E15**
+(`MAX_PATH`) and **S7** (`path::string()` vs `u8string()`) would first show.
+
+### Linux — ⏳ pending
+
+Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
+
+**Task 2.2.4 gate status: OPEN — the mechanical/structural half is green on macOS (both presets at
+94/94, the `AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, three
+non-interactive launch runs, all eleven sabotage proofs, all five guards, clang-format and
+clang-tidy clean with zero new NOLINTs), and the interactive human pass is pending on all three
+OSes.** The gate closes when the three OS records land — the 0.5.3/1.4.2/2.1.1/2.1.3/2.2.1/2.2.2/
+2.2.3 precedent.
