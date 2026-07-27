@@ -129,6 +129,13 @@ void AssetBrowserPanel::drawHeader() {
         ImGui::TextUnformatted("/");
         ImGui::SameLine();
         ImGui::PushID(static_cast<int>(i));  // two segments CAN share a name ("a/x/x") -- F26/E9
+        // KNOWN AND RECORDED, not an oversight (review gap 4): SmallButton/Button have NO format
+        // overload, so a crumb literally named "sprites##old" displays as "sprites" -- Button runs its
+        // label through FindRenderedTextEnd(). The tree and the contents table, which are what a user
+        // actually reads a name from, ARE fixed; navigation here is unaffected because the id comes
+        // from PushID(i), not the label. Closing it needs an InvisibleButton plus hand-placed
+        // draw-list text with its own hover/active styling -- disproportionate for a stub, and new
+        // ImGui surface with its own bug potential. Recorded in editor/VALIDATION.md instead.
         if (ImGui::SmallButton(breadcrumb[i].c_str())) {
             record(ActionKind::Navigate, accumulated);
         }
@@ -190,7 +197,17 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
             // D5: our openDirs is AUTHORITATIVE over ImGui's storage. ImGuiCond_Always means the two
             // can never desync -- except for a _Leaf node, which ignores this entirely (see below).
             ImGui::SetNextItemOpen(row.open, ImGuiCond_Always);
-            const bool nowOpen = ImGui::TreeNodeEx(labelScratch.c_str(), flags);
+            // The (str_id, flags, fmt, ...) OVERLOAD, never (label, flags) -- review gap 4, the same
+            // class C7 closed for printf formats. A directory literally named "sprites##old" would
+            // otherwise display as "sprites": the single-argument form runs the label through
+            // FindRenderedTextEnd(), which stops at the first "##". Verified at upstream
+            // v1.92.8-docking: TreeNodeExV(str_id, ...) builds the label with
+            // ImFormatStringToTempBufferV and hands TreeNodeBehavior an EXPLICIT label_end, and
+            // TreeNodeBehavior only falls back to FindRenderedTextEnd when label_end is null -- so the
+            // "##" renders literally. "%s" also keeps it printf-safe, exactly as C7 requires.
+            // The id now comes from the constant str_id, which is unique per row via PushID(i) above,
+            // and is stable frame to frame; ImGui's own open state is irrelevant anyway (D5).
+            const bool nowOpen = ImGui::TreeNodeEx("##dir", flags, "%s", labelScratch.c_str());
             // C1 -- LOAD-BEARING. _Leaf makes TreeNodeEx return TRUE unconditionally and skips the
             // whole toggle block (`if (!is_leaf)` in TreeNodeBehavior), so a leaf's return value
             // carries NO open/closed information. Comparing it would record a spurious ToggleDir on
@@ -282,13 +299,25 @@ void AssetBrowserPanel::drawContentsPane(float paneHeight) {
                     // branch below is UNREACHABLE and AC-3's "double-click enters it" never works.
                     const ImGuiSelectableFlags selFlags =
                         ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick;
-                    if (ImGui::Selectable(entry.name.c_str(), rel == selectedEntry, selFlags)) {
+                    // An EMPTY label plus a separate TextUnformatted -- review gap 4. Selectable has
+                    // no format overload, and it runs its label through FindRenderedTextEnd(), so a
+                    // file named "readme##v2.txt" would display as "readme". TextUnformatted goes
+                    // through TextEx, which never calls FindRenderedTextEnd and renders "##"
+                    // literally (both verified at upstream v1.92.8-docking).
+                    // The layout is exact, not approximate: Selectable calls ItemSize() with the
+                    // label-derived size BEFORE the SpanAllColumns widening, and CalcTextSize returns
+                    // (0, fontSize) for an empty display range -- so the row keeps full height while
+                    // CursorPosPrevLine.x stays at the cell origin, and SameLine(0, 0) puts the name
+                    // exactly where Selectable would have drawn it.
+                    if (ImGui::Selectable("##row", rel == selectedEntry, selFlags)) {
                         if (entry.isDirectory && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                             record(ActionKind::Navigate, rel);
                         } else {
                             record(ActionKind::SelectEntry, rel);
                         }
                     }
+                    ImGui::SameLine(0.0F, 0.0F);
+                    ImGui::TextUnformatted(entry.name.c_str());
                     ImGui::PopID();  // no continue/break/return between Push and Pop
                     ImGui::TableSetColumnIndex(1);
                     if (!entry.isDirectory) {
