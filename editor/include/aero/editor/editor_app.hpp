@@ -16,6 +16,10 @@
 
 namespace engine::editor {
 
+class ViewportPanel;  // task 2.2.3: src-private (editor/src/viewport_panel.hpp). Only the NAME is
+                      // needed here, so this PUBLIC header stays free of viewport_panel.hpp's
+                      // engine includes and stays ImGui/entt-free.
+
 struct EditorAppConfig {
     rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
     bool persistLayout = true;                         // -> ImGuiLayer (imgui.ini); false in tests
@@ -96,6 +100,10 @@ private:
     bool presented = false;
     World sceneWorld;
     Selection sceneSelection;
+    // Non-owning; owned by `registry`, which holds panels through unique_ptr -- so the Panel object
+    // is address-stable and this pointer survives an EditorApp move (F21). Null when
+    // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.
+    ViewportPanel* viewportPanel = nullptr;
 };
 
 }  // namespace engine::editor
