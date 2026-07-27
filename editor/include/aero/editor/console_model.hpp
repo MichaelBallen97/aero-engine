@@ -147,7 +147,15 @@ public:
     LogSinkScope();
     explicit LogSinkScope(std::size_t stagingCapacity);
     ~LogSinkScope();
+    // Moving TRANSFERS the sink but never seizes the routing slot from a third scope. The token records
+    // a LogSink* and the sink itself does not move, so a moved-to scope inherits `other`'s active status
+    // exactly: active if `other` was, displaced if `other` was displaced.
     LogSinkScope(LogSinkScope&& other) noexcept;
+    // Assignment additionally detaches this scope's own prior installation first, and re-installs for
+    // the incoming sink ONLY when the routing slot was ours or was free -- assigning never kills an
+    // unrelated scope's console. The re-install allocates, so an out-of-memory failure THERE terminates
+    // (noexcept is mandatory on a move-assignment here); see the .cpp for why each alternative is
+    // worse. Nothing under editor/ move-assigns a scope, so that path is test-only in practice.
     LogSinkScope& operator=(LogSinkScope&& other) noexcept;
     LogSinkScope(const LogSinkScope&) = delete;
     LogSinkScope& operator=(const LogSinkScope&) = delete;

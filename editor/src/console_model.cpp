@@ -60,9 +60,16 @@ void appendPadded(std::string& out, std::uint64_t value, std::size_t width) {
 // what tier-0 case 21 asserts and sabotage S1 breaks -- it must never be "simplified". Unconditional,
 // exactly like setLogCallback itself (F5/D4) -- the caller decides whether that is wanted; this
 // function only ever installs.
+//
+// ORDER IS LOAD-BEARING: setLogCallback ALLOCATES (log.cpp:109-115 wraps the callback in a
+// make_shared), so it can throw std::bad_alloc. Install FIRST and record the token only once it
+// succeeded. Storing the token first would leave activeSink holding the address of a LogSink that the
+// unwinding constructor is about to free, with no destructor left to clear it; a later sink reusing
+// that address would then report installed() == true spuriously and its detach() would clear a
+// callback it never installed.
 void installSink(const std::shared_ptr<LogSink>& sink) {
-    activeSink.store(sink.get(), std::memory_order_relaxed);
     setLogCallback([sink](const LogRecord& record) { sink->push(record.level, record.message, record.location); });
+    activeSink.store(sink.get(), std::memory_order_relaxed);
 }
 
 }  // namespace
@@ -249,16 +256,33 @@ LogSinkScope::LogSinkScope(LogSinkScope&& other) noexcept : sinkPtr(std::move(ot
     // moved-from scope's destructor becomes a no-op (its sinkPtr is null).
 }
 
+// noexcept is REQUIRED here, not chosen: performance-noexcept-move-constructor is
+// --warnings-as-errors on the Linux lint lane. The re-install below reaches setLogCallback, which
+// allocates (log.cpp:109-115), so a std::bad_alloc at that point terminates rather than propagating.
+// That is accepted deliberately, and the three alternatives were each worse: dropping noexcept fails
+// the lint lane; swallowing the throw fails bugprone-empty-catch and would leave the scope silently
+// unrouted; a NOLINT would hide the question rather than answer it. The exposure is nil in practice --
+// nothing under editor/ move-ASSIGNS a LogSinkScope (ConsolePanel move-CONSTRUCTS one, which installs
+// nothing and cannot throw), so this path is reachable only from a test.
+//
+// The DESTRUCTOR's implicit noexcept is the one the RAII contract actually depends on, and it is
+// unconditionally safe: detach() calls setLogCallback({}), which takes the nullptr branch and does not
+// allocate at all.
 LogSinkScope& LogSinkScope::operator=(LogSinkScope&& other) noexcept {
     if (this != &other) {
+        // Whether WE were the active installation decides whether we may re-install below, so it must
+        // be read before detach() clears it. Only the owner thread ever mutates activeSink (construct,
+        // assign, detach), so this two-step is not racy.
+        const bool wasActive = installed();
         detach();  // our own installation goes first, or it would leak past the assignment
         sinkPtr = std::move(other.sinkPtr);
-        if (sinkPtr) {
-            // `other` may already have been displaced by a LATER scope's construction before this
-            // assignment ran (F5/E16 -- setLogCallback has no compare-and-swap), so its routing cannot
-            // simply be "inherited" by moving the pointer alone. Re-install for the sink we now own,
-            // exactly as the constructor does, so the assignee becomes (or remains) the active
-            // installation for whatever sink it ends up holding.
+        // Re-install ONLY when the routing slot is ours to take: either we just vacated it, or nobody
+        // holds it. `other` may have been displaced by a LATER scope (F5/E16 -- setLogCallback has no
+        // compare-and-swap), and re-installing unconditionally would silently kill THAT scope's console
+        // even though no scope was constructed or destroyed. When `other` was itself the active
+        // installation, activeSink already names the sink we just took, so installed() is true here
+        // with no work -- the token records a LogSink*, and the sink did not move.
+        if (sinkPtr && (wasActive || activeSink.load(std::memory_order_relaxed) == nullptr)) {
             installSink(sinkPtr);
         }
     }

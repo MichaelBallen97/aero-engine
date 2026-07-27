@@ -48,10 +48,16 @@ EditorApp::EditorApp(ImGuiLayer layer, platform::Context& ctx, EditorAppConfig c
 std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window& window, platform::Context& ctx,
                                            const EditorAppConfig& config) {
     // Task 2.2.5 (D5): install the console's log sink BEFORE ANYTHING LOGS, so registerEditorReflection()'s
-    // tools-OFF WARN, ViewportPanel's tools-OFF shader WARN, the assets root and "shell ready" are all
+    // tools-OFF WARN, the assets root and "shell ready" -- everything create() itself emits -- are all
     // already in the panel the first time it draws (AC-2). A local std::optional, so the
     // `return std::nullopt` below detaches it by RAII rather than by a cleanup branch. Moved into the
     // panel at registration.
+    //
+    // ViewportPanel's tools-OFF shader WARN is deliberately NOT in that list: it is emitted from
+    // ensureInitialized() on the panel's FIRST DRAW (viewport_panel.cpp:95, called from onDraw), not
+    // from its constructor. tick() pumps before the draw walk, so a record raised during frame N's draw
+    // reaches the history at frame N+1 -- correct and unavoidable ordering, but it means the WARN is one
+    // frame later than the create()-time lines, not present alongside them.
     std::optional<LogSinkScope> logScope;
     if (config.registerDefaultPanels) {
         logScope.emplace();

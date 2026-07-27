@@ -593,16 +593,54 @@ TEST_CASE("console: LogSinkScope moves cleanly") {
     c.sink()->take(out);
     CHECK(out.size() == 1);
 
-    // A moved-from scope's destructor detaches nothing.
+    // A moved-from scope's destructor detaches nothing. The moved-from `d` must therefore be DESTROYED
+    // while the observer and the moved-to scope are still alive -- asserting before any destructor has
+    // run would only restate that moving a shared_ptr preserves the total count, which is true by
+    // definition and would hold even if ~d wrongly detached.
     {
-        std::optional<LogSinkScope> d;
-        d.emplace();
-        const std::shared_ptr<LogSink> dObserver = d->sink();
-        const long countBefore = dObserver.use_count();
-        const LogSinkScope movedFrom(std::move(*d));
-        (void)movedFrom;
-        CHECK(dObserver.use_count() == countBefore);  // d's destructor (moved-from) did nothing
+        std::optional<LogSinkScope> movedTo;
+        std::shared_ptr<LogSink> dObserver;
+        {
+            std::optional<LogSinkScope> d;
+            d.emplace();
+            dObserver = d->sink();
+            movedTo.emplace(std::move(*d));
+            d.reset();  // the moved-from scope dies HERE, with movedTo and dObserver outliving it
+        }
+        CHECK(movedTo->sink() == dObserver);
+        CHECK(movedTo->installed());        // ~d did not clear the routing movedTo owns
+        CHECK(dObserver.use_count() >= 2);  // ... and did not drop the callback's reference
     }
+}
+
+TEST_CASE("console: move-assignment never seizes a third scope's installation") {
+    const LogFixture fixture;
+    // a and b are both displaced by x, which is the active installation. Assigning b into a must move
+    // the sink WITHOUT stealing routing from x: no scope was constructed or destroyed, so x's console
+    // has no reason to go dead. Re-installing unconditionally here would silently kill it.
+    std::optional<LogSinkScope> a;
+    a.emplace();
+    std::optional<LogSinkScope> b;
+    b.emplace();
+    const LogSinkScope x;
+    CHECK(x.installed());
+    CHECK_FALSE(a->installed());
+    CHECK_FALSE(b->installed());
+
+    LogSink* const bRaw = b->sink().get();
+    *a = std::move(*b);
+    CHECK(a->sink().get() == bRaw);  // the sink moved
+    CHECK(x.installed());            // ... and x still owns the routing
+    CHECK_FALSE(a->installed());
+
+    std::vector<LogEntry> out;
+    AERO_LOG_INFO("still reaches x");
+    x.sink()->take(out);
+    CHECK(out.size() == 1);
+
+    out.clear();
+    a->sink()->take(out);
+    CHECK(out.empty());  // a holds a sink nothing routes to, exactly as before the assignment
 }
 
 TEST_CASE("console: install/destroy under concurrent logging (R14 stress)") {
@@ -639,6 +677,14 @@ TEST_CASE("console: an Off-level record is stored but gets no counter slot (plan
     CHECK(h.visibleAt(0).message == "floor value");
     CHECK(std::string_view(logLevelLabel(h.visibleAt(0).level)) == "OFF");
     CHECK(h.levelCount(LogLevel::Off) == 0);
+    // THIS is the assertion that actually discriminates a missing guard, and it is not decoration.
+    // levelCount() has its own independent range check, so it reads 0 whatever the write side did --
+    // it cannot witness the overflow. `counts` is a 6-slot array followed immediately by activeFilter,
+    // so an unguarded ++counts[Off] lands on activeFilter.minLevel and silently promotes the filter
+    // from Trace to Debug. Neither a sanitizer nor any other assertion here sees that: it is an
+    // intra-object write, and std::array::operator[] is not instrumented. Comparing the filter against
+    // a default-constructed one is what turns the C1 guard from asserted-in-prose into tested.
+    CHECK(h.filter() == LogFilter{});
 
     LogHistory small(1);
     small.append(makeEntry(LogLevel::Off, "evicted"));
@@ -646,4 +692,7 @@ TEST_CASE("console: an Off-level record is stored but gets no counter slot (plan
     CHECK(small.size() == 1);
     CHECK(small.evictedCount() == 1);
     CHECK(small.levelCount(LogLevel::Info) == 1);
+    // The mirror for the EVICTION decrement: unguarded, --counts[Off] on the evicted record underflows
+    // the same neighbouring byte to 255 instead of promoting it to 1.
+    CHECK(small.filter() == LogFilter{});
 }

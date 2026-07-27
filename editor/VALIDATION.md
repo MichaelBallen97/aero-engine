@@ -921,8 +921,11 @@ minimum level and by text, clearable, copyable, bounded in memory, honest about 
 Landing it deletes the last `PlaceholderPanel` in the tree and closes Epic 2.2 in code. CI proves the
 structural/mechanical half automatically: the new `tests/editor/console_model_test.cpp` (tier-0, no
 GPU, no window, no ImGui context, riding the existing `aero_editor_shell_test` entry) proves the
-entire sink / ring / filter / formatter surface over **25 `TEST_CASE`s** — including an 8-concurrent-
-producer arm, the R14 shared-ownership proof, and the C1 `Off`-level counter-overflow guard; and
+entire sink / ring / filter / formatter surface over **26 `TEST_CASE`s** — including an 8-concurrent-
+producer arm, the R14 shared-ownership proof, a move-assignment case proving an assignment never
+seizes a third scope's installation, and the C1 `Off`-level counter-overflow guard (whose case asserts
+`filter() == LogFilter{}`, the only observable the overflow reaches — `levelCount(Off)` is blind to it
+and no sanitizer fires); and
 `aero_editor_imgui_test` drives the **real** `ConsolePanel` through `EditorApp::tick()` in three new
 cases (the live log stream, hidden-panel capture with an exact-delta assertion, and a full
 10 000-record ring under a window resize), where an unbalanced `EndChild`, a wrongly-called `EndCombo`
