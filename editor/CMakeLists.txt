@@ -23,6 +23,7 @@ add_library(aero_editor_core STATIC
     src/text_input.cpp          # task 2.2.2 -- inputTextString, promoted verbatim from hierarchy_panel.cpp
     src/inspector_panel.cpp     # task 2.2.2 -- the reflection-driven Inspector panel
     src/viewport_panel.cpp      # task 2.2.3 -- the scene rendered to texture inside a panel
+    src/project_files.cpp       # task 2.2.4 -- the asset browser's filesystem model (ImGui-free)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
