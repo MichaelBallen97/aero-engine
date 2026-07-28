@@ -1075,10 +1075,51 @@ filtering and copying byte-exactly. That half needs a person at the machine.
 The mechanical/structural pass above ran and is green (build, full ctest on both presets, the
 `AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, the non-interactive launch
 proof with the D5 ordering check, seventeen sabotage proofs each seed-confirmed and reverted, all five
-guards, clang-format and clang-tidy clean with zero new `NOLINT`s). **The 15-row interactive human
-mouse/keyboard pass above has NOT been performed** — this implementation pass had no interactive
-display access — and is recorded pending, not assumed. A human must run it before this row can read
-PASS.
+guards, clang-format and clang-tidy clean with zero new `NOLINT`s).
+
+### macOS — ⚠️ PARTIAL PASS (2026-07-28)
+
+Machine: MacBook Pro (Apple M1 Pro), Metal. Human mouse/keyboard pass against `40908fb` — the merged
+tree, with the code-review gap fixes in place.
+
+Eleven of the fifteen rows pass. **Four are BLOCKED, and the cause is a defect in the rows themselves,
+not in the panel:** every one of them requires a log record to be emitted *after* startup, and
+**nothing in the editor emits one**. Verified exhaustively against the tree — there is not a single
+`AERO_LOG_TRACE` or `AERO_LOG_DEBUG` call site anywhere in the first-party tree, and every remaining
+site reachable at editor runtime is a failure path (`component_ops`' eleven `ERROR`s, `panel_registry`'s
+four rejection `ERROR`s, `imgui_layer`/`main`/`platform`/`rhi`/`render` init and swapchain `ERROR`s) or
+a once-per-lifetime startup notice. A successful resize, click, selection or dock change logs nothing.
+Row 10's instruction to "cause some logging (resize the window, click around)" therefore cannot be
+carried out as written.
+
+- **1 — Console is the selected bottom tab; startup diagnostics already present** — PASS
+- **2 — rows match the terminal's spdlog output line for line, in content and order (F9)** — PASS
+- **3 — levels visually distinct** — PARTIAL: only `INFO` (startup) and `WARN` (tools-OFF build) are
+  reachable. Trace/Debug/Error/Critical colouring is **unverified by eye**.
+- **4 — `Level >= WARN` hides Info; back to `TRACE` restores the same order** — PASS
+- **5 — text filter, including the opposite-case spelling** — PASS
+- **6 — `Clear` empties and zeroes the notices; `Copy` pastes the visible rows** — PASS
+- **7 — scroll position holds; auto-scroll resumes at the bottom** — PARTIAL: exercised against a
+  static history only. The "while records arrive" half is unverified.
+- **8 — hover tooltip shows `file:line` after the normal delay** — PASS. The "two rows with identical
+  text keep separate tooltips" half (ImGui id merging) is unverified: no way to produce duplicates.
+- **9 — `##`, `%s` and embedded-newline messages** — **BLOCKED**, no reachable log source.
+- **10 — records captured while the Assets tab is selected (AC-6)** — **BLOCKED**, no reachable log
+  source. Note this property *is* proven mechanically by GPU case B (hide the panel, emit 20 records,
+  tick once, assert the delta is exactly 20); what is unverified is only the visual confirmation.
+- **11 — exceeding 10 000 records stays smooth; footer shows the aged-out count** — **BLOCKED**, no
+  reachable log source. `ImGuiListClipper` behaviour under a full ring is covered by GPU case C.
+- **12 — tools-OFF build: the two WARNs are visible in-panel, not just in the terminal (AC-2)** — PASS
+- **13 — sliver-height panel, collapse, undock and redock: no assert, no visual breakage** — PASS
+- **14 — quit and relaunch: docked where it was; filter/level/auto-scroll reset by design (D22)** — PASS
+- **15 — non-ASCII renders as `?` but filters and copies byte-exactly** — **BLOCKED**, no reachable
+  log source.
+
+**Follow-up this pass identified (nobody's task yet):** the editor has no runtime log source a user can
+trigger, which makes four validation rows unrunnable and will make every future log-consuming panel
+equally hard to validate. Either the engine should emit `TRACE`/`DEBUG` records on ordinary events
+(resize, selection, dock change), or a debug-only log trigger should exist behind a CMake option. The
+four blocked rows should be re-run once one of those lands.
 
 ### Windows — ⏳ pending
 
@@ -1088,13 +1129,20 @@ Needs a native run (D3D12). No checks recorded yet.
 
 Needs a native run (real Vulkan; **not** lavapipe/CI). No checks recorded yet.
 
-**Task 2.2.5 gate status: mechanically green on macOS — held OPEN pending the human interactive pass
-on all three OSes.** The mechanical/structural half is green end to end on macOS (both presets at
-94/94, the `AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof, the non-interactive launch proof,
-seventeen sabotage proofs, all five guards, clang-format/clang-tidy clean with zero new NOLINTs). The
-interactive half — the 15-row pass above, which is the only proof of AC-2's in-panel WARN visibility,
-AC-5's clipboard/auto-scroll feel, AC-8's `##`/newline rendering, and colour/alignment legibility — is
-**pending on all three OSes**, not just Windows/Linux as the 2.2.1–2.2.4 precedent recorded it: unlike
-those tasks, this implementation pass had no human at the machine at all. Epic 2.2 is **CLOSED in
-code** (no `PlaceholderPanel` remains) but the gate itself stays open until at least one OS's human
-pass lands.
+**Task 2.2.5 gate status: mechanically green on macOS, human pass PARTIAL on macOS — held OPEN.** The
+mechanical/structural half is green end to end on macOS (both presets at 94/94, the
+`AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof, the non-interactive launch proof, seventeen
+sabotage proofs, all five guards, clang-format/clang-tidy clean with zero new NOLINTs). The macOS
+human pass ran on 2026-07-28: **eleven of fifteen rows PASS, three are partial, and four are BLOCKED**
+because the editor emits no log record after startup, so they cannot be performed at all (see the
+macOS block above for the exhaustive verification of that claim).
+
+What the blocked rows leave unproven by eye: `##`/`%s`/newline rendering (AC-8), the visual half of
+hidden-panel capture (AC-6), full-ring scrolling smoothness (AC-13), and non-ASCII glyph handling.
+**Each of those four has mechanical coverage** — GPU cases B and C, tier-0 cases 3, 4 and 12, and the
+INV-6 grep — so nothing here is entirely unverified; what is missing is human confirmation of
+appearance and feel, which is exactly what this ledger exists to record separately.
+
+Windows and Linux remain **pending in full**. Epic 2.2 is **CLOSED in code** (no `PlaceholderPanel`
+remains); the gate stays **OPEN** until the four blocked rows can be run — which needs a triggerable
+runtime log source that does not exist today — and until at least one non-macOS human pass lands.
