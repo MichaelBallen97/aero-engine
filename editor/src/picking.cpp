@@ -180,8 +180,8 @@ PickResult pickEntity(const World& world, const EditorCamera& camera, const Pick
     PickResult point{};
     float bestScreenDistance = INF;
 
-    // eachEntity + has/get, NEVER each<T> -- see the header. This is also why the signature can take
-    // a const World& at all (F15/F17).
+    // eachEntity + has/get, NEVER a typed query walk -- see the header. This is also why the
+    // signature can take a const World& at all (F15/F17).
     world.eachEntity([&](Entity e) {
         if (!world.alive(e)) {
             return;
