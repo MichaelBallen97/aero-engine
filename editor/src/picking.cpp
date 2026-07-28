@@ -166,4 +166,114 @@ bool rayLocalBoxHit(Vec3 origin, Vec3 direction, float halfExtent, float& outT) 
     return true;
 }
 
+PickResult pickEntity(const World& world, const EditorCamera& camera, const PickRequest& request) {
+    const Ray ray = viewportRay(camera, request.ndc, request.aspect);
+    if (lengthSquared(ray.direction) <= 0.0F) {
+        return {};  // E6: an unbuildable ray is a guaranteed miss
+    }
+    const Mat4 viewProj = camera.projectionMatrix(request.aspect) * camera.viewMatrix();
+    // A11: loop-invariant, so hoisted out of the walk below.
+    const Vec2 clickPoints = ndcToViewportPoints(request.ndc, request.viewportSizePoints);
+    const Vec3 eye = camera.position();
+
+    PickResult mesh{};
+    PickResult point{};
+    float bestScreenDistance = INF;
+
+    // eachEntity + has/get, NEVER each<T> -- see the header. This is also why the signature can take
+    // a const World& at all (F15/F17).
+    world.eachEntity([&](Entity e) {
+        if (!world.alive(e)) {
+            return;
+        }
+        const Mat4 model = worldMatrix(world, e);  // silent identity when untransformed (F16/E3)
+        if (world.has<MeshRenderer>(e)) {          // silent for an unregistered type (F15)
+            const float det = determinant(model);
+            if (!std::isfinite(det) || std::abs(det) < DETERMINANT_EPSILON) {
+                return;  // E5 zero scale / E4 poisoned Transform: not pickable
+            }
+            const Mat4 inverseModel = inverse(model);
+            float t = 0.0F;
+            // D2: the local direction is deliberately NOT normalised, so the t that comes back is in
+            // WORLD units and hits from entities with wildly different scales are comparable.
+            if (!rayLocalBoxHit(transformPoint(inverseModel, ray.origin),
+                                transformDirection(inverseModel, ray.direction), LOCAL_MESH_HALF_EXTENT, t)) {
+                return;
+            }
+            // D16's tie-break, spelled `!(t > best)` rather than `t == best`: equivalent for the
+            // finite values that reach here, and it keeps a float equality comparison out of the tree.
+            if (!mesh.hit() || t < mesh.distance || (!(t > mesh.distance) && e.index < mesh.entity.index)) {
+                mesh = PickResult{.entity = e, .distance = t, .isPoint = false};
+            }
+            return;
+        }
+        // D5: the non-mesh candidate. entityBounds(..., false).center() IS the world translation for
+        // an entity with no MeshRenderer (F3) -- one convention, stated in one place, shared with
+        // 2.3.1's focus walk.
+        const Aabb bounds = entityBounds(world, e, /*includeDescendants=*/false);
+        if (!bounds.valid()) {
+            return;
+        }
+        Vec2 screen{};
+        if (!projectToViewport(viewProj, bounds.center(), request.viewportSizePoints, screen)) {
+            return;  // at or behind the eye
+        }
+        const float screenDistance = length(screen - clickPoints);
+        // A10: the NaN-safe NEGATED `<=`. The positive `> radius` form accepts a NaN distance (every
+        // comparison with NaN is false) and would carry it into the tie-break below.
+        if (!(screenDistance <= request.pointRadiusPoints)) {
+            return;
+        }
+        // Among point candidates the smallest SCREEN distance wins -- they are competing for a click,
+        // not for depth. Ties break on lowest entity index (D16).
+        if (screenDistance < bestScreenDistance ||
+            (!(screenDistance > bestScreenDistance) && e.index < point.entity.index)) {
+            bestScreenDistance = screenDistance;
+            point = PickResult{.entity = e, .distance = length(bounds.center() - eye), .isPoint = true};
+        }
+    });
+
+    // D5's depth rule, and it is NOT optional: markers are invisible until selected (D8), so a light
+    // hidden behind a wall stealing every click on the wall would be inexplicable to the user. A point
+    // candidate wins iff there is no mesh hit, or it is not BEHIND the one there is. No bias constant,
+    // no fudge -- the plain comparison.
+    if (point.hit() && (!mesh.hit() || point.distance <= mesh.distance)) {
+        return point;
+    }
+    return mesh;
+}
+
+// See the header for why `alreadySelected` is unnamed and why it nonetheless stays in the signature.
+PickAction pickSelectionAction(bool hit, bool /*alreadySelected*/, bool ctrlOrCmd, bool shift) noexcept {
+    if (!hit) {
+        return (ctrlOrCmd || shift) ? PickAction::None : PickAction::Clear;
+    }
+    if (ctrlOrCmd) {
+        return PickAction::Toggle;  // Ctrl/Cmd BEFORE Shift, so the matrix is order-independent
+    }
+    if (shift) {
+        return PickAction::Add;  // grows only -- Selection::add is already a no-op when present
+    }
+    return PickAction::Select;
+}
+
+void applyPickAction(Selection& selection, PickAction action, Entity entity) {
+    switch (action) {
+        case PickAction::None:
+            break;
+        case PickAction::Select:
+            selection.set(entity);
+            break;
+        case PickAction::Toggle:
+            selection.toggle(entity);
+            break;
+        case PickAction::Add:
+            selection.add(entity);
+            break;
+        case PickAction::Clear:
+            selection.clear();
+            break;
+    }
+}
+
 }  // namespace engine::editor

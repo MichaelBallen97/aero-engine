@@ -93,4 +93,57 @@ inline constexpr float CLIP_W_EPSILON = 1.0e-4F;
 // `outT` is left UNTOUCHED on a miss.
 [[nodiscard]] bool rayLocalBoxHit(Vec3 origin, Vec3 direction, float halfExtent, float& outT) noexcept;
 
+// One click, in the units the pure functions want. Built by ViewportPanel::updatePick from ImGui
+// values; built by hand in a tier-0 test.
+struct PickRequest {
+    Vec2 ndc{};                 // the click, NDC, y UP
+    float aspect = 1.0F;        // width/height, derived from drawExtent in PIXELS -- UNITLESS (D18)
+    Vec2 viewportSizePoints{};  // the image rect's size, POINTS -- for the screen-space radius (D5)
+    float pointRadiusPoints = POINT_PICK_RADIUS_POINTS;
+};
+
+struct PickResult {
+    Entity entity{};        // an INVALID handle is the miss -- never a null pointer, never a throw
+    float distance = 0.0F;  // WORLD units from the eye. Kept even on a point hit, because
+                            // per-triangle picking (Handoffs) wants this box pass as its broadphase.
+    bool isPoint = false;   // true when a NON-MESH entity won its screen-space disc (D5)
+    [[nodiscard]] bool hit() const noexcept { return entity.valid(); }
+};
+
+// The world walk. O(N) with one Mat4 inverse per mesh entity, run ONCE PER CLICK, not per frame -- a
+// BVH is the right answer at a scale this repository does not have (A8).
+//
+// const World& is LOAD-BEARING, not stylistic: it is what structurally forbids World::each<T>, which
+// logs one AERO_LOG_ERROR PER CALL for an unregistered type -- straight into 2.2.5's Console. This
+// walk uses eachEntity + has/get exclusively, all of them const and all of them silent (F15/F17).
+// It emits NO log record on ANY path (AC-11/INV-5). Do not "improve" it into each<MeshRenderer>.
+[[nodiscard]] PickResult pickEntity(const World& world, const EditorCamera& camera, const PickRequest& request);
+
+// What a click should DO. Mirrors the Hierarchy's modifier vocabulary (F5) and drops Range, which has
+// no meaning in a viewport (there is no linear order over candidates to extend along).
+enum class PickAction : std::uint8_t { None = 0, Select, Toggle, Add, Clear };
+
+// The D9 table:
+//   hit, no modifier   -> Select   replace the selection with exactly this entity
+//   hit, Ctrl/Cmd      -> Toggle   add if absent, remove if present
+//   hit, Shift         -> Add      add if absent; a NO-OP if present -- never removes
+//   miss, no modifier  -> Clear    the universal "click empty space to deselect"
+//   miss, any modifier -> None     a user extending a selection who misses by two pixels must not
+//                                  lose what they have been building
+// Ctrl/Cmd is tested BEFORE Shift, so the matrix is total and order-independent.
+//
+// PURE, and takes no Selection, so a tier-0 test drives all sixteen rows with no World and no panel.
+// `alreadySelected` is DELIBERATELY not consulted: Toggle defers the add/remove choice to
+// Selection::toggle and Add defers the no-op to Selection::add. It stays in the signature because
+// that INDEPENDENCE is the contract, and picking_test.cpp case 12 asserts it by running every row
+// with the flag both false and true. The definition leaves the name out (misc-unused-parameters is
+// --warnings-as-errors on the Linux lane).
+[[nodiscard]] PickAction pickSelectionAction(bool hit, bool alreadySelected, bool ctrlOrCmd, bool shift) noexcept;
+
+// The ONE place a PickAction becomes a Selection mutation. Separated from the decision so the decision
+// stays pure and this stays a five-arm switch with nothing to get wrong. Both writers of the shared
+// Selection -- the Hierarchy and now the Viewport -- funnel through the same Selection mutators, so
+// whatever 2.4.2 decides to wrap for undo, it wraps both call sites at once (D22).
+void applyPickAction(Selection& selection, PickAction action, Entity entity);
+
 }  // namespace engine::editor
