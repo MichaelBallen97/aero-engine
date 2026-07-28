@@ -5,6 +5,7 @@
 #include <aero/core/time.hpp>
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/editor_app.hpp>
+#include <aero/editor/editor_camera.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/project_files.hpp>
 #include <aero/platform/context.hpp>
@@ -185,6 +186,12 @@ bool EditorApp::focused() const noexcept { return windowFocused; }
 bool EditorApp::presentedLastFrame() const noexcept { return presented; }
 std::size_t EditorApp::logRecordCount() const noexcept {
     return consolePanel != nullptr ? consolePanel->history().size() : std::size_t{0};
+}
+EditorCamera* EditorApp::viewportCamera() noexcept {
+    return viewportPanel != nullptr ? &viewportPanel->camera() : nullptr;
+}
+const EditorCamera* EditorApp::viewportCamera() const noexcept {
+    return viewportPanel != nullptr ? &viewportPanel->camera() : nullptr;
 }
 
 void EditorApp::requestQuit() noexcept { running = false; }
