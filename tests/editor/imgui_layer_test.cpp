@@ -16,19 +16,24 @@
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
 #include <aero/editor/editor_app.hpp>
+#include <aero/editor/editor_camera.hpp>  // task 2.3.1
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/scene_bounds.hpp>  // task 2.3.1
 #include <aero/editor/selection.hpp>
 #include <aero/platform/platform.hpp>
 #include <aero/rhi/device.hpp>
+#include <aero/scene/scene.hpp>
 #include <aero/scene/world.hpp>
 
 #include "rhi_test_support.hpp"
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace {
@@ -563,6 +568,221 @@ TEST_CASE("editor: a full Console ring stays balanced and clipped (task 2.2.5, A
         REQUIRE(app->tick());
         CHECK(app->presentedLastFrame());
     }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ==================================================================================================
+// task 2.3.1 -- the real editor camera driven through a real EditorApp::tick(). Honest limit, stated
+// once here for all four cases: this proves NO CRASH, NO ABORT, NO LEAK, and that frames present, and
+// that the World/Selection stay untouched by camera motion. It does NOT prove the image is correct,
+// that any gesture FEELS right, or that ImGui-side input routing works -- no ImGui input can be
+// synthesised in this harness (the 2.2.1/2.2.2/2.2.3/2.2.5 precedent). That half is editor/VALIDATION.md's
+// human pass.
+// ==================================================================================================
+
+TEST_CASE("editor: the editor camera drives the viewport with zero scene Cameras (task 2.3.1, AC-1)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "editor camera smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    // Destroy the seeded "Main Camera" -- the World now holds zero Camera components.
+    engine::World& world = app->world();
+    engine::Entity mainCamera{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Main Camera") {
+            mainCamera = e;
+        }
+    });
+    REQUIRE(mainCamera.valid());
+    REQUIRE(world.destroy(mainCamera));
+
+    std::vector<std::string> warnMessages;
+    engine::setLogCallback([&warnMessages](const engine::LogRecord& r) {
+        if (r.level >= engine::LogLevel::Warn) {
+            warnMessages.emplace_back(r.message);
+        }
+    });
+
+    // Before this task this scene rendered nothing but the clear. This is what S5 also reds.
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    engine::setLogCallback({});  // detach before any REQUIRE below could otherwise leak it
+    const bool sawNoCameraWarn = std::any_of(warnMessages.begin(), warnMessages.end(), [](const std::string& m) {
+        return m.find("no Camera in world") != std::string::npos;
+    });
+    CHECK_FALSE(sawNoCameraWarn);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: EditorApp::viewportCamera() (task 2.3.1, D6)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport camera accessor", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::editor::EditorCamera* camera = app->viewportCamera();
+    REQUIRE(camera != nullptr);
+    const engine::editor::EditorCamera* constCamera =
+        const_cast<const engine::editor::EditorApp*>(&*app)->viewportCamera();
+    CHECK(constCamera == camera);  // the const/non-const overloads agree by address
+
+    // The pose immediately after create() is D8's default.
+    using namespace engine::editor;
+    CHECK(camera->pivot() == DEFAULT_PIVOT);
+    CHECK(camera->distance() == DEFAULT_DISTANCE);
+    CHECK(camera->yaw() == DEFAULT_YAW);
+    CHECK(camera->pitch() == DEFAULT_PITCH);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+
+    // E23/E13: null when no Viewport panel is registered.
+    std::optional<engine::editor::EditorApp> bareApp = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .registerDefaultPanels = false, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(bareApp.has_value());
+    CHECK(bareApp->viewportCamera() == nullptr);
+    bareApp->requestQuit();
+    CHECK(bareApp->tick() == false);
+    bareApp.reset();
+}
+
+TEST_CASE("editor: programmatic camera navigation mutates no World, no Selection (task 2.3.1, AC-19)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "camera nav survives a real frame", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    const engine::World& world = app->world();
+    const std::size_t entityCountBefore = world.entityCount();
+    const std::size_t transformCountBefore = world.componentCount<engine::Transform>();
+    const std::size_t cameraCountBefore = world.componentCount<engine::Camera>();
+    const std::size_t meshCountBefore = world.componentCount<engine::MeshRenderer>();
+    const std::size_t dirLightCountBefore = world.componentCount<engine::DirectionalLight>();
+    const std::size_t pointLightCountBefore = world.componentCount<engine::PointLight>();
+    const std::size_t selectionCountBefore = app->selection().count();
+
+    engine::editor::EditorCamera* camera = app->viewportCamera();
+    REQUIRE(camera != nullptr);
+
+    using engine::editor::CameraGesture;
+    using engine::editor::CameraInput;
+    camera->update(CameraInput{.dragDelta = {10.0F, 5.0F}, .gesture = CameraGesture::Orbit}, 1.0F / 60.0F);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    camera->update(
+        CameraInput{.dragDelta = {8.0F, 0.0F}, .viewportHeightPoints = 200.0F, .gesture = CameraGesture::Pan},
+        1.0F / 60.0F);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    camera->update(CameraInput{.wheelNotches = 2.0F}, 1.0F / 60.0F);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    camera->update(CameraInput{.gesture = CameraGesture::Fly, .moveForward = true}, 1.0F / 60.0F);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    camera->focusOn(engine::editor::sceneBounds(world), 1.5F);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(world.entityCount() == entityCountBefore);
+    CHECK(world.componentCount<engine::Transform>() == transformCountBefore);
+    CHECK(world.componentCount<engine::Camera>() == cameraCountBefore);
+    CHECK(world.componentCount<engine::MeshRenderer>() == meshCountBefore);
+    CHECK(world.componentCount<engine::DirectionalLight>() == dirLightCountBefore);
+    CHECK(world.componentCount<engine::PointLight>() == pointLightCountBefore);
+    CHECK(app->selection().count() == selectionCountBefore);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a hidden/tabbed-away Viewport does not reset or re-latch the camera pose (task 2.3.1, E2)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "camera hidden viewport", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    app->panels().setVisible("Viewport", false);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    engine::editor::EditorCamera* camera = app->viewportCamera();
+    REQUIRE(camera != nullptr);
+    camera->setPivot(engine::Vec3{3.0F, 4.0F, 5.0F});
+    camera->setDistance(42.0F);
+
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->panels().setVisible("Viewport", true);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    CHECK(camera->pivot() == engine::Vec3{3.0F, 4.0F, 5.0F});
+    CHECK(camera->distance() == 42.0F);
 
     app->requestQuit();
     CHECK(app->tick() == false);
