@@ -239,8 +239,8 @@ TEST_CASE("editor camera: case 1 -- defaults (D8)") {
 
     CHECK(camera.pivot() == DEFAULT_PIVOT);
     CHECK(camera.distance() == DEFAULT_DISTANCE);
-    CHECK(camera.yaw() == DEFAULT_YAW);
-    CHECK(camera.pitch() == DEFAULT_PITCH);
+    CHECK(camera.yaw() == DEFAULT_YAW_RADIANS);
+    CHECK(camera.pitch() == DEFAULT_PITCH_RADIANS);
     CHECK(camera.fovYRadians() == DEFAULT_FOV_Y);
     CHECK(camera.nearPlane() == DEFAULT_NEAR);
     CHECK(camera.farPlane() == DEFAULT_FAR);
@@ -249,8 +249,8 @@ TEST_CASE("editor camera: case 1 -- defaults (D8)") {
     // position() independently derived from the D16/D17 formula the header documents -- NOT by
     // calling camera.rotation()/forward() (which would be tautological), but by composing the same
     // documented quaternion product directly here.
-    const engine::Quat expectedRotation =
-        engine::fromAxisAngle(Vec3::unitY(), DEFAULT_YAW) * engine::fromAxisAngle(Vec3::unitX(), DEFAULT_PITCH);
+    const engine::Quat expectedRotation = engine::fromAxisAngle(Vec3::unitY(), DEFAULT_YAW_RADIANS) *
+                                          engine::fromAxisAngle(Vec3::unitX(), DEFAULT_PITCH_RADIANS);
     const Vec3 expectedForward = expectedRotation * Vec3{0.0F, 0.0F, -1.0F};
     const Vec3 expectedPosition = DEFAULT_PIVOT - expectedForward * DEFAULT_DISTANCE;
     CHECK(engine::approxEquals(camera.position(), expectedPosition));
@@ -737,7 +737,7 @@ TEST_CASE("editor camera: case 10 -- totality (AC-18, E11, E12, E22) [C4]") {
         const Vec3 pivotBefore = camera.pivot();
         camera.update(CameraInput{.dragDelta = Vec2{20.0F, 0.0F}, .gesture = CameraGesture::Orbit}, 0.0F);
         CHECK(camera.pivot() == pivotBefore);
-        CHECK(camera.yaw() != engine::editor::DEFAULT_YAW);
+        CHECK(camera.yaw() != engine::editor::DEFAULT_YAW_RADIANS);
     }
 
     SUBCASE("a non-finite or <=0 aspect falls back to 1.0 in projectionMatrix") {

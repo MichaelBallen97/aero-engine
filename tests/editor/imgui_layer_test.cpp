@@ -661,8 +661,8 @@ TEST_CASE("editor: EditorApp::viewportCamera() (task 2.3.1, D6)") {
     using namespace engine::editor;
     CHECK(camera->pivot() == DEFAULT_PIVOT);
     CHECK(camera->distance() == DEFAULT_DISTANCE);
-    CHECK(camera->yaw() == DEFAULT_YAW);
-    CHECK(camera->pitch() == DEFAULT_PITCH);
+    CHECK(camera->yaw() == DEFAULT_YAW_RADIANS);
+    CHECK(camera->pitch() == DEFAULT_PITCH_RADIANS);
 
     app->requestQuit();
     CHECK(app->tick() == false);

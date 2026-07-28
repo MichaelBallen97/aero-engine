@@ -221,8 +221,8 @@ bool EditorCamera::stateIsFinite() const noexcept {
 void EditorCamera::reset() noexcept {
     pivotPoint = DEFAULT_PIVOT;
     orbitDistance = DEFAULT_DISTANCE;
-    yawRadians = DEFAULT_YAW;
-    pitchRadians = DEFAULT_PITCH;
+    yawRadians = DEFAULT_YAW_RADIANS;
+    pitchRadians = DEFAULT_PITCH_RADIANS;
     fovYValue = DEFAULT_FOV_Y;
     nearPlaneValue = DEFAULT_NEAR;
     farPlaneValue = DEFAULT_FAR;

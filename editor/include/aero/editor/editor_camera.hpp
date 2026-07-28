@@ -78,14 +78,19 @@ struct CameraGestureInput {
 // invariance) rather than a magnitude, so retuning reddens nothing. Sensitivities are per logical
 // POINT, not per pixel (D15) -- see viewport_panel.cpp's `.viewportHeightPoints = avail.y` comment for
 // the one call site this matters at.
-inline constexpr Vec3 DEFAULT_PIVOT = Vec3::zero();      // the seeded Cube's position
-inline constexpr float DEFAULT_DISTANCE = 8.0F;          // frames a unit cube with headroom at 60deg
-inline constexpr float DEFAULT_YAW = radians(30.0F);     // a right-front 3/4 view, not a flat elevation
-inline constexpr float DEFAULT_PITCH = radians(-20.0F);  // looking slightly down
-inline constexpr float DEFAULT_FOV_Y = radians(60.0F);   // matches engine::Camera's default
-inline constexpr float DEFAULT_NEAR = 0.1F;              // matches engine::Camera's default
-inline constexpr float DEFAULT_FAR = 1000.0F;            // >> Camera's 100: flying a 100-unit box takes ~20s
-inline constexpr float DEFAULT_FLY_SPEED = 5.0F;         // world units / second
+inline constexpr Vec3 DEFAULT_PIVOT = Vec3::zero();  // the seeded Cube's position
+inline constexpr float DEFAULT_DISTANCE = 8.0F;      // frames a unit cube with headroom at 60deg
+// The _RADIANS suffix on these two is LOAD-BEARING, not decoration: <wingdi.h> defines DEFAULT_PITCH
+// as a font-pitch macro (0). A macro ignores namespaces, so `engine::editor::DEFAULT_PITCH` was
+// substituted to `0` at every USE site on Windows while this header itself still compiled -- the
+// Windows CI lane caught it as a wrong VALUE, not a build error. Do not drop the suffix. The yaw
+// constant carries it too, to keep the pair symmetric and to match the yaw/pitchRadians members.
+inline constexpr float DEFAULT_YAW_RADIANS = radians(30.0F);     // a right-front 3/4 view, not flat
+inline constexpr float DEFAULT_PITCH_RADIANS = radians(-20.0F);  // looking slightly down
+inline constexpr float DEFAULT_FOV_Y = radians(60.0F);           // matches engine::Camera's default
+inline constexpr float DEFAULT_NEAR = 0.1F;                      // matches engine::Camera's default
+inline constexpr float DEFAULT_FAR = 1000.0F;                    // >> Camera's 100: flying a 100-unit box takes ~20s
+inline constexpr float DEFAULT_FLY_SPEED = 5.0F;                 // world units / second
 inline constexpr float MIN_DISTANCE = 0.05F;
 inline constexpr float MAX_DISTANCE = 10000.0F;
 inline constexpr float MAX_PITCH = HALF_PI - 0.01F;       // +-89.43 degrees
@@ -178,8 +183,8 @@ private:  // C3: members renamed so they never collide with the accessors above
 
     Vec3 pivotPoint = DEFAULT_PIVOT;
     float orbitDistance = DEFAULT_DISTANCE;
-    float yawRadians = DEFAULT_YAW;
-    float pitchRadians = DEFAULT_PITCH;
+    float yawRadians = DEFAULT_YAW_RADIANS;
+    float pitchRadians = DEFAULT_PITCH_RADIANS;
     float fovYValue = DEFAULT_FOV_Y;
     float nearPlaneValue = DEFAULT_NEAR;
     float farPlaneValue = DEFAULT_FAR;
