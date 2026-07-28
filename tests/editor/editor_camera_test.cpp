@@ -49,6 +49,50 @@ struct GestureRow {
     CameraGestureState expected;
 };
 
+// Every field of the camera's public pose in one snapshot. Comparing the WHOLE pose bit-for-bit is
+// what makes "the poisoned input was IGNORED" distinguishable from "the state went non-finite and
+// reset() restored the default pose" -- from a DEFAULT-constructed camera those two outcomes are
+// identical, which is why every totality row below starts from offDefaultCamera().
+struct Pose {
+    Vec3 pivot;
+    float distance = 0.0F;
+    float yaw = 0.0F;
+    float pitch = 0.0F;
+    float fovY = 0.0F;
+    float nearPlane = 0.0F;
+    float farPlane = 0.0F;
+    float flySpeed = 0.0F;
+};
+
+[[nodiscard]] Pose poseOf(const EditorCamera& camera) {
+    return Pose{camera.pivot(),       camera.distance(),  camera.yaw(),      camera.pitch(),
+                camera.fovYRadians(), camera.nearPlane(), camera.farPlane(), camera.flySpeed()};
+}
+
+// A camera deliberately OFF the D8 default pose -- orbited (yaw + pitch) and dollied (distance) --
+// while leaving the pivot exactly at the origin, so a fly's `pivot = eye + forward*distance` round
+// trip stays bit-exact. reset() lands on the default pose, so yaw/pitch/distance differing from
+// DEFAULT_* is what makes an unwanted reset visible at all.
+[[nodiscard]] EditorCamera offDefaultCamera() {
+    EditorCamera camera;
+    camera.update(CameraInput{.dragDelta = Vec2{37.0F, -21.0F}, .gesture = CameraGesture::Orbit}, 1.0F / 60.0F);
+    camera.update(CameraInput{.wheelNotches = 2.0F}, 1.0F / 60.0F);
+    return camera;
+}
+
+// AC-18's "rejected WITHOUT corrupting state", asserted field by field and EXACTLY: an ignored input
+// must leave the pose untouched, not merely finite.
+void checkPoseUnchanged(const EditorCamera& camera, const Pose& before) {
+    CHECK(camera.pivot() == before.pivot);
+    CHECK(camera.distance() == before.distance);
+    CHECK(camera.yaw() == before.yaw);
+    CHECK(camera.pitch() == before.pitch);
+    CHECK(camera.fovYRadians() == before.fovY);
+    CHECK(camera.nearPlane() == before.nearPlane);
+    CHECK(camera.farPlane() == before.farPlane);
+    CHECK(camera.flySpeed() == before.flySpeed);
+}
+
 // INV-5, in one place: finite everywhere, and every clamped field inside its own documented bound.
 void checkPoseIsSane(const EditorCamera& camera) {
     using namespace engine::editor;  // the MIN_*/MAX_* bounds; test TU, not a header
@@ -553,6 +597,57 @@ TEST_CASE("editor camera: case 9 -- focus (AC-16) [S11]") {
     }
 }
 
+TEST_CASE("editor camera: case 9's independent framing check -- the box lands inside the frustum (AC-16)") {
+    using namespace engine::editor;
+    // Case 9 re-derives radius/sin(halfFov) from the same inputs the implementation uses. This is the
+    // INDEPENDENT half section 6.1 case 9 asks for, and it goes through a different code path
+    // entirely: push the eight corners of the framed box through projectionMatrix(aspect) *
+    // viewMatrix() and require every one to land inside the clip volume -- x,y in [-1,1] and
+    // z in [0,1], because ADR-005 pins clip Z to [0,1], right-handed, Y-up, -Z forward, with NO Y
+    // flip for Vulkan (SDL converts behind the scenes; flipping here would double-flip).
+    const Aabb box{Vec3{-0.5F, -0.5F, -0.5F}, Vec3{0.5F, 0.5F, 0.5F}};
+    const std::vector<float> aspects = {0.5F, 1.0F, 2.0F};  // 0.5 is narrow -> the fovX-tighter branch
+
+    for (const float aspect : aspects) {
+        CAPTURE(aspect);
+        EditorCamera camera;
+        camera.focusOn(box, aspect);
+        const Mat4 viewProj = camera.projectionMatrix(aspect) * camera.viewMatrix();
+
+        float widest = 0.0F;
+        for (int corner = 0; corner < 8; ++corner) {
+            CAPTURE(corner);
+            const Vec3 point{(corner & 1) != 0 ? box.max.x : box.min.x, (corner & 2) != 0 ? box.max.y : box.min.y,
+                             (corner & 4) != 0 ? box.max.z : box.min.z};
+            const Vec4 clip = viewProj * Vec4{point.x, point.y, point.z, 1.0F};
+            REQUIRE(clip.w > 0.0F);  // in front of the eye at all -- and the divide below is safe
+            const Vec3 ndc{clip.x / clip.w, clip.y / clip.w, clip.z / clip.w};
+            CHECK(std::abs(ndc.x) <= 1.0F);
+            CHECK(std::abs(ndc.y) <= 1.0F);
+            CHECK(ndc.z >= 0.0F);
+            CHECK(ndc.z <= 1.0F);
+            widest = std::max({widest, std::abs(ndc.x), std::abs(ndc.y)});
+        }
+        // ... and the box subtends EXACTLY the angle FOCUS_MARGIN asks for. The framing puts a sphere
+        // of radius r*FOCUS_MARGIN tangent to the frustum, so the box's OWN bounding sphere (radius
+        // r) subtends asin(sin(halfFov)/FOCUS_MARGIN), and no corner can project past
+        // tan(that)/tan(halfFov) on the tighter screen axis. Derived from FOCUS_MARGIN, the fov and
+        // the aspect -- never from camera.distance() -- so retuning a constant moves the bound WITH
+        // the implementation (R-4) while a wrong distance formula still reddens it.
+        const float halfY = 0.5F * camera.fovYRadians();
+        const float halfX = std::atan(std::tan(halfY) * aspect);
+        const float halfFov = std::min(halfY, halfX);
+        const float expectedWidest = std::tan(std::asin(std::sin(halfFov) / FOCUS_MARGIN)) / std::tan(halfFov);
+        CAPTURE(widest);
+        CAPTURE(expectedWidest);
+        CHECK(widest <= expectedWidest);
+        // The cube's corners sit ON its bounding sphere, so they must come CLOSE to that bound rather
+        // than shrink to a dot: without this, every assertion above would pass just as happily for a
+        // camera parked at MAX_DISTANCE.
+        CHECK(widest > 0.5F * expectedWidest);
+    }
+}
+
 TEST_CASE("editor camera: case 10 -- totality (AC-18, E11, E12, E22) [C4]") {
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float posInf = std::numeric_limits<float>::infinity();
@@ -562,47 +657,66 @@ TEST_CASE("editor camera: case 10 -- totality (AC-18, E11, E12, E22) [C4]") {
     const std::vector<CameraGesture> gestures = {CameraGesture::None, CameraGesture::Orbit, CameraGesture::Pan,
                                                  CameraGesture::Dolly, CameraGesture::Fly};
 
+    // AC-18 says a poisoned input is rejected WITHOUT CORRUPTING STATE, which is strictly stronger
+    // than "the camera ends up finite": from a DEFAULT-constructed camera, "the input was ignored"
+    // and "the state went non-finite and reset() restored the default pose" are INDISTINGUISHABLE --
+    // and the reset path is exactly the one an unguarded +inf takes. Every camera below therefore
+    // starts OFF the default pose, and the whole pose is compared field by field.
     for (const CameraGesture gesture : gestures) {
         CAPTURE(static_cast<int>(gesture));
         for (const float poison : poisons) {
+            CAPTURE(poison);
             {
-                EditorCamera camera;
+                INFO("dragDelta.x");
+                EditorCamera camera = offDefaultCamera();
+                const Pose before = poseOf(camera);
                 camera.update(CameraInput{.dragDelta = Vec2{poison, 1.0F}, .gesture = gesture}, 1.0F / 60.0F);
-                CHECK(std::isfinite(camera.distance()));
-                CHECK(camera.distance() > 0.0F);
-                CHECK(camera.nearPlane() < camera.farPlane());
+                checkPoseUnchanged(camera, before);
+                checkPoseIsSane(camera);
             }
             {
-                EditorCamera camera;
+                INFO("dragDelta.y");
+                EditorCamera camera = offDefaultCamera();
+                const Pose before = poseOf(camera);
                 camera.update(CameraInput{.dragDelta = Vec2{1.0F, poison}, .gesture = gesture}, 1.0F / 60.0F);
-                CHECK(std::isfinite(camera.distance()));
+                checkPoseUnchanged(camera, before);
+                checkPoseIsSane(camera);
             }
             {
-                EditorCamera camera;
+                INFO("wheelNotches");
+                EditorCamera camera = offDefaultCamera();
+                const Pose before = poseOf(camera);
                 camera.update(CameraInput{.wheelNotches = poison, .gesture = gesture}, 1.0F / 60.0F);
-                CHECK(std::isfinite(camera.distance()));
+                checkPoseUnchanged(camera, before);
+                checkPoseIsSane(camera);
             }
             {
-                EditorCamera camera;
+                INFO("viewportHeightPoints");
+                EditorCamera camera = offDefaultCamera();
+                const Pose before = poseOf(camera);
                 camera.update(CameraInput{.viewportHeightPoints = poison, .gesture = gesture}, 1.0F / 60.0F);
-                CHECK(std::isfinite(camera.distance()));
+                checkPoseUnchanged(camera, before);
+                checkPoseIsSane(camera);
             }
             {
-                EditorCamera camera;
+                INFO("deltaSeconds");
+                EditorCamera camera = offDefaultCamera();
+                const Pose before = poseOf(camera);
                 camera.update(CameraInput{.gesture = gesture}, poison);
-                CHECK(std::isfinite(camera.distance()));
+                checkPoseUnchanged(camera, before);
+                checkPoseIsSane(camera);
             }
             {
-                // All at once.
-                EditorCamera camera;
+                INFO("all at once");
+                EditorCamera camera = offDefaultCamera();
+                const Pose before = poseOf(camera);
                 camera.update(CameraInput{.dragDelta = Vec2{poison, poison},
                                           .wheelNotches = poison,
                                           .viewportHeightPoints = poison,
                                           .gesture = gesture},
                               poison);
-                CHECK(std::isfinite(camera.distance()));
-                CHECK(camera.distance() > 0.0F);
-                CHECK(camera.nearPlane() < camera.farPlane());
+                checkPoseUnchanged(camera, before);
+                checkPoseIsSane(camera);
             }
         }
     }
@@ -628,11 +742,180 @@ TEST_CASE("editor camera: case 10 -- totality (AC-18, E11, E12, E22) [C4]") {
 
     SUBCASE("a non-finite or <=0 aspect falls back to 1.0 in projectionMatrix") {
         const EditorCamera camera;
-        const Mat4 withNan = camera.projectionMatrix(nan);
-        const Mat4 withZero = camera.projectionMatrix(0.0F);
         const Mat4 withOne = camera.projectionMatrix(1.0F);
-        CHECK(engine::approxEquals(withNan, withOne));
-        CHECK(engine::approxEquals(withZero, withOne));
+        // NaN and 0.0F discriminate NOTHING on their own: the spec's negated-`>` spelling rejects
+        // both (`NaN > 0` is false, `0 > 0` is false). They are kept as coverage, not as proof.
+        CHECK(engine::approxEquals(camera.projectionMatrix(nan), withOne));
+        CHECK(engine::approxEquals(camera.projectionMatrix(0.0F), withOne));
+        CHECK(engine::approxEquals(camera.projectionMatrix(-2.0F), withOne));
+        // +inf IS the row C4 exists for: `+inf > 0.0F` is TRUE, so the negated-`>` spelling passes it
+        // straight through and proj[0][0] becomes 1/(tan(halfY)*inf) == 0 instead of 1/tan(halfY).
+        CHECK(engine::approxEquals(camera.projectionMatrix(posInf), withOne));
+        CHECK(engine::approxEquals(camera.projectionMatrix(negInf), withOne));
+        // ... and the fallback is not vacuous: a genuinely different aspect gives a different matrix.
+        CHECK_FALSE(engine::approxEquals(camera.projectionMatrix(2.0F), withOne));
+    }
+
+    SUBCASE("+inf deltaSeconds falls back to exactly 0.0F [C4]") {
+        // Under the negated-`>` spelling `dt` stays +inf, `pivot += normalizeOrZero(move) * (speed *
+        // inf)` poisons the pose, and the finiteness sweep RESETS the camera -- which is not
+        // "rejected without corrupting state". Starting off the default pose is what makes that
+        // reset visible; from a default camera the reset is invisible and every assertion passes.
+        const CameraInput flyForward{.gesture = CameraGesture::Fly, .moveForward = true, .fast = true};
+        EditorCamera poisoned = offDefaultCamera();
+        const Pose before = poseOf(poisoned);
+        poisoned.update(flyForward, posInf);
+        checkPoseUnchanged(poisoned, before);
+
+        // ... and it is exactly the pose a dt of 0.0F -- the documented fallback VALUE -- produces.
+        EditorCamera zeroDelta = offDefaultCamera();
+        zeroDelta.update(flyForward, 0.0F);
+        checkPoseUnchanged(zeroDelta, before);
+
+        // Not vacuous: a real dt does move the camera, so the two rows above assert something.
+        EditorCamera moving = offDefaultCamera();
+        moving.update(flyForward, 1.0F);
+        CHECK(moving.pivot() != before.pivot);
+    }
+
+    SUBCASE("+inf viewportHeightPoints falls back to exactly 1.0F [C4]") {
+        // Under the negated-`>` spelling `height` stays +inf, worldPerPoint becomes
+        // 2*distance*tan(fovY/2)/inf == 0, and a pan drag moves NOTHING -- silently finite, silently
+        // wrong. The specified fallback is 1.0F, so the poisoned pan must land on the 1.0F pan.
+        const CameraInput panDrag{
+            .dragDelta = Vec2{12.0F, -7.0F}, .viewportHeightPoints = posInf, .gesture = CameraGesture::Pan};
+        EditorCamera poisoned = offDefaultCamera();
+        poisoned.update(panDrag, 1.0F / 60.0F);
+
+        CameraInput unitHeight = panDrag;
+        unitHeight.viewportHeightPoints = 1.0F;
+        EditorCamera reference = offDefaultCamera();
+        reference.update(unitHeight, 1.0F / 60.0F);
+
+        CHECK(poisoned.pivot() == reference.pivot());
+        // Not vacuous: the fallback pan genuinely moves the pivot off where it started.
+        CHECK(poisoned.pivot() != offDefaultCamera().pivot());
+        checkPoseIsSane(poisoned);
+    }
+}
+
+// ==================================================================================================
+// clampState()'s setter-reached arms. setYaw/setPitch/setFovYRadians/setNearPlane/setFarPlane/
+// setFlySpeed had ZERO call sites anywhere in editor/ or tests/, so four of clampState()'s seven
+// statements -- the fov, near, far and flySpeed clamps -- were dead to the entire suite: deleting all
+// four left it green. C7, one of the plan's four load-bearing corrections, was therefore unproven.
+// ==================================================================================================
+
+TEST_CASE("editor camera: every setter clamps through clampState (INV-5, C7)") {
+    using namespace engine::editor;
+
+    SUBCASE("setFovYRadians clamps into [MIN_FOV_Y, MAX_FOV_Y]") {
+        EditorCamera camera;
+        camera.setFovYRadians(0.0F);
+        CHECK(camera.fovYRadians() == MIN_FOV_Y);
+        camera.setFovYRadians(10.0F);  // ~573 degrees
+        CHECK(camera.fovYRadians() == MAX_FOV_Y);
+    }
+
+    SUBCASE("setNearPlane floors at MIN_NEAR_PLANE") {
+        EditorCamera camera;
+        camera.setNearPlane(0.0F);
+        CHECK(camera.nearPlane() == MIN_NEAR_PLANE);
+        camera.setNearPlane(-5.0F);
+        CHECK(camera.nearPlane() == MIN_NEAR_PLANE);
+        CHECK(camera.nearPlane() < camera.farPlane());
+    }
+
+    SUBCASE("setFarPlane floors at exactly nearPlane() + MIN_DEPTH_RANGE") {
+        EditorCamera camera;
+        camera.setFarPlane(0.0F);
+        // EXACTLY that sum, not merely "greater than near": at ordinary magnitudes MIN_DEPTH_RANGE is
+        // the wider of the two floors, and a hypothetical nextafter-only floor would give 0.10000001
+        // where this gives 0.101 -- collapsing the usable depth range.
+        CHECK(camera.farPlane() == camera.nearPlane() + MIN_DEPTH_RANGE);
+        camera.setFarPlane(-1.0e6F);
+        CHECK(camera.farPlane() == camera.nearPlane() + MIN_DEPTH_RANGE);
+        CHECK(camera.nearPlane() < camera.farPlane());
+    }
+
+    SUBCASE("setFlySpeed clamps into [MIN_FLY_SPEED, MAX_FLY_SPEED]") {
+        EditorCamera camera;
+        camera.setFlySpeed(0.0F);
+        CHECK(camera.flySpeed() == MIN_FLY_SPEED);
+        camera.setFlySpeed(1.0e6F);
+        CHECK(camera.flySpeed() == MAX_FLY_SPEED);
+    }
+
+    SUBCASE("setDistance clamps into [MIN_DISTANCE, MAX_DISTANCE]") {
+        EditorCamera camera;
+        camera.setDistance(0.0F);
+        CHECK(camera.distance() == MIN_DISTANCE);
+        camera.setDistance(1.0e9F);
+        CHECK(camera.distance() == MAX_DISTANCE);
+    }
+
+    SUBCASE("setPitch clamps into +-MAX_PITCH") {
+        EditorCamera camera;
+        camera.setPitch(10.0F);
+        CHECK(camera.pitch() == MAX_PITCH);
+        camera.setPitch(-10.0F);
+        CHECK(camera.pitch() == -MAX_PITCH);
+    }
+
+    SUBCASE("setYaw wraps into the HALF-OPEN interval (-pi, pi]") {
+        EditorCamera camera;
+        camera.setYaw(100.0F);
+        CHECK(camera.yaw() > -engine::PI);
+        CHECK(camera.yaw() <= engine::PI);
+        CHECK(camera.yaw() != 100.0F);
+        // -pi is the open end: it must come back as +pi exactly, never as -pi (AC-10, exactly).
+        camera.setYaw(-engine::PI);
+        CHECK(camera.yaw() == engine::PI);
+    }
+
+    SUBCASE("setPivot is unclamped and round-trips exactly") {
+        EditorCamera camera;
+        const Vec3 target{12.5F, -3.25F, 0.75F};
+        camera.setPivot(target);
+        CHECK(camera.pivot() == target);
+    }
+
+    SUBCASE("a non-finite value through ANY setter is swept sane by the next update()") {
+        // The setters deliberately do NOT reset: std::clamp does not sanitize NaN (`v < lo` and
+        // `hi < v` are both false for it), and case 10's direct-poison row depends on the poison
+        // SURVIVING until the next update(). So the contract proved here is the pair -- poison a
+        // setter, then ONE update() lands a finite pose inside every INV-5 bound.
+        struct FloatSetterRow {
+            std::string name;
+            void (EditorCamera::*apply)(float) noexcept;
+        };
+        const std::vector<FloatSetterRow> setters = {
+            {"setDistance", &EditorCamera::setDistance},   {"setYaw", &EditorCamera::setYaw},
+            {"setPitch", &EditorCamera::setPitch},         {"setFovYRadians", &EditorCamera::setFovYRadians},
+            {"setNearPlane", &EditorCamera::setNearPlane}, {"setFarPlane", &EditorCamera::setFarPlane},
+            {"setFlySpeed", &EditorCamera::setFlySpeed}};
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        const float posInf = std::numeric_limits<float>::infinity();
+        const std::vector<float> poisons = {nan, posInf, -posInf};
+
+        for (const FloatSetterRow& row : setters) {
+            CAPTURE(row.name);
+            for (const float poison : poisons) {
+                CAPTURE(poison);
+                EditorCamera camera;
+                (camera.*row.apply)(poison);
+                camera.update(CameraInput{}, 1.0F / 60.0F);
+                checkPoseIsSane(camera);
+            }
+        }
+
+        for (const float poison : poisons) {
+            CAPTURE(poison);
+            EditorCamera camera;
+            camera.setPivot(Vec3{poison, 0.0F, -poison});
+            camera.update(CameraInput{}, 1.0F / 60.0F);
+            checkPoseIsSane(camera);
+        }
     }
 }
 
