@@ -19,8 +19,10 @@
 #include <aero/editor/editor_camera.hpp>  // task 2.3.1
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/picking.hpp>       // task 2.3.2
 #include <aero/editor/scene_bounds.hpp>  // task 2.3.1
 #include <aero/editor/selection.hpp>
+#include <aero/editor/selection_overlay.hpp>  // task 2.3.2
 #include <aero/platform/platform.hpp>
 #include <aero/rhi/device.hpp>
 #include <aero/scene/scene.hpp>
@@ -783,6 +785,248 @@ TEST_CASE("editor: a hidden/tabbed-away Viewport does not reset or re-latch the 
 
     CHECK(camera->pivot() == engine::Vec3{3.0F, 4.0F, 5.0F});
     CHECK(camera->distance() == 42.0F);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ==================================================================================================
+// task 2.3.2 -- the selection overlay driven through a real EditorApp::tick(). Honest limit, stated
+// once here for all five cases: this proves NO CRASH, NO ABORT, NO LEAK, that frames present, and that
+// a pick mutates nothing but the Selection. It does NOT prove that `onDraw` hands the pure pick
+// functions the right ImGui values -- this harness cannot synthesise a click at all: SDL owns the
+// mouse position and ImGui_ImplSDL3_NewFrame overwrites any injected value every frame, and there is
+// no window under a real cursor in CI. What IS mechanically covered is the whole chain
+// `mouse points -> NDC -> ray -> entity -> PickAction -> Selection`, because every link is a pure
+// function tested in picking_test.cpp. That gap is three lines wide (updatePick's ARM/FIRE gates), it
+// is named here, and editor/VALIDATION.md's rows 1-8 are what close it -- the same accounting 2.3.1
+// gave its own AC-14/AC-15.
+// ==================================================================================================
+
+TEST_CASE("editor: the selection overlay path executes and stays balanced through real frames (task 2.3.2, AC-19)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "selection overlay smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+
+    // An unbalanced PushClipRect/PopClipRect pair is an IM_ASSERT ABORT in the Debug ImGui build, so a
+    // green Debug run through three real frames IS the balance proof.
+    app->selection().set(cube);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a dead handle left in the selection does not crash the overlay (task 2.3.2, E2)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "selection overlay dead handle", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+
+    // Reachable in the shipped editor whenever the Hierarchy is hidden: nothing prunes the selection.
+    app->selection().set(cube);
+    REQUIRE(world.destroy(cube));  // destroyed WITHOUT pruning the selection first
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a non-mesh selection drives the point-marker path (task 2.3.2, D8)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "selection overlay point marker", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity light{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Directional Light") {
+            light = e;
+        }
+    });
+    REQUIRE(light.valid());
+
+    app->selection().set(light);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the selection cap survives 300 real entities under load (task 2.3.2, E13)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "selection overlay cap load", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    std::vector<engine::Entity> all;
+    all.reserve(300);
+    for (int i = 0; i < 300; ++i) {
+        const engine::Entity e = world.create();
+        world.add<engine::Transform>(
+            e, engine::Transform{.position = engine::Vec3{static_cast<float>(i) * 0.01F, 0.0F, 0.0F}});
+        world.add<engine::MeshRenderer>(e, engine::MeshRenderer{});
+        all.push_back(e);
+    }
+    app->selection().setAll(all);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: driving the Selection through real frames mutates nothing but the Selection (task 2.3.2, AC-19)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "selection overlay purity", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    const engine::World& world = app->world();
+    const std::size_t entityCountBefore = world.entityCount();
+    const std::size_t transformCountBefore = world.componentCount<engine::Transform>();
+    const std::size_t cameraCountBefore = world.componentCount<engine::Camera>();
+    const std::size_t meshCountBefore = world.componentCount<engine::MeshRenderer>();
+    const std::size_t dirLightCountBefore = world.componentCount<engine::DirectionalLight>();
+    const std::size_t pointLightCountBefore = world.componentCount<engine::PointLight>();
+
+    engine::editor::EditorCamera* camera = app->viewportCamera();
+    REQUIRE(camera != nullptr);
+    // The FULL pose, all eight accessors -- comparing the whole pose is what distinguishes "unchanged"
+    // from "reset to the default" (2.3.1's recorded lesson).
+    const engine::Vec3 pivotBefore = camera->pivot();
+    const float distanceBefore = camera->distance();
+    const float yawBefore = camera->yaw();
+    const float pitchBefore = camera->pitch();
+    const float fovBefore = camera->fovYRadians();
+    const float nearBefore = camera->nearPlane();
+    const float farBefore = camera->farPlane();
+    const float flySpeedBefore = camera->flySpeed();
+
+    engine::Entity cube{};
+    engine::Entity light{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+        if (world.name(e) == "Directional Light") {
+            light = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    REQUIRE(light.valid());
+
+    app->selection().set(cube);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    app->selection().toggle(light);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    app->selection().clear();
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(world.entityCount() == entityCountBefore);
+    CHECK(world.componentCount<engine::Transform>() == transformCountBefore);
+    CHECK(world.componentCount<engine::Camera>() == cameraCountBefore);
+    CHECK(world.componentCount<engine::MeshRenderer>() == meshCountBefore);
+    CHECK(world.componentCount<engine::DirectionalLight>() == dirLightCountBefore);
+    CHECK(world.componentCount<engine::PointLight>() == pointLightCountBefore);
+    CHECK(camera->pivot() == pivotBefore);
+    CHECK(camera->distance() == distanceBefore);
+    CHECK(camera->yaw() == yawBefore);
+    CHECK(camera->pitch() == pitchBefore);
+    CHECK(camera->fovYRadians() == fovBefore);
+    CHECK(camera->nearPlane() == nearBefore);
+    CHECK(camera->farPlane() == farBefore);
+    CHECK(camera->flySpeed() == flySpeedBefore);
 
     app->requestQuit();
     CHECK(app->tick() == false);
