@@ -47,7 +47,17 @@ struct RenderViewScratch {
 // entity index; point lights beyond MAX_POINT_LIGHTS are dropped, in iteration order. The diagnostic
 // counts (cameraCount/directionalCount/pointsTruncated) are always filled — SceneRenderer::render
 // turns them into latched WARNs; tier-0 tests assert them directly.
-[[nodiscard]] render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi::Extent2D viewport);
+//
+// `cameraOverride` (task 2.3.1): when non-null, it REPLACES the World's camera entirely — view, proj
+// AND eyePosition, all three fields, by whole-struct assignment — and every MeshInstance::mvp is
+// built from ITS view-projection; `viewport` is then not consulted for aspect at all (the caller has
+// already resolved it, e.g. from its own render target's drawn sub-rect). The scene walk (instances,
+// cameraCount, the light walk) is UNCHANGED and UNAFFECTED by the override — `view.cameraCount` stays
+// informational either way, which is what a future Game view (Phase 4) will want. When null (the
+// default), behaviour is unchanged in EVERY observable respect, including the 0-camera early return
+// that skips the light walk.
+[[nodiscard]] render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi::Extent2D viewport,
+                                                 const render::CameraView* cameraOverride = nullptr);
 
 // Room for future knobs (ambient override, max lights, ...); v0 uses defaults.
 struct SceneRendererConfig {};
@@ -71,10 +81,12 @@ public:
     SceneRenderer(const SceneRenderer&) = delete;
     SceneRenderer& operator=(const SceneRenderer&) = delete;
 
-    // buildRenderView(world, internal scratch, frame.extent()) + the latched D5/D6 WARNs + forward.draw
-    // (a no-op when the resolved view has no camera). `world` is non-const for the same reason
-    // buildRenderView's is.
-    void render(World& world, render::Frame& frame);
+    // buildRenderView(world, internal scratch, frame.extent(), cameraOverride) + the latched D5/D6
+    // WARNs + forward.draw (a no-op when the resolved view has no camera). `world` is non-const for
+    // the same reason buildRenderView's is. Task 2.3.1: when `cameraOverride` is non-null, the two
+    // CAMERA WARNs ("no Camera in world" / "multiple Cameras") are SUPPRESSED — the override makes
+    // both moot — while the directional and point-light WARNs are UNAFFECTED.
+    void render(World& world, render::Frame& frame, const render::CameraView* cameraOverride = nullptr);
 
 private:
     explicit SceneRenderer(render::ForwardRenderer&& fwd) noexcept;  // private — create() move-constructs
