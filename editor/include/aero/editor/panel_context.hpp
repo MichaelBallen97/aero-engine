@@ -21,6 +21,12 @@ class Selection;
 struct PanelContext {
     World& world;
     Selection& selection;
+    // Task 2.3.1: this frame's SPIKE-CLAMPED delta -- FrameClock::deltaSeconds(), capped at 0.25 s
+    // (core/time.hpp), NOT io.DeltaTime. Two reasons the clamped engine clock is the right one: the
+    // editor throttles to 20 Hz when unfocused (EditorAppConfig::unfocusedFrameCapHz), and a stall
+    // during a window drag must not teleport a panel's continuous input.
+    // DEFAULTED so `{world, selection}` stays valid -- this aggregate is designed to grow (2.2.1 D7).
+    float deltaSeconds = 0.0F;
 };
 
 }  // namespace engine::editor

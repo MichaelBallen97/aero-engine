@@ -87,6 +87,9 @@ void drawPanels(PanelRegistry& panels, PanelContext& context) {
         if (opts.hasMenuBar) {
             flags |= ImGuiWindowFlags_MenuBar;
         }
+        if (opts.noScrollWithMouse) {
+            flags |= ImGuiWindowFlags_NoScrollWithMouse;
+        }
 
         if (opts.noPadding) {
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
