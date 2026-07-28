@@ -1,4 +1,4 @@
-# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1, 2.2.2, 2.2.3, 2.2.4, 2.2.5, 2.3.1)
+# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1, 2.2.2, 2.2.3, 2.2.4, 2.2.5, 2.3.1, 2.3.2)
 
 Task 2.1.1's deliverable: an editor window with dockable dummy panels, layout persisted across
 restarts, HiDPI scaling checked on all 3 OSes. CI proves the "builds clean on all 3 OSes, imgui
@@ -1401,3 +1401,220 @@ code** (2.3.1 is its first landed task). The gate stays open **only** for the tw
 macOS half is closed. Note that Windows and Linux are already green in **CI** (build + full ctest on
 both presets, PR #53) — what is outstanding is the *human* mouse/keyboard pass on each, which CI
 cannot perform. Row 20 exists specifically for the Linux run.
+
+# Task 2.3.2 — selection & picking
+
+**Deliverable:** clicking a mesh in the Viewport selects it; clicking empty space clears the
+selection; `Ctrl`/`Cmd` toggles and `Shift` adds without ever removing; whatever is selected — from
+the Viewport or the Hierarchy — draws back into the Viewport as a wireframe box, with the primary
+entity visually distinguished by colour and thickness. This is what turns the Viewport from a thing
+you only look *through* into a thing you *reach into*; 2.3.1 shipped the camera and deliberately left
+plain LMB unbound for exactly this task.
+
+**What CI proves automatically:** the tier-0 batteries in `picking_test.cpp` (the screen mapping, the
+basis ray, the local-box slab test, the world pick walk, and all sixteen combinations of the
+hit/modifier click-decision table) and `selection_overlay_test.cpp` (the 12-edge table re-derived from
+its bit assignment, segment counts and roles, transform tracking including the OBB-vs-AABB rotation
+discriminator, near-plane clipping, the entity cap, hostile input, scratch reuse), both riding
+`aero_editor_shell_test`; and five new `imgui_layer_test.cpp` cases driving the real
+`ViewportPanel::updatePick`/`drawSelectionOverlay` path through a real `EditorApp::tick()` — the
+overlay executing and staying ImGui-balanced, a dead handle left in the selection, a non-mesh
+selection, 300 real entities under the cap, and a full pick/select/clear sequence mutating nothing but
+the `Selection` (entity/component counts and all eight `EditorCamera` accessors, unchanged).
+
+**What it cannot prove:** anything requiring a synthesised ImGui mouse click. `ImGui_ImplSDL3_NewFrame`
+overwrites any injected mouse position from SDL every frame, and there is no window under a real
+cursor in CI. What *is* mechanically covered is the whole chain
+`mouse points -> NDC -> ray -> entity -> PickAction -> Selection`, because every link is a pure
+function tested in isolation; what is *not* covered is that `onDraw` hands those functions the right
+ImGui values — three lines wide (`updatePick`'s ARM/FIRE gates), named here, and closed only by the
+human pass below (rows 1–8). The colour/thickness choices (row 3), the feel of the 4-point slop
+(row 6), and the HiDPI pick radius (row 9, S13's human row) are human-only for the same reason.
+
+## What was mechanically verified (this implementation pass, macOS, Apple M1 Pro / Metal)
+
+Measured at every one of the five commit boundaries, not once at the end:
+
+- `ctest --preset macos-debug` and `--preset macos-release`: **94/94** both presets, at every commit.
+- `ctest --preset macos-debug -N` → **Total Tests: 94** throughout; `AERO_REQUIRE_GPU=1 ctest` green on
+  both presets (the CI ratchet rehearsed, not skipped).
+- Fresh `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` configure into `build/tools-off-2.3.2`:
+  **5/5**, `aero_editor` launches with **exactly two** WARN lines (2.2.2's reflection WARN, 2.2.3's
+  shader WARN) and **no third** — E11 confirmed: `onDraw` returns at its status gate, before phase 8c,
+  whenever the Viewport is `Unavailable`, so this task adds no new tools-gate WARN.
+- Doctest case counts, measured with `--list-test-cases`, never predicted: `aero_editor_shell_test`
+  **117 → 123 → 131 → 141** across the three code-bearing commits; `aero_editor_imgui_test`
+  **14 → 19**; `aero_tests` unchanged at **356**.
+- The non-interactive launch check (`aero_editor`, seeded scene): **zero** new ERROR/CRITICAL/WARN
+  lines, run after every ImGui-touching step, after the tools-OFF configure, and again after the final
+  format pass.
+- The sabotage table's outcome — all thirteen, every seed confirmed present via `git diff` before
+  trusting the verdict, every one reverted and re-confirmed green afterward:
+
+  | | Seed | Result |
+  |---|---|---|
+  | S1 | `rayLocalBoxHit`: `!(tMin > 0.0F)` → `!(tMax > 0.0F)` | reddened case 4's inside (both arms) and on-a-face subcases exactly; the aimed-away and entirely-behind subcases stayed green |
+  | S2a | `rayLocalBoxHit`: normalise `direction` right after the guard | reddened case 6 arm A exactly as predicted; also reddened arm B, an expected mechanical consequence since arm B calls the same sabotaged function; cases 4 and 7 stayed green |
+  | S2b | `pickEntity`: wrap the local direction in `normalizeOrZero` at the call site only | reddened case 6 arm B exactly, and *only* arm B; arm A and cases 4/7 stayed green |
+  | S3 | `pickEntity`, mesh branch: replace the OBB test with the plan's own literal world-AABB one (`h = max(hs.x, hs.y, hs.z)`) | reddened case 7's MISS subcase exactly (the primary discriminator); also perturbed the HIT subcase's *distance* assertion (a uniform max-extent box is not the true anisotropic AABB even where both still register a hit) — the entity/isPoint checks in that subcase still passed. Second-order check performed: weakening both perturbed assertions to `CHECK(true)` makes the seeded defect pass the whole suite, confirming those assertions do the real work |
+  | S4 | `pickEntity`: drop the `e.index < mesh.entity.index` tie-break arm | reddened case 8's forced-inversion tie subcase exactly (1 assertion); the nearest/destroy/parenting/dead-handle subcases stayed green |
+  | S5 | `pickEntity`: `if (point.hit() && (...))` → `if (point.hit())` | reddened case 10's BEHIND subcase exactly; the FRONT subcase and case 9 stayed green |
+  | S6 | `buildSelectionOverlay`: build the mesh box from the world AABB instead of the OBB | reddened case 4's rotation arm (S6's discriminator) exactly; the translate and scale arms stayed green |
+  | S7 | `appendBoxEdges`: reject whole corners (`a.w > eps && b.w > eps`) instead of clipping the edge | reddened case 7's straddling subcase exactly (8 → 4 segments); the entirely-behind subcase stayed green |
+  | S8 | `clipSegmentToNearPlane`: replace the clip-space lerp with a post-divide one | reddened case 6's straddling subcase exactly (both the on-the-line and the not-post-divide assertions); both-in-front and both-behind stayed green. Second-order check performed: weakening both assertions to `CHECK(true)` makes the seeded defect pass the whole suite |
+  | S9 | `pickSelectionAction`: swap the `Toggle`/`Add` returns for `ctrlOrCmd`/`shift` | reddened case 12 exactly (6 assertions across the swapped rows); case 13 stayed green |
+  | S10 | `pickSelectionAction`: the miss branch → unconditional `Clear` | reddened 3 of case 12's 4 miss rows (6 assertions) — the no-modifier miss row already expects `Clear` and is correctly unaffected; hit rows and case 13 stayed green |
+  | S11 | `buildSelectionOverlay`: delete the `MAX_HIGHLIGHTED_ENTITIES` cap check | reddened case 8 exactly: 3600 segments instead of 3072, and the beyond-cap-primary assertion also failed, both as predicted; cases 2–7 and 9–10 stayed green |
+  | S12 | *(see below)* | **not mechanically seeded — recorded as a documented non-discrimination, exactly as the plan predicts** |
+  | S12b | `pickEntity`: add `AERO_LOG_WARN("picking: probe")` before the final `return mesh` | reddened 3 of case 11's 4 subcases (the populated-scene, empty-World and moved-from-World arms); the 4th, the ANTI-VACUITY canary, does not call `pickEntity` at all and correctly stayed green; case 8 (which doesn't check log records) stayed green |
+  | S13 | `onDraw`'s call to `updatePick`: pass `drawExtent` (pixels) instead of `avail` (points) as the pick's `viewportSizePoints` | **seeded for real and confirmed to redden NOTHING** — the whole 94/94 tier-0 suite plus all 19 GPU-gated cases stayed green with the defect live, exactly as the plan predicts: points and pixels coincide on this non-Retina runner, so nothing in this harness can discriminate D18's pixel/point distinction |
+
+  **S12 — recorded, not forced (§A3).** The spec's stated seed ("use `each<MeshRenderer>` in `pickEntity`
+  instead of `eachEntity` + `has`") does not compile: `pickEntity` takes `const World&` and
+  `World::each<Ts...>` is non-const. Widening the signature to `World&` compiles but reddens nothing
+  either — every `World`'s constructor registers `MeshRenderer` unconditionally, so `beginQuery` never
+  takes its `AERO_LOG_ERROR` path on a live `World`, and on a moved-from `World` it bails at
+  `impl == nullptr` before that ERROR anyway. The silence guarantee (AC-11/INV-5) is held
+  **structurally, by the `const World&` signature itself** — a compile-time property strictly stronger
+  than any reddening test — and S12b plus case 11's `each<NeverRegistered>` canary are what prove the
+  assertion is not vacuous. Identical in shape to 2.3.1's own S9/S12 non-discriminations.
+
+- All five guards green with **no allowlist change**: `check-math-boundary.sh`'s scanned count moved
+  **197 → 203** (+6: `picking.hpp/.cpp`, `selection_overlay.hpp/.cpp`, `picking_test.cpp`,
+  `selection_overlay_test.cpp` — measured against `origin/main` in a disposable `git worktree`, not
+  assumed); `check-golden-rule.sh`, `check-rhi-boundary.sh`, `check-scene-boundary.sh`,
+  `check-platform-boundary.sh` all unaffected (this task changes no `engine/` file and adds no
+  SDL/EnTT identifier).
+- `git diff --name-only origin/main` empty over `engine/`, `runtime/`, `samples/`, `tools/`,
+  `shaders/`, `cmake/`, `.github/` and `vcpkg.json`; the `/vcpkg` submodule SHA unchanged;
+  `editor/src/imgui_layer.{hpp,cpp}` and `editor/src/main.cpp` byte-identical for the **eighth** task
+  running; `ViewportPanel::renderScene` byte-identical (no hunk at or after its signature in
+  `git diff origin/main -- editor/src/viewport_panel.cpp`); `aero_editor_shell_test`'s and
+  `aero_editor_core`'s link lines byte-identical (verified against `origin/main`).
+- clang-format and clang-tidy clean on every touched file at every commit boundary, with **zero new
+  `NOLINT`s** — the one pre-existing `reinterpret_cast` NOLINT in `viewport_panel.cpp` (2.2.3) is
+  unchanged.
+
+## Known-and-expected, NOT a defect
+
+- **D13/F19: the Plane primitive's fat box** — flat at local `y = 0`, but picked and highlighted as a
+  full 1-unit-thick box (`LOCAL_MESH_HALF_EXTENT = 0.5F` on every axis). Fixed in one change, alongside
+  `LOCAL_MESH_HALF_EXTENT`'s own documented expiry, once 3.1.x publishes real per-mesh bounds.
+- **D17: the highlight is not depth-occluded** — it always draws on top, deliberately; a depth-correct
+  outline is a stencil-pass feature for a later editor-chrome task, not this one.
+- **D8: the point marker is invisible until its owning entity is selected** — a light or camera has no
+  always-on gizmo icon in this task; that is Handoffs' "always-on gizmo icons" item.
+- **E12: a viewport pick reaches the Hierarchy and Inspector on the *next* frame** — one tick (~16 ms)
+  of latency, which should be imperceptible.
+- **G6: the seeded `Directional Light` sits at the world origin, *inside* the seeded `Cube`** — D5's
+  depth rule correctly makes the cube win every click there, so the light is unpickable until moved.
+  Move it to e.g. `{3, 2, 0}` in the Inspector before trying to click it (§H row 13).
+- **The highlight draws over other geometry** — always-on-top by design (same as D17 above); revisit
+  only as part of a general editor-chrome render pass, never as a one-off.
+- **2.2.5's four BLOCKED validation rows stay blocked** — every path this task adds is deliberately
+  silent (AC-11/INV-5), so it introduces no triggerable runtime log source. 2.4's undo remains the
+  natural candidate to unblock them.
+
+## How to validate one OS
+
+Twenty-two rows, per OS, macOS first. Rows **1–8** close the "does `onDraw` hand the pure functions
+the right ImGui values" gap named above; row **9** is S13's human row; rows **12–14** are
+known-and-accepted behaviours a validator who does not know them will file as defects.
+
+1. **Click the Cube** — it is selected: an amber box appears around it in the Viewport, the Hierarchy
+   row highlights, and the Inspector fills. *(The Hierarchy/Inspector update on the next frame — E12,
+   ~16 ms — which should be imperceptible; note it if it is not.)*
+2. **Click empty space** — the selection clears, the box disappears, the Inspector empties.
+3. **`Ctrl`/`Cmd`+click** a second object — both are boxed, and the newly clicked one is **brighter and
+   thicker** (it is the primary). `Ctrl`/`Cmd`+click it again — it is removed and its box goes.
+   *This row is also where the colour and thickness choices are judged.*
+4. **`Shift`+click** — adds without ever removing; `Shift`+clicking an already-selected object changes
+   nothing at all (not even the primary).
+5. **`Ctrl`/`Cmd`+click empty space** — the selection is **unchanged**, not cleared.
+6. **Press on the Cube, drag 200 points, release** — nothing is selected. Press and release without
+   moving — it is selected. *Judge whether the 4-point slop feels right; it is a one-line retune.*
+7. **Press on the Cube, drag outside the window, release there** — nothing is selected, nothing
+   latches, and the next click inside works normally.
+8. **`Alt`+LMB drag** starting on the Cube — the camera orbits and the selection does **not** change.
+9. **HiDPI — S13's human row.** On a Retina display, the clickable radius around a (moved — see
+   row 13) Directional Light feels the same as on a 1× display, and the slop feels the same. If a
+   light needs a pixel-perfect click on Retina, **D18 was violated** — `viewportSizePoints` is being
+   fed pixels.
+10. **Rotate the Cube 45°** in the Inspector — the box **rotates with it** and still hugs it. Click just
+    outside a corner, inside where an axis-aligned box would be: **nothing is selected.** *This row is
+    the user-visible proof of D2 and of the whole local-space design.*
+11. **Scale the Cube to 3** — the box grows with it and picking follows.
+12. **Select a Plane and click half a unit above it** — it **is** selected. This is **D13**, expected,
+    and the drawn box shows exactly why. Record it as observed-and-accepted, not as a defect.
+13. **Click the Directional Light.** **First move it** — the seeded light sits at the world origin,
+    inside the seeded Cube, where D5's depth rule correctly makes the Cube win every click (G6). Set
+    its position to e.g. `{3, 2, 0}` in the Inspector, then click it: it is selected and shows a small
+    diamond marker. Note honestly that the target is **invisible until hit** (D8).
+14. **A light in front of / behind a cube** — position a light 1 unit in **front** of a cube and click
+    where they overlap: the **light** is selected. Move it 1 unit **behind**: the **cube** is selected.
+    *(D5's depth rule.)*
+15. **Fly the camera into the Cube** — the box's near edges **clip cleanly** rather than popping out of
+    existence (D14); clicking from inside selects **what is behind it**, not the cube (D3). *If the
+    clipped edges shoot off to visibly absurd screen positions, `CLIP_W_EPSILON` is the one-line knob —
+    raise it toward the camera's near plane and re-judge.*
+16. **Select something, then fly far away** — the box shrinks correctly, stays aligned, and never
+    smears or jitters.
+17. **Select something, then move the Viewport** — undock, redock, resize, maximise: the box stays on
+    the object and is **clipped at the panel edge**, never drawn over the Hierarchy (E8).
+18. **Select in the Hierarchy** — the Viewport box appears for it too. One selection, two entry points
+    (F4).
+19. **Select 10+ entities via the Hierarchy** — every one is boxed, and **exactly one** is
+    primary-styled.
+20. **Delete the selected entity from the Hierarchy** — the box disappears the same frame the entity
+    does; no crash, no ghost box (E2).
+21. **Click while renaming** — double-click a Hierarchy name to rename, then click the Viewport: the
+    rename commits and the click selects (E14). *Deliberately different from `F`, which **is** gated on
+    `io.WantTextInput`: a key press is genuinely ambiguous where a click is not.*
+22. **Linux only** — confirm rows 1–6 with 2.3.1's D4 window-manager `Alt`+drag caveat in mind; picking
+    itself uses no modifier a WM steals.
+
+## Validation records
+
+- **Click the Cube: it is selected, boxed, Hierarchy/Inspector follow next frame**
+- **Click empty space: selection clears**
+- **`Ctrl`/`Cmd`+click a second object: both boxed, newly clicked is brighter/thicker (primary); toggling removes it**
+- **`Shift`+click: adds without removing; already-selected is a true no-op**
+- **`Ctrl`/`Cmd`+click empty space: selection unchanged, not cleared**
+- **Drag 200pt then release: no selection; press/release without moving: selected (4-point slop)**
+- **Press, drag outside, release outside: nothing selected, nothing latched**
+- **`Alt`+LMB drag on the Cube: camera orbits, selection unchanged**
+- **HiDPI clickable radius matches a 1x display (S13's human row)**
+- **Rotate the Cube 45°: box rotates with it; a corner-adjacent click outside the OBB misses**
+- **Scale the Cube to 3: box grows with it, picking follows**
+- **Select a Plane, click half a unit above it: selected (D13, expected)**
+- **Click the (moved) Directional Light: selected, shows a diamond marker**
+- **Light in front of / behind a cube: nearer of the two wins the click**
+- **Fly into the Cube: near edges clip cleanly; clicking from inside selects what's behind**
+- **Select something, fly far away: box shrinks correctly, stays aligned**
+- **Select something, move the Viewport: box stays on the object, clips at the panel edge**
+- **Select in the Hierarchy: the Viewport box appears too (one selection, two entry points)**
+- **Select 10+ entities via the Hierarchy: all boxed, exactly one primary-styled**
+- **Delete the selected entity from the Hierarchy: box disappears same frame, no crash**
+- **Click while renaming: rename commits, click selects**
+- **Linux only: WM Alt+drag caveat noted; picking itself uses no modifier a WM steals**
+
+### macOS — ⏳ pending
+
+Needs a native human mouse/keyboard pass. No checks recorded yet.
+
+### Windows — ⏳ pending
+
+Needs a native run. No checks recorded yet.
+
+### Linux — ⏳ pending
+
+Needs a native run (real Vulkan or native Wayland/X11; **not** lavapipe/CI, which cannot exercise
+window-manager or compositor interaction). No checks recorded yet.
+
+**Task 2.3.2 gate status: mechanically green (build + full ctest on both presets, the
+`AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, the non-interactive launch
+proof, all thirteen sabotage proofs each seed-confirmed and reverted — one recorded as a documented
+non-discrimination (S12), one confirmed to redden nothing as predicted (S13), two second-order-checked
+(S3, S8) — all five guards green, clang-format and clang-tidy clean with zero new `NOLINT`s), human
+passes pending on all three OSes.** Epic 2.3 (Manipulation) remains **in progress in code**
+(2.3.3 ImGuizmo transform gizmos is next).
