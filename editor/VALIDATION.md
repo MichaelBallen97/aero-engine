@@ -1340,13 +1340,51 @@ Measured at every one of the eight commit boundaries, not once at the end:
 - **Two buttons at once: orbit wins over a mid-drag RMB press**
 - **Linux only: Alt+LMB WM caveat and X11/Wayland noted**
 
-### macOS — ⏳ pending
+### macOS — ✅ PASS (2026-07-28)
 
-The mechanical/structural pass above ran and is green (build, full ctest on both presets, the
+Machine: MacBook Pro (Apple M1 Pro), Metal. Human mouse/keyboard pass against `91f3887` — the merged
+tree, including the code-review gap fixes and the `<wingdi.h>` rename.
+
+**All nineteen macOS-applicable rows pass.** Row 20 is Linux-only and is not runnable here.
+
+- **1 — Launch: cube framed in a right-front ¾ view, lit, not edge-on, not clipped** — PASS
+- **2 — Alt+LMB orbit: drag right turns right, drag down raises the eye, no roll, clean pole stops** — PASS
+- **3 — MMB pan: tracks the cursor at pivot depth, still 1:1 fully dollied in and out** — PASS
+- **4 — Alt+Cmd+LMB pan (the Mac-trackpad path): identical behaviour** — PASS
+- **5 — Wheel / two-finger dolly: smooth, never passes through the pivot, never inverts** — PASS
+- **6 — Alt+RMB drag dolly: right/up zooms in, diagonal reinforces** — PASS
+- **7 — RMB fly: WASD view-relative, Q/E world-vertical at any pitch, Shift ≈4×, overlay reads
+  `fly N.N u/s` only while RMB is held** — PASS
+- **8 — Frame-rate independence: same distance travelled focused and unfocused (20 Hz cap)** — PASS
+- **9 — HiDPI pan speed (S12's human row): a ~100-pt drag moves the same on-screen amount as on a 1×
+  display — D15 holds, `viewportHeightPoints` is fed points, not pixels** — PASS
+- **10 — `F` on Cube / on a parent (whole subtree) / on the Directional Light (sane distance):
+  correct framing, viewing angle preserved** — PASS
+- **11 — `F` with nothing selected frames the scene; `F` in an emptied scene returns to the launch
+  pose, with no ERROR lines in the Console** — PASS
+- **12 — `F` while renaming an entity: the camera does not move and the name commits** — PASS
+- **13 — Wheel routing: Hierarchy/Console/Assets scroll, the Viewport dollies, no dock-node bubble** — PASS
+- **14 — Plain LMB in the Viewport does nothing; no undock, no window move; Alt+LMB still orbits
+  after** — PASS *(the binding 2.3.2 depends on staying free)*
+- **15 — Delete `Main Camera`: the viewport keeps rendering lit, no "No camera in scene" text, no
+  WARN** — PASS *(replaces 2.2.3's row 12)*
+- **16 — Editing `Camera.fovYRadians` no longer changes the Viewport** — PASS *(the user-visible
+  proof of the whole task)*
+- **17 — Resize / undock / redock / maximise mid-gesture: no jump, no crash, no stuck gesture,
+  aspect stays correct, `{W}×{H}` keeps updating** — PASS
+- **18 — Drag outside the window and release: the gesture continues outside, ends cleanly, nothing
+  latched** — PASS *(macOS is a capture platform — F18; the Wayland stall is C8 and a Linux row)*
+- **19 — Two buttons at once: a mid-drag RMB press does not switch an orbit to fly** — PASS
+- **20 — Linux-only WM caveat (Alt+drag swallowed by GNOME/KDE) and X11/Wayland session** — **N/A on
+  macOS**
+
+The mechanical/structural pass above also ran and is green (build, full ctest on both presets, the
 `AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, the non-interactive launch
 proof, thirteen sabotage proofs each seed-confirmed and reverted (two recorded as expected
 non-discriminations, one recorded as a partial-discrimination finding), all five guards, clang-format
 and clang-tidy clean with zero new `NOLINT`s).
+
+**macOS half of the 2.3.1 gate: CLOSED.**
 
 ### Windows — ⏳ pending
 
@@ -1357,7 +1395,9 @@ Needs a native run. No checks recorded yet.
 Needs a native run (real Vulkan or native Wayland/X11; **not** lavapipe/CI, which cannot exercise
 window-manager or compositor interaction). No checks recorded yet.
 
-**Task 2.3.1 gate status: mechanically green on macOS — human pass pending on all three OSes.** Epic
-2.3 (Manipulation) is now **OPEN in code** (2.3.1 is its first landed task). The gate stays open until
-the macOS human pass is recorded (a separate `docs:` commit after merge) and until Windows/Linux
-native passes land.
+**Task 2.3.1 gate status: macOS-PASS — mechanically green and human-validated on macOS (19/19
+applicable rows), Windows/Linux human passes pending.** Epic 2.3 (Manipulation) is now **OPEN in
+code** (2.3.1 is its first landed task). The gate stays open **only** for the two native runs; the
+macOS half is closed. Note that Windows and Linux are already green in **CI** (build + full ctest on
+both presets, PR #53) — what is outstanding is the *human* mouse/keyboard pass on each, which CI
+cannot perform. Row 20 exists specifically for the Linux run.
