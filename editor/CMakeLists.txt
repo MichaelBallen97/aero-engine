@@ -28,6 +28,7 @@ add_library(aero_editor_core STATIC
     src/console_panel.cpp       # task 2.2.5 -- the log/console panel
     src/editor_camera.cpp       # task 2.3.1 -- the pure gesture + orbit/pan/dolly/fly model (ImGui-free)
     src/scene_bounds.cpp        # task 2.3.1 -- Aabb + the world-bounds walk (ImGui-free; 2.3.2 reuses)
+    src/picking.cpp             # task 2.3.2 -- screen ray + ray-vs-box + the world pick (ImGui-free)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
