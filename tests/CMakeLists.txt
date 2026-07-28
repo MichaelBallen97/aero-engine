@@ -141,9 +141,16 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # Threads::Threads anywhere to propagate. Relying on $<LINK_ONLY:> through two static archives is the
 # kind of thing that is green on macOS and red on one CI lane. One explicit link removes the question.
 # This target is NOT a boundary probe, so R12's "exactly one aero:: entry" rule does not apply to it.
+#
+# task 2.3.1 joins this target with editor/editor_camera_test.cpp (the gesture matrix in step 2, then
+# the EditorCamera model in step 4) and, in step 3, editor/scene_bounds_test.cpp. The target stays
+# TIER-0: no GPU, no window, no ImGui context, so it must pass identically with AERO_REQUIRE_GPU unset
+# and set. target_link_libraries below is UNCHANGED (AC-22) -- the new TUs need only
+# aero::core/aero::scene/aero::scene_internal, all already on this line.
 find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
-               editor/project_files_test.cpp editor/console_model_test.cpp)
+               editor/project_files_test.cpp editor/console_model_test.cpp
+               editor/editor_camera_test.cpp editor/scene_bounds_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

@@ -24,6 +24,10 @@ class ViewportPanel;  // task 2.2.3: src-private (editor/src/viewport_panel.hpp)
 class ConsolePanel;   // task 2.2.5: src-private (editor/src/console_panel.hpp). Only the NAME is
                       // needed here, so this PUBLIC header stays free of console_panel.hpp and
                       // therefore of <aero/editor/console_model.hpp> as well.
+class EditorCamera;   // task 2.3.1: PUBLIC (editor/include/aero/editor/editor_camera.hpp). Only the
+                      // NAME is needed here -- viewportCamera() returns a pointer -- so this header
+                      // keeps its include weight, exactly as it already does for ViewportPanel and
+                      // ConsolePanel.
 
 struct EditorAppConfig {
     rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
@@ -96,6 +100,13 @@ public:
     // presentedLastFrame() does (D16): without it, "records are captured while the panel is HIDDEN"
     // (AC-6) is mechanically unprovable and would fall entirely to the human pass.
     [[nodiscard]] std::size_t logRecordCount() const noexcept;
+    // The Viewport's own camera (task 2.3.1, D6). NULL when no Viewport panel is registered
+    // (registerDefaultPanels == false, or registration was rejected). Exists for the same reason
+    // logRecordCount() does: without it, "the Viewport renders through the EDITOR camera and not
+    // through the scene Camera" has no black-box signature at all and would fall entirely to the
+    // human pass -- exactly the failure mode 2.2.3's S6 and S8 documented.
+    [[nodiscard]] EditorCamera* viewportCamera() noexcept;
+    [[nodiscard]] const EditorCamera* viewportCamera() const noexcept;
 
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame

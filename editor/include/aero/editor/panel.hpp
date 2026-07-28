@@ -28,6 +28,12 @@ struct PanelOptions {
     bool noScrollbar = false;  // -> ImGuiWindowFlags_NoScrollbar
     bool noPadding = false;    // -> WindowPadding pushed to (0,0) across Begin (the 2.2.3 viewport)
     bool hasMenuBar = false;   // -> ImGuiWindowFlags_MenuBar; the panel draws its own BeginMenuBar
+    // Task 2.3.1: -> ImGuiWindowFlags_NoScrollWithMouse. The Viewport OWNS the wheel (it dollies the
+    // editor camera), so the wheel must not also scroll the panel or bubble into the dock node.
+    // ImGui's SetItemKeyOwner cannot express this here: ImGui::Image submits its item with id 0
+    // (imgui_widgets.cpp) and SetItemKeyOwner returns false immediately for id 0 (imgui.cpp), so the
+    // documented per-item route is a no-op for an image. The window flag is not.
+    bool noScrollWithMouse = false;
 };
 
 // One dockable editor panel. Subclasses own their state; the REGISTRY owns the subclass and calls

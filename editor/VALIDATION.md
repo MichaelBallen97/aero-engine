@@ -1,4 +1,4 @@
-# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1, 2.2.2, 2.2.3, 2.2.4, 2.2.5)
+# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1, 2.2.2, 2.2.3, 2.2.4, 2.2.5, 2.3.1)
 
 Task 2.1.1's deliverable: an editor window with dockable dummy panels, layout persisted across
 restarts, HiDPI scaling checked on all 3 OSes. CI proves the "builds clean on all 3 OSes, imgui
@@ -577,10 +577,15 @@ suite stays green under that exact reordering). That half needs a person at the 
   the sub-rect edge with a half-texel inset — that resamples and blurs the whole image.
 - **Panel resolution jumps in 64-px steps in the allocation but never in the image** — the overlay
   text shows `drawExtent`, which is exact; only the allocation quantises (AC-6).
-- **No camera → the clear colour plus "No camera in scene"**, with exactly ONE WARN, not a stream
-  (`SceneRenderer`'s WARNs are latched once per lifetime). There is no fallback editor camera in this
-  task by design — 2.3.1 owns it.
-- **No camera navigation at all** — orbit/pan/zoom/focus is 2.3.1; picking is 2.3.2; gizmos are 2.3.3.
+- **No camera → the clear colour plus "No camera in scene"**, with exactly ONE WARN, not a stream.
+  **Superseded by task 2.3.1:** the Viewport now renders through the editor's own camera, so a World
+  with no `Camera` still draws its meshes, lit, with no WARN at all; the overlay text and its
+  `worldHasCamera()` helper were deleted (2.3.1 D19). Scene-camera diagnostics move to the Phase 4 Game
+  view, which renders through the scene camera by definition. This row was PASS as written at 2.2.3's
+  macOS pass and is retained for that record.
+- **No camera navigation at all** — **discharged by task 2.3.1**: orbit (Alt+LMB), pan (MMB /
+  Alt+Cmd-or-Ctrl+LMB), dolly (wheel / Alt+RMB), fly (RMB + WASD/QE/Shift) and focus (`F`) all ship
+  there. Picking is still 2.3.2; gizmos are still 2.3.3.
 
 ## How to validate one OS (for the pending ones)
 
@@ -601,8 +606,8 @@ suite stays green under that exact reordering). That half needs a person at the 
     same frame, smoothly.
 11. **Live structure**: create / duplicate / delete / reparent entities in the Hierarchy — the
     viewport tracks every change immediately.
-12. **Delete "Main Camera"** — the viewport shows the clear colour plus "No camera in scene"; the log
-    gains one WARN, not a stream. Re-add via Hierarchy + Inspector to restore the view.
+12. **(2.2.3-era; superseded by 2.3.1 — see that section's row 15.)** Delete "Main Camera" — the
+    viewport **keeps rendering**, lit; there is **no** "No camera in scene" text and **no** WARN.
 13. **`View > Viewport` off / on** — the panel disappears and returns with its content intact.
 14. **Quit and relaunch** — the layout persists byte-identically, the viewport comes back rendering.
 15. **A visibly non-square panel** (very tall and narrow) — geometry is not distorted.
@@ -623,7 +628,8 @@ OS's section below as you go, appending ` — PASS` (or FAIL) and what you obser
 - **Alpha opaque, no chrome bleed-through (S4's human proof)**
 - **Live edit (Transform.position) reflected immediately**
 - **Live structure edits reflected immediately**
-- **No-camera overlay + single WARN**
+- **No-camera overlay + single WARN (2.2.3-era expectation; 2.3.1 deletes the overlay — re-validate
+  against 2.3.1's row 15, not this one)**
 - **View > Viewport off/on**
 - **Quit and relaunch**
 - **Non-square panel — no distortion**
@@ -1146,3 +1152,212 @@ appearance and feel, which is exactly what this ledger exists to record separate
 Windows and Linux remain **pending in full**. Epic 2.2 is **CLOSED in code** (no `PlaceholderPanel`
 remains); the gate stays **OPEN** until the four blocked rows can be run — which needs a triggerable
 runtime log source that does not exist today — and until at least one non-macOS human pass lands.
+
+# Task 2.3.1 — editor camera
+
+**Deliverable:** the Viewport now renders through the editor's OWN camera — orbit (Alt+LMB), pan
+(MMB / Alt+Cmd-or-Ctrl+LMB), dolly (wheel / Alt+RMB drag), fly (RMB + WASD/QE/Shift) and focus the
+selection or the scene (`F`) — never through the scene's `Camera` component. This is what makes the
+Viewport navigable at all: 2.2.3 shipped a static, fixed-angle render of whatever camera the seeded
+scene happened to contain.
+
+**What CI proves automatically:** the tier-0 batteries in `editor_camera_test.cpp` (the gesture
+matrix plus the whole `EditorCamera` model — defaults, orbit, pan, dolly, fly, focus, totality,
+view/projection matrices, and the no-log-output sequence) and `scene_bounds_test.cpp` (`Aabb`
+algebra, `entityBounds`/`selectionBounds`/`sceneBounds`, and the F12 has/get-vs-each asymmetry), both
+riding `aero_editor_shell_test`; the four new `scene_render_test.cpp` tier-0 cases proving
+`cameraOverride` replaces/coexists with/is-unaffected-by the scene camera, plus the GPU-gated
+WARN-suppression case; and the four new `imgui_layer_test.cpp` cases driving a real `EditorApp::tick()`
+with the real camera.
+
+**What it cannot prove:** anything requiring synthesised ImGui mouse or keyboard input. Named
+explicitly: AC-14 (wheel ownership — `ImGuiWindowFlags_NoScrollWithMouse`'s effect on real scroll
+routing), AC-15 (`io.WantTextInput` gating a real focused `InputText`), AC-21's overlay text actually
+appearing on screen, the whole *feel* of every gesture's sensitivity, and **S12's HiDPI pan-speed
+row**, which no test in this harness can discriminate because pixels and points are equal on a 1×
+runner and every tier-0 case supplies `viewportHeightPoints` directly rather than deriving it from a
+real DisplayFramebufferScale.
+
+## What was mechanically verified (this implementation pass, macOS, Apple M1 Pro / Metal)
+
+Measured at every one of the eight commit boundaries, not once at the end:
+
+- `ctest --preset macos-debug` and `--preset macos-release`: **94/94** both presets, at every commit.
+- `ctest --preset macos-debug -N` → **Total Tests: 94** throughout; `AERO_REQUIRE_GPU=1 ctest` green on
+  both presets (the CI ratchet rehearsed, not skipped).
+- Fresh `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` configure into `build/tools-off-2.3.1`:
+  **5/5**, `aero_editor` launches with **exactly two** WARN lines (2.2.2's reflection WARN, 2.2.3's
+  shader WARN) and **no third** — E23 confirmed: `onDraw` returns before the camera block when the
+  Viewport is `Unavailable`, so this task adds no new tools-gate WARN.
+- Doctest case counts, measured with `--list-test-cases`, never predicted: `aero_tests` **351 → 356**
+  (+5: four tier-0 `scene_render` cases plus one GPU-gated case); `aero_editor_shell_test`
+  **89 → 114** (+25: the gesture matrix and idempotence cases, the whole `EditorCamera` battery, the
+  `scene_bounds`/`Aabb` battery plus case 12b, and the `PanelContext` delta case);
+  `aero_editor_imgui_test` **10 → 14** (+4: the four real-`EditorApp::tick()` camera cases).
+- The non-interactive launch check (`aero_editor`, `.ini` deleted, seeded scene): **zero** new
+  ERROR/CRITICAL/WARN lines, run after every ImGui-touching step and again after the final format
+  pass.
+- The sabotage table's outcome, every seed confirmed present before trusting the verdict, every one
+  reverted and re-confirmed green afterward:
+
+  | | Seed | Result |
+  |---|---|---|
+  | S1 | flip `ORBIT_YAW_SIGN` to `+1.0F` | reddened case 3's right-drag row exactly; case 3's pitch row and cases 2/5/6 stayed green |
+  | S2 | drop the pitch clamp from `clampState` | reddened case 4 exactly, as predicted; case 7's extreme-pitch "eye invariant" arm did **not** redden (see the finding below) — case 3 stayed green |
+  | S3 | make `worldPerPoint` a constant | reddened case 5's two scaling rows exactly; its direction rows stayed green |
+  | S4 | delete `applyFly`'s eye-restore line | reddened case 7's eye-invariant row exactly; its translation rows stayed green |
+  | S5 | ignore `cameraOverride` in `buildRenderView` | reddened `scene_render` tier-0 cases 1–2 and GPU case 1; tier-0 case 3 stayed green |
+  | S6 | drop the `cameraOverride == nullptr` gate on the two camera WARNs | reddened GPU case arms a and c exactly; arm d (the light WARN) stayed green |
+  | S7 | hoist the light walk above the camera resolution | reddened `scene_render` tier-0 case 3 exactly; every other case in the file stayed green |
+  | S8 | drop the fresh-press requirement (`...Down` instead of `...Pressed`) | reddened the no-fresh-press rows (the E5 two-button row and the dedicated Alt-after-press case) exactly; the continuation rows stayed green |
+  | S9 | remove `sceneBounds`'s `registered()` guard | **did not redden anything — recorded as non-discriminating, exactly as the plan predicts** (the guard's target state, an unregistered `MeshRenderer`, is unreachable on a live `World`) |
+  | S9b | add an `AERO_LOG_WARN` on `sceneBounds`'s empty-result path | reddened case 12 exactly; `scene_bounds_test.cpp`'s case 7 stayed green |
+  | S10 | drop `dt` from `applyFly`'s translation | reddened case 7's frame-rate-independence row (and its single-step "W for 1s" row); the true single-call rows (Shift, Q/E, W+D) stayed green |
+  | S11 | use `fovY` alone in `focusOn` (ignore aspect) | reddened case 9's `aspect = 0.5` row exactly; its `aspect = 1`/invalid/point/huge-box rows stayed green |
+  | S12 | pass `drawExtent.height` instead of `avail.y` as `viewportHeightPoints` | **not seeded mechanically — recorded as human-only, exactly as the plan predicts** (no test in this harness can tell pixels from points on a 1× runner) |
+
+  **A genuine finding, recorded honestly rather than glossed over:** the plan's §V4 table predicts S2
+  also reddens "case 7's eye-invariant at extreme pitch." Investigated directly (seed → build → run →
+  revert, twice, with an intermediate probe isolating the two candidate mechanisms): dropping ONLY the
+  pitch-clamp *value* does not move `position()`, because the eye-restore identity
+  (`pivotPoint = eye + forward() * orbitDistance`) holds algebraically regardless of whether
+  `pitchRadians` itself was clamped — the restore uses whatever `forward()` the (possibly unclamped)
+  pitch currently produces, and `fromAxisAngle` never produces NaN/Inf for a large finite angle. The
+  ordering property the comment actually protects against — `clampState()` running BETWEEN the look
+  and the restore, not after — was separately verified live: moving the call to run AFTER the restore
+  (a different, non-plan seed) reddens the SAME row hugely (drift of several world units), confirming
+  the assertion is real and does its job; it simply does not double as an S2 discriminator. Recorded
+  here in the open, the same way S9/S12 are — see the engineering log for the full trail.
+- All five guards green with **no allowlist change**:
+  `check-math-boundary.sh`'s scanned count moved **191 → 197** (+6: `editor_camera.hpp/.cpp`,
+  `scene_bounds.hpp/.cpp`, `editor_camera_test.cpp`, `scene_bounds_test.cpp` — measured against
+  `origin/main`, not assumed); `check-golden-rule.sh`, `check-rhi-boundary.sh`,
+  `check-scene-boundary.sh`, `check-platform-boundary.sh` all unaffected.
+- `git diff --stat origin/main` empty over `runtime/`, `samples/`, `tools/`, `cmake/`, `shaders/`,
+  `.github/` and `vcpkg.json`; the `/vcpkg` submodule SHA unchanged; `editor/src/imgui_layer.{hpp,cpp}`
+  and `editor/src/main.cpp` byte-identical for the **seventh** task running; `aero_editor_shell_test`'s
+  `target_link_libraries` line byte-identical (verified against `origin/main`, not merely "unedited by
+  eye").
+- clang-format and clang-tidy clean on every touched file at every commit boundary, with **zero new
+  `NOLINT`s** — the one pre-existing `reinterpret_cast` NOLINT in `viewport_panel.cpp` (2.2.3) is
+  unchanged, and no `readability-math-missing-parentheses` finding appeared (C9: that check is not in
+  this repo's enabled set).
+
+## Known-and-expected, NOT a defect
+
+- **The D4 Linux Alt+drag WM caveat** — GNOME/KDE bind Alt+drag to *move window* by default, which
+  affects Blender, Unity and Maya identically; the fix is a window-manager setting, and the MMB pan
+  path is unaffected.
+- **C8's Wayland caveat** — ImGui's SDL3 backend whitelists `{windows, cocoa, x11, DIVE, VMAN}` for
+  `SDL_CaptureMouse`, so on Wayland a drag that leaves the window may stall; release and re-press to
+  recover.
+- **D14: no cursor lock**, so a fly-look drag stalls at the physical screen edge — declined by the
+  user; see the Handoffs section of the plan for the two costed routes (`io.WantSetMousePos` vs
+  `platform::Window::setRelativeMouseMode`).
+- **E7: macOS "natural" scrolling inverts the wheel** exactly as it does in every other Mac
+  application — uncompensated by design.
+- **D13: the pose is transient** — never serialized, never undoable, and there is no camera-settings
+  UI for fov/near/far/speed.
+- **E9: dolly stops at `MIN_DISTANCE`** rather than passing through the pivot.
+- **E16: an enormous subtree frames imperfectly** rather than infinitely — clamped at `MAX_DISTANCE`.
+- **D9: `LOCAL_MESH_HALF_EXTENT = 0.5F` is exact for the three procedural primitives** (cube, sphere,
+  plane) and **wrong the moment a later task imports a real mesh** — the AssetDatabase should then
+  publish per-mesh local bounds and `entityBounds()` should read them.
+- **The `"No camera in scene"` overlay is gone on purpose** (D19) — see the 2.2.3 section's rewritten
+  rows above.
+
+## How to validate one OS
+
+1. **Launch** — the cube is framed in a right-front ¾ view, lit, not edge-on and not clipped.
+2. **Alt+LMB orbit** — smooth; **drag right turns the view right**; **drag down raises the eye and
+   looks down at the pivot**; **no roll at any angle**; the poles stop cleanly with no flip, no spin
+   and no stutter.
+3. **MMB pan** — the scene tracks the cursor at the pivot depth; **still 1:1 after dollying all the
+   way in and all the way out**.
+4. **Alt+Cmd+LMB pan** (Alt+Ctrl+LMB on Windows/Linux) — identical behaviour; this is the
+   **Mac-trackpad path**, since a MacBook trackpad has no middle button at all.
+5. **Wheel / two-finger dolly** — smooth and continuous; **never passes through the pivot**; never
+   inverts the view; fractional trackpad scroll is smooth, not steppy.
+6. **Alt+RMB drag dolly** — right **or up** zooms in; left or down zooms out; a right-and-up diagonal
+   zooms in **faster**, not slower.
+7. **RMB fly** — look around freely; `W A S D` move relative to the view; **`Q`/`E` move straight
+   down/up regardless of pitch**; `Shift` is noticeably (≈4×) faster; the wheel changes speed and the
+   overlay reads **`fly N.N u/s`**, appearing only while RMB is held.
+8. **Frame-rate independence** — hold `W` for ~3 s with the window focused, note where you end up;
+   reset (`F`), then repeat with the window **unfocused** (the 20 Hz cap): the distance travelled is
+   the **same**, the motion is merely coarser.
+9. **HiDPI pan speed — S12's human row.** On a Retina display, a ~100-pt pan drag moves the scene by
+   the same **on-screen** amount as the same drag on a 1× display. If it moves roughly **twice** as
+   far, **D15 was violated** — `viewportHeightPoints` is being fed pixels.
+10. **`F` on the Cube** frames it and **keeps the current viewing angle**. **`F` on a parent** frames
+    the whole subtree, not just the parent. **`F` on the Directional Light** (no mesh) gives a sane
+    distance, not a nose-touch.
+11. **`F` with nothing selected** frames the whole scene. **`F` in an empty scene** (delete
+    everything) returns to the launch pose — and **the Console shows no ERROR lines**.
+12. **`F` while renaming** — double-click an entity name in the Hierarchy, type `feature`, press
+    Enter: **the camera does not move** and the name is `feature`.
+13. **Wheel routing** — wheel over the **Hierarchy / Console / Assets** scrolls those panels; wheel
+    over the **Viewport** dollies and does **not** scroll the panel or the dock node.
+14. **Plain LMB in the Viewport does nothing** — no gesture starts, the panel does not undock, the
+    window does not move, and a subsequent Alt+LMB still orbits normally. (This binding is reserved
+    for 2.3.2's picking.)
+15. **Delete `Main Camera`** — the viewport **keeps rendering**, lit; there is **no** `"No camera in
+    scene"` text; the Console gains **no** WARN. *(This is the row that replaces 2.2.3's row 12.)*
+16. **Edit `Camera.fovYRadians` in the Inspector** — the Viewport does **not** change. *(It used to.
+    This row is the user-visible proof of the whole task.)*
+17. **Resize / undock / redock / maximise the Viewport mid-gesture** — no jump, no crash, no stuck
+    gesture; the aspect stays correct as the panel narrows; the `{W}×{H}` readout keeps updating.
+18. **Drag outside the window and release there** — the gesture continues while outside, then **ends
+    cleanly** on release; pressing again inside starts a fresh one; nothing is latched. *(On
+    **Wayland** the drag may stall at the window edge — **C8**; record it as environmental.)*
+19. **Two buttons at once** — begin an Alt+LMB orbit, press RMB mid-drag: it **keeps orbiting** and
+    does not switch to fly; release LMB, then press RMB again: fly starts normally.
+20. **Linux only** — if **Alt+LMB is swallowed by the window manager** (GNOME/KDE bind Alt+drag to
+    *move window*), confirm it in the WM settings and record it as **environmental, not a defect**
+    (D4); **MMB pan must still work**. Also confirm whether the session is X11 or Wayland and note it
+    against row 18.
+
+## Validation records
+
+- **Launch: cube framed in a right-front ¾ view, lit**
+- **Alt+LMB orbit: right drags right, down raises the eye, no roll, clean pole stops**
+- **MMB pan: tracks the cursor at pivot depth, 1:1 at any zoom**
+- **Alt+Cmd+LMB pan (the Mac-trackpad path)**
+- **Wheel / two-finger dolly: smooth, never passes through the pivot**
+- **Alt+RMB drag dolly: right/up zooms in, diagonal reinforces**
+- **RMB fly: WASD relative, Q/E world-vertical, Shift ≈4×, overlay reads `fly N.N u/s`**
+- **Frame-rate independence: same distance focused vs. unfocused (20 Hz cap)**
+- **HiDPI pan speed matches a 1× display (S12's human row)**
+- **`F` on Cube/parent/light: correct framing, angle preserved**
+- **`F` with nothing selected / in an empty scene: scene-frame or reset, no ERROR**
+- **`F` while renaming: camera does not move**
+- **Wheel routing: other panels scroll, Viewport dollies, no dock-node bubble**
+- **Plain LMB in the Viewport does nothing**
+- **Delete `Main Camera`: viewport keeps rendering, no overlay text, no WARN**
+- **Editing `Camera.fovYRadians` no longer affects the Viewport**
+- **Resize/undock/redock/maximise mid-gesture: no jump, no crash, no stuck gesture**
+- **Drag outside the window and release: gesture ends cleanly, nothing latched**
+- **Two buttons at once: orbit wins over a mid-drag RMB press**
+- **Linux only: Alt+LMB WM caveat and X11/Wayland noted**
+
+### macOS — ⏳ pending
+
+The mechanical/structural pass above ran and is green (build, full ctest on both presets, the
+`AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, the non-interactive launch
+proof, thirteen sabotage proofs each seed-confirmed and reverted (two recorded as expected
+non-discriminations, one recorded as a partial-discrimination finding), all five guards, clang-format
+and clang-tidy clean with zero new `NOLINT`s).
+
+### Windows — ⏳ pending
+
+Needs a native run. No checks recorded yet.
+
+### Linux — ⏳ pending
+
+Needs a native run (real Vulkan or native Wayland/X11; **not** lavapipe/CI, which cannot exercise
+window-manager or compositor interaction). No checks recorded yet.
+
+**Task 2.3.1 gate status: mechanically green on macOS — human pass pending on all three OSes.** Epic
+2.3 (Manipulation) is now **OPEN in code** (2.3.1 is its first landed task). The gate stays open until
+the macOS human pass is recorded (a separate `docs:` commit after merge) and until Windows/Linux
+native passes land.

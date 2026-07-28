@@ -229,6 +229,34 @@ TEST_CASE("editor: Panel defaults") {
     CHECK_FALSE(opts.noScrollbar);
     CHECK_FALSE(opts.noPadding);
     CHECK_FALSE(opts.hasMenuBar);
+    CHECK_FALSE(opts.noScrollWithMouse);  // task 2.3.1
+}
+
+namespace {
+// Records what PanelContext::deltaSeconds it was handed -- the tier-0 half of AC-20 (the value
+// actually being FrameClock::deltaSeconds() is proven by the GPU case in imgui_layer_test.cpp).
+class DeltaProbePanel final : public engine::editor::Panel {
+public:
+    [[nodiscard]] const char* id() const noexcept override { return "DeltaProbe"; }
+    void onDraw(engine::editor::PanelContext& context) override { seenDeltaSeconds = context.deltaSeconds; }
+    float seenDeltaSeconds = -1.0F;
+};
+}  // namespace
+
+TEST_CASE("editor: PanelContext carries the frame delta (task 2.3.1, AC-20)") {
+    engine::World world;
+    engine::editor::Selection selection;
+
+    // The default keeps two-brace construction valid -- every pre-2.3.1 call site must keep compiling.
+    const engine::editor::PanelContext defaulted{world, selection};
+    CHECK(defaulted.deltaSeconds == 0.0F);
+
+    engine::editor::PanelContext withDelta{world, selection, 0.016F};
+    CHECK(withDelta.deltaSeconds == 0.016F);
+
+    DeltaProbePanel probe;
+    probe.onDraw(withDelta);
+    CHECK(probe.seenDeltaSeconds == 0.016F);
 }
 
 TEST_CASE("editor: const overloads compile and agree") {

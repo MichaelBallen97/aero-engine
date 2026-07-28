@@ -5,6 +5,7 @@
 #include <aero/core/time.hpp>
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/editor_app.hpp>
+#include <aero/editor/editor_camera.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/project_files.hpp>
 #include <aero/platform/context.hpp>
@@ -142,10 +143,11 @@ bool EditorApp::tick() {
 
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout, .quitRequested = false};
-    PanelContext panelContext{sceneWorld, sceneSelection};  // rebuilt per frame (D7)
-    drawShellUi(registry, panelContext, ui);                // menu bar -> dockspace -> panels
-    applyDefaultLayout = ui.applyDefaultLayout;             // drawShellUi clears it once consumed, and re-sets
-                                                            // it for View > Reset Layout
+    // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1)
+    PanelContext panelContext{sceneWorld, sceneSelection, frameClock.deltaSeconds()};
+    drawShellUi(registry, panelContext, ui);     // menu bar -> dockspace -> panels
+    applyDefaultLayout = ui.applyDefaultLayout;  // drawShellUi clears it once consumed, and re-sets
+                                                 // it for View > Reset Layout
     // D3: the offscreen scene pass runs AFTER the draw walk (only it knows this frame's panel size,
     // which is what removes the one-frame resize lag) and BEFORE endFrame (ImGui's command buffer is
     // acquired and submitted there; ours must be submitted first -- F8's ordering guarantee, and F7
@@ -184,6 +186,12 @@ bool EditorApp::focused() const noexcept { return windowFocused; }
 bool EditorApp::presentedLastFrame() const noexcept { return presented; }
 std::size_t EditorApp::logRecordCount() const noexcept {
     return consolePanel != nullptr ? consolePanel->history().size() : std::size_t{0};
+}
+EditorCamera* EditorApp::viewportCamera() noexcept {
+    return viewportPanel != nullptr ? &viewportPanel->camera() : nullptr;
+}
+const EditorCamera* EditorApp::viewportCamera() const noexcept {
+    return viewportPanel != nullptr ? &viewportPanel->camera() : nullptr;
 }
 
 void EditorApp::requestQuit() noexcept { running = false; }

@@ -50,7 +50,8 @@ void warnOnce(bool& latch, const char* message) {
 
 }  // namespace
 
-render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi::Extent2D viewport) {
+render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi::Extent2D viewport,
+                                   const render::CameraView* cameraOverride) {
     AERO_PROFILE_ZONE;
     scratch.instances.clear();
     scratch.points.clear();
@@ -58,6 +59,9 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
     view.ambient = {0.03F, 0.03F, 0.03F};
 
     // --- renderable instances: each<Transform, MeshRenderer> (AC-6/AC-8 — no Transform => excluded) ---
+    // The scene walk ALWAYS runs first, unchanged, so view.cameraCount stays filled on every path
+    // below (task 2.3.1 AC-2/AC-3: it stays informational even when an override replaces the camera —
+    // a future Phase 4 Game view will want it).
     world.each<Transform, MeshRenderer>([&](Entity e, Transform& /*transform*/, MeshRenderer& meshRenderer) {
         const Mat4 model = worldMatrix(world, e);
         render::MeshInstance instance;
@@ -78,20 +82,34 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
             cam = &c;
         }
     });
-    if (!camEntity.valid()) {
-        // 0 cameras (D5): nothing to draw; the frame's own clear still shows. Diagnostics still filled.
+
+    // Task 2.3.1: a three-arm decision, in this exact order. The instance loop above and the light
+    // walk below are UNTOUCHED by any of the three arms (INV-4) — S7's sabotage is hoisting the light
+    // walk above this resolution, which would change the empty-world diagnostics below.
+    if (cameraOverride != nullptr) {
+        // The override REPLACES the World's camera entirely (D3): all three CameraView fields, by
+        // whole-struct assignment. `viewport` is deliberately NOT consulted here — the caller already
+        // resolved the aspect into cameraOverride->proj.
+        view.camera = *cameraOverride;
+        view.hasCamera = true;
+    } else if (!camEntity.valid()) {
+        // 0 cameras (D5), no override: nothing to draw; the frame's own clear still shows. This is
+        // BYTE-FOR-BYTE the pre-2.3.1 path, including the early return that skips the light walk below
+        // (INV-4) — directionalCount stays 0 and pointsTruncated stays false on this arm.
         view.hasCamera = false;
         view.instances = scratch.instances;
         view.points = scratch.points;
         return view;
+    } else {
+        const float aspect =
+            viewport.height != 0 ? static_cast<float>(viewport.width) / static_cast<float>(viewport.height) : 1.0F;
+        const Mat4 camWorld = worldMatrix(world, camEntity);
+        view.camera.view = inverse(camWorld);  // == viewMatrix(world, camEntity), computed once
+        view.camera.proj = projectionMatrix(*cam, aspect);
+        view.camera.eyePosition = translationOf(camWorld);
+        view.hasCamera = true;
     }
 
-    const float aspect =
-        viewport.height != 0 ? static_cast<float>(viewport.width) / static_cast<float>(viewport.height) : 1.0F;
-    const Mat4 camWorld = worldMatrix(world, camEntity);
-    view.camera.view = inverse(camWorld);  // == viewMatrix(world, camEntity), computed once
-    view.camera.proj = projectionMatrix(*cam, aspect);
-    view.camera.eyePosition = translationOf(camWorld);
     const Mat4 viewProj = view.camera.proj * view.camera.view;
     for (render::MeshInstance& instance : scratch.instances) {
         instance.mvp = viewProj * instance.model;
@@ -136,13 +154,15 @@ std::optional<SceneRenderer> SceneRenderer::create(rhi::Device& device, const Vi
     return SceneRenderer{std::move(*fwd)};
 }
 
-void SceneRenderer::render(World& world, render::Frame& frame) {
+void SceneRenderer::render(World& world, render::Frame& frame, const render::CameraView* cameraOverride) {
     AERO_PROFILE_ZONE;
-    const render::RenderView view = buildRenderView(world, scratch, frame.extent());
-    if (view.cameraCount == 0) {
-        warnOnce(noCameraWarned, "SceneRenderer: no Camera in world; nothing rendered");
-    } else if (view.cameraCount > 1) {
-        warnOnce(multiCameraWarned, "SceneRenderer: multiple Cameras; using lowest entity index");
+    const render::RenderView view = buildRenderView(world, scratch, frame.extent(), cameraOverride);
+    if (cameraOverride == nullptr) {  // D3: an override suppresses the two CAMERA WARNs, nothing else
+        if (view.cameraCount == 0) {
+            warnOnce(noCameraWarned, "SceneRenderer: no Camera in world; nothing rendered");
+        } else if (view.cameraCount > 1) {
+            warnOnce(multiCameraWarned, "SceneRenderer: multiple Cameras; using lowest entity index");
+        }
     }
     if (view.directionalCount > 1) {
         warnOnce(multiDirWarned, "SceneRenderer: multiple DirectionalLights; using lowest entity index");
