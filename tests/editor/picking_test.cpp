@@ -34,6 +34,7 @@ using engine::Vec3;
 using engine::Vec4;
 using engine::World;
 using engine::editor::applyPickAction;
+using engine::editor::CLIP_W_EPSILON;
 using engine::editor::EditorCamera;
 using engine::editor::PickAction;
 using engine::editor::pickEntity;
@@ -211,6 +212,31 @@ TEST_CASE("picking: the round trip NDC -> ray -> project -> NDC holds off-axis (
     }
 }
 
+TEST_CASE("picking: projectToViewport rejects a FINITE point whose viewport mapping overflows (E4)") {
+    const EditorCamera camera = testCamera();
+    const Mat4 viewProj = camera.projectionMatrix(1.0F) * camera.viewMatrix();
+    // 5e37 world units off-axis, one unit in front of the eye. Everything up to and INCLUDING the NDC
+    // stays finite -- only ndcToViewportPoints' multiply by viewportWidth/2 overflows to +inf. That is
+    // precisely why the E4 guard exists: ImDrawList consumes a +inf happily and corrupts the whole
+    // frame's vertex buffer. The round-trip case above only ever feeds this function points that
+    // project cleanly, so without this case the guard has no coverage at all.
+    const Vec3 worldPoint{5.0e37F, 0.0F, 9.0F};
+    const Vec4 clip = viewProj * engine::toVec4(worldPoint, 1.0F);
+
+    // ANTI-VACUITY: prove that neither the input nor the near-plane test is what rejects this, so a
+    // green CHECK_FALSE below can only come from the finiteness guard.
+    REQUIRE(std::isfinite(worldPoint.x));
+    REQUIRE(std::isfinite(clip.x));
+    REQUIRE(std::isfinite(clip.w));
+    REQUIRE(clip.w > CLIP_W_EPSILON);
+    REQUIRE(std::isfinite(clip.x / clip.w));
+
+    Vec2 out{12345.0F, 54321.0F};
+    CHECK_FALSE(projectToViewport(viewProj, worldPoint, VIEWPORT_POINTS, out));
+    CHECK(out.x == 12345.0F);  // left UNTOUCHED on a rejection, like rayLocalBoxHit's outT
+    CHECK(out.y == 54321.0F);
+}
+
 TEST_CASE("picking: rayLocalBoxHit core geometry (AC-4/D3)") {
     constexpr float H = 0.5F;
     SUBCASE("entry hit") {
@@ -260,6 +286,78 @@ TEST_CASE("picking: rayLocalBoxHit totality against hostile inputs (AC-7)") {
     CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, -0.5F, t));
     CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, QUIET_NAN, t));
     CHECK(t == 12345.0F);
+}
+
+// The case above drives rayLocalBoxHit with RAY-level arguments only. AC-7's other two clauses -- a
+// zero scale (a singular model matrix) and a non-finite Transform -- are properties of an ENTITY, and
+// nothing else in this file builds a degenerate one and hands it to pickEntity. Without this case the
+// E5 asymmetry has only one of its two halves proved: selection_overlay_test.cpp asserts that a
+// zero-scaled entity still DRAWS its 12 segments, while "you cannot CLICK a zero-volume object" is
+// asserted nowhere.
+TEST_CASE("picking: a degenerate or non-finite ENTITY is never picked (AC-7/E5)") {
+    const EditorCamera camera = testCamera();
+    // Every subcase clicks the centre, ndc {0,0}, where a SANE entity at the world origin is picked --
+    // the first subcase proves exactly that. So a CHECK_FALSE(hit()) below reports the degeneracy and
+    // not a badly aimed ray.
+
+    SUBCASE("ANTI-VACUITY: the same entity with a SANE transform IS picked") {
+        World w;
+        const Entity sane = makeMesh(w, Vec3::zero());
+        const PickResult r = pickEntity(w, camera, requestAt(Vec2::zero()));
+        CHECK(r.entity == sane);
+        CHECK(std::abs(r.distance - 9.5F) < 1.0e-3F);
+    }
+    SUBCASE("zero scale on every axis -- a singular model matrix") {
+        World w;
+        (void)makeMesh(w, Vec3::zero(), Quat::identity(), Vec3::zero());
+        const PickResult r = pickEntity(w, camera, requestAt(Vec2::zero()));
+        CHECK_FALSE(r.hit());
+        CHECK(std::isfinite(r.distance));
+    }
+    SUBCASE("zero scale on ONE axis -- singular too, and geometrically ON the ray") {
+        // The collapsed box is a unit quad at local z = 0 that the -Z ray passes straight through, so
+        // this is not a miss for want of geometry: it is a miss because zero VOLUME is not pickable.
+        World w;
+        (void)makeMesh(w, Vec3::zero(), Quat::identity(), Vec3{1.0F, 1.0F, 0.0F});
+        const PickResult r = pickEntity(w, camera, requestAt(Vec2::zero()));
+        CHECK_FALSE(r.hit());
+        CHECK(std::isfinite(r.distance));
+    }
+    SUBCASE("a non-finite position") {
+        World w;
+        (void)makeMesh(w, Vec3{INF_F, 0.0F, 0.0F});
+        const PickResult r = pickEntity(w, camera, requestAt(Vec2::zero()));
+        CHECK_FALSE(r.hit());
+        CHECK(std::isfinite(r.distance));
+    }
+    SUBCASE("a non-finite scale") {
+        World w;
+        (void)makeMesh(w, Vec3::zero(), Quat::identity(), Vec3{QUIET_NAN, 1.0F, 1.0F});
+        const PickResult r = pickEntity(w, camera, requestAt(Vec2::zero()));
+        CHECK_FALSE(r.hit());
+        CHECK(std::isfinite(r.distance));
+    }
+    SUBCASE("a TINY but non-degenerate entity stays pickable") {
+        // The other half of the determinant contract, and the half that regresses silently: the guard
+        // rejects zero VOLUME, never small OBJECTS. A uniform 1e-4 scale has det 1e-12 -- eight orders
+        // of magnitude above DETERMINANT_EPSILON -- and must still be clickable. Raising that epsilon
+        // "to be safe" would make small objects quietly unselectable in the editor, and reddens here.
+        World w;
+        const Entity tiny = makeMesh(w, Vec3::zero(), Quat::identity(), Vec3{1.0e-4F, 1.0e-4F, 1.0e-4F});
+        const PickResult r = pickEntity(w, camera, requestAt(Vec2::zero()));
+        CHECK(r.entity == tiny);
+        CHECK_FALSE(r.isPoint);
+        CHECK(std::abs(r.distance - 10.0F) < 1.0e-3F);  // the eye is 10 away; the box is 1e-4 across
+    }
+    SUBCASE("a degenerate entity NEARER than a sane one never shadows it") {
+        // The walk must SKIP the degenerate candidate and keep going, not abandon the click.
+        World w;
+        (void)makeMesh(w, Vec3{0.0F, 0.0F, 4.0F}, Quat::identity(), Vec3::zero());
+        const Entity sane = makeMesh(w, Vec3::zero());
+        const PickResult r = pickEntity(w, camera, requestAt(Vec2::zero()));
+        CHECK(r.entity == sane);
+        CHECK(std::abs(r.distance - 9.5F) < 1.0e-3F);
+    }
 }
 
 TEST_CASE("picking: rayLocalBoxHit's t is in WORLD units, not local units (AC-5/D2, arm A)") {
@@ -436,17 +534,41 @@ TEST_CASE("picking: point candidates by screen radius (AC-9/D5)") {
         CHECK(r.entity == near);  // wins on DISTANCE despite the higher index
         (void)far;
     }
-    SUBCASE("equal screen distance ties break on the LOWEST index") {
+    SUBCASE("equal screen distance ties break on the LOWEST index, whatever eachEntity's order") {
         // Both candidates sit at the EXACT SAME world point as the click itself, which makes their
         // screenDistance BIT-IDENTICAL (both zero) by construction -- a floating round trip through
         // the projection matrix could never be trusted to reproduce an exact tie, but two identical
         // calls with identical inputs are deterministic under IEEE arithmetic.
+        //
+        // CREATION ORDER ALONE CANNOT EXERCISE THE TIE-BREAK. eachEntity walks creation order, which
+        // is also index order, so the lower index is visited FIRST and wins on the plain
+        // `screenDistance < bestScreenDistance` arm -- `e.index < point.entity.index` is never the
+        // decider and deleting it changes nothing. Recycling a destroyed slot inverts the visit
+        // order, exactly as case 8 above does for the MESH tie-break: destroy() swaps the erased
+        // entity with the last in-use element, so [a,b,c] - destroy(b) -> [a,c,b], and the next
+        // create() recycles b's index with a bumped generation.
         const Vec3 clickWorld{2.0F, 0.0F, 0.0F};
-        const Entity low = makePoint(w, clickWorld);   // created FIRST -- the LOWER index
-        const Entity high = makePoint(w, clickWorld);  // created SECOND, SAME position -- the tie
+        const Entity decoy = makeMesh(w, Vec3{0.0F, 0.0F, -50.0F});  // index 0; this ray misses it
+        const Entity doomed = w.create();                            // index 1
+        const Entity high = makePoint(w, clickWorld);                // index 2
+        REQUIRE(w.destroy(doomed));
+        const Entity low = makePoint(w, clickWorld);  // index 1 recycled, generation 2
+
+        // ANTI-VACUITY: assert the inversion exists. If EnTT's packing ever changes, this REQUIRE
+        // fails LOUDLY instead of the case passing for the wrong reason.
+        std::vector<std::uint32_t> visited;
+        w.eachEntity([&](Entity e) { visited.push_back(e.index); });
+        REQUIRE(visited.size() == 3);
+        const auto highPos = std::find(visited.begin(), visited.end(), high.index);
+        const auto lowPos = std::find(visited.begin(), visited.end(), low.index);
+        REQUIRE(highPos != visited.end());
+        REQUIRE(lowPos != visited.end());
+        REQUIRE(highPos < lowPos);  // a HIGHER index is visited BEFORE a lower one
+
         const PickResult r = pickEntity(w, camera, requestAt(ndcOf(camera, 1.0F, clickWorld)));
-        CHECK(r.entity == low);
-        (void)high;
+        CHECK(r.entity == low);  // dropping the index tie-break returns `high` and reddens here
+        CHECK(low.index < high.index);
+        (void)decoy;
     }
 }
 

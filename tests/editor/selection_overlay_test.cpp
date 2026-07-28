@@ -343,6 +343,27 @@ TEST_CASE("selection_overlay: behind the camera and straddling the near plane (A
     }
 }
 
+TEST_CASE("selection_overlay: a HUGE FINITE transform never emits a non-finite coordinate (E4)") {
+    World w;
+    const EditorCamera camera = testCamera();
+    const Mat4 viewProj = testViewProj(camera);
+    // The hostile-input case below uses position.x = INF, which makes EVERY clip w NaN, so all twelve
+    // edges are dropped by clipSegmentToNearPlane BEFORE the finiteness guard is ever reached -- an
+    // allFinite() over an empty scratch is vacuous. A huge-but-FINITE scale straddling the eye is what
+    // actually reaches the guard: the four Z edges each have one endpoint in front and one behind, so
+    // they survive clipping, and the clipped endpoint's x/w then overflows inside ndcToViewportPoints.
+    const Entity huge = makeMesh(w, Vec3::zero(), Quat::identity(), Vec3{1.0e34F, 1.0e34F, 1.0e34F});
+    std::vector<OverlaySegment> scratch;
+    buildSelectionOverlay(w, std::array<Entity, 1>{huge}, huge, viewProj, VIEWPORT_POINTS, scratch);
+
+    CHECK(allFinite(scratch));
+    // ANTI-VACUITY, and the whole point of the case: the scratch is NOT empty, so allFinite above has
+    // something to be true of. Four edges lie wholly in front of the eye and survive; four lie wholly
+    // behind and are dropped by clipSegmentToNearPlane; the four straddling Z edges survive clipping
+    // and are dropped HERE, by the finiteness guard. Dropping that guard emits all eight.
+    CHECK(scratch.size() == 4);
+}
+
 TEST_CASE("selection_overlay: the cap bounds both segment count and Primary role (AC-18/E13/D15)") {
     World w;
     const EditorCamera camera = testCamera();
@@ -367,6 +388,69 @@ TEST_CASE("selection_overlay: the cap bounds both segment count and Primary role
     buildSelectionOverlay(w, all, all.front(), viewProj, VIEWPORT_POINTS, scratch);
     CHECK(std::count_if(scratch.begin(), scratch.end(),
                         [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }) == 12);
+}
+
+// A7 is a claim about the CAP: a dead handle is skipped BEFORE the counter advances, so stale handles
+// never consume another entity's budget. Discriminating it needs MORE than MAX_HIGHLIGHTED_ENTITIES
+// live entities with dead handles among them -- the cap case above has 300 live entities and no dead
+// ones, and the hostile-input case below builds one live entity alone, which draws its 12 segments
+// wherever ++drawn sits.
+TEST_CASE("selection_overlay: dead handles do NOT consume cap budget (A7/AC-17/AC-18)") {
+    World w;
+    const EditorCamera camera = testCamera();
+    const Mat4 viewProj = testViewProj(camera);
+
+    // Created and destroyed FIRST, so the live entities below recycle their slots with a bumped
+    // generation: every handle in `dead` is then stale by GENERATION, not merely a freed index.
+    std::vector<Entity> dead;
+    dead.reserve(12);
+    for (int i = 0; i < 10; ++i) {
+        const Entity doomed = makeMesh(w, Vec3::zero());
+        REQUIRE(w.destroy(doomed));
+        dead.push_back(doomed);
+    }
+    dead.push_back(Entity{});  // and two NULL handles, which are dead by generation 0
+    dead.push_back(Entity{});
+
+    constexpr std::size_t LIVE_COUNT = MAX_HIGHLIGHTED_ENTITIES + 4;
+    std::vector<Entity> live;
+    live.reserve(LIVE_COUNT);
+    for (std::size_t i = 0; i < LIVE_COUNT; ++i) {
+        live.push_back(makeMesh(w, Vec3{static_cast<float>(i) * 0.001F, 0.0F, 0.0F}));
+    }
+    for (const Entity e : dead) {
+        REQUIRE_FALSE(w.alive(e));  // ANTI-VACUITY: recycling must not have revived one of them
+    }
+
+    // Two dead handles ahead of everything, then one after every 25 live entities -- so they are both
+    // BEFORE and AMONG the live ones, and eleven of them fall inside the first 256 span entries.
+    std::vector<Entity> span;
+    span.reserve(live.size() + dead.size());
+    std::size_t nextDead = 0;
+    span.push_back(dead[nextDead++]);
+    span.push_back(dead[nextDead++]);
+    for (std::size_t i = 0; i < live.size(); ++i) {
+        span.push_back(live[i]);
+        if ((i % 25) == 24 && nextDead < dead.size()) {
+            span.push_back(dead[nextDead++]);
+        }
+    }
+    REQUIRE(nextDead == dead.size());
+    REQUIRE(span.size() == live.size() + dead.size());
+
+    std::vector<OverlaySegment> scratch;
+    buildSelectionOverlay(w, span, Entity{}, viewProj, VIEWPORT_POINTS, scratch);
+    CHECK(scratch.size() == 12U * MAX_HIGHLIGHTED_ENTITIES);  // still exactly 3072, not 12 fewer boxes
+
+    // Sharper than the count: the 256th LIVE entity is the LAST one inside the cap...
+    buildSelectionOverlay(w, span, live[MAX_HIGHLIGHTED_ENTITIES - 1], viewProj, VIEWPORT_POINTS, scratch);
+    CHECK(std::count_if(scratch.begin(), scratch.end(),
+                        [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }) == 12);
+    // ...and the 257th is the FIRST one outside it. Counting dead handles against the budget would
+    // push the boundary earlier and redden both of these.
+    buildSelectionOverlay(w, span, live[MAX_HIGHLIGHTED_ENTITIES], viewProj, VIEWPORT_POINTS, scratch);
+    CHECK(std::none_of(scratch.begin(), scratch.end(),
+                       [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }));
 }
 
 TEST_CASE("selection_overlay: hostile input never crashes, never emits non-finite output (AC-17/E4/E5)") {
