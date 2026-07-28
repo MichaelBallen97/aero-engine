@@ -13,6 +13,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -25,6 +26,7 @@ using engine::Entity;
 using engine::Mat4;
 using engine::Vec2;
 using engine::Vec3;
+using engine::Vec4;
 using engine::World;
 using engine::editor::Aabb;
 using engine::editor::CameraButton;
@@ -46,6 +48,32 @@ struct GestureRow {
     CameraGestureInput input;
     CameraGestureState expected;
 };
+
+// INV-5, in one place: finite everywhere, and every clamped field inside its own documented bound.
+void checkPoseIsSane(const EditorCamera& camera) {
+    using namespace engine::editor;  // the MIN_*/MAX_* bounds; test TU, not a header
+    CHECK(std::isfinite(camera.pivot().x));
+    CHECK(std::isfinite(camera.pivot().y));
+    CHECK(std::isfinite(camera.pivot().z));
+    CHECK(camera.distance() >= MIN_DISTANCE);
+    CHECK(camera.distance() <= MAX_DISTANCE);
+    CHECK(camera.yaw() > -engine::PI);
+    CHECK(camera.yaw() <= engine::PI);
+    CHECK(std::abs(camera.pitch()) <= MAX_PITCH);
+    CHECK(camera.fovYRadians() >= MIN_FOV_Y);
+    CHECK(camera.fovYRadians() <= MAX_FOV_Y);
+    CHECK(camera.nearPlane() >= MIN_NEAR_PLANE);
+    CHECK(camera.nearPlane() < camera.farPlane());
+    CHECK(std::isfinite(camera.farPlane()));
+    CHECK(camera.flySpeed() >= MIN_FLY_SPEED);
+    CHECK(camera.flySpeed() <= MAX_FLY_SPEED);
+}
+
+[[nodiscard]] bool allFinite(const Mat4& matrix) {
+    return std::all_of(matrix.columns.begin(), matrix.columns.end(), [](const Vec4& column) {
+        return std::isfinite(column.x) && std::isfinite(column.y) && std::isfinite(column.z) && std::isfinite(column.w);
+    });
+}
 
 }  // namespace
 
@@ -605,6 +633,49 @@ TEST_CASE("editor camera: case 10 -- totality (AC-18, E11, E12, E22) [C4]") {
         const Mat4 withOne = camera.projectionMatrix(1.0F);
         CHECK(engine::approxEquals(withNan, withOne));
         CHECK(engine::approxEquals(withZero, withOne));
+    }
+}
+
+TEST_CASE("editor camera: near < far survives every magnitude (INV-5, C7's MIN_DEPTH_RANGE floor)") {
+    using namespace engine::editor;
+    // MIN_DEPTH_RANGE (1.0e-3F) is below half an ULP of a float at magnitudes >= 32768, so
+    // `near + MIN_DEPTH_RANGE == near` EXACTLY there: with that floor alone, setNearPlane(40000.0F)
+    // leaves near == far. Nothing downstream survives it -- perspective() asserts zFar > zNear in
+    // Debug and divides by zFar - zNear == 0 in Release, returning a matrix carrying +-inf -- and
+    // stateIsFinite() cannot see it, because BOTH members are perfectly finite. Only this sweep can.
+    const std::vector<float> nearValues = {MIN_NEAR_PLANE, 0.1F,     1.0F,   100.0F,  20000.0F, 32767.0F,
+                                           32768.0F,       40000.0F, 1.0e6F, 1.0e20F, 1.0e30F};
+
+    for (const float value : nearValues) {
+        CAPTURE(value);
+        EditorCamera camera;
+        camera.setNearPlane(value);
+        CHECK(camera.nearPlane() >= MIN_NEAR_PLANE);
+        CHECK(std::isfinite(camera.farPlane()));
+        // REQUIRE, not CHECK: perspective() asserts zFar > zNear, so letting the case run on past a
+        // broken floor would abort the whole binary instead of naming the magnitude that failed.
+        REQUIRE(camera.nearPlane() < camera.farPlane());
+        // perspective()'s own `-(zFar*zNear)/(zFar-zNear)` term overflows a float once zNear passes
+        // ~sqrt(FLT_MAX) (~1.8e19), however correct the floor is -- that is a limit of the projection
+        // formula, not of this clamp, and a near plane of 1e20 is far past any real use. Ask for a
+        // finite projection only where the formula is representable at all.
+        if (value < 1.0e19F) {
+            CHECK(allFinite(camera.projectionMatrix(1.5F)));
+        }
+    }
+
+    SUBCASE("the one input with no finite answer: near == FLT_MAX leaves +inf, which update() sweeps") {
+        // No float is greater than FLT_MAX, so `near < far` is unreachable with a finite far. far
+        // therefore lands on +inf -- which, unlike near == far, IS visible to stateIsFinite(), so the
+        // next update() resets the camera instead of leaving a silently degenerate projection.
+        EditorCamera camera;
+        camera.setNearPlane(std::numeric_limits<float>::max());
+        CHECK(camera.nearPlane() < camera.farPlane());
+        CHECK_FALSE(std::isfinite(camera.farPlane()));
+        camera.update(CameraInput{}, 1.0F / 60.0F);
+        CHECK(camera.nearPlane() == DEFAULT_NEAR);
+        CHECK(camera.farPlane() == DEFAULT_FAR);
+        checkPoseIsSane(camera);
     }
 }
 

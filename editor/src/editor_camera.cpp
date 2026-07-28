@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace engine::editor {
 
@@ -195,7 +196,17 @@ void EditorCamera::clampState() noexcept {
     }
     fovYValue = std::clamp(fovYValue, MIN_FOV_Y, MAX_FOV_Y);
     nearPlaneValue = std::max(nearPlaneValue, MIN_NEAR_PLANE);
-    farPlaneValue = std::max(farPlaneValue, nearPlaneValue + MIN_DEPTH_RANGE);
+    // BOTH floors, because MIN_DEPTH_RANGE alone stops holding INV-5's `near < far`: 1.0e-3F is below
+    // half an ULP of a float at magnitudes >= 32768, so `near + MIN_DEPTH_RANGE == near` EXACTLY
+    // there and far would silently land ON near. Nothing downstream survives that -- perspective()
+    // asserts zFar > zNear in Debug and divides by zFar - zNear == 0 in Release -- and
+    // stateIsFinite() cannot catch it, because BOTH members are perfectly finite. nextafter alone is
+    // not the answer either: it gives 100.000008 where MIN_DEPTH_RANGE gives 100.001, needlessly
+    // collapsing the usable depth range at ordinary magnitudes. Take the max of both floors.
+    // The one input whose result is not finite is near == FLT_MAX (no float is greater), which lands
+    // +inf in far -- and that the stateIsFinite() sweep below every caller DOES catch.
+    farPlaneValue = std::max({farPlaneValue, nearPlaneValue + MIN_DEPTH_RANGE,
+                              std::nextafter(nearPlaneValue, std::numeric_limits<float>::infinity())});
     flySpeedValue = std::clamp(flySpeedValue, MIN_FLY_SPEED, MAX_FLY_SPEED);
     // std::clamp does NOT sanitize NaN -- `v < lo` and `hi < v` are both false for NaN, so it returns
     // NaN unchanged. That is BY DESIGN here: stateIsFinite() immediately after every caller of this
