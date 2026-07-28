@@ -147,10 +147,17 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # TIER-0: no GPU, no window, no ImGui context, so it must pass identically with AERO_REQUIRE_GPU unset
 # and set. target_link_libraries below is UNCHANGED (AC-22) -- the new TUs need only
 # aero::core/aero::scene/aero::scene_internal, all already on this line.
+#
+# task 2.3.2 joins this target with editor/picking_test.cpp (step 1: the screen mapping, the basis ray
+# and the local-box slab test; step 2: the world pick walk and the click-decision table) and, in
+# step 3, editor/selection_overlay_test.cpp. The target stays TIER-0: no GPU, no window, no ImGui
+# context, so it must pass identically with AERO_REQUIRE_GPU unset and set. target_link_libraries
+# below is UNCHANGED (AC-21) and no add_test is registered (ctest -N stays 94/5, AC-22).
 find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
-               editor/editor_camera_test.cpp editor/scene_bounds_test.cpp)
+               editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
+               editor/picking_test.cpp editor/selection_overlay_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

@@ -10,6 +10,7 @@
 #include <aero/core/math.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/vfs.hpp>
+#include <aero/editor/picking.hpp>
 #include <aero/editor/scene_bounds.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/rhi/internal/native_device.hpp>
@@ -32,6 +33,16 @@ constexpr std::uint32_t VIEWPORT_EXTENT_QUANTUM = 64;
 constexpr rhi::Color VIEWPORT_CLEAR_COLOR{0.06F, 0.06F, 0.07F, 1.0F};
 constexpr ImVec4 OVERLAY_COLOR{0.7F, 0.7F, 0.75F, 0.8F};
 constexpr float OVERLAY_INSET = 4.0F;
+
+// D6: colour lives HERE, never in the public header -- an ImU32 there would break the ImGui-free
+// rule, which is exactly why buildSelectionOverlay tags a ROLE and the panel maps role -> style.
+// These four are TUNING values, judged by the human pass (editor/VALIDATION.md).
+// IM_COL32 is a pure shift/or over its four arguments (imgui.h:3096), so constexpr is valid here --
+// verified against the pinned 1.92.8 header, not assumed.
+constexpr ImU32 SELECTION_COLOR = IM_COL32(255, 148, 32, 190);          // amber, dimmed
+constexpr ImU32 SELECTION_PRIMARY_COLOR = IM_COL32(255, 176, 64, 255);  // brighter + opaque = primary
+constexpr float SELECTION_THICKNESS = 1.0F;
+constexpr float SELECTION_PRIMARY_THICKNESS = 2.0F;
 
 // D7/E9: GetContentRegionAvail() is in LOGICAL units; allocation must be sized in PIXELS. A
 // non-finite or non-positive scale falls back to 1.0 (the framePaceSleepMs NaN-safe idiom,
@@ -197,6 +208,13 @@ void ViewportPanel::onDraw(PanelContext& context) {
     lastAspect =
         drawExtent.height != 0 ? static_cast<float>(drawExtent.width) / static_cast<float>(drawExtent.height) : 1.0F;
 
+    // --- 8c. picking (task 2.3.2). Runs BEFORE F -- so a click-then-F in the same frame frames what
+    // was just clicked -- and BEFORE the overlay, so the highlight shows the new selection with no
+    // frame of lag (D11). Writing context.selection HERE is the HierarchyPanel::applyPending shape
+    // (F32): the Image item is submitted and closed, no ImGui tree is open, and no eachChild walk is
+    // in flight, which is what .claude/rules/editor.md's "not during a draw walk" actually protects.
+    updatePick(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y}, hovered);
+
     // D7: F is gated on HOVER, not on focus. This is a REASONED DEVIATION from the chord rule in
     // .claude/rules/editor.md, not an oversight: that rule exists so a focused InputText cannot
     // swallow a menu accelerator like Ctrl+S. F is not a chord, and its correct routing is the
@@ -207,6 +225,12 @@ void ViewportPanel::onDraw(PanelContext& context) {
     if (hovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
         focusSelection(context);
     }
+
+    // --- 8e. the selection highlight (task 2.3.2). LAST of the new phases so it projects through the
+    // POST-F camera: F moves the eye in this same frame and renderScene will submit that moved
+    // camera, so building the overlay any earlier would put the box one frame behind the pixels
+    // (INV-2). Drawing here also puts it UNDER the size readout below and OVER the Image above.
+    drawSelectionOverlay(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y});
 
     // Step 9 (D15/C3): the overlay offset is written COMPONENT-WISE -- ImVec2 + ImVec2 does not
     // compile in this codebase (IMGUI_DEFINE_MATH_OPERATORS is defined nowhere).
@@ -229,6 +253,95 @@ void ViewportPanel::focusSelection(PanelContext& context) {
         editorCamera.reset();  // nothing framable anywhere -- the DELIBERATE recovery path for a user
                                // who has flown into the void (E14)
     }
+}
+
+void ViewportPanel::updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered) {
+    const ImGuiIO& io = ImGui::GetIO();
+
+    // ARM. Only a plain FRESH LMB press on the image that nextGesture did NOT claim. Alt+LMB has
+    // already classified as Orbit/Pan on THIS frame (F1's fresh-press rule), so an orbit press can
+    // never arm a pick and no retroactive cancellation is needed.
+    // 2.3.3 SEAM (D20): this condition gains `&& !ImGuizmo::IsOver() && !ImGuizmo::IsUsing()` when
+    // the gizmo lands, or every gizmo-handle press will also fire a pick. Shipping a
+    // `const bool gizmoActive = false;` today would be a constant-folded branch no test can exercise.
+    if (hovered && gesture.gesture == CameraGesture::None && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        pickArmed = true;
+        pickPressPos = Vec2{io.MousePos.x, io.MousePos.y};
+    }
+    if (!pickArmed) {
+        return;
+    }
+    // A gesture that began after the arm (it cannot today, given F1 -- but a future binding could)
+    // DISARMS. So does a button that vanished without a release we saw: E10, nothing latches across
+    // frames, and the not-down check runs on EVERY armed frame rather than only on the release edge,
+    // because onDraw does not run at all for a hidden panel and the arm could otherwise survive a
+    // hide/show.
+    if (gesture.gesture != CameraGesture::None) {
+        pickArmed = false;
+        return;
+    }
+    if (!ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            pickArmed = false;
+        }
+        return;
+    }
+    pickArmed = false;
+
+    // FIRE. Two gates, both on POINTS (D18). The RECT test rather than IsItemHovered(): the SDL3
+    // backend captures the mouse while a button is held (F29), so a release far outside is an
+    // ORDINARY sequence, and a containment test on io.MousePos is deterministic where ImGui's hover
+    // heuristics are not (F28: the image's item id is 0 and it never becomes Active).
+    const Vec2 pos{io.MousePos.x, io.MousePos.y};
+    const bool insideRect = pos.x >= imageOrigin.x && pos.x < imageOrigin.x + avail.x && pos.y >= imageOrigin.y &&
+                            pos.y < imageOrigin.y + avail.y;
+    const Vec2 travel = pos - pickPressPos;
+    // The negated `>` NaN-safe idiom (viewport_panel.cpp:104): a non-finite delta takes the reject
+    // branch. PICK_CLICK_SLOP_POINTS is OURS, deliberately not io.MouseDragThreshold (F24/D10).
+    const bool withinSlop = lengthSquared(travel) <= PICK_CLICK_SLOP_POINTS * PICK_CLICK_SLOP_POINTS;
+    if (!insideRect || !withinSlop) {
+        return;
+    }
+
+    const PickRequest request{
+        .ndc = viewportNdc(pos, imageOrigin, avail), .aspect = lastAspect, .viewportSizePoints = avail};
+    const PickResult result = pickEntity(context.world, editorCamera, request);
+    // F30: io.KeyCtrl ALONE is ALREADY "Ctrl on Windows/Linux, Cmd on macOS". Writing
+    // `io.KeyCtrl || io.KeySuper` would ALSO fire on physical Ctrl on macOS -- identical to :171.
+    const PickAction action =
+        pickSelectionAction(result.hit(), context.selection.contains(result.entity), io.KeyCtrl, io.KeyShift);
+    applyPickAction(context.selection, action, result.entity);
+}
+
+void ViewportPanel::drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin, Vec2 avail) {
+    // The SAME view-projection renderScene will submit this tick (INV-2/F7: lastAspect comes from
+    // drawExtent, and renderScene derives the identical number from frame->extent() with no resize in
+    // between) -- so the box lands on the pixels it belongs to, never one frame behind them.
+    const Mat4 viewProj = editorCamera.projectionMatrix(lastAspect) * editorCamera.viewMatrix();
+    buildSelectionOverlay(context.world, context.selection.entities(), context.selection.primary(), viewProj, avail,
+                          overlayScratch);
+    if (overlayScratch.empty()) {
+        return;  // E1: no PushClipRect at all, so there is no pair left unbalanced
+    }
+
+    ImDrawList* const drawList = ImGui::GetWindowDrawList();
+    // 1:1 with PopClipRect, like every ImGui pair (.claude/rules/editor.md) -- an unbalanced pair is
+    // an IM_ASSERT abort in Debug, not a visual glitch. `true` INTERSECTS with the window's own clip
+    // rect rather than replacing it, which is what stops a box on an off-screen entity from drawing
+    // OVER the Hierarchy panel (E8). The draw-list form, not ImGui::PushClipRect: this task draws
+    // only and hit-tests nothing, so render-level scissoring is the correct and cheaper one (F22).
+    drawList->PushClipRect(ImVec2(imageOrigin.x, imageOrigin.y),
+                           ImVec2(imageOrigin.x + avail.x, imageOrigin.y + avail.y), true);
+    for (const OverlaySegment& segment : overlayScratch) {
+        const bool isPrimary = segment.role == OverlayRole::Primary;
+        // F27: ImVec2 + ImVec2 does not compile in this codebase (IMGUI_DEFINE_MATH_OPERATORS is
+        // defined nowhere) -- component-wise, always.
+        drawList->AddLine(ImVec2(imageOrigin.x + segment.a.x, imageOrigin.y + segment.a.y),
+                          ImVec2(imageOrigin.x + segment.b.x, imageOrigin.y + segment.b.y),
+                          isPrimary ? SELECTION_PRIMARY_COLOR : SELECTION_COLOR,
+                          isPrimary ? SELECTION_PRIMARY_THICKNESS : SELECTION_THICKNESS);
+    }
+    drawList->PopClipRect();
 }
 
 void ViewportPanel::renderScene(World& world) {

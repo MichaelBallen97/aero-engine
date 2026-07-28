@@ -7,11 +7,13 @@
 #include <aero/core/vfs.hpp>
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/panel.hpp>
+#include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
 #include <aero/render/render_target.hpp>
 #include <aero/scene_render/scene_renderer.hpp>
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace engine::rhi {
 class Device;
@@ -47,6 +49,12 @@ private:
     void ensureInitialized(rhi::Extent2D firstExtent);  // D11: one attempt, latched
     void focusSelection(PanelContext& context);         // F: frame the selection, or the scene, or reset
 
+    // Task 2.3.2. Both take POINTS (D18) as engine Vec2, never ImVec2: this header is deliberately
+    // ImGui-free -- every ImGui value is converted at the ONE call site in onDraw. Both are members
+    // rather than free functions because both need lastAspect and the latched `gesture`.
+    void updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered);
+    void drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin, Vec2 avail);
+
     rhi::Device* device = nullptr;  // non-owning; outlives the panel (EditorApp owns both)
     VirtualFileSystem shaderVfs;    // mounted once at init (AERO_SHADERS_DIR, D-user-1)
     std::optional<render::RenderTarget> target;
@@ -58,6 +66,14 @@ private:
     EditorCamera editorCamera;     // WRITTEN only in onDraw; READ in both phases (INV-3)
     CameraGestureState gesture{};  // LATCHED across frames -- D5 rule 1 needs the previous value
     float lastAspect = 1.0F;       // set in onDraw (PIXELS, D15); read by F's focusOn, same frame
+
+    // Task 2.3.2 (D10): the pick's own press/release tracking. NOT an ImGui item state -- ImGui::Image
+    // submits its item with id 0, so nothing on the image ever becomes Active and there is no item
+    // state to consult (F28); and the SDL3 backend captures the mouse while a button is held (F29), so
+    // a press inside followed by a release far outside is an ORDINARY sequence, not an edge case.
+    bool pickArmed = false;                      // LMB went down on the image with no camera gesture
+    Vec2 pickPressPos{};                         // where, in POINTS -- for the slop test
+    std::vector<OverlaySegment> overlayScratch;  // caller-owned, cleared and reused every frame (D6)
 };
 
 }  // namespace engine::editor
