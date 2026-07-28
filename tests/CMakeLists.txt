@@ -150,7 +150,7 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
-               editor/editor_camera_test.cpp)
+               editor/editor_camera_test.cpp editor/scene_bounds_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
