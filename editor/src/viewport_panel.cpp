@@ -7,10 +7,12 @@
 #include "viewport_panel.hpp"
 
 #include <aero/core/log.hpp>
+#include <aero/core/math.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/vfs.hpp>
+#include <aero/editor/scene_bounds.hpp>
+#include <aero/editor/selection.hpp>
 #include <aero/rhi/internal/native_device.hpp>
-#include <aero/scene/camera.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -40,12 +42,6 @@ constexpr float OVERLAY_INSET = 4.0F;
     return rounded < 1 ? 1U : static_cast<std::uint32_t>(rounded);
 }
 
-[[nodiscard]] bool worldHasCamera(World& world) {
-    bool found = false;
-    world.each<Camera>([&](Entity /*e*/, Camera& /*camera*/) { found = true; });
-    return found;
-}
-
 // The shared "nothing to show" path (D11/D12): a centred one-line message, no image, no request.
 void drawUnavailableMessage(const char* reason) {
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -61,7 +57,12 @@ ViewportPanel::ViewportPanel(rhi::Device& deviceIn) noexcept : device(&deviceIn)
 
 const char* ViewportPanel::id() const noexcept { return "Viewport"; }
 DockSlot ViewportPanel::defaultDockSlot() const noexcept { return DockSlot::Center; }
-PanelOptions ViewportPanel::options() const noexcept { return {.noScrollbar = true, .noPadding = true}; }
+PanelOptions ViewportPanel::options() const noexcept {
+    return {.noScrollbar = true, .noPadding = true, .noScrollWithMouse = true};
+}
+
+EditorCamera& ViewportPanel::camera() noexcept { return editorCamera; }
+const EditorCamera& ViewportPanel::camera() const noexcept { return editorCamera; }
 
 void ViewportPanel::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent) {
     if (status != Status::Uninitialized) {
@@ -149,16 +150,85 @@ void ViewportPanel::onDraw(PanelContext& context) {
     const ImVec2 imageOrigin = ImGui::GetCursorScreenPos();
     ImGui::Image(texId, avail, ImVec2(0, 0), uvMax);
 
+    // --- 8b. navigation (task 2.3.1). `hovered` is captured HERE, immediately after the Image and
+    // BEFORE the overlay text, so it refers to the image item and not to a label drawn over it.
+    // ImGui::Image submits its item with id 0, so IsItemHovered() works (ItemAdd sets HoveredRect
+    // regardless of id) but SetItemKeyOwner does NOT (it returns false for id 0) -- the wheel is
+    // claimed by ImGuiWindowFlags_NoScrollWithMouse in options() instead. See plan C1.
+    const bool hovered = ImGui::IsItemHovered();
+    const CameraGestureInput gestureInput{
+        .hovered = hovered,
+        .leftDown = ImGui::IsMouseDown(ImGuiMouseButton_Left),
+        .rightDown = ImGui::IsMouseDown(ImGuiMouseButton_Right),
+        .middleDown = ImGui::IsMouseDown(ImGuiMouseButton_Middle),
+        .leftPressed = ImGui::IsMouseClicked(ImGuiMouseButton_Left),
+        .rightPressed = ImGui::IsMouseClicked(ImGuiMouseButton_Right),
+        .middlePressed = ImGui::IsMouseClicked(ImGuiMouseButton_Middle),
+        // F22b: io.KeyCtrl IS ALREADY "Ctrl on Windows/Linux, Cmd on macOS" (imgui.h). Do NOT write
+        // `|| io.KeySuper` -- that would ALSO fire on physical Ctrl on macOS and on the Windows/Super
+        // key elsewhere.
+        .alt = io.KeyAlt,
+        .ctrlOrCmd = io.KeyCtrl};
+    gesture = nextGesture(gesture, gestureInput);
+
+    const bool flying = gesture.gesture == CameraGesture::Fly;
+    // C6: the KEY reads are gated on !io.WantTextInput, exactly like F below -- ImGui::IsKeyDown polls
+    // with ImGuiKeyOwner_Any and is blind to a focused InputText, so without this a rename in the
+    // Hierarchy would both type `wasd` and fly the camera. The MOUSE half is deliberately NOT gated: a
+    // drag must keep working while a field has focus.
+    const bool keysLive = flying && !io.WantTextInput;
+    const CameraInput cameraInput{
+        .dragDelta = (gesture.gesture != CameraGesture::None) ? Vec2{io.MouseDelta.x, io.MouseDelta.y} : Vec2::zero(),
+        // ours when the image is hovered, and STILL ours mid-fly even if the cursor wandered out of
+        // the panel (the drag stays alive under mouse capture, so the speed control must follow it)
+        .wheelNotches = (hovered || flying) ? io.MouseWheel : 0.0F,
+        .viewportHeightPoints = avail.y,  // POINTS (D15) -- NEVER drawExtent().height
+        .gesture = gesture.gesture,
+        .moveForward = keysLive && ImGui::IsKeyDown(ImGuiKey_W),
+        .moveBack = keysLive && ImGui::IsKeyDown(ImGuiKey_S),
+        .moveLeft = keysLive && ImGui::IsKeyDown(ImGuiKey_A),
+        .moveRight = keysLive && ImGui::IsKeyDown(ImGuiKey_D),
+        .moveUp = keysLive && ImGui::IsKeyDown(ImGuiKey_E),    // WORLD +Y
+        .moveDown = keysLive && ImGui::IsKeyDown(ImGuiKey_Q),  // WORLD -Y
+        .fast = keysLive && io.KeyShift};
+    editorCamera.update(cameraInput, context.deltaSeconds);
+
+    // drawExtent is step 7's local, in PIXELS -- the ONE place pixels are correct (D15).
+    lastAspect =
+        drawExtent.height != 0 ? static_cast<float>(drawExtent.width) / static_cast<float>(drawExtent.height) : 1.0F;
+
+    // D7: F is gated on HOVER, not on focus. This is a REASONED DEVIATION from the chord rule in
+    // .claude/rules/editor.md, not an oversight: that rule exists so a focused InputText cannot
+    // swallow a menu accelerator like Ctrl+S. F is not a chord, and its correct routing is the
+    // opposite -- it must act on the panel the mouse is OVER, not the one last CLICKED, or focusing
+    // the camera would require clicking the viewport first, which no 3D application demands. ImGui
+    // has NO "route to hovered" flag, so Shortcut() cannot express it. io.WantTextInput preserves the
+    // rule's real intent (AC-15); repeat=false frames once per press, not every frame.
+    if (hovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+        focusSelection(context);
+    }
+
     // Step 9 (D15/C3): the overlay offset is written COMPONENT-WISE -- ImVec2 + ImVec2 does not
     // compile in this codebase (IMGUI_DEFINE_MATH_OPERATORS is defined nowhere).
     ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + OVERLAY_INSET, imageOrigin.y + OVERLAY_INSET));
     ImGui::TextColored(OVERLAY_COLOR, "%ux%u", drawExtent.width, drawExtent.height);
-    if (!worldHasCamera(context.world)) {
-        ImGui::TextColored(OVERLAY_COLOR, "No camera in scene");
+    if (gesture.gesture == CameraGesture::Fly) {
+        ImGui::TextColored(OVERLAY_COLOR, "fly %.1f u/s", static_cast<double>(editorCamera.flySpeed()));
     }
 
     // Step 10: record the request, LAST, after everything succeeded.
     renderRequested = true;
+}
+
+void ViewportPanel::focusSelection(PanelContext& context) {
+    const Aabb bounds = context.selection.empty() ? sceneBounds(context.world)
+                                                  : selectionBounds(context.world, context.selection.entities());
+    if (bounds.valid()) {
+        editorCamera.focusOn(bounds, lastAspect);
+    } else {
+        editorCamera.reset();  // nothing framable anywhere -- the DELIBERATE recovery path for a user
+                               // who has flown into the void (E14)
+    }
 }
 
 void ViewportPanel::renderScene(World& world) {
@@ -170,13 +240,25 @@ void ViewportPanel::renderScene(World& world) {
     if (!requested || status != Status::Ready || !target || !sceneRenderer) {
         return;
     }
-    // INV-3: no ImGui call and no World mutation anywhere in this function.
+    // INV-3: no ImGui call, no World mutation -- and, from task 2.3.1, no CAMERA mutation either. The
+    // camera is READ here and WRITTEN only in onDraw; moving the update here would work today and
+    // break the moment 2.3.3 needs the view-projection during the draw walk.
     AERO_PROFILE_ZONE;
     std::optional<render::Frame> frame = target->beginFrame(VIEWPORT_CLEAR_COLOR);
     if (!frame) {
         return;
     }
-    sceneRenderer->render(world, *frame);  // buildRenderView + latched WARNs + ForwardRenderer::draw
+    // frame->extent() is the DRAWN sub-rect (2.2.3's own S3 pins this), so it stays the correct
+    // aspect source even with quantum = 64.
+    const rhi::Extent2D extent = frame->extent();
+    const float aspect =
+        extent.height != 0 ? static_cast<float>(extent.width) / static_cast<float>(extent.height) : 1.0F;
+    const render::CameraView cameraView{.view = editorCamera.viewMatrix(),
+                                        .proj = editorCamera.projectionMatrix(aspect),
+                                        .eyePosition = editorCamera.position()};
+    // buildRenderView + latched WARNs (suppressed for the camera pair, D3) + ForwardRenderer::draw.
+    // This is the ONE place in the tree that names render::CameraView, and it is src-private (D2).
+    sceneRenderer->render(world, *frame, &cameraView);
     target->endFrame(std::move(*frame));
 }
 
