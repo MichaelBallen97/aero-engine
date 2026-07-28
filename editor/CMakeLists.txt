@@ -26,6 +26,7 @@ add_library(aero_editor_core STATIC
     src/asset_browser_panel.cpp # task 2.2.4 -- the read-only project file browser
     src/console_model.cpp       # task 2.2.5 -- the console panel's log model (ImGui-free)
     src/console_panel.cpp       # task 2.2.5 -- the log/console panel
+    src/editor_camera.cpp       # task 2.3.1 -- the pure gesture + orbit/pan/dolly/fly model (ImGui-free)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
