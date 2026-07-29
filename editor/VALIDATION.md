@@ -1751,10 +1751,14 @@ way to move an entity.
 `gizmo_test.cpp` (17 cases, G1–G17: the mode/key state machine, `effectiveSpace`'s Scale-forces-Local
 rule, the three snap steps as relationships never magnitudes, the drag-edge table, `gizmoModelMatrix`/
 `gizmoParentMatrix`'s World-walk arms, the channel-isolation property G7 — this task's highest-value
-case — the identity round-trip, a rotated-parent translate, a uniformly-scaled-parent rotate, a
-degenerate-scale `NotDecomposable`, a singular-parent `NotFinite`, hostile-input `NotFinite`, a
-huge-but-finite scale, and `gizmoOriginBehindCamera`'s near-plane predicate with a positive control)
-and `transform_ops_test.cpp` (7 cases, T1–T7: the exact read/write round trip, silent rejections with
+case, now also asserting the Rotate arm's positive value — the identity round-trip, a rotated-parent
+translate, a uniformly-scaled-parent rotate, a genuine-shear `NotDecomposable` (caught by the
+code-review round's `isSheared()` guard, restored to the plan's original construction), a
+singular-parent `NotFinite`, hostile-input `NotFinite`, a huge-but-finite scale with a structurally
+argued step-6-unreachability comment, and `gizmoOriginBehindCamera`'s near-plane predicate — now TWO
+tests, mirroring both our own `w`-based check and ImGuizmo's own raw-`z` check, with a positive control
+and a dedicated case pinning the code-review round's widened band fix) and `transform_ops_test.cpp` (7
+cases, T1–T7: the exact read/write round trip, silent rejections with
 an anti-vacuity canary, no-mutation-anywhere on every rejection, no component creation as a side
 effect, non-finite values stored as given, and tools-independence with no `entt::` anywhere on the
 path) — plus five GPU-gated cases in `imgui_layer_test.cpp` (I1–I5) driving the real
@@ -1776,7 +1780,10 @@ runner (S7 confirms this — see below). Every one of these is named as a specif
 
 ## What was mechanically verified (this implementation pass, macOS, Apple M1 Pro / Metal)
 
-Measured at every one of the six commit boundaries, not once at the end:
+Measured at every commit boundary of the implementation pass (eight commits: the plan's seven
+code-bearing/docs steps plus one extra fix for a prose collision in T7's own §V7 grep — §5 below), not
+once at the end. The code-review round's three further commits are measured separately, in their own
+section below.
 
 - `ctest --preset macos-debug` and `--preset macos-release`: **94/94** both presets, at every commit;
   `AERO_REQUIRE_GPU=1 ctest` green on both presets (the CI ratchet rehearsed, not skipped).
@@ -1823,9 +1830,9 @@ reverted and re-confirmed green afterward:
 |---|---|---|
 | S1 | `ImGuizmo::BeginFrame()` deleted from `drawShellUi` | **reddened nothing, by construction** — the `mbOverGizmoHotspot` latch needs a live hover across real frames, which this harness cannot synthesise. Human row 6 only. |
 | S2 | `&& !gizmoActive` removed from `updatePick`'s arm condition | reddened nothing — I1 executes identically with no real click to arm. Human row 7 is the real check. |
-| S3 | the `gizmoOriginBehindCamera` skip removed (`Manipulate` called unconditionally) | reddened nothing in **either** G15 or I2 — G15 tests the predicate itself (untouched), and I2 (which flies the eye past the primary) does **not** discriminate either, because it asserts only execution/balance/presentation, never the gizmo's screen position. This is a genuine non-discrimination beyond what the plan predicted (it named I2 as the discriminator); recorded honestly rather than forced. Human row 12 is the only real check. |
+| S3 | the `gizmoOriginBehindCamera` skip removed (`Manipulate` called unconditionally) | reddened nothing in **either** G15 or I2 — G15 tests the predicate itself (untouched), and I2 (which flies the eye past the primary) does **not** discriminate either, because it asserts only execution/balance/presentation, never the gizmo's screen position. This is a genuine non-discrimination beyond what the plan predicted (it named I2 as the discriminator); recorded honestly rather than forced. **Re-checked after the code-review round's widened predicate (below): unchanged** — S3 sabotages the call site in `viewport_panel.cpp`, not the predicate itself, so widening the predicate does not give it a new discriminator. Human row 12 remains the only real check. |
 | S4 | `gizmoWriteFromWorld` made to write all three channels unconditionally | **reddened G7 and G10**, exactly as predicted. Second-order checked: weakening G7's non-primary-channel assertions to `CHECK(true)` makes the seeded defect pass the whole suite silently — proving the original assertions, not the harness, do the work. |
-| S5 | the `decompose` failure branch dropped (assume success, use the untouched `Trs`) | **reddened G11**, exactly as predicted. Second-order checked the same way — weakened to `CHECK(true)`, the defect passes silently. |
+| S5 | the `decompose` failure branch dropped (assume success, use the untouched `Trs`) | **Re-verified after the code-review round restored G11 to the plan's original shear construction and added the `isSheared()` guard (below) — and the result is more subtle than "confirmed": literal S5 (dropping ONLY `decompose()`'s own failure branch, leaving `isSheared()` intact) now reddens NOTHING.** `isSheared()` runs upstream of `decompose()` and independently rejects G11's shear construction before `decompose()` is ever reached, so decompose()'s own return value stops mattering for this case. This is an honest finding surfaced during the re-check, not assumed from the review's prediction. **What DOES discriminate G11 now** is dropping the NEW `isSheared()` guard itself: seeded and confirmed — G11 reddens (`status 0 == 3` — `Applied` instead of `NotDecomposable`) exactly because, absent the guard, `decompose()` silently succeeds on the shear input, precisely the mechanism the guard exists to close. |
 | S6 | step 6's post-decompose finiteness sweep dropped | **reddened nothing, including G14** — a genuine, honest non-discrimination the plan itself authorised recording. See the G14/step-6 finding below for why. |
 | S7 | `SetRect` fed pixels (`drawExtent`) instead of points (`avail`) | reddened nothing, exactly as predicted — points and pixels coincide on this non-Retina runner (the 2.3.2 S13 precedent). Human row 14 is the only real check. |
 | S8 | `effectiveSpace` returns `requested` for `Scale` instead of forcing `Local` | **reddened G3**, exactly as predicted. |
@@ -1833,25 +1840,72 @@ reverted and re-confirmed green afterward:
 | S10 | `updateGizmo`'s call moved to *after* `updatePick`'s in `onDraw` | reddened nothing — I1 executes identically; the F8 ordering's user-visible consequence (a gizmo grab also firing a pick) is human row 7. |
 | S11 | the `.clang-format` `IncludeCategories` entry for `<ImGuizmo.h>` removed | **reddened nothing in this tree** — see the finding below. Not the "build itself" failure the plan predicted, for a documented, verified reason. |
 | S12 | `isUsing` renamed back to `using_` | **caught by clang-tidy** (`readability-identifier-naming`), exactly as A2 predicted — confirms the naming rule is a real CI failure, not a style opinion. |
+| S13 *(added in the code-review round)* | `gizmo.cpp`'s new `isSheared()` guard neutered (`if (false && isSheared(local))`) | **reddened G11** — `write.status` comes back `Applied` (0) instead of `NotDecomposable` (3), because `decompose()` itself silently succeeds on the shear input once nothing rejects it first. This is G11's real discriminator post-fix; literal S5 (above) is not. |
 
-### Two findings that corrected the plan, verified at source against the pinned `engine::decompose()`
+### The code-review round (2026-07-29) — one BLOCKING fix, one SHOULD-FIX, two RECORD items
 
-**G11 — `decompose()` does not detect shear; it detects only a degenerate/non-finite column.** The
-spec/plan's literal E7 construction for `NotDecomposable` — left-multiplying a world-space rotation
-delta onto a matrix under a non-uniformly-scaled parent, i.e. genuine shear — was built and run
-directly against `engine::decompose()` (`glm_backend.cpp`). Measured result: `decompose()` **succeeds**
-(returns `true`) with a numerically **wrong** but finite `Trs` — `Applied`, not `NotDecomposable`. The
-function's own guard only rejects a column whose length is non-finite or below `EPSILON`; it never
-checks orthogonality. G11 was corrected to a construction that reaches `NotDecomposable` cleanly and
-reproducibly — a genuinely degenerate local scale axis (`1e-7` on one axis) surviving a non-uniform
-parent's inversion — which preserves E7's "non-uniformly-scaled ancestor" framing while using the
-mechanism that actually triggers the guard. **Practical consequence worth flagging:** a world-space
-rotate (or translate) drag on a child of a non-uniformly-scaled parent may, in the shipped gizmo,
-silently *apply* a numerically wrong transform rather than refuse-and-warn as AC-10 states. This was
-not re-designed (that would be an `engine/core` change outside this task's scope and outside `AC-20`'s
-"zero `engine/` changes" invariant) — it is reported here for the architect's attention, and **human
-row 11 is the row that will actually reveal it**: if the cube visibly snaps to a wrong orientation
-instead of staying put with one Console WARN, that is this finding made visible, not a new defect.
+A code review before merge found `decompose()`'s shear-blindness (recorded below as an open finding in
+the implementation pass) was **worse than measured**: not "in one scenario" but **never** rejected, with
+a quantified consequence (a unit-cube corner up to tens of world units off; a stored quaternion measured
+as non-unit down to `|q| = 0.962` across a fuzz sweep) and zero WARNs. Closed with a NEW guard entirely
+inside `editor/src/gizmo.cpp` — `isSheared()`, called between `local`'s formation and `decompose()` —
+because the engine's own contract assigns this responsibility to the caller, not to `decompose()`:
+`transform.hpp:38-41` states a sheared matrix "decomposes to nonsense, which is out of contract."
+`engine::decompose()` itself is **unchanged** — it remains shear-blind by contract, zero `engine/` file
+touched, `AC-20` holds. `GIZMO_ORTHOGONALITY_EPSILON = 1e-4` is a measured constant (comment in
+`gizmo.cpp` records the full derivation): every legitimate (non-sheared) construction tested tops out at
+`8.0e-08` `|cos|` between normalised column pairs; the hardest genuine shear case tried measures
+`1.7e-04` — three-plus orders of magnitude of separation. Every shipped tier-0 case was re-evaluated
+under the guard and no verdict changed. **G11 was restored to the plan's original shear construction**
+(parent `scaling({2,1,1})`, child rotated 45° about Z, a world-space rotation delta) and now genuinely
+returns `NotDecomposable` — measured `maxAbsCos ≈ 0.33` for that construction, far over the threshold.
+
+A second, SHOULD-FIX gap closed in the same round: `gizmoOriginBehindCamera`'s `w`-based test and
+ImGuizmo's own behind-camera test (`ImGuizmo.cpp:2696-2698`, raw clip-space `z < 0.001`, no perspective
+divide) are different quantities, leaving a reachable band — measured directly with this task's own
+camera setup (eye at `z=5`, near `0.1`): roughly **0.0002 to 0.11** world units in front of the eye,
+where the `w`-test alone said "in front" but ImGuizmo's own test would have refused, so `Manipulate` got
+called and took exactly the early return that leaks an unmatched `PushClipRect` (F5). Fixed by widening
+the predicate to also reject on ImGuizmo's own raw-`z` test, computed from the same `viewProj * origin`
+already in hand; a new tier-0 subcase (a gizmo origin at `world z = 4.95` — 0.05 units into the band)
+pins it. `gizmo.hpp`'s comment was corrected to describe what the widened predicate now actually does.
+
+Two RECORD-level items closed alongside: G7's `Rotate` arm now asserts the rotation was actually
+*written* (`approxEquals(write.transform.rotation, differentTrs.rotation)`), matching the positive
+assertion `Translate`/`Scale` already had — AC-2's "changes only its own field" was covered, "changes
+its own field" was not, for rotate. And an unused `<aero/editor/gizmo.hpp>` include was dropped from
+`imgui_layer_test.cpp` — no symbol from it is used there.
+
+**The sabotage table's S5 row surfaced an honest finding of its own during re-verification** (recorded
+in the table above): with `isSheared()` now running upstream of `decompose()`, the literal S5 seed
+(dropping only `decompose()`'s own failure branch) no longer discriminates G11 — `isSheared()`
+independently rejects the shear construction first, so `decompose()`'s return value stops mattering for
+this input. What discriminates G11 now is dropping `isSheared()` itself (S13, added above). S3 was
+re-checked against the widened predicate and is unchanged: it sabotages the call site in
+`viewport_panel.cpp`, not the predicate, so widening the predicate gives it no new discriminator.
+
+### One finding that was FIXED, and one that corrected the plan and remains open — both verified at source against the pinned `engine::decompose()`
+
+**G11 — `decompose()` does not detect shear at all; it detects only a degenerate/non-finite column —
+FIXED in the code-review round.** The plan's literal E7 construction for `NotDecomposable` — a
+world-space rotation delta applied under a non-uniformly-scaled parent, i.e. genuine shear — was built
+and run directly against `engine::decompose()` (`glm_backend.cpp`). Measured result during the
+implementation pass: `decompose()` **succeeded** (returned `true`) with a numerically **wrong** but
+finite `Trs` — `Applied`, not `NotDecomposable`. `decompose()`'s own guard only ever rejected a column
+whose length is non-finite or below `EPSILON`; it had no orthogonality test at all — so this was not
+"one scenario" but the general case, confirmed by the code-review round's own quantification (a
+unit-cube corner up to tens of world units off; a stored quaternion measured down to `|q| = 0.962`
+across a fuzz sweep, silently rescaling per `transform.hpp:35`; zero WARNs). **Fixed** by adding
+`isSheared()` in `editor/src/gizmo.cpp` — normalises the three linear-block columns and rejects if any
+pairwise `|cos|` exceeds `GIZMO_ORTHOGONALITY_EPSILON = 1e-4` (a measured constant; see the code-review
+round above and `gizmo.cpp`'s own comment for the full derivation) — called between `local`'s formation
+and `decompose()`. `engine::decompose()` itself is **unchanged**: the fix lives entirely in the editor
+layer because the engine's own contract puts it there (`transform.hpp:38-41`: a sheared matrix
+"decomposes to nonsense, which is out of contract" — `decompose()` never promised to detect shear;
+`gizmoWriteFromWorld` is the layer obliged not to feed it out-of-contract input). Zero `engine/` file
+touched; `AC-20` holds. G11 was restored to the plan's original shear construction and now genuinely
+returns `NotDecomposable`. **AC-10's guarantee now holds as stated**: shear under a non-uniformly-scaled
+ancestor is refused with exactly one Console WARN, not silently applied.
 
 **G14 — the "reaches step 6 and only step 6" case is unreachable for any scale magnitude tested.** The
 plan predicted a uniform `1e34` scale would be finite going in, decompose successfully, and produce a
@@ -1863,9 +1917,20 @@ column length around `sqrt(FLT_MAX) ≈ 1.84e19` — so `decompose()` itself ret
 looking for a finite input where `decompose()` succeeds yet yields a non-finite `Trs`; none was found —
 the transition goes directly from a fully-finite success to an outright `decompose()` rejection, with
 no intermediate band. G14 now asserts the **measured** status (`NotDecomposable`), not the predicted
-one. Consequence: step 6's finiteness sweep is real, correct defence in depth (a hostile ROTATION-only
-input was not exhaustively searched and might still reach it), but it ships **uncovered by any test in
-this task** — the same honest status as A4's stale-latch clear.
+one. **Strengthened in the code-review round: step 6 is STRUCTURALLY unreachable from `decompose()`'s
+current implementation, not merely unscanned.** Translation is a direct read of the input matrix's own
+column, already finite by the upstream `allFinite` guards. Scale is exactly what `decompose()`'s own
+length guard proves finite before it is ever stored. Rotation comes from `glm::quat_cast` of a Mat3
+built from NORMALISED columns, and `quat_cast`'s own four candidate terms
+(`glm/gtc/quaternion.inl:83-86`) provably sum to zero for any input — verified directly against the
+vendored source — so the chosen maximum is always `>= 0`, its `sqrt(max+1) >= 1`, and the resulting
+reciprocal can never blow up. A 20-million-sample fuzz across this task's exponent range found zero
+non-finite outputs, confirming it empirically as well as structurally. The code (step 6 itself) is kept
+regardless: the unreachability rests on `decompose()`'s *current implementation*, not its published
+contract, and this task's own new `isSheared()` guard changes what reaches it — structural
+unreachability of one input class is not a promise about every future one. It ships as real, correct
+defence in depth, **uncovered by any test in this task** — the same honest status as A4's stale-latch
+clear.
 
 **S11's own finding.** Both `#include <ImGuizmo.h>` lines carry an explanatory F3 comment immediately
 above them. Verified directly: clang-format's `IncludeBlocks: Regroup` treats that comment as a block
@@ -1884,9 +1949,10 @@ that strips the comment while leaving only a blank line would be unprotected wit
 - **AC-4 — the space button is disabled and reads `Local` for `Scale`.** ImGuizmo forces local space
   for scale internally (skew avoidance); the bar mirrors it rather than silently disagreeing. Human
   row 4.
-- **E7 — a sheared child does not move, and says so once.** See the G11 finding above for the one
-  scenario (world-space rotate/translate under a non-uniform parent) where this guarantee does not
-  currently hold; everywhere else, shear is refused with exactly one Console WARN per drag (D12).
+- **E7 — a sheared child does not move, and says so once.** Fixed in the code-review round (see the
+  G11 finding above): `gizmo.cpp`'s `isSheared()` guard now refuses shear from a non-uniformly-scaled
+  ancestor unconditionally, with exactly one Console WARN per drag (D12). There is no longer a
+  scenario where this guarantee does not hold.
 - **A8 — a gizmo-bar button overlapping a handle both presses the button and grabs the gizmo.** The bar
   is submitted after `Manipulate` (so gizmo lines paint over the buttons, not the reverse); a grab with
   no subsequent mouse motion produces `GizmoWriteStatus::NoChange` and writes nothing, so the
@@ -1897,16 +1963,25 @@ that strips the comment while leaving only a blank line would be unprotected wit
 - **The seeded `Directional Light` sits inside the seeded `Cube`** (2.3.2 §G6, still true) — select it
   via the Hierarchy, not by clicking in the Viewport. Human row 20.
 - **2.2.5's four BLOCKED validation rows stay blocked**, but this task changes the landscape: D12's
-  shear WARN is a genuinely triggerable runtime log source (the first one since 2.2.5 shipped). It is
-  out of scope to re-run 2.2.5's rows here — noted so whoever revisits that gate knows a source now
-  exists.
+  degenerate/non-finite-transform WARN is a genuinely triggerable runtime log source (the first one
+  since 2.2.5 shipped) — **the reliable recipe, verified directly against `gizmoWriteFromWorld`**: select
+  ANY single entity (no parent needed), set one of its own `Transform.scale` components to `0` in the
+  Inspector, then drag its own translate (or rotate) handle. `decompose()`'s own column-length guard
+  rejects the zero-length axis (`GizmoWriteStatus::NotDecomposable`) on the very first frame the drag
+  moves anything, and the Console gets exactly one WARN for the whole drag. The code-review round's
+  shear fix means a shear drag (a non-uniformly-scaled parent + a rotated child) now reliably reaches
+  the SAME WARN branch too, but that needs a parent/child hierarchy set up first, so the single-entity
+  zero-scale recipe above is the simpler one to hand whoever re-runs the four blocked rows. It is out
+  of scope to re-run 2.2.5's rows here — noted so whoever revisits that gate knows a source now exists,
+  with the exact, verified reproduction.
 
 ## How to validate one OS
 
 Twenty-five rows, per OS, macOS first. Rows **1–9** close the "does `onDraw` hand the pure functions
 the right ImGui values" gap; row **6** is the only check for F4's `mbOverGizmoHotspot` latch; row **14**
-is the only check for the points/pixels distinction (S7 cannot catch it on this hardware); rows **11**
-and **24** are the two findings above made visible; rows **22, 25** are known-and-accepted behaviours a
+is the only check for the points/pixels distinction (S7 cannot catch it on this hardware); row **11**
+is the human check for the code-review round's shear fix (G11 — see above); row **24** is the only
+check for A4's stale-latch clear, not test-covered; rows **22, 25** are known-and-accepted behaviours a
 validator who does not know them will file as defects.
 
 1. **Launch, click the seeded Cube in the Viewport.** Selection highlight (2.3.2) **and** a translate
@@ -1931,9 +2006,10 @@ validator who does not know them will file as defects.
 10. **Parent the Cube under a new entity (Hierarchy drag-drop), move the parent, then drag the child.**
     The child moves where the mouse says; the Inspector shows a **parent-relative** position.
 11. **Give the parent a non-uniform scale (`{2,1,1}`), rotate the child 45°, then drag it in WORLD
-    space.** Per this task's G11 finding, watch carefully: the intended behaviour is nothing moves plus
-    **exactly one** WARN; if instead the cube snaps to a visibly wrong orientation, that is the
-    reported finding made visible, not a fresh defect — note which was observed.
+    space.** Nothing moves; **exactly one** WARN appears in the Console for the whole drag (D12,
+    `editor::gizmo`'s `isSheared()` guard, fixed in the code-review round — G11/AC-10). A flood of
+    WARNs means the `gizmoWarnLatched` latch is not working; the cube visibly moving to a wrong
+    orientation would mean the shear guard regressed — either is a real defect, not expected behaviour.
 12. **Select the cube, then fly the camera until the cube is behind you.** No gizmo drawn; **no visual
     corruption anywhere in the Viewport**.
 13. **Start a translate drag, then press and hold RMB (fly) without releasing LMB.** The drag ends;
@@ -1972,7 +2048,7 @@ validator who does not know them will file as defects.
 - **Click empty space then another entity: picking works, gizmo follows new primary**
 - **Hold Ctrl/Cmd while dragging: snaps to 0.5u/15°/0.1; release mid-drag resumes continuous, no jump**
 - **Parent the Cube, move the parent, drag the child: parent-relative position shown**
-- **Non-uniform parent scale + rotated child dragged in world space: observed behaviour noted**
+- **Non-uniform parent scale + rotated child dragged in world space: nothing moves, exactly one WARN**
 - **Fly the camera until the cube is behind you: no gizmo, no visual corruption**
 - **Start a translate drag then hold RMB to fly: drag ends cleanly, flying works**
 - **Retina: drag a handle across the viewport, no 2x drift**
@@ -2002,13 +2078,19 @@ Needs a native run. No checks recorded yet.
 Needs a native run (real Vulkan or native Wayland/X11; **not** lavapipe/CI, which cannot exercise
 window-manager or compositor interaction). No checks recorded yet.
 
-**Task 2.3.3 gate status: mechanically green** (build + full ctest on both presets, the
-`AERO_REQUIRE_GPU=1` rehearsal, both tools-OFF configurations — including the new reflect-OFF/
-shaders-ON gate AC-17 adds — the non-interactive launch proof, all twelve sabotage proofs each
-seed-confirmed and reverted (two second-order-checked: S4, S5; five recorded as honest
-non-discriminations: S1, S2, S7, S9, S10; S3 and S11 each corrected a plan prediction with a verified
-finding, both recorded above; S6 also a documented non-discrimination, tied to the G14 finding), all
-five guards green, clang-format and clang-tidy clean with zero new `NOLINT`s). **The human pass —
-macOS, Windows and Linux — is pending** and closes AC-1/AC-6/AC-7/AC-8's human-only surface plus the
-two findings above.
+**Task 2.3.3 gate status: mechanically green, including a code-review round that closed one BLOCKING
+finding (G11/shear detection) and one SHOULD-FIX gap (the behind-camera predicate band) before
+merge** (build + full ctest on both presets, the `AERO_REQUIRE_GPU=1` rehearsal, both tools-OFF
+configurations — including the new reflect-OFF/shaders-ON gate AC-17 adds — the non-interactive launch
+proof, all thirteen sabotage proofs each seed-confirmed and reverted: S4 second-order-checked; S13
+(added in the code-review round) confirms `isSheared()` is load-bearing for G11; S5 re-verified to
+reveal an honest post-fix subtlety — literal S5 no longer discriminates G11 since `isSheared()`
+intercepts first, recorded plainly rather than left as a stale claim; five recorded as honest
+non-discriminations (S1, S2, S7, S9, S10); S3 and S11 each corrected a plan prediction with a verified
+finding, both recorded above, and S3 was re-checked against the widened predicate with the same
+verdict; S6 also a documented non-discrimination, tied to the (now structurally explained) G14
+finding — all five guards green, clang-format and clang-tidy clean with zero new `NOLINT`s). **The
+human pass — macOS, Windows and Linux — is pending** and closes AC-1/AC-6/AC-7/AC-8's human-only
+surface plus confirms the shear fix (row 11) and the widened behind-camera predicate (row 12) hold on
+real hardware.
 
