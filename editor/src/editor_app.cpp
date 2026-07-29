@@ -142,7 +142,15 @@ bool EditorApp::tick() {
     }
 
     layer.beginFrame();
-    ShellUiState ui{.applyDefaultLayout = applyDefaultLayout, .quitRequested = false};
+    ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
+                    .quitRequested = false,
+                    .undoRequested = undoRequested,
+                    .redoRequested = redoRequested};
+    // Consumed: a request never survives the tick that carried it. Unlike applyDefaultLayout below,
+    // these are NOT read back out of `ui` -- drawShellUi clears them as it applies them, and reading
+    // them back would re-arm the request every frame (task 2.4.1).
+    undoRequested = false;
+    redoRequested = false;
     // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1);
     // commandStack is the editor's ONE undo history (task 2.4.1 D7)
     PanelContext panelContext{sceneWorld, sceneSelection, commandStack, frameClock.deltaSeconds()};
@@ -199,5 +207,7 @@ const EditorCamera* EditorApp::viewportCamera() const noexcept {
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
+void EditorApp::requestUndo() noexcept { undoRequested = true; }
+void EditorApp::requestRedo() noexcept { redoRequested = true; }
 
 }  // namespace engine::editor

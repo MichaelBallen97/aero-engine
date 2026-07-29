@@ -3,12 +3,14 @@
 // Panel::onDraw(). editor_app.cpp includes this header but never ImGui itself.
 #include "shell_ui.hpp"
 
+#include <aero/editor/command_stack.hpp>
 #include <aero/editor/panel.hpp>
 
 #include <array>
 #include <cstddef>
 #include <imgui.h>
 #include <imgui_internal.h>  // DockBuilder* (2.1.1 precedent)
+#include <string>
 
 // <ImGuizmo.h> deliberately follows <imgui.h> and lives in its own trailing include block: it does
 // NOT include imgui.h (it forward-declares ImGuiWindow, then names ImDrawList / ImVec2 / ImU32 /
@@ -29,12 +31,36 @@ void menuItemStub(const char* label, const char* shortcut, const char* owningTas
     }
 }
 
-void drawMenuBar(PanelRegistry& panels, ShellUiState& state) {
+// SCREAMING_SNAKE and file-scope, NOT a `constexpr` local named historyFlags: .clang-tidy's
+// readability-identifier-naming.ConstexprVariableCase is UPPER_CASE and applies to LOCALS too, so the
+// camelBack spelling fails --warnings-as-errors on the Linux lane (the same class of trap as 2.3.3's
+// `const bool using_`, which failed VariableCase: camelBack). File scope because both chords share it.
+constexpr ImGuiInputFlags HISTORY_SHORTCUT_FLAGS = ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat;
+
+void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& state) {
     // Editor shortcuts go through ImGui's routing, NEVER ctx.input() (D7/E9): a focused InputText
     // must be able to swallow the chord. ImGuiMod_Ctrl is Cmd on macOS automatically (F8).
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, ImGuiInputFlags_RouteGlobal)) {
         state.quitRequested = true;
     }
+
+    // Task 2.4.1. RouteGlobal, exactly like Ctrl+Q above -- which is what makes a focused InputText
+    // win these chords back: InputTextEx binds Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z on the ACTIVE ITEM's own
+    // id with the default RouteFocused (imgui_widgets.cpp:5130-5131), and plain RouteGlobal is LAST in
+    // the documented priority list (imgui.h:1758). Repeat: ImGui's own text undo repeats, and
+    // RepeatUntilKeyModsChange is applied automatically (imgui.cpp:11457-11460), so RELEASING the
+    // modifier stops the repeat instead of leaving a stuck auto-repeat on Z. ImGuiMod_Ctrl is Cmd on
+    // macOS (imgui.h:1735 + the AddKeyEvent swap at imgui.cpp:1894). The two chords cannot cross-fire:
+    // a chord requires an EXACT 4-bit mod match (imgui.cpp:11386, `g.IO.KeyMods != mods`), so this
+    // order is documentation, not arbitration.
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, HISTORY_SHORTCUT_FLAGS)) {
+        state.undoRequested = true;
+    }
+    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, HISTORY_SHORTCUT_FLAGS)) {
+        state.redoRequested = true;
+    }
+    // Ctrl+Y is DELIBERATELY NOT bound (D13): ImGuiMod_Ctrl is Cmd on macOS, so a global Ctrl+Y would
+    // bind ⌘Y, which is redo on no platform. InputText keeps its own local Ctrl+Y and is unaffected.
 
     if (!ImGui::BeginMainMenuBar()) {
         return;  // F7: End only when Begin returned true
@@ -51,8 +77,27 @@ void drawMenuBar(PanelRegistry& panels, ShellUiState& state) {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
-        menuItemStub("Undo", "Ctrl+Z", "Not implemented yet — task 2.4.1");
-        menuItemStub("Redo", "Ctrl+Shift+Z", "Not implemented yet — task 2.4.1");
+        // Task 2.4.1: these are IMPLEMENTED now, so the disabled-stub helper's "owned by task N"
+        // tooltip would be a lie. Built only while the menu is OPEN, so the allocation happens on the
+        // frames a human is looking at it. No std::format and no snprintf: += over a string_view is
+        // the whole operation.
+        const CommandStack& commands = context.commands;
+        std::string undoText = "Undo";
+        if (const std::string_view label = commands.undoLabel(); !label.empty()) {
+            undoText += ' ';
+            undoText += label;
+        }
+        if (ImGui::MenuItem(undoText.c_str(), "Ctrl+Z", false, commands.canUndo())) {
+            state.undoRequested = true;
+        }
+        std::string redoText = "Redo";
+        if (const std::string_view label = commands.redoLabel(); !label.empty()) {
+            redoText += ' ';
+            redoText += label;
+        }
+        if (ImGui::MenuItem(redoText.c_str(), "Ctrl+Shift+Z", false, commands.canRedo())) {
+            state.redoRequested = true;
+        }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
@@ -71,9 +116,30 @@ void drawMenuBar(PanelRegistry& panels, ShellUiState& state) {
     ImGui::EndMainMenuBar();
 }
 
-// The shortcut labels above are DISPLAY STRINGS ONLY — MenuItem's `shortcut` argument draws text and
-// binds nothing; the sole live binding is the explicit ImGui::Shortcut above (the stubs deliberately
-// bind nothing, so Ctrl+S does nothing until 2.5.1 wires it).
+// The shortcut labels above are DISPLAY STRINGS ONLY -- MenuItem's `shortcut` argument draws text and
+// binds nothing. The only live bindings are the THREE explicit ImGui::Shortcut calls at the top of
+// drawMenuBar (Ctrl+Q, Ctrl+Z, Ctrl+Shift+Z); the File-menu stubs deliberately bind nothing, so Ctrl+S
+// does nothing until 2.5.1 wires it.
+
+// Applied HERE -- after drawMenuBar returned (EndMainMenuBar has run) and BEFORE the dockspace and the
+// panel walk. That is the precondition .claude/rules/editor.md's "never mutate the World during a draw
+// walk" actually protects: no ImGui tree is open and no eachChild walk is in flight
+// (viewport_panel.cpp:264-266 records the same reasoning for the selection write). Applying here rather
+// than back in tick() is what makes THIS frame's panels show post-undo state, with no lag (D19/AC-21).
+//
+// Undo before redo when both are set in one frame: the two chords cannot both fire (an exact mod match,
+// imgui.cpp:11386), but requestUndo() and requestRedo() can both be called before one tick. A fixed
+// order makes that deterministic and testable; the net effect is a no-op plus two DEBUG lines (E12).
+void applyHistoryRequests(PanelContext& context, ShellUiState& state) {
+    if (state.undoRequested) {
+        state.undoRequested = false;
+        context.commands.undo(context.world);
+    }
+    if (state.redoRequested) {
+        state.redoRequested = false;
+        context.commands.redo(context.world);
+    }
+}
 
 // The balanced-End core (E1). Hidden panels `continue` before Begin, so they never call End either;
 // a visible panel's End() is unconditional — Begin's return value only gates onDraw().
@@ -189,9 +255,10 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // byte-identical for eight tasks) because THIS is the ImGui frame-composition TU.
     ImGuizmo::BeginFrame();
 
-    drawMenuBar(panels, state);  // reserves the viewport work area (F9) and is where Reset Layout
-                                 // can still affect THIS frame -- the first REAL window, after the
-                                 // transparent, NoInputs "gizmo" window above
+    drawMenuBar(panels, context, state);   // reserves the viewport work area (F9) and is where Reset
+                                           // Layout can still affect THIS frame -- the first REAL
+                                           // window, after the transparent, NoInputs "gizmo" window
+    applyHistoryRequests(context, state);  // task 2.4.1, D19/AC-21
     const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
     if (state.applyDefaultLayout) {
         state.applyDefaultLayout = false;

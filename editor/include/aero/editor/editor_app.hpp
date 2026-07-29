@@ -119,6 +119,13 @@ public:
 
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
+    // Same effect as Edit > Undo / Ctrl+Z (Cmd+Z on macOS), applied on the NEXT tick -- the
+    // requestLayoutReset() shape, NOT requestQuit()'s (which takes effect immediately). This is the
+    // only mechanically drivable entry point: aero_editor_imgui_test is ImGui-free at source and
+    // cannot press a key (task 2.4.1 D11/F6), the same reason logRecordCount() (2.2.5 D16) and
+    // viewportCamera() (2.3.1 D6) exist.
+    void requestUndo() noexcept;
+    void requestRedo() noexcept;
 
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
@@ -136,6 +143,8 @@ private:
     bool applyDefaultLayout = false;  // seeded from ImGuiLayer::wantsDefaultLayout(); also set by
                                       // View > Reset Layout / requestLayoutReset()
     bool presented = false;
+    bool undoRequested = false;  // consumed by the next tick(); never survives it (task 2.4.1)
+    bool redoRequested = false;
     World sceneWorld;
     Selection sceneSelection;
     CommandStack commandStack;  // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
