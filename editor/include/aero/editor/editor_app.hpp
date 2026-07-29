@@ -5,6 +5,9 @@
 // `while (tick()) {}`), which is what makes it drivable N-frames-at-a-time from a test.
 
 #include <aero/core/time.hpp>
+#include <aero/editor/command_stack.hpp>  // a VALUE member needs the definition (the selection.hpp /
+                                          // panel_registry.hpp precedent), unlike panel_context.hpp,
+                                          // which holds a reference and forward-declares.
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/selection.hpp>
@@ -90,6 +93,12 @@ public:
     // read it, 2.3.2's picking writes it. ONE object, never two.
     [[nodiscard]] Selection& selection() noexcept;
     [[nodiscard]] const Selection& selection() const noexcept;
+    // The editor's undo/redo history (task 2.4.1). ONE object: the menu items, the two chords and
+    // requestUndo()/requestRedo() all drive this same stack, and every panel reaches it through
+    // PanelContext::commands. INV-6: it is only ever driven against the World this EditorApp owns --
+    // 2.5.1's New/Open Scene must clear() it in the same operation that replaces that World.
+    [[nodiscard]] CommandStack& commands() noexcept;
+    [[nodiscard]] const CommandStack& commands() const noexcept;
     [[nodiscard]] const FrameClock& clock() const noexcept;
     [[nodiscard]] bool focused() const noexcept;
     // True when the LAST tick() actually presented (false when the window was minimized). This is
@@ -129,6 +138,8 @@ private:
     bool presented = false;
     World sceneWorld;
     Selection sceneSelection;
+    CommandStack commandStack;  // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
+                                // stays valid. command_stack.hpp's two static_asserts hold that line.
     // Non-owning; owned by `registry`, which holds panels through unique_ptr -- so the Panel object
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.

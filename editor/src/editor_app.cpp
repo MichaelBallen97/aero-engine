@@ -143,8 +143,9 @@ bool EditorApp::tick() {
 
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout, .quitRequested = false};
-    // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1)
-    PanelContext panelContext{sceneWorld, sceneSelection, frameClock.deltaSeconds()};
+    // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1);
+    // commandStack is the editor's ONE undo history (task 2.4.1 D7)
+    PanelContext panelContext{sceneWorld, sceneSelection, commandStack, frameClock.deltaSeconds()};
     drawShellUi(registry, panelContext, ui);     // menu bar -> dockspace -> panels
     applyDefaultLayout = ui.applyDefaultLayout;  // drawShellUi clears it once consumed, and re-sets
                                                  // it for View > Reset Layout
@@ -181,6 +182,8 @@ World& EditorApp::world() noexcept { return sceneWorld; }
 const World& EditorApp::world() const noexcept { return sceneWorld; }
 Selection& EditorApp::selection() noexcept { return sceneSelection; }
 const Selection& EditorApp::selection() const noexcept { return sceneSelection; }
+CommandStack& EditorApp::commands() noexcept { return commandStack; }
+const CommandStack& EditorApp::commands() const noexcept { return commandStack; }
 const FrameClock& EditorApp::clock() const noexcept { return frameClock; }
 bool EditorApp::focused() const noexcept { return windowFocused; }
 bool EditorApp::presentedLastFrame() const noexcept { return presented; }

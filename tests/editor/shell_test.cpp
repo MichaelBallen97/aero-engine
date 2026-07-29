@@ -5,6 +5,7 @@
 // registry + pacing policy live there) but never constructs a platform::Context/Window/rhi::Device/
 // EditorApp/ImGuiLayer and never names an ImGui symbol.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <aero/editor/command_stack.hpp>
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/panel.hpp>
 #include <aero/editor/panel_context.hpp>
@@ -247,11 +248,13 @@ TEST_CASE("editor: PanelContext carries the frame delta (task 2.3.1, AC-20)") {
     engine::World world;
     engine::editor::Selection selection;
 
-    // The default keeps two-brace construction valid -- every pre-2.3.1 call site must keep compiling.
-    const engine::editor::PanelContext defaulted{world, selection};
+    // `deltaSeconds` is the ONE defaulted member: omitting it still yields 0. `commands` is a
+    // reference and has no default (task 2.4.1 D7), so three-brace construction is the new minimum.
+    engine::editor::CommandStack commands;
+    const engine::editor::PanelContext defaulted{world, selection, commands};
     CHECK(defaulted.deltaSeconds == 0.0F);
 
-    engine::editor::PanelContext withDelta{world, selection, 0.016F};
+    engine::editor::PanelContext withDelta{world, selection, commands, 0.016F};
     CHECK(withDelta.deltaSeconds == 0.016F);
 
     DeltaProbePanel probe;
@@ -373,7 +376,8 @@ public:
 TEST_CASE("editor: onDraw receives the caller's World and Selection by reference (AC-8/D7)") {
     engine::World world;
     engine::editor::Selection selection;
-    engine::editor::PanelContext context{world, selection};
+    engine::editor::CommandStack commands;
+    engine::editor::PanelContext context{world, selection, commands};
 
     ContextProbePanel probe;
     engine::editor::Panel& asBase = probe;  // through the BASE -- the virtual is what changed
