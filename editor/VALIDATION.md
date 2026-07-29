@@ -1197,37 +1197,37 @@ Measured at every one of the eight commit boundaries, not once at the end:
 - The non-interactive launch check (`aero_editor`, `.ini` deleted, seeded scene): **zero** new
   ERROR/CRITICAL/WARN lines, run after every ImGui-touching step and again after the final format
   pass.
-- The sabotage table's outcome, every seed confirmed present before trusting the verdict, every one
-  reverted and re-confirmed green afterward:
+**The sabotage table's outcome**, every seed confirmed present before trusting the verdict, every one reverted and re-confirmed green afterward:
 
-  | | Seed | Result |
-  |---|---|---|
-  | S1 | flip `ORBIT_YAW_SIGN` to `+1.0F` | reddened case 3's right-drag row exactly; case 3's pitch row and cases 2/5/6 stayed green |
-  | S2 | drop the pitch clamp from `clampState` | reddened case 4 exactly, as predicted; case 7's extreme-pitch "eye invariant" arm did **not** redden (see the finding below) — case 3 stayed green |
-  | S3 | make `worldPerPoint` a constant | reddened case 5's two scaling rows exactly; its direction rows stayed green |
-  | S4 | delete `applyFly`'s eye-restore line | reddened case 7's eye-invariant row exactly; its translation rows stayed green |
-  | S5 | ignore `cameraOverride` in `buildRenderView` | reddened `scene_render` tier-0 cases 1–2 and GPU case 1; tier-0 case 3 stayed green |
-  | S6 | drop the `cameraOverride == nullptr` gate on the two camera WARNs | reddened GPU case arms a and c exactly; arm d (the light WARN) stayed green |
-  | S7 | hoist the light walk above the camera resolution | reddened `scene_render` tier-0 case 3 exactly; every other case in the file stayed green |
-  | S8 | drop the fresh-press requirement (`...Down` instead of `...Pressed`) | reddened the no-fresh-press rows (the E5 two-button row and the dedicated Alt-after-press case) exactly; the continuation rows stayed green |
-  | S9 | remove `sceneBounds`'s `registered()` guard | **did not redden anything — recorded as non-discriminating, exactly as the plan predicts** (the guard's target state, an unregistered `MeshRenderer`, is unreachable on a live `World`) |
-  | S9b | add an `AERO_LOG_WARN` on `sceneBounds`'s empty-result path | reddened case 12 exactly; `scene_bounds_test.cpp`'s case 7 stayed green |
-  | S10 | drop `dt` from `applyFly`'s translation | reddened case 7's frame-rate-independence row (and its single-step "W for 1s" row); the true single-call rows (Shift, Q/E, W+D) stayed green |
-  | S11 | use `fovY` alone in `focusOn` (ignore aspect) | reddened case 9's `aspect = 0.5` row exactly; its `aspect = 1`/invalid/point/huge-box rows stayed green |
-  | S12 | pass `drawExtent.height` instead of `avail.y` as `viewportHeightPoints` | **not seeded mechanically — recorded as human-only, exactly as the plan predicts** (no test in this harness can tell pixels from points on a 1× runner) |
 
-  **A genuine finding, recorded honestly rather than glossed over:** the plan's §V4 table predicts S2
-  also reddens "case 7's eye-invariant at extreme pitch." Investigated directly (seed → build → run →
-  revert, twice, with an intermediate probe isolating the two candidate mechanisms): dropping ONLY the
-  pitch-clamp *value* does not move `position()`, because the eye-restore identity
-  (`pivotPoint = eye + forward() * orbitDistance`) holds algebraically regardless of whether
-  `pitchRadians` itself was clamped — the restore uses whatever `forward()` the (possibly unclamped)
-  pitch currently produces, and `fromAxisAngle` never produces NaN/Inf for a large finite angle. The
-  ordering property the comment actually protects against — `clampState()` running BETWEEN the look
-  and the restore, not after — was separately verified live: moving the call to run AFTER the restore
-  (a different, non-plan seed) reddens the SAME row hugely (drift of several world units), confirming
-  the assertion is real and does its job; it simply does not double as an S2 discriminator. Recorded
-  here in the open, the same way S9/S12 are — see the engineering log for the full trail.
+| | Seed | Result |
+|---|---|---|
+| S1 | flip `ORBIT_YAW_SIGN` to `+1.0F` | reddened case 3's right-drag row exactly; case 3's pitch row and cases 2/5/6 stayed green |
+| S2 | drop the pitch clamp from `clampState` | reddened case 4 exactly, as predicted; case 7's extreme-pitch "eye invariant" arm did **not** redden (see the finding below) — case 3 stayed green |
+| S3 | make `worldPerPoint` a constant | reddened case 5's two scaling rows exactly; its direction rows stayed green |
+| S4 | delete `applyFly`'s eye-restore line | reddened case 7's eye-invariant row exactly; its translation rows stayed green |
+| S5 | ignore `cameraOverride` in `buildRenderView` | reddened `scene_render` tier-0 cases 1–2 and GPU case 1; tier-0 case 3 stayed green |
+| S6 | drop the `cameraOverride == nullptr` gate on the two camera WARNs | reddened GPU case arms a and c exactly; arm d (the light WARN) stayed green |
+| S7 | hoist the light walk above the camera resolution | reddened `scene_render` tier-0 case 3 exactly; every other case in the file stayed green |
+| S8 | drop the fresh-press requirement (`...Down` instead of `...Pressed`) | reddened the no-fresh-press rows (the E5 two-button row and the dedicated Alt-after-press case) exactly; the continuation rows stayed green |
+| S9 | remove `sceneBounds`'s `registered()` guard | **did not redden anything — recorded as non-discriminating, exactly as the plan predicts** (the guard's target state, an unregistered `MeshRenderer`, is unreachable on a live `World`) |
+| S9b | add an `AERO_LOG_WARN` on `sceneBounds`'s empty-result path | reddened case 12 exactly; `scene_bounds_test.cpp`'s case 7 stayed green |
+| S10 | drop `dt` from `applyFly`'s translation | reddened case 7's frame-rate-independence row (and its single-step "W for 1s" row); the true single-call rows (Shift, Q/E, W+D) stayed green |
+| S11 | use `fovY` alone in `focusOn` (ignore aspect) | reddened case 9's `aspect = 0.5` row exactly; its `aspect = 1`/invalid/point/huge-box rows stayed green |
+| S12 | pass `drawExtent.height` instead of `avail.y` as `viewportHeightPoints` | **not seeded mechanically — recorded as human-only, exactly as the plan predicts** (no test in this harness can tell pixels from points on a 1× runner) |
+
+**A genuine finding, recorded honestly rather than glossed over:** the plan's §V4 table predicts S2
+also reddens "case 7's eye-invariant at extreme pitch." Investigated directly (seed → build → run →
+revert, twice, with an intermediate probe isolating the two candidate mechanisms): dropping ONLY the
+pitch-clamp *value* does not move `position()`, because the eye-restore identity
+(`pivotPoint = eye + forward() * orbitDistance`) holds algebraically regardless of whether
+`pitchRadians` itself was clamped — the restore uses whatever `forward()` the (possibly unclamped)
+pitch currently produces, and `fromAxisAngle` never produces NaN/Inf for a large finite angle. The
+ordering property the comment actually protects against — `clampState()` running BETWEEN the look
+and the restore, not after — was separately verified live: moving the call to run AFTER the restore
+(a different, non-plan seed) reddens the SAME row hugely (drift of several world units), confirming
+the assertion is real and does its job; it simply does not double as an S2 discriminator. Recorded
+here in the open, the same way S9/S12 are — see the engineering log for the full trail.
 - All five guards green with **no allowlist change**:
   `check-math-boundary.sh`'s scanned count moved **191 → 197** (+6: `editor_camera.hpp/.cpp`,
   `scene_bounds.hpp/.cpp`, `editor_camera_test.cpp`, `scene_bounds_test.cpp` — measured against
@@ -1443,41 +1443,61 @@ Measured at every one of the five commit boundaries, not once at the end:
   shader WARN) and **no third** — E11 confirmed: `onDraw` returns at its status gate, before phase 8c,
   whenever the Viewport is `Unavailable`, so this task adds no new tools-gate WARN.
 - Doctest case counts, measured with `--list-test-cases`, never predicted: `aero_editor_shell_test`
-  **117 → 123 → 131 → 141** across the three code-bearing commits; `aero_editor_imgui_test`
-  **14 → 19**; `aero_tests` unchanged at **356**.
+  **117 → 123 → 131 → 141** across the three code-bearing commits, then **141 → 145** in the
+  review round below; `aero_editor_imgui_test` **14 → 19**; `aero_tests` unchanged at **356**.
 - The non-interactive launch check (`aero_editor`, seeded scene): **zero** new ERROR/CRITICAL/WARN
   lines, run after every ImGui-touching step, after the tools-OFF configure, and again after the final
   format pass.
-- The sabotage table's outcome — all thirteen, every seed confirmed present via `git diff` before
-  trusting the verdict, every one reverted and re-confirmed green afterward:
+**The sabotage table's outcome** — all thirteen, every seed confirmed present via `git diff` before trusting the verdict, every one reverted and re-confirmed green afterward:
 
-  | | Seed | Result |
-  |---|---|---|
-  | S1 | `rayLocalBoxHit`: `!(tMin > 0.0F)` → `!(tMax > 0.0F)` | reddened case 4's inside (both arms) and on-a-face subcases exactly; the aimed-away and entirely-behind subcases stayed green |
-  | S2a | `rayLocalBoxHit`: normalise `direction` right after the guard | reddened case 6 arm A exactly as predicted; also reddened arm B, an expected mechanical consequence since arm B calls the same sabotaged function; cases 4 and 7 stayed green |
-  | S2b | `pickEntity`: wrap the local direction in `normalizeOrZero` at the call site only | reddened case 6 arm B exactly, and *only* arm B; arm A and cases 4/7 stayed green |
-  | S3 | `pickEntity`, mesh branch: replace the OBB test with the plan's own literal world-AABB one (`h = max(hs.x, hs.y, hs.z)`) | reddened case 7's MISS subcase exactly (the primary discriminator); also perturbed the HIT subcase's *distance* assertion (a uniform max-extent box is not the true anisotropic AABB even where both still register a hit) — the entity/isPoint checks in that subcase still passed. Second-order check performed: weakening both perturbed assertions to `CHECK(true)` makes the seeded defect pass the whole suite, confirming those assertions do the real work |
-  | S4 | `pickEntity`: drop the `e.index < mesh.entity.index` tie-break arm | reddened case 8's forced-inversion tie subcase exactly (1 assertion); the nearest/destroy/parenting/dead-handle subcases stayed green |
-  | S5 | `pickEntity`: `if (point.hit() && (...))` → `if (point.hit())` | reddened case 10's BEHIND subcase exactly; the FRONT subcase and case 9 stayed green |
-  | S6 | `buildSelectionOverlay`: build the mesh box from the world AABB instead of the OBB | reddened case 4's rotation arm (S6's discriminator) exactly; the translate and scale arms stayed green |
-  | S7 | `appendBoxEdges`: reject whole corners (`a.w > eps && b.w > eps`) instead of clipping the edge | reddened case 7's straddling subcase exactly (8 → 4 segments); the entirely-behind subcase stayed green |
-  | S8 | `clipSegmentToNearPlane`: replace the clip-space lerp with a post-divide one | reddened case 6's straddling subcase exactly (both the on-the-line and the not-post-divide assertions); both-in-front and both-behind stayed green. Second-order check performed: weakening both assertions to `CHECK(true)` makes the seeded defect pass the whole suite |
-  | S9 | `pickSelectionAction`: swap the `Toggle`/`Add` returns for `ctrlOrCmd`/`shift` | reddened case 12 exactly (6 assertions across the swapped rows); case 13 stayed green |
-  | S10 | `pickSelectionAction`: the miss branch → unconditional `Clear` | reddened 3 of case 12's 4 miss rows (6 assertions) — the no-modifier miss row already expects `Clear` and is correctly unaffected; hit rows and case 13 stayed green |
-  | S11 | `buildSelectionOverlay`: delete the `MAX_HIGHLIGHTED_ENTITIES` cap check | reddened case 8 exactly: 3600 segments instead of 3072, and the beyond-cap-primary assertion also failed, both as predicted; cases 2–7 and 9–10 stayed green |
-  | S12 | *(see below)* | **not mechanically seeded — recorded as a documented non-discrimination, exactly as the plan predicts** |
-  | S12b | `pickEntity`: add `AERO_LOG_WARN("picking: probe")` before the final `return mesh` | reddened 3 of case 11's 4 subcases (the populated-scene, empty-World and moved-from-World arms); the 4th, the ANTI-VACUITY canary, does not call `pickEntity` at all and correctly stayed green; case 8 (which doesn't check log records) stayed green |
-  | S13 | `onDraw`'s call to `updatePick`: pass `drawExtent` (pixels) instead of `avail` (points) as the pick's `viewportSizePoints` | **seeded for real and confirmed to redden NOTHING** — the whole 94/94 tier-0 suite plus all 19 GPU-gated cases stayed green with the defect live, exactly as the plan predicts: points and pixels coincide on this non-Retina runner, so nothing in this harness can discriminate D18's pixel/point distinction |
 
-  **S12 — recorded, not forced (§A3).** The spec's stated seed ("use `each<MeshRenderer>` in `pickEntity`
-  instead of `eachEntity` + `has`") does not compile: `pickEntity` takes `const World&` and
-  `World::each<Ts...>` is non-const. Widening the signature to `World&` compiles but reddens nothing
-  either — every `World`'s constructor registers `MeshRenderer` unconditionally, so `beginQuery` never
-  takes its `AERO_LOG_ERROR` path on a live `World`, and on a moved-from `World` it bails at
-  `impl == nullptr` before that ERROR anyway. The silence guarantee (AC-11/INV-5) is held
-  **structurally, by the `const World&` signature itself** — a compile-time property strictly stronger
-  than any reddening test — and S12b plus case 11's `each<NeverRegistered>` canary are what prove the
-  assertion is not vacuous. Identical in shape to 2.3.1's own S9/S12 non-discriminations.
+| | Seed | Result |
+|---|---|---|
+| S1 | `rayLocalBoxHit`: `!(tMin > 0.0F)` → `!(tMax > 0.0F)` | reddened case 4's inside (both arms) and on-a-face subcases exactly; the aimed-away and entirely-behind subcases stayed green |
+| S2a | `rayLocalBoxHit`: normalise `direction` right after the guard | reddened case 6 arm A as predicted, and arm B too — see note (b); cases 4 and 7 stayed green |
+| S2b | `pickEntity`: wrap the local direction in `normalizeOrZero` at the call site only | reddened case 6 arm B exactly, and *only* arm B; arm A and cases 4/7 stayed green |
+| S3 | `pickEntity`, mesh branch: replace the OBB test with the plan's own literal world-AABB one (`h = max(hs.x, hs.y, hs.z)`) | reddened case 7's MISS subcase (the primary discriminator) exactly; also perturbed the HIT subcase's distance — see note (a) |
+| S4 | `pickEntity`: drop the `e.index < mesh.entity.index` tie-break arm | reddened case 8's forced-inversion tie subcase exactly; the nearest/destroy/parenting/dead-handle subcases stayed green |
+| S5 | `pickEntity`: `if (point.hit() && (...))` → `if (point.hit())` | reddened case 10's BEHIND subcase exactly; the FRONT subcase and case 9 stayed green |
+| S6 | `buildSelectionOverlay`: build the mesh box from the world AABB instead of the OBB | reddened case 4's rotation arm (S6's discriminator) exactly; the translate and scale arms stayed green |
+| S7 | `appendBoxEdges`: reject whole corners (`a.w > eps && b.w > eps`) instead of clipping the edge | reddened case 7's straddling subcase exactly (8 → 4 segments); the entirely-behind subcase stayed green |
+| S8 | `clipSegmentToNearPlane`: replace the clip-space lerp with a post-divide one | reddened case 6's straddling subcase exactly (both assertions); both-in-front and both-behind stayed green — see note (a) |
+| S9 | `pickSelectionAction`: swap the `Toggle`/`Add` returns for `ctrlOrCmd`/`shift` | reddened case 12 exactly (6 assertions across the swapped rows); case 13 stayed green |
+| S10 | `pickSelectionAction`: the miss branch → unconditional `Clear` | reddened 3 of case 12's 4 miss rows (6 assertions); the no-modifier row already expects `Clear`, so it is correctly unaffected |
+| S11 | `buildSelectionOverlay`: delete the `MAX_HIGHLIGHTED_ENTITIES` cap check | reddened case 8 exactly — 3600 segments instead of 3072, plus the beyond-cap-primary assertion; cases 2–7 and 9–10 stayed green |
+| S12 | *(see below)* | **not mechanically seeded — recorded as a documented non-discrimination, exactly as the plan predicts** |
+| S12b | `pickEntity`: add `AERO_LOG_WARN` before the final `return mesh` | reddened 3 of case 11's 4 subcases; the 4th is the anti-vacuity canary — see note (c) |
+| S13 | `onDraw`'s call to `updatePick`: pass `drawExtent` (pixels) instead of `avail` (points) as the pick's `viewportSizePoints` | **seeded for real, reddened NOTHING** — as predicted — see note (d) |
+
+**(a) S3 and S8 were second-order checked.** Both seeds perturbed an assertion beyond their table
+entry, and both were re-tested by weakening the discriminating assertions to `CHECK(true)`: with them
+weakened, the seeded defect passes the whole suite. So those assertions — not the harness — do the
+real work. S3's extra perturbation is the HIT subcase's *distance* value (a uniform max-extent box is
+not the true anisotropic AABB even where both still register a hit); its entity/isPoint checks still
+passed.
+
+**(b) S2a reddens one arm more than its table entry.** It normalises inside `rayLocalBoxHit` itself
+rather than at the call site, so case 6 arm B — which calls the same sabotaged function — reddens
+too. An expected mechanical consequence, not a contradiction; S2b isolates arm B alone.
+
+**(c) S12b's fourth subcase cannot redden from this seed.** Case 11's anti-vacuity canary asserts
+that `each<NeverRegistered>` *does* log, and never calls `pickEntity` at all. Its staying green is
+the correct outcome and is what proves the other three are not vacuous.
+
+**(d) S13 is human-only by construction.** The whole 94/94 tier-0 suite plus all 19 GPU-gated cases
+stayed green with the defect live, exactly as the plan predicts: points and pixels coincide on a
+non-Retina runner, so nothing in this harness can discriminate D18's pixel/point distinction. Row 9
+of the human pass is the only thing that can.
+
+**S12 — recorded, not forced (§A3).** The spec's stated seed ("use `each<MeshRenderer>` in `pickEntity`
+instead of `eachEntity` + `has`") does not compile: `pickEntity` takes `const World&` and
+`World::each<Ts...>` is non-const. Widening the signature to `World&` compiles but reddens nothing
+either — every `World`'s constructor registers `MeshRenderer` unconditionally, so `beginQuery` never
+takes its `AERO_LOG_ERROR` path on a live `World`, and on a moved-from `World` it bails at
+`impl == nullptr` before that ERROR anyway. The silence guarantee (AC-11/INV-5) is held
+**structurally, by the `const World&` signature itself** — a compile-time property strictly stronger
+than any reddening test — and S12b plus case 11's `each<NeverRegistered>` canary are what prove the
+assertion is not vacuous. Identical in shape to 2.3.1's own S9/S12 non-discriminations.
 
 - All five guards green with **no allowlist change**: `check-math-boundary.sh`'s scanned count moved
   **197 → 203** (+6: `picking.hpp/.cpp`, `selection_overlay.hpp/.cpp`, `picking_test.cpp`,
@@ -1494,6 +1514,39 @@ Measured at every one of the five commit boundaries, not once at the end:
 - clang-format and clang-tidy clean on every touched file at every commit boundary, with **zero new
   `NOLINT`s** — the one pre-existing `reinterpret_cast` NOLINT in `viewport_panel.cpp` (2.2.3) is
   unchanged.
+
+### The review round (2026-07-29)
+
+A code review before merge found **no functional defect**, but four assertions that could not fail.
+Each was confirmed vacuous the same way the table above works — seed the defect, confirm it landed with
+`git diff`, rebuild, and watch the suite stay green — then closed with tests only, **zero
+production-code change** (141 → 145 cases):
+
+| | Gap | Proof it is now caught |
+|---|---|---|
+| 1 | the E4 non-finite guards, both sites, had no coverage | deleting either guard now reddens its own new case |
+| 2 | AC-7's zero-scale / non-finite clauses never reached `pickEntity` | seven new degeneracy subcases |
+| 3 | the point-candidate index tie-break could not decide | rewritten to force a visit-order inversion and `REQUIRE` it |
+| 4 | the A7 "dead handles do not consume cap budget" claim | 11 dead handles among 256+ live, asserting the exact cap |
+
+**The trap worth keeping.** The pre-existing E4 test used `position.x = INF`, which puts `inf` in the
+model matrix, makes every clip `w` come out `0 * inf = NaN`, and so drops all twelve edges in
+`clipSegmentToNearPlane` *before* the finiteness guard ever runs — `allFinite` over an empty vector is
+vacuously true. Reaching that guard needs a huge but **finite** transform (uniform `1e34` straddling
+the eye). Handing a function its most extreme input is not automatically the test that reaches the
+guard: the extreme input can be rejected earlier, by a different guard, for a different reason.
+
+**A second finding, about a constant rather than a test.** `DETERMINANT_EPSILON`'s guard turns out to
+be *redundant* — deleting it leaves the suite green, because GLM's `inverse` of a singular matrix
+yields NaN that `rayLocalBoxHit`'s `allFinite` already rejects. It was left in place (readable, cheap,
+states intent locally). But retuning it the wrong way was **not** covered: seeding `1e-20 → 1e-6`
+reddened nothing, meaning an over-eager epsilon would have silently made small legitimate objects
+unclickable with a fully green suite. Now pinned by an explicit "a uniform 1e-4 scale stays pickable"
+subcase.
+
+All five CI lanes passed first try, which also settled the one open portability question: the
+`1e34`-scale case's expected segment count was measured on macOS/arm64 only, and Windows/MSVC and
+Linux/GCC both confirmed it.
 
 ## Known-and-expected, NOT a defect
 
@@ -1615,6 +1668,7 @@ window-manager or compositor interaction). No checks recorded yet.
 `AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, the non-interactive launch
 proof, all thirteen sabotage proofs each seed-confirmed and reverted — one recorded as a documented
 non-discrimination (S12), one confirmed to redden nothing as predicted (S13), two second-order-checked
-(S3, S8) — all five guards green, clang-format and clang-tidy clean with zero new `NOLINT`s), human
+(S3, S8) — plus the review round's four closed gaps, all five guards green, clang-format and clang-tidy
+clean with zero new `NOLINT`s, and all five CI lanes green), human
 passes pending on all three OSes.** Epic 2.3 (Manipulation) remains **in progress in code**
 (2.3.3 ImGuizmo transform gizmos is next).
