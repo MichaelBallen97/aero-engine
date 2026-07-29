@@ -165,7 +165,7 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
                editor/picking_test.cpp editor/selection_overlay_test.cpp
-               editor/gizmo_test.cpp)
+               editor/gizmo_test.cpp editor/transform_ops_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
