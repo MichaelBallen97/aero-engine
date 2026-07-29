@@ -21,7 +21,6 @@
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>  // task 2.3.1
 #include <aero/editor/entity_ops.hpp>
-#include <aero/editor/gizmo.hpp>  // task 2.3.3
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>       // task 2.3.2
 #include <aero/editor/scene_bounds.hpp>  // task 2.3.1

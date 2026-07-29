@@ -264,6 +264,9 @@ TEST_CASE("gizmo: channel isolation (G7)") {
     {
         const GizmoWrite write = gizmoWriteFromWorld(parentWorld, newWorld, before, GizmoOperation::Rotate);
         REQUIRE(write.status == GizmoWriteStatus::Applied);
+        // Code review (2026-07-29): AC-2's "changes ONLY its own field" was covered; "CHANGES its own
+        // field" was not, for Rotate -- Translate and Scale each assert their new value already.
+        CHECK(approxEquals(write.transform.rotation, differentTrs.rotation));
         CHECK(write.transform.position == before.position);
         CHECK(write.transform.scale == before.scale);
     }
