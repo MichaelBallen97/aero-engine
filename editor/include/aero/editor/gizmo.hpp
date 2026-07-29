@@ -81,4 +81,53 @@ inline constexpr float GIZMO_SNAP_SCALE = 0.1F;            // scale factor
 // PURE drag-edge derivation (D22). `wasUsing` is the previous frame's latched value.
 [[nodiscard]] GizmoDragEdge gizmoDragEdge(bool wasUsing, bool isUsing) noexcept;
 
+// ---- geometry -----------------------------------------------------------------------------------
+
+// The world matrix to hand ImGuizmo, or nullopt when there is nothing to manipulate: a null or dead
+// entity, a moved-from World, or an entity with no Transform. Never returns a non-finite matrix: a
+// Transform carrying inf/NaN yields nullopt rather than feeding garbage into the library (E15).
+[[nodiscard]] std::optional<Mat4> gizmoModelMatrix(const World& world, Entity entity);
+
+// The entity's PARENT's world matrix -- identity for a root, for a null/dead parent, and for a
+// moved-from World. This is the matrix gizmoWriteFromWorld inverts.
+[[nodiscard]] Mat4 gizmoParentMatrix(const World& world, Entity entity);
+
+// Is the gizmo origin at or behind the near plane? Delegates to picking.hpp's projectToViewport,
+// which is false for w <= CLIP_W_EPSILON AND for any non-finite result -- so pick, highlight and
+// gizmo share ONE definition of "behind the camera" and can never disagree (D9). FAILS CLOSED: a
+// non-finite model returns true.
+// `viewportSizePoints` only scales the (discarded) screen point; any positive size gives the same
+// answer, and the panel passes the real one.
+[[nodiscard]] bool gizmoOriginBehindCamera(const Mat4& viewProj, const Mat4& model, Vec2 viewportSizePoints) noexcept;
+
+// ---- the write ----------------------------------------------------------------------------------
+
+enum class GizmoWriteStatus : std::uint8_t {
+    Applied = 0,      // `transform` is the new value; write it
+    NoChange,         // exactly equal to `before`; write NOTHING (D6)
+    NotFinite,        // newWorld, the derived local, or the composed result carries inf/NaN
+    NotDecomposable,  // decompose() refused -- degenerate scale, or shear from a non-uniformly
+                      // scaled ancestor (out of contract per transform.hpp's D9)
+};
+
+struct GizmoWrite {
+    GizmoWriteStatus status = GizmoWriteStatus::NoChange;
+    Transform transform{};  // meaningful ONLY when status == Applied; left DEFAULT otherwise, never
+                            // partially filled (G11 asserts this)
+};
+
+// THE core of this task. `newWorld` is the matrix ImGuizmo just mutated in place; `parentWorld` is
+// gizmoParentMatrix's result; `before` is the entity's CURRENT local Transform.
+//
+//   local = inverse(parentWorld) * newWorld        (identity parent -> the inverse is SKIPPED)
+//   decompose(local, trs)                          (ours, never ImGuizmo's -- F11)
+//   result = before, with ONLY the channel `op` owns replaced (D5)
+//
+// Writing one channel is not a micro-optimisation: a full three-field round-trip renormalises the
+// quaternion and re-derives scale from column lengths on EVERY frame of a drag, so dragging a
+// ROTATION handle would slowly drift a stored scale of {1,1,1}. Channel isolation makes "nothing
+// else changed" an assertable property (G7/AC-2) instead of a hope.
+[[nodiscard]] GizmoWrite gizmoWriteFromWorld(const Mat4& parentWorld, const Mat4& newWorld, const Transform& before,
+                                             GizmoOperation op) noexcept;
+
 }  // namespace engine::editor
