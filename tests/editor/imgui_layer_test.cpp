@@ -43,6 +43,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <system_error>  // std::error_code -- the non-throwing filesystem::remove overload
 #include <vector>
 
 namespace {
@@ -1241,7 +1242,11 @@ TEST_CASE(
         AERO_SKIP_OR_FAIL("no base path resolvable");
     }
     const std::string iniPath = std::string(base) + "aero_editor.ini";
-    std::filesystem::remove(iniPath);  // start clean regardless of a previous run's leftover file
+    // NON-THROWING remove (the vfs_test / project_files_test idiom): a leftover file from an
+    // aborted previous run can still be handle-locked on Windows, and a throwing remove would turn
+    // that into a test ERROR rather than the REQUIRE below.
+    std::error_code removeEc;
+    std::filesystem::remove(iniPath, removeEc);  // start clean regardless of a leftover file
     REQUIRE_FALSE(std::filesystem::exists(iniPath));
 
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
@@ -1260,12 +1265,19 @@ TEST_CASE(
     app.reset();  // ~ImGuiLayer -> ImGui::DestroyContext() -> SaveIniSettingsToDisk (imgui.cpp)
 
     REQUIRE(std::filesystem::exists(iniPath));
-    const std::ifstream in(iniPath);
-    REQUIRE(in.is_open());
-    std::ostringstream contentsStream;
-    contentsStream << in.rdbuf();
-    const std::string contents = contentsStream.str();
+    std::string contents;
+    {
+        // SCOPED so the handle is CLOSED before the remove below. POSIX happily unlinks a file that
+        // is still open (the inode survives until the last descriptor closes), so a trailing remove
+        // with the stream still in scope passes on macOS and Linux and FAILS on Windows, which
+        // refuses with a sharing violation. That is exactly how this reddened the MSVC lane.
+        const std::ifstream in(iniPath);
+        REQUIRE(in.is_open());
+        std::ostringstream contentsStream;
+        contentsStream << in.rdbuf();
+        contents = contentsStream.str();
+    }
     CHECK(contents.find("[Window][gizmo]") == std::string::npos);
 
-    std::filesystem::remove(iniPath);  // leave no state behind for the next run
+    std::filesystem::remove(iniPath, removeEc);  // leave no state behind for the next run
 }
