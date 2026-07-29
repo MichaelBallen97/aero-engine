@@ -10,10 +10,12 @@
 #include <aero/core/math.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/vfs.hpp>
+#include <aero/editor/command_stack.hpp>
 #include <aero/editor/gizmo.hpp>
 #include <aero/editor/picking.hpp>
 #include <aero/editor/scene_bounds.hpp>
 #include <aero/editor/selection.hpp>
+#include <aero/editor/transform_command.hpp>
 #include <aero/editor/transform_ops.hpp>
 #include <aero/rhi/internal/native_device.hpp>
 
@@ -394,7 +396,9 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
         gizmoWasUsing = false;
         gizmoWarnLatched = false;
         ImGuizmo::Enable(false);
-        return;  // AC-14: no ImGuizmo call at all
+        context.commands.breakMergeChain();  // INV-3: every site that clears gizmoWasUsing also
+                                             // breaks the chain -- this return delivers no End edge
+        return;                              // AC-14: no ImGuizmo call at all
     }
     gizmoHasTarget = true;
 
@@ -409,6 +413,7 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
         // (ImGuizmo.cpp:2697) so an in-flight drag is never cut off mid-gesture (A10).
         gizmoWasUsing = false;
         gizmoWarnLatched = false;
+        context.commands.breakMergeChain();  // INV-3: this return also delivers no End edge
         return;
     }
 
@@ -467,6 +472,13 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     if (edge == GizmoDragEdge::Begin) {
         gizmoWarnLatched = false;
     }
+    // Task 2.4.1: a new drag never merges into an old one (Begin), and nothing merges into a finished
+    // one (End). Breaking at BOTH boundaries is belt and braces on purpose -- with the two early
+    // returns above it makes "the chain is open only strictly between one drag's Begin and its End" a
+    // structural property rather than a consequence of every exit path remembering (INV-3).
+    if (edge == GizmoDragEdge::Begin || edge == GizmoDragEdge::End) {
+        context.commands.breakMergeChain();
+    }
 
     // 10. Write back.
     if (!changed) {
@@ -476,12 +488,12 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
         gizmoWriteFromWorld(gizmoParentMatrix(context.world, target), matrix, *before, gizmoMode.operation);
     switch (write.status) {
         case GizmoWriteStatus::Applied:
-            // D13: mutating the World here is permitted. The Image item is submitted and closed, no
-            // ImGui tree is open, and no eachChild walk is in flight -- which is what
-            // .claude/rules/editor.md's "never mutate the World during a draw walk" actually
-            // protects (the same reasoning :212-216 already records for the selection write).
-            // INV-3 is untouched: renderScene gains nothing.
-            writeTransform(context.world, target, write.transform);
+            // Task 2.4.1 D5: push() APPLIES the command. The direct transform write this replaces is
+            // GONE -- there is exactly one write path now and it lives inside TransformCommand::redo
+            // (AC-18). 2.3.3 D13's "mutating the World here is permitted" reasoning is unchanged: the
+            // Image item is submitted and closed, no ImGui tree is open, and no eachChild walk is in
+            // flight. The offscreen scene pass gains nothing from this change (INV-5).
+            context.commands.push(context.world, std::make_unique<TransformCommand>(target, *before, write.transform));
             break;
         case GizmoWriteStatus::NoChange:
             break;  // write nothing (AC-11)
