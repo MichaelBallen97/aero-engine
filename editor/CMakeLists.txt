@@ -38,6 +38,7 @@ add_library(aero_editor_core STATIC
     src/selection_overlay.cpp   # task 2.3.2 -- selection -> screen-space segments (ImGui-free)
     src/gizmo.cpp                # task 2.3.3 -- the pure gizmo model (ImGui-free AND ImGuizmo-free)
     src/transform_ops.cpp       # task 2.3.3 -- the Transform write seam 2.4.2 wraps
+    src/command_stack.cpp       # task 2.4.1 -- Command + the bounded CommandStack (ImGui-free, entt-free)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
