@@ -92,12 +92,16 @@ inline constexpr float GIZMO_SNAP_SCALE = 0.1F;            // scale factor
 // moved-from World. This is the matrix gizmoWriteFromWorld inverts.
 [[nodiscard]] Mat4 gizmoParentMatrix(const World& world, Entity entity);
 
-// Is the gizmo origin at or behind the near plane? Delegates to picking.hpp's projectToViewport,
-// which is false for w <= CLIP_W_EPSILON AND for any non-finite result -- so pick, highlight and
-// gizmo share ONE definition of "behind the camera" and can never disagree (D9). FAILS CLOSED: a
-// non-finite model returns true.
-// `viewportSizePoints` only scales the (discarded) screen point; any positive size gives the same
-// answer, and the panel passes the real one.
+// Is the gizmo origin at or behind the near plane? TWO tests, either of which fails closed:
+//   1. picking.hpp's projectToViewport, false for w <= CLIP_W_EPSILON or any non-finite result --
+//      so pick, highlight and gizmo share ONE definition of "behind the camera" for this half (D9).
+//   2. ImGuizmo's OWN behind-camera test, mirrored exactly (ImGuizmo.cpp:2696-2698): RAW clip-space
+//      z < 0.001, no perspective divide. Code-review finding (2026-07-29): test 1 alone leaves a
+//      reachable band where OUR test says "in front" but ImGuizmo's own test would have refused,
+//      so Manipulate gets called and leaks an unmatched PushClipRect (F5). Test 2 closes it.
+// FAILS CLOSED throughout: a non-finite model, or a non-finite clip.z, returns true.
+// `viewportSizePoints` only scales the (discarded) screen point test 1 computes; any positive size
+// gives the same answer, and the panel passes the real one.
 [[nodiscard]] bool gizmoOriginBehindCamera(const Mat4& viewProj, const Mat4& model, Vec2 viewportSizePoints) noexcept;
 
 // ---- the write ----------------------------------------------------------------------------------

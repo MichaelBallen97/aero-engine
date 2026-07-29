@@ -460,6 +460,17 @@ TEST_CASE("gizmo: gizmoOriginBehindCamera (G15)") {
         model.columns[3] = Vec4{std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F, 1.0F};
         CHECK(gizmoOriginBehindCamera(viewProj, model, viewportSize));
     }
+
+    SUBCASE("the w/z disagreement band -- code-review finding, 2026-07-29") {
+        // With THIS camera (eye at z=5, near=0.1), an origin 0.05 world units in front of the eye
+        // (world z = 4.95) has clip.w = 0.05 (> CLIP_W_EPSILON, our OLD test alone said "in front")
+        // but RAW clip.z = -0.05 (< 0.001, ImGuizmo's OWN test says "behind") -- measured directly:
+        // the band spans roughly d in (0.0002, 0.11) world units in front of the eye for this
+        // camera. Pins the fix: the widened predicate must say "behind" here, closing the band
+        // Manipulate's own leaking early return (F5) would otherwise be reachable through.
+        const Mat4 model = translation(Vec3{0.0F, 0.0F, 4.95F});
+        CHECK(gizmoOriginBehindCamera(viewProj, model, viewportSize));
+    }
 }
 
 TEST_CASE("gizmo: gizmoDragEdge transitions (G16)") {

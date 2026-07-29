@@ -152,8 +152,26 @@ bool gizmoOriginBehindCamera(const Mat4& viewProj, const Mat4& model, Vec2 viewp
     const Vec3 origin{model.columns[3].x, model.columns[3].y, model.columns[3].z};
     Vec2 scratch{};
     // D9: projectToViewport already fails closed for w <= CLIP_W_EPSILON AND any non-finite result
-    // (2.3.2 E4) -- reusing it is what gives pick, highlight and gizmo ONE shared "behind the camera".
-    return !projectToViewport(viewProj, origin, viewportSizePoints, scratch);
+    // (2.3.2 E4) -- reusing it is what gives pick, highlight and gizmo ONE shared "behind the camera"
+    // definition for the w-based half of this test.
+    if (!projectToViewport(viewProj, origin, viewportSizePoints, scratch)) {
+        return true;
+    }
+    // Code-review finding (2026-07-29): our w-based test and ImGuizmo's OWN behind-camera test
+    // (ImGuizmo.cpp:2696-2698 -- `camSpacePosition.z < 0.001f`, the RAW clip-space z, no perspective
+    // divide) are DIFFERENT quantities. With the real EditorCamera defaults (near 0.1, far 1000,
+    // 60-degree fov) there is a reachable band -- roughly 0.0002 to 0.11 world units in front of the
+    // eye -- where our w-test says "in front" but ImGuizmo's own z-test would have refused, so
+    // Manipulate gets called and takes exactly the early return that leaks an unmatched
+    // PushClipRect (F5: the `PushClipRect` at `:2682` has no matching `PopClipRect` on that path --
+    // the only one is at `:2728`). Mirroring ImGuizmo's own z-test here, from the SAME
+    // viewProj*origin, closes the band completely: nothing can reach Manipulate that ImGuizmo itself
+    // would have refused.
+    // `!(clip.z >= 0.001F)`, not `clip.z < 0.001F`: the negated form fails CLOSED on a non-finite
+    // clip.z (every direct `<`/`>=` comparison with NaN is false, so the negated form is true) --
+    // the same NaN-safety idiom this codebase uses throughout (2.3.1/2.3.2).
+    const Vec4 clip = viewProj * toVec4(origin, 1.0F);
+    return !(clip.z >= 0.001F);
 }
 
 GizmoWrite gizmoWriteFromWorld(const Mat4& parentWorld, const Mat4& newWorld, const Transform& before,
