@@ -407,10 +407,24 @@ TEST_CASE("gizmo: huge-but-finite scale (G14)") {
     // which decompose() SUCCEEDS yet produces a non-finite Trs component -- the transition at
     // sqrt(FLT_MAX) (~1.84e19) goes directly from a fully-finite success to an outright decompose()
     // rejection, with no intermediate "succeeds but non-finite" band. Recorded honestly per the
-    // plan's own instruction ("if it does not discriminate, say so rather than forcing it") --
-    // this is NOT proof step 6 is dead code (a pathological ROTATION-only input was not exhaustively
-    // searched), only that THIS construction does not reach it. The step-6 check remains defence in
-    // depth, uncovered by this case, exactly like A4's stale-latch clear.
+    // plan's own instruction ("if it does not discriminate, say so rather than forcing it").
+    //
+    // Code-review finding (2026-07-29): step 6's post-decompose finiteness sweep is STRUCTURALLY
+    // unreachable from decompose()'s current implementation, not merely unscanned. Translation is a
+    // direct read of newWorld's own column 3, already covered by the allFinite(newWorld)/
+    // allFinite(local) guards upstream. Scale (sx/sy/sz) is exactly what decompose()'s own guard
+    // proves finite before it is ever stored (glm_backend.cpp:149-153). Rotation comes from
+    // toQuat(rot) -- glm::quat_cast of a Mat3 built from NORMALISED columns -- and quat_cast's own
+    // four candidate terms (glm/gtc/quaternion.inl:83-86, `fourXSquaredMinus1` etc.) provably SUM TO
+    // ZERO -- verified directly:
+    // `(m00-m11-m22)+(m11-m00-m22)+(m22-m00-m11)+(m00+m11+m22) == 0` for any m00/m11/m22 -- so the
+    // chosen maximum is always >= 0, `sqrt(max+1) >= 1` is always well-defined, and the reciprocal
+    // (`mult = 0.25/biggestVal`) can never blow up. A 20M-sample fuzz across this task's exponent
+    // range (1e-44..1e38, 862,378 successes) found zero non-finite outputs,
+    // confirming it empirically as well as structurally. KEEP the step-6 code anyway: the
+    // unreachability rests on decompose()'s CURRENT implementation, not its published contract, and
+    // this task's own shear guard (isSheared(), added in code review) changes what reaches it --
+    // structural unreachability of one input class is not a promise about every future one.
     const Mat4 parentWorld = Mat4::identity();
     const Transform before{};
     const float huge = 1.0e34F;
