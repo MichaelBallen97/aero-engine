@@ -23,6 +23,13 @@ DerivePointerAlignment: false
 SortIncludes: CaseSensitive
 IncludeBlocks: Regroup
 IncludeCategories:
+  # ImGuizmo.h does NOT include imgui.h (it only forward-declares ImGuiWindow, then names
+  # ImDrawList / ImVec2 / ImVec4 / ImU32 / ImGuiContext / ImGuiID), so it must come AFTER it.
+  # SortIncludes: CaseSensitive would otherwise hoist it -- 'I' (0x49) sorts before 'i' (0x69),
+  # and the TU then fails to compile. Its own trailing category is what makes the order
+  # STRUCTURAL instead of a comment nobody reads (task 2.3.3, D23).
+  - Regex: '^<ImGuizmo\.h>'
+    Priority: 5
   # Engine's own public headers first (<aero/...>) — listed before the generic
   # third-party rule so it wins the "first matching category" tie-break.
   - Regex: '^<aero/'

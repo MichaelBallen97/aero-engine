@@ -3,8 +3,11 @@
 // precedent). GPU-gated at RUNTIME via AERO_REQUIRE_GPU (rhi_test_support.hpp): unset locally skips
 // loudly; set (CI) a missing GPU/display is a hard failure. ImGui-free at source -- this TU drives
 // aero::editor_core's engine-typed API only (task 2.1.3: EditorApp::tick(), not a hand-rolled loop);
-// imgui/SDL3 reach it purely transitively through editor_core's PRIVATE static archive (the
-// glm-in-aero_tests precedent).
+// imgui reaches it purely transitively through editor_core's PRIVATE static archive (the
+// glm-in-aero_tests precedent). SDL3 reaches it BOTH transitively AND directly as of task 2.3.3's
+// I5 case, which needs SDL_GetBasePath() to compute the SAME exe-relative aero_editor.ini path
+// ImGuiLayer::create's deriveIniPath() does (imgui_layer.cpp) -- there is no test-supplied "scratch
+// directory" option in EditorAppConfig, so this is the only way to find the file the real app wrote.
 //
 // G6 (window visibility): uses a small VISIBLE 320x180 window, matching the rhi_swapchain_test
 // precedent that is proven to present on all three CI lanes (macOS Metal, Windows WARP, Linux
@@ -30,12 +33,17 @@
 
 #include "rhi_test_support.hpp"
 
+#include <SDL3/SDL_filesystem.h>  // task 2.3.3 I5: SDL_GetBasePath(), matching imgui_layer.cpp:38
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <system_error>  // std::error_code -- the non-throwing filesystem::remove overload
 #include <vector>
 
 namespace {
@@ -1031,4 +1039,245 @@ TEST_CASE("editor: driving the Selection through real frames mutates nothing but
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ==================================================================================================
+// task 2.3.3 -- the transform gizmo path driven through a real EditorApp::tick(). Honest limit,
+// stated once here for all five cases: this harness CANNOT synthesise a mouse click or drag --
+// ImGui_ImplSDL3_NewFrame overwrites any injected mouse position from SDL every frame, and there is
+// no window under a real cursor in CI. Every case below is therefore an EXECUTION / BALANCE /
+// no-crash proof, not a behaviour proof: an unbalanced PushClipRect/PushID/PushStyleColor/
+// BeginDisabled is an IM_ASSERT ABORT in the Debug build, so a green Debug run through real frames
+// IS the balance proof. Behaviour lives in the tier-0 batteries (gizmo_test.cpp) plus the human pass
+// (editor/VALIDATION.md).
+// ==================================================================================================
+
+TEST_CASE("editor: the gizmo path executes and stays balanced through real frames (task 2.3.3, I1)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "gizmo smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+
+    app->selection().set(cube);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the gizmo origin behind the near plane skips Manipulate cleanly (task 2.3.3, I2/AC-12)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "gizmo behind camera", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+
+    engine::editor::EditorCamera* camera = app->viewportCamera();
+    REQUIRE(camera != nullptr);
+    // Fly the eye far along its OWN forward direction, past the origin (the seeded Cube's position,
+    // DEFAULT_PIVOT) -- this puts the Cube behind the eye regardless of the default yaw/pitch,
+    // without depending on any particular camera orientation.
+    const engine::Vec3 farAhead = camera->position() + camera->forward() * 1000.0F;
+    camera->setPivot(farAhead);
+
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: an empty selection and a Transform-less primary skip the gizmo cleanly (task 2.3.3, I3/AC-14)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "gizmo no target", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+
+    SUBCASE("empty selection") {
+        app->selection().clear();
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(app->tick());
+            CHECK(app->presentedLastFrame());
+        }
+    }
+
+    SUBCASE("a primary with no Transform") {
+        // world.create() -- the RAW World API, deliberately NOT entity_ops::createEntity, which
+        // DOES add a Transform unconditionally (2.3.2 G1) and would defeat this case.
+        const engine::Entity bare = world.create();
+        REQUIRE_FALSE(world.has<engine::Transform>(bare));
+        app->selection().set(bare);
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(app->tick());
+            CHECK(app->presentedLastFrame());
+        }
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a hidden then re-shown Viewport survives the gizmo path (task 2.3.3, I4/E3)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "gizmo hidden viewport", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+
+    // This is also the proof that BeginFrame()-without-Manipulate is safe: the Viewport panel does
+    // not draw at all while hidden, so `ImGuizmo::BeginFrame()` runs alone for two frames.
+    app->panels().setVisible("Viewport", false);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->panels().setVisible("Viewport", true);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the gizmo's transparent overlay window is invisible to the persisted layout (task 2.3.3, I5/AC-15)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "gizmo ini persistence", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    // The SAME exe-relative path ImGuiLayer::create's deriveIniPath() computes (imgui_layer.cpp) --
+    // EditorAppConfig has no test-supplied "scratch directory" option (a plan assumption this task
+    // corrects). SDL_GetBasePath() is SDL-cached (do NOT free), matching imgui_layer.cpp:38.
+    const char* const base = SDL_GetBasePath();
+    if (base == nullptr) {
+        AERO_SKIP_OR_FAIL("no base path resolvable");
+    }
+    const std::string iniPath = std::string(base) + "aero_editor.ini";
+    // NON-THROWING remove (the vfs_test / project_files_test idiom): a leftover file from an
+    // aborted previous run can still be handle-locked on Windows, and a throwing remove would turn
+    // that into a test ERROR rather than the REQUIRE below.
+    std::error_code removeEc;
+    std::filesystem::remove(iniPath, removeEc);  // start clean regardless of a leftover file
+    REQUIRE_FALSE(std::filesystem::exists(iniPath));
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = true, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+    const std::size_t panelCountBefore = app->panels().count();
+
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->panels().count() == panelCountBefore);  // the "gizmo" window is not a panel
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();  // ~ImGuiLayer -> ImGui::DestroyContext() -> SaveIniSettingsToDisk (imgui.cpp)
+
+    REQUIRE(std::filesystem::exists(iniPath));
+    std::string contents;
+    {
+        // SCOPED so the handle is CLOSED before the remove below. POSIX happily unlinks a file that
+        // is still open (the inode survives until the last descriptor closes), so a trailing remove
+        // with the stream still in scope passes on macOS and Linux and FAILS on Windows, which
+        // refuses with a sharing violation. That is exactly how this reddened the MSVC lane.
+        const std::ifstream in(iniPath);
+        REQUIRE(in.is_open());
+        std::ostringstream contentsStream;
+        contentsStream << in.rdbuf();
+        contents = contentsStream.str();
+    }
+    CHECK(contents.find("[Window][gizmo]") == std::string::npos);
+
+    std::filesystem::remove(iniPath, removeEc);  // leave no state behind for the next run
 }

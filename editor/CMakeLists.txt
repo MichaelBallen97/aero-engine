@@ -4,6 +4,12 @@
 # confined to this layer's .cpp TUs and the aero_editor exe / the smoke test stay ImGui-free.
 
 find_package(imgui CONFIG REQUIRED)    # 1.92.8 docking + sdl3 + sdlgpu3 bindings (vcpkg.json, D1)
+find_package(imguizmo CONFIG REQUIRED)  # 1.10, MIT, static-only (vcpkg.json, task 2.3.3 D1).
+                                        # Editor-ONLY by docs/03:87. Its header installs FLAT into
+                                        # include/, so the spelling is #include <ImGuizmo.h> and the
+                                        # imported target is imguizmo::imguizmo. The port's exported
+                                        # target carries NO interface link libraries (imgui reaches
+                                        # it as PRIVATE include dirs), so this adds nothing else.
 find_package(SDL3  CONFIG REQUIRED)    # editor speaks SDL/SDL_GPU directly (far side of the boundary)
 
 add_library(aero_editor_core STATIC
@@ -30,6 +36,8 @@ add_library(aero_editor_core STATIC
     src/scene_bounds.cpp        # task 2.3.1 -- Aabb + the world-bounds walk (ImGui-free; 2.3.2 reuses)
     src/picking.cpp             # task 2.3.2 -- screen ray + ray-vs-box + the world pick (ImGui-free)
     src/selection_overlay.cpp   # task 2.3.2 -- selection -> screen-space segments (ImGui-free)
+    src/gizmo.cpp                # task 2.3.3 -- the pure gizmo model (ImGui-free AND ImGuizmo-free)
+    src/transform_ops.cpp       # task 2.3.3 -- the Transform write seam 2.4.2 wraps
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -52,7 +60,10 @@ target_link_libraries(aero_editor_core
     # aero_scene_render) and, like aero::scene, propagates no vcpkg include path. It is NOT gated on
     # AERO_REFLECT_TOOLS (engine/scene_render/CMakeLists.txt has no gate), so the tools-OFF build and
     # the ungated tier-0 shell test both survive.
-    PRIVATE aero::profiling imgui::imgui SDL3::SDL3 EnTT::EnTT aero::scene_render
+    # imguizmo::imguizmo is PRIVATE for the SAME reason imgui::imgui is (D1/2.1.3): it confines
+    # ImGuizmo to this layer's .cpp TUs, so aero_editor and aero_editor_shell_test stay ImGuizmo-free
+    # at source. Like imgui, that is convention + review, NOT enforcement (R12).
+    PRIVATE aero::profiling imgui::imgui imguizmo::imguizmo SDL3::SDL3 EnTT::EnTT aero::scene_render
             aero::platform_internal aero::rhi_internal
 )
 

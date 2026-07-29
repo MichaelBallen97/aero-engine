@@ -6,6 +6,7 @@
 // Never call renderScene() from inside a draw walk, and never touch ImGui inside it.
 #include <aero/core/vfs.hpp>
 #include <aero/editor/editor_camera.hpp>
+#include <aero/editor/gizmo.hpp>  // task 2.3.3: GizmoMode, for the latched mode member
 #include <aero/editor/panel.hpp>
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
 #include <aero/render/render_target.hpp>
@@ -55,6 +56,12 @@ private:
     void updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered);
     void drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin, Vec2 avail);
 
+    // Task 2.3.3. Both take POINTS (D18) as engine Vec2, never ImVec2: this header is deliberately
+    // ImGui-free -- every ImGui value is converted at the ONE call site in onDraw (the 2.3.2
+    // precedent). updateGizmo is a member because it needs lastAspect, editorCamera and `gesture`.
+    void updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered);
+    void drawGizmoBar();  // takes nothing: everything it needs is a member (A13)
+
     rhi::Device* device = nullptr;  // non-owning; outlives the panel (EditorApp owns both)
     VirtualFileSystem shaderVfs;    // mounted once at init (AERO_SHADERS_DIR, D-user-1)
     std::optional<render::RenderTarget> target;
@@ -74,6 +81,18 @@ private:
     bool pickArmed = false;                      // LMB went down on the image with no camera gesture
     Vec2 pickPressPos{};                         // where, in POINTS -- for the slop test
     std::vector<OverlaySegment> overlayScratch;  // caller-owned, cleared and reused every frame (D6)
+
+    // Task 2.3.3.
+    GizmoMode gizmoMode{};          // LATCHED across frames; W/E/R/X and the overlay bar both write it
+    bool gizmoActive = false;       // D10: THIS frame's "the gizmo owns the cursor". Assigned on EVERY
+                                    // updateGizmo entry (INV-4) -- false whenever no Manipulate was
+                                    // called, because ImGuizmo::IsOver() would answer from stale
+                                    // gContext state on such a frame (F8).
+    bool gizmoHasTarget = false;    // A13: assigned every frame beside gizmoActive; the ONLY thing the
+                                    // overlay bar's enabled state reads, so the bar can never disagree
+                                    // with whether a gizmo actually drew.
+    bool gizmoWasUsing = false;     // previous frame's IsUsing(), for gizmoDragEdge (D22)
+    bool gizmoWarnLatched = false;  // D12: one WARN per drag, not one per frame
 };
 
 }  // namespace engine::editor
