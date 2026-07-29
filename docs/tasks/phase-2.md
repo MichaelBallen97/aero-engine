@@ -86,7 +86,9 @@ Subtasks:
 ## Epic 2.3 — Manipulation · editor
 
 **Goal:** direct manipulation: fly a camera, pick an entity, drag a gizmo.
-**Definition of Done:** entities are selected and transformed with the mouse, undoably.
+**Definition of Done:** entities are selected and transformed with the mouse, undoably (the *undoably*
+clause completes at **2.4.2**, which wraps 2.3.3's `transform_ops` seam in a command — see task
+2.3.3's D0).
 
 ### 2.3.1 Editor camera · P0 · M · depends: 2.2.3
 **Goal:** comfortable navigation — the editor is unusable without it.
@@ -102,13 +104,13 @@ Subtasks:
 - Click-pick via ray vs entity AABBs
 - Selection highlight in viewport
 
-### 2.3.3 ImGuizmo transform gizmos · P0 · M · depends: 2.3.2, 2.4.1
+### 2.3.3 ImGuizmo transform gizmos · P0 · M · depends: 2.3.2
 **Goal:** the canonical translate/rotate/scale workflow.
-**Deliverable:** ImGuizmo gizmos in local/world space with snapping, writing through undo commands.
+**Deliverable:** ImGuizmo gizmos in local/world space with snapping, writing through the
+`transform_ops` seam task 2.4.2's commands wrap.
 Subtasks:
 - Translate / rotate / scale gizmos (ImGuizmo, editor-only dep)
 - Local/world toggle; snapping
-- Gizmo edits create undo commands
 
 ---
 
@@ -129,6 +131,7 @@ Subtasks:
 **Deliverable:** reflected property-set command plus create/delete/reparent entity commands.
 Subtasks:
 - Generic property-set command via `entt::meta`
+- Transform command wrapping `transform_ops`; gizmo and Inspector edits both route through it
 - Create / delete / reparent / duplicate commands
 
 ---

@@ -1736,3 +1736,279 @@ clean with zero new `NOLINT`s, and all five CI lanes green), and the **macOS hum
 21 of 21 applicable rows PASS** (2026-07-29), which closes AC-20's human-only gap and confirms D18 on a
 Retina display. Windows and Linux human passes remain pending.** Epic 2.3 (Manipulation) remains **in progress in code**
 (2.3.3 ImGuizmo transform gizmos is next).
+
+# Task 2.3.3 — ImGuizmo transform gizmos
+
+**Deliverable:** dragging a gizmo handle in the Viewport transforms the primary selected entity —
+translate, rotate or scale — in local or world space, with optional hold-to-snap, writing the result
+into the entity's own parent-relative `Transform` through the new `transform_ops` seam task 2.4.2's
+undo commands will wrap unchanged. This is the other half of direct manipulation Epic 2.3 opened:
+2.3.1 made the Viewport navigable, 2.3.2 made its contents selectable, and this task makes them
+*movable* with the mouse — the Inspector's reflection-driven numeric fields are no longer the only
+way to move an entity.
+
+**What CI proves automatically:** two tier-0 batteries riding `aero_editor_shell_test` —
+`gizmo_test.cpp` (17 cases, G1–G17: the mode/key state machine, `effectiveSpace`'s Scale-forces-Local
+rule, the three snap steps as relationships never magnitudes, the drag-edge table, `gizmoModelMatrix`/
+`gizmoParentMatrix`'s World-walk arms, the channel-isolation property G7 — this task's highest-value
+case — the identity round-trip, a rotated-parent translate, a uniformly-scaled-parent rotate, a
+degenerate-scale `NotDecomposable`, a singular-parent `NotFinite`, hostile-input `NotFinite`, a
+huge-but-finite scale, and `gizmoOriginBehindCamera`'s near-plane predicate with a positive control)
+and `transform_ops_test.cpp` (7 cases, T1–T7: the exact read/write round trip, silent rejections with
+an anti-vacuity canary, no-mutation-anywhere on every rejection, no component creation as a side
+effect, non-finite values stored as given, and tools-independence with no `entt::` anywhere on the
+path) — plus five GPU-gated cases in `imgui_layer_test.cpp` (I1–I5) driving the real
+`ViewportPanel::updateGizmo`/`drawGizmoBar` path through a real `EditorApp::tick()`: the gizmo path
+executing and staying ImGui-balanced with a selected Cube, the behind-camera skip exercised by flying
+the eye past the primary programmatically, an empty selection and a Transform-less primary both
+skipping the gizmo cleanly, a hidden-then-shown Viewport surviving (also the proof that
+`BeginFrame()`-without-`Manipulate` is safe), and the transparent "gizmo" overlay window leaving no
+trace in a persisted `aero_editor.ini`.
+
+**What it cannot prove:** anything requiring a synthesised ImGui mouse press or drag.
+`ImGui_ImplSDL3_NewFrame` overwrites any injected mouse position from SDL every frame, and there is no
+window under a real cursor in CI. Named precisely, the uncovered surface is: `updateGizmo`'s four ImGui
+key-state reads (W/E/R/X) and their three gates (hover, `WantTextInput`, no-camera-gesture);
+`io.KeyCtrl` driving the snap; the exact arguments handed to `ImGuizmo::SetRect`/`SetDrawlist`/
+`Manipulate`; the `mbOverGizmoHotspot` latch F4 describes (a one-way, no-test-can-see-it failure mode);
+and the points-vs-pixels distinction (D18), provably indistinguishable from pixels on a non-Retina
+runner (S7 confirms this — see below). Every one of these is named as a specific human row.
+
+## What was mechanically verified (this implementation pass, macOS, Apple M1 Pro / Metal)
+
+Measured at every one of the six commit boundaries, not once at the end:
+
+- `ctest --preset macos-debug` and `--preset macos-release`: **94/94** both presets, at every commit;
+  `AERO_REQUIRE_GPU=1 ctest` green on both presets (the CI ratchet rehearsed, not skipped).
+- `ctest --preset macos-debug -N` → **Total Tests: 94** throughout — **no new `add_test`**, exactly as
+  AC-20 requires; both new test TUs ride the existing `aero_editor_shell_test`/`aero_editor_imgui_test`
+  targets.
+- Doctest case counts, measured with `--list-test-cases`, never predicted:
+  `aero_editor_shell_test` **145 → 151** (step 2, the tool-state model) **→ 162** (step 3, the
+  geometry and write pipeline) **→ 169** (step 4, `transform_ops`) — the plan's own per-step
+  checkpoints, all confirmed exactly; `aero_editor_imgui_test` **19 → 24** (I1–I5); `aero_tests`
+  unchanged at **356**; `aero_editor_core` **23 → 25** sources (`gizmo.cpp`, `transform_ops.cpp`).
+- Fresh `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` configure into `build/tools-off-2.3.3`:
+  **5/5**, `aero_editor` launches with **exactly two** WARN lines (2.2.2's reflection WARN, 2.2.3's
+  shader WARN) and **no third**.
+- **New this task (AC-17) — `-DAERO_REFLECT_TOOLS=OFF` alone (shaders ON)** into
+  `build/reflect-off-2.3.3`: **18/18**, measured not assumed (the tools-OFF five plus the 13
+  `shaderc.*` cases, every `if(AERO_REFLECT_TOOLS)` block absent); the launch log shows
+  `editor: shell ready (...)`, the 2.2.2 reflection WARN, and **no** reflection ERROR — the Viewport,
+  and therefore the gizmo, both work with reflection off, and the write path never touches
+  `entt::meta` (D21), exactly what this configuration exists to prove.
+- `check-math-boundary.sh`'s scanned count moved **203 → 209** (+6: `gizmo.hpp/.cpp`,
+  `transform_ops.hpp/.cpp`, `gizmo_test.cpp`, `transform_ops_test.cpp` — measured against
+  `origin/main` in a disposable `git worktree`, not assumed); the other four guards
+  (`check-golden-rule.sh`, `check-platform-boundary.sh`, `check-rhi-boundary.sh`,
+  `check-scene-boundary.sh`) all green with **no allowlist change** — this task adds no SDL/EnTT
+  identifier and changes no `engine/`/`runtime/` file.
+- `git diff --name-only origin/main` empty over `engine/`, `runtime/`, `samples/`, `tools/`,
+  `shaders/`, `cmake/`, `.github/`; `vcpkg.json`'s `builtin-baseline` and the `/vcpkg` submodule SHA
+  byte-identical; `editor/src/imgui_layer.{hpp,cpp}`, `editor/src/main.cpp` and
+  `editor/src/editor_app.cpp` byte-identical for the **ninth** task running;
+  `ViewportPanel::renderScene` byte-identical (no hunk at or after its signature); both test targets'
+  `target_link_libraries` lines byte-identical.
+- clang-format clean over the **whole tracked tree** (mandatory this task — `.clang-format` itself
+  changed) and clang-tidy clean on every touched file, with **zero new `NOLINT`s**.
+- The non-interactive launch check (`aero_editor`, seeded scene): zero unexpected ERROR/CRITICAL/WARN
+  lines at every ImGui-touching commit boundary.
+
+### The sabotage table's outcome
+
+All twelve seeds, every one confirmed present via `git diff` before trusting a verdict, every one
+reverted and re-confirmed green afterward:
+
+| | Seed | Result |
+|---|---|---|
+| S1 | `ImGuizmo::BeginFrame()` deleted from `drawShellUi` | **reddened nothing, by construction** — the `mbOverGizmoHotspot` latch needs a live hover across real frames, which this harness cannot synthesise. Human row 6 only. |
+| S2 | `&& !gizmoActive` removed from `updatePick`'s arm condition | reddened nothing — I1 executes identically with no real click to arm. Human row 7 is the real check. |
+| S3 | the `gizmoOriginBehindCamera` skip removed (`Manipulate` called unconditionally) | reddened nothing in **either** G15 or I2 — G15 tests the predicate itself (untouched), and I2 (which flies the eye past the primary) does **not** discriminate either, because it asserts only execution/balance/presentation, never the gizmo's screen position. This is a genuine non-discrimination beyond what the plan predicted (it named I2 as the discriminator); recorded honestly rather than forced. Human row 12 is the only real check. |
+| S4 | `gizmoWriteFromWorld` made to write all three channels unconditionally | **reddened G7 and G10**, exactly as predicted. Second-order checked: weakening G7's non-primary-channel assertions to `CHECK(true)` makes the seeded defect pass the whole suite silently — proving the original assertions, not the harness, do the work. |
+| S5 | the `decompose` failure branch dropped (assume success, use the untouched `Trs`) | **reddened G11**, exactly as predicted. Second-order checked the same way — weakened to `CHECK(true)`, the defect passes silently. |
+| S6 | step 6's post-decompose finiteness sweep dropped | **reddened nothing, including G14** — a genuine, honest non-discrimination the plan itself authorised recording. See the G14/step-6 finding below for why. |
+| S7 | `SetRect` fed pixels (`drawExtent`) instead of points (`avail`) | reddened nothing, exactly as predicted — points and pixels coincide on this non-Retina runner (the 2.3.2 S13 precedent). Human row 14 is the only real check. |
+| S8 | `effectiveSpace` returns `requested` for `Scale` instead of forcing `Local` | **reddened G3**, exactly as predicted. |
+| S9 | the `gizmoWarnLatched` latch removed (unconditional WARN every rejected frame) | reddened nothing — no I-series case can produce a real, sustained drag to exercise it. Recorded as **human-pass-only (row 11)**, exactly as the plan's own escape hatch anticipates. |
+| S10 | `updateGizmo`'s call moved to *after* `updatePick`'s in `onDraw` | reddened nothing — I1 executes identically; the F8 ordering's user-visible consequence (a gizmo grab also firing a pick) is human row 7. |
+| S11 | the `.clang-format` `IncludeCategories` entry for `<ImGuizmo.h>` removed | **reddened nothing in this tree** — see the finding below. Not the "build itself" failure the plan predicted, for a documented, verified reason. |
+| S12 | `isUsing` renamed back to `using_` | **caught by clang-tidy** (`readability-identifier-naming`), exactly as A2 predicted — confirms the naming rule is a real CI failure, not a style opinion. |
+
+### Two findings that corrected the plan, verified at source against the pinned `engine::decompose()`
+
+**G11 — `decompose()` does not detect shear; it detects only a degenerate/non-finite column.** The
+spec/plan's literal E7 construction for `NotDecomposable` — left-multiplying a world-space rotation
+delta onto a matrix under a non-uniformly-scaled parent, i.e. genuine shear — was built and run
+directly against `engine::decompose()` (`glm_backend.cpp`). Measured result: `decompose()` **succeeds**
+(returns `true`) with a numerically **wrong** but finite `Trs` — `Applied`, not `NotDecomposable`. The
+function's own guard only rejects a column whose length is non-finite or below `EPSILON`; it never
+checks orthogonality. G11 was corrected to a construction that reaches `NotDecomposable` cleanly and
+reproducibly — a genuinely degenerate local scale axis (`1e-7` on one axis) surviving a non-uniform
+parent's inversion — which preserves E7's "non-uniformly-scaled ancestor" framing while using the
+mechanism that actually triggers the guard. **Practical consequence worth flagging:** a world-space
+rotate (or translate) drag on a child of a non-uniformly-scaled parent may, in the shipped gizmo,
+silently *apply* a numerically wrong transform rather than refuse-and-warn as AC-10 states. This was
+not re-designed (that would be an `engine/core` change outside this task's scope and outside `AC-20`'s
+"zero `engine/` changes" invariant) — it is reported here for the architect's attention, and **human
+row 11 is the row that will actually reveal it**: if the cube visibly snaps to a wrong orientation
+instead of staying put with one Console WARN, that is this finding made visible, not a new defect.
+
+**G14 — the "reaches step 6 and only step 6" case is unreachable for any scale magnitude tested.** The
+plan predicted a uniform `1e34` scale would be finite going in, decompose successfully, and produce a
+non-finite *result*, caught specifically by the write pipeline's own post-decompose finiteness sweep
+(step 6) rather than by `decompose()` itself. Measured instead: `decompose()`'s internal `length()`
+computation squares each column (`dot(c,c)`), which overflows `float` at `dot ~ 3.4e38` — i.e. at a
+column length around `sqrt(FLT_MAX) ≈ 1.84e19` — so `decompose()` itself returns `false`
+(`NotDecomposable`) before step 6 ever runs. The full magnitude range `1e10 .. 1e37` was scanned
+looking for a finite input where `decompose()` succeeds yet yields a non-finite `Trs`; none was found —
+the transition goes directly from a fully-finite success to an outright `decompose()` rejection, with
+no intermediate band. G14 now asserts the **measured** status (`NotDecomposable`), not the predicted
+one. Consequence: step 6's finiteness sweep is real, correct defence in depth (a hostile ROTATION-only
+input was not exhaustively searched and might still reach it), but it ships **uncovered by any test in
+this task** — the same honest status as A4's stale-latch clear.
+
+**S11's own finding.** Both `#include <ImGuizmo.h>` lines carry an explanatory F3 comment immediately
+above them. Verified directly: clang-format's `IncludeBlocks: Regroup` treats that comment as a block
+separator and does not merge/reorder across it, **independent of whether the `.clang-format` category
+exists**. A minimal repro without the comment (just a blank line) reproduces the hoist exactly as F3
+describes; with the comment, it does not, category or no category. This means removing the category
+does **not** break the build in this specific tree today — but the category remains the *correct*
+engineering decision (exactly the plan's own reasoning: "its own trailing category is what makes the
+order STRUCTURAL instead of a comment nobody reads") and is kept exactly as specified. A future edit
+that strips the comment while leaving only a blank line would be unprotected without it.
+
+## Known-and-expected, NOT a defect
+
+- **E18/D0 — no undo yet.** `Ctrl+Z`/`Ctrl+Shift+Z` are still disabled stubs naming task 2.4.1; a gizmo
+  drag is real and permanent until 2.4.2 wraps `transform_ops` in a command. Human row 22.
+- **AC-4 — the space button is disabled and reads `Local` for `Scale`.** ImGuizmo forces local space
+  for scale internally (skew avoidance); the bar mirrors it rather than silently disagreeing. Human
+  row 4.
+- **E7 — a sheared child does not move, and says so once.** See the G11 finding above for the one
+  scenario (world-space rotate/translate under a non-uniform parent) where this guarantee does not
+  currently hold; everywhere else, shear is refused with exactly one Console WARN per drag (D12).
+- **A8 — a gizmo-bar button overlapping a handle both presses the button and grabs the gizmo.** The bar
+  is submitted after `Manipulate` (so gizmo lines paint over the buttons, not the reverse); a grab with
+  no subsequent mouse motion produces `GizmoWriteStatus::NoChange` and writes nothing, so the
+  interaction is self-neutralising. Human row 25.
+- **A4 — the stale-latch clear (`Enable(false)` on a drag ImGuizmo never saw released) ships as
+  documented defence in depth and is not test-covered.** Not GPU-test testable (the harness cannot
+  synthesise a mouse press) and not tier-0 testable (ImGuizmo global state). Human row 24 only.
+- **The seeded `Directional Light` sits inside the seeded `Cube`** (2.3.2 §G6, still true) — select it
+  via the Hierarchy, not by clicking in the Viewport. Human row 20.
+- **2.2.5's four BLOCKED validation rows stay blocked**, but this task changes the landscape: D12's
+  shear WARN is a genuinely triggerable runtime log source (the first one since 2.2.5 shipped). It is
+  out of scope to re-run 2.2.5's rows here — noted so whoever revisits that gate knows a source now
+  exists.
+
+## How to validate one OS
+
+Twenty-five rows, per OS, macOS first. Rows **1–9** close the "does `onDraw` hand the pure functions
+the right ImGui values" gap; row **6** is the only check for F4's `mbOverGizmoHotspot` latch; row **14**
+is the only check for the points/pixels distinction (S7 cannot catch it on this hardware); rows **11**
+and **24** are the two findings above made visible; rows **22, 25** are known-and-accepted behaviours a
+validator who does not know them will file as defects.
+
+1. **Launch, click the seeded Cube in the Viewport.** Selection highlight (2.3.2) **and** a translate
+   gizmo at the cube.
+2. **Drag the red / green / blue arrow.** Moves along that world axis only; the Inspector's `position`
+   updates live; `rotation` and `scale` do not move at all.
+3. **Press `E`, drag a rotation ring.** Rotates about that axis. Inspector `rotation` updates;
+   `position` and `scale` **do not**.
+4. **Press `R`.** Scale handles appear; the space button reads **`Local`** and is **disabled** with a
+   tooltip (AC-4). *If the tooltip does not appear, `SetItemTooltip` was used instead of
+   `IsItemHovered(AllowWhenDisabled)`.*
+5. **Press `W`, then `X` repeatedly.** Handles alternate between world-axis-aligned and
+   entity-aligned. **Rotate the cube first** so the two are visibly different.
+6. **Hover every handle for ~10 s without clicking, then try to drag.** Still grabbable. *(The F4
+   `mbOverGizmoHotspot` latch — the one failure no test can see.)*
+7. **Click directly on a gizmo handle.** The gizmo grabs; the selection **does not** change and no
+   other entity is picked.
+8. **Click empty space, then another entity.** Picking works exactly as in 2.3.2; the gizmo follows the
+   new primary.
+9. **Hold `Ctrl`/`Cmd` while dragging translate / rotate / scale.** Snaps to 0.5 u / 15° / 0.1.
+   Release mid-drag ⇒ continuous again, **with no jump**.
+10. **Parent the Cube under a new entity (Hierarchy drag-drop), move the parent, then drag the child.**
+    The child moves where the mouse says; the Inspector shows a **parent-relative** position.
+11. **Give the parent a non-uniform scale (`{2,1,1}`), rotate the child 45°, then drag it in WORLD
+    space.** Per this task's G11 finding, watch carefully: the intended behaviour is nothing moves plus
+    **exactly one** WARN; if instead the cube snaps to a visibly wrong orientation, that is the
+    reported finding made visible, not a fresh defect — note which was observed.
+12. **Select the cube, then fly the camera until the cube is behind you.** No gizmo drawn; **no visual
+    corruption anywhere in the Viewport**.
+13. **Start a translate drag, then press and hold RMB (fly) without releasing LMB.** The drag ends;
+    the cube keeps the position it had reached; flying works normally.
+14. **On a Retina display, drag a handle across the full width of the Viewport.** The handle tracks the
+    cursor exactly — **no 2× drift**.
+15. **Focus the Hierarchy's rename field, type `wersx`.** The text appears; **no gizmo mode change**.
+16. **Hover the Hierarchy / Inspector / Console / Assets while the gizmo is on screen.** No handle
+    highlights; no drag can start.
+17. **Select an entity with no `Transform`** (create one through the raw World API, or remove the
+    component in the Inspector). No gizmo; the overlay bar is **greyed with a tooltip**.
+18. **Resize the Viewport, dock it elsewhere, tab it away and back.** The gizmo stays correctly
+    positioned and clipped to the panel; **no bleed over other panels**.
+19. **View menu.** No `"gizmo"` entry. Quit and reopen ⇒ the layout is restored and `aero_editor.ini`
+    contains **no** `gizmo` window.
+20. **Select the Directional Light and drag translate.** It moves. *(Seeded inside the Cube — select
+    via the Hierarchy first.)*
+21. **Grab a handle and release without moving.** Nothing changes; no Inspector flicker.
+22. **Undo (`Ctrl+Z`).** **Still a disabled stub.** Expected — closes at 2.4.2.
+23. *(Linux only)* **Repeat rows 1–3 under the lavapipe lane.** No LSan report.
+24. **Start a translate drag, minimize the window mid-drag, release the button while minimized,
+    restore, and select a DIFFERENT entity.** The new entity does **not** jump. Repeat with the
+    Viewport panel *hidden* mid-drag, and with the dragged entity *destroyed* mid-drag.
+25. **Move an entity so its gizmo overlaps the mode bar in the Viewport's top-left, then click a bar
+    button.** The mode changes; the entity does **not** move.
+
+## Validation records
+
+- **Launch, click the seeded Cube: selection highlight and a translate gizmo appear**
+- **Drag the red/green/blue arrow: moves along that axis only; rotation/scale untouched**
+- **Press `E`, drag a rotation ring: rotates about that axis only**
+- **Press `R`: scale handles appear; space button reads Local and is disabled with a tooltip**
+- **Press `W` then `X` repeatedly: handles alternate world/local alignment**
+- **Hover every handle ~10s without clicking, then drag: still grabbable (F4 latch)**
+- **Click directly on a handle: gizmo grabs, selection unchanged**
+- **Click empty space then another entity: picking works, gizmo follows new primary**
+- **Hold Ctrl/Cmd while dragging: snaps to 0.5u/15°/0.1; release mid-drag resumes continuous, no jump**
+- **Parent the Cube, move the parent, drag the child: parent-relative position shown**
+- **Non-uniform parent scale + rotated child dragged in world space: observed behaviour noted**
+- **Fly the camera until the cube is behind you: no gizmo, no visual corruption**
+- **Start a translate drag then hold RMB to fly: drag ends cleanly, flying works**
+- **Retina: drag a handle across the viewport, no 2x drift**
+- **Focus the Hierarchy rename field, type wersx: no gizmo mode change**
+- **Hover other panels while the gizmo is on screen: no handle highlights, no drag starts**
+- **Select an entity with no Transform: no gizmo, overlay bar greyed with a tooltip**
+- **Resize/dock/tab the Viewport: gizmo stays correctly positioned and clipped**
+- **View menu has no "gizmo" entry; aero_editor.ini has no gizmo window after quit/reopen**
+- **Select the Directional Light and drag translate: it moves**
+- **Grab a handle, release without moving: nothing changes, no Inspector flicker**
+- **Undo: still a disabled stub (expected, closes at 2.4.2)**
+- **Linux only: rows 1-3 under lavapipe, no LSan report**
+- **Minimize/hide/destroy mid-drag then select a different entity: it does not jump**
+- **Gizmo overlapping the mode bar, click a bar button: mode changes, entity does not move**
+
+### macOS — ⏳ pending
+
+Needs a native mouse/keyboard run. Recorded separately, in a `docs:`-only commit after this branch
+merges (the 2.2.1–2.3.2 precedent).
+
+### Windows — ⏳ pending
+
+Needs a native run. No checks recorded yet.
+
+### Linux — ⏳ pending
+
+Needs a native run (real Vulkan or native Wayland/X11; **not** lavapipe/CI, which cannot exercise
+window-manager or compositor interaction). No checks recorded yet.
+
+**Task 2.3.3 gate status: mechanically green** (build + full ctest on both presets, the
+`AERO_REQUIRE_GPU=1` rehearsal, both tools-OFF configurations — including the new reflect-OFF/
+shaders-ON gate AC-17 adds — the non-interactive launch proof, all twelve sabotage proofs each
+seed-confirmed and reverted (two second-order-checked: S4, S5; five recorded as honest
+non-discriminations: S1, S2, S7, S9, S10; S3 and S11 each corrected a plan prediction with a verified
+finding, both recorded above; S6 also a documented non-discrimination, tied to the G14 finding), all
+five guards green, clang-format and clang-tidy clean with zero new `NOLINT`s). **The human pass —
+macOS, Windows and Linux — is pending** and closes AC-1/AC-6/AC-7/AC-8's human-only surface plus the
+two findings above.
+
