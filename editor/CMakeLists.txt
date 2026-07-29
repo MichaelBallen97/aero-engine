@@ -36,6 +36,7 @@ add_library(aero_editor_core STATIC
     src/scene_bounds.cpp        # task 2.3.1 -- Aabb + the world-bounds walk (ImGui-free; 2.3.2 reuses)
     src/picking.cpp             # task 2.3.2 -- screen ray + ray-vs-box + the world pick (ImGui-free)
     src/selection_overlay.cpp   # task 2.3.2 -- selection -> screen-space segments (ImGui-free)
+    src/gizmo.cpp                # task 2.3.3 -- the pure gizmo model (ImGui-free AND ImGuizmo-free)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

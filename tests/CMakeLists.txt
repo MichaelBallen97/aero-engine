@@ -153,11 +153,19 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # step 3, editor/selection_overlay_test.cpp. The target stays TIER-0: no GPU, no window, no ImGui
 # context, so it must pass identically with AERO_REQUIRE_GPU unset and set. target_link_libraries
 # below is UNCHANGED (AC-21) and no add_test is registered (ctest -N stays 94/5, AC-22).
+#
+# task 2.3.3 joins this target with editor/gizmo_test.cpp (step 2: the tool-state model; step 3: the
+# geometry and the write pipeline) and, in step 4, editor/transform_ops_test.cpp. The target stays
+# TIER-0: no GPU, no window, no ImGui context, so it must pass identically with AERO_REQUIRE_GPU
+# unset and set. NEITHER new TU includes <ImGuizmo.h> -- the pure layer names no ImGuizmo type, which
+# is exactly what makes this whole task tier-0 testable. target_link_libraries below is UNCHANGED
+# (AC-20) and no add_test is registered (ctest -N stays 94/5).
 find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
-               editor/picking_test.cpp editor/selection_overlay_test.cpp)
+               editor/picking_test.cpp editor/selection_overlay_test.cpp
+               editor/gizmo_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
