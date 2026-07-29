@@ -1832,7 +1832,7 @@ reverted and re-confirmed green afterward:
 | S2 | `&& !gizmoActive` removed from `updatePick`'s arm condition | reddened nothing — I1 executes identically with no real click to arm. Human row 7 is the real check. |
 | S3 | the `gizmoOriginBehindCamera` skip removed (`Manipulate` called unconditionally) | reddened nothing in **either** G15 or I2 — G15 tests the predicate itself (untouched), and I2 (which flies the eye past the primary) does **not** discriminate either, because it asserts only execution/balance/presentation, never the gizmo's screen position. This is a genuine non-discrimination beyond what the plan predicted (it named I2 as the discriminator); recorded honestly rather than forced. **Re-checked after the code-review round's widened predicate (below): unchanged** — S3 sabotages the call site in `viewport_panel.cpp`, not the predicate itself, so widening the predicate does not give it a new discriminator. Human row 12 remains the only real check. |
 | S4 | `gizmoWriteFromWorld` made to write all three channels unconditionally | **reddened G7 and G10**, exactly as predicted. Second-order checked: weakening G7's non-primary-channel assertions to `CHECK(true)` makes the seeded defect pass the whole suite silently — proving the original assertions, not the harness, do the work. |
-| S5 | the `decompose` failure branch dropped (assume success, use the untouched `Trs`) | **Re-verified after the code-review round restored G11 to the plan's original shear construction and added the `isSheared()` guard (below) — and the result is more subtle than "confirmed": literal S5 (dropping ONLY `decompose()`'s own failure branch, leaving `isSheared()` intact) now reddens NOTHING.** `isSheared()` runs upstream of `decompose()` and independently rejects G11's shear construction before `decompose()` is ever reached, so decompose()'s own return value stops mattering for this case. This is an honest finding surfaced during the re-check, not assumed from the review's prediction. **What DOES discriminate G11 now** is dropping the NEW `isSheared()` guard itself: seeded and confirmed — G11 reddens (`status 0 == 3` — `Applied` instead of `NotDecomposable`) exactly because, absent the guard, `decompose()` silently succeeds on the shear input, precisely the mechanism the guard exists to close. |
+| S5 | the `decompose` failure branch dropped (assume success, use the untouched `Trs`) | **Reddens — but via a DIFFERENT case than before the code-review round, and this was re-measured against the full suite rather than G11 alone.** Seeded and confirmed on the final committed tree: `aero_editor_shell_test` goes 169/169 → **168 passed, 1 failed**, the failure being **G14** (`gizmo: huge-but-finite scale`), `gizmo_test.cpp:444`, `CHECK(write.status == GizmoWriteStatus::NotDecomposable)` reporting `1 == 3` (`Applied` instead of `NotDecomposable`). G14 is the discriminator because a huge-but-finite scale overflows `decompose()`'s internal `length()` and is rejected by its own column-length guard — a path `isSheared()` deliberately declines to answer for (it returns `false` on any non-finite/degenerate column, leaving those to `decompose()`). **What S5 no longer reddens is G11**, because `isSheared()` now runs upstream and rejects G11's shear construction before `decompose()` is reached — so for *that* input `decompose()`'s return value stops mattering. Both halves matter: `decompose()`'s failure branch remains load-bearing and tested (G14), and the new guard is separately load-bearing (S13/G11). |
 | S6 | step 6's post-decompose finiteness sweep dropped | **reddened nothing, including G14** — a genuine, honest non-discrimination the plan itself authorised recording. See the G14/step-6 finding below for why. |
 | S7 | `SetRect` fed pixels (`drawExtent`) instead of points (`avail`) | reddened nothing, exactly as predicted — points and pixels coincide on this non-Retina runner (the 2.3.2 S13 precedent). Human row 14 is the only real check. |
 | S8 | `effectiveSpace` returns `requested` for `Scale` instead of forcing `Local` | **reddened G3**, exactly as predicted. |
@@ -1878,9 +1878,14 @@ its own field" was not, for rotate. And an unused `<aero/editor/gizmo.hpp>` incl
 
 **The sabotage table's S5 row surfaced an honest finding of its own during re-verification** (recorded
 in the table above): with `isSheared()` now running upstream of `decompose()`, the literal S5 seed
-(dropping only `decompose()`'s own failure branch) no longer discriminates G11 — `isSheared()`
+(dropping only `decompose()`'s own failure branch) no longer discriminates **G11** — `isSheared()`
 independently rejects the shear construction first, so `decompose()`'s return value stops mattering for
-this input. What discriminates G11 now is dropping `isSheared()` itself (S13, added above). S3 was
+this input. What discriminates G11 now is dropping `isSheared()` itself (S13, added above).
+**S5 nevertheless still reddens, via G14** — re-measured against the full suite, not G11 alone: a
+huge-but-finite scale overflows `decompose()`'s internal `length()` and is caught by its own
+column-length guard, which `isSheared()` deliberately does not intercept. The first pass through this
+re-check concluded "S5 reddens nothing" from a G11-scoped run; running the whole suite corrected it.
+**Both guards are independently load-bearing and independently tested.** S3 was
 re-checked against the widened predicate and is unchanged: it sabotages the call site in
 `viewport_panel.cpp`, not the predicate, so widening the predicate gives it no new discriminator.
 
@@ -2085,7 +2090,8 @@ configurations — including the new reflect-OFF/shaders-ON gate AC-17 adds — 
 proof, all thirteen sabotage proofs each seed-confirmed and reverted: S4 second-order-checked; S13
 (added in the code-review round) confirms `isSheared()` is load-bearing for G11; S5 re-verified to
 reveal an honest post-fix subtlety — literal S5 no longer discriminates G11 since `isSheared()`
-intercepts first, recorded plainly rather than left as a stale claim; five recorded as honest
+intercepts first, but it **does** still redden **G14** (re-measured against the full suite, not G11
+alone), so `decompose()`'s own failure branch remains load-bearing and tested; five recorded as honest
 non-discriminations (S1, S2, S7, S9, S10); S3 and S11 each corrected a plan prediction with a verified
 finding, both recorded above, and S3 was re-checked against the widened predicate with the same
 verdict; S6 also a documented non-discrimination, tied to the (now structurally explained) G14
