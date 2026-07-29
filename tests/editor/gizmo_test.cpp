@@ -25,6 +25,7 @@ using engine::Mat4;
 using engine::Quat;
 using engine::radians;
 using engine::scaling;
+using engine::toMat4;
 using engine::Transform;
 using engine::transformPoint;
 using engine::translation;
@@ -335,20 +336,21 @@ TEST_CASE("gizmo: rotate under a uniformly scaled parent (G10)") {
     CHECK(approxEquals(reconstructed, newWorld, TIGHT_EPS));
 }
 
-TEST_CASE("gizmo: degenerate local scale under a non-uniform ancestor is NotDecomposable (G11/E7/AC-10)") {
-    // VERIFIED AT SOURCE against the pinned engine::decompose() (glm_backend.cpp): it rejects ONLY a
-    // near-zero-length or non-finite COLUMN -- it does NOT detect general shear/non-orthogonality. A
-    // "shear" input built by left-multiplying a world-space rotation delta onto a matrix under a
-    // non-uniformly-scaled parent (the spec/plan's literal E7 construction) was measured to make
-    // decompose() SUCCEED with a numerically WRONG (but finite) Trs -- Applied, not NotDecomposable.
-    // That is a real, reported finding (see the implementation report), not a defect in THIS test.
-    // What DOES reach NotDecomposable, cleanly and reproducibly, is a genuinely degenerate LOCAL
-    // scale axis surviving the parent inversion -- still framed under a non-uniformly-scaled
-    // ancestor, so E7's "ancestor" half is preserved even though the trigger is "degenerate", not
-    // "sheared".
+TEST_CASE("gizmo: shear under a non-uniform ancestor is NotDecomposable (G11/E7/AC-10)") {
+    // Code-review finding (2026-07-29), verified at source against the pinned engine::decompose()
+    // (glm_backend.cpp): decompose() itself guards ONLY column length/finiteness -- it has NO
+    // orthogonality test, so it never rejects shear on its own. gizmo.cpp's OWN isSheared() guard
+    // (GIZMO_ORTHOGONALITY_EPSILON = 1e-4, measured against this exact family of constructions) is
+    // what makes THIS construction -- the plan's original E7 one: a world-space rotation delta
+    // applied under a non-uniformly-scaled parent, genuine shear -- reach NotDecomposable. Measured
+    // maxAbsCos for this construction is ~0.33, three-plus orders of magnitude over the threshold.
     const Mat4 parentWorld = scaling(Vec3{2.0F, 1.0F, 1.0F});
-    const Mat4 degenerateChildLocal = scaling(Vec3{1.0e-7F, 1.0F, 1.0F});  // near-zero on X
-    const Mat4 newWorld = parentWorld * degenerateChildLocal;
+    const Quat childRotation = fromAxisAngle(Vec3::unitZ(), radians(45.0F));
+    const Mat4 childLocal = toMat4(childRotation);
+    // The world-space delta: NOT commutative with the parent's non-uniform scale, which is exactly
+    // what a world-space rotate/translate handle produces and what makes the result genuine shear.
+    const Mat4 worldSpaceDelta = toMat4(fromAxisAngle(Vec3::unitY(), radians(20.0F)));
+    const Mat4 newWorld = worldSpaceDelta * parentWorld * childLocal;
     const Transform before{};
 
     const GizmoWrite write = gizmoWriteFromWorld(parentWorld, newWorld, before, GizmoOperation::Rotate);

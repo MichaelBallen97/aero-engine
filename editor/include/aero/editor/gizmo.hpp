@@ -106,8 +106,10 @@ enum class GizmoWriteStatus : std::uint8_t {
     Applied = 0,      // `transform` is the new value; write it
     NoChange,         // exactly equal to `before`; write NOTHING (D6)
     NotFinite,        // newWorld, the derived local, or the composed result carries inf/NaN
-    NotDecomposable,  // decompose() refused -- degenerate scale, or shear from a non-uniformly
-                      // scaled ancestor (out of contract per transform.hpp's D9)
+    NotDecomposable,  // degenerate/near-singular scale (decompose() itself refused), OR shear from a
+                      // non-uniformly scaled ancestor -- caught by gizmo.cpp's OWN orthogonality
+                      // guard, upstream of decompose(), which has no such test (out of contract per
+                      // transform.hpp's D9; code-review finding, 2026-07-29)
 };
 
 struct GizmoWrite {
@@ -120,6 +122,7 @@ struct GizmoWrite {
 // gizmoParentMatrix's result; `before` is the entity's CURRENT local Transform.
 //
 //   local = inverse(parentWorld) * newWorld        (identity parent -> the inverse is SKIPPED)
+//   reject shear (NotDecomposable)                 (ours: decompose() itself has no such test)
 //   decompose(local, trs)                          (ours, never ImGuizmo's -- F11)
 //   result = before, with ONLY the channel `op` owns replaced (D5)
 //

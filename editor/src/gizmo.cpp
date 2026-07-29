@@ -32,6 +32,50 @@ namespace {
 // what removes an inverse()'s rounding from the result.
 [[nodiscard]] bool isIdentityMatrix(const Mat4& m) noexcept { return m == Mat4::identity(); }
 
+// Code-review finding (2026-07-29), verified at source against the pinned engine::decompose()
+// (glm_backend.cpp:126): it guards ONLY column length and finiteness (plus a determinant-sign flip
+// for handedness) -- it has NO orthogonality test, so it never rejects shear. That is in contract for
+// decompose() itself (transform.hpp:38-41: a sheared matrix "decomposes to nonsense, which is out of
+// contract"), but gizmoWriteFromWorld is the layer that must not FEED it out-of-contract input --
+// this is that guard. A world-space rotation/translation delta applied under a non-uniformly-scaled
+// parent is genuine shear: decompose() would otherwise silently SUCCEED with a numerically wrong
+// (and possibly non-unit, scale-corrupting per transform.hpp:35) Trs, `Applied` instead of refused.
+//
+// GIZMO_ORTHOGONALITY_EPSILON = 1e-4 is MEASURED, not guessed (2026-07-29 review, exact figures
+// recorded here so a future retune has the baseline): every LEGITIMATE (non-sheared) construction
+// tested tops out at 8.0e-08 |cos| between normalised column pairs (a rotated + uniformly-scaled
+// parent with a rotated child); an 8-deep transform chain measures 3.3e-08; the worst numerical
+// conditioning tried (a 1e3-scaled parent at a 1e4 offset with a 1e-3-scaled child) measures 1.7e-08.
+// The hardest REAL shear case tried -- a barely-non-uniform {1.01,1,1} parent with a 0.5-degree delta
+// -- measures 1.7e-04. 1e-4 sits three orders of magnitude above the legitimate-construction ceiling
+// and one below the smallest shear tried, with room either way. Every shipped tier-0 case was
+// re-evaluated under this guard and no verdict changed (G7 6.5e-10, G8 0, G9 0, G10 1.3e-08 --
+// all far under the threshold).
+inline constexpr float GIZMO_ORTHOGONALITY_EPSILON = 1.0e-4F;
+
+// True iff `m`'s upper-left 3x3 is NOT (numerically) an orthogonal basis once each column is
+// normalised -- i.e. the matrix carries shear. Zero-length or non-finite columns are deliberately
+// NOT flagged here: that is decompose()'s own job (its length/EPSILON guard), and normalising a
+// near-zero column would divide by ~0 -- this function judges ORTHOGONALITY only, nothing else, so
+// it must not disturb the existing NotFinite/degenerate rejection paths.
+[[nodiscard]] bool isSheared(const Mat4& m) noexcept {
+    const Vec3 c0{m.columns[0].x, m.columns[0].y, m.columns[0].z};
+    const Vec3 c1{m.columns[1].x, m.columns[1].y, m.columns[1].z};
+    const Vec3 c2{m.columns[2].x, m.columns[2].y, m.columns[2].z};
+    const float l0 = length(c0);
+    const float l1 = length(c1);
+    const float l2 = length(c2);
+    if (!std::isfinite(l0) || !(l0 > EPSILON) || !std::isfinite(l1) || !(l1 > EPSILON) || !std::isfinite(l2) ||
+        !(l2 > EPSILON)) {
+        return false;  // decompose()'s own guard rejects this; not this function's question to answer
+    }
+    const Vec3 n0 = c0 / l0;
+    const Vec3 n1 = c1 / l1;
+    const Vec3 n2 = c2 / l2;
+    return std::abs(dot(n0, n1)) > GIZMO_ORTHOGONALITY_EPSILON || std::abs(dot(n0, n2)) > GIZMO_ORTHOGONALITY_EPSILON ||
+           std::abs(dot(n1, n2)) > GIZMO_ORTHOGONALITY_EPSILON;
+}
+
 }  // namespace
 
 GizmoMode nextGizmoMode(GizmoMode current, const GizmoModeInput& in) noexcept {
@@ -124,6 +168,11 @@ GizmoWrite gizmoWriteFromWorld(const Mat4& parentWorld, const Mat4& newWorld, co
         // An inverse of a near-singular parent yields NaN/inf: GLM multiplies a zero adjugate by
         // 1/0 -- exactly the mechanism 2.3.2 recorded for DETERMINANT_EPSILON (E8).
         return GizmoWrite{.status = GizmoWriteStatus::NotFinite};
+    }
+    if (isSheared(local)) {
+        // Code-review finding: decompose() itself has no orthogonality test and would otherwise
+        // silently SUCCEED on this out-of-contract input (see isSheared's comment above).
+        return GizmoWrite{.status = GizmoWriteStatus::NotDecomposable};
     }
     Trs trs;
     if (!decompose(local, trs)) {
