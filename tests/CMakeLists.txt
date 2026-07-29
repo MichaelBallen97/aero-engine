@@ -165,7 +165,7 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # stack's five algorithms) and, in step 2, editor/transform_command_test.cpp. The target stays TIER-0: no
 # GPU, no window, no ImGui context, so it must pass identically with AERO_REQUIRE_GPU unset and set.
 # Neither new TU names an ImGui, ImGuizmo or entt type -- the whole command model is pure, which is what
-# makes it tier-0 testable at all. target_link_libraries below is UNCHANGED (AC-23) and no add_test is
+# makes it tier-0 testable at all. The link line below is UNCHANGED (AC-23) and no new ctest entry is
 # registered (ctest -N stays 94/5/18, AC-25).
 find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp

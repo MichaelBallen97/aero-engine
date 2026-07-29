@@ -36,7 +36,7 @@ struct LogFixture {
     LogFixture& operator=(LogFixture&&) = delete;
 };
 
-// A non-TransformCommand, for T6's dynamic_cast arm. Nothing else needs it.
+// A non-TransformCommand, for T6's cross-type merge-rejection arm. Nothing else needs it.
 class OtherCommand final : public engine::editor::Command {
 public:
     bool redo(engine::World& /*world*/) override { return true; }
