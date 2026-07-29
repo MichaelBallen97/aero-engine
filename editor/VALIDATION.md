@@ -2069,10 +2069,34 @@ validator who does not know them will file as defects.
 - **Minimize/hide/destroy mid-drag then select a different entity: it does not jump**
 - **Gizmo overlapping the mode bar, click a bar button: mode changes, entity does not move**
 
-### macOS — ⏳ pending
+### macOS — ✅ PASS (2026-07-30)
 
-Needs a native mouse/keyboard run. Recorded separately, in a `docs:`-only commit after this branch
-merges (the 2.2.1–2.3.2 precedent).
+Machine: MacBook Pro (Apple M1 Pro), Metal. Human mouse/keyboard pass against `db0f782` — the merged
+tree, including the code-review round's shear guard and widened behind-camera predicate.
+
+**All twenty-four macOS-applicable rows pass.** Row 23 is Linux-only and is not runnable here.
+
+Rows 1–22, 24 and 25 as listed above — every one **PASS**. The rows worth calling out, because no
+mechanical test in this harness can reach them:
+
+- **6 — hover every handle ~10 s without clicking, then drag: still grabbable** — PASS. This is F4's
+  `mbOverGizmoHotspot` latch, the one-way failure that would have made the gizmo permanently inert
+  from the second frame onward had `ImGuizmo::BeginFrame()` been missed. Sabotage S1 reddens nothing,
+  so this row is the *only* proof the call is present and correctly placed.
+- **7 / 8 — a press on a handle grabs without re-picking; hovering another panel starts nothing** —
+  PASS. The gizmo-vs-picking arbitration (D10) and ImGuizmo's own `_OwnerName == "Viewport"` hover
+  gating (F6). S2 and S10 both redden nothing; this row is their only cover.
+- **11 — non-uniform parent scale + rotated child dragged in world space: nothing moves, exactly one
+  WARN** — PASS. This is AC-10, the criterion that was silently *false* until the code-review round
+  added the editor-side shear guard. Confirms the fix end to end, and that the WARN latches once per
+  drag instead of flooding the Console at frame rate (D12).
+- **12 — fly the camera until the cube is behind you: no gizmo, no visual corruption** — PASS,
+  including through the ~0.0002–0.11 world-unit band where our predicate and ImGuizmo's disagreed
+  before the widening fix.
+- **14 — Retina: drag a handle across the viewport, no 2× drift** — PASS. D18's points-vs-pixels
+  split; S7 cannot redden on a non-Retina runner, so this row is its only proof.
+- **24 — minimize/hide/destroy mid-drag, then select a different entity: it does not jump** — PASS.
+  The §A4 stale-latch clear, which ships as documented defence in depth with no automated coverage.
 
 ### Windows — ⏳ pending
 
