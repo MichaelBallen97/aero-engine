@@ -189,9 +189,9 @@ TEST_CASE("transform_ops: non-finite values are stored AS GIVEN (T6)") {
     CHECK(std::isnan(read->position.y));
 }
 
-TEST_CASE("transform_ops: tools-independence -- no entt anywhere on this path (T7/AC-17)") {
+TEST_CASE("transform_ops: tools-independence -- no EnTT anywhere on this path (T7/AC-17)") {
     // A World with NO editor reflection registered round-trips identically. Structurally reinforced
-    // by the task's grep that neither this TU nor transform_ops.cpp names entt:: (see §V7).
+    // by the task's grep that neither this TU nor transform_ops.cpp names EnTT (see §V7).
     World w;
     const Entity e = w.create();
     const Transform t{.position = Vec3{3.0F, 2.0F, 1.0F}};
