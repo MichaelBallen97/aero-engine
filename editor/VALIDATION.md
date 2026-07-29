@@ -1651,9 +1651,72 @@ known-and-accepted behaviours a validator who does not know them will file as de
 - **Click while renaming: rename commits, click selects**
 - **Linux only: WM Alt+drag caveat noted; picking itself uses no modifier a WM steals**
 
-### macOS — ⏳ pending
+### macOS — ✅ PASS (2026-07-29)
 
-Needs a native human mouse/keyboard pass. No checks recorded yet.
+Machine: MacBook Pro (Apple M1 Pro), Metal. Human mouse/keyboard pass against `099ce08` — the merged
+tree, including the review round's four closed coverage gaps.
+
+**All twenty-one macOS-applicable rows pass.** Row 22 is Linux-only and is not runnable here.
+
+- **1 — Click the Cube: selected, amber box appears, Hierarchy row highlights, Inspector fills** — PASS
+  *(the next-frame Hierarchy/Inspector update, E12, was imperceptible)*
+- **2 — Click empty space: selection clears, box disappears, Inspector empties** — PASS
+- **3 — `Ctrl`/`Cmd`+click a second object: both boxed, the newly clicked one brighter and thicker;
+  `Ctrl`/`Cmd`+click again removes it** — PASS *(the colour/thickness choice reads correctly as
+  primary-vs-selected — a human-only judgement)*
+- **4 — `Shift`+click: adds without ever removing; `Shift`+clicking an already-selected object is a
+  true no-op** — PASS
+- **5 — `Ctrl`/`Cmd`+click empty space: the selection is unchanged, not cleared** — PASS
+- **6 — Press, drag 200 pt, release: nothing selected; press and release without moving: selected** —
+  PASS *(the 4-point slop feels right — a human-only judgement)*
+- **7 — Press inside, drag outside the window, release there: nothing selected, nothing latched; the
+  next click inside works normally** — PASS *(E9/F29 — macOS is a capture platform)*
+- **8 — `Alt`+LMB drag starting on the Cube: the camera orbits and the selection does not change** —
+  PASS *(D10's already-arbitrated gesture test)*
+- **9 — HiDPI (S13's human row): the clickable radius around the Directional Light and the click slop
+  feel the same as on a 1× display** — PASS *(**D18 holds** — the pick is fed points, not pixels. This
+  is the row no mechanical test in this harness can reach)*
+- **10 — Rotate the Cube 45°: the box rotates with it and still hugs it; a click just outside a corner,
+  inside where an axis-aligned box would be, selects nothing** — PASS *(the user-visible proof of D2 —
+  a local-space OBB test, not a world AABB)*
+- **11 — Scale the Cube to 3: the box grows with it and picking follows** — PASS
+- **12 — Select a Plane and click half a unit above it: it is selected** — PASS *(**D13, expected and
+  accepted** — the Plane's knowingly fat box; the drawn box shows exactly why. Not a defect)*
+- **13 — Click the Directional Light (moved off the origin first, per G6): selected, shows a small
+  diamond marker** — PASS *(the target is invisible until hit — D8, recorded and accepted)*
+- **14 — A light in front of / behind a cube: clicking where it sits in front selects the light, where
+  it sits behind selects the cube** — PASS *(D5's depth rule)*
+- **15 — Fly the camera into the Cube: the box's near edges clip cleanly rather than popping out of
+  existence; clicking from inside selects what is behind it, not the cube** — PASS *(D14's per-edge
+  clip-space clipping, and D3's entry-hits-only rule)*
+- **16 — Select something, then fly far away: the box shrinks correctly, stays aligned, never smears
+  or jitters** — PASS
+- **17 — Select something, then undock / redock / resize / maximise the Viewport: the box stays on the
+  object and is clipped at the panel edge, never drawn over the Hierarchy** — PASS *(E8 — the clip
+  rect is not optional)*
+- **18 — Select in the Hierarchy: the Viewport box appears for it too** — PASS *(F4 — one selection,
+  two entry points; the sentence `selection.hpp` has carried since 2.2.1)*
+- **19 — Select 10+ entities via the Hierarchy: every one is boxed, exactly one is primary-styled** —
+  PASS
+- **20 — Delete the selected entity from the Hierarchy: the box disappears the same frame the entity
+  does; no crash, no ghost box** — PASS *(E2)*
+- **21 — Click while renaming: the rename commits and the click selects** — PASS *(E14 — deliberately
+  ungated, unlike `F`)*
+- **22 — Linux-only WM `Alt`+drag caveat** — **N/A on macOS**
+
+Rows 1–8 are what close the "does `onDraw` hand the pure functions the right ImGui values" gap named
+above — the three lines of `updatePick`'s ARM/FIRE gates that no tier-0 or GPU-gated test can reach
+(AC-20). Row 9 is the only possible proof of D18's points-vs-pixels split, since S13 is provably
+non-discriminating on this harness. Rows 12–14 are the known-and-accepted behaviours, observed and
+confirmed as behaviour rather than filed as defects.
+
+The mechanical/structural pass above also ran and is green (build, full ctest on both presets, the
+`AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, the non-interactive launch
+proof, all thirteen sabotage proofs each seed-confirmed and reverted, the review round's four closed
+gaps, all five guards, clang-format and clang-tidy clean with zero new `NOLINT`s, and all five CI
+lanes green).
+
+**macOS half of the 2.3.2 gate: CLOSED.**
 
 ### Windows — ⏳ pending
 
@@ -1669,6 +1732,7 @@ window-manager or compositor interaction). No checks recorded yet.
 proof, all thirteen sabotage proofs each seed-confirmed and reverted — one recorded as a documented
 non-discrimination (S12), one confirmed to redden nothing as predicted (S13), two second-order-checked
 (S3, S8) — plus the review round's four closed gaps, all five guards green, clang-format and clang-tidy
-clean with zero new `NOLINT`s, and all five CI lanes green), human
-passes pending on all three OSes.** Epic 2.3 (Manipulation) remains **in progress in code**
+clean with zero new `NOLINT`s, and all five CI lanes green), and the **macOS human pass is COMPLETE —
+21 of 21 applicable rows PASS** (2026-07-29), which closes AC-20's human-only gap and confirms D18 on a
+Retina display. Windows and Linux human passes remain pending.** Epic 2.3 (Manipulation) remains **in progress in code**
 (2.3.3 ImGuizmo transform gizmos is next).
