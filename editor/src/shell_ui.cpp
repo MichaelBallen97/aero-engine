@@ -10,6 +10,12 @@
 #include <imgui.h>
 #include <imgui_internal.h>  // DockBuilder* (2.1.1 precedent)
 
+// <ImGuizmo.h> deliberately follows <imgui.h> and lives in its own trailing include block: it does
+// NOT include imgui.h (it forward-declares ImGuiWindow, then names ImDrawList / ImVec2 / ImU32 /
+// ImGuiContext), and SortIncludes: CaseSensitive would hoist 'I' above 'i'. The ordering is held
+// STRUCTURALLY by .clang-format's ImGuizmo category (Priority 5), not by this comment.
+#include <ImGuizmo.h>
+
 namespace engine::editor {
 
 namespace {
@@ -167,8 +173,25 @@ void buildDefaultLayout(ImGuiID dockId, PanelRegistry& panels) {
 }  // namespace
 
 void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& state) {
-    drawMenuBar(panels, state);  // FIRST: reserves the viewport work area (F9) and is where Reset
-                                 // Layout can still affect THIS frame
+    // Task 2.3.3 (D17): FIRST, before anything else submits a window. This call is MANDATORY, not
+    // optional: gContext.mbOverGizmoHotspot is reset in exactly ONE place in the whole library
+    // (ImGuizmo.cpp:1016, inside BeginFrame), and every operation handler does
+    // `type = mbOverGizmoHotspot ? MT_NONE : Get*Type(...)` followed by `mbOverGizmoHotspot |= ...`
+    // (ImGuizmo.cpp:2258, :2308, :2431). Skip it and the flag latches true the first time the cursor
+    // crosses a handle, after which the gizmo DRAWS but can never be GRABBED again -- a latching,
+    // one-way failure no smoke test can see (human validation row 6).
+    //
+    // It submits a fully transparent, NoInputs, NoBringToFrontOnFocus, NoSavedSettings full-screen
+    // window named "gizmo". NoSavedSettings is what keeps it out of aero_editor.ini (AC-15), and
+    // NoInputs (=> NoMouseInputs) is what keeps it out of g.HoveredWindow, which is what makes
+    // ImGuizmo's own IsHoveringWindow() resolve to "Viewport" (F6). It is HERE rather than in
+    // editor_app.cpp (ImGui-FREE by design, 2.1.3 D1) or imgui_layer.cpp (backend lifetime,
+    // byte-identical for eight tasks) because THIS is the ImGui frame-composition TU.
+    ImGuizmo::BeginFrame();
+
+    drawMenuBar(panels, state);  // reserves the viewport work area (F9) and is where Reset Layout
+                                 // can still affect THIS frame -- the first REAL window, after the
+                                 // transparent, NoInputs "gizmo" window above
     const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
     if (state.applyDefaultLayout) {
         state.applyDefaultLayout = false;
