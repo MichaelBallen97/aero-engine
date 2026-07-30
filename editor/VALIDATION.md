@@ -1,4 +1,4 @@
-# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1, 2.2.2, 2.2.3, 2.2.4, 2.2.5, 2.3.1, 2.3.2)
+# Editor gate ledger — `aero_editor` (tasks 2.1.1, 2.1.3, 2.2.1, 2.2.2, 2.2.3, 2.2.4, 2.2.5, 2.3.1, 2.3.2, 2.3.3, 2.4.1)
 
 Task 2.1.1's deliverable: an editor window with dockable dummy panels, layout persisted across
 restarts, HiDPI scaling checked on all 3 OSes. CI proves the "builds clean on all 3 OSes, imgui
@@ -864,6 +864,8 @@ That half needs a person at the machine.
     must **stay visible** in the footer alongside the selection — code-review gap 3. Before the fix,
     clicking a file made the truncation notice disappear.
 
+## Validation records
+
 ### macOS — ✅ PASS (2026-07-28)
 
 Machine: MacBook Pro (Apple M1 Pro), Metal. Human mouse/keyboard pass against `c8ab8a0` — i.e.
@@ -1076,9 +1078,9 @@ filtering and copying byte-exactly. That half needs a person at the machine.
 15. A **non-ASCII** log message renders as `?` glyphs but **filters and copies byte-exactly** — the
     documented font-range limitation (E12/F30), not a defect.
 
-### macOS — ⏳ pending
+## Validation records
 
-The mechanical/structural pass above ran and is green (build, full ctest on both presets, the
+The mechanical/structural pass ran and is green (build, full ctest on both presets, the
 `AERO_REQUIRE_GPU=1` rehearsal, the tools-OFF proof with exactly two WARNs, the non-interactive launch
 proof with the D5 ordering check, seventeen sabotage proofs each seed-confirmed and reverted, all five
 guards, clang-format and clang-tidy clean with zero new `NOLINT`s).
@@ -2299,6 +2301,34 @@ entry for the full narrative:
     Edit item greys, nothing crashes, and there is **no WARN** about the lost oldest entry (E2).
 16. **Quit and relaunch.** `aero_editor.ini` is unchanged in shape, the layout returns, and the history
     is **empty** on the new run — no history is persisted, by design.
+
+## Validation records
+
+The sixteen rows above, one line each — this is the list to run down and tick off. The numbering
+matches "How to validate one OS" exactly, so a failure can be reported as "row N".
+
+- **1 — Launch: Edit > Undo and Redo both present, both greyed, no owning-task tooltip**
+- **2 — Drag the Cube's translate gizmo once and release: Undo reads "Undo Transform" and is enabled**
+- **3 — ⚠ `Ctrl/⌘+Z`: the cube returns to the PRE-DRAG pose in ONE step, Inspector updates same frame**
+- **4 — `Ctrl/⌘+Shift+Z`: returns to the dragged pose in one step**
+- **5 — ⚠ Three drags then three undos: walks back through all three; a fourth does nothing and greys**
+- **6 — Hold `Ctrl/⌘+Z`: repeats, and releasing the modifier stops it immediately**
+- **7 — Rotate (`E`) and Scale (`R`) undo/redo the same way; undoing a rotate leaves position+scale untouched**
+- **8 — Undo once then perform a NEW drag: Redo greys out (redo branch truncated)**
+- **9 — ⚠ Rename field focused (`F2`) + `Ctrl/⌘+Z`: the TEXT undoes, the scene does NOT move**
+- **10 — `Ctrl/⌘+Z` on an empty history: nothing happens, no Console spam even when held**
+- **11 — Drag, delete the Cube, then `Ctrl/⌘+Z`: nothing moves, exactly ONE WARN (never an ERROR)**
+- **12 — Known-and-expected: `Ctrl/⌘+Z` mid-drag continues from the reverted pose, no crash/flood**
+- **13 — Known-and-expected: Inspector edit after a drag is discarded by undo (closes at 2.4.2)**
+- **14 — Debug build: one `DEBUG editor: undo 'Transform' (…)` per undo; Release is silent**
+- **15 — 130+ drags then hold undo: stops cleanly at the capacity floor, greys, no WARN**
+- **16 — Quit and relaunch: layout returns, history is empty, `aero_editor.ini` unchanged in shape**
+
+The four ⚠ rows are the ones no mechanical test in this harness can reach, so they are the only proof
+of their acceptance criteria. **Rows 3 and 5 are the priority** — they are the sole guard on the
+code-review round's blocking AC-16 fix (a release frame must merge into the drag it completes, not
+record a second entry); if that ordering ever regresses, both test tiers stay green. Row 9 is
+`RouteGlobal`'s documented loss to a focused `InputText` and is S14's only discriminator.
 
 ### macOS — ⏳ pending
 
