@@ -5,6 +5,9 @@
 // `while (tick()) {}`), which is what makes it drivable N-frames-at-a-time from a test.
 
 #include <aero/core/time.hpp>
+#include <aero/editor/command_stack.hpp>  // a VALUE member needs the definition (the selection.hpp /
+                                          // panel_registry.hpp precedent), unlike panel_context.hpp,
+                                          // which holds a reference and forward-declares.
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/selection.hpp>
@@ -90,6 +93,12 @@ public:
     // read it, 2.3.2's picking writes it. ONE object, never two.
     [[nodiscard]] Selection& selection() noexcept;
     [[nodiscard]] const Selection& selection() const noexcept;
+    // The editor's undo/redo history (task 2.4.1). ONE object: the menu items, the two chords and
+    // requestUndo()/requestRedo() all drive this same stack, and every panel reaches it through
+    // PanelContext::commands. INV-6: it is only ever driven against the World this EditorApp owns --
+    // 2.5.1's New/Open Scene must clear() it in the same operation that replaces that World.
+    [[nodiscard]] CommandStack& commands() noexcept;
+    [[nodiscard]] const CommandStack& commands() const noexcept;
     [[nodiscard]] const FrameClock& clock() const noexcept;
     [[nodiscard]] bool focused() const noexcept;
     // True when the LAST tick() actually presented (false when the window was minimized). This is
@@ -110,6 +119,13 @@ public:
 
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
+    // Same effect as Edit > Undo / Ctrl+Z (Cmd+Z on macOS), applied on the NEXT tick -- the
+    // requestLayoutReset() shape, NOT requestQuit()'s (which takes effect immediately). This is the
+    // only mechanically drivable entry point: aero_editor_imgui_test is ImGui-free at source and
+    // cannot press a key (task 2.4.1 D11/F6), the same reason logRecordCount() (2.2.5 D16) and
+    // viewportCamera() (2.3.1 D6) exist.
+    void requestUndo() noexcept;
+    void requestRedo() noexcept;
 
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
@@ -127,8 +143,12 @@ private:
     bool applyDefaultLayout = false;  // seeded from ImGuiLayer::wantsDefaultLayout(); also set by
                                       // View > Reset Layout / requestLayoutReset()
     bool presented = false;
+    bool undoRequested = false;  // consumed by the next tick(); never survives it (task 2.4.1)
+    bool redoRequested = false;
     World sceneWorld;
     Selection sceneSelection;
+    CommandStack commandStack;  // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
+                                // stays valid. command_stack.hpp's two static_asserts hold that line.
     // Non-owning; owned by `registry`, which holds panels through unique_ptr -- so the Panel object
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.

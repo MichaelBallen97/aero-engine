@@ -10,10 +10,12 @@
 #include <aero/core/math.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/vfs.hpp>
+#include <aero/editor/command_stack.hpp>
 #include <aero/editor/gizmo.hpp>
 #include <aero/editor/picking.hpp>
 #include <aero/editor/scene_bounds.hpp>
 #include <aero/editor/selection.hpp>
+#include <aero/editor/transform_command.hpp>
 #include <aero/editor/transform_ops.hpp>
 #include <aero/rhi/internal/native_device.hpp>
 
@@ -394,7 +396,9 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
         gizmoWasUsing = false;
         gizmoWarnLatched = false;
         ImGuizmo::Enable(false);
-        return;  // AC-14: no ImGuizmo call at all
+        context.commands.breakMergeChain();  // INV-3: every site that clears gizmoWasUsing also
+                                             // breaks the chain -- this return delivers no End edge
+        return;                              // AC-14: no ImGuizmo call at all
     }
     gizmoHasTarget = true;
 
@@ -409,6 +413,7 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
         // (ImGuizmo.cpp:2697) so an in-flight drag is never cut off mid-gesture (A10).
         gizmoWasUsing = false;
         gizmoWarnLatched = false;
+        context.commands.breakMergeChain();  // INV-3: this return also delivers no End edge
         return;
     }
 
@@ -467,35 +472,63 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     if (edge == GizmoDragEdge::Begin) {
         gizmoWarnLatched = false;
     }
-
-    // 10. Write back.
-    if (!changed) {
-        return;
+    // Code-review round (Gap 1): a new drag never merges into an old one, and this has to run BEFORE
+    // this frame's own write-back below. ImGuizmo's Scale/Rotate handlers (unlike Translate) run their
+    // "just grabbed" and "apply this frame's delta" blocks back to back on the SAME frame -- the onset
+    // block sets mbUsing true and the very next `if (mbUsing)` block runs immediately after, so a
+    // stale mScaleLast/mRotationAngleOrigin comparison left over from an EARLIER, unrelated drag can
+    // report `changed` on this very Begin frame (ImGuizmo.cpp HandleScale ~:2305-2384, HandleRotation
+    // ~:2429-2495). Breaking here, first, is what makes that push start a fresh entry instead of
+    // folding into whatever the previous drag left open.
+    if (edge == GizmoDragEdge::Begin) {
+        context.commands.breakMergeChain();
     }
-    const GizmoWrite write =
-        gizmoWriteFromWorld(gizmoParentMatrix(context.world, target), matrix, *before, gizmoMode.operation);
-    switch (write.status) {
-        case GizmoWriteStatus::Applied:
-            // D13: mutating the World here is permitted. The Image item is submitted and closed, no
-            // ImGui tree is open, and no eachChild walk is in flight -- which is what
-            // .claude/rules/editor.md's "never mutate the World during a draw walk" actually
-            // protects (the same reasoning :212-216 already records for the selection write).
-            // INV-3 is untouched: renderScene gains nothing.
-            writeTransform(context.world, target, write.transform);
-            break;
-        case GizmoWriteStatus::NoChange:
-            break;  // write nothing (AC-11)
-        case GizmoWriteStatus::NotFinite:
-        case GizmoWriteStatus::NotDecomposable:
-            // D12: an unlatched WARN emits ~60 lines/second straight into the Console panel and
-            // drowns it -- the same discipline SceneRenderer's camera WARNs use.
-            if (!gizmoWarnLatched) {
-                gizmoWarnLatched = true;
-                AERO_LOG_WARN(
-                    "editor: gizmo drag rejected -- the result is degenerate or non-finite "
-                    "(shear from a non-uniformly scaled ancestor, or a singular parent)");
-            }
-            break;
+
+    // 10. Write back. Code-review round (Gap 1): the RELEASE frame carries the drag's FINAL delta --
+    // ImGuizmo clears its own mbUsing latch only after writing that delta into `matrix` and reporting
+    // `modified` (translate: ImGuizmo.cpp ~:2244-2249; scale/rotate are the same shape), so `edge ==
+    // End` and a genuine write-back land on the SAME frame. The chain must therefore stay open through
+    // THIS push and close only after it, on every exit path below -- closing first (the previous
+    // shape) records the release frame as a SECOND, un-merged entry, failing AC-16. The old
+    // `if (!changed) { return; }` early return is now this `if (changed)` block for exactly that
+    // reason: whatever happens inside it, the chain-close after it still runs.
+    if (changed) {
+        const GizmoWrite write =
+            gizmoWriteFromWorld(gizmoParentMatrix(context.world, target), matrix, *before, gizmoMode.operation);
+        switch (write.status) {
+            case GizmoWriteStatus::Applied:
+                // Task 2.4.1 D5: push() APPLIES the command. The direct transform write this replaces
+                // is GONE -- there is exactly one write path now and it lives inside
+                // TransformCommand::redo (AC-18). 2.3.3 D13's "mutating the World here is permitted"
+                // reasoning is unchanged: the Image item is submitted and closed, no ImGui tree is
+                // open, and no eachChild walk is in flight. The offscreen scene pass gains nothing from
+                // this change (INV-5).
+                context.commands.push(context.world,
+                                      std::make_unique<TransformCommand>(target, *before, write.transform));
+                break;
+            case GizmoWriteStatus::NoChange:
+                break;  // write nothing (AC-11)
+            case GizmoWriteStatus::NotFinite:
+            case GizmoWriteStatus::NotDecomposable:
+                // D12: an unlatched WARN emits ~60 lines/second straight into the Console panel and
+                // drowns it -- the same discipline SceneRenderer's camera WARNs use.
+                if (!gizmoWarnLatched) {
+                    gizmoWarnLatched = true;
+                    AERO_LOG_WARN(
+                        "editor: gizmo drag rejected -- the result is degenerate or non-finite "
+                        "(shear from a non-uniformly scaled ancestor, or a singular parent)");
+                }
+                break;
+        }
+    }
+    // Code-review round (Gap 1): nothing merges into a finished drag -- closed AFTER this frame's
+    // write-back above, not before it, so the release frame's own push (if any) still merges into the
+    // drag it completes. Keeping this as its own site (rather than folding it back into item 9's
+    // pre-write check) is what fixes AC-16 without giving up INV-3's belt-and-braces defence: a future,
+    // non-gizmo push arriving while this frame's chain is still nominally open must not fold into a
+    // drag that has already finished.
+    if (edge == GizmoDragEdge::End) {
+        context.commands.breakMergeChain();
     }
 }
 

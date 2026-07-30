@@ -10,6 +10,12 @@ struct ShellUiState {
     bool applyDefaultLayout = false;  // in: build the default layout this frame; out: cleared once
                                       // consumed, or re-set to true by View > Reset Layout
     bool quitRequested = false;       // out: File > Exit or Ctrl/Cmd+Q fired
+    // Task 2.4.1. IN: seeded by EditorApp::requestUndo()/requestRedo() (D11); also set INSIDE
+    // drawShellUi by Ctrl+Z / Ctrl+Shift+Z and by the Edit menu items. Cleared the moment they are
+    // applied, in the SAME drawShellUi call (D19) -- unlike applyDefaultLayout these are NEVER read
+    // back by tick(), because reading them back would re-arm the request every frame.
+    bool undoRequested = false;
+    bool redoRequested = false;
 };
 
 // Draws the menu bar, the full-viewport dockspace, and every visible panel (Begin/End around

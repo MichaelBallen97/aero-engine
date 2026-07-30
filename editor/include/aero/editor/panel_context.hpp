@@ -17,15 +17,24 @@ class World;
 namespace engine::editor {
 
 class Selection;
+class CommandStack;
 
 struct PanelContext {
     World& world;
     Selection& selection;
+    // Task 2.4.1: the editor's undo/redo history. A REFERENCE, not a pointer: the editor always has
+    // exactly one stack, so a null state would mean nothing and would only buy a null check at every
+    // present and future call site (2.3.1 D1's rule is that a borrowed reference WITH a null state is
+    // spelled as a pointer). Consequence, stated so it is never rediscovered: `{world, selection}` is
+    // no longer a valid initialiser -- the five construction sites in the tree (editor_app.cpp:147,
+    // shell_test.cpp x3, hierarchy_test.cpp x1) were all updated with this line.
+    CommandStack& commands;
     // Task 2.3.1: this frame's SPIKE-CLAMPED delta -- FrameClock::deltaSeconds(), capped at 0.25 s
     // (core/time.hpp), NOT io.DeltaTime. Two reasons the clamped engine clock is the right one: the
     // editor throttles to 20 Hz when unfocused (EditorAppConfig::unfocusedFrameCapHz), and a stall
     // during a window drag must not teleport a panel's continuous input.
-    // DEFAULTED so `{world, selection}` stays valid -- this aggregate is designed to grow (2.2.1 D7).
+    // The ONE defaulted member: omitting it still yields 0. `commands` is a reference and has no
+    // default (task 2.4.1 D7).
     float deltaSeconds = 0.0F;
 };
 

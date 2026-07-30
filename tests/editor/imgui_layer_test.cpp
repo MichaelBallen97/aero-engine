@@ -15,7 +15,8 @@
 // presentation is unproven on the lavapipe/WARP lanes; since every tick() below asserts the frame
 // presented, we take the proven visible path. The brief flash matches rhi_swapchain_test.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
-#include <aero/core/log.hpp>  // AERO_LOG_* + initLogging (cases B and C)
+#include <aero/core/log.hpp>              // AERO_LOG_* + initLogging (cases B and C)
+#include <aero/editor/command_stack.hpp>  // task 2.4.1
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
 #include <aero/editor/editor_app.hpp>
@@ -26,6 +27,8 @@
 #include <aero/editor/scene_bounds.hpp>  // task 2.3.1
 #include <aero/editor/selection.hpp>
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2
+#include <aero/editor/transform_command.hpp>  // task 2.4.1
+#include <aero/editor/transform_ops.hpp>      // task 2.4.1
 #include <aero/platform/platform.hpp>
 #include <aero/rhi/device.hpp>
 #include <aero/scene/scene.hpp>
@@ -40,6 +43,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>  // task 2.4.1: std::make_unique<TransformCommand>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -1280,4 +1284,304 @@ TEST_CASE(
     CHECK(contents.find("[Window][gizmo]") == std::string::npos);
 
     std::filesystem::remove(iniPath, removeEc);  // leave no state behind for the next run
+}
+
+// ==================================================================================================
+// task 2.4.1 -- the undo/redo shell path driven through a real EditorApp::tick(). Honest limit,
+// stated once here for all six cases: this harness CANNOT press a key -- aero_editor_imgui_test is
+// ImGui-free at source (imgui::imgui is PRIVATE on aero_editor_core), so it cannot name ImGuiKey, and
+// injecting a chord would additionally have to inject the platform-swapped modifier key
+// (imgui.cpp:1894-1903) while ImGui_ImplSDL3_NewFrame overwrites injected input every frame anyway.
+// EditorApp::requestUndo()/requestRedo() (D11) is the mechanically drivable substitute: it exercises
+// the WHOLE shell path -- ShellUiState -> drawMenuBar -> applyHistoryRequests -> CommandStack ->
+// TransformCommand -> writeTransform -- and an unbalanced ImGui call is an IM_ASSERT ABORT in the
+// Debug build, so a green Debug run through real frames IS the balance proof. The physical key chord
+// is human row 9's business and nothing else's.
+// ==================================================================================================
+
+TEST_CASE("editor: the history path executes and stays balanced (task 2.4.1, I1)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "history smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+
+    const std::optional<engine::Transform> before = engine::editor::readTransform(app->world(), cube);
+    REQUIRE(before.has_value());
+    engine::Transform after = *before;
+    after.position = before->position + engine::Vec3{1.0F, 2.0F, 3.0F};
+    CHECK(app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
+
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    app->requestUndo();
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    app->requestRedo();
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: undo through the shell mutates the World (task 2.4.1, I2/AC-22)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "history undo mutates", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+
+    const std::optional<engine::Transform> before = engine::editor::readTransform(app->world(), cube);
+    REQUIRE(before.has_value());
+    engine::Transform after = *before;
+    after.position = before->position + engine::Vec3{4.0F, 0.0F, 0.0F};
+    REQUIRE(
+        app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
+
+    app->requestUndo();
+    REQUIRE(app->tick());
+    REQUIRE(engine::editor::readTransform(app->world(), cube).has_value());
+    CHECK(*engine::editor::readTransform(app->world(), cube) == *before);
+
+    app->requestRedo();
+    REQUIRE(app->tick());
+    REQUIRE(engine::editor::readTransform(app->world(), cube).has_value());
+    CHECK(*engine::editor::readTransform(app->world(), cube) == after);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a request is consumed exactly once (task 2.4.1, I3)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "history request once", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+
+    const std::optional<engine::Transform> p0 = engine::editor::readTransform(app->world(), cube);
+    REQUIRE(p0.has_value());
+    engine::Transform p1 = *p0;
+    p1.position = p0->position + engine::Vec3{1.0F, 0.0F, 0.0F};
+    app->commands().breakMergeChain();
+    REQUIRE(app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, *p0, p1)));
+    app->commands().breakMergeChain();
+    engine::Transform p2 = p1;
+    p2.position = p1.position + engine::Vec3{1.0F, 0.0F, 0.0F};
+    REQUIRE(app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, p1, p2)));
+
+    const std::size_t appliedBefore = app->commands().appliedCount();
+    app->requestUndo();
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(appliedBefore - app->commands().appliedCount() == 1);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: undo and redo requested in one tick (task 2.4.1, I4/E12)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "history undo redo same tick", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+
+    const std::optional<engine::Transform> before = engine::editor::readTransform(app->world(), cube);
+    REQUIRE(before.has_value());
+    engine::Transform after = *before;
+    after.position = before->position + engine::Vec3{2.0F, 0.0F, 0.0F};
+    REQUIRE(
+        app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
+
+    const std::size_t appliedBefore = app->commands().appliedCount();
+    app->requestUndo();
+    app->requestRedo();
+    REQUIRE(app->tick());
+    CHECK(app->commands().appliedCount() == appliedBefore);
+    REQUIRE(engine::editor::readTransform(app->world(), cube).has_value());
+    CHECK(*engine::editor::readTransform(app->world(), cube) == after);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: an empty history is inert through real frames (task 2.4.1, I5/E1)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "history empty inert", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    CHECK(app->commands().count() == 0);
+    // TWO ticks first, so `before` is captured only once the sink has settled. create() itself already
+    // logged three INFO lines (console sink attached, assets root, shell ready) that sit unpumped
+    // until the FIRST tick()'s pumpLog() runs (editor_app.cpp D14); under -DAERO_SHADER_TOOLS=OFF the
+    // Viewport ALSO logs a WARN on its first DRAW (viewport_panel.cpp, ensureInitialized), one frame
+    // later still, so the second tick is what settles that too. Capturing `before` only after both
+    // is what makes the loop below a clean "zero NEW records" measurement in every tools configuration.
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    const std::size_t before = app->logRecordCount();
+    for (int i = 0; i < 10; ++i) {
+        app->requestUndo();
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->commands().count() == 0);
+    CHECK_FALSE(app->commands().canUndo());
+    CHECK(app->logRecordCount() == before);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: undo of a destroyed target through real frames (task 2.4.1, I6/E3)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "history destroyed target", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+
+    const std::optional<engine::Transform> before = engine::editor::readTransform(app->world(), cube);
+    REQUIRE(before.has_value());
+    engine::Transform after = *before;
+    after.position = before->position + engine::Vec3{0.0F, 5.0F, 0.0F};
+    REQUIRE(
+        app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
+    REQUIRE(app->tick());
+
+    engine::editor::destroyEntities(app->world(), std::vector<engine::Entity>{cube});
+    REQUIRE(app->tick());
+
+    const std::size_t before2 = app->logRecordCount();
+    app->requestUndo();
+    REQUIRE(app->tick());  // undo() runs INSIDE this tick's drawShellUi and logs the WARN into the
+                           // sink, but pumpLog() already ran at the TOP of this same tick (D14) -- the
+                           // record is not visible through logRecordCount() until the NEXT pump.
+    REQUIRE(app->tick());
+    CHECK(app->logRecordCount() - before2 == 1);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }

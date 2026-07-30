@@ -87,8 +87,8 @@ Subtasks:
 
 **Goal:** direct manipulation: fly a camera, pick an entity, drag a gizmo.
 **Definition of Done:** entities are selected and transformed with the mouse, undoably (the *undoably*
-clause completes at **2.4.2**, which wraps 2.3.3's `transform_ops` seam in a command — see task
-2.3.3's D0).
+clause completes at **2.4.1**, which wraps 2.3.3's `transform_ops` seam in a `TransformCommand` and
+routes the gizmo through it — see task 2.4.1's D1).
 
 ### 2.3.1 Editor camera · P0 · M · depends: 2.2.3
 **Goal:** comfortable navigation — the editor is unusable without it.
@@ -119,19 +119,23 @@ Subtasks:
 **Goal:** every editor mutation is a command; nothing mutates the scene directly.
 **Definition of Done:** any sequence of edits (property, structural, gizmo) undoes and redoes correctly.
 
-### 2.4.1 Command stack · P0 · M · depends: 2.1.3
+### 2.4.1 Command stack · P0 · M · depends: 2.1.3, 2.3.3
 **Goal:** the command-pattern backbone.
-**Deliverable:** `ICommand` do/undo, drag-merge for continuous edits, history capacity, Ctrl+Z / Shift+Ctrl+Z.
+**Deliverable:** `Command` do/undo (spelled `redo()`/`undo()` — `do` is a C++ keyword), drag-merge for
+continuous edits, history capacity, Ctrl+Z / Ctrl+Shift+Z, plus the transform command wrapping
+`transform_ops`, with the gizmo routed through it.
 Subtasks:
 - Command interface + stack; keyboard shortcuts
 - Merge policy for continuous (drag) edits; history capacity
+- Transform command wrapping `transform_ops`; the gizmo routes through it
 
 ### 2.4.2 Property-set + structural commands · P0 · M · depends: 2.4.1, 1.1.4
 **Goal:** one generic reflected property command covers every component field forever.
 **Deliverable:** reflected property-set command plus create/delete/reparent entity commands.
 Subtasks:
 - Generic property-set command via `entt::meta`
-- Transform command wrapping `transform_ops`; gizmo and Inspector edits both route through it
+- Inspector edits route through the generic property-set command (the gizmo already routes through
+  2.4.1's `TransformCommand`)
 - Create / delete / reparent / duplicate commands
 
 ---

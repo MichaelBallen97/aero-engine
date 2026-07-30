@@ -7,6 +7,7 @@
 // (entity_ops.hpp) and PanelContext (panel_context.hpp). The HierarchyPanel itself is src-private and
 // ImGui-bound: its Begin/End + TreePop balance is proven by aero_editor_imgui_test on a real GPU,
 // which is the only place that assertion means anything (I3).
+#include <aero/editor/command_stack.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/selection.hpp>
@@ -303,7 +304,8 @@ TEST_CASE("editor: multi-select drag survives the press -- the end-to-end regres
 TEST_CASE("editor: PanelContext binds references, it does not copy (D7)") {
     World w;
     Selection s;
-    engine::editor::PanelContext context{w, s};
+    engine::editor::CommandStack commands;
+    engine::editor::PanelContext context{w, s, commands};
 
     CHECK(&context.world == &w);
     CHECK(&context.selection == &s);
