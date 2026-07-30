@@ -195,6 +195,94 @@ TEST_CASE(
     CHECK(after[3] == d);  // the UNTOUCHED sibling -- this is what a wrong replay order moves
 }
 
+// N15 -- N14's ASCENDING mirror, added by a SECOND code-review round (task 2.4.2) that found N14's
+// fix (the first review round's own fix) was itself wrong: it split the position-restore pass into
+// an append-every-subtree-root pass followed by a SEPARATE sorted placeAt pass, which only keeps
+// `child == scratch.back()` (placeAt's own precondition) for the LAST subtree root appended -- every
+// earlier one silently no-ops. Descending capture (N14) happens to still come back correct under
+// that split; ASCENDING capture -- a shift-click range or a top-down Ctrl-click, the ORDINARY
+// gesture -- does not. Same assertions as N14, capture order reversed, so the two together prove
+// the fix is order-INDEPENDENT rather than merely fixing the one order N14 happens to name.
+TEST_CASE(
+    "scene_snapshot: two captured siblings of one parent restore in slot order in ASCENDING "
+    "capture order too (N15/second code-review round)") {
+    World world;
+    const Entity parent = world.create();
+    std::vector<Entity> kids;
+    for (int i = 0; i < 4; ++i) {
+        const Entity k = world.create();
+        REQUIRE(world.setParent(k, parent));
+        kids.push_back(k);
+    }
+    const Entity a = kids[0];
+    const Entity b = kids[1];
+    const Entity c = kids[2];
+    const Entity d = kids[3];
+
+    // Captured ASCENDING by slot (b is slot 1, c is slot 2) -- the ordinary top-down multi-select.
+    SubtreeSnapshot snap;
+    REQUIRE(snap.capture(world, std::vector<Entity>{b, c}));
+    REQUIRE(world.destroy(b));
+    REQUIRE(world.destroy(c));
+
+    std::vector<Entity> remaining;
+    world.eachChild(parent, [&remaining](Entity ch) { remaining.push_back(ch); });
+    REQUIRE(remaining.size() == 2);  // a, d
+
+    REQUIRE(snap.restore(world));
+    std::vector<Entity> after;
+    world.eachChild(parent, [&after](Entity ch) { after.push_back(ch); });
+    REQUIRE(after.size() == 4);
+    CHECK(after[0] == a);
+    CHECK(after[1] == b);
+    CHECK(after[2] == c);
+    CHECK(after[3] == d);  // the UNTOUCHED sibling -- this is what a wrong replay order moves
+}
+
+// N16 -- a THREE-sibling case with a MIXED capture order, added alongside N15: a two-element case
+// cannot distinguish "restored in the order they were sorted" from "restored in the order they were
+// reversed" (both look identical for exactly two entries). Capturing {c,b,d} of five siblings
+// [a,b,c,d,e] is neither ascending nor descending in capture order, so only a genuinely correct
+// ascending-by-slot replay reproduces the original list.
+TEST_CASE(
+    "scene_snapshot: three captured siblings of one parent restore in slot order under a MIXED "
+    "capture order (N16)") {
+    World world;
+    const Entity parent = world.create();
+    std::vector<Entity> kids;
+    for (int i = 0; i < 5; ++i) {
+        const Entity k = world.create();
+        REQUIRE(world.setParent(k, parent));
+        kids.push_back(k);
+    }
+    const Entity a = kids[0];
+    const Entity b = kids[1];
+    const Entity c = kids[2];
+    const Entity d = kids[3];
+    const Entity e = kids[4];
+
+    // Captured MIXED by slot: c (slot 2), then b (slot 1), then d (slot 3).
+    SubtreeSnapshot snap;
+    REQUIRE(snap.capture(world, std::vector<Entity>{c, b, d}));
+    REQUIRE(world.destroy(c));
+    REQUIRE(world.destroy(b));
+    REQUIRE(world.destroy(d));
+
+    std::vector<Entity> remaining;
+    world.eachChild(parent, [&remaining](Entity ch) { remaining.push_back(ch); });
+    REQUIRE(remaining.size() == 2);  // a, e
+
+    REQUIRE(snap.restore(world));
+    std::vector<Entity> after;
+    world.eachChild(parent, [&after](Entity ch) { after.push_back(ch); });
+    REQUIRE(after.size() == 5);
+    CHECK(after[0] == a);
+    CHECK(after[1] == b);
+    CHECK(after[2] == c);
+    CHECK(after[3] == d);
+    CHECK(after[4] == e);  // the UNTOUCHED sibling -- this is what a wrong replay order moves
+}
+
 TEST_CASE("scene_snapshot: topMost collapses a parent captured with its own child (N4/S17)") {
     World world;
     const Entity parent = world.create();

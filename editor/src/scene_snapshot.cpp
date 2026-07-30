@@ -137,20 +137,29 @@ bool SubtreeSnapshot::restore(World& world) const {
     }
 
     // PHASE B -- payload, names, links, sibling order (cannot fail except on allocation). THREE
-    // PASSES, in THIS order (A3, extended by the code-review round's Gap 1): names + components for
-    // every record; THEN links for every record (pre-order guarantees a parent already exists before
-    // its children are linked); THEN position-restore for the subtree roots that need one, ORDERED
-    // ascending by recorded slot rather than records order.
+    // PASSES, in THIS order (A3, extended by the code-review round's Gap 1, and CORRECTED by a
+    // second review round -- see below): names + components for every record; THEN links for every
+    // non-subtree-root record (pre-order guarantees a parent already exists before its children are
+    // linked); THEN, for the subtree roots that need one, setParent immediately followed by ITS OWN
+    // placeAt, together, in ONE pass ordered ascending by recorded slot.
     //
-    // Why a third pass, and why sorted: placeAt repositions ONE entity at a time by nudging every
-    // sibling that must follow it, which is only equivalent to "put the whole list back" if entries
-    // are placed in ASCENDING recorded-slot order per parent. `impl->records` order is capture order
-    // (the caller's target/selection order for a subtreeRoot), which a descending selection (e.g.
-    // Ctrl-clicking a lower sibling before a higher one) makes descending too -- and placing a lower
-    // slot AFTER a higher one shifts an untouched sibling that sits between them. A stable sort by
-    // siblingIndex alone (no grouping by parent -- Entity has no operator<, G5) is sufficient: any
-    // one parent's own entries are a subsequence of the sorted whole, and a subsequence of a sorted
-    // sequence is itself sorted.
+    // Ascending order is NECESSARY but NOT SUFFICIENT, which the first review round's fix got wrong.
+    // `placeAt`'s own contract (this file's `placeAt`, declared in the header) is that `child` has
+    // JUST been appended -- it repositions ONE entity at a time by nudging every sibling that must
+    // follow it, which only reproduces "the whole list, restored" if the append and the placeAt for
+    // ONE record are ADJACENT, with no other subtree root's append landing in between. The first
+    // review round split this into an append-every-subtree-root pass followed by a SEPARATE sorted
+    // placeAt pass: with two or more subtree roots sharing a parent, every one of them gets appended
+    // before any of them is placed, so at most the LAST-appended one is still `scratch.back()` by
+    // the time its own placeAt runs -- every earlier one silently no-ops behind the
+    // `scratch.back() == child` guard (see that guard's own comment below). Measured, not assumed:
+    // parent `[a,b,c,d]`, capturing `{b,c}` in ASCENDING slot order (the ordinary top-down
+    // multi-select) restored to `[a,d,c,b]`, not `[a,b,c,d]` -- caught by a second review round
+    // (docs/10-engineering-log.md's 2.4.2 entry). The ascending sort by `siblingIndex` (no grouping
+    // by parent needed -- `Entity` has no `operator<`, G5; a subsequence of a sorted sequence is
+    // itself sorted) is still correct and still required. What changed is that `setParent` for a
+    // subtree root is now deferred until this SAME sorted pass, immediately before that record's own
+    // `placeAt` call -- the shape `ReparentCommand::undo` already used correctly.
     for (const Impl::Record& record : impl->records) {
         if (!record.name.empty()) {
             world.setName(record.handle, record.name);
@@ -175,14 +184,14 @@ bool SubtreeSnapshot::restore(World& world) const {
                 AERO_LOG_WARN("editor: snapshot restored an entity as a root -- its parent is gone (index {})",
                               record.handle.index);
             } else {
-                world.setParent(record.handle, record.parent);  // appends, temporarily last
-                toPlace.push_back(&record);                     // positioned in the sorted pass below
+                toPlace.push_back(&record);  // linked AND placed together, below, in slot order
             }
         }
         // else: it was already a world root (record.parent invalid) -- nothing to link.
     }
     std::ranges::stable_sort(toPlace, {}, [](const Impl::Record* r) { return r->siblingIndex; });
     for (const Impl::Record* record : toPlace) {
+        world.setParent(record->handle, record->parent);  // appends, temporarily last
         placeAt(world, record->parent, record->handle, record->siblingIndex, impl->scratch);
     }
     return true;
@@ -268,8 +277,15 @@ std::size_t childIndexOf(const World& world, Entity parent, Entity child) {
 // check) leaves `scratch` NOT containing `child` at all once the parent already has >=2 real
 // children, and the loop below would then detach and re-append genuine siblings for no reason:
 // spurious reordering on a pure failure path. Verifying `scratch.back() == child` first is what
-// makes that unreachable rather than merely unlikely -- unreachable TODAY only because LIFO undo
-// means the sole refusal (a cycle) cannot be live at undo time, per this function's own comment.
+// makes that unreachable rather than merely unlikely -- PROVIDED every caller keeps its own
+// setParent and this placeAt call ADJACENT, which both callers now do (`SubtreeSnapshot::restore`
+// and `ReparentCommand::undo`, task 2.4.2's second review round). This is not a hypothetical
+// caveat: an intermediate version of `SubtreeSnapshot::restore` (the first review round's own fix,
+// since corrected) broke that adjacency by appending every subtree root before placing any of
+// them -- which made this guard fire on the MAIN path, on the first `placeAt` of every ascending
+// multi-sibling restore, silently no-opping every entry but the last-appended one rather than
+// merely guarding an unreachable failure path. See docs/10-engineering-log.md's 2.4.2 entry for
+// the full account of both review rounds.
 void placeAt(World& world, Entity parent, Entity child, std::size_t index, std::vector<Entity>& scratch) {
     scratch.clear();
     world.eachChild(parent, [&scratch](Entity c) { scratch.push_back(c); });  // child is currently last
