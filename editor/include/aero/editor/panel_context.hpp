@@ -9,6 +9,10 @@
 //
 // FORWARD DECLARATIONS ONLY: this header reaches every panel through panel.hpp, so it must stay free
 // of <aero/scene/world.hpp>. A TU that actually TOUCHES the World includes that header itself.
+//
+// The one exception is command_stack.hpp (task 2.4.2): it pulls no engine header either, only forward
+// declarations, so including it here to get CommandContext costs nothing and keeps this rule intact.
+#include <aero/editor/command_stack.hpp>
 
 namespace engine {
 class World;
@@ -17,7 +21,6 @@ class World;
 namespace engine::editor {
 
 class Selection;
-class CommandStack;
 class RootOrder;
 
 struct PanelContext {
@@ -43,5 +46,12 @@ struct PanelContext {
     // have no default (tasks 2.4.1 D7 / 2.4.2 D10).
     float deltaSeconds = 0.0F;
 };
+
+// The single place a PanelContext becomes a CommandContext (task 2.4.2). Inline and trivial on
+// purpose -- a panel that writes {context.world, context.selection, context.roots} by hand at ten
+// call sites is nine chances to pass the wrong RootOrder.
+[[nodiscard]] inline CommandContext toCommandContext(PanelContext& context) {
+    return CommandContext{context.world, context.selection, context.roots};
+}
 
 }  // namespace engine::editor

@@ -5,6 +5,8 @@
 #include <aero/core/log.hpp>
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/console_model.hpp>
+#include <aero/editor/entity_ops.hpp>
+#include <aero/editor/selection.hpp>
 #include <aero/scene/scene.hpp>
 
 #include <doctest/doctest.h>
@@ -44,11 +46,11 @@ public:
     FakeCommand(FakeCommand&&) = delete;
     FakeCommand& operator=(FakeCommand&&) = delete;
 
-    bool redo(engine::World& /*world*/) override {
+    bool redo(engine::editor::CommandContext& /*context*/) override {
         ++sink->redoCalls;
         return redoResult;
     }
-    bool undo(engine::World& /*world*/) override {
+    bool undo(engine::editor::CommandContext& /*context*/) override {
         ++sink->undoCalls;
         return undoResult;
     }
@@ -94,6 +96,9 @@ using engine::editor::CommandStack;
 
 TEST_CASE("command_stack: a fresh stack is empty and clean (C1)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandStack stack;
     CHECK(stack.count() == 0);
     CHECK(stack.appliedCount() == 0);
@@ -103,8 +108,8 @@ TEST_CASE("command_stack: a fresh stack is empty and clean (C1)") {
     CHECK(stack.undoLabel().empty());
     CHECK(stack.redoLabel().empty());
     CHECK(stack.isClean());
-    CHECK_FALSE(stack.undo(world));
-    CHECK_FALSE(stack.redo(world));
+    CHECK_FALSE(stack.undo(ctx));
+    CHECK_FALSE(stack.redo(ctx));
 
     const CommandLog log;
     CHECK(log.redoCalls == 0);
@@ -115,9 +120,12 @@ TEST_CASE("command_stack: a fresh stack is empty and clean (C1)") {
 
 TEST_CASE("command_stack: push applies exactly once (C2/AC-2)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog log;
     CommandStack stack;
-    CHECK(stack.push(world, std::make_unique<FakeCommand>(log, "fake")));
+    CHECK(stack.push(ctx, std::make_unique<FakeCommand>(log, "fake")));
     CHECK(log.redoCalls == 1);  // not 0, not 2
     CHECK(log.undoCalls == 0);
     CHECK(stack.canUndo());
@@ -131,11 +139,14 @@ TEST_CASE("command_stack: push applies exactly once (C2/AC-2)") {
 
 TEST_CASE("command_stack: undo -> redo round trip (C3/AC-4)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog log;
     CommandStack stack;
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(log, "fake")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(log, "fake")));
 
-    CHECK(stack.undo(world));
+    CHECK(stack.undo(ctx));
     CHECK(log.undoCalls == 1);
     CHECK(stack.appliedCount() == 0);
     CHECK_FALSE(stack.canUndo());
@@ -143,7 +154,7 @@ TEST_CASE("command_stack: undo -> redo round trip (C3/AC-4)") {
     CHECK(stack.undoLabel().empty());
     CHECK(stack.redoLabel() == "fake");
 
-    CHECK(stack.redo(world));
+    CHECK(stack.redo(ctx));
     CHECK(log.redoCalls == 2);
     CHECK(stack.appliedCount() == 1);
     CHECK(stack.undoLabel() == "fake");
@@ -152,14 +163,17 @@ TEST_CASE("command_stack: undo -> redo round trip (C3/AC-4)") {
 
 TEST_CASE("command_stack: a recording push truncates the redo branch (C4/AC-3)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;
     CommandLog logB;
     CommandLog logC;
     CommandStack stack;
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logA, "A")));
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));  // A's mergeWith is false
-    REQUIRE(stack.undo(world));
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logC, "C")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));  // A's mergeWith is false
+    REQUIRE(stack.undo(ctx));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logC, "C")));
 
     CHECK(logB.destroyCalls == 1);
     CHECK(stack.count() == 2);
@@ -170,15 +184,18 @@ TEST_CASE("command_stack: a recording push truncates the redo branch (C4/AC-3)")
 
 TEST_CASE("command_stack: merge collapses into the top (C5/AC-6)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;
     CommandLog logB;
     CommandStack stack;
     auto a = std::make_unique<FakeCommand>(logA, "A");
     FakeCommand* const aPtr = a.get();  // the stack keeps A alive; this stays valid
-    REQUIRE(stack.push(world, std::move(a)));
+    REQUIRE(stack.push(ctx, std::move(a)));
     aPtr->mergeResult = true;
 
-    CHECK(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+    CHECK(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
     CHECK(stack.count() == 1);
     CHECK(stack.appliedCount() == 1);
     CHECK(logA.mergeCalls == 1);
@@ -190,16 +207,19 @@ TEST_CASE("command_stack: merge collapses into the top (C5/AC-6)") {
 
 TEST_CASE("command_stack: breakMergeChain prevents a merge (C6/AC-7)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;
     CommandLog logB;
     CommandStack stack;
     auto a = std::make_unique<FakeCommand>(logA, "A");
     FakeCommand* const aPtr = a.get();
-    REQUIRE(stack.push(world, std::move(a)));
+    REQUIRE(stack.push(ctx, std::move(a)));
     aPtr->mergeResult = true;
     stack.breakMergeChain();
 
-    CHECK(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+    CHECK(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
     CHECK(stack.count() == 2);
     CHECK(logA.mergeCalls == 0);
     CHECK(logB.destroyCalls == 0);
@@ -207,6 +227,9 @@ TEST_CASE("command_stack: breakMergeChain prevents a merge (C6/AC-7)") {
 
 TEST_CASE("command_stack: undo/redo/clear/setClean each break the chain (C7/AC-7)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
 
     SUBCASE("undo") {
         // Code-review round (Gap 2): the single-entry construction below this comment used to be the
@@ -223,12 +246,12 @@ TEST_CASE("command_stack: undo/redo/clear/setClean each break the chain (C7/AC-7
         CommandStack stack;
         auto a = std::make_unique<FakeCommand>(logA, "A");
         FakeCommand* const aPtr = a.get();
-        REQUIRE(stack.push(world, std::move(a)));
+        REQUIRE(stack.push(ctx, std::move(a)));
         aPtr->mergeResult = true;
         stack.breakMergeChain();
-        REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
-        REQUIRE(stack.undo(world));
-        CHECK(stack.push(world, std::make_unique<FakeCommand>(logC, "C")));
+        REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
+        REQUIRE(stack.undo(ctx));
+        CHECK(stack.push(ctx, std::make_unique<FakeCommand>(logC, "C")));
         CHECK(logA.mergeCalls == 0);
         CHECK(stack.count() == 2);  // B's redo branch is truncated by C; A survives untouched
     }
@@ -239,11 +262,11 @@ TEST_CASE("command_stack: undo/redo/clear/setClean each break the chain (C7/AC-7
         CommandStack stack;
         auto a = std::make_unique<FakeCommand>(logA, "A");
         FakeCommand* const aPtr = a.get();
-        REQUIRE(stack.push(world, std::move(a)));
+        REQUIRE(stack.push(ctx, std::move(a)));
         aPtr->mergeResult = true;
-        REQUIRE(stack.undo(world));
-        REQUIRE(stack.redo(world));
-        CHECK(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+        REQUIRE(stack.undo(ctx));
+        REQUIRE(stack.redo(ctx));
+        CHECK(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
         CHECK(logA.mergeCalls == 0);
         CHECK(stack.count() == 2);
     }
@@ -254,10 +277,10 @@ TEST_CASE("command_stack: undo/redo/clear/setClean each break the chain (C7/AC-7
         CommandStack stack;
         auto a = std::make_unique<FakeCommand>(logA, "A");
         FakeCommand* const aPtr = a.get();
-        REQUIRE(stack.push(world, std::move(a)));
+        REQUIRE(stack.push(ctx, std::move(a)));
         aPtr->mergeResult = true;
         stack.clear();
-        CHECK(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+        CHECK(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
         CHECK(logA.mergeCalls == 0);
         CHECK(stack.count() == 1);
     }
@@ -268,10 +291,10 @@ TEST_CASE("command_stack: undo/redo/clear/setClean each break the chain (C7/AC-7
         CommandStack stack;
         auto a = std::make_unique<FakeCommand>(logA, "A");
         FakeCommand* const aPtr = a.get();
-        REQUIRE(stack.push(world, std::move(a)));
+        REQUIRE(stack.push(ctx, std::move(a)));
         aPtr->mergeResult = true;
         stack.setClean();
-        CHECK(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+        CHECK(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
         CHECK(logA.mergeCalls == 0);
         CHECK(stack.count() == 2);
     }
@@ -279,13 +302,16 @@ TEST_CASE("command_stack: undo/redo/clear/setClean each break the chain (C7/AC-7
 
 TEST_CASE("command_stack: capacity evicts from the front (C8/AC-8)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;
     CommandLog logB;
     CommandLog logC;
     CommandStack stack{2};
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logA, "A")));
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logC, "C")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logC, "C")));
 
     CHECK(logA.destroyCalls == 1);
     CHECK(logB.destroyCalls == 0);
@@ -293,26 +319,29 @@ TEST_CASE("command_stack: capacity evicts from the front (C8/AC-8)") {
     CHECK(stack.appliedCount() == 2);
     CHECK(stack.capacity() == 2);
 
-    CHECK(stack.undo(world));
-    CHECK(stack.undo(world));
+    CHECK(stack.undo(ctx));
+    CHECK(stack.undo(ctx));
     CHECK(stack.appliedCount() == 0);
 
     const int undoCallsB = logB.undoCalls;
     const int undoCallsC = logC.undoCalls;
-    CHECK_FALSE(stack.undo(world));  // a third undo does nothing -- A is gone
+    CHECK_FALSE(stack.undo(ctx));  // a third undo does nothing -- A is gone
     CHECK(logB.undoCalls == undoCallsB);
     CHECK(logC.undoCalls == undoCallsC);
 }
 
 TEST_CASE("command_stack: capacity is clamped to at least 1 (C9/AC-8)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;  // declared BEFORE the stack: the LogFixture ordering rule (§A12)
     CommandLog logB;
     CommandStack stack{0};
     CHECK(stack.capacity() == 1);
 
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logA, "A")));
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
 
     CHECK(stack.count() == 1);
     CHECK(logA.destroyCalls == 1);  // the FIRST is evicted, not the second
@@ -326,17 +355,20 @@ TEST_CASE("command_stack: a failed push records nothing (C10/AC-2/D21/E7)") {
     std::vector<engine::editor::LogEntry> records;
 
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;
     CommandLog logB;
     CommandStack stack;
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logA, "A")));
-    REQUIRE(stack.undo(world));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
+    REQUIRE(stack.undo(ctx));
     scope.sink()->take(records);
     records.clear();  // A6: LogSink::take requires `out` empty on entry
 
     auto b = std::make_unique<FakeCommand>(logB, "B");
     b->redoResult = false;
-    CHECK_FALSE(stack.push(world, std::move(b)));
+    CHECK_FALSE(stack.push(ctx, std::move(b)));
     CHECK(stack.count() == 1);
     CHECK(stack.canRedo());  // the redo branch (A) survives
     CHECK(logB.destroyCalls == 1);
@@ -351,16 +383,19 @@ TEST_CASE("command_stack: a failed undo still consumes its step (C11/AC-5/D20)")
     std::vector<engine::editor::LogEntry> records;
 
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;
     CommandStack stack;
     auto a = std::make_unique<FakeCommand>(logA, "A");
     FakeCommand* const aPtr = a.get();
-    REQUIRE(stack.push(world, std::move(a)));
+    REQUIRE(stack.push(ctx, std::move(a)));
     aPtr->undoResult = false;
     scope.sink()->take(records);
     records.clear();
 
-    CHECK(stack.undo(world));
+    CHECK(stack.undo(ctx));
     CHECK(stack.appliedCount() == 0);
     CHECK(stack.canRedo());
     CHECK(logA.undoCalls == 1);
@@ -371,14 +406,17 @@ TEST_CASE("command_stack: a failed undo still consumes its step (C11/AC-5/D20)")
 
 TEST_CASE("command_stack: clear() (C12/AC-9)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;
     CommandLog logB;
     CommandLog logC;
     CommandLog logD;
     CommandStack stack;
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logA, "A")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
     stack.breakMergeChain();
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
     stack.clear();
 
     CHECK(logA.destroyCalls == 1);
@@ -386,56 +424,62 @@ TEST_CASE("command_stack: clear() (C12/AC-9)") {
     CHECK(stack.count() == 0);
     CHECK(stack.appliedCount() == 0);
     CHECK(stack.isClean());
-    CHECK_FALSE(stack.undo(world));
+    CHECK_FALSE(stack.undo(ctx));
 
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logC, "C")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logC, "C")));
     stack.breakMergeChain();  // the chain was broken by clear() up to here; keep it broken across the
                               // seam so D records independently rather than attempting a merge into C
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logD, "D")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logD, "D")));
     CHECK(stack.count() == 2);
     CHECK(logC.mergeCalls == 0);
 }
 
 TEST_CASE("command_stack: clean tracking (C13/AC-9)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;
     CommandLog logB;
     CommandStack stack;
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logA, "A")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
     CHECK_FALSE(stack.isClean());
 
     stack.setClean();
     CHECK(stack.isClean());
 
-    REQUIRE(stack.undo(world));
+    REQUIRE(stack.undo(ctx));
     CHECK_FALSE(stack.isClean());
 
-    REQUIRE(stack.redo(world));
+    REQUIRE(stack.redo(ctx));
     CHECK(stack.isClean());
 
     stack.breakMergeChain();
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
     CHECK_FALSE(stack.isClean());
 }
 
 TEST_CASE("command_stack: the clean position shifts, then becomes unreachable (C14/AC-9/E17)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
 
     SUBCASE("arm 1: the clean position survives one shift and stays reachable") {
         CommandLog logA;
         CommandLog logB;
         CommandLog logC;
         CommandStack stack{2};
-        REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logA, "A")));
+        REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
         stack.setClean();  // clean = 1
         stack.breakMergeChain();
-        REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));  // clean = 1, applied = 2
+        REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));  // clean = 1, applied = 2
         stack.breakMergeChain();
-        REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logC, "C")));  // trim evicts A; clean 1->0
+        REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logC, "C")));  // trim evicts A; clean 1->0
         CHECK_FALSE(stack.isClean());
 
-        REQUIRE(stack.undo(world));
-        REQUIRE(stack.undo(world));
+        REQUIRE(stack.undo(ctx));
+        REQUIRE(stack.undo(ctx));
         CHECK(stack.appliedCount() == 0);
         CHECK(stack.isClean());  // position 0 now denotes "after A", which IS the saved state
     }
@@ -446,26 +490,29 @@ TEST_CASE("command_stack: the clean position shifts, then becomes unreachable (C
         CommandLog logC;
         CommandLog logD;
         CommandStack stack{2};
-        REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logA, "A")));
+        REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
         stack.setClean();  // clean = 1
         stack.breakMergeChain();
-        REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+        REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
         stack.breakMergeChain();
-        REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logC, "C")));  // trim: clean 1->0
+        REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logC, "C")));  // trim: clean 1->0
         stack.breakMergeChain();
-        REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logD, "D")));  // trim evicts B; clean -> nullopt
+        REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logD, "D")));  // trim evicts B; clean -> nullopt
 
         CHECK_FALSE(stack.isClean());
         CHECK(stack.appliedCount() == 2);
-        REQUIRE(stack.undo(world));
+        REQUIRE(stack.undo(ctx));
         CHECK_FALSE(stack.isClean());
-        REQUIRE(stack.undo(world));
+        REQUIRE(stack.undo(ctx));
         CHECK_FALSE(stack.isClean());
     }
 }
 
-TEST_CASE("command_stack: push(world, nullptr) (C15/AC-11/E8)") {
+TEST_CASE("command_stack: push(ctx, nullptr) (C15/AC-11/E8)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
 
     SUBCASE("a null command changes nothing and logs nothing") {
         const LogFixture fixture;
@@ -473,7 +520,7 @@ TEST_CASE("command_stack: push(world, nullptr) (C15/AC-11/E8)") {
         std::vector<engine::editor::LogEntry> records;
 
         CommandStack stack;
-        CHECK_FALSE(stack.push(world, nullptr));
+        CHECK_FALSE(stack.push(ctx, nullptr));
         CHECK(stack.count() == 0);
         CHECK(stack.appliedCount() == 0);
         scope.sink()->take(records);
@@ -493,38 +540,44 @@ TEST_CASE("command_stack: push(world, nullptr) (C15/AC-11/E8)") {
 
 TEST_CASE("command_stack: labels (C16/AC-10)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;
     CommandLog logB;
     CommandStack stack;
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logA, "A")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
     stack.breakMergeChain();
-    REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
 
     CHECK(stack.undoLabel() == "B");
     CHECK(stack.redoLabel().empty());
 
-    REQUIRE(stack.undo(world));
+    REQUIRE(stack.undo(ctx));
     CHECK(stack.undoLabel() == "A");
     CHECK(stack.redoLabel() == "B");
 
-    REQUIRE(stack.undo(world));
+    REQUIRE(stack.undo(ctx));
     CHECK(stack.undoLabel().empty());
     CHECK(stack.redoLabel() == "A");
 
-    REQUIRE(stack.redo(world));
-    REQUIRE(stack.redo(world));
+    REQUIRE(stack.redo(ctx));
+    REQUIRE(stack.redo(ctx));
     CHECK(stack.undoLabel() == "B");
     CHECK(stack.redoLabel().empty());
 }
 
 TEST_CASE("command_stack: destruction is complete, no leak (C17)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog log;  // ONE shared log, declared BEFORE the inner scope
     {
         CommandStack stack{8};
         for (int i = 0; i < 200; ++i) {
             auto cmd = std::make_unique<FakeCommand>(log, "cmd");
-            REQUIRE(stack.push(world, std::move(cmd)));  // mergeResult defaults to false: never merges
+            REQUIRE(stack.push(ctx, std::move(cmd)));  // mergeResult defaults to false: never merges
         }
         CHECK(stack.count() == 8);
         CHECK(log.destroyCalls == 192);
@@ -534,6 +587,9 @@ TEST_CASE("command_stack: destruction is complete, no leak (C17)") {
 
 TEST_CASE("command_stack: the drag call sequence, end to end (C18/AC-16/AC-17)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     // `logs` declared BEFORE the stack: the LogFixture ordering rule (§A12) -- each FakeCommand's
     // sink is one of these, heap-owned, and must outlive the stack that destroys the commands.
     std::vector<std::unique_ptr<CommandLog>> logs;
@@ -547,21 +603,21 @@ TEST_CASE("command_stack: the drag call sequence, end to end (C18/AC-16/AC-17)")
     for (int i = 0; i < 5; ++i) {
         auto cmd = std::make_unique<FakeCommand>(*logs[static_cast<std::size_t>(i)], "drag");
         cmd->mergeResult = true;
-        REQUIRE(stack.push(world, std::move(cmd)));
+        REQUIRE(stack.push(ctx, std::move(cmd)));
     }
 
     stack.breakMergeChain();
     for (int i = 5; i < 10; ++i) {
         auto cmd = std::make_unique<FakeCommand>(*logs[static_cast<std::size_t>(i)], "drag");
         cmd->mergeResult = true;
-        REQUIRE(stack.push(world, std::move(cmd)));
+        REQUIRE(stack.push(ctx, std::move(cmd)));
     }
 
     CHECK(stack.count() == 2);
     CHECK(stack.appliedCount() == 2);
 
-    REQUIRE(stack.undo(world));
-    REQUIRE(stack.undo(world));
+    REQUIRE(stack.undo(ctx));
+    REQUIRE(stack.undo(ctx));
     CHECK(stack.appliedCount() == 0);
     CHECK(stack.canRedo());
 
@@ -586,17 +642,20 @@ TEST_CASE("command_stack: a failed redo still consumes its step (C19/AC-5/D20)")
     std::vector<engine::editor::LogEntry> records;
 
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
     CommandLog logA;
     CommandStack stack;
     auto a = std::make_unique<FakeCommand>(logA, "A");
     FakeCommand* const aPtr = a.get();
-    REQUIRE(stack.push(world, std::move(a)));
-    REQUIRE(stack.undo(world));
+    REQUIRE(stack.push(ctx, std::move(a)));
+    REQUIRE(stack.undo(ctx));
     aPtr->redoResult = false;
     scope.sink()->take(records);
     records.clear();  // A6: LogSink::take requires `out` empty on entry
 
-    CHECK(stack.redo(world));  // D20: "did the history move", never "did the command work"
+    CHECK(stack.redo(ctx));  // D20: "did the history move", never "did the command work"
     CHECK(stack.appliedCount() == 1);
     CHECK_FALSE(stack.canRedo());
     CHECK(logA.redoCalls == 2);  // once from the original push, once from this redo
@@ -612,6 +671,9 @@ TEST_CASE("command_stack: a failed redo still consumes its step (C19/AC-5/D20)")
 // are now hand-written to reset the source to clear()'s state.
 TEST_CASE("command_stack: a moved-from stack is empty, clean and cannot undo (Gap 5/INV-1)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
 
     SUBCASE("move construction") {
         CommandLog logA;
@@ -620,7 +682,7 @@ TEST_CASE("command_stack: a moved-from stack is empty, clean and cannot undo (Ga
         // keeps bugprone-use-after-move from flagging a deliberate moved-from-state assertion.
         std::optional<CommandStack> source;
         source.emplace();
-        REQUIRE(source->push(world, std::make_unique<FakeCommand>(logA, "A")));
+        REQUIRE(source->push(ctx, std::make_unique<FakeCommand>(logA, "A")));
         REQUIRE(source->canUndo());
 
         const CommandStack moved{std::move(*source)};
@@ -633,7 +695,7 @@ TEST_CASE("command_stack: a moved-from stack is empty, clean and cannot undo (Ga
         CHECK(source->appliedCount() == 0);
         CHECK(source->isClean());
         CHECK(source->undoLabel().empty());
-        CHECK_FALSE(source->undo(world));  // must not index history[applied - 1] on an empty vector
+        CHECK_FALSE(source->undo(ctx));  // must not index history[applied - 1] on an empty vector
     }
 
     SUBCASE("move assignment") {
@@ -641,10 +703,10 @@ TEST_CASE("command_stack: a moved-from stack is empty, clean and cannot undo (Ga
         CommandLog logB;
         std::optional<CommandStack> source;
         source.emplace();
-        REQUIRE(source->push(world, std::make_unique<FakeCommand>(logA, "A")));
+        REQUIRE(source->push(ctx, std::make_unique<FakeCommand>(logA, "A")));
 
         CommandStack target;
-        REQUIRE(target.push(world, std::make_unique<FakeCommand>(logB, "B")));
+        REQUIRE(target.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
         target = std::move(*source);
         CHECK(target.count() == 1);
 
@@ -653,7 +715,7 @@ TEST_CASE("command_stack: a moved-from stack is empty, clean and cannot undo (Ga
         CHECK(source->count() == 0);
         CHECK(source->appliedCount() == 0);
         CHECK(source->isClean());
-        CHECK_FALSE(source->undo(world));
+        CHECK_FALSE(source->undo(ctx));
     }
 }
 
@@ -666,6 +728,9 @@ TEST_CASE("command_stack: a moved-from stack is empty, clean and cannot undo (Ga
 // regression the panel cannot host.
 TEST_CASE("command_stack: a release frame's final delta merges into the drag it completes (Gap 1/AC-16)") {
     engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
 
     SUBCASE("correct order -- End closes AFTER the release frame's push: one entry") {
         std::vector<std::unique_ptr<CommandLog>> logs;
@@ -679,13 +744,13 @@ TEST_CASE("command_stack: a release frame's final delta merges into the drag it 
         for (int i = 0; i < 5; ++i) {
             auto cmd = std::make_unique<FakeCommand>(*logs[static_cast<std::size_t>(i)], "drag");
             cmd->mergeResult = true;
-            REQUIRE(stack.push(world, std::move(cmd)));
+            REQUIRE(stack.push(ctx, std::move(cmd)));
         }
         {
             // The release frame's OWN final delta, pushed while the chain is STILL open.
             auto cmd = std::make_unique<FakeCommand>(*logs[5], "drag");
             cmd->mergeResult = true;
-            REQUIRE(stack.push(world, std::move(cmd)));
+            REQUIRE(stack.push(ctx, std::move(cmd)));
         }
         stack.breakMergeChain();  // End, AFTER the release frame's push
 
@@ -705,14 +770,14 @@ TEST_CASE("command_stack: a release frame's final delta merges into the drag it 
         for (int i = 0; i < 5; ++i) {
             auto cmd = std::make_unique<FakeCommand>(*logs[static_cast<std::size_t>(i)], "drag");
             cmd->mergeResult = true;
-            REQUIRE(stack.push(world, std::move(cmd)));
+            REQUIRE(stack.push(ctx, std::move(cmd)));
         }
         stack.breakMergeChain();  // End, BEFORE the release frame's push -- the ordering this task's
                                   // code-review round found and fixed in viewport_panel.cpp
         {
             auto cmd = std::make_unique<FakeCommand>(*logs[5], "drag");
             cmd->mergeResult = true;
-            REQUIRE(stack.push(world, std::move(cmd)));
+            REQUIRE(stack.push(ctx, std::move(cmd)));
         }
 
         // The release frame's delta records as a SEPARATE entry: AC-16 fails under this ordering.

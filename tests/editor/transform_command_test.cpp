@@ -5,6 +5,8 @@
 #include <aero/core/log.hpp>
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/console_model.hpp>
+#include <aero/editor/entity_ops.hpp>
+#include <aero/editor/selection.hpp>
 #include <aero/editor/transform_command.hpp>
 #include <aero/editor/transform_ops.hpp>
 #include <aero/scene/scene.hpp>
@@ -39,8 +41,8 @@ struct LogFixture {
 // A non-TransformCommand, for T6's cross-type merge-rejection arm. Nothing else needs it.
 class OtherCommand final : public engine::editor::Command {
 public:
-    bool redo(engine::World& /*world*/) override { return true; }
-    bool undo(engine::World& /*world*/) override { return true; }
+    bool redo(engine::editor::CommandContext& /*context*/) override { return true; }
+    bool undo(engine::editor::CommandContext& /*context*/) override { return true; }
     [[nodiscard]] std::string_view label() const noexcept override { return "other"; }
 };
 
@@ -56,6 +58,9 @@ using engine::editor::TransformCommand;
 
 TEST_CASE("transform_command: apply / revert (T1/AC-12)") {
     World w;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{w, selection, roots};
     const Entity e = w.create();
     const Transform before{.position = Vec3{1.0F, 2.0F, 3.0F},
                            .rotation = engine::fromAxisAngle(Vec3::unitZ(), engine::radians(20.0F)),
@@ -66,11 +71,11 @@ TEST_CASE("transform_command: apply / revert (T1/AC-12)") {
     REQUIRE(w.add<Transform>(e, before) != nullptr);
 
     TransformCommand cmd{e, before, after};
-    CHECK(cmd.redo(w));
+    CHECK(cmd.redo(ctx));
     REQUIRE(readTransform(w, e).has_value());
     CHECK(*readTransform(w, e) == after);
 
-    CHECK(cmd.undo(w));
+    CHECK(cmd.undo(ctx));
     REQUIRE(readTransform(w, e).has_value());
     CHECK(*readTransform(w, e) == before);
 }
@@ -82,6 +87,9 @@ TEST_CASE("transform_command: dead entity (T2/AC-13/D16)") {
 
     SUBCASE("undo/redo return false, and no ERROR is emitted -- the discriminating half (S10)") {
         World w;
+        engine::editor::Selection selection;
+        engine::editor::RootOrder roots;
+        engine::editor::CommandContext ctx{w, selection, roots};
         const Entity e = w.create();
         REQUIRE(w.add<Transform>(e) != nullptr);
         const Transform before = *readTransform(w, e);
@@ -89,24 +97,27 @@ TEST_CASE("transform_command: dead entity (T2/AC-13/D16)") {
         TransformCommand cmd{e, before, after};
         REQUIRE(w.destroy(e));
 
-        CHECK_FALSE(cmd.undo(w));
+        CHECK_FALSE(cmd.undo(ctx));
         scope.sink()->take(records);
         CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
     }
 
     SUBCASE("driven through a CommandStack: exactly one WARN and zero ERRORs") {
         World w;
+        engine::editor::Selection selection;
+        engine::editor::RootOrder roots;
+        engine::editor::CommandContext ctx{w, selection, roots};
         const Entity e = w.create();
         REQUIRE(w.add<Transform>(e) != nullptr);
         const Transform before = *readTransform(w, e);
         const Transform after{.position = Vec3{9.0F, 9.0F, 9.0F}};
         engine::editor::CommandStack stack;
-        REQUIRE(stack.push(w, std::make_unique<TransformCommand>(e, before, after)));
+        REQUIRE(stack.push(ctx, std::make_unique<TransformCommand>(e, before, after)));
         REQUIRE(w.destroy(e));
         scope.sink()->take(records);
         records.clear();  // LogSink::take requires `out` empty on entry
 
-        CHECK(stack.undo(w));  // D20: the history still MOVES even though the command failed
+        CHECK(stack.undo(ctx));  // D20: the history still MOVES even though the command failed
         scope.sink()->take(records);
         CHECK(countAtLevel(records, engine::LogLevel::Warn) == 1);
         CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
@@ -121,7 +132,7 @@ TEST_CASE("transform_command: dead entity (T2/AC-13/D16)") {
 
 // Code-review round (Gap 4): T3 used to have no LogFixture/LogSinkScope/ERROR assertion at all, so the
 // "no AERO_LOG_ERROR" half of AC-13 was proven only by T2's DEAD-entity arm. Both of T3's original
-// checks (CHECK_FALSE(cmd.redo(w)) and CHECK_FALSE(w.has<Transform>(e))) stay true with
+// checks (CHECK_FALSE(cmd.redo(ctx)) and CHECK_FALSE(w.has<Transform>(e))) stay true with
 // TransformCommand::write's `readTransform` guard removed (S10), because writeTransform ALSO returns
 // false for a missing component -- it just also emits the AERO_LOG_ERROR the guard exists to avoid.
 // Proven dead before this rewrite: seeding S10 left T3 green. The null-Entity{} arm of AC-13 (a target
@@ -133,12 +144,15 @@ TEST_CASE("transform_command: no Transform component (T3/AC-13)") {
 
     SUBCASE("a live entity with no Transform: redo fails, no side effect, zero ERRORs (S10)") {
         World w;
+        engine::editor::Selection selection;
+        engine::editor::RootOrder roots;
+        engine::editor::CommandContext ctx{w, selection, roots};
         const Entity e = w.create();  // bare entity, no Transform
         const Transform before{};
         const Transform after{.position = Vec3{1.0F, 1.0F, 1.0F}};
         TransformCommand cmd{e, before, after};
 
-        CHECK_FALSE(cmd.redo(w));
+        CHECK_FALSE(cmd.redo(ctx));
         CHECK_FALSE(w.has<Transform>(e));  // nothing created as a side effect
         scope.sink()->take(records);
         CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
@@ -146,13 +160,16 @@ TEST_CASE("transform_command: no Transform component (T3/AC-13)") {
 
     SUBCASE("a null Entity{}: redo and undo both fail, zero ERRORs -- the AC-13 arm T3 never covered") {
         World w;
+        engine::editor::Selection selection;
+        engine::editor::RootOrder roots;
+        engine::editor::CommandContext ctx{w, selection, roots};
         const Entity e{};  // default-constructed: generation 0, never resolves to a live component
         const Transform before{};
         const Transform after{.position = Vec3{1.0F, 1.0F, 1.0F}};
         TransformCommand cmd{e, before, after};
 
-        CHECK_FALSE(cmd.redo(w));
-        CHECK_FALSE(cmd.undo(w));
+        CHECK_FALSE(cmd.redo(ctx));
+        CHECK_FALSE(cmd.undo(ctx));
         scope.sink()->take(records);
         CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
     }
@@ -220,6 +237,9 @@ TEST_CASE("transform_command: label (T7/AC-15)") {
 
 TEST_CASE("transform_command: a simulated drag through a real stack (T8/AC-16)") {
     World w;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{w, selection, roots};
     const Entity e = w.create();
     REQUIRE(w.add<Transform>(e) != nullptr);
 
@@ -231,7 +251,7 @@ TEST_CASE("transform_command: a simulated drag through a real stack (T8/AC-16)")
     for (int i = 1; i <= 49; ++i) {
         Transform next = previous;
         next.position = Vec3{static_cast<float>(i), 0.0F, 0.0F};
-        REQUIRE(stack.push(w, std::make_unique<TransformCommand>(e, previous, next)));
+        REQUIRE(stack.push(ctx, std::make_unique<TransformCommand>(e, previous, next)));
         previous = next;
     }
     const Transform p49 = previous;
@@ -241,17 +261,20 @@ TEST_CASE("transform_command: a simulated drag through a real stack (T8/AC-16)")
     REQUIRE(readTransform(w, e).has_value());
     CHECK(*readTransform(w, e) == p49);
 
-    REQUIRE(stack.undo(w));
+    REQUIRE(stack.undo(ctx));
     REQUIRE(readTransform(w, e).has_value());
     CHECK(*readTransform(w, e) == p0);  // the drag START, not one frame back
 
-    REQUIRE(stack.redo(w));
+    REQUIRE(stack.redo(ctx));
     REQUIRE(readTransform(w, e).has_value());
     CHECK(*readTransform(w, e) == p49);
 }
 
 TEST_CASE("transform_command: interleaved entities do not merge (T9)") {
     World w;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{w, selection, roots};
     const Entity a = w.create();
     const Entity b = w.create();
     const Transform aBefore{.position = Vec3{0.0F, 0.0F, 0.0F}};
@@ -263,13 +286,13 @@ TEST_CASE("transform_command: interleaved entities do not merge (T9)") {
 
     engine::editor::CommandStack stack;
     stack.breakMergeChain();
-    REQUIRE(stack.push(w, std::make_unique<TransformCommand>(a, aBefore, aAfter)));
-    REQUIRE(stack.push(w, std::make_unique<TransformCommand>(b, bBefore, bAfter)));  // chain still open
+    REQUIRE(stack.push(ctx, std::make_unique<TransformCommand>(a, aBefore, aAfter)));
+    REQUIRE(stack.push(ctx, std::make_unique<TransformCommand>(b, bBefore, bAfter)));  // chain still open
 
     CHECK(stack.count() == 2);
 
-    REQUIRE(stack.undo(w));
-    REQUIRE(stack.undo(w));
+    REQUIRE(stack.undo(ctx));
+    REQUIRE(stack.undo(ctx));
     REQUIRE(readTransform(w, a).has_value());
     REQUIRE(readTransform(w, b).has_value());
     CHECK(*readTransform(w, a) == aBefore);

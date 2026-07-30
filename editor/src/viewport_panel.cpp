@@ -496,16 +496,17 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
         const GizmoWrite write =
             gizmoWriteFromWorld(gizmoParentMatrix(context.world, target), matrix, *before, gizmoMode.operation);
         switch (write.status) {
-            case GizmoWriteStatus::Applied:
+            case GizmoWriteStatus::Applied: {
                 // Task 2.4.1 D5: push() APPLIES the command. The direct transform write this replaces
                 // is GONE -- there is exactly one write path now and it lives inside
                 // TransformCommand::redo (AC-18). 2.3.3 D13's "mutating the World here is permitted"
                 // reasoning is unchanged: the Image item is submitted and closed, no ImGui tree is
                 // open, and no eachChild walk is in flight. The offscreen scene pass gains nothing from
                 // this change (INV-5).
-                context.commands.push(context.world,
-                                      std::make_unique<TransformCommand>(target, *before, write.transform));
+                CommandContext cmd = toCommandContext(context);
+                context.commands.push(cmd, std::make_unique<TransformCommand>(target, *before, write.transform));
                 break;
+            }
             case GizmoWriteStatus::NoChange:
                 break;  // write nothing (AC-11)
             case GizmoWriteStatus::NotFinite:

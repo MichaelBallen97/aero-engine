@@ -1329,7 +1329,8 @@ TEST_CASE("editor: the history path executes and stays balanced (task 2.4.1, I1)
     REQUIRE(before.has_value());
     engine::Transform after = *before;
     after.position = before->position + engine::Vec3{1.0F, 2.0F, 3.0F};
-    CHECK(app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    CHECK(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
 
     for (int i = 0; i < 5; ++i) {
         REQUIRE(app->tick());
@@ -1381,8 +1382,8 @@ TEST_CASE("editor: undo through the shell mutates the World (task 2.4.1, I2/AC-2
     REQUIRE(before.has_value());
     engine::Transform after = *before;
     after.position = before->position + engine::Vec3{4.0F, 0.0F, 0.0F};
-    REQUIRE(
-        app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
 
     app->requestUndo();
     REQUIRE(app->tick());
@@ -1429,12 +1430,13 @@ TEST_CASE("editor: a request is consumed exactly once (task 2.4.1, I3)") {
     REQUIRE(p0.has_value());
     engine::Transform p1 = *p0;
     p1.position = p0->position + engine::Vec3{1.0F, 0.0F, 0.0F};
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
     app->commands().breakMergeChain();
-    REQUIRE(app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, *p0, p1)));
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(cube, *p0, p1)));
     app->commands().breakMergeChain();
     engine::Transform p2 = p1;
     p2.position = p1.position + engine::Vec3{1.0F, 0.0F, 0.0F};
-    REQUIRE(app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, p1, p2)));
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(cube, p1, p2)));
 
     const std::size_t appliedBefore = app->commands().appliedCount();
     app->requestUndo();
@@ -1478,8 +1480,8 @@ TEST_CASE("editor: undo and redo requested in one tick (task 2.4.1, I4/E12)") {
     REQUIRE(before.has_value());
     engine::Transform after = *before;
     after.position = before->position + engine::Vec3{2.0F, 0.0F, 0.0F};
-    REQUIRE(
-        app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
 
     const std::size_t appliedBefore = app->commands().appliedCount();
     app->requestUndo();
@@ -1566,8 +1568,8 @@ TEST_CASE("editor: undo of a destroyed target through real frames (task 2.4.1, I
     REQUIRE(before.has_value());
     engine::Transform after = *before;
     after.position = before->position + engine::Vec3{0.0F, 5.0F, 0.0F};
-    REQUIRE(
-        app->commands().push(app->world(), std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
     REQUIRE(app->tick());
 
     engine::editor::destroyEntities(app->world(), std::vector<engine::Entity>{cube});

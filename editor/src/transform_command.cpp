@@ -21,8 +21,8 @@ bool TransformCommand::write(World& world, const Transform& value) {
     return writeTransform(world, target, value);
 }
 
-bool TransformCommand::redo(World& world) { return write(world, afterValue); }
-bool TransformCommand::undo(World& world) { return write(world, beforeValue); }
+bool TransformCommand::redo(CommandContext& context) { return write(context.world, afterValue); }
+bool TransformCommand::undo(CommandContext& context) { return write(context.world, beforeValue); }
 
 std::string_view TransformCommand::label() const noexcept { return TRANSFORM_COMMAND_LABEL; }
 
