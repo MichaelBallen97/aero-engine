@@ -15,6 +15,36 @@ CommandStack::CommandStack(std::size_t capacity)
     // (D8/AC-8, S12's discriminator).
     : capacityLimit(capacity < 1 ? std::size_t{1} : capacity) {}
 
+// Gap 5 (code-review round): hand-written, not `= default`. A defaulted move would COPY `applied`,
+// `cleanPosition` and `mergeOpen` (they are trivially-copyable scalars, so a "move" of them is a copy)
+// while `history`'s own move leaves it empty behind -- the source would then have `applied > 0` over
+// an empty `history`, breaking INV-1: `canUndo()` reports true, and `undoLabel()`/`undo()` index
+// `history[applied - 1]` on an empty vector. Reset the source to the same state `clear()` produces.
+CommandStack::CommandStack(CommandStack&& other) noexcept
+    : history(std::move(other.history)),
+      applied(other.applied),
+      cleanPosition(other.cleanPosition),
+      mergeOpen(other.mergeOpen),
+      capacityLimit(other.capacityLimit) {
+    other.applied = 0;
+    other.cleanPosition = 0;
+    other.mergeOpen = false;
+}
+
+CommandStack& CommandStack::operator=(CommandStack&& other) noexcept {
+    if (this != &other) {
+        history = std::move(other.history);
+        applied = other.applied;
+        cleanPosition = other.cleanPosition;
+        mergeOpen = other.mergeOpen;
+        capacityLimit = other.capacityLimit;
+        other.applied = 0;
+        other.cleanPosition = 0;
+        other.mergeOpen = false;
+    }
+    return *this;
+}
+
 bool CommandStack::push(World& world, std::unique_ptr<Command> command) {
     if (command == nullptr) {
         return false;  // AC-11/E8: silent -- there is nothing to name in a WARN
@@ -47,7 +77,10 @@ bool CommandStack::undo(World& world) {
         return false;  // E1: the guard PRECEDES the log, so held key repeat stays silent
     }
     Command& top = *history[applied - 1];
-    const std::string_view label = top.label();  // BEFORE the call: a command may mutate itself
+    // Command::label()'s CONTRACT (Gap 6) guarantees this view stays valid and unchanged across the
+    // command's own undo() -- captured here for clarity, not as a workaround for a mutation the
+    // contract already forbids.
+    const std::string_view label = top.label();
     const bool ok = top.undo(world);
     --applied;          // ALWAYS, even on failure (D20/AC-5)
     mergeOpen = false;  // D10/AC-7
@@ -64,7 +97,10 @@ bool CommandStack::redo(World& world) {
         return false;
     }
     Command& next = *history[applied];
-    const std::string_view label = next.label();  // BEFORE the call: a command may mutate itself
+    // Command::label()'s CONTRACT (Gap 6) guarantees this view stays valid and unchanged across the
+    // command's own redo() -- captured here for clarity, not as a workaround for a mutation the
+    // contract already forbids.
+    const std::string_view label = next.label();
     const bool ok = next.redo(world);
     ++applied;
     mergeOpen = false;  // D10/AC-7

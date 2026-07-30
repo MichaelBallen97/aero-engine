@@ -52,6 +52,17 @@ public:
 
     // A short, NON-EMPTY, human-facing noun phrase for the Edit menu: "Undo <label>". Backed by a
     // string literal or by a std::string the command itself owns; valid for the command's lifetime.
+    //
+    // CONTRACT (code-review round, Gap 6): the returned view must stay VALID AND UNCHANGED across this
+    // command's OWN redo(), undo() and mergeWith() calls -- a command must not mutate whatever backs
+    // its label from inside any of those three. This is what makes CommandStack::undo()/redo()'s
+    // "capture the label, then call the command, then log it" idiom sound: holding a string_view
+    // across a call that could reallocate the buffer behind it would dangle. Callers must additionally
+    // not hold a label view ACROSS a push()/undo()/redo()/clear() call on the owning CommandStack (a
+    // merge or a capacity trim can destroy the command that view points into). If a future command
+    // genuinely needs a label that changes on redo()/undo() (D18's std::string-backed case), the
+    // caller must copy it into a std::string BEFORE the call that could change it, not hold this
+    // string_view across it -- a handoff for 2.4.2.
     [[nodiscard]] virtual std::string_view label() const noexcept = 0;
 
     // Fold `incoming` into this command, so a continuous gesture is ONE history entry. Called only
@@ -78,8 +89,15 @@ public:
     // noexcept is EXPLICIT, not inherited: EditorApp's own move is `noexcept = default` (F15), so a
     // future member that is not noexcept-movable must fail HERE, loudly, not delete a defaulted move
     // two headers away.
-    CommandStack(CommandStack&&) noexcept = default;
-    CommandStack& operator=(CommandStack&&) noexcept = default;
+    //
+    // HAND-WRITTEN, not defaulted (code-review round, Gap 5/INV-1): a defaulted move copies the
+    // scalars (`applied`, `cleanPosition`, `mergeOpen`) while std::vector's own move leaves `history`
+    // empty behind -- a moved-from stack would then read `applied > 0` over an empty `history`,
+    // reporting `canUndo() == true` and having `undoLabel()`/`undo()` index off the end of an empty
+    // vector. Defined in the .cpp to reset the SOURCE to the same empty/clean/chain-closed state
+    // clear() produces.
+    CommandStack(CommandStack&& other) noexcept;
+    CommandStack& operator=(CommandStack&& other) noexcept;
 
     // Apply `command` and record it. Returns true iff it was applied (and therefore recorded, or
     // merged into the top). A null command returns false silently.
