@@ -148,10 +148,24 @@ private:
 };
 
 // F15: EditorApp holds a CommandStack BY VALUE and its own move is `noexcept = default`
-// (editor_app.hpp:70-71). A defaulted move with an incompatible exception spec is DEFINED AS
-// DELETED, not ill-formed -- so without these two lines a future non-noexcept-movable member would
-// surface as an error at std::optional<EditorApp>'s first move, two headers away. Fail HERE.
+// (editor_app.hpp:70-71), so this type's move must stay noexcept or EditorApp's silently degrades.
+//
+// WHAT THESE ASSERTS DO AND DO NOT CATCH -- corrected in the code-review round, because the comment
+// that stood here claimed a guarantee they never provided. The move above is HAND-WRITTEN and declared
+// `noexcept`, so the first two hold BY DECLARATION: a member whose own move can throw does NOT make
+// this ill-formed, it makes the move call std::terminate instead (declaring a function `noexcept` whose
+// body may throw is well-formed; P1286R2 removed the "defined as deleted" rule even for the defaulted
+// spelling, and Clang applies it as a DR under -std=c++17). The first two therefore only catch a member
+// that is not movable AT ALL -- worth keeping, but far weaker than advertised.
+//
+// The PER-MEMBER asserts below are what actually enforce the intent: a future member whose move can
+// throw fails HERE, loudly, instead of turning a moved-from EditorApp into a terminate two headers
+// away. The scalar members need no assert; only the three non-trivial ones can regress.
 static_assert(std::is_nothrow_move_constructible_v<CommandStack>);
 static_assert(std::is_nothrow_move_assignable_v<CommandStack>);
+static_assert(std::is_nothrow_move_constructible_v<std::vector<std::unique_ptr<Command>>>);
+static_assert(std::is_nothrow_move_assignable_v<std::vector<std::unique_ptr<Command>>>);
+static_assert(std::is_nothrow_move_constructible_v<std::optional<std::size_t>>);
+static_assert(std::is_nothrow_move_assignable_v<std::optional<std::size_t>>);
 
 }  // namespace engine::editor
