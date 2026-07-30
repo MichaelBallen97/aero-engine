@@ -85,6 +85,33 @@ public:
     // ERROR — moved-from is the only failure mode create() has.
     [[nodiscard]] Entity create();
 
+    // Re-mints a PREVIOUSLY DESTROYED entity with its ORIGINAL identity — the same index AND the same
+    // generation — so a handle that went stale becomes valid again. This exists for exactly one
+    // caller: the editor's undo of a structural delete (task 2.4.2). An undone delete that returned a
+    // DIFFERENT handle would silently strand every command still in the history that names the old
+    // one, which is why this is an allocator-level operation and not something the editor can fake.
+    //
+    // Returns EXACTLY `entity`, or Entity{} — never a third answer. Every rejection is decided BEFORE
+    // anything is created, so a rejection has no side effects at all:
+    //   * a moved-from World                      -> Entity{} + one ERROR
+    //   * Entity{}                                -> Entity{}, silent
+    //   * an entity that is currently ALIVE       -> Entity{}, silent (nothing to restore)
+    //   * an index whose live occupant is alive   -> Entity{} + one ERROR (the slot is taken by a
+    //                                                different generation; the caller must not be
+    //                                                handed a substitute)
+    //   * an index this World never issued        -> Entity{} + one ERROR (out of contract)
+    //
+    // The returned entity is BARE: no components, no name, no parent, no children — restoring those
+    // is the caller's business. Repeatable: destroying a recreated entity returns its slot, and a
+    // later recreate() of the same handle succeeds again.
+    //
+    // ADR-001 note, stated so it is never rediscovered as a bug: the generational handle's guarantee
+    // is that a stale handle never SILENTLY aliases a live entity. This function does not weaken it —
+    // it never mints an identity the caller did not name, and it refuses when the slot is occupied.
+    // What it does introduce is that a handle which WAS stale can become valid again, which is
+    // precisely, and only, what "undo the delete" means.
+    [[nodiscard]] Entity recreate(Entity entity);
+
     // Destroys `entity` AND EVERY DESCENDANT (task 1.3.2): the whole subtree dies, children before
     // parents, deterministically. Each of them is erased from every component storage it appears in
     // (running each component's destructor) and its handle is invalidated permanently. `entity` is
