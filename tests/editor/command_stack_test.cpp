@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -208,17 +209,28 @@ TEST_CASE("command_stack: undo/redo/clear/setClean each break the chain (C7/AC-7
     engine::World world;
 
     SUBCASE("undo") {
+        // Code-review round (Gap 2): the single-entry construction below this comment used to be the
+        // whole arm -- push A, undo A, push B -- and it CANNOT discriminate S2 (a bugged `undo()` that
+        // forgets `mergeOpen = false;`), because undoing the stack's SOLE entry drops `applied` to 0,
+        // and push B's own step 3 (truncate `history[applied, size)`) then destroys A before the merge
+        // guard's `applied > 0` term is ever reached -- the seed and the fix look identical. A TWO-entry
+        // construction (push A, break the chain, push B, undo B, push C) leaves A applied and B
+        // redoable: with the bug, `mergeOpen` stays true after undoing B, and push C's merge guard finds
+        // `applied > 0` true and A's `mergeWith` gets called, wrongly folding C into A.
         CommandLog logA;
         CommandLog logB;
+        CommandLog logC;
         CommandStack stack;
         auto a = std::make_unique<FakeCommand>(logA, "A");
         FakeCommand* const aPtr = a.get();
         REQUIRE(stack.push(world, std::move(a)));
         aPtr->mergeResult = true;
+        stack.breakMergeChain();
+        REQUIRE(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
         REQUIRE(stack.undo(world));
-        CHECK(stack.push(world, std::make_unique<FakeCommand>(logB, "B")));
+        CHECK(stack.push(world, std::make_unique<FakeCommand>(logC, "C")));
         CHECK(logA.mergeCalls == 0);
-        CHECK(stack.count() == 1);  // the follow-up push also truncates A's now-redoable branch
+        CHECK(stack.count() == 2);  // B's redo branch is truncated by C; A survives untouched
     }
 
     SUBCASE("redo") {
@@ -560,5 +572,151 @@ TEST_CASE("command_stack: the drag call sequence, end to end (C18/AC-16/AC-17)")
     }
     for (std::size_t i = 6; i < 10; ++i) {
         CHECK(logs[i]->destroyCalls == 1);
+    }
+}
+
+// Code-review round (Gap 3): the mirror of C11, on the `redo()` side. AC-5 covers both directions, but
+// C11 only ever drives `undo()` with a failing command -- nothing in this TU exercised `redo()`
+// returning false before this case, so `CommandStack::redo`'s own "consume the step even on failure"
+// arm (D20) had zero coverage. Proven dead before this case existed: seeding `if (ok) { ++applied; }`
+// into `redo()` left the whole suite green.
+TEST_CASE("command_stack: a failed redo still consumes its step (C19/AC-5/D20)") {
+    const LogFixture fixture;  // declared FIRST: destructs LAST
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    engine::World world;
+    CommandLog logA;
+    CommandStack stack;
+    auto a = std::make_unique<FakeCommand>(logA, "A");
+    FakeCommand* const aPtr = a.get();
+    REQUIRE(stack.push(world, std::move(a)));
+    REQUIRE(stack.undo(world));
+    aPtr->redoResult = false;
+    scope.sink()->take(records);
+    records.clear();  // A6: LogSink::take requires `out` empty on entry
+
+    CHECK(stack.redo(world));  // D20: "did the history move", never "did the command work"
+    CHECK(stack.appliedCount() == 1);
+    CHECK_FALSE(stack.canRedo());
+    CHECK(logA.redoCalls == 2);  // once from the original push, once from this redo
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 1);
+}
+
+// Code-review round (Gap 5/INV-1): a defaulted move copies the scalars (`applied`, `cleanPosition`,
+// `mergeOpen`) while std::vector's own move leaves `history` empty behind -- a moved-from stack would
+// then have `applied > 0` over an empty `history`: `canUndo()` lies true, and `undoLabel()`/`undo()`
+// index off the end of an empty vector (ASan/UBSan would abort). CommandStack's move ctor/assignment
+// are now hand-written to reset the source to clear()'s state.
+TEST_CASE("command_stack: a moved-from stack is empty, clean and cannot undo (Gap 5/INV-1)") {
+    engine::World world;
+
+    SUBCASE("move construction") {
+        CommandLog logA;
+        // Wrapped in std::optional (the shell_test.cpp PanelRegistry precedent): moving *source rather
+        // than a bare local, and reading the moved-from state back through source-> afterward, is what
+        // keeps bugprone-use-after-move from flagging a deliberate moved-from-state assertion.
+        std::optional<CommandStack> source;
+        source.emplace();
+        REQUIRE(source->push(world, std::make_unique<FakeCommand>(logA, "A")));
+        REQUIRE(source->canUndo());
+
+        const CommandStack moved{std::move(*source)};
+        CHECK(moved.canUndo());
+        CHECK(moved.count() == 1);
+
+        CHECK_FALSE(source->canUndo());
+        CHECK_FALSE(source->canRedo());
+        CHECK(source->count() == 0);
+        CHECK(source->appliedCount() == 0);
+        CHECK(source->isClean());
+        CHECK(source->undoLabel().empty());
+        CHECK_FALSE(source->undo(world));  // must not index history[applied - 1] on an empty vector
+    }
+
+    SUBCASE("move assignment") {
+        CommandLog logA;
+        CommandLog logB;
+        std::optional<CommandStack> source;
+        source.emplace();
+        REQUIRE(source->push(world, std::make_unique<FakeCommand>(logA, "A")));
+
+        CommandStack target;
+        REQUIRE(target.push(world, std::make_unique<FakeCommand>(logB, "B")));
+        target = std::move(*source);
+        CHECK(target.count() == 1);
+
+        CHECK_FALSE(source->canUndo());
+        CHECK_FALSE(source->canRedo());
+        CHECK(source->count() == 0);
+        CHECK(source->appliedCount() == 0);
+        CHECK(source->isClean());
+        CHECK_FALSE(source->undo(world));
+    }
+}
+
+// Code-review round (Gap 1): encodes, at the CommandStack call-sequence level, the ordering
+// viewport_panel.cpp::updateGizmo must produce around a gizmo drag's RELEASE frame. ImGuizmo reports
+// that frame's final delta on the SAME frame its End edge fires (translate ImGuizmo.cpp ~:2244-2249;
+// scale/rotate the same shape), so the chain must close AFTER that frame's own push, never before it --
+// closing first records the release frame as a second, un-merged entry, failing AC-16. The panel itself
+// is unreachable from this test tier (src-private, ImGui-bound); this case is the policy-level
+// regression the panel cannot host.
+TEST_CASE("command_stack: a release frame's final delta merges into the drag it completes (Gap 1/AC-16)") {
+    engine::World world;
+
+    SUBCASE("correct order -- End closes AFTER the release frame's push: one entry") {
+        std::vector<std::unique_ptr<CommandLog>> logs;
+        logs.reserve(6);
+        for (int i = 0; i < 6; ++i) {
+            logs.push_back(std::make_unique<CommandLog>());
+        }
+        CommandStack stack;
+
+        stack.breakMergeChain();  // Begin
+        for (int i = 0; i < 5; ++i) {
+            auto cmd = std::make_unique<FakeCommand>(*logs[static_cast<std::size_t>(i)], "drag");
+            cmd->mergeResult = true;
+            REQUIRE(stack.push(world, std::move(cmd)));
+        }
+        {
+            // The release frame's OWN final delta, pushed while the chain is STILL open.
+            auto cmd = std::make_unique<FakeCommand>(*logs[5], "drag");
+            cmd->mergeResult = true;
+            REQUIRE(stack.push(world, std::move(cmd)));
+        }
+        stack.breakMergeChain();  // End, AFTER the release frame's push
+
+        CHECK(stack.count() == 1);
+        CHECK(stack.appliedCount() == 1);
+    }
+
+    SUBCASE("broken order -- End closes BEFORE the release frame's push: two entries (documents Gap 1)") {
+        std::vector<std::unique_ptr<CommandLog>> logs;
+        logs.reserve(6);
+        for (int i = 0; i < 6; ++i) {
+            logs.push_back(std::make_unique<CommandLog>());
+        }
+        CommandStack stack;
+
+        stack.breakMergeChain();  // Begin
+        for (int i = 0; i < 5; ++i) {
+            auto cmd = std::make_unique<FakeCommand>(*logs[static_cast<std::size_t>(i)], "drag");
+            cmd->mergeResult = true;
+            REQUIRE(stack.push(world, std::move(cmd)));
+        }
+        stack.breakMergeChain();  // End, BEFORE the release frame's push -- the ordering this task's
+                                  // code-review round found and fixed in viewport_panel.cpp
+        {
+            auto cmd = std::make_unique<FakeCommand>(*logs[5], "drag");
+            cmd->mergeResult = true;
+            REQUIRE(stack.push(world, std::move(cmd)));
+        }
+
+        // The release frame's delta records as a SEPARATE entry: AC-16 fails under this ordering.
+        CHECK(stack.count() == 2);
+        CHECK(stack.appliedCount() == 2);
     }
 }
