@@ -790,7 +790,7 @@ Three call sites all failed this, independently:
 
 **Empirically reproduced first, not assumed**: parent `P` with children `[a,b,c,d]`, capturing `{c,b}`
 (descending, exactly what Ctrl-clicking C then B produces) and restoring both landed `[a,b,d,c]` — the
-untouched sibling `d` moved, confirmed by a temporary probe before any fix landed. **Fixed by sorting the
+untouched sibling `d` moved, confirmed by a temporary probe before any fix landed. **"Fixed" by sorting the
 position-restore pass ascending by recorded slot at all three sites** — a plain `std::ranges::stable_sort`
 by slot alone, with NO grouping by parent needed: `Entity` has no `operator<` (G5), but a subsequence of a
 globally-sorted sequence is itself sorted, so restoring position for any one parent's own entries stays
@@ -803,14 +803,23 @@ replaced its reverse walk with an ascending-by-recaptured-slot walk — the reve
 needed to undo NESTING (restoring a parent before its own child), and `targets` can never contain both,
 because `topMost()`/`reparentTargets()` (D19) always collapse a selected parent and its own selected child
 into one target before this command ever sees them.
+**CORRECTION (second code-review round, below): this claim was FALSE for `SubtreeSnapshot::restore`.** The
+ascending sort was necessary but not sufficient there — it was measured only against the ONE order (N14's
+descending capture) that this round's own fix happened to get right, and the fix introduced a NEW,
+worse-in-practice regression in the other order. `entity_commands.cpp`'s `restoreState` and
+`ReparentCommand::undo` were NOT affected; both hold in both directions. Full account below.
 
 **Also fixed, same function, low severity**: `placeAt` guarded only the 0/1-child case against a failed
 append; if `setParent` ever failed to append `child` while the parent already had ≥2 real children,
 `scratch` would not contain `child` at all, and the loop would then detach and re-append genuine siblings
-for no reason — spurious reordering on a pure failure path. Unreachable today (LIFO undo means the sole
-refusal, a cycle, cannot be live at undo time), but the function's own comment already anticipated a
-failed append, so it is now verified: `scratch.back() == child` is checked before anything else is
+for no reason — spurious reordering on a pure failure path. **Believed unreachable today** (LIFO undo means
+the sole refusal, a cycle, cannot be live at undo time), but the function's own comment already anticipated
+a failed append, so it is now verified: `scratch.back() == child` is checked before anything else is
 touched, which required un-eliding the `child` parameter (now genuinely used, no `NOLINT` needed).
+**CORRECTION (second code-review round, below): this guard was NOT merely a defensive belt for a
+hypothetical failure path — the pass split this same round introduced made it fire on the ordinary,
+successful main path, on the first `placeAt` of every ascending multi-sibling restore, and its effect there
+was to silently no-op the reorder for everything but the last-appended entry.**
 
 **A fourth, related defect found ONLY while writing the mandated shared-parent `ReparentCommand` test, not
 named by the original review** — recorded here in full rather than folded silently into the three sites
@@ -895,6 +904,108 @@ ERROR/CRITICAL/WARN, all five architecture guards green with no allowlist change
 origin/main -- engine/ runtime/ samples/ tools/ shaders/ cmake/ .github/` unchanged from the original nine
 commits (this round touches only `editor/`, `tests/` and docs), clang-format and clang-tidy
 (`--warnings-as-errors='*'`) clean on every touched file with **zero new `NOLINT`**.
+
+##### Task 2.4.2 — second code-review round (found the first round's own fix was wrong; two commits)
+
+**A second code review, run against a tree the first review round had already left mechanically green
+(94/94 both presets, N14/X21/X22 all passing), found that the first round's fix for
+`SubtreeSnapshot::restore` was itself WRONG — not incomplete, WRONG: it swapped which capture order fails
+rather than fixing the defect, and the order it newly broke (ascending) is the ordinary one, while the
+order it happened to still get right (descending, N14's own case) is the less common one. This is the
+most important lesson this task produced, more than either bug individually: a fix verified only against
+the originally-reported input can be a swap, not a fix. Recorded here in full rather than folded silently
+into the first round's own entry above, because the first round's entry already asserted (twice) that the
+defect was fixed, and both assertions were false — corrected in place above rather than deleted, so this
+document does not quietly erase its own prior mistake.**
+
+**Measured reproduction, against `SubtreeSnapshot::restore` directly, before any second-round fix
+landed**: parent `P` with children `[a,b,c,d]`, capturing two siblings and restoring —
+
+| capture order | measured result | correct? |
+|---|---|---|
+| `{b,c}` (ASCENDING — a shift-click range or a top-down Ctrl-click, the ordinary gesture) | `[a,d,c,b]` | **WRONG** — 3 of 4 entries misplaced |
+| `{c,b}` (DESCENDING — N14's own case, a bottom-up Ctrl-click) | `[a,b,c,d]` | correct |
+
+Pre-first-round-fix, this was the reverse (descending wrong, ascending — untested by N14 — accidentally
+right). The regression the first round shipped is both more likely to be hit (ascending is the common
+gesture) and worse (3 of 4 slots wrong instead of the original bug's own shape).
+
+**Root cause: `placeAt` is not an insert-into-list primitive.** Its own contract, stated in its header
+comment (`scene_snapshot.hpp`), is *"the child has just been APPENDED to parent"* — it repositions ONE
+already-last entity, it does not insert an arbitrary entity at an arbitrary position. The first round's fix
+split `SubtreeSnapshot::restore`'s phase B into an append-every-subtree-root pass followed by a SEPARATE,
+sorted `placeAt` pass. When two or more subtree roots share one parent, every one of them is appended
+before any of them is placed — so by the time the sorted pass starts calling `placeAt`, at most the
+LAST-appended entry is still `scratch.back()`. `placeAt`'s own `scratch.back() == child` guard (added by the
+first round as a defensive belt against a hypothetical failed-append edge case) then makes every EARLIER
+entry silently no-op instead of visibly corrupting the list — converting a loud bug into a silent one. The
+ascending-by-slot sort itself was correctly reasoned (`stable_sort`'s "a subsequence of a globally-sorted
+sequence stays sorted" claim is true) but insufficient: ascending replay order is NECESSARY, not
+SUFFICIENT — `placeAt` also needs child-is-last AT CALL TIME, which the append/place pass split destroyed.
+This is exactly why the identical ascending sort is correct at `entity_commands.cpp`'s `restoreState` and
+at `ReparentCommand::undo` (both keep their own `setParent` and `placeAt`/`RootOrder::insert` call
+adjacent, in the SAME loop iteration, for the SAME entry) and wrong only at `SubtreeSnapshot::restore` (the
+only one of the three sites the first round restructured into two passes instead of one).
+
+**Fix, `editor/src/scene_snapshot.cpp` only**: keep the ascending `stable_sort`, but restore append/place
+ADJACENCY. The subtree-root records needing a position are still collected and sorted ascending by
+`siblingIndex` first, exactly as before; what changed is that `world.setParent(record->handle,
+record->parent)` now happens INSIDE that same sorted loop, immediately before that record's own `placeAt`
+call — the shape `ReparentCommand::undo` already used correctly. Non-`subtreeRoot` links (a parent already
+inside the snapshot) are untouched, in the original pre-order pass, exactly as A2 requires.
+**`restoreState` and `ReparentCommand::undo` were NOT touched** — both were independently re-verified
+correct in ascending, descending AND mixed order this round (see the new tests below); their own
+`RootOrder::insert`/`placeAt` calls were already adjacent to their own `setParent`, so the first round's
+defect never applied to them.
+
+**Four new tests, mirroring every order-sensitive site in the direction it did not yet have a case for —
+this is the process fix, not just the code fix.** N14 and X21 each only ever tested ONE capture order, and
+N14 happened to test the order the first round's broken fix got right, so the gate stayed green through a
+real regression:
+
+- `scene_snapshot_test.cpp` N15 — N14's ASCENDING mirror, same two-sibling-of-one-parent shape, capture
+  order reversed. **Shown RED against the pre-fix tree** (`after[1]`/`after[3]` wrong, matching the
+  measured `[a,d,c,b]` reproduction above), then GREEN after the adjacency fix.
+- `scene_snapshot_test.cpp` N16 — a THREE-sibling MIXED-order case (`{c,b,d}` of `[a,b,c,d,e]`), added
+  because a two-element case cannot distinguish "restored correctly" from "restored reversed" — both look
+  identical for exactly two entries. Also shown RED against the pre-fix tree, then GREEN.
+- `structural_commands_test.cpp` X23 — X21's ASCENDING mirror (two roots deleted together, ascending slot
+  order). `restoreState`'s own sort-then-`RootOrder::insert` loop was already correct in both directions
+  (`RootOrder::insert` is a genuine positional `vector::insert` with no positional precondition, unlike
+  `placeAt`), so this is a regression-proofing addition, not a red-then-green case — measured green against
+  both the pre-fix and post-fix tree.
+- `structural_commands_test.cpp` X24 — X22's DESCENDING mirror (two-target reparent sharing one parent,
+  descending slot order). `ReparentCommand::undo` was already correct in both directions for the same
+  reason as X23 — measured green against both trees.
+
+**Discrimination proof for the ascending mirror, run and recorded**: reverting the adjacency fix (restoring
+the first round's append-pass/sorted-placeAt-pass split) reddens N15 (`after[1]`/`after[3]` wrong,
+`[a,d,c,b]`) and N16 (`after[1]`/`after[4]` wrong) cleanly; X23 and X24 stay green in that configuration
+(confirming they were never testing the defective code path). Restoring the fix: all four green, whole
+suite 244/244 (up from 240) both presets, `ctest -N` unchanged at 94/18/5 (new coverage rides the existing
+two TUs).
+
+**`placeAt`'s own comment corrected**: it previously called the `scratch.back() == child` guard
+"unreachable today" (a claim written by the first round, describing the guard as a defensive belt for a
+failure path that LIFO undo cannot currently produce). That claim was true for the ORIGINAL, single-pass
+`placeAt` call shape, but became FALSE the moment the first round's own restructuring split append from
+place: for the intervening tree (the one this second round found), the guard fired on the MAIN, successful
+path, on the first `placeAt` of every ascending multi-sibling restore — not a hypothetical failure case at
+all, but the mechanism that converted a loud corruption into a silent no-op. The comment now describes both
+the current (adjacency-restored, guard-unreachable-again) state and this history, rather than asserting
+only the current state as if it had always held.
+
+**Inventory delta, measured, not predicted.** `aero_editor_shell_test` **240 → 244** (N15, N16, X23, X24);
+`ctest -N` unchanged at **94** (tools ON), **18** (`build/reflect-off-2.4.2`), **5**
+(`build/tools-off-2.4.2`) — all new coverage rides the same two existing TUs, no new `add_test`. Both macOS
+presets green at 94/94 Debug and Release, the `AERO_REQUIRE_GPU=1` rehearsal green, both reflect/tools-OFF
+configures green, clang-format and clang-tidy (`--warnings-as-errors='*'`) clean on every touched file with
+**zero new `NOLINT`**.
+
+**The transferable lesson, stated plainly for future review rounds on this codebase: verifying an
+order-sensitive fix against only the originally-reported input is not verification — a fix that reorders
+rather than corrects will pass that one input by construction. Every order-sensitive fix from here on
+needs a mirror case in the OTHER order before it is trusted, not after.**
 
 ---
 
