@@ -167,13 +167,22 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # Neither new TU names an ImGui, ImGuizmo or entt type -- the whole command model is pure, which is what
 # makes it tier-0 testable at all. The link line below is UNCHANGED (AC-23) and no new ctest entry is
 # registered (ctest -N stays 94/5/18, AC-25).
+#
+# task 2.4.2 joins this target with editor/scene_snapshot_test.cpp (step 4: the detached-subtree payload
+# and its two-phase restore) and, in steps 5-6, editor/structural_commands_test.cpp. Both stay TIER-0: no
+# GPU, no window, no ImGui context, so they must pass identically with AERO_REQUIRE_GPU unset and set --
+# and, crucially, they need NO REFLECTION (component_ops' addComponent/removeComponent and the whole
+# snapshot facility are meta-free), which is what makes AC-8's "structural undo works with
+# -DAERO_REFLECT_TOOLS=OFF" a tested fact rather than a claim. No new ctest entry is registered (the
+# link line below is unchanged; ctest -N stays 94/5/18).
 find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
                editor/picking_test.cpp editor/selection_overlay_test.cpp
                editor/gizmo_test.cpp editor/transform_ops_test.cpp
-               editor/command_stack_test.cpp editor/transform_command_test.cpp)
+               editor/command_stack_test.cpp editor/transform_command_test.cpp
+               editor/scene_snapshot_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
