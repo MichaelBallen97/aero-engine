@@ -42,6 +42,7 @@ add_library(aero_editor_core STATIC
     src/transform_command.cpp   # task 2.4.1 -- the undoable Transform write wrapping transform_ops
     src/scene_snapshot.cpp      # task 2.4.2 -- SubtreeSnapshot/ComponentSnapshot (entt-free, ImGui-free)
     src/component_commands.cpp  # task 2.4.2 -- SetField/Add/RemoveComponent, wrapping component_ops
+    src/entity_commands.cpp     # task 2.4.2 -- the five structural commands, wrapping entity_ops
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
