@@ -23,8 +23,8 @@ public:
     // write. Both by const& (Transform is 40 bytes; the writeTransform signature's own spelling).
     TransformCommand(Entity entity, const Transform& before, const Transform& after);
 
-    bool redo(World& world) override;
-    bool undo(World& world) override;
+    bool redo(CommandContext& context) override;
+    bool undo(CommandContext& context) override;
     [[nodiscard]] std::string_view label() const noexcept override;
     // True iff `incoming` is a TransformCommand on the SAME entity. Keeps our `before`, takes their
     // `after` -- which is what makes a 200-frame drag one undo step whose before is the drag's start.

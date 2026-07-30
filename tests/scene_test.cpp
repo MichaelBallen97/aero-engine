@@ -1051,3 +1051,164 @@ TEST_CASE("scene: copyComponent removes the destination BEFORE reading the sourc
     CHECK(w.get<Payload>(source)->text == longText);  // the source survives, wherever it moved
     CHECK(w.componentCount<Payload>() == 1201);       // overwrite, not insert
 }
+
+// ---- task 2.4.2: World::recreate ---------------------------------------------------------------
+// The one engine primitive undo needs: give a previously-destroyed entity its ORIGINAL identity
+// back. Transform/Camera are built-ins, auto-registered by every World's constructor (F10), so these
+// cases use a plain World rather than makeWorld().
+
+TEST_CASE("scene: recreate restores a destroyed entity's IDENTITY (task 2.4.2 W1)") {
+    World w;
+    const Entity a = w.create();
+    CHECK(w.destroy(a));
+    CHECK(w.entityCount() == 0);
+
+    const Entity made = w.recreate(a);
+    CHECK(made == a);
+    CHECK(made.index == a.index);
+    CHECK(made.generation == a.generation);
+    CHECK(w.alive(made));
+    CHECK(w.entityCount() == 1);
+
+    std::size_t occurrences = 0;
+    w.eachEntity([&](Entity e) {
+        if (e == made) {
+            ++occurrences;
+        }
+    });
+    CHECK(occurrences == 1);
+}
+
+TEST_CASE("scene: recreate returns a BARE entity -- no components, name, parent or children (task 2.4.2 W2)") {
+    World w;
+    const Entity parent = w.create();
+    const Entity a = w.create();
+    const Entity child = w.create();
+    REQUIRE(w.add<engine::Transform>(a) != nullptr);
+    REQUIRE(w.add<engine::Camera>(a) != nullptr);
+    CHECK(w.setName(a, "bare-me"));
+    CHECK(w.setParent(a, parent));
+    CHECK(w.setParent(child, a));
+
+    CHECK(w.destroy(a));
+    CHECK(!w.alive(child));  // the whole subtree died with it -- assert that too
+
+    const Entity made = w.recreate(a);
+    REQUIRE(made == a);
+    CHECK(!w.has<engine::Transform>(made));
+    CHECK(!w.has<engine::Camera>(made));
+    CHECK(w.name(made).empty());
+    CHECK(w.parent(made) == Entity{});
+    CHECK(w.childCount(made) == 0);
+}
+
+TEST_CASE("scene: recreate's five refusals of D22, each leaving the World unchanged (task 2.4.2 W3)") {
+    // ERROR-line accounting for the four refusals that log one: this TU has no log sink (its own
+    // header says so -- the 0.2.4 deferral), so only the OBSERVABLE state is asserted here. The
+    // accounting itself moves to the editor side, case RL1 in tests/editor/scene_snapshot_test.cpp.
+    SUBCASE("a moved-from World") {
+        std::optional<World> w;
+        w.emplace();
+        const Entity a = w->create();
+        CHECK(w->destroy(a));
+        const World moved = std::move(*w);
+        CHECK(!w->recreate(a).valid());
+        CHECK(moved.entityCount() == 0);  // the move didn't resurrect anything either
+    }
+    SUBCASE("Entity{}") {
+        World w;
+        CHECK(!w.recreate(Entity{}).valid());
+        CHECK(w.entityCount() == 0);
+    }
+    SUBCASE("a currently-live handle") {
+        World w;
+        const Entity a = w.create();
+        CHECK(!w.recreate(a).valid());
+        CHECK(w.alive(a));
+        CHECK(w.entityCount() == 1);
+    }
+    SUBCASE("an occupied index (a recycled slot)") {
+        World w;
+        const Entity a = w.create();
+        CHECK(w.destroy(a));
+        const Entity recycled = w.create();  // recycles a's index at a new generation
+        CHECK(recycled.index == a.index);
+        CHECK(!(recycled == a));
+        CHECK(!w.recreate(a).valid());
+        CHECK(w.alive(recycled));
+        CHECK(w.entityCount() == 1);
+    }
+    SUBCASE("an index this World never issued") {
+        World w;
+        CHECK(w.entityCount() == 0);
+        CHECK(!w.recreate(Entity{9999U, 1U}).valid());
+        CHECK(w.entityCount() == 0);
+    }
+}
+
+TEST_CASE("scene: recreate is repeatable across destroy/recreate cycles (task 2.4.2 W4/F3)") {
+    World w;
+    const Entity a = w.create();
+    for (int i = 0; i < 2; ++i) {
+        CHECK(w.destroy(a));
+        const Entity made = w.recreate(a);
+        CHECK(made == a);
+        CHECK(w.alive(made));
+    }
+}
+
+TEST_CASE("scene: recreate interleaves cleanly with fresh create() calls (task 2.4.2 W5)") {
+    World w;
+    const Entity a = w.create();
+    CHECK(w.destroy(a));
+    const Entity made = w.recreate(a);
+    REQUIRE(made == a);
+
+    const Entity b = w.create();
+    const Entity c = w.create();
+    CHECK(!(b == made));
+    CHECK(!(c == made));
+    CHECK(!(b == c));
+    CHECK(w.entityCount() == 3);
+}
+
+TEST_CASE("scene: a recreated entity is first-class again (task 2.4.2 W6)") {
+    World w;
+    const Entity parent = w.create();
+    const Entity a = w.create();
+    CHECK(w.destroy(a));
+    const Entity made = w.recreate(a);
+    REQUIRE(made == a);
+
+    REQUIRE(w.add<engine::Transform>(made) != nullptr);
+    CHECK(w.setName(made, "reborn"));
+    CHECK(w.setParent(made, parent));
+    CHECK(w.parent(made) == parent);
+
+    std::size_t seen = 0;
+    w.each<engine::Transform>([&](Entity e, engine::Transform&) {
+        if (e == made) {
+            ++seen;
+        }
+    });
+    CHECK(seen == 1);
+
+    CHECK(w.destroy(made));
+}
+
+TEST_CASE("scene: clear() does not un-issue an index -- recreate still succeeds (task 2.4.2 W7/G4)") {
+    World w;
+    const Entity a = w.create();
+    w.clear();
+    CHECK(!w.alive(a));
+    CHECK(w.entityCount() == 0);
+
+    // MEASURED EnTT behaviour (2.4.2 G4): registry.clear() bumps versions and frees slots but never
+    // shrinks the entity storage's size(), so an index this World already issued stays "issued" --
+    // recreate() of a pre-clear() handle succeeds. This is what makes a redo/undo cycle stable, and
+    // it is why INV-6 ("2.5.1 must clear() the stack in the same operation that replaces the World")
+    // is a POLICY the editor must uphold, not a mechanism this function enforces.
+    const Entity made = w.recreate(a);
+    CHECK(made == a);
+    CHECK(w.alive(made));
+}

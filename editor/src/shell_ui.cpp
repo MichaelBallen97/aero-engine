@@ -131,13 +131,14 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
 // imgui.cpp:11386), but requestUndo() and requestRedo() can both be called before one tick. A fixed
 // order makes that deterministic and testable; the net effect is a no-op plus two DEBUG lines (E12).
 void applyHistoryRequests(PanelContext& context, ShellUiState& state) {
+    CommandContext cmd = toCommandContext(context);
     if (state.undoRequested) {
         state.undoRequested = false;
-        context.commands.undo(context.world);
+        context.commands.undo(cmd);
     }
     if (state.redoRequested) {
         state.redoRequested = false;
-        context.commands.redo(context.world);
+        context.commands.redo(cmd);
     }
 }
 

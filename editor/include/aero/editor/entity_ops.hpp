@@ -12,6 +12,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace engine {
@@ -19,6 +20,9 @@ class World;
 }  // namespace engine
 
 namespace engine::editor {
+
+// Not a root, or not tracked. Deliberately not spelled npos (that name belongs to std::string).
+inline constexpr std::size_t NO_ROOT_SLOT = static_cast<std::size_t>(-1);
 
 // ---- queries ---------------------------------------------------------------------------------
 
@@ -106,10 +110,26 @@ public:
     [[nodiscard]] std::span<const Entity> entities() const noexcept;
     void clear() noexcept;
 
+    // Where `entity` currently sits in the display order, or NO_ROOT_SLOT. What a structural command
+    // captures BEFORE destroying a root, so its undo can put the row back where it was (task 2.4.2).
+    [[nodiscard]] std::size_t indexOf(Entity entity) const noexcept;
+
+    // Re-inserts `entity` at `index`, CLAMPED to the current size (D25). A no-op for an invalid handle
+    // or one already tracked. The counterpart of indexOf: reconcile() preserves the order of entries
+    // it already knows (entity_ops.cpp:187-192), so an entry inserted here survives every later frame.
+    void insert(Entity entity, std::size_t index);
+
 private:
     std::vector<Entity> order;
     std::vector<std::uint32_t> stamp;  // Entity::index -> generation of the entry in `order`, else 0
     std::vector<Entity> scratch;
 };
+
+// EditorApp's move is `noexcept = default` (editor_app.hpp). Under P1286R2 a defaulted move with a
+// throwing member is NOT deleted -- it terminates -- so the guarantee has to be asserted on the
+// member type itself (2.4.1's equivalent asserts on CommandStack, applied here). These do NOT catch a
+// future member whose move happens to be noexcept but semantically wrong -- only the noexcept-ness.
+static_assert(std::is_nothrow_move_constructible_v<RootOrder>);
+static_assert(std::is_nothrow_move_assignable_v<RootOrder>);
 
 }  // namespace engine::editor

@@ -152,8 +152,9 @@ bool EditorApp::tick() {
     undoRequested = false;
     redoRequested = false;
     // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1);
-    // commandStack is the editor's ONE undo history (task 2.4.1 D7)
-    PanelContext panelContext{sceneWorld, sceneSelection, commandStack, frameClock.deltaSeconds()};
+    // commandStack is the editor's ONE undo history (task 2.4.1 D7); rootOrder is the editor's ONE
+    // display order among root entities (task 2.4.2 D10)
+    PanelContext panelContext{sceneWorld, sceneSelection, commandStack, rootOrder, frameClock.deltaSeconds()};
     drawShellUi(registry, panelContext, ui);     // menu bar -> dockspace -> panels
     applyDefaultLayout = ui.applyDefaultLayout;  // drawShellUi clears it once consumed, and re-sets
                                                  // it for View > Reset Layout
@@ -192,6 +193,8 @@ Selection& EditorApp::selection() noexcept { return sceneSelection; }
 const Selection& EditorApp::selection() const noexcept { return sceneSelection; }
 CommandStack& EditorApp::commands() noexcept { return commandStack; }
 const CommandStack& EditorApp::commands() const noexcept { return commandStack; }
+RootOrder& EditorApp::roots() noexcept { return rootOrder; }
+const RootOrder& EditorApp::roots() const noexcept { return rootOrder; }
 const FrameClock& EditorApp::clock() const noexcept { return frameClock; }
 bool EditorApp::focused() const noexcept { return windowFocused; }
 bool EditorApp::presentedLastFrame() const noexcept { return presented; }

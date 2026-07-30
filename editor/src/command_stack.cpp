@@ -45,13 +45,13 @@ CommandStack& CommandStack::operator=(CommandStack&& other) noexcept {
     return *this;
 }
 
-bool CommandStack::push(World& world, std::unique_ptr<Command> command) {
+bool CommandStack::push(CommandContext& context, std::unique_ptr<Command> command) {
     if (command == nullptr) {
         return false;  // AC-11/E8: silent -- there is nothing to name in a WARN
     }
     // Step 2 BEFORE step 3 is load-bearing: a failed command must not destroy a redo branch that is
     // still valid (D21 -- S3's discriminator).
-    if (!command->redo(world)) {
+    if (!command->redo(context)) {
         AERO_LOG_WARN("editor: command '{}' could not be applied and was not recorded", command->label());
         return false;  // the redo branch is UNTOUCHED
     }
@@ -72,7 +72,7 @@ bool CommandStack::push(World& world, std::unique_ptr<Command> command) {
     return true;
 }
 
-bool CommandStack::undo(World& world) {
+bool CommandStack::undo(CommandContext& context) {
     if (applied == 0) {
         return false;  // E1: the guard PRECEDES the log, so held key repeat stays silent
     }
@@ -81,7 +81,7 @@ bool CommandStack::undo(World& world) {
     // command's own undo() -- captured here for clarity, not as a workaround for a mutation the
     // contract already forbids.
     const std::string_view label = top.label();
-    const bool ok = top.undo(world);
+    const bool ok = top.undo(context);
     --applied;          // ALWAYS, even on failure (D20/AC-5)
     mergeOpen = false;  // D10/AC-7
     if (ok) {
@@ -92,7 +92,7 @@ bool CommandStack::undo(World& world) {
     return true;  // D20: "did the history move", never "did the command work"
 }
 
-bool CommandStack::redo(World& world) {
+bool CommandStack::redo(CommandContext& context) {
     if (applied == history.size()) {
         return false;
     }
@@ -101,7 +101,7 @@ bool CommandStack::redo(World& world) {
     // command's own redo() -- captured here for clarity, not as a workaround for a mutation the
     // contract already forbids.
     const std::string_view label = next.label();
-    const bool ok = next.redo(world);
+    const bool ok = next.redo(context);
     ++applied;
     mergeOpen = false;  // D10/AC-7
     if (ok) {

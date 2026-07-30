@@ -167,13 +167,22 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # Neither new TU names an ImGui, ImGuizmo or entt type -- the whole command model is pure, which is what
 # makes it tier-0 testable at all. The link line below is UNCHANGED (AC-23) and no new ctest entry is
 # registered (ctest -N stays 94/5/18, AC-25).
+#
+# task 2.4.2 joins this target with editor/scene_snapshot_test.cpp (step 4: the detached-subtree payload
+# and its two-phase restore) and, in steps 5-6, editor/structural_commands_test.cpp. Both stay TIER-0: no
+# GPU, no window, no ImGui context, so they must pass identically with AERO_REQUIRE_GPU unset and set --
+# and, crucially, they need NO REFLECTION (component_ops' addComponent/removeComponent and the whole
+# snapshot facility are meta-free), which is what makes AC-8's "structural undo works with
+# -DAERO_REFLECT_TOOLS=OFF" a tested fact rather than a claim. No new ctest entry is registered (the
+# link line below is unchanged; ctest -N stays 94/5/18).
 find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
                editor/picking_test.cpp editor/selection_overlay_test.cpp
                editor/gizmo_test.cpp editor/transform_ops_test.cpp
-               editor/command_stack_test.cpp editor/transform_command_test.cpp)
+               editor/command_stack_test.cpp editor/transform_command_test.cpp
+               editor/scene_snapshot_test.cpp editor/structural_commands_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -429,7 +438,12 @@ if(AERO_REFLECT_TOOLS)
     # aero::scene_internal is here for the SAME reason aero_tests and aero_editor_shell_test link it:
     # the fixture is registered through engine::scene::internal::registerComponent<T>. Tier-0: no GPU,
     # no window, no ImGui context, no AERO_REQUIRE_GPU, no vulkan_stack_pin.cpp, no ${CMAKE_DL_LIBS}.
-    add_executable(aero_editor_inspector_test editor/inspector_test.cpp)
+    #
+    # task 2.4.2 joins this target with editor/field_command_test.cpp (step 5: SetFieldCommand driven
+    # against the real generated InspectorProbe meta, cases P1-P7, and step 7's P8) -- a SECOND TU on
+    # this already-two-TU-capable target (inspector_test.cpp defines DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN;
+    # the new TU must not). The link line below is unchanged.
+    add_executable(aero_editor_inspector_test editor/inspector_test.cpp editor/field_command_test.cpp)
     target_link_libraries(aero_editor_inspector_test PRIVATE
         doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core)
     target_include_directories(aero_editor_inspector_test PRIVATE editor/fixtures)

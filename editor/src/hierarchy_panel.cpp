@@ -1,5 +1,7 @@
 #include "hierarchy_panel.hpp"
 
+#include <aero/editor/command_stack.hpp>
+#include <aero/editor/entity_commands.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/scene/world.hpp>
@@ -11,6 +13,7 @@
 #include <cstddef>
 #include <cstring>  // std::memcpy -- the payload read (C6: the ImGui payload is alignas(1))
 #include <imgui.h>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -58,9 +61,12 @@ void HierarchyPanel::onDraw(PanelContext& context) {
 
     // -- phase 1: reconcile (FIRST, so the panel is correct when something ELSE changed the World --
     //    2.5.1's load, 2.4.2's undo, a future script). prune() only knows about Selection, which is
-    //    why the two handle checks below are separate: they close E19 and E24.
+    //    why the two handle checks below are separate: they close E19 and E24. The root order
+    //    (RootOrder, D10) now lives on EditorApp; it is still reconciled HERE, deliberately: this must
+    //    run AFTER this frame's undo (applied in drawShellUi, 2.4.1 D19) and BEFORE the tree walk,
+    //    which is exactly where it is.
     context.selection.prune(world);
-    roots.reconcile(world);
+    context.roots.reconcile(world);
     if (renaming.valid() && !world.alive(renaming)) {
         renaming = {};  // E24: the renamed entity was deleted mid-rename
         renameFocusPending = false;
@@ -135,7 +141,7 @@ void HierarchyPanel::drawTree(PanelContext& context) {
         ImGui::PopID();
         ImGui::PopID();
     };
-    walkForest(world, roots.entities(), stack, childArena, enter, unwind);
+    walkForest(world, context.roots.entities(), stack, childArena, enter, unwind);
 
     revealPath.clear();  // consumed -- ImGui's own per-ID storage now remembers the open state
 }
@@ -328,7 +334,9 @@ void HierarchyPanel::drawVoidTarget(PanelContext& context) {
 }
 
 void HierarchyPanel::applyPending(PanelContext& context) {
-    World& world = context.world;
+    // Every mutation now flows through a Command's redo() (task 2.4.2) -- this function only ever
+    // READS the World directly (alive()/name(), and reparentTargets()'s own const query).
+    const World& world = context.world;
     Selection& selection = context.selection;
 
     switch (pending.kind) {
@@ -364,10 +372,14 @@ void HierarchyPanel::applyPending(PanelContext& context) {
             rangeAnchor = {};
             break;
         case ActionKind::CreateEmpty: {
-            const Entity created = createEntity(world, {});
-            if (created.valid()) {
-                selection.set(created);  // AC-11
-                rangeAnchor = created;
+            CommandContext cmd = toCommandContext(context);
+            if (context.commands.push(
+                    cmd, std::make_unique<CreateEntityCommand>(Entity{}, std::string_view{}, selection.entities()))) {
+                // The command has already set the selection to the created entity (AC-22, D5), so the
+                // panel reads it back instead of holding a pointer into the stack -- a merged or
+                // rejected command is destroyed INSIDE push(), and a raw pointer held across that call
+                // is exactly the dangling class command_stack.hpp:60-65 warns about.
+                rangeAnchor = selection.primary();
             }
             break;
         }
@@ -377,11 +389,11 @@ void HierarchyPanel::applyPending(PanelContext& context) {
             // Duplicate below already follow this rule; CreateChild now does too, so right-clicking
             // an unselected row never silently creates a child under a DIFFERENT (selected) entity.
             const Entity parent = resolveCreateChildParent(selection.entities(), selection.primary(), pending.target);
-            const Entity created = createEntity(world, parent);
-            if (created.valid()) {
-                selection.set(created);
-                rangeAnchor = created;
-                revealTarget = created;  // Gap 2: open a collapsed parent to show it, next frame
+            CommandContext cmd = toCommandContext(context);
+            if (context.commands.push(
+                    cmd, std::make_unique<CreateEntityCommand>(parent, std::string_view{}, selection.entities()))) {
+                rangeAnchor = selection.primary();
+                revealTarget = rangeAnchor;  // Gap 2: open a collapsed parent to show it, next frame
             }
             break;
         }
@@ -391,27 +403,29 @@ void HierarchyPanel::applyPending(PanelContext& context) {
             if (pending.target.valid() && !selection.contains(pending.target)) {
                 moveScratch.clear();
                 moveScratch.push_back(pending.target);
-                destroyEntities(world, moveScratch);
             } else {
-                destroyEntities(world, selection.entities());  // AC-12/E8/E13
-                selection.clear();
+                moveScratch.assign(selection.entities().begin(), selection.entities().end());
             }
-            selection.prune(world);  // no dead handles survive the frame (I5/AC-12)
+            CommandContext cmd = toCommandContext(context);
+            // The command's own redo prunes the selection (AC-12/E8/E13/I5): it empties exactly when
+            // the destroyed set WAS the selection and leaves it untouched otherwise, expressing that
+            // rule once instead of twice.
+            context.commands.push(cmd, std::make_unique<DeleteEntitiesCommand>(moveScratch, selection.entities()));
             rangeAnchor = {};
             renaming = {};
             break;
         }
         case ActionKind::Duplicate: {
-            std::vector<Entity> created;
             if (pending.target.valid() && !selection.contains(pending.target)) {
                 moveScratch.clear();
                 moveScratch.push_back(pending.target);
-                created = duplicateEntities(world, moveScratch);
             } else {
-                created = duplicateEntities(world, selection.entities());  // AC-13/E9/E13
+                moveScratch.assign(selection.entities().begin(), selection.entities().end());
             }
-            if (!created.empty()) {
-                selection.setAll(created);
+            CommandContext cmd = toCommandContext(context);
+            if (context.commands.push(cmd,
+                                      std::make_unique<DuplicateEntitiesCommand>(moveScratch, selection.entities()))) {
+                // AC-13/E9/E13: the command has already selected the copies (D5).
                 rangeAnchor = selection.primary();
                 revealTarget = rangeAnchor;  // Gap 2: reveal the primary copy too
             }
@@ -424,13 +438,19 @@ void HierarchyPanel::applyPending(PanelContext& context) {
                 renameFocusPending = true;
             }
             break;
-        case ActionKind::CommitRename:
-            if (world.alive(pending.target)) {
-                world.setName(pending.target, renameBuffer);  // "" clears (E22/AC-14)
+        case ActionKind::CommitRename: {
+            // D19: compare first -- an unchanged name pushes nothing. The std::string(...) copy is
+            // MANDATORY, not defensive: world.name()'s view is invalidated by the very rename commit
+            // this command is about to perform.
+            if (world.alive(pending.target) && world.name(pending.target) != renameBuffer) {
+                CommandContext cmd = toCommandContext(context);
+                context.commands.push(cmd, std::make_unique<RenameEntityCommand>(
+                                               pending.target, std::string(world.name(pending.target)), renameBuffer));
             }
             renaming = {};
             renameFocusPending = false;
             break;
+        }
         case ActionKind::CancelRename:
             renaming = {};  // the name is left untouched
             renameFocusPending = false;
@@ -440,13 +460,10 @@ void HierarchyPanel::applyPending(PanelContext& context) {
             // reparentTargets() is ALREADY topMost()-filtered -- the exact set `dropLegal` validated
             // during the hover that produced this action -- so a multi-selected parent+child dragged
             // together moves as ONE subtree, never split with the child peeled off into the target
-            // directly. reparentTargets() returns a fresh vector (independent of Selection's own
-            // storage), so this is safe even though reparentEntity mutates the World the Selection
-            // reads.
+            // directly.
             const std::vector<Entity> targets = reparentTargets(world, selection.entities(), pending.target);
-            for (const Entity e : targets) {
-                reparentEntity(world, e, pending.second);
-            }
+            CommandContext cmd = toCommandContext(context);
+            context.commands.push(cmd, std::make_unique<ReparentCommand>(targets, pending.second));
             break;
         }
     }

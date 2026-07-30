@@ -38,6 +38,7 @@ using scene::internal::fromEntt;
 using scene::internal::Registry;
 using scene::internal::SceneEntity;
 using scene::internal::toEntt;
+using scene::internal::Traits;  // task 2.4.2 — World::recreate's occupancy pre-check
 
 // The hierarchy's backing storage (task 1.3.2): a TU-LOCAL component type the registry owns. It is
 // created directly on the registry and NEVER bound into the public registration table, so
@@ -199,6 +200,44 @@ Entity World::create() {
         return Entity{};
     }
     return fromEntt(impl->registry.create());
+}
+
+Entity World::recreate(Entity entity) {
+    AERO_PROFILE_ZONE;
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("scene: {} on a moved-from World", "recreate");
+        return Entity{};
+    }
+    if (!entity.valid() || impl->aliveInternal(entity)) {
+        return Entity{};  // silent: nothing to restore
+    }
+    Registry& reg = impl->registry;
+    const SceneEntity ee = toEntt(entity);
+
+    // F6: the entity storage's size() counts every slot this World has EVER issued. An index beyond
+    // it was never minted here, and honouring it would punch a hole in the packed array.
+    if (static_cast<std::size_t>(entity.index) >= reg.storage<SceneEntity>().size()) {
+        AERO_LOG_ERROR("scene: recreate of an index this world never issued (index {})", entity.index);
+        return Entity{};
+    }
+    // F5: side-effect-free occupancy test. current(ee) is the version that index holds NOW; if the
+    // identifier built from it is alive, the slot belongs to a different generation and entt's own
+    // create(hint) would silently hand back a substitute — which this contract forbids.
+    const SceneEntity occupant = Traits::construct(Traits::to_entity(ee), reg.current(ee));
+    if (reg.valid(occupant)) {
+        AERO_LOG_ERROR("scene: recreate of an occupied index (index {}, generation {})", entity.index,
+                       entity.generation);
+        return Entity{};
+    }
+    const Entity made = fromEntt(reg.create(ee));
+    // Belt-and-braces behind F3's contract, in the addRaw M5 spirit: if a future entt ever falls back
+    // despite the checks above, undo the surprise rather than hand it to the caller.
+    if (made != entity) {
+        reg.destroy(toEntt(made));
+        AERO_LOG_ERROR("scene: recreate could not honour the requested identity (index {})", entity.index);
+        return Entity{};
+    }
+    return made;
 }
 
 bool World::destroy(Entity entity) noexcept {

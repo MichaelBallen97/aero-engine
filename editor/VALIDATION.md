@@ -28,6 +28,7 @@ now lives in its own page, short enough to render anywhere.
 | [2.3.2 — selection & picking](validation/2.3.2-selection-picking.md) | ✅ | ✅ PASS 21/21 | ⏳ | ⏳ |
 | [2.3.3 — ImGuizmo transform gizmos](validation/2.3.3-imguizmo-transform-gizmos.md) | ✅ | ✅ PASS 24/24 applicable | ⏳ | ⏳ |
 | [2.4.1 — command stack](validation/2.4.1-command-stack.md) | ✅ | ✅ PASS 16/16 | ⏳ | ⏳ |
+| [2.4.2 — property-set + structural commands](validation/2.4.2-property-set-structural-commands.md) | ✅ | ⏳ | ⏳ | ⏳ |
 
 `⏳` = needs a code-free, on-hardware follow-up, the Phase 0/1 precedent (0.5.3 / 1.4.2). No Windows or
 Linux human pass has been run for **any** Phase 2 task yet; that is a known, accumulating debt, not an
@@ -35,20 +36,26 @@ oversight per task.
 
 ## What needs a human next
 
-**Every macOS row across Phase 2 is now run.** 2.4.1's pass (2026-07-30, 16/16) was the last one
-outstanding, and it confirmed the code-review round's AC-16 ordering fix end to end — one continuous
-gizmo drag undoes in a single step, which is the *only* guard on that ordering, since neither test tier
-can reach it (tier-0 cannot construct the panel; the GPU-gated target cannot inject mouse input).
+**2.4.2 is the one macOS row left outstanding in Epic 2.4 — its 24-row pass has not been run.** Two rows
+carry the whole weight of this task's uncovered surface: row 6 is the **only** proof anywhere in this
+tree that the Inspector panel itself applies the D17 merge-chain gate pair correctly (no test target can
+construct `InspectorPanel` — it is src-private and ImGui-bound; `field_command_test.cpp`'s P8 pins the
+*policy* against a bare `CommandStack`, not the panel), and row 11 is the canonical sequence spec §0-D2
+exists for — move the Cube with the gizmo, delete it, undo twice, and the move must undo too. Until this
+pass runs, Epic 2.4 is CLOSED **in code** only.
 
 What is left:
 
 - **[2.2.5 — log/console panel](validation/2.2.5-log-console-panel.md) · 4 rows still BLOCKED.** They
-  could not be run because the editor emitted no log record after startup. **Two triggerable sources now
-  exist and both are confirmed working by human passes** — 2.3.3's degenerate-transform gizmo WARN, and
-  2.4.1's Debug-build `⌘Z`, which row 14 verified logs one `DEBUG editor: undo 'Transform' (…)` per undo
-  (and is silent in Release). Nothing blocks these four rows any more; they simply have not been re-run.
+  could not be run because the editor emitted no log record after startup. **Three triggerable sources
+  now exist** — 2.3.3's degenerate-transform gizmo WARN and 2.4.1's Debug-build `⌘Z` (both confirmed
+  working by human passes), plus 2.4.2's own Debug-build `⌘Z`, which now varies its label
+  (`Delete Entity`, `Rename`, `Add MeshRenderer`, …) instead of always reading `Transform`. Nothing
+  blocks these four rows any more; they have not been re-run against any of the three sources yet.
   **This is the cheapest open item in the ledger.**
-- **Windows and Linux — every task, all eleven.** No non-macOS human pass has been run for any Phase 2
+- **[2.4.2 — property-set + structural commands](validation/2.4.2-property-set-structural-commands.md)
+  · macOS pass not yet run.** 24 rows; see the priority rows called out on that page (11, 6, 18, 8, 9, 21).
+- **Windows and Linux — every task, all twelve.** No non-macOS human pass has been run for any Phase 2
   task. That is accumulating debt across the whole phase, not a per-task gap, and it is worth scheduling
   deliberately rather than discovering at the phase gate. Each task page carries its own "How to
   validate one OS" section; the rows are identical per platform except where a page marks one

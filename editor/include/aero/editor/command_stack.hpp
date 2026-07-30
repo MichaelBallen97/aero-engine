@@ -26,6 +26,31 @@ class World;  // forward-declared: every entry point takes it by reference; the 
 
 namespace engine::editor {
 
+class Selection;  // forward declarations only: this header stays free of world.hpp/selection.hpp/
+class RootOrder;  //   entity_ops.hpp weight, exactly as it already is for World.
+
+// What a command is handed at apply time (task 2.4.2). References, never ownership -- the PanelContext
+// shape, and for the same reason: a command may outlive the frame that created it by an arbitrary
+// number of frames, so it must hold VALUES and HANDLES only and receive everything else as an
+// argument (the rule this header already states below).
+//
+// PASSED PER CALL, never stored on the stack: a reference member on CommandStack would delete
+// EditorApp's defaulted move assignment (2.4.1 F15) and would let one stack straddle a scene swap,
+// which INV-6 exists to make impossible.
+//
+// Three fields, each earned:
+//   world      -- what a command mutates.
+//   selection  -- create/delete/duplicate change it, so their undo must put it back (2.4.2 D12;
+//                selection.hpp:11 has said so since 2.2.1).
+//   roots      -- the editor's display order among ROOT entities, which the World deliberately does
+//                not model (entity_ops.hpp:91-98). An undone delete of a root must return that root
+//                to the row it occupied, not to the bottom of the list.
+struct CommandContext {
+    World& world;
+    Selection& selection;
+    RootOrder& roots;
+};
+
 // One undoable editor mutation. Concrete commands live next to the seam they wrap
 // (transform_command.hpp here; 2.4.2 adds the reflected property-set and the structural four).
 //
@@ -45,10 +70,10 @@ public:
     // Apply, or re-apply. CALLED BY push() (D5) -- the first application is a redo. Returns false
     // when the edit could not be applied (its target is gone, typically); the stack turns that into
     // exactly one WARN. MUST NOT partially mutate on a false return.
-    virtual bool redo(World& world) = 0;
+    virtual bool redo(CommandContext& context) = 0;
 
     // Restore the state as it was before redo(). Same false semantics.
-    virtual bool undo(World& world) = 0;
+    virtual bool undo(CommandContext& context) = 0;
 
     // A short, NON-EMPTY, human-facing noun phrase for the Edit menu: "Undo <label>". Backed by a
     // string literal or by a std::string the command itself owns; valid for the command's lifetime.
@@ -101,12 +126,12 @@ public:
 
     // Apply `command` and record it. Returns true iff it was applied (and therefore recorded, or
     // merged into the top). A null command returns false silently.
-    bool push(World& world, std::unique_ptr<Command> command);
+    bool push(CommandContext& context, std::unique_ptr<Command> command);
 
     // Returns false iff there was nothing to undo/redo. A command that FAILS still consumes its step
     // and returns true -- a frozen Ctrl+Z is worse than a step that reverted nothing (D20).
-    bool undo(World& world);
-    bool redo(World& world);
+    bool undo(CommandContext& context);
+    bool redo(CommandContext& context);
 
     // The next push starts a NEW entry instead of merging into the top. Idempotent.
     void breakMergeChain() noexcept;

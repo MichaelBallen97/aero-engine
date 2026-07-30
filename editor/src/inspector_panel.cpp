@@ -1,6 +1,8 @@
 #include "inspector_panel.hpp"
 
 #include <aero/core/math.hpp>
+#include <aero/editor/command_stack.hpp>
+#include <aero/editor/component_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/selection.hpp>
@@ -14,6 +16,7 @@
 #include <cstdint>
 #include <imgui.h>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -67,6 +70,31 @@ float dragSpeed(bool hasRange, double rangeMin, double rangeMax, float unrangedS
         return unrangedSpeed;
     }
     return static_cast<float>(std::max((rangeMax - rangeMin) / 200.0, 0.05));
+}
+
+// The continuous-gesture boundary pair (task 2.4.2, D17). IsItemActivated/IsItemDeactivated refer to
+// the LAST submitted item, so this is read AFTER the widget call -- and the two halves are applied on
+// OPPOSITE sides of this frame's push: an OPEN edge breaks the chain BEFORE the push, a CLOSE edge
+// breaks it AFTER. That asymmetry is not stylistic -- on the release frame ImGui reports the final
+// edit AND the deactivation together, so closing the chain FIRST would record that frame as a second,
+// un-merged entry. Exactly the ordering defect 2.4.1's code-review round found in the gizmo, factored
+// into ONE place here so it cannot drift between the seven arms below.
+struct EditGate {
+    bool opened = false;
+    bool closed = false;
+};
+[[nodiscard]] EditGate gateForLastItem() { return {ImGui::IsItemActivated(), ImGui::IsItemDeactivated()}; }
+
+// Builds the named CommandContext (never a temporary bound to a reference -- A10) and pushes the
+// generic reflected field-write seam once. `field.value` is passed as `before` -- this frame's
+// pre-edit value from the model rebuilt at :105, BEFORE any widget was drawn (F13/D16) -- never a
+// fresh read taken at push time, which would cost extra lookups and could read the POST-edit value on
+// an arm that writes before the push.
+void pushFieldEdit(PanelContext& context, Entity entity, const ComponentEntry& entry, const FieldEntry& field,
+                   FieldValue after) {
+    CommandContext cmd = toCommandContext(context);
+    context.commands.push(cmd, std::make_unique<SetFieldCommand>(entity, entry.typeId, field.name, entry.name,
+                                                                 field.value, std::move(after)));
 }
 
 }  // namespace
@@ -192,8 +220,18 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
     switch (field.kind) {
         case FieldKind::Bool: {
             bool v = std::get<bool>(field.value);
-            if (ImGui::Checkbox("##v", &v)) {
-                writeComponentField(context.world, primary, entry.typeId, field.name, FieldValue{v});
+            const bool edited = ImGui::Checkbox("##v", &v);
+            // A Checkbox activates AND deactivates on the same frame (press-release, discrete), so the
+            // gate is harmless here -- applied anyway so no arm is the odd one out (task 2.4.2 D17).
+            const EditGate gate = gateForLastItem();
+            if (gate.opened) {
+                context.commands.breakMergeChain();  // BEFORE the push
+            }
+            if (edited) {
+                pushFieldEdit(context, primary, entry, field, FieldValue{v});
+            }
+            if (gate.closed) {
+                context.commands.breakMergeChain();  // AFTER the push
             }
             break;
         }
@@ -203,9 +241,17 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             const auto hi = doubleToClamped<std::int64_t>(field.rangeMax);
             const float speed = dragSpeed(field.hasRange, field.rangeMin, field.rangeMax, 1.0F);
             const ImGuiSliderFlags flags = field.hasRange ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
-            if (ImGui::DragScalar("##v", ImGuiDataType_S64, &v, speed, field.hasRange ? &lo : nullptr,
-                                  field.hasRange ? &hi : nullptr, nullptr, flags)) {
-                writeComponentField(context.world, primary, entry.typeId, field.name, FieldValue{v});
+            const bool edited = ImGui::DragScalar("##v", ImGuiDataType_S64, &v, speed, field.hasRange ? &lo : nullptr,
+                                                  field.hasRange ? &hi : nullptr, nullptr, flags);
+            const EditGate gate = gateForLastItem();
+            if (gate.opened) {
+                context.commands.breakMergeChain();
+            }
+            if (edited) {
+                pushFieldEdit(context, primary, entry, field, FieldValue{v});
+            }
+            if (gate.closed) {
+                context.commands.breakMergeChain();
             }
             break;
         }
@@ -215,9 +261,17 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             const auto hi = doubleToClamped<std::uint64_t>(field.rangeMax);
             const float speed = dragSpeed(field.hasRange, field.rangeMin, field.rangeMax, 1.0F);
             const ImGuiSliderFlags flags = field.hasRange ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
-            if (ImGui::DragScalar("##v", ImGuiDataType_U64, &v, speed, field.hasRange ? &lo : nullptr,
-                                  field.hasRange ? &hi : nullptr, nullptr, flags)) {
-                writeComponentField(context.world, primary, entry.typeId, field.name, FieldValue{v});
+            const bool edited = ImGui::DragScalar("##v", ImGuiDataType_U64, &v, speed, field.hasRange ? &lo : nullptr,
+                                                  field.hasRange ? &hi : nullptr, nullptr, flags);
+            const EditGate gate = gateForLastItem();
+            if (gate.opened) {
+                context.commands.breakMergeChain();
+            }
+            if (edited) {
+                pushFieldEdit(context, primary, entry, field, FieldValue{v});
+            }
+            if (gate.closed) {
+                context.commands.breakMergeChain();
             }
             break;
         }
@@ -227,9 +281,18 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             const double hi = field.rangeMax;
             const float speed = dragSpeed(field.hasRange, field.rangeMin, field.rangeMax, 0.1F);
             const ImGuiSliderFlags flags = field.hasRange ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
-            if (ImGui::DragScalar("##v", ImGuiDataType_Double, &v, speed, field.hasRange ? &lo : nullptr,
-                                  field.hasRange ? &hi : nullptr, nullptr, flags)) {
-                writeComponentField(context.world, primary, entry.typeId, field.name, FieldValue{v});
+            const bool edited =
+                ImGui::DragScalar("##v", ImGuiDataType_Double, &v, speed, field.hasRange ? &lo : nullptr,
+                                  field.hasRange ? &hi : nullptr, nullptr, flags);
+            const EditGate gate = gateForLastItem();
+            if (gate.opened) {
+                context.commands.breakMergeChain();
+            }
+            if (edited) {
+                pushFieldEdit(context, primary, entry, field, FieldValue{v});
+            }
+            if (gate.closed) {
+                context.commands.breakMergeChain();
             }
             break;
         }
@@ -243,8 +306,18 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             } else {
                 edited = ImGui::DragFloat3("##v", tmp.data(), 0.1F);
             }
+            // DragFloat3/ColorEdit4 wrap themselves in BeginGroup/EndGroup, and EndGroup forwards the
+            // active/deactivated id to LastItemData, so the gate below sees the WHOLE widget's edges,
+            // not a single axis's (task 2.4.2 G2). Read once, after the branch.
+            const EditGate gate = gateForLastItem();
+            if (gate.opened) {
+                context.commands.breakMergeChain();
+            }
             if (edited) {
-                writeComponentField(context.world, primary, entry.typeId, field.name, FieldValue{fromArray(tmp)});
+                pushFieldEdit(context, primary, entry, field, FieldValue{fromArray(tmp)});
+            }
+            if (gate.closed) {
+                context.commands.breakMergeChain();
             }
             break;
         }
@@ -256,14 +329,23 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                                                       : toArray(vecDegrees(eulerAngles(std::get<Quat>(field.value))));
             std::array<float, 3> dragged = deg;
             const bool edited = ImGui::DragFloat3("##v", dragged.data(), 1.0F);
+            // The gate refers to this same last-submitted item; read it here, immediately after the
+            // widget call and before the cache block below (which submits no ImGui item of its own).
+            const EditGate gate = gateForLastItem();
             if (ImGui::IsItemActive()) {
                 quatCache = {primary, entry.typeId, field.name, /*active=*/true, fromArray(dragged)};
             } else if (cacheHit) {
                 quatCache = {};  // released: drop, so the display re-derives next frame (E11)
             }
+            if (gate.opened) {
+                context.commands.breakMergeChain();
+            }
             if (edited) {
-                writeComponentField(context.world, primary, entry.typeId, field.name,
-                                    FieldValue{normalize(fromEulerAngles(vecRadians(fromArray(dragged))))});
+                pushFieldEdit(context, primary, entry, field,
+                              FieldValue{normalize(fromEulerAngles(vecRadians(fromArray(dragged))))});
+            }
+            if (gate.closed) {
+                context.commands.breakMergeChain();
             }
             break;
         }
@@ -273,11 +355,22 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                 stringCache.buffer = std::get<std::string>(field.value);
             }
             inputTextString("##v", stringCache.buffer, 0);
-            // D14: commit only on deactivation-after-edit, never per-keystroke -- read BEFORE any
-            // cache release below, so the committed text is never a just-reset default.
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                writeComponentField(context.world, primary, entry.typeId, field.name, FieldValue{stringCache.buffer});
+            const EditGate gate = gateForLastItem();
+            // D14: commit only on deactivation-after-edit, never per-keystroke -- this lands on the
+            // SAME frame as gate.closed, so the push-then-close ordering below is what makes it one
+            // entry rather than one entry plus an orphaned open chain (F15).
+            const bool committed = ImGui::IsItemDeactivatedAfterEdit();
+            if (gate.opened) {
+                context.commands.breakMergeChain();  // BEFORE the push
             }
+            if (committed) {
+                pushFieldEdit(context, primary, entry, field, FieldValue{stringCache.buffer});
+            }
+            if (gate.closed) {
+                context.commands.breakMergeChain();  // AFTER the push
+            }
+            // The cache release below stays AFTER the push above: the push reads stringCache.buffer,
+            // and release clears it.
             if (ImGui::IsItemActive()) {
                 stringCache.entity = primary;
                 stringCache.type = entry.typeId;
@@ -301,12 +394,18 @@ void InspectorPanel::applyPending(PanelContext& context, Entity primary) {
     switch (pending.kind) {
         case ActionKind::None:
             break;
-        case ActionKind::AddComponent:
-            addComponent(context.world, primary, pending.type);
+        case ActionKind::AddComponent: {
+            CommandContext cmd = toCommandContext(context);
+            context.commands.push(cmd, std::make_unique<AddComponentCommand>(
+                                           primary, pending.type, context.world.componentTypeName(pending.type)));
             break;
-        case ActionKind::RemoveComponent:
-            removeComponent(context.world, primary, pending.type);
+        }
+        case ActionKind::RemoveComponent: {
+            CommandContext cmd = toCommandContext(context);
+            context.commands.push(cmd, std::make_unique<RemoveComponentCommand>(
+                                           primary, pending.type, context.world.componentTypeName(pending.type)));
             break;
+        }
     }
     pending = PendingAction{};
 }

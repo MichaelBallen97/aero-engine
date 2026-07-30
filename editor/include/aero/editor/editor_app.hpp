@@ -8,6 +8,7 @@
 #include <aero/editor/command_stack.hpp>  // a VALUE member needs the definition (the selection.hpp /
                                           // panel_registry.hpp precedent), unlike panel_context.hpp,
                                           // which holds a reference and forward-declares.
+#include <aero/editor/entity_ops.hpp>     // a VALUE member (rootOrder) needs RootOrder's definition
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/selection.hpp>
@@ -99,6 +100,13 @@ public:
     // 2.5.1's New/Open Scene must clear() it in the same operation that replaces that World.
     [[nodiscard]] CommandStack& commands() noexcept;
     [[nodiscard]] const CommandStack& commands() const noexcept;
+    // The editor's ONE display order among root entities (task 2.4.2, D10). Moved off HierarchyPanel so
+    // a structural command can restore a deleted root to the row it occupied: a command cannot reach a
+    // panel's private member, and must not -- commands hold values and handles only. The Hierarchy
+    // reconciles this same object every frame; with registerDefaultPanels == false nothing reconciles it
+    // and it stays empty, which is a TESTED state (E5), not an assumption.
+    [[nodiscard]] RootOrder& roots() noexcept;
+    [[nodiscard]] const RootOrder& roots() const noexcept;
     [[nodiscard]] const FrameClock& clock() const noexcept;
     [[nodiscard]] bool focused() const noexcept;
     // True when the LAST tick() actually presented (false when the window was minimized). This is
@@ -149,6 +157,8 @@ private:
     Selection sceneSelection;
     CommandStack commandStack;  // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
                                 // stays valid. command_stack.hpp's two static_asserts hold that line.
+    RootOrder rootOrder;        // task 2.4.2, D10 (accessor: roots()). entity_ops.hpp's two static_asserts
+                                // hold the same noexcept-move guarantee for this member.
     // Non-owning; owned by `registry`, which holds panels through unique_ptr -- so the Panel object
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.
