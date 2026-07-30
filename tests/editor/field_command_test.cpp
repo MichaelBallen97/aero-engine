@@ -393,3 +393,80 @@ TEST_CASE("field_command: a std::string field owns its value, independent of the
     REQUIRE(beforeVal.has_value());
     CHECK(std::get<std::string>(*beforeVal) == "Alpha");
 }
+
+TEST_CASE("field_command: the merge-chain ordering law -- OPEN before the push, CLOSE after (P8/D17/AC-16)") {
+    // The tier-0 policy pin for inspector_panel.cpp's seven-arm gate (task 2.4.2 R-1): the panel itself
+    // is unreachable from any test target (src-private, ImGui-bound), so this drives the CALL SEQUENCE
+    // a release frame produces, directly against a real CommandStack. Human row 6 is the only proof the
+    // panel actually applies the policy pinned here.
+    World world;
+    aero_reflect_register_all_aero_editor_inspector_test();
+    const ComponentTypeId probeId = registerProbe(world);
+    REQUIRE(probeId.valid());
+    const Entity e = world.create();
+    world.addRaw(probeId, e, nullptr);
+    Selection selection;
+    RootOrder roots;
+    CommandContext ctx{world, selection, roots};
+
+    SUBCASE("Arm 1 -- the correct order: OPEN before, CLOSE after -> one entry, undo reaches the drag start") {
+        CommandStack stack;
+        stack.breakMergeChain();  // the OPEN edge, correctly BEFORE this gesture's first push
+        double v = 1.0;
+        const double start = v;
+        for (int i = 0; i < 3; ++i) {  // three drag frames
+            const double next = v + 1.0;
+            REQUIRE(stack.push(ctx, std::make_unique<SetFieldCommand>(e, probeId, "mass", "InspectorProbe",
+                                                                      FieldValue{v}, FieldValue{next})));
+            v = next;
+        }
+        // The release frame: push THEN close -- the correct order (D17).
+        const double released = v + 1.0;
+        REQUIRE(stack.push(ctx, std::make_unique<SetFieldCommand>(e, probeId, "mass", "InspectorProbe", FieldValue{v},
+                                                                  FieldValue{released})));
+        stack.breakMergeChain();
+
+        CHECK(stack.count() == 1);
+        REQUIRE(stack.undo(ctx));
+        auto afterUndo = readComponentField(world, e, probeId, "mass");
+        REQUIRE(afterUndo.has_value());
+        CHECK(std::get<double>(*afterUndo) == doctest::Approx(start));  // the drag START, not one frame back
+    }
+
+    SUBCASE("Arm 2 -- the DEFECT, documented: CLOSE moved BEFORE the release frame's push -> two entries") {
+        CommandStack stack;
+        stack.breakMergeChain();
+        double v = 1.0;
+        for (int i = 0; i < 3; ++i) {
+            const double next = v + 1.0;
+            REQUIRE(stack.push(ctx, std::make_unique<SetFieldCommand>(e, probeId, "mass", "InspectorProbe",
+                                                                      FieldValue{v}, FieldValue{next})));
+            v = next;
+        }
+        // This arm exists to PIN the bug the code above must not have, not to bless it: the CLOSE edge
+        // runs BEFORE the release frame's push instead of after -- 2.4.1's own code-review-round defect,
+        // reproduced here on purpose.
+        const double released = v + 1.0;
+        stack.breakMergeChain();
+        REQUIRE(stack.push(ctx, std::make_unique<SetFieldCommand>(e, probeId, "mass", "InspectorProbe", FieldValue{v},
+                                                                  FieldValue{released})));
+
+        CHECK(stack.count() == 2);
+    }
+
+    SUBCASE("Arm 3 -- the OPEN edge on the wrong side: two gestures wrongly collapse into one entry") {
+        CommandStack stack;
+        // Gesture 1: OPEN correctly before its push.
+        stack.breakMergeChain();
+        REQUIRE(stack.push(ctx, std::make_unique<SetFieldCommand>(e, probeId, "mass", "InspectorProbe", FieldValue{1.0},
+                                                                  FieldValue{2.0})));
+        // Gesture 2's OPEN edge, moved AFTER its first push instead of before: the push below runs
+        // while gesture 1's chain is still open, so it wrongly MERGES into gesture 1's entry -- the
+        // breakMergeChain() call that follows is too late to prevent it.
+        REQUIRE(stack.push(ctx, std::make_unique<SetFieldCommand>(e, probeId, "mass", "InspectorProbe", FieldValue{2.0},
+                                                                  FieldValue{3.0})));
+        stack.breakMergeChain();
+
+        CHECK(stack.count() == 1);  // two GESTURES should be two entries; the ordering defect collapses them
+    }
+}
