@@ -400,6 +400,45 @@ TEST_CASE("scene_snapshot: an unmirrorable type logs exactly one WARN per captur
     CHECK_FALSE(world.has<FieldedProbe>(child));
 }
 
+// N13 is the OTHER half of AC-7's atomicity, and it exists because the sabotage matrix found N7 alone
+// could not prove it: N7 pre-occupies the FIRST record's index, so phase A refuses on record 0, the
+// rollback loop iterates zero times, and seeding S6 (the rollback deleted outright) left the WHOLE
+// suite green. A `world.clear()` probe in that loop confirmed it is never entered with created > 0
+// anywhere in the inventory. This case fails on the SECOND record instead: phase A must recreate `a`,
+// refuse `b`, then DESTROY `a` again and return false, leaving no survivor of the attempt.
+//
+// Two INDEPENDENT roots, not a parent/child pair, because that makes the destroy ORDER this test's own
+// to choose -- entt's entity free list is LIFO, so destroying `b` last is what makes the single
+// create() below land on b's index while a's stays free.
+TEST_CASE("scene_snapshot: a failure on a LATER record rolls back what phase A already made (N13/AC-7/S6)") {
+    World world;
+    const Entity a = world.create();
+    const Entity b = world.create();
+
+    SubtreeSnapshot snap;
+    REQUIRE(snap.capture(world, std::vector<Entity>{a, b}));  // topMost preserves input order: records [a, b]
+    REQUIRE(snap.entityCount() == 2);
+
+    REQUIRE(world.destroy(a));  // freed FIRST
+    REQUIRE(world.destroy(b));  // freed LAST -- so it is the first index handed back out
+    REQUIRE(world.entityCount() == 0);
+
+    // ONE create(), with the LIFO assumption ASSERTED rather than looped around (N7's do-while shape is
+    // wrong here): were entt to stop recycling b's slot first, this REQUIRE fails loudly instead of
+    // leaving the case vacuous -- a loop would occupy a's index too and phase A would then refuse on
+    // record 0, silently degrading N13 back into N7.
+    const Entity occupant = world.create();
+    REQUIRE(occupant.index == b.index);
+    REQUIRE(occupant.generation != b.generation);
+    REQUIRE(world.entityCount() == 1);
+
+    CHECK_FALSE(snap.restore(world));
+    CHECK_FALSE(world.alive(a));      // THE ROLLBACK: `a` WAS recreated, then destroyed again
+    CHECK_FALSE(world.alive(b));      // never recreated at all
+    CHECK(world.alive(occupant));     // the occupant is entirely untouched
+    CHECK(world.entityCount() == 1);  // exactly the occupant -- no survivor of the failed attempt
+}
+
 // AC-2's ERROR accounting for World::recreate, driven from here (not tests/scene_test.cpp -- see
 // that TU's W3 comment) because aero_editor_shell_test already carries a LogSinkScope and links
 // aero::scene. One TEST_CASE, six SUBCASEs: a LogFixture declared FIRST (destructs LAST), then a
