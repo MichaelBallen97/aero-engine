@@ -189,6 +189,165 @@ What each task shipped, decided, and proved.
 
 **Corrected inventory, measured at each of the five new commit boundaries, not assumed.** `aero_editor_shell_test` stays **169** TEST_CASEs (no new ones — every fix landed inside an existing case), with assertions **14542 → 14544** (+2: G7's new rotation check, the new behind-camera band subcase); `aero_editor_imgui_test` unchanged at **24**; `aero_tests` unchanged at **356**; `check-math-boundary.sh` unchanged at **209** scanned (no new files, only edits to existing ones); `ctest -N` unchanged at **94**/**5**/**18** across all three configurations. Local ctest green on both macOS presets at every commit boundary; `AERO_REQUIRE_GPU=1 ctest` green on both presets; all five boundary guards green with no allowlist change; clang-format/clang-tidy clean with **zero new `NOLINT`s**. Thirteen sabotage proofs now stand (S1–S13), all seed-confirmed via `git diff`, all reverted and re-confirmed green.
 
+### Epic 2.4 — Undo/redo
+
+#### Task 2.4.1 — Command stack — OPENS Epic 2.4
+
+**2.4.1 ("Command stack") landed: a `Command`/`CommandStack` backbone with an explicit merge chain and a
+128-entry bounded history, `Ctrl+Z`/`Ctrl+Shift+Z` with key repeat and live Edit-menu items, and
+`TransformCommand` wrapping 2.3.3's `transform_ops` seam with the Viewport gizmo routed through it, so
+one continuous drag is exactly one undo step whose `before` is where the drag began.** Two new PUBLIC,
+ImGui-free/entt-free/ImGuizmo-free editor headers (`command_stack.hpp`, `transform_command.hpp`) plus two
+sources; one `CommandStack&` reference member on `PanelContext` and one owned `CommandStack` member on
+`EditorApp` with two accessors and two request methods (`requestUndo()`/`requestRedo()`, mirroring
+`requestLayoutReset()`); two new `ShellUiState` fields, two `ImGui::Shortcut()` chords, a live Edit menu
+and one `applyHistoryRequests` call in `shell_ui.cpp`; three `breakMergeChain()` sites and one `push` in
+`viewport_panel.cpp`; two new tier-0 test TUs (`command_stack_test.cpp` C1–C18, `transform_command_test.cpp`
+T1–T9) and six GPU-gated cases (I1–I6) in `imgui_layer_test.cpp`. **D0/D1 — two scope corrections to
+`docs/tasks/phase-2.md`, mirroring 2.3.3's own D0 in the opposite direction.** D0: the deliverable was
+written as "`ICommand` do/undo" but `do` is a C++ keyword and no prefixed interface exists anywhere in
+this tree (`Panel` is the unprefixed precedent) — the type is `engine::editor::Command`, spelled
+`redo()`/`undo()`. D1: `transform_ops.hpp:2-5` and `gizmo.hpp:33-36` were both written *for this task, by
+name* in 2.3.3, so 2.4.1 now ships `TransformCommand` and routes the gizmo through it — half of one
+2.4.2 bullet ("Transform command wrapping `transform_ops`; gizmo and Inspector edits both route through
+it") moves here, becoming 2.4.2's "Inspector edits route through the generic property-set command (the
+gizmo already routes through 2.4.1's `TransformCommand`)". Five `docs/tasks/phase-2.md` edits carry this:
+`2.4.1`'s `depends:` line (`2.1.3` → `2.1.3, 2.3.3`), its deliverable and subtask list, 2.4.2's bullet, and
+Epic 2.3's Definition of Done (the *undoably* clause now completes at **2.4.1**, not 2.4.2 — the word
+*undoably* is never dropped, only re-pointed). **What deliberately did not ship, all recorded as
+Handoffs, not gaps:** no selection capture/restore (D14 — 2.4.2's, `selection.hpp:11`); no compound/macro
+commands and no `CommandContext` aggregate (D22 — a one-field struct today is ceremony this log already
+criticises; 2.4.2's multi-entity delete widens `redo`/`undo` to one when `Selection&` is actually needed);
+no Inspector routing (D1/E14 — 2.4.2's, the honest one-task cost: drag the cube, type into the Inspector,
+`Ctrl+Z` discards the Inspector edit until 2.4.2 lands); no `Ctrl+Y` (D13 — `ImGuiMod_Ctrl` is ⌘ on
+macOS, so a global `Ctrl+Y` would bind ⌘Y, redo on no platform); no history panel (a natural 2.6.x
+addition — `count()`/`appliedCount()`/`label()` are already the whole model it needs); no memory-budget
+eviction and no runtime capacity setter (D8 — a count, not a byte budget, clamped to ≥ 1, fixed at
+construction); no `incoming.before() == after()` merge guard in `TransformCommand::mergeWith` (deliberately
+absent because it could not fail today — the gizmo reads `before` fresh from the World every frame and
+`Transform::operator==` is exact — an assertion that cannot fail is precisely the defect class this log
+keeps calling out; the first task that writes a `Transform` from outside the drag loop must add it).
+
+**The traps worth keeping.** (i) **F3** — `IsKeyChordPressed` compares the whole 4-bit mod mask for
+*equality* (`imgui.cpp:11386`), so `Ctrl+Z` and `Ctrl+Shift+Z` structurally cannot cross-fire; the
+submission order in `drawMenuBar` is documentation, not arbitration. (ii) **F5** — a focused `InputText`
+outranks a global route for exactly these three chords: `InputTextEx` binds `Ctrl+Z`/`Ctrl+Y`/
+`Ctrl+Shift+Z` on the active item's own id with the default `RouteFocused` (`imgui_widgets.cpp:5130-5131`),
+and plain `RouteGlobal` — what this task and F2's pre-existing `Ctrl+Q` both use — is **last** in the
+documented priority list (`imgui.h:1758`); using `ctx.input()` instead of `ImGui::Shortcut` would make the
+scene jump while renaming (human row 9, S14's only discriminator). (iii) **§A5** — `AERO_LOG_DEBUG` is
+compiled out under `NDEBUG` (`log.hpp:137-143`), so any test asserting `records.size()` would be
+Debug/Release-divergent (CI runs Release on all three lanes); every log assertion in this task counts
+records **by level** via a file-local `countAtLevel` helper in each of the two new test TUs. (iv)
+**F9/INV-3** — `updateGizmo`'s two early returns clear `gizmoWasUsing` *without computing an edge*, so
+breaking the merge chain has to be a property of every latch-clearing site, not of the `End` edge alone —
+both early returns and the `Begin`/`End` edge block all call `breakMergeChain()` (three sites total,
+confirmed by a comment-stripped `grep -c`). (v) **the console's pump-before-draw ordering** (2.2.5 D14)
+bit two of this task's own GPU-gated cases during the Step 7 verification pass, not during Step 6's own
+gate: `EditorApp::tick()` pumps the log sink at the TOP of the frame, before `drawShellUi` runs, so a WARN
+or INFO record raised *during* that same tick's draw (a Viewport's tools-OFF WARN on its first draw; a
+`CommandStack` WARN from an undo applied inside `drawShellUi`) is not visible through `logRecordCount()`
+until the *following* tick's pump — I5 needed a second settling tick before capturing its baseline
+(`-DAERO_SHADER_TOOLS=OFF` adds a one-frame-delayed WARN the tools-ON configuration does not have) and I6
+needed a second tick after `requestUndo()` before its delta assertion; both fixes are one-tick additions,
+found by running §V5's tools-OFF configuration against Step 6's already-committed cases, and both are
+folded into the Step 6 commit rather than shipped as a Step 7 fixup (Step 7 carries no commit of its own).
+
+**§A's nine corrections, each confirmed at the tree, not assumed.** **F16 was wrong** — `PanelContext` has
+**five** construction sites, four in `tests/` (`editor_app.cpp:147`, `shell_test.cpp` ×3,
+`hierarchy_test.cpp` ×1), not the one the spec claimed, so D7's reference member cost five lines, not one;
+`shell_test.cpp:246`'s case (which existed to prove `{world, selection}` stayed valid) was **rewritten,
+never deleted** — its title and both `CHECK`s survive, proving `deltaSeconds` is the ONE defaulted member
+at the new three-brace arity. **`editor/src/imgui_layer.hpp` does not exist** — the header is PUBLIC, at
+`editor/include/aero/editor/imgui_layer.hpp`; AC-24's frozen-file grep against the spec's own path is
+half-vacuous on any tree, and 2.3.3's own log entry carried the same path error forward without noticing.
+**The streak arithmetic was wrong in both directions** — measured with `git log -1`: `imgui_layer.{hpp,cpp}`
+last changed at task **2.1.1** (a ten-task streak, this the eleventh), `main.cpp` at **2.2.4** (a
+four-task streak, this the fifth), `editor_app.cpp` at **2.3.1** (a two-task streak — **this task breaks
+it, deliberately**, wiring the command stack through it). This plan asserts byte-identity only, never a
+streak count. **C14's second half was impossible against the spec's own §3.2 algorithm** — after
+`CommandStack{2}` + push A + `setClean()` + push B + push C + two undos, a `push(D)` truncates the
+(already-empty) redo branch first, so `trimToCapacity` never runs and nothing becomes unreachable; the
+correct two-arm construction (Arm 1: the clean position survives one capacity shift and stays reachable;
+Arm 2: a second shift evicts it and `cleanPosition` becomes permanently `nullopt`) is what actually
+discriminates S8. **A genuine tenth finding, beyond the plan's own nine:** the plan's own C7 "undo" arm,
+as literally specified (push a single entry, undo it, push a follow-up, assert no merge), cannot
+discriminate S2 (a bugged `undo()` that forgets `mergeOpen = false`) — undoing a stack's SOLE entry drops
+`applied` to 0, and the merge guard's own `applied > 0` term then masks `mergeOpen`'s value regardless of
+whether `undo()` reset it, since `push`'s step 3 (truncate) removes that entry before the merge check is
+ever reached. Found by actually running the seed and watching the whole suite stay green when the plan
+predicted red. Fixed with a two-entry construction (push A, break the chain, push B, then undo B — leaving
+`applied == 1`, A still applied) that makes a stale `mergeOpen` visible as an erroneous merge into A; the
+corrected arm now genuinely discriminates S2, and this is the same class of defect §A4 already found in
+the spec's own C14 — a plan- or spec-authored test construction that cannot reach the state it claims to.
+
+**The dead ends recorded so they are never retried:** `ctx.input()` for an editor chord — no notion of UI
+focus, so a focused `InputText` could not swallow `Ctrl+Z` (F5); a global `Ctrl+Y` as a second redo — binds
+⌘Y on macOS, redo on no platform (D13); recording-after-the-fact (`push` does not apply) — two write paths
+forever, a failed first application unrepresentable; pushing once at the drag `End` — a drag abandoned
+through either of `updateGizmo`'s early returns records nothing while the World has already changed
+(F9); time-window merging — needs a clock in a class that has none and is wrong at both ends; a `World&`
+member on `CommandStack` — deletes `EditorApp`'s defaulted move assignment (F15) and would let a stack
+straddle a scene swap, which INV-6 exists to make impossible; a nullable `CommandStack*` in `PanelContext`
+— a null branch at every present and future call site, plus a silent "the edit was not recorded" failure
+mode; applying undo in `tick()` after `drawShellUi` returns — that frame's panels would render pre-undo
+state while `renderScene` renders post-undo, an inconsistency *within* one frame; Qt's integer `id()` tag
+gating the merge — one `dynamic_cast` per push is not worth a second virtual plus a tag to keep in sync;
+comparing a `&incoming` pointer saved during `mergeWith` after the merge destroyed it — record
+`incoming.label()` instead, a string literal with static storage.
+
+**Inventory, measured at every commit boundary, never predicted.** `ctest -N` **94 → 94** (tools ON),
+**5 → 5** (both tools OFF) and **18 → 18** (reflect OFF alone) throughout — **no new `add_test`** anywhere;
+`aero_editor_shell_test` **169 → 187** (Step 1: `command_stack_test.cpp`, C1–C18) **→ 196** (Step 2:
+`transform_command_test.cpp`, T1–T9), unchanged through Steps 3–6; `aero_editor_imgui_test` **24 → 30**
+(I1–I6); `aero_tests` unchanged at **356**; `check-math-boundary.sh`'s scanned count **209 → 215** (+6:
+two headers, two sources, two test TUs — measured against `origin/main` in a disposable `git worktree` at
+Step 0, and directly on the finished tree at Step 7; both agree); `aero_editor_core` **25 → 27** sources
+with a byte-identical link line (`command_stack.cpp` needs only `aero::core`, already PUBLIC;
+`transform_command.cpp` needs only `aero::core`/`aero::scene`, already PUBLIC); `aero_editor_shell_test`'s
+and `aero_editor_imgui_test`'s link lines byte-identical; `editor/include/aero/editor/imgui_layer.hpp`,
+`editor/src/imgui_layer.cpp` and `editor/src/main.cpp` byte-identical for the **eleventh** task running
+(measured last-change commits above, no streak claim per §A3); `editor_app.cpp` changes deliberately,
+ending its own two-task streak; `ViewportPanel::renderScene` byte-identical (`git diff origin/main`, no
+hunk at or after its signature); zero new `NOLINT`s. Both macOS presets green at every one of the six
+commit boundaries, Debug and Release, with and without `AERO_REQUIRE_GPU=1`; both tools-OFF configurations
+green (`build/tools-off-2.4.1` 5/5 with exactly the two known pre-existing WARNs and no third;
+`build/reflect-off-2.4.1` 18/18); all five architecture guards green with no allowlist change; this is the
+**first `dynamic_cast` in the whole tree** (`transform_command.cpp`'s merge downcast), and RTTI was
+confirmed on on all three lanes by the absence of any `-fno-rtti`/`/GR-` flag anywhere in `cmake/` or the
+presets. **All fourteen sabotage proofs were performed**, each seed confirmed landed via `git diff` before
+trusting a verdict, each reverted and re-confirmed green afterward, every verdict measured against the
+WHOLE suite, never a filtered case: **S1–S4, S6–S8, S10, S12 discriminate exactly as predicted**; **S2
+discriminates only after the C7 "undo" arm fix above** (predicted non-discriminating as originally
+written, corrected, then confirmed); **S5's second-order check found MORE redundant coverage than the plan
+predicted** — weakening only the two assertions the plan named (`log.redoCalls == 1` in C2, the three
+`readTransform` equalities in T8) does *not* make the seed pass silently, because C3's `redoCalls == 2`,
+C5's `redoCalls == 1` and C10's whole failed-push case each independently catch it too; recorded honestly
+as a stronger result than predicted rather than mechanically weakened further to force a silent pass;
+**S9's second-order check matched the plan's prediction exactly** — weakening T4's `a.before() == p0` and
+T8's post-undo `readTransform` equality does make the whole suite pass silently with the seed live,
+confirming those two assertions (not the harness) do the work; **S11 discriminates via an ASan
+stack-out-of-bounds abort**, not merely a red assertion — `static_cast`ing an `OtherCommand` through a
+`TransformCommand*` and reading its wider layout is UB the sanitizer catches directly, a stronger result
+than the plan's own "expect a compiler diagnostic or a red test"; **S13 and S14 are confirmed
+NON-DISCRIMINATING, exactly as predicted** — S13 (dropping the `End` arm of the merge-chain break) is
+unreachable from `aero_editor_shell_test` because the panel's own call sites are src-private and ImGui-
+bound; S14 (`RouteGlobal` → `RouteAlways`) is unreachable from `aero_editor_imgui_test` because that
+target is ImGui-free at source and cannot press a key; both are routed to human rows (5 and 9) and neither
+was forced into a manufactured tier-0 discriminator. Three prose-collision fixes, the `each<T>` class
+2.3.2 first found: a `viewport_panel.cpp` comment originally said "the direct `writeTransform` call" and
+inflated AC-18's `git grep -n 'writeTransform'` past its expected two files; a `shell_ui.cpp` comment named
+`menuItemStub` inside the Edit-menu block and inflated AC-20's five-line expectation to six; a
+`tests/CMakeLists.txt` comment paragraph said "target_link_libraries below is UNCHANGED" and matched
+AC-25's own "no new link line" grep; and a `transform_command_test.cpp` comment said "T6's `dynamic_cast`
+arm" and inflated D9/A20's expected single hit to two. All four reworded to describe the same fact without
+the literal token, confirmed back to the expected count, folded into the commit that introduced each
+(Steps 1, 2, 4, 5 respectively — the CMakeLists fix folded into Step 1's commit via the same disposable-
+worktree-and-fold path as the C7 fix). One measured drift from the plan's own §G9 baseline table, recorded
+rather than silently corrected: INV-4's uncomment-stripped identifier scan reads **35 hits across 8
+headers** at `bb6de90`, not the plan's stated "34 hits across 9 headers" — the comment-stripped form
+(the actual gate) is unaffected and was empty before and after this task, so nothing enforceable moved.
+
 ---
 
 # Part 2 — Build & dependency impact ledger
@@ -323,3 +482,50 @@ provably did *not* change.
 #### Task 2.3.3 — ImGuizmo transform gizmos
 
 **2.3.3 is the first task to add a new vcpkg dependency since 0.4.3 (`shaderc`'s SDL_shadercross toolchain) and the first editor-side one since 2.1.1's `imgui` itself** — `imguizmo` joins `vcpkg.json`'s `dependencies` array, alphabetically after the `imgui` object and before `miniaudio`, with **`builtin-baseline` and the `/vcpkg` submodule SHA byte-identical**: F1 (verified at source against the pinned submodule commit) proved `imguizmo` already resolves to `1.10` at the existing baseline, so the CI job asserting `submodule SHA == builtin-baseline` stays green by changing neither. The port is `vcpkg_check_linkage(ONLY_STATIC_LIBRARY)`, MIT-licensed, installs its single header **flat** into `include/` (so the spelling is `#include <ImGuizmo.h>`, not `<ImGuizmo/ImGuizmo.h>`), and exports `imguizmo::imguizmo` with **no `INTERFACE_LINK_LIBRARIES`** — it reaches `imgui` only via `PRIVATE` include dirs baked in at the port's own build time, so `find_package(imguizmo CONFIG REQUIRED)` pulls nothing else onto `editor/CMakeLists.txt`'s line. `imguizmo::imguizmo` is linked `PRIVATE` on `aero_editor_core` only, immediately after `imgui::imgui`, for the identical reason (D1/2.1.3): it confines every ImGuizmo symbol to `editor/src/` TUs, so `aero_editor` and `aero_editor_shell_test` stay ImGuizmo-free at source, held by file placement and review (R12), not by a probe. **No guard or allowlist changed anywhere** (G2, confirmed at source): `check-golden-rule.sh`'s `SCAN_ROOTS` is `('engine' 'runtime')`, an include scan with no dependency allowlist at all, and `aero_assert_golden_rule`'s `CMAKE_CURRENT_FUNCTION` link-graph walk is directory-rooted (`file(RELATIVE_PATH)`), never a substring match on a target or package name — adding `imguizmo::imguizmo` to an `/editor` target is structurally invisible to both, by design, and `golden-rule.link_graph_e2e`'s six-reconfigure fixture proves it directly: it now sees `imguizmo::imguizmo` on an editor target, exactly where the golden rule says a third-party dependency is allowed to live. The math/platform/rhi/scene boundary guards are likewise untouched: this task adds no GLM, SDL, SDL_GPU or EnTT identifier anywhere, and touches no `engine/` file at all. **`.clang-format` also changed — the first `IncludeCategories` edit since task 0.1.6 stood the file up.** One new entry, `- Regex: '^<ImGuizmo\.h>' / Priority: 5`, listed FIRST so it wins clang-format's "first matching category" tie-break ahead of the generic third-party-with-path rule; empirically reproduced against the pinned Homebrew clang-format 18.1.8 (the CI version): without the entry, `<ImGuizmo.h>` sorts as a no-path third-party include and gets grouped with `<algorithm>`/`<cmath>`/etc under `SortIncludes: CaseSensitive`, where `'I'` (0x49) sorts before every lowercase entry and hoists it above `<imgui.h>` — which does not compile, since `ImGuizmo.h` never includes `imgui.h` itself. The patched config was run over **every tracked `*.cpp/*.hpp/*.h/*.inl` file at HEAD before this task's own includes existed** and is a byte-for-byte **no-op** (`--dry-run --Werror`, exit 0, empty output) — expected, since the new regex matches nothing until this task's own two `#include <ImGuizmo.h>` lines land, and confirmed a second time, tree-wide, at the end of this task with those two lines in place. `tests/CMakeLists.txt` gained **two source tokens** on `aero_editor_shell_test`'s existing `add_executable` (`editor/gizmo_test.cpp`, `editor/transform_ops_test.cpp`) plus two comment paragraphs in the file's running style — its `target_link_libraries`, every `*_boundary_probe` line, `aero_tests`' whole block and `aero_editor_imgui_test`'s whole block are byte-identical, confirmed with `git diff origin/main -- tests/CMakeLists.txt editor/CMakeLists.txt` showing only source-list/comment hunks plus the one `imguizmo::imguizmo` link token. `tests/editor/imgui_layer_test.cpp` gained two includes (`<aero/editor/gizmo.hpp>`, `<SDL3/SDL_filesystem.h>` — the latter a genuinely new DIRECT SDL3 touch in a TU whose own header comment previously claimed SDL3 reached it "purely transitively"; the comment was corrected in the same commit, not left stale) plus three more standard-library includes (`<filesystem>`, `<fstream>`, `<sstream>`) and five GPU-gated `TEST_CASE`s on its existing target — **no new `add_test` anywhere**. `ctest -N` reads **94** on both macOS presets at every one of the six commit boundaries, a fresh `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` configure (`build/tools-off-2.3.3`) reads **5**, and the new **`-DAERO_REFLECT_TOOLS=OFF` alone** configuration this task's own AC-17 adds to the gate (`build/reflect-off-2.3.3`) reads **18**, measured not assumed (the tools-OFF five plus the thirteen `shaderc.*` cases, every `if(AERO_REFLECT_TOOLS)` CMake block simply absent from the build graph). `check-math-boundary.sh` is the one guard that sees this task's diff at all; its scanned count moved **203 → 209** (+6: `gizmo.hpp`, `transform_ops.hpp`, `gizmo.cpp`, `transform_ops.cpp`, `gizmo_test.cpp`, `transform_ops_test.cpp` — measured with a disposable `git worktree` against `origin/main`, not assumed). `editor/src/viewport_panel.hpp` gained one include (`gizmo.hpp`), two private methods (`updateGizmo`, `drawGizmoBar`) and five members (`gizmoMode`, `gizmoActive`, `gizmoHasTarget`, `gizmoWasUsing`, `gizmoWarnLatched`). `editor/src/viewport_panel.cpp` gained three includes (`gizmo.hpp`, `transform_ops.hpp` alongside the existing `picking.hpp`/`scene_bounds.hpp`/`selection.hpp`, plus `<ImGuizmo.h>` in its own trailing category), a two-function anonymous-namespace enum bridge, one phase insertion in `onDraw` (8b′, between the camera and picking phases — load-bearing in both directions per D4), one rewritten condition plus comment in `updatePick`'s arm gate (folding the pre-existing camera-gesture disarm and the new gizmo disarm into one check, not two), and the two new method bodies placed between `updatePick` and `drawSelectionOverlay` — **`ViewportPanel::renderScene` itself is byte-identical**, confirmed by `git diff origin/main -- editor/src/viewport_panel.cpp` showing no hunk at or after its signature (INV-2/INV-3). `editor/src/shell_ui.cpp` gained one include and one call (`ImGuizmo::BeginFrame()`, first statement in `drawShellUi`, before `drawMenuBar`) — no other line of that file changed. `editor/src/imgui_layer.{hpp,cpp}`, `editor/src/main.cpp` and `editor/src/editor_app.cpp` stayed byte-identical for the **ninth task running** (INV-7). Both macOS presets configure, build warning-free and pass 94/94 at every one of the six commit boundaries, with the `AERO_REQUIRE_GPU=1` CI ratchet rehearsed green on both. Local lint was run before every commit with the keg-only Homebrew LLVM 18 — `clang-format-18 --dry-run --Werror` over every changed file, **plus a tree-wide pass this task specifically** because `.clang-format` itself changed (S11 is the reason); `SDKROOT=$(xcrun --sdk macosx15.4 --show-sdk-path) clang-tidy-18 -p build/macos-debug --warnings-as-errors='*'` over every new/changed TU — both clean, **zero new `NOLINT`s** (the one pre-existing `reinterpret_cast` NOLINT in `viewport_panel.cpp`, 2.2.3, is unchanged); two clang-tidy findings surfaced during development and were both fixed with real code changes, never suppressed: `bugprone-branch-clone` on the initial G17 enum-totality test (three/two/four identical branches; fixed by writing to a distinct `std::array<bool,N>` slot per branch) and `modernize-use-auto` on two `Transform*`-typed locals in `transform_ops.cpp` initialised from a template-cast `world.get<Transform>(...)`. All twelve sabotage proofs were performed, each seed confirmed landed via `git diff` before trusting the verdict, each reverted and re-confirmed green afterward; S4 and S5 additionally passed the second-order `CHECK(true)` check.
+
+### Epic 2.4 — Undo/redo
+
+#### Task 2.4.1 — Command stack
+
+**2.4.1 ("Command stack") is the quiet one — it changes NO dependency at all.** `vcpkg.json`'s
+`builtin-baseline` and the `/vcpkg` submodule SHA are byte-identical; `.clang-format` and `.clang-tidy`
+are byte-identical (`git diff origin/main -- .clang-format .clang-tidy` empty); **every
+`target_link_libraries` line on every target is byte-identical** — `editor/CMakeLists.txt` gains **two
+source lines** on `aero_editor_core`'s existing `add_library` (`src/command_stack.cpp`,
+`src/transform_command.cpp`; 25 → 27) and no link-line change, because both new TUs need only
+`aero::core`/`aero::scene`, already PUBLIC; `tests/CMakeLists.txt` gains **two source tokens** on
+`aero_editor_shell_test`'s existing `add_executable` (`editor/command_stack_test.cpp`,
+`editor/transform_command_test.cpp`) plus one comment paragraph, and **four includes** on
+`aero_editor_imgui_test`'s existing `imgui_layer_test.cpp` TU — **no new `add_test` anywhere**, confirmed
+by `git diff origin/main -- tests/CMakeLists.txt editor/CMakeLists.txt | grep -E 'add_test|find_package'`
+returning empty. `ctest -N` reads **94** (tools ON), **5** (both tools OFF, `build/tools-off-2.4.1`) and
+**18** (reflect OFF alone, `build/reflect-off-2.4.1`) at every one of the six commit boundaries — all
+three configurations measured, none assumed. `check-math-boundary.sh` is the only guard that sees this
+task's diff at all; its scanned count moved **209 → 215** (+6: `command_stack.hpp`,
+`transform_command.hpp`, `command_stack.cpp`, `transform_command.cpp`, `command_stack_test.cpp`,
+`transform_command_test.cpp` — measured with a disposable `git worktree` against `origin/main` at Step 0,
+and reconfirmed directly on the finished tree at Step 7; both readings agree). `check-golden-rule.sh`,
+`check-platform-boundary.sh`, `check-rhi-boundary.sh` and `check-scene-boundary.sh` cannot see this diff
+at all — zero `engine/`, `runtime/`, `tools/`, `samples/`, `shaders/`, `cmake/` or `.github/` file changed
+(`git diff --stat origin/main -- engine runtime tools samples cmake shaders .github vcpkg.json vcpkg`
+empty), no SDL/SDL_GPU/EnTT identifier touched. `editor/include/aero/editor/panel_context.hpp` gains a
+`class CommandStack;` forward declaration and a `CommandStack& commands` reference member (no new
+`#include` — the header's own "forward declarations only" rule holds); `editor/include/aero/editor/
+editor_app.hpp` gains one `#include <aero/editor/command_stack.hpp>` (a VALUE member needs the
+definition), two accessors and two request methods. `editor/src/viewport_panel.cpp` gains two includes
+(`command_stack.hpp`, `transform_command.hpp`) and no others — `<memory>` was already present since
+2.2.3, so `std::make_unique` needed no new include. `editor/src/imgui_layer.{hpp,cpp}` and
+`editor/src/main.cpp` stayed byte-identical for the **eleventh task running** (INV-7), measured against
+the four genuine last-change commits (`imgui_layer.{hpp,cpp}` at task **2.1.1**, `main.cpp` at task
+**2.2.4**, `editor_app.cpp` at task **2.3.1** — a two-task streak this task deliberately breaks, wiring
+the command stack through `tick()`); no streak COUNT is asserted, only the byte-identity itself, per
+§A3's correction of the streak arithmetic 2.3.3's own log entry carried forward in error.
+`ViewportPanel::renderScene` byte-identical (`git diff origin/main -- editor/src/viewport_panel.cpp`
+shows no hunk at or after its signature — the sole grep hit inside the diff is a REMOVED context line
+from a comment this task's own edit moved away from the word "renderScene", not a touch on the function
+itself). Both macOS presets green at every one of the six commit boundaries, Debug and Release, with and
+without `AERO_REQUIRE_GPU=1`; clang-format/clang-tidy clean on every touched file, **zero new `NOLINT`s**;
+this is the **first `dynamic_cast` in the tree** (`transform_command.cpp`'s merge downcast) and RTTI was
+confirmed on on all three lanes by the absence of any `-fno-rtti`/`/GR-` flag. All fourteen sabotage
+proofs performed and confirmed against the whole suite (see the Part 1 entry for the full per-seed
+detail, the two second-order checks, and the one test-construction defect found and fixed along the way).

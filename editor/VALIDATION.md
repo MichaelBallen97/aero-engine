@@ -2124,3 +2124,187 @@ human pass — macOS, Windows and Linux — is pending** and closes AC-1/AC-6/AC
 surface plus confirms the shear fix (row 11) and the widened behind-camera predicate (row 12) hold on
 real hardware.
 
+# Task 2.4.1 — command stack
+
+**Deliverable:** a `Command`/`CommandStack` backbone with an explicit merge chain and a 128-entry bounded
+history; `Ctrl+Z`/`Ctrl+Shift+Z` with key repeat, routed `RouteGlobal`, and live Edit-menu items
+(`"Undo <label>"`/`"Redo <label>"`, enabled by `canUndo()`/`canRedo()`); and `TransformCommand`, wrapping
+2.3.3's `transform_ops` seam exactly as that seam's own header said it would be wrapped, with the
+Viewport gizmo routed through it so **one continuous drag is exactly one undo step whose `before` is
+where the drag began**. This closes Epic 2.3's Definition of Done's *undoably* clause one task earlier
+than the docs previously said (D1) — drag the cube, press `⌘Z`, watch it go back, in one step, not one
+frame's worth.
+
+**What CI proves automatically:** two tier-0 batteries riding `aero_editor_shell_test` —
+`command_stack_test.cpp` (18 cases, C1–C18: the push contract calling `redo()` exactly once before any
+history mutation, a recording push truncating the redo branch first, the merge chain collapsing a
+continuous run into one entry and each of its five breakers — undo/redo/clear/setClean/
+`breakMergeChain()` — capacity eviction from the front and the ≥ 1 clamp, clean tracking through a
+capacity shift and permanently past an eviction, the failed-push and failed-undo paths each producing
+exactly one WARN while the redo branch stays untouched, the null push, every label query, complete
+destruction with no leak, and the drag call sequence end to end) and `transform_command_test.cpp` (9
+cases, T1–T9: exact apply/revert on all three channels at once, the silent dead-target guard with zero
+ERRORs plus an anti-vacuity canary, the three merge arms — same entity, different entity, a
+cross-type command via `dynamic_cast` — the label, and a 50-frame simulated drag that undoes to the
+exact drag-start `Transform`) — plus six GPU-gated cases in `imgui_layer_test.cpp` (I1–I6) driving the
+real `requestUndo()`/`requestRedo()` → `ShellUiState` → `drawMenuBar` → `applyHistoryRequests` →
+`CommandStack` → `TransformCommand` → `writeTransform` path through a real `EditorApp::tick()`: the
+whole history path executing and staying ImGui-balanced (an unbalanced ImGui call is an `IM_ASSERT`
+abort in Debug, so a green Debug run through real frames *is* the balance proof), undo/redo through the
+shell genuinely mutating the World, a request consumed exactly once even across three subsequent ticks,
+undo-then-redo requested in the same tick netting to a no-op, an empty history staying silent (zero new
+log records) across ten requested-undo ticks, and undoing past a destroyed target producing exactly one
+WARN and no crash.
+
+**What it cannot prove:** anything requiring a synthesised ImGui key press.
+`tests/CMakeLists.txt:96-106` — the GPU-gated editor target links `aero::editor_core` with `imgui::imgui`
+`PRIVATE`, so it is ImGui-free at source and cannot name `ImGuiKey`; `requestUndo()`/`requestRedo()`
+exercise the whole path *below* the physical chord, but the chord itself is untestable here. Named
+precisely, the uncovered surface is: the two `ImGui::Shortcut` call sites and the exact flags they pass
+(`ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat`); `RouteGlobal`'s documented last-place loss to a
+focused `InputText`'s own `RouteFocused` binding (F5 — the single most likely place a naive
+implementation goes wrong); `ImGuiInputFlags_Repeat`'s hold-to-repeat and its stop-on-modifier-release
+(`RepeatUntilKeyModsChange`); the Edit menu's live enabled state and its `"Undo <label>"` text, as
+actually rendered; and the fact that the panels of the *same* frame render post-undo state (D19 — I2
+proves the World changed through the shell path, not that a panel's own widgets reflect it that frame).
+Every one of these is named as a specific human row below.
+
+## What was mechanically verified (this implementation pass, macOS, Apple M1 Pro / Metal)
+
+Measured at every one of the six code-bearing commit boundaries, not once at the end.
+
+- `ctest --preset macos-debug` and `--preset macos-release`: **94/94** both presets, at every commit;
+  `AERO_REQUIRE_GPU=1 ctest` green on both presets (the CI ratchet rehearsed, not skipped).
+- `ctest --preset macos-debug -N` → **Total Tests: 94** throughout — **no new `add_test`**, exactly as
+  AC-25 requires; both new test TUs ride the existing `aero_editor_shell_test`/`aero_editor_imgui_test`
+  targets.
+- Doctest case counts, measured with `--list-test-cases`, never predicted: `aero_editor_shell_test`
+  **169 → 187** (step 1, `command_stack_test.cpp` C1–C18) **→ 196** (step 2, `transform_command_test.cpp`
+  T1–T9), unchanged through steps 3–6 — both figures matched the plan's own predictions exactly;
+  `aero_editor_imgui_test` **24 → 30** (I1–I6); `aero_tests` unchanged at **356**; `aero_editor_core`
+  **25 → 27** sources (`command_stack.cpp`, `transform_command.cpp`).
+- Fresh `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` configure into `build/tools-off-2.4.1`:
+  **5/5**, `aero_editor` launches with **exactly two** WARN lines (2.2.2's reflection WARN, 2.2.3's
+  shader WARN) and **no third**.
+- `-DAERO_REFLECT_TOOLS=OFF` alone (shaders ON) into `build/reflect-off-2.4.1`: **18/18**, measured not
+  assumed; the launch log shows `editor: shell ready (...)`, the 2.2.2 reflection WARN, and no third —
+  `TransformCommand` goes through `transform_ops`, never `component_ops`, so it is tools-independent by
+  construction (the same D21 precedent 2.3.3 established); the actual drag-and-undo confirmation under
+  this configuration is human row 16's business.
+- `check-math-boundary.sh`'s scanned count moved **209 → 215** (+6: `command_stack.hpp/.cpp`,
+  `transform_command.hpp/.cpp`, `command_stack_test.cpp`, `transform_command_test.cpp` — measured
+  against `origin/main` in a disposable `git worktree` at the start, and reconfirmed directly on the
+  finished tree at the end; both readings agree); the other four guards (`check-golden-rule.sh`,
+  `check-platform-boundary.sh`, `check-rhi-boundary.sh`, `check-scene-boundary.sh`) all green with **no
+  allowlist change** — this task adds no SDL/EnTT identifier and changes no `engine/`/`runtime/` file.
+- `git diff --stat origin/main` empty over `engine/`, `runtime/`, `samples/`, `tools/`, `shaders/`,
+  `cmake/`, `.github/`; `vcpkg.json`'s `builtin-baseline` and the `/vcpkg` submodule SHA byte-identical;
+  `.clang-format`/`.clang-tidy` byte-identical; `editor/include/aero/editor/imgui_layer.hpp`,
+  `editor/src/imgui_layer.cpp` and `editor/src/main.cpp` byte-identical for the **eleventh** task
+  running (`editor_app.cpp`'s own two-task streak ends here, deliberately, wiring the command stack
+  through `tick()`); `ViewportPanel::renderScene` byte-identical (no hunk at or after its signature);
+  every `target_link_libraries` line on every target byte-identical.
+- clang-format and clang-tidy clean on every touched file, with **zero new `NOLINT`s**.
+- The non-interactive launch check (`aero_editor`, seeded scene): zero unexpected ERROR/CRITICAL/WARN
+  lines at every commit boundary.
+
+### The sabotage table's outcome
+
+All fourteen seeds, every one confirmed present via `git diff` before trusting a verdict, every verdict
+measured against the whole suite, every one reverted and re-confirmed green afterward:
+
+| | Seed | Result |
+|---|---|---|
+| S1 | `push`'s step 3 (redo-branch truncation) deleted | **reddens `aero_editor_shell_test`**, exactly as predicted (C4). |
+| S2 | `undo`'s `mergeOpen = false;` deleted | **reddens**, but only after correcting C7's own "undo" arm — the single-entry construction the plan literally describes cannot discriminate S2 at all (undoing a stack's sole entry drops `applied` to 0, which masks `mergeOpen` behind the merge guard's own `applied > 0` term regardless of the seed). Rebuilt as a two-entry construction and reconfirmed reddening. |
+| S3 | `push`'s step 2 (the `redo()` guard) moved after step 3 (truncate) | **reddens**, exactly as predicted (C10). |
+| S4 | `trimToCapacity()` deleted from `push` | **reddens**, exactly as predicted (C8). |
+| S5 | `push` replaced with an unconditional `label()` call, `redo()` never invoked | **reddens** (C2, T8, and — beyond the plan's own prediction — C3, C5 and C10 independently too). Second-order checked: weakening only the two assertions the plan names (C2's `redoCalls`, T8's three `readTransform` equalities) to `CHECK(true)` does **not** make the seed pass the whole suite silently, because those three other cases catch it on their own — a stronger, more redundant result than predicted, recorded honestly rather than forced to match. |
+| S6 | `undo`'s `--applied;` guarded behind `if (ok)` | **reddens**, exactly as predicted (C11). |
+| S7 | `setClean`'s `mergeOpen = false;` deleted | **reddens**, exactly as predicted (C7's setClean arm, C13). |
+| S8 | `trimToCapacity`'s `nullopt` branch replaced with `cleanPosition = 0` | **reddens**, exactly as predicted (C14 arm 2). |
+| S9 | `TransformCommand::mergeWith` also overwrites `beforeValue` | **reddens** (T4, T8), exactly as predicted. Second-order checked: weakening T4's `a.before() == p0` and T8's post-undo `readTransform` equality to `CHECK(true)` DOES make the whole suite pass silently with the seed live — confirming those two assertions, not the harness, do the work, exactly matching the plan's own prediction. |
+| S10 | `TransformCommand::write`'s `readTransform` guard deleted | **reddens both `aero_editor_shell_test` and `aero_editor_imgui_test`**, exactly as predicted (T2, T3, and I-series execution). |
+| S11 | `mergeWith`'s `dynamic_cast` replaced with `static_cast` | **reddens via an ASan stack-out-of-bounds abort**, not merely a red assertion — a stronger result than the plan's own "expect a compiler diagnostic or a red test": reading an `OtherCommand` through a `TransformCommand*`'s wider layout is UB the sanitizer catches directly (T6). |
+| S12 | the capacity clamp dropped from `CommandStack`'s constructor | **reddens**, exactly as predicted (C9). |
+| S13 | `updateGizmo`'s edge block's `End` arm dropped (break on `Begin` only) | **confirmed NON-discriminating**, exactly as predicted — the panel's own call sites are src-private and ImGui-bound, unreachable from `aero_editor_shell_test`; **human row 5** is the only real check. |
+| S14 | `HISTORY_SHORTCUT_FLAGS` changed from `RouteGlobal` to `RouteAlways` | **confirmed NON-discriminating**, exactly as predicted — `aero_editor_imgui_test` is ImGui-free at source and cannot press a key; **human row 9** is the only real check. |
+
+## Known-and-expected, NOT a defect
+
+- **E14** — an Inspector edit is discarded by a later undo, until 2.4.2 routes the Inspector through a
+  command too (D1's honest one-task cost).
+- **E5** — `⌘Z` mid-drag: the drag continues from the reverted pose. No crash, no log flood.
+- **E13** — undo does not restore the selection (D14, 2.4.2's).
+- **E2** — past the 128-entry capacity floor the oldest drag is unrecoverable, silently and by design —
+  a WARN there would fire once per session for a user doing nothing wrong.
+- **E3** — undoing past a deleted entity moves nothing and logs exactly one WARN, never an ERROR.
+- Hierarchy and Inspector edits are still **not** undoable — only the gizmo routes through a command
+  after this task.
+
+## How to validate one OS
+
+1. **Launch.** The **Edit** menu shows "Undo" and "Redo", both **greyed**, labelled `Ctrl+Z` /
+   `Ctrl+Shift+Z` (⌘Z / ⇧⌘Z on macOS). **No tooltip claiming an owning task** — the stubs are gone.
+2. **Drag the seeded Cube's translate gizmo once and release.** Edit > Undo now reads **"Undo
+   Transform"** and is **enabled**; Redo is still greyed. The Inspector's `position` shows the new
+   value.
+3. **Press `Ctrl/⌘+Z`.** The cube returns to where it was **before the whole drag**, in **one** step —
+   not one frame's worth, not to an intermediate position. The Inspector updates in the **same** frame
+   (D19/AC-21: no visible one-frame lag).
+4. **Press `Ctrl/⌘+Shift+Z`.** It returns to the dragged position, in one step. Edit > Undo reads
+   "Undo Transform" again.
+5. **Three separate drags, then three undos.** The cube walks back through all three, newest first; a
+   fourth undo does nothing and the item greys. *(INV-3 and AC-17. If three drags collapse into fewer
+   than three steps, a chain-break site is missing — S13's only discriminator.)*
+6. **Hold `Ctrl/⌘+Z`.** The history rewinds repeatedly (key repeat, D12), and **releasing the modifier
+   stops it immediately** rather than leaving a stuck auto-repeat on `Z`.
+7. **Rotate (`E`) and Scale (`R`) drags undo and redo the same way**, and undoing a rotate leaves
+   `position` and `scale` **untouched** — 2.3.3's channel isolation survives the command layer.
+8. **Undo once, then perform a NEW drag.** Redo **greys out** — the redo branch was truncated (AC-3).
+9. **⚠ The routing trap.** Press `F2` on a Hierarchy row to rename, type something, then press
+   `Ctrl/⌘+Z` **while the field still has focus**: the **text** undoes and **the scene does not move**.
+   Then press `Esc`/`Enter` to leave the field and press it again: now the *scene* undoes.
+   *(F5. This is S14's only discriminator and the single most likely place a naive implementation —
+   `ctx.input()` instead of `ImGui::Shortcut`, or `RouteAlways` instead of `RouteGlobal` — goes wrong.)*
+10. **`Ctrl/⌘+Z` with an empty history.** Nothing happens; **no Console spam even when held** (E1: the
+    `applied == 0` guard precedes the log).
+11. **Drag the Cube, delete it from the Hierarchy, then `Ctrl/⌘+Z`.** Nothing moves and the Console
+    shows **exactly one WARN** — not an ERROR, and not two records (E3/D16).
+12. **Known-and-expected.** Press `Ctrl/⌘+Z` *while holding* a gizmo handle mid-drag: the drag
+    continues from the reverted pose. **No crash, no log flood** (E5).
+13. **Known-and-expected.** Drag the Cube, then type a new position into the Inspector, then
+    `Ctrl/⌘+Z`: the Inspector's value is **discarded** and the pre-drag transform is restored — D1's
+    honest one-task cost, closed at 2.4.2 (E14).
+14. **In a Debug build, the Console shows one `DEBUG editor: undo 'Transform' (…)` line per undo** —
+    the triggerable log source 2.2.5's four BLOCKED rows have been waiting for (D17), alongside 2.3.3's
+    degenerate-transform WARN. In a **Release** build the same undo is silent (`NDEBUG` compiles the
+    record out) — that is correct, not a defect.
+15. **Perform 130+ drags, then hold undo to the bottom.** It stops cleanly at the capacity floor, the
+    Edit item greys, nothing crashes, and there is **no WARN** about the lost oldest entry (E2).
+16. **Quit and relaunch.** `aero_editor.ini` is unchanged in shape, the layout returns, and the history
+    is **empty** on the new run — no history is persisted, by design.
+
+### macOS — ⏳ pending
+
+Needs a native human pass. No checks recorded yet.
+
+### Windows — ⏳ pending
+
+Needs a native run. No checks recorded yet.
+
+### Linux — ⏳ pending
+
+Needs a native run. No checks recorded yet.
+
+**Task 2.4.1 gate status: mechanically green** (build + full ctest on both presets, the
+`AERO_REQUIRE_GPU=1` rehearsal, both tools-OFF configurations, the non-interactive launch proof, all
+fourteen sabotage proofs each seed-confirmed and reverted — S2 discriminates only after a test-
+construction fix; S5's second-order check found MORE redundant coverage than predicted; S9's second-order
+check matched the prediction exactly; S11 discriminates via an ASan abort; S13 and S14 confirmed
+non-discriminating exactly as predicted and routed to human rows 5 and 9 — all five guards green with no
+allowlist change, clang-format and clang-tidy clean with zero new `NOLINT`s). **The human pass — macOS,
+Windows and Linux — is pending** and is the only proof of the physical `Ctrl+Z`/`Ctrl+Shift+Z` chords,
+`RouteGlobal`'s loss to a focused `InputText` (row 9), and the merge chain holding across three
+consecutive drags (row 5).
+

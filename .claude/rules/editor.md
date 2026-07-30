@@ -60,6 +60,28 @@ that way.
   never a dead handler behind a stub.
 - `<imgui_stdlib.h>` is included **flat**, not under `misc/cpp/` (vcpkg installs it flat).
 
+## Undo/redo
+
+- **`CommandStack::push()` APPLIES the command** (task 2.4.1 D5). A caller must NOT have already
+  written the edit — there is exactly one write path and it runs inside `Command::redo()`. Wrapping an
+  existing direct write means the write **moves into** the command, not that a command is pushed
+  beside it.
+- **The merge chain** is open only between one continuous gesture's start and end. It is broken by
+  `undo()`, `redo()`, `clear()`, `setClean()` and the explicit `breakMergeChain()`, and opened by any
+  push that records a new entry. A panel driving a continuous edit breaks the chain at **both**
+  boundaries and at **every** path that abandons the gesture — `ViewportPanel::updateGizmo`'s two
+  early returns are the precedent, and they deliver no end edge at all.
+- **Undo/redo are applied inside `drawShellUi`, immediately after `drawMenuBar()` returns** and before
+  the dockspace (D19): `EndMainMenuBar` has run, no ImGui tree is open, no `eachChild` walk is in
+  flight, and the panels of the SAME frame therefore render post-undo state. Do not move it into
+  `tick()` — that would render pre-undo panels against a post-undo `renderScene` in one frame.
+- Commands hold **values and handles only** — never a `World&`, a `Selection&`, or a pointer into a
+  panel. Everything needed at apply time arrives as an argument, which is also why `CommandStack`
+  never stores a `World&` (it would delete `EditorApp`'s defaulted move assignment).
+- Success logs at `AERO_LOG_DEBUG` (compiled out under `NDEBUG`) and failure at `AERO_LOG_WARN`, from
+  the stack and **only** the stack — a command returns `false` silently. A successful `push` logs
+  nothing at all: a drag pushes once per frame.
+
 ## Inspector / reflection
 
 The inspector is driven entirely by generated `entt::meta`: a new `[[engine::component]]`
