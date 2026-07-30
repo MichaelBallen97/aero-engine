@@ -767,6 +767,135 @@ clean and clang-tidy (`--warnings-as-errors='*'`) clean on every touched file. *
 not yet run for this task** — Windows/Linux rows pending too; see
 `editor/validation/2.4.2-property-set-structural-commands.md`.
 
+##### Task 2.4.2 — code-review round (three commits after the nine, all after the sabotage matrix passed)
+
+**A code review of `feat/2.4.2-property-set-structural-commands` found one BLOCKING correctness defect,
+plus two should-fix items, ALL after the twenty-seed sabotage matrix had already been run and recorded
+green. This is the honest lesson: S3 and S15 could not see the blocking defect, and could not have —
+every existing sabotage case and every existing test restores exactly ONE entity per parent, and the
+defect only exists when TWO OR MORE do.**
+
+**Gap 1 — BLOCKING — `placeAt`/`RootOrder::insert` correctness depends on REPLAY ORDER, and nothing
+enforced it.** `placeAt` (and `RootOrder::insert`, the identical shape one level up) repositions ONE
+entity at a time by nudging every sibling that must follow it into place — which is only equivalent to
+"restore the whole list" if entries sharing a parent are replayed in ASCENDING recorded-slot order.
+Three call sites all failed this, independently:
+
+- `SubtreeSnapshot::restore`'s phase-B link loop (`scene_snapshot.cpp`) replayed subtree-root position
+  restores in **capture order** — the caller's raw target/selection order, which a bottom-up multi-select
+  (Ctrl-click a lower sibling before a higher one) makes descending.
+- `entity_commands.cpp`'s `restoreState` replayed `RootOrder::insert` calls in the same raw order.
+- `ReparentCommand::undo` replayed in the REVERSE of capture order (`std::ranges::reverse_view`), which
+  turns an ORDINARY ascending multi-select into the same descending failure mode.
+
+**Empirically reproduced first, not assumed**: parent `P` with children `[a,b,c,d]`, capturing `{c,b}`
+(descending, exactly what Ctrl-clicking C then B produces) and restoring both landed `[a,b,d,c]` — the
+untouched sibling `d` moved, confirmed by a temporary probe before any fix landed. **Fixed by sorting the
+position-restore pass ascending by recorded slot at all three sites** — a plain `std::ranges::stable_sort`
+by slot alone, with NO grouping by parent needed: `Entity` has no `operator<` (G5), but a subsequence of a
+globally-sorted sequence is itself sorted, so restoring position for any one parent's own entries stays
+correctly ordered regardless of how other parents' entries interleave with them. `SubtreeSnapshot::restore`
+gained a third pass (names+components unchanged; links unchanged in order — A2's append-order correctness
+for non-subtree-root records already held and was left alone; a NEW third pass collects the subtree-root
+records needing `placeAt` and sorts that list before replaying it). `entity_commands.cpp`'s `restoreState`
+sorts the eligible `(root, slot)` pairs before the `RootOrder::insert` loop. `ReparentCommand::undo`
+replaced its reverse walk with an ascending-by-recaptured-slot walk — the reverse walk was only ever
+needed to undo NESTING (restoring a parent before its own child), and `targets` can never contain both,
+because `topMost()`/`reparentTargets()` (D19) always collapse a selected parent and its own selected child
+into one target before this command ever sees them.
+
+**Also fixed, same function, low severity**: `placeAt` guarded only the 0/1-child case against a failed
+append; if `setParent` ever failed to append `child` while the parent already had ≥2 real children,
+`scratch` would not contain `child` at all, and the loop would then detach and re-append genuine siblings
+for no reason — spurious reordering on a pure failure path. Unreachable today (LIFO undo means the sole
+refusal, a cycle, cannot be live at undo time), but the function's own comment already anticipated a
+failed append, so it is now verified: `scratch.back() == child` is checked before anything else is
+touched, which required un-eliding the `child` parameter (now genuinely used, no `NOLINT` needed).
+
+**A fourth, related defect found ONLY while writing the mandated shared-parent `ReparentCommand` test, not
+named by the original review** — recorded here in full rather than folded silently into the three sites
+above, since it is outside their literal scope: `ReparentCommand::redo` captured each target's old
+parent+slot INTERLEAVED with the actual reparent, one target at a time. When two targets share an
+immediate parent, reparenting the first target ALREADY shifts the second target's position in the live
+world before its own slot is queried — `childIndexOf` reads a list that has already lost one entry, so the
+captured slot is silently wrong (shifted down by the number of already-processed same-parent targets),
+independent of any replay-order fix. **Fixed by capturing every target's old parent+slot in a first pass
+against the UNCHANGED tree, then applying every reparent in a second pass** — no signature change, purely
+internal to `redo()`.
+
+**A genuine anti-vacuity trap, found and proven rather than assumed**: for the specific shared-parent test
+scenario (two adjacent, or even two non-adjacent, siblings reparented together), reverting BOTH the
+`redo()` capture fix and the `undo()` ordering fix TOGETHER leaves the mandated new test (`X22`) passing —
+the two bugs' errors cancel out for this input shape by coincidence (a corrupted-but-still-in-range
+captured slot, replayed in the old reversed order, happens to land back on the correct final position).
+Reverting EITHER fix ALONE, with the other left in place, reddens `X22` cleanly (two different wrong final
+orderings, verified by running both configurations, not inferred). This is precisely this project's own
+"verify the seed landed" discipline turned on a same-branch code-review fix instead of a sabotage seed —
+recorded here so it is never mistaken for a clean two-fix discrimination proof.
+
+**Three new tests, one per site, each asserting the FULL child list element-wise (including the untouched
+siblings), because the untouched sibling is exactly what a wrong replay order silently moves:**
+
+- `scene_snapshot_test.cpp` N14 — two captured siblings of one parent, captured in DESCENDING slot order,
+  restored via `SubtreeSnapshot::restore` directly.
+- `structural_commands_test.cpp` X21 — two ROOTS deleted together in descending slot order via
+  `DeleteEntitiesCommand`, `RootOrder` reconciled before and after.
+- `structural_commands_test.cpp` X22 — a two-target `ReparentCommand` whose targets are siblings of ONE
+  shared parent, given in ORDINARY ascending (in-row-order) selection order — deliberately NOT X12's shape
+  (X12 uses two DIFFERENT parents, which is exactly why it cannot see this class of bug, per the plan's
+  own finding 7 on X12/S15).
+
+**Discrimination proof, run and recorded, not assumed**: reverting all three fixes together (full
+`git checkout` of both touched `.cpp` files back to the pre-review tree) reddens N14 (`after[2]`/`after[3]`
+wrong) and X21 (`roots.entities()[2]`/`[3]` wrong) cleanly; X22 passed in that exact configuration, which
+is the anti-vacuity trap above, resolved by the two isolated partial-revert runs (redo fix alone reverted
+→ X22 red on `after[1]`/`after[2]`; undo fix alone reverted → X22 red on `after[2]`/`after[3]`; X10/X11/X12
+stayed green in both configurations). Restoring the full fix: all three green, whole suite 94/94 both
+presets, `ctest -N` unchanged at 94/18/5.
+
+**New seed S20, recorded for the sabotage table**: *"reverse the position-restore order"* (equivalently:
+skip the ascending sort at any of the three sites). Measured discriminator: N14 and X21 each redden
+cleanly on their own site's revert; `ReparentCommand`'s two component fixes (redo capture, undo order)
+must each be isolated from the other to see X22 redden, per the anti-vacuity trap above — a combined
+revert of both is NOT a valid S20 rehearsal for that site. **S3 and S15 (the existing table's two
+"placeAt"/position-restore entries) provably cannot catch S20**: both delete `placeAt`/the whole
+position-restore block entirely, which every existing single-target case already catches on its own; none
+of S3/S15/N3/X10/X12 ever exercises two entries sharing one parent, which is the one precondition S20
+needs to fire.
+
+**Gap 2 — two §V7 gate greps inflated by this task's own prose, both corrected.** `scene_snapshot.hpp`'s
+own doc comment for `SubtreeSnapshot::roots()` named the `RootOrder` class directly, making
+`git grep -n 'RootOrder ' -- editor/src editor/include | grep -v 'RootOrder&'` read **3** lines where
+AC-31's gate pins exactly **2** (the two real declaration sites, `entity_ops.hpp`'s class and
+`editor_app.hpp`'s member, after D10's HierarchyPanel→EditorApp move) — reworded to describe the query
+without naming the class. `editor/validation/2.4.2-property-set-structural-commands.md` quoted the AC-24
+Hierarchy call-form pattern verbatim, including `destroyEntities`, making
+`git grep -ln 'destroyEntities' -- editor/` read **4** files where §V7 pins exactly **3** — reworded to
+describe the five mutator names without spelling all of them out. Both confirmed to reproduce their pinned
+counts after the reword. This is the same identifier/prose-collision class R9/§A29 already named for panel
+comments (never the exact token an AC-24/AC-31 grep counts), now also applied to a public header comment
+and to a doc this task itself writes — the real gates (the panel-scoped negative greps) were never
+affected, and no shipped document ever asserted the inflated value as fact, so nothing false was recorded
+at any point; this is purely a gate-reproducibility fix.
+
+**Gap 3 — `AddComponentCommand::undo` was missing its `alive()` pre-guard.** Plan §S 5b mandates a silent
+liveness pre-guard on every command's `undo`/`write` so an undo past a deleted entity returns `false`
+quietly rather than relying on the seam's own silence; `RemoveComponentCommand::undo` and
+`SetFieldCommand::write` both had theirs, `AddComponentCommand::undo` did not. Behaviourally identical
+today (`removeComponent`/`world.cpp` already return `false` silently for a dead entity) — this is plan
+conformance and cross-command consistency, not a live bug — fixed to match its two siblings' shape.
+
+**Inventory delta, measured, not predicted.** `aero_editor_shell_test` **237 → 240** (N14, X21, X22 — the
+three new `TEST_CASE`s, one per site); `ctest -N` unchanged at **94** (tools ON), **18**
+(`build/reflect-off-2.4.2`), **5** (`build/tools-off-2.4.2`) — all new coverage rides the same two existing
+TUs, no new `add_test`. `aero_tests`, `aero_editor_imgui_test` and `aero_editor_inspector_test` all
+unchanged. Both macOS presets green at 94/94 Debug and Release, the `AERO_REQUIRE_GPU=1` rehearsal green,
+both reflect/tools-OFF configures green, the non-interactive launch proof zero unexpected
+ERROR/CRITICAL/WARN, all five architecture guards green with no allowlist change, `git diff --stat
+origin/main -- engine/ runtime/ samples/ tools/ shaders/ cmake/ .github/` unchanged from the original nine
+commits (this round touches only `editor/`, `tests/` and docs), clang-format and clang-tidy
+(`--warnings-as-errors='*'`) clean on every touched file with **zero new `NOLINT`**.
+
 ---
 
 # Part 2 — Build & dependency impact ledger
