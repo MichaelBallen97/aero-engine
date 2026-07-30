@@ -626,7 +626,7 @@ line number the spec cited had drifted — measured fresh (five sites, `editor_a
 `inspector_test.cpp`); every `recreate` grep in this task uses the call form `recreate\(`, scoped to
 `engine/scene` or `editor/src`.
 
-**Four findings that must be recorded honestly — measured facts, not paragraphs that say "fixed."**
+**Five findings that must be recorded honestly — measured facts, not paragraphs that say "fixed."**
 
 1. **⚠ AC-10 is NOT satisfied, and no test in this tree can prove it is.** None of the five built-in
    components (`Transform`, `Camera`, `DirectionalLight`, `PointLight`, `MeshRenderer`) is an empty
@@ -644,27 +644,31 @@ line number the spec cited had drifted — measured fresh (five sites, `editor_a
    empty — its draw path is src-private and ImGui-bound); `field_command_test.cpp`'s P8 pins the D17
    *policy* against a `CommandStack` directly, which is a real and useful test, but it is not the
    panel. Seeding S9 (move the Inspector's `gate.closed` break *before* the push, in five of the seven
-   arms) and running the whole suite left it **94/94**, P8 included — the panel's own application of the
+   arms) and running the whole suite left it **94/94**, P8 included — and the later sabotage pass
+   confirmed the mirror by measurement rather than inference: seeding **S10** (move the `gate.opened`
+   break *after* the push, in **all seven** arms, diff-verified as 7 relocations) also left the suite at
+   **94/94**, with §V7's comment-stripped `breakMergeChain` count still reading **14**, so not even the
+   grep gate catches it. The panel's own application of the
    rule has exactly one proof anywhere in this tree: **human row 6** on
    `editor/validation/2.4.2-property-set-structural-commands.md`. This is the same class of finding
    2.4.1's own code-review round made about S13 — a sabotage table entry that looked covered and was
    not — caught here before merge instead of after, by actually seeding and running rather than trusting
    the plan's own prediction.
-3. **Only four of the plan's nineteen sabotage seeds (S1, S9, S11, S14) were actually run this pass —
-   an honest gap against §V4's "all eighteen, plus one added and one corrected" mandate, not a silent
-   shortfall.** Each was confirmed landed via `git diff` before trusting a verdict, measured against the
-   whole suite, then reverted and reconfirmed green: **S1** (`World::recreate` calls `create()` instead
-   of `create(hint)`) reddened three targets — `aero_tests` (W1, the handle differs), `aero_editor_shell_test`
-   (X19, the transform undo silently stops applying) — the two halves of D2's whole argument, exactly as
-   predicted. **S11** (`DeleteEntitiesCommand::redo` destroys before capturing) reddened two targets across
-   six failed assertions — the single most catastrophic ordering error the task could ship. **S14**
-   (`RemoveComponentCommand::undo` calls `addComponent` instead of `ComponentSnapshot::restore`) reddened
-   X16 exactly, with `*world.get<Transform>(e) == t` failing because the restored values came back zeroed
-   — silent data loss with an otherwise green suite, which is exactly why the plan calls this one out.
-   **S9** did not discriminate anything (finding 2, above). The remaining fifteen seeds — S2, S3, S4, S5,
-   S5b, S6, S7, S8, S10, S12, S13, S15, S16, S17, S18, S19 — were **not run** during this implementation
-   pass. This is recorded here as an open item rather than claimed as covered; nothing above should be
-   read as "the sabotage table is discharged."
+3. **§V4 is DISCHARGED: all twenty seeds (S1–S19 plus S5b) and all three second-order checks have been
+   run.** Four (S1, S9, S11, S14) ran during the implementation pass; the other sixteen ran in a
+   dedicated sabotage pass afterwards. Every seed was proved present with `git diff` before any verdict
+   was trusted, rebuilt (never a stale binary), measured against the **whole** 94-entry suite (never a
+   filtered or case-scoped run — 2.3.3's S5 was misreported that way), then reverted with
+   `git status --short` confirmed empty before the next. Seventeen behaved as predicted or better —
+   S1 (3 targets: `aero_tests` W1, `aero_editor_shell_test` X19, `aero_editor_imgui_test`), S2b, S3, S5,
+   S5b, S7, S8, S11, S14, S17, S19 all reddened their named discriminator, several of them plus three to
+   five extra cases. **Nine did not**, and are set out as finding 5 below rather than relabelled. The
+   full per-seed verdict table lives in
+   `editor/validation/2.4.2-property-set-structural-commands.md`; the second-order checks came out
+   PASS for S7 (weakening P3 `:226` + P4 `:297` + P8 `:433` makes the seed pass 94/94) and PASS for S14
+   (weakening X16 `:146` + `:178` does the same), while **S11 is stronger than predicted** — the seed is
+   caught independently by 12 cases across 2 targets, and weakening X4's four assertions still leaves 11
+   red, so per §V4's own instruction the check stopped there rather than forcing a silent pass.
 4. **Three plan errors surfaced during execution, all fixed as minor deviations, not silently.** (a) The
    plan's architectural solution diagram asserted `Traits` was already a `using` alias in `world.cpp`; it
    was not — `using scene::internal::Traits;` (`world.cpp:41`) had to be added for `recreate`'s occupancy
@@ -674,19 +678,66 @@ line number the spec cited had drifted — measured fresh (five sites, `editor_a
    (§V1's own table flags this "MEASURE IT" rather than trust it, and the plan's own arithmetic — "+9 new
    files" over 2.4.1's 215 — does not even reach 221 on its own terms); it measures **224** at HEAD,
    confirmed directly with `bash .github/scripts/check-math-boundary.sh`.
+5. **Nine of §V4's twenty seeds did not behave as the plan predicted — three have NO discriminator at
+   all, six are caught by a different case than the one the matrix names.** In order:
+   (a) **S2a** — dropping `recreate`'s F5 occupied-index pre-check *alone* leaves the suite 94/94; W3's
+   occupied-index arm only reddens once the trailing `made != entity` belt is removed too (S2b). The
+   suite proves the belt's **outcome**, never the pre-check's existence. §V4 predicted this branch and
+   called it a finding rather than a pass.
+   (b) **S6 — phase A's rollback was entirely untested; a real gap found by the matrix, not by review,
+   and now CLOSED.** N7 pre-occupies the *first* record's index, so phase A refuses on record 0,
+   `created == 0`, and the rollback loop iterates zero times — deleting the loop outright changed
+   nothing. Proven rather than inferred: replacing its body with `world.clear()` when `created > 0`, a
+   probe that would wipe the World if the body were ever entered, *also* left the suite at 94/94. **N13**
+   (`tests/editor/scene_snapshot_test.cpp`, commit `dca6302`) closes it — two independent roots, `b`
+   destroyed last so entt's LIFO free list hands its index back first, occupying **only** `b`'s slot, so
+   phase A recreates `a`, refuses `b`, and must destroy `a` again. Re-seeding S6 with N13 present reddens
+   **N13 and nothing else**, on `CHECK_FALSE(world.alive(a))` and `world.entityCount() == 1`. The LIFO
+   assumption is `REQUIRE`d rather than looped around, so the case fails loudly instead of silently
+   degrading back into N7 if entt's recycling order ever changes.
+   (c) **S9/S10** — finding 2 above; no mechanical proof of the Inspector's gate pair exists at all.
+   (d) **S4 — the dangling `string_view` is NOT sanitizer-visible, which inverts §V4's own claim.** The
+   plan said "ASan aborts N1/N10 — an abort, not a red assertion… a *stronger* result than a failed
+   `CHECK`". Measured on macOS Debug with ASan **and** UBSan confirmed on
+   (`AERO_ENABLE_SANITIZERS:BOOL=ON`, `-fsanitize=address,undefined -fno-sanitize-recover=all`): **zero
+   sanitizer output**, and five ordinary red `CHECK`s (N1, N10, N12, X4, X18). The World's name records
+   live in an EnTT swap-and-pop pool, so destroying the entity leaves the freed record's bytes inside a
+   still-mapped, still-live page, overwritten by the swap — nothing ASan can flag. **Standing lesson: a
+   dangling view into a pooled component must never be assumed sanitizer-visible**; the ordinary
+   assertions are what catch it.
+   (e) **S12** — X1 is not a discriminator and structurally cannot be: it only pushes and asserts the
+   selection *after the push*, never calling `undo`. X2, X3, X7 and X8 are what fire.
+   (f) **S13** — only **R3** reddens. **X7 and I8 do not**: both insert an *in-range* slot (1 into size 2,
+   2 into size 2), so the clamp direction is irrelevant to them. Nothing at command or frame level
+   exercises an out-of-range slot.
+   (g) **S15** — X10 fires as predicted; **X12 does not**, because its two restores coincide with a plain
+   append. X12 is not sibling-slot coverage.
+   (h) **S16** — the row names two discriminators that need two different seeds: seeding
+   `CreateEntityCommand::redo` reddens X3 and X18 but **not** X9, which is only reachable by separately
+   seeding `DuplicateEntitiesCommand::redo`. Both were run.
+   (i) **S18** — **I9, the named discriminator, is vacuous against this defect class** (as §V4 itself
+   predicted): it builds its own `CommandContext` from `app->roots()`, so handing every panel a decoy
+   `RootOrder` leaves `CHECK(&cmd.roots == firstTick)` green. The measured addition is that S18 **is**
+   caught — by **I8**, which fails hard because the panel reconciles the decoy while `app->roots()` stays
+   empty. I9 must not be cited as the proof.
 
 **Inventory, measured at every commit boundary and read back out of the tree, never predicted.**
 `ctest -N` **94 → 94** (tools ON), **5 → 5** (both tools OFF, `build/tools-off-2.4.2`) and **18 → 18**
 (reflect OFF alone, `build/reflect-off-2.4.2`) throughout — no new `add_test` anywhere (AC-34); `aero_tests`
 **356 → 363** (`tests/scene_test.cpp` W1–W7, `World::recreate`'s Step 1 commit); `aero_editor_shell_test`
-**199 → 236** (`hierarchy_test.cpp` R1–R4 in the `RootOrder` move; `scene_snapshot_test.cpp` N1–N12 plus
-`RL1`'s six-`SUBCASE` `TEST_CASE` — `grep -c '^TEST_CASE'` on that file reads **13**, not 18 — in the
-`SubtreeSnapshot`/`ComponentSnapshot` commit; `structural_commands_test.cpp` X1–X20 split across the
+**199 → 236 → 237** (`hierarchy_test.cpp` R1–R4 in the `RootOrder` move; `scene_snapshot_test.cpp` N1–N12
+plus `RL1`'s six-`SUBCASE` `TEST_CASE` in the `SubtreeSnapshot`/`ComponentSnapshot` commit, then **+N13**
+in the sabotage pass's `dca6302` — `grep -c '^TEST_CASE'` on that file reads **14**, not 19 or 20;
+`structural_commands_test.cpp` X1–X20 split across the
 component-commands and structural-entity-commands commits); `aero_editor_inspector_test`
 **14 → 22** (`field_command_test.cpp` P1–P8, riding the `AERO_REFLECT_TOOLS`-gated target — its P8 case is
 the sole tier-0 proof of finding 2); `aero_editor_imgui_test` **30 → 35** (I7–I11, real-frame Create /
-Delete / Duplicate / Reparent-and-Rename / `EditorApp` noexcept-move coverage); **+57 new doctest cases
-total**, matching the plan's own §V1 prediction exactly. `editor/CMakeLists.txt` sources **27 → 30**
+Delete / Duplicate / Reparent-and-Rename / `EditorApp` noexcept-move coverage); **+57 new doctest cases**
+from the implementation pass, matching the plan's own §V1 prediction exactly, **plus N13 from the
+sabotage pass — 58 in total**, which moves `scene_snapshot_test.cpp` and `aero_editor_shell_test` one
+past §V1's pinned 13/236. That pin is plan bookkeeping; the real invariant is `ctest -N` = 94/5/18, which
+adding a `TEST_CASE` to an existing TU does not touch, and shipping a false AC-7 coverage claim would
+have been the worse trade. `editor/CMakeLists.txt` sources **27 → 30**
 (`scene_snapshot.cpp`, `component_commands.cpp`, `entity_commands.cpp`) with **no link-line change** — all
 three need only `aero::core`/`aero::scene`, already PUBLIC. `check-math-boundary.sh`'s scanned count
 **215 → 224** (finding 4c, above — measured, not the plan's predicted 221). `breakMergeChain`, comment-stripped:
@@ -945,6 +996,8 @@ identical in shape to `inspector_test.cpp:47`'s pre-existing one — Part 1's fi
 Step 11 pass (`clang-format-18 --dry-run --Werror`, `SDKROOT=$(xcrun --sdk macosx15.4 --show-sdk-path)
 clang-tidy-18 -p build/macos-debug --warnings-as-errors='*'`), both clean. See the Part 1 entry above for
 the full per-step build, the nine-commit rundown, the traps, the dead ends, the nine spec corrections and
-the four findings that must be read before touching this subsystem again — most importantly, **only four
-of the plan's nineteen mandatory sabotage seeds were actually run** and AC-10 (tag round-tripping) is an
-**honest, currently-unfixable gap** until Phase 4/5's project-defined components land (H3).
+the five findings that must be read before touching this subsystem again — most importantly, **§V4's
+twenty sabotage seeds are now all run (finding 3/5): nine did not behave as the plan predicted, three of
+those have no discriminator at all, and the phase-A rollback gap S6 exposed is closed by N13** — and
+AC-10 (tag round-tripping) is an **honest, currently-unfixable gap** until Phase 4/5's project-defined
+components land (H3).
