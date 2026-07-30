@@ -20,7 +20,8 @@
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
 #include <aero/editor/editor_app.hpp>
-#include <aero/editor/editor_camera.hpp>  // task 2.3.1
+#include <aero/editor/editor_camera.hpp>    // task 2.3.1
+#include <aero/editor/entity_commands.hpp>  // task 2.4.2
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>       // task 2.3.2
@@ -48,6 +49,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>  // std::error_code -- the non-throwing filesystem::remove overload
+#include <type_traits>   // task 2.4.2, I11: std::is_nothrow_move_constructible_v/assignable_v
 #include <vector>
 
 namespace {
@@ -1586,4 +1588,258 @@ TEST_CASE("editor: undo of a destroyed target through real frames (task 2.4.1, I
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ==================================================================================================
+// task 2.4.2 -- the structural/property-set commands driven through a real EditorApp::tick(). Honest
+// limit, stated once here for all five cases: this harness CANNOT press a key or type into a widget,
+// so it drives the commands directly against a real CommandStack/CommandContext and pumps them through
+// requestUndo()/requestRedo() and real tick()s -- the same substitute task 2.4.1's own I1-I6 use. An
+// unbalanced ImGui call is an IM_ASSERT ABORT in the Debug build, so a green Debug run through real
+// frames IS the balance proof. Every case that reads logRecordCount() budgets a SETTLING TICK first
+// (2.2.5 D14/2.4.1 I5-I6): a record raised during a tick's draw is only visible on the FOLLOWING tick,
+// since EditorApp::tick() pumps the console sink at the TOP of the frame, before drawShellUi.
+// ==================================================================================================
+
+TEST_CASE("editor: a structural command executes through a real frame (task 2.4.2, I7)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "structural command smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    const std::size_t entityCountBefore = world.entityCount();
+
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                          std::vector<engine::Entity>{cube}, std::vector<engine::Entity>{})));
+
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(world.entityCount() == entityCountBefore - 1);
+    CHECK_FALSE(world.alive(cube));
+
+    app->requestUndo();
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(world.entityCount() == entityCountBefore);
+    CHECK(world.alive(cube));  // the ORIGINAL handle, back (D2) -- not a lookalike under a new identity
+
+    app->requestRedo();
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(world.entityCount() == entityCountBefore - 1);
+    CHECK_FALSE(world.alive(cube));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: delete -> undo through the shell restores the ORIGINAL handle and the root order "
+    "(task 2.4.2, I8)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "structural undo root order", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+
+    // Settle first: RootOrder is reconciled by the Hierarchy panel's own phase 1, inside tick().
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    const std::vector<engine::Entity> rootsBefore(app->roots().entities().begin(), app->roots().entities().end());
+    REQUIRE(rootsBefore.size() == 3);  // Main Camera, Directional Light, Cube -- all three are roots
+
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                          std::vector<engine::Entity>{cube}, std::vector<engine::Entity>{})));
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    app->requestUndo();
+    for (int i = 0; i < 2; ++i) {  // one to apply undo(), one to let the Hierarchy reconcile again
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    CHECK(world.alive(cube));
+    const std::vector<engine::Entity> rootsAfter(app->roots().entities().begin(), app->roots().entities().end());
+    CHECK(rootsAfter == rootsBefore);  // element-wise: the SAME order, Cube back in ITS OWN slot
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: EditorApp exposes exactly ONE RootOrder, shared by a command and the Hierarchy panel "
+    "(task 2.4.2, I9)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "one root order", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // reconciles once, through the Hierarchy panel's own phase 1
+    CHECK(app->presentedLastFrame());
+    const engine::editor::RootOrder* firstTick = &app->roots();
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    const engine::editor::RootOrder* secondTick = &app->roots();
+    CHECK(firstTick == secondTick);  // address-stable across frames -- exactly ONE object
+
+    // And it is the SAME object a CommandContext built the way tick() builds one would see -- there is
+    // no second RootOrder a structural command could be handed by mistake.
+    const engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    CHECK(&cmd.roots == firstTick);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: an empty history stays silent under the widened CommandContext (task 2.4.2, I10)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "history empty widened", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    CHECK(app->commands().count() == 0);
+    // TWO settling ticks (§A30), matching 2.4.1's I5: create() itself already logged records that sit
+    // unpumped until the FIRST tick()'s pumpLog() runs, and under -DAERO_SHADER_TOOLS=OFF the Viewport
+    // logs a one-time WARN on its first draw, one frame later still.
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    const std::size_t before = app->logRecordCount();
+    for (int i = 0; i < 10; ++i) {
+        app->requestUndo();
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->commands().count() == 0);
+    CHECK_FALSE(app->commands().canUndo());
+    CHECK(app->logRecordCount() == before);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: EditorApp stays noexcept-movable and drives after a move (task 2.4.2, I11/AC-32)") {
+    // The COMPILE-TIME half of AC-32 -- entity_ops.hpp's two static_asserts on RootOrder are the other.
+    static_assert(std::is_nothrow_move_constructible_v<engine::editor::EditorApp>);
+    static_assert(std::is_nothrow_move_assignable_v<engine::editor::EditorApp>);
+
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "editor app move", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> holder = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(holder.has_value());
+
+    engine::World& world = holder->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+
+    // The RUNTIME half: move into a second optional<EditorApp> -- the exact shape a future scene-swap
+    // (2.5.1) exercises -- then prove push/undo/tick still work against the MOVED object.
+    std::optional<engine::editor::EditorApp> moved = std::move(holder);
+    REQUIRE(moved.has_value());
+
+    const engine::World& movedWorld = moved->world();
+    const std::optional<engine::Transform> before = engine::editor::readTransform(movedWorld, cube);
+    REQUIRE(before.has_value());
+    engine::Transform after = *before;
+    after.position = before->position + engine::Vec3{1.0F, 1.0F, 1.0F};
+    engine::editor::CommandContext cmd{moved->world(), moved->selection(), moved->roots()};
+    REQUIRE(moved->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
+
+    REQUIRE(moved->tick());
+    CHECK(moved->presentedLastFrame());
+
+    moved->requestUndo();
+    REQUIRE(moved->tick());
+    REQUIRE(engine::editor::readTransform(movedWorld, cube).has_value());
+    CHECK(*engine::editor::readTransform(movedWorld, cube) == *before);
+
+    moved->requestQuit();
+    CHECK(moved->tick() == false);
+    moved.reset();
 }
