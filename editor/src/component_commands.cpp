@@ -67,7 +67,17 @@ AddComponentCommand::AddComponentCommand(Entity entity, ComponentTypeId type, st
     : target(entity), typeId(type), labelText(std::string("Add ") + std::string(shortComponentName(componentName))) {}
 
 bool AddComponentCommand::redo(CommandContext& context) { return addComponent(context.world, target, typeId); }
-bool AddComponentCommand::undo(CommandContext& context) { return removeComponent(context.world, target, typeId); }
+
+bool AddComponentCommand::undo(CommandContext& context) {
+    // SILENT liveness pre-guard (D15/2.4.1 D16), matching RemoveComponentCommand::undo and
+    // SetFieldCommand::write: behaviourally identical to removeComponent's own silent refusal on a
+    // dead entity (world.cpp) today, but keeps the three sibling commands' shape consistent (plan
+    // conformance / code-review Gap 3, task 2.4.2).
+    if (!context.world.alive(target)) {
+        return false;
+    }
+    return removeComponent(context.world, target, typeId);
+}
 
 std::string_view AddComponentCommand::label() const noexcept { return labelText; }
 Entity AddComponentCommand::entity() const noexcept { return target; }

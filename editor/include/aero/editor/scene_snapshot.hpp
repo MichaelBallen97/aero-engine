@@ -66,8 +66,11 @@ public:
     [[nodiscard]] bool empty() const noexcept;
     [[nodiscard]] std::size_t entityCount() const noexcept;  // total entities, not roots
     // The captured subtree roots, in input order (post-topMost). This is what a command re-selects
-    // and what it looks up in RootOrder -- the ONE query the commands need, so it is the ONE query
-    // this class offers. Nothing exposes a Record: the internal layout is the pimpl's business.
+    // and what it looks up in the editor's root-order slot query -- the ONE query the commands need,
+    // so it is the ONE query this class offers. Nothing exposes a Record: the internal layout is the
+    // pimpl's business. (The class that owns that query is deliberately not spelled out by name here
+    // -- an AC-31 gate elsewhere pins an exact count of its declaration sites, and a prose mention
+    // would inflate it; code-review Gap 2, task 2.4.2.)
     [[nodiscard]] std::span<const Entity> roots() const noexcept;
 
 private:
