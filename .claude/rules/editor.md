@@ -71,6 +71,14 @@ that way.
   push that records a new entry. A panel driving a continuous edit breaks the chain at **both**
   boundaries and at **every** path that abandons the gesture — `ViewportPanel::updateGizmo`'s two
   early returns are the precedent, and they deliver no end edge at all.
+- **The gate pair is asymmetric by which side of the push it sits on, and the two edges cannot share a
+  call site (task 2.4.2 D17).** An OPEN edge (`IsItemActivated`, `GizmoDragEdge::Begin`) breaks the
+  chain **before** that frame's push; a CLOSE edge (`IsItemDeactivated`, `GizmoDragEdge::End`) breaks it
+  **after**. Both ImGuizmo and ImGui report a gesture's final delta on the *same* frame they report the
+  gesture's end, so closing the chain first records that frame as a second, un-merged history entry —
+  this is 2.4.1's blocking Gap 1, and 2.4.2 had to get the same decision right independently in seven
+  Inspector arms. No test tier can reach a panel's own application of this rule (panels are src-private
+  and ImGui-bound) — it is proven only by a human pass, so get it right by construction, not by review.
 - **Undo/redo are applied inside `drawShellUi`, immediately after `drawMenuBar()` returns** and before
   the dockspace (D19): `EndMainMenuBar` has run, no ImGui tree is open, no `eachChild` walk is in
   flight, and the panels of the SAME frame therefore render post-undo state. Do not move it into
@@ -86,9 +94,19 @@ that way.
 
 The inspector is driven entirely by generated `entt::meta`: a new `[[engine::component]]`
 type must get a working UI with **zero editor changes**. Do not special-case component
-names — walk the registration table. `editor::component_ops` is the seam task 2.4.2 will
-wrap; narrow and clamp in C++ before writing the exact concrete type, never letting EnTT
-convert (it silently wraps `300` into a `uint8_t` as `44`).
+names — walk the registration table. `editor::component_ops` is the seam
+`SetFieldCommand`/`AddComponentCommand`/`RemoveComponentCommand` wrap (task 2.4.2); narrow and
+clamp in C++ before writing the exact concrete type, never letting EnTT convert (it silently
+wraps `300` into a `uint8_t` as `44`).
+
+**No panel writes the scene directly (true since task 2.4.2).** The only call sites of
+`entity_ops` / `component_ops` / `transform_ops` mutators under `editor/src/` are their own
+TUs and their command TUs (`entity_commands.cpp`, `component_commands.cpp`,
+`transform_command.cpp`). A new panel action that mutates the World is a new `Command`
+pushed onto the `CommandStack`, never a direct call — that is what keeps every edit
+undoable and is the AC-24 grep this task's gate depends on
+(`git grep -nE '(writeComponentField|addComponent|removeComponent)\(' -- editor/src/`,
+scoped per panel, must stay empty).
 
 Validation is a two-part gate: mechanical/structural (build, ctest, sabotage proofs) and
 a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.

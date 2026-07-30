@@ -116,7 +116,9 @@ Subtasks:
 
 ## Epic 2.4 — Undo/redo · editor
 
-**Goal:** every editor mutation is a command; nothing mutates the scene directly.
+**Goal:** every editor mutation is a command; nothing mutates the scene directly. **Met at 2.4.2 — the
+only direct scene writes left under `editor/src/` are inside the three `_ops` TUs and the three command
+TUs.**
 **Definition of Done:** any sequence of edits (property, structural, gizmo) undoes and redoes correctly.
 
 ### 2.4.1 Command stack · P0 · M · depends: 2.1.3, 2.3.3
@@ -131,12 +133,17 @@ Subtasks:
 
 ### 2.4.2 Property-set + structural commands · P0 · M · depends: 2.4.1, 1.1.4
 **Goal:** one generic reflected property command covers every component field forever.
-**Deliverable:** reflected property-set command plus create/delete/reparent entity commands.
+**Deliverable:** reflected property-set command (`SetFieldCommand`), the five structural entity commands
+(create / delete / duplicate / reparent / rename) and the two component-structure commands (add / remove
+component), plus `World::recreate` and the `SubtreeSnapshot` facility that make an undone delete restore
+the entity's original handle.
 Subtasks:
 - Generic property-set command via `entt::meta`
 - Inspector edits route through the generic property-set command (the gizmo already routes through
   2.4.1's `TransformCommand`)
 - Create / delete / reparent / duplicate commands
+- Rename command; the Hierarchy's double-click / `F2` commit routes through it
+- Add / remove component commands, with the removed component's field values preserved
 
 ---
 
