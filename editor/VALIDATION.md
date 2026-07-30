@@ -2136,13 +2136,16 @@ than the docs previously said (D1) — drag the cube, press `⌘Z`, watch it go 
 frame's worth.
 
 **What CI proves automatically:** two tier-0 batteries riding `aero_editor_shell_test` —
-`command_stack_test.cpp` (18 cases, C1–C18: the push contract calling `redo()` exactly once before any
+`command_stack_test.cpp` (21 cases, C1–C18 plus three code-review-round additions, C19–C21: the push
+contract calling `redo()` exactly once before any
 history mutation, a recording push truncating the redo branch first, the merge chain collapsing a
 continuous run into one entry and each of its five breakers — undo/redo/clear/setClean/
 `breakMergeChain()` — capacity eviction from the front and the ≥ 1 clamp, clean tracking through a
 capacity shift and permanently past an eviction, the failed-push and failed-undo paths each producing
 exactly one WARN while the redo branch stays untouched, the null push, every label query, complete
-destruction with no leak, and the drag call sequence end to end) and `transform_command_test.cpp` (9
+destruction with no leak, the drag call sequence end to end, the mirror of C11 on the `redo()` side
+(C19), a moved-from stack staying empty/clean/`!canUndo()` (C20), and the release-frame merge-ordering
+policy case that documents Gap 1's fix (C21)) and `transform_command_test.cpp` (9
 cases, T1–T9: exact apply/revert on all three channels at once, the silent dead-target guard with zero
 ERRORs plus an anti-vacuity canary, the three merge arms — same entity, different entity, a
 cross-type command via `dynamic_cast` — the label, and a 50-frame simulated drag that undoes to the
@@ -2181,7 +2184,10 @@ Measured at every one of the six code-bearing commit boundaries, not once at the
 - Doctest case counts, measured with `--list-test-cases`, never predicted: `aero_editor_shell_test`
   **169 → 187** (step 1, `command_stack_test.cpp` C1–C18) **→ 196** (step 2, `transform_command_test.cpp`
   T1–T9), unchanged through steps 3–6 — both figures matched the plan's own predictions exactly;
-  `aero_editor_imgui_test` **24 → 30** (I1–I6); `aero_tests` unchanged at **356**; `aero_editor_core`
+  **196 → 199** in the code-review round below (C19, a moved-from-stack case, and C21 — C7's arm fix and
+  T3's rewrite both add `SUBCASE`s, not `TEST_CASE`s, so neither moves this count);
+  `aero_editor_imgui_test` **24 → 30** (I1–I6), unchanged by the review round; `aero_tests` unchanged at
+  **356**; `aero_editor_core`
   **25 → 27** sources (`command_stack.cpp`, `transform_command.cpp`).
 - Fresh `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` configure into `build/tools-off-2.4.1`:
   **5/5**, `aero_editor` launches with **exactly two** WARN lines (2.2.2's reflection WARN, 2.2.3's
@@ -2210,24 +2216,28 @@ Measured at every one of the six code-bearing commit boundaries, not once at the
 
 ### The sabotage table's outcome
 
-All fourteen seeds, every one confirmed present via `git diff` before trusting a verdict, every verdict
-measured against the whole suite, every one reverted and re-confirmed green afterward:
+All fourteen original seeds, plus a fifteenth added by the code-review round (the `redo()` half of
+AC-5/D20, Gap 3) and re-runs of S2, S6, S7, S10 and S13 against the fixed tree, every one confirmed
+present via `git diff` before trusting a verdict, every verdict measured against the whole suite, every
+one reverted and re-confirmed green afterward. Rows marked **corrected** below replace a prior version of
+this table whose S2/S7/S10/S13 rows were wrong — see `docs/10-engineering-log.md`'s 2.4.1 code-review-round
+entry for the full narrative:
 
 | | Seed | Result |
 |---|---|---|
 | S1 | `push`'s step 3 (redo-branch truncation) deleted | **reddens `aero_editor_shell_test`**, exactly as predicted (C4). |
-| S2 | `undo`'s `mergeOpen = false;` deleted | **reddens**, but only after correcting C7's own "undo" arm — the single-entry construction the plan literally describes cannot discriminate S2 at all (undoing a stack's sole entry drops `applied` to 0, which masks `mergeOpen` behind the merge guard's own `applied > 0` term regardless of the seed). Rebuilt as a two-entry construction and reconfirmed reddening. |
+| S2 | `undo`'s `mergeOpen = false;` deleted | **Code-review round correction: the earlier row here was false.** The single-entry construction the plan literally describes cannot discriminate S2 at all (undoing a stack's sole entry drops `applied` to 0, which masks `mergeOpen` behind the merge guard's own `applied > 0` term regardless of the seed) — and the fix this row previously claimed ("rebuilt as a two-entry construction") was never actually written into `command_stack_test.cpp`: the implementation pass shipped the original single-entry arm unchanged, and S2 had ZERO coverage on the seven-commit branch. A later code review caught this by reading the tree directly. **Now actually rebuilt** as a two-entry construction (push A with `mergeResult = true`, `breakMergeChain()`, push B, `undo()`, push C) and **confirmed reddening** (`logA.mergeCalls == 1`, `count() == 1` with the seed live, against `logA.mergeCalls == 0`/`count() == 2` expected). |
 | S3 | `push`'s step 2 (the `redo()` guard) moved after step 3 (truncate) | **reddens**, exactly as predicted (C10). |
 | S4 | `trimToCapacity()` deleted from `push` | **reddens**, exactly as predicted (C8). |
 | S5 | `push` replaced with an unconditional `label()` call, `redo()` never invoked | **reddens** (C2, T8, and — beyond the plan's own prediction — C3, C5 and C10 independently too). Second-order checked: weakening only the two assertions the plan names (C2's `redoCalls`, T8's three `readTransform` equalities) to `CHECK(true)` does **not** make the seed pass the whole suite silently, because those three other cases catch it on their own — a stronger, more redundant result than predicted, recorded honestly rather than forced to match. |
 | S6 | `undo`'s `--applied;` guarded behind `if (ok)` | **reddens**, exactly as predicted (C11). |
-| S7 | `setClean`'s `mergeOpen = false;` deleted | **reddens**, exactly as predicted (C7's setClean arm, C13). |
+| S7 | `setClean`'s `mergeOpen = false;` deleted | **Code-review round correction: only half of the predicted attribution is real.** **Reddens via C7's `setClean` SUBCASE** — confirmed. **Does NOT reden C13** ("clean tracking"): C13 calls its own explicit `breakMergeChain()` immediately before the push that would expose a stale `mergeOpen`, so it passes identically whether or not `setClean()` resets the chain, seed live or not — confirmed by running C13 alone with the seed live and watching it pass. C7's `setClean` arm is S7's only discriminator. |
 | S8 | `trimToCapacity`'s `nullopt` branch replaced with `cleanPosition = 0` | **reddens**, exactly as predicted (C14 arm 2). |
 | S9 | `TransformCommand::mergeWith` also overwrites `beforeValue` | **reddens** (T4, T8), exactly as predicted. Second-order checked: weakening T4's `a.before() == p0` and T8's post-undo `readTransform` equality to `CHECK(true)` DOES make the whole suite pass silently with the seed live — confirming those two assertions, not the harness, do the work, exactly matching the plan's own prediction. |
-| S10 | `TransformCommand::write`'s `readTransform` guard deleted | **reddens both `aero_editor_shell_test` and `aero_editor_imgui_test`**, exactly as predicted (T2, T3, and I-series execution). |
+| S10 | `TransformCommand::write`'s `readTransform` guard deleted | **Code-review round correction: T3 did not actually discriminate this, pre-fix.** T2 and the I-series discriminate as originally stated. T3 ("no Transform component"), as originally shipped, had no `LogFixture`/`LogSinkScope`/ERROR assertion at all — its two checks (`CHECK_FALSE(cmd.redo(w))`, `CHECK_FALSE(w.has<Transform>(e))`) both stay true with the guard removed, because `writeTransform` also returns `false` for a missing component (it just also emits the `AERO_LOG_ERROR` the guard exists to avoid, which the original T3 never checked for). Verified directly: the original T3 body was run against a live S10 seed and passed unchanged. **T3 rewritten** — wrapped in `LogFixture`/`LogSinkScope` with a `countAtLevel(records, Error) == 0` assertion, plus a new null-`Entity{}` SUBCASE covering the other half of AC-13 that had no coverage anywhere. **Reddens both `aero_editor_shell_test` and `aero_editor_imgui_test`**, now via T2, the rewritten T3 (both SUBCASEs), and I-series execution. |
 | S11 | `mergeWith`'s `dynamic_cast` replaced with `static_cast` | **reddens via an ASan stack-out-of-bounds abort**, not merely a red assertion — a stronger result than the plan's own "expect a compiler diagnostic or a red test": reading an `OtherCommand` through a `TransformCommand*`'s wider layout is UB the sanitizer catches directly (T6). |
 | S12 | the capacity clamp dropped from `CommandStack`'s constructor | **reddens**, exactly as predicted (C9). |
-| S13 | `updateGizmo`'s edge block's `End` arm dropped (break on `Begin` only) | **confirmed NON-discriminating**, exactly as predicted — the panel's own call sites are src-private and ImGui-bound, unreachable from `aero_editor_shell_test`; **human row 5** is the only real check. |
+| S13 | `updateGizmo`'s `End` chain-close dropped entirely | **Code-review round correction: the original verdict's REASON was wrong, even though the "non-discriminating" label was defensible at the time for a different bug.** As originally shipped (the `End` break ran BEFORE that frame's write-back — Gap 1's blocking defect), dropping the `End` arm entirely made the code MORE correct, not less: it removed the premature close that was splitting a release frame's final delta into a second entry, so a suite run with S13 seeded against the ORIGINAL code would have looked identical to correct behaviour, for the wrong reason. **Re-run against the FIXED code** (the `End` close now correctly runs AFTER the write-back): still confirmed non-discriminating, `aero_editor_shell_test`/`aero_editor_imgui_test` both 94/94 whole-suite with the seed live — but now for a genuinely structural reason: `Begin`'s own break is unconditional and independently guarantees one entry per drag-start, so for the ONLY command producer this task wires up (the gizmo), no sequence of ordinary drags can expose a missing `End` close. **Human row 5 is NOT S13's discriminator** (corrected below) — three separate drags produce three entries regardless of whether `End` closes the chain, because each new drag's own `Begin` already forces a fresh entry. `End`'s close remains in the code as INV-3's stated defence-in-depth for the day a second, non-gizmo command producer exists (2.4.2+). |
 | S14 | `HISTORY_SHORTCUT_FLAGS` changed from `RouteGlobal` to `RouteAlways` | **confirmed NON-discriminating**, exactly as predicted — `aero_editor_imgui_test` is ImGui-free at source and cannot press a key; **human row 9** is the only real check. |
 
 ## Known-and-expected, NOT a defect
@@ -2255,8 +2265,13 @@ measured against the whole suite, every one reverted and re-confirmed green afte
 4. **Press `Ctrl/⌘+Shift+Z`.** It returns to the dragged position, in one step. Edit > Undo reads
    "Undo Transform" again.
 5. **Three separate drags, then three undos.** The cube walks back through all three, newest first; a
-   fourth undo does nothing and the item greys. *(INV-3 and AC-17. If three drags collapse into fewer
-   than three steps, a chain-break site is missing — S13's only discriminator.)*
+   fourth undo does nothing and the item greys. *(INV-3 and AC-17. Code-review round correction: this
+   row is NOT S13's discriminator — each new drag's own `Begin` edge unconditionally closes the merge
+   chain before that drag's first push, independent of whether the `End` boundary ever closes it, so
+   three separate drags produce three entries whether or not S13 is seeded. This row DOES catch Gap 1's
+   real defect, though: with the pre-review-round `End`-closes-before-write-back bug, a release frame's
+   final delta recorded as a second entry, so three drags would have produced SIX undo steps, not three
+   — this row would have failed had the human pass run before the review round fixed it.)*
 6. **Hold `Ctrl/⌘+Z`.** The history rewinds repeatedly (key repeat, D12), and **releasing the modifier
    stops it immediately** rather than leaving a stuck auto-repeat on `Z`.
 7. **Rotate (`E`) and Scale (`R`) drags undo and redo the same way**, and undoing a rotate leaves
@@ -2299,12 +2314,17 @@ Needs a native run. No checks recorded yet.
 
 **Task 2.4.1 gate status: mechanically green** (build + full ctest on both presets, the
 `AERO_REQUIRE_GPU=1` rehearsal, both tools-OFF configurations, the non-interactive launch proof, all
-fourteen sabotage proofs each seed-confirmed and reverted — S2 discriminates only after a test-
-construction fix; S5's second-order check found MORE redundant coverage than predicted; S9's second-order
-check matched the prediction exactly; S11 discriminates via an ASan abort; S13 and S14 confirmed
-non-discriminating exactly as predicted and routed to human rows 5 and 9 — all five guards green with no
-allowlist change, clang-format and clang-tidy clean with zero new `NOLINT`s). **The human pass — macOS,
-Windows and Linux — is pending** and is the only proof of the physical `Ctrl+Z`/`Ctrl+Shift+Z` chords,
-`RouteGlobal`'s loss to a focused `InputText` (row 9), and the merge chain holding across three
-consecutive drags (row 5).
+sabotage proofs each seed-confirmed and reverted — including a code-review round that found and fixed a
+blocking AC-16 ordering defect (Gap 1: a release frame recorded as two history entries, not one) and
+corrected the S2, S7, S10 and S13 rows above, none of which were what the original pass claimed; S5's
+second-order check found MORE redundant coverage than predicted; S9's second-order check matched the
+prediction exactly; S11 discriminates via an ASan abort; S14 confirmed non-discriminating exactly as
+predicted and routed to human row 9; S13 confirmed non-discriminating against the FIXED code for a
+structural reason (`Begin`'s own break is sufficient for this task's only command producer), not the
+"closer to correct than the buggy code it was seeded against" reason it would have shown pre-fix — all
+five guards green with no allowlist change, clang-format and clang-tidy clean with zero new `NOLINT`s).
+**The human pass — macOS, Windows and Linux — is pending** and is the only proof of the physical
+`Ctrl+Z`/`Ctrl+Shift+Z` chords, `RouteGlobal`'s loss to a focused `InputText` (row 9), and — now that Gap
+1 is fixed — that the merge chain genuinely holds across three consecutive drags (row 5, which is a real
+end-to-end check of AC-16/AC-17, not S13's discriminator).
 

@@ -270,16 +270,25 @@ streak count. **C14's second half was impossible against the spec's own §3.2 al
 (already-empty) redo branch first, so `trimToCapacity` never runs and nothing becomes unreachable; the
 correct two-arm construction (Arm 1: the clean position survives one capacity shift and stays reachable;
 Arm 2: a second shift evicts it and `cleanPosition` becomes permanently `nullopt`) is what actually
-discriminates S8. **A genuine tenth finding, beyond the plan's own nine:** the plan's own C7 "undo" arm,
-as literally specified (push a single entry, undo it, push a follow-up, assert no merge), cannot
-discriminate S2 (a bugged `undo()` that forgets `mergeOpen = false`) — undoing a stack's SOLE entry drops
-`applied` to 0, and the merge guard's own `applied > 0` term then masks `mergeOpen`'s value regardless of
-whether `undo()` reset it, since `push`'s step 3 (truncate) removes that entry before the merge check is
-ever reached. Found by actually running the seed and watching the whole suite stay green when the plan
-predicted red. Fixed with a two-entry construction (push A, break the chain, push B, then undo B — leaving
-`applied == 1`, A still applied) that makes a stale `mergeOpen` visible as an erroneous merge into A; the
-corrected arm now genuinely discriminates S2, and this is the same class of defect §A4 already found in
-the spec's own C14 — a plan- or spec-authored test construction that cannot reach the state it claims to.
+discriminates S8. **A genuine tenth finding, beyond the plan's own nine — but, corrected below, one this
+implementation pass identified and then failed to actually land.** The plan's own C7 "undo" arm, as
+literally specified (push a single entry, undo it, push a follow-up, assert no merge), cannot discriminate
+S2 (a bugged `undo()` that forgets `mergeOpen = false`) — undoing a stack's SOLE entry drops `applied` to
+0, and the merge guard's own `applied > 0` term then masks `mergeOpen`'s value regardless of whether
+`undo()` reset it, since `push`'s step 3 (truncate) removes that entry before the merge check is ever
+reached. Found by actually running the seed and watching the whole suite stay green when the plan
+predicted red. **The described fix — a two-entry construction (push A, break the chain, push B, then undo
+B, leaving `applied == 1` with A still applied) — was correctly diagnosed here but never actually written
+into `tests/editor/command_stack_test.cpp`: the shipped C7 "undo" arm at merge time was byte-identical to
+the plan's own single-entry construction, and S2 shipped completely uncovered.** A first-pass code review
+of `feat/2.4.1-command-stack` caught this directly (`git show <the seven-commit HEAD>:tests/editor/
+command_stack_test.cpp`'s "undo" arm was unchanged from the single-entry shape this very paragraph already
+diagnoses as non-discriminating), confirmed the seed landed green against the whole suite, and only then
+rebuilt the arm to the two-entry construction described above — now genuinely discriminating (see the
+review round below). This is the same class of defect §A4 already found in the spec's own C14 — a plan-
+or spec-authored test construction that cannot reach the state it claims to — compounded, this time, by
+the fix being described accurately in prose without the corresponding code change actually landing. The
+standing lesson: a paragraph that says "fixed" is not evidence: `git diff`/`git show` the tree, always.
 
 **The dead ends recorded so they are never retried:** `ctx.input()` for an editor chord — no notion of UI
 focus, so a focused `InputText` could not swallow `Ctrl+Z` (F5); a global `Ctrl+Y` as a second redo — binds
@@ -317,9 +326,17 @@ green (`build/tools-off-2.4.1` 5/5 with exactly the two known pre-existing WARNs
 confirmed on on all three lanes by the absence of any `-fno-rtti`/`/GR-` flag anywhere in `cmake/` or the
 presets. **All fourteen sabotage proofs were performed**, each seed confirmed landed via `git diff` before
 trusting a verdict, each reverted and re-confirmed green afterward, every verdict measured against the
-WHOLE suite, never a filtered case: **S1–S4, S6–S8, S10, S12 discriminate exactly as predicted**; **S2
-discriminates only after the C7 "undo" arm fix above** (predicted non-discriminating as originally
-written, corrected, then confirmed); **S5's second-order check found MORE redundant coverage than the plan
+WHOLE suite, never a filtered case: **S1, S3, S4, S6, S8, S10, S12 discriminate exactly as predicted.**
+**S2 was CLAIMED to discriminate "after the C7 undo arm fix above", and that claim was false at the time
+it was written** — the fix described in the paragraph above was never actually made to the tree in this
+implementation pass, so S2 shipped on `feat/2.4.1-command-stack`'s first seven commits with ZERO coverage,
+undetected until a code review re-read the tree directly instead of trusting the log's own prose. Actually
+fixed in the review round below, and reconfirmed reddening there. **S7 was predicted to discriminate via
+TWO cases, "C7's setClean arm, C13" — only the first half is true.** C13 ("clean tracking") calls its own
+explicit `breakMergeChain()` immediately before the push that would expose a stale `mergeOpen`, so C13
+passes identically whether or not `setClean()` resets the chain; only C7's `setClean` SUBCASE (which pushes
+its follow-up command WITHOUT an intervening `breakMergeChain()`) actually discriminates S7. Found and
+corrected by the same review round, below; **S5's second-order check found MORE redundant coverage than the plan
 predicted** — weakening only the two assertions the plan named (`log.redoCalls == 1` in C2, the three
 `readTransform` equalities in T8) does *not* make the seed pass silently, because C3's `redoCalls == 2`,
 C5's `redoCalls == 1` and C10's whole failed-push case each independently catch it too; recorded honestly
@@ -329,12 +346,12 @@ T8's post-undo `readTransform` equality does make the whole suite pass silently 
 confirming those two assertions (not the harness) do the work; **S11 discriminates via an ASan
 stack-out-of-bounds abort**, not merely a red assertion — `static_cast`ing an `OtherCommand` through a
 `TransformCommand*` and reading its wider layout is UB the sanitizer catches directly, a stronger result
-than the plan's own "expect a compiler diagnostic or a red test"; **S13 and S14 are confirmed
-NON-DISCRIMINATING, exactly as predicted** — S13 (dropping the `End` arm of the merge-chain break) is
-unreachable from `aero_editor_shell_test` because the panel's own call sites are src-private and ImGui-
-bound; S14 (`RouteGlobal` → `RouteAlways`) is unreachable from `aero_editor_imgui_test` because that
-target is ImGui-free at source and cannot press a key; both are routed to human rows (5 and 9) and neither
-was forced into a manufactured tier-0 discriminator. Three prose-collision fixes, the `each<T>` class
+than the plan's own "expect a compiler diagnostic or a red test"; **S13's verdict is corrected by the
+review round below — it was CLOSER TO CORRECT than the code it was seeded against, not merely
+non-discriminating for an unrelated structural reason.** S14 (`RouteGlobal` → `RouteAlways`) remains
+confirmed NON-DISCRIMINATING exactly as predicted — `aero_editor_imgui_test` is ImGui-free at source and
+cannot press a key; it is routed to human row 9, and was not forced into a manufactured tier-0
+discriminator. Three prose-collision fixes, the `each<T>` class
 2.3.2 first found: a `viewport_panel.cpp` comment originally said "the direct `writeTransform` call" and
 inflated AC-18's `git grep -n 'writeTransform'` past its expected two files; a `shell_ui.cpp` comment named
 `menuItemStub` inside the Edit-menu block and inflated AC-20's five-line expectation to six; a
@@ -347,6 +364,147 @@ worktree-and-fold path as the C7 fix). One measured drift from the plan's own §
 rather than silently corrected: INV-4's uncomment-stripped identifier scan reads **35 hits across 8
 headers** at `bb6de90`, not the plan's stated "34 hits across 9 headers" — the comment-stripped form
 (the actual gate) is unaffected and was empty before and after this task, so nothing enforceable moved.
+
+##### Task 2.4.1 — code-review round (six commits after the seven)
+
+**A code review of `feat/2.4.1-command-stack` found six issues, two of them blocking, all six fixed on
+the same branch as six further green `fix:`/`test:`/`docs:` commits, the original seven untouched. Every
+sabotage verdict this round moved was re-run against the fixed tree, seed confirmed landed via `git diff`
+before trusting the result, reverted and re-confirmed green afterward.**
+
+**Gap 1 — BLOCKING — a released drag recorded TWO history entries, so AC-16 was not met.**
+`ViewportPanel::updateGizmo`'s merge-chain break ran on `edge == Begin || edge == End`, in ONE place,
+*before* that frame's write-back. On the genuine release frame, ImGuizmo reports the drag's FINAL delta
+on the SAME frame it clears its own `mbUsing` latch (translate: `ImGuizmo.cpp` ~:2244-2249 — `*(matrix_t*)
+matrix = res;` runs, THEN `if (!io.MouseDown[0]) { mbUsing = false; }`; scale/rotate are the same shape),
+so `edge == End` and a real `changed == true` land on the SAME frame. Breaking the chain first meant that
+frame's push recorded as a SECOND, un-merged entry beside the drag's already-merged one: `⌘Z` only undid
+the last frame's motion, not the whole gesture. **Fixed by splitting the single check into two**: the
+`Begin` break stays exactly where it was (before the write-back — necessary because ImGuizmo's Scale and
+Rotate handlers, unlike Translate, run their "just grabbed" and "apply this frame's delta" logic back to
+back on the SAME frame, so a stale `mScaleLast`/`mRotationAngleOrigin` comparison left over from an
+EARLIER, unrelated drag can report `changed` on the very Begin frame — confirmed by reading
+`HandleScale`/`HandleRotation`, not assumed); the `End` break now runs AFTER the write-back, reached on
+every exit path (the old `if (!changed) { return; }` early return became an `if (changed) { … }` block so
+the trailing close is never skipped). **This raises the file's comment-stripped `breakMergeChain` count
+from 3 to 4** (two early-return sites, unchanged, plus Begin and End as two now-separate call sites) —
+a deliberate, evidence-based deviation from the plan's own §V7 expectation of 3. The two boundaries have
+structurally opposite positional requirements (Begin must run before ITS OWN frame's push; End must run
+after ITS OWN frame's push) and cannot share one call site without reintroducing either this bug (moving
+Begin's break late) or a second, symmetric one (moving End's break early); collapsing the two early-return
+sites was considered and rejected — they exist for the same INV-3 defence-in-depth reason the End close
+does, and nothing in this round asked to weaken them. **New regression coverage at the policy level**
+(the panel itself is unreachable from any test target — src-private, ImGui-bound): a new
+`command_stack_test.cpp` case drives the exact call sequence a release frame produces two ways — chain
+closed AFTER the release frame's push (`count() == 1`, correct) contrasted with chain closed BEFORE it
+(`count() == 2`, documents the bug this round fixed). **S13 re-run against the fixed code and given a
+corrected verdict**: the plan's own sabotage table called S13 (dropping the `End` arm entirely) "confirmed
+NON-DISCRIMINATING, exactly as predicted" and attributed that to the panel being unreachable from any test
+target. That framing hid the real finding — **S13, seeded against the ORIGINAL (buggy) code, was CLOSER
+TO CORRECT than the code it was tested against**: removing the premature `End` close also removes the bug
+this round fixes, so the seeded tree would have produced ONE entry per drag, correctly, for the wrong
+reason. Re-run against the FIXED code, S13 (dropping the now-correctly-timed post-write `End` close
+entirely) is confirmed non-discriminating for a DIFFERENT and more permanent reason: `Begin`'s own break is
+unconditional and does not depend on whatever `End` left behind, so for the ONLY command producer this
+task wires up (the gizmo itself), any sequence of ordinary drags produces one entry each regardless of
+whether the trailing `End` close exists at all — `aero_editor_shell_test`/`aero_editor_imgui_test` stayed
+94/94 (whole tests, not filtered) with the seed live, confirmed. This also means human row 5 ("three
+separate drags, then three undos") was never actually S13's discriminator, contrary to `editor/
+VALIDATION.md`'s row-5 parenthetical — corrected there. The `End` close remains in the code purely as
+INV-3's stated defence-in-depth, for the day a second command producer (2.4.2's Inspector routing, H6's
+second continuous-gesture producer) can push while a gizmo drag's chain is nominally still open.
+
+**Gap 2 — BLOCKING — S2 had zero coverage, and two documents claimed otherwise.** Covered above at length
+(the "genuine tenth finding" paragraph, corrected in place, and the sabotage-verdict correction two
+paragraphs above it): the plan/log's own C7 "undo" arm fix was DESCRIBED but never WRITTEN, so S2 shipped
+uncovered on the original seven commits. **Fixed now**: C7's "undo" SUBCASE rebuilt to the two-entry
+construction (push A with `mergeResult = true`, `breakMergeChain()`, push B, `undo()`, push C) —
+`logA.mergeCalls == 0` and `count() == 2` now hold only because `mergeOpen` is genuinely reset by
+`undo()`; seeded and confirmed reddening (`logA.mergeCalls == 1`, `count() == 1` with S2 live), reverted
+and re-confirmed green. **The S7/C13 misattribution, a second false claim in the same family, found and
+corrected in the same pass**: C13 ("clean tracking") calls its own explicit `breakMergeChain()`
+immediately before the push that would expose S7's bug, so it passes identically whether or not
+`setClean()` resets `mergeOpen` — confirmed by seeding S7 and watching C13 stay green in isolation while
+only C7's `setClean` SUBCASE reddens. **Two related seeds measured and deliberately left alone, per the
+review's own finding**: deleting `mergeOpen = false` from `redo()` or from `clear()` both leave the whole
+suite green, and correctly so — `redo()`'s own `applied == history.size()` guard and `clear()`'s own
+`applied > 0` term already make the stale flag unobservable in both cases; adding assertions that cannot
+fail would be exactly the defect class this log keeps calling out, so neither arm was touched.
+`editor/VALIDATION.md`'s S2 and S7 rows, and this file's own sabotage-summary sentence above, are
+corrected to match.
+
+**Gap 3 — AC-5's `redo()` half was completely untested.** `command_stack.cpp:62-77`'s "consume the step
+even on failure" (D20) arm existed on both `undo()` and `redo()`, but C11 only ever drove `undo()` with a
+failing command; nothing exercised `redo()` returning false. Proven dead before the fix: seeding
+`if (ok) { ++applied; }` into `redo()` left the whole 196-case suite green — a frozen `Ctrl+Shift+Z` (the
+exact failure D20 exists to prevent) would have shipped undetected. **New case, the mirror of C11**: push a
+`FakeCommand`, `undo()`, set `redoResult = false`, `redo()` — asserts `true` returned, `appliedCount()`
+back to 1, exactly one WARN. Seeded and confirmed reddening, reverted and re-confirmed green.
+
+**Gap 4 — T3 did not assert the half of AC-13 it was credited with.** `transform_command_test.cpp`'s
+original T3 ("no Transform component") had no `LogFixture`, no `LogSinkScope` and no ERROR assertion — the
+"no `AERO_LOG_ERROR`" half of AC-13 was proven only by T2's dead-entity arm, and `editor/VALIDATION.md`'s
+own S10 row over-claimed T3 as a second discriminator. **Verified, not assumed**: the ORIGINAL T3 body was
+checked out standalone and run against a live S10 seed (`TransformCommand::write`'s `readTransform` guard
+removed) — it passed unchanged, because `writeTransform` also returns `false` for a missing component, it
+just ALSO emits the `AERO_LOG_ERROR` the guard exists to avoid, and the original T3 never checked for one.
+**Fixed**: T3 wrapped in the same `LogFixture`/`LogSinkScope` as T2, with a `countAtLevel(records, Error)
+== 0` assertion, plus a genuinely new arm for the null-`Entity{}` case of AC-13 that had no coverage at
+all anywhere in the TU. Re-seeded S10 against the fixed T3: both SUBCASEs now redden. `editor/
+VALIDATION.md`'s S10 row corrected to remove T3 from the pre-fix discriminator list and note the fix.
+
+**Gap 5 — a moved-from `CommandStack` broke INV-1.** `command_stack.hpp`'s defaulted move moved `history`
+(left empty by `std::vector`'s own move) but COPIED the scalars `applied`/`cleanPosition`/`mergeOpen`
+(trivially-copyable types have no distinct "move"), so a moved-from stack could have `applied > 0` over an
+empty `history`: `canUndo()` would lie true, and `undoLabel()`/`undo()` would index `history[applied - 1]`
+on an empty vector. Latent in the shipped code — `EditorApp`'s one move (inside `create()`) only ever
+destroys the source afterward — but exactly the shape 2.5.1 trips the moment it clears/replaces stacks.
+**Fixed**: the move constructor and move assignment are now hand-written (still `noexcept`, so the two
+`static_assert`s and `EditorApp`'s own defaulted move stay valid), resetting the source's three scalars to
+`clear()`'s state. New tier-0 case (move construction and move assignment, each a SUBCASE) asserts a
+moved-from stack is empty, clean and `!canUndo()`, using the `std::optional<T>`-wrapped-source idiom
+(`shell_test.cpp`'s `PanelRegistry` precedent) so `bugprone-use-after-move` does not flag the deliberate
+moved-from-state read-back.
+
+**Gap 6 — the `label()` contract permitted the mutation the stack's `string_view` capture cannot
+survive.** The original contract allowed a `std::string` a command owns, and `undo()`/`redo()`'s own
+"capture the label before the call, a command may mutate itself" comment invited exactly the mutation that
+would dangle a `string_view` held across the call. **Tightened, not redesigned**: `Command::label()`'s
+contract in `command_stack.hpp` now states explicitly that the view must stay valid AND UNCHANGED across
+that command's own `redo()`, `undo()` and `mergeWith()`, and that callers must not hold it across a
+`push()`/`undo()`/`redo()`/`clear()` on the owning stack. `undo()`/`redo()`'s capture-before-the-call
+comments were rewritten to say the contract makes this safe, not that a mutation is expected. **Handoff to
+2.4.2, recorded in the header**: a future command with a genuinely mutable label must have its caller copy
+it into a `std::string` before the call that could change it, not hold a `string_view` across it — nothing
+in this task needs that (`TRANSFORM_COMMAND_LABEL` is a `constexpr` literal with static storage), so no
+behavioural change was made, only the documented contract and the misleading comments.
+
+**Process note, stated plainly because it is the standing lesson of this round.** The prior pass of this
+task amended its seven commits and reported a fix ("C7's undo arm rebuilt as a two-entry construction")
+that was never actually in the tree — this file and `editor/VALIDATION.md` both repeated that false claim.
+This round adds new commits on top instead of amending, and every claim above was verified by reading the
+diff/`git show` back out of the tree after writing it, not by re-describing what the previous pass said it
+did.
+
+**Inventory, measured before and after this round, never assumed.** `aero_editor_shell_test` **196 → 199**
+(three new cases: the redo-failure mirror of C11, the moved-from-stack case, and the release-frame-ordering
+policy case; C7's own arm fix and T3's rewrite both add `SUBCASE`s, not `TEST_CASE`s, so neither moves the
+count). `aero_editor_imgui_test` and `aero_tests` unchanged at **30** and **356**. `ctest -N` unchanged at
+**94** (tools ON), **5** (`build/tools-off-2.4.1`) and **18** (`build/reflect-off-2.4.1`) — no new
+`add_test` anywhere, both new/changed sources ride existing targets. `check-math-boundary.sh`'s scanned
+count unchanged at **215** — no new tracked C-family file. All five architecture guards green with no
+allowlist change. Both macOS presets green at every one of the six new commit boundaries, Debug and
+Release, with and without `AERO_REQUIRE_GPU=1`; both tools-OFF configurations green. clang-format and
+clang-tidy (`--warnings-as-errors='*'`) clean on every touched file, zero new `NOLINT`s. Sabotage seeds
+re-run this round — S2, S6, S7, S10, S13, plus the Gap-3 `redo()` seed — each confirmed landed via `git
+diff`, measured against the WHOLE suite, reverted and re-confirmed green: **S2 now reddens** (C7's fixed
+"undo" arm); **S6 still reddens exactly as before** (C11, unaffected by this round's changes); **S7 still
+reddens, but ONLY via C7's `setClean` arm**, confirmed by watching C13 pass in isolation with the seed
+live; **S10 now reddens T3 too**, both its live-entity and its new null-`Entity{}` SUBCASEs, where before
+only T2 caught it; **S13 remains non-discriminating against the fixed code, for a different and more
+durable reason than the plan recorded** (`Begin`'s own break is unconditional and independently guarantees
+one entry per drag for the only producer this task wires up); the new Gap-3 seed (`redo()`'s `++applied`
+guarded behind `if (ok)`) now reddens the new C11-mirror case where before nothing in the suite did.
 
 ---
 
