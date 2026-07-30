@@ -61,7 +61,9 @@ private:
     void drawVoidTarget(PanelContext& context);
     void applyPending(PanelContext& context);
 
-    RootOrder roots;
+    // Task 2.4.2, D10: the root order (RootOrder) moved to EditorApp (accessor context.roots) so a
+    // structural command can restore a deleted root to the row it occupied. This panel still
+    // reconciles it, in phase 1.
     std::vector<Entity> rows;        // this frame's visible rows, in DRAW order (the Shift-range domain)
     std::vector<Entity> childArena;  // LIFO scratch for expanded nodes' children (D14), owned by walkForest
     std::vector<TreeWalkEntry> stack;

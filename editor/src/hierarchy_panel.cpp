@@ -58,9 +58,12 @@ void HierarchyPanel::onDraw(PanelContext& context) {
 
     // -- phase 1: reconcile (FIRST, so the panel is correct when something ELSE changed the World --
     //    2.5.1's load, 2.4.2's undo, a future script). prune() only knows about Selection, which is
-    //    why the two handle checks below are separate: they close E19 and E24.
+    //    why the two handle checks below are separate: they close E19 and E24. The root order
+    //    (RootOrder, D10) now lives on EditorApp; it is still reconciled HERE, deliberately: this must
+    //    run AFTER this frame's undo (applied in drawShellUi, 2.4.1 D19) and BEFORE the tree walk,
+    //    which is exactly where it is.
     context.selection.prune(world);
-    roots.reconcile(world);
+    context.roots.reconcile(world);
     if (renaming.valid() && !world.alive(renaming)) {
         renaming = {};  // E24: the renamed entity was deleted mid-rename
         renameFocusPending = false;
@@ -135,7 +138,7 @@ void HierarchyPanel::drawTree(PanelContext& context) {
         ImGui::PopID();
         ImGui::PopID();
     };
-    walkForest(world, roots.entities(), stack, childArena, enter, unwind);
+    walkForest(world, context.roots.entities(), stack, childArena, enter, unwind);
 
     revealPath.clear();  // consumed -- ImGui's own per-ID storage now remembers the open state
 }

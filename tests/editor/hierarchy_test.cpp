@@ -305,7 +305,8 @@ TEST_CASE("editor: PanelContext binds references, it does not copy (D7)") {
     World w;
     Selection s;
     engine::editor::CommandStack commands;
-    engine::editor::PanelContext context{w, s, commands};
+    engine::editor::RootOrder roots;
+    engine::editor::PanelContext context{w, s, commands, roots};
 
     CHECK(&context.world == &w);
     CHECK(&context.selection == &s);
@@ -742,6 +743,113 @@ TEST_CASE("editor: RootOrder does not mistake a recycled slot for its predecesso
     REQUIRE(ro.entities().size() == 2);
     CHECK(ro.entities()[0] == keep);      // untouched -- pass 1 preserved its position
     CHECK(ro.entities()[1] == recycled);  // appended -- generation mismatch correctly re-admits it
+}
+
+// ---- RootOrder::indexOf / RootOrder::insert (task 2.4.2, D9) --------------------------------------
+
+TEST_CASE("editor: RootOrder::indexOf reports a tracked root's slot, or NO_ROOT_SLOT (task 2.4.2 R1)") {
+    using engine::editor::RootOrder;
+    World w;
+    RootOrder ro;
+    const Entity a = w.create();
+    const Entity b = w.create();
+    const Entity c = w.create();
+    ro.reconcile(w);
+    REQUIRE(ro.entities().size() == 3);
+    CHECK(ro.indexOf(a) == 0);
+    CHECK(ro.indexOf(b) == 1);
+    CHECK(ro.indexOf(c) == 2);
+
+    const Entity child = w.create();
+    REQUIRE(w.setParent(child, a));
+    CHECK(ro.indexOf(child) == engine::editor::NO_ROOT_SLOT);  // a child -- never entered `order`
+
+    const Entity dead = w.create();
+    REQUIRE(w.destroy(dead));
+    CHECK(ro.indexOf(dead) == engine::editor::NO_ROOT_SLOT);  // dead -- never reconciled in, so untracked
+
+    CHECK(ro.indexOf(Entity{}) == engine::editor::NO_ROOT_SLOT);
+}
+
+TEST_CASE("editor: RootOrder::insert restores a destroyed root to its captured slot (task 2.4.2 R2)") {
+    // The shape a real root-delete undo produces: capture the slot BEFORE destroying, destroy, then
+    // put the entity's IDENTITY back via World::recreate (task 2.4.2's own engine primitive) before
+    // reinserting it at the captured slot -- never a fresh create().
+    using engine::editor::RootOrder;
+    World w;
+    RootOrder ro;
+    const Entity a = w.create();
+    const Entity middle = w.create();
+    const Entity c = w.create();
+    ro.reconcile(w);
+    REQUIRE(ro.entities().size() == 3);
+    const std::size_t slot = ro.indexOf(middle);
+    REQUIRE(slot == 1);
+
+    REQUIRE(w.destroy(middle));
+    ro.reconcile(w);
+    REQUIRE(ro.entities().size() == 2);  // the dead root dropped out
+
+    const Entity restored = w.recreate(middle);
+    REQUIRE(restored == middle);
+    ro.insert(restored, slot);
+
+    REQUIRE(ro.entities().size() == 3);
+    CHECK(ro.entities()[0] == a);
+    CHECK(ro.entities()[1] == middle);  // back where it was, not appended at the end
+    CHECK(ro.entities()[2] == c);
+}
+
+TEST_CASE(
+    "editor: RootOrder::insert clamps out-of-range indices and no-ops on invalid/duplicate input "
+    "(task 2.4.2 R3/D25)") {
+    using engine::editor::RootOrder;
+    World w;
+    RootOrder ro;
+    const Entity a = w.create();
+    const Entity b = w.create();
+    ro.reconcile(w);
+    REQUIRE(ro.entities().size() == 2);
+
+    const Entity c = w.create();
+    ro.insert(c, 999);  // clamps to size() -- an append
+    REQUIRE(ro.entities().size() == 3);
+    CHECK(ro.entities()[2] == c);
+
+    const Entity d = w.create();
+    ro.insert(d, engine::editor::NO_ROOT_SLOT);  // the sentinel clamps to size() too -- an append
+    REQUIRE(ro.entities().size() == 4);
+    CHECK(ro.entities()[3] == d);
+
+    const std::vector<Entity> before(ro.entities().begin(), ro.entities().end());
+    ro.insert(a, 0);  // already tracked -- a no-op, not a move
+    CHECK(ro.entities().size() == before.size());
+    CHECK(std::vector<Entity>(ro.entities().begin(), ro.entities().end()) == before);
+
+    ro.insert(Entity{}, 0);  // invalid handle -- a no-op
+    CHECK(ro.entities().size() == before.size());
+    CHECK(std::vector<Entity>(ro.entities().begin(), ro.entities().end()) == before);
+}
+
+TEST_CASE("editor: reconcile preserves an entry insert() placed, it does not re-append it (task 2.4.2 R4/F12)") {
+    using engine::editor::RootOrder;
+    World w;
+    RootOrder ro;
+    const Entity a = w.create();
+    const Entity b = w.create();
+    ro.reconcile(w);
+    REQUIRE(ro.entities().size() == 2);
+
+    const Entity c = w.create();  // a genuine root, but NOT yet reconciled in
+    ro.insert(c, 1);
+    REQUIRE(ro.entities().size() == 3);
+    CHECK(ro.entities()[1] == c);
+
+    ro.reconcile(w);
+    REQUIRE(ro.entities().size() == 3);
+    CHECK(ro.entities()[0] == a);
+    CHECK(ro.entities()[1] == c);  // stays at index 1 -- not re-appended at the end
+    CHECK(ro.entities()[2] == b);
 }
 
 // ---- walkForest (review round 2, Gap 1) -----------------------------------------------------------

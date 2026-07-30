@@ -220,6 +220,18 @@ void RootOrder::reconcile(const World& world) {
 
 std::span<const Entity> RootOrder::entities() const noexcept { return std::span<const Entity>{order}; }
 
+std::size_t RootOrder::indexOf(Entity entity) const noexcept {
+    const auto it = std::find(order.begin(), order.end(), entity);
+    return it == order.end() ? NO_ROOT_SLOT : static_cast<std::size_t>(it - order.begin());
+}
+
+void RootOrder::insert(Entity entity, std::size_t index) {
+    if (!entity.valid() || std::find(order.begin(), order.end(), entity) != order.end()) {
+        return;  // invalid, or already tracked -- reconcile() owns the append path
+    }
+    order.insert(order.begin() + static_cast<std::ptrdiff_t>(std::min(index, order.size())), entity);
+}
+
 void RootOrder::clear() noexcept {
     order.clear();
     scratch.clear();
