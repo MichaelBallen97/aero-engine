@@ -27,7 +27,7 @@ now lives in its own page, short enough to render anywhere.
 | [2.3.1 — editor camera](validation/2.3.1-editor-camera.md) | ✅ | ✅ PASS 19/19 | ⏳ | ⏳ |
 | [2.3.2 — selection & picking](validation/2.3.2-selection-picking.md) | ✅ | ✅ PASS 21/21 | ⏳ | ⏳ |
 | [2.3.3 — ImGuizmo transform gizmos](validation/2.3.3-imguizmo-transform-gizmos.md) | ✅ | ✅ PASS 24/24 applicable | ⏳ | ⏳ |
-| [**2.4.1 — command stack**](validation/2.4.1-command-stack.md) | ✅ | **⏳ pending — 16 rows** | ⏳ | ⏳ |
+| [2.4.1 — command stack](validation/2.4.1-command-stack.md) | ✅ | ✅ PASS 16/16 | ⏳ | ⏳ |
 
 `⏳` = needs a code-free, on-hardware follow-up, the Phase 0/1 precedent (0.5.3 / 1.4.2). No Windows or
 Linux human pass has been run for **any** Phase 2 task yet; that is a known, accumulating debt, not an
@@ -35,20 +35,24 @@ oversight per task.
 
 ## What needs a human next
 
-- **[2.4.1 — command stack](validation/2.4.1-command-stack.md) · 16 rows, none run.** Its
-  `## Validation records` section is a tickable checklist. **Rows 3 and 5 are the priority**: they are
-  the *only* guard on the code-review round's blocking AC-16 fix — one continuous gizmo drag must undo
-  in a single step. No test in either tier can reach that ordering (tier-0 cannot construct the panel,
-  the GPU-gated target cannot inject mouse input), so if it regresses, CI stays green. Row 9 (rename
-  field focused + `Ctrl/⌘+Z` must undo the *text*, not move the scene) is the other row with no
-  mechanical cover.
-- **[2.2.5 — log/console panel](validation/2.2.5-log-console-panel.md) · 4 rows BLOCKED.** They could
-  not be run because the editor emitted no log record after startup. Two triggerable sources exist
-  now — 2.3.3's degenerate-transform gizmo WARN, and (as of 2.4.1) a Debug-build `⌘Z`, which logs one
-  `DEBUG editor: undo 'Transform' (…)` per undo — but the four rows have not been re-run against
-  either.
-- **Windows and Linux, every task.** Each task page carries its own "How to validate one OS" section;
-  the rows are the same on every platform except where a page marks one platform-only.
+**Every macOS row across Phase 2 is now run.** 2.4.1's pass (2026-07-30, 16/16) was the last one
+outstanding, and it confirmed the code-review round's AC-16 ordering fix end to end — one continuous
+gizmo drag undoes in a single step, which is the *only* guard on that ordering, since neither test tier
+can reach it (tier-0 cannot construct the panel; the GPU-gated target cannot inject mouse input).
+
+What is left:
+
+- **[2.2.5 — log/console panel](validation/2.2.5-log-console-panel.md) · 4 rows still BLOCKED.** They
+  could not be run because the editor emitted no log record after startup. **Two triggerable sources now
+  exist and both are confirmed working by human passes** — 2.3.3's degenerate-transform gizmo WARN, and
+  2.4.1's Debug-build `⌘Z`, which row 14 verified logs one `DEBUG editor: undo 'Transform' (…)` per undo
+  (and is silent in Release). Nothing blocks these four rows any more; they simply have not been re-run.
+  **This is the cheapest open item in the ledger.**
+- **Windows and Linux — every task, all eleven.** No non-macOS human pass has been run for any Phase 2
+  task. That is accumulating debt across the whole phase, not a per-task gap, and it is worth scheduling
+  deliberately rather than discovering at the phase gate. Each task page carries its own "How to
+  validate one OS" section; the rows are identical per platform except where a page marks one
+  platform-only (2.3.3's row 23 is Linux-only).
 
 ## Conventions for these pages
 
