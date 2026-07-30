@@ -119,15 +119,49 @@ TEST_CASE("transform_command: dead entity (T2/AC-13/D16)") {
     }
 }
 
-TEST_CASE("transform_command: no Transform component") {
-    World w;
-    const Entity e = w.create();  // bare entity, no Transform
-    const Transform before{};
-    const Transform after{.position = Vec3{1.0F, 1.0F, 1.0F}};
-    TransformCommand cmd{e, before, after};
+// Code-review round (Gap 4): T3 used to have no LogFixture/LogSinkScope/ERROR assertion at all, so the
+// "no AERO_LOG_ERROR" half of AC-13 was proven only by T2's DEAD-entity arm. Both of T3's original
+// checks (CHECK_FALSE(cmd.redo(w)) and CHECK_FALSE(w.has<Transform>(e))) stay true with
+// TransformCommand::write's `readTransform` guard removed (S10), because writeTransform ALSO returns
+// false for a missing component -- it just also emits the AERO_LOG_ERROR the guard exists to avoid.
+// Proven dead before this rewrite: seeding S10 left T3 green. The null-Entity{} arm of AC-13 (a target
+// that never resolves at all, as opposed to one that used to exist) had no coverage anywhere in this TU.
+TEST_CASE("transform_command: no Transform component (T3/AC-13)") {
+    const LogFixture fixture;  // declared FIRST: destructs LAST
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
 
-    CHECK_FALSE(cmd.redo(w));
-    CHECK_FALSE(w.has<Transform>(e));  // nothing created as a side effect
+    SUBCASE("a live entity with no Transform: redo fails, no side effect, zero ERRORs (S10)") {
+        World w;
+        const Entity e = w.create();  // bare entity, no Transform
+        const Transform before{};
+        const Transform after{.position = Vec3{1.0F, 1.0F, 1.0F}};
+        TransformCommand cmd{e, before, after};
+
+        CHECK_FALSE(cmd.redo(w));
+        CHECK_FALSE(w.has<Transform>(e));  // nothing created as a side effect
+        scope.sink()->take(records);
+        CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    }
+
+    SUBCASE("a null Entity{}: redo and undo both fail, zero ERRORs -- the AC-13 arm T3 never covered") {
+        World w;
+        const Entity e{};  // default-constructed: generation 0, never resolves to a live component
+        const Transform before{};
+        const Transform after{.position = Vec3{1.0F, 1.0F, 1.0F}};
+        TransformCommand cmd{e, before, after};
+
+        CHECK_FALSE(cmd.redo(w));
+        CHECK_FALSE(cmd.undo(w));
+        scope.sink()->take(records);
+        CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    }
+
+    SUBCASE("ANTI-VACUITY: the sink IS listening") {
+        AERO_LOG_ERROR("transform_command_test: deliberate canary record");
+        scope.sink()->take(records);
+        CHECK_FALSE(records.empty());
+    }
 }
 
 TEST_CASE("transform_command: merge, same entity (T4/AC-14)") {
