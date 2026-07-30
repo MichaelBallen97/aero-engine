@@ -28,7 +28,7 @@ now lives in its own page, short enough to render anywhere.
 | [2.3.2 — selection & picking](validation/2.3.2-selection-picking.md) | ✅ | ✅ PASS 21/21 | ⏳ | ⏳ |
 | [2.3.3 — ImGuizmo transform gizmos](validation/2.3.3-imguizmo-transform-gizmos.md) | ✅ | ✅ PASS 24/24 applicable | ⏳ | ⏳ |
 | [2.4.1 — command stack](validation/2.4.1-command-stack.md) | ✅ | ✅ PASS 16/16 | ⏳ | ⏳ |
-| [2.4.2 — property-set + structural commands](validation/2.4.2-property-set-structural-commands.md) | ✅ | ⏳ | ⏳ | ⏳ |
+| [2.4.2 — property-set + structural commands](validation/2.4.2-property-set-structural-commands.md) | ✅ | ✅ PASS 24/24 | ⏳ | ⏳ |
 
 `⏳` = needs a code-free, on-hardware follow-up, the Phase 0/1 precedent (0.5.3 / 1.4.2). No Windows or
 Linux human pass has been run for **any** Phase 2 task yet; that is a known, accumulating debt, not an
@@ -36,13 +36,16 @@ oversight per task.
 
 ## What needs a human next
 
-**2.4.2 is the one macOS row left outstanding in Epic 2.4 — its 24-row pass has not been run.** Two rows
-carry the whole weight of this task's uncovered surface: row 6 is the **only** proof anywhere in this
-tree that the Inspector panel itself applies the D17 merge-chain gate pair correctly (no test target can
-construct `InspectorPanel` — it is src-private and ImGui-bound; `field_command_test.cpp`'s P8 pins the
-*policy* against a bare `CommandStack`, not the panel), and row 11 is the canonical sequence spec §0-D2
-exists for — move the Cube with the gizmo, delete it, undo twice, and the move must undo too. Until this
-pass runs, Epic 2.4 is CLOSED **in code** only.
+**Every Phase 2 macOS pass is now recorded — 2.4.2 passed 24/24 on 2026-07-31, so Epic 2.4 is CLOSED in
+code *and* macOS-validated.** That pass is what turned this task's two uncovered claims into evidence:
+row 6 is the **only** proof anywhere in this tree that the Inspector panel itself applies the D17
+merge-chain gate pair correctly (no test target can construct `InspectorPanel` — it is src-private and
+ImGui-bound; `field_command_test.cpp`'s P8 pins the *policy* against a bare `CommandStack`, not the
+panel, and seeding S9/S10 into all seven arms leaves the suite 94/94), and row 11 is the canonical
+sequence spec §0-D2 exists for — move the Cube with the gizmo, delete it, undo twice, and the move
+undoes too.
+
+**The whole remaining debt in this ledger is now non-macOS, plus 2.2.5's four rows.**
 
 What is left:
 
@@ -54,7 +57,8 @@ What is left:
   blocks these four rows any more; they have not been re-run against any of the three sources yet.
   **This is the cheapest open item in the ledger.**
 - **[2.4.2 — property-set + structural commands](validation/2.4.2-property-set-structural-commands.md)
-  · macOS pass not yet run.** 24 rows; see the priority rows called out on that page (11, 6, 18, 8, 9, 21).
+  · macOS ✅ 24/24 (2026-07-31); Windows and Linux pending.** Row 22's second clause — re-running 2.2.5's
+  four rows — was **not** performed in that pass, so it did not close the item above.
 - **Windows and Linux — every task, all twelve.** No non-macOS human pass has been run for any Phase 2
   task. That is accumulating debt across the whole phase, not a per-task gap, and it is worth scheduling
   deliberately rather than discovering at the phase gate. Each task page carries its own "How to
