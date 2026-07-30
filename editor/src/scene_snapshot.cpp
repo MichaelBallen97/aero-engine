@@ -136,9 +136,21 @@ bool SubtreeSnapshot::restore(World& world) const {
         ++created;
     }
 
-    // PHASE B -- payload, names, links, sibling order (cannot fail except on allocation). TWO LOOPS,
-    // in THIS order (A3): names + components for every record, THEN links + order for every record --
-    // pre-order guarantees a parent already exists before its children are linked.
+    // PHASE B -- payload, names, links, sibling order (cannot fail except on allocation). THREE
+    // PASSES, in THIS order (A3, extended by the code-review round's Gap 1): names + components for
+    // every record; THEN links for every record (pre-order guarantees a parent already exists before
+    // its children are linked); THEN position-restore for the subtree roots that need one, ORDERED
+    // ascending by recorded slot rather than records order.
+    //
+    // Why a third pass, and why sorted: placeAt repositions ONE entity at a time by nudging every
+    // sibling that must follow it, which is only equivalent to "put the whole list back" if entries
+    // are placed in ASCENDING recorded-slot order per parent. `impl->records` order is capture order
+    // (the caller's target/selection order for a subtreeRoot), which a descending selection (e.g.
+    // Ctrl-clicking a lower sibling before a higher one) makes descending too -- and placing a lower
+    // slot AFTER a higher one shifts an untouched sibling that sits between them. A stable sort by
+    // siblingIndex alone (no grouping by parent -- Entity has no operator<, G5) is sufficient: any
+    // one parent's own entries are a subsequence of the sorted whole, and a subsequence of a sorted
+    // sequence is itself sorted.
     for (const Impl::Record& record : impl->records) {
         if (!record.name.empty()) {
             world.setName(record.handle, record.name);
@@ -150,6 +162,7 @@ bool SubtreeSnapshot::restore(World& world) const {
             }
         }
     }
+    std::vector<const Impl::Record*> toPlace;
     for (const Impl::Record& record : impl->records) {
         if (!record.subtreeRoot) {
             // Its parent is INSIDE this snapshot, already recreated above (pre-order): setParent
@@ -163,10 +176,14 @@ bool SubtreeSnapshot::restore(World& world) const {
                               record.handle.index);
             } else {
                 world.setParent(record.handle, record.parent);  // appends, temporarily last
-                placeAt(world, record.parent, record.handle, record.siblingIndex, impl->scratch);
+                toPlace.push_back(&record);                     // positioned in the sorted pass below
             }
         }
         // else: it was already a world root (record.parent invalid) -- nothing to link.
+    }
+    std::ranges::stable_sort(toPlace, {}, [](const Impl::Record* r) { return r->siblingIndex; });
+    for (const Impl::Record* record : toPlace) {
+        placeAt(world, record->parent, record->handle, record->siblingIndex, impl->scratch);
     }
     return true;
 }
@@ -246,14 +263,21 @@ std::size_t childIndexOf(const World& world, Entity parent, Entity child) {
     return result;
 }
 
-// `child` is UNNAMED here (misc-unused-parameters): the algorithm trusts the caller's contract --
-// `child` was just APPENDED, so it is always `scratch.back()` -- and never re-checks its identity.
-// The header keeps the name for documentation; only this definition elides it.
-void placeAt(World& world, Entity parent, Entity /*child*/, std::size_t index, std::vector<Entity>& scratch) {
+// The caller's contract is that `child` was just APPENDED, so it is expected to be `scratch.back()`
+// -- but a failed append (the setParent that should have put it there refused, e.g. a live cycle
+// check) leaves `scratch` NOT containing `child` at all once the parent already has >=2 real
+// children, and the loop below would then detach and re-append genuine siblings for no reason:
+// spurious reordering on a pure failure path. Verifying `scratch.back() == child` first is what
+// makes that unreachable rather than merely unlikely -- unreachable TODAY only because LIFO undo
+// means the sole refusal (a cycle) cannot be live at undo time, per this function's own comment.
+void placeAt(World& world, Entity parent, Entity child, std::size_t index, std::vector<Entity>& scratch) {
     scratch.clear();
     world.eachChild(parent, [&scratch](Entity c) { scratch.push_back(c); });  // child is currently last
+    if (scratch.empty() || scratch.back() != child) {
+        return;  // the append never took -- nothing to reposition, and nothing else may be touched
+    }
     if (scratch.size() < 2U) {
-        return;  // 0 children (the setParent that should have appended `child` failed) or 1 (already placed)
+        return;  // exactly 1 child (already placed)
     }
     const std::size_t target = std::min(index, scratch.size() - 1U);  // D25: clamp, never assert
     if (target + 1U >= scratch.size()) {

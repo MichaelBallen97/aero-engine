@@ -150,6 +150,51 @@ TEST_CASE("scene_snapshot: a captured middle child restores to its own sibling p
     CHECK(after[4] == kids[4]);
 }
 
+// N14 -- code-review Gap 1 (task 2.4.2). N3 alone cannot catch this: it captures/restores exactly
+// ONE entity per parent, so the position-restore pass never has a second sibling to corrupt.
+// Capturing TWO siblings of one parent in DESCENDING slot order -- exactly what Ctrl-clicking the
+// lower one before the higher one produces -- and restoring them naively (one placeAt call per
+// record, in capture order) leaves an UNTOUCHED sibling shifted: parking the higher slot first
+// appends past where the lower slot's later placeAt call expects the list to still be. Asserted
+// element-wise over the WHOLE list, not just the two restored entries, because the untouched
+// sibling is exactly what silently moves.
+TEST_CASE(
+    "scene_snapshot: two captured siblings of one parent restore in slot order regardless of "
+    "capture order (N14/code-review Gap 1)") {
+    World world;
+    const Entity parent = world.create();
+    std::vector<Entity> kids;
+    for (int i = 0; i < 4; ++i) {
+        const Entity k = world.create();
+        REQUIRE(world.setParent(k, parent));
+        kids.push_back(k);
+    }
+    const Entity a = kids[0];
+    const Entity b = kids[1];
+    const Entity c = kids[2];
+    const Entity d = kids[3];
+
+    // Captured DESCENDING by slot (c is slot 2, b is slot 1) -- the input order a naive per-record
+    // placeAt pass would replay verbatim.
+    SubtreeSnapshot snap;
+    REQUIRE(snap.capture(world, std::vector<Entity>{c, b}));
+    REQUIRE(world.destroy(c));
+    REQUIRE(world.destroy(b));
+
+    std::vector<Entity> remaining;
+    world.eachChild(parent, [&remaining](Entity ch) { remaining.push_back(ch); });
+    REQUIRE(remaining.size() == 2);  // a, d
+
+    REQUIRE(snap.restore(world));
+    std::vector<Entity> after;
+    world.eachChild(parent, [&after](Entity ch) { after.push_back(ch); });
+    REQUIRE(after.size() == 4);
+    CHECK(after[0] == a);
+    CHECK(after[1] == b);
+    CHECK(after[2] == c);
+    CHECK(after[3] == d);  // the UNTOUCHED sibling -- this is what a wrong replay order moves
+}
+
 TEST_CASE("scene_snapshot: topMost collapses a parent captured with its own child (N4/S17)") {
     World world;
     const Entity parent = world.create();

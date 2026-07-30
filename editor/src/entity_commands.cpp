@@ -7,8 +7,8 @@
 #include <aero/editor/selection.hpp>
 #include <aero/scene/world.hpp>
 
+#include <algorithm>
 #include <cstddef>
-#include <ranges>
 #include <span>
 #include <utility>
 #include <vector>
@@ -47,11 +47,20 @@ bool restoreState(CommandContext& ctx, const StructuralUndoState& state, std::sp
         return false;
     }
     const std::span<const Entity> restoredRoots = state.subtree.roots();
+    // Insert ascending by recorded slot, NOT in restoredRoots/rootSlots order: RootOrder::insert
+    // repositions one entity at a time (the same shape as placeAt), so restoring two roots in
+    // descending slot order -- exactly what a bottom-up multi-select produces -- would shift an
+    // untouched root sitting between them (code-review Gap 1, task 2.4.2). A stable sort by slot
+    // alone is enough; this is the ONE flat list, so no per-parent grouping is needed.
+    std::vector<std::size_t> order;
     for (std::size_t i = 0; i < restoredRoots.size() && i < state.rootSlots.size(); ++i) {
-        const Entity r = restoredRoots[i];
-        if (state.rootSlots[i] != NO_ROOT_SLOT && !ctx.world.parent(r).valid()) {
-            ctx.roots.insert(r, state.rootSlots[i]);
+        if (state.rootSlots[i] != NO_ROOT_SLOT && !ctx.world.parent(restoredRoots[i]).valid()) {
+            order.push_back(i);
         }
+    }
+    std::ranges::stable_sort(order, {}, [&state](std::size_t i) { return state.rootSlots[i]; });
+    for (const std::size_t i : order) {
+        ctx.roots.insert(restoredRoots[i], state.rootSlots[i]);
     }
     ctx.selection.setAll(selection);
     ctx.selection.prune(ctx.world);  // E14: the restored selection can only contain live handles
@@ -146,7 +155,20 @@ ReparentCommand::ReparentCommand(std::span<const Entity> targetsIn, Entity newPa
 bool ReparentCommand::redo(CommandContext& context) {
     // Captures the OLD parent and slot INSIDE redo, EVERY time (A19): a redo after an undo must
     // capture whatever the tree looks like NOW, not what it looked like at construction.
-    captured.clear();
+    //
+    // TWO PASSES, deliberately not interleaved with the actual reparent (found while writing
+    // code-review Gap 1's mandated shared-parent test, task 2.4.2): querying childIndexOf for a LATER
+    // target after an EARLIER target sharing the same parent has already been detached reads a
+    // list that has already lost one entry, silently shifting the later target's captured slot down
+    // by one. Every old-parent/old-slot pair is captured against the UNCHANGED tree first; only then
+    // does anything actually move.
+    struct Pending {
+        Entity entity;
+        Entity oldParent;
+        std::size_t oldSlot;
+    };
+    std::vector<Pending> pending;
+    pending.reserve(targets.size());
     for (const Entity e : targets) {
         if (!context.world.alive(e)) {
             continue;
@@ -154,10 +176,14 @@ bool ReparentCommand::redo(CommandContext& context) {
         const Entity oldParent = context.world.parent(e);
         const std::size_t slot =
             oldParent.valid() ? childIndexOf(context.world, oldParent, e) : context.roots.indexOf(e);
-        if (!reparentEntity(context.world, e, newParentTarget)) {
+        pending.push_back(Pending{e, oldParent, slot});
+    }
+    captured.clear();
+    for (const Pending& p : pending) {
+        if (!reparentEntity(context.world, p.entity, newParentTarget)) {
             continue;  // canReparent already refused; predicted, silent
         }
-        captured.push_back(Move{e, oldParent, slot});
+        captured.push_back(Move{p.entity, p.oldParent, p.oldSlot});
     }
     return !captured.empty();
 }
@@ -166,8 +192,22 @@ bool ReparentCommand::undo(CommandContext& context) {
     // LOCAL, not a member: undo is human-paced, and a member would be per-command memory sitting idle
     // in a 128-entry history.
     std::vector<Entity> scratch;
+    // Ascending by the recaptured OLD slot, NOT the reverse of capture order (code-review Gap 1, task
+    // 2.4.2): placeAt/RootOrder::insert reposition one entity at a time, so replaying them out of
+    // ascending-per-parent order corrupts an untouched sibling captured between two of them -- exactly
+    // what an ordinary in-row-order multi-select reparent produces once reversed. The reverse walk
+    // this replaced was only ever needed to undo NESTING (a parent before its own child), and
+    // `targets` can never contain both: topMost()/reparentTargets() (D19) always collapse a selected
+    // parent and its own selected child into one target before this command ever sees them.
+    std::vector<std::size_t> order(captured.size());
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        order[i] = i;
+    }
+    std::ranges::stable_sort(order, {}, [this](std::size_t i) { return captured[i].oldSlot; });
+
     bool any = false;
-    for (const Move& move : std::ranges::reverse_view(captured)) {
+    for (const std::size_t idx : order) {
+        const Move& move = captured[idx];
         if (!context.world.alive(move.entity)) {
             continue;
         }

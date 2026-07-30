@@ -383,6 +383,46 @@ TEST_CASE(
     CHECK(selection.primary() == middle);
 }
 
+// X21 -- code-review Gap 1 (task 2.4.2). X7 alone cannot catch this: it deletes exactly ONE root,
+// so `restoreState`'s RootOrder-reinsert pass never has a second entry to corrupt. Two ROOTS deleted
+// TOGETHER, given to the command in DESCENDING slot order -- exactly what selecting the lower one
+// before the higher one produces -- must still come back in ascending display order, with the
+// untouched roots on either side of them exactly where they were.
+TEST_CASE(
+    "structural_commands: X21 -- two roots deleted together in descending slot order restore "
+    "in original RootOrder, untouched roots unmoved (code-review Gap 1)") {
+    World world;
+    Selection selection;
+    RootOrder roots;
+    CommandContext ctx{world, selection, roots};
+    const Entity r0 = world.create();
+    const Entity r1 = world.create();
+    const Entity r2 = world.create();
+    const Entity r3 = world.create();
+    roots.reconcile(world);
+    REQUIRE(roots.entities().size() == 4);
+    REQUIRE(roots.indexOf(r1) == 1);
+    REQUIRE(roots.indexOf(r2) == 2);
+
+    CommandStack stack;
+    // DESCENDING slot order: r2 (slot 2) named before r1 (slot 1).
+    const std::vector<Entity> targets{r2, r1};
+    REQUIRE(stack.push(ctx, std::make_unique<DeleteEntitiesCommand>(targets, std::vector<Entity>{})));
+    CHECK_FALSE(world.alive(r1));
+    CHECK_FALSE(world.alive(r2));
+    roots.reconcile(world);
+    REQUIRE(roots.entities().size() == 2);
+
+    REQUIRE(stack.undo(ctx));
+    CHECK(world.alive(r1));
+    CHECK(world.alive(r2));
+    REQUIRE(roots.entities().size() == 4);
+    CHECK(roots.entities()[0] == r0);
+    CHECK(roots.entities()[1] == r1);
+    CHECK(roots.entities()[2] == r2);
+    CHECK(roots.entities()[3] == r3);  // the UNTOUCHED root -- this is what a wrong replay order moves
+}
+
 // ---- DuplicateEntitiesCommand (X8-X9) -------------------------------------------------------------
 
 TEST_CASE(
@@ -543,6 +583,50 @@ TEST_CASE(
     world.eachChild(parentB, [&bChildren](Entity c) { bChildren.push_back(c); });
     REQUIRE(bChildren.size() == 1);
     CHECK(bChildren[0] == b0);
+}
+
+// X22 -- code-review Gap 1 (task 2.4.2). X12 deliberately uses two DIFFERENT parents, which is
+// exactly why it is blind here: reversing the walk order is invisible when nothing shares a parent.
+// Two targets that are SIBLINGS OF ONE PARENT, given in the ORDINARY in-row-order a multi-select
+// produces (ascending slot), must both come back at their own old slot once undone -- asserted over
+// the WHOLE child list, including the two untouched siblings either side of them.
+TEST_CASE(
+    "structural_commands: X22 -- two-target reparent whose targets share ONE parent: both back "
+    "at their own old slot on undo (code-review Gap 1)") {
+    World world;
+    Selection selection;
+    RootOrder roots;
+    CommandContext ctx{world, selection, roots};
+    const Entity parent = world.create();
+    std::vector<Entity> kids;
+    for (int i = 0; i < 4; ++i) {
+        const Entity k = world.create();
+        REQUIRE(world.setParent(k, parent));
+        kids.push_back(k);
+    }
+    const Entity k0 = kids[0];
+    const Entity k1 = kids[1];
+    const Entity k2 = kids[2];
+    const Entity k3 = kids[3];
+    const Entity newParent = world.create();
+
+    CommandStack stack;
+    // ORDINARY in-row-order selection: k1 (slot 1) named before k2 (slot 2).
+    const std::vector<Entity> targets{k1, k2};
+    REQUIRE(stack.push(ctx, std::make_unique<ReparentCommand>(targets, newParent)));
+    CHECK(world.parent(k1) == newParent);
+    CHECK(world.parent(k2) == newParent);
+
+    REQUIRE(stack.undo(ctx));
+    CHECK(world.parent(k1) == parent);
+    CHECK(world.parent(k2) == parent);
+    std::vector<Entity> after;
+    world.eachChild(parent, [&after](Entity c) { after.push_back(c); });
+    REQUIRE(after.size() == 4);
+    CHECK(after[0] == k0);
+    CHECK(after[1] == k1);
+    CHECK(after[2] == k2);
+    CHECK(after[3] == k3);  // the UNTOUCHED sibling -- this is what a wrong replay order moves
 }
 
 // ---- RenameEntityCommand (X13-X14) ----------------------------------------------------------------
