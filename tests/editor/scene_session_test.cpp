@@ -571,7 +571,15 @@ TEST_CASE("scene_session: Quit is guarded and confirmable; a clean quit needs no
     }
 }
 
-TEST_CASE("scene_session: a dialog in flight swallows every request (SS27/D8/AC-5)") {
+TEST_CASE("scene_session: a dialog in flight swallows every request (SS27/D8/AC-5/E4)") {
+    // A LogSinkScope so this case can discriminate the Quit iteration's own E4 record (finding 6 of
+    // the 2.5.1 code-review round: the original SS27 asserted only entityCount()/pending, which stays
+    // green even with the swallow guard removed entirely, since nothing here mutated the World either
+    // way -- the missing half was the SWALLOW itself, proven by the log record and by `quitConfirmed`).
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
     FlowFixture f;
     SceneSession session;
     f.flow.dialog = engine::editor::DialogKind::Open;
@@ -579,10 +587,47 @@ TEST_CASE("scene_session: a dialog in flight swallows every request (SS27/D8/AC-
 
     for (const FileAction action : {FileAction::NewScene, FileAction::OpenScene, FileAction::SaveScene,
                                     FileAction::SaveSceneAs, FileAction::Quit}) {
+        scope.sink()->take(records);
+        records.clear();  // LogSink::take requires `out` empty on entry
+
+        f.flow.requested = action;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+
+        CHECK(f.world.entityCount() == countBefore);
+        CHECK(f.flow.pending == FileAction::None);
+        CHECK_FALSE(f.flow.quitConfirmed);  // a swallowed Quit must NOT confirm
+
+        scope.sink()->take(records);
+        const std::size_t expectedInfo = (action == FileAction::Quit) ? 1U : 0U;  // E4, Quit only
+        CHECK(countAtLevel(records, engine::LogLevel::Info) == expectedInfo);
+        CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+        CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    }
+}
+
+TEST_CASE("scene_session: the unsaved-changes modal swallows every request too (SS27b/BLOCKING-2)") {
+    // BLOCKING-2 (code review): `flow.confirmOpen` must gate a new request exactly like
+    // `flow.dialog != None` does -- otherwise a Ctrl+S fired while the modal is showing falls straight
+    // through to AskWhereToSave and can launch a NATIVE Save dialog on top of the still-open ImGui
+    // modal (E18's violation). Seeded initial pending = Quit (not the actions under test) so an
+    // unfixed swallow is caught the moment ANY of NewScene/OpenScene overwrites it via the guard.
+    FlowFixture f;
+    SceneSession session;
+    f.makeDirty();
+    f.flow.requested = FileAction::Quit;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);  // raises the modal
+    REQUIRE(f.flow.confirmOpen);
+    REQUIRE(f.flow.pending == FileAction::Quit);
+    const std::size_t countBefore = f.world.entityCount();
+
+    for (const FileAction action : {FileAction::NewScene, FileAction::OpenScene, FileAction::SaveScene,
+                                    FileAction::SaveSceneAs, FileAction::Quit}) {
         f.flow.requested = action;
         applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
         CHECK(f.world.entityCount() == countBefore);
-        CHECK(f.flow.pending == FileAction::None);
+        CHECK(f.flow.dialog == engine::editor::DialogKind::None);  // nothing was launched
+        CHECK(f.flow.confirmOpen);                                 // the modal itself is untouched
+        CHECK(f.flow.pending == FileAction::Quit);                 // the ORIGINAL pending SURVIVES
     }
 }
 
@@ -603,6 +648,32 @@ TEST_CASE("scene_session: a modal answer beats a new request carried in the same
     CHECK(f.flow.requested == FileAction::None);
     CHECK_FALSE(f.flow.choice.has_value());
     CHECK(f.flow.pending == FileAction::None);
+}
+
+TEST_CASE("scene_session: a modal answer resolves BEFORE a same-frame request re-raises it (SS28b/finding 5)") {
+    // finding 5 of the 2.5.1 code-review round: the original SS28 only used `choice = Discard`, which
+    // produces an IDENTICAL end state (pending == None) whether the modal or the request is processed
+    // first, so it never actually proved the ordering the comment above claims. `choice = Cancel` is
+    // order-sensitive: processed first (as the code does), Cancel clears the ORIGINAL pending action,
+    // then the fresh request re-raises the guard on its own -- `pending == NewScene`, `confirmOpen ==
+    // true`. Processed in the wrong order, the fresh request's guard-raise would itself be undone by
+    // the (now second) Cancel -- both cleared.
+    FlowFixture f;
+    SceneSession session;
+    f.makeDirty();
+    f.flow.requested = FileAction::NewScene;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);  // raises the modal
+    REQUIRE(f.flow.confirmOpen);
+    REQUIRE(f.flow.pending == FileAction::NewScene);
+
+    f.flow.choice = ConfirmChoice::Cancel;
+    f.flow.requested = FileAction::NewScene;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+
+    CHECK(f.flow.requested == FileAction::None);
+    CHECK_FALSE(f.flow.choice.has_value());
+    CHECK(f.flow.pending == FileAction::NewScene);  // the FRESH request's OWN guard-raise, not a leftover
+    CHECK(f.flow.confirmOpen);
 }
 
 TEST_CASE("scene_session: applyDialogResult -- cancelled is silent, failed logs exactly one ERROR (SS29/AC-13)") {
@@ -679,4 +750,101 @@ TEST_CASE("scene_session: performAction with no channel and no requestedPath is 
     CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
     CHECK(countAtLevel(records, engine::LogLevel::Info) == 0);
     CHECK(f.flow.dialog == engine::editor::DialogKind::None);
+}
+
+// ---- SS31-SS34: BLOCKING-1, the 2.5.1 code-review round -------------------------------------------
+//
+// `flow.requestedPath` used to be read as the AskWhereToSave step's OWN save target -- but it is also
+// where a DEFERRED OpenScene/SaveSceneAs request's own path lives while the guard's modal is up, and
+// those are two different things that must not share one field. A guarded Open's target surviving
+// across the modal, followed by the user answering "Save", let the modal's write land on the Open's
+// own target instead of a real Save location -- concrete data loss, reachable through the public API.
+
+TEST_CASE(
+    "scene_session: a guarded Open + modal Save on an untitled document must not write to the Open "
+    "target (SS31/BLOCKING-1)") {
+    const TempDir dir;
+    const std::string openTarget = dir.join("level1.scene.json");
+    const std::string preexisting = R"({"version": 1, "entities": []})";
+    REQUIRE(engine::editor::writeTextFileAtomic(openTarget, preexisting).empty());
+
+    FlowFixture f;
+    SceneSession session;  // untitled
+    f.makeDirty();
+    f.flow.requested = FileAction::OpenScene;
+    f.flow.requestedPath = openTarget;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    REQUIRE(f.flow.confirmOpen);
+    REQUIRE(f.flow.pending == FileAction::OpenScene);
+    REQUIRE(f.flow.requestedPath == openTarget);  // still needed to eventually PERFORM the Open
+
+    f.flow.choice = ConfirmChoice::Save;  // the modal's "Save" button
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+
+    // host.channel == nullptr, so AskWhereToSave can launch no dialog and must ABANDON the pending
+    // Open rather than silently writing the CURRENT (untitled) scene over the Open's own target -- the
+    // exact defect reported: the old code read flow.requestedPath here as ITS OWN save target.
+    const engine::editor::FileReadResult after = engine::editor::readTextFile(openTarget);
+    REQUIRE(after.text.has_value());
+    CHECK(*after.text == preexisting);  // byte-identical: nothing wrote to the Open target
+    CHECK(session.untitled());          // nothing was saved at all
+    CHECK(f.flow.pending == FileAction::None);
+    CHECK(f.flow.requestedPath.empty());
+}
+
+TEST_CASE(
+    "scene_session: a cancelled guarded Open clears requestedPath, so it cannot hijack a later Save "
+    "As (SS32/BLOCKING-1)") {
+    const TempDir dir;
+    const std::string openTarget = dir.join("level1.scene.json");
+
+    FlowFixture f;
+    SceneSession session;  // untitled
+    f.makeDirty();
+    f.flow.requested = FileAction::OpenScene;
+    f.flow.requestedPath = openTarget;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    REQUIRE(f.flow.confirmOpen);
+    REQUIRE(f.flow.pending == FileAction::OpenScene);
+    REQUIRE(f.flow.requestedPath == openTarget);
+
+    f.flow.choice = ConfirmChoice::Cancel;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+
+    CHECK(f.flow.pending == FileAction::None);
+    CHECK_FALSE(f.flow.confirmOpen);
+    CHECK(f.flow.requestedPath.empty());  // the abandoned Open's own target must not survive
+
+    // A LATER, unrelated Save As with NO explicit path (host.channel == nullptr too, so it can launch
+    // no dialog either) must be a silent no-op -- not hijack the abandoned Open's target.
+    f.flow.requested = FileAction::SaveSceneAs;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    CHECK(session.untitled());  // nothing was written to openTarget behind the session's back
+}
+
+TEST_CASE(
+    "scene_session: a guarded Open + modal Save on a TITLED document that fails to write abandons "
+    "the Open's own target too (SS33/BLOCKING-1)") {
+    // The same leak, at the OTHER resolveConfirm arm: WriteNow (Save, titled) never touched
+    // `flow.requestedPath` at all in the old code, on EITHER outcome -- so a failed write left the
+    // deferred Open's own target alive indefinitely, same as the Cancel case above.
+    const TempDir dir;
+    const std::string currentScenePath = dir.join("missing-subdir/current.scene.json");  // the WRITE fails
+    const std::string openTarget = dir.join("other.scene.json");
+
+    FlowFixture f;
+    SceneSession session;
+    session.setPath(currentScenePath);  // TITLED -- resolveConfirm(Save, untitled=false) == WriteNow
+    f.makeDirty();
+    f.flow.requested = FileAction::OpenScene;
+    f.flow.requestedPath = openTarget;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    REQUIRE(f.flow.confirmOpen);
+    REQUIRE(f.flow.pending == FileAction::OpenScene);
+
+    f.flow.choice = ConfirmChoice::Save;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);  // WriteNow to a missing directory
+
+    CHECK(f.flow.pending == FileAction::None);  // abandoned, not performed
+    CHECK(f.flow.requestedPath.empty());        // the abandoned Open's own target must not leak
 }
