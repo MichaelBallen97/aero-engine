@@ -49,10 +49,15 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // Editor shortcuts go through ImGui's routing, NEVER ctx.input() (D7/E9): a focused InputText
     // must be able to swallow the chord. ImGuiMod_Ctrl is Cmd on macOS automatically (F8).
     //
-    // D8/AC-5: `fileEnabled` gates every File chord AND every File menu item below -- while a native
-    // dialog is in flight, the whole menu behaves as disabled at the input layer too, not only
-    // visually.
-    const bool fileEnabled = fileMenu.flow.dialog == DialogKind::None;
+    // D8/AC-5, widened by BLOCKING-2 (the 2.5.1 code-review round): `fileEnabled` gates every File
+    // chord AND every File menu item below -- while a native dialog is in flight OR the
+    // unsaved-changes modal is up, the whole menu behaves as disabled at the input layer too, not only
+    // visually. Before this widened, the modal being up alone did not stop a chord (e.g. Ctrl+S) from
+    // reaching AskWhereToSave and launching a SECOND, native dialog on top of the still-open modal --
+    // `scene_session.cpp`'s `applyFileRequests` mirrors this exact same widening for the request path
+    // itself (defence in depth: the chords stay quiet AND the state machine refuses the request even
+    // if something else got past this check, e.g. a raw `request*()` call).
+    const bool fileEnabled = fileMenu.flow.dialog == DialogKind::None && !fileMenu.flow.confirmOpen;
     if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, FILE_SHORTCUT_FLAGS)) {
         fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
     }
@@ -101,17 +106,22 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         if (ImGui::MenuItem("Open Scene...", "Ctrl+O", false, io)) {
             fileMenu.flow.requested = FileAction::OpenScene;
         }
-        ioTooltip(io);
+        // D18/AC-6: the tooltip names ONLY the AERO_REFLECT_TOOLS reason (finding 8 of the 2.5.1
+        // code-review round -- `io` also folds in `fileEnabled`, so with reflect tools ON and a dialog
+        // in flight or the modal up, `ioTooltip(io)` would falsely claim "Scene I/O needs
+        // AERO_REFLECT_TOOLS". `sceneIoAvailable()` alone is the ONLY thing this tooltip is about, at
+        // all three call sites below.
+        ioTooltip(sceneIoAvailable());
         // AC-4: nothing to write when the document is clean AND has a path.
         const bool canSave = io && (!context.commands.isClean() || fileMenu.session.untitled());
         if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, canSave)) {
             fileMenu.flow.requested = FileAction::SaveScene;
         }
-        ioTooltip(io);
+        ioTooltip(sceneIoAvailable());
         if (ImGui::MenuItem("Save Scene As...", "Ctrl+Shift+S", false, io)) {
             fileMenu.flow.requested = FileAction::SaveSceneAs;
         }
-        ioTooltip(io);
+        ioTooltip(sceneIoAvailable());
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Ctrl+Q", false, fileEnabled)) {
             fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit

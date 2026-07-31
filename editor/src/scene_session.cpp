@@ -268,6 +268,11 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
         switch (resolveConfirm(choice, session.untitled())) {
             case FileStep::Nothing:
                 flow.pending = FileAction::None;  // Cancel/Esc: NOTHING ELSE changes (AC-24)
+                // BLOCKING-1 (code review): `flow.requestedPath` may be the ABANDONED pending
+                // action's OWN target (e.g. a deferred OpenScene's file) -- it must not survive to be
+                // mistaken for a later, unrelated request's path. Cleared on every path that abandons
+                // or defers below, never only where it happens to be read.
+                flow.requestedPath.clear();
                 break;
             case FileStep::Perform: {  // Don't Save
                 const FileAction pending = flow.pending;
@@ -281,29 +286,32 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
                 flow.pending = FileAction::None;
                 if (ok) {
                     performAction(pending, context, commands, session, flow, host);
+                } else {
+                    flow.requestedPath.clear();  // the pending action is ABANDONED, not performed --
+                                                 // its own target (if any) must not leak (BLOCKING-1)
                 }
                 break;
             }
             case FileStep::AskWhereToSave: {  // Save, untitled -- chains through Save As
+                // BLOCKING-1 (code review): this branch used to read `flow.requestedPath` as ITS OWN
+                // save target, sharing the field with `flow.pending`'s (e.g. a deferred OpenScene's)
+                // own target -- that is exactly what let "Open X (guarded, dirty) -> modal Save" write
+                // the CURRENT scene over X. No hook in this tree ever supplies a direct save target for
+                // an untitled Save reached THIS way (only requestSaveSceneAs(path), a different, never
+                // guarded action, does that), so this branch no longer consults `requestedPath` at
+                // all: it either launches the real Save dialog or -- with no channel to launch one --
+                // abandons the pending action outright, exactly like every other no-channel arm (A17).
                 flow.saveBeforePending = true;
-                if (!flow.requestedPath.empty()) {
-                    const std::string path = flow.requestedPath;
-                    flow.requestedPath.clear();
-                    const bool ok = saveSceneFile(context, commands, session, path, /*appendExtension=*/false);
-                    const FileAction pending = flow.pending;
-                    flow.pending = FileAction::None;
-                    flow.saveBeforePending = false;
-                    if (ok) {
-                        performAction(pending, context, commands, session, flow, host);
-                    }
-                } else if (host.channel != nullptr) {
+                if (host.channel != nullptr) {
                     flow.dialog = DialogKind::Save;
                     launchSaveSceneDialog(host.channel->shared_from_this(), host.parentWindow,
                                           session.saveSuggestion(host.projectRoot));
-                    // flow.pending stays SET -- applyDialogResult performs it once the write succeeds.
+                    // flow.pending AND flow.requestedPath stay SET -- applyDialogResult performs the
+                    // pending action (consuming requestedPath itself, if any) once the write succeeds.
                 } else {
                     flow.pending = FileAction::None;  // A17: nothing to launch, nothing to wait for
                     flow.saveBeforePending = false;
+                    flow.requestedPath.clear();  // the pending action is ABANDONED (BLOCKING-1)
                 }
                 break;
             }
@@ -319,14 +327,22 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
     const FileAction action = flow.requested;
     flow.requested = FileAction::None;  // a request NEVER survives the frame that carried it
 
-    if (flow.dialog != DialogKind::None) {
-        // D8/AC-5: everything File is disabled while a dialog is in flight, so a MENU item drawn
-        // disabled can never produce a request here -- only a chord can. Silent for every action
-        // except Quit, which gets one INFO (E4): the dialog always calls back eventually, so the
-        // editor is never wedged, but the user's quit was still ignored and that is worth a record.
+    if (flow.dialog != DialogKind::None || flow.confirmOpen) {
+        // D8/AC-5, widened by BLOCKING-2 (code review): everything File is disabled while a NATIVE
+        // dialog is in flight OR the unsaved-changes MODAL is up -- `shell_ui.cpp`'s `fileEnabled`
+        // mirrors this exactly, so a MENU item drawn disabled can never produce a request here, only a
+        // chord (or a raw request*() call bypassing the UI entirely) can. Before this widened, a
+        // dirty+untitled Quit could raise the modal (confirmOpen=true, flow.dialog still None) and a
+        // Ctrl+S fired WHILE it was showing would fall straight through to AskWhereToSave and launch a
+        // second, native Save dialog on top of the still-open ImGui modal. Silent for every action
+        // except Quit, which gets one INFO (E4): the flow always resolves eventually (the modal answers
+        // it, or the dialog calls back), so the editor is never wedged, but the user's quit was still
+        // ignored and that is worth a record.
         if (action == FileAction::Quit) {
-            AERO_LOG_INFO("editor: quit request ignored -- a file dialog is already open (D8)");
+            AERO_LOG_INFO(
+                "editor: quit request ignored -- a file dialog or the unsaved-changes modal is already up (D8)");
         }
+        flow.requestedPath.clear();  // a swallowed request's own target must not leak (BLOCKING-1)
         return;
     }
 
@@ -336,12 +352,14 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
                 (void)saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false);
                 return;
             case FileStep::AskWhereToSave:
+                // BLOCKING-1 (code review): no hook ever sets `flow.requestedPath` for a plain SaveScene
+                // request (only `requestOpenScene(path)`/`requestSaveSceneAs(path)` do, for a DIFFERENT
+                // action each), so reading it here could only ever pick up a STALE value left behind by
+                // some other, unrelated request. Always launch the real dialog, or no-op with no channel
+                // (A17) -- exactly the AskWhereToSave arm above, mirrored for the un-guarded SaveScene
+                // path.
                 flow.saveBeforePending = false;
-                if (!flow.requestedPath.empty()) {
-                    const std::string path = flow.requestedPath;
-                    flow.requestedPath.clear();
-                    (void)saveSceneFile(context, commands, session, path, /*appendExtension=*/false);
-                } else if (host.channel != nullptr) {
+                if (host.channel != nullptr) {
                     flow.dialog = DialogKind::Save;
                     launchSaveSceneDialog(host.channel->shared_from_this(), host.parentWindow,
                                           session.saveSuggestion(host.projectRoot));
@@ -386,11 +404,13 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
         AERO_LOG_ERROR("editor: the system file dialog failed -- {}", "the operation could not be completed");
         flow.pending = FileAction::None;
         flow.saveBeforePending = false;
+        flow.requestedPath.clear();  // the pending action is ABANDONED here too (BLOCKING-1)
         return;
     }
     if (result.cancelled) {  // D11: SILENT at every level -- the commonest interaction in this feature
         flow.pending = FileAction::None;
         flow.saveBeforePending = false;
+        flow.requestedPath.clear();  // the pending action is ABANDONED here too (BLOCKING-1)
         return;
     }
     if (kind == DialogKind::Open) {
