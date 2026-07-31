@@ -242,6 +242,49 @@ Success-only warnings (document order, `"scene: "`-prefixed):
 | `scene: ignoring unknown key "<k>"` (root) |
 | `scene: entities[<i>] (id <id>): ignoring unknown key "<k>"` (entity) |
 
+### 2.7 Golden fixtures
+
+Three scene files under `tests/fixtures/scenes/` are **content pins** for this format:
+
+| File | Pins |
+|---|---|
+| `empty.scene.json` | the degenerate document — an empty `entities` array |
+| `full.scene.json` | 8 entities, 10 components: all five built-in component types, a **forward** `parent` reference, a three-level chain, an entity with no `name` key, an entity with no `components` key, and two entities sharing one name |
+| `edge.scene.json` | 4 entities, 3 components: the lexical corners — `-0`, two `null` payloads, both exponent signs, a full-precision decimal, all five string-escape classes, and 2-, 3- and 4-byte raw UTF-8 |
+
+Each is an exact fixpoint of the writer — `saveWorldText(load(bytes)) == bytes`, and again on a
+second cycle. **Nothing regenerates them.** There is no environment variable, CMake option, target or
+script that can update one; a deliberate format change is a hand edit, reviewed in a diff, landed in
+the same commit as the change to this document. The doctest batteries in
+`tests/scene_serialize_test.cpp` (engine: text → `World` → text) and
+`tests/editor/scene_golden_test.cpp` (editor: file → `World` → file, through the editor's own atomic
+read/write pair) are their machine-checkable form, and they assert structure and semantics alongside
+the bytes: bytes-in == bytes-out is necessary, never sufficient — a load/save pair that *both* stopped
+handling a key would agree with itself.
+
+**Non-finite floats, at the component layer.** §2.4 states the rule for JSON *lexemes*; this is its
+typed consequence, and it is asymmetric. A `float` field holding NaN **or ±infinity** writes as
+`null`, and reading `null` back yields **NaN**. So an infinity is lossy exactly once and byte-stable
+from the first write onward, while a negative zero survives intact as the lexeme `-0`.
+`edge.scene.json` pins all three cases end to end through a real component.
+
+**String escaping, exhaustively.** A quote becomes `\"`, a backslash `\\`, a tab `\t`, a newline
+`\n`; every other C0 control becomes `\uXXXX`. Multi-byte UTF-8 is emitted **raw**, never
+re-escaped, and a `\uXXXX`-escaped input normalizes to raw UTF-8 on the first write (§2.4). Names are
+never validated and never interpreted (§2.2), so a control character in a name is legal and
+round-trips.
+
+**Entity order is storage order, and a delete reorders the file.** §2.2 says a save assigns file ids
+`1..N` in "the `World`'s entity iteration order". That order is the entity storage's **packed** order,
+and destroying an entity is swap-and-pop: the last live entity moves into the destroyed entity's
+slot. Consequently a save taken after deleting one entity **renumbers every later id and reorders the
+entities**, and a `parent` reference that was forward can become backward. A one-entity edit
+therefore produces a whole-file diff. This is the behaviour today and it is pinned by a test.
+Stabilizing entity order across edits is a format-level decision — a stable sort key, a hierarchy
+walk, or persistent per-entity ids — with a migration question attached and an interaction with the
+future `.meta` GUID system (§2.2); it is unowned, and should be scoped before Phase 3's asset
+database makes scene diffs a daily concern.
+
 ## 3. Versioning & evolution
 
 The `"version"` key is validated **first**, before any structural check — so a future-format file
