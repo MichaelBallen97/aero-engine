@@ -239,7 +239,9 @@ void buildDefaultLayout(ImGuiID dockId, PanelRegistry& panels) {
 
 }  // namespace
 
-void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& state) {
+void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& state, FileMenuContext& /*fileMenu*/) {
+    // task 2.5.1 step 6: the parameter exists so editor_app.cpp's call site and this signature agree;
+    // the File menu itself (menu items, chords, the modal, applyFileRequests) is wired in step 7.
     // Task 2.3.3 (D17): FIRST, before anything else submits a window. This call is MANDATORY, not
     // optional: gContext.mbOverGizmoHotspot is reset in exactly ONE place in the whole library
     // (ImGuizmo.cpp:1016, inside BeginFrame), and every operation handler does

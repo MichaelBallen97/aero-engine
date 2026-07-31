@@ -11,14 +11,23 @@
 #include <aero/editor/entity_ops.hpp>     // a VALUE member (rootOrder) needs RootOrder's definition
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/scene_session.hpp>  // task 2.5.1: VALUE members SceneSession/FileFlow need the
+                                          // definition, the command_stack.hpp precedent above.
 #include <aero/editor/selection.hpp>
 #include <aero/rhi/types.hpp>
 #include <aero/scene/world.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+
+namespace engine::platform {
+class Window;  // task 2.5.1 (F14): a POINTER member needs only the name -- a precedent already set
+               // below for ViewportPanel/ConsolePanel/EditorCamera. Keeps this header light (2.1.3 D9).
+}  // namespace engine::platform
 
 namespace engine::editor {
 
@@ -32,6 +41,8 @@ class EditorCamera;   // task 2.3.1: PUBLIC (editor/include/aero/editor/editor_c
                       // NAME is needed here -- viewportCamera() returns a pointer -- so this header
                       // keeps its include weight, exactly as it already does for ViewportPanel and
                       // ConsolePanel.
+class DialogChannel;  // task 2.5.1: src-private (editor/src/file_dialog.hpp). Only the NAME is needed
+                      // here for the shared_ptr member -- the ViewportPanel/ConsolePanel precedent.
 
 struct EditorAppConfig {
     rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
@@ -70,9 +81,15 @@ public:
     [[nodiscard]] static std::optional<EditorApp> create(rhi::Device& device, platform::Window& window,
                                                          platform::Context& ctx, const EditorAppConfig& config = {});
 
-    ~EditorApp() = default;
-    EditorApp(EditorApp&&) noexcept = default;
-    EditorApp& operator=(EditorApp&&) noexcept = default;
+    // task 2.5.1: declared here, DEFINED (= default) in editor_app.cpp -- the standard pimpl-adjacent
+    // fix (2.4.2 §A13's scene_snapshot.hpp precedent, applied one layer up). A destructor/move
+    // defaulted IN THIS HEADER would need DialogChannel complete at every point it could be
+    // instantiated (including this header's own inclusion sites), which would force
+    // "file_dialog.hpp" -- an SDL-adjacent src-private header -- onto every consumer's compile line
+    // (AC-32). Out-of-line, where DialogChannel is complete, is the only acceptable spelling.
+    ~EditorApp();
+    EditorApp(EditorApp&&) noexcept;
+    EditorApp& operator=(EditorApp&&) noexcept;
     EditorApp(const EditorApp&) = delete;
     EditorApp& operator=(const EditorApp&) = delete;
 
@@ -124,6 +141,11 @@ public:
     // human pass -- exactly the failure mode 2.2.3's S6 and S8 documented.
     [[nodiscard]] EditorCamera* viewportCamera() noexcept;
     [[nodiscard]] const EditorCamera* viewportCamera() const noexcept;
+    // The current scene's path ("" == untitled, task 2.5.1). A VIEW into a member that lives as long
+    // as the app -- a caller holding it ACROSS a scene swap would dangle; copy it first if that matters.
+    [[nodiscard]] std::string_view scenePath() const noexcept;
+    // == !commands().isClean() (D3): there is no second flag.
+    [[nodiscard]] bool sceneDirty() const noexcept;
 
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
@@ -134,6 +156,21 @@ public:
     // viewportCamera() (2.3.1 D6) exist.
     void requestUndo() noexcept;
     void requestRedo() noexcept;
+
+    // ---- task 2.5.1: the File menu's request hooks. Each is `fileFlow.requested = FileAction::X;`
+    // (plus `.requestedPath` for the two path-taking ones), applied on the NEXT tick -- the
+    // requestLayoutReset()/requestUndo() shape, not requestQuit()'s. The two path-taking hooks are
+    // D15's test seam: aero_editor_imgui_test is ImGui-free at source and cannot click a native
+    // dialog, so nothing about Open/Save As would be drivable through a real frame without them. ----
+    void requestNewScene() noexcept;                 // guarded
+    void requestOpenSceneDialog() noexcept;          // guarded, then launches the native dialog
+    void requestOpenScene(std::string_view path);    // guarded, NO dialog (D15)
+    void requestSaveScene() noexcept;                // Save, or Save As when untitled
+    void requestSaveSceneAs(std::string_view path);  // NO dialog (D15)
+    // D14: what the UI's quit paths (File > Exit, Ctrl+Q, the window [X]) call. requestQuit() below
+    // stays UNCHANGED and unguarded -- 35 existing GPU-gated cases end
+    // `app->requestQuit(); CHECK(app->tick() == false);` and this must not become a second thing.
+    void requestGuardedQuit() noexcept;
 
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
@@ -167,6 +204,19 @@ private:
     // F17, the same reason viewportPanel above is legal). Null when registerDefaultPanels == false or
     // if registration was rejected -- ALWAYS null-check.
     ConsolePanel* consolePanel = nullptr;
+
+    // ---- task 2.5.1 ---------------------------------------------------------------------------
+    // Non-owning; F14: setTitle() and the dialog's parent window. The caller contract (create()'s
+    // doc comment above) already requires the window to outlive the app.
+    platform::Window* window = nullptr;
+    SceneSession session;  // the current scene's path (D2/D3: dirtiness itself is NOT stored here)
+    FileFlow fileFlow;     // the File-menu state machine's data
+    // Created once in create(); NEVER null on a LIVE app. NULL only on a moved-from app (a defaulted
+    // move leaves the source's shared_ptr empty), which is why the drain in tick() is null-guarded
+    // (plan A18) rather than assumed non-null.
+    std::shared_ptr<DialogChannel> dialogChannel;
+    std::string projectRootResolved;  // D20: resolved ONCE in create(), the dialog's start directory
+    std::string lastTitle;            // D16: setTitle() only when this string CHANGES
 };
 
 }  // namespace engine::editor
