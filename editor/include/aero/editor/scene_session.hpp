@@ -1,9 +1,9 @@
 #pragma once
 // Aero Engine — SceneSession: the document model, the pure file-flow guard, and the single scene-swap
-// operation (task 2.5.1, D2/D3/INV-1). PUBLIC, and free of ImGui, SDL, entt, <filesystem> and
-// scene_serialize -- every rule below is reachable from the ungated tier-0 aero_editor_shell_test, with
-// no window and no GPU. Held by FILE PLACEMENT (R12), exactly like every other header under
-// editor/include.
+// operation (task 2.5.1, D2/D3/INV-1). PUBLIC, and free of ImGui, SDL, entt, <filesystem> and the
+// engine's serialization bridge -- every rule below is reachable from the ungated tier-0
+// aero_editor_shell_test, with no window and no GPU. Held by FILE PLACEMENT (R12), exactly like every
+// other header under editor/include.
 #include <aero/editor/command_stack.hpp>  // CommandContext + CommandStack; forward decls only inside
 
 #include <cstddef>

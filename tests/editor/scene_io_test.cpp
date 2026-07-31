@@ -1,9 +1,11 @@
-// tests/editor/scene_io_test.cpp -- task 2.5.1: the scene_serialize bridge (step 3: IO1-IO10; step 5:
-// IO11-IO14, the flow through real files). CONDITIONAL: this TU is appended to aero_editor_shell_test
-// only inside if(AERO_REFLECT_TOOLS) (tests/CMakeLists.txt) -- with the tool off, engine/scene_serialize
-// does not EXIST (F9), so this whole TU is absent from that build, not skipped. Sixteenth TU; do NOT
-// define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN. This TU must NOT include <aero/scene_serialize/...> (plan
-// A29): every symbol it touches lives in aero_editor_core, which keeps §V7's boundary grep honest.
+// tests/editor/scene_io_test.cpp -- task 2.5.1: the engine's serialization bridge, reached through
+// scene_session.hpp's openSceneText/sceneToText (step 3: IO1-IO10; step 5: IO11-IO14, the flow
+// through real files). CONDITIONAL: this TU is appended to aero_editor_shell_test only inside
+// if(AERO_REFLECT_TOOLS) (tests/CMakeLists.txt) -- with the tool off, the generated component
+// serializers do not EXIST (F9), so this whole TU is absent from that build, not skipped. Sixteenth
+// TU; do NOT define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN. This TU must NOT include the engine's
+// serialization header directly (plan A29): every symbol it touches lives in aero_editor_core, which
+// keeps §V7's boundary grep honest.
 #include <aero/core/log.hpp>
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/console_model.hpp>
