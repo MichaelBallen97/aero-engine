@@ -35,8 +35,9 @@ constexpr std::array<SDL_DialogFileFilter, 2> SCENE_FILTERS{{
 //     ticket points at the control block, not at the app.
 //   * EditorApp is DESTROYED while a dialog is open -> the channel's refcount is still >= 1, so
 //     deliver() writes into a live object nobody will ever read, and the last release frees it.
-// No NOLINT on the raw `new` below (plan A23): cppcoreguidelines-* is not in .clang-tidy's Checks
-// list, so the suppression would be dead text. If a lane's clang-tidy fires here, fix with real code.
+// The raw `new` below carries no lint suppression (plan A23): cppcoreguidelines-* is not in
+// .clang-tidy's Checks list, so one would be dead text. If a lane's clang-tidy fires here, fix with
+// real code rather than adding a suppression back.
 using Ticket = std::shared_ptr<DialogChannel>;
 
 void SDLCALL onDialogResult(void* userdata, const char* const* filelist, int /*filter*/) {

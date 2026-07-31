@@ -436,3 +436,224 @@ TEST_CASE("scene_session: fileExists agrees with the filesystem (SS20)") {
     CHECK(fileExists(dir.utf8()));  // a directory
     CHECK_FALSE(fileExists(dir.join("definitely-missing")));
 }
+
+// ---- SS21-SS30: the flow, driven with a NULL dialog channel (task 2.5.1 step 5) --------------------
+//
+// Every case here drives applyFileRequests/applyDialogResult with `FileDialogHost{}` -- a null
+// channel -- so no dialog is ever launched and no SDL is involved (A17's tier-0 test seam).
+
+namespace {
+
+using engine::editor::FileDialogHost;
+using engine::editor::FileFlow;
+
+// A fixture that owns the four objects every flow case needs, plus a helper to make the document
+// dirty without going through a scene swap (the SS-case shape hierarchy_test.cpp already uses).
+struct FlowFixture {
+    engine::World world;
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    FileFlow flow;
+    const FileDialogHost host{};  // channel == nullptr: the tier-0 seam
+
+    void makeDirty() {
+        const engine::Entity a = world.create();
+        REQUIRE(commands.push(ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                       std::vector<engine::Entity>{a}, std::vector<engine::Entity>{})));
+    }
+};
+
+}  // namespace
+
+TEST_CASE("scene_session: New performs immediately when clean, and produces three entities (SS21)") {
+    FlowFixture f;
+    SceneSession session;
+    f.flow.requested = FileAction::NewScene;
+
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+
+    CHECK(f.world.entityCount() == 3);
+    CHECK(f.flow.requested == FileAction::None);
+    CHECK(f.flow.pending == FileAction::None);
+    CHECK_FALSE(f.flow.confirmOpen);
+}
+
+TEST_CASE("scene_session: a request never survives its frame (SS22)") {
+    FlowFixture f;
+    SceneSession session;
+    f.flow.requested = FileAction::NewScene;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    CHECK(f.flow.requested == FileAction::None);
+    CHECK_FALSE(f.flow.choice.has_value());
+
+    const std::size_t countAfterFirst = f.world.entityCount();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);  // a second call is a no-op
+    CHECK(f.world.entityCount() == countAfterFirst);
+}
+
+TEST_CASE("scene_session: the guard raises on a dirty document (SS23)") {
+    FlowFixture f;
+    SceneSession session;
+    f.makeDirty();
+    const std::size_t countBefore = f.world.entityCount();
+    f.flow.requested = FileAction::NewScene;
+
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+
+    CHECK(f.world.entityCount() == countBefore);  // UNCHANGED
+    CHECK(f.flow.pending == FileAction::NewScene);
+    CHECK(f.flow.confirmOpen);
+}
+
+TEST_CASE("scene_session: Cancel changes nothing and leaves no pending action (SS24/S10/S21)") {
+    FlowFixture f;
+    SceneSession session;
+    f.makeDirty();
+    const std::size_t countBefore = f.world.entityCount();
+    const bool cleanBefore = f.commands.isClean();
+    f.flow.requested = FileAction::NewScene;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    REQUIRE(f.flow.confirmOpen);
+
+    f.flow.choice = ConfirmChoice::Cancel;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+
+    CHECK(f.world.entityCount() == countBefore);
+    CHECK(f.commands.isClean() == cleanBefore);
+    CHECK(f.flow.pending == FileAction::None);
+    CHECK_FALSE(f.flow.confirmOpen);
+
+    // A further frame does nothing -- no pending action survived (S21's discriminator).
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    CHECK(f.world.entityCount() == countBefore);
+}
+
+TEST_CASE("scene_session: Don't Save performs immediately (SS25)") {
+    FlowFixture f;
+    SceneSession session;
+    f.makeDirty();
+    f.flow.requested = FileAction::NewScene;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    REQUIRE(f.flow.confirmOpen);
+
+    f.flow.choice = ConfirmChoice::Discard;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+
+    CHECK(f.world.entityCount() == 3);  // the new scene
+    CHECK(f.commands.count() == 0);
+    CHECK(f.commands.isClean());
+    CHECK_FALSE(f.flow.confirmOpen);
+}
+
+TEST_CASE("scene_session: Quit is guarded and confirmable; a clean quit needs no modal (SS26/S9)") {
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.makeDirty();
+        f.flow.requested = FileAction::Quit;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+        CHECK_FALSE(f.flow.quitConfirmed);
+        CHECK(f.flow.confirmOpen);
+
+        f.flow.choice = ConfirmChoice::Discard;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+        CHECK(f.flow.quitConfirmed);
+    }
+    {
+        FlowFixture f;  // clean
+        SceneSession session;
+        f.flow.requested = FileAction::Quit;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+        CHECK(f.flow.quitConfirmed);  // immediately -- no modal
+        CHECK_FALSE(f.flow.confirmOpen);
+    }
+}
+
+TEST_CASE("scene_session: a dialog in flight swallows every request (SS27/D8/AC-5)") {
+    FlowFixture f;
+    SceneSession session;
+    f.flow.dialog = engine::editor::DialogKind::Open;
+    const std::size_t countBefore = f.world.entityCount();
+
+    for (const FileAction action : {FileAction::NewScene, FileAction::OpenScene, FileAction::SaveScene,
+                                    FileAction::SaveSceneAs, FileAction::Quit}) {
+        f.flow.requested = action;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+        CHECK(f.world.entityCount() == countBefore);
+        CHECK(f.flow.pending == FileAction::None);
+    }
+}
+
+TEST_CASE("scene_session: a modal answer beats a new request carried in the same frame (SS28)") {
+    FlowFixture f;
+    SceneSession session;
+    f.makeDirty();
+    f.flow.requested = FileAction::NewScene;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);  // raises the modal
+    REQUIRE(f.flow.confirmOpen);
+
+    // ONE call carrying BOTH the modal's answer AND a fresh request.
+    f.flow.choice = ConfirmChoice::Discard;
+    f.flow.requested = FileAction::NewScene;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+
+    CHECK(f.world.entityCount() == 3);  // the pending New performed, then the fresh New performed too
+    CHECK(f.flow.requested == FileAction::None);
+    CHECK_FALSE(f.flow.choice.has_value());
+    CHECK(f.flow.pending == FileAction::None);
+}
+
+TEST_CASE("scene_session: applyDialogResult -- cancelled is silent, failed logs exactly one ERROR (SS29/AC-13)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    FlowFixture f;
+    SceneSession session;
+    f.flow.dialog = engine::editor::DialogKind::Open;
+    f.flow.pending = FileAction::NewScene;
+    scope.sink()->take(records);
+    records.clear();
+
+    engine::editor::DialogResult cancelled;
+    cancelled.ready = true;
+    cancelled.cancelled = true;
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, cancelled);
+    scope.sink()->take(records);
+    CHECK(f.flow.dialog == engine::editor::DialogKind::None);
+    CHECK(f.flow.pending == FileAction::None);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 0);
+    records.clear();
+
+    f.flow.dialog = engine::editor::DialogKind::Save;
+    engine::editor::DialogResult failed;
+    failed.ready = true;
+    failed.failed = true;
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, failed);
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+}
+
+TEST_CASE("scene_session: performAction with no channel and no requestedPath is silent (SS30)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    FlowFixture f;  // clean, host.channel == nullptr, requestedPath empty
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    f.flow.requested = FileAction::OpenScene;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 0);
+    CHECK(f.flow.dialog == engine::editor::DialogKind::None);
+}

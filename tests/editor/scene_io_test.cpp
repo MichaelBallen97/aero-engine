@@ -4,7 +4,9 @@
 // does not EXIST (F9), so this whole TU is absent from that build, not skipped. Sixteenth TU; do NOT
 // define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN. This TU must NOT include <aero/scene_serialize/...> (plan
 // A29): every symbol it touches lives in aero_editor_core, which keeps §V7's boundary grep honest.
+#include <aero/core/log.hpp>
 #include <aero/editor/command_stack.hpp>
+#include <aero/editor/console_model.hpp>
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/scene_session.hpp>
@@ -17,10 +19,12 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 using engine::editor::CommandContext;
@@ -30,6 +34,63 @@ using engine::editor::RootOrder;
 using engine::editor::sceneIoAvailable;
 using engine::editor::sceneToText;
 using engine::editor::Selection;
+
+namespace {
+
+// Count by LEVEL, never records.size() (the command_stack_test.cpp precedent, plan A31).
+[[nodiscard]] std::size_t countAtLevel(const std::vector<engine::editor::LogEntry>& records, engine::LogLevel level) {
+    return static_cast<std::size_t>(std::count_if(
+        records.begin(), records.end(), [level](const engine::editor::LogEntry& e) { return e.level == level; }));
+}
+
+struct LogFixture {
+    LogFixture() { engine::initLogging(engine::LogConfig{.level = engine::LogLevel::Trace, .console = false}); }
+    ~LogFixture() { engine::shutdownLogging(); }
+    LogFixture(const LogFixture&) = delete;
+    LogFixture& operator=(const LogFixture&) = delete;
+    LogFixture(LogFixture&&) = delete;
+    LogFixture& operator=(LogFixture&&) = delete;
+};
+
+// A unique temp directory that removes itself on destruction -- the FOURTH TU-local copy of this
+// shape (plan A28/G12: tests/vfs_test.cpp, tests/editor/project_files_test.cpp,
+// tests/editor/scene_session_test.cpp). These cases cannot borrow scene_session_test.cpp's copy: a
+// file-scope/anonymous-namespace helper is TU-scoped.
+class TempDir {
+public:
+    TempDir() {
+        std::error_code ec;
+        const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+        static int counter = 0;
+        dirPath = base / ("aero_scene_io_test_" + std::to_string(++counter));
+        std::filesystem::remove_all(dirPath, ec);
+        std::filesystem::create_directories(dirPath, ec);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(dirPath, ec);
+    }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+    TempDir(TempDir&&) = delete;
+    TempDir& operator=(TempDir&&) = delete;
+
+    [[nodiscard]] std::string utf8() const {
+        const std::u8string bytes = dirPath.u8string();
+        return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    }
+    [[nodiscard]] std::string join(std::string_view leaf) const {
+        std::string result = utf8();
+        result += '/';
+        result += leaf;
+        return result;
+    }
+
+private:
+    std::filesystem::path dirPath;
+};
+
+}  // namespace
 
 TEST_CASE("scene_io: sceneIoAvailable is true in this configuration") { CHECK(sceneIoAvailable()); }
 
@@ -262,4 +323,155 @@ TEST_CASE("scene_io: names survive, including an entity with no name (IO10)") {
     });
     CHECK(namedCount == 1);
     CHECK(unnamedCount == 1);
+}
+
+// ---- IO11-IO14: the flow through real files (task 2.5.1 step 5) -----------------------------------
+
+TEST_CASE("scene_io: save -> open round trip through the flow (IO11/AC-10/AC-15/AC-20)") {
+    using engine::editor::openSceneFile;
+    using engine::editor::saveSceneFile;
+
+    const TempDir dir;
+    const std::string path = dir.join("level1.scene.json");
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    REQUIRE(saveSceneFile(ctx, commands, session, path, /*appendExtension=*/false));
+    CHECK(commands.isClean());
+    CHECK(session.path() == path);
+
+    // Mutate directly (bypassing the stack, the hierarchy_test.cpp shape): the document stays "saved"
+    // as far as this test cares -- the point is that Open discards it regardless of the clean flag.
+    const engine::Entity extra = engine::editor::createEntity(world, {}, "Extra");
+    REQUIRE(extra.valid());
+    REQUIRE(world.entityCount() == 4);
+
+    REQUIRE(openSceneFile(ctx, commands, session, path));
+    CHECK(world.entityCount() == 3);  // the mutation is gone
+    CHECK(commands.isClean());
+    CHECK(commands.count() == 0);
+}
+
+TEST_CASE("scene_io: a failed save does not lie (IO12/AC-21/S22)") {
+    using engine::editor::saveSceneFile;
+
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const std::string path = dir.join("missing-subdir/level1.scene.json");
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    // Made DIRTY first (not left at its already-clean default): a stack that starts clean would stay
+    // clean whether or not the bug (S22: setClean() called before checking the write's own reason) is
+    // present, which would make this assertion vacuous. Starting dirty is what makes "still dirty
+    // afterwards" the real, discriminating check.
+    const engine::Entity probe = world.create();
+    REQUIRE(commands.push(ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                   std::vector<engine::Entity>{probe}, std::vector<engine::Entity>{})));
+    REQUIRE_FALSE(commands.isClean());
+    engine::editor::SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    const bool ok = saveSceneFile(ctx, commands, session, path, /*appendExtension=*/false);
+
+    CHECK_FALSE(ok);
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    CHECK_FALSE(commands.isClean());  // the single most valuable assertion in this TU
+    CHECK(session.path().empty());    // the path did NOT change either
+}
+
+TEST_CASE("scene_io: D13's refusal -- appending the extension never overwrites silently (IO13/AC-22)") {
+    using engine::editor::saveSceneFile;
+    using engine::editor::writeTextFileAtomic;
+
+    const TempDir dir;
+    const std::string target = dir.join("x.scene.json");
+    REQUIRE(writeTextFileAtomic(target, "PRE-EXISTING").empty());
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    const std::string bareName = dir.join("x");
+    const bool refused = saveSceneFile(ctx, commands, session, bareName, /*appendExtension=*/true);
+    CHECK_FALSE(refused);
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+
+    const engine::editor::FileReadResult afterRefusal = engine::editor::readTextFile(target);
+    REQUIRE(afterRefusal.text.has_value());
+    CHECK(*afterRefusal.text == "PRE-EXISTING");  // byte-identical -- nothing was written
+
+    // The SAME call with appendExtension=false writes the bare name literally (D15's hook contract).
+    CHECK(saveSceneFile(ctx, commands, session, bareName, /*appendExtension=*/false));
+    CHECK(session.path() == bareName);
+}
+
+TEST_CASE("scene_io: a malformed file through the flow changes nothing (IO14/AC-11/AC-12)") {
+    using engine::editor::openSceneFile;
+    using engine::editor::writeTextFileAtomic;
+
+    const TempDir dir;
+    const std::string malformedPath = dir.join("broken.scene.json");
+    REQUIRE(writeTextFileAtomic(malformedPath, "not json at all {{{").empty());
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+    session.setPath("/some/other/path.scene.json");
+    const std::size_t countBefore = world.entityCount();
+    const std::size_t commandsBefore = commands.count();
+    const bool cleanBefore = commands.isClean();
+
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    CHECK_FALSE(openSceneFile(ctx, commands, session, malformedPath));
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    CHECK(world.entityCount() == countBefore);
+    CHECK(selection.empty());
+    CHECK(roots.entities().empty());
+    CHECK(commands.count() == commandsBefore);
+    CHECK(commands.isClean() == cleanBefore);
+    CHECK(session.path() == "/some/other/path.scene.json");
+
+    records.clear();
+    CHECK_FALSE(openSceneFile(ctx, commands, session, dir.join("definitely-missing.scene.json")));
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    CHECK(world.entityCount() == countBefore);
+    CHECK(session.path() == "/some/other/path.scene.json");
 }

@@ -27,8 +27,9 @@ namespace {
 // A5). NOT std::filesystem::u8path: deprecated since C++20 ([depr.fs.path.factory]), and
 // clang-tidy's --warnings-as-errors would flag it. Construct from UTF-8 BYTES so non-ASCII names
 // resolve correctly on Windows, where path's native encoding is UTF-16 and the narrow-char
-// constructor assumes the active code page (NOT UTF-8). No NOLINT: project_files.cpp's identical
-// casts carry none, and cppcoreguidelines-* is not enabled (.clang-tidy).
+// constructor assumes the active code page (NOT UTF-8). Carries no lint suppression:
+// project_files.cpp's identical casts carry none either, and cppcoreguidelines-* is not enabled
+// (.clang-tidy).
 std::filesystem::path pathFromUtf8(std::string_view utf8) {
     const std::u8string bytes(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
     return std::filesystem::path(bytes);

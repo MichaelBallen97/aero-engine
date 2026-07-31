@@ -17,7 +17,13 @@ namespace engine::editor {
 // The one object that crosses threads. Heap-allocated and SHARED (std::shared_ptr), so it is
 // address-stable across an EditorApp move AND outlives an EditorApp destroyed with a dialog still in
 // flight (D6).
-class DialogChannel {
+//
+// `enable_shared_from_this`: `FileDialogHost` (scene_session.hpp) deliberately carries only a raw
+// `DialogChannel*` -- a plain, trivially-nullable test seam (A17) -- while the two launchers below
+// need a `shared_ptr` to construct the cross-thread Ticket. `shared_from_this()` is what bridges the
+// two without adding a second owner: it is only ever called on the channel `EditorApp::create()`
+// already holds by `shared_ptr`, so the precondition (an existing shared_ptr owner) always holds.
+class DialogChannel : public std::enable_shared_from_this<DialogChannel> {
 public:
     // Called on an ARBITRARY thread, exactly once per launch (D7).
     void deliver(const char* const* filelist);

@@ -171,4 +171,43 @@ struct FileDialogHost {
     std::string_view projectRoot;  // D20's fallback start directory
 };
 
+// ---- the flow: PUBLIC plain data (A16). EditorApp holds ONE by value; the shell writes the two IN
+// fields and reads the rest. ----------------------------------------------------------------------
+struct FileFlow {
+    // IN -- written by the menu, the chords, the modal, or a request hook. Consumed and cleared by
+    // applyFileRequests; a request NEVER survives the frame that carried it (the 2.4.1 rule).
+    FileAction requested = FileAction::None;
+    std::optional<ConfirmChoice> choice;
+    std::string requestedPath;  // D15: non-empty means "skip the dialog, use this"
+    // STATE -- owned by the flow.
+    FileAction pending = FileAction::None;  // what to do once the way is clear
+    bool confirmOpen = false;               // OUT to the modal
+    DialogKind dialog = DialogKind::None;   // OUT: a native dialog is in flight (D8/AC-5)
+    bool saveBeforePending = false;         // the in-flight save is the modal's "Save" answer (D11)
+    bool quitConfirmed = false;             // OUT to tick() (A10)
+};
+
+// Read `path`, parse, and on success swap the scene and set `session`'s path. Returns true iff the
+// scene was replaced. LOGS: one ERROR on any failure (naming the path, plus line/column when
+// line > 0); one INFO on success carrying the four SceneLoadReport counts; one additional WARN iff
+// skipped + failed > 0 (D21). This and saveSceneFile are the ONLY places task 2.5.1 logs.
+[[nodiscard]] bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
+                                 std::string_view absolutePathUtf8);
+
+// Serialize, apply D13's extension rule when `appendExtension`, write atomically, and on success set
+// the path and mark the history CLEAN. Returns true iff the file was written. Logs exactly one ERROR
+// on failure and NOTHING on success.
+[[nodiscard]] bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
+                                 std::string_view absolutePathUtf8, bool appendExtension);
+
+// ONE frame's worth of the File flow. Consumes flow.requested / flow.choice, may swap the scene, may
+// launch a dialog through `host`, may set flow.quitConfirmed. ImGui-FREE: the shell TU only DRAWS.
+void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSession& session, FileFlow& flow,
+                       const FileDialogHost& host);
+
+// The dialog result, applied on the main thread BEFORE the frame. Same sinks; then performs the
+// pending action iff the operation succeeded (D11).
+void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSession& session, FileFlow& flow,
+                       const FileDialogHost& host, const DialogResult& result);
+
 }  // namespace engine::editor
