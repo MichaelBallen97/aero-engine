@@ -147,4 +147,28 @@ struct SceneOpenOutcome {
 // nullopt only when !sceneIoAvailable().
 [[nodiscard]] std::optional<std::string> sceneToText(const World& world);
 
+// ---- the async dialog boundary (file_dialog.{hpp,cpp}, src-private; D0/D6/D7/D8) -------------------
+
+// The dialog result, drained on the MAIN thread. A plain value type, declared here rather than nested
+// in the src-private DialogChannel so a PUBLIC signature (applyDialogResult) can name it without
+// seeing file_dialog.hpp.
+struct DialogResult {
+    bool ready = false;      // false == nothing has arrived
+    bool cancelled = false;  // *filelist == NULL -- the user cancelled; SILENT (AC-13)
+    bool failed = false;     // filelist == NULL -- an SDL error (F4); exactly one ERROR
+    std::string path;
+};
+
+// src-private (editor/src/file_dialog.hpp). Only the NAME is needed here -- the ViewportPanel /
+// ConsolePanel precedent (editor_app.hpp), which keeps this PUBLIC header free of SDL.
+class DialogChannel;
+
+// Everything the flow needs to launch a native dialog. `channel == nullptr` means "no dialog is
+// possible" -- the tier-0 test seam: a request that would need one is then a SILENT no-op (A17).
+struct FileDialogHost {
+    DialogChannel* channel = nullptr;
+    void* parentWindow = nullptr;  // SDL_Window*, OPAQUE. No SDL type crosses this header (AC-32).
+    std::string_view projectRoot;  // D20's fallback start directory
+};
+
 }  // namespace engine::editor

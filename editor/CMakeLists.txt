@@ -46,6 +46,7 @@ add_library(aero_editor_core STATIC
     src/scene_session.cpp       # task 2.5.1 -- the document model, the pure guard and THE scene swap
     src/scene_file.cpp          # task 2.5.1 -- ALL <filesystem>/<fstream> for scenes (D19/F17)
     src/scene_io.cpp            # task 2.5.1 -- the scene_serialize bridge; the ONE #if (F10/AC-33)
+    src/file_dialog.cpp         # task 2.5.1 -- SDL native dialogs + the cross-thread result channel
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
