@@ -190,12 +190,17 @@ TEST_CASE("scene_io: valid JSON, invalid envelope -- a cyclic parent fails with 
   ]
 })";
 
+    // A non-empty World, deliberately: an empty one would leave world.entityCount() == 0 both before
+    // and after a swap that should not have happened, making the assertion below trivially true
+    // regardless of ordering (S4's second half needs the World to actually LOSE something to fail).
     engine::World world;
+    engine::editor::seedDefaultScene(world);
     Selection selection;
     RootOrder roots;
     CommandStack commands;
     CommandContext ctx{world, selection, roots};
     const std::size_t countBefore = world.entityCount();
+    REQUIRE(countBefore > 0);
 
     const engine::editor::SceneOpenOutcome outcome = openSceneText(ctx, commands, cyclic);
 
