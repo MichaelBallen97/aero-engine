@@ -111,4 +111,15 @@ void resetSceneState(CommandContext& context, CommandStack& commands);
 // clearing would leave six entities, not three.
 void newScene(CommandContext& context, CommandStack& commands);
 
+// ---- file bytes (scene_file.cpp; ALL <filesystem>/<fstream> for scenes lives there) --------------
+struct FileReadResult {
+    std::optional<std::string> text;  // engaged == success
+    std::string error;                // OS reason; empty iff `text` is engaged
+};
+[[nodiscard]] FileReadResult readTextFile(std::string_view absolutePathUtf8);
+
+// "" == success. ATOMIC (D12): writes <path>.aero-tmp, CLOSES it, renames over `path`.
+[[nodiscard]] std::string writeTextFileAtomic(std::string_view absolutePathUtf8, std::string_view text);
+[[nodiscard]] bool fileExists(std::string_view absolutePathUtf8);
+
 }  // namespace engine::editor

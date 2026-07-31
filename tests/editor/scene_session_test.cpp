@@ -18,9 +18,11 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 using engine::editor::CommandContext;
@@ -49,6 +51,44 @@ struct LogFixture {
     LogFixture& operator=(const LogFixture&) = delete;
     LogFixture(LogFixture&&) = delete;
     LogFixture& operator=(LogFixture&&) = delete;
+};
+
+// A unique temp directory that removes itself (and its contents) on destruction -- the THIRD TU-local
+// copy of this shape (tests/vfs_test.cpp:20-60, tests/editor/project_files_test.cpp:41-60; plan
+// A28/G12). Kept TU-local rather than shared: ~30 lines, no new header, no new
+// target_include_directories.
+class TempDir {
+public:
+    TempDir() {
+        std::error_code ec;
+        const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+        static int counter = 0;  // doctest runs serially in one process; a plain counter is unique enough
+        dirPath = base / ("aero_scene_session_test_" + std::to_string(++counter));
+        std::filesystem::remove_all(dirPath, ec);
+        std::filesystem::create_directories(dirPath, ec);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(dirPath, ec);
+    }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+    TempDir(TempDir&&) = delete;
+    TempDir& operator=(TempDir&&) = delete;
+
+    [[nodiscard]] std::string utf8() const {
+        const std::u8string bytes = dirPath.u8string();
+        return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    }
+    [[nodiscard]] std::string join(std::string_view leaf) const {
+        std::string result = utf8();
+        result += '/';
+        result += leaf;
+        return result;
+    }
+
+private:
+    std::filesystem::path dirPath;
 };
 
 }  // namespace
@@ -317,4 +357,82 @@ TEST_CASE("scene_session: resetSceneState on an empty World is a silent no-op (S
     // it is proven to be LISTENING at all -- so this is a ZERO assertion, deliberately not `records.empty()`.
     CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
     CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+}
+
+// ---- SS16-SS20: the atomic file I/O (task 2.5.1 step 2) -------------------------------------------
+
+TEST_CASE("scene_session: readTextFile/writeTextFileAtomic round-trip is byte-exact (SS16/S8)") {
+    using engine::editor::fileExists;
+    using engine::editor::readTextFile;
+    using engine::editor::writeTextFileAtomic;
+
+    const TempDir dir;
+    const std::string path = dir.join("scene.scene.json");
+    // Embedded '\n', a trailing '\n' and an EXPLICIT "\r\n" pair -- the only possible discriminator for
+    // S8 (both streams dropping std::ios::binary), and only on the Windows lane.
+    const std::string content = "{\n  \"a\": 1\r\n}\n";
+
+    CHECK(writeTextFileAtomic(path, content).empty());
+    const engine::editor::FileReadResult result = readTextFile(path);
+    REQUIRE(result.text.has_value());
+    CHECK(result.error.empty());
+    CHECK(*result.text == content);  // std::string equality -- never line by line
+    CHECK(fileExists(path));
+}
+
+TEST_CASE("scene_session: writeTextFileAtomic overwrites and leaves no temp behind (SS17/S6)") {
+    using engine::editor::fileExists;
+    using engine::editor::writeTextFileAtomic;
+
+    const TempDir dir;
+    const std::string path = dir.join("scene.scene.json");
+    CHECK(writeTextFileAtomic(path, "first").empty());
+    CHECK(writeTextFileAtomic(path, "second").empty());
+
+    const engine::editor::FileReadResult result = engine::editor::readTextFile(path);
+    REQUIRE(result.text.has_value());
+    CHECK(*result.text == "second");
+    CHECK_FALSE(fileExists(path + ".aero-tmp"));
+}
+
+TEST_CASE("scene_session: writeTextFileAtomic to a non-existent directory fails and leaves no temp (SS18)") {
+    using engine::editor::fileExists;
+    using engine::editor::writeTextFileAtomic;
+
+    const TempDir dir;
+    const std::string path = dir.join("missing-subdir/scene.scene.json");
+    const std::string reason = writeTextFileAtomic(path, "content");
+    CHECK_FALSE(reason.empty());
+    CHECK_FALSE(fileExists(path));
+    CHECK_FALSE(fileExists(path + ".aero-tmp"));
+}
+
+TEST_CASE("scene_session: readTextFile failures -- missing path and a directory (SS19/E15)") {
+    using engine::editor::readTextFile;
+
+    const TempDir dir;
+    {
+        const engine::editor::FileReadResult missing = readTextFile(dir.join("nope.scene.json"));
+        CHECK_FALSE(missing.text.has_value());
+        CHECK_FALSE(missing.error.empty());
+    }
+    {
+        const engine::editor::FileReadResult directory = readTextFile(dir.utf8());
+        CHECK_FALSE(directory.text.has_value());
+        CHECK_FALSE(directory.error.empty());
+    }
+}
+
+TEST_CASE("scene_session: fileExists agrees with the filesystem (SS20)") {
+    using engine::editor::fileExists;
+    using engine::editor::writeTextFileAtomic;
+
+    const TempDir dir;
+    const std::string filePath = dir.join("scene.scene.json");
+    CHECK_FALSE(fileExists(filePath));
+    CHECK(writeTextFileAtomic(filePath, "x").empty());
+    CHECK(fileExists(filePath));
+
+    CHECK(fileExists(dir.utf8()));  // a directory
+    CHECK_FALSE(fileExists(dir.join("definitely-missing")));
 }
