@@ -175,6 +175,15 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # snapshot facility are meta-free), which is what makes AC-8's "structural undo works with
 # -DAERO_REFLECT_TOOLS=OFF" a tested fact rather than a claim. No new ctest entry is registered (the
 # link line below is unchanged; ctest -N stays 94/5/18).
+#
+# task 2.5.1 joins this target with editor/scene_session_test.cpp (steps 1-2: the document model, the
+# pure guard state machine, THE scene swap and the atomic file I/O; step 5: the whole file-flow
+# transition table, driven with a NULL dialog channel) and, in steps 3 and 5, the CONDITIONAL
+# editor/scene_io_test.cpp below. scene_session_test.cpp is UNGATED and must build and pass in both
+# tools-OFF configurations -- that is AC-6/E21's proof and the reason the two TUs are split. Both stay
+# TIER-0: no GPU, no window, no ImGui context, so they must pass identically with AERO_REQUIRE_GPU
+# unset and set. The link line below is unchanged and no new ctest entry is registered (ctest -N stays
+# 94/5/18, AC-35).
 find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
@@ -182,7 +191,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/picking_test.cpp editor/selection_overlay_test.cpp
                editor/gizmo_test.cpp editor/transform_ops_test.cpp
                editor/command_stack_test.cpp editor/transform_command_test.cpp
-               editor/scene_snapshot_test.cpp editor/structural_commands_test.cpp)
+               editor/scene_snapshot_test.cpp editor/structural_commands_test.cpp
+               editor/scene_session_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
