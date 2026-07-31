@@ -1009,6 +1009,156 @@ needs a mirror case in the OTHER order before it is trusted, not after.**
 
 ---
 
+### Epic 2.5 — Scene I/O
+
+#### Task 2.5.1 — Save/load/new from editor — OPENS Epic 2.5
+
+**2.5.1 ships the whole File menu — New Scene, Open Scene…, Save Scene, Save Scene As… — all live, plus
+the unsaved-changes guard over New/Open/quit and a window title showing the document name and its dirty
+state.** It ships in eight code-bearing commits (§S Steps 1–8) plus four small follow-up commits found
+during verification and one documentation commit, thirteen in total. The whole file-flow state machine
+(menu → guard → modal → native dialog → atomic write/read) lives as free functions in two ImGui-free,
+SDL-free TUs (`scene_session.{hpp,cpp}`), which is what makes almost the entire transition table tier-0
+testable with no window and no GPU — the plan's own §A13/§A14 structural decision, taken as given rather
+than re-litigated (both were pre-decided in §R-0 before this pass began). `scene_file.{hpp,cpp}` adds the
+atomic read/write pair (write to `<path>.aero-tmp`, close the stream, `std::filesystem::rename` over the
+target — Windows-safe ordering, `std::ios::binary` on both sides so 2.5.2's future byte-stable golden
+test survives CRLF translation). `scene_io.{hpp,cpp}` is the **one** `#if defined(AERO_EDITOR_REFLECTION)`
+TU in the whole editor (4 occurrences, `git grep -c`) bridging to `scene_serialize::loadScene`/
+`saveWorldText`/`parseScene`; `sceneIoAvailable()` reports `false` when the editor is built with
+`AERO_REFLECT_TOOLS=OFF`, and every path that reaches native I/O checks it first (D18). `file_dialog.
+{hpp,cpp}` (src-private) wraps SDL3's native async `SDL_ShowOpenFileDialog`/`SDL_ShowSaveFileDialog`
+behind `DialogChannel` — a judgement-call addition beyond the plan's literal text:
+`DialogChannel : public std::enable_shared_from_this<DialogChannel>`, so the callback's raw
+`FileDialogHost` pointer can hand back a `shared_ptr` ("Ticket") the SDL callback keeps alive across the
+cross-thread boundary without a manual `new`/`delete` anywhere. `EditorApp` gains a `SceneSession`, a
+`FileFlow`, a `shared_ptr<DialogChannel>` and — forced by that forward-declared `DialogChannel` member —
+out-of-line special members (`~EditorApp()`, move ctor, move assign, all `= default`d in the `.cpp`, not
+the header; §R-0's second pre-decided item). `shell_ui.{hpp,cpp}` loses `menuItemStub` entirely (the
+last disabled-stub placeholder anywhere in the editor), gains a live four-item File menu with the
+correct `canSave` greying logic (AC-4: greyed only when clean **and** titled), the `FileMenuContext`
+threaded through `drawShellUi`'s new fourth parameter, and the unsaved-changes modal.
+
+**§A1 was the plan's own named highest-risk item, and it held exactly as predicted.** ImGui 1.92.8
+cannot dismiss a *modal* popup with Escape through its built-in nav-cancel path — verified directly
+against the vendored source (`imgui.cpp:15007`/`15032`'s `NavUpdateCancelRequest` popup branch excludes
+`ImGuiWindowFlags_Modal`; `imgui_layer.cpp:79` confirms `ImGuiConfigFlags_NavEnableKeyboard` is never
+set) — so AC-27 is hand-bound inside the modal body with
+`ImGui::IsKeyPressed(ImGuiKey_Escape, false)`, with the plan's own comment kept explaining why this is
+not redundant with ImGui's own handling. **No test tier can press a key**; row 14 of the validation page
+is the only proof of AC-27 anywhere in this tree.
+
+**What deliberately did not ship, all recorded rather than silently dropped.** No compound "save on
+quit without asking" preference (out of scope — the guard always asks). No recent-files list (2.6.1's
+concern). No project-relative path storage (`SceneSession` holds an absolute path only; project roots
+arrive at 2.6.1). The Linux no-XDG-portal/no-zenity path (F4/S14) logs exactly one ERROR and keeps
+running — proven unreachable from any test tier (S14 confirmed GREEN, zero references to
+`DialogChannel`/either launcher anywhere under `tests/`) and left as a human-only, Linux-only row (20).
+
+**The traps worth keeping.** (i) **INV-6 is a data-corruption invariant since 2.4.2, not a cosmetic
+one** — `World::clear()` bumps every entity's generation but never un-issues an index (measured,
+`scene_test.cpp` W7), so a `CommandStack` left holding a `SubtreeSnapshot`/history entry against a
+*replaced* World would `recreate()` handles that mean nothing there. `resetSceneState` clears the
+World, the Selection, the `RootOrder` **and** the `CommandStack` in the same operation, and S1's seed
+(dropping just the `commands.clear()` call) reddened the whole suite far harder than predicted: SS10,
+SS11, SS25 **and** SS28, not the two the plan named. (ii) **S5's seed reddened with a different, more
+severe symptom than predicted.** The plan predicted `newScene` seeding before clearing would leave 6
+entities where 3 were expected (double-seed); measured, the actual defect is that `resetSceneState`'s
+`world.clear()` runs *after* the seed and destroys the just-added entities too, leaving **0** entities,
+not 6 — a worse defect than the plan's own prediction, caught by SS12, SS13, SS21, SS25 and
+`imgui_layer_test.cpp`'s I12. (iii) **S23 exposed a real, previously unwritten test case.** `applyDialogResult`'s
+existing `SS29` only ever exercised a failed *dialog* (SDL-level cancel/fail); nothing in the tree
+covered a save whose *write itself* failed while `flow.saveBeforePending` was set — D11's own safety
+invariant ("a save that fails must abandon the pending action") had zero coverage, and seeding S23
+(dropping the `ok &&` guard) left the whole 94-entry suite green. Closed in the same pass with a new
+SS29-family case (save to a non-existent directory, `saveBeforePending = true`, assert the pending
+action never ran); re-seeding S23 against the strengthened suite reddens it. (iv) **IO5, as first
+written, was not actually discriminating S4.** It used an empty, unseeded `World`, so
+`entityCount() == countBefore` (0 == 0) held regardless of parse/swap ordering. Fixed by seeding via
+`seedDefaultScene` first, matching IO4's own rigor, before re-confirming the seed reddens it too. (v)
+**A commit was made with the working tree not fully staged** — Step 7's `shell_ui.hpp` edit removed
+`ShellUiState::quitRequested`, but the corresponding read in `editor_app.cpp` was not staged in the
+same commit, leaving HEAD itself non-building (`field designator 'quitRequested' does not refer to any
+field`). Caught immediately by `git status --short` showing the file still modified post-commit and a
+`git stash` rebuild of HEAD failing; fixed with a new commit, never an amend, per the hard rule. The
+standing lesson: verify `git status --short` is clean immediately after every commit, and treat a
+non-empty result as a build-breaking emergency, not a footnote.
+
+**§A's corrections, each confirmed at the tree rather than trusted.** The plan's own §G13/§S Step 0
+NOLINT baseline (asserted **3**) measures **4** at untouched HEAD (`90c95a0`) —
+`editor_reflection.cpp:10`'s prose ("five existing `NOLINT`s of this shape") contains the literal
+substring "NOLINTs" via its own plural, the identical "prose collides with a literal grep" class this
+task's own comments tripped repeatedly (below). Documented as a measured plan inaccuracy rather than
+silently corrected to match the plan's assumption; the real invariant (zero new *suppressions*) was
+re-confirmed at 4 before and 4 after. `check-math-boundary.sh`'s scanned count moved **224 → 232**,
+exactly the plan's own predicted +8 for the eight new tracked C-family files — the one place this
+task's own arithmetic held on the first try.
+
+**The recurring trap this task hit four separate times: an explanatory code comment that names the
+exact literal string a `git grep` gate is designed to police.** `shell_ui.cpp` accumulated roughly nine
+comments containing the literal string "task 2.5.1" (the gate's own AC-30-family check expects the
+*deleted* stub text to be gone, not new prose repeating the task number); one comment referencing "the
+deleted `menuItemStub`" by name; two occurrences of the literal substring `ImGui::Shortcut` in prose
+describing the seven real call sites (the gate does `git grep -c` expecting exactly 7); and three
+banner comments in `scene_session.{hpp,cpp}`/`scene_io_test.cpp` naming `scene_serialize` by identifier
+(the AC-32/A29 gate expects that string to appear in exactly `scene_io.cpp` and nowhere else). All four
+were reworded to describe the same fact without repeating the policed token — no gate was weakened to
+make any of them pass. A fifth, smaller instance: inserting a new `#include <aero/editor/
+scene_session.hpp>` with a trailing comment in `imgui_layer_test.cpp` triggered clang-format's
+comment-alignment cascade, shifting two neighboring pre-existing lines' comment columns and turning an
+"insertions-only" diff (AC-29's own gate) into one with two spurious deletions; fixed by dropping the
+trailing comment on the new line rather than fighting the formatter. **Also discovered, not introduced:
+the plan's own claim that `ctx.input()`/`__APPLE__` were both empty at HEAD in `shell_ui.cpp` was
+false** — one pre-existing `ctx.input()`-related comment line predates this task (`shell_ui.cpp:41`,
+present at `90c95a0`); documented as a plan inaccuracy rather than "corrected," and this task's own new
+`__APPLE__` mention was removed rather than added to avoid inflating a baseline the plan had measured
+wrong.
+
+**§V4 is DISCHARGED: all twenty-three seeds (the spec's original twenty plus S21–S23) and all three
+mandatory second-order checks (S1, S4, S10) have been run.** Every seed proved present with `git diff`
+before any verdict was trusted, rebuilt (never a stale binary), measured against the **whole** 94-entry
+suite, then reverted with the build re-confirmed green before the next. The plan's own §V4 summary
+claims "six predicted non-discriminating or human-only" (S6, S7, S8, S14, S17, S19), but its own
+per-seed table predicts the identical no-automated-tier outcome for **three more it excludes from that
+tally** — S15 (ASan use-after-scope, "No automated tier") and S16 (ASan heap-use-after-free, "same
+reachability as S15") are both reproducible only under a Debug-preset dialog a human opens; S18 (an
+`IM_ASSERT` abort, "not a red assertion; an abort") is caught only the moment a human opens the File
+menu. Measured: all nine (S6, S7, S8, S14, S15, S16, S17, S18, S19) came out GREEN exactly as their own
+row predicted, confirmed unreachable from any test tier by the same method S14/2.4.2 established (a
+tier-0-wide reference-count grep for the symbol the seed touches) — the plan's summary undercounts its
+own table by three, documented here rather than silently reconciled. Of the remaining fourteen, eleven
+behaved as predicted; three (S1, S5, S23) reddened with a different or stronger symptom than the plan
+named, documented above as traps rather than silently matched to the plan's prediction. The full
+per-seed predicted-vs-measured table and the three second-order-check results live in
+`editor/validation/2.5.1-save-load-new-from-editor.md`.
+
+**Inventory, measured at every commit boundary, never predicted.** `ctest -N` **94 → 94** (tools ON),
+**5 → 5** (`build/tools-off-2.5.1`), **18 → 18** (`build/reflect-off-2.5.1`) throughout — no new
+`add_test` anywhere. `aero_tests` unchanged at **363** (no engine change this task — the only
+`engine/` touch of the whole task is zero files, confirmed by `git diff --name-only origin/main --
+engine/` reading empty). `aero_editor_shell_test` **244 → 259 → 264 → 274 → 288 → 289**
+(`scene_session_test.cpp` SS1–SS30 across three commits, `scene_io_test.cpp` IO1–IO14 across two, plus
+**+1** from the sabotage pass's own S23-gap-closing case). `aero_editor_imgui_test` **35 → 41**
+(I12–I17, New/Save-As/Save/Open driven through real `EditorApp::tick()` frames, including a **moved**
+`EditorApp` still driving Save As/Open, AC-34). `aero_editor_inspector_test` unchanged at **22** (no
+Inspector change this task). `editor/CMakeLists.txt` sources **30 → 34** (`scene_session.cpp`,
+`scene_file.cpp`, `scene_io.cpp`, `file_dialog.cpp`) with exactly **one** new link-line change —
+`target_link_libraries(aero_editor_core PRIVATE aero::scene_serialize)`, inside the existing
+`if(AERO_REFLECT_TOOLS)` block, the first new PRIVATE link entry on `aero_editor_core` since 2.4.1's
+quiet no-link-change task. `check-math-boundary.sh` **224 → 232**. All other four guards green with
+**no allowlist change**. `-DAERO_REFLECT_TOOLS=OFF` alone (`build/reflect-off-2.5.1`) reads **18/18**
+with `scene_session_test.cpp` running and passing and `scene_io_test.cpp` confirmed **absent** (no
+object file, no matching string anywhere under the build tree) — not merely skipped; the four new I12–I17
+GPU cases fall back to a `sceneIoAvailable()` guard there and stay green with only New Scene exercised
+(a real coverage gap found during Step 9's mandatory tools-off re-verification: these four cases, added
+in Step 8, had never been run against a tools-OFF configuration and initially failed there with four
+concrete `CHECK`/`REQUIRE` failures — fixed by the guard, not by weakening the assertions). Both macOS
+presets green at every commit boundary, Debug and Release, with and without `AERO_REQUIRE_GPU=1`;
+clang-format and clang-tidy clean on every one of the thirteen touched files; **zero new `NOLINT`**
+against the corrected baseline of 4 (not the plan's assumed 3).
+
+---
+
 # Part 2 — Build & dependency impact ledger
 
 Per task: what it changed in `vcpkg.json`, `ci.yml`, `cmake/**`, the boundary
@@ -1241,3 +1391,62 @@ twenty sabotage seeds are now all run (finding 3/5): nine did not behave as the 
 those have no discriminator at all, and the phase-A rollback gap S6 exposed is closed by N13** — and
 AC-10 (tag round-tripping) is an **honest, currently-unfixable gap** until Phase 4/5's project-defined
 components land (H3).
+
+### Epic 2.5 — Scene I/O
+
+#### Task 2.5.1 — Save/load/new from editor
+
+**2.5.1 changes no `engine/` file at all** (`git diff --name-only origin/main -- engine/` empty) and
+touches no `vcpkg.json`/`/vcpkg` pin/`ci.yml`/`cmake/**`/boundary-guard file — the first Phase 2 editor
+task since 2.4.1 to add a link-line change, and the smallest one yet: **exactly one** new PRIVATE entry,
+`target_link_libraries(aero_editor_core PRIVATE aero::scene_serialize)`, inside the existing
+`if(AERO_REFLECT_TOOLS)` block. `editor/CMakeLists.txt` gains **four source lines** on
+`aero_editor_core`'s existing `add_library` (`src/scene_session.cpp`, `src/scene_file.cpp`,
+`src/scene_io.cpp`, `src/file_dialog.cpp`; 30 → 34). `tests/CMakeLists.txt` gains two source tokens on
+`aero_editor_shell_test`'s existing `add_executable` (`editor/scene_session_test.cpp`, unconditional) and
+one `if(AERO_REFLECT_TOOLS) target_sources(aero_editor_shell_test PRIVATE editor/scene_io_test.cpp)
+endif()` block (the same target gains a conditional source, not a second target — mirroring
+`aero_editor_inspector_test`'s existing pattern rather than inventing a new one); `tests/editor/
+imgui_layer_test.cpp` gains one include and six new GPU-gated cases on its existing target — **no new
+`add_test` anywhere**, confirmed by `git diff origin/main -- tests/CMakeLists.txt editor/CMakeLists.txt
+| grep -E 'add_test|find_package'` returning empty. `ctest -N` reads **94** (tools ON), **5** (both tools
+OFF, `build/tools-off-2.5.1`) and **18** (reflect OFF alone, `build/reflect-off-2.5.1`) at every one of
+the nine code-bearing commit boundaries — all three configurations measured, none assumed, and the
+reflect-OFF figure is AC-6/E21's actual proof: `scene_session_test.cpp` runs and passes there (274 of its
+own cases, `--list-test-cases`), `scene_io_test.cpp` is confirmed **absent** (no object file, no matching
+string anywhere under the build tree, not merely skipped), and the four new I12–I17 GPU cases in
+`imgui_layer_test.cpp` fall back to a `sceneIoAvailable()` guard rather than failing. `check-math-boundary.
+sh` is the only guard that sees this task's diff at all; its scanned count moved **224 → 232**, exactly
+the plan's own predicted +8 for the eight new tracked C-family files (`scene_session.{hpp,cpp}`,
+`scene_file.{hpp,cpp}`, `scene_io.{hpp,cpp}`, `file_dialog.{hpp,cpp}` — `file_dialog.hpp` is src-private,
+not under `include/`, but still C-family and still tracked). `check-golden-rule.sh`,
+`check-platform-boundary.sh`, `check-rhi-boundary.sh` and `check-scene-boundary.sh` cannot see this diff
+at all — zero `engine/`, `runtime/`, `tools/`, `samples/`, `shaders/`, `cmake/` or `.github/` file changed,
+no SDL/SDL_GPU/EnTT identifier touched in any public header (comment-stripped grep confirmed empty).
+`editor/include/aero/editor/editor_app.hpp` gains forward declarations for `platform::Window` and
+`DialogChannel`, four new members (`window`, `session`, `fileFlow`, `dialogChannel`), two new accessors
+(`scenePath()`, `sceneDirty()`) and six request hooks; because `DialogChannel` is only forward-declared,
+`~EditorApp()`, the move constructor and the move-assignment operator must be declared in the header and
+defined (`= default`) out-of-line in `editor_app.cpp`, where the two pre-existing `static_assert`s
+asserting `EditorApp`'s move-only, noexcept-move properties move to as well (§R-0's second pre-decided
+item — the compiler cannot instantiate a defaulted special member against an incomplete type). `editor/
+src/shell_ui.hpp` loses `ShellUiState::quitRequested` entirely and gains `FileMenuContext` (a
+three-reference/value aggregate: `SceneSession&`, `FileFlow&`, `FileDialogHost` by value); `drawShellUi`
+widens to a fourth parameter. `editor/src/imgui_layer.{hpp,cpp}`, `editor/src/main.cpp` and `editor/src/
+project_files.{hpp,cpp}` stay byte-identical against `origin/main` (AC-37, confirmed by `git diff --stat`
+reading empty for all five). `ViewportPanel::renderScene` and every other Viewport/Inspector/Hierarchy
+file are untouched — this task's whole surface is the File menu, the shell, and the new scene-session/
+scene-file/scene-io/file-dialog TUs. Both macOS presets green at every one of the nine commit boundaries,
+Debug and Release, with and without `AERO_REQUIRE_GPU=1`; clang-format clean and clang-tidy
+(`--warnings-as-errors='*'`) clean on every touched file; **zero new `NOLINT`**, against a corrected
+baseline of **4** (not the plan's assumed 3 — `editor_reflection.cpp:10`'s own "NOLINTs" prose collision,
+pre-existing, not introduced by this task). Local lint was run with the keg-only Homebrew LLVM 18 before
+every commit boundary (`clang-format-18 --dry-run --Werror`, `SDKROOT=$(xcrun --sdk macosx15.4
+--show-sdk-path) clang-tidy-18 -p build/macos-debug --warnings-as-errors='*'`), both clean throughout. See
+the Part 1 entry above for the full per-step build, the thirteen-commit rundown (nine code-bearing plus
+four verification-driven fix commits plus one documentation commit), the traps (INV-6, S1/S5's stronger
+symptoms, S23's exposed gap, the missed-file commit, the recurring prose/grep-token collision), and the
+full §V4 sabotage matrix — **all twenty-three seeds run and confirmed, all three mandatory second-order
+checks (S1, S4, S10) run, §V4 discharged**, with the plan's own summary undercounting its predicted
+non-discriminating/human-only count by three (nine measured, not six) and one seed (S23) exposing a real,
+previously unwritten test case now closed.

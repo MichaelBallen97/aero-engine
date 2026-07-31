@@ -158,6 +158,8 @@ Subtasks:
 Subtasks:
 - File dialogs; current-scene path; New Scene
 - Dirty flag + unsaved-changes confirmation
+- The confirmation guards quit too — File > Exit, `Ctrl+Q` and the window close button (D1)
+- Window title shows the document name and its dirty state (D16)
 
 ### 2.5.2 Scene round-trip golden test · P1 · S · depends: 2.5.1
 **Goal:** serialization stability becomes a CI fact (docs/04 testing strategy).
