@@ -1919,6 +1919,12 @@ TEST_CASE("editor: requestSaveSceneAs writes through a real frame (task 2.5.1, I
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
         *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
     REQUIRE(app.has_value());
+    if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6: Save/Open need AERO_REFLECT_TOOLS; New Scene
+        MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");  // does not (untested here)
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
 
     const std::string tmp = uniqueScenePath(".scene.json");
     app->requestSaveSceneAs(tmp);
@@ -1949,6 +1955,12 @@ TEST_CASE("editor: requestSaveScene on a titled scene writes with no guard invol
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
         *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
     REQUIRE(app.has_value());
+    if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6
+        MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
 
     const std::string tmp = uniqueScenePath(".scene.json");
     app->requestSaveSceneAs(tmp);
@@ -2007,6 +2019,12 @@ TEST_CASE("editor: requestOpenScene discards a direct World mutation in one tick
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
         *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
     REQUIRE(app.has_value());
+    if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6
+        MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
 
     const std::string tmp = uniqueScenePath(".scene.json");
     app->requestSaveSceneAs(tmp);
@@ -2095,6 +2113,12 @@ TEST_CASE("editor: a MOVED EditorApp still drives Save As and Open through real 
 
     std::optional<engine::editor::EditorApp> moved = std::move(holder);
     REQUIRE(moved.has_value());
+    if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6: the move-safety half of AC-34 is proven by
+        MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");  // the static_asserts above
+        moved->requestQuit();                                                  // regardless of tools state
+        CHECK(moved->tick() == false);
+        return;
+    }
 
     const std::string tmp = uniqueScenePath(".scene.json");
     moved->requestSaveSceneAs(tmp);

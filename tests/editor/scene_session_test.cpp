@@ -638,6 +638,29 @@ TEST_CASE("scene_session: applyDialogResult -- cancelled is silent, failed logs 
     CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
 }
 
+TEST_CASE(
+    "scene_session: applyDialogResult abandons the pending action when the WRITE itself fails "
+    "(SS29/D11/S23)") {
+    // D11: a save that FAILS (not just a cancelled/failed DIALOG) must abandon the pending action --
+    // performing it anyway would apply a "Save" answer the write never actually honoured.
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+    f.flow.dialog = engine::editor::DialogKind::Save;
+    f.flow.saveBeforePending = true;
+    f.flow.pending = FileAction::NewScene;
+    const std::size_t countBefore = f.world.entityCount();
+
+    engine::editor::DialogResult result;
+    result.ready = true;
+    result.path = dir.join("missing-subdir/x.scene.json");  // the directory does not exist -> write fails
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, result);
+
+    CHECK(f.flow.pending == FileAction::None);  // abandoned, not merely deferred
+    CHECK_FALSE(f.flow.saveBeforePending);
+    CHECK(f.world.entityCount() == countBefore);  // NewScene did NOT run
+}
+
 TEST_CASE("scene_session: performAction with no channel and no requestedPath is silent (SS30)") {
     const LogFixture fixture;
     const engine::editor::LogSinkScope scope;
