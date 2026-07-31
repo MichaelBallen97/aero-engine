@@ -29,6 +29,7 @@ now lives in its own page, short enough to render anywhere.
 | [2.3.3 — ImGuizmo transform gizmos](validation/2.3.3-imguizmo-transform-gizmos.md) | ✅ | ✅ PASS 24/24 applicable | ⏳ | ⏳ |
 | [2.4.1 — command stack](validation/2.4.1-command-stack.md) | ✅ | ✅ PASS 16/16 | ⏳ | ⏳ |
 | [2.4.2 — property-set + structural commands](validation/2.4.2-property-set-structural-commands.md) | ✅ | ✅ PASS 24/24 | ⏳ | ⏳ |
+| [2.5.1 — save/load/new from editor](validation/2.5.1-save-load-new-from-editor.md) | ✅ | ⏳ pending | ⏳ | ⏳ |
 
 `⏳` = needs a code-free, on-hardware follow-up, the Phase 0/1 precedent (0.5.3 / 1.4.2). No Windows or
 Linux human pass has been run for **any** Phase 2 task yet; that is a known, accumulating debt, not an
@@ -36,34 +37,40 @@ oversight per task.
 
 ## What needs a human next
 
-**Every Phase 2 macOS pass is now recorded — 2.4.2 passed 24/24 on 2026-07-31, so Epic 2.4 is CLOSED in
-code *and* macOS-validated.** That pass is what turned this task's two uncovered claims into evidence:
-row 6 is the **only** proof anywhere in this tree that the Inspector panel itself applies the D17
-merge-chain gate pair correctly (no test target can construct `InspectorPanel` — it is src-private and
-ImGui-bound; `field_command_test.cpp`'s P8 pins the *policy* against a bare `CommandStack`, not the
-panel, and seeding S9/S10 into all seven arms leaves the suite 94/94), and row 11 is the canonical
-sequence spec §0-D2 exists for — move the Cube with the gizmo, delete it, undo twice, and the move
-undoes too.
+**Task 2.5.1 is closed in code, mechanically green on macOS, and its human pass has not been run yet —
+that is now the single most valuable row in this entire ledger.** The editor gained a whole document
+loop (New/Open/Save/Save As, the unsaved-changes guard over New/Open/quit, the window title) since the
+last recorded macOS pass, and nothing in this tree has clicked a native file dialog, held a chord, or
+pressed Esc on the confirmation modal — those are 2.5.1's own named "what CI cannot prove" list (see its
+validation page), and every one of them is currently **evidenced by nothing**.
 
-**The whole remaining debt in this ledger is now non-macOS, plus 2.2.5's four rows.**
+**The whole remaining debt in this ledger is now: 2.5.1's human pass (all three OSes), plus the
+carried-forward Windows/Linux debt on every earlier task, plus 2.2.5's four rows.**
 
 What is left:
 
+- **[2.5.1 — save/load/new from editor](validation/2.5.1-save-load-new-from-editor.md) · no human pass
+  recorded on any OS.** Twenty-two rows, six of them (AC-27's Esc, AC-3's held-chord, the native panels
+  themselves, the full Save-As-then-Cancel chain, the atomic-write-survives-a-kill row, and the Linux
+  no-portal/no-zenity path) are provable **only** by a human — no test tier can reach any of them. Row
+  15 (the INV-6 trap: move, delete, New Scene, undo twice, nothing happens) is the whole reason this
+  task touches `CommandStack`/`World` ownership at all.
 - **[2.2.5 — log/console panel](validation/2.2.5-log-console-panel.md) · 4 rows still BLOCKED.** They
-  could not be run because the editor emitted no log record after startup. **Three triggerable sources
-  now exist** — 2.3.3's degenerate-transform gizmo WARN and 2.4.1's Debug-build `⌘Z` (both confirmed
-  working by human passes), plus 2.4.2's own Debug-build `⌘Z`, which now varies its label
-  (`Delete Entity`, `Rename`, `Add MeshRenderer`, …) instead of always reading `Transform`. Nothing
-  blocks these four rows any more; they have not been re-run against any of the three sources yet.
-  **This is the cheapest open item in the ledger.**
+  could not be run because the editor emitted no log record after startup. **Four triggerable sources
+  now exist** — 2.3.3's degenerate-transform gizmo WARN, 2.4.1's Debug-build `⌘Z`, 2.4.2's own
+  Debug-build `⌘Z` with a varied label, and **2.5.1's own load-outcome INFO/WARN (D21) — the first of
+  the four that is not Debug-only**, so these rows are now runnable in a **Release** build too, on any
+  platform. Nothing blocks these four rows any more; they have not been re-run against any of the four
+  sources yet. **This is the cheapest open item in the ledger, and it has now been made cheaper three
+  times without being done** — see 2.5.1's own validation page, row 22.
 - **[2.4.2 — property-set + structural commands](validation/2.4.2-property-set-structural-commands.md)
   · macOS ✅ 24/24 (2026-07-31); Windows and Linux pending.** Row 22's second clause — re-running 2.2.5's
   four rows — was **not** performed in that pass, so it did not close the item above.
-- **Windows and Linux — every task, all twelve.** No non-macOS human pass has been run for any Phase 2
+- **Windows and Linux — every task, all thirteen.** No non-macOS human pass has been run for any Phase 2
   task. That is accumulating debt across the whole phase, not a per-task gap, and it is worth scheduling
   deliberately rather than discovering at the phase gate. Each task page carries its own "How to
   validate one OS" section; the rows are identical per platform except where a page marks one
-  platform-only (2.3.3's row 23 is Linux-only).
+  platform-only (2.3.3's row 23 is Linux-only; 2.5.1's row 20 is Linux-only).
 
 ## Conventions for these pages
 

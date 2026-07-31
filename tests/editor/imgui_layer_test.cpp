@@ -26,6 +26,7 @@
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>       // task 2.3.2
 #include <aero/editor/scene_bounds.hpp>  // task 2.3.1
+#include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2
 #include <aero/editor/transform_command.hpp>  // task 2.4.1
@@ -65,6 +66,19 @@ struct QuietTraceLogging {
     QuietTraceLogging(QuietTraceLogging&&) = delete;
     QuietTraceLogging& operator=(QuietTraceLogging&&) = delete;
 };
+
+// task 2.5.1 (I12-I17): a fresh, never-yet-existing absolute path in the OS temp directory -- these
+// cases save/open a single FILE, not a whole directory tree, so the TempDir class the tier-0 scene
+// tests use would be overkill here. Never removed proactively: the OS temp directory is reclaimed by
+// the OS, and every case here writes at most one small scene file.
+[[nodiscard]] std::string uniqueScenePath(std::string_view suffix) {
+    static int counter = 0;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path();
+    const std::filesystem::path file =
+        dir / ("aero_imgui_layer_scene_" + std::to_string(++counter) + std::string(suffix));
+    const std::u8string bytes = file.u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
 }  // namespace
 
 TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke test)") {
@@ -1838,6 +1852,301 @@ TEST_CASE("editor: EditorApp stays noexcept-movable and drives after a move (tas
     REQUIRE(moved->tick());
     REQUIRE(engine::editor::readTransform(movedWorld, cube).has_value());
     CHECK(*engine::editor::readTransform(movedWorld, cube) == *before);
+
+    moved->requestQuit();
+    CHECK(moved->tick() == false);
+    moved.reset();
+}
+
+// ==================================================================================================
+// task 2.5.1 -- New/Open/Save driven through a real EditorApp::tick(), using the D15 path-taking
+// hooks (requestOpenScene(path)/requestSaveSceneAs(path)) as the mechanical substitute for a native
+// dialog this harness cannot click. TWO mandatory rules for every case below (plan §S Step 8):
+//   1. state in a comment WHY the document is CLEAN at the moment a guarded hook is called -- a
+//      mutation must go through the World DIRECTLY, never through CommandStack::push(), unless the
+//      case's own point IS the guard;
+//   2. budget a SETTLING TICK before reading logRecordCount() -- tick() pumps the console sink at the
+//      TOP of the frame, so a record raised during frame N's draw is visible only on frame N+1.
+// ==================================================================================================
+
+TEST_CASE("editor: requestNewScene on a clean app produces the seed contents through a real frame (task 2.5.1, I12)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "new scene smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    // Finding 3 of the 2.5.1 code-review round: with `seedDefaultScene = true`, every assertion below
+    // already held BEFORE `requestNewScene()` ran at all, so a no-op `requestNewScene()` (the same
+    // defect class self-corrected for IO5 in 1ad4c93) would leave this case green. A DIRECT World
+    // mutation (never through CommandStack::push()) keeps the document CLEAN, so the guard still
+    // performs immediately (Perform, not Confirm) -- and gives requestNewScene() something real to
+    // discard.
+    const engine::Entity probe = engine::editor::createEntity(app->world(), {}, "Probe");
+    REQUIRE(probe.valid());
+    REQUIRE(app->world().entityCount() == 4);
+
+    app->requestNewScene();  // clean at create() -- nothing pushed to the stack yet
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(app->world().entityCount() == 3);  // NOT 4 -- "Probe" is gone; discriminates the no-op
+    std::vector<std::string> names;
+    app->world().eachEntity([&](engine::Entity e) { names.emplace_back(app->world().name(e)); });
+    std::sort(names.begin(), names.end());
+    CHECK(names == std::vector<std::string>{"Cube", "Directional Light", "Main Camera"});
+    CHECK(app->selection().empty());
+    CHECK(app->commands().count() == 0);
+    CHECK(app->commands().isClean());
+    CHECK(app->scenePath().empty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: requestSaveSceneAs writes through a real frame (task 2.5.1, I13/AC-15/AC-20)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "save as smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+    if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6: Save/Open need AERO_REFLECT_TOOLS; New Scene
+        MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");  // does not (untested here)
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
+
+    const std::string tmp = uniqueScenePath(".scene.json");
+    app->requestSaveSceneAs(tmp);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(engine::editor::fileExists(tmp));
+    CHECK(app->scenePath() == tmp);
+    CHECK_FALSE(app->sceneDirty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: requestSaveScene on a titled scene writes with no guard involved (task 2.5.1, I14/AC-16)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "save titled smoke", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+    if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6
+        MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
+
+    const std::string tmp = uniqueScenePath(".scene.json");
+    app->requestSaveSceneAs(tmp);
+    REQUIRE(app->tick());
+    REQUIRE(app->scenePath() == tmp);
+    REQUIRE_FALSE(app->sceneDirty());
+
+    engine::Entity cube{};
+    app->world().eachEntity([&](engine::Entity e) {
+        if (app->world().name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    const std::optional<engine::Transform> before = engine::editor::readTransform(app->world(), cube);
+    REQUIRE(before.has_value());
+    engine::Transform after = *before;
+    after.position = before->position + engine::Vec3{0.0F, 1.0F, 0.0F};
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    // Pushed through the STACK deliberately: this case's own point is that a mutation which ALREADY
+    // exists in the history still goes through a plain, unguarded Save (SaveScene never discards
+    // work, so guardFor returns Perform and the modal is never involved -- SS1 pins that).
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(cube, *before, after)));
+    REQUIRE(app->tick());
+    CHECK(app->sceneDirty());
+
+    app->requestSaveScene();
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->sceneDirty());
+    CHECK(app->scenePath() == tmp);
+
+    // Push again -- dirty once more, proving the clean flag is live history arithmetic, not a latch.
+    engine::Transform again = after;
+    again.position = after.position + engine::Vec3{0.0F, 1.0F, 0.0F};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(cube, after, again)));
+    REQUIRE(app->tick());
+    CHECK(app->sceneDirty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: requestOpenScene discards a direct World mutation in one tick (task 2.5.1, I15/AC-10)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "open discards mutation", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+    if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6
+        MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        return;
+    }
+
+    const std::string tmp = uniqueScenePath(".scene.json");
+    app->requestSaveSceneAs(tmp);
+    REQUIRE(app->tick());
+    REQUIRE(app->scenePath() == tmp);
+    const std::size_t savedCount = app->world().entityCount();
+
+    // Mutate the World DIRECTLY (§A11): requestOpenScene(path) is GUARDED, and a mutation pushed
+    // through the CommandStack would make isClean() false, raising the modal instead of opening --
+    // no test tier can answer a modal. Bypassing the stack keeps the document clean, so the guard's
+    // Perform branch is what runs here; the guard's BLOCKING half is covered tier-0 by SS23-SS26.
+    const engine::Entity extra = engine::editor::createEntity(app->world(), {}, "DirectMutation");
+    REQUIRE(extra.valid());
+    REQUIRE(app->world().entityCount() == savedCount + 1);
+    REQUIRE(app->commands().isClean());  // still clean -- the guard will proceed, not raise the modal
+
+    app->requestOpenScene(tmp);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(app->world().entityCount() == savedCount);  // the mutation is gone
+    CHECK(app->commands().isClean());
+    CHECK(app->commands().count() == 0);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: requestOpenScene on a missing file changes nothing and logs (task 2.5.1, I16/AC-11/AC-12)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "open missing file", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(app.has_value());
+
+    // TWO settling ticks first (2.4.1 I5's precedent): create() itself already logged records that
+    // sit unpumped until the first tick()'s pumpLog() runs, and under -DAERO_SHADER_TOOLS=OFF the
+    // Viewport logs a one-time WARN on its first draw, one frame later still.
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    const std::size_t countBefore = app->world().entityCount();
+    const std::string_view pathBefore = app->scenePath();
+    const std::size_t before = app->logRecordCount();
+
+    const std::string missing = uniqueScenePath("-definitely-missing.scene.json");
+    app->requestOpenScene(missing);
+    REQUIRE(app->tick());  // openSceneFile fails and logs an ERROR into the sink this frame
+    REQUIRE(app->tick());  // the settling tick: pumpLog() at the TOP of THIS frame surfaces it
+
+    CHECK(app->world().entityCount() == countBefore);
+    CHECK(app->scenePath() == pathBefore);
+    CHECK(app->logRecordCount() - before >= 1);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a MOVED EditorApp still drives Save As and Open through real frames (task 2.5.1, I17/AC-34)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "editor app move scene io", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> holder = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+    REQUIRE(holder.has_value());
+
+    std::optional<engine::editor::EditorApp> moved = std::move(holder);
+    REQUIRE(moved.has_value());
+    if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6: the move-safety half of AC-34 is proven by
+        MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");  // the static_asserts above
+        moved->requestQuit();                                                  // regardless of tools state
+        CHECK(moved->tick() == false);
+        return;
+    }
+
+    const std::string tmp = uniqueScenePath(".scene.json");
+    moved->requestSaveSceneAs(tmp);
+    REQUIRE(moved->tick());
+    CHECK(moved->presentedLastFrame());
+    CHECK(engine::editor::fileExists(tmp));
+    CHECK(moved->scenePath() == tmp);
+    CHECK_FALSE(moved->sceneDirty());
+
+    // Direct mutation again (§A11) -- requestOpenScene is guarded and the document must stay clean.
+    const engine::Entity extra = engine::editor::createEntity(moved->world(), {}, "MovedMutation");
+    REQUIRE(extra.valid());
+    REQUIRE(moved->commands().isClean());
+
+    moved->requestOpenScene(tmp);
+    REQUIRE(moved->tick());
+    CHECK_FALSE(moved->world().alive(extra));
+    CHECK(moved->commands().isClean());
 
     moved->requestQuit();
     CHECK(moved->tick() == false);

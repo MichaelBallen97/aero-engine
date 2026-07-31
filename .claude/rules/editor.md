@@ -111,4 +111,35 @@ scoped per panel, must stay empty).
 Validation is a two-part gate: mechanical/structural (build, ctest, sabotage proofs) and
 a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
 
-Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 entries.
+## Scene I/O and the File menu (task 2.5.1)
+
+- **`World::clear()`, `Selection::clear()`, `RootOrder::clear()` and `CommandStack::clear()` must
+  always be called together, in the same operation, never independently.** `resetSceneState`
+  (`scene_session.cpp`) is the **only** call site that clears the World. `World::clear()` bumps
+  every existing entity's generation but never un-issues its index (measured,
+  `scene_test.cpp` W7) — a `CommandStack` left holding history against a *replaced* World would
+  `recreate()` handles that mean nothing there, not merely display a stale undo label. This is
+  INV-6, and since task 2.4.2 put `SubtreeSnapshot`s inside history entries it is a
+  data-corruption invariant, not a cosmetic one. Never add a second path that swaps the World
+  (a future New/Open flow, a project-load flow) without also clearing the stack in that same
+  call.
+- **Every native scene I/O call site checks `sceneIoAvailable()` first.** The engine's
+  serialization bridge lives behind exactly one build gate
+  (`AERO_EDITOR_REFLECTION`, confined to `scene_io.cpp`), and building the editor with
+  `AERO_REFLECT_TOOLS=OFF` makes every save/open reachably no-op rather than a link error —
+  `sceneIoAvailable()` reports `false` in that configuration and every save/open path checks it
+  before touching a file. A test or panel action that calls into scene I/O without this guard
+  will fail specifically in the tools-OFF configurations, not the default build — always verify
+  both.
+- **AC-27 (Esc dismisses the unsaved-changes modal as Cancel) is hand-bound, not built-in, and
+  this is deliberate, not a workaround to simplify.** ImGui 1.92.8's own nav-cancel path cannot
+  close a *modal* popup: `NavUpdateCancelRequest`'s popup branch excludes
+  `ImGuiWindowFlags_Modal` (`imgui.cpp:15007`/`15032`), and the editor never sets
+  `ImGuiConfigFlags_NavEnableKeyboard` (`imgui_layer.cpp:79`). The modal body checks
+  `ImGui::IsKeyPressed(ImGuiKey_Escape, false)` directly. Keep the comment explaining this is not
+  redundant with ImGui's own handling — a future ImGui upgrade is the only thing that could make
+  it so, and removing the hand-bound check on that assumption without re-verifying against the
+  vendored source would silently break AC-27 with no test able to catch it (no tier can press a
+  key on a modal; see `editor/validation/2.5.1-save-load-new-from-editor.md` row 14).
+
+Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 entries.

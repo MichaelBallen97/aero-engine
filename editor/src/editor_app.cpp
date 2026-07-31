@@ -8,12 +8,19 @@
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/project_files.hpp>
+#include <aero/editor/scene_session.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
+#include <aero/platform/internal/native_window.hpp>  // task 2.5.1: the SECOND consumer F15 sanctions
+                                                     // (the first is imgui_layer.cpp) -- no new
+                                                     // accessor is added.
+#include <aero/platform/window.hpp>                  // task 2.5.1: window->setTitle() (F14)
 
 #include "asset_browser_panel.hpp"
 #include "console_panel.hpp"
 #include "editor_reflection.hpp"
+#include "file_dialog.hpp"  // task 2.5.1: DialogChannel's definition -- the shared_ptr's deleter needs
+                            // a complete type wherever it could run, including this TU's ~EditorApp
 #include "hierarchy_panel.hpp"
 #include "inspector_panel.hpp"
 #include "shell_ui.hpp"
@@ -23,10 +30,23 @@
 #include <cmath>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 
 namespace engine::editor {
+
+namespace {
+
+// task 2.5.1: the dialog's parent window and setTitle()'s target both need the SDL_Window* the
+// platform layer hides. This is the SECOND consumer of NativeWindowAccessor (imgui_layer.cpp is the
+// first) -- no new accessor is added (F15). `window == nullptr` only on a moved-from app.
+void* nativeWindowHandle(platform::Window* window) {
+    return window != nullptr ? static_cast<void*>(platform::internal::NativeWindowAccessor::get(*window)) : nullptr;
+}
+
+}  // namespace
 
 std::uint32_t framePaceSleepMs(bool presented, bool focused, float unfocusedCapHz, float frameElapsedMs) noexcept {
     if (!presented) {
@@ -45,6 +65,13 @@ std::uint32_t framePaceSleepMs(bool presented, bool focused, float unfocusedCapH
 
 EditorApp::EditorApp(ImGuiLayer layer, platform::Context& ctx, EditorAppConfig config)
     : layer(std::move(layer)), ctx(&ctx), config(std::move(config)) {}
+
+// task 2.5.1: defined HERE, out-of-line, where DialogChannel is a complete type -- forced by
+// std::shared_ptr<DialogChannel>'s deleter needing completeness wherever it could run, including this
+// destructor and both moves (the scene_snapshot.hpp precedent, 2.4.2 §A13, applied one layer up).
+EditorApp::~EditorApp() = default;
+EditorApp::EditorApp(EditorApp&&) noexcept = default;
+EditorApp& EditorApp::operator=(EditorApp&&) noexcept = default;
 
 std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window& window, platform::Context& ctx,
                                            const EditorAppConfig& config) {
@@ -72,9 +99,16 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     }
 
     EditorApp app(std::move(*layer), ctx, config);
+    app.window = &window;                                   // task 2.5.1, F14/A19
+    app.dialogChannel = std::make_shared<DialogChannel>();  // never null on a LIVE app
     // The default layout is built on the FIRST DRAWN FRAME, not here (E3) — so panels registered by
     // the caller between create() and the first tick() are included.
     app.applyDefaultLayout = app.layer.wantsDefaultLayout();
+    // task 2.5.1, D20: hoisted OUT of the registerDefaultPanels branch below -- the dialog's start
+    // directory needs it whether or not the Asset Browser panel exists. The LOG line stays inside
+    // that branch (plan A9): its text, level and position in the startup sequence are unchanged, and
+    // 2.2.5's create-time record ordering is asserted on them.
+    app.projectRootResolved = resolveProjectRoot(config.projectRoot);
 
     if (config.registerDefaultPanels) {
         app.registry.emplace<HierarchyPanel>();                           // task 2.2.1 -- was a PlaceholderPanel
@@ -87,9 +121,11 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         if (logScope.has_value()) {
             app.consolePanel = app.registry.emplace<ConsolePanel>(std::move(*logScope));
         }
-        std::string assetsRoot = resolveProjectRoot(config.projectRoot);
-        AERO_LOG_INFO("editor: assets root '{}'", assetsRoot);
-        app.registry.emplace<AssetBrowserPanel>(std::move(assetsRoot));  // task 2.2.4 -- was a PlaceholderPanel
+        AERO_LOG_INFO("editor: assets root '{}'", app.projectRootResolved);
+        app.registry.emplace<AssetBrowserPanel>(app.projectRootResolved);  // task 2.2.4 -- a COPY now
+                                                                           // (plan A9): the string moved
+                                                                           // into the panel before 2.5.1
+                                                                           // needed it a second time.
     }
 
     if (config.seedDefaultScene) {
@@ -115,7 +151,10 @@ bool EditorApp::tick() {
         switch (ev.type) {
             case platform::EventType::Quit:
             case platform::EventType::WindowClose:
-                running = false;
+                requestGuardedQuit();  // task 2.5.1, D1: route the OS quit / window [X] through the
+                                       // guard instead of quitting immediately. Observable consequence:
+                                       // closing a CLEAN editor now draws one more frame before exiting
+                                       // -- deliberate (AC-28), not a regression.
                 break;
             case platform::EventType::WindowFocusGained:
                 windowFocused = true;
@@ -128,8 +167,12 @@ bool EditorApp::tick() {
         }
     }
     if (!running) {
-        presented = false;  // as above: no frame was presented, so don't report a stale true
-        return false;       // quit before any ImGui call (D11) — no NewFrame means nothing to balance
+        // Reachable only through a DIRECT requestQuit() call (D14) -- the window [X] / OS Quit path
+        // above no longer flips `running` here, it only requests the guard. Kept for the same reason
+        // it always existed: a caller that quits before this tick even begins must still balance
+        // ImGui correctly (no NewFrame means nothing to balance).
+        presented = false;
+        return false;
     }
     frameClock.tick();
 
@@ -141,11 +184,28 @@ bool EditorApp::tick() {
         consolePanel->pumpLog();
     }
 
+    // task 2.5.1: the dialog result is taken BEFORE the frame, so THIS frame's menu, modal and panels
+    // all see the post-load scene -- the F12 property (2.4.1 D19), one step earlier, because the
+    // RESULT is not a UI event. Guarded: a moved-from EditorApp has a null channel and is deliberately
+    // inert (plan A18) rather than crashing on a null dereference.
+    if (dialogChannel != nullptr) {
+        if (const DialogResult result = dialogChannel->take(); result.ready) {
+            CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
+            const FileDialogHost host{dialogChannel.get(), nativeWindowHandle(window), projectRootResolved};
+            applyDialogResult(cmd, commandStack, session, fileFlow, host, result);
+        }
+    }
+    if (window != nullptr) {
+        std::string title = session.windowTitle(!commandStack.isClean());
+        if (title != lastTitle) {  // D16: push the title only when it CHANGES
+            lastTitle = std::move(title);
+            window->setTitle(lastTitle);
+        }
+    }
+
     layer.beginFrame();
-    ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
-                    .quitRequested = false,
-                    .undoRequested = undoRequested,
-                    .redoRequested = redoRequested};
+    ShellUiState ui{
+        .applyDefaultLayout = applyDefaultLayout, .undoRequested = undoRequested, .redoRequested = redoRequested};
     // Consumed: a request never survives the tick that carried it. Unlike applyDefaultLayout below,
     // these are NOT read back out of `ui` -- drawShellUi clears them as it applies them, and reading
     // them back would re-arm the request every frame (task 2.4.1).
@@ -155,9 +215,13 @@ bool EditorApp::tick() {
     // commandStack is the editor's ONE undo history (task 2.4.1 D7); rootOrder is the editor's ONE
     // display order among root entities (task 2.4.2 D10)
     PanelContext panelContext{sceneWorld, sceneSelection, commandStack, rootOrder, frameClock.deltaSeconds()};
-    drawShellUi(registry, panelContext, ui);     // menu bar -> dockspace -> panels
-    applyDefaultLayout = ui.applyDefaultLayout;  // drawShellUi clears it once consumed, and re-sets
-                                                 // it for View > Reset Layout
+    // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does not
+    // carry (D17), built fresh each frame exactly like panelContext above.
+    FileMenuContext fileMenu{session, fileFlow,
+                             FileDialogHost{dialogChannel.get(), nativeWindowHandle(window), projectRootResolved}};
+    drawShellUi(registry, panelContext, ui, fileMenu);  // menu bar -> dockspace -> panels
+    applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
+                                                        // it for View > Reset Layout
     // D3: the offscreen scene pass runs AFTER the draw walk (only it knows this frame's panel size,
     // which is what removes the one-frame resize lag) and BEFORE endFrame (ImGui's command buffer is
     // acquired and submitted there; ours must be submitted first -- F8's ordering guarantee, and F7
@@ -166,8 +230,10 @@ bool EditorApp::tick() {
         viewportPanel->renderScene(sceneWorld);
     }
     presented = layer.endFrame(config.clearColor);
-    if (ui.quitRequested) {
-        running = false;  // File>Exit / Ctrl+Q: this frame still completed, so Render stays balanced
+    if (fileFlow.quitConfirmed) {
+        // File > Exit / Ctrl+Q / the window [X] -- all AFTER the guard said yes (task 2.5.1 D1). This
+        // frame still completed, so Render stays balanced (AC-28).
+        running = false;
     }
     AERO_PROFILE_FRAME_MARK;
 
@@ -207,10 +273,36 @@ EditorCamera* EditorApp::viewportCamera() noexcept {
 const EditorCamera* EditorApp::viewportCamera() const noexcept {
     return viewportPanel != nullptr ? &viewportPanel->camera() : nullptr;
 }
+std::string_view EditorApp::scenePath() const noexcept { return session.path(); }
+bool EditorApp::sceneDirty() const noexcept { return !commandStack.isClean(); }
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
 void EditorApp::requestUndo() noexcept { undoRequested = true; }
 void EditorApp::requestRedo() noexcept { redoRequested = true; }
 
+// task 2.5.1: each hook is `fileFlow.requested = FileAction::X;` (plus `.requestedPath` for the two
+// path-taking ones), applied on the NEXT tick -- the requestLayoutReset()/requestUndo() shape, not
+// requestQuit()'s (D14/AC-29 -- requestQuit() above stays byte-identical; 35 GPU-gated cases depend
+// on it, plan A4).
+void EditorApp::requestNewScene() noexcept { fileFlow.requested = FileAction::NewScene; }
+void EditorApp::requestOpenSceneDialog() noexcept { fileFlow.requested = FileAction::OpenScene; }
+void EditorApp::requestOpenScene(std::string_view path) {
+    fileFlow.requested = FileAction::OpenScene;
+    fileFlow.requestedPath = path;
+}
+void EditorApp::requestSaveScene() noexcept { fileFlow.requested = FileAction::SaveScene; }
+void EditorApp::requestSaveSceneAs(std::string_view path) {
+    fileFlow.requested = FileAction::SaveSceneAs;
+    fileFlow.requestedPath = path;
+}
+void EditorApp::requestGuardedQuit() noexcept { fileFlow.requested = FileAction::Quit; }
+
 }  // namespace engine::editor
+
+// F15/2.4.1's precedent, applied to EditorApp itself: this type stays noexcept-movable, so a future
+// member whose move can throw fails HERE, loudly, instead of silently degrading EditorApp's own
+// defaulted... spelled-out move (task 2.5.1: no longer `= default` IN THE HEADER, so the assert
+// cannot live there any more -- it moves here, where EditorApp is complete). AC-34's mechanical proof.
+static_assert(std::is_nothrow_move_constructible_v<engine::editor::EditorApp>);
+static_assert(std::is_nothrow_move_assignable_v<engine::editor::EditorApp>);
