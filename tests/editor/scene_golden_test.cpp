@@ -18,6 +18,7 @@
 #include <aero/core/log.hpp>
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/console_model.hpp>
+#include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
@@ -31,9 +32,11 @@
 #include <array>
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 using engine::editor::CommandContext;
@@ -156,6 +159,19 @@ TEST_CASE("scene_golden/editor: openSceneFile loads each golden cleanly (EG2/AC-
     for (const GoldenFixture& fixture : GOLDEN_FIXTURES) {
         INFO(std::string{fixture.name});
         EditorFixture ed;
+
+        // Made DIRTY first, never left at its already-clean default -- the scene_io_test.cpp:383-391
+        // idiom, and for the same reason: a stack that STARTS clean stays clean whether or not
+        // openSceneFile clears it, so the two history assertions below would pass with the clearing
+        // removed entirely. Starting dirty is what makes them discriminate. AC-15's "history is
+        // clean" clause is only worth asserting in this form.
+        const engine::Entity probe = ed.world.create();
+        const std::vector<engine::Entity> targets{probe};
+        const std::vector<engine::Entity> noSelection;
+        auto dirty = std::make_unique<engine::editor::DeleteEntitiesCommand>(targets, noSelection);
+        REQUIRE(ed.commands.push(ed.context, std::move(dirty)));
+        REQUIRE_FALSE(ed.commands.isClean());
+
         REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, fixture.path));
         CHECK(ed.world.entityCount() == fixture.entities);
         CHECK(ed.commands.isClean());  // a fresh load is a saved document by definition
@@ -181,7 +197,12 @@ TEST_CASE("scene_golden/editor: a save writes the fixture's exact bytes back (EG
         const std::string target = dir.join(std::string{fixture.name} + ".scene.json");
         REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, target, /*appendExtension=*/false));
         CHECK(ed.session.path() == target);
-        CHECK(ed.commands.isClean());
+        // NO isClean() assertion here, deliberately. The open above already left the stack clean and
+        // nothing between them dirties it, so the check would pass with saveSceneFile's setClean()
+        // deleted -- vacuous, which is the one thing this task exists to forbid. It cannot be made
+        // discriminating either: dirtying the stack means mutating the World, and this case's whole
+        // point is that the saved bytes still equal the fixture's. "A save marks the document clean"
+        // is owned by scene_io_test.cpp's IO cases and imgui_layer_test.cpp's I14.
 
         const engine::editor::FileReadResult written = readTextFile(target);
         REQUIRE_MESSAGE(written.text.has_value(), written.error);
@@ -268,13 +289,21 @@ TEST_CASE("scene_golden/editor: opening a golden logs exactly one INFO and no WA
     // silently degraded. It is a richness pin wearing a different hat, and it reuses IO15's shape.
     const LogFixture fixture;
     const engine::editor::LogSinkScope scope;
-    std::vector<engine::editor::LogEntry> records;
 
     for (const GoldenFixture& golden : GOLDEN_FIXTURES) {
         INFO(std::string{golden.name});
         EditorFixture ed;
-        records.clear();
+
+        // take() ASSERTS `out` is empty and then SWAPS (console_model.cpp:231-234), so the drain
+        // below leaves its haul IN `records` and the drain after the open must start from empty.
+        // Hence take-then-clear, the scene_io_test.cpp:393-394/424-425/474-475/512-513 idiom -- NOT
+        // clear-then-take, which leaves the pre-open residue in place: in Debug that trips the
+        // assert and aborts all 304 cases, and in Release (NDEBUG compiles the assert out) it is
+        // silently COUNTED below, failing for a reason unrelated to openSceneFile. `records` is
+        // loop-scoped so iteration N+1 cannot inherit iteration N's haul either.
+        std::vector<engine::editor::LogEntry> records;
         scope.sink()->take(records);
+        records.clear();
 
         REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, golden.path));
 

@@ -1318,13 +1318,56 @@ reading *"No add_test: ctest -N stays 94/5/18"* made AC-21's own `git diff … |
 a real `add_test` call — reworded to drop the substring. Both are new instances of the class of trap
 2.5.1's log names four times; this task adds two more to the tally, both closed.
 
-**A mechanical bug found and fixed while writing the editor battery, not sabotage.** EG6 (log-count
-per open) called `scope.sink()->take(records)` **before** `records.clear()` inside a loop over three
-fixtures; `LogSink::take()` asserts its argument is empty, and on the second loop iteration `records`
-still held the first iteration's drained entries — an assertion abort, not a red test. Fixed by
-swapping the two lines, matching the established idiom already used four times in
-`scene_io_test.cpp`. Verified: the corrected loop runs all three fixtures cleanly with the predicted
-one-INFO/zero-WARN/zero-ERROR shape each time.
+**A mechanical bug found while writing the editor battery, fixed WRONGLY at first, and corrected in
+the code-review round.** EG6 (log-count per open) loops over three fixtures with a single `records`
+vector declared outside the loop. `LogSink::take()` asserts its argument is empty **and then swaps**
+(`console_model.cpp:231-234`), so on the second iteration `records` still held the first iteration's
+haul and the drain aborted. The first fix inverted the two lines to `clear(); take();` — which
+removes the cross-iteration abort but **inverts the house idiom** (`take(); clear();`, used four
+times in `scene_io_test.cpp` at `:393-394`, `:424-425`, `:474-475`, `:512-513`) and leaves a worse
+bug in its place: `take()` swaps the pre-open drain INTO `records` and nothing removes it, so the
+second `take()` asserts against a non-empty vector. In Debug that aborts all 304 cases; in Release
+`NDEBUG` compiles the assert out and the residue is silently **counted**, failing the INFO/WARN/ERROR
+checks for a reason unrelated to `openSceneFile`. The correct fix, applied in the review round, is
+loop-scoped `records` **plus** the house take-then-clear order: the first restores the iteration
+boundary, the second discards the drain. Neither alone is sufficient. **The idiom is take-then-clear
+— do not "tidy" it back.**
+
+**The code-review round (2026-07-31): six findings, one blocking, all fixed on the same branch.**
+The implementation pass's own claim that the work was ready to merge was wrong — the same mistake
+2.5.1's implementation pass made, and worth recording twice for that reason.
+
+1. **BLOCKING — EG6's inverted log drain**, above. The only finding that could redden or abort CI.
+2. **An unguarded index that could abort instead of failing.** G5's grandparent walk indexes
+   `doc.entities[rec.parent - 1U]`, which is in range only because ids are contiguous `1..N`. That
+   precondition was a `CHECK` (reports and continues) sitting in a *different* loop from the index,
+   and `parseScene` guarantees only that a parent matches **some** record's id
+   (`scene_format.cpp:202-205`), never that it is `<= size()`. A hand-edited or future
+   persistent-id fixture would therefore read past the end of the vector: an ASan
+   heap-buffer-overflow abort on both Debug lanes, silent UB in Release — in exactly the scenario the
+   pin exists to diagnose. Promoted to `REQUIRE`.
+3. **Three assertions that could not fail.** EG2's `isClean()`/`count() == 0` and EG3's `isClean()`
+   ran against an `EditorFixture` constructed fresh inside the loop, so the stack was *already* clean
+   before the operation under test — they would pass with the clearing removed entirely. This is the
+   precise vacuity failure the whole task exists to forbid, shipped inside it. EG2 now dirties the
+   stack first (the `scene_io_test.cpp:383-391` idiom), which makes AC-15's "history is clean" clause
+   real. EG3's was **deleted** rather than fixed: dirtying the stack means mutating the World, and
+   EG3's entire purpose is that the saved bytes still equal the fixture's, so the assertion cannot be
+   made discriminating there at all. The property is owned by the IO cases and by `I14`.
+4. **`.gitattributes` did not cover one of the four files the batteries compare.** `*.scene.json`
+   does **not** match `samples/phase-1-scene/scene.json` (verified with `git check-attr`: it fell
+   through to the blanket `text: auto`), yet G9 byte-compares that file. The explicit rule's own
+   stated rationale was false for it. Given its own line.
+5. **`CLAUDE.md`'s new prose broke the roster grep** — a seventh instance of the "comment names the
+   policed token" trap. Its state block is one physical line, so the literal fixture path landed
+   beside the words "write" and "rename". Reworded to name the directory in prose only.
+6. **This log described the EG6 fix backwards**, teaching a future reader the inverse of the house
+   idiom. Rewritten above.
+
+Findings 2 and 3 are the ones worth internalising: a golden-test task shipped both an out-of-bounds
+read in its own diagnostic path *and* three vacuous assertions. Neither would ever have reddened CI,
+which is exactly why neither the implementation pass nor its own sabotage matrix caught them — a seed
+proves a test *can* fail, never that an assertion *does* anything.
 
 **What deliberately did not ship.** No regeneration mechanism of any kind. No new ctest entry. No fix
 for the destroy-reordering (G10; a format-level decision, unowned). **And no human validation rows:

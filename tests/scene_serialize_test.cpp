@@ -578,8 +578,12 @@ TEST_CASE("scene_golden: every fixture converges on a second cycle (G4/AC-2)") {
         REQUIRE_FALSE(loadSceneText(second, cycle1).error.has_value());
         const std::string cycle2 = saveWorldText(second);
 
-        INFO(scene_golden::describeMismatch(cycle1, cycle2));
+        // ONE INFO PER COMPARISON. A single describeMismatch(cycle1, cycle2) would print an empty
+        // string when it is the fixture-vs-cycle-1 check that fails, which is the failure a remote
+        // lane is most likely to hit and the one D5 exists to make readable.
+        INFO(scene_golden::describeMismatch(file.text, cycle1));
         CHECK(cycle1 == file.text);
+        INFO(scene_golden::describeMismatch(cycle1, cycle2));
         CHECK(cycle2 == cycle1);
     }
 }
@@ -612,7 +616,12 @@ TEST_CASE("scene_golden: full.scene.json still contains everything it is for (G5
         // hand-edited fixture whose ids are not contiguous can never be a fixpoint. Pinning the
         // property turns that from an opaque byte diff into a named failure -- and it is what makes
         // the parent lookup below a direct index rather than a search.
-        CHECK(rec.id == static_cast<std::uint64_t>(i) + 1U);
+        // REQUIRE, not CHECK: the grandparent walk below indexes doc.entities BY rec.parent - 1,
+        // which is only in range because ids are contiguous 1..N. parseScene guarantees only that a
+        // parent matches SOME record's id (scene_format.cpp:202-205), not that it is <= size(). A
+        // CHECK here would report and continue straight into a read past the end of the vector --
+        // an ASan heap-buffer-overflow abort on both Debug lanes, silent UB in Release.
+        REQUIRE(rec.id == static_cast<std::uint64_t>(i) + 1U);
         if (rec.name.empty()) {
             ++emptyName;
         }
