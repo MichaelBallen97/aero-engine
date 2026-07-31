@@ -45,6 +45,7 @@ add_library(aero_editor_core STATIC
     src/entity_commands.cpp     # task 2.4.2 -- the five structural commands, wrapping entity_ops
     src/scene_session.cpp       # task 2.5.1 -- the document model, the pure guard and THE scene swap
     src/scene_file.cpp          # task 2.5.1 -- ALL <filesystem>/<fstream> for scenes (D19/F17)
+    src/scene_io.cpp            # task 2.5.1 -- the scene_serialize bridge; the ONE #if (F10/AC-33)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -89,6 +90,15 @@ if(AERO_REFLECT_TOOLS)
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")
     target_compile_definitions(aero_editor_core PRIVATE AERO_EDITOR_REFLECTION=1)
+
+    # Task 2.5.1: the editor's scene I/O bridge. PRIVATE, and INSIDE this gate, because
+    # engine/scene_serialize/CMakeLists.txt:7-10 return()s when AERO_REFLECT_TOOLS is OFF -- the target
+    # does not exist there, so neither does its include directory. PRIVATE (not PUBLIC) because no
+    # PUBLIC editor header names a scene_serialize type (AC-32); on a STATIC library that becomes
+    # $<LINK_ONLY:>, so the archive reaches consumers' link lines while its include directory reaches
+    # nobody's compile line. It brings aero::reflect, which aero::scene already carries PUBLIC, so no
+    # new vcpkg include path reaches any consumer and no boundary probe is affected.
+    target_link_libraries(aero_editor_core PRIVATE aero::scene_serialize)
 endif()
 
 if(AERO_SHADER_TOOLS)

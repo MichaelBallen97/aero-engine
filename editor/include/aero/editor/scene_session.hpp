@@ -6,6 +6,7 @@
 // editor/include.
 #include <aero/editor/command_stack.hpp>  // CommandContext + CommandStack; forward decls only inside
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -121,5 +122,29 @@ struct FileReadResult {
 // "" == success. ATOMIC (D12): writes <path>.aero-tmp, CLOSES it, renames over `path`.
 [[nodiscard]] std::string writeTextFileAtomic(std::string_view absolutePathUtf8, std::string_view text);
 [[nodiscard]] bool fileExists(std::string_view absolutePathUtf8);
+
+// ---- serialization (scene_io.cpp; the ONE #if in this task, F9's AERO_REFLECT_TOOLS gate) --------
+[[nodiscard]] bool sceneIoAvailable() noexcept;  // false without AERO_REFLECT_TOOLS
+
+// Deliberately PLAIN INTEGERS, not an engine::SceneError -- even though F9 says the latter WOULD be
+// legal here (aero::reflect is already a PUBLIC transitive dependency of aero_editor_core through
+// aero::scene). Keeping this a value type with no <aero/reflect/...> include is what lets this whole
+// header stay reachable in every build configuration with no #if of its own; do not "improve" it.
+struct SceneOpenOutcome {
+    bool ok = false;
+    std::string message;     // the SceneError message when !ok; "" otherwise
+    std::uint32_t line = 0;  // >0 only for a JSON-stage failure
+    std::uint32_t column = 0;
+    std::size_t entities = 0;  // SceneLoadReport, on success
+    std::size_t components = 0;
+    std::size_t skipped = 0;
+    std::size_t failed = 0;
+};
+
+// PARSE FIRST, THEN SWAP (D5/E8): on a parse error nothing is touched, and `context`/`commands` are
+// byte-for-byte what they were. On success calls resetSceneState, loads, and leaves the history clean.
+[[nodiscard]] SceneOpenOutcome openSceneText(CommandContext& context, CommandStack& commands, std::string_view text);
+// nullopt only when !sceneIoAvailable().
+[[nodiscard]] std::optional<std::string> sceneToText(const World& world);
 
 }  // namespace engine::editor
