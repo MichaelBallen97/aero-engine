@@ -1556,14 +1556,3 @@ rows of its own, and it will keep being skipped until it is scheduled as work in
 dialogs but not under a sanitizer build, so sabotage seeds **S15** (the dangling `SCENE_FILTERS` array)
 and **S16** (the `Ticket` use-after-free) still have no proof on any platform; they are ASan aborts
 reachable only by a human running the Debug preset with those seeds present.
-
-**Records relocated (2026-07-31).** `editor/VALIDATION.md` and everything under `editor/validation/` were
-untracked from git (`git rm --cached`, files kept on disk) and gitignored alongside `docs/plans/` and
-`docs/specs/`. They remain the place a human pass is recorded, but **a fresh clone will not have them**,
-and the references to them in this log, in `CLAUDE.md`, in `.claude/rules/editor.md` and in comments
-across a few editor sources and tests now point at maintainer-local files. Nothing in CI, CMake or any
-test read them — verified before untracking — so the build is unaffected.
-`samples/phase-0-cube/VALIDATION.md` and `samples/phase-1-scene/VALIDATION.md` stay **tracked**: those
-record the Phase 0 and Phase 1 gates, which are still open on Windows and Linux. Consequence worth
-stating plainly: **`CLAUDE.md`'s state block is now the only tracked record of editor validation status**,
-so it has to be updated whenever a pass lands, not just the local page.

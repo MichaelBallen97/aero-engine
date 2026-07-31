@@ -26,15 +26,8 @@ desktop.ini
 .claude/settings.local.json
 .claude/agents/
 
-# ---- Planning docs (specs & plans) — kept local-only, never on the remote ----
 docs/plans/
 docs/specs/
 
-# ---- Editor human-validation records — kept local-only, never on the remote ----
-# The per-task human mouse/keyboard passes. Untracked 2026-07-31; the files still live on the
-# maintainer's machine and are still where a pass is recorded, they are simply not published.
-# NOTE: samples/phase-0-cube/VALIDATION.md and samples/phase-1-scene/VALIDATION.md are deliberately
-# NOT covered here — the Phase 0 and Phase 1 gate records stay tracked. That is why these patterns are
-# anchored to editor/ rather than written as a bare VALIDATION.md.
 editor/VALIDATION.md
 editor/validation/
