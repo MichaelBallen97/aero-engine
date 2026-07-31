@@ -24,9 +24,9 @@
 #include <aero/editor/entity_commands.hpp>  // task 2.4.2
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_registry.hpp>
-#include <aero/editor/picking.hpp>        // task 2.3.2
-#include <aero/editor/scene_bounds.hpp>   // task 2.3.1
-#include <aero/editor/scene_session.hpp>  // task 2.5.1
+#include <aero/editor/picking.hpp>       // task 2.3.2
+#include <aero/editor/scene_bounds.hpp>  // task 2.3.1
+#include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2
 #include <aero/editor/transform_command.hpp>  // task 2.4.1

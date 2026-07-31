@@ -197,12 +197,12 @@ target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
 
-# task 2.5.1, step 3: the round-trip cases need engine/scene_serialize, which does not EXIST with the
-# tool off (F9). The TARGET stays ungated -- only this ONE TU is conditional -- so the reflect-OFF
-# configuration still builds and runs every serialization-free case in scene_session_test.cpp above.
-# This TU names NO scene_serialize type: everything it calls lives in aero_editor_core, so the link
-# line and the include directories above are both unchanged, and no add_test is registered (ctest -N
-# stays 94/5/18, AC-35).
+# task 2.5.1, step 3: the round-trip cases need the engine's generated component serializers, which
+# do not EXIST with the tool off (F9). The TARGET stays ungated -- only this ONE TU is conditional --
+# so the reflect-OFF configuration still builds and runs every serialization-free case in
+# scene_session_test.cpp above. This TU names no serialization type directly: everything it calls
+# lives in aero_editor_core, so the link line and the include directories above are both unchanged,
+# and no new ctest entry is registered (ctest -N stays 94/5/18, AC-35).
 if(AERO_REFLECT_TOOLS)
     target_sources(aero_editor_shell_test PRIVATE editor/scene_io_test.cpp)
 endif()
