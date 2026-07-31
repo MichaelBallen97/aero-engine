@@ -1015,12 +1015,26 @@ needs a mirror case in the OTHER order before it is trusted, not after.**
 
 **2.5.1 ships the whole File menu — New Scene, Open Scene…, Save Scene, Save Scene As… — all live, plus
 the unsaved-changes guard over New/Open/quit and a window title showing the document name and its dirty
-state.** It ships in eight code-bearing commits (§S Steps 1–8) plus five small follow-up commits found
-during verification and one documentation commit, fourteen in total. **Corrected from this entry's own
-original claim of "thirteen"** — found by the 2026-07-31 code-review round (finding 9b): the branch has
-fourteen commits, and the uncounted one is `412639c`, the build-break fix for a commit
-(`fba58b3`) that did not compile (`shell_ui.hpp` dropped `ShellUiState::quitRequested` while
-`editor_app.cpp` still read it) — see that round's own entry below. The whole file-flow state machine
+state.** As merged, the task is **seventeen commits** on `main` (measured with
+`git log --oneline --no-merges 90c95a0..main`, not counted by hand): eight code-bearing (§S Steps 1–8),
+four small follow-up commits found during verification, one documentation commit, and four more from the
+2026-07-31 code-review round.
+
+**This count has been wrong twice, in opposite directions, and the history it describes was rewritten
+before merge — so read it carefully.** The entry originally claimed "thirteen"; the code-review round
+(finding 9b) corrected it to fourteen, having spotted that the uncounted one was `412639c`, a build-break
+fix for `fba58b3`, which did not compile (`shell_ui.hpp` dropped `ShellUiState::quitRequested` while
+`editor_app.cpp` still read it). **That fix commit no longer exists.** Before merge it was folded back
+into `fba58b3` with a non-interactive rebase (`GIT_SEQUENCE_EDITOR`, since `git rebase -i` is unavailable
+in the agent environment), so every commit on `main` builds and `git bisect` across this range returns
+test verdicts rather than compile errors — which is the entire reason this project mandates a merge
+commit over a squash. The rewrite was verified three ways before force-pushing: commit count 18 → 17,
+`git diff` between the pre-rebase backup tag and the rewritten HEAD **empty** (tree byte-identical, only
+history changed), and the rewritten commit (`3ef893c`) **checked out and built**, exit 0 — a grep that
+the symbol mismatch was gone would not have been proof. **The lesson worth carrying: a per-step commit
+history is only bisectable if each step actually compiles, and the ordinary way that breaks is a partial
+`git add`** — the edit that keeps a commit consistent sitting unstaged in the working tree while its
+sibling is committed. `git status --short` immediately after each commit is what catches it. The whole file-flow state machine
 (menu → guard → modal → native dialog → atomic write/read) lives as free functions in two ImGui-free,
 SDL-free TUs (`scene_session.{hpp,cpp}`), which is what makes almost the entire transition table tier-0
 testable with no window and no GPU — the plan's own §A13/§A14 structural decision, taken as given rather
@@ -1507,10 +1521,49 @@ baseline of **4** (not the plan's assumed 3 — `editor_reflection.cpp:10`'s own
 pre-existing, not introduced by this task). Local lint was run with the keg-only Homebrew LLVM 18 before
 every commit boundary (`clang-format-18 --dry-run --Werror`, `SDKROOT=$(xcrun --sdk macosx15.4
 --show-sdk-path) clang-tidy-18 -p build/macos-debug --warnings-as-errors='*'`), both clean throughout. See
-the Part 1 entry above for the full per-step build, the thirteen-commit rundown (nine code-bearing plus
-four verification-driven fix commits plus one documentation commit), the traps (INV-6, S1/S5's stronger
+the Part 1 entry above for the full per-step build, the commit rundown (**seventeen as merged**, after
+`412639c` was folded back into `fba58b3` pre-merge — the arithmetic there has been wrong twice and is now
+measured, not counted), the traps (INV-6, S1/S5's stronger
 symptoms, S23's exposed gap, the missed-file commit, the recurring prose/grep-token collision), and the
 full §V4 sabotage matrix — **all twenty-three seeds run and confirmed, all three mandatory second-order
 checks (S1, S4, S10) run, §V4 discharged**, with the plan's own summary undercounting its predicted
 non-discriminating/human-only count by three (nine measured, not six) and one seed (S23) exposing a real,
 previously unwritten test case now closed.
+
+**2.5.1 macOS human validation — PASS 20/20 applicable (2026-07-31).** Twenty of the twenty-two rows are
+applicable on macOS and all twenty pass, closing every ⚠ row this platform can reach: the parented native
+Save panel with its pre-filled name, the Open panel starting in the scene's own folder, the held `Ctrl+S`
+writing exactly once (AC-3 — no test tier can hold a key), the File items greying while a dialog is open,
+the D11 chain (Open → modal → Save → **native** Cancel → the Open is abandoned and nothing is lost), and
+the atomic write surviving a force-quit with the original intact and no `.aero-tmp` beside it (the only
+proof of temp-then-rename anywhere, since seed S6 measured non-discriminating at tier-0). Two rows carry
+weight nothing else in this tree does. **Row 14** — Esc dismisses the modal as Cancel — is the *only*
+evidence that AC-27 works: ImGui cannot deliver it (`NavUpdateCancelRequest`'s popup branch excludes
+`ImGuiWindowFlags_Modal` at `imgui.cpp:15031`, `BeginPopupModal` always sets that flag at
+`imgui.cpp:13232`, and the editor never enables `ImGuiConfigFlags_NavEnableKeyboard` at
+`imgui_layer.cpp:79`), so the check is hand-bound at `shell_ui.cpp:212` and **nothing in CI would notice
+its removal**. **Row 15** — move the Cube, delete it, New Scene (Don't Save), `⌘Z` `⌘Z`, and nothing
+happens — is the INV-6 ghost-entity trap confirmed end to end, which is the whole reason
+`resetSceneState` clears the `CommandStack` in the same operation that clears the `World`.
+
+**Three things stay open despite the pass, and none of them should be read as closed.** Row 20 is
+**Linux-only** by nature (a box with neither XDG portal nor zenity). Row 22 — re-run 2.2.5's four BLOCKED
+rows against this task's INFO/WARN sources — was **not performed**, so 2.2.5 stays macOS-PARTIAL at 11/15;
+**this is the second consecutive task (after 2.4.2) whose row 22 carried that clause and left it
+undone**, which is a pattern rather than an accident: the clause keeps riding on a task that has twenty
+rows of its own, and it will keep being skipped until it is scheduled as work in its own right. And
+**AC-38's "including a run that opens and closes a dialog" half is unevidenced** — the pass exercised
+dialogs but not under a sanitizer build, so sabotage seeds **S15** (the dangling `SCENE_FILTERS` array)
+and **S16** (the `Ticket` use-after-free) still have no proof on any platform; they are ASan aborts
+reachable only by a human running the Debug preset with those seeds present.
+
+**Records relocated (2026-07-31).** `editor/VALIDATION.md` and everything under `editor/validation/` were
+untracked from git (`git rm --cached`, files kept on disk) and gitignored alongside `docs/plans/` and
+`docs/specs/`. They remain the place a human pass is recorded, but **a fresh clone will not have them**,
+and the references to them in this log, in `CLAUDE.md`, in `.claude/rules/editor.md` and in comments
+across a few editor sources and tests now point at maintainer-local files. Nothing in CI, CMake or any
+test read them — verified before untracking — so the build is unaffected.
+`samples/phase-0-cube/VALIDATION.md` and `samples/phase-1-scene/VALIDATION.md` stay **tracked**: those
+record the Phase 0 and Phase 1 gates, which are still open on Windows and Linux. Consequence worth
+stating plainly: **`CLAUDE.md`'s state block is now the only tracked record of editor validation status**,
+so it has to be updated whenever a pass lands, not just the local page.
