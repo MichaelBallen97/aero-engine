@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "name": "non-finite",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": -0,
+            "y": null,
+            "z": null
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "float extremes",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 1e-07,
+            "y": 0.33333334,
+            "z": -0.1
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 3.4028235e+38,
+            "y": 1.1754944e-38,
+            "z": 0.1
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "name": "quote\" backslash\\ tab\t newline\n control\u0001 end",
+      "components": {
+        "engine::PointLight": {
+          "color": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "intensity": 0,
+          "range": 1e-07
+        }
+      }
+    },
+    {
+      "id": 4,
+      "name": "café ✓ 🚀"
+    }
+  ]
+}

@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "name": "camera",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 2.5,
+            "z": 6
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::Camera": {
+          "fovYRadians": 1.0471976,
+          "nearPlane": 0.1,
+          "farPlane": 100
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "ground",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 8,
+            "y": 1,
+            "z": 8
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 2,
+          "color": {
+            "x": 0.5,
+            "y": 0.5,
+            "z": 0.55
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "name": "prop",
+      "parent": 2,
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": -1.5,
+            "y": 0.5,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 0,
+          "color": {
+            "x": 0.85,
+            "y": 0.35,
+            "z": 0.3
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "name": "prop",
+      "parent": 3,
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 1,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 0.5,
+            "y": 0.5,
+            "z": 0.5
+          }
+        }
+      }
+    },
+    {
+      "id": 5
+    },
+    {
+      "id": 6,
+      "name": "lights",
+      "components": {
+        "engine::DirectionalLight": {
+          "color": {
+            "x": 1,
+            "y": 0.96,
+            "z": 0.9
+          },
+          "intensity": 0.9
+        },
+        "engine::PointLight": {
+          "color": {
+            "x": 0.6,
+            "y": 0.8,
+            "z": 1
+          },
+          "intensity": 1,
+          "range": 12
+        }
+      }
+    },
+    {
+      "id": 7,
+      "name": "forward child",
+      "parent": 8
+    },
+    {
+      "id": 8,
+      "name": "late parent",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": -4
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      }
+    }
+  ]
+}
