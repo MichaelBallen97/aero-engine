@@ -439,6 +439,92 @@ TEST_CASE("scene_io: D13's refusal -- appending the extension never overwrites s
     CHECK(session.path() == bareName);
 }
 
+TEST_CASE("scene_io: openSceneFile logs exactly one INFO and zero WARN on a clean load (IO15/AC-14/D21)") {
+    // Finding 4 of the 2.5.1 code-review round: AC-14's INFO and WARN records were asserted NOWHERE --
+    // IO11 (which drives openSceneFile through a real file) installs no LogSinkScope at all, IO6 calls
+    // openSceneText directly (which by design never logs), and IO14 counts ERRORs only. This closes the
+    // gap for the clean-load half: exactly one INFO, zero WARN.
+    using engine::editor::openSceneFile;
+    using engine::editor::saveSceneFile;
+
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const std::string path = dir.join("level1.scene.json");
+
+    engine::World seedWorld;
+    engine::editor::seedDefaultScene(seedWorld);
+    Selection seedSelection;
+    RootOrder seedRoots;
+    CommandStack seedCommands;
+    CommandContext seedCtx{seedWorld, seedSelection, seedRoots};  // a PRVALUE cannot bind to
+                                                                  // saveSceneFile's CommandContext&
+    engine::editor::SceneSession seedSession;
+    REQUIRE(saveSceneFile(seedCtx, seedCommands, seedSession, path, /*appendExtension=*/false));
+
+    engine::World world;
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    scope.sink()->take(records);
+    records.clear();
+
+    REQUIRE(openSceneFile(ctx, commands, session, path));
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+}
+
+TEST_CASE(
+    "scene_io: openSceneFile logs one INFO AND at least one WARN when a component is skipped "
+    "(IO16/AC-14/D21)") {
+    using engine::editor::openSceneFile;
+    using engine::editor::writeTextFileAtomic;
+
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const std::string path = dir.join("mystery.scene.json");
+    const std::string unknownComponent = R"({
+  "version": 1,
+  "entities": [
+    { "id": 1, "name": "mystery", "components": { "not::a::real::Component": {} } }
+  ]
+})";
+    REQUIRE(writeTextFileAtomic(path, unknownComponent).empty());
+
+    engine::World world;
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    scope.sink()->take(records);
+    records.clear();
+
+    REQUIRE(openSceneFile(ctx, commands, session, path));
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);
+    // Measured, not assumed: TWO WARNs, not one -- `engine::scene_serialize` itself already logs its
+    // own WARN per skipped component ("scene: unknown component type ... skipped",
+    // scene_serialize.cpp:109), and scene_session.cpp's D21 arm adds ONE MORE, aggregate WARN on top
+    // ("scene '...' loaded with N skipped and M failed components") whenever skipped + failed > 0.
+    // This scene has exactly one unknown component, so 1 (the loader's own) + 1 (D21's aggregate) == 2.
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 2);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+}
+
 TEST_CASE("scene_io: a malformed file through the flow changes nothing (IO14/AC-11/AC-12)") {
     using engine::editor::openSceneFile;
     using engine::editor::writeTextFileAtomic;

@@ -1885,11 +1885,21 @@ TEST_CASE("editor: requestNewScene on a clean app produces the seed contents thr
         *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
     REQUIRE(app.has_value());
 
+    // Finding 3 of the 2.5.1 code-review round: with `seedDefaultScene = true`, every assertion below
+    // already held BEFORE `requestNewScene()` ran at all, so a no-op `requestNewScene()` (the same
+    // defect class self-corrected for IO5 in 1ad4c93) would leave this case green. A DIRECT World
+    // mutation (never through CommandStack::push()) keeps the document CLEAN, so the guard still
+    // performs immediately (Perform, not Confirm) -- and gives requestNewScene() something real to
+    // discard.
+    const engine::Entity probe = engine::editor::createEntity(app->world(), {}, "Probe");
+    REQUIRE(probe.valid());
+    REQUIRE(app->world().entityCount() == 4);
+
     app->requestNewScene();  // clean at create() -- nothing pushed to the stack yet
     REQUIRE(app->tick());
     CHECK(app->presentedLastFrame());
 
-    CHECK(app->world().entityCount() == 3);
+    CHECK(app->world().entityCount() == 3);  // NOT 4 -- "Probe" is gone; discriminates the no-op
     std::vector<std::string> names;
     app->world().eachEntity([&](engine::Entity e) { names.emplace_back(app->world().name(e)); });
     std::sort(names.begin(), names.end());
