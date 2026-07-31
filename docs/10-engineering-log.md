@@ -1233,6 +1233,184 @@ is corrected here rather than silently edited away.
   measured gate output — in `editor/validation/2.5.1-save-load-new-from-editor.md`'s own new
   "The 2026-07-31 code-review round" section.
 
+#### Task 2.5.2 — Scene round-trip golden test — CLOSES Epic 2.5
+
+**2.5.2 turns serialization stability into a CI fact.** Three committed scene fixtures under
+`tests/fixtures/scenes/` — `empty` (37 bytes), `full` (3244 bytes, 8 entities / 10 components) and
+`edge` (1328 bytes, 4 entities / 3 components) — plus **two** byte-comparison batteries that run on
+all three lanes: an engine battery (`tests/scene_serialize_test.cpp`, G1–G10, text → `World` → text,
+no disk) and an editor battery (`tests/editor/scene_golden_test.cpp`, EG1–EG8, file → `World` → file
+through 2.5.1's real `openSceneFile`/`saveSceneFile` pair). Neither is a new ctest entry; both ride
+existing targets, so `ctest -N` stays **94 / 5 / 18**. **`engine/`, `runtime/` and `tools/` are all
+byte-identical** — and this is the **first task in the project with an empty `editor/` diff as well**
+(the whole task lands in `tests/` plus `.gitattributes` and docs). Five commits.
+
+**The trap the whole design exists for — S12, run in full.** A load→save byte comparison is
+*self-consistent under a mutual bug*: `loadScene` was made to stop reading `parent`
+(`scene_serialize.cpp:132`) and `saveWorld` was made to stop emitting it
+(`scene_format.cpp:378-381`) at the same time, the Release archives were rebuilt, and
+`full.scene.json` was **regenerated from the seeded build** (the realistic version of the seed — a
+developer who introduced the bug and then "fixed the stale golden" would do exactly this). Measured:
+the regenerated fixture is **3187 bytes** (not 3244) with **zero** `"parent"` keys.
+**G2's byte comparison then PASSES** — the fixture and the seeded writer agree with each other, which
+is the entire point of D0 — while **G5 and G6 both go red**: G5's `forwardParent`/`grandParented`
+counts drop to 0, and every `world.parent(...)` assertion in G6 fails. Reverting both source hunks
+and the regenerated fixture restores green. If G5/G6 had not shipped, this task would have shipped a
+rubber stamp.
+
+**Sabotage: all 19 of 19 seeds run, plus all 3 mandatory second-order checks — every one confirmed
+landed before trusting a verdict, every one reverted and reconfirmed green.** S7 and S19 are
+Windows-lane-only by construction and **not dischargeable on this machine**; both were run anyway and
+confirmed a genuine no-op on macOS (94/94 stayed green with the seed applied), recorded as
+*"confirmed no-op, not a pass"* rather than as passes. Full predicted-vs-measured table lives in the
+plan (`docs/plans/2.5.2-scene-round-trip-golden-test.md` §V4); the summary below is what was actually
+observed, not what was predicted, per this project's standing rule.
+
+**Six findings from the sabotage pass, none of them cosmetic.**
+
+(i) **A whole class of seed cannot redden G5/G5b/G6/G7/G8 — a WRITER-only bug is invisible to any
+case that reads the committed fixture bytes or a freshly-loaded `World` without re-deriving them.**
+Measured directly, repeatedly: S3 (swap two `BUILTINS` entries), S4 (drop the name assign), S5 (drop
+`parent`'s `+ 1`), S6 (sort components alphabetically), S8 (shorten `to_chars`' precision) and S9
+(non-finite → `"0"` instead of `null`) each reddened only the cases that **re-derive bytes and
+compare them** (G1–G4, G9, G10, the editor's EG3–EG5/EG7) — never G5, G5b, G6, G7 or G8, which parse
+the fixture straight off disk or read values a correct `loadScene` already produced correctly. The
+plan's own per-seed table named G5–G8 as expected discriminators for several of these seeds; that
+prediction does not hold. The design is still sound — S11 (break the *loader's* `setParent` call)
+and S12 (the mutual bug) both prove G5/G6/G7 catch exactly what they were built to catch, on the
+load side and the load+save side — but six individual seed-row predictions in the plan's table
+named the wrong catcher for a writer-only defect, and that asymmetry is worth carrying forward
+explicitly rather than re-deriving it from scratch next time.
+
+(ii) **S16 has zero coverage from this task's own new tests.** None of the three golden fixtures is
+malformed, so `openSceneFile`'s `!outcome.ok` branch — the one S16 breaks — is never exercised by
+EG1–EG8 at all; the plan predicted EG2 would also redden, and it does not. The sole detector anywhere
+in the tree is the pre-existing `scene_io_test.cpp` case IO14, which supplies its own malformed
+input. This is not a defect in 2.5.2 — a golden fixture is by definition well-formed — but it is a
+real gap between the plan's prediction and what the new battery actually contributes for this seed.
+
+(iii) **S17 discriminates nowhere the plan predicted.** Both EG3's `CHECK(ed.commands.isClean())` and
+the pre-existing IO11's identical assertion start from a stack that was never dirtied between open
+and save, so `isClean()` reads true whether or not `commands.setClean()` ran — neither catches the
+missing call. The only detector anywhere in the tree is `aero_editor_imgui_test`'s pre-existing case
+I14, in a different binary entirely, which performs a real edit before saving.
+
+(iv) **`git diff` cannot see a CRLF seed (S13).** Under `.gitattributes`' `text=auto eol=lf` git
+normalizes the working-tree copy before diffing, so seeding a fixture with carriage returns produces
+an **empty `git diff`** and only a stderr warning; `xxd`/`grep -c $'\r'` are the only proof the seed
+landed. `hygieneComplaint` breaks with mandatory second-order check 3 confirmed both S13 and S14 are
+still caught by the raw byte comparison (G2/G3) with an opaque `"golden mismatch at byte offset …"`
+message instead of the friendly *"carriage return at offset 1"* / *"UTF-8 BOM at offset 0"* one — the
+hygiene check adds diagnosis, not detection, exactly as designed.
+
+(v) **`aero_scene_serialize_test`'s measured case count is 23, not the plan's predicted 22.** G5b
+(`edge.scene.json`'s lexical-corner richness case) is a distinct `TEST_CASE`, not folded into "G5" as
+the plan's "+6 for G5–G10" arithmetic assumed — the family is seven physical cases (G5, G5b, G6, G7,
+G8, G9, G10), giving 16 → **23**. Every count elsewhere in this entry uses the measured figure.
+
+(vi) **Two self-inflicted "the comment names the policed token" near-misses, both caught and fixed
+before committing.** The editor TU's header comment named `tests/scene_serialize_test.cpp` verbatim,
+which joined 2.5.1's confinement-grep roster (`git grep -ln "scene_serialize" -- editor/src/
+tests/editor/`, baseline **two** files) — reworded to describe the sibling battery without the
+literal substring, roster back to two. Separately, an explanatory comment in `tests/CMakeLists.txt`
+reading *"No add_test: ctest -N stays 94/5/18"* made AC-21's own `git diff … | grep -E
+'add_test|find_package|target_link_libraries'` gate non-empty — a real false positive from prose, not
+a real `add_test` call — reworded to drop the substring. Both are new instances of the class of trap
+2.5.1's log names four times; this task adds two more to the tally, both closed.
+
+**A mechanical bug found while writing the editor battery, fixed WRONGLY at first, and corrected in
+the code-review round.** EG6 (log-count per open) loops over three fixtures with a single `records`
+vector declared outside the loop. `LogSink::take()` asserts its argument is empty **and then swaps**
+(`console_model.cpp:231-234`), so on the second iteration `records` still held the first iteration's
+haul and the drain aborted. The first fix inverted the two lines to `clear(); take();` — which
+removes the cross-iteration abort but **inverts the house idiom** (`take(); clear();`, used four
+times in `scene_io_test.cpp` at `:393-394`, `:424-425`, `:474-475`, `:512-513`) and leaves a worse
+bug in its place: `take()` swaps the pre-open drain INTO `records` and nothing removes it, so the
+second `take()` asserts against a non-empty vector. In Debug that aborts all 304 cases; in Release
+`NDEBUG` compiles the assert out and the residue is silently **counted**, failing the INFO/WARN/ERROR
+checks for a reason unrelated to `openSceneFile`. The correct fix, applied in the review round, is
+loop-scoped `records` **plus** the house take-then-clear order: the first restores the iteration
+boundary, the second discards the drain. Neither alone is sufficient. **The idiom is take-then-clear
+— do not "tidy" it back.**
+
+**The code-review round (2026-07-31): six findings, one blocking, all fixed on the same branch.**
+The implementation pass's own claim that the work was ready to merge was wrong — the same mistake
+2.5.1's implementation pass made, and worth recording twice for that reason.
+
+1. **BLOCKING — EG6's inverted log drain**, above. The only finding that could redden or abort CI.
+2. **An unguarded index that could abort instead of failing.** G5's grandparent walk indexes
+   `doc.entities[rec.parent - 1U]`, which is in range only because ids are contiguous `1..N`. That
+   precondition was a `CHECK` (reports and continues) sitting in a *different* loop from the index,
+   and `parseScene` guarantees only that a parent matches **some** record's id
+   (`scene_format.cpp:202-205`), never that it is `<= size()`. A hand-edited or future
+   persistent-id fixture would therefore read past the end of the vector: an ASan
+   heap-buffer-overflow abort on both Debug lanes, silent UB in Release — in exactly the scenario the
+   pin exists to diagnose. Promoted to `REQUIRE`.
+3. **Three assertions that could not fail.** EG2's `isClean()`/`count() == 0` and EG3's `isClean()`
+   ran against an `EditorFixture` constructed fresh inside the loop, so the stack was *already* clean
+   before the operation under test — they would pass with the clearing removed entirely. This is the
+   precise vacuity failure the whole task exists to forbid, shipped inside it. EG2 now dirties the
+   stack first (the `scene_io_test.cpp:383-391` idiom), which makes AC-15's "history is clean" clause
+   real. EG3's was **deleted** rather than fixed: dirtying the stack means mutating the World, and
+   EG3's entire purpose is that the saved bytes still equal the fixture's, so the assertion cannot be
+   made discriminating there at all. The property is owned by the IO cases and by `I14`.
+4. **`.gitattributes` did not cover one of the four files the batteries compare.** `*.scene.json`
+   does **not** match `samples/phase-1-scene/scene.json` (verified with `git check-attr`: it fell
+   through to the blanket `text: auto`), yet G9 byte-compares that file. The explicit rule's own
+   stated rationale was false for it. Given its own line.
+5. **`CLAUDE.md`'s new prose broke the roster grep** — a seventh instance of the "comment names the
+   policed token" trap. Its state block is one physical line, so the literal fixture path landed
+   beside the words "write" and "rename". Reworded to name the directory in prose only.
+6. **This log described the EG6 fix backwards**, teaching a future reader the inverse of the house
+   idiom. Rewritten above.
+
+Findings 2 and 3 are the ones worth internalising: a golden-test task shipped both an out-of-bounds
+read in its own diagnostic path *and* three vacuous assertions. Neither would ever have reddened CI,
+which is exactly why neither the implementation pass nor its own sabotage matrix caught them — a seed
+proves a test *can* fail, never that an assertion *does* anything.
+
+**What deliberately did not ship.** No regeneration mechanism of any kind. No new ctest entry. No fix
+for the destroy-reordering (G10; a format-level decision, unowned). **And no human validation rows:
+2.5.2 adds no UI, no menu item, no panel and no keystroke, so there is nothing for a human to click.**
+It is recorded as *mechanical only* in `editor/VALIDATION.md` (local-only, gitignored since `035882e`
+— see below) so an absent page is not read as a pending gate — and, deliberately, it does **not**
+carry a row re-running 2.2.5's four BLOCKED log-panel rows. That clause has now been written into
+three consecutive tasks (2.4.2, 2.5.1, 2.5.2) and performed by none of them; attaching it to a task
+with *zero* other human rows would be the worst version yet. It needs a session of its own.
+
+**Two spec corrections found at the tree, recorded rather than silently absorbed (both in the plan's
+own §A, reconfirmed here).** The spec's AC-27 asks for an `editor/VALIDATION.md` row as a committed
+deliverable, but that file and `editor/validation/` were **untracked and gitignored** by `035882e`
+the same day the spec was written — the edit is made and is real
+(`git status --porcelain --ignored -- editor/VALIDATION.md editor/validation/` shows both `!!`), but
+it appears in no commit and no CI run. And the spec's AC-7 grep (`bless|update[_-]?golden|…`) is
+**already non-empty at HEAD** by four pre-existing prose uses of the English word, so it can never be
+a gate; it was replaced by three greps that are (an `AERO_GOLDEN` roster, a `fixtures/scenes` roster,
+a scoped `getenv`/`$ENV{}` scan) plus a stability check that the bare-`bless` count stays at 4 — all
+four reconfirmed here. One further correction found only during this pass: the `fixtures/scenes`
+roster grep matches the **literal substring**, and the two new `.cpp` files reference the
+`AERO_GOLDEN_SCENES_DIR` **macro**, not that literal path text — so the roster reads **one** file
+(`tests/CMakeLists.txt`), not the three the plan's own §V7 predicted. INV-1's actual property (nothing
+writes a fixture) still holds and is proven by the separate `ofstream|write|remove|rename` grep,
+which stays empty either way.
+
+**Inventory, measured at every commit boundary.** `ctest -N` **94 → 94** (tools ON), **5 → 5**,
+**18 → 18** — no new `add_test`. `aero_scene_serialize_test` **12 → 16 → 23** (G1–G4, then
+G5/G5b/G6/G7/G8/G9/G10 — seven physical cases, not six; see finding v). `aero_editor_shell_test`
+**296 → 304** (EG1–EG8), and **280 → 280** in `build/reflect-off-2.5.2`, where
+`scene_golden_test.cpp` is confirmed **absent from the build** (no `.o`, no `add_test`, no
+`aero_scene_serialize_test*` binary at all), not skipped. `aero_tests` unchanged at **363**;
+`aero_editor_imgui_test` at **41**; `aero_editor_inspector_test` at **22**. `check-math-boundary.sh`
+**232 → 233 → 234** (+`tests/scene_golden_support.hpp` at the Step-2 boundary,
++`tests/editor/scene_golden_test.cpp` at the Step-4 boundary; the three `.json` fixtures never move
+it — `EXTS` is C-family only). All five guards green with no allowlist change. Both macOS presets
+green at every commit boundary, Debug and Release, with and without `AERO_REQUIRE_GPU=1`;
+clang-format and clang-tidy clean on all three touched/new C-family files
+(`tests/scene_golden_support.hpp`, `tests/scene_serialize_test.cpp`,
+`tests/editor/scene_golden_test.cpp`) — one clang-format pass was needed after hand-authoring
+(comment/vector-literal alignment and one splice-safe hex-escape line), accepted as ordinary
+formatting, not a finding; **zero new `NOLINT`** against a `tests/` baseline of 9 (still 9 after).
+
 ---
 
 # Part 2 — Build & dependency impact ledger

@@ -3,6 +3,16 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
+# Golden scene fixtures are compared BYTE-FOR-BYTE by tests/scene_serialize_test.cpp and
+# tests/editor/scene_golden_test.cpp (task 2.5.2). The blanket `* text=auto eol=lf` above already
+# covers them; this line is explicit so narrowing that rule cannot silently break the comparison on
+# Windows, where a CRLF checkout would make every fixture fail with a hygiene complaint.
+*.scene.json text eol=lf
+# The phase-1 sample is byte-compared too (G9, AC-13) but is named `scene.json`, which `*.scene.json`
+# does NOT match -- verified with `git check-attr text eol`. It needs its own line for the sentence
+# above to be true of every file the batteries compare.
+samples/phase-1-scene/scene.json text eol=lf
+
 # Binary asset types (extended as asset work lands in Phase 3+)
 *.png binary
 *.jpg binary

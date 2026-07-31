@@ -205,6 +205,23 @@ add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
 # and no new ctest entry is registered (ctest -N stays 94/5/18, AC-35).
 if(AERO_REFLECT_TOOLS)
     target_sources(aero_editor_shell_test PRIVATE editor/scene_io_test.cpp)
+    # task 2.5.2: the EDITOR half of the golden battery -- the same three fixtures driven through
+    # 2.5.1's real openSceneFile/saveSceneFile disk path. Same gate as scene_io_test.cpp above and for
+    # the same reason (2.5.1 F9): the generated component serializers do not EXIST with the tool off,
+    # so this TU is ABSENT from that build rather than skipped -- prove it with --list-test-cases,
+    # which must read 280 there and 304 here, not 304 in both.
+    #
+    # Like scene_io_test.cpp this TU names no engine serialization type directly: every symbol it
+    # calls lives in aero_editor_core. So the LINK LINE above is unchanged; the only additions are the
+    # two fixture-locating definitions and the tests/ include root for scene_golden_support.hpp (the
+    # aero_editor_imgui_test precedent at :106). AERO_GOLDEN_OUT_DIR differs from the engine
+    # battery's on purpose -- `ctest -j` runs both targets concurrently (spec D13). No new ctest
+    # entry is registered here: ctest -N stays 94/5/18.
+    target_sources(aero_editor_shell_test PRIVATE editor/scene_golden_test.cpp)
+    target_compile_definitions(aero_editor_shell_test PRIVATE
+        AERO_GOLDEN_SCENES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/scenes"
+        AERO_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden/editor")
+    target_include_directories(aero_editor_shell_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 # ---------------------------------------------------------------------------------------------
@@ -451,6 +468,23 @@ if(AERO_REFLECT_TOOLS)
                                                              aero::reflect aero::core)
     target_compile_definitions(aero_scene_serialize_test PRIVATE
         AERO_PHASE1_SCENE_DIR="${CMAKE_SOURCE_DIR}/samples/phase-1-scene")  # locates the committed file (test 9)
+
+    # task 2.5.2: the golden fixtures reach the ENGINE battery. AERO_GOLDEN_SCENES_DIR is NOT
+    # optional -- scene_serialize_test.cpp's new G1-G10 use it with no #ifdef guard (spec D8), so a
+    # missing definition is a COMPILE error and a missing fixture file is a REQUIRE failure. Neither
+    # can silently skip, which is the same failure mode as a regeneration flag. The pre-existing
+    # AERO_PHASE1_SCENE_DIR line above and its #ifdef consumer at scene_serialize_test.cpp:314 are
+    # left ALONE: that guard is acceptable for an OPTIONAL sample and this task does not touch it.
+    # AERO_GOLDEN_OUT_DIR is a per-battery failure-dump root -- `ctest -j` runs this target and
+    # aero_editor_shell_test concurrently, and neither may write where the other reads (D13).
+    # The include dir is for tests/scene_golden_support.hpp; the aero_editor_imgui_test precedent is
+    # at :106. This target is NOT a boundary probe, so R12's "exactly one aero:: entry" rule does not
+    # apply to it and NO link line changes -- <filesystem> needs no link library, and aero::core
+    # (already on the line) has used it since engine/core/src/vfs.cpp.
+    target_compile_definitions(aero_scene_serialize_test PRIVATE
+        AERO_GOLDEN_SCENES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/scenes"
+        AERO_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden/engine")
+    target_include_directories(aero_scene_serialize_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME aero_scene_serialize_test COMMAND aero_scene_serialize_test)
 
     # --- task 2.2.2: the inspector's tier-0 battery + the zero-per-component-code proof (D18) ---
