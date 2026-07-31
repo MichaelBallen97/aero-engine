@@ -15,8 +15,11 @@
 #include <aero/scene/world.hpp>
 #include <aero/scene_serialize/scene_serialize.hpp>
 
+#include "scene_golden_support.hpp"
+
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -75,6 +78,50 @@ std::vector<Entity> collectEntities(const World& world) {
     std::vector<Entity> out;
     world.eachEntity([&out](Entity e) { out.push_back(e); });
     return out;
+}
+
+// ---- task 2.5.2: the golden fixtures ---------------------------------------------------------
+// THESE THREE FILES ARE CONTENT PINS. Nothing in this repository regenerates them: no environment
+// variable, no CMake option, no target, no script. If a deliberate format change makes one stale,
+// the fix is to regenerate it BY HAND with the recipe recorded in docs/10's 2.5.2 entry, review the
+// resulting diff AS a format change, and update docs/09 in the SAME commit. A fixture edit that
+// arrives without a matching change to docs/09, engine/reflect/, engine/scene_serialize/ or
+// tools/reflect-gen/ is a defect being made permanent (INV-2).
+//
+// Bytes are NECESSARY and NEVER SUFFICIENT. G5-G7 assert structure and semantics alongside them,
+// because a load/save pair that BOTH stopped handling `parent` would pass a byte comparison the
+// moment anyone regenerated the fixture. Removing those cases to "simplify" reopens that hole; S12
+// in the task's sabotage matrix is the seed that proves it.
+constexpr std::string_view GOLDEN_EMPTY = AERO_GOLDEN_SCENES_DIR "/empty.scene.json";
+constexpr std::string_view GOLDEN_FULL = AERO_GOLDEN_SCENES_DIR "/full.scene.json";
+constexpr std::string_view GOLDEN_EDGE = AERO_GOLDEN_SCENES_DIR "/edge.scene.json";
+constexpr std::string_view PHASE1_SAMPLE = AERO_PHASE1_SCENE_DIR "/scene.json";
+
+// The exact bytes the pre-existing "empty World" case already pins programmatically. Having BOTH
+// means a writer change accompanied by a "helpfully" regenerated fixture still reddens here.
+constexpr std::string_view EMPTY_DOCUMENT = "{\n  \"version\": 1,\n  \"entities\": []\n}\n";
+
+// edge.scene.json's two exotic names, as BYTES. Written with \x escapes rather than glyphs because
+// this task is a byte comparison and an escape is source-charset-independent by construction (the
+// tree sets no /utf-8 flag anywhere, so MSVC reads this file in the active code page). They spell:
+//   ESCAPED_NAME : quote" backslash\ tab<TAB> newline<LF> control<0x01> end          (44 bytes)
+//   UTF8_NAME    : c a f e-acute SP check-mark SP rocket -- 2-, 3- and 4-byte UTF-8  (14 bytes)
+// EVERY hex escape below is terminated by a backslash or a non-hex character. "a\x01b" would be ONE
+// byte (0x1b, with 'b' swallowed as a hex digit) -- never write one without checking what follows.
+constexpr std::string_view ESCAPED_NAME = "quote\" backslash\\ tab\t newline\n control\x01 end";
+constexpr std::string_view UTF8_NAME = "caf\xC3\xA9 \xE2\x9C\x93 \xF0\x9F\x9A\x80";
+
+// Loads a fixture, asserts hygiene and a clean parse, and hands back the parsed document. REQUIREs
+// on every failure -- a golden that can skip itself is the same failure mode as a regeneration flag.
+[[nodiscard]] SceneDocument requireGolden(std::string_view path, std::string& bytesOut) {
+    const scene_golden::FileBytes file = scene_golden::readBytes(path);
+    REQUIRE_MESSAGE(file.ok, file.error);
+    const std::string hygiene = scene_golden::hygieneComplaint(file.text);
+    CHECK_MESSAGE(hygiene.empty(), hygiene);
+    SceneParseResult parsed = parseScene(file.text);
+    REQUIRE_MESSAGE(parsed.document.has_value(), parsed.error.message);
+    bytesOut = file.text;
+    return std::move(*parsed.document);
 }
 
 }  // namespace
@@ -443,4 +490,95 @@ TEST_CASE("scene_serialize: a named World is byte-exactly idempotent (2.2.1 AC-7
     CHECK(b.name(es[1]) == std::string_view{"Child With A Long Name"});
     CHECK(b.name(es[2]).empty());
     CHECK(b.parent(es[1]) == es[0]);  // hierarchy still round-trips
+}
+
+// ================================================================================================
+// task 2.5.2 -- the golden battery. G1-G4: the byte comparison itself.
+// ================================================================================================
+
+TEST_CASE("scene_golden: empty.scene.json is a byte-exact fixpoint (G1/AC-1/AC-2/AC-3/AC-6/AC-8)") {
+    std::string bytes;
+    const SceneDocument doc = requireGolden(GOLDEN_EMPTY, bytes);
+    CHECK(doc.entities.empty());
+
+    World world;
+    const SceneLoadReport report = loadScene(world, doc);
+    CHECK(report.entitiesCreated == 0);
+    CHECK(report.componentsAttached == 0);
+    CHECK(report.componentsSkipped == 0);
+    CHECK(report.componentsFailed == 0);
+
+    const std::string actual = saveWorldText(world);
+    INFO(scene_golden::describeMismatch(bytes, actual));
+    if (actual != bytes) {
+        scene_golden::dumpActual(AERO_GOLDEN_OUT_DIR, "empty", actual);
+    }
+    CHECK(actual == bytes);
+    CHECK(bytes == EMPTY_DOCUMENT);
+}
+
+TEST_CASE("scene_golden: full.scene.json is a byte-exact fixpoint (G2/AC-1/AC-2/AC-3/AC-8)") {
+    std::string bytes;
+    const SceneDocument doc = requireGolden(GOLDEN_FULL, bytes);
+
+    World world;
+    const SceneLoadReport report = loadScene(world, doc);
+    CHECK(report.entitiesCreated == 8);
+    CHECK(report.componentsAttached == 10);
+    CHECK(report.componentsSkipped == 0);  // non-zero here means the fixture named a type this build
+    CHECK(report.componentsFailed == 0);   // cannot resolve -- i.e. the fixture degraded (E2)
+
+    const std::string actual = saveWorldText(world);
+    INFO(scene_golden::describeMismatch(bytes, actual));
+    if (actual != bytes) {
+        scene_golden::dumpActual(AERO_GOLDEN_OUT_DIR, "full", actual);
+    }
+    CHECK(actual == bytes);
+}
+
+TEST_CASE("scene_golden: edge.scene.json is a byte-exact fixpoint (G3/AC-1/AC-2/AC-3/AC-8)") {
+    // If exactly THIS case reddens and G2 does not, suspect a std::to_chars divergence between
+    // standard libraries -- every exponent-form lexeme in the tree's fixtures lives in this one file
+    // by construction (spec D2/D4). The fix goes into engine/reflect/src/json_writer.cpp's
+    // value(float), NEVER into the fixture: a scene file whose bytes depend on which OS saved it
+    // would make every cross-platform diff of a scene noise, which is the property docs/09 promises
+    // and this battery exists to lock.
+    std::string bytes;
+    const SceneDocument doc = requireGolden(GOLDEN_EDGE, bytes);
+
+    World world;
+    const SceneLoadReport report = loadScene(world, doc);
+    CHECK(report.entitiesCreated == 4);
+    CHECK(report.componentsAttached == 3);
+    CHECK(report.componentsSkipped == 0);
+    CHECK(report.componentsFailed == 0);
+
+    const std::string actual = saveWorldText(world);
+    INFO(scene_golden::describeMismatch(bytes, actual));
+    if (actual != bytes) {
+        scene_golden::dumpActual(AERO_GOLDEN_OUT_DIR, "edge", actual);
+    }
+    CHECK(actual == bytes);
+}
+
+TEST_CASE("scene_golden: every fixture converges on a second cycle (G4/AC-2)") {
+    // A first cycle proving equality is not convergence: a writer that alternated between two forms
+    // would pass G1-G3 on one of them and fail here.
+    for (const std::string_view path : {GOLDEN_EMPTY, GOLDEN_FULL, GOLDEN_EDGE}) {
+        INFO(std::string{path});
+        const scene_golden::FileBytes file = scene_golden::readBytes(path);
+        REQUIRE_MESSAGE(file.ok, file.error);
+
+        World first;
+        REQUIRE_FALSE(loadSceneText(first, file.text).error.has_value());
+        const std::string cycle1 = saveWorldText(first);
+
+        World second;
+        REQUIRE_FALSE(loadSceneText(second, cycle1).error.has_value());
+        const std::string cycle2 = saveWorldText(second);
+
+        INFO(scene_golden::describeMismatch(cycle1, cycle2));
+        CHECK(cycle1 == file.text);
+        CHECK(cycle2 == cycle1);
+    }
 }
