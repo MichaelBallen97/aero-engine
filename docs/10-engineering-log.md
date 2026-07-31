@@ -1015,8 +1015,12 @@ needs a mirror case in the OTHER order before it is trusted, not after.**
 
 **2.5.1 ships the whole File menu — New Scene, Open Scene…, Save Scene, Save Scene As… — all live, plus
 the unsaved-changes guard over New/Open/quit and a window title showing the document name and its dirty
-state.** It ships in eight code-bearing commits (§S Steps 1–8) plus four small follow-up commits found
-during verification and one documentation commit, thirteen in total. The whole file-flow state machine
+state.** It ships in eight code-bearing commits (§S Steps 1–8) plus five small follow-up commits found
+during verification and one documentation commit, fourteen in total. **Corrected from this entry's own
+original claim of "thirteen"** — found by the 2026-07-31 code-review round (finding 9b): the branch has
+fourteen commits, and the uncounted one is `412639c`, the build-break fix for a commit
+(`fba58b3`) that did not compile (`shell_ui.hpp` dropped `ShellUiState::quitRequested` while
+`editor_app.cpp` still read it) — see that round's own entry below. The whole file-flow state machine
 (menu → guard → modal → native dialog → atomic write/read) lives as free functions in two ImGui-free,
 SDL-free TUs (`scene_session.{hpp,cpp}`), which is what makes almost the entire transition table tier-0
 testable with no window and no GPU — the plan's own §A13/§A14 structural decision, taken as given rather
@@ -1154,8 +1158,66 @@ GPU cases fall back to a `sceneIoAvailable()` guard there and stay green with on
 in Step 8, had never been run against a tools-OFF configuration and initially failed there with four
 concrete `CHECK`/`REQUIRE` failures — fixed by the guard, not by weakening the assertions). Both macOS
 presets green at every commit boundary, Debug and Release, with and without `AERO_REQUIRE_GPU=1`;
-clang-format and clang-tidy clean on every one of the thirteen touched files; **zero new `NOLINT`**
-against the corrected baseline of 4 (not the plan's assumed 3).
+clang-format and clang-tidy clean on every one of the thirteen touched files (this "thirteen" counts
+distinct touched *files*, not commits — unaffected by finding 9b below, which is about the commit
+count only); **zero new `NOLINT`** against the corrected baseline of 4 (not the plan's assumed 3).
+
+**The 2026-07-31 code-review round — nine findings, two blocking, all fixed on the same branch.**
+This entry's own original text claimed "no code-review round needed"; that claim was itself wrong, and
+is corrected here rather than silently edited away.
+
+- **BLOCKING 1.** `flow.requestedPath` was read as the `AskWhereToSave` step's OWN save target, but it
+  is also where a *deferred* Open/SaveSceneAs request's own path lives while the unsaved-changes modal
+  is up — two different things sharing one field. Concrete data loss: dirty + untitled document,
+  `requestOpenScene(path)` (guard raises `Confirm`, `pending = OpenScene`, `requestedPath = path`), user
+  answers **Save** on the modal → the current scene was written **over** `path`, then the code tried to
+  open the file it had just destroyed. A second half: no abandon path (Cancel, the dialog-in-flight
+  swallow, `applyDialogResult`'s failed/cancelled returns) ever cleared the field, so it could also
+  survive to hijack a **later, unrelated** Save As with no dialog and no overwrite prompt. **Fixed** by
+  removing the `AskWhereToSave` arms' read of `requestedPath` entirely (no hook in this tree ever
+  populates it for that purpose) and adding `flow.requestedPath.clear()` to every abandon/defer path —
+  Cancel, the `WriteNow` write-failure branch (an extra site found while fixing this, same root cause,
+  beyond the review's own three named locations), the `AskWhereToSave` no-channel abandon, the
+  dialog/modal swallow, and both of `applyDialogResult`'s early returns. New tests: SS31, SS32, SS33 in
+  `scene_session_test.cpp`. **Seed-back:** reintroducing the exact original `AskWhereToSave` branch
+  reddens SS31 alone, the whole 296-entry suite otherwise green — proved present with `git diff` first,
+  reverted, rebuilt green.
+- **BLOCKING 2.** Nothing gated a File request on `flow.confirmOpen` — only `flow.dialog` was checked,
+  in both `shell_ui.cpp`'s `fileEnabled` and `scene_session.cpp`'s swallow guard. The unsaved-changes
+  modal being up (with no *native* dialog yet in flight) did not stop a chord from reaching
+  `AskWhereToSave` and launching a **second**, native Save dialog on top of the still-open ImGui modal —
+  verified against the vendored ImGui 1.92.8 source: `CalcRoutingScore` (`imgui.cpp:10326`) grants
+  `ImGuiInputFlags_RouteGlobal` with no modal test at all. **Fixed** by widening both gates to
+  `flow.dialog != DialogKind::None || flow.confirmOpen`. New test: SS27b. **Seed-back:** dropping the
+  `confirmOpen` disjunct reddens SS27b alone (4 assertion failures inside that one case), whole suite
+  otherwise green — proved present with `git diff` first, reverted, rebuilt green.
+- **Seven should-fix findings**, all fixed: (3) `imgui_layer_test.cpp`'s I12 could not fail if
+  `requestNewScene()` were a no-op (the identical defect class self-corrected for IO5 in `1ad4c93`) —
+  fixed with a direct World mutation before the request, seed-verified (2 assertions redden under
+  `AERO_REQUIRE_GPU=1`, reverted); (4) AC-14's INFO/WARN were asserted nowhere — closed by two new
+  `scene_io_test.cpp` cases, IO15/IO16, which measured (not assumed) that a skipped component produces
+  **two** WARNs, not one — `engine::scene_serialize` logs its own per-component WARN independently of
+  `scene_session.cpp`'s D21 aggregate WARN; (5) SS28 did not discriminate the ordering it is named for
+  (its only arm produced an identical end state either order) — closed by SS28b, using `Cancel` instead
+  of `Discard`; (6) SS27 asserted only `entityCount()`/`pending`, both green even with the swallow guard
+  removed — strengthened to assert `quitConfirmed` and count E4's one INFO under a `LogSinkScope`;
+  (7) commit `fba58b3` did not compile, fixed by `412639c` (see above) — left to the developer's
+  separate history-handling pass, no further code change here; (8) `shell_ui.cpp`'s `ioTooltip(io)`
+  showed the wrong reason (`io` folds in `fileEnabled`, so a true `AERO_REFLECT_TOOLS` claim could be
+  false while a dialog/modal was active) — fixed to `ioTooltip(sceneIoAvailable())` at all three call
+  sites, per the plan's own §S 7b; no test tier reaches this ImGui-drawn line, human validation only;
+  (9) two doc numbers were wrong (274 → **275** measured reflect-OFF case count; "thirteen" → **fourteen**
+  commits) and this entry's own "no code-review round needed" claim was wrong — all corrected above and
+  in this section.
+- **Full local gate re-measured green after every fix**, not assumed from the implementation pass:
+  `ctest -N` unchanged at **94/5/18**; both macOS presets, Debug + Release, with and without
+  `AERO_REQUIRE_GPU=1`; `aero_editor_shell_test --list-test-cases` now **296** (default) / **280**
+  (`build/reflect-off-2.5.1`); all five guards green with no allowlist change; clang-format and
+  clang-tidy clean on all five touched files (`editor/src/scene_session.cpp`, `editor/src/shell_ui.cpp`,
+  `tests/editor/imgui_layer_test.cpp`, `tests/editor/scene_io_test.cpp`,
+  `tests/editor/scene_session_test.cpp`). Full detail — findings, fixes, both seed-back proofs, the
+  measured gate output — in `editor/validation/2.5.1-save-load-new-from-editor.md`'s own new
+  "The 2026-07-31 code-review round" section.
 
 ---
 
@@ -1412,8 +1474,10 @@ imgui_layer_test.cpp` gains one include and six new GPU-gated cases on its exist
 | grep -E 'add_test|find_package'` returning empty. `ctest -N` reads **94** (tools ON), **5** (both tools
 OFF, `build/tools-off-2.5.1`) and **18** (reflect OFF alone, `build/reflect-off-2.5.1`) at every one of
 the nine code-bearing commit boundaries — all three configurations measured, none assumed, and the
-reflect-OFF figure is AC-6/E21's actual proof: `scene_session_test.cpp` runs and passes there (274 of its
-own cases, `--list-test-cases`), `scene_io_test.cpp` is confirmed **absent** (no object file, no matching
+reflect-OFF figure is AC-6/E21's actual proof: `scene_session_test.cpp` runs and passes there (**275** of
+its own cases, `--list-test-cases` — corrected from this entry's own original claim of 274, an arithmetic
+error found by the 2026-07-31 code-review round: 289 total minus IO1–IO14's 14 cases is 275),
+`scene_io_test.cpp` is confirmed **absent** (no object file, no matching
 string anywhere under the build tree, not merely skipped), and the four new I12–I17 GPU cases in
 `imgui_layer_test.cpp` fall back to a `sceneIoAvailable()` guard rather than failing. `check-math-boundary.
 sh` is the only guard that sees this task's diff at all; its scanned count moved **224 → 232**, exactly
