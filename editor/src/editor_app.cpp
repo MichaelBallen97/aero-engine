@@ -204,10 +204,8 @@ bool EditorApp::tick() {
     }
 
     layer.beginFrame();
-    ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
-                    .quitRequested = false,
-                    .undoRequested = undoRequested,
-                    .redoRequested = redoRequested};
+    ShellUiState ui{
+        .applyDefaultLayout = applyDefaultLayout, .undoRequested = undoRequested, .redoRequested = redoRequested};
     // Consumed: a request never survives the tick that carried it. Unlike applyDefaultLayout below,
     // these are NOT read back out of `ui` -- drawShellUi clears them as it applies them, and reading
     // them back would re-arm the request every frame (task 2.4.1).
@@ -232,10 +230,9 @@ bool EditorApp::tick() {
         viewportPanel->renderScene(sceneWorld);
     }
     presented = layer.endFrame(config.clearColor);
-    if (ui.quitRequested || fileFlow.quitConfirmed) {
-        // File>Exit / Ctrl+Q (still the OLD, unguarded ui.quitRequested until step 7 rewires the menu)
-        // / the guarded window [X] path (fileFlow.quitConfirmed, task 2.5.1 D1): this frame still
-        // completed either way, so Render stays balanced (AC-28).
+    if (fileFlow.quitConfirmed) {
+        // File > Exit / Ctrl+Q / the window [X] -- all AFTER the guard said yes (task 2.5.1 D1). This
+        // frame still completed, so Render stays balanced (AC-28).
         running = false;
     }
     AERO_PROFILE_FRAME_MARK;

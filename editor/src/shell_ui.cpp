@@ -5,6 +5,7 @@
 
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/panel.hpp>
+#include <aero/editor/scene_session.hpp>
 
 #include <array>
 #include <cstddef>
@@ -22,26 +23,38 @@ namespace engine::editor {
 
 namespace {
 
-// One disabled stub item + its "owned by task N" tooltip (D5). A disabled MenuItem can never return
-// true, so there is no unimplemented handler behind it.
-void menuItemStub(const char* label, const char* shortcut, const char* owningTask) {
-    ImGui::MenuItem(label, shortcut, false, /*enabled=*/false);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("%s", owningTask);  // e.g. "Not implemented yet — task 2.5.1"
-    }
-}
-
 // SCREAMING_SNAKE and file-scope, NOT a `constexpr` local named historyFlags: .clang-tidy's
 // readability-identifier-naming.ConstexprVariableCase is UPPER_CASE and applies to LOCALS too, so the
 // camelBack spelling fails --warnings-as-errors on the Linux lane (the same class of trap as 2.3.3's
 // `const bool using_`, which failed VariableCase: camelBack). File scope because both chords share it.
 constexpr ImGuiInputFlags HISTORY_SHORTCUT_FLAGS = ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat;
 
-void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& state) {
+// The File menu's own shortcut flags. RouteGlobal, exactly like Ctrl+Q/Ctrl+Z above -- a focused
+// InputText must be able to win them back. NO Repeat, UNLIKE the history chords (AC-3): holding
+// Ctrl+S must write ONCE, not once per frame. ImGuiMod_Ctrl already maps to Cmd on macOS
+// automatically (F8) -- no platform-conditional compilation appears anywhere in this file.
+constexpr ImGuiInputFlags FILE_SHORTCUT_FLAGS = ImGuiInputFlags_RouteGlobal;
+
+// D18/AC-6. Called after EACH of the three tools-gated items -- a single trailing call would only
+// ever tooltip the LAST one, because IsItemHovered answers about the PREVIOUS item only. That is the
+// shape the now-deleted disabled-stub helper already got right, and the same trap
+// viewport_panel.cpp:539 records.
+void ioTooltip(bool available) {
+    if (!available && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Scene I/O needs AERO_REFLECT_TOOLS");
+    }
+}
+
+void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& state, FileMenuContext& fileMenu) {
     // Editor shortcuts go through ImGui's routing, NEVER ctx.input() (D7/E9): a focused InputText
     // must be able to swallow the chord. ImGuiMod_Ctrl is Cmd on macOS automatically (F8).
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, ImGuiInputFlags_RouteGlobal)) {
-        state.quitRequested = true;
+    //
+    // D8/AC-5: `fileEnabled` gates every File chord AND every File menu item below -- while a native
+    // dialog is in flight, the whole menu behaves as disabled at the input layer too, not only
+    // visually.
+    const bool fileEnabled = fileMenu.flow.dialog == DialogKind::None;
+    if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, FILE_SHORTCUT_FLAGS)) {
+        fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
     }
 
     // Task 2.4.1. RouteGlobal, exactly like Ctrl+Q above -- which is what makes a focused InputText
@@ -62,17 +75,46 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // Ctrl+Y is DELIBERATELY NOT bound (D13): ImGuiMod_Ctrl is Cmd on macOS, so a global Ctrl+Y would
     // bind ⌘Y, which is redo on no platform. InputText keeps its own local Ctrl+Y and is unaffected.
 
+    // The three I/O chords additionally require sceneIoAvailable() (D18/AC-6) -- New Scene does not,
+    // because it needs no serialization at all.
+    const bool io = fileEnabled && sceneIoAvailable();
+    if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N, FILE_SHORTCUT_FLAGS)) {
+        fileMenu.flow.requested = FileAction::NewScene;
+    }
+    if (io && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, FILE_SHORTCUT_FLAGS)) {
+        fileMenu.flow.requested = FileAction::OpenScene;
+    }
+    if (io && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, FILE_SHORTCUT_FLAGS)) {
+        fileMenu.flow.requested = FileAction::SaveScene;
+    }
+    if (io && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, FILE_SHORTCUT_FLAGS)) {
+        fileMenu.flow.requested = FileAction::SaveSceneAs;
+    }
+
     if (!ImGui::BeginMainMenuBar()) {
         return;  // F7: End only when Begin returned true
     }
     if (ImGui::BeginMenu("File")) {
-        menuItemStub("New Scene", "Ctrl+N", "Not implemented yet — task 2.5.1");
-        menuItemStub("Open Scene...", "Ctrl+O", "Not implemented yet — task 2.5.1");
-        menuItemStub("Save Scene", "Ctrl+S", "Not implemented yet — task 2.5.1");
-        menuItemStub("Save Scene As...", "Ctrl+Shift+S", "Not implemented yet — task 2.5.1");
+        if (ImGui::MenuItem("New Scene", "Ctrl+N", false, fileEnabled)) {
+            fileMenu.flow.requested = FileAction::NewScene;
+        }
+        if (ImGui::MenuItem("Open Scene...", "Ctrl+O", false, io)) {
+            fileMenu.flow.requested = FileAction::OpenScene;
+        }
+        ioTooltip(io);
+        // AC-4: nothing to write when the document is clean AND has a path.
+        const bool canSave = io && (!context.commands.isClean() || fileMenu.session.untitled());
+        if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, canSave)) {
+            fileMenu.flow.requested = FileAction::SaveScene;
+        }
+        ioTooltip(io);
+        if (ImGui::MenuItem("Save Scene As...", "Ctrl+Shift+S", false, io)) {
+            fileMenu.flow.requested = FileAction::SaveSceneAs;
+        }
+        ioTooltip(io);
         ImGui::Separator();
-        if (ImGui::MenuItem("Exit", "Ctrl+Q")) {
-            state.quitRequested = true;
+        if (ImGui::MenuItem("Exit", "Ctrl+Q", false, fileEnabled)) {
+            fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
         }
         ImGui::EndMenu();
     }
@@ -117,9 +159,68 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
 }
 
 // The shortcut labels above are DISPLAY STRINGS ONLY -- MenuItem's `shortcut` argument draws text and
-// binds nothing. The only live bindings are the THREE explicit ImGui::Shortcut calls at the top of
-// drawMenuBar (Ctrl+Q, Ctrl+Z, Ctrl+Shift+Z); the File-menu stubs deliberately bind nothing, so Ctrl+S
-// does nothing until 2.5.1 wires it.
+// binds nothing. The live bindings are the seven explicit chord registrations at the top of
+// drawMenuBar (Ctrl+Q, Ctrl+Z, Ctrl+Shift+Z, Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S) -- every File menu
+// item and chord is now LIVE; no disabled stub remains anywhere in the editor (G5).
+
+// The unsaved-changes confirmation modal. A file-local static, drawn in the SAME slot as
+// applyHistoryRequests below -- after drawMenuBar returned (EndMainMenuBar has run, so the ID stack
+// is clean and OpenPopup is legal, F13) and before the dockspace/panel walk.
+constexpr const char* UNSAVED_MODAL_ID = "Unsaved Changes###aero_unsaved";
+// The ### form makes the ID stable even though the visible label never changes -- ImHashStr restarts
+// the hash at "###" (imgui.cpp:2539-2545), so IsPopupOpen and BeginPopupModal agree by construction.
+
+void drawUnsavedChangesModal(FileMenuContext& fileMenu) {
+    if (fileMenu.flow.confirmOpen && !ImGui::IsPopupOpen(UNSAVED_MODAL_ID)) {
+        ImGui::OpenPopup(UNSAVED_MODAL_ID);
+    }
+    if (!fileMenu.flow.confirmOpen) {
+        return;
+    }
+    // F13: EndPopup ONLY when BeginPopupModal returned true -- the BeginMenu family, not the Begin one.
+    if (ImGui::BeginPopupModal(UNSAVED_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const std::string name = fileMenu.session.documentName();  // built only while the modal is up
+        ImGui::Text("Save changes to \"%s\"?", name.c_str());      // %s, NEVER name.c_str() bare -- a
+                                                                   // document name containing '%'
+                                                                   // would otherwise be a format bug
+        ImGui::TextDisabled("Your changes will be lost if you don't save them.");
+        ImGui::Separator();
+        if (ImGui::Button("Save")) {
+            fileMenu.flow.choice = ConfirmChoice::Save;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SetItemDefaultFocus();  // Enter == Save
+        ImGui::SameLine();
+        if (ImGui::Button("Don't Save")) {
+            fileMenu.flow.choice = ConfirmChoice::Discard;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            fileMenu.flow.choice = ConfirmChoice::Cancel;
+            ImGui::CloseCurrentPopup();
+        }
+        // ImGui CANNOT dismiss a MODAL with Escape: NavUpdateCancelRequest's popup branch excludes
+        // ImGuiWindowFlags_Modal (imgui.cpp:15032) and BeginPopupModal always sets it (imgui.cpp:13232)
+        // -- and the editor does not enable ImGuiConfigFlags_NavEnableKeyboard at all
+        // (imgui_layer.cpp:79), so that path is doubly dead. Esc is the universal DISMISS key
+        // (.claude/rules/editor.md), so we bind it OURSELVES, HERE, inside the body -- repeat=false,
+        // one press = one Cancel. Deliberately NOT the global-route chord mechanism used above: the
+        // editor-chord rule exists so a focused InputText can win a chord back, but a modal already
+        // blocks every other window, and a global Escape route would also fire on the frames the
+        // modal is NOT up.
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            fileMenu.flow.choice = ConfirmChoice::Cancel;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    } else {
+        // A SAFETY NET, not the Esc mechanism above: in 1.92.8 the only thing that can reach here is a
+        // PROGRAMMATIC close, because a modal also swallows outside clicks. Treating it as Cancel keeps
+        // the flow from wedging with confirmOpen stuck true.
+        fileMenu.flow.choice = ConfirmChoice::Cancel;
+    }
+}
 
 // Applied HERE -- after drawMenuBar returned (EndMainMenuBar has run) and BEFORE the dockspace and the
 // panel walk. That is the precondition .claude/rules/editor.md's "never mutate the World during a draw
@@ -239,9 +340,7 @@ void buildDefaultLayout(ImGuiID dockId, PanelRegistry& panels) {
 
 }  // namespace
 
-void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& state, FileMenuContext& /*fileMenu*/) {
-    // task 2.5.1 step 6: the parameter exists so editor_app.cpp's call site and this signature agree;
-    // the File menu itself (menu items, chords, the modal, applyFileRequests) is wired in step 7.
+void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& state, FileMenuContext& fileMenu) {
     // Task 2.3.3 (D17): FIRST, before anything else submits a window. This call is MANDATORY, not
     // optional: gContext.mbOverGizmoHotspot is reset in exactly ONE place in the whole library
     // (ImGuizmo.cpp:1016, inside BeginFrame), and every operation handler does
@@ -258,9 +357,21 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // byte-identical for eight tasks) because THIS is the ImGui frame-composition TU.
     ImGuizmo::BeginFrame();
 
-    drawMenuBar(panels, context, state);   // reserves the viewport work area (F9) and is where Reset
-                                           // Layout can still affect THIS frame -- the first REAL
-                                           // window, after the transparent, NoInputs "gizmo" window
+    drawMenuBar(panels, context, state, fileMenu);  // reserves the viewport work area (F9) and is
+                                                    // where Reset Layout can still affect THIS frame
+                                                    // -- the first REAL window, after the
+                                                    // transparent, NoInputs "gizmo" window
+    drawUnsavedChangesModal(fileMenu);              // may set fileMenu.flow.choice
+    {
+        // applyFileRequests runs BEFORE applyHistoryRequests, on purpose (plan A32/E22): if one frame
+        // carries both a scene swap and an undo request, the undo must be evaluated against the stack
+        // that exists AFTER the swap -- which, being freshly cleared, has nothing to undo and takes
+        // the ordinary "nothing to undo" path rather than driving a command against the wrong World.
+        // toCommandContext's return is a PRVALUE and push()/undo()/redo() take CommandContext&, so the
+        // named local `cmd` is mandatory (2.4.2 §A10's rule).
+        CommandContext cmd = toCommandContext(context);
+        applyFileRequests(cmd, context.commands, fileMenu.session, fileMenu.flow, fileMenu.dialogs);
+    }
     applyHistoryRequests(context, state);  // task 2.4.1, D19/AC-21
     const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
     if (state.applyDefaultLayout) {

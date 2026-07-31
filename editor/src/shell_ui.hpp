@@ -10,11 +10,10 @@ namespace engine::editor {
 struct ShellUiState {
     bool applyDefaultLayout = false;  // in: build the default layout this frame; out: cleared once
                                       // consumed, or re-set to true by View > Reset Layout
-    // task 2.5.1 step 6/7 (plan A10/A15): still written by the OLD, unguarded Ctrl+Q / File > Exit
-    // paths through Step 6's gate -- Step 7 reroutes both through FileAction::Quit (FileMenuContext's
-    // flow) and DELETES this field outright, since nothing would write it any more and a field
-    // nobody writes is a trap. The confirmed OUTPUT of a GUARDED quit is FileFlow::quitConfirmed.
-    bool quitRequested = false;
+    // `quitRequested` is DELETED (task 2.5.1, plan A10/A15): after D1, both Ctrl+Q and File > Exit
+    // are FileAction::Quit, routed through FileMenuContext's flow -- nothing writes this field any
+    // more, and a field nobody writes is a trap. The confirmed OUTPUT of a GUARDED quit is
+    // FileFlow::quitConfirmed.
     // Task 2.4.1. IN: seeded by EditorApp::requestUndo()/requestRedo() (D11); also set INSIDE
     // drawShellUi by Ctrl+Z / Ctrl+Shift+Z and by the Edit menu items. Cleared the moment they are
     // applied, in the SAME drawShellUi call (D19) -- unlike applyDefaultLayout these are NEVER read
