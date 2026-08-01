@@ -1411,6 +1411,144 @@ clang-format and clang-tidy clean on all three touched/new C-family files
 (comment/vector-literal alignment and one splice-safe hex-escape line), accepted as ordinary
 formatting, not a finding; **zero new `NOLINT`** against a `tests/` baseline of 9 (still 9 after).
 
+#### Task 2.6.1 — `project.json` + create/open flow — OPENS Epic 2.6
+
+**2.6.1 gives the editor a project, not just a scene.** `project.json` v1 (5 root keys in a fixed
+order, `paths.assets`/`paths.scenes` nested) with a pure parse/write/validate half
+(`editor/src/project.cpp`) and a `<filesystem>`-and-SDL half (`editor/src/project_file.cpp`) that
+scaffolds a project on disk, loads one, and maintains a versioned `recent_projects.json`. A New
+Project modal and a Welcome window (shown iff no project is open) both route through the *existing*
+unsaved-changes guard — `FileAction::NewProject`/`OpenProject` join `NewScene`/`OpenScene`/`Quit` in
+`discardsWork`, the **single** pure-function-body change this task makes (D1). `adoptProject` is the
+sole call site of `ProjectSession::set()` (INV-P1) and always calls `newScene` first (INV-6), so a
+project swap can never leave a stale World/Selection/RootOrder/CommandStack behind — the identical
+invariant 2.5.1 established for a scene swap, applied one layer up. The Asset Browser's root is kept
+in sync by a **reconcile, never push** comparison inside `EditorApp::tick()` (D10): one
+`std::string` comparison per frame, not a second write path the swap itself could half-perform. Nine
+feature commits, `docs/09-file-formats.md` §4 documents the format.
+
+**`engine/` diff is empty (AC-36) — this task needed no engine change at all**, the identical property
+2.5.1 established for scene I/O, now true of the project layer too. Both `project.hpp` and
+`project.cpp` are free of every build gate (D4/AC-35/INV-P5): the project flow reads and writes no
+scene, so it never touches the engine's serialization bridge, which is why `project_test.cpp`'s 53
+cases are present and passing in **all three** build configurations — unlike 2.5.1's/2.5.2's editor
+test TUs, which are absent from the reflect-OFF build by design.
+
+**Inventory, measured at every one of the nine commit boundaries, not once at the end.**
+`aero_editor_shell_test` **304 → 327 → 337 → 346 → 357 → 356 → 356** (Step 2's 23 project cases,
+Step 3's +10, Step 4's PG1-PG9 golden battery +9, Step 5's +11, Step 6's −1 for the deleted
+`resolveProjectRoot` case, Step 7 unchanged, Step 8 unchanged) — **356 at HEAD**;
+`aero_editor_imgui_test` **41 → 46** (Step 8's I18/I21–I24, exactly the plan's own predicted +5).
+`ctest -N` unchanged at **94** throughout. `check-math-boundary.sh` **239 → 241** (Step 7's
+`project_ui.hpp`/`project_ui.cpp`, its only movement). Both tools-OFF configurations verified from
+scratch: `build/tools-off-2.6.1` **5/5**, `build/reflect-off-2.6.1` **18/18**, both reading **332**
+`aero_editor_shell_test` cases including all 53 `project:`-prefixed ones — the project format rides
+no build gate at all, confirmed directly rather than assumed.
+
+**Three self-referential comment traps found and fixed during implementation, the same standing
+class §A26/2.5.2's log already names three times over.** A comment saying "the `EditorApp::create(`
+count" collided with its own §V7 grep; a comment spelling `restoreLastProject = false` inside a
+paragraph explaining that every literal below sets it collided with the count-equality grep counting
+that exact literal; a comment in `project_file.cpp` reading "No `remove_all`, no rollback" collided
+with INV-P4's own grep for that identifier. All three reworded without repeating the policed token;
+no gate was weakened.
+
+**A real implementation bug found and fixed before any commit: `parseProject`'s unknown-key sweep
+was two separate loops, not one.** The first draft collected root-level unknowns and `paths`-nested
+unknowns in two passes, producing `{"author", "editorLayout", "prefabs"}` for the golden
+`unknown-keys.project.json` fixture — wrong order. Cross-checked against the golden battery's own
+expected order `{"prefabs", "author", "editorLayout"}` (§4.1/§4.7's document-order rule) and rewritten
+as a single depth-first walk that collects a `paths`-nested unknown at the position `paths` itself
+occupies among the root members. Found during Step 2's implementation, before the first commit — not
+a sabotage finding, a genuine pre-commit bug.
+
+**A second real bug found and fixed during Step 5: `project.flow.requestedPath` wasn't cleared
+alongside `flow.requestedPath` on every abandoning path** — the same BLOCKING-1 leak class 2.5.1's
+code-review round found for the scene flow's own `requestedPath`, recurring one layer up because the
+project flow duplicates the same field shape. Fixed by adding `project.flow.requestedPath.clear()` at
+the five places `flow.requestedPath.clear()` already runs.
+
+**Sabotage: all 22 seeds run, plus all 3 mandatory second-order checks (S1, S9, S11) — every one
+confirmed landed with `git diff` (or `git check-attr`/regenerated-fixture inspection for the two
+data-only seeds) before trusting a verdict, every one reverted and reconfirmed green.** Full
+predicted-vs-measured table lives in `editor/validation/2.6.1-project-json-create-open-flow.md`
+(local-only); the findings below are the ones worth carrying forward.
+
+**Two seeds proved *completely undetected* by the whole suite — a real coverage gap, not a
+non-discriminating-by-construction result like S6/S20/S21.**
+
+(i) **S11 (a `remove_all` rollback added to the `WriteFailed` branch) reddens nothing — 100% pass,
+94/94, both default and `AERO_REQUIRE_GPU=1`.** The `WriteFailed` branch of `createProject` is
+structurally unreachable by any test in the tree: the plan's own suggested seeding recipe (pre-create
+`project.json` or `project.json.aero-tmp` inside the target) was tried first and measured to trip
+step 3's `TargetNotEmpty` gate before step 4 ever runs — any pre-existing entry, whatever its name,
+makes the adoption check see a non-empty directory. The nearest reachable proof of D7/INV-P4 is
+`CreateFailed` at the "assets" step (case 30, via a chmod'd read-only target), which this seed does
+not touch at all. D7/INV-P4's "nothing removed" property is therefore **completely unproven for the
+`WriteFailed` branch specifically** — carried forward as an open item, not fixed here (fixing it would
+mean inventing a new way to reach that branch, a design question, not a one-line change).
+
+(ii) **S15 (`create()` reads recents even when `restoreLastProject == false`) reddens nothing — 100%
+pass, both tiers.** I24 only asserts `projectIsOpen()`/`projectRoot()`, both gated by whether recents
+is *used* (a separate, unaffected `if (resolved.empty() && config.restoreLastProject)` check), never
+by whether recents is *read*. `app.recents` has no public accessor, so no test can observe the read
+itself. A real accessor gap, not a false alarm from this task's own tests.
+
+**Four seeds deviated from their table prediction by under-catching — a case named in the plan does
+not actually discriminate the seed.** S5 (`promoteRecent` appends instead of prepending): only case
+19 reddens, not the recents-count case the table also named, because that case's single
+`promoteRecent` call cannot distinguish append-vs-prepend order with one element. S12
+(`discardsWork` omits `NewProject`): only the tier-0 case reddens; the GPU-gated I22 the table also
+named tests `OpenProject`, not `NewProject`, so it is untouched by this specific seed. S14
+(`EditorApp::tick` drops the Asset Browser reconcile): only I21 reddens; I18's panel is born with the
+correct root at *construction*, so the reconcile the table also named is a no-op for that scenario
+and never runs before I18's own assertion. S10 (`createProject` writes the manifest before creating
+the directories): the table's own case 26 only checks final end-state, never call order, so a
+reordering that still succeeds end-to-end passes it silently — the only actual discriminator is case
+30, and via a different assertion than predicted (`CreateProblem::WriteFailed != CreateProblem::
+CreateFailed`, not the file-lands-in-a-missing-directory mechanism the table described).
+
+**One seed over-caught (collateral beyond the named case, a stronger result).** S17
+(`projectRootFromPath` fails to strip `project.json`) reddens the named case **and** `loadProjectFrom
+reads, validates and reports`, a call site that passes a `project.json` path directly and inherits the
+break.
+
+**S9 (the mutual bug, 2.5.2's S12 re-proven for this format) confirmed the design, with two nuances
+the table's summary line did not capture.** Both halves of `parseProject`/`writeProjectText` were
+made to stop handling `paths.scenes`, `minimal.project.json` was regenerated from the seeded build
+(128 bytes, down from 152), and the whole suite was run before any revert. Before regenerating: **11
+cases red**, proving the mutual bug is real end to end. After regenerating only `minimal.project.json`
+(the plan's own instruction): **PG6 and PG7 stayed red** (they read `full.project.json` and
+`unknown-keys.project.json`, neither regenerated) but **PG5 and PG8 went green** — masked, because
+`minimal.project.json` is exactly the one fixture the seeded writer's own bytes now agree with, and
+`ProjectManifest::scenesPath`'s default ("scenes") happens to coincide with the value the un-seeded
+fixture held, so PG5's field-by-field read cannot tell the difference. **PG2 stayed red too, but not
+because the masking failed** — it iterates over *both* fixpoint fixtures in one case, and
+`full.project.json`'s honest, unrelated mismatch keeps it red regardless of `minimal.project.json`'s
+state. The design still holds — PG6/PG7 are the un-maskable discriminators, exactly as 2.5.2's S12
+established — but "regenerate the one fixture nearest the bug" turned out to partially mask even a
+semantic case, which the redundancy of checking multiple independent fixtures in one battery (PG1,
+PG2) happened to catch by a different route. Worth remembering: single-fixture regeneration can mask
+a semantic case that reads *that* fixture, even when the design intends semantic cases to be
+un-maskable — the mitigation here was accidental (PG2's multi-fixture loop), not by design.
+
+**One minor prose deviation confirmed, not a defect.** S19 (removing the `project.json` line from
+`.gitattributes`) is confirmed Windows-only in effect via `git check-attr --all`, but the local
+`text` attribute flips from `set` to `auto` — `eol` stays `lf` in **both** states (the blanket `*
+text=auto eol=lf` rule already covers it), not "unspecified" as an earlier draft of the plan's prose
+stated.
+
+**What was deliberately not built.** No fix for S11's `WriteFailed`-unreachable gap or S15's
+`app.recents` accessor gap — both are real, both are carried forward as open coverage debt, neither
+is a defect in code that shipped (D7/INV-P4 still hold; they are simply unproven by any *test*, which
+is a different claim). No CI script enforces INV-P1 (`ProjectSession::set()`'s single-call-site
+invariant) or AC-46 (a panel never mutating project state directly) — both are architectural
+properties held by discipline and comment, the same posture 2.5.1 took for AC-27's hand-bound Esc.
+
+**No separate code-review round was run for this task**, unlike 2.4.1/2.4.2/2.5.1's precedent — the
+two real bugs found (the unknown-key sweep order, the `project.flow.requestedPath` leak) were both
+caught and fixed during the implementation pass itself, before their commits, not in a later pass.
+
 ---
 
 # Part 2 — Build & dependency impact ledger
@@ -1734,6 +1872,59 @@ rows of its own, and it will keep being skipped until it is scheduled as work in
 dialogs but not under a sanitizer build, so sabotage seeds **S15** (the dangling `SCENE_FILTERS` array)
 and **S16** (the `Ticket` use-after-free) still have no proof on any platform; they are ASan aborts
 reachable only by a human running the Debug preset with those seeds present.
+
+#### Task 2.6.1 — `project.json` + create/open flow
+
+**`engine/` diff is empty** (`git diff --name-only origin/main -- engine/` empty) — the same property
+2.5.1 established, now true of the project layer too: nothing here touches `vcpkg.json`, the `/vcpkg`
+pin, `ci.yml`, `cmake/**`, or any of the five boundary-guard scripts' allowlists except
+`check-math-boundary.sh`. `editor/CMakeLists.txt` gains **three** new source lines on
+`aero_editor_core`'s existing `add_library` across the task (`src/text_file.cpp` — renamed from
+`src/scene_file.cpp`, Step 1; `src/project.cpp`, Step 2; `src/project_file.cpp`, Step 3;
+`src/project_ui.cpp`, Step 7) plus one new `target_compile_definitions(aero_editor_core PRIVATE
+AERO_ENGINE_VERSION="${PROJECT_VERSION}")` line (Step 5) — no new `target_link_libraries` entry
+anywhere; the project format needs nothing from `aero::scene_serialize` or any other engine target.
+`tests/CMakeLists.txt` gains `editor/project_test.cpp` **unconditionally** on
+`aero_editor_shell_test`'s existing `add_executable` (Step 2), an `AERO_PROJECT_FIXTURES_DIR` compile
+definition and a relocation of `target_include_directories(aero_editor_shell_test ...)` out of the
+`if(AERO_REFLECT_TOOLS)` gate (Step 4, §A16) — **no new `add_test` anywhere**, confirmed by
+`git diff origin/main -- tests/CMakeLists.txt editor/CMakeLists.txt | grep -E
+'add_test|find_package'` returning empty at every commit. `ctest -N` reads **94** (tools ON), **5**
+(both tools OFF, `build/tools-off-2.6.1`) and **18** (reflect OFF alone, `build/reflect-off-2.6.1`) at
+every one of the nine code-bearing commit boundaries and again in the final sabotage-pass sweep — all
+three configurations measured, none assumed. `check-math-boundary.sh` is the only guard whose scanned
+count moves at all: **239 → 241**, exactly `project_ui.hpp`/`project_ui.cpp` (Step 7's two new
+C-family files) — every other boundary guard (`check-golden-rule.sh`, `check-platform-boundary.sh`,
+`check-rhi-boundary.sh`, `check-scene-boundary.sh`) cannot see this diff at all: zero `engine/`,
+`runtime/`, `tools/`, `samples/`, `shaders/`, `cmake/` or `.github/` file changed, no SDL/SDL_GPU/EnTT
+identifier introduced in any public header. `editor/include/aero/editor/editor_app.hpp` gains a
+renamed config field (`projectRoot` → `projectPath`), two new config fields
+(`restoreLastProject`/`recentProjectsPath`), four accessors
+(`projectIsOpen`/`projectRoot`/`projectName`/`assetBrowserRoot`), four request hooks
+(`requestNewProject`/`requestOpenProjectDialog`/`requestOpenProject`/`requestClearRecentProjects`),
+and a non-owning `AssetBrowserPanel*` member; `editor/include/aero/editor/project_files.hpp` **loses**
+`resolveProjectRoot` entirely (superseded by the recents-driven resolution in `EditorApp::create()`).
+`editor/src/scene_session.hpp`/`.cpp` gain the two new `FileAction`/`DialogKind` enumerators, the
+`ProjectFlow`/`ProjectContext`/`NewProjectForm` structs, and `adoptProject`/`openProjectPath`/
+`createAndOpenProject` — the only pure-function-body change anywhere in this task is `discardsWork`
+gaining two `case` labels (D1). `editor/src/file_dialog.hpp`/`.cpp` gain
+`launchOpenProjectFolderDialog`; `editor/src/shell_ui.hpp` gains `FileMenuContext::project` (a
+reference, not a value, per the plan's own §S 5e correction). Both macOS presets green at every one of
+the nine commit boundaries, Debug and Release, with and without `AERO_REQUIRE_GPU=1`; clang-format and
+clang-tidy (`--warnings-as-errors='*'`) clean on all 25 touched `.cpp`/`.hpp` files, re-verified in a
+final comprehensive pass after all 22 sabotage seeds were reverted. See the Part 1 entry above for the
+full per-step build, the two real pre-commit bugs found and fixed (the unknown-key sweep's document
+order, `project.flow.requestedPath`'s leak), the three self-referential comment traps, and the full
+§V4 sabotage matrix — **all twenty-two seeds run and confirmed, all three mandatory second-order
+checks (S1, S9, S11) run, §V4 discharged** — with two seeds (S11, S15) exposing real coverage gaps
+this task's own tests cannot reach, four seeds under-catching their table-predicted case, one
+over-catching, and S9 re-proving 2.5.2's mutual-bug design with a nuance (single-fixture regeneration
+partially masks a semantic case, caught only by an unrelated multi-fixture loop) worth carrying
+forward.
+
+**2.6.1 has no human validation pass recorded by this implementation pass** — the sixteen rows in
+`editor/validation/2.6.1-project-json-create-open-flow.md` (local-only) are all `⏳ pending`, following
+the project's own standing rule never to record a PASS in the same pass that writes the code.
 
 ---
 

@@ -304,7 +304,143 @@ A load-then-save cycle **strips unknown keys** (with load-time WARNs naming each
 pre-1.0, and safely gated by the version check: a v2 file never successfully reaches a v1 save, since
 it would have failed the version gate on load.
 
-## 4. Reserved for future formats
+## 4. Project format v1
+
+> Enforced in code by `editor/src/project.cpp` (the pure parse/write/validate half) and
+> `editor/src/project_file.cpp` (the `<filesystem>`-and-SDL half); `tests/editor/project_test.cpp`
+> (53 cases, task 2.6.1) is its machine-checkable form, including a three-fixture golden battery
+> (§4.7) mirroring section 2.7's design.
+
+### 4.1 Envelope
+
+One `project.json` per project, at the project root. **Five root keys, in this exact order on
+save**: `version`, `name`, `engineVersion`, `language`, `paths`; `paths` has exactly two members,
+`assets` then `scenes`.
+
+| Key | Kind | Required | Range / rule | Default | Error on violation |
+|---|---|---|---|---|---|
+| `version` (root) | number, integral | yes | must equal `1` | — | missing / wrong kind / wrong value: see §4.6 |
+| `name` (root) | string | yes | validated by §4.3 | — | missing / wrong kind: see §4.6 |
+| `engineVersion` (root) | string | yes | informational only, never compared for ordering, never a gate | — | missing / wrong kind: see §4.6 |
+| `language` (root) | string | yes | `"ts"` or `"cpp"` | — | missing / wrong kind / unsupported value: see §4.6 |
+| `paths` (root) | object | yes | exactly `assets` and `scenes`, both required | — | missing / wrong kind: see §4.6 |
+| `paths.assets` (paths) | string | yes | a legal project-relative path (§4.4) | `"assets"` | missing / wrong kind / illegal: see §4.6 |
+| `paths.scenes` (paths) | string | yes | a legal project-relative path (§4.4) | `"scenes"` | missing / wrong kind / illegal: see §4.6 |
+
+`version` is validated **first**, before any other key — a file also missing `name` still reports the
+version error, mirroring §2.6/§3's "first violation wins" and "future-format files fail fast" rules.
+
+Unknown keys, at root or nested inside `paths`, are **tolerated**: WARNed (one WARN per key, by the
+caller — this format's parser never logs, INV-P6) and collected in **true document order**. A nested
+`paths.<unknown>` key is collected at the position `paths` itself occupies among the root members, not
+after every root-level unknown regardless of where `paths` sits — one depth-first walk, not two
+separate sweeps. Stripped on the next canonical save, exactly like §2.1's envelope-level unknowns.
+
+### 4.2 Language
+
+`ProjectLanguage` is `"ts"` (TypeScript) or `"cpp"` (C++), fixed at creation and never mixed
+(ADR-008). New Project always writes `"ts"` in this build; `"cpp"` is accepted on read so a
+hand-edited or future-tool-authored file opens correctly, and enforcing the C++ project workflow
+itself is a later task's job — purely additive over a field that already round-trips. Any other value
+is a hard reject, never a silent fallback.
+
+### 4.3 Project name validation
+
+Checked in this exact order, the first violation wins (mirrors §2.6's fail-fast discipline):
+
+| Order | Problem | Rule |
+|---|---|---|
+| 1 | Empty | the name has zero bytes |
+| 2 | TooLong | more than 64 UTF-8 bytes |
+| 3 | Separator | contains `/` or `\` |
+| 4 | DotName | is exactly `.` or `..` |
+| 5 | IllegalChar | contains any of `<>:"/\|?*` or a C0 control byte |
+| 6 | TrailingSpaceOrDot | starts or ends with a space, or ends with `.` |
+| 7 | ReservedDeviceName | is (ASCII-case-insensitively, stem before the first `.`) one of the 22 reserved DOS device names: `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9` |
+
+All seven rules apply on **every** OS unconditionally — there is no `#if defined(_WIN32)` anywhere;
+a name illegal on Windows is refused even when creating on macOS or Linux, so a project directory
+never becomes unusable after being copied to a different platform.
+
+### 4.4 Path fields
+
+`paths.assets`/`paths.scenes` are checked with a **pure string** rule, deliberately never
+`std::filesystem::path::is_absolute()` (`is_absolute("/shared")` is `false` on Windows — no root
+name — so a POSIX-rooted value would sail through that check): non-empty, no leading `/`, no `\`
+anywhere, no `:` anywhere (covers `C:` and `C:/x`), no `..` segment. A `.` segment is legal. Both
+default to their own bare name (`"assets"`/`"scenes"`) when creating a new project.
+
+### 4.5 Canonicalization notes
+
+Same canonical-form policy as §1: UTF-8, no BOM, LF newlines, pretty 2-space indent, one trailing
+newline. Key order is fixed (§4.1); members within `paths` are always `assets` then `scenes`, never
+sorted or reordered by content. `New Project` writes exactly the same bytes `writeProjectText` would
+produce from any other manifest carrying the same field values — there is no second code path.
+
+### 4.6 Error catalog
+
+| Stage | Message |
+|---|---|
+| JSON | *(passed through verbatim from the JSON parser, with position)* |
+| Envelope | `project root must be a JSON object (found <kind>)` |
+| Envelope | `missing required key "version"` |
+| Envelope | `"version" must be an integer (found <kind-or-lexeme>)` |
+| Envelope | `unsupported project format version <N> (this build reads version 1)` |
+| Envelope | `missing required key "name"` |
+| Envelope | `"name" must be a string (found <kind>)` |
+| Envelope | `missing required key "engineVersion"` |
+| Envelope | `"engineVersion" must be a string (found <kind>)` |
+| Envelope | `missing required key "language"` |
+| Envelope | `"language" must be a string (found <kind>)` |
+| Envelope | `unsupported language "<value>" (expected "ts" or "cpp")` |
+| Envelope | `missing required key "paths"` |
+| Envelope | `"paths" must be an object (found <kind>)` |
+| Paths | `missing required key "paths.assets"` / `"paths.scenes"` |
+| Paths | `"paths.assets"/"paths.scenes" must be a string (found <kind>)` |
+| Paths | `"paths.assets"/"paths.scenes" must be a non-empty relative path with no leading '/', no '\', no ':' and no ".." segment (found "<value>")` |
+
+Success-only warnings (document order, caller-emitted — the parser itself never logs):
+
+| Warning |
+|---|
+| `editor: project '<root>' -- ignoring unknown key "<k>"` |
+
+### 4.7 Golden fixtures
+
+Three project files under `tests/fixtures/projects/` are **content pins** for this format, mirroring
+§2.7's design exactly — no self-update flag, no environment variable, no target, no regeneration path
+whatsoever:
+
+| File | Pins |
+|---|---|
+| `minimal.project.json` | the exact bytes `createProject`/New Project writes for a fresh TypeScript project |
+| `full.project.json` | nested `paths` content (`content/art`, `content/levels`), `language: "cpp"`, a non-ASCII name (`Café Rocket 🚀`) |
+| `unknown-keys.project.json` | one root-level unknown key nested inside `paths` (`prefabs`) plus two root-level unknowns (`author`, `editorLayout`), pinning the document-order collection rule of §4.1 |
+
+**Bytes are necessary and never sufficient — the same lesson §2.7 and task 2.5.2's S12 seed
+established, re-proven for this format by sabotage seed S9 (task 2.6.1).** A `parseProject`/
+`writeProjectText` pair that both stopped handling one key (`paths.scenes`) agreed with itself and
+passed every byte comparison the moment the affected fixture was regenerated from the buggy build —
+and stayed caught only by the semantic cases that read a fixture or a freshly-created project
+directly (`PG5`–`PG7`), never by the cases that re-derive bytes and compare them. The battery
+therefore always pairs byte-fixpoint cases with at least one semantic case that reads the fixture (or
+a real `createProject` outcome) without re-deriving it — never bytes alone.
+
+### 4.8 The recent-projects envelope
+
+A small, separate versioned format at `recent_projects.json` (under `SDL_GetPrefPath`, not next to
+the executable — it is *user* state that must survive rebuilding the editor into a fresh `build/`
+directory, unlike `aero_editor.ini`): `{"version": 1, "projects": [<absolute path>, ...]}`. Same
+canonical form as §4.5. Capped at 10 entries, newest-first, deduplicated on normalized bytes with no
+case folding (two paths differing only in case get two rows — dedup is not the place to guess a
+filesystem's case sensitivity). Never auto-pruned: a missing/renamed/unmounted target is left for
+"Clear Recent Projects" to remove explicitly, since the destructive interpretation of a transient
+`exists() == false` is the irreversible one. A corrupt, wrong-version or malformed file is tolerated —
+one WARN, an empty list, the editor keeps running — with one exception: an individual non-string
+array element is skipped and the rest of the list is kept, so one corrupt row never costs the whole
+file. No golden fixtures; this format has no byte-stability requirement any caller depends on.
+
+## 5. Reserved for future formats
 
 - **`.meta` (asset GUID sidecars)** — Phase 2. Section appends here.
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
