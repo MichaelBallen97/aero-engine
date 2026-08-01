@@ -2655,8 +2655,16 @@ TEST_CASE("editor: a panel the restored layout has never seen is docked, not lef
     {
         std::ofstream out(iniFile, std::ios::binary | std::ios::trunc);
         REQUIRE(out.good());
-        out << "[Window][Hierarchy]\nPos=0,25\nSize=255,695\nDockId=0x00000001,0\n\n"
-               "[Window][Inspector]\nPos=1025,25\nSize=255,695\nDockId=0x00000004,0\n\n"
+        // ⛔ Hierarchy and Inspector are DELIBERATELY SWAPPED against what buildDefaultLayout produces
+        // (it makes Left 0x1 and Right 0x4, in that order): this is a user who dragged Inspector to
+        // the left and Hierarchy to the right. That swap is what gives this case its teeth. With the
+        // node ids in their default arrangement, an implementation that simply ran buildDefaultLayout
+        // on a RESTORED ini -- the exact damage this fix exists to prevent, and which additionally
+        // zeroes every user DockId on the way through DockBuilderRemoveNodeDockedWindows -- would
+        // regenerate bit-identical ids and satisfy every assertion below. Swapped, it cannot: it puts
+        // Hierarchy back in 0x1 and reddens.
+        out << "[Window][Hierarchy]\nPos=1025,25\nSize=255,695\nDockId=0x00000004,0\n\n"
+               "[Window][Inspector]\nPos=0,25\nSize=255,695\nDockId=0x00000001,0\n\n"
                "[Window][Viewport]\nPos=259,25\nSize=762,518\nDockId=0x00000005,0\n\n"
                "[Window][Console]\nPos=259,547\nSize=762,173\nDockId=0x00000006,0\n\n"
                "[Window][Assets]\nPos=259,547\nSize=762,173\nDockId=0x00000006,1\n\n"
@@ -2716,15 +2724,31 @@ TEST_CASE("editor: a panel the restored layout has never seen is docked, not lef
         const std::size_t at = saved.find("DockId=", sectionAt);
         REQUIRE(at != std::string::npos);
         REQUIRE((sectionEnd == std::string::npos || at < sectionEnd));
-        const std::size_t comma = saved.find(',', at);
-        REQUIRE(comma != std::string::npos);
-        return saved.substr(at + 7, comma - (at + 7));
+        // Clamped to the LINE as well as the section: ImGui omits the ",order" suffix entirely when
+        // DockOrder == -1, and DockBuilderDockWindow leaves exactly that on a freshly created entry.
+        // Without the clamp the comma search would run into a later section's "Pos=x,y" and return a
+        // multi-line string -- a spurious failure rather than a false pass, but a confusing one.
+        const std::size_t lineEnd = saved.find('\n', at);
+        REQUIRE(lineEnd != std::string::npos);
+        const std::size_t end = std::min(saved.find(',', at), lineEnd);
+        return saved.substr(at + 7, end - (at + 7));
     };
     const std::string settingsDock = dockIdInSection(settingsAt);
     const std::string inspectorDock = dockIdInSection(inspectorAt);
     CHECK_FALSE(settingsDock.empty());
     CHECK(settingsDock != "0x00000000");
     CHECK_EQ(settingsDock, inspectorDock);  // it joined its slot-mate's node (D12's stated intent)
+
+    // The two assertions that give the swapped fixture its purpose, and the ONLY coverage anywhere of
+    // this fix's headline promise -- "a panel the ini already knows is never touched, wherever the
+    // user put it". Both are exact node ids, not a relative comparison, because the whole point is
+    // that the SPECIFIC user arrangement survived rather than being regenerated into something
+    // self-consistent. A rebuild-on-restore implementation returns Hierarchy to 0x00000001 and
+    // Project Settings to 0x00000004, reddening both.
+    const std::size_t hierarchyAt = saved.find("[Window][Hierarchy]");
+    REQUIRE(hierarchyAt != std::string::npos);
+    CHECK_EQ(dockIdInSection(hierarchyAt), "0x00000004");  // a KNOWN panel stayed where the user put it
+    CHECK_EQ(settingsDock, "0x00000001");                  // and the NEW panel followed its slot-mate LEFT
 
     std::error_code ec;
     std::filesystem::remove(iniFile, ec);

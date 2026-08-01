@@ -58,9 +58,15 @@ that way.
   frame of a restored layout it docks **only** the panels the ini has never heard of, into
   the node already hosting a panel that declares the *same* `defaultDockSlot()`, falling
   back to the dockspace root. A panel the ini knows is never touched, wherever the user put
-  it. **Adding a panel therefore needs no layout migration of its own** — but a test that
-  drives this path must set `EditorAppConfig::layoutIniPath`, or it rewrites the developer's
-  real editor layout (the `recentProjectsPath` lesson, second instance).
+  it. **Adding a panel therefore needs no layout migration of its own — provided it is
+  registered before the first `tick()`**, as all six defaults are (`EditorApp::create`). The
+  pass is a one-shot consumed on the first drawn frame, so a panel registered through
+  `panels()` *later* (a dynamically opened tool window) is not covered by it and free-floats:
+  that case needs its own placement, and would be the same defect again. A test driving this
+  path must set `EditorAppConfig::layoutIniPath`, or it rewrites the developer's real editor
+  layout (the `recentProjectsPath` lesson, second instance) — and that field is **inert unless
+  `persistLayout` is also true**, so setting the path and forgetting the flag silently takes
+  the default-layout path and can false-pass.
 - Drag-drop payloads: `std::memcpy` into a local, **never a cast** — ImGui's buffer is
   `alignas(1)` and the Debug lanes run UBSan. Decide drop legality by *peeking* with
   `GetDragDropPayload()`, so an illegal drop never draws a highlight.
