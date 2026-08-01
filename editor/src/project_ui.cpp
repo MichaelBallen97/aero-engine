@@ -105,12 +105,23 @@ void drawNewProjectModal(FileMenuContext& fileMenu) {
         ImGui::BeginDisabled(!canCreate);
         if (ImGui::Button("Create")) {
             form.createRequested = true;
+            // BLOCKING-1 (code review): clearing `form.open` only stops THIS TU from re-submitting the
+            // popup next frame -- ImGui itself owns `g.OpenPopupStack` and never GCs an entry for a
+            // popup that simply stops being submitted (GetTopMostPopupModal() checks only the Modal
+            // flag, never Active). Left uncalled, imgui.cpp's own per-frame bookkeeping sets
+            // g.HoveredWindow = NULL forever after, and EVERY menu/panel/button/dock tab becomes
+            // unhoverable and unclickable until a stray click happens to trim the stack. Closed
+            // UNCONDITIONALLY here: a FAILED create leaves `form.open == true` (see the createRequested
+            // consumer below), and this file's own OpenPopup call at the top re-opens the popup next
+            // frame from that state, exactly like a fresh NewProject request would.
+            ImGui::CloseCurrentPopup();
         }
         ImGui::EndDisabled();
         ImGui::SetItemDefaultFocus();
         ImGui::SameLine();
         if (ImGui::Button("Cancel")) {
             form.cancelRequested = true;
+            ImGui::CloseCurrentPopup();  // BLOCKING-1: the same closure, on the path that discards
         }
         // ImGui CANNOT dismiss a MODAL with Escape: NavUpdateCancelRequest's popup branch excludes
         // ImGuiWindowFlags_Modal (imgui.cpp:15032) and BeginPopupModal always sets it -- and the
@@ -122,6 +133,7 @@ void drawNewProjectModal(FileMenuContext& fileMenu) {
         // behaviour with NO test able to catch it. Human row 10 is its only proof anywhere.
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
             form.cancelRequested = true;
+            ImGui::CloseCurrentPopup();  // BLOCKING-1: the same closure, on the Esc path
         }
         ImGui::EndPopup();
     } else {
