@@ -10,6 +10,7 @@
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_context.hpp>
+#include <aero/editor/project.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/tree_walk.hpp>
 #include <aero/scene/internal/world_access.hpp>  // registerComponent<T> -- the E12/AC-13 proof
@@ -306,7 +307,8 @@ TEST_CASE("editor: PanelContext binds references, it does not copy (D7)") {
     Selection s;
     engine::editor::CommandStack commands;
     engine::editor::RootOrder roots;
-    engine::editor::PanelContext context{w, s, commands, roots};
+    const engine::editor::ProjectSession project;
+    engine::editor::PanelContext context{w, s, commands, roots, project};
 
     CHECK(&context.world == &w);
     CHECK(&context.selection == &s);

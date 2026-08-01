@@ -11,6 +11,7 @@
 #include <aero/editor/panel.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/project.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/scene/world.hpp>
 
@@ -249,15 +250,16 @@ TEST_CASE("editor: PanelContext carries the frame delta (task 2.3.1, AC-20)") {
     engine::World world;
     engine::editor::Selection selection;
 
-    // `deltaSeconds` is the ONE defaulted member: omitting it still yields 0. `commands` and `roots`
-    // are references and have no default (tasks 2.4.1 D7 / 2.4.2 D10), so four-brace construction is
-    // the new minimum.
+    // `deltaSeconds` is the ONE defaulted member: omitting it still yields 0. `commands`, `roots` and
+    // `project` are references and have no default (tasks 2.4.1 D7 / 2.4.2 D10 / 2.6.2 D1), so
+    // five-brace construction is the new minimum.
     engine::editor::CommandStack commands;
     engine::editor::RootOrder roots;
-    const engine::editor::PanelContext defaulted{world, selection, commands, roots};
+    const engine::editor::ProjectSession project;
+    const engine::editor::PanelContext defaulted{world, selection, commands, roots, project};
     CHECK(defaulted.deltaSeconds == 0.0F);
 
-    engine::editor::PanelContext withDelta{world, selection, commands, roots, 0.016F};
+    engine::editor::PanelContext withDelta{world, selection, commands, roots, project, 0.016F};
     CHECK(withDelta.deltaSeconds == 0.016F);
 
     DeltaProbePanel probe;
@@ -381,7 +383,8 @@ TEST_CASE("editor: onDraw receives the caller's World and Selection by reference
     engine::editor::Selection selection;
     engine::editor::CommandStack commands;
     engine::editor::RootOrder roots;
-    engine::editor::PanelContext context{world, selection, commands, roots};
+    const engine::editor::ProjectSession project;
+    engine::editor::PanelContext context{world, selection, commands, roots, project};
 
     ContextProbePanel probe;
     engine::editor::Panel& asBase = probe;  // through the BASE -- the virtual is what changed
