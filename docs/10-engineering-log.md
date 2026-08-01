@@ -1713,6 +1713,51 @@ positional read, so a shape-changing regression fails cleanly in the case that o
 running off the end and aborting the binary before PS22's independent eight-row sum can run — which
 is exactly what cost this task's own sabotage pass the demonstration of PS22's discrimination.
 
+#### Follow-up — newly-registered panels are docked on a RESTORED layout
+
+**Found by the project owner on their own machine, minutes after 2.6.2 merged, and not by any test or
+validation row.** After creating a project, `Project Settings` appeared as a free-floating sliver of a
+window on top of the Hierarchy panel — narrow enough that "Format version" rendered one letter per
+line. The Console line said everything: `shell ready (6 panels, 3 entities, layout: restored)`.
+
+**Cause, and it was never 2.6.2-specific.** `buildDefaultLayout` is the only reader of
+`defaultDockSlot()`, and `imgui_layer.cpp` only asks for it when there is no ini to restore
+(`wantsDefault = !(persistLayout && exists(iniPath))`). Every machine that had already run the editor
+restores instead, and a restored ini written before the panel existed has no `[Window][Project
+Settings]` entry at all, so ImGui falls back to a floating window. **Every panel any later task adds
+would have landed the same way** — Phase 3's importers, 4.6's language surface, Phase 7's 2D tools.
+
+**Why no gate caught it.** 2.6.2's own human validation row 1 asserts the tab "sits beside Inspector
+in the right dock", and it would have PASSED on a clean checkout, because a fresh tree has no
+`aero_editor.ini` and therefore takes the default-layout path. The bug is only reachable on an install
+with history — which is every real user and no CI lane. A validation row that a fresh machine cannot
+fail is not a validation row for this class of defect.
+
+**Fix.** `placeUnplacedPanels` (`shell_ui.cpp`), a one-shot on the first drawn frame, seeded as the
+exact complement of `applyDefaultLayout` and `else if`-exclusive with it. It docks **only** panels
+whose id has no settings entry (`FindWindowSettingsByID(ImHashStr(id))`), into the node already
+hosting a panel that declares the same `defaultDockSlot()`, read from that sibling's
+`ImGuiWindowSettings::DockId`; the dockspace root is the fallback. Reading SETTINGS rather than the
+live window is mandatory: on the first frame no panel has been submitted, so `FindWindowByName` would
+return null for every one of them and the pass would "place" panels the user had already positioned.
+Joining a slot-mate's *current* node rather than re-splitting is what keeps a customised layout
+untouched — and if the user moved Inspector to the bottom, the new panel belongs beside it there, not
+where a fresh layout would have put it.
+
+**`EditorAppConfig::layoutIniPath` is new, and is the `recentProjectsPath` lesson arriving a second
+time.** The ini path was hardcoded to an exe/pref-relative location, so the restore path was
+untestable: any test setting `persistLayout = true` would read and then overwrite the developer's real
+editor layout — 2.6.1's BLOCKING-2 in a new costume. Empty keeps the shipped derivation.
+
+**I26** proves it black-box, without ImGui: it writes a REAL pre-2.6.2 ini captured from the owner's
+machine (five windows, no `Project Settings`, node `0x00000004` holding Inspector), runs the editor
+against it, quits so `SaveIniSettingsToDisk` fires, then reads the file back and asserts
+`[Window][Project Settings]` now carries a `DockId` **equal to Inspector's** — compared to each other,
+not to a literal, so it survives ImGui renumbering nodes. The DockId lookup is deliberately BOUNDED to
+its section: an unbounded `find` would return the *next* section's DockId exactly when this section
+has none, i.e. the bug would supply the value that makes the test pass. Seed-proven both ways —
+disabling the fix reddens I26, reverting greens it. `aero_editor_imgui_test` **47 → 48**.
+
 ---
 
 # Part 2 — Build & dependency impact ledger

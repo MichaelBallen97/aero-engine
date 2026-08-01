@@ -10,6 +10,11 @@ namespace engine::editor {
 struct ShellUiState {
     bool applyDefaultLayout = false;  // in: build the default layout this frame; out: cleared once
                                       // consumed, or re-set to true by View > Reset Layout
+    // In: this frame, dock any panel the restored imgui.ini has never heard of. Out: cleared once
+    // consumed, and NEVER re-armed -- unlike applyDefaultLayout there is no menu item that re-sets it.
+    // Mutually exclusive with applyDefaultLayout by construction (EditorApp seeds one as the other's
+    // negation): a default layout places every panel already, so there is nothing left unplaced.
+    bool placeUnplacedPanels = false;
     // `quitRequested` is DELETED (task 2.5.1, plan A10/A15): after D1, both Ctrl+Q and File > Exit
     // are FileAction::Quit, routed through FileMenuContext's flow -- nothing writes this field any
     // more, and a field nobody writes is a trap. The confirmed OUTPUT of a GUARDED quit is

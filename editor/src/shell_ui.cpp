@@ -359,6 +359,60 @@ static_assert(static_cast<std::size_t>(DockSlot::Bottom) + 1U == DOCK_SLOT_COUNT
 
 constexpr std::size_t slotIndex(DockSlot slot) noexcept { return static_cast<std::size_t>(slot); }
 
+// buildDefaultLayout below is the ONLY reader of defaultDockSlot(), and it runs only when there is no
+// imgui.ini to restore. So a panel added to the editor AFTER a user's layout was written has no
+// settings entry at all, and ImGui falls back to a free-floating window at a default position —
+// which is exactly what shipping the Project Settings panel did to every existing install: a sliver
+// of a window over the Hierarchy panel, narrow enough to render "Format version" one letter per line.
+// It is not specific to that panel; without this, every panel any later task adds lands the same way.
+//
+// This places EXACTLY the panels the ini has never heard of and touches nothing else. A panel the ini
+// already knows is left precisely where the user put it, floating or docked, forever.
+//
+// An unknown panel joins the node that already hosts a panel declaring the SAME defaultDockSlot(),
+// rather than re-splitting the dockspace. Two reasons, and the first is the important one: a split
+// would resize the arrangement the user built, which is the thing we are trying not to disturb. The
+// second is that a slot-mate's CURRENT node is a better reading of "where this belongs" than a fresh
+// layout's would be — if the user moved Inspector to the bottom, Project Settings belongs beside it
+// there, not on the right where a default layout would have put it. Falls back to the dockspace root
+// when no slot-mate is placed (every slot-mate is itself new, or the ini predates all of them).
+//
+// The ini's settings ID is ImHashStr(name) (imgui.cpp's CreateNewWindowSettings), and our panel ids
+// carry no "###" suffix, so ImHashSkipUncontributingPrefix is the identity on them and the hash
+// matches. Reading SETTINGS rather than the live window is mandatory here: on the first frame no
+// panel has been submitted yet, so FindWindowByName would return null for every one of them and this
+// would "place" panels the user had already positioned.
+void placeUnplacedPanels(ImGuiID dockId, PanelRegistry& panels) {
+    bool placedAny = false;
+    for (std::size_t i = 0; i < panels.count(); ++i) {
+        const Panel& panel = panels.panelAt(i);
+        if (ImGui::FindWindowSettingsByID(ImHashStr(panel.id())) != nullptr) {
+            continue;  // the ini knows this panel: leave it exactly where the user has it
+        }
+        ImGuiID target = dockId;
+        for (std::size_t j = 0; j < panels.count(); ++j) {
+            if (j == i) {
+                continue;
+            }
+            const Panel& sibling = panels.panelAt(j);
+            if (sibling.defaultDockSlot() != panel.defaultDockSlot()) {
+                continue;
+            }
+            const ImGuiWindowSettings* const settings = ImGui::FindWindowSettingsByID(ImHashStr(sibling.id()));
+            if (settings != nullptr && settings->DockId != 0) {
+                target = settings->DockId;
+                break;
+            }
+        }
+        ImGui::DockBuilderDockWindow(panel.id(), target);
+        placedAny = true;
+    }
+    // Only when something actually moved: finishing an untouched tree is pure waste.
+    if (placedAny) {
+        ImGui::DockBuilderFinish(dockId);
+    }
+}
+
 // D3 + F10: the default/reset dock layout. Only splits a slot at least one registered panel asks
 // for — an empty ImGui dock node is not pruned, it renders as a dead grey rectangle.
 void buildDefaultLayout(ImGuiID dockId, PanelRegistry& panels) {
@@ -450,6 +504,13 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     if (state.applyDefaultLayout) {
         state.applyDefaultLayout = false;
         buildDefaultLayout(dockId, panels);  // must run AFTER the dockspace exists this frame (E17)
+    } else if (state.placeUnplacedPanels) {
+        // `else if`, not a second `if`: a default layout has just placed every panel by definition,
+        // so there is nothing unplaced left and running both would be redundant work on the same
+        // frame. Same E17 ordering requirement -- the dockspace must exist first. Both flags are
+        // one-shot, and this one is never re-armed.
+        state.placeUnplacedPanels = false;
+        placeUnplacedPanels(dockId, panels);
     }
     drawPanels(panels, context);
     drawWelcomeWindow(fileMenu);  // AFTER the dockspace and the panels, so it FLOATS above them

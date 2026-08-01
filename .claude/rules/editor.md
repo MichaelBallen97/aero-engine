@@ -49,6 +49,18 @@ that way.
   empty dock node is not pruned and draws a dead grey rectangle. Node size comes from
   `GetMainViewport()->WorkSize`, not `->Size` (the menu bar shrinks the work area); the
   one-frame settle is expected — do not "fix" it with a manual `GetFrameHeight()` offset.
+- **`buildDefaultLayout` runs ONLY when there is no `imgui.ini` to restore, so it is not
+  what places a panel you add today.** It is the only reader of `defaultDockSlot()`, and
+  on every machine that has already run the editor the layout is *restored* instead — a
+  panel added after that file was written has no settings entry, and ImGui free-floats it
+  at a default position. Shipping the Project Settings panel did exactly that to every
+  existing install. `placeUnplacedPanels` (`shell_ui.cpp`) closes it: on the first drawn
+  frame of a restored layout it docks **only** the panels the ini has never heard of, into
+  the node already hosting a panel that declares the *same* `defaultDockSlot()`, falling
+  back to the dockspace root. A panel the ini knows is never touched, wherever the user put
+  it. **Adding a panel therefore needs no layout migration of its own** — but a test that
+  drives this path must set `EditorAppConfig::layoutIniPath`, or it rewrites the developer's
+  real editor layout (the `recentProjectsPath` lesson, second instance).
 - Drag-drop payloads: `std::memcpy` into a local, **never a cast** — ImGui's buffer is
   `alignas(1)` and the Debug lanes run UBSan. Decide drop legality by *peeking* with
   `GetDragDropPayload()`, so an illegal drop never draws a highlight.
