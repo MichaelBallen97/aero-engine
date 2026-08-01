@@ -101,4 +101,12 @@ void launchSaveSceneDialog(const std::shared_ptr<DialogChannel>& channel, void* 
                            static_cast<int>(SCENE_FILTERS.size()), dir.empty() ? nullptr : dir.c_str());
 }
 
+void launchOpenProjectFolderDialog(const std::shared_ptr<DialogChannel>& channel, void* parent,
+                                   std::string_view startDirectory) {
+    auto* ticket = new Ticket(channel);
+    const std::string dir(startDirectory);  // SDL copies it; OUR copy must survive the async call
+    SDL_ShowOpenFolderDialog(&onDialogResult, ticket, static_cast<SDL_Window*>(parent),
+                             dir.empty() ? nullptr : dir.c_str(), /*allow_many=*/false);
+}
+
 }  // namespace engine::editor

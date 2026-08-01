@@ -78,6 +78,12 @@ target_link_libraries(aero_editor_core
             aero::platform_internal aero::rhi_internal
 )
 
+# task 2.6.1 (D14): the ONLY consumer is editor_app.cpp, and `engineVersion` is INFORMATIONAL in v0
+# -- never compared for ordering, never a gate. This is what keeps engine/ untouched for a THIRD
+# consecutive task: engine/core/include/aero/core/version.hpp would be a defensible change, but the
+# runtime is the task that should decide that header's shape (Phase 5), not this one.
+target_compile_definitions(aero_editor_core PRIVATE AERO_ENGINE_VERSION="${PROJECT_VERSION}")
+
 if(AERO_REFLECT_TOOLS)
     # Task 2.2.2 (D16/§3.12): the four built-in component headers, compiled INTO the editor as
     # generated entt::meta registration + one aggregator, aero_reflect_register_all_aero_editor_core

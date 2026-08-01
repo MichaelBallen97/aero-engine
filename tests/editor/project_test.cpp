@@ -9,9 +9,15 @@
 // never with a skip. Tier-0: no GPU, no window, no ImGui context, so it must pass identically with
 // AERO_REQUIRE_GPU unset and set.
 #include <aero/core/log.hpp>
+#include <aero/editor/command_stack.hpp>
 #include <aero/editor/console_model.hpp>
+#include <aero/editor/entity_commands.hpp>
+#include <aero/editor/entity_ops.hpp>
 #include <aero/editor/project.hpp>
+#include <aero/editor/scene_session.hpp>
+#include <aero/editor/selection.hpp>
 #include <aero/editor/text_file.hpp>
+#include <aero/scene/world.hpp>
 
 #include "scene_golden_support.hpp"
 
@@ -22,26 +28,44 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
 
+using engine::editor::applyDialogResult;
+using engine::editor::applyFileRequests;
+using engine::editor::CommandContext;
+using engine::editor::CommandStack;
+using engine::editor::ConfirmChoice;
+using engine::editor::createAndOpenProject;
 using engine::editor::CreateProblem;
 using engine::editor::createProject;
+using engine::editor::DialogKind;
+using engine::editor::DialogResult;
 using engine::editor::directoryExists;
 using engine::editor::directoryIsEmpty;
+using engine::editor::discardsWork;
+using engine::editor::FileAction;
+using engine::editor::FileDialogHost;
 using engine::editor::fileExists;
+using engine::editor::FileFlow;
 using engine::editor::FileReadResult;
+using engine::editor::FileStep;
+using engine::editor::guardFor;
 using engine::editor::isLegalRelativePath;
 using engine::editor::loadProjectFrom;
 using engine::editor::NameProblem;
 using engine::editor::nameProblemMessage;
+using engine::editor::openProjectPath;
 using engine::editor::parseProject;
 using engine::editor::parseRecentProjects;
+using engine::editor::ProjectContext;
 using engine::editor::ProjectCreateOutcome;
 using engine::editor::ProjectError;
+using engine::editor::ProjectFlow;
 using engine::editor::ProjectLanguage;
 using engine::editor::ProjectLoadOutcome;
 using engine::editor::ProjectManifest;
@@ -52,6 +76,9 @@ using engine::editor::promoteRecent;
 using engine::editor::readRecentProjects;
 using engine::editor::readTextFile;
 using engine::editor::RecentProjects;
+using engine::editor::RootOrder;
+using engine::editor::SceneSession;
+using engine::editor::Selection;
 using engine::editor::validateProjectName;
 using engine::editor::writeProjectText;
 using engine::editor::writeRecentProjects;
@@ -112,6 +139,28 @@ public:
 
 private:
     std::filesystem::path dirPath;
+};
+
+// The scene_session_test.cpp FlowFixture shape, applied here so the project flow's own cases (43-53)
+// need no scene_session_test.cpp coupling. `host.channel == nullptr`: the tier-0 seam (A17).
+struct FlowFixture {
+    engine::World world;
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    FileFlow flow;
+    const FileDialogHost host{};
+    ProjectSession projectSession;
+    ProjectFlow projectFlow;
+    RecentProjects recents;
+    ProjectContext project{projectSession, projectFlow, recents, ""};
+
+    void makeDirty() {
+        const engine::Entity a = world.create();
+        REQUIRE(commands.push(ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                       std::vector<engine::Entity>{a}, std::vector<engine::Entity>{})));
+    }
 };
 
 }  // namespace
@@ -1087,4 +1136,299 @@ TEST_CASE("project_golden: a created project.json on disk is a fixpoint (PG9/AC-
     REQUIRE(reparsed.manifest.has_value());
     const std::string cycle = writeProjectText(*reparsed.manifest);
     CHECK(cycle == *written.text);
+}
+
+// ---- P69-P80: the flow, driven with a NULL dialog channel ------------------------------------------
+
+TEST_CASE("project: windowTitle with and without a project name (P69/F11/AC-27/AC-28)") {
+    SceneSession session;
+    // EMPTY projectName -- byte-identical to today's four forms (F11/AC-28).
+    CHECK(session.windowTitle(false) == "Untitled - Aero Editor");
+    CHECK(session.windowTitle(true) == "*Untitled - Aero Editor");
+    session.setPath("/tmp/level1.scene.json");
+    CHECK(session.windowTitle(false) == "level1.scene.json - Aero Editor");
+    CHECK(session.windowTitle(true) == "*level1.scene.json - Aero Editor");
+
+    // WITH a project name (AC-27).
+    session.clearPath();
+    CHECK(session.windowTitle(false, "MyGame") == "Untitled - MyGame - Aero Editor");
+    CHECK(session.windowTitle(true, "MyGame") == "*Untitled - MyGame - Aero Editor");
+    session.setPath("/tmp/level1.scene.json");
+    CHECK(session.windowTitle(false, "MyGame") == "level1.scene.json - MyGame - Aero Editor");
+    CHECK(session.windowTitle(true, "MyGame") == "*level1.scene.json - MyGame - Aero Editor");
+}
+
+TEST_CASE("project: discardsWork and guardFor cover NewProject and OpenProject (P70/P71/AC-19/S12)") {
+    CHECK(discardsWork(FileAction::NewProject));
+    CHECK(discardsWork(FileAction::OpenProject));
+    for (const FileAction action : {FileAction::NewProject, FileAction::OpenProject}) {
+        CHECK(guardFor(action, false) == FileStep::Perform);
+        CHECK(guardFor(action, true) == FileStep::Confirm);
+    }
+}
+
+TEST_CASE("project: openProjectPath opens, resets the scene and promotes the recent entry (P73/AC-18/S1/S2)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+
+    FlowFixture f;
+    SceneSession session;
+    // Start DIRTY, with an entity beyond the (not-yet-seeded) default -- a stack that starts clean
+    // stays clean whether or not the code actually clears it (the scene_io_test.cpp:383-391 idiom).
+    const engine::Entity extra = f.world.create();
+    REQUIRE(f.commands.push(f.ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                       std::vector<engine::Entity>{extra}, std::vector<engine::Entity>{})));
+    REQUIRE_FALSE(f.commands.isClean());
+    session.setPath("/tmp/some-other-scene.scene.json");
+
+    scope.sink()->take(records);
+    records.clear();
+
+    const bool ok = openProjectPath(f.ctx, f.commands, session, f.project, created.root);
+
+    CHECK(ok);
+    CHECK(f.world.entityCount() == 3);  // the fresh default scene (AC-18)
+    CHECK(f.commands.isClean());
+    CHECK(f.commands.count() == 0);
+    CHECK(session.path().empty());
+    CHECK(f.projectSession.isOpen());
+    CHECK(f.projectSession.name() == "MyGame");
+    CHECK(f.recents.paths.size() == 1);
+    CHECK(f.projectFlow.recentsDirty);
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+}
+
+TEST_CASE("project: a REJECTED project changes nothing (P74/INV-P3/AC-8/S13)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    REQUIRE(writeTextFileAtomic(dir.join("project.json"), R"({"version": 2})").empty());
+
+    FlowFixture f;
+    SceneSession session;
+    const engine::Entity extra = f.world.create();
+    REQUIRE(f.commands.push(f.ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                       std::vector<engine::Entity>{extra}, std::vector<engine::Entity>{})));
+    const std::size_t entitiesBefore = f.world.entityCount();
+    const std::size_t countBefore = f.commands.count();
+
+    scope.sink()->take(records);
+    records.clear();
+
+    const bool ok = openProjectPath(f.ctx, f.commands, session, f.project, dir.utf8());
+
+    CHECK_FALSE(ok);
+    CHECK_FALSE(f.projectSession.isOpen());  // session STILL closed
+    CHECK(f.world.entityCount() == entitiesBefore);
+    CHECK(f.commands.count() == countBefore);
+    CHECK(f.recents.paths.empty());
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 0);
+}
+
+TEST_CASE("project: createAndOpenProject scaffolds and adopts in one operation (P75/AC-9/AC-21)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    const bool ok = createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "MyGame");
+
+    CHECK(ok);
+    CHECK(directoryExists(dir.join("MyGame")));
+    CHECK(directoryExists(dir.join("MyGame/assets")));
+    CHECK(directoryExists(dir.join("MyGame/scenes")));
+    CHECK(f.projectSession.isOpen());
+    CHECK(f.world.entityCount() == 3);
+    CHECK(f.commands.isClean());
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);  // exactly ONE (A24 -- never re-reads)
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+}
+
+TEST_CASE("project: the New Project form's requests never survive their frame (P76/AC-46)") {
+    FlowFixture f;
+    SceneSession session;
+    f.project.flow.form.open = true;
+    f.project.flow.form.cancelRequested = true;
+    f.project.flow.form.browseRequested = true;
+    f.project.flow.clearRecentsRequested = true;
+
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    // cancelRequested resets the WHOLE form (form = {}), so browseRequested/createRequested/open are
+    // ALSO cleared by that same assignment -- verify the flags, not merely `form.open`.
+    CHECK_FALSE(f.project.flow.form.open);
+    CHECK_FALSE(f.project.flow.form.cancelRequested);
+    CHECK_FALSE(f.project.flow.form.browseRequested);
+    CHECK_FALSE(f.project.flow.clearRecentsRequested);
+}
+
+TEST_CASE("project: a create FAILURE keeps the modal open with the typed name (AC-12)") {
+    FlowFixture f;
+    SceneSession session;
+    f.project.flow.form.open = true;
+    f.project.flow.form.name = "MyGame";
+    f.project.flow.form.location = "/definitely/does/not/exist";  // LocationMissing
+    f.project.flow.form.createRequested = true;
+
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+    CHECK(f.project.flow.form.open);              // the modal STAYS UP
+    CHECK(f.project.flow.form.name == "MyGame");  // the typed name is INTACT
+    CHECK_FALSE(f.project.flow.form.error.empty());
+    CHECK_FALSE(f.projectSession.isOpen());
+}
+
+TEST_CASE("project: a project request is refused while the form or a dialog is up (P77/R2/R3/S7)") {
+    // Arm 1: the New Project form is open.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.project.flow.form.open = true;
+        const std::size_t entitiesBefore = f.world.entityCount();
+        f.flow.requested = FileAction::NewScene;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK(f.world.entityCount() == entitiesBefore);
+        CHECK(f.flow.requested == FileAction::None);
+    }
+    // Arm 2: a native dialog is in flight.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.flow.dialog = DialogKind::Open;
+        f.flow.requested = FileAction::NewProject;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK_FALSE(f.project.flow.form.open);  // NewProject's own form was never opened
+    }
+    // Arm 3: the unsaved-changes modal is up.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.flow.confirmOpen = true;
+        f.flow.pending = FileAction::Quit;
+        f.flow.requested = FileAction::OpenProject;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK(f.flow.pending == FileAction::Quit);  // the ORIGINAL pending SURVIVES
+        CHECK_FALSE(f.projectSession.isOpen());
+    }
+}
+
+TEST_CASE("project: projectFlow.requestedPath is cleared on every abandoning path (P78/F10)") {
+    // Swallowed by a dialog already in flight.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.flow.dialog = DialogKind::Open;
+        f.project.flow.requestedPath = "/some/project";
+        f.flow.requested = FileAction::OpenProject;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK(f.project.flow.requestedPath.empty());
+    }
+    // A cancelled ProjectFolder dialog result.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.flow.dialog = DialogKind::ProjectFolder;
+        f.project.flow.requestedPath = "/some/project";
+        DialogResult cancelled;
+        cancelled.ready = true;
+        cancelled.cancelled = true;
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, cancelled, f.project);
+        CHECK(f.project.flow.requestedPath.empty());
+    }
+    // A failed ProjectFolder dialog result.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.flow.dialog = DialogKind::ProjectFolder;
+        f.project.flow.requestedPath = "/some/project";
+        DialogResult failed;
+        failed.ready = true;
+        failed.failed = true;
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, failed, f.project);
+        CHECK(f.project.flow.requestedPath.empty());
+    }
+    // Guard Cancel over a guarded OpenProject.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.makeDirty();
+        f.project.flow.requestedPath = "/some/project";
+        f.flow.requested = FileAction::OpenProject;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        REQUIRE(f.flow.confirmOpen);
+        f.flow.choice = ConfirmChoice::Cancel;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK(f.project.flow.requestedPath.empty());
+    }
+}
+
+TEST_CASE("project: applyDialogResult -- ProjectFolder opens, ProjectLocation only fills the form (P79/E18/E19)") {
+    const TempDir dir;
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.flow.dialog = DialogKind::ProjectFolder;
+        DialogResult result;
+        result.ready = true;
+        result.path = created.root;
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, result, f.project);
+        CHECK(f.projectSession.isOpen());
+        CHECK(f.flow.dialog == DialogKind::None);
+    }
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.flow.dialog = DialogKind::ProjectLocation;
+        f.project.flow.form.open = true;
+        DialogResult result;
+        result.ready = true;
+        result.path = dir.utf8();
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, result, f.project);
+        CHECK(f.project.flow.form.location == dir.utf8());  // and NOTHING else
+        CHECK(f.project.flow.form.open);                    // the modal stays up; Create is still needed
+        CHECK_FALSE(f.projectSession.isOpen());
+
+        // A CANCELLED ProjectLocation result is silent and leaves form.location unchanged.
+        f.flow.dialog = DialogKind::ProjectLocation;
+        DialogResult cancelled;
+        cancelled.ready = true;
+        cancelled.cancelled = true;
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, cancelled, f.project);
+        CHECK(f.project.flow.form.location == dir.utf8());
+    }
+}
+
+TEST_CASE("project: clearRecentProjects empties the list and marks it dirty (P80/AC-25)") {
+    FlowFixture f;
+    SceneSession session;
+    f.recents.paths = {"/a", "/b"};
+    f.project.flow.clearRecentsRequested = true;
+
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+    CHECK(f.recents.paths.empty());
+    CHECK(f.projectFlow.recentsDirty);
+    CHECK_FALSE(f.project.flow.clearRecentsRequested);
 }

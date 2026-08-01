@@ -28,6 +28,9 @@ struct FileMenuContext {
     SceneSession& session;
     FileFlow& flow;
     FileDialogHost dialogs;  // BY VALUE: two pointers and a string_view
+    // task 2.6.1: a REFERENCE, not a value -- ProjectContext already holds references, and copying
+    // it per frame would be a second object with the same referents.
+    ProjectContext& project;
 };
 
 // Draws the menu bar, the full-viewport dockspace, and every visible panel (Begin/End around

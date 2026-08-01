@@ -35,6 +35,13 @@
 #include <type_traits>
 #include <utility>
 
+#ifndef AERO_ENGINE_VERSION
+    #define AERO_ENGINE_VERSION \
+        "0.0.0"  // a fallback for a hand-rolled build with no CMake definition.
+                 // NOT a build gate (AC-35/D4/INV-P5): no CODE PATH is
+                 // conditional on it -- exactly one string constant is.
+#endif
+
 namespace engine::editor {
 
 namespace {
@@ -188,11 +195,15 @@ bool EditorApp::tick() {
     // all see the post-load scene -- the F12 property (2.4.1 D19), one step earlier, because the
     // RESULT is not a UI event. Guarded: a moved-from EditorApp has a null channel and is deliberately
     // inert (plan A18) rather than crashing on a null dereference.
+    // task 2.6.1: everything the project half of the flow needs, built fresh each frame -- the
+    // PanelContext/FileMenuContext shape, and for the same reason (D7). AERO_ENGINE_VERSION is read
+    // at this ONE call site (D14).
+    ProjectContext projectContext{project, projectFlow, recents, AERO_ENGINE_VERSION};
     if (dialogChannel != nullptr) {
         if (const DialogResult result = dialogChannel->take(); result.ready) {
             CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
             const FileDialogHost host{dialogChannel.get(), nativeWindowHandle(window), projectRootResolved};
-            applyDialogResult(cmd, commandStack, session, fileFlow, host, result);
+            applyDialogResult(cmd, commandStack, session, fileFlow, host, result, projectContext);
         }
     }
     if (window != nullptr) {
@@ -218,7 +229,8 @@ bool EditorApp::tick() {
     // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does not
     // carry (D17), built fresh each frame exactly like panelContext above.
     FileMenuContext fileMenu{session, fileFlow,
-                             FileDialogHost{dialogChannel.get(), nativeWindowHandle(window), projectRootResolved}};
+                             FileDialogHost{dialogChannel.get(), nativeWindowHandle(window), projectRootResolved},
+                             projectContext};
     drawShellUi(registry, panelContext, ui, fileMenu);  // menu bar -> dockspace -> panels
     applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
                                                         // it for View > Reset Layout

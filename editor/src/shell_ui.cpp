@@ -380,7 +380,7 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         // toCommandContext's return is a PRVALUE and push()/undo()/redo() take CommandContext&, so the
         // named local `cmd` is mandatory (2.4.2 §A10's rule).
         CommandContext cmd = toCommandContext(context);
-        applyFileRequests(cmd, context.commands, fileMenu.session, fileMenu.flow, fileMenu.dialogs);
+        applyFileRequests(cmd, context.commands, fileMenu.session, fileMenu.flow, fileMenu.dialogs, fileMenu.project);
     }
     applyHistoryRequests(context, state);  // task 2.4.1, D19/AC-21
     const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());

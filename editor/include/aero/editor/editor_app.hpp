@@ -211,6 +211,12 @@ private:
     platform::Window* window = nullptr;
     SceneSession session;  // the current scene's path (D2/D3: dirtiness itself is NOT stored here)
     FileFlow fileFlow;     // the File-menu state machine's data
+    // task 2.6.1: the open project and its own flow state, plus the recent-projects list. Wired
+    // fully in Step 6 (startup resolution, the reconcile, the request hooks); Step 5 only keeps the
+    // signature changes above compiling.
+    ProjectSession project;
+    ProjectFlow projectFlow;
+    RecentProjects recents;
     // Created once in create(); NEVER null on a LIVE app. NULL only on a moved-from app (a defaulted
     // move leaves the source's shared_ptr empty), which is why the drain in tick() is null-guarded
     // (plan A18) rather than assumed non-null.
