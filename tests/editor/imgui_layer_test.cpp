@@ -25,10 +25,12 @@
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>       // task 2.3.2
+#include <aero/editor/project.hpp>       // task 2.6.1
 #include <aero/editor/scene_bounds.hpp>  // task 2.3.1
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2
+#include <aero/editor/text_file.hpp>          // task 2.6.1: writeTextFileAtomic, for I23/I24's recents file
 #include <aero/editor/transform_command.hpp>  // task 2.4.1
 #include <aero/editor/transform_ops.hpp>      // task 2.4.1
 #include <aero/platform/platform.hpp>
@@ -76,6 +78,35 @@ struct QuietTraceLogging {
     const std::filesystem::path dir = std::filesystem::temp_directory_path();
     const std::filesystem::path file =
         dir / ("aero_imgui_layer_scene_" + std::to_string(++counter) + std::string(suffix));
+    const std::u8string bytes = file.u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+// task 2.6.1 (I18/I21-I24): a fresh DIRECTORY in the OS temp directory, CREATED (createProject
+// requires its `location` argument to already exist) and GUARANTEED EMPTY -- unlike uniqueScenePath
+// above, createProject REFUSES a non-empty target (TargetNotEmpty), so a per-PROCESS counter alone is
+// not enough: two ctest invocations both start counting from 1, and the FIRST run's
+// "aero_imgui_layer_project_1/MyGame" (a real, non-empty scaffolded project) collides with the
+// SECOND run's attempt to create the identically-named project inside it. remove_all FIRST, exactly
+// the tests/editor/project_files_test.cpp TempDir precedent, discharges that regardless of what an
+// earlier run left behind.
+[[nodiscard]] std::string uniqueProjectLocation() {
+    static int counter = 0;
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / ("aero_imgui_layer_project_" + std::to_string(++counter));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    const std::u8string bytes = dir.u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+// task 2.6.1 (I23/I24): a fresh, never-yet-existing recents-file PATH -- the file itself is written
+// by writeTextFileAtomic at each case's own call site, never here.
+[[nodiscard]] std::string uniqueRecentsFile() {
+    static int counter = 0;
+    const std::filesystem::path file =
+        std::filesystem::temp_directory_path() / ("aero_imgui_layer_recents_" + std::to_string(++counter) + ".json");
     const std::u8string bytes = file.u8string();
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
@@ -2209,4 +2240,236 @@ TEST_CASE("editor: a MOVED EditorApp still drives Save As and Open through real 
     moved->requestQuit();
     CHECK(moved->tick() == false);
     moved.reset();
+}
+
+// ---- I18, I21-I24: task 2.6.1's project flow, driven through real frames ---------------------------
+
+TEST_CASE(
+    "editor: a project passed at create() opens and drives the Asset Browser root (task 2.6.1, I18/AC-27/AC-31)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "project i18", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(*device, *window, ctx,
+                                                                                     {.persistLayout = false,
+                                                                                      .unfocusedFrameCapHz = 0.0F,
+                                                                                      .projectPath = created.root,
+                                                                                      .restoreLastProject = false});
+    REQUIRE(app.has_value());
+    CHECK(app->projectIsOpen());
+    CHECK(app->projectName() == "MyGame");
+
+    // D10's reconcile is a startup NO-OP (the panel is BORN with the right root, 2.6.1's whole point)
+    // but this is proven only AFTER a tick -- the reconcile runs inside tick(), never at create().
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    CHECK(app->assetBrowserRoot() == created.root + "/assets");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: requestOpenProject swaps the project and resets the scene in one tick (task 2.6.1, "
+    "I21/AC-18/AC-31)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "project i21", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+    CHECK_FALSE(app->projectIsOpen());
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    // Start from a MUTATED World -- a World already at 3 entities would pass whether or not newScene
+    // actually ran underneath requestOpenProject (2.5.2's EG2 lesson), so an extra entity is created
+    // first to make 3-afterwards a real assertion.
+    //
+    // PLAN DEVIATION, recorded here and in the engineering log: the plan's own §S Step 8 text says to
+    // push a REAL command here and REQUIRE(app->sceneDirty()) before the swap -- tried first, and
+    // measured to behave exactly as AC-19 specifies: OpenProject's discardsWork() is true, so a dirty
+    // scene raises the unsaved-changes modal (confirmOpen) instead of swapping, and this GPU-gated TU
+    // has no mechanism to answer that modal (FileFlow::choice has no public EditorApp accessor,
+    // matching F6's "no ImGui input can be synthesised here"). That is I22's own scenario, not I21's:
+    // "swaps... in one tick" and "a dirty scene guards... behind the modal" cannot both be true of the
+    // same precondition. The World is mutated directly (bypassing the CommandStack, so
+    // commands().isClean() stays true and the guard does not fire) rather than through a pushed
+    // command, which is the only way to keep 2.5.2's EG2 discrimination (a real, non-vacuous reset)
+    // without contradicting AC-19, already covered by I22 immediately below.
+    const engine::Entity extra = app->world().create();
+    (void)extra;
+
+    app->requestOpenProject(created.root);
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(app->projectIsOpen());
+    CHECK(app->projectName() == "MyGame");
+    CHECK(app->world().entityCount() == 3);  // the fresh default scene (AC-18)
+    CHECK_FALSE(app->sceneDirty());
+    CHECK(app->scenePath().empty());
+    CHECK(app->commands().count() == 0);
+
+    // MEASURED, not assumed: the reconcile runs at the TOP of tick() (mirroring the title push's own
+    // placement), BEFORE drawShellUi()'s applyFileRequests() actually performs the swap -- so on the
+    // very tick the swap happens, the reconcile has already run against the PRE-swap project state.
+    // AC-31 promises the root is correct "after a project change from any entry point", not
+    // necessarily within the exact tick the change is requested; one more plain tick is what makes it
+    // observable, exactly as the window title already lags a swap by one tick for the same reason.
+    REQUIRE(app->tick());
+    CHECK(app->assetBrowserRoot() == created.root + "/assets");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a dirty scene guards requestOpenProject behind the modal (task 2.6.1, I22/AC-19)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "project i22", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+
+    const engine::Entity extra = app->world().create();
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                          std::vector<engine::Entity>{extra}, std::vector<engine::Entity>{})));
+    REQUIRE(app->sceneDirty());
+
+    app->requestOpenProject(created.root);
+    REQUIRE(app->tick());  // the unsaved-changes modal is raised; the project has NOT changed
+    CHECK(app->presentedLastFrame());
+    CHECK_FALSE(app->projectIsOpen());
+
+    // requestQuit() is the UNGUARDED direct hook (D14) -- it bypasses the guard entirely, exactly as
+    // the other 35+ GPU-gated smoke tests in this file rely on for teardown regardless of a pending
+    // modal.
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: restoreLastProject opens the first recents entry at create() (task 2.6.1, I23/AC-33/D15)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "project i23", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    engine::editor::RecentProjects recents;
+    recents.paths = {created.root};
+    const std::string recentsFile = uniqueRecentsFile();
+    REQUIRE(engine::editor::writeTextFileAtomic(recentsFile, engine::editor::writeRecentProjectsText(recents)).empty());
+
+    // The ONE case in this file that ENABLES restoreLastProject -- and it ALSO points
+    // recentProjectsPath at a TempDir-style file, so even with restore ON, the real pref path
+    // (~/Library/Application Support/AeroEngine/AeroEditor/ on macOS) is never touched (D15).
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = true,
+                                           .recentProjectsPath = recentsFile});
+    REQUIRE(app.has_value());
+    CHECK(app->projectIsOpen());
+    CHECK(app->projectName() == "MyGame");
+    CHECK(app->projectRoot() == created.root);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: restoreLastProject = false never reads the recents file (task 2.6.1, I24/AC-34/E23)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "project i24", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    engine::editor::RecentProjects recents;
+    recents.paths = {created.root};
+    const std::string recentsFile = uniqueRecentsFile();
+    REQUIRE(engine::editor::writeTextFileAtomic(recentsFile, engine::editor::writeRecentProjectsText(recents)).empty());
+
+    // The SAME file as I23, present on disk -- but restoreLastProject stays false (this file's own
+    // default posture), so it must never be read at all, and no project opens.
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = recentsFile});
+    REQUIRE(app.has_value());
+    CHECK_FALSE(app->projectIsOpen());
+    CHECK(app->projectRoot().empty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }
