@@ -11,6 +11,17 @@
 #include <doctest/doctest.h>
 
 #include <cstddef>
+#include <ostream>  // MSVC ONLY, and not optional: PS15/PS23 compare a std::string_view inside a
+                    // doctest assertion, so doctest's stringification instantiates the BODY of
+                    // operator<<(basic_ostream&, basic_string_view) in <__msvc_string_view.hpp>. MSVC
+                    // reaches that operator through <iosfwd> alone, leaving basic_ostream INCOMPLETE
+                    // (C2027) -- while libc++ and libstdc++ both supply it transitively, so macOS and
+                    // Linux compile this TU clean and cannot see the break. console_model_test.cpp
+                    // makes the identical string_view comparison and builds on MSVC only because it
+                    // includes <aero/core/log.hpp> and inherits <ostream> through spdlog. This TU
+                    // deliberately depends on nothing but project.hpp (D4), so it inherits nothing.
+                    // The include-what-you-use rule in .claude/rules/ci-portability.md, in its MSVC
+                    // direction.
 #include <string>
 #include <string_view>
 #include <vector>
