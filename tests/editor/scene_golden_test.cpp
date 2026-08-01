@@ -8,7 +8,7 @@
 // WHY THIS EXISTS ALONGSIDE THE ENGINE BATTERY. The engine-side golden cases (G1-G10, a sibling
 // tests/ target) already compare the same three files byte-for-byte, but they never touch a file on
 // the WRITE side. This battery is the ONLY test in the tree that can catch the removal of
-// std::ios::binary from editor/src/scene_file.cpp:56 and :76 -- and it can only catch it ON THE
+// std::ios::binary from editor/src/text_file.cpp:57 and :77 -- and it can only catch it ON THE
 // WINDOWS LANE, where text mode would turn every newline into a carriage-return pair on the way out.
 // On macOS and Linux EG3's hygiene assertion is a no-op that can never fail. That is not a weakness;
 // it is the whole reason the assertion is written down.
@@ -214,7 +214,7 @@ TEST_CASE("scene_golden/editor: a save writes the fixture's exact bytes back (EG
 
         // THE WINDOWS CANARY. On macOS and Linux this assertion is a NO-OP -- it cannot fail, because
         // nothing on those platforms rewrites a newline. Its ONLY possible failure is a Windows
-        // text-mode regression: dropping std::ios::binary from editor/src/scene_file.cpp:56 or :76
+        // text-mode regression: dropping std::ios::binary from editor/src/text_file.cpp:57 or :77
         // makes every newline in the written file a carriage-return pair, and this line is the only
         // thing anywhere in the tree that would notice. Do not delete it as untested; it is untestable
         // HERE and load-bearing THERE.
@@ -315,7 +315,7 @@ TEST_CASE("scene_golden/editor: opening a golden logs exactly one INFO and no WA
 }
 
 TEST_CASE("scene_golden/editor: a non-ASCII target directory round-trips byte-identically (EG7/AC-20)") {
-    // editor/src/scene_file.cpp:33-36's pathFromUtf8 constructs from UTF-8 BYTES rather than from a
+    // editor/src/text_file.cpp:34-37's pathFromUtf8 constructs from UTF-8 BYTES rather than from a
     // narrow std::string, which is what makes this work on Windows. Constructed from `char`, the
     // directory below resolves to mojibake or not at all, and the save fails or lands somewhere else.
     // Like EG3's hygiene check this is a Windows-lane assertion: on macOS and Linux both spellings

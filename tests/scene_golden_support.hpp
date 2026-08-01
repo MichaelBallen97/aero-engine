@@ -38,7 +38,7 @@ namespace scene_golden {
 namespace detail {
 
 // The tree's standing UTF-8 -> path construction (engine/core/src/vfs.cpp, editor/src/
-// project_files.cpp, editor/src/scene_file.cpp:33-36). NOT std::filesystem::u8path -- deprecated
+// project_files.cpp, editor/src/text_file.cpp:34-37). NOT std::filesystem::u8path -- deprecated
 // since C++20. Construct from UTF-8 BYTES so a non-ASCII directory resolves on Windows, where path's
 // native encoding is UTF-16 and the narrow-char constructor assumes the ACTIVE CODE PAGE, not UTF-8.
 [[nodiscard]] inline std::filesystem::path pathFromUtf8(std::string_view utf8) {
@@ -88,7 +88,7 @@ struct FileBytes {
     }
     std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
     // .bad(), NOT .fail(): fail() is set by the EOF that ends the istreambuf_iterator loop above,
-    // which is the ordinary, successful termination (editor/src/scene_file.cpp:61-65's rule).
+    // which is the ordinary, successful termination (editor/src/text_file.cpp:62-66's rule).
     if (in.bad()) {
         return {false, {}, "read failed for " + std::string(path)};
     }

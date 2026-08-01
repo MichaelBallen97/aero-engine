@@ -5,6 +5,9 @@
 // aero_editor_shell_test, with no window and no GPU. Held by FILE PLACEMENT (R12), exactly like every
 // other header under editor/include.
 #include <aero/editor/command_stack.hpp>  // CommandContext + CommandStack; forward decls only inside
+#include <aero/editor/text_file.hpp>      // task 2.6.1 (D12): the three file-bytes declarations moved here;
+                                          // every existing call site and every existing test compiles
+                                          // unchanged.
 
 #include <cstddef>
 #include <cstdint>
@@ -111,17 +114,6 @@ void resetSceneState(CommandContext& context, CommandStack& commands);
 // already marks it so, and seedDefaultScene pushes nothing. Never the reverse order: seeding before
 // clearing would leave six entities, not three.
 void newScene(CommandContext& context, CommandStack& commands);
-
-// ---- file bytes (scene_file.cpp; ALL <filesystem>/<fstream> for scenes lives there) --------------
-struct FileReadResult {
-    std::optional<std::string> text;  // engaged == success
-    std::string error;                // OS reason; empty iff `text` is engaged
-};
-[[nodiscard]] FileReadResult readTextFile(std::string_view absolutePathUtf8);
-
-// "" == success. ATOMIC (D12): writes <path>.aero-tmp, CLOSES it, renames over `path`.
-[[nodiscard]] std::string writeTextFileAtomic(std::string_view absolutePathUtf8, std::string_view text);
-[[nodiscard]] bool fileExists(std::string_view absolutePathUtf8);
 
 // ---- serialization (scene_io.cpp; the ONE #if in this task, F9's AERO_REFLECT_TOOLS gate) --------
 [[nodiscard]] bool sceneIoAvailable() noexcept;  // false without AERO_REFLECT_TOOLS

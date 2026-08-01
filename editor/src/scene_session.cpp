@@ -1,7 +1,7 @@
 // Aero Engine — the document model, the pure file-flow guard, and THE scene swap (task 2.5.1). This
 // TU is ImGui-FREE and SDL-FREE at source (plan A13): the whole state machine lives here as free
 // functions so it is testable with no window and no GPU. <filesystem> and the engine's
-// serialization bridge live in scene_file.cpp / scene_io.cpp instead (D19/F17, F9's gate).
+// serialization bridge live in text_file.cpp / scene_io.cpp instead (D19/F17, F9's gate).
 #include <aero/core/log.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/scene_session.hpp>
