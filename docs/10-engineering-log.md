@@ -1926,6 +1926,168 @@ forward.
 `editor/validation/2.6.1-project-json-create-open-flow.md` (local-only) are all `⏳ pending`, following
 the project's own standing rule never to record a PASS in the same pass that writes the code.
 
+##### Task 2.6.1 — code-review round (2 blocking + 6 should-fix, zero new commits sharing docs)
+
+**Found 2 blocking + 6 should-fix defects, all closed** — no new engine change (`git diff
+--name-only origin/main -- engine/` stays empty), no `editor/VALIDATION.md`/`editor/validation/`
+churn committed.
+
+**BLOCKING-1 — the New Project modal never called `ImGui::CloseCurrentPopup()`.** `project_ui.cpp`
+had `OpenPopup`/`BeginPopupModal`/`EndPopup` and zero `CloseCurrentPopup`, unlike
+`drawUnsavedChangesModal`'s four call sites in `shell_ui.cpp`. Clearing `form.open` only stops THIS
+TU from re-submitting the popup next frame; ImGui itself owns `g.OpenPopupStack` and never GCs an
+entry for a popup that simply stops being submitted (`GetTopMostPopupModal()` checks only the
+`Modal` flag, never `Active`), so `imgui.cpp`'s own bookkeeping sets `g.HoveredWindow = NULL` every
+frame thereafter — every menu, panel, button and dock tab becomes unhoverable and unclickable after
+any Create or Cancel, until a stray click happens to trim the stack. Fixed by calling
+`CloseCurrentPopup()` UNCONDITIONALLY on Create, Cancel and the hand-bound Esc handler — a FAILED
+create leaves `form.open == true`, so `project_ui.cpp`'s own `OpenPopup` re-opens the popup next
+frame from that state, exactly like a fresh `NewProject` request would. **No test tier can drive a
+live ImGui popup** (the FileDialogHost/AC-27 precedent), so the regression proof
+(`project_test.cpp`'s `PU1`) is mechanical: it reads `project_ui.cpp`'s OWN SOURCE TEXT (a new
+`AERO_EDITOR_SRC_DIR` compile definition, the `AERO_PROJECT_FIXTURES_DIR` precedent) and asserts
+each of the three closing paths' own `*Requested = true;` line is followed, within a small window,
+by a `CloseCurrentPopup()` call — the same textual-grep principle the five CI architecture guards
+already use, run as a doctest case because what is being checked is one file's own text, not a
+repo-wide invariant.
+
+**BLOCKING-2 — the GPU suite overwrote the real, machine-wide `recent_projects.json`.** I18 and I21
+(`imgui_layer_test.cpp`) set `.restoreLastProject = false` but no `.recentProjectsPath`; `restoreLastProject
+== false` only ever suppressed the READ (`readRecentProjects` at `create()`), never the WRITE — the
+recents flush inside `tick()` (`if (projectFlow.recentsDirty) { writeRecentProjects(recentsPath,
+recents); }`) runs unconditionally on `recentsDirty`, and `recentsPath` resolves to
+`defaultRecentProjectsPath()` (`~/Library/Application Support/AeroEngine/AeroEditor/recent_projects.json`
+on macOS) whenever `config.recentProjectsPath` is empty, with no dependency on `restoreLastProject`
+at all. **Confirmed already landed on the implementation machine**: the real file read a stray
+`aero_imgui_layer_project_2/MyGame` entry before this fix. Fixed by pointing both cases at
+`uniqueRecentsFile()` (I23/I24's own helper) and auditing every other `EditorAppConfig` literal in
+the file for the same hole — none found (only three `.projectPath` assignments exist tree-wide: `""`,
+a nonexistent path, and I18's `created.root`; only I18/I21/I22 call `requestOpenProject`, and I22's
+own scenario is a GUARDED swap that never reaches `adoptProject`). The file-top banner (previously
+"no test ever reads the real pref directory") now states the write-side risk explicitly too.
+**Decision on the harder question — should `restoreLastProject == false` also suppress the flush:
+NO.** The two are deliberately orthogonal: `restoreLastProject` is about auto-opening at LAUNCH;
+the recents flush is about remembering whatever project a session actually opened, for a FUTURE
+launch (which might set `restoreLastProject = true`). Conflating them would silently break "don't
+auto-restore, but do remember what I just opened" for any real embedder that wants exactly that
+combination — a new bug disguised as a fix. The real defect was that tests left
+`recentProjectsPath` unset, not that the write path exists; comprehensive test coverage is the
+correct fix, not narrowing production behavior. **Acceptance test, run and confirmed**: deleted the
+polluted `~/Library/Application Support/AeroEngine/AeroEditor/recent_projects.json`, re-ran the full
+`AERO_REQUIRE_GPU=1 ctest` suite (95/95 green), and confirmed the directory stayed empty afterward —
+the file is not recreated.
+
+**Closed S15 (the reviewer's condition for merge).** `EditorApp::recentProjectCount()` added (the
+`assetBrowserRoot()`/A9 precedent — a fourth black-box accessor existing only because AC-34 had no
+signature to assert against otherwise), and I24 now asserts `recentProjectCount() == 0` directly
+rather than only through the downstream consequence (`projectIsOpen()`/`projectRoot()` staying
+empty) — this is what makes sabotage seed S15 (dropping the `if (config.restoreLastProject)` guard
+around `readRecentProjects`) redden.
+
+**SHOULD-FIX 5 — the Browse button had no in-flight dialog interlock, and an orphaned result fell
+into the Save arm (2.5.1's BLOCKING-2 shape again).** `applyFileRequests`'s `browseRequested`
+consumer ran at step 0, before the refusal check further down (`flow.dialog != DialogKind::None ||
+...`), with no dialog-state guard of its own — every OTHER launcher in the file is protected by that
+later check, this one uniquely was not. A second Browse click before the first answers overwrites
+`flow.dialog` and (with a real channel) launches a SECOND native dialog; `DialogChannel::take()`
+always resets its slot, so whichever result answers SECOND is consumed with `flow.dialog` already
+reset to `None` by the first. `applyDialogResult`'s kind chain had no arm for `kind == None` and its
+final arm never even checked `kind == DialogKind::Save` explicitly ("by elimination," per its own
+comment) — an orphan fell straight through into it, silently saving the CURRENT scene to
+`"<picked folder>.scene.json"` and rebinding the session path. **Two independent one-line closures,
+both applied**: the browse arm now also requires `flow.dialog == DialogKind::None`, and
+`applyDialogResult` now returns immediately when `kind == DialogKind::None`, before touching
+`flow.pending`/`saveBeforePending`/`requestedPath` (none of those belong to an unrelated orphan).
+`scene_session_test.cpp`'s new `SS35` drives the orphan-result half directly (a `flow.dialog ==
+DialogKind::None` result arriving with `ready = true` and its own path); the browse-arm interlock
+itself is **not independently testable at any tier** — launching a real dialog with no parent window
+would risk a blocking `[dialog runModal]` on macOS (`file_dialog.cpp`'s own A1 note), so proving it
+would require the one thing this codebase has never risked in a test.
+
+**SHOULD-FIX 8 — `createProject` computed the wrong root for a project literally named
+`"project.json"`.** `validateProjectName("project.json")` is `Ok` (no separator, not a dot-name, not
+a reserved device name), so `createProject` legitimately scaffolds
+`<location>/project.json/{assets,scenes,project.json}` — but `out.root` was re-derived by running the
+scaffolded `target` path back through `projectRootFromPath`, whose manifest-name strip fires
+whenever the FINAL path component reads `"project.json"` (a rule meant for a CALLER-supplied path
+that might already end in the manifest file name, not for a root this function just built with its
+own hands) — taking `out.root` one level too high, silently. Fixed by normalizing `target` ONCE with
+`.lexically_normal()` at construction and using `utf8FromPath(target)` VERBATIM for `out.root`,
+never re-deriving it. New case `P83` proves both `createProject`'s own output and the real
+`createAndOpenProject` flow (which adopts `outcome.root` directly) land at the correct directory;
+re-opening that SAME directory later by PATH remains a distinct, pre-existing, out-of-scope
+ambiguity (`projectRootFromPath` cannot tell "the manifest file" from "a root whose own name happens
+to be `project.json`") and is documented, not fixed, in the new test's own comment.
+
+**SHOULD-FIX 3/4 — two ACs claimed proven in the plan's §T with nothing that actually executed
+them.** Every `ProjectContext` under `tests/` carried `engineVersion = ""` (`FlowFixture`'s own
+default), so AC-7's mismatch WARN and its `!empty()` guard were both unexercised; no case ever
+called `openProjectPath` on a manifest with unknown keys, so AC-6's WARN **emission loop** (as
+opposed to the parse-level collection PG7 already covered) never ran. New cases `P81` (a minimal
+pair: `FlowFixture`'s own `""` engine version asserts `Warn == 0`, a second `ProjectContext` sharing
+the same session/flow/recents but with `engineVersion = "9.9.9"` asserts `Warn == 1` and
+`isOpen()`) and `P82` (the `unknown-keys.project.json` fixture's bytes written into a fresh
+`TempDir` and opened through the real `openProjectPath`, asserting `Warn == 3`). The AC-7 WARN
+message was also added to `docs/09` §4.7's "Success-only warnings" table, which Step 10a required
+and had omitted.
+
+**SHOULD-FIX 6 — `project_file.cpp`'s banner was false.** It claimed "NEVER LOGS, with exactly ONE
+exception" (the pref-path CWD fallback); the file actually has three `AERO_LOG_WARN` sites — the
+other two (`readRecentProjects`'s corrupt-file WARN, `writeRecentProjects`'s write-failure WARN) are
+required by AC-23/AC-24 and were simply left out of the count. The code was already correct; only
+the comment was rewritten.
+
+**SHOULD-FIX 7 — `docs/09` §4.3 (project name validation) contradicted `validateProjectName` in
+three rows.** Row 1 omitted that the Empty check trims first; Row 6 said "starts or ends with a
+space," but the code checks only `utf8.back()` — a LEADING space is legal (`" Foo"` is `Ok` and
+scaffolds a directory literally named that); Row 5's `IllegalChar` set listed `/` and `\`, which are
+actually caught earlier by the `Separator` rule and can never reach `IllegalChar`. **Decision: the
+code is spec-correct (D6 says only "no trailing space and no trailing `.`") and the doc
+over-stated it — `docs/09` §4.3 was corrected to describe actual behavior; `validateProjectName`
+was not touched.** Noted here, per the reviewer's own instruction, as the record of a deliberate
+choice: a leading space in a project name is legal, on purpose, not an oversight.
+
+**Sixth architecture guard: `check-project-no-delete.sh` (D7/INV-P4), promoted from a plan-only
+grep.** The reviewer accepted sabotage seed S11 (`createProject`'s `WriteFailed` rollback branch is
+genuinely unreachable by any test in the tree) as documented debt on ONE condition: the only
+artefact proving a future `remove_all` would be caught was the plan's own §V7 grep, and
+`docs/plans/` is gitignored — that grep ceases to exist the moment this branch merges. Added
+`.github/scripts/check-project-no-delete.sh`, following the five existing guards' exact shape
+(anti-vacuity self-tests, an 0/1/2 exit contract, `GITHUB_ACTIONS` annotations), asserting that
+`remove_all`/`std::filesystem::remove`/`std::filesystem::rename`/a bare `::copy` never appears as
+CODE (comment-stripped, the scene/rhi-boundary precedent) in exactly `editor/src/project.cpp`,
+`project_file.cpp` and `project_ui.cpp` — a THREE-NAMED-FILE allowlist, not a glob over
+`editor/src/`, since the invariant is specific to the project flow. Proven red-on-violation by a new
+hermetic ctest case, `project-no-delete.no_delete_e2e` (`tests/project-no-delete/no_delete_e2e.cmake`,
+mirroring `golden-rule.include_scan_e2e`'s scratch-git-repo shape exactly: six stages covering all
+four forbidden forms, the comment-stripping false-positive proof, and the canary/vacuity exit-2
+path), wired into `tests/CMakeLists.txt` right after the golden-rule e2e block and into `ci.yml`'s
+`lint` job right after the golden-rule step. **Sabotage-proofed the guard itself, both directions**:
+seeding a real `std::filesystem::remove_all` call into `project_file.cpp` reddens the guard
+(confirmed, then reverted); weakening `FORBIDDEN_RE` to drop the `remove_all` alternative makes the
+e2e ctest case itself go FATAL (self-test 2 catches it before the seeded stage even runs) — the
+"breaking the guard is the real test" rule (`.claude/rules/boundary-guards.md`), applied here rather
+than merely asserted. This is a **new ctest entry** in all three configurations: `94/5/18 → 95/6/19`.
+
+**Verification, all green:** `macos-debug` and `macos-release` full ctest (95/95 both, `git status
+--short` after each build empty), `AERO_REQUIRE_GPU=1 ctest --preset macos-debug` (95/95, including
+the real-recents-file acceptance test above), `-DAERO_REFLECT_TOOLS=OFF` (19/19 ctest,
+`aero_editor_shell_test` **337** cases, up from 332 — a figure `CLAUDE.md` had never recorded after
+2.6.1's own implementation, closed alongside this round), `-DAERO_REFLECT_TOOLS=OFF
+-DAERO_SHADER_TOOLS=OFF` (6/6 ctest). `aero_editor_shell_test` tools-ON: **361**, up from 356 (+5:
+`P81`/`P82`/`P83`/`PU1` in `project_test.cpp`, `SS35` in `scene_session_test.cpp`).
+`check-math-boundary.sh` stayed at **241** (no new C-family file — only `.sh`/`.cmake` additions and
+edits to existing `.cpp`/`.hpp`). `git diff --name-only origin/main -- engine/` stayed empty.
+clang-format and clang-tidy (`--warnings-as-errors='*'`) clean on every touched file, including one
+real finding of its own: a new `constexpr std::string_view` local named `sourcePath` failed
+`readability-identifier-naming` (must be `SCREAMING_SNAKE_CASE` even as a local) — renamed to
+`SOURCE_PATH`. Two doctest bugs found and fixed while writing the new cases before they ever reached
+CI: `P81`'s two `LogSink::take()` calls shared one `records` vector without an intervening
+`.clear()` between blocks (the API's own documented precondition), aborting under `assert`; and
+`P83`'s second `createAndOpenProject` call reused the SAME `TempDir` a prior `createProject` call had
+already scaffolded a non-empty `"project.json"` directory into, tripping `TargetNotEmpty` — fixed
+with a second, fresh `TempDir`.
+
 ---
 
 ## 2.2.5-R — log/console panel, standalone re-validation (2026-08-01)
