@@ -154,8 +154,11 @@ TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke
         *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
-    // The D8 registration -- the ONE absolute panel count in the tree.
-    CHECK(app->panels().count() == 5);
+    // The D8 registration -- FOUR absolute panel-count sites in the tree (this one plus :219, :447 and
+    // :551), all of which moved from 5 to 6 the moment task 2.6.2 registered the sixth default panel,
+    // "Project Settings". (`:1360`/`:1366`'s captured `panelCountBefore` is a fifth, count-agnostic
+    // site by construction -- the "gizmo" window is not a panel -- and is NOT one of the four.)
+    CHECK(app->panels().count() == 6);
 
     // wantsDefaultLayout() is true even with persistLayout = false (F1b), so frame 1 below exercises
     // buildDefaultLayout for real. Use REQUIRE on tick(), not CHECK: a spurious Quit/WindowClose from
@@ -216,7 +219,7 @@ TEST_CASE("editor: the Hierarchy panel draws a seeded scene and survives edits (
 
     // AC-18: the default config seeds three entities.
     CHECK(app->world().entityCount() == 3);
-    CHECK(app->panels().count() == 5);
+    CHECK(app->panels().count() == 6);
     CHECK(app->selection().empty());
 
     for (int i = 0; i < 3; ++i) {
@@ -444,7 +447,7 @@ TEST_CASE(
                                                                                       .projectPath = "",
                                                                                       .restoreLastProject = false});
     REQUIRE(app.has_value());
-    CHECK(app->panels().count() == 5);
+    CHECK(app->panels().count() == 6);
     CHECK_FALSE(app->projectIsOpen());
     CHECK(app->assetBrowserRoot().empty());
 
@@ -549,7 +552,7 @@ TEST_CASE("editor: the Console panel draws the engine log stream (task 2.2.5)") 
     REQUIRE(app.has_value());
 
     // The D8 registration -- the ONE absolute panel count in the tree (plan C3's proof).
-    CHECK(app->panels().count() == 5);
+    CHECK(app->panels().count() == 6);
 
     // The create()-time records are staged in the sink; only the pump fills the history.
     CHECK(app->logRecordCount() == 0);
