@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Aero Engine — the project-no-delete architecture guard (task 2.6.1, code-review round; D7/INV-P4).
+#
+# INV-P4 (.claude/rules/editor.md's "Projects" section): a createProject FAILURE never deletes
+# anything it already created, on ANY failure path, EVER -- the target directory, assets/, scenes/,
+# whatever exists at the moment of failure, all stay exactly as they are. The reviewer accepted
+# sabotage seed S11 (the WriteFailed branch's rollback is genuinely unreachable by any test in this
+# tree -- the directoryIsEmpty gate at the adoption step always fires first) as DOCUMENTED DEBT, on
+# ONE condition: the only artefact that proved a future `remove_all` would be caught was §V7's grep in
+# the task's own plan file -- and `docs/plans/` is GITIGNORED, so that grep ceases to exist the moment
+# this branch merges. This script is what replaces "the safety-critical branch is unproven" with "the
+# offending call cannot be written at all", which is strictly stronger and, unlike the plan's grep,
+# survives the merge.
+#
+# THE INVARIANT: none of `remove_all`, `std::filesystem::remove`, `std::filesystem::rename`, or a
+# bare `::copy` (covers `std::filesystem::copy` and an `fs::copy` alias alike) may appear as CODE in
+# editor/src/project.cpp, editor/src/project_file.cpp or editor/src/project_ui.cpp -- the three files
+# that own every filesystem-writing line in the whole project flow (D7). This is deliberately an
+# ALLOWLIST OF THREE NAMED FILES, not a glob over editor/src/ -- the invariant is specific to the
+# project flow, and a glob would also flag legitimate deletion elsewhere in the editor (e.g. a future
+# asset-deletion feature) that this task's D7 says nothing about.
+#
+# WHY COMMENT-STRIPPED (the check-scene-boundary.sh / check-rhi-boundary.sh precedent): a future
+# maintainer explaining WHY a call is forbidden, in a comment, must not itself trip the guard it is
+# describing.
+#
+# Run it locally before pushing:
+#     bash .github/scripts/check-project-no-delete.sh
+# NOTE: it scans TRACKED files only -- `git add` a new file before expecting it to be seen.
+#
+# bash 3.2 compatible on purpose (macOS ships 3.2.57): no mapfile, no associative arrays.
+
+set -euo pipefail
+
+# The exact three files D7/INV-P4 governs. Order matches the "Files touched" table (project.hpp is
+# PURE and <filesystem>-free by construction -- AC-38 -- so it is not in this list at all; nothing to
+# scan there).
+readonly FORBIDDEN_FILES=(
+  "editor/src/project.cpp"
+  "editor/src/project_file.cpp"
+  "editor/src/project_ui.cpp"
+)
+
+# remove_all | std::filesystem::remove | std::filesystem::rename | ::copy -- exactly the four tokens
+# the code-review finding names. `std::filesystem::remove` also matches the PREFIX of
+# `std::filesystem::remove_all`, so the two alternatives overlap deliberately rather than needing a
+# fifth, narrower pattern.
+readonly FORBIDDEN_RE='(remove_all|std::filesystem::remove|std::filesystem::rename|::copy)'
+
+cd "$(git rev-parse --show-toplevel)"
+
+# --- Self-test 1: every named file must exist and be TRACKED. -------------------------------------
+# Without this, a rename of any of the three (project_file.cpp -> project_fs.cpp, say) would silently
+# shrink the scan to fewer files instead of refusing to pass.
+for f in "${FORBIDDEN_FILES[@]}"; do
+  if [ ! -f "$f" ]; then
+    echo "::error::project-no-delete guard: '$f' is missing. Was it renamed? The guard cannot self-verify," >&2
+    echo "         so it is refusing to pass. Update FORBIDDEN_FILES in $0." >&2
+    exit 2
+  fi
+  if [ -z "$(git ls-files -- "$f")" ]; then
+    echo "::error::project-no-delete guard: '$f' exists but is not tracked by git -- the guard scans" >&2
+    echo "         tracked files only ('git add' it), so it is refusing to pass rather than silently" >&2
+    echo "         scanning nothing for this file." >&2
+    exit 2
+  fi
+done
+
+# --- Self-test 2: the regex actually fires on each of the four forbidden forms. --------------------
+for probe in \
+  'std::filesystem::remove_all(target, ec);' \
+  'std::filesystem::remove(target, ec);' \
+  'std::filesystem::rename(target, dest, ec);' \
+  'std::filesystem::copy(target, dest, ec);'; do
+  if ! printf '%s\n' "$probe" | grep -qE "$FORBIDDEN_RE"; then
+    echo "::error::project-no-delete guard: FORBIDDEN_RE in $0 no longer matches '$probe' -- it is" >&2
+    echo "         vacuous for that form. Fix FORBIDDEN_RE." >&2
+    exit 2
+  fi
+done
+
+# --- Self-test 3: comment-stripping is load-bearing and does not over-match. -----------------------
+if printf '// never call std::filesystem::remove_all here (D7/INV-P4)\n' | sed 's|//.*||' | grep -qE "$FORBIDDEN_RE"; then
+  echo "::error::project-no-delete guard: comment-stripping in $0 is broken -- a pure comment line" >&2
+  echo "         still matches." >&2
+  exit 2
+fi
+if printf 'the target directory may need to be removed by the USER, by hand\n' | grep -qE "$FORBIDDEN_RE"; then
+  echo "::error::project-no-delete guard: FORBIDDEN_RE in $0 over-matches ordinary prose containing" >&2
+  echo "         the bare word 'removed' -- fix the regex." >&2
+  exit 2
+fi
+
+# --- The guard. --------------------------------------------------------------------------------
+violations=""
+for f in "${FORBIDDEN_FILES[@]}"; do
+  # Line-numbered, comment-stripped view, exactly the check-scene-boundary.sh / check-rhi-boundary.sh
+  # shape (BSD-safe: nl -ba -w1 -s, then strip `//...`).
+  stripped="$(nl -ba -w1 -s: "$f" | sed -E 's|//.*||')"
+  hits="$(printf '%s\n' "$stripped" | grep -E "$FORBIDDEN_RE" || true)"
+  if [ -n "$hits" ]; then
+    while IFS= read -r hit; do
+      n="${hit%%:*}"
+      violations="${violations}${f}:${n}: a filesystem delete/rename/copy call in the project flow (D7/INV-P4)
+"
+    done <<< "$hits"
+  fi
+done
+
+if [ -n "$violations" ]; then
+  echo "A delete/rename/copy call leaked into the project flow -- task 2.6.1 D7/INV-P4:" >&2
+  echo "$violations" >&2
+  echo "" >&2
+  echo "Fix: a createProject failure must NEVER remove, rename or copy anything it already created," >&2
+  echo "     on ANY failure path. Leave the half-made directory inert and report the failure instead" >&2
+  echo "     (see .claude/rules/editor.md's \"Projects (task 2.6.1)\" section)." >&2
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    while IFS= read -r v; do
+      [ -z "$v" ] && continue
+      f="${v%%:*}"; rest="${v#*:}"; n="${rest%%:*}"
+      echo "::error file=${f},line=${n}::a filesystem delete/rename/copy call leaked into the project flow (task 2.6.1 D7/INV-P4). Never remove/rename/copy anything a createProject failure already created."
+    done <<< "$violations"
+  fi
+  exit 1
+fi
+
+echo "project-no-delete guard: OK -- ${#FORBIDDEN_FILES[@]} files scanned; no delete/rename/copy call in the project flow"

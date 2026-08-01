@@ -187,7 +187,13 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   the `WriteFailed` branch (the manifest write itself failing after both directories already exist) is
   structurally unreachable by any test in this tree, confirmed by direct sabotage (seed S11: adding a
   `remove_all` rollback there reddens nothing at all, in either build tier). Do not read a green suite
-  as evidence this line holds on that specific branch — it is a real, open coverage gap.
+  as evidence this line holds on that specific branch — it is a real, open coverage gap. **Since the
+  code-review round, this is also a CI guard, not only a coverage gap**:
+  `.github/scripts/check-project-no-delete.sh` (the sixth architecture guard, proven red-on-violation
+  by ctest case `project-no-delete.no_delete_e2e`) makes `remove_all`/`std::filesystem::remove`/
+  `std::filesystem::rename`/a bare `::copy` a hard CI failure the instant one is WRITTEN into
+  `project.cpp`, `project_file.cpp` or `project_ui.cpp` — the untested `WriteFailed` branch cannot be
+  "fixed" with a rollback that would violate this rule even once a test could reach it.
 - **`std::filesystem::create_directory`/`create_directories` on an ALREADY-EXISTING directory returns
   `false` with NO `error_code` set (measured, not assumed).** Deciding a scaffold failure from the
   bool return instead of from `ec` breaks the legal "adopt an existing empty directory" path every

@@ -170,6 +170,17 @@ jobs:
         # violation that is invisible to any #include scan.
         run: bash .github/scripts/check-golden-rule.sh
 
+      - name: Project flow — no delete/rename/copy in createProject's three files
+        shell: bash
+        # Sixth architecture guard (task 2.6.1, code-review round; D7/INV-P4). A createProject failure
+        # must never remove, rename or copy anything it already created, on any failure path. Like the
+        # platform/rhi/scene/golden-rule guards this is a SCRIPT, not a bare grep, so a comment
+        # explaining WHY a call is forbidden never trips the check it is describing. Scoped to exactly
+        # three named files (editor/src/project.cpp, project_file.cpp, project_ui.cpp), not a glob over
+        # editor/src/ -- the invariant is specific to the project flow. Proven red-on-violation by the
+        # hermetic ctest case project-no-delete.no_delete_e2e.
+        run: bash .github/scripts/check-project-no-delete.sh
+
   build:
     name: ${{ matrix.name }}
     needs: vcpkg-baseline        # don't spend build minutes if the pin is broken
