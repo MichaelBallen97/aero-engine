@@ -31,7 +31,7 @@ int runEditor(std::string_view rootArg) {
     }
     // RAII order ctx -> window -> device -> app is load-bearing: ~EditorApp runs before ~Device/~Window/~Context.
     std::optional<editor::EditorApp> app =
-        editor::EditorApp::create(*device, *window, ctx, {.projectRoot = std::string(rootArg)});
+        editor::EditorApp::create(*device, *window, ctx, {.projectPath = std::string(rootArg)});
     if (!app) {
         AERO_LOG_CRITICAL("editor: EditorApp::create failed");
         return 1;
@@ -41,10 +41,12 @@ int runEditor(std::string_view rootArg) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    // Task 2.2.4: an optional argv[1] is the project directory to browse; bare `aero_editor` browses
-    // the process working directory, so the shipped editor always shows something real. NOT validated
-    // here (D17) -- an unusable path is a PANEL state, and the editor must still open, dock and quit.
-    // Extra arguments are ignored; there is no CLI to speak of yet (2.6.1 owns Open Project).
+    // Task 2.6.1: an optional argv[1] is the PROJECT to open -- either the project directory or a
+    // path to its project.json; both normalize to the same root (AC-17). With no argument the editor
+    // opens the most recent project that still has a project.json on disk, and with none of those it
+    // opens in the no-project state and shows the Welcome window (D0). NOT validated here (2.2.4's
+    // D17, preserved): an unusable path is one ERROR plus the no-project state, and the editor must
+    // still open, dock and quit. Extra arguments are ignored; there is no CLI to speak of yet.
     try {
         return runEditor(argc > 1 ? argv[1] : "");
     } catch (const std::exception& e) {

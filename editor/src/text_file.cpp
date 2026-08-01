@@ -1,10 +1,11 @@
-// Aero Engine — the only place a scene's bytes touch the disk (task 2.5.1, D12/D19/F16/F17). THE ONLY
-// editor TU under this task that includes <filesystem>/<fstream>. NEVER THROWS: every call uses the
-// std::error_code overload (project_files.cpp's E20 rule). NOTHING HERE LOGS -- status is RETURNED,
-// never printed (project_files.hpp:15-16's convention, applied a second time): the caller
-// (scene_session.cpp's openSceneFile/saveSceneFile) knows both the path and the outcome, this TU only
-// the outcome.
-#include <aero/editor/scene_session.hpp>
+// Aero Engine — the only place the editor's text files touch the disk (task 2.5.1 D12/D19/F16/F17;
+// promoted to its own header at task 2.6.1, D12). THE ONLY editor TU under this task that includes
+// <filesystem>/<fstream>. NEVER THROWS: every call uses the std::error_code overload
+// (project_files.cpp's E20 rule). NOTHING HERE LOGS -- status is RETURNED, never printed
+// (project_files.hpp:15-16's convention, applied a second time): the caller (scene_session.cpp's
+// openSceneFile/saveSceneFile, project_file.cpp's loadProjectFrom/createProject) knows both the path
+// and the outcome, this TU only the outcome.
+#include <aero/editor/text_file.hpp>
 
 #include <cerrno>
 #include <cstddef>

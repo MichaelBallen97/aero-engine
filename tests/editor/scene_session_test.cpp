@@ -457,6 +457,14 @@ struct FlowFixture {
     CommandContext ctx{world, selection, roots};
     FileFlow flow;
     const FileDialogHost host{};  // channel == nullptr: the tier-0 seam
+    // task 2.6.1: the project half of the flow. Owned here so no case can accidentally share one.
+    // NAMED projectSession, not `session`: every case below already declares a local
+    // `SceneSession session;`, and a member of the same name would shadow confusingly. No trailing
+    // underscore -- members are plain camelBack (docs/04).
+    engine::editor::ProjectSession projectSession;
+    engine::editor::ProjectFlow projectFlow;
+    engine::editor::RecentProjects recents;
+    engine::editor::ProjectContext project{projectSession, projectFlow, recents, ""};
 
     void makeDirty() {
         const engine::Entity a = world.create();
@@ -472,7 +480,7 @@ TEST_CASE("scene_session: New performs immediately when clean, and produces thre
     SceneSession session;
     f.flow.requested = FileAction::NewScene;
 
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
     CHECK(f.world.entityCount() == 3);
     CHECK(f.flow.requested == FileAction::None);
@@ -484,12 +492,12 @@ TEST_CASE("scene_session: a request never survives its frame (SS22)") {
     FlowFixture f;
     SceneSession session;
     f.flow.requested = FileAction::NewScene;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
     CHECK(f.flow.requested == FileAction::None);
     CHECK_FALSE(f.flow.choice.has_value());
 
     const std::size_t countAfterFirst = f.world.entityCount();
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);  // a second call is a no-op
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);  // a second call is a no-op
     CHECK(f.world.entityCount() == countAfterFirst);
 }
 
@@ -500,7 +508,7 @@ TEST_CASE("scene_session: the guard raises on a dirty document (SS23)") {
     const std::size_t countBefore = f.world.entityCount();
     f.flow.requested = FileAction::NewScene;
 
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
     CHECK(f.world.entityCount() == countBefore);  // UNCHANGED
     CHECK(f.flow.pending == FileAction::NewScene);
@@ -514,11 +522,11 @@ TEST_CASE("scene_session: Cancel changes nothing and leaves no pending action (S
     const std::size_t countBefore = f.world.entityCount();
     const bool cleanBefore = f.commands.isClean();
     f.flow.requested = FileAction::NewScene;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
     REQUIRE(f.flow.confirmOpen);
 
     f.flow.choice = ConfirmChoice::Cancel;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
     CHECK(f.world.entityCount() == countBefore);
     CHECK(f.commands.isClean() == cleanBefore);
@@ -526,7 +534,7 @@ TEST_CASE("scene_session: Cancel changes nothing and leaves no pending action (S
     CHECK_FALSE(f.flow.confirmOpen);
 
     // A further frame does nothing -- no pending action survived (S21's discriminator).
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
     CHECK(f.world.entityCount() == countBefore);
 }
 
@@ -535,11 +543,11 @@ TEST_CASE("scene_session: Don't Save performs immediately (SS25)") {
     SceneSession session;
     f.makeDirty();
     f.flow.requested = FileAction::NewScene;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
     REQUIRE(f.flow.confirmOpen);
 
     f.flow.choice = ConfirmChoice::Discard;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
     CHECK(f.world.entityCount() == 3);  // the new scene
     CHECK(f.commands.count() == 0);
@@ -553,19 +561,19 @@ TEST_CASE("scene_session: Quit is guarded and confirmable; a clean quit needs no
         SceneSession session;
         f.makeDirty();
         f.flow.requested = FileAction::Quit;
-        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
         CHECK_FALSE(f.flow.quitConfirmed);
         CHECK(f.flow.confirmOpen);
 
         f.flow.choice = ConfirmChoice::Discard;
-        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
         CHECK(f.flow.quitConfirmed);
     }
     {
         FlowFixture f;  // clean
         SceneSession session;
         f.flow.requested = FileAction::Quit;
-        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
         CHECK(f.flow.quitConfirmed);  // immediately -- no modal
         CHECK_FALSE(f.flow.confirmOpen);
     }
@@ -591,7 +599,7 @@ TEST_CASE("scene_session: a dialog in flight swallows every request (SS27/D8/AC-
         records.clear();  // LogSink::take requires `out` empty on entry
 
         f.flow.requested = action;
-        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
         CHECK(f.world.entityCount() == countBefore);
         CHECK(f.flow.pending == FileAction::None);
@@ -615,7 +623,7 @@ TEST_CASE("scene_session: the unsaved-changes modal swallows every request too (
     SceneSession session;
     f.makeDirty();
     f.flow.requested = FileAction::Quit;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);  // raises the modal
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);  // raises the modal
     REQUIRE(f.flow.confirmOpen);
     REQUIRE(f.flow.pending == FileAction::Quit);
     const std::size_t countBefore = f.world.entityCount();
@@ -623,7 +631,7 @@ TEST_CASE("scene_session: the unsaved-changes modal swallows every request too (
     for (const FileAction action : {FileAction::NewScene, FileAction::OpenScene, FileAction::SaveScene,
                                     FileAction::SaveSceneAs, FileAction::Quit}) {
         f.flow.requested = action;
-        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
         CHECK(f.world.entityCount() == countBefore);
         CHECK(f.flow.dialog == engine::editor::DialogKind::None);  // nothing was launched
         CHECK(f.flow.confirmOpen);                                 // the modal itself is untouched
@@ -636,13 +644,13 @@ TEST_CASE("scene_session: a modal answer beats a new request carried in the same
     SceneSession session;
     f.makeDirty();
     f.flow.requested = FileAction::NewScene;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);  // raises the modal
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);  // raises the modal
     REQUIRE(f.flow.confirmOpen);
 
     // ONE call carrying BOTH the modal's answer AND a fresh request.
     f.flow.choice = ConfirmChoice::Discard;
     f.flow.requested = FileAction::NewScene;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
     CHECK(f.world.entityCount() == 3);  // the pending New performed, then the fresh New performed too
     CHECK(f.flow.requested == FileAction::None);
@@ -662,13 +670,13 @@ TEST_CASE("scene_session: a modal answer resolves BEFORE a same-frame request re
     SceneSession session;
     f.makeDirty();
     f.flow.requested = FileAction::NewScene;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);  // raises the modal
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);  // raises the modal
     REQUIRE(f.flow.confirmOpen);
     REQUIRE(f.flow.pending == FileAction::NewScene);
 
     f.flow.choice = ConfirmChoice::Cancel;
     f.flow.requested = FileAction::NewScene;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
     CHECK(f.flow.requested == FileAction::None);
     CHECK_FALSE(f.flow.choice.has_value());
@@ -691,7 +699,7 @@ TEST_CASE("scene_session: applyDialogResult -- cancelled is silent, failed logs 
     engine::editor::DialogResult cancelled;
     cancelled.ready = true;
     cancelled.cancelled = true;
-    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, cancelled);
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, cancelled, f.project);
     scope.sink()->take(records);
     CHECK(f.flow.dialog == engine::editor::DialogKind::None);
     CHECK(f.flow.pending == FileAction::None);
@@ -704,7 +712,7 @@ TEST_CASE("scene_session: applyDialogResult -- cancelled is silent, failed logs 
     engine::editor::DialogResult failed;
     failed.ready = true;
     failed.failed = true;
-    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, failed);
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, failed, f.project);
     scope.sink()->take(records);
     CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
 }
@@ -725,7 +733,7 @@ TEST_CASE(
     engine::editor::DialogResult result;
     result.ready = true;
     result.path = dir.join("missing-subdir/x.scene.json");  // the directory does not exist -> write fails
-    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, result);
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, result, f.project);
 
     CHECK(f.flow.pending == FileAction::None);  // abandoned, not merely deferred
     CHECK_FALSE(f.flow.saveBeforePending);
@@ -743,12 +751,44 @@ TEST_CASE("scene_session: performAction with no channel and no requestedPath is 
     records.clear();
 
     f.flow.requested = FileAction::OpenScene;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
     scope.sink()->take(records);
     CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
     CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
     CHECK(countAtLevel(records, engine::LogLevel::Info) == 0);
+    CHECK(f.flow.dialog == engine::editor::DialogKind::None);
+}
+
+TEST_CASE(
+    "scene_session: applyDialogResult drops an orphaned result whose dialog kind is already None "
+    "(SS35/SHOULD-FIX-5)") {
+    // 2.6.1's code-review round: a second Browse click before the first project-location dialog
+    // answers overwrites `flow.dialog` and (with a real channel) launches a SECOND native dialog.
+    // `DialogChannel::take()` always resets its slot, so whichever result answers SECOND is consumed
+    // with `flow.dialog` already reset to None by the FIRST -- this case simulates exactly that
+    // ordering directly, with no real dialog needed: `flow.dialog` is already None (as if a prior
+    // result already claimed and cleared it) when a second, orphaned, READY result with its own path
+    // arrives. Before the fix, `applyDialogResult`'s kind chain had no arm for `kind == None` and fell
+    // straight through into the Save arm (it never even checked `kind == DialogKind::Save` explicitly,
+    // "by elimination"), silently saving the CURRENT scene to "<orphan path>.scene.json" and rebinding
+    // the session path -- 2.5.1's BLOCKING-2 again, reached through 2.6.1's Browse button.
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;  // untitled
+    REQUIRE(session.untitled());
+    REQUIRE(f.flow.dialog == engine::editor::DialogKind::None);  // the precondition this case exists to prove
+
+    engine::editor::DialogResult orphan;
+    orphan.ready = true;
+    orphan.path = dir.join("orphan-folder");  // NOT a scene path -- exactly what a folder dialog yields
+
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, orphan, f.project);
+
+    CHECK(session.untitled());  // NOTHING was written or bound
+    CHECK_FALSE(engine::editor::fileExists(orphan.path + ".scene.json"));
+    CHECK(f.flow.pending == FileAction::None);  // untouched -- this orphan owns no pending action
+    CHECK_FALSE(f.flow.saveBeforePending);
     CHECK(f.flow.dialog == engine::editor::DialogKind::None);
 }
 
@@ -773,13 +813,13 @@ TEST_CASE(
     f.makeDirty();
     f.flow.requested = FileAction::OpenScene;
     f.flow.requestedPath = openTarget;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
     REQUIRE(f.flow.confirmOpen);
     REQUIRE(f.flow.pending == FileAction::OpenScene);
     REQUIRE(f.flow.requestedPath == openTarget);  // still needed to eventually PERFORM the Open
 
     f.flow.choice = ConfirmChoice::Save;  // the modal's "Save" button
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
     // host.channel == nullptr, so AskWhereToSave can launch no dialog and must ABANDON the pending
     // Open rather than silently writing the CURRENT (untitled) scene over the Open's own target -- the
@@ -803,13 +843,13 @@ TEST_CASE(
     f.makeDirty();
     f.flow.requested = FileAction::OpenScene;
     f.flow.requestedPath = openTarget;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
     REQUIRE(f.flow.confirmOpen);
     REQUIRE(f.flow.pending == FileAction::OpenScene);
     REQUIRE(f.flow.requestedPath == openTarget);
 
     f.flow.choice = ConfirmChoice::Cancel;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
     CHECK(f.flow.pending == FileAction::None);
     CHECK_FALSE(f.flow.confirmOpen);
@@ -818,7 +858,7 @@ TEST_CASE(
     // A LATER, unrelated Save As with NO explicit path (host.channel == nullptr too, so it can launch
     // no dialog either) must be a silent no-op -- not hijack the abandoned Open's target.
     f.flow.requested = FileAction::SaveSceneAs;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
     CHECK(session.untitled());  // nothing was written to openTarget behind the session's back
 }
 
@@ -838,12 +878,12 @@ TEST_CASE(
     f.makeDirty();
     f.flow.requested = FileAction::OpenScene;
     f.flow.requestedPath = openTarget;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
     REQUIRE(f.flow.confirmOpen);
     REQUIRE(f.flow.pending == FileAction::OpenScene);
 
     f.flow.choice = ConfirmChoice::Save;
-    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host);  // WriteNow to a missing directory
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);  // WriteNow to a missing directory
 
     CHECK(f.flow.pending == FileAction::None);  // abandoned, not performed
     CHECK(f.flow.requestedPath.empty());        // the abandoned Open's own target must not leak

@@ -184,6 +184,13 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # TIER-0: no GPU, no window, no ImGui context, so they must pass identically with AERO_REQUIRE_GPU
 # unset and set. The link line below is unchanged and no new ctest entry is registered (ctest -N stays
 # 94/5/18, AC-35).
+#
+# task 2.6.1 joins this target with editor/project_test.cpp -- the project format, its validators,
+# the filesystem half, the flow, and the three golden fixtures. UNCONDITIONAL, unlike
+# scene_io_test.cpp and scene_golden_test.cpp below: the project flow reads and writes no scene, so
+# it needs no serialization at all (spec D4/AC-35). It must be PRESENT in the reflect-OFF build, not
+# skipped -- prove it with --list-test-cases. Tier-0: no GPU, no window, no ImGui context. The link
+# line is UNCHANGED and no new ctest entry is registered (ctest -N stays 94/5/18, AC-39).
 find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
@@ -192,10 +199,30 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/gizmo_test.cpp editor/transform_ops_test.cpp
                editor/command_stack_test.cpp editor/transform_command_test.cpp
                editor/scene_snapshot_test.cpp editor/structural_commands_test.cpp
-               editor/scene_session_test.cpp)
+               editor/scene_session_test.cpp editor/project_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
+
+# task 2.6.1: the three committed project fixtures reach the UNGATED project_test.cpp. Not optional
+# and not #ifdef-guarded (2.5.2's D8 rule, reused): a missing definition is a COMPILE error and a
+# missing fixture file is a REQUIRE failure. Neither can silently skip, which is the same failure
+# mode as a regeneration flag. NO AERO_PROJECT_*_OUT_DIR is defined -- the project battery uses
+# describeMismatch's context window (which, for a 152-byte manifest, IS the whole file) and never
+# dumpActual, so nothing here writes anywhere and `ctest -j` has no collision surface at all.
+target_compile_definitions(aero_editor_shell_test PRIVATE
+    AERO_PROJECT_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/projects"
+    # code review (BLOCKING-1): project_ui.cpp's ImGui::CloseCurrentPopup() bookkeeping cannot be
+    # driven from any test tier -- it needs a live ImGui context and a synthesized widget click, which
+    # this codebase has never had (the AC-27/FileDialogHost precedent). project_test.cpp's PU1 case
+    # reads the file's OWN SOURCE TEXT as a mechanical proof instead -- the same textual-grep principle
+    # the five CI architecture guards already use, just run as a doctest case rather than a lint-job
+    # script. A path, not a flag: a missing file is a REQUIRE failure, never a silent skip.
+    AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src")
+# MOVED OUT of the if(AERO_REFLECT_TOOLS) block below, where task 2.5.2 put it: project_test.cpp is
+# UNGATED and includes tests/scene_golden_support.hpp, so this include root must exist in EVERY
+# configuration. The aero_editor_imgui_test precedent is at :106.
+target_include_directories(aero_editor_shell_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # task 2.5.1, step 3: the round-trip cases need the engine's generated component serializers, which
 # do not EXIST with the tool off (F9). The TARGET stays ungated -- only this ONE TU is conditional --
@@ -221,7 +248,6 @@ if(AERO_REFLECT_TOOLS)
     target_compile_definitions(aero_editor_shell_test PRIVATE
         AERO_GOLDEN_SCENES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/scenes"
         AERO_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden/editor")
-    target_include_directories(aero_editor_shell_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 # ---------------------------------------------------------------------------------------------
@@ -543,3 +569,25 @@ add_test(NAME golden-rule.link_graph_e2e COMMAND ${CMAKE_COMMAND}
     -DAERO_REPO_ROOT=${CMAKE_SOURCE_DIR}
     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/golden-rule-scratch/editor/link-graph
     -P ${CMAKE_CURRENT_SOURCE_DIR}/golden-rule/link_graph_e2e.cmake)
+
+# ---------------------------------------------------------------------------------------------
+# Sixth architecture guard: project-no-delete (task 2.6.1, code-review round; D7/INV-P4). A hermetic
+# proof that .github/scripts/check-project-no-delete.sh actually goes RED, mirroring
+# golden-rule.include_scan_e2e's shape exactly -- the reviewer's condition for accepting sabotage seed
+# S11 as documented debt was that the ONLY artefact proving a future `remove_all` would be caught
+# (the plan's own §V7 grep) lives in the gitignored docs/plans/ tree and ceases to exist at merge; this
+# ctest entry is what survives it. Same NOT WIN32 gate as golden-rule's own e2e case, and for the same
+# reason (D16): the script never runs on Windows in CI (the lint job is ubuntu-24.04-only), and this
+# case's value -- proving the regex + `nl | sed` comment-stripping pipeline behaves under BSD userland
+# -- comes from the macOS lane; Linux would only re-prove what Linux already proves.
+if(NOT WIN32 AND AERO_BASH_EXECUTABLE AND GIT_EXECUTABLE)
+    add_test(NAME project-no-delete.no_delete_e2e COMMAND ${CMAKE_COMMAND}
+        -DSCRIPT=${CMAKE_SOURCE_DIR}/.github/scripts/check-project-no-delete.sh
+        -DBASH=${AERO_BASH_EXECUTABLE}
+        -DGIT=${GIT_EXECUTABLE}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/project-no-delete-scratch
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/project-no-delete/no_delete_e2e.cmake)
+else()
+    message(STATUS "project-no-delete: no_delete_e2e SKIPPED (Windows, or bash/git not found) -- the "
+                   "guard itself still runs in CI's lint job on Linux")
+endif()

@@ -42,4 +42,10 @@ void launchOpenSceneDialog(const std::shared_ptr<DialogChannel>& channel, void* 
 void launchSaveSceneDialog(const std::shared_ptr<DialogChannel>& channel, void* parentSdlWindow,
                            std::string_view suggestion);
 
+// task 2.6.1: A FOLDER dialog -- no filters at all (SDL_ShowOpenFolderDialog takes none). Same
+// callback, same Ticket, same arbitrary-thread contract (F1/INV-3) -- DialogChannel::deliver handles
+// its result UNCHANGED, because the callback signature is identical to the two file dialogs' above.
+void launchOpenProjectFolderDialog(const std::shared_ptr<DialogChannel>& channel, void* parentSdlWindow,
+                                   std::string_view startDirectory);
+
 }  // namespace engine::editor

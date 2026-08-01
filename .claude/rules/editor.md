@@ -142,4 +142,61 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   vendored source would silently break AC-27 with no test able to catch it (no tier can press a
   key on a modal; see `editor/validation/2.5.1-save-load-new-from-editor.md` row 14).
 
-Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 entries.
+## Projects (task 2.6.1)
+
+- **`ProjectSession::set()` has exactly ONE call site: `adoptProject` in `scene_session.cpp` (INV-P1),
+  and `adoptProject` always calls `newScene` first (INV-6).** The identical rule the Scene I/O section
+  above holds for `World::clear()`/`CommandStack::clear()`, applied one layer up: a project swap that
+  ever skips resetting the scene, or resets the scene without going through `adoptProject`, is a
+  data-corruption bug, not a style issue. `openProjectPath` and `createAndOpenProject` are the only
+  two functions that call `adoptProject`; neither is a second policy, both route through the one
+  function. **No CI script enforces this** — it is held by discipline and by `tests/editor/
+  project_test.cpp`'s cases plus `imgui_layer_test.cpp`'s I18/I21, not by a grep, the same posture the
+  Undo/redo section above takes for the merge-chain gate.
+- **The Asset Browser's root is a RECONCILE, never a push (D10).** `EditorApp::tick()` compares
+  `assetBrowserPanel->root()` against `project.assetsRoot()` every frame and calls `setRoot()` only on
+  a mismatch — the project swap itself never calls `setRoot()`. One `std::string` comparison that
+  cannot be half-performed and cannot drift, whether the project changed via the menu, the Welcome
+  window, argv, or the startup restore. The RootOrder/Hierarchy precedent (`editor_app.hpp`), applied
+  to a second panel. A panel born with the CORRECT root at construction time (e.g. a project passed at
+  `EditorApp::create()`) never exercises this path at all — the reconcile is a no-op for it, which is
+  why a seed dropping the reconcile block does not redden every project-aware GPU case, only the ones
+  that swap projects at *runtime* (2.6.1's sabotage seed S14 found exactly this the hard way).
+- **`FileDialogHost::projectRoot` is a `std::string_view` bound to `project.scenesRoot()`, which
+  returns BY VALUE.** Binding it directly inside a call expression dangles the instant the
+  full-expression ends — the named-local-first pattern (`const std::string scenesRoot =
+  project.scenesRoot();` then construct the host from that local) is MANDATORY at every construction
+  site, not style. This is the one defect class in this task that could ship green through every CI
+  lane: no test tier can trigger a native-dialog launch, so nothing but ASan on a human's own Debug run
+  would ever catch it, and even that only on a frame where a dialog was actually opened.
+- **The New Project modal and the Welcome window mutate NOTHING directly — every control sets exactly
+  ONE request field** (`form.createRequested`, `form.browseRequested`, `flow.requested =
+  FileAction::NewProject`, …) **and nothing else.** Consumption happens OUTSIDE the draw walk, in
+  `applyFileRequests`, which is what gets both windows the unsaved-changes guard for free — the
+  identical "record a pending action, apply it after the walk" rule the Panels section above states
+  for the World/Selection, applied to project state. A control that calls `createProject`/
+  `ProjectSession::set()`/`promoteRecent` directly from inside `project_ui.cpp`'s draw functions is an
+  architecture bug (AC-46) with **no automated test able to catch it** — confirmed directly: sabotage
+  seed S20 seeded exactly this violation and the whole 94-entry suite stayed green.
+- **A `createProject` failure NEVER deletes anything it already created, on ANY failure path, EVER
+  (D7/INV-P4)** — the target directory, `assets/`, `scenes/`, whatever exists at the moment of
+  failure, all stay exactly as they are. An editor that recursively deletes a user-chosen directory
+  tree on an error path (a full disk, a permission change, an antivirus lock) is worse than one that
+  leaves an inert half-made folder behind. **This is proven by test only for the `CreateFailed`
+  branch** (a chmod'd read-only target forcing failure at the `assets/` `create_directory` step) —
+  the `WriteFailed` branch (the manifest write itself failing after both directories already exist) is
+  structurally unreachable by any test in this tree, confirmed by direct sabotage (seed S11: adding a
+  `remove_all` rollback there reddens nothing at all, in either build tier). Do not read a green suite
+  as evidence this line holds on that specific branch — it is a real, open coverage gap. **Since the
+  code-review round, this is also a CI guard, not only a coverage gap**:
+  `.github/scripts/check-project-no-delete.sh` (the sixth architecture guard, proven red-on-violation
+  by ctest case `project-no-delete.no_delete_e2e`) makes `remove_all`/`std::filesystem::remove`/
+  `std::filesystem::rename`/a bare `::copy` a hard CI failure the instant one is WRITTEN into
+  `project.cpp`, `project_file.cpp` or `project_ui.cpp` — the untested `WriteFailed` branch cannot be
+  "fixed" with a rollback that would violate this rule even once a test could reach it.
+- **`std::filesystem::create_directory`/`create_directories` on an ALREADY-EXISTING directory returns
+  `false` with NO `error_code` set (measured, not assumed).** Deciding a scaffold failure from the
+  bool return instead of from `ec` breaks the legal "adopt an existing empty directory" path every
+  time E7/AC-13 legitimately hits it. Confirmed load-bearing by direct sabotage (seed S22).
+
+Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries.

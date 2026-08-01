@@ -5,6 +5,10 @@
 // aero_editor_shell_test, with no window and no GPU. Held by FILE PLACEMENT (R12), exactly like every
 // other header under editor/include.
 #include <aero/editor/command_stack.hpp>  // CommandContext + CommandStack; forward decls only inside
+#include <aero/editor/project.hpp>        // task 2.6.1: ProjectSession/ProjectFlow/ProjectContext/RecentProjects
+#include <aero/editor/text_file.hpp>      // task 2.6.1 (D12): the three file-bytes declarations moved here;
+                                          // every existing call site and every existing test compiles
+                                          // unchanged.
 
 #include <cstddef>
 #include <cstdint>
@@ -17,8 +21,17 @@ namespace engine::editor {
 // EVERY enum below carries an explicit underlying type: performance-enum-size is
 // --warnings-as-errors on the Linux lane.
 
-// What the shell was asked to do.
-enum class FileAction : std::uint8_t { None = 0, NewScene, OpenScene, SaveScene, SaveSceneAs, Quit };
+// What the shell was asked to do. NewProject/OpenProject: task 2.6.1, +2.
+enum class FileAction : std::uint8_t {
+    None = 0,
+    NewScene,
+    OpenScene,
+    SaveScene,
+    SaveSceneAs,
+    Quit,
+    NewProject,
+    OpenProject,
+};
 
 // The modal's three answers. Esc == Cancel (D10).
 enum class ConfirmChoice : std::uint8_t { Save = 0, Discard, Cancel };
@@ -33,8 +46,9 @@ enum class FileStep : std::uint8_t {
 };
 
 // Moved here from file_dialog.hpp (plan A16) so a PUBLIC signature (FileFlow/FileDialogHost, task
-// 2.5.1 step 5) can name it without seeing the src-private file_dialog.hpp.
-enum class DialogKind : std::uint8_t { None = 0, Open, Save };
+// 2.5.1 step 5) can name it without seeing the src-private file_dialog.hpp. ProjectFolder/
+// ProjectLocation: task 2.6.1, +2.
+enum class DialogKind : std::uint8_t { None = 0, Open, Save, ProjectFolder, ProjectLocation };
 
 // Does `action` risk discarding work? NewScene/OpenScene/Quit do; the two saves never do.
 [[nodiscard]] bool discardsWork(FileAction action) noexcept;
@@ -65,7 +79,13 @@ public:
     // "*level1.scene.json - Aero Editor". Separator is " - " (space hyphen space), an ASCII hyphen,
     // NEVER an em dash -- this goes through SDL_SetWindowTitle and into a native title bar. The '*' is
     // the ONLY dirty affordance outside the Edit menu, so it leads.
-    [[nodiscard]] std::string windowTitle(bool dirty) const;
+    //
+    // Task 2.6.1 (AC-27/AC-28): with a non-empty `projectName` the title becomes
+    // "[*]<doc> - <ProjectName> - Aero Editor". An EMPTY projectName -- the parameter's DEFAULT --
+    // produces today's exact bytes, character for character, which is what leaves every existing
+    // assertion and every existing caller untouched (F11). Separator " - ", an ASCII hyphen, NEVER an
+    // em dash: this goes through SDL_SetWindowTitle into a native title bar.
+    [[nodiscard]] std::string windowTitle(bool dirty, std::string_view projectName = {}) const;
     // Where a dialog should start: this scene's directory, else `projectRootUtf8`, else "" (D20).
     [[nodiscard]] std::string dialogDirectory(std::string_view projectRootUtf8) const;
     // The pre-filled Save target: the current path, else `<dialogDirectory>/Untitled.scene.json`.
@@ -111,17 +131,6 @@ void resetSceneState(CommandContext& context, CommandStack& commands);
 // already marks it so, and seedDefaultScene pushes nothing. Never the reverse order: seeding before
 // clearing would leave six entities, not three.
 void newScene(CommandContext& context, CommandStack& commands);
-
-// ---- file bytes (scene_file.cpp; ALL <filesystem>/<fstream> for scenes lives there) --------------
-struct FileReadResult {
-    std::optional<std::string> text;  // engaged == success
-    std::string error;                // OS reason; empty iff `text` is engaged
-};
-[[nodiscard]] FileReadResult readTextFile(std::string_view absolutePathUtf8);
-
-// "" == success. ATOMIC (D12): writes <path>.aero-tmp, CLOSES it, renames over `path`.
-[[nodiscard]] std::string writeTextFileAtomic(std::string_view absolutePathUtf8, std::string_view text);
-[[nodiscard]] bool fileExists(std::string_view absolutePathUtf8);
 
 // ---- serialization (scene_io.cpp; the ONE #if in this task, F9's AERO_REFLECT_TOOLS gate) --------
 [[nodiscard]] bool sceneIoAvailable() noexcept;  // false without AERO_REFLECT_TOOLS
@@ -171,6 +180,37 @@ struct FileDialogHost {
     std::string_view projectRoot;  // D20's fallback start directory
 };
 
+// ---- the New Project form and the project flow's own state (task 2.6.1, §3.6) -------------------
+struct NewProjectForm {
+    // STATE -- owned by the flow, edited by the modal's own widgets.
+    bool open = false;     // the modal is up -> shell_ui's `fileEnabled` MUST include !open (F10)
+    std::string name;      // edited by the modal
+    std::string location;  // absolute parent directory, from the ProjectLocation dialog or typed
+    std::string error;     // last inline validation/creation message; "" when clean
+    // IN -- set by the modal's buttons, consumed and cleared OUTSIDE the draw walk. A button may not
+    // scaffold a project or swap a World from inside its own frame (.claude/rules/editor.md's
+    // "record one pending action and apply it after the walk"); `name`/`location` are the only fields
+    // the modal writes directly, because neither touches anything outside this struct.
+    bool createRequested = false;
+    bool cancelRequested = false;
+    bool browseRequested = false;  // -> the ProjectLocation folder dialog
+};
+struct ProjectFlow {
+    NewProjectForm form;
+    std::string requestedPath;  // the Open Recent / argv / test seam -- mirrors flow.requestedPath's
+                                // discipline: CLEARED ON EVERY PATH that abandons or defers (F10)
+    bool clearRecentsRequested = false;
+    bool recentsDirty = false;  // set by adoptProject and by a clear; consumed once per tick
+};
+// Everything the project half of the flow needs, built fresh each frame in tick() -- the
+// PanelContext / FileMenuContext shape, and for the same reason (D7).
+struct ProjectContext {
+    ProjectSession& session;
+    ProjectFlow& flow;
+    RecentProjects& recents;
+    std::string_view engineVersion;  // AERO_ENGINE_VERSION, read at ONE call site in editor_app.cpp
+};
+
 // ---- the flow: PUBLIC plain data (A16). EditorApp holds ONE by value; the shell writes the two IN
 // fields and reads the rest. ----------------------------------------------------------------------
 struct FileFlow {
@@ -200,14 +240,29 @@ struct FileFlow {
 [[nodiscard]] bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
                                  std::string_view absolutePathUtf8, bool appendExtension);
 
+// ---- the two project-opening logging actions (task 2.6.1; mirrors openSceneFile/saveSceneFile as
+// the ONLY other places this task logs) -----------------------------------------------------------
+
+// Load, validate, and on success swap the scene, adopt the project and promote the recent entry.
+// Returns true iff the project was replaced. LOGS: one ERROR on any failure (naming the path, plus
+// line/column when line > 0); one WARN per unknown key; one WARN on an engineVersion mismatch; one
+// INFO on success carrying name, root, assets and scenes.
+[[nodiscard]] bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSession& session,
+                                   ProjectContext& project, std::string_view pathUtf8);
+
+// Validate, scaffold, then hand off to the same adopt path. One ERROR on failure, one INFO on success.
+// NEVER re-reads the file it just wrote (A24) -- that would be a second INFO.
+[[nodiscard]] bool createAndOpenProject(CommandContext& context, CommandStack& commands, SceneSession& session,
+                                        ProjectContext& project, std::string_view location, std::string_view name);
+
 // ONE frame's worth of the File flow. Consumes flow.requested / flow.choice, may swap the scene, may
 // launch a dialog through `host`, may set flow.quitConfirmed. ImGui-FREE: the shell TU only DRAWS.
 void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSession& session, FileFlow& flow,
-                       const FileDialogHost& host);
+                       const FileDialogHost& host, ProjectContext& project);
 
 // The dialog result, applied on the main thread BEFORE the frame. Same sinks; then performs the
 // pending action iff the operation succeeded (D11).
 void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSession& session, FileFlow& flow,
-                       const FileDialogHost& host, const DialogResult& result);
+                       const FileDialogHost& host, const DialogResult& result, ProjectContext& project);
 
 }  // namespace engine::editor

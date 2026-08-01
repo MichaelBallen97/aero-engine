@@ -44,9 +44,12 @@ add_library(aero_editor_core STATIC
     src/component_commands.cpp  # task 2.4.2 -- SetField/Add/RemoveComponent, wrapping component_ops
     src/entity_commands.cpp     # task 2.4.2 -- the five structural commands, wrapping entity_ops
     src/scene_session.cpp       # task 2.5.1 -- the document model, the pure guard and THE scene swap
-    src/scene_file.cpp          # task 2.5.1 -- ALL <filesystem>/<fstream> for scenes (D19/F17)
+    src/text_file.cpp           # task 2.5.1 / 2.6.1 D12 -- ALL <filesystem>/<fstream> for the editor's TEXT files
+    src/project.cpp             # task 2.6.1 -- the project format's pure half (ImGui/SDL/<filesystem>-free)
+    src/project_file.cpp        # task 2.6.1 -- ALL <filesystem> and ALL SDL for projects; never deletes anything (D7)
     src/scene_io.cpp            # task 2.5.1 -- the scene_serialize bridge; the ONE #if (F10/AC-33)
     src/file_dialog.cpp         # task 2.5.1 -- SDL native dialogs + the cross-thread result channel
+    src/project_ui.cpp          # task 2.6.1 -- the Welcome window and the New Project modal
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -75,6 +78,12 @@ target_link_libraries(aero_editor_core
     PRIVATE aero::profiling imgui::imgui imguizmo::imguizmo SDL3::SDL3 EnTT::EnTT aero::scene_render
             aero::platform_internal aero::rhi_internal
 )
+
+# task 2.6.1 (D14): the ONLY consumer is editor_app.cpp, and `engineVersion` is INFORMATIONAL in v0
+# -- never compared for ordering, never a gate. This is what keeps engine/ untouched for a THIRD
+# consecutive task: engine/core/include/aero/core/version.hpp would be a defensible change, but the
+# runtime is the task that should decide that header's shape (Phase 5), not this one.
+target_compile_definitions(aero_editor_core PRIVATE AERO_ENGINE_VERSION="${PROJECT_VERSION}")
 
 if(AERO_REFLECT_TOOLS)
     # Task 2.2.2 (D16/§3.12): the four built-in component headers, compiled INTO the editor as
