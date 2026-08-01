@@ -308,8 +308,8 @@ it would have failed the version gate on load.
 
 > Enforced in code by `editor/src/project.cpp` (the pure parse/write/validate half) and
 > `editor/src/project_file.cpp` (the `<filesystem>`-and-SDL half); `tests/editor/project_test.cpp`
-> (53 cases, task 2.6.1) is its machine-checkable form, including a three-fixture golden battery
-> (§4.7) mirroring section 2.7's design.
+> (57 cases, task 2.6.1 plus its code-review round) is its machine-checkable form, including a
+> three-fixture golden battery (§4.8) mirroring section 2.7's design.
 
 ### 4.1 Envelope
 
@@ -319,13 +319,13 @@ save**: `version`, `name`, `engineVersion`, `language`, `paths`; `paths` has exa
 
 | Key | Kind | Required | Range / rule | Default | Error on violation |
 |---|---|---|---|---|---|
-| `version` (root) | number, integral | yes | must equal `1` | — | missing / wrong kind / wrong value: see §4.6 |
-| `name` (root) | string | yes | validated by §4.3 | — | missing / wrong kind: see §4.6 |
-| `engineVersion` (root) | string | yes | informational only, never compared for ordering, never a gate | — | missing / wrong kind: see §4.6 |
-| `language` (root) | string | yes | `"ts"` or `"cpp"` | — | missing / wrong kind / unsupported value: see §4.6 |
-| `paths` (root) | object | yes | exactly `assets` and `scenes`, both required | — | missing / wrong kind: see §4.6 |
-| `paths.assets` (paths) | string | yes | a legal project-relative path (§4.4) | `"assets"` | missing / wrong kind / illegal: see §4.6 |
-| `paths.scenes` (paths) | string | yes | a legal project-relative path (§4.4) | `"scenes"` | missing / wrong kind / illegal: see §4.6 |
+| `version` (root) | number, integral | yes | must equal `1` | — | missing / wrong kind / wrong value: see §4.7 |
+| `name` (root) | string | yes | validated by §4.3 | — | missing / wrong kind: see §4.7 |
+| `engineVersion` (root) | string | yes | informational only, never compared for ordering, never a gate | — | missing / wrong kind: see §4.7 |
+| `language` (root) | string | yes | `"ts"` or `"cpp"` | — | missing / wrong kind / unsupported value: see §4.7 |
+| `paths` (root) | object | yes | exactly `assets` and `scenes`, both required | — | missing / wrong kind: see §4.7 |
+| `paths.assets` (paths) | string | yes | a legal project-relative path (§4.4) | `"assets"` | missing / wrong kind / illegal: see §4.7 |
+| `paths.scenes` (paths) | string | yes | a legal project-relative path (§4.4) | `"scenes"` | missing / wrong kind / illegal: see §4.7 |
 
 `version` is validated **first**, before any other key — a file also missing `name` still reports the
 version error, mirroring §2.6/§3's "first violation wins" and "future-format files fail fast" rules.
@@ -346,16 +346,19 @@ is a hard reject, never a silent fallback.
 
 ### 4.3 Project name validation
 
-Checked in this exact order, the first violation wins (mirrors §2.6's fail-fast discipline):
+Checked in this exact order, the first violation wins (mirrors §2.6's fail-fast discipline). This
+table describes `validateProjectName`'s **actual behavior**, corrected from an earlier draft that
+over-stated it in three rows (code-review round, task 2.6.1) — the code was already spec-correct
+against D6 ("no trailing space and no trailing `.`"); only the doc was wrong:
 
 | Order | Problem | Rule |
 |---|---|---|
-| 1 | Empty | the name has zero bytes |
-| 2 | TooLong | more than 64 UTF-8 bytes |
-| 3 | Separator | contains `/` or `\` |
+| 1 | Empty | zero bytes remain after **trimming** ASCII spaces/tabs from both ends of the name — this trim exists ONLY to decide this one rule; the untrimmed name is what every later rule (including 6) checks |
+| 2 | TooLong | more than 64 UTF-8 bytes, measured on the **original, untrimmed** name |
+| 3 | Separator | contains `/` or `\` anywhere in the original name |
 | 4 | DotName | is exactly `.` or `..` |
-| 5 | IllegalChar | contains any of `<>:"/\|?*` or a C0 control byte |
-| 6 | TrailingSpaceOrDot | starts or ends with a space, or ends with `.` |
+| 5 | IllegalChar | contains any of `<>:"\|?*` or a C0 control byte. `/` and `\` are deliberately absent from this set — rule 3 (Separator) already catches both first, so this rule can never fire for either |
+| 6 | TrailingSpaceOrDot | the **original, untrimmed** name ends with a space or a `.` — checked on `back()` only. **A leading space is legal and reaches no rule at all**: `" Foo"` is `Ok` and scaffolds a directory literally named `" Foo"`. This is deliberate, not an oversight — D6 only ever asked for a trailing check |
 | 7 | ReservedDeviceName | is (ASCII-case-insensitively, stem before the first `.`) one of the 22 reserved DOS device names: `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9` |
 
 All seven rules apply on **every** OS unconditionally — there is no `#if defined(_WIN32)` anywhere;
@@ -370,14 +373,35 @@ name — so a POSIX-rooted value would sail through that check): non-empty, no l
 anywhere, no `:` anywhere (covers `C:` and `C:/x`), no `..` segment. A `.` segment is legal. Both
 default to their own bare name (`"assets"`/`"scenes"`) when creating a new project.
 
-### 4.5 Canonicalization notes
+### 4.5 Worked example
+
+The exact bytes of `minimal.project.json` (152 bytes, one trailing newline, `tests/fixtures/projects/`)
+— what `createProject`/New Project writes for a fresh TypeScript project:
+
+```json
+{
+  "version": 1,
+  "name": "MyGame",
+  "engineVersion": "0.1.0",
+  "language": "ts",
+  "paths": {
+    "assets": "assets",
+    "scenes": "scenes"
+  }
+}
+```
+
+Byte-pinned by `tests/editor/project_test.cpp`'s golden battery (PG4, §4.8); regenerating it from a
+build that silently changed the writer is exactly what that battery exists to catch.
+
+### 4.6 Canonicalization notes
 
 Same canonical-form policy as §1: UTF-8, no BOM, LF newlines, pretty 2-space indent, one trailing
 newline. Key order is fixed (§4.1); members within `paths` are always `assets` then `scenes`, never
 sorted or reordered by content. `New Project` writes exactly the same bytes `writeProjectText` would
 produce from any other manifest carrying the same field values — there is no second code path.
 
-### 4.6 Error catalog
+### 4.7 Error catalog
 
 | Stage | Message |
 |---|---|
@@ -404,8 +428,9 @@ Success-only warnings (document order, caller-emitted — the parser itself neve
 | Warning |
 |---|
 | `editor: project '<root>' -- ignoring unknown key "<k>"` |
+| `editor: project '<root>' was created with engine version <manifest-version> (this build is <build-version>)` — D14: informational only, never a gate, and never emitted when the caller's own build-version string is empty (a test context, by convention) |
 
-### 4.7 Golden fixtures
+### 4.8 Golden fixtures
 
 Three project files under `tests/fixtures/projects/` are **content pins** for this format, mirroring
 §2.7's design exactly — no self-update flag, no environment variable, no target, no regeneration path
@@ -426,12 +451,12 @@ directly (`PG5`–`PG7`), never by the cases that re-derive bytes and compare th
 therefore always pairs byte-fixpoint cases with at least one semantic case that reads the fixture (or
 a real `createProject` outcome) without re-deriving it — never bytes alone.
 
-### 4.8 The recent-projects envelope
+### 4.9 The recent-projects envelope
 
 A small, separate versioned format at `recent_projects.json` (under `SDL_GetPrefPath`, not next to
 the executable — it is *user* state that must survive rebuilding the editor into a fresh `build/`
 directory, unlike `aero_editor.ini`): `{"version": 1, "projects": [<absolute path>, ...]}`. Same
-canonical form as §4.5. Capped at 10 entries, newest-first, deduplicated on normalized bytes with no
+canonical form as §4.6. Capped at 10 entries, newest-first, deduplicated on normalized bytes with no
 case folding (two paths differing only in case get two rows — dedup is not the place to guess a
 filesystem's case sensitivity). Never auto-pruned: a missing/renamed/unmounted target is left for
 "Clear Recent Projects" to remove explicitly, since the destructive interpretation of a transient

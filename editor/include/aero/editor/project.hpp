@@ -62,7 +62,7 @@ enum class ProjectError : std::uint8_t {
 struct ProjectParseResult {
     std::optional<ProjectManifest> manifest;  // engaged == success
     ProjectError error = ProjectError::None;
-    // The exact docs/09 §4.6 text; "" iff `manifest` is engaged. line/column are > 0 ONLY for a
+    // The exact docs/09 §4.7 text; "" iff `manifest` is engaged. line/column are > 0 ONLY for a
     // JSON-stage failure -- the SceneError contract, one layer up.
     std::string message;
     std::uint32_t line = 0;
