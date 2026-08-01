@@ -1,10 +1,12 @@
 // Aero Engine — the project format's <filesystem>-and-SDL half (task 2.6.1). THE only new SDL TU
 // this task adds (besides the pre-existing file_dialog.cpp and imgui_layer.cpp -- the roster moves
 // from two files to three, A4). NEVER THROWS: every std::filesystem call uses the std::error_code
-// overload (project_files.cpp's E20 rule). NEVER LOGS, with exactly ONE exception, stated where it
-// happens: the pref-path CWD fallback inside defaultRecentProjectsPath, mirroring
-// imgui_layer.cpp:46's WARN. NEVER DELETES, RENAMES or MOVES anything -- the only writes anywhere in
-// this task are three create_directory calls and two atomic file writes (INV-P4/D7).
+// overload (project_files.cpp's E20 rule). NEVER LOGS except at exactly THREE call sites (code
+// review: an earlier "exactly ONE exception" banner undercounted this by two): the pref-path CWD
+// fallback inside defaultRecentProjectsPath (mirroring imgui_layer.cpp:46's WARN), the
+// corrupt-recents-file WARN inside readRecentProjects (AC-23), and the recents-write-failure WARN
+// inside writeRecentProjects (AC-24). NEVER DELETES, RENAMES or MOVES anything -- the only writes
+// anywhere in this task are three create_directory calls and two atomic file writes (INV-P4/D7).
 #include <aero/core/log.hpp>
 #include <aero/editor/project.hpp>
 #include <aero/editor/text_file.hpp>
@@ -146,8 +148,15 @@ ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_vi
         return out;
     }
 
-    // 3. The target: may not exist (created) or exist and be EMPTY (adopted, E7/AC-13).
-    const std::filesystem::path target = pathFromUtf8(locationUtf8) / pathFromUtf8(nameUtf8);
+    // 3. The target: may not exist (created) or exist and be EMPTY (adopted, E7/AC-13). Normalized
+    // ONCE, here -- SHOULD-FIX 8 (code review): `out.root` below used to be re-derived by running
+    // `target` back through `projectRootFromPath`, whose manifest-name strip fires whenever the
+    // FINAL path component reads "project.json". A project literally named "project.json" made that
+    // strip fire on the root we just built, taking `out.root` one level too high (a directory
+    // `<location>/project.json/` scaffolded, but `out.root` reported `<location>` itself -- a
+    // silently broken project). `target` IS the true root by construction; it never needs
+    // re-deriving through a helper meant for a caller-supplied, not-yet-known path.
+    const std::filesystem::path target = (pathFromUtf8(locationUtf8) / pathFromUtf8(nameUtf8)).lexically_normal();
     std::error_code existsEc;
     const bool exists = std::filesystem::exists(target, existsEc);
     if (exists) {
@@ -210,7 +219,8 @@ ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_vi
     }
 
     out.problem = CreateProblem::Ok;
-    out.root = projectRootFromPath(utf8FromPath(target));
+    out.root = utf8FromPath(target);  // verbatim -- SHOULD-FIX 8: never re-derived via
+                                      // projectRootFromPath's manifest-name strip
     out.manifest = manifest;
     return out;
 }
