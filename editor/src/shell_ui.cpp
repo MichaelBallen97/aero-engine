@@ -7,6 +7,8 @@
 #include <aero/editor/panel.hpp>
 #include <aero/editor/scene_session.hpp>
 
+#include "project_ui.hpp"  // task 2.6.1: drawWelcomeWindow / drawNewProjectModal
+
 #include <array>
 #include <cstddef>
 #include <imgui.h>
@@ -49,15 +51,18 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // Editor shortcuts go through ImGui's routing, NEVER ctx.input() (D7/E9): a focused InputText
     // must be able to swallow the chord. ImGuiMod_Ctrl is Cmd on macOS automatically (F8).
     //
-    // D8/AC-5, widened by BLOCKING-2 (the 2.5.1 code-review round): `fileEnabled` gates every File
-    // chord AND every File menu item below -- while a native dialog is in flight OR the
-    // unsaved-changes modal is up, the whole menu behaves as disabled at the input layer too, not only
-    // visually. Before this widened, the modal being up alone did not stop a chord (e.g. Ctrl+S) from
-    // reaching AskWhereToSave and launching a SECOND, native dialog on top of the still-open modal --
-    // `scene_session.cpp`'s `applyFileRequests` mirrors this exact same widening for the request path
-    // itself (defence in depth: the chords stay quiet AND the state machine refuses the request even
-    // if something else got past this check, e.g. a raw `request*()` call).
-    const bool fileEnabled = fileMenu.flow.dialog == DialogKind::None && !fileMenu.flow.confirmOpen;
+    // D8/AC-5, widened by BLOCKING-2 (the 2.5.1 code-review round) and again by task 2.6.1:
+    // `fileEnabled` gates every File chord AND every File menu item below -- while a native dialog is
+    // in flight, the unsaved-changes modal is up, OR the New Project modal is up, the whole menu
+    // behaves as disabled at the input layer too, not only visually. Before BLOCKING-2 widened this,
+    // the modal being up alone did not stop a chord (e.g. Ctrl+S) from reaching AskWhereToSave and
+    // launching a SECOND, native dialog on top of the still-open modal -- `scene_session.cpp`'s
+    // `applyFileRequests` mirrors this exact same widening for the request path itself (defence in
+    // depth: the chords stay quiet AND the state machine refuses the request even if something else
+    // got past this check, e.g. a raw `request*()` call). The 2.5.1 code-review round's BLOCKING-2 is
+    // the standing evidence of what a disagreement between the two definitions costs.
+    const bool fileEnabled =
+        fileMenu.flow.dialog == DialogKind::None && !fileMenu.flow.confirmOpen && !fileMenu.project.flow.form.open;
     if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, FILE_SHORTCUT_FLAGS)) {
         fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
     }
@@ -100,6 +105,40 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         return;  // F7: End only when Begin returned true
     }
     if (ImGui::BeginMenu("File")) {
+        // task 2.6.1: New/Open Project, Open Recent, then a separator, before the existing scene
+        // items. NONE of the four is ever disabled for sceneIoAvailable() -- the project flow is
+        // gate-free (D4), so ioTooltip is not called for any of them.
+        if (ImGui::MenuItem("New Project...", nullptr, false, fileEnabled)) {
+            fileMenu.flow.requested = FileAction::NewProject;
+        }
+        if (ImGui::MenuItem("Open Project...", nullptr, false, fileEnabled)) {
+            fileMenu.flow.requested = FileAction::OpenProject;
+        }
+        // BeginMenu obeys the OPPOSITE balance rule from Begin: EndMenu() ONLY when BeginMenu()
+        // returned true (.claude/rules/editor.md). An unbalanced call is an IM_ASSERT ABORT in Debug,
+        // not a glitch.
+        const bool recentsEnabled = fileEnabled && !fileMenu.project.recents.paths.empty();
+        if (ImGui::BeginMenu("Open Recent", recentsEnabled)) {
+            for (std::size_t i = 0; i < fileMenu.project.recents.paths.size(); ++i) {
+                const std::string& path = fileMenu.project.recents.paths[i];
+                ImGui::PushID(static_cast<int>(i));  // two entries whose LABELS collide would
+                                                     // otherwise MERGE into one item -- ImGui derives
+                                                     // the ID from the label. MenuItem's `label` is
+                                                     // NOT a format string, so a '%' in a path is
+                                                     // safe HERE (unlike ImGui::Text).
+                if (ImGui::MenuItem(path.c_str())) {
+                    fileMenu.project.flow.requestedPath = path;
+                    fileMenu.flow.requested = FileAction::OpenProject;
+                }
+                ImGui::PopID();
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Clear Recent Projects")) {
+                fileMenu.project.flow.clearRecentsRequested = true;
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("New Scene", "Ctrl+N", false, fileEnabled)) {
             fileMenu.flow.requested = FileAction::NewScene;
         }
@@ -372,6 +411,9 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
                                                     // -- the first REAL window, after the
                                                     // transparent, NoInputs "gizmo" window
     drawUnsavedChangesModal(fileMenu);              // may set fileMenu.flow.choice
+    drawNewProjectModal(fileMenu);                  // the SAME slot as the unsaved-changes modal: drawMenuBar has
+                                                    // returned, EndMainMenuBar has run, the ID stack is clean and
+                                                    // OpenPopup is legal here (2.5.1's F13)
     {
         // applyFileRequests runs BEFORE applyHistoryRequests, on purpose (plan A32/E22): if one frame
         // carries both a scene swap and an undo request, the undo must be evaluated against the stack
@@ -389,6 +431,7 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         buildDefaultLayout(dockId, panels);  // must run AFTER the dockspace exists this frame (E17)
     }
     drawPanels(panels, context);
+    drawWelcomeWindow(fileMenu);  // AFTER the dockspace and the panels, so it FLOATS above them
 }
 
 }  // namespace engine::editor

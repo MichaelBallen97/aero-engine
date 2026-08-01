@@ -49,6 +49,7 @@ add_library(aero_editor_core STATIC
     src/project_file.cpp        # task 2.6.1 -- ALL <filesystem> and ALL SDL for projects; never deletes anything (D7)
     src/scene_io.cpp            # task 2.5.1 -- the scene_serialize bridge; the ONE #if (F10/AC-33)
     src/file_dialog.cpp         # task 2.5.1 -- SDL native dialogs + the cross-thread result channel
+    src/project_ui.cpp          # task 2.6.1 -- the Welcome window and the New Project modal
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
