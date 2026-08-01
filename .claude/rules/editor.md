@@ -236,12 +236,17 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   no test tier in this tree can read). A `requestProjectSettings()` hook was rejected precisely
   because it would be a second path to the half that was already testable. Human rows 5-7 are its
   only proof — get it right by construction.
-- **A group/row-count sabotage in this model does not stay contained to the row it directly damaged.**
-  Two independent sabotage seeds (deleting the Format-version row; swapping the two groups' push
-  order) each cascaded into every LATER index-based test assertion and eventually crashed the test
-  binary with an ASan container-overflow, rather than reddening only the row(s) the edit touched. The
-  model's eight-row, two-group shape (D7) is right; the lesson is that a future append to it (a ninth
-  row, a third group) should carry its own index-scoped assertions rather than leaning on the existing
-  ones to catch a regression safely.
+- **A group/row-count sabotage in this model does not stay contained to the row it directly damaged —
+  guard the SHAPE before any positional read.** Two independent sabotage seeds (deleting the
+  Format-version row; swapping the two groups' push order) each cascaded into every LATER index-based
+  assertion and crashed the test binary with an ASan container-overflow, rather than reddening only
+  the row(s) the edit touched — and in doing so killed the run before PS22's *independent* eight-row
+  sum, the one case designed to catch a row that MOVED rather than vanished, could execute. The
+  model's eight-row, two-group shape (D7) is right; the test file is what changed:
+  `project_settings_test.cpp` routes every positional case through a `shapedGroups` helper that
+  `REQUIRE`s the two group sizes first, so a shape regression now fails cleanly in the case that owns
+  it. **A future append (a ninth row, a third group) updates that helper — it does not add unguarded
+  `groups[0].rows[N]` reads beside it.** In a Release lane, where there is no ASan, the same
+  regression is silent UB rather than a clean abort.
 
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries.

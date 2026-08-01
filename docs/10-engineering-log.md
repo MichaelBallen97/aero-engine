@@ -1600,6 +1600,20 @@ the unsaved-changes guard a panel may not bypass. The documented way to pick up 
 `File ▸ Open Project…` on the same root — which goes through the guard and does reset the scene, an
 honest cost recorded rather than hidden.
 
+**Two more known-and-expected behaviours, both surfaced by the code-review round rather than by the
+sabotage pass, both cosmetic and neither filed as a bug.** First, **AC-17's "column 0 at the same
+width in both groups" holds until the user drags a divider, not forever**: `TABLE_FLAGS` sets
+`ImGuiTableFlags_Resizable` deliberately (a user may want a wider label column) and the per-group
+`PushID(g)` keeps the two tables distinct entities, so resizing `Manifest`'s label column does **not**
+move `Location`'s. The groups are aligned as shipped and after any relayout; they are not *locked*
+together. Second, **`widestLabel()`'s per-frame recompute does not re-widen the column on a runtime
+font-scale change** — `TableSetupColumn`'s init width reaches `WidthRequest` only through
+`TableInitColumnDefaults`, which runs under `if (table->IsInitializing)` (`imgui_tables.cpp:1693-1698`),
+true only on a table id's first frame; the one per-frame path that would re-apply it (`:937-938`) is
+gated on `!column_is_resizable` and is therefore excluded by our own `Resizable`. Consequence is mild
+— labels **wrap** via `TextWrapped` rather than clip, and the column stays user-resizable — but E19
+should be read as *tolerated*, not *mitigated*, and the panel's comment was corrected to say so.
+
 **F2/D10, the reason the model returns GROUPS rather than a flat row list with a separator flag:**
 `ImGui::Separator()` only promotes to `SpanAllColumns` for the legacy `Columns()` API
 (`imgui_widgets.cpp:1726-1741`); inside a `BeginTable` cell it spans only that cell. The panel therefore
@@ -1627,16 +1641,16 @@ diff` before building and confirmed reverted-and-green after:**
 | S6 | PS14, PS15 | PS14, PS15 | none |
 | S7 | PS10, PS11, PS12 (not PS4) | PS10, PS11, PS12; PS4 stayed green | none |
 | S8 | PS20 | PS20 | none |
-| S9 | PS3, PS4, PS5 (PS22 stays green) | PS3, PS4, PS5 **plus** PS6, PS7, PS8, PS9 (index-shifted reads), **then a SIGABRT crash in PS10** (out-of-bounds `rows[4]`/`rows[5]` on a 2-row vector) that halted the whole `aero_editor_shell_test` binary before PS11–PS23 (incl. PS22) could run at all | **major over-catch**: the plan's "PS22 stays green" could not even be observed — the process aborted first |
-| S10 | PS4, PS6, PS22 | PS4, PS6 as predicted, **plus** PS7, PS8, PS9 (index-shifted reads), **then an ASan container-overflow SIGABRT in PS10** (`rows[4]`/`rows[5]` out of bounds on the now-5-row group), halting the binary before PS22 could run | **major over-catch**, same shape as S9: a row-count-changing sabotage in this model cascades past its "intended" blast radius and crashes the binary rather than staying contained |
+| S9 | PS3, PS4, PS5 (PS22 stays green) | PS3, PS4, PS5 **plus** PS6, PS7, PS8, PS9 (index-shifted reads), **then a SIGABRT crash in PS10** (out-of-bounds `rows[4]`/`rows[5]` on a 2-row vector) that halted the whole `aero_editor_shell_test` binary before PS11–PS23 (incl. PS22) could run at all | **major over-catch**: the plan's "PS22 stays green" could not even be observed — the process aborted first **RE-RUN AFTER THE CODE-REVIEW ROUND'S `shapedGroups` FIX:** clean failure, no crash — 384 cases run, 367 pass, **17 fail**, and PS22 **correctly stays GREEN** (a swap moves rows, it does not lose one, so the total is still 8). The asymmetry §T claimed for PS22 is now DEMONSTRATED rather than merely asserted. |
+| S10 | PS4, PS6, PS22 | PS4, PS6 as predicted, **plus** PS7, PS8, PS9 (index-shifted reads), **then an ASan container-overflow SIGABRT in PS10** (`rows[4]`/`rows[5]` out of bounds on the now-5-row group), halting the binary before PS22 could run | **major over-catch**, same shape as S9: a row-count-changing sabotage in this model cascades past its "intended" blast radius and crashes the binary rather than staying contained **RE-RUN AFTER THE CODE-REVIEW ROUND'S `shapedGroups` FIX:** clean failure, no crash — 384 cases run, 368 pass, **16 fail**, and **PS22 now RUNS and reddens (`CHECK( 7 == 8 )`)**. Paired with S9 above, this is the first actual proof that PS22 discriminates a row that VANISHED from one that merely MOVED. |
 | S11 | nothing (non-discriminator by construction — `PROJECT_FORMAT_VERSION` is 1 today) | nothing | none |
 | S12 | PS10, PS11, PS12 | PS10, PS11, PS12 | none |
 | S13 | I25 only (`panelAt(5)`/`panelAt(1)`) | I25 only, both `CHECK_EQ`s; tier-0 stayed green | none |
-| S14 | nothing (real gap, human row 1 only) | nothing | none |
+| S14 | nothing (real gap, human row 1 only) | nothing **at the time of the sabotage pass** | **CLOSED by the code-review round.** `imgui_layer_test.cpp` now asserts `panelAt(5).defaultDockSlot() == DockSlot::Right` (plus the four `options()` defaults) — `panelAt()` hands back a `Panel&` and both accessors are public, so no src-private header is needed. Re-run with the seed applied: I25 fails `CHECK( 0 == 2 )`. AC-15's dock-slot clause is no longer human-row-only |
 | S15 | nothing mechanically (R-S1's gap; the exactly-3 grep is the only guard) | nothing mechanically; the grep's count stayed 3 but the first hit's argument became `text.c_str()` instead of `"%s"` — confirms the grep must be INSPECTED, not merely counted, exactly as designed | none |
-| S16 | I25 aborts (`IM_ASSERT`, F9) | **NO abort — all 95 tests pass, I25's 26 assertions all pass.** `BeginTable()` returns `false` only under degenerate conditions (zero-size/fully clipped) that never occur in I25's 320×180 visible window, so hoisting `EndTable()` outside the `if` is behaviourally IDENTICAL to the original on every path this suite exercises | **confirmed deviation**: the F9 balance invariant is real but no test in this tree can currently force `BeginTable()` to return `false`, so this specific miswrite is untested even though the *rule* it violates is documented and believed |
+| S16 | I25 aborts (`IM_ASSERT`, F9) | **NO abort — all 95 tests pass, I25's 26 assertions all pass.** Hoisting `EndTable()` outside the `if` is behaviourally IDENTICAL to the original on every path this suite exercises | **confirmed deviation, and the code-review round corrected its CLASSIFICATION**: this is a non-discriminator **by construction**, the S11 category — not new coverage debt. `BeginTableEx` has exactly two `return false` sites in the pinned 1.92.8 source. The first (`imgui_tables.cpp:323-324`) requires `outer_window->SkipItems`, which is false **by construction** here: `shell_ui.cpp`'s `drawPanels` calls `onDraw` only when `ImGui::Begin` returned true, and `Begin` returns `!window->SkipItems` (`imgui.cpp:8798`). The second (`:348`) requires `use_child_window`, i.e. `ScrollX\|ScrollY` — and `TABLE_FLAGS` deliberately sets neither (the panel's own window scrolls). So `BeginTable()` cannot return `false` for this panel **at all**, not merely "not in I25's window", and **no test change can close this** — it would require changing the product (adding a scroll flag, or calling `BeginTable` outside the registry's `Begin` gate). Do not file this as debt for a future task to work on |
 | S17 | I25 aborts, specifically in step 3's no-project ticks | I25 aborts exactly there — `IM_ASSERT`: "In window 'Project Settings': Missing EndTable()" — 46 cases in that binary skipped as a result | none |
-| S18 | "likely nothing mechanically" (an open question the plan deferred to implementation) | **resolved: nothing mechanically.** I25 passes clean (26/26 assertions, no abort, no `[imgui-error]` log line, unlike S17). ImGui silently MERGES the two same-`id` tables rather than asserting. Only human row 4 can observe the visual consequence | plan's own open question, now answered definitively |
+| S18 | "likely nothing mechanically" (an open question the plan deferred to implementation) | **resolved: nothing mechanically.** I25 passes clean (26/26 assertions, no abort, no `[imgui-error]` log line, unlike S17). ImGui silently MERGES the two same-`id` tables rather than asserting — multiple instances of one table id is a *supported* feature: `BeginTableEx` assigns `instance_no = (previous_frame_active != g.FrameCount) ? 0 : table->InstanceCurrent + 1` and proceeds | plan's own open question, now answered definitively. **Caveat added by the code-review round: human row 4 is NOT a reliable catch for this seed.** ImGui's multi-instance tables share column widths, and both groups are already initialised from the same `labelWidth`, so the merged rendering is most likely *indistinguishable* from the correct one. `PushID(g)` is still right — it is what keeps the two tables independent entities — but nothing in this tree, human or mechanical, reliably observes its absence |
 | S19 | nothing (human rows 5-6 only) | nothing | none |
 | S20 | nothing (human row 7 / E4) | nothing | none |
 | S21 | with `const`: probe fails to compile; without `const`: probe compiles | **both halves confirmed** — with `const`, `error: 'this' argument to member function 'set' has type 'const ProjectSession', but function is not marked const`; without `const`, `project_settings_panel.cpp` (the probe's own TU) builds clean. Side note, not part of the seed's own claim: removing `const` from `PanelContext::project` also broke `shell_test.cpp`/`hierarchy_test.cpp`, which bind `const ProjectSession` locals to the aggregate — collateral evidence of how structurally deep the enforcement runs | none against the seed's stated claim |
@@ -1689,9 +1703,15 @@ since the first one.
 format question (`docs/09` §2.7) is still open. 2.6.1's S11 coverage gap (`createProject`'s
 `WriteFailed` rollback branch, unreachable by any test, held instead by
 `check-project-no-delete.sh`) and its `app.recents` accessor gap are unchanged. This task's own two
-real, recorded gaps — S16 (no test can force `BeginTable()` to return `false`) and S9/S10 (no
-per-group/per-row-count regression net beyond literal indices) — are new debt, not inherited, and are
-recorded here rather than silently accepted.
+real, recorded gaps were both **re-classified or closed by the code-review round**, and neither is
+carried forward. **S16 is NOT debt** — `BeginTable()` is unreachable-by-`false` for this panel by
+construction (see its row in the sabotage table above for the two source citations), so it belongs in
+S11's non-discriminator-by-construction bucket and no future task should spend effort on it.
+**S9/S10's gap is CLOSED**: `project_settings_test.cpp` now routes PS6–PS20 through a `shapedGroups`
+helper that `REQUIRE`s `groups.size() == 2`, `rows.size() == 6` and `rows.size() == 2` before any
+positional read, so a shape-changing regression fails cleanly in the case that owns it instead of
+running off the end and aborting the binary before PS22's independent eight-row sum can run — which
+is exactly what cost this task's own sabotage pass the demonstration of PS22's discrimination.
 
 ---
 

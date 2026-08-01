@@ -780,6 +780,11 @@ TEST_CASE("editor: EditorApp::viewportCamera() (task 2.3.1, D6)") {
                                            .restoreLastProject = false});
     REQUIRE(bareApp.has_value());
     CHECK(bareApp->viewportCamera() == nullptr);
+    // Task 2.6.2 AC-28's first half: with registerDefaultPanels == false NOTHING is registered, which
+    // is what makes the Edit > Project Settings... item resolve to disabled rather than to a logged
+    // no-op ERROR on every click (shell_ui.cpp gates it on panels.find(id) != nullptr). The count-0
+    // half had no assertion anywhere in the tree before this line.
+    CHECK(bareApp->panels().count() == 0);
     bareApp->requestQuit();
     CHECK(bareApp->tick() == false);
     bareApp.reset();
@@ -2550,6 +2555,20 @@ TEST_CASE(
     CHECK(app->panels().count() == 6);
     CHECK_EQ(std::string(app->panels().panelAt(5).id()), "Project Settings");
     CHECK_EQ(std::string(app->panels().panelAt(1).id()), "Inspector");
+
+    // AC-15's other two clauses, asserted MECHANICALLY rather than left to human row 1. panelAt()
+    // hands back a Panel& and both accessors are public on the base, so nothing here needs the
+    // src-private panel header -- the same reach shell_test.cpp already uses on its MinimalPanel.
+    // This is what makes sabotage seed S14 (defaultDockSlot() returning Center) discriminate; before
+    // it, S14 reddened nothing anywhere in the tree.
+    CHECK(app->panels().panelAt(5).defaultDockSlot() == engine::editor::DockSlot::Right);
+    // options() is deliberately NOT overridden (AC-15): the panel's own window must keep scrolling,
+    // because the two tables carry no ScrollY of their own.
+    const engine::editor::PanelOptions settingsOpts = app->panels().panelAt(5).options();
+    CHECK_FALSE(settingsOpts.noScrollbar);
+    CHECK_FALSE(settingsOpts.hasMenuBar);
+    CHECK_FALSE(settingsOpts.noPadding);
+    CHECK_FALSE(settingsOpts.noScrollWithMouse);
 
     // R-1 (LOAD-BEARING): "Project Settings" shares DockSlot::Right with "Inspector", and Inspector
     // registers FIRST, so it is the selected tab in a fresh layout -- exactly 2.2.4's C5 finding, one

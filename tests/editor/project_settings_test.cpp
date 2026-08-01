@@ -44,6 +44,23 @@ constexpr std::string_view BUILD_VERSION = "0.1.0";
     return session;                                     // INV-P1's grep is scoped to editor/src/
 }
 
+// Every case from PS6 onward indexes groups[0] / groups[1] POSITIONALLY. Guarding the shape first
+// turns a shape-changing regression into a clean failure in the case that owns it, instead of an
+// out-of-bounds read that aborts the whole binary before the later cases run. Sabotage seeds S9
+// (groups emitted in the wrong order) and S10 (the Format version row dropped) both did exactly
+// that: each cascaded past its predicted cases and died in PS10 with an ASan container-overflow,
+// so PS22's independent eight-row sum -- the very case whose separateness is meant to catch a row
+// that MOVED rather than vanished -- never got to run and its discrimination went undemonstrated.
+// PS3/PS4/PS5 keep their own explicit REQUIREs: asserting the shape IS what those three are for.
+[[nodiscard]] std::vector<ProjectSettingsGroup> shapedGroups(const ProjectSession& session,
+                                                             std::string_view buildEngineVersion) {
+    std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, buildEngineVersion);
+    REQUIRE(groups.size() == 2);
+    REQUIRE(groups[0].rows.size() == 6);
+    REQUIRE(groups[1].rows.size() == 2);
+    return groups;
+}
+
 }  // namespace
 
 TEST_CASE("editor: a closed session yields no groups (task 2.6.2, PS1/AC-1/D11)") {
@@ -93,7 +110,7 @@ TEST_CASE("editor: the Location group's two labels, in order (task 2.6.2, PS5/AC
 
 TEST_CASE("editor: Format version comes from the constant (task 2.6.2, PS6/AC-5)") {
     const ProjectSession session = openSession();
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, BUILD_VERSION);
     // NEVER compare against the literal "1" -- that is what makes S11 discriminating the day a v2
     // exists.
     CHECK(groups[0].rows[0].value == std::to_string(PROJECT_FORMAT_VERSION));
@@ -101,33 +118,33 @@ TEST_CASE("editor: Format version comes from the constant (task 2.6.2, PS6/AC-5)
 
 TEST_CASE("editor: Name is byte-identical for ASCII (task 2.6.2, PS7/AC-6)") {
     const ProjectSession session = openSession("MyGame");
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[1].value == "MyGame");
 }
 
 TEST_CASE("editor: Name survives UTF-8 (task 2.6.2, PS8/AC-6/E7)") {
     // Escapes, never glyphs -- the tree sets no /utf-8 flag (§S's lint-and-portability trap table).
     const ProjectSession session = openSession("Caf\xC3\xA9 Rocket \xF0\x9F\x9A\x80");
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[1].value == "Caf\xC3\xA9 Rocket \xF0\x9F\x9A\x80");
 }
 
 TEST_CASE("editor: a % in the name is DATA (task 2.6.2, PS9/AC-6/E6/F4)") {
     const ProjectSession session = openSession("100% Cotton");
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[1].value == "100% Cotton");
 }
 
 TEST_CASE("editor: the default relative paths are verbatim (task 2.6.2, PS10/AC-7)") {
     const ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts, "assets", "scenes");
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[4].value == "assets");
     CHECK(groups[0].rows[5].value == "scenes");
 }
 
 TEST_CASE("editor: nested relative paths are verbatim (task 2.6.2, PS11/AC-7/E8)") {
     const ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts, "content/art", "content/levels");
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[4].value == "content/art");
     CHECK(groups[0].rows[5].value == "content/levels");
 }
@@ -136,7 +153,7 @@ TEST_CASE(
     "editor: a trailing separator is NOT stripped here, and IS stripped by assetsRoot() (task 2.6.2, "
     "PS12/AC-7/E9)") {
     const ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts, "assets/", "scenes/", "/tmp/p");
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[4].value == "assets/");
     // Built from the accessor, never a literal -- pinning the deliberate difference.
     CHECK(session.assetsRoot() == std::string(session.root()) + "/assets");
@@ -144,13 +161,13 @@ TEST_CASE(
 
 TEST_CASE("editor: Language reads TypeScript for Ts (task 2.6.2, PS13/AC-8)") {
     const ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts);
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[3].value == "TypeScript");
 }
 
 TEST_CASE("editor: Language reads C++ for Cpp (task 2.6.2, PS14/AC-8/E12)") {
     const ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Cpp);
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[3].value == "C++");
 }
 
@@ -163,33 +180,33 @@ TEST_CASE("editor: languageDisplayName directly, and it is noexcept (task 2.6.2,
 
 TEST_CASE("editor: Engine version is verbatim when it equals the build (task 2.6.2, PS16/AC-9)") {
     const ProjectSession session = openSession("MyGame", "0.1.0");
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, "0.1.0");
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, "0.1.0");
     CHECK(groups[0].rows[2].value == "0.1.0");
     CHECK(groups[0].rows[2].value.find("this build") == std::string::npos);
 }
 
 TEST_CASE("editor: an EMPTY build version suppresses the suffix even when they differ (task 2.6.2, PS17/AC-10)") {
     const ProjectSession session = openSession("MyGame", "0.0.9");
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, "");
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, "");
     CHECK(groups[0].rows[2].value == "0.0.9");
     CHECK(groups[0].rows[2].value.find("this build") == std::string::npos);
 }
 
 TEST_CASE("editor: both non-empty and different => the exact suffix (task 2.6.2, PS18/AC-11/E10)") {
     const ProjectSession session = openSession("MyGame", "0.0.9");
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, "0.1.0");
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, "0.1.0");
     CHECK(groups[0].rows[2].value == "0.0.9 (this build: 0.1.0)");
 }
 
 TEST_CASE("editor: an EMPTY manifest version still gets the suffix (task 2.6.2, PS19/AC-10/F13)") {
     const ProjectSession session = openSession("MyGame", "");
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, "0.1.0");
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, "0.1.0");
     CHECK(groups[0].rows[2].value == " (this build: 0.1.0)");
 }
 
 TEST_CASE("editor: the two Location rows come from the session's own accessors (task 2.6.2, PS20/AC-12)") {
     const ProjectSession session = openSession();
-    const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
+    const std::vector<ProjectSettingsGroup> groups = shapedGroups(session, BUILD_VERSION);
     CHECK(groups[1].rows[0].value == std::string(session.root()));
     CHECK(groups[1].rows[1].value == session.manifestPath());
     // So the two rows are provably distinct and S8 cannot pass by coincidence. NEVER re-derive a

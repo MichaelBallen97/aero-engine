@@ -53,8 +53,21 @@ void drawEmptyState() {
 }
 
 // ONE pass over every row of every group, so BOTH tables get the SAME column-0 width and the two
-// groups align as if they were one table (D10). Computed from the LIVE font, so it is correct on a
-// HiDPI display and after a font-scale change -- a hardcoded font multiple would not be.
+// groups align as if they were one table (D10). Computed from the LIVE font rather than a hardcoded
+// font multiple, so the width is right for whatever font and DPI are in effect when a table first
+// lays itself out.
+//
+// WHAT THIS DOES *NOT* DO, verified in the pinned 1.92.8 source rather than assumed: it does not
+// re-widen the column when the font scale changes at runtime. TableSetupColumn's init width reaches
+// column->WidthRequest only via TableInitColumnDefaults, which is called under `if
+// (table->IsInitializing)` (imgui_tables.cpp:1693-1698), and IsInitializing is true only on the
+// frame a table id first allocates (`RawData == NULL`, :574-577). The one per-frame path that would
+// re-apply it, `column->WidthAuto = column->InitStretchWeightOrWidth` (:937-938), is gated on
+// `!column_is_resizable` -- and TABLE_FLAGS sets Resizable deliberately, so that path is excluded
+// here. The recompute therefore still costs nothing worth saving (eight CalcTextSize calls) and
+// still covers a table that re-initializes, but a live font-scale change leaves the column where it
+// was: labels WRAP rather than clip, and the user can drag the divider. Do not describe this as
+// mitigating a runtime font-scale change.
 [[nodiscard]] float widestLabel(const std::vector<ProjectSettingsGroup>& groups) {
     float widest = 0.0F;
     for (const ProjectSettingsGroup& group : groups) {
