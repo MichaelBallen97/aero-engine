@@ -104,6 +104,26 @@ struct LogFixture {
     LogFixture& operator=(LogFixture&&) = delete;
 };
 
+// Rewrite a '/'-separated EXPECTATION into the platform's own separator. A no-op on macOS and Linux.
+//
+// This is not cosmetic. `projectRootFromPath` and `createProject` build their result through
+// std::filesystem::path and return `utf8FromPath(p)`, and docs/09 4.2 specifies a root "with
+// separators unified to the platform's own" -- so on Windows a root really is `C:\a\b`, and a byte
+// comparison against a literal "/a/b" fails there and ONLY there. Windows CI caught exactly this on
+// the first run of this file: 16 assertions across two cases, every one of them a wrong expectation
+// rather than a wrong result.
+//
+// Apply it to the ROOT only. assetsRoot()/scenesRoot()/manifestPath() join with a literal '/' onto
+// that native root (project.cpp), so on Windows they are legitimately MIXED -- `C:\a\b/assets` -- and
+// wrapping the whole expected string would assert a form the code deliberately does not produce.
+[[nodiscard]] std::string nativeSeparators(std::string_view utf8) {
+    std::string out(utf8);
+    if constexpr (std::filesystem::path::preferred_separator != '/') {
+        std::replace(out.begin(), out.end(), '/', '\\');
+    }
+    return out;
+}
+
 // A unique temp directory that removes itself (and its contents) on destruction -- the SIXTH
 // TU-local copy of this shape (tests/vfs_test.cpp, tests/editor/project_files_test.cpp,
 // tests/editor/scene_session_test.cpp, ...); scaffolding is copied, the ASSERTION is shared (F14).
@@ -747,20 +767,24 @@ TEST_CASE("project: ProjectSession defaults, joins, nested paths and close (P63-
 // ---- P35/P36: projectRootFromPath ----------------------------------------------------------------
 
 TEST_CASE("project: projectRootFromPath accepts a directory or a project.json (P35/P36/AC-17/S17)") {
+    // Every expectation goes through nativeSeparators: the result is built via std::filesystem::path,
+    // so it carries '\' on Windows and '/' everywhere else (docs/09 4.2). "" is separator-free and
+    // needs no wrapping.
     CHECK(projectRootFromPath("") == "");
-    CHECK(projectRootFromPath("/a/b") == "/a/b");
-    CHECK(projectRootFromPath("/a/b/") == "/a/b");
-    CHECK(projectRootFromPath("/a/b//") == "/a/b");
-    CHECK(projectRootFromPath("/a/b/project.json") == "/a/b");
-    CHECK(projectRootFromPath("/a/b/project.json/") == "/a/b");
-    CHECK(projectRootFromPath("/a/b/./project.json") == "/a/b");
-    CHECK(projectRootFromPath("/a/b/c/../project.json") == "/a/b");
-    CHECK(projectRootFromPath("/") == "/");
-    CHECK(projectRootFromPath("/project.json") == "/");
-    CHECK(projectRootFromPath("relative/x") == "relative/x");
-    CHECK(projectRootFromPath("/a/b/.") == "/a/b");
-    CHECK(projectRootFromPath("/a/b/c/..") == "/a/b");
-    CHECK(projectRootFromPath("/a/b/Project.json") == "/a/b/Project.json");  // NO case folding -- D9
+    CHECK(projectRootFromPath("/a/b") == nativeSeparators("/a/b"));
+    CHECK(projectRootFromPath("/a/b/") == nativeSeparators("/a/b"));
+    CHECK(projectRootFromPath("/a/b//") == nativeSeparators("/a/b"));
+    CHECK(projectRootFromPath("/a/b/project.json") == nativeSeparators("/a/b"));
+    CHECK(projectRootFromPath("/a/b/project.json/") == nativeSeparators("/a/b"));
+    CHECK(projectRootFromPath("/a/b/./project.json") == nativeSeparators("/a/b"));
+    CHECK(projectRootFromPath("/a/b/c/../project.json") == nativeSeparators("/a/b"));
+    CHECK(projectRootFromPath("/") == nativeSeparators("/"));
+    CHECK(projectRootFromPath("/project.json") == nativeSeparators("/"));
+    CHECK(projectRootFromPath("relative/x") == nativeSeparators("relative/x"));
+    CHECK(projectRootFromPath("/a/b/.") == nativeSeparators("/a/b"));
+    CHECK(projectRootFromPath("/a/b/c/..") == nativeSeparators("/a/b"));
+    // NO case folding -- D9
+    CHECK(projectRootFromPath("/a/b/Project.json") == nativeSeparators("/a/b/Project.json"));
 }
 
 // ---- loadProjectFrom ------------------------------------------------------------------------------
@@ -892,7 +916,9 @@ TEST_CASE(
         createProject(dir.utf8(), std::string(engine::editor::PROJECT_FILE_NAME), "0.1.0");
     REQUIRE(outcome.problem == CreateProblem::Ok);
 
-    const std::string expectedRoot = dir.join(engine::editor::PROJECT_FILE_NAME);
+    // createProject builds its root through std::filesystem::path, so it is fully native; dir.join
+    // splices with '/'. Convert the whole expectation (see nativeSeparators).
+    const std::string expectedRoot = nativeSeparators(dir.join(engine::editor::PROJECT_FILE_NAME));
     CHECK(outcome.root == expectedRoot);
     CHECK(directoryExists(outcome.root));
     CHECK(directoryExists(outcome.root + "/assets"));
@@ -905,7 +931,7 @@ TEST_CASE(
     // already has a non-empty "project.json" directory in it from the createProject call, and
     // createAndOpenProject must scaffold its OWN target, not adopt that one.
     const TempDir dir2;
-    const std::string expectedRoot2 = dir2.join(engine::editor::PROJECT_FILE_NAME);
+    const std::string expectedRoot2 = nativeSeparators(dir2.join(engine::editor::PROJECT_FILE_NAME));
     FlowFixture f;
     SceneSession session;
     const bool ok = createAndOpenProject(f.ctx, f.commands, session, f.project, dir2.utf8(),
