@@ -47,7 +47,7 @@ constexpr std::string_view BUILD_VERSION = "0.1.0";
 }  // namespace
 
 TEST_CASE("editor: a closed session yields no groups (task 2.6.2, PS1/AC-1/D11)") {
-    ProjectSession session;
+    const ProjectSession session;
     CHECK(projectSettingsGroups(session, BUILD_VERSION).empty());
     CHECK(projectSettingsGroups(session, "").empty());
 }
@@ -62,7 +62,7 @@ TEST_CASE("editor: a CLOSED session's manifest is not empty, which is why PS1's 
 }
 
 TEST_CASE("editor: an open session yields exactly two groups, Manifest then Location (task 2.6.2, PS3/AC-2)") {
-    ProjectSession session = openSession();
+    const ProjectSession session = openSession();
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     REQUIRE(groups.size() == 2);
     CHECK(groups[0].title == "Manifest");
@@ -70,7 +70,7 @@ TEST_CASE("editor: an open session yields exactly two groups, Manifest then Loca
 }
 
 TEST_CASE("editor: the Manifest group's six labels, in order (task 2.6.2, PS4/AC-3)") {
-    ProjectSession session = openSession();
+    const ProjectSession session = openSession();
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     REQUIRE(groups.size() == 2);
     REQUIRE(groups[0].rows.size() == 6);
@@ -83,7 +83,7 @@ TEST_CASE("editor: the Manifest group's six labels, in order (task 2.6.2, PS4/AC
 }
 
 TEST_CASE("editor: the Location group's two labels, in order (task 2.6.2, PS5/AC-4)") {
-    ProjectSession session = openSession();
+    const ProjectSession session = openSession();
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     REQUIRE(groups.size() == 2);
     REQUIRE(groups[1].rows.size() == 2);
@@ -92,7 +92,7 @@ TEST_CASE("editor: the Location group's two labels, in order (task 2.6.2, PS5/AC
 }
 
 TEST_CASE("editor: Format version comes from the constant (task 2.6.2, PS6/AC-5)") {
-    ProjectSession session = openSession();
+    const ProjectSession session = openSession();
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     // NEVER compare against the literal "1" -- that is what makes S11 discriminating the day a v2
     // exists.
@@ -100,33 +100,33 @@ TEST_CASE("editor: Format version comes from the constant (task 2.6.2, PS6/AC-5)
 }
 
 TEST_CASE("editor: Name is byte-identical for ASCII (task 2.6.2, PS7/AC-6)") {
-    ProjectSession session = openSession("MyGame");
+    const ProjectSession session = openSession("MyGame");
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[1].value == "MyGame");
 }
 
 TEST_CASE("editor: Name survives UTF-8 (task 2.6.2, PS8/AC-6/E7)") {
     // Escapes, never glyphs -- the tree sets no /utf-8 flag (§S's lint-and-portability trap table).
-    ProjectSession session = openSession("Caf\xC3\xA9 Rocket \xF0\x9F\x9A\x80");
+    const ProjectSession session = openSession("Caf\xC3\xA9 Rocket \xF0\x9F\x9A\x80");
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[1].value == "Caf\xC3\xA9 Rocket \xF0\x9F\x9A\x80");
 }
 
 TEST_CASE("editor: a % in the name is DATA (task 2.6.2, PS9/AC-6/E6/F4)") {
-    ProjectSession session = openSession("100% Cotton");
+    const ProjectSession session = openSession("100% Cotton");
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[1].value == "100% Cotton");
 }
 
 TEST_CASE("editor: the default relative paths are verbatim (task 2.6.2, PS10/AC-7)") {
-    ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts, "assets", "scenes");
+    const ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts, "assets", "scenes");
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[4].value == "assets");
     CHECK(groups[0].rows[5].value == "scenes");
 }
 
 TEST_CASE("editor: nested relative paths are verbatim (task 2.6.2, PS11/AC-7/E8)") {
-    ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts, "content/art", "content/levels");
+    const ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts, "content/art", "content/levels");
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[4].value == "content/art");
     CHECK(groups[0].rows[5].value == "content/levels");
@@ -135,7 +135,7 @@ TEST_CASE("editor: nested relative paths are verbatim (task 2.6.2, PS11/AC-7/E8)
 TEST_CASE(
     "editor: a trailing separator is NOT stripped here, and IS stripped by assetsRoot() (task 2.6.2, "
     "PS12/AC-7/E9)") {
-    ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts, "assets/", "scenes/", "/tmp/p");
+    const ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts, "assets/", "scenes/", "/tmp/p");
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[4].value == "assets/");
     // Built from the accessor, never a literal -- pinning the deliberate difference.
@@ -143,13 +143,13 @@ TEST_CASE(
 }
 
 TEST_CASE("editor: Language reads TypeScript for Ts (task 2.6.2, PS13/AC-8)") {
-    ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts);
+    const ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Ts);
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[3].value == "TypeScript");
 }
 
 TEST_CASE("editor: Language reads C++ for Cpp (task 2.6.2, PS14/AC-8/E12)") {
-    ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Cpp);
+    const ProjectSession session = openSession("MyGame", "0.1.0", ProjectLanguage::Cpp);
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     CHECK(groups[0].rows[3].value == "C++");
 }
@@ -162,33 +162,33 @@ TEST_CASE("editor: languageDisplayName directly, and it is noexcept (task 2.6.2,
 }
 
 TEST_CASE("editor: Engine version is verbatim when it equals the build (task 2.6.2, PS16/AC-9)") {
-    ProjectSession session = openSession("MyGame", "0.1.0");
+    const ProjectSession session = openSession("MyGame", "0.1.0");
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, "0.1.0");
     CHECK(groups[0].rows[2].value == "0.1.0");
     CHECK(groups[0].rows[2].value.find("this build") == std::string::npos);
 }
 
 TEST_CASE("editor: an EMPTY build version suppresses the suffix even when they differ (task 2.6.2, PS17/AC-10)") {
-    ProjectSession session = openSession("MyGame", "0.0.9");
+    const ProjectSession session = openSession("MyGame", "0.0.9");
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, "");
     CHECK(groups[0].rows[2].value == "0.0.9");
     CHECK(groups[0].rows[2].value.find("this build") == std::string::npos);
 }
 
 TEST_CASE("editor: both non-empty and different => the exact suffix (task 2.6.2, PS18/AC-11/E10)") {
-    ProjectSession session = openSession("MyGame", "0.0.9");
+    const ProjectSession session = openSession("MyGame", "0.0.9");
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, "0.1.0");
     CHECK(groups[0].rows[2].value == "0.0.9 (this build: 0.1.0)");
 }
 
 TEST_CASE("editor: an EMPTY manifest version still gets the suffix (task 2.6.2, PS19/AC-10/F13)") {
-    ProjectSession session = openSession("MyGame", "");
+    const ProjectSession session = openSession("MyGame", "");
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, "0.1.0");
     CHECK(groups[0].rows[2].value == " (this build: 0.1.0)");
 }
 
 TEST_CASE("editor: the two Location rows come from the session's own accessors (task 2.6.2, PS20/AC-12)") {
-    ProjectSession session = openSession();
+    const ProjectSession session = openSession();
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     CHECK(groups[1].rows[0].value == std::string(session.root()));
     CHECK(groups[1].rows[1].value == session.manifestPath());
@@ -198,7 +198,7 @@ TEST_CASE("editor: the two Location rows come from the session's own accessors (
 }
 
 TEST_CASE("editor: no row is silently blank for a fully populated manifest (task 2.6.2, PS21)") {
-    ProjectSession session = openSession();
+    const ProjectSession session = openSession();
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     for (const ProjectSettingsGroup& group : groups) {
         for (const ProjectSettingsRow& row : group.rows) {
@@ -209,7 +209,7 @@ TEST_CASE("editor: no row is silently blank for a fully populated manifest (task
 }
 
 TEST_CASE("editor: the total row count is exactly eight (task 2.6.2, PS22/AC-3+AC-4)") {
-    ProjectSession session = openSession();
+    const ProjectSession session = openSession();
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(session, BUILD_VERSION);
     std::size_t total = 0;
     for (const ProjectSettingsGroup& group : groups) {
