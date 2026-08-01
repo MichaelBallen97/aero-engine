@@ -347,6 +347,7 @@ std::string_view EditorApp::projectName() const noexcept { return project.name()
 std::string_view EditorApp::assetBrowserRoot() const noexcept {
     return assetBrowserPanel != nullptr ? std::string_view(assetBrowserPanel->root()) : std::string_view{};
 }
+std::size_t EditorApp::recentProjectCount() const noexcept { return recents.paths.size(); }
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }

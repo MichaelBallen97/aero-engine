@@ -117,8 +117,21 @@ struct QuietTraceLogging {
 // open whatever project the developer last used, swapping the World and seeding three entities. It
 // would PASS on a CI runner (which has no recents file) and FAIL on a developer machine, which is
 // the worst possible shape for a bug. The ONE case that must exercise the restore path (I23)
-// enables it AND points `recentProjectsPath` at a TempDir file, so no test ever reads the real
+// enables it AND points `recentProjectsPath` at a TempDir file, so no test ever READS the real
 // pref directory. §V7's grep asserts this count matches the total number of app-creation call sites.
+//
+// BLOCKING-2 (code review): `restoreLastProject == false` ONLY suppresses the READ. It does NOT
+// suppress the WRITE -- `recentsPath` is resolved from `config.recentProjectsPath` unconditionally at
+// create(), and ANY case that opens or creates a project during its run (I18, I21: `.projectPath` /
+// `requestOpenProject()`) dirties the recents list and gets it FLUSHED on the very next tick(),
+// falling through to the real `defaultRecentProjectsPath()` -- the real, machine-wide
+// `~/Library/Application Support/AeroEngine/AeroEditor/recent_projects.json` on macOS -- the moment
+// `recentProjectsPath` is left unset. This is not hypothetical: it happened on the machine this task
+// was implemented on, confirmed by inspecting that file's contents after a run. EVERY case that can
+// reach `adoptProject` (a real `.projectPath`, or `requestOpenProject`/`requestNewProject`/
+// `requestClearRecentProjects`) MUST set `.recentProjectsPath` to `uniqueRecentsFile()`, exactly like
+// I23/I24 already do for the READ side -- READ and WRITE are two independent footguns closed by the
+// SAME field, and a case can dirty recents without ever setting `restoreLastProject = true`.
 
 TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke test)") {
     engine::platform::Context ctx;
@@ -2262,11 +2275,20 @@ TEST_CASE(
     const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
-    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(*device, *window, ctx,
-                                                                                     {.persistLayout = false,
-                                                                                      .unfocusedFrameCapHz = 0.0F,
-                                                                                      .projectPath = created.root,
-                                                                                      .restoreLastProject = false});
+    // BLOCKING-2 (code review): opening a project here (via `.projectPath`) dirties the recents list
+    // (adoptProject -> promoteRecent -> recentsDirty = true), which the very next tick() FLUSHES --
+    // `.restoreLastProject = false` only ever suppressed the READ half; with no `.recentProjectsPath`
+    // override, the WRITE fell through to `defaultRecentProjectsPath()`, the REAL machine-wide
+    // `recent_projects.json`. This is the exact defect the reviewer found already landed on this
+    // machine. `uniqueRecentsFile()` (I23/I24's own helper, :106-112) points the write at a scratch
+    // path instead.
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
     REQUIRE(app.has_value());
     CHECK(app->projectIsOpen());
     CHECK(app->projectName() == "MyGame");
@@ -2301,9 +2323,17 @@ TEST_CASE(
     const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
 
-    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx,
-        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    // BLOCKING-2 (code review): requestOpenProject() below dirties the recents list on the tick that
+    // performs the swap, and the very next tick() flushes it -- `recentProjectsPath` MUST be set here
+    // too, at create() time, or the flush falls through to the REAL machine-wide recents file exactly
+    // as I18's did.
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .seedDefaultScene = true,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
     REQUIRE(app.has_value());
     CHECK_FALSE(app->projectIsOpen());
     REQUIRE(app->tick());
@@ -2468,6 +2498,12 @@ TEST_CASE("editor: restoreLastProject = false never reads the recents file (task
     REQUIRE(app.has_value());
     CHECK_FALSE(app->projectIsOpen());
     CHECK(app->projectRoot().empty());
+    // S15/AC-34, directly: the file on disk has ONE entry, but restoreLastProject == false means it
+    // was never read at all, so the in-memory recents list must still be EMPTY -- proving AC-34
+    // directly instead of only through the downstream consequence (projectIsOpen()/projectRoot()
+    // staying empty), and making sabotage seed S15 (dropping the `if (config.restoreLastProject)`
+    // guard around `readRecentProjects`) redden this case specifically.
+    CHECK(app->recentProjectCount() == 0);
 
     app->requestQuit();
     CHECK(app->tick() == false);

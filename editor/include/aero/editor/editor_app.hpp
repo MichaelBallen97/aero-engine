@@ -172,6 +172,14 @@ public:
     // (2.2.5 D16) and viewportCamera() (2.3.1 D6) do: without it, D10's per-frame reconcile has no
     // black-box signature, AC-31 is unprovable and sabotage seed S14 would redden nothing at all.
     [[nodiscard]] std::string_view assetBrowserRoot() const noexcept;
+    // How many entries the recents list currently holds. Exists for the same reason
+    // assetBrowserRoot() (A9) does: without it, AC-34 ("restoreLastProject == false never reads the
+    // recents file") is provable only as a downstream consequence (projectIsOpen()/projectRoot()
+    // staying empty), never DIRECTLY -- and it is what makes BLOCKING-2's fix (every GPU case that can
+    // dirty the recents list points recentProjectsPath at its own scratch file) testable at all: a
+    // case that forgot the override would otherwise show no symptom in-process, only a polluted file
+    // on disk after the run.
+    [[nodiscard]] std::size_t recentProjectCount() const noexcept;
 
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
