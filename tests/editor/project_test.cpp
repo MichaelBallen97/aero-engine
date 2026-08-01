@@ -936,3 +936,155 @@ TEST_CASE("project: writeRecentProjects round-trips atomically and leaves no tem
     scope.sink()->take(records);
     CHECK(countAtLevel(records, engine::LogLevel::Warn) == 1);
 }
+
+// ---- PG1-PG9: the three committed golden fixtures --------------------------------------------------
+
+namespace {
+
+constexpr std::string_view PROJECT_MINIMAL = AERO_PROJECT_FIXTURES_DIR "/minimal.project.json";
+constexpr std::string_view PROJECT_FULL = AERO_PROJECT_FIXTURES_DIR "/full.project.json";
+constexpr std::string_view PROJECT_UNKNOWN = AERO_PROJECT_FIXTURES_DIR "/unknown-keys.project.json";
+
+// name, path, is-a-fixpoint -- unknown-keys is deliberately NOT one (it loses its three unknown keys
+// on save; PG8 is the case that pins exactly which three).
+struct ProjectFixture {
+    std::string_view name;
+    std::string_view path;
+    bool fixpoint;
+};
+constexpr std::array<ProjectFixture, 3> PROJECT_FIXTURES{{
+    {"minimal", PROJECT_MINIMAL, true},
+    {"full", PROJECT_FULL, true},
+    {"unknown-keys", PROJECT_UNKNOWN, false},
+}};
+
+}  // namespace
+
+TEST_CASE("project_golden: the three fixtures resolve, are non-empty and hygienic (PG1/AC-41)") {
+    for (const ProjectFixture& fixture : PROJECT_FIXTURES) {
+        const scene_golden::FileBytes file = scene_golden::readBytes(fixture.path);
+        REQUIRE_MESSAGE(file.ok, file.error);  // never a skip
+        CHECK_FALSE(file.text.empty());
+        CHECK(scene_golden::hygieneComplaint(file.text).empty());
+    }
+}
+
+TEST_CASE("project_golden: minimal and full are exact byte fixpoints (PG2/AC-3/AC-41/S8)") {
+    for (const ProjectFixture& fixture : PROJECT_FIXTURES) {
+        if (!fixture.fixpoint) {
+            continue;
+        }
+        const scene_golden::FileBytes file = scene_golden::readBytes(fixture.path);
+        REQUIRE(file.ok);
+        const ProjectParseResult parsed = parseProject(file.text);
+        REQUIRE(parsed.manifest.has_value());
+        const std::string written = writeProjectText(*parsed.manifest);
+        INFO(scene_golden::describeMismatch(file.text, written));
+        CHECK(written == file.text);
+    }
+}
+
+TEST_CASE("project_golden: a second write cycle is byte-identical (PG3/AC-3)") {
+    for (const ProjectFixture& fixture : PROJECT_FIXTURES) {
+        if (!fixture.fixpoint) {
+            continue;
+        }
+        const scene_golden::FileBytes file = scene_golden::readBytes(fixture.path);
+        REQUIRE(file.ok);
+        const ProjectParseResult parsed1 = parseProject(file.text);
+        REQUIRE(parsed1.manifest.has_value());
+        const std::string cycle1 = writeProjectText(*parsed1.manifest);
+        const ProjectParseResult parsed2 = parseProject(cycle1);
+        REQUIRE(parsed2.manifest.has_value());
+        const std::string cycle2 = writeProjectText(*parsed2.manifest);
+        CHECK(cycle2 == cycle1);
+    }
+}
+
+TEST_CASE("project_golden: minimal.project.json is the exact bytes New Project writes (PG4/§4.5)") {
+    ProjectManifest manifest;
+    manifest.name = "MyGame";
+    manifest.engineVersion = "0.1.0";
+    manifest.language = ProjectLanguage::Ts;
+    manifest.assetsPath = "assets";
+    manifest.scenesPath = "scenes";
+    const std::string written = writeProjectText(manifest);
+
+    const scene_golden::FileBytes file = scene_golden::readBytes(PROJECT_MINIMAL);
+    REQUIRE(file.ok);
+    INFO(scene_golden::describeMismatch(file.text, written));
+    CHECK(written == file.text);
+}
+
+// PG5-PG7 must NEVER be deleted as redundant with PG2-PG4. That is the exact hole 2.5.2's S12 proved
+// open: a parseProject/writeProjectText pair that BOTH stopped handling a key would agree with each
+// other, and a regenerated fixture would make the byte comparison pass. Seed S9 re-proves it for this
+// format. These three cases read the FIXTURE directly, never a re-derived string.
+TEST_CASE("project_golden: minimal's parsed model, field by field (PG5/AC-43/S9)") {
+    const scene_golden::FileBytes file = scene_golden::readBytes(PROJECT_MINIMAL);
+    REQUIRE(file.ok);
+    const ProjectParseResult parsed = parseProject(file.text);
+    REQUIRE(parsed.manifest.has_value());
+    CHECK(parsed.manifest->name == "MyGame");
+    CHECK(parsed.manifest->engineVersion == "0.1.0");
+    CHECK(parsed.manifest->language == ProjectLanguage::Ts);
+    CHECK(parsed.manifest->assetsPath == "assets");
+    CHECK(parsed.manifest->scenesPath == "scenes");
+    CHECK(parsed.unknownKeys.empty());
+}
+
+TEST_CASE("project_golden: full's parsed model -- nested paths, Cpp, the non-ASCII name (PG6/AC-43/S9/E29)") {
+    const scene_golden::FileBytes file = scene_golden::readBytes(PROJECT_FULL);
+    REQUIRE(file.ok);
+    const ProjectParseResult parsed = parseProject(file.text);
+    REQUIRE(parsed.manifest.has_value());
+    CHECK(parsed.manifest->assetsPath == "content/art");
+    CHECK(parsed.manifest->scenesPath == "content/levels");
+    CHECK(parsed.manifest->language == ProjectLanguage::Cpp);
+    CHECK(parsed.manifest->name == "Caf\xC3\xA9 Rocket \xF0\x9F\x9A\x80");
+}
+
+TEST_CASE("project_golden: unknown-keys' collected key list, read from the fixture (PG7/AC-6/AC-43)") {
+    const scene_golden::FileBytes file = scene_golden::readBytes(PROJECT_UNKNOWN);
+    REQUIRE(file.ok);
+    const ProjectParseResult parsed = parseProject(file.text);
+    REQUIRE(parsed.manifest.has_value());
+    const std::vector<std::string> expected = {"prefabs", "author", "editorLayout"};
+    CHECK(parsed.unknownKeys == expected);
+    CHECK(parsed.manifest->name == "MyGame");
+    CHECK(parsed.manifest->engineVersion == "0.1.0");
+    CHECK(parsed.manifest->language == ProjectLanguage::Ts);
+    CHECK(parsed.manifest->assetsPath == "assets");
+    CHECK(parsed.manifest->scenesPath == "scenes");
+}
+
+TEST_CASE("project_golden: a save strips exactly the three unknown keys (PG8/AC-6)") {
+    const scene_golden::FileBytes unknownFile = scene_golden::readBytes(PROJECT_UNKNOWN);
+    REQUIRE(unknownFile.ok);
+    const ProjectParseResult parsed = parseProject(unknownFile.text);
+    REQUIRE(parsed.manifest.has_value());
+    const std::string written = writeProjectText(*parsed.manifest);
+
+    const scene_golden::FileBytes minimalFile = scene_golden::readBytes(PROJECT_MINIMAL);
+    REQUIRE(minimalFile.ok);
+    INFO(scene_golden::describeMismatch(minimalFile.text, written));
+    CHECK(written == minimalFile.text);
+}
+
+TEST_CASE("project_golden: a created project.json on disk is a fixpoint (PG9/AC-11)") {
+    const TempDir dir;
+    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(outcome.problem == CreateProblem::Ok);
+
+    const FileReadResult written = readTextFile(outcome.root + "/project.json");
+    REQUIRE(written.text.has_value());
+    // A Windows-lane canary: untestable HERE, load-bearing THERE (2.5.2's EG3 precedent). On macOS
+    // and Linux this can never fail, because nothing here rewrites a newline; on Windows a text-mode
+    // regression in text_file.cpp would flip it red. Do not delete it as untested.
+    CHECK(scene_golden::hygieneComplaint(*written.text).empty());
+
+    const ProjectParseResult reparsed = parseProject(*written.text);
+    REQUIRE(reparsed.manifest.has_value());
+    const std::string cycle = writeProjectText(*reparsed.manifest);
+    CHECK(cycle == *written.text);
+}

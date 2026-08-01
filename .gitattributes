@@ -13,6 +13,14 @@
 # above to be true of every file the batteries compare.
 samples/phase-1-scene/scene.json text eol=lf
 
+# Golden project fixtures are compared BYTE-FOR-BYTE by tests/editor/project_test.cpp (task 2.6.1),
+# and New Project writes real `project.json` files into test temp directories whose bytes the same
+# battery compares. TWO patterns are required, not one: `*.project.json` does NOT match a bare
+# `project.json` -- the identical glob trap recorded above for samples/phase-1-scene/scene.json, and
+# verified the same way, with `git check-attr text eol`.
+*.project.json text eol=lf
+project.json   text eol=lf
+
 # Binary asset types (extended as asset work lands in Phase 3+)
 *.png binary
 *.jpg binary

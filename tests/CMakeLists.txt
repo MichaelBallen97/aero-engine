@@ -204,6 +204,19 @@ target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
 
+# task 2.6.1: the three committed project fixtures reach the UNGATED project_test.cpp. Not optional
+# and not #ifdef-guarded (2.5.2's D8 rule, reused): a missing definition is a COMPILE error and a
+# missing fixture file is a REQUIRE failure. Neither can silently skip, which is the same failure
+# mode as a regeneration flag. NO AERO_PROJECT_*_OUT_DIR is defined -- the project battery uses
+# describeMismatch's context window (which, for a 152-byte manifest, IS the whole file) and never
+# dumpActual, so nothing here writes anywhere and `ctest -j` has no collision surface at all.
+target_compile_definitions(aero_editor_shell_test PRIVATE
+    AERO_PROJECT_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/projects")
+# MOVED OUT of the if(AERO_REFLECT_TOOLS) block below, where task 2.5.2 put it: project_test.cpp is
+# UNGATED and includes tests/scene_golden_support.hpp, so this include root must exist in EVERY
+# configuration. The aero_editor_imgui_test precedent is at :106.
+target_include_directories(aero_editor_shell_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # task 2.5.1, step 3: the round-trip cases need the engine's generated component serializers, which
 # do not EXIST with the tool off (F9). The TARGET stays ungated -- only this ONE TU is conditional --
 # so the reflect-OFF configuration still builds and runs every serialization-free case in
@@ -228,7 +241,6 @@ if(AERO_REFLECT_TOOLS)
     target_compile_definitions(aero_editor_shell_test PRIVATE
         AERO_GOLDEN_SCENES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/scenes"
         AERO_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden/editor")
-    target_include_directories(aero_editor_shell_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 # ---------------------------------------------------------------------------------------------

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Café Rocket 🚀",
+  "engineVersion": "0.1.0",
+  "language": "cpp",
+  "paths": {
+    "assets": "content/art",
+    "scenes": "content/levels"
+  }
+}

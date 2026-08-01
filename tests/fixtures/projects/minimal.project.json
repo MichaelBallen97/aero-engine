@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "MyGame",
+  "engineVersion": "0.1.0",
+  "language": "ts",
+  "paths": {
+    "assets": "assets",
+    "scenes": "scenes"
+  }
+}
