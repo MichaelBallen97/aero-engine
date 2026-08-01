@@ -877,6 +877,51 @@ TEST_CASE("project: createProject refuses a bad name and a missing location (P61
     CHECK(emptyLocation.problem == CreateProblem::BadLocation);
 }
 
+// SHOULD-FIX 8 (code review): a project literally named "project.json" is legal by
+// validateProjectName (it contains no separator, is not a dot-name, and is not a reserved device
+// name), so `createProject` must scaffold `<location>/project.json/{assets,scenes,project.json}` and
+// report THAT directory as `out.root` -- not `<location>` itself, which is what re-deriving the root
+// through `projectRootFromPath`'s manifest-name strip used to produce (the strip exists for a
+// CALLER-supplied path that might already end in "project.json", not for a root this function just
+// built with its own hands).
+TEST_CASE(
+    "project: createProject names its root correctly for a project literally named \"project.json\" "
+    "(P83/SHOULD-FIX-8)") {
+    const TempDir dir;
+    const ProjectCreateOutcome outcome =
+        createProject(dir.utf8(), std::string(engine::editor::PROJECT_FILE_NAME), "0.1.0");
+    REQUIRE(outcome.problem == CreateProblem::Ok);
+
+    const std::string expectedRoot = dir.join(engine::editor::PROJECT_FILE_NAME);
+    CHECK(outcome.root == expectedRoot);
+    CHECK(directoryExists(outcome.root));
+    CHECK(directoryExists(outcome.root + "/assets"));
+    CHECK(directoryExists(outcome.root + "/scenes"));
+    CHECK(fileExists(outcome.root + "/" + std::string(engine::editor::PROJECT_FILE_NAME)));
+
+    // createAndOpenProject (the real flow) adopts `outcome.root` DIRECTLY -- never re-derived through
+    // projectRootFromPath -- so the fix must hold there too: the session opens at the SAME directory
+    // createProject just scaffolded, not one level higher. A SECOND, fresh TempDir -- `dir` above
+    // already has a non-empty "project.json" directory in it from the createProject call, and
+    // createAndOpenProject must scaffold its OWN target, not adopt that one.
+    const TempDir dir2;
+    const std::string expectedRoot2 = dir2.join(engine::editor::PROJECT_FILE_NAME);
+    FlowFixture f;
+    SceneSession session;
+    const bool ok = createAndOpenProject(f.ctx, f.commands, session, f.project, dir2.utf8(),
+                                         std::string(engine::editor::PROJECT_FILE_NAME));
+    CHECK(ok);
+    CHECK(f.projectSession.root() == expectedRoot2);
+    CHECK(f.projectSession.assetsRoot() == expectedRoot2 + "/assets");
+
+    // NOTE (deliberately unasserted): re-opening THIS SAME directory later by PATH (Open Project, a
+    // recents entry, argv) is a separate, pre-existing property of `projectRootFromPath`'s
+    // manifest-name strip -- a caller-supplied path ending in "project.json" is ambiguous between "the
+    // manifest file" and "a root whose OWN name happens to be project.json", and the strip resolves
+    // that ambiguity in favour of the former. That is outside SHOULD-FIX 8's scope (createProject's
+    // OWN root computation) and is not fixed here.
+}
+
 // PLAN DEVIATION, recorded here and in the engineering log: the plan's own suggested seeds for this
 // case -- a "project.json" directory pre-created inside the target, or the same for
 // "project.json.aero-tmp" -- were TRIED FIRST and BOTH measured to redden the WRONG assertion: any
@@ -1431,4 +1476,150 @@ TEST_CASE("project: clearRecentProjects empties the list and marks it dirty (P80
     CHECK(f.recents.paths.empty());
     CHECK(f.projectFlow.recentsDirty);
     CHECK_FALSE(f.project.flow.clearRecentsRequested);
+}
+
+// ---- P81/P82: SHOULD-FIX 3/4, the code-review round -- AC-6's WARN half and AC-7 were both claimed
+// proven in the plan's §T with nothing that actually executes them: every ProjectContext under
+// tests/ carries `engineVersion = ""` (FlowFixture's own default above), so the mismatch WARN and its
+// `!empty()` guard were both unexercised, and no case ever called openProjectPath on a manifest
+// carrying an unknown key, so the AC-6 emission LOOP (as opposed to the parse-level collection PG7
+// already covers) never ran either.
+
+TEST_CASE(
+    "project: openProjectPath WARNs on an engine-version mismatch, and stays silent when the "
+    "caller's own engineVersion is empty (P81/AC-7/D14)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+
+    {
+        // The empty arm FIRST -- every OTHER case in this file relies on FlowFixture's own default
+        // ("") staying silent; prove it directly rather than merely by absence of a failure elsewhere.
+        FlowFixture f;
+        REQUIRE(f.project.engineVersion.empty());
+        SceneSession session;
+        scope.sink()->take(records);
+        records.clear();
+
+        const bool ok = openProjectPath(f.ctx, f.commands, session, f.project, created.root);
+        CHECK(ok);
+
+        scope.sink()->take(records);
+        CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+        records.clear();  // LogSink::take requires `out` empty on entry -- the next block's own take()
+    }
+    {
+        // The mismatch arm -- a SECOND ProjectContext over the SAME session/flow/recents, differing
+        // ONLY in engineVersion, so this is a true minimal pair with the arm above.
+        FlowFixture f;
+        ProjectContext mismatched{f.projectSession, f.projectFlow, f.recents, "9.9.9"};
+        SceneSession session;
+        scope.sink()->take(records);
+        records.clear();
+
+        const bool ok = openProjectPath(f.ctx, f.commands, session, mismatched, created.root);
+        CHECK(ok);  // D14: informational only -- never a gate, the project still opens
+        CHECK(f.projectSession.isOpen());
+
+        scope.sink()->take(records);
+        CHECK(countAtLevel(records, engine::LogLevel::Warn) == 1);
+    }
+}
+
+TEST_CASE("project: openProjectPath WARNs once per unknown key and still opens (P82/AC-6)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const scene_golden::FileBytes unknownFile = scene_golden::readBytes(PROJECT_UNKNOWN);
+    REQUIRE(unknownFile.ok);
+    const TempDir dir;
+    REQUIRE(writeTextFileAtomic(dir.join(engine::editor::PROJECT_FILE_NAME), unknownFile.text).empty());
+
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    const bool ok = openProjectPath(f.ctx, f.commands, session, f.project, dir.utf8());
+
+    CHECK(ok);
+    CHECK(f.projectSession.isOpen());
+
+    scope.sink()->take(records);
+    // "prefabs" (nested inside "paths"), "author", "editorLayout" -- PG7's own three, this time
+    // driven through the REAL openProjectPath emission loop rather than through parseProject alone.
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 3);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+}
+
+// ---- PU1: BLOCKING-1, the code-review round ---------------------------------------------------------
+//
+// ImGui::CloseCurrentPopup()'s bookkeeping is pure UI/ImGui-internal state (g.OpenPopupStack,
+// g.HoveredWindow) that no test tier in this codebase can drive: it needs a live ImGui context AND a
+// synthesized widget click, and aero_editor_imgui_test is "ImGui-free at source" by design (the
+// AC-27/FileDialogHost precedent -- see .claude/rules/editor.md). This case is the next best thing: a
+// MECHANICAL, textual proof over project_ui.cpp's OWN SOURCE TEXT, the same grep principle the five CI
+// architecture guards already use, run here as a doctest case because what is being checked is one
+// file's own text, not a repo-wide invariant that needs `git ls-files`.
+
+TEST_CASE(
+    "project_ui: the New Project modal closes the ImGui popup on every path that closes the form "
+    "(PU1/BLOCKING-1)") {
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/project_ui.cpp";
+    const FileReadResult read = readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+    const std::string& text = *read.text;
+    REQUIRE_FALSE(text.empty());
+
+    std::vector<std::string_view> lines;
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        if (newline == std::string_view::npos) {
+            lines.push_back(remaining);
+            break;
+        }
+        lines.push_back(remaining.substr(0, newline));
+        remaining.remove_prefix(newline + 1U);
+    }
+
+    // True iff the Nth (0-based) line containing `trigger` is followed, within the next few lines (the
+    // same `if` block, allowing for the explanatory comments this fix actually carries), by a
+    // CloseCurrentPopup() call.
+    const auto closesWithinWindow = [&](std::string_view trigger, std::size_t occurrenceIndex) {
+        std::size_t seen = 0;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (lines[i].find(trigger) == std::string_view::npos) {
+                continue;
+            }
+            if (seen != occurrenceIndex) {
+                ++seen;
+                continue;
+            }
+            for (std::size_t j = i; j < lines.size() && j < i + 16U; ++j) {
+                if (lines[j].find("CloseCurrentPopup") != std::string_view::npos) {
+                    return true;
+                }
+                if (lines[j].find("EndPopup") != std::string_view::npos) {
+                    return false;  // ran off the end of the block without finding it
+                }
+            }
+            return false;
+        }
+        return false;  // the trigger itself is gone -- also a failure
+    };
+
+    // Create -- occurrence 0 of its own trigger.
+    CHECK(closesWithinWindow("form.createRequested = true;", 0));
+    // `form.cancelRequested = true;` appears THREE times: the Cancel button (0), the hand-bound Esc
+    // handler (1), and the programmatic-close safety net in the `else` branch (2) -- which has NO
+    // popup open to close and is deliberately NOT asserted here (asserting it would be wrong, not
+    // merely untested).
+    CHECK(closesWithinWindow("form.cancelRequested = true;", 0));
+    CHECK(closesWithinWindow("form.cancelRequested = true;", 1));
 }

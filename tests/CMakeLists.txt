@@ -211,7 +211,14 @@ add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
 # describeMismatch's context window (which, for a 152-byte manifest, IS the whole file) and never
 # dumpActual, so nothing here writes anywhere and `ctest -j` has no collision surface at all.
 target_compile_definitions(aero_editor_shell_test PRIVATE
-    AERO_PROJECT_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/projects")
+    AERO_PROJECT_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/projects"
+    # code review (BLOCKING-1): project_ui.cpp's ImGui::CloseCurrentPopup() bookkeeping cannot be
+    # driven from any test tier -- it needs a live ImGui context and a synthesized widget click, which
+    # this codebase has never had (the AC-27/FileDialogHost precedent). project_test.cpp's PU1 case
+    # reads the file's OWN SOURCE TEXT as a mechanical proof instead -- the same textual-grep principle
+    # the five CI architecture guards already use, just run as a doctest case rather than a lint-job
+    # script. A path, not a flag: a missing file is a REQUIRE failure, never a silent skip.
+    AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src")
 # MOVED OUT of the if(AERO_REFLECT_TOOLS) block below, where task 2.5.2 put it: project_test.cpp is
 # UNGATED and includes tests/scene_golden_support.hpp, so this include root must exist in EVERY
 # configuration. The aero_editor_imgui_test precedent is at :106.

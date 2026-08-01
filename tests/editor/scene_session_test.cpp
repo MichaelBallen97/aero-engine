@@ -760,6 +760,38 @@ TEST_CASE("scene_session: performAction with no channel and no requestedPath is 
     CHECK(f.flow.dialog == engine::editor::DialogKind::None);
 }
 
+TEST_CASE(
+    "scene_session: applyDialogResult drops an orphaned result whose dialog kind is already None "
+    "(SS35/SHOULD-FIX-5)") {
+    // 2.6.1's code-review round: a second Browse click before the first project-location dialog
+    // answers overwrites `flow.dialog` and (with a real channel) launches a SECOND native dialog.
+    // `DialogChannel::take()` always resets its slot, so whichever result answers SECOND is consumed
+    // with `flow.dialog` already reset to None by the FIRST -- this case simulates exactly that
+    // ordering directly, with no real dialog needed: `flow.dialog` is already None (as if a prior
+    // result already claimed and cleared it) when a second, orphaned, READY result with its own path
+    // arrives. Before the fix, `applyDialogResult`'s kind chain had no arm for `kind == None` and fell
+    // straight through into the Save arm (it never even checked `kind == DialogKind::Save` explicitly,
+    // "by elimination"), silently saving the CURRENT scene to "<orphan path>.scene.json" and rebinding
+    // the session path -- 2.5.1's BLOCKING-2 again, reached through 2.6.1's Browse button.
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;  // untitled
+    REQUIRE(session.untitled());
+    REQUIRE(f.flow.dialog == engine::editor::DialogKind::None);  // the precondition this case exists to prove
+
+    engine::editor::DialogResult orphan;
+    orphan.ready = true;
+    orphan.path = dir.join("orphan-folder");  // NOT a scene path -- exactly what a folder dialog yields
+
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, orphan, f.project);
+
+    CHECK(session.untitled());  // NOTHING was written or bound
+    CHECK_FALSE(engine::editor::fileExists(orphan.path + ".scene.json"));
+    CHECK(f.flow.pending == FileAction::None);  // untouched -- this orphan owns no pending action
+    CHECK_FALSE(f.flow.saveBeforePending);
+    CHECK(f.flow.dialog == engine::editor::DialogKind::None);
+}
+
 // ---- SS31-SS34: BLOCKING-1, the 2.5.1 code-review round -------------------------------------------
 //
 // `flow.requestedPath` used to be read as the AskWhereToSave step's OWN save target -- but it is also
