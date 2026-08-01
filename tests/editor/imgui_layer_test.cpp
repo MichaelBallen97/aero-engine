@@ -154,8 +154,11 @@ TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke
         *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
-    // The D8 registration -- the ONE absolute panel count in the tree.
-    CHECK(app->panels().count() == 5);
+    // The D8 registration -- FOUR absolute panel-count sites in the tree (this one plus :219, :447 and
+    // :551), all of which moved from 5 to 6 the moment task 2.6.2 registered the sixth default panel,
+    // "Project Settings". (`:1360`/`:1366`'s captured `panelCountBefore` is a fifth, count-agnostic
+    // site by construction -- the "gizmo" window is not a panel -- and is NOT one of the four.)
+    CHECK(app->panels().count() == 6);
 
     // wantsDefaultLayout() is true even with persistLayout = false (F1b), so frame 1 below exercises
     // buildDefaultLayout for real. Use REQUIRE on tick(), not CHECK: a spurious Quit/WindowClose from
@@ -216,7 +219,7 @@ TEST_CASE("editor: the Hierarchy panel draws a seeded scene and survives edits (
 
     // AC-18: the default config seeds three entities.
     CHECK(app->world().entityCount() == 3);
-    CHECK(app->panels().count() == 5);
+    CHECK(app->panels().count() == 6);
     CHECK(app->selection().empty());
 
     for (int i = 0; i < 3; ++i) {
@@ -444,7 +447,7 @@ TEST_CASE(
                                                                                       .projectPath = "",
                                                                                       .restoreLastProject = false});
     REQUIRE(app.has_value());
-    CHECK(app->panels().count() == 5);
+    CHECK(app->panels().count() == 6);
     CHECK_FALSE(app->projectIsOpen());
     CHECK(app->assetBrowserRoot().empty());
 
@@ -549,7 +552,7 @@ TEST_CASE("editor: the Console panel draws the engine log stream (task 2.2.5)") 
     REQUIRE(app.has_value());
 
     // The D8 registration -- the ONE absolute panel count in the tree (plan C3's proof).
-    CHECK(app->panels().count() == 5);
+    CHECK(app->panels().count() == 6);
 
     // The create()-time records are staged in the sink; only the pump fills the history.
     CHECK(app->logRecordCount() == 0);
@@ -777,6 +780,11 @@ TEST_CASE("editor: EditorApp::viewportCamera() (task 2.3.1, D6)") {
                                            .restoreLastProject = false});
     REQUIRE(bareApp.has_value());
     CHECK(bareApp->viewportCamera() == nullptr);
+    // Task 2.6.2 AC-28's first half: with registerDefaultPanels == false NOTHING is registered, which
+    // is what makes the Edit > Project Settings... item resolve to disabled rather than to a logged
+    // no-op ERROR on every click (shell_ui.cpp gates it on panels.find(id) != nullptr). The count-0
+    // half had no assertion anywhere in the tree before this line.
+    CHECK(bareApp->panels().count() == 0);
     bareApp->requestQuit();
     CHECK(bareApp->tick() == false);
     bareApp.reset();
@@ -2508,4 +2516,108 @@ TEST_CASE("editor: restoreLastProject = false never reads the recents file (task
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ---- I25: task 2.6.2's Project Settings panel, driven through real frames ---------------------------
+
+TEST_CASE(
+    "editor: the Project Settings panel registers, orders and draws in both project states (task 2.6.2, "
+    "I25/AC-26/AC-27)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "project settings i25", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    // ⛔ `.recentProjectsPath` is MANDATORY, not defensive: step 4 below opens a project through
+    // requestOpenProject(), which dirties the recents list and gets it flushed on the very next
+    // tick() -- `.restoreLastProject = false` only ever suppresses the READ half. Without this override
+    // the flush falls through to the REAL machine-wide recents file, exactly 2.6.1's BLOCKING-2.
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+
+    // 2. Registration and ORDER -- what makes sabotage seed S13 (registering before Inspector) redden.
+    CHECK(app->panels().count() == 6);
+    CHECK_EQ(std::string(app->panels().panelAt(5).id()), "Project Settings");
+    CHECK_EQ(std::string(app->panels().panelAt(1).id()), "Inspector");
+
+    // AC-15's other two clauses, asserted MECHANICALLY rather than left to human row 1. panelAt()
+    // hands back a Panel& and both accessors are public on the base, so nothing here needs the
+    // src-private panel header -- the same reach shell_test.cpp already uses on its MinimalPanel.
+    // This is what makes sabotage seed S14 (defaultDockSlot() returning Center) discriminate; before
+    // it, S14 reddened nothing anywhere in the tree.
+    CHECK(app->panels().panelAt(5).defaultDockSlot() == engine::editor::DockSlot::Right);
+    // options() is deliberately NOT overridden (AC-15): the panel's own window must keep scrolling,
+    // because the two tables carry no ScrollY of their own.
+    const engine::editor::PanelOptions settingsOpts = app->panels().panelAt(5).options();
+    CHECK_FALSE(settingsOpts.noScrollbar);
+    CHECK_FALSE(settingsOpts.hasMenuBar);
+    CHECK_FALSE(settingsOpts.noPadding);
+    CHECK_FALSE(settingsOpts.noScrollWithMouse);
+
+    // R-1 (LOAD-BEARING): "Project Settings" shares DockSlot::Right with "Inspector", and Inspector
+    // registers FIRST, so it is the selected tab in a fresh layout -- exactly 2.2.4's C5 finding, one
+    // panel later. Without hiding Inspector, onDraw() never runs for this panel and every assertion
+    // below (including the balance proof through the empty-state and eight-row branches) is vacuous.
+    app->panels().setVisible("Inspector", false);
+
+    // 3. Three ticks with NO project open -- the empty-state branch. An unbalanced BeginTable/EndTable
+    // or a stray Begin/End is an IM_ASSERT ABORT in the Debug build, so a green run IS the assertion
+    // (F9/F10) -- which is what makes seeds S16/S17 real.
+    CHECK_FALSE(app->projectIsOpen());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // 4. Open the project through the D15 test seam and draw the eight-row branch. The scene is CLEAN
+    // here, so discardsWork(OpenProject)'s guard does not fire and the swap completes in ONE tick
+    // (G2-13). Because PanelContext::project is a REFERENCE and applyFileRequests runs before
+    // drawPanels, the panel already renders the eight rows on the very tick of the swap (§A10) -- no
+    // extra tick is needed for correctness, but the three extra ticks below exercise the table across
+    // frames.
+    app->requestOpenProject(created.root);
+    REQUIRE(app->tick());
+    CHECK(app->projectIsOpen());
+    CHECK(app->projectName() == "MyGame");
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // 5. Hidden/shown transitions -- where a stray End() or an unconditional EndTable() aborts.
+    app->panels().setVisible("Project Settings", false);
+    REQUIRE(app->tick());
+    app->panels().setVisible("Project Settings", true);
+    REQUIRE(app->tick());
+
+    // 6. A layout reset: buildDefaultLayout with SIX panels and a two-panel Right node. This re-docks
+    // "Project Settings" beside "Inspector"; the visibility set in step 3 is not restored by a layout
+    // reset, since ImGui does not persist visibility.
+    app->requestLayoutReset();
+    REQUIRE(app->tick());
+
+    // 7. Teardown clean under ASan/UBSan, and LSan on the Linux Debug lane.
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+
+    // What this case deliberately does NOT assert, because no ImGui-free test TU can observe it: that
+    // the tab is SELECTED, that the text is legible, that the columns align, or that '%' renders
+    // correctly. Those are validation rows 4, 5-7 and 11.
 }

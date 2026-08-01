@@ -22,6 +22,7 @@
                             // a complete type wherever it could run, including this TU's ~EditorApp
 #include "hierarchy_panel.hpp"
 #include "inspector_panel.hpp"
+#include "project_settings_panel.hpp"
 #include "shell_ui.hpp"
 #include "viewport_panel.hpp"
 
@@ -51,6 +52,12 @@ namespace {
 void* nativeWindowHandle(platform::Window* window) {
     return window != nullptr ? static_cast<void*>(platform::internal::NativeWindowAccessor::get(*window)) : nullptr;
 }
+
+// task 2.6.2 (F11/D14): the ONE read of the build-version compile definition in the whole tree.
+// TWO functions in this TU need it now -- create() for the settings panel and for ProjectContext,
+// tick() for ProjectContext -- and a macro read three times is a macro that gets read a fourth
+// somewhere worse.
+constexpr std::string_view BUILD_ENGINE_VERSION = AERO_ENGINE_VERSION;
 
 }  // namespace
 
@@ -134,7 +141,7 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     }
     if (!resolved.empty()) {
         CommandContext cmd{app.sceneWorld, app.sceneSelection, app.rootOrder};
-        ProjectContext projectContext{app.project, app.projectFlow, app.recents, AERO_ENGINE_VERSION};
+        ProjectContext projectContext{app.project, app.projectFlow, app.recents, BUILD_ENGINE_VERSION};
         (void)openProjectPath(cmd, app.commandStack, app.session, projectContext, resolved);
         // openProjectPath logs its own ERROR or INFO. A FAILURE leaves the no-project state, which IS
         // AC-32's "the editor still opens, docks and quits" property -- not an error path to handle here.
@@ -153,6 +160,12 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         }
         AERO_LOG_INFO("editor: assets root '{}'", app.project.assetsRoot());
         app.assetBrowserPanel = app.registry.emplace<AssetBrowserPanel>(app.project.assetsRoot());
+        // task 2.6.2 (D12): LAST. Inspector registers before it and therefore stays the selected tab
+        // in the shared Right dock node (the Console-before-Assets property), and no existing panel's
+        // index shifts, so every index-based assertion in the tree keeps its meaning. Its return value
+        // is deliberately DISCARDED: nothing in tick() reaches this panel -- no pump, no render, no
+        // reconcile -- and a non-owning pointer nobody dereferences is a trap.
+        app.registry.emplace<ProjectSettingsPanel>(std::string(BUILD_ENGINE_VERSION));
     }
 
     // task 2.6.1: `&& !app.project.isOpen()` is MANDATORY, not defensive. Opening a project above went
@@ -221,9 +234,9 @@ bool EditorApp::tick() {
     // RESULT is not a UI event. Guarded: a moved-from EditorApp has a null channel and is deliberately
     // inert (plan A18) rather than crashing on a null dereference.
     // task 2.6.1: everything the project half of the flow needs, built fresh each frame -- the
-    // PanelContext/FileMenuContext shape, and for the same reason (D7). AERO_ENGINE_VERSION is read
-    // at this ONE call site (D14).
-    ProjectContext projectContext{project, projectFlow, recents, AERO_ENGINE_VERSION};
+    // PanelContext/FileMenuContext shape, and for the same reason (D7). task 2.6.2: reads the hoisted
+    // build-version constant, not the macro directly -- see its definition above (F11/D14).
+    ProjectContext projectContext{project, projectFlow, recents, BUILD_ENGINE_VERSION};
     if (dialogChannel != nullptr) {
         if (const DialogResult result = dialogChannel->take(); result.ready) {
             CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
@@ -274,8 +287,9 @@ bool EditorApp::tick() {
     redoRequested = false;
     // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1);
     // commandStack is the editor's ONE undo history (task 2.4.1 D7); rootOrder is the editor's ONE
-    // display order among root entities (task 2.4.2 D10)
-    PanelContext panelContext{sceneWorld, sceneSelection, commandStack, rootOrder, frameClock.deltaSeconds()};
+    // display order among root entities (task 2.4.2 D10); project is the open project (task 2.6.2
+    // D1), CONST so no panel can swap it
+    PanelContext panelContext{sceneWorld, sceneSelection, commandStack, rootOrder, project, frameClock.deltaSeconds()};
     // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does not
     // carry (D17), built fresh each frame exactly like panelContext above.
     // task 2.6.1: the SAME named-local requirement as the drain above -- FileDialogHost::projectRoot

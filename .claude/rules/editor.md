@@ -199,4 +199,54 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   bool return instead of from `ec` breaks the legal "adopt an existing empty directory" path every
   time E7/AC-13 legitimately hits it. Confirmed load-bearing by direct sabotage (seed S22).
 
+## Project settings (task 2.6.2)
+
+- **`PanelContext::project` is a `const ProjectSession&`, and the `const` is the enforcement.**
+  INV-P1 ("the session's setter has exactly one call site") stops being a grep for panels and becomes
+  a compile error: the channel that reaches every panel is the one that must be least able to write.
+  A future append to `PanelContext` must clear the same bar — a *panel-general* need, not one panel's;
+  a single panel's need is a constructor parameter (2.6.2's own build-version string) or a reconcile
+  (2.6.1's `setRoot`).
+- **The panel id `"Project Settings"` is FROZEN.** It is the ImGui window name *and* the `imgui.ini`
+  settings key; renaming it orphans every user's saved layout for this panel. `"Project"` was
+  rejected — Unity calls its *asset browser* the Project window, and this tree already has one of
+  those, called `Assets`.
+- **The panel is bound to the in-memory session, NOT to the file (D6): there is deliberately no
+  Reload button.** A reload would need a mutable path to the session's setter, which INV-P1 forbids
+  everywhere but `adoptProject` — and routing it through `adoptProject` from a panel would silently
+  discard the user's scene. A panel may not do that; the File menu may, because it goes through the
+  unsaved-changes guard. Hand-editing `project.json` while the editor runs therefore does not update
+  the panel; `File ▸ Open Project…` on the same root is the documented way, and it resets the scene.
+- **The model's `isOpen()` guard is load-bearing for a non-obvious reason.** `ProjectSession::manifest()`
+  is NOT guarded by `isOpen()`, and `close()` resets it to a DEFAULT manifest whose `assetsPath` /
+  `scenesPath` are `"assets"` / `"scenes"` — **not** empty. A model that read `manifest()` unguarded
+  would render a plausible, entirely fictional project rather than obviously breaking.
+- **`ImGui::Separator()` does not span table columns.** The `SpanAllColumns` promotion applies only to
+  the legacy `Columns()` API; inside a `BeginTable` cell it spans that cell. That is why the settings
+  model returns GROUPS and the panel draws `SeparatorText` outside the table, one table per group,
+  both columns sized from one shared width.
+- **`ImGui::SetWindowFocus(name)` DOES select a docked window's tab — but not where `FocusWindow`
+  suggests.** That function's own "Select in dock node" block is COMMENTED OUT in 1.92.8; the
+  selection happens in `DockNodeUpdateTabBar` via `g.NavWindow->RootWindow->DockNode == node`, which
+  works because a *docked* window keeps `RootWindow == window`. Dock nodes update inside
+  `DockSpaceOverViewport`, which runs later in the same frame than the menu bar, so a menu item's
+  focus write lands with no one-frame lag. An unknown name is a silent no-op.
+- **The Edit-menu item has NO automated coverage, and that is a decision, not a gap in the tests.**
+  Its effect is `setVisible` (observable) plus `SetWindowFocus` (a dock tab's `SelectedTabId`, which
+  no test tier in this tree can read). A `requestProjectSettings()` hook was rejected precisely
+  because it would be a second path to the half that was already testable. Human rows 5-7 are its
+  only proof — get it right by construction.
+- **A group/row-count sabotage in this model does not stay contained to the row it directly damaged —
+  guard the SHAPE before any positional read.** Two independent sabotage seeds (deleting the
+  Format-version row; swapping the two groups' push order) each cascaded into every LATER index-based
+  assertion and crashed the test binary with an ASan container-overflow, rather than reddening only
+  the row(s) the edit touched — and in doing so killed the run before PS22's *independent* eight-row
+  sum, the one case designed to catch a row that MOVED rather than vanished, could execute. The
+  model's eight-row, two-group shape (D7) is right; the test file is what changed:
+  `project_settings_test.cpp` routes every positional case through a `shapedGroups` helper that
+  `REQUIRE`s the two group sizes first, so a shape regression now fails cleanly in the case that owns
+  it. **A future append (a ninth row, a third group) updates that helper — it does not add unguarded
+  `groups[0].rows[N]` reads beside it.** In a Release lane, where there is no ASan, the same
+  regression is silent UB rather than a clean abort.
+
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries.

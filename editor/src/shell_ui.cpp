@@ -5,6 +5,7 @@
 
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/panel.hpp>
+#include <aero/editor/project_settings.hpp>
 #include <aero/editor/scene_session.hpp>
 
 #include "project_ui.hpp"  // task 2.6.1: drawWelcomeWindow / drawNewProjectModal
@@ -188,6 +189,26 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         }
         if (ImGui::MenuItem(redoText.c_str(), "Ctrl+Shift+Z", false, commands.canRedo())) {
             state.redoRequested = true;
+        }
+        ImGui::Separator();
+        // task 2.6.2 (D13): the View toggle can SHOW a hidden panel but cannot REACH a visible one
+        // tabbed behind Inspector, which is the state this panel ships in. Disabled -- never a dead
+        // handler -- when the panel is not registered (registerDefaultPanels == false, or registration
+        // was rejected): setVisible on an unknown id is a LOGGED no-op that would fire an ERROR on
+        // every click.
+        //
+        // SetWindowFocus is what selects the dock TAB, and NOT the way FocusWindow's own "Select in
+        // dock node" block suggests -- that block is COMMENTED OUT in 1.92.8 (imgui.cpp:13763-13766,
+        // for issue #2304). The selection happens in DockNodeUpdateTabBar instead
+        // (imgui.cpp:19611-19613), and for a DOCKED window RootWindow is the window itself (the
+        // !window->DockIsActive guard, imgui.cpp:7766). Dock nodes update inside DockSpaceOverViewport,
+        // which runs LATER THIS FRAME (line 428), so the click lands with no one-frame lag; MenuItem
+        // has already closed its popup by the time it returns true (imgui_widgets.cpp:7533-7535), so
+        // this is the frame's last focus write. An unknown name is a silent no-op.
+        const bool settingsPanelExists = panels.find(PROJECT_SETTINGS_PANEL_ID) != nullptr;
+        if (ImGui::MenuItem("Project Settings...", nullptr, false, settingsPanelExists)) {
+            panels.setVisible(PROJECT_SETTINGS_PANEL_ID, true);
+            ImGui::SetWindowFocus(PROJECT_SETTINGS_PANEL_ID);
         }
         ImGui::EndMenu();
     }

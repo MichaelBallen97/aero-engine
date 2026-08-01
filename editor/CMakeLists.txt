@@ -50,6 +50,8 @@ add_library(aero_editor_core STATIC
     src/scene_io.cpp            # task 2.5.1 -- the scene_serialize bridge; the ONE #if (F10/AC-33)
     src/file_dialog.cpp         # task 2.5.1 -- SDL native dialogs + the cross-thread result channel
     src/project_ui.cpp          # task 2.6.1 -- the Welcome window and the New Project modal
+    src/project_settings.cpp    # task 2.6.2 -- the settings panel's pure model (ImGui/SDL/<filesystem>-free)
+    src/project_settings_panel.cpp # task 2.6.2 -- the read-only Project Settings panel (the only ImGui in it)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

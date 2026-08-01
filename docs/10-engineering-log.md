@@ -1411,6 +1411,8 @@ clang-format and clang-tidy clean on all three touched/new C-family files
 (comment/vector-literal alignment and one splice-safe hex-escape line), accepted as ordinary
 formatting, not a finding; **zero new `NOLINT`** against a `tests/` baseline of 9 (still 9 after).
 
+### Epic 2.6 — Project system v0
+
 #### Task 2.6.1 — `project.json` + create/open flow — OPENS Epic 2.6
 
 **2.6.1 gives the editor a project, not just a scene.** `project.json` v1 (5 root keys in a fixed
@@ -1548,6 +1550,168 @@ properties held by discipline and comment, the same posture 2.5.1 took for AC-27
 **No separate code-review round was run for this task**, unlike 2.4.1/2.4.2/2.5.1's precedent — the
 two real bugs found (the unknown-key sweep order, the `project.flow.requestedPath` leak) were both
 caught and fixed during the implementation pass itself, before their commits, not in a later pass.
+
+#### Task 2.6.2 — Project settings panel stub — CLOSES Epic 2.6
+
+**2.6.2 gives the editor a way to LOOK at the project 2.6.1 gave it.** A dockable, strictly read-only
+`Project Settings` panel bound to the open project's parsed manifest, plus one `Edit ▸ Project
+Settings…` menu item and the one `PanelContext` member (`const ProjectSession& project`) that lets
+every present and future panel read the open project without being able to write it. This closes
+Epic 2.6, and with it every Phase 2 epic is closed in code.
+
+**Two plan-time corrections worth restating exactly, because both are "the plan was right and the
+spec was stale" findings, not implementation surprises:**
+- **§A1 — `AERO_ENGINE_VERSION` had TWO read sites at HEAD, not the ONE the 2.6.1-era spec recorded**
+  (`editor_app.cpp`'s `create()` and `tick()`, both reading the macro directly). The task's own D14
+  hoist (`BUILD_ENGINE_VERSION`, a `constexpr std::string_view` read once) is not a tidy-up — it is
+  what turns "two macro reads" into "one read, two consumers" before a third consumer (the settings
+  panel's constructor argument) could make it three reads. The gate is the comment-stripped,
+  directive-excluded grep (`sed -E 's|//.*||' | grep -vE '#[[:space:]]*(ifndef|define)'`), which reads
+  **2 at HEAD, 1 after** — a raw, unstripped grep can never read `1` because the `#ifndef`/`#define`
+  fallback pair and the two prose comments both spell the macro's name.
+- **§A3 — the two on-disk `tools-off-2.6.1` build directories were STALE and read `5/18/332` against
+  a true `6/19/337`**, because they were configured before 2.6.1's own code-review round added the
+  sixth architecture guard's ctest entry. Fresh directories (`build/tools-off-2.6.2`,
+  `build/reflect-off-2.6.2`) were configured from scratch and re-measured before any code was written
+  — a stale build directory had already produced one wrong number in this task's own planning
+  investigation, which is the exact "vacuous baseline" shape this project's standing lesson names.
+
+**F1 in full, because it is the one fact in this task most likely to be re-derived wrongly from
+memory rather than read from source.** The Edit-menu item's `ImGui::SetWindowFocus(name)` selects a
+docked window's TAB, but not through the mechanism `FocusWindow`'s own comments suggest: the "Select
+in dock node" block inside `FocusWindow` is **commented out** in vendored ImGui 1.92.8
+(`imgui.cpp:13763-13766`, tagged for issue #2304). The real selection happens one indirection away, in
+`DockNodeUpdateTabBar` (`imgui.cpp:19611-19613`): `if (g.NavWindow && g.NavWindow->RootWindow->DockNode
+== node) tab_bar->SelectedTabId = g.NavWindow->RootWindow->TabId;`. That resolves correctly for
+`SetWindowFocus` only because a **docked** window keeps `RootWindow == window`
+(`UpdateWindowParentAndRootLinks`, `imgui.cpp:7759-7768`, the `!window->DockIsActive` guard at
+`:7766`). `DockSpaceOverViewport` — where dock nodes actually update — runs LATER in the same frame
+than the menu bar (`shell_ui.cpp`'s `drawMenuBar` → the two modals → `applyFileRequests` →
+`applyHistoryRequests` → `DockSpaceOverViewport` → `drawPanels`), so the menu item's focus write lands
+with no one-frame lag. No test tier in this tree can read a dock tab's `SelectedTabId`, so this whole
+mechanism is proven only by reading the vendored source and by human validation rows 5-6.
+
+**D6's limitation, stated as intended behaviour, not filed as a future bug:** the panel is bound to
+the **parsed, in-memory** `ProjectSession`, never to `project.json` on disk. Hand-editing the file
+while the editor runs does **not** update the panel — there is deliberately no Reload button, because
+a reload would need a mutable path to the session's setter, which INV-P1 restricts to exactly one call
+site (`adoptProject`), and routing a panel through it would silently discard the user's scene without
+the unsaved-changes guard a panel may not bypass. The documented way to pick up an external edit is
+`File ▸ Open Project…` on the same root — which goes through the guard and does reset the scene, an
+honest cost recorded rather than hidden.
+
+**Two more known-and-expected behaviours, both surfaced by the code-review round rather than by the
+sabotage pass, both cosmetic and neither filed as a bug.** First, **AC-17's "column 0 at the same
+width in both groups" holds until the user drags a divider, not forever**: `TABLE_FLAGS` sets
+`ImGuiTableFlags_Resizable` deliberately (a user may want a wider label column) and the per-group
+`PushID(g)` keeps the two tables distinct entities, so resizing `Manifest`'s label column does **not**
+move `Location`'s. The groups are aligned as shipped and after any relayout; they are not *locked*
+together. Second, **`widestLabel()`'s per-frame recompute does not re-widen the column on a runtime
+font-scale change** — `TableSetupColumn`'s init width reaches `WidthRequest` only through
+`TableInitColumnDefaults`, which runs under `if (table->IsInitializing)` (`imgui_tables.cpp:1693-1698`),
+true only on a table id's first frame; the one per-frame path that would re-apply it (`:937-938`) is
+gated on `!column_is_resizable` and is therefore excluded by our own `Resizable`. Consequence is mild
+— labels **wrap** via `TextWrapped` rather than clip, and the column stays user-resizable — but E19
+should be read as *tolerated*, not *mitigated*, and the panel's comment was corrected to say so.
+
+**F2/D10, the reason the model returns GROUPS rather than a flat row list with a separator flag:**
+`ImGui::Separator()` only promotes to `SpanAllColumns` for the legacy `Columns()` API
+(`imgui_widgets.cpp:1726-1741`); inside a `BeginTable` cell it spans only that cell. The panel therefore
+calls `SeparatorText` OUTSIDE any table and draws one table per group, both tables sized from one
+shared `widestLabel()` pass so the two groups' label columns align as if they were one table.
+
+**D14, stated honestly rather than papered over with a second code path:** the Edit-menu item has NO
+automated coverage at all. Its whole observable effect is `PanelRegistry::setVisible` (which a test CAN
+read) plus `ImGui::SetWindowFocus` (a dock tab's `SelectedTabId`, which no test tier in this tree can
+read). A `requestProjectSettings()` `EditorApp` hook was considered and rejected — it would only
+duplicate the half that is already testable, while adding zero coverage for the half that matters.
+Human validation rows 5-7 are its only proof, by design.
+
+**The full sabotage matrix — all 22 seeds plus the 3 mandatory second-order checks, run sequentially
+against `build/macos-debug` with `AERO_REQUIRE_GPU=1`, each with its edit confirmed landed via `git
+diff` before building and confirmed reverted-and-green after:**
+
+| # | Predicted | Actual | Deviation |
+|---|---|---|---|
+| S1 | PS1, PS2 | PS1, PS2 | none |
+| S2 | PS17 | PS17 | none |
+| S3 | PS16 | PS16 | none |
+| S4 | PS18 (PS19 flagged as possible) | PS18 **and** PS19 | none (flagged possibility confirmed) |
+| S5 | PS19 only | PS19 only | none |
+| S6 | PS14, PS15 | PS14, PS15 | none |
+| S7 | PS10, PS11, PS12 (not PS4) | PS10, PS11, PS12; PS4 stayed green | none |
+| S8 | PS20 | PS20 | none |
+| S9 | PS3, PS4, PS5 (PS22 stays green) | PS3, PS4, PS5 **plus** PS6, PS7, PS8, PS9 (index-shifted reads), **then a SIGABRT crash in PS10** (out-of-bounds `rows[4]`/`rows[5]` on a 2-row vector) that halted the whole `aero_editor_shell_test` binary before PS11–PS23 (incl. PS22) could run at all | **major over-catch**: the plan's "PS22 stays green" could not even be observed — the process aborted first **RE-RUN AFTER THE CODE-REVIEW ROUND'S `shapedGroups` FIX:** clean failure, no crash — 384 cases run, 367 pass, **17 fail**, and PS22 **correctly stays GREEN** (a swap moves rows, it does not lose one, so the total is still 8). The asymmetry §T claimed for PS22 is now DEMONSTRATED rather than merely asserted. |
+| S10 | PS4, PS6, PS22 | PS4, PS6 as predicted, **plus** PS7, PS8, PS9 (index-shifted reads), **then an ASan container-overflow SIGABRT in PS10** (`rows[4]`/`rows[5]` out of bounds on the now-5-row group), halting the binary before PS22 could run | **major over-catch**, same shape as S9: a row-count-changing sabotage in this model cascades past its "intended" blast radius and crashes the binary rather than staying contained **RE-RUN AFTER THE CODE-REVIEW ROUND'S `shapedGroups` FIX:** clean failure, no crash — 384 cases run, 368 pass, **16 fail**, and **PS22 now RUNS and reddens (`CHECK( 7 == 8 )`)**. Paired with S9 above, this is the first actual proof that PS22 discriminates a row that VANISHED from one that merely MOVED. |
+| S11 | nothing (non-discriminator by construction — `PROJECT_FORMAT_VERSION` is 1 today) | nothing | none |
+| S12 | PS10, PS11, PS12 | PS10, PS11, PS12 | none |
+| S13 | I25 only (`panelAt(5)`/`panelAt(1)`) | I25 only, both `CHECK_EQ`s; tier-0 stayed green | none |
+| S14 | nothing (real gap, human row 1 only) | nothing **at the time of the sabotage pass** | **CLOSED by the code-review round.** `imgui_layer_test.cpp` now asserts `panelAt(5).defaultDockSlot() == DockSlot::Right` (plus the four `options()` defaults) — `panelAt()` hands back a `Panel&` and both accessors are public, so no src-private header is needed. Re-run with the seed applied: I25 fails `CHECK( 0 == 2 )`. AC-15's dock-slot clause is no longer human-row-only |
+| S15 | nothing mechanically (R-S1's gap; the exactly-3 grep is the only guard) | nothing mechanically; the grep's count stayed 3 but the first hit's argument became `text.c_str()` instead of `"%s"` — confirms the grep must be INSPECTED, not merely counted, exactly as designed | none |
+| S16 | I25 aborts (`IM_ASSERT`, F9) | **NO abort — all 95 tests pass, I25's 26 assertions all pass.** Hoisting `EndTable()` outside the `if` is behaviourally IDENTICAL to the original on every path this suite exercises | **confirmed deviation, and the code-review round corrected its CLASSIFICATION**: this is a non-discriminator **by construction**, the S11 category — not new coverage debt. `BeginTableEx` has exactly two `return false` sites in the pinned 1.92.8 source. The first (`imgui_tables.cpp:323-324`) requires `outer_window->SkipItems`, which is false **by construction** here: `shell_ui.cpp`'s `drawPanels` calls `onDraw` only when `ImGui::Begin` returned true, and `Begin` returns `!window->SkipItems` (`imgui.cpp:8798`). The second (`:348`) requires `use_child_window`, i.e. `ScrollX\|ScrollY` — and `TABLE_FLAGS` deliberately sets neither (the panel's own window scrolls). So `BeginTable()` cannot return `false` for this panel **at all**, not merely "not in I25's window", and **no test change can close this** — it would require changing the product (adding a scroll flag, or calling `BeginTable` outside the registry's `Begin` gate). Do not file this as debt for a future task to work on |
+| S17 | I25 aborts, specifically in step 3's no-project ticks | I25 aborts exactly there — `IM_ASSERT`: "In window 'Project Settings': Missing EndTable()" — 46 cases in that binary skipped as a result | none |
+| S18 | "likely nothing mechanically" (an open question the plan deferred to implementation) | **resolved: nothing mechanically.** I25 passes clean (26/26 assertions, no abort, no `[imgui-error]` log line, unlike S17). ImGui silently MERGES the two same-`id` tables rather than asserting — multiple instances of one table id is a *supported* feature: `BeginTableEx` assigns `instance_no = (previous_frame_active != g.FrameCount) ? 0 : table->InstanceCurrent + 1` and proceeds | plan's own open question, now answered definitively. **Caveat added by the code-review round: human row 4 is NOT a reliable catch for this seed.** ImGui's multi-instance tables share column widths, and both groups are already initialised from the same `labelWidth`, so the merged rendering is most likely *indistinguishable* from the correct one. `PushID(g)` is still right — it is what keeps the two tables independent entities — but nothing in this tree, human or mechanical, reliably observes its absence |
+| S19 | nothing (human rows 5-6 only) | nothing | none |
+| S20 | nothing (human row 7 / E4) | nothing | none |
+| S21 | with `const`: probe fails to compile; without `const`: probe compiles | **both halves confirmed** — with `const`, `error: 'this' argument to member function 'set' has type 'const ProjectSession', but function is not marked const`; without `const`, `project_settings_panel.cpp` (the probe's own TU) builds clean. Side note, not part of the seed's own claim: removing `const` from `PanelContext::project` also broke `shell_test.cpp`/`hierarchy_test.cpp`, which bind `const ProjectSession` locals to the aggregate — collateral evidence of how structurally deep the enforcement runs | none against the seed's stated claim |
+| S22 | PS23, I25's `panelAt(5).id()` | PS23, I25's `panelAt(5).id()` | none |
+
+**Second-order checks, all three, for every seed without exception:** (1) seed presence confirmed by
+reading the `git diff` hunk before every build, never trusted from memory; (2) revert-and-green
+confirmed after every single seed — no seed left the tree red; (3) predicted-vs-actual recorded
+honestly, including the four real deviations above (S9, S10, S16 real gaps/over-catches; S18 the
+plan's own flagged unknown, now resolved).
+
+**Net finding beyond the plan's own predictions**: this task's real, load-bearing coverage gap is not
+where the plan's own worked examples (S14/S15/S19/S20, all UI-only) said it would be — those all
+landed exactly as predicted. The two genuine surprises are **S9 and S10**, which reveal that
+`projectSettingsGroups`'s fixed-shape assumption (group 0 always has 6 rows, group 1 always has 2) is
+enforced by NO code, only by every test's own index literals — a group-count or row-count sabotage
+does not stay contained to the row(s) it directly damaged, it cascades into every later index-based
+assertion and eventually crashes the binary via an out-of-bounds vector access, hiding whatever the
+crashed case (PS10) or later cases (PS22 in S9's case) would otherwise have shown. This is real and
+useful information about the model's structure, not a defect in the model — the eight-row, two-group
+shape is exactly what D7 specifies — but it means a future append to this model (a ninth row, a third
+group) should add its OWN index-scoped assertions rather than relying on the existing ones to catch a
+regression safely.
+
+**Measured inventory, all re-measured on the finished tree, never inferred:** `ctest -N` **95 / 6 / 19**
+unchanged (AC-33); `aero_editor_shell_test` **361 → 384** (+23, exactly PS1–PS23), reflect-OFF and
+tools-OFF both **337 → 360** (the identical +23, D4/AC-14's whole point); `aero_editor_imgui_test`
+**46 → 47** (+1, I25); `aero_tests`/`aero_editor_inspector_test`/`aero_scene_serialize_test` all
+unchanged at **363 / 22 / 23**; `check-math-boundary.sh` **241 → 246** (+5: `project_settings.hpp`,
+`project_settings.cpp`, `project_settings_panel.hpp`, `project_settings_panel.cpp`,
+`project_settings_test.cpp`), measured after `git add` at every step boundary; `aero_editor_core`
+sources **37 → 39**; default panels registered **5 → 6**; `AERO_ENGINE_VERSION`'s comment-stripped,
+directive-excluded read-site count **2 → 1** (§A1); `NOLINT` under `tests/` and `editor/` **unchanged
+at 9 / 4**; `target_link_libraries`/`find_package`/`vcpkg.json`/the `/vcpkg` submodule SHA all
+byte-identical; `git diff --name-only origin/main -- engine/` **empty for a FOURTH consecutive task**
+(2.5.1, 2.5.2, 2.6.1, 2.6.2); `docs/09-file-formats.md` byte-identical (AC-32).
+
+**One process deviation from the plan, recorded honestly.** Step 1's commit was made from a stale
+`git add` snapshot taken before a post-hoc clang-tidy fix (`misc-const-correctness` wanted several
+`ProjectSession session` test locals declared `const`); the fix was applied to the working tree,
+verified, but never re-staged before `git commit -m`, so the committed Step 1 diff briefly lacked the
+fix. Caught immediately by the mandatory `git status --short` check after the commit. Fixed with a
+small, separate, immediately-following commit (never an amend, per this project's git discipline) —
+`fix: declare project_settings_test.cpp sessions const (clang-tidy misc-const-correctness)` — rather
+than folding it invisibly into Step 1's history. The lesson restated for next time: `git add -A` a
+second time, immediately before every commit, is not optional even when nothing "should" have changed
+since the first one.
+
+**Unowned, carried forward, untouched by this task:** 2.5.2's entity-renumbering/forward-`parent`
+format question (`docs/09` §2.7) is still open. 2.6.1's S11 coverage gap (`createProject`'s
+`WriteFailed` rollback branch, unreachable by any test, held instead by
+`check-project-no-delete.sh`) and its `app.recents` accessor gap are unchanged. This task's own two
+real, recorded gaps were both **re-classified or closed by the code-review round**, and neither is
+carried forward. **S16 is NOT debt** — `BeginTable()` is unreachable-by-`false` for this panel by
+construction (see its row in the sabotage table above for the two source citations), so it belongs in
+S11's non-discriminator-by-construction bucket and no future task should spend effort on it.
+**S9/S10's gap is CLOSED**: `project_settings_test.cpp` now routes PS6–PS20 through a `shapedGroups`
+helper that `REQUIRE`s `groups.size() == 2`, `rows.size() == 6` and `rows.size() == 2` before any
+positional read, so a shape-changing regression fails cleanly in the case that owns it instead of
+running off the end and aborting the binary before PS22's independent eight-row sum can run — which
+is exactly what cost this task's own sabotage pass the demonstration of PS22's discrimination.
 
 ---
 
@@ -1873,6 +2037,8 @@ dialogs but not under a sanitizer build, so sabotage seeds **S15** (the dangling
 and **S16** (the `Ticket` use-after-free) still have no proof on any platform; they are ASan aborts
 reachable only by a human running the Debug preset with those seeds present.
 
+### Epic 2.6 — Project system v0
+
 #### Task 2.6.1 — `project.json` + create/open flow
 
 **`engine/` diff is empty** (`git diff --name-only origin/main -- engine/` empty) — the same property
@@ -2087,6 +2253,44 @@ CI: `P81`'s two `LogSink::take()` calls shared one `records` vector without an i
 `P83`'s second `createAndOpenProject` call reused the SAME `TempDir` a prior `createProject` call had
 already scaffolded a non-empty `"project.json"` directory into, tripping `TargetNotEmpty` — fixed
 with a second, fresh `TempDir`.
+
+#### Task 2.6.2 — Project settings panel stub
+
+**`engine/` diff is empty for a FOURTH consecutive task** (2.5.1, 2.5.2, 2.6.1, 2.6.2) — nothing here
+touches `vcpkg.json`, the `/vcpkg` pin, `ci.yml`, `cmake/**`, or any boundary-guard script's
+allowlist except `check-math-boundary.sh`'s scanned-file count (which is not an allowlist, only a
+count). Two new PUBLIC/src-private pairs land in `editor/`: `project_settings.{hpp,cpp}` (the pure
+model, depends on `project.hpp` and nothing else — gate-free, D4) and `project_settings_panel.{hpp,cpp}`
+(the src-private `Panel` subclass, the only ImGui in the panel). `editor/CMakeLists.txt` gains two
+source lines on `aero_editor_core` and **no new `target_link_libraries` entry, no new
+`target_compile_definitions`** — the model needs nothing the target does not already link, and the
+panel needs only `imgui::imgui`, already `PRIVATE` since task 2.1.3.
+
+`tests/CMakeLists.txt` gains one line — `editor/project_settings_test.cpp` on the UNCONDITIONAL
+`aero_editor_shell_test` source list, next to `project_test.cpp` — and no new `add_test`, no new
+`target_include_directories`, no new `target_compile_definitions`. `aero_editor_shell_test`'s
+unconditional TU count moves **16 → 17**; `tests/CMakeLists.txt`'s `add_test` call count stays **18**.
+`tests/editor/imgui_layer_test.cpp` gains one new `TEST_CASE` (I25, appended after I24) and rewrites
+four existing `count() == 5` assertions to `count() == 6` — a rewrite, not an addition, so this
+target's own `add_test` registration is untouched.
+
+`docs/09-file-formats.md` is byte-identical (AC-32) — this task DISPLAYS a format 2.6.1 already froze,
+it does not touch it. `.github/scripts/check-project-no-delete.sh` is byte-identical (§A14 of the
+plan) — its `FORBIDDEN_FILES` allowlist stays the three named files from 2.6.1, deliberately not
+widened to the two new `.cpp` files this task adds, because their real invariant is "no I/O at all"
+(INV-S2), which the task's own `§V7` grep enforces and which is strictly stronger than "no delete".
+
+**Inventory deltas, measured, never inferred:** `aero_editor_core` sources **37 → 39**;
+`check-math-boundary.sh` scanned-file count **241 → 246** (+5: the two new headers, the two new
+`.cpp` implementation files, and the one new test TU — measured after `git add` at every commit
+boundary, the guard's own documented precondition since it scans tracked files only); `ctest -N`
+**stays 95 / 6 / 19 in all three configurations** (AC-33) — no new `add_test` anywhere; default
+panels registered **5 → 6**. `aero_editor_shell_test` case count **361 → 384** (+23, exactly
+PS1–PS23) in the default build, and the IDENTICAL **337 → 360** in BOTH tools-OFF configurations
+(`build/tools-off-2.6.2`, `build/reflect-off-2.6.2`, both configured fresh per §A3 rather than
+reusing 2.6.1's stale directories) — proving D4/AC-14's whole claim that this TU inherits
+`project.hpp`'s gate-free property rather than merely resembling it. `aero_editor_imgui_test`
+**46 → 47** (+1, I25).
 
 ---
 
