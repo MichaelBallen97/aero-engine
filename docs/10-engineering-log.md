@@ -1734,3 +1734,46 @@ rows of its own, and it will keep being skipped until it is scheduled as work in
 dialogs but not under a sanitizer build, so sabotage seeds **S15** (the dangling `SCENE_FILTERS` array)
 and **S16** (the `Ticket` use-after-free) still have no proof on any platform; they are ASan aborts
 reachable only by a human running the Debug preset with those seeds present.
+
+---
+
+## 2.2.5-R — log/console panel, standalone re-validation (2026-08-01)
+
+**Not a task.** A validation-only session with no code change: `git diff --name-only` over the
+engine, editor, tests and tools trees is empty, and the only tracked edits are this entry and
+`CLAUDE.md`'s state block. It exists because the work it did had been deferred four times.
+
+**What ran.** The four macOS rows that task 2.2.5's human pass recorded as **BLOCKED** on 2026-07-28
+— row 9 (`##`, `%s` and embedded-newline messages), row 10 (records captured while the Assets tab is
+selected, AC-6), row 11 (exceeding 10 000 records stays smooth, footer shows the aged-out count) and
+row 15 (non-ASCII renders as `?` but filters and copies byte-exactly). **All four PASS**, moving 2.2.5
+from ⚠️ PARTIAL 11/15 to ✅ **PASS 15/15** on macOS. Every Phase 2 task now carries a full macOS pass,
+and 2.2.5's gate is held open only by the phase-wide Windows/Linux debt.
+
+**Why they were blocked, and what unblocked them.** The original pass verified exhaustively that the
+editor emitted **no log record after startup** — no `AERO_LOG_TRACE`/`AERO_LOG_DEBUG` call site
+existed anywhere in the first-party tree, and every reachable site was either a failure path or a
+once-per-lifetime startup notice. A successful resize, click, selection or dock change logged nothing,
+so a row instructing the tester to "cause some logging" could not be carried out *as written*. That is
+worth restating precisely: the rows were not failing and the panel was not broken — the rows were
+**unrunnable**, which is a third state, and recording it as such rather than as a failure is what made
+it obvious later exactly what had to land to close them. Four triggerable sources have since arrived:
+2.3.3's degenerate/non-finite-transform gizmo WARN, 2.4.1's Debug-build `⌘Z` record, 2.4.2's
+Debug-build `⌘Z` with a varied label, and **2.5.1's load-outcome INFO/WARN — the first that is not
+Debug-only**, and therefore the first that makes these rows runnable in a Release build on any
+platform.
+
+**Not re-run, and unchanged:** rows 3, 7 and 8 keep the partial sub-clauses from the first sitting
+(Trace/Debug/Error/Critical colouring by eye; the "while records arrive" half of auto-scroll; the
+identical-text tooltip / ImGui id-merging half). All three are now *reachable* with the sources above
+and each already has mechanical coverage, so they are closable work rather than structural gaps.
+
+**The process finding, which outlives the rows themselves.** The clause "re-run 2.2.5's four rows" was
+written into **three consecutive tasks** — 2.4.2's row 22, 2.5.1's row 22, and considered for 2.5.2 —
+and performed by **none** of them. 2.5.2's spec (D3) refused to carry it on the grounds that attaching
+it to a task with *zero* other human rows would be the worst version yet, and named a standalone
+successor instead. That refusal was correct: scheduled as work of its own, the item took one short
+session. **A ride-along validation row on a task that already has twenty of its own does not get
+done** — not through negligence, but because the tester is deep in that task's own checklist and an
+unrelated row at the end is the first thing dropped when the session runs long. Schedule cross-task
+validation debt separately, and make the blocker explicit so it is obvious when it clears.
