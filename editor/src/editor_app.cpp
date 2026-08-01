@@ -7,7 +7,6 @@
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/entity_ops.hpp>
-#include <aero/editor/project_files.hpp>
 #include <aero/editor/scene_session.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
@@ -111,11 +110,35 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // The default layout is built on the FIRST DRAWN FRAME, not here (E3) — so panels registered by
     // the caller between create() and the first tick() are included.
     app.applyDefaultLayout = app.layer.wantsDefaultLayout();
-    // task 2.5.1, D20: hoisted OUT of the registerDefaultPanels branch below -- the dialog's start
-    // directory needs it whether or not the Asset Browser panel exists. The LOG line stays inside
-    // that branch (plan A9): its text, level and position in the startup sequence are unchanged, and
-    // 2.2.5's create-time record ordering is asserted on them.
-    app.projectRootResolved = resolveProjectRoot(config.projectRoot);
+    // task 2.6.1: the recents list and the project are resolved HERE -- the same position the old
+    // project-root resolution occupied -- so the "assets root" INFO below keeps its exact text AND
+    // its exact position among the panel records, and so AssetBrowserPanel is BORN with the right
+    // root (which makes D10's reconcile a startup no-op rather than a one-frame correction).
+    app.recentsPath =
+        config.recentProjectsPath.empty() ? defaultRecentProjectsPath() : std::string(config.recentProjectsPath);
+    if (config.restoreLastProject) {
+        app.recents = readRecentProjects(app.recentsPath);  // D15: NOT read at all when false (AC-34/E23)
+    }
+    // D0's launch resolution order: argv/config -> the FIRST recents entry that HAS a project.json ->
+    // none. The startup restore tries only that ONE entry: if it fails to VALIDATE we stop and show
+    // Welcome rather than cascade, because silently opening a DIFFERENT project than the one you last
+    // used is worse than showing Welcome (E16/E17/AC-33).
+    std::string resolved(config.projectPath);
+    if (resolved.empty() && config.restoreLastProject) {
+        for (const std::string& candidate : app.recents.paths) {
+            if (fileExists(candidate + "/" + std::string(PROJECT_FILE_NAME))) {
+                resolved = candidate;
+                break;
+            }
+        }
+    }
+    if (!resolved.empty()) {
+        CommandContext cmd{app.sceneWorld, app.sceneSelection, app.rootOrder};
+        ProjectContext projectContext{app.project, app.projectFlow, app.recents, AERO_ENGINE_VERSION};
+        (void)openProjectPath(cmd, app.commandStack, app.session, projectContext, resolved);
+        // openProjectPath logs its own ERROR or INFO. A FAILURE leaves the no-project state, which IS
+        // AC-32's "the editor still opens, docks and quits" property -- not an error path to handle here.
+    }
 
     if (config.registerDefaultPanels) {
         app.registry.emplace<HierarchyPanel>();                           // task 2.2.1 -- was a PlaceholderPanel
@@ -128,14 +151,16 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         if (logScope.has_value()) {
             app.consolePanel = app.registry.emplace<ConsolePanel>(std::move(*logScope));
         }
-        AERO_LOG_INFO("editor: assets root '{}'", app.projectRootResolved);
-        app.registry.emplace<AssetBrowserPanel>(app.projectRootResolved);  // task 2.2.4 -- a COPY now
-                                                                           // (plan A9): the string moved
-                                                                           // into the panel before 2.5.1
-                                                                           // needed it a second time.
+        AERO_LOG_INFO("editor: assets root '{}'", app.project.assetsRoot());
+        app.assetBrowserPanel = app.registry.emplace<AssetBrowserPanel>(app.project.assetsRoot());
     }
 
-    if (config.seedDefaultScene) {
+    // task 2.6.1: `&& !app.project.isOpen()` is MANDATORY, not defensive. Opening a project above went
+    // through adoptProject -> newScene -> resetSceneState + seedDefaultScene, so the World already
+    // holds the three seed entities; seeding again would produce SIX. This is 2.5.1's S5 trap in a new
+    // costume. Corollary, and it is CORRECT: opening a project always yields three entities, even with
+    // seedDefaultScene == false -- AC-18 says a project switch resets to a FRESH DEFAULT scene.
+    if (config.seedDefaultScene && !app.project.isOpen()) {
         engine::editor::seedDefaultScene(app.sceneWorld);  // fully qualified: the config field shadows
     }
 
@@ -202,17 +227,42 @@ bool EditorApp::tick() {
     if (dialogChannel != nullptr) {
         if (const DialogResult result = dialogChannel->take(); result.ready) {
             CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
-            const FileDialogHost host{dialogChannel.get(), nativeWindowHandle(window), projectRootResolved};
+            // task 2.6.1: FileDialogHost::projectRoot is a std::string_view. Binding it DIRECTLY to
+            // project.scenesRoot() -- which returns BY VALUE -- leaves it dangling the instant the
+            // full-expression ends. The named local is MANDATORY, not style.
+            const std::string scenesRoot = project.scenesRoot();
+            const FileDialogHost host{dialogChannel.get(), nativeWindowHandle(window), scenesRoot};
             applyDialogResult(cmd, commandStack, session, fileFlow, host, result, projectContext);
         }
     }
+
+    // task 2.6.1 (D10/AC-31): RECONCILE, never push. The swap does not call setRoot() -- if it did,
+    // the swap would be two things a future caller could perform half of, and a stale Asset Browser
+    // root after a project change is exactly the kind of drift nobody notices until it is confusing.
+    // One std::string comparison per frame, which cannot be half-performed and cannot drift, and
+    // which works identically whether the project changed via the menu, the Welcome window, argv, the
+    // startup restore, or a caller nobody has written yet. It is the RootOrder/Hierarchy precedent
+    // (editor_app.hpp:120-124) applied to a second panel. Null-checked: registerDefaultPanels == false
+    // leaves the pointer null and this a no-op (E26). ONE allocation per frame, deliberately -- the
+    // title push below has allocated one on every frame since task 2.5.1.
+    if (assetBrowserPanel != nullptr) {
+        std::string wanted = project.assetsRoot();
+        if (assetBrowserPanel->root() != wanted) {
+            assetBrowserPanel->setRoot(std::move(wanted));
+        }
+    }
     if (window != nullptr) {
-        std::string title = session.windowTitle(!commandStack.isClean());
+        std::string title = session.windowTitle(!commandStack.isClean(), project.name());
         if (title != lastTitle) {  // D16: push the title only when it CHANGES
             lastTitle = std::move(title);
             window->setTitle(lastTitle);
         }
     }
+    // The recents list is flushed ONLY when it changed -- never per-frame file I/O, ever.
+    if (projectFlow.recentsDirty) {
+        projectFlow.recentsDirty = false;
+        writeRecentProjects(recentsPath, recents);  // one WARN on failure; the editor keeps running
+    }  // and the project stays open (AC-24)
 
     layer.beginFrame();
     ShellUiState ui{
@@ -228,8 +278,11 @@ bool EditorApp::tick() {
     PanelContext panelContext{sceneWorld, sceneSelection, commandStack, rootOrder, frameClock.deltaSeconds()};
     // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does not
     // carry (D17), built fresh each frame exactly like panelContext above.
+    // task 2.6.1: the SAME named-local requirement as the drain above -- FileDialogHost::projectRoot
+    // is a string_view and project.scenesRoot() returns by value.
+    const std::string scenesRootForMenu = project.scenesRoot();
     FileMenuContext fileMenu{session, fileFlow,
-                             FileDialogHost{dialogChannel.get(), nativeWindowHandle(window), projectRootResolved},
+                             FileDialogHost{dialogChannel.get(), nativeWindowHandle(window), scenesRootForMenu},
                              projectContext};
     drawShellUi(registry, panelContext, ui, fileMenu);  // menu bar -> dockspace -> panels
     applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
@@ -288,6 +341,13 @@ const EditorCamera* EditorApp::viewportCamera() const noexcept {
 std::string_view EditorApp::scenePath() const noexcept { return session.path(); }
 bool EditorApp::sceneDirty() const noexcept { return !commandStack.isClean(); }
 
+bool EditorApp::projectIsOpen() const noexcept { return project.isOpen(); }
+std::string_view EditorApp::projectRoot() const noexcept { return project.root(); }
+std::string_view EditorApp::projectName() const noexcept { return project.name(); }
+std::string_view EditorApp::assetBrowserRoot() const noexcept {
+    return assetBrowserPanel != nullptr ? std::string_view(assetBrowserPanel->root()) : std::string_view{};
+}
+
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
 void EditorApp::requestUndo() noexcept { undoRequested = true; }
@@ -309,6 +369,17 @@ void EditorApp::requestSaveSceneAs(std::string_view path) {
     fileFlow.requestedPath = path;
 }
 void EditorApp::requestGuardedQuit() noexcept { fileFlow.requested = FileAction::Quit; }
+
+// task 2.6.1: the SAME requestUndo()/requestLayoutReset() shape -- applied on the NEXT tick, never
+// immediately. requestOpenProject(path) is what makes the entire project flow drivable through real
+// frames from the ImGui-free aero_editor_imgui_test, exactly as requestOpenScene(path) did for 2.5.1.
+void EditorApp::requestNewProject() noexcept { fileFlow.requested = FileAction::NewProject; }
+void EditorApp::requestOpenProjectDialog() noexcept { fileFlow.requested = FileAction::OpenProject; }
+void EditorApp::requestOpenProject(std::string_view path) {
+    fileFlow.requested = FileAction::OpenProject;
+    projectFlow.requestedPath = path;
+}
+void EditorApp::requestClearRecentProjects() noexcept { projectFlow.clearRecentsRequested = true; }
 
 }  // namespace engine::editor
 

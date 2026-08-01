@@ -62,9 +62,9 @@ int compareFolded(std::string_view a, std::string_view b) noexcept {
     return a.size() < b.size() ? -1 : 1;
 }
 
-// rootDisplayName is the ONE helper that sees an OS-native path (resolveProjectRoot returns
-// current_path(), which is backslash-separated on Windows). Everything else here sees only our own
-// '/'-separated relative paths.
+// rootDisplayName is the ONE helper that sees an OS-native path (a project's root, task 2.6.1's
+// ProjectSession::root(), which is backslash-separated on Windows). Everything else here sees only
+// our own '/'-separated relative paths.
 constexpr bool isPathSeparator(char c) noexcept { return c == '/' || c == '\\'; }
 
 bool hasSubdirectory(const DirectoryListing& listing) noexcept {
@@ -235,7 +235,7 @@ void buildVisibleTree(const std::function<const DirectoryListing*(const std::str
 DirectoryListing listDirectory(std::string_view rootUtf8, std::string_view relPath, bool includeHidden) {
     DirectoryListing out;
     if (rootUtf8.empty()) {
-        out.status = ScanStatus::Missing;  // E2: resolveProjectRoot failed, or no project is open
+        out.status = ScanStatus::Missing;  // E2: no root was given, or no project is open
         return out;
     }
 
@@ -346,18 +346,6 @@ DirectoryListing listDirectory(std::string_view rootUtf8, std::string_view relPa
 
     std::sort(out.entries.begin(), out.entries.end(), entryOrderLess);  // D11/F19
     return out;
-}
-
-std::string resolveProjectRoot(std::string_view configuredUtf8) {
-    if (!configuredUtf8.empty()) {
-        return std::string(configuredUtf8);  // VERBATIM -- see the header's rationale
-    }
-    std::error_code ec;
-    const std::filesystem::path cwd = std::filesystem::current_path(ec);
-    if (ec) {
-        return {};  // the panel renders ScanStatus::Missing / "No project directory" (E2)
-    }
-    return utf8FromPath(cwd);
 }
 
 }  // namespace engine::editor

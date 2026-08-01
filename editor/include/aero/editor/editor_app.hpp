@@ -31,18 +31,21 @@ class Window;  // task 2.5.1 (F14): a POINTER member needs only the name -- a pr
 
 namespace engine::editor {
 
-class ViewportPanel;  // task 2.2.3: src-private (editor/src/viewport_panel.hpp). Only the NAME is
-                      // needed here, so this PUBLIC header stays free of viewport_panel.hpp's
-                      // engine includes and stays ImGui/entt-free.
-class ConsolePanel;   // task 2.2.5: src-private (editor/src/console_panel.hpp). Only the NAME is
-                      // needed here, so this PUBLIC header stays free of console_panel.hpp and
-                      // therefore of <aero/editor/console_model.hpp> as well.
-class EditorCamera;   // task 2.3.1: PUBLIC (editor/include/aero/editor/editor_camera.hpp). Only the
-                      // NAME is needed here -- viewportCamera() returns a pointer -- so this header
-                      // keeps its include weight, exactly as it already does for ViewportPanel and
-                      // ConsolePanel.
-class DialogChannel;  // task 2.5.1: src-private (editor/src/file_dialog.hpp). Only the NAME is needed
-                      // here for the shared_ptr member -- the ViewportPanel/ConsolePanel precedent.
+class ViewportPanel;      // task 2.2.3: src-private (editor/src/viewport_panel.hpp). Only the NAME is
+                          // needed here, so this PUBLIC header stays free of viewport_panel.hpp's
+                          // engine includes and stays ImGui/entt-free.
+class ConsolePanel;       // task 2.2.5: src-private (editor/src/console_panel.hpp). Only the NAME is
+                          // needed here, so this PUBLIC header stays free of console_panel.hpp and
+                          // therefore of <aero/editor/console_model.hpp> as well.
+class EditorCamera;       // task 2.3.1: PUBLIC (editor/include/aero/editor/editor_camera.hpp). Only the
+                          // NAME is needed here -- viewportCamera() returns a pointer -- so this header
+                          // keeps its include weight, exactly as it already does for ViewportPanel and
+                          // ConsolePanel.
+class DialogChannel;      // task 2.5.1: src-private (editor/src/file_dialog.hpp). Only the NAME is needed
+                          // here for the shared_ptr member -- the ViewportPanel/ConsolePanel precedent.
+class AssetBrowserPanel;  // task 2.2.4: src-private (editor/src/asset_browser_panel.hpp). Only the
+                          // NAME is needed here for the reconcile's non-owning pointer -- the
+                          // ViewportPanel/ConsolePanel precedent, applied a third time.
 
 struct EditorAppConfig {
     rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
@@ -55,12 +58,23 @@ struct EditorAppConfig {
     // Frame-rate ceiling applied ONLY while the window has no keyboard focus (D4). <= 0 disables the
     // throttle entirely — what the GPU smoke test uses so its frames stay unpaced + deterministic.
     float unfocusedFrameCapHz = 20.0F;
-    // Task 2.2.4: the asset browser's root, as UTF-8. EMPTY -> the process working directory,
-    // resolved ONCE at create() by resolveProjectRoot(). aero_editor's optional argv[1] writes this
-    // field. A bad path is NOT validated here (D17): it flows to the panel, which reports it in-panel
-    // and still docks and quits cleanly. Task 2.6.1 replaces this with the opened project's path and
-    // calls AssetBrowserPanel::setRoot().
-    std::string projectRoot;
+    // Task 2.6.1 (WAS `projectRoot`): a project DIRECTORY or a .../project.json path, as UTF-8.
+    // EMPTY => the no-project state (D0), which is first-class and NOT an error: menus, panels,
+    // docking, undo/redo and scene save/load all keep working; the Asset Browser simply has nothing
+    // to show and a Welcome window offers the two ways out. NOT validated here (2.2.4's D17,
+    // preserved): a bad path is one ERROR plus the no-project state, and the editor still opens,
+    // docks and quits cleanly (AC-32). aero_editor's optional argv[1] writes this field.
+    std::string projectPath;
+    // Task 2.6.1 (D15): with no `projectPath`, open the first recents entry that HAS a project.json
+    // on disk. TRUE is the shipping behaviour and therefore the default, matching
+    // registerDefaultPanels / seedDefaultScene / persistLayout -- which makes a forgotten opt-out a
+    // real footgun, so EVERY EditorAppConfig literal under tests/ sets it false and an AC-level grep
+    // holds that line.
+    bool restoreLastProject = true;
+    // Task 2.6.1 (D15, the second defence): where the recents list lives. EMPTY =>
+    // defaultRecentProjectsPath(). The one case that MUST exercise the restore path points this at a
+    // TempDir file, so even with restore ENABLED no test ever touches the real pref directory.
+    std::string recentProjectsPath;
 };
 
 // Sleep applied when the window is not presentable (minimized) — inherited verbatim from 2.1.1.
@@ -147,6 +161,18 @@ public:
     // == !commands().isClean() (D3): there is no second flag.
     [[nodiscard]] bool sceneDirty() const noexcept;
 
+    // ---- task 2.6.1: the open project. The black-box signature the GPU cases need, exactly the
+    // reason logRecordCount() (2.2.5 D16) and viewportCamera() (2.3.1 D6) exist. ----
+    [[nodiscard]] bool projectIsOpen() const noexcept;
+    [[nodiscard]] std::string_view projectRoot() const noexcept;  // "" when none
+    [[nodiscard]] std::string_view projectName() const noexcept;  // "" when none
+    // The Asset Browser panel's current root ("" when no Asset Browser panel is registered, i.e.
+    // registerDefaultPanels == false or registration was rejected). A VIEW into a member that lives as
+    // long as the app -- the scenePath() caveat applies. Exists for the same reason logRecordCount()
+    // (2.2.5 D16) and viewportCamera() (2.3.1 D6) do: without it, D10's per-frame reconcile has no
+    // black-box signature, AC-31 is unprovable and sabotage seed S14 would redden nothing at all.
+    [[nodiscard]] std::string_view assetBrowserRoot() const noexcept;
+
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
     // Same effect as Edit > Undo / Ctrl+Z (Cmd+Z on macOS), applied on the NEXT tick -- the
@@ -171,6 +197,13 @@ public:
     // stays UNCHANGED and unguarded -- 35 existing GPU-gated cases end
     // `app->requestQuit(); CHECK(app->tick() == false);` and this must not become a second thing.
     void requestGuardedQuit() noexcept;
+
+    // ---- task 2.6.1: the project flow's request hooks. All `projectFlow`/`fileFlow` writes, applied
+    // on the NEXT tick -- the requestUndo() shape, never requestQuit()'s. ----
+    void requestNewProject() noexcept;               // guarded; opens the modal
+    void requestOpenProjectDialog() noexcept;        // guarded; launches the folder dialog
+    void requestOpenProject(std::string_view path);  // guarded, NO dialog -- the D15 test seam
+    void requestClearRecentProjects() noexcept;
 
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
@@ -204,6 +237,10 @@ private:
     // F17, the same reason viewportPanel above is legal). Null when registerDefaultPanels == false or
     // if registration was rejected -- ALWAYS null-check.
     ConsolePanel* consolePanel = nullptr;
+    // task 2.6.1: non-owning, the SAME precedent as viewportPanel/consolePanel above -- owned by
+    // `registry` through unique_ptr, therefore address-stable, null when registerDefaultPanels ==
+    // false or registration was rejected (E26), ALWAYS null-checked. D10's per-frame reconcile target.
+    AssetBrowserPanel* assetBrowserPanel = nullptr;
 
     // ---- task 2.5.1 ---------------------------------------------------------------------------
     // Non-owning; F14: setTitle() and the dialog's parent window. The caller contract (create()'s
@@ -211,18 +248,16 @@ private:
     platform::Window* window = nullptr;
     SceneSession session;  // the current scene's path (D2/D3: dirtiness itself is NOT stored here)
     FileFlow fileFlow;     // the File-menu state machine's data
-    // task 2.6.1: the open project and its own flow state, plus the recent-projects list. Wired
-    // fully in Step 6 (startup resolution, the reconcile, the request hooks); Step 5 only keeps the
-    // signature changes above compiling.
+    // task 2.6.1: the open project and its own flow state, plus the recent-projects list.
     ProjectSession project;
     ProjectFlow projectFlow;
     RecentProjects recents;
+    std::string recentsPath;  // resolved ONCE in create(): config.recentProjectsPath, else D8's default
     // Created once in create(); NEVER null on a LIVE app. NULL only on a moved-from app (a defaulted
     // move leaves the source's shared_ptr empty), which is why the drain in tick() is null-guarded
     // (plan A18) rather than assumed non-null.
     std::shared_ptr<DialogChannel> dialogChannel;
-    std::string projectRootResolved;  // D20: resolved ONCE in create(), the dialog's start directory
-    std::string lastTitle;            // D16: setTitle() only when this string CHANGES
+    std::string lastTitle;  // D16: setTitle() only when this string CHANGES
 };
 
 }  // namespace engine::editor

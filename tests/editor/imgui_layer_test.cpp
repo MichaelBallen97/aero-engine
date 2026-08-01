@@ -81,6 +81,14 @@ struct QuietTraceLogging {
 }
 }  // namespace
 
+// task 2.6.1 (D15): EVERY EditorAppConfig literal below opts OUT of restoring the last project. The
+// field defaults to TRUE -- the shipping behaviour -- so without the opt-out every case here would
+// open whatever project the developer last used, swapping the World and seeding three entities. It
+// would PASS on a CI runner (which has no recents file) and FAIL on a developer machine, which is
+// the worst possible shape for a bug. The ONE case that must exercise the restore path (I23)
+// enables it AND points `recentProjectsPath` at a TempDir file, so no test ever reads the real
+// pref directory. §V7's grep asserts this count matches the total number of app-creation call sites.
+
 TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke test)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
@@ -98,8 +106,8 @@ TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke
 
     // persistLayout = false: no ini written by this test. unfocusedFrameCapHz = 0: the pacing
     // throttle is disabled, so ticks stay unpaced and deterministic.
-    std::optional<engine::editor::EditorApp> app =
-        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     // The D8 registration -- the ONE absolute panel count in the tree.
@@ -158,8 +166,8 @@ TEST_CASE("editor: the Hierarchy panel draws a seeded scene and survives edits (
     if (!device) {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
-    std::optional<engine::editor::EditorApp> app =
-        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     // AC-18: the default config seeds three entities.
@@ -217,7 +225,8 @@ TEST_CASE("editor: seedDefaultScene = false yields an empty tree (AC-18)") {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = false, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     CHECK(app->world().entityCount() == 0);
@@ -240,8 +249,8 @@ TEST_CASE("editor: the Inspector panel draws a seeded scene and survives structu
     if (!device) {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
-    std::optional<engine::editor::EditorApp> app =
-        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -305,7 +314,8 @@ TEST_CASE("editor: the Viewport panel drives resize, hide/show and no-camera wit
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
     CHECK(app->world().entityCount() == 3);
 
@@ -360,7 +370,9 @@ TEST_CASE("editor: the Viewport panel drives resize, hide/show and no-camera wit
     app.reset();
 }
 
-TEST_CASE("editor: the Asset browser panel draws a real directory tree without unbalancing ImGui (task 2.2.4)") {
+TEST_CASE(
+    "editor: the Asset browser panel handles the no-project state without unbalancing ImGui (task "
+    "2.2.4/2.6.1, I19/AC-28/AC-30)") {
     // Honest limit: this proves NO CRASH, NO ABORT, NO LEAK, and that frames present. It does NOT
     // prove the listing is CORRECT, that navigation works, or that the tree expands -- no ImGui
     // input can be synthesised here. The expand/collapse/navigate half is proven at tier-0 by
@@ -377,13 +389,20 @@ TEST_CASE("editor: the Asset browser panel draws a real directory tree without u
     if (!device) {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
-    // projectRoot = "" -> resolveProjectRoot falls back to the process working directory, which for
-    // ctest is the build tree: a real, non-empty directory with real subdirectories and real files.
-    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx,
-        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .projectRoot = ""});
+    // projectPath = "" now means NO PROJECT (D0) -- unlike 2.2.4's old premise (the CWD-fallback
+    // helper this task deletes, D11), the Asset Browser's root is "" and the panel renders its no-root
+    // state. This is exactly what AC-28/AC-30 require: no project is not a cage, and the panel must
+    // still draw, resize and tear down cleanly through it.
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(*device, *window, ctx,
+                                                                                     {.persistLayout = false,
+                                                                                      .seedDefaultScene = true,
+                                                                                      .unfocusedFrameCapHz = 0.0F,
+                                                                                      .projectPath = "",
+                                                                                      .restoreLastProject = false});
     REQUIRE(app.has_value());
     CHECK(app->panels().count() == 5);
+    CHECK_FALSE(app->projectIsOpen());
+    CHECK(app->assetBrowserRoot().empty());
 
     // LOAD-BEARING (plan C5): "Assets" shares DockSlot::Bottom with "Console", and Console registers
     // FIRST, so Console is the selected tab and the Assets window is never drawn -- onDraw would
@@ -431,10 +450,14 @@ TEST_CASE("editor: the Asset browser panel draws a real directory tree without u
     app.reset();
 }
 
-TEST_CASE("editor: the Asset browser draws its error state for an unusable root (task 2.2.4, E1)") {
+TEST_CASE("editor: the Asset browser draws its error state for an unusable root (task 2.2.4/2.6.1, I20/AC-32)") {
     // Proves the D17 degradation path is DRAWN, not merely returned: a missing root must still open,
     // dock and quit cleanly. A relative literal is used deliberately -- it keeps <filesystem> out of
     // this GPU TU, and no such directory exists under the ctest working directory (the build tree).
+    // task 2.6.1: this path is now a PROJECT path (AC-32) -- it has no project.json, so
+    // openProjectPath logs one ERROR and the project stays CLOSED; the Asset Browser's root is then
+    // "" (the no-project state, not the literal bad path), and its OBSERVABLE outcome -- an error/
+    // empty-state render -- is unchanged from 2.2.4's own premise.
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -451,8 +474,10 @@ TEST_CASE("editor: the Asset browser draws its error state for an unusable root 
                                           {.persistLayout = false,
                                            .seedDefaultScene = false,
                                            .unfocusedFrameCapHz = 0.0F,
-                                           .projectRoot = "aero-nonexistent-root-2.2.4"});
+                                           .projectPath = "aero-nonexistent-root-2.2.4",
+                                           .restoreLastProject = false});
     REQUIRE(app.has_value());
+    CHECK_FALSE(app->projectIsOpen());
     app->panels().setVisible("Console", false);  // plan C5, as above
     for (int i = 0; i < 2; ++i) {
         REQUIRE(app->tick());
@@ -475,8 +500,8 @@ TEST_CASE("editor: the Console panel draws the engine log stream (task 2.2.5)") 
     if (!device) {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
-    std::optional<engine::editor::EditorApp> app =
-        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     // The D8 registration -- the ONE absolute panel count in the tree (plan C3's proof).
@@ -521,8 +546,8 @@ TEST_CASE("editor: the Console panel captures records while HIDDEN (task 2.2.5, 
     if (!device) {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
-    std::optional<engine::editor::EditorApp> app =
-        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     // Warm-up tick, BEFORE the measurement window starts: the Viewport panel initializes LAZILY on
@@ -573,8 +598,8 @@ TEST_CASE("editor: a full Console ring stays balanced and clipped (task 2.2.5, A
     if (!device) {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
-    std::optional<engine::editor::EditorApp> app =
-        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     constexpr int BATCH_COUNT = 4;
@@ -626,7 +651,8 @@ TEST_CASE("editor: the editor camera drives the viewport with zero scene Cameras
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     // Destroy the seeded "Main Camera" -- the World now holds zero Camera components.
@@ -677,8 +703,8 @@ TEST_CASE("editor: EditorApp::viewportCamera() (task 2.3.1, D6)") {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
 
-    std::optional<engine::editor::EditorApp> app =
-        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::editor::EditorCamera* camera = app->viewportCamera();
@@ -699,8 +725,12 @@ TEST_CASE("editor: EditorApp::viewportCamera() (task 2.3.1, D6)") {
     app.reset();
 
     // E23/E13: null when no Viewport panel is registered.
-    std::optional<engine::editor::EditorApp> bareApp = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .registerDefaultPanels = false, .unfocusedFrameCapHz = 0.0F});
+    std::optional<engine::editor::EditorApp> bareApp =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .registerDefaultPanels = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false});
     REQUIRE(bareApp.has_value());
     CHECK(bareApp->viewportCamera() == nullptr);
     bareApp->requestQuit();
@@ -721,7 +751,8 @@ TEST_CASE("editor: programmatic camera navigation mutates no World, no Selection
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     const engine::World& world = app->world();
@@ -785,8 +816,8 @@ TEST_CASE("editor: a hidden/tabbed-away Viewport does not reset or re-latch the 
     if (!device) {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
-    std::optional<engine::editor::EditorApp> app =
-        engine::editor::EditorApp::create(*device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F});
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     app->panels().setVisible("Viewport", false);
@@ -845,7 +876,8 @@ TEST_CASE("editor: the selection overlay path executes and stays balanced throug
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -883,7 +915,8 @@ TEST_CASE("editor: a dead handle left in the selection does not crash the overla
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -921,7 +954,8 @@ TEST_CASE("editor: a non-mesh selection drives the point-marker path (task 2.3.2
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -957,7 +991,8 @@ TEST_CASE("editor: the selection cap survives 300 real entities under load (task
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -994,7 +1029,8 @@ TEST_CASE("editor: driving the Selection through real frames mutates nothing but
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     const engine::World& world = app->world();
@@ -1085,7 +1121,8 @@ TEST_CASE("editor: the gizmo path executes and stays balanced through real frame
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1121,7 +1158,8 @@ TEST_CASE("editor: the gizmo origin behind the near plane skips Manipulate clean
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1165,7 +1203,8 @@ TEST_CASE("editor: an empty selection and a Transform-less primary skip the gizm
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1208,7 +1247,8 @@ TEST_CASE("editor: a hidden then re-shown Viewport survives the gizmo path (task
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1270,7 +1310,8 @@ TEST_CASE(
     REQUIRE_FALSE(std::filesystem::exists(iniPath));
 
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = true, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = true, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
     const std::size_t panelCountBefore = app->panels().count();
 
@@ -1328,7 +1369,8 @@ TEST_CASE("editor: the history path executes and stays balanced (task 2.4.1, I1)
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1381,7 +1423,8 @@ TEST_CASE("editor: undo through the shell mutates the World (task 2.4.1, I2/AC-2
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1429,7 +1472,8 @@ TEST_CASE("editor: a request is consumed exactly once (task 2.4.1, I3)") {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1479,7 +1523,8 @@ TEST_CASE("editor: undo and redo requested in one tick (task 2.4.1, I4/E12)") {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1525,7 +1570,8 @@ TEST_CASE("editor: an empty history is inert through real frames (task 2.4.1, I5
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     CHECK(app->commands().count() == 0);
@@ -1567,7 +1613,8 @@ TEST_CASE("editor: undo of a destroyed target through real frames (task 2.4.1, I
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1628,7 +1675,8 @@ TEST_CASE("editor: a structural command executes through a real frame (task 2.4.
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1688,7 +1736,8 @@ TEST_CASE(
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
@@ -1742,7 +1791,8 @@ TEST_CASE(
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     REQUIRE(app->tick());  // reconciles once, through the Hierarchy panel's own phase 1
@@ -1776,7 +1826,8 @@ TEST_CASE("editor: an empty history stays silent under the widened CommandContex
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     CHECK(app->commands().count() == 0);
@@ -1820,7 +1871,8 @@ TEST_CASE("editor: EditorApp stays noexcept-movable and drives after a move (tas
     }
 
     std::optional<engine::editor::EditorApp> holder = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(holder.has_value());
 
     engine::World& world = holder->world();
@@ -1882,7 +1934,8 @@ TEST_CASE("editor: requestNewScene on a clean app produces the seed contents thr
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     // Finding 3 of the 2.5.1 code-review round: with `seedDefaultScene = true`, every assertion below
@@ -1927,7 +1980,8 @@ TEST_CASE("editor: requestSaveSceneAs writes through a real frame (task 2.5.1, I
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
     if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6: Save/Open need AERO_REFLECT_TOOLS; New Scene
         MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");  // does not (untested here)
@@ -1963,7 +2017,8 @@ TEST_CASE("editor: requestSaveScene on a titled scene writes with no guard invol
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
     if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6
         MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");
@@ -2027,7 +2082,8 @@ TEST_CASE("editor: requestOpenScene discards a direct World mutation in one tick
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
     if (!engine::editor::sceneIoAvailable()) {  // D18/AC-6
         MESSAGE("scene I/O unavailable -- built without AERO_REFLECT_TOOLS");
@@ -2077,7 +2133,8 @@ TEST_CASE("editor: requestOpenScene on a missing file changes nothing and logs (
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
     // TWO settling ticks first (2.4.1 I5's precedent): create() itself already logged records that
@@ -2118,7 +2175,8 @@ TEST_CASE("editor: a MOVED EditorApp still drives Save As and Open through real 
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> holder = engine::editor::EditorApp::create(
-        *device, *window, ctx, {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F});
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(holder.has_value());
 
     std::optional<engine::editor::EditorApp> moved = std::move(holder);

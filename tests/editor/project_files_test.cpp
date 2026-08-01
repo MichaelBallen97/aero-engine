@@ -611,15 +611,3 @@ TEST_CASE("editor: buildVisibleTree reuses `out` without leaving a survivor (D15
     // because either alone passes for the implementation the other forbids (the 2.2.2 D15 lesson).
     CHECK(out.capacity() == capacityAfterLarge);
 }
-
-TEST_CASE("editor: resolveProjectRoot passes through or falls back to the cwd (AC-9)") {
-    using engine::editor::resolveProjectRoot;
-    CHECK(resolveProjectRoot("/a/b/c") == "/a/b/c");  // VERBATIM -- never normalised
-
-    const TempDir tmp;
-    CHECK(resolveProjectRoot(tmp.utf8()) == tmp.utf8());
-
-    const std::string cwd = resolveProjectRoot("");
-    CHECK_FALSE(cwd.empty());
-    CHECK(engine::editor::listDirectory(cwd, "", false).status == ScanStatus::Ok);
-}

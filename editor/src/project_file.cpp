@@ -189,10 +189,10 @@ ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_vi
         return out;
     }
 
-    // 5. The manifest. NOTHING IS REMOVED ON ANY FAILURE PATH, EVER (D7/INV-P4). No remove_all, no
-    // rollback. The target may be a directory the user pre-created and cares about; it may be a
-    // symlink; the failure that stopped us (a full disk, a permission change, an antivirus lock) is
-    // exactly the condition under which a recursive delete is most likely to do something
+    // 5. The manifest. NOTHING IS REMOVED ON ANY FAILURE PATH, EVER (D7/INV-P4). No recursive
+    // deletion, no rollback. The target may be a directory the user pre-created and cares about; it
+    // may be a symlink; the failure that stopped us (a full disk, a permission change, an antivirus
+    // lock) is exactly the condition under which a recursive delete is most likely to do something
     // surprising. The half-made directory is inert and the project is simply not opened. Seed S11
     // is what holds this line.
     ProjectManifest manifest;

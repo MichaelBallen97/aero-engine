@@ -45,9 +45,9 @@ public:
     // shell_ui.cpp:19-24 refuses to ship for menu items. options() is deliberately NOT overridden.
     void onDraw(PanelContext& context) override;
 
-    // Task 2.6.1's ENTIRE integration point: one call when a project opens. Clears the cache, the
+    // Task 2.6.1's ENTIRE integration point: called from EditorApp::tick()'s per-frame reconcile
+    // (D10) whenever this root disagrees with ProjectSession::assetsRoot(). Clears the cache, the
     // open set, the current directory and the selection, so no stale row can survive it (E18).
-    // Unused in this task; it exists and is tested so 2.6.1 does not have to add AND validate it.
     void setRoot(std::string rootPath);
     [[nodiscard]] const std::string& root() const noexcept { return rootUtf8; }
 

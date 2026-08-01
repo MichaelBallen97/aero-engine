@@ -137,10 +137,4 @@ void buildVisibleTree(const std::function<const DirectoryListing*(const std::str
 // root-relative; "" means the root itself. An EMPTY `rootUtf8` is ScanStatus::Missing (E2).
 [[nodiscard]] DirectoryListing listDirectory(std::string_view rootUtf8, std::string_view relPath, bool includeHidden);
 
-// `configuredUtf8` VERBATIM when non-empty (no normalisation: listDirectory's operator/ join makes it
-// unnecessary, and rewriting a user-supplied path would make the logged root differ from what they
-// typed); otherwise the process working directory as UTF-8; "" when even that fails, which the panel
-// then renders as ScanStatus::Missing. Called once, at EditorApp::create().
-[[nodiscard]] std::string resolveProjectRoot(std::string_view configuredUtf8);
-
 }  // namespace engine::editor
