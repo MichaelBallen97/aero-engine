@@ -364,7 +364,18 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
         project.flow.form.browseRequested = false;
         // NOT guarded by the unsaved-changes interlock: the guard was already answered before the
         // form opened. With no channel, A17's silent no-op applies exactly as every other launcher.
-        if (host.channel != nullptr) {
+        //
+        // SHOULD-FIX 5 (code review): `flow.dialog == DialogKind::None` is ALSO required -- this
+        // consumer runs at step 0, BEFORE the refusal check further down (:468's
+        // `flow.dialog != DialogKind::None || ...`), and unlike every other launcher it had no
+        // in-flight guard of its own. A second Browse click before the first dialog answers would
+        // otherwise overwrite `flow.dialog` and launch a SECOND native dialog; `DialogChannel::take()`
+        // resets its slot on every read, so whichever result answers SECOND is consumed with
+        // `flow.dialog` already reset to None by the first -- and applyDialogResult's kind chain used
+        // to have no arm for that, falling through into the Save arm below and writing the scene to
+        // "<picked folder>.scene.json" (2.5.1's BLOCKING-2 again). Dropping a second Browse while one
+        // is already in flight is a silent no-op, exactly A17's shape for every other launcher.
+        if (host.channel != nullptr && flow.dialog == DialogKind::None) {
             flow.dialog = DialogKind::ProjectLocation;
             const std::string startDir =
                 project.flow.form.location.empty() ? std::string(project.session.root()) : project.flow.form.location;
@@ -540,6 +551,18 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
     }
     const DialogKind kind = flow.dialog;
     flow.dialog = DialogKind::None;
+    if (kind == DialogKind::None) {
+        // SHOULD-FIX 5 (code review): an ORPHANED result -- from a dialog launch that got superseded
+        // before it answered, so whichever result claims `flow.dialog` FIRST resets it to None for the
+        // one that answers SECOND (DialogChannel::take() always resets its slot). Every arm below
+        // assumes `kind` names a real, still-in-flight dialog; the final one does not even check its
+        // own `kind == DialogKind::Save` explicitly (a comment states it "by elimination"), so an
+        // orphan used to fall straight through into it and save the CURRENT scene to a random picked
+        // path (2.5.1's BLOCKING-2 again, reached through 2.6.1's Browse). Dropped here, silently,
+        // before touching flow.pending/saveBeforePending/requestedPath -- none of those belong to this
+        // orphan, and clearing them would incorrectly abandon a genuinely unrelated pending action.
+        return;
+    }
     if (result.failed) {  // F4/AC-13: exactly one ERROR
         AERO_LOG_ERROR("editor: the system file dialog failed -- {}", "the operation could not be completed");
         flow.pending = FileAction::None;
