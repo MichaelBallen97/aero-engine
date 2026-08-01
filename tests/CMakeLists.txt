@@ -184,6 +184,13 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # TIER-0: no GPU, no window, no ImGui context, so they must pass identically with AERO_REQUIRE_GPU
 # unset and set. The link line below is unchanged and no new ctest entry is registered (ctest -N stays
 # 94/5/18, AC-35).
+#
+# task 2.6.1 joins this target with editor/project_test.cpp -- the project format, its validators,
+# the filesystem half, the flow, and the three golden fixtures. UNCONDITIONAL, unlike
+# scene_io_test.cpp and scene_golden_test.cpp below: the project flow reads and writes no scene, so
+# it needs no serialization at all (spec D4/AC-35). It must be PRESENT in the reflect-OFF build, not
+# skipped -- prove it with --list-test-cases. Tier-0: no GPU, no window, no ImGui context. The link
+# line is UNCHANGED and no new ctest entry is registered (ctest -N stays 94/5/18, AC-39).
 find_package(Threads REQUIRED)
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
@@ -192,7 +199,7 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/gizmo_test.cpp editor/transform_ops_test.cpp
                editor/command_stack_test.cpp editor/transform_command_test.cpp
                editor/scene_snapshot_test.cpp editor/structural_commands_test.cpp
-               editor/scene_session_test.cpp)
+               editor/scene_session_test.cpp editor/project_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
