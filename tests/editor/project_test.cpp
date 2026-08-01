@@ -8,6 +8,8 @@
 // file must be PRESENT and PASSING in all three configurations -- prove it with --list-test-cases,
 // never with a skip. Tier-0: no GPU, no window, no ImGui context, so it must pass identically with
 // AERO_REQUIRE_GPU unset and set.
+#include <aero/core/log.hpp>
+#include <aero/editor/console_model.hpp>
 #include <aero/editor/project.hpp>
 #include <aero/editor/text_file.hpp>
 
@@ -15,29 +17,104 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
+using engine::editor::CreateProblem;
+using engine::editor::createProject;
+using engine::editor::directoryExists;
+using engine::editor::directoryIsEmpty;
+using engine::editor::fileExists;
+using engine::editor::FileReadResult;
 using engine::editor::isLegalRelativePath;
+using engine::editor::loadProjectFrom;
 using engine::editor::NameProblem;
 using engine::editor::nameProblemMessage;
 using engine::editor::parseProject;
 using engine::editor::parseRecentProjects;
+using engine::editor::ProjectCreateOutcome;
 using engine::editor::ProjectError;
 using engine::editor::ProjectLanguage;
+using engine::editor::ProjectLoadOutcome;
 using engine::editor::ProjectManifest;
 using engine::editor::ProjectParseResult;
+using engine::editor::projectRootFromPath;
 using engine::editor::ProjectSession;
 using engine::editor::promoteRecent;
+using engine::editor::readRecentProjects;
+using engine::editor::readTextFile;
 using engine::editor::RecentProjects;
 using engine::editor::validateProjectName;
 using engine::editor::writeProjectText;
+using engine::editor::writeRecentProjects;
 using engine::editor::writeRecentProjectsText;
+using engine::editor::writeTextFileAtomic;
+
+namespace {
+
+// Count by LEVEL, never records.size() (the scene_session_test.cpp / command_stack_test.cpp
+// precedent): AERO_LOG_DEBUG is compiled out under NDEBUG, so counting by level makes an assertion
+// identical on both presets.
+[[nodiscard]] std::size_t countAtLevel(const std::vector<engine::editor::LogEntry>& records, engine::LogLevel level) {
+    return static_cast<std::size_t>(std::count_if(
+        records.begin(), records.end(), [level](const engine::editor::LogEntry& e) { return e.level == level; }));
+}
+
+struct LogFixture {
+    LogFixture() { engine::initLogging(engine::LogConfig{.level = engine::LogLevel::Trace, .console = false}); }
+    ~LogFixture() { engine::shutdownLogging(); }
+    LogFixture(const LogFixture&) = delete;
+    LogFixture& operator=(const LogFixture&) = delete;
+    LogFixture(LogFixture&&) = delete;
+    LogFixture& operator=(LogFixture&&) = delete;
+};
+
+// A unique temp directory that removes itself (and its contents) on destruction -- the SIXTH
+// TU-local copy of this shape (tests/vfs_test.cpp, tests/editor/project_files_test.cpp,
+// tests/editor/scene_session_test.cpp, ...); scaffolding is copied, the ASSERTION is shared (F14).
+class TempDir {
+public:
+    TempDir() {
+        std::error_code ec;
+        const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+        static int counter = 0;  // doctest runs serially in one process; a plain counter is unique enough
+        dirPath = base / ("aero_project_test_" + std::to_string(++counter));
+        std::filesystem::remove_all(dirPath, ec);
+        std::filesystem::create_directories(dirPath, ec);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(dirPath, ec);
+    }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+    TempDir(TempDir&&) = delete;
+    TempDir& operator=(TempDir&&) = delete;
+
+    [[nodiscard]] std::string utf8() const {
+        const std::u8string bytes = dirPath.u8string();
+        return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    }
+    [[nodiscard]] std::string join(std::string_view leaf) const {
+        std::string result = utf8();
+        result += '/';
+        result += leaf;
+        return result;
+    }
+
+private:
+    std::filesystem::path dirPath;
+};
+
+}  // namespace
 
 // ---- P1-P8: parseProject happy paths ---------------------------------------------------------------
 
@@ -616,4 +693,246 @@ TEST_CASE("project: ProjectSession defaults, joins, nested paths and close (P63-
     CHECK_FALSE(session.isOpen());
     CHECK(session.name().empty());
     CHECK(session.assetsRoot().empty());
+}
+
+// ---- P35/P36: projectRootFromPath ----------------------------------------------------------------
+
+TEST_CASE("project: projectRootFromPath accepts a directory or a project.json (P35/P36/AC-17/S17)") {
+    CHECK(projectRootFromPath("") == "");
+    CHECK(projectRootFromPath("/a/b") == "/a/b");
+    CHECK(projectRootFromPath("/a/b/") == "/a/b");
+    CHECK(projectRootFromPath("/a/b//") == "/a/b");
+    CHECK(projectRootFromPath("/a/b/project.json") == "/a/b");
+    CHECK(projectRootFromPath("/a/b/project.json/") == "/a/b");
+    CHECK(projectRootFromPath("/a/b/./project.json") == "/a/b");
+    CHECK(projectRootFromPath("/a/b/c/../project.json") == "/a/b");
+    CHECK(projectRootFromPath("/") == "/");
+    CHECK(projectRootFromPath("/project.json") == "/");
+    CHECK(projectRootFromPath("relative/x") == "relative/x");
+    CHECK(projectRootFromPath("/a/b/.") == "/a/b");
+    CHECK(projectRootFromPath("/a/b/c/..") == "/a/b");
+    CHECK(projectRootFromPath("/a/b/Project.json") == "/a/b/Project.json");  // NO case folding -- D9
+}
+
+// ---- loadProjectFrom ------------------------------------------------------------------------------
+
+TEST_CASE("project: loadProjectFrom reads, validates and reports (AC-4/AC-8)") {
+    const TempDir dir;
+    ProjectManifest manifest;
+    manifest.name = "MyGame";
+    manifest.engineVersion = "0.1.0";
+    manifest.language = ProjectLanguage::Ts;
+    REQUIRE(writeTextFileAtomic(dir.join("project.json"), writeProjectText(manifest)).empty());
+
+    {
+        const ProjectLoadOutcome outcome = loadProjectFrom(dir.utf8());
+        REQUIRE(outcome.ok);
+        CHECK(outcome.manifest.name == "MyGame");
+        CHECK(outcome.root == dir.utf8());
+    }
+    {
+        // Also accepts a direct path to project.json.
+        const ProjectLoadOutcome outcome = loadProjectFrom(dir.join("project.json"));
+        REQUIRE(outcome.ok);
+        CHECK(outcome.manifest.name == "MyGame");
+    }
+    {
+        // A missing file.
+        const TempDir emptyDir;
+        const ProjectLoadOutcome outcome = loadProjectFrom(emptyDir.utf8());
+        CHECK_FALSE(outcome.ok);
+        CHECK(outcome.error == ProjectError::Unreadable);
+    }
+    {
+        // E1: project.json is a DIRECTORY.
+        const TempDir dirAsFile;
+        std::error_code ec;
+        std::filesystem::create_directory(std::filesystem::path(dirAsFile.utf8()) / "project.json", ec);
+        REQUIRE_FALSE(ec);
+        const ProjectLoadOutcome outcome = loadProjectFrom(dirAsFile.utf8());
+        CHECK_FALSE(outcome.ok);
+        CHECK(outcome.error == ProjectError::Unreadable);
+        CHECK(outcome.message == "path is a directory");
+    }
+    {
+        // A v2 file.
+        const TempDir v2Dir;
+        REQUIRE(writeTextFileAtomic(v2Dir.join("project.json"), R"({"version": 2})").empty());
+        const ProjectLoadOutcome outcome = loadProjectFrom(v2Dir.utf8());
+        CHECK_FALSE(outcome.ok);
+        CHECK(outcome.error == ProjectError::UnsupportedVersion);
+    }
+}
+
+// ---- P55-P62: createProject ------------------------------------------------------------------------
+
+TEST_CASE("project: createProject scaffolds and writes the exact bytes (P55-P57/AC-9/AC-10/AC-11)") {
+    const TempDir dir;
+    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(outcome.problem == CreateProblem::Ok);
+    CHECK(directoryExists(outcome.root));
+    CHECK(directoryExists(outcome.root + "/assets"));
+    CHECK(directoryExists(outcome.root + "/scenes"));
+
+    const FileReadResult written = readTextFile(outcome.root + "/project.json");
+    REQUIRE(written.text.has_value());
+    CHECK(*written.text == writeProjectText(outcome.manifest));
+
+    const ProjectParseResult reparsed = parseProject(*written.text);
+    REQUIRE(reparsed.manifest.has_value());
+    CHECK(reparsed.manifest->name == "MyGame");
+    CHECK(reparsed.manifest->engineVersion == "0.1.0");
+    CHECK(reparsed.manifest->language == ProjectLanguage::Ts);
+}
+
+TEST_CASE("project: createProject adopts an existing EMPTY directory (P58/E7/AC-13)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "MyGame", ec);
+    REQUIRE_FALSE(ec);
+
+    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0");
+    CHECK(outcome.problem == CreateProblem::Ok);
+    CHECK(directoryExists(outcome.root + "/assets"));
+    CHECK(directoryExists(outcome.root + "/scenes"));
+}
+
+TEST_CASE("project: createProject refuses a non-empty directory and a file target (P59/P60/E8/AC-13)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "NonEmpty", ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE(writeTextFileAtomic(dir.join("NonEmpty/keep.txt"), "x").empty());
+
+    const ProjectCreateOutcome nonEmptyOutcome = createProject(dir.utf8(), "NonEmpty", "0.1.0");
+    CHECK(nonEmptyOutcome.problem == CreateProblem::TargetNotEmpty);
+    CHECK_FALSE(nonEmptyOutcome.message.empty());
+
+    REQUIRE(writeTextFileAtomic(dir.join("AFile"), "x").empty());
+    const ProjectCreateOutcome fileOutcome = createProject(dir.utf8(), "AFile", "0.1.0");
+    CHECK(fileOutcome.problem == CreateProblem::TargetIsFile);
+    CHECK_FALSE(fileOutcome.message.empty());
+    CHECK(fileOutcome.message != nonEmptyOutcome.message);  // two DISTINCT messages
+}
+
+TEST_CASE("project: createProject refuses a bad name and a missing location (P61/P62/AC-12)") {
+    const TempDir dir;
+    const ProjectCreateOutcome badName = createProject(dir.utf8(), "CON", "0.1.0");
+    CHECK(badName.problem == CreateProblem::BadName);
+    CHECK(badName.message == nameProblemMessage(NameProblem::ReservedDeviceName));
+
+    const ProjectCreateOutcome missingLocation = createProject(dir.join("does-not-exist"), "MyGame", "0.1.0");
+    CHECK(missingLocation.problem == CreateProblem::LocationMissing);
+
+    const ProjectCreateOutcome emptyLocation = createProject("", "MyGame", "0.1.0");
+    CHECK(emptyLocation.problem == CreateProblem::BadLocation);
+}
+
+// PLAN DEVIATION, recorded here and in the engineering log: the plan's own suggested seeds for this
+// case -- a "project.json" directory pre-created inside the target, or the same for
+// "project.json.aero-tmp" -- were TRIED FIRST and BOTH measured to redden the WRONG assertion: any
+// pre-existing entry inside `target`, whatever its name, makes createProject's step-3 adoption check
+// (`directoryIsEmpty`) see a NON-empty directory and refuse with TargetNotEmpty *before* step 4 ever
+// runs -- so `WriteFailed` (E11: "the write fails AFTER the dirs exist") is structurally unreachable
+// by pre-seeding *anything* inside `target`, because step 3's gate fires on ANY entry, not
+// specifically on "project.json". Measured directly: both seeds produced
+// `outcome.problem == CreateProblem::TargetNotEmpty`, never `WriteFailed`. This is the plan's own
+// step order (S Step 3b) turned against its own step 3d test recipe, not an implementation bug --
+// project_file.cpp matches the algorithm exactly as specified.
+//
+// The nearest REACHABLE proof of D7's "nothing is ever removed" invariant on a LATER-stage failure
+// is CreateFailed at the "assets" step, forced by making an EMPTY, ADOPTABLE target read-only: step 3
+// sees zero entries (permissions do not affect directory_iterator's entry count) and adopts it, then
+// step 4's create_directory(target/"assets") fails for lack of write permission. Verified locally
+// (non-root): create_directory under a chmod'd read-only parent returns ec == EACCES.
+TEST_CASE("project: createProject deletes NOTHING when a later step fails (E11/D7/S11, adjusted -- see comment)") {
+    const TempDir dir;
+    std::error_code ec;
+    const std::filesystem::path target = std::filesystem::path(dir.utf8()) / "MyGame";
+    std::filesystem::create_directory(target, ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::permissions(target, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace, ec);
+    REQUIRE_FALSE(ec);
+
+    const ProjectCreateOutcome outcome = createProject(dir.utf8(), "MyGame", "0.1.0");
+
+    // Restore permissions BEFORE any assertion can throw/fail loudly and BEFORE ~TempDir runs, or
+    // cleanup itself fails (the project_files_test.cpp precedent for the identical hazard).
+    std::error_code restoreEc;
+    std::filesystem::permissions(target, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace,
+                                 restoreEc);
+
+    if (outcome.problem == CreateProblem::Ok) {
+        // Running as a user for whom the read-only bit does not block writes (e.g. root in some CI
+        // containers) -- the seed did not land. Recorded rather than silently passed (the standing
+        // "verify the seed landed" rule): this environment cannot discriminate this case.
+        WARN("createProject: the read-only-target seed did not block a write on this account; skipping");
+        return;
+    }
+    CHECK(outcome.problem == CreateProblem::CreateFailed);
+    CHECK_FALSE(outcome.message.empty());
+
+    // D7: NOTHING was removed. The target itself still exists (still empty -- "assets" never made it
+    // in), and the project was not opened.
+    CHECK(directoryExists(dir.join("MyGame")));
+    CHECK(directoryIsEmpty(dir.join("MyGame")));
+}
+
+TEST_CASE("project: directoryExists / directoryIsEmpty agree with the filesystem (A8)") {
+    const TempDir dir;
+    CHECK(directoryExists(dir.utf8()));
+    CHECK(directoryIsEmpty(dir.utf8()));
+
+    REQUIRE(writeTextFileAtomic(dir.join("f.txt"), "x").empty());
+    CHECK_FALSE(directoryIsEmpty(dir.utf8()));
+
+    CHECK_FALSE(directoryExists(dir.join("does-not-exist")));
+    CHECK_FALSE(directoryIsEmpty(dir.join("does-not-exist")));
+
+    // A file is neither a directory nor "empty" in the directory sense.
+    CHECK_FALSE(directoryExists(dir.join("f.txt")));
+    CHECK_FALSE(directoryIsEmpty(dir.join("f.txt")));
+}
+
+// ---- readRecentProjects / writeRecentProjects --------------------------------------------------
+
+TEST_CASE("project: readRecentProjects on a missing file is an empty list, silently (AC-23)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    const TempDir dir;
+    const RecentProjects recents = readRecentProjects(dir.join("does-not-exist.json"));
+    CHECK(recents.paths.empty());
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+}
+
+TEST_CASE("project: writeRecentProjects round-trips atomically and leaves no temp behind (AC-22/AC-24)") {
+    const TempDir dir;
+    RecentProjects recents;
+    recents.paths = {"/proj/one", "/proj/two"};
+    const std::string path = dir.join("recent_projects.json");
+    writeRecentProjects(path, recents);
+
+    CHECK(fileExists(path));
+    CHECK_FALSE(fileExists(path + ".aero-tmp"));
+
+    const RecentProjects readBack = readRecentProjects(path);
+    CHECK(readBack.paths == recents.paths);
+
+    // A write failure (into a non-existent directory) is one WARN; nothing crashes.
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+    writeRecentProjects(dir.join("missing-subdir/recent_projects.json"), recents);
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 1);
 }

@@ -145,4 +145,56 @@ void promoteRecent(RecentProjects& recents, std::string absoluteRootUtf8);  // d
 [[nodiscard]] RecentProjects parseRecentProjects(std::string_view text, bool& warn);  // AC-23
 [[nodiscard]] std::string writeRecentProjectsText(const RecentProjects& recents);
 
+// ---- the filesystem half (project_file.cpp; ALL <filesystem> and ALL SDL for projects) ----------
+// Every function below NEVER THROWS: each std::filesystem call uses the std::error_code overload
+// (project_files.cpp's E20 rule). None of them logs (INV-P6). None of them DELETES, RENAMES or MOVES
+// anything -- the only writes in this whole task are three create_directory calls and two atomic
+// file writes (INV-P4/D7).
+
+struct ProjectLoadOutcome {
+    bool ok = false;
+    ProjectManifest manifest;
+    std::string root;  // normalized absolute root
+    ProjectError error = ProjectError::None;
+    std::string message;
+    std::uint32_t line = 0;
+    std::uint32_t column = 0;
+    std::vector<std::string> unknownKeys;
+};
+// Read <root>/project.json, parse, validate. Touches NOTHING else. Never logs.
+[[nodiscard]] ProjectLoadOutcome loadProjectFrom(std::string_view pathUtf8);
+
+enum class CreateProblem : std::uint8_t {
+    Ok = 0,
+    BadName,
+    BadLocation,
+    LocationMissing,
+    TargetIsFile,
+    TargetNotEmpty,
+    CreateFailed,
+    WriteFailed,
+};
+struct ProjectCreateOutcome {
+    CreateProblem problem = CreateProblem::Ok;
+    std::string message;  // OS reason when there is one
+    std::string root;     // the created root, on success
+    ProjectManifest manifest;
+};
+// D6/D7/AC-9..AC-15. Creates nothing until every purely-lexical check has passed.
+[[nodiscard]] ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_view nameUtf8,
+                                                 std::string_view engineVersionUtf8);
+
+[[nodiscard]] bool directoryExists(std::string_view utf8);
+[[nodiscard]] bool directoryIsEmpty(std::string_view utf8);  // false when it is not a directory
+[[nodiscard]] std::string defaultRecentProjectsPath();       // D8/F16: pref -> base -> CWD
+[[nodiscard]] RecentProjects readRecentProjects(std::string_view pathUtf8);
+void writeRecentProjects(std::string_view pathUtf8, const RecentProjects& recents);
+
+// Accepts a project DIRECTORY or a .../project.json. Returns the ROOT with separators unified to the
+// platform's own, `.`/`..` resolved LEXICALLY, and no trailing separator. "" in, "" out (AC-17).
+// PURE -- it touches no disk -- but DEFINED IN project_file.cpp, because unifying separators without
+// a platform conditional (forbidden, D4/AC-35) is exactly what std::filesystem::path's lexical
+// machinery does for free, and THIS header must stay <filesystem>-free (AC-38).
+[[nodiscard]] std::string projectRootFromPath(std::string_view pathUtf8);
+
 }  // namespace engine::editor

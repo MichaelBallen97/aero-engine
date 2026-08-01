@@ -46,6 +46,7 @@ add_library(aero_editor_core STATIC
     src/scene_session.cpp       # task 2.5.1 -- the document model, the pure guard and THE scene swap
     src/text_file.cpp           # task 2.5.1 / 2.6.1 D12 -- ALL <filesystem>/<fstream> for the editor's TEXT files
     src/project.cpp             # task 2.6.1 -- the project format's pure half (ImGui/SDL/<filesystem>-free)
+    src/project_file.cpp        # task 2.6.1 -- ALL <filesystem> and ALL SDL for projects; never deletes anything (D7)
     src/scene_io.cpp            # task 2.5.1 -- the scene_serialize bridge; the ONE #if (F10/AC-33)
     src/file_dialog.cpp         # task 2.5.1 -- SDL native dialogs + the cross-thread result channel
 )
