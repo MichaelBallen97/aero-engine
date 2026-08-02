@@ -785,3 +785,76 @@ TEST_CASE("command_stack: a release frame's final delta merges into the drag it 
         CHECK(stack.appliedCount() == 2);
     }
 }
+
+// C20 (Phase 2 audit): `push()` step 3 ERASES the redo branch, and that erase can destroy the very
+// entry the clean position denotes. `trimToCapacity` already reasons about exactly this hazard for
+// the EVICTION path (C14/AC-9/E17) -- truncation is the same hazard reached from the other end, and
+// nothing handled it. This is not a cosmetic flag: `isClean()` is the SOLE definition of "dirty" for
+// the whole editor (D3 keeps no second copy), so a false CLEAN silently disables the window title's
+// marker (editor_app.cpp), the Save item (shell_ui.cpp) AND `guardFor`'s unsaved-changes prompt
+// (scene_session.cpp) -- File > New/Open, Ctrl+Q and the window [X] then discard the work with no
+// prompt at all.
+TEST_CASE("command_stack: a truncated redo branch invalidates the clean position (C20/AC-9/E17)") {
+    engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
+    CommandLog logA;
+    CommandLog logB;
+    CommandLog logC;
+    CommandLog logD;
+    CommandStack stack;
+
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
+    stack.breakMergeChain();
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));
+    stack.setClean();  // the document on disk is "A then B applied"; clean = applied = 2
+    REQUIRE(stack.isClean());
+
+    // The user undoes past the save point, then edits again -- an ordinary sequence, not a corner.
+    REQUIRE(stack.undo(ctx));
+    REQUIRE(stack.undo(ctx));
+    CHECK(stack.appliedCount() == 0);
+    CHECK_FALSE(stack.isClean());
+
+    // Each push truncates whatever redo branch survives. The first one destroys A and B -- the two
+    // commands the clean position was counting -- so that state can never be returned to again.
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logC, "C")));
+    stack.breakMergeChain();
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logD, "D")));
+
+    // applied is back to 2, but 2 now counts C and D -- a document sharing nothing with the file.
+    CHECK(stack.count() == 2);
+    CHECK(stack.appliedCount() == 2);
+    CHECK_FALSE(stack.isClean());
+}
+
+// C21 (Phase 2 audit): the same truncation must NOT invalidate a clean position that is still
+// reachable. Undoing back to a save point and re-editing FORWARD of it destroys only entries the
+// clean position does not depend on, so the mark must survive -- otherwise the fix for C20 would
+// simply mark everything dirty forever and the asterisk would stop meaning anything.
+TEST_CASE("command_stack: truncation forward of the clean position keeps it (C21/AC-9)") {
+    engine::World world;
+    engine::editor::Selection selection;
+    engine::editor::RootOrder roots;
+    engine::editor::CommandContext ctx{world, selection, roots};
+    CommandLog logA;
+    CommandLog logB;
+    CommandLog logC;
+    CommandStack stack;
+
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logA, "A")));
+    stack.setClean();  // clean = 1
+    stack.breakMergeChain();
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));  // applied = 2
+    REQUIRE(stack.undo(ctx));                                           // applied = 1 == clean
+    CHECK(stack.isClean());
+
+    // Truncates B only. A -- the entry the clean position counts -- is untouched, so position 1
+    // still denotes the saved document and the stack is clean again once C is undone.
+    REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logC, "C")));
+    CHECK_FALSE(stack.isClean());
+    REQUIRE(stack.undo(ctx));
+    CHECK(stack.appliedCount() == 1);
+    CHECK(stack.isClean());
+}
