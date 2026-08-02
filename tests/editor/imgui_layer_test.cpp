@@ -44,6 +44,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>  // the frozen panel-id roster; reached transitively on libc++, not on MSVC (813bc4d)
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -2553,8 +2554,21 @@ TEST_CASE(
 
     // 2. Registration and ORDER -- what makes sabotage seed S13 (registering before Inspector) redden.
     CHECK(app->panels().count() == 6);
-    CHECK_EQ(std::string(app->panels().panelAt(5).id()), "Project Settings");
-    CHECK_EQ(std::string(app->panels().panelAt(1).id()), "Inspector");
+
+    // EVERY id, in order (Phase 2 audit). Each panel's own header calls its id FROZEN because it is
+    // the imgui.ini settings key -- renaming one orphans every user's saved layout for that panel --
+    // but only "Project Settings" and "Inspector" were ever pinned, and a rename of the other four
+    // passed the whole suite green. Worse than silent: the GPU cases reach these panels by
+    // `setVisible("Console", …)`, and setVisible on an unknown id is a LOGGED NO-OP, so a renamed
+    // panel would simply stop being hidden and the case that depends on hiding it would assert
+    // against a panel that never draws -- 2.2.4's C5 trap, re-armed. This is a PERSISTED FORMAT, so
+    // treat a diff here like a file-format change, not a test to update.
+    const std::array<const char*, 6> frozenPanelIds{"Hierarchy", "Inspector", "Viewport",
+                                                    "Console",   "Assets",    "Project Settings"};
+    for (std::size_t i = 0; i < frozenPanelIds.size(); ++i) {
+        CAPTURE(i);
+        CHECK_EQ(std::string(app->panels().panelAt(i).id()), std::string(frozenPanelIds[i]));
+    }
 
     // AC-15's other two clauses, asserted MECHANICALLY rather than left to human row 1. panelAt()
     // hands back a Panel& and both accessors are public on the base, so nothing here needs the

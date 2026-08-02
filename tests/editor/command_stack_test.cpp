@@ -847,7 +847,7 @@ TEST_CASE("command_stack: truncation forward of the clean position keeps it (C21
     stack.setClean();  // clean = 1
     stack.breakMergeChain();
     REQUIRE(stack.push(ctx, std::make_unique<FakeCommand>(logB, "B")));  // applied = 2
-    REQUIRE(stack.undo(ctx));                                           // applied = 1 == clean
+    REQUIRE(stack.undo(ctx));                                            // applied = 1 == clean
     CHECK(stack.isClean());
 
     // Truncates B only. A -- the entry the clean position counts -- is untouched, so position 1

@@ -31,14 +31,22 @@ bool TransformCommand::mergeWith(const Command& incoming) {
     if (next == nullptr || next->target != target) {
         return false;
     }
+    // The merge guard task 2.4.1 deliberately left out, added now that its own stated trigger has
+    // fired (E9/H7): "the first task that can write a Transform from outside the drag loop must add
+    // it." That task was the very next one -- 2.4.2's SetFieldCommand writes Transform.position /
+    // rotation / scale from the Inspector, Transform being one reflected component among five --  and
+    // the handoff went unread until the Phase 2 audit. It is no longer an assertion that cannot fail.
+    //
+    // Merging keeps OUR before and takes THEIR after, which is sound only while the two are
+    // CONTIGUOUS. If anything wrote the Transform in between, `beforeValue` skips that write and undo
+    // would restore a value the entity never held. Refusing costs a second history entry -- always
+    // correct, merely less tidy -- while merging a stale pair is silent corruption of the undo record.
+    if (!(next->beforeValue == afterValue)) {
+        return false;
+    }
     // `beforeValue` is deliberately UNTOUCHED: keeping our own before and taking their after is what
     // makes a 200-frame drag one undo step whose before is the drag's start (AC-14).
     afterValue = next->afterValue;
-    // An `incoming.before() == after()` merge guard is DELIBERATELY ABSENT: it could never be false
-    // in this task -- the gizmo reads `before` fresh from the World every frame (viewport_panel.cpp),
-    // writeTransform stores exactly what it is given, and Transform::operator== is exact -- and an
-    // assertion that cannot fail is precisely the defect class this project's log calls out. The first
-    // task that can write a Transform from outside the drag loop must add it (E9/H7).
     return true;
 }
 

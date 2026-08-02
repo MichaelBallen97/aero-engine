@@ -901,9 +901,7 @@ TEST_CASE("scene_session: modalInputActive is true iff some modal surface owns t
     engine::editor::FileFlow flow;
     engine::editor::ProjectFlow projectFlow;
 
-    SUBCASE("idle: nothing owns the input") {
-        CHECK_FALSE(engine::editor::modalInputActive(flow, projectFlow));
-    }
+    SUBCASE("idle: nothing owns the input") { CHECK_FALSE(engine::editor::modalInputActive(flow, projectFlow)); }
     SUBCASE("a native dialog is in flight") {
         flow.dialog = DialogKind::Open;
         CHECK(engine::editor::modalInputActive(flow, projectFlow));

@@ -41,6 +41,30 @@ std::string utf8FromPath(const std::filesystem::path& path) {
     return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
+// Resolve `p` against the current directory (Phase 2 audit, P84/P85). `ProjectSession::root()` and
+// `RecentProjects::paths` are both DOCUMENTED absolute, and `set()`/`promoteRecent()` both name their
+// parameter `absoluteRootUtf8` -- four statements of one contract that nothing enforced, so
+// `aero_editor MyGame` wrote the literal "MyGame" into the machine-wide recents file and a later
+// launch from elsewhere resolved it against a different directory or not at all.
+//
+// `absolute`, deliberately NOT `weakly_canonical`: prepending the working directory is what makes the
+// contract true, while resolving symlinks would additionally rewrite a path the user chose (a project
+// reached through a symlinked home would be recorded under its target), which is a different promise
+// than "absolute, normalized". On failure the input is returned unchanged -- a project that opens at a
+// relative root is still better than one that refuses to open.
+//
+// NOT applied inside `projectRootFromPath`: on Windows "/a/b" is rooted but NOT absolute, so doing it
+// there would rewrite that function's result to "C:\a\b" on one platform only and change the
+// normalization contract P35 pins. This is applied where the value BECOMES a project root instead.
+std::filesystem::path absolutePath(const std::filesystem::path& p) {
+    std::error_code ec;
+    const std::filesystem::path resolved = std::filesystem::absolute(p, ec);
+    if (ec) {
+        return p;
+    }
+    return resolved.lexically_normal();
+}
+
 // If `p`'s filename is empty (a trailing separator), step up to the parent -- guarded so "/" never
 // recurses to itself.
 void stripTrailingSeparator(std::filesystem::path& p) {
@@ -96,12 +120,16 @@ bool directoryIsEmpty(std::string_view utf8) {
 
 ProjectLoadOutcome loadProjectFrom(std::string_view pathUtf8) {
     ProjectLoadOutcome out;
-    const std::string root = projectRootFromPath(pathUtf8);
-    if (root.empty()) {
+    const std::string normalized = projectRootFromPath(pathUtf8);
+    if (normalized.empty()) {
         out.error = ProjectError::Unreadable;
         out.message = "no project path given";
         return out;
     }
+    // P84: the emptiness check runs on the NORMALIZED form ("" in, "" out is AC-17's contract), and
+    // absolutization happens after it -- absolute("") is not empty, so resolving first would turn "no
+    // project path given" into an attempt to open the working directory.
+    const std::string root = utf8FromPath(absolutePath(pathFromUtf8(normalized)));
     const std::string manifestPath = root + "/" + std::string(PROJECT_FILE_NAME);
     const FileReadResult read = readTextFile(manifestPath);
     if (!read.text.has_value()) {
@@ -156,7 +184,13 @@ ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_vi
     // `<location>/project.json/` scaffolded, but `out.root` reported `<location>` itself -- a
     // silently broken project). `target` IS the true root by construction; it never needs
     // re-deriving through a helper meant for a caller-supplied, not-yet-known path.
-    const std::filesystem::path target = (pathFromUtf8(locationUtf8) / pathFromUtf8(nameUtf8)).lexically_normal();
+    // P85: absolutized here, so `out.root` below satisfies ProjectSession::root()'s documented
+    // "Absolute, normalized" for a RELATIVE location too (the New Project modal's location can be
+    // typed, not only Browse'd). `absolutePath` preserves the final component, so SHOULD-FIX 8's rule
+    // -- out.root is `target` verbatim, never re-derived through projectRootFromPath's manifest-name
+    // strip -- is untouched, including for a project literally named "project.json".
+    const std::filesystem::path target =
+        absolutePath((pathFromUtf8(locationUtf8) / pathFromUtf8(nameUtf8)).lexically_normal());
     std::error_code existsEc;
     const bool exists = std::filesystem::exists(target, existsEc);
     if (exists) {

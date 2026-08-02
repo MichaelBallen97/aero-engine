@@ -1649,3 +1649,66 @@ TEST_CASE(
     CHECK(closesWithinWindow("form.cancelRequested = true;", 0));
     CHECK(closesWithinWindow("form.cancelRequested = true;", 1));
 }
+
+// ---- P84/P85 (Phase 2 audit): the root a project OPENS at is absolute --------------------------
+//
+// `ProjectSession::root()` is documented "Absolute, normalized" (project.hpp), `RecentProjects::paths`
+// is documented "absolute, normalized", and both `ProjectSession::set()` and `promoteRecent()` name
+// their parameter `absoluteRootUtf8` -- four statements of one contract, enforced nowhere: nothing in
+// editor/ ever called absolute()/weakly_canonical(). `main.cpp` passes argv[1] verbatim, so
+// `aero_editor MyGame` stored the literal string "MyGame" in the machine-wide recents file. Launched
+// later from a different directory (or from Finder, whose CWD is "/") that entry either resolves to a
+// DIFFERENT project -- the outcome editor_app.cpp's own comment calls "worse than showing Welcome" --
+// or is permanently dead while `promoteRecent`'s byte-dedup keeps it as a second row for one project.
+// Phase 3's AssetDatabase scans paths.assets off this same root.
+//
+// Absolutization is deliberately NOT done inside `projectRootFromPath`: on Windows "/a/b" is rooted
+// but NOT absolute, so absolutizing there would rewrite it to "C:\a\b" and change that function's
+// whole normalization contract on one platform only -- PR #60's standing lesson. It is done where the
+// value BECOMES a project root instead, which is these two functions.
+class ScopedCwd {
+public:
+    explicit ScopedCwd(const std::filesystem::path& to) : previous(std::filesystem::current_path()) {
+        std::filesystem::current_path(to);
+    }
+    ~ScopedCwd() {
+        std::error_code ec;
+        std::filesystem::current_path(previous, ec);
+    }
+    ScopedCwd(const ScopedCwd&) = delete;
+    ScopedCwd& operator=(const ScopedCwd&) = delete;
+    ScopedCwd(ScopedCwd&&) = delete;
+    ScopedCwd& operator=(ScopedCwd&&) = delete;
+
+private:
+    std::filesystem::path previous;
+};
+
+TEST_CASE("project: loadProjectFrom reports an ABSOLUTE root for a relative path (P84)") {
+    const TempDir dir;
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+
+    // Open it the way argv[1] does: by a path relative to the current directory.
+    const ScopedCwd cwd{std::filesystem::path(dir.utf8())};
+    const ProjectLoadOutcome opened = loadProjectFrom("MyGame");
+    REQUIRE(opened.ok);
+    CHECK(std::filesystem::path(opened.root).is_absolute());
+    CHECK(std::filesystem::path(opened.root).filename() == "MyGame");
+}
+
+TEST_CASE("project: createProject reports an ABSOLUTE root for a relative location (P85)") {
+    const TempDir dir;
+    const ScopedCwd cwd{std::filesystem::path(dir.utf8())};
+    std::error_code ec;
+    std::filesystem::create_directory("here", ec);
+    REQUIRE_FALSE(ec);
+
+    const ProjectCreateOutcome created = createProject("here", "MyGame", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+    CHECK(std::filesystem::path(created.root).is_absolute());
+    CHECK(std::filesystem::path(created.root).filename() == "MyGame");
+    // The scaffold really is at that absolute root, not merely named one.
+    CHECK(directoryExists(created.root + "/assets"));
+    CHECK(directoryExists(created.root + "/scenes"));
+}
