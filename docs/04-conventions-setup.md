@@ -69,13 +69,18 @@ Matrix across **macOS + Windows + Ubuntu**. Every push/PR runs:
 1. Configure (CMake presets) + build (Debug with ASan/UBSan; Release)
 2. `reflect-gen` + `shaderc` codegen steps
 3. Unit tests (doctest)
-4. The five architecture-guard tests above (each activates once its owning task lands)
+4. The six architecture-guard tests below (each activates once its owning task lands)
 5. `clang-format` / `clang-tidy` check
 6. Task-local boundary check: no spdlog/fmt types in public engine headers (0.2.4)
 7. Task-local boundary check: no enkiTS types in public engine headers (0.2.5; `lint`-job grep + the `aero_jobs_boundary_probe` compile-time probe)
 8. Task-local boundary check: no SDL types in public engine headers (0.3.1; `lint`-job step running `.github/scripts/check-platform-boundary.sh` — a script, not a bare grep, because SDL's un-namespaced identifiers collide with legitimate documentation prose that cites them — + the `aero_platform_boundary_probe` compile-time probe)
 9. Task-local boundary check: no entt types in public engine headers (1.3.1; `lint`-job step running `.github/scripts/check-scene-boundary.sh` — a script, not a bare grep, because the scene headers cite `entt::basic_registry` in documentation prose — + the `aero_scene_boundary_probe` compile-time probe, which links `aero::scene` alone)
 10. Golden-rule check: nothing under `/engine` or `/runtime` may reference `/editor` (2.1.2; two surfaces — a `lint`-job step running `.github/scripts/check-golden-rule.sh` for the textual half, a script rather than a bare grep because 22 first-party comments under `engine/` legitimately say "editor", and `cmake/golden_rule.cmake`'s `aero_assert_golden_rule()` at the end of the root `CMakeLists.txt` for the link/include-directory half, which runs in every configure on every lane; both proved red-on-violation by the hermetic ctest cases `golden-rule.include_scan_e2e` and `golden-rule.link_graph_e2e`)
+
+11. Math-boundary check: no `<glm/...>` include outside `engine/core/src/math/glm_backend.cpp`, the single allowlisted file (`lint`-job step running `.github/scripts/check-math-boundary.sh` + the `aero_math_boundary_probe`)
+12. Project no-delete check: `editor/src/project.cpp`, `project_file.cpp` and `project_ui.cpp` may never call `remove_all` / `std::filesystem::remove` / `std::filesystem::rename` / a bare `::copy` (2.6.1's code-review round; `.github/scripts/check-project-no-delete.sh`, proved red-on-violation by the hermetic ctest case `project-no-delete.no_delete_e2e`). A failed `createProject` must never delete a user-chosen directory tree.
+
+**A guard asserting its scan set is non-empty is not asserting that it covers anything.** The scene- and platform-boundary guards additionally verify that the scan spans every engine subsystem shipping a public `include/`, with both sides derived from the tree (self-test 1b) — added by the Phase 2 audit after a narrowed glob was measured to take the scan from 51 files to 8 while still exiting 0. See `.claude/rules/boundary-guards.md`.
 
 Runtime binaries for each platform are built and archived by CI (this is what makes TS-project export instant — see [ADR-008](./02-adrs.md#adr-008--per-project-language-choice-and-the-two-export-models)).
 
@@ -95,5 +100,5 @@ Runtime binaries for each platform are built and archived by CI (this is what ma
 
 - **Unit tests (doctest):** core utilities, math, handles, serialization round-trips, the reflection generator's output.
 - **Golden/snapshot tests:** cooked-asset determinism, serialization stability.
-- **Guard tests:** the five architecture guards (treated as tests).
+- **Guard tests:** the six architecture guards (treated as tests). Measured from `.github/scripts/`, never remembered — the count was stale at "five" for a whole task after `check-project-no-delete.sh` landed.
 - **Manual validation gates:** each phase's deliverable gate ([05 — Roadmap](./05-roadmap.md)) is the human acceptance test for that phase.
