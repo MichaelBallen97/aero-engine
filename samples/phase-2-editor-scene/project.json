@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "phase-2-editor-scene",
+  "engineVersion": "0.1.0",
+  "language": "ts",
+  "paths": {
+    "assets": "assets",
+    "scenes": "scenes"
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "name": "Main Camera",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 1,
+            "z": 5
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::Camera": {
+          "fovYRadians": 1.0471976,
+          "nearPlane": 0.1,
+          "farPlane": 100
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "Directional Light",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": -0.42261827,
+            "y": -0,
+            "z": -0,
+            "w": 0.90630776
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::DirectionalLight": {
+          "color": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          },
+          "intensity": 9.1
+        }
+      }
+    },
+    {
+      "id": 3,
+      "name": "Cube",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 3.9955873
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0.4782339,
+            "z": 0,
+            "w": 0.8782325
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 0,
+          "color": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        }
+      }
+    }
+  ]
+}
