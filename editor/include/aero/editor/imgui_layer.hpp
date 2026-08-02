@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace engine::rhi {
 class Device;
@@ -35,8 +36,11 @@ public:
     // When true, the layer derives + owns the exe-relative ini path internally (it has SDL — D7),
     // so callers stay SDL-free. Installs the raw-event sink on ctx (D5) so ImGui receives every
     // event, including ones Context::pollEvent would otherwise translate-and-discard.
+    // `iniPathOverride` EMPTY => the exe/pref-relative derivation that ships. Non-empty is used
+    // verbatim, so a test can drive the layout-restore path without touching the real editor ini.
     [[nodiscard]] static std::optional<ImGuiLayer> create(rhi::Device& device, platform::Window& window,
-                                                          platform::Context& ctx, bool persistLayout = true);
+                                                          platform::Context& ctx, bool persistLayout = true,
+                                                          std::string_view iniPathOverride = {});
 
     // Teardown order (load-bearing): clear the raw-event sink -> device->waitIdle() -> SDLGPU3
     // shutdown -> SDL3 shutdown -> ImGui::DestroyContext() -> destroySwapchain(). A moved-from

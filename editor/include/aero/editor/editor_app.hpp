@@ -75,6 +75,12 @@ struct EditorAppConfig {
     // defaultRecentProjectsPath(). The one case that MUST exercise the restore path points this at a
     // TempDir file, so even with restore ENABLED no test ever touches the real pref directory.
     std::string recentProjectsPath;
+    // Where imgui.ini lives. EMPTY => ImGuiLayer's own exe/pref-relative derivation, which is what
+    // ships. This exists for the SAME reason recentProjectsPath above does, and it is the second
+    // instance of the same lesson: a machine-wide file a test needs to drive is untestable until the
+    // test can point it somewhere else. Any test that sets persistLayout TRUE must set this too, or
+    // it writes the developer's real editor layout -- 2.6.1's BLOCKING-2 in a new costume.
+    std::string layoutIniPath;
 };
 
 // Sleep applied when the window is not presentable (minimized) — inherited verbatim from 2.1.1.
@@ -228,6 +234,12 @@ private:
                                       // would only cost one throttled frame before the first focus event
     bool applyDefaultLayout = false;  // seeded from ImGuiLayer::wantsDefaultLayout(); also set by
                                       // View > Reset Layout / requestLayoutReset()
+    // The EXACT COMPLEMENT of applyDefaultLayout, and seeded from the same call: when a layout was
+    // RESTORED, buildDefaultLayout never runs, and it is the only reader of defaultDockSlot(). A panel
+    // registered after the user's imgui.ini was written therefore has no settings entry at all and
+    // ImGui free-floats it. This one-shot places exactly those panels on the first drawn frame.
+    // Consumed like applyDefaultLayout (read back out of ShellUiState), never re-armed.
+    bool placeUnplacedPanels = false;
     bool presented = false;
     bool undoRequested = false;  // consumed by the next tick(); never survives it (task 2.4.1)
     bool redoRequested = false;

@@ -106,7 +106,8 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
                       DEFAULT_LOG_HISTORY_CAPACITY);
     }
     registerEditorReflection();  // task 2.2.2 -- unconditional, once-per-process, before ImGuiLayer
-    std::optional<ImGuiLayer> layer = ImGuiLayer::create(device, window, ctx, config.persistLayout);
+    std::optional<ImGuiLayer> layer =
+        ImGuiLayer::create(device, window, ctx, config.persistLayout, config.layoutIniPath);
     if (!layer) {
         return std::nullopt;  // ImGuiLayer already logged the reason
     }
@@ -117,6 +118,9 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // The default layout is built on the FIRST DRAWN FRAME, not here (E3) — so panels registered by
     // the caller between create() and the first tick() are included.
     app.applyDefaultLayout = app.layer.wantsDefaultLayout();
+    // The complement: a RESTORED layout is exactly the case buildDefaultLayout does not cover, and so
+    // the case where a newly-registered panel would otherwise free-float. Never both.
+    app.placeUnplacedPanels = !app.applyDefaultLayout;
     // task 2.6.1: the recents list and the project are resolved HERE -- the same position the old
     // project-root resolution occupied -- so the "assets root" INFO below keeps its exact text AND
     // its exact position among the panel records, and so AssetBrowserPanel is BORN with the right
@@ -278,8 +282,10 @@ bool EditorApp::tick() {
     }  // and the project stays open (AC-24)
 
     layer.beginFrame();
-    ShellUiState ui{
-        .applyDefaultLayout = applyDefaultLayout, .undoRequested = undoRequested, .redoRequested = redoRequested};
+    ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
+                    .placeUnplacedPanels = placeUnplacedPanels,
+                    .undoRequested = undoRequested,
+                    .redoRequested = redoRequested};
     // Consumed: a request never survives the tick that carried it. Unlike applyDefaultLayout below,
     // these are NOT read back out of `ui` -- drawShellUi clears them as it applies them, and reading
     // them back would re-arm the request every frame (task 2.4.1).
@@ -301,6 +307,7 @@ bool EditorApp::tick() {
     drawShellUi(registry, panelContext, ui, fileMenu);  // menu bar -> dockspace -> panels
     applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
                                                         // it for View > Reset Layout
+    placeUnplacedPanels = ui.placeUnplacedPanels;       // cleared once consumed; nothing ever re-arms it
     // D3: the offscreen scene pass runs AFTER the draw walk (only it knows this frame's panel size,
     // which is what removes the one-frame resize lag) and BEFORE endFrame (ImGui's command buffer is
     // acquired and submitted there; ours must be submitted first -- F8's ordering guarantee, and F7

@@ -2621,3 +2621,135 @@ TEST_CASE(
     // the tab is SELECTED, that the text is legible, that the columns align, or that '%' renders
     // correctly. Those are validation rows 4, 5-7 and 11.
 }
+
+// I26 -- the layout-migration regression. Before this, buildDefaultLayout was the ONLY reader of
+// defaultDockSlot() and it runs only when there is NO imgui.ini to restore, so any panel added after
+// a user's layout was written had no settings entry and ImGui free-floated it. Shipping the Project
+// Settings panel did exactly that to every existing install; without the fix, every panel a later
+// task adds lands the same way.
+//
+// The .ini below is a REAL pre-2.6.2 layout, captured from a machine that had been running the editor
+// before the panel existed: five window entries, no "Project Settings", and a Docking section whose
+// node 0x00000004 is the right-hand node holding Inspector. That is the whole scenario.
+//
+// This is a BLACK-BOX assertion on the saved file, not on ImGui state: the test TU is deliberately
+// ImGui-free (no <imgui.h> anywhere in it), so the proof has to survive a round trip to disk. It also
+// pins the behaviour that matters -- the new panel joins INSPECTOR'S node rather than merely being
+// docked somewhere -- by comparing the two DockIds to each other rather than to a hardcoded id.
+TEST_CASE("editor: a panel the restored layout has never seen is docked, not left floating (I26)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "layout migration i26", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    static int iniCounter = 0;
+    const std::filesystem::path iniFile =
+        std::filesystem::temp_directory_path() / ("aero_layout_migration_" + std::to_string(++iniCounter) + ".ini");
+    {
+        std::ofstream out(iniFile, std::ios::binary | std::ios::trunc);
+        REQUIRE(out.good());
+        // ⛔ Hierarchy and Inspector are DELIBERATELY SWAPPED against what buildDefaultLayout produces
+        // (it makes Left 0x1 and Right 0x4, in that order): this is a user who dragged Inspector to
+        // the left and Hierarchy to the right. That swap is what gives this case its teeth. With the
+        // node ids in their default arrangement, an implementation that simply ran buildDefaultLayout
+        // on a RESTORED ini -- the exact damage this fix exists to prevent, and which additionally
+        // zeroes every user DockId on the way through DockBuilderRemoveNodeDockedWindows -- would
+        // regenerate bit-identical ids and satisfy every assertion below. Swapped, it cannot: it puts
+        // Hierarchy back in 0x1 and reddens.
+        out << "[Window][Hierarchy]\nPos=1025,25\nSize=255,695\nDockId=0x00000004,0\n\n"
+               "[Window][Inspector]\nPos=0,25\nSize=255,695\nDockId=0x00000001,0\n\n"
+               "[Window][Viewport]\nPos=259,25\nSize=762,518\nDockId=0x00000005,0\n\n"
+               "[Window][Console]\nPos=259,547\nSize=762,173\nDockId=0x00000006,0\n\n"
+               "[Window][Assets]\nPos=259,547\nSize=762,173\nDockId=0x00000006,1\n\n"
+               "[Docking][Data]\n"
+               "DockSpace       ID=0x08BD597D Pos=0,25 Size=1280,695 Split=X\n"
+               "  DockNode      ID=0x00000001 Parent=0x08BD597D SizeRef=255,695\n"
+               "  DockNode      ID=0x00000002 Parent=0x08BD597D SizeRef=1021,695 Split=X\n"
+               "    DockNode    ID=0x00000003 Parent=0x00000002 SizeRef=762,695 Split=Y\n"
+               "      DockNode  ID=0x00000005 Parent=0x00000003 SizeRef=762,518 CentralNode=1\n"
+               "      DockNode  ID=0x00000006 Parent=0x00000003 SizeRef=762,173\n"
+               "    DockNode    ID=0x00000004 Parent=0x00000002 SizeRef=255,695\n";
+    }  // scoped: Windows cannot remove/rewrite a file whose stream is still open
+    REQUIRE(std::filesystem::exists(iniFile));
+
+    const std::u8string iniBytes = iniFile.u8string();
+    const std::string iniPath(reinterpret_cast<const char*>(iniBytes.data()), iniBytes.size());
+
+    {
+        // persistLayout TRUE is the whole point -- it is what makes wantsDefaultLayout() false and
+        // sends create() down the RESTORE path. layoutIniPath is therefore MANDATORY here: without it
+        // this case would read and then overwrite the developer's real editor layout.
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = true,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile(),
+                                               .layoutIniPath = iniPath});
+        REQUIRE(app.has_value());
+        CHECK(app->panels().count() == 6);
+
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(app->tick());
+        }
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }  // ~EditorApp -> ~ImGuiLayer -> DestroyContext -> SaveIniSettingsToDisk
+
+    std::ifstream in(iniFile, std::ios::binary);
+    REQUIRE(in.good());
+    const std::string saved((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    // The panel the restored ini had never heard of now has an entry of its own...
+    const std::size_t settingsAt = saved.find("[Window][Project Settings]");
+    REQUIRE(settingsAt != std::string::npos);
+    const std::size_t inspectorAt = saved.find("[Window][Inspector]");
+    REQUIRE(inspectorAt != std::string::npos);
+
+    // ...and its DockId is INSPECTOR'S, not 0 (floating) and not some other node. Both are read out of
+    // the saved file and compared to each other, so the assertion survives ImGui renumbering nodes.
+    // BOUNDED to the section, deliberately. An unbounded find("DockId=", sectionAt) would happily
+    // return the NEXT section's DockId when this section has none, which is precisely the
+    // not-docked case -- i.e. the bug would report the value that makes the test pass. Verified by
+    // seeding: with the fix disabled this helper must fail to find one, not find someone else's.
+    auto dockIdInSection = [&saved](std::size_t sectionAt) {
+        const std::size_t sectionEnd = saved.find("\n[", sectionAt + 1);
+        const std::size_t at = saved.find("DockId=", sectionAt);
+        REQUIRE(at != std::string::npos);
+        REQUIRE((sectionEnd == std::string::npos || at < sectionEnd));
+        // Clamped to the LINE as well as the section: ImGui omits the ",order" suffix entirely when
+        // DockOrder == -1, and DockBuilderDockWindow leaves exactly that on a freshly created entry.
+        // Without the clamp the comma search would run into a later section's "Pos=x,y" and return a
+        // multi-line string -- a spurious failure rather than a false pass, but a confusing one.
+        const std::size_t lineEnd = saved.find('\n', at);
+        REQUIRE(lineEnd != std::string::npos);
+        const std::size_t end = std::min(saved.find(',', at), lineEnd);
+        return saved.substr(at + 7, end - (at + 7));
+    };
+    const std::string settingsDock = dockIdInSection(settingsAt);
+    const std::string inspectorDock = dockIdInSection(inspectorAt);
+    CHECK_FALSE(settingsDock.empty());
+    CHECK(settingsDock != "0x00000000");
+    CHECK_EQ(settingsDock, inspectorDock);  // it joined its slot-mate's node (D12's stated intent)
+
+    // The two assertions that give the swapped fixture its purpose, and the ONLY coverage anywhere of
+    // this fix's headline promise -- "a panel the ini already knows is never touched, wherever the
+    // user put it". Both are exact node ids, not a relative comparison, because the whole point is
+    // that the SPECIFIC user arrangement survived rather than being regenerated into something
+    // self-consistent. A rebuild-on-restore implementation returns Hierarchy to 0x00000001 and
+    // Project Settings to 0x00000004, reddening both.
+    const std::size_t hierarchyAt = saved.find("[Window][Hierarchy]");
+    REQUIRE(hierarchyAt != std::string::npos);
+    CHECK_EQ(dockIdInSection(hierarchyAt), "0x00000004");  // a KNOWN panel stayed where the user put it
+    CHECK_EQ(settingsDock, "0x00000001");                  // and the NEW panel followed its slot-mate LEFT
+
+    std::error_code ec;
+    std::filesystem::remove(iniFile, ec);
+}

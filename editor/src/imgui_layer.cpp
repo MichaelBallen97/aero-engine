@@ -50,7 +50,7 @@ std::string deriveIniPath() {
 }  // namespace
 
 std::optional<ImGuiLayer> ImGuiLayer::create(rhi::Device& device, platform::Window& window, platform::Context& ctx,
-                                             bool persistLayout) {
+                                             bool persistLayout, std::string_view iniPathOverride) {
     if (ImGui::GetCurrentContext() != nullptr) {
         AERO_LOG_ERROR("editor: ImGuiLayer::create: an ImGui context already exists (one per process)");
         return std::nullopt;
@@ -70,7 +70,10 @@ std::optional<ImGuiLayer> ImGuiLayer::create(rhi::Device& device, platform::Wind
         return std::nullopt;
     }
 
-    auto iniPath = std::make_unique<std::string>(deriveIniPath());
+    // EMPTY override => the shipped exe/pref-relative derivation. A non-empty one is used verbatim,
+    // which is what lets a test drive the layout-RESTORE path without touching the real editor ini.
+    std::string resolvedIni = iniPathOverride.empty() ? deriveIniPath() : std::string(iniPathOverride);
+    auto iniPath = std::make_unique<std::string>(std::move(resolvedIni));
     const bool wantsDefault = !(persistLayout && std::filesystem::exists(*iniPath));
 
     IMGUI_CHECKVERSION();
