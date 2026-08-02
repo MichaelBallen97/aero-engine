@@ -53,6 +53,29 @@ if [ "$scanned" -eq 0 ]; then
   exit 2
 fi
 
+# --- Self-test 1b: the scan set must COVER the tree, not merely be non-empty. ------------------
+# "scanned > 0" is satisfied by a scan set narrowed to a SINGLE subsystem. MEASURED during the Phase 2
+# audit: narrowing HEADER_GLOB to 'engine/scene/include/*' -- a plausible edit, the guard is named
+# scene-boundary -- takes the scan from 51 files to 8 and the guard still exits 0, printing its usual
+# OK banner while a real entt:: leak in engine/core/include/ has become invisible. That is the SAME
+# false-green class the 2.1.2 review round found in check-golden-rule.sh's SCAN_ROOTS ("OK -- 80
+# tracked sources scanned", a lie), reached through the glob instead of through the root list.
+#
+# BOTH sides are derived from the tree, and that is what keeps this from being the hardcoded per-root
+# roster boundary-guards.md warns against: a subsystem that ships no public header never enters the
+# expected set, so unlike a roster this cannot fail on a correct tree. The left side deliberately does
+# NOT reuse HEADER_GLOB -- deriving the expectation from the value under test would be circular and
+# would agree with any narrowing.
+expected_subsystems=$(git ls-files -- 'engine' | sed -n 's|^engine/\([^/]*\)/include/.*|\1|p' | sort -u)
+scanned_subsystems=$(git ls-files -- "$HEADER_GLOB" | sed -n 's|^engine/\([^/]*\)/include/.*|\1|p' | sort -u)
+missing=$(comm -23 <(printf '%s\n' "$expected_subsystems") <(printf '%s\n' "$scanned_subsystems"))
+if [ -n "$missing" ]; then
+  echo "::error::scene-boundary guard's scan set does not cover every engine subsystem that ships a" >&2
+  echo "::error::public include/ -- these are a silent blind spot: $(printf '%s ' $missing)" >&2
+  echo "::error::HEADER_GLOB in $0 has been narrowed. Widen it back to cover every subsystem." >&2
+  exit 2
+fi
+
 # --- Self-test 2: the canary. ----------------------------------------------------------------
 if [ ! -f "$CANARY_FILE" ]; then
   echo "::error::Canary '$CANARY_FILE' is missing. Was the seam renamed? The guard cannot self-verify," >&2

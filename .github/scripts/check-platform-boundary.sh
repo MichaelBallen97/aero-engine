@@ -68,6 +68,23 @@ if [ "$scanned" -eq 0 ]; then
   exit 2
 fi
 
+# --- Self-test 1b: the scan set must COVER the tree, not merely be non-empty. ------------------
+# See check-scene-boundary.sh's copy for the full reasoning and the measurement. In short: "scanned
+# > 0" is still satisfied after HEADER_GLOB is narrowed to one subsystem, so an SDL leak in every
+# OTHER subsystem's public headers becomes invisible while the guard prints OK -- the 2.1.2 review's
+# SCAN_ROOTS false-green, reached through the glob. Both sides are derived from the tree, so a
+# subsystem shipping no public header never enters the expected set and this cannot fail on a correct
+# tree; the left side deliberately does not reuse HEADER_GLOB, which would be circular.
+expected_subsystems=$(git ls-files -- 'engine' | sed -n 's|^engine/\([^/]*\)/include/.*|\1|p' | sort -u)
+scanned_subsystems=$(git ls-files -- "$HEADER_GLOB" | sed -n 's|^engine/\([^/]*\)/include/.*|\1|p' | sort -u)
+missing=$(comm -23 <(printf '%s\n' "$expected_subsystems") <(printf '%s\n' "$scanned_subsystems"))
+if [ -n "$missing" ]; then
+  echo "::error::platform-boundary guard's scan set does not cover every engine subsystem that ships a" >&2
+  echo "::error::public include/ -- these are a silent blind spot: $(printf '%s ' $missing)" >&2
+  echo "::error::HEADER_GLOB in $0 has been narrowed. Widen it back to cover every subsystem." >&2
+  exit 2
+fi
+
 # --- Self-test 2: the machinery still fires (no allowlisted file exists to use as a canary, unlike
 # check-math-boundary.sh -- every public header must be SDL-free, so this proves the regexes against
 # synthetic input instead). ------------------------------------------------------------------------

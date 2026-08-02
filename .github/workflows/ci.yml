@@ -5,10 +5,17 @@ on:
     branches: [main]
   pull_request:
 
-# One in-flight run per branch/PR; new pushes cancel the old run.
+# One in-flight run per branch/PR; a new push cancels the old run -- ON PULL REQUESTS ONLY.
+#
+# On `main` every push shares one ref, so back-to-back merges cancelled each other: merging PR #63
+# while PR #62's merge-commit run was still in flight left commit 96f06a4 on `main` with NO completed
+# CI run, and a8b296ab (PR #60's merge) the same way. "main is always green" (docs/04) then means
+# "green at the tip", which is not what a bisect needs -- and this repo merges small PRs back to back,
+# so it is the normal case rather than a corner. Superseding a PR's own iterations is still right and
+# still saves the runner time; superseding a trunk commit's only verification is not.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least privilege — this workflow only reads the repo.
 permissions:
