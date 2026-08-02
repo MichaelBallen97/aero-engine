@@ -22,6 +22,10 @@ namespace engine::editor {
 
 // task 2.6.1: NewProject/OpenProject join NewScene/OpenScene/Quit. This is the ONLY change to any
 // pure function's body this task makes -- and it is what buys AC-19 whole (D1).
+bool modalInputActive(const FileFlow& flow, const ProjectFlow& projectFlow) noexcept {
+    return flow.dialog != DialogKind::None || flow.confirmOpen || projectFlow.form.open;
+}
+
 bool discardsWork(FileAction action) noexcept {
     switch (action) {
         case FileAction::NewScene:
@@ -476,7 +480,7 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
     const FileAction action = flow.requested;
     flow.requested = FileAction::None;  // a request NEVER survives the frame that carried it
 
-    if (flow.dialog != DialogKind::None || flow.confirmOpen || project.flow.form.open) {
+    if (modalInputActive(flow, project.flow)) {
         // D8/AC-5, widened by BLOCKING-2 (code review) and again by task 2.6.1: everything File is
         // disabled while a NATIVE dialog is in flight, the unsaved-changes MODAL is up, OR the New
         // Project form is up -- `shell_ui.cpp`'s `fileEnabled` mirrors this exactly (defence in

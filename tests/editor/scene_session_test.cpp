@@ -888,3 +888,41 @@ TEST_CASE(
     CHECK(f.flow.pending == FileAction::None);  // abandoned, not performed
     CHECK(f.flow.requestedPath.empty());        // the abandoned Open's own target must not leak
 }
+
+// SS36 (Phase 2 audit): ONE definition of "a modal surface owns the input". Before this, the
+// condition was written out by hand in two places -- `shell_ui.cpp`'s `fileEnabled` and
+// `applyFileRequests`' refusal check -- and shell_ui.cpp's own banner names the cost of letting the
+// two drift (2.5.1's BLOCKING-2: a chord reached AskWhereToSave while the modal was up and launched a
+// SECOND native dialog on top of it). The audit found the drift had already happened in the other
+// direction: `fileEnabled` gated every File chord and NEITHER history chord, so Ctrl+Z mutated the
+// World behind the unsaved-changes modal that was still asking about the pre-undo document.
+TEST_CASE("scene_session: modalInputActive is true iff some modal surface owns the input (SS36)") {
+    using engine::editor::DialogKind;
+    engine::editor::FileFlow flow;
+    engine::editor::ProjectFlow projectFlow;
+
+    SUBCASE("idle: nothing owns the input") {
+        CHECK_FALSE(engine::editor::modalInputActive(flow, projectFlow));
+    }
+    SUBCASE("a native dialog is in flight") {
+        flow.dialog = DialogKind::Open;
+        CHECK(engine::editor::modalInputActive(flow, projectFlow));
+    }
+    SUBCASE("the unsaved-changes modal is up") {
+        flow.confirmOpen = true;
+        CHECK(engine::editor::modalInputActive(flow, projectFlow));
+    }
+    SUBCASE("the New Project modal is up") {
+        projectFlow.form.open = true;
+        CHECK(engine::editor::modalInputActive(flow, projectFlow));
+    }
+    SUBCASE("it agrees with applyFileRequests' own refusal, which is the point of sharing it") {
+        // The refusal check inside applyFileRequests is the same predicate; a request raised while a
+        // modal is up must be refused, not performed.
+        flow.confirmOpen = true;
+        REQUIRE(engine::editor::modalInputActive(flow, projectFlow));
+        flow.confirmOpen = false;
+        flow.dialog = DialogKind::Save;
+        CHECK(engine::editor::modalInputActive(flow, projectFlow));
+    }
+}
