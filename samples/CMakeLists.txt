@@ -6,3 +6,9 @@ add_subdirectory(phase-0-window)
 add_subdirectory(phase-0-clear)  # task 0.5.1 — first pixels
 add_subdirectory(phase-0-cube)   # task 0.5.2 — textured cube (phase-0 gate artifact)
 add_subdirectory(phase-1-scene)  # task 1.4.2 — load & draw a JSON scene (phase-1 gate artifact)
+# phase-2-editor-scene is DATA, not a sample app, and is deliberately NOT add_subdirectory'd: it is an
+# Aero project (project.json + assets/ + scenes/) authored through the editor, with no main.cpp and no
+# CMakeLists.txt of its own. The other three samples are compile-proofs of engine code; the Phase 2
+# gate artifact is a provenance proof of the EDITOR, and nothing CMake can do would strengthen it —
+# the scene's format is already pinned by scene_golden_test.cpp (EG1-EG8) and scene_serialize_test.cpp
+# (G1-G10). See samples/phase-2-editor-scene/README.md.
