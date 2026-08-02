@@ -366,8 +366,24 @@ constexpr std::size_t slotIndex(DockSlot slot) noexcept { return static_cast<std
 // of a window over the Hierarchy panel, narrow enough to render "Format version" one letter per line.
 // It is not specific to that panel; without this, every panel any later task adds lands the same way.
 //
-// This places EXACTLY the panels the ini has never heard of and touches nothing else. A panel the ini
-// already knows is left precisely where the user put it, floating or docked, forever.
+// The test is "IS THIS PANEL DOCKED", not "has the ini heard of it". That distinction is the whole
+// bug fix: the first shipped version asked the second question and helped nobody who mattered.
+// A panel born floating writes a settings entry on quit -- Pos, Size, Collapsed, and NO DockId line
+// at all (ImGui omits it when DockId == 0) -- so on the next launch the ini HAS heard of it, the
+// narrow predicate skipped it, and the bad placement was preserved forever. That is exactly what
+// happened on the machine this was found on: an 81px-wide sliver, faithfully restored every launch.
+// Reading DockId covers both populations in one test -- never-seen panels and born-floating ones.
+//
+// A panel that IS docked is never touched, wherever the user dragged it. That is the promise this
+// keeps, and it is the one that matters: an arrangement of docked panels survives exactly.
+//
+// The accepted cost, stated rather than discovered later: a panel the user deliberately drags OUT of
+// the dock is re-docked on the next launch, because ImGui records a deliberate float and a
+// never-placed panel identically (no DockId either way) and nothing in the ini can separate them.
+// That is a real limitation and it is the right trade here -- viewports are OFF, so a floating panel
+// is trapped inside the main window overlapping its neighbours, which is strictly worse than docked
+// and is what this fix exists to stop. Persistent floating, if it is ever wanted, needs its own
+// design (an explicit Detach affordance and somewhere to record the intent), not a looser predicate.
 //
 // An unknown panel joins the node that already hosts a panel declaring the SAME defaultDockSlot(),
 // rather than re-splitting the dockspace. Two reasons, and the first is the important one: a split
@@ -386,8 +402,9 @@ void placeUnplacedPanels(ImGuiID dockId, PanelRegistry& panels) {
     bool placedAny = false;
     for (std::size_t i = 0; i < panels.count(); ++i) {
         const Panel& panel = panels.panelAt(i);
-        if (ImGui::FindWindowSettingsByID(ImHashStr(panel.id())) != nullptr) {
-            continue;  // the ini knows this panel: leave it exactly where the user has it
+        const ImGuiWindowSettings* const own = ImGui::FindWindowSettingsByID(ImHashStr(panel.id()));
+        if (own != nullptr && own->DockId != 0) {
+            continue;  // already docked: leave it exactly where the user has it
         }
         ImGuiID target = dockId;
         for (std::size_t j = 0; j < panels.count(); ++j) {

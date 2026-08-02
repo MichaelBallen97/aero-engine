@@ -2628,15 +2628,18 @@ TEST_CASE(
 // Settings panel did exactly that to every existing install; without the fix, every panel a later
 // task adds lands the same way.
 //
-// The .ini below is a REAL pre-2.6.2 layout, captured from a machine that had been running the editor
-// before the panel existed: five window entries, no "Project Settings", and a Docking section whose
-// node 0x00000004 is the right-hand node holding Inspector. That is the whole scenario.
+// The .ini below carries BOTH populations at once, which is the point. "Project Settings" is present
+// but FLOATING (an entry with no DockId -- the born-floating case, captured verbatim from the machine
+// this was reported on), while the five older panels are docked, with Hierarchy and Inspector
+// deliberately swapped out of their default nodes. So one run proves all three promises: a floating
+// panel gets docked, a docked panel is never moved, and the new panel follows its slot-mate to
+// wherever the user actually dragged it.
 //
 // This is a BLACK-BOX assertion on the saved file, not on ImGui state: the test TU is deliberately
 // ImGui-free (no <imgui.h> anywhere in it), so the proof has to survive a round trip to disk. It also
 // pins the behaviour that matters -- the new panel joins INSPECTOR'S node rather than merely being
 // docked somewhere -- by comparing the two DockIds to each other rather than to a hardcoded id.
-TEST_CASE("editor: a panel the restored layout has never seen is docked, not left floating (I26)") {
+TEST_CASE("editor: a registered panel that is not DOCKED in a restored layout gets docked (I26)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -2663,7 +2666,13 @@ TEST_CASE("editor: a panel the restored layout has never seen is docked, not lef
         // zeroes every user DockId on the way through DockBuilderRemoveNodeDockedWindows -- would
         // regenerate bit-identical ids and satisfy every assertion below. Swapped, it cannot: it puts
         // Hierarchy back in 0x1 and reddens.
-        out << "[Window][Hierarchy]\nPos=1025,25\nSize=255,695\nDockId=0x00000004,0\n\n"
+        // ⛔ "Project Settings" IS PRESENT and FLOATING -- Pos/Size/Collapsed with no DockId line,
+        // which is byte-for-byte what ImGui writes for a panel that was born floating and then saved
+        // on quit. This is the case the FIRST version of this fix got wrong: it asked "has the ini
+        // heard of this panel", the answer here is yes, and it skipped the panel and preserved an
+        // 81px sliver forever. Captured from the machine the bug was found on, Size and all.
+        out << "[Window][Project Settings]\nPos=80,53\nSize=81,593\nCollapsed=0\n\n"
+               "[Window][Hierarchy]\nPos=1025,25\nSize=255,695\nDockId=0x00000004,0\n\n"
                "[Window][Inspector]\nPos=0,25\nSize=255,695\nDockId=0x00000001,0\n\n"
                "[Window][Viewport]\nPos=259,25\nSize=762,518\nDockId=0x00000005,0\n\n"
                "[Window][Console]\nPos=259,547\nSize=762,173\nDockId=0x00000006,0\n\n"

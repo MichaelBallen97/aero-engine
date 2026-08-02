@@ -1758,6 +1758,52 @@ its section: an unbounded `find` would return the *next* section's DockId exactl
 has none, i.e. the bug would supply the value that makes the test pass. Seed-proven both ways —
 disabling the fix reddens I26, reverting greens it. `aero_editor_imgui_test` **47 → 48**.
 
+#### Follow-up 2 — the predicate was wrong: dock what is NOT DOCKED, not what is unknown
+
+The first fix above shipped, merged, and **did not fix the machine it was written for**. Reported
+immediately with a screenshot: the panel was still an 81px floating sliver over the Hierarchy panel.
+
+**Cause, and it is a lesson about choosing a predicate.** That fix asked *"has the ini heard of this
+panel?"* and skipped it if so. But a panel born floating **writes a settings entry on quit** —
+`Pos=80,53 / Size=81,593 / Collapsed=0`, with no `DockId` line at all, because ImGui omits the key
+when the id is 0. So on the very next launch the ini *had* heard of it, the predicate skipped it, and
+the bad placement was faithfully restored forever. The fix therefore only ever helped installs that
+had **never run the build that introduced the panel** — precisely the population that did not have
+the problem. Everyone who actually hit the bug was excluded by construction.
+
+Confirmed against the reporter's real ini before changing anything: every other registered panel
+carried a `DockId`; only `Project Settings` did not. (The other `DockId`-less sections — the dockspace
+host, `Debug##Default`, the two modals, an Assets child — are not registered panels and are never
+iterated.)
+
+**Fix: one line.** `if (own != nullptr && own->DockId != 0) continue;` — the test becomes *is this
+panel docked*, which covers both populations, never-seen and born-floating, in a single condition.
+The preserved promise narrows honestly from "a panel the ini knows is never touched" to **"a panel
+that IS DOCKED is never touched"**, which is the one that actually matters: an arrangement of docked
+panels survives exactly.
+
+**Accepted cost, recorded rather than left to be discovered.** A panel the user deliberately drags out
+of the dock is re-docked on the next launch: ImGui records a deliberate float and a never-placed panel
+identically, and nothing in the ini separates them. This is the right trade *here* — viewports are
+OFF, so a floating panel is trapped inside the main window overlapping its neighbours, which is
+strictly worse than docked and is the thing being fixed. Persistent floating, if ever wanted, needs
+its own design (an explicit Detach affordance plus somewhere to record the intent), not a looser
+predicate. A one-time migration keyed on a persisted marker was considered and rejected as more
+machinery than the problem earns.
+
+**I26 now carries both populations in one fixture** — `Project Settings` present but floating
+(captured verbatim from the reporter's ini, `Size=81,593` and all), the five older panels docked, and
+Hierarchy/Inspector deliberately swapped out of their default nodes. One run proves three things: a
+floating panel gets docked, a docked panel is never moved, and the new panel follows its slot-mate to
+wherever the user dragged it. Seed-proven against **three** distinct bug classes now — the fix
+disabled, a rebuild-on-restore implementation, and the original narrow predicate — each of which
+reddens it.
+
+**Standing lesson.** Two rounds were spent because the first predicate was chosen from the *diagnosis*
+("the ini has no entry") rather than from the *property that matters* ("the panel is not docked").
+Those coincide only on a machine that has never run the broken build — which is every clean checkout,
+every CI lane, and no real user.
+
 ---
 
 # Part 2 — Build & dependency impact ledger
