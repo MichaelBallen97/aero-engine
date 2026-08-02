@@ -95,8 +95,10 @@ git ls-files -z '*.cpp' | xargs -0 -r -n1 clang-tidy -p build/macos-debug --warn
 
 - **Phase 0** — Foundations & First Triangle: complete in code, macOS-validated; Windows/Linux on-hardware sign-off pending.
 - **Phase 1** — Reflection, ECS & Serialization: complete; the `reflect-gen` codegen spine and JSON scene format are in.
-- **Phase 2** — The Editor Shell: every epic closed in code and macOS human-validated. Windows/Linux human passes, and the phase's gate artifact (`samples/phase-2-editor-scene/`), remain owed.
+- **Phase 2** — The Editor Shell: **complete, gate met 2026-08-02.** Every epic closed, every task macOS human-validated, and the gate artifact committed at [`samples/phase-2-editor-scene/`](./samples/phase-2-editor-scene/) — a project and scene built entirely through the editor, saved and reopened.
 - **Next:** Phase 3 (Assets & Rendering), starting with task 3.1.1 — GUIDs and `.meta` files.
+
+Carried-forward debt: no Windows or Linux human validation pass exists yet for Phase 0's 60 fps sign-off or for any Phase 2 task. The engine builds and its full test suite runs green on all three OSes in CI; what is outstanding is the on-hardware human half.
 
 Per-task engineering history — what each task shipped, what it deliberately left out, and the dead ends never to retry — lives in [docs/10-engineering-log.md](./docs/10-engineering-log.md).
 

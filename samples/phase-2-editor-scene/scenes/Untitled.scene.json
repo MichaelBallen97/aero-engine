@@ -93,6 +93,38 @@
           }
         }
       }
+    },
+    {
+      "id": 4,
+      "name": "OBJ2",
+      "components": {
+        "engine::Transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 3.06,
+            "y": 3.06,
+            "z": 3.06
+          }
+        },
+        "engine::MeshRenderer": {
+          "primitive": 1,
+          "color": {
+            "x": 0.12716262,
+            "y": 0.21443117,
+            "z": 0.7205882
+          }
+        }
+      }
     }
   ]
 }

@@ -34,9 +34,37 @@ through a unit test.
 
 | OS | Status | Date | Machine / GPU | Project created | Scene authored visually | Saved | Reopened identical | notes |
 |----|--------|------|----------------|------------------|--------------------------|-------|--------------------|-------|
-| macOS | ⏳ pending | — | — | — | — | — | — | — |
-| Windows | ⏳ pending | — | — | — | — | — | — | — |
-| Linux | ⏳ pending | — | — | — | — | — | — | — |
+| macOS | ✅ validated | 2026-08-02 | MacBook Pro (Apple M1 Pro), Metal backend | PASS — `File ▸ New Project…` wrote `project.json` v1 + `assets/` + `scenes/` | PASS — see the provenance note below | PASS — `File ▸ Save Scene` → `scenes/Untitled.scene.json` | PASS — `File ▸ New Scene` then `File ▸ Open Scene`, scene returned identical | 4 entities, 8 components. Parent/child nesting is **not** exercised (all four entities are roots) — see "not exercised" below. |
+| Windows | ⏳ not run | — | — | — | — | — | — | not blocking: one platform closes this gate |
+| Linux | ⏳ not run | — | — | — | — | — | — | not blocking: one platform closes this gate |
+
+### Provenance — why these bytes could not have been typed
+
+This is the only evidence an artifact like this can offer, so it is recorded rather than asserted.
+Every value below differs from what the code would produce on its own:
+
+- **`DirectionalLight.intensity` = 9.1.** The component's default is `1.0f`
+  (`engine/scene/include/aero/scene/light.hpp:28`). A reflected, non-Transform field driven through
+  the Inspector — ADR-004's whole payoff, exercised end to end.
+- **`Cube.position.z` = 3.9955873, `rotation.y` = 0.4782339** (≈57°). `seedDefaultScene` gives the
+  Cube a default-constructed `Transform`. Values that are *near* a round number but not on it are what
+  an ImGuizmo drag produces; typed input lands on the round number.
+- **`OBJ2`** — a fourth entity that `seedDefaultScene` never creates, carrying a **renamed** id, a
+  uniform `scale` of 3.06, `primitive` = 1 (not the default 0/Cube), and
+  `color` = (0.12716262, 0.21443117, 0.7205882) — the non-round triple a colour-picker drag leaves
+  behind.
+
+Together those cover every verb in the gate sentence: **create a project** ✓, **create** ✓, **move** ✓,
+**edit** ✓, **save** ✓ — plus rename, and the reopen that proves the document is real.
+
+### Not exercised by this artifact
+
+**Parent/child nesting.** All four entities are roots, so the scene never serializes a `parent` field
+and this file does not stress the hierarchy path on load. That path is covered mechanically — the
+`full` golden fixture in `tests/editor/` carries nested entities, and `scene_serialize_test.cpp`'s
+G5/G6/G7 pin the structure — so nothing is unproven; it simply means **this** file is not the artifact
+to reach for if a future task wants a hand-authored nesting case. Worth a deeper tree if the Phase 3
+gate reuses it.
 
 **One platform closes this gate.** Unlike Phase 0's fps floor and Phase 1's render rows, the claim here
 is "the workflow produces a document", which is not platform-specific — the editor's three lanes are
