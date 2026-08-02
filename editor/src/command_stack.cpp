@@ -58,6 +58,17 @@ bool CommandStack::push(CommandContext& context, std::unique_ptr<Command> comman
     // Step 3 BEFORE step 4 is defensive, not load-bearing: a non-empty redo branch implies an earlier
     // undo()/redo(), both of which break the chain (D10), so `mergeOpen && applied < count()` is
     // unreachable today. Written in this order, it stays correct even if that invariant is weakened.
+    //
+    // The clean position must be invalidated FIRST when the erase would destroy it (C20). This is
+    // trimToCapacity's E17 reasoning reached from the other end: a position AHEAD of `applied`
+    // counts entries that are about to stop existing, and you cannot redo back to a command that no
+    // longer exists -- so that document state becomes UNREACHABLE, not "some other position". A
+    // position at or behind `applied` counts only surviving entries and keeps its meaning (C21).
+    // Getting this wrong is silent data loss rather than a stale asterisk: isClean() is the sole
+    // definition of dirty (D3), so a false CLEAN also switches off guardFor's unsaved-changes prompt.
+    if (cleanPosition.has_value() && *cleanPosition > applied) {
+        cleanPosition = std::nullopt;
+    }
     history.erase(history.begin() + static_cast<std::ptrdiff_t>(applied), history.end());  // AC-3
 
     if (mergeOpen && applied > 0 && history[applied - 1]->mergeWith(*command)) {

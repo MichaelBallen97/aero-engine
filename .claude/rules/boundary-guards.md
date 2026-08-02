@@ -55,7 +55,19 @@ enforcement that does not exist.
   vacuously. Use `(^|[^a-zA-Z0-9_])` instead.
 - Every guard needs an **anti-vacuity canary**: prove the scan actually found and
   traversed something, not that it passed because it matched nothing. Check the
-  *combined* set is non-empty, never a per-root count or roster.
+  *combined* set is non-empty, never a **hardcoded** per-root count or roster — a root
+  that is legitimately empty today (`runtime/`) would fail a correct tree.
+- **Non-empty is not the same as complete, and only the second one is the guard's job.**
+  A scan set narrowed to one subsystem still passes "combined set is non-empty" while
+  every other subsystem silently becomes a blind spot. Measured in the Phase 2 audit:
+  narrowing `check-scene-boundary.sh`'s `HEADER_GLOB` to `engine/scene/include/*` took
+  the scan from 51 files to 8 and the guard still exited 0 with its usual OK banner —
+  the same false-green the 2.1.2 review found in `check-golden-rule.sh`'s `SCAN_ROOTS`,
+  reached through the glob instead. So also assert **coverage**, with both sides derived
+  from the tree (`check-scene-boundary.sh` / `check-platform-boundary.sh` self-test 1b
+  are the pattern): a subsystem that ships nothing never enters the expected set, so
+  unlike a hardcoded roster it cannot fail on a correct tree. Never derive the
+  expectation from the value under test — that is circular and agrees with any narrowing.
 - Scan every declared root. A multi-root scan whose second root is empty today
   (`runtime/`) will rot silently green — seed a violation against each root in tests.
 

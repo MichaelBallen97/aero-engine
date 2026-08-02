@@ -227,6 +227,20 @@ struct FileFlow {
     bool quitConfirmed = false;             // OUT to tick() (A10)
 };
 
+// Is some MODAL surface currently the owner of input? True while a native dialog is in flight, the
+// unsaved-changes modal is up, or the New Project modal is up.
+//
+// THE single definition (Phase 2 audit). It used to be written out by hand at each site, and
+// shell_ui.cpp's banner already named what a disagreement costs -- 2.5.1's BLOCKING-2, where a chord
+// reached AskWhereToSave while the modal was up and launched a SECOND native dialog on top of it.
+// The audit then found the drift had happened again, the other way round: `fileEnabled` gated every
+// File chord and NEITHER history chord, so a reflex Ctrl+Z behind the unsaved-changes modal mutated
+// the World that modal was still asking the user about -- answer "Save" and the editor writes a
+// document that was never on screen. Anything that can discard or rewrite work checks THIS, and
+// nothing re-derives it. Declared here rather than in shell_ui.hpp because `applyFileRequests` needs
+// it too and shell_ui.hpp is src-private.
+[[nodiscard]] bool modalInputActive(const FileFlow& flow, const ProjectFlow& projectFlow) noexcept;
+
 // Read `path`, parse, and on success swap the scene and set `session`'s path. Returns true iff the
 // scene was replaced. LOGS: one ERROR on any failure (naming the path, plus line/column when
 // line > 0); one INFO on success carrying the four SceneLoadReport counts; one additional WARN iff

@@ -62,8 +62,7 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // depth: the chords stay quiet AND the state machine refuses the request even if something else
     // got past this check, e.g. a raw `request*()` call). The 2.5.1 code-review round's BLOCKING-2 is
     // the standing evidence of what a disagreement between the two definitions costs.
-    const bool fileEnabled =
-        fileMenu.flow.dialog == DialogKind::None && !fileMenu.flow.confirmOpen && !fileMenu.project.flow.form.open;
+    const bool fileEnabled = !modalInputActive(fileMenu.flow, fileMenu.project.flow);
     if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, FILE_SHORTCUT_FLAGS)) {
         fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
     }
@@ -77,10 +76,18 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // macOS (imgui.h:1735 + the AddKeyEvent swap at imgui.cpp:1894). The two chords cannot cross-fire:
     // a chord requires an EXACT 4-bit mod match (imgui.cpp:11386, `g.IO.KeyMods != mods`), so this
     // order is documentation, not arbitration.
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, HISTORY_SHORTCUT_FLAGS)) {
+    //
+    // `fileEnabled` gates these too (Phase 2 audit). RouteGlobal is granted with NO modal test at all
+    // -- `CalcRoutingScore` (imgui.cpp:10326), the same fact 2.5.1's BLOCKING-2 turned on for the File
+    // chords -- and an ungated Ctrl+Z mutates the World behind a modal that is still asking about the
+    // PRE-undo document. Answer that modal "Save" and the editor writes a scene the user never saw;
+    // the same leak lets Ctrl+Shift+Z re-create content behind the New Project form after its guard
+    // was already answered. History is not File, but it discards and rewrites work just the same, so
+    // it takes the same gate.
+    if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, HISTORY_SHORTCUT_FLAGS)) {
         state.undoRequested = true;
     }
-    if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, HISTORY_SHORTCUT_FLAGS)) {
+    if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, HISTORY_SHORTCUT_FLAGS)) {
         state.redoRequested = true;
     }
     // Ctrl+Y is DELIBERATELY NOT bound (D13): ImGuiMod_Ctrl is Cmd on macOS, so a global Ctrl+Y would
@@ -179,7 +186,9 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             undoText += ' ';
             undoText += label;
         }
-        if (ImGui::MenuItem(undoText.c_str(), "Ctrl+Z", false, commands.canUndo())) {
+        // `fileEnabled` for the same reason the chords take it (Phase 2 audit): a modal owns the
+        // input, so the history must not move underneath it. Drawn disabled rather than hidden.
+        if (ImGui::MenuItem(undoText.c_str(), "Ctrl+Z", false, fileEnabled && commands.canUndo())) {
             state.undoRequested = true;
         }
         std::string redoText = "Redo";
@@ -187,7 +196,7 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             redoText += ' ';
             redoText += label;
         }
-        if (ImGui::MenuItem(redoText.c_str(), "Ctrl+Shift+Z", false, commands.canRedo())) {
+        if (ImGui::MenuItem(redoText.c_str(), "Ctrl+Shift+Z", false, fileEnabled && commands.canRedo())) {
             state.redoRequested = true;
         }
         ImGui::Separator();

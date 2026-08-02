@@ -91,6 +91,13 @@ git ls-files -z '*.cpp' | xargs -0 -r -n1 clang-tidy -p build/macos-debug --warn
 
 ## Status
 
-Planning complete. Phase 0 (Foundations & First Triangle) in progress — epic 0.1 (build & CI bootstrap) done; epic 0.2 (`core`) under way — `aero::core` arrived with 0.2.1 (handles) and became the first *compiled* engine target with 0.2.4 (logging).
+**Phase 2 (The Editor Shell) is complete in code.** All six of its epics have landed: ImGui docking and the app shell, the five core panels (hierarchy, reflection-driven inspector, viewport, asset browser, log/console), manipulation (editor camera, picking, ImGuizmo gizmos), undo/redo, scene save/load, and the project system.
+
+- **Phase 0** — Foundations & First Triangle: complete in code, macOS-validated; Windows/Linux on-hardware sign-off pending.
+- **Phase 1** — Reflection, ECS & Serialization: complete; the `reflect-gen` codegen spine and JSON scene format are in.
+- **Phase 2** — The Editor Shell: every epic closed in code and macOS human-validated. Windows/Linux human passes, and the phase's gate artifact (`samples/phase-2-editor-scene/`), remain owed.
+- **Next:** Phase 3 (Assets & Rendering), starting with task 3.1.1 — GUIDs and `.meta` files.
+
+Per-task engineering history — what each task shipped, what it deliberately left out, and the dead ends never to retry — lives in [docs/10-engineering-log.md](./docs/10-engineering-log.md).
 
 Live task tracking lives in Notion — [**Aero Engine — Build Tracker**](https://app.notion.com/p/39b120678cf1810dbd89cd87ca594ed2) (Phases → Epics → Tasks/subtasks). These docs are the source of truth for scope and architecture; Notion tracks execution.

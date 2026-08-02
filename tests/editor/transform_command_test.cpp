@@ -298,3 +298,46 @@ TEST_CASE("transform_command: interleaved entities do not merge (T9)") {
     CHECK(*readTransform(w, a) == aBefore);
     CHECK(*readTransform(w, b) == bBefore);
 }
+
+// T10 (Phase 2 audit): a stale incoming command does not merge.
+//
+// `mergeWith`'s own comment scoped its safety precisely -- the guard "could never be false in this
+// task ... The first task that can write a Transform from outside the drag loop must add it (E9/H7)."
+// That task landed immediately afterwards: 2.4.2's SetFieldCommand writes Transform.position /
+// rotation / scale from the Inspector, Transform being one reflected component among five. The
+// handoff was recorded and never re-read, which is the failure mode -- three review rounds each
+// caught a defect in the code and none caught a claim about the code that had stopped being true.
+//
+// Merging keeps OUR before and takes THEIR after. That is only sound while the two are contiguous:
+// if anything wrote the Transform between the two commands, our `before` skips that write, and undo
+// restores a value the entity never held.
+TEST_CASE("transform_command: a command whose before does not continue ours never merges (T10/E9/H7)") {
+    engine::Transform a;
+    a.position = {0.0F, 0.0F, 0.0F};
+    engine::Transform b;
+    b.position = {1.0F, 0.0F, 0.0F};
+    engine::Transform outside;
+    outside.position = {50.0F, 0.0F, 0.0F};  // an Inspector edit, a script, a future timeline scrub
+    engine::Transform d;
+    d.position = {2.0F, 0.0F, 0.0F};
+
+    const engine::Entity target{1U, 1U};
+
+    SUBCASE("contiguous: the next frame of the SAME drag still merges (AC-14 is not weakened)") {
+        engine::editor::TransformCommand drag(target, a, b);
+        const engine::editor::TransformCommand nextFrame(target, b, d);
+        REQUIRE(drag.mergeWith(nextFrame));
+        CHECK(drag.before().position.x == doctest::Approx(0.0F));  // ours, kept
+        CHECK(drag.after().position.x == doctest::Approx(2.0F));   // theirs, taken
+    }
+
+    SUBCASE("stale: something wrote the Transform in between, so the chain is broken") {
+        engine::editor::TransformCommand drag(target, a, b);
+        const engine::editor::TransformCommand afterOutsideWrite(target, outside, d);
+        CHECK_FALSE(drag.mergeWith(afterOutsideWrite));
+        // Refusing leaves this command exactly as it was -- the caller records a second entry, so
+        // undo walks b -> a and the outside write keeps its own history entry.
+        CHECK(drag.before().position.x == doctest::Approx(0.0F));
+        CHECK(drag.after().position.x == doctest::Approx(1.0F));
+    }
+}

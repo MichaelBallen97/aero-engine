@@ -116,9 +116,23 @@ Subtasks:
 
 ## Epic 2.4 — Undo/redo · editor
 
-**Goal:** every editor mutation is a command; nothing mutates the scene directly. **Met at 2.4.2 — the
-only direct scene writes left under `editor/src/` are inside the three `_ops` TUs and the three command
-TUs.**
+**Goal:** every editor mutation is a command; **no panel ever writes the scene directly.** Met at
+2.4.2, and this is the form of the claim that is actually true: the only call sites of the
+`entity_ops` / `component_ops` / `transform_ops` mutators under `editor/src/` are their own TUs and
+their three command TUs, which is the AC-24 grep.
+
+*(Corrected by the Phase 2 audit. This used to read "the only direct scene writes left under
+`editor/src/` are inside the three `_ops` TUs and the three command TUs", and that enumeration was
+already false when it was written: `scene_snapshot.cpp` is a **seventh** mutating TU — it calls
+`recreate` / `destroy` / `setName` / `addRaw` / `setParent` directly, and shipped inside 2.4.2 itself
+— while `scene_session.cpp` (`world.clear()`, `seedDefaultScene`), `scene_io.cpp`
+(`scene_serialize::loadScene`) and `editor_app.cpp` (`seedDefaultScene`) each write the World as part
+of a whole-document swap that clears the CommandStack in the same operation, which is INV-6 and
+correct. **Nothing here is a code defect and nothing needs moving.** The lesson is the one the audit
+kept finding: three review rounds each caught a defect in the code and none caught a claim about the
+code that had stopped being true. A prose invariant with no guard behind it drifts silently — if the
+literal enumeration is worth asserting, it wants a script in `.github/scripts/` and a hermetic ctest
+case, the `check-project-no-delete.sh` shape.)*
 **Definition of Done:** any sequence of edits (property, structural, gizmo) undoes and redoes correctly.
 
 ### 2.4.1 Command stack · P0 · M · depends: 2.1.3, 2.3.3
