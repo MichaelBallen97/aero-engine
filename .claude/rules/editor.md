@@ -55,10 +55,18 @@ that way.
   panel added after that file was written has no settings entry, and ImGui free-floats it
   at a default position. Shipping the Project Settings panel did exactly that to every
   existing install. `placeUnplacedPanels` (`shell_ui.cpp`) closes it: on the first drawn
-  frame of a restored layout it docks **only** the panels the ini has never heard of, into
+  frame of a restored layout it docks every registered panel that is **not docked**, into
   the node already hosting a panel that declares the *same* `defaultDockSlot()`, falling
-  back to the dockspace root. A panel the ini knows is never touched, wherever the user put
-  it. **Adding a panel therefore needs no layout migration of its own — provided it is
+  back to the dockspace root. **The test is `DockId != 0`, not "does the ini know this
+  panel" — that narrower predicate shipped first and helped nobody who mattered.** A panel
+  born floating writes a settings entry on quit (Pos/Size/Collapsed, and no `DockId` line at
+  all, since ImGui omits it when the id is 0), so on the next launch the ini *has* heard of
+  it and the narrow test skipped it, preserving an 81px sliver forever. A panel that **is**
+  docked is never touched, wherever the user dragged it — that is the promise that matters.
+  Accepted cost, stated rather than discovered later: a panel deliberately dragged out of the
+  dock is re-docked next launch, because ImGui records a deliberate float and a never-placed
+  panel identically and nothing in the ini separates them. Persistent floating needs its own
+  design, not a looser predicate. **Adding a panel therefore needs no layout migration of its own — provided it is
   registered before the first `tick()`**, as all six defaults are (`EditorApp::create`). The
   pass is a one-shot consumed on the first drawn frame, so a panel registered through
   `panels()` *later* (a dynamically opened tool window) is not covered by it and free-floats:
