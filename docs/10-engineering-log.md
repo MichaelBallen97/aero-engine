@@ -2425,3 +2425,172 @@ session. **A ride-along validation row on a task that already has twenty of its 
 done** — not through negligence, but because the tester is deep in that task's own checklist and an
 unrelated row at the end is the first thing dropped when the session runs long. Schedule cross-task
 validation debt separately, and make the blocker explicit so it is obvious when it clears.
+
+---
+
+## Phase 2 audit — whole-phase review (2026-08-02)
+
+**Scope:** every epic of Phase 2 (2.1–2.6) read end to end by seven parallel reviewers, one per
+subsystem, against the task specs, the local plans, and this log's own entries. Everything below was
+independently verified in the source before being acted on; a reviewer's claim was never taken on
+trust. Mechanical baseline at the start: 95/95 ctest with `AERO_REQUIRE_GPU=1` on macos-debug and
+macos-release, 6/6 tools-OFF, 19/19 reflect-OFF, CI green on `main` at `90d812f`, and CLAUDE.md's
+test-inventory numbers (363/384/23/22/48) accurate to the case.
+
+### The headline: the phase was in genuinely good shape, and had two silent data-loss paths
+
+Both were in the *seams between* well-built subsystems, not in any subsystem itself — which is
+exactly what a per-task review cannot see and a whole-phase read can.
+
+**1. `CommandStack::isClean()` reported CLEAN over a document that shared nothing with the file.**
+`push()` step 3 erases the redo branch, and that erase can destroy the entry `cleanPosition` denotes.
+`trimToCapacity` already reasons about this hazard for the *eviction* path (AC-9/E17) and gets it
+right; truncation is the same hazard reached from the other end, and nothing handled it. Save, undo
+past the save point, make two new edits: `applied` returns to its saved value while counting entirely
+different commands. Because `isClean()` is the sole definition of dirty (D3, deliberately no second
+copy), that one wrong bool switched off the title's marker, the Save item **and** `guardFor`'s
+unsaved-changes prompt simultaneously — File ▸ New/Open, `⌘Q` and the window [X] then discarded the
+work with no prompt at all. Fixed by invalidating the mark when the erase destroys it. **C21 is the
+load-bearing test, not C20:** it pins that truncation *forward* of a still-reachable clean position
+must KEEP it, so the fix cannot degrade into marking everything dirty forever. A fix for a
+false-clean is trivially "achievable" by never reporting clean; only the second test forbids that.
+
+**2. The undo/redo chords fired behind modals.** `fileEnabled` gated every File chord and neither
+history chord. ImGui grants `RouteGlobal` with no modal test at all (`CalcRoutingScore`) — the exact
+fact 2.5.1's BLOCKING-2 turned on for the File chords. So a reflex `⌘Z` behind the unsaved-changes
+modal mutated the World that modal was still asking about; answering "Save" wrote a document that was
+never on screen. **The fix that matters is not the two `&&`s** — it is that the condition had been
+written out by hand in two places, and `shell_ui.cpp`'s own banner already named what a disagreement
+between them costs. Extracted as `modalInputActive` (SS36), so the shell's chords, the Edit items and
+`applyFileRequests`' refusal all read one definition.
+
+### The pattern worth keeping: reviews catch defects in code, not claims about code
+
+Three prior review rounds each found a real defect. **None found a sentence that had stopped being
+true**, and the audit found four:
+
+- **Epic 2.4's goal** claimed "the only direct scene writes left under `editor/src/` are inside the
+  three `_ops` TUs and the three command TUs". False when written: `scene_snapshot.cpp` is a
+  *seventh* mutating TU and shipped inside 2.4.2 itself. (Three further sites write the World as part
+  of a whole-document swap that clears the stack in the same operation — INV-6, correct.) No code was
+  wrong. Restated as the form that is true *and* greppable: no panel writes the scene directly.
+- **`TransformCommand::mergeWith`'s absent guard** carried its own trigger condition in a comment:
+  "the first task that can write a Transform from outside the drag loop must add it (E9/H7)." That
+  task was the very *next* one — 2.4.2's `SetFieldCommand` writes `Transform` from the Inspector —
+  and the handoff went unread for four tasks. Merging a stale pair silently records an undo step
+  restoring a value the entity never held. Guard added, T10 pins both directions.
+- **CLAUDE.md and docs/04 said "five architecture guards"** when six exist, and CLAUDE.md's
+  enumeration named two that do **not exist as scripts** (audio-boundary, runtime-purity) while
+  omitting three that do.
+- **README's Status section** was two whole phases behind, telling every visitor to the public repo
+  that Phase 0 was still in progress.
+
+**A prose invariant with no guard behind it drifts silently, and nothing goes red.** Where the
+literal enumeration is worth asserting, it wants a script plus a hermetic ctest case — the
+`check-project-no-delete.sh` shape.
+
+### Two false-greens in the mechanical gate itself
+
+**`cancel-in-progress: true` applied to pushes on `main`,** where every push shares one ref, so
+back-to-back merges cancelled each other. Measured, not theorised: `96f06a4` (PR #63's merge) and
+`a8b296ab` (PR #60's merge) are both on `main` with **no completed CI run**. "main is always green"
+had quietly become "green at the tip", which is not what a bisect needs — and this repo merges small
+PRs back to back, so it was the normal case, not a corner. Scoped the cancel to `pull_request`.
+
+**Four guards asserted their scan set was non-empty, never that it covered anything.** Measured
+directly: narrowing `check-scene-boundary.sh`'s `HEADER_GLOB` from `engine/*/include/*` to
+`engine/scene/include/*` — a plausible edit, the guard is *named* scene-boundary — took the scan from
+51 files to 8, and the guard still exited 0 printing its usual OK banner, with a real `entt::` leak in
+`engine/core/include/` now invisible. This is precisely the class 2.1.2's review found in
+`check-golden-rule.sh`'s `SCAN_ROOTS` ("OK — 80 tracked sources scanned", a lie); the lesson was
+applied forward to `check-project-no-delete.sh` but **never applied backward**, so the four guards
+written before the lesson are the four that still had it.
+
+Self-test 1b (scene + platform) asserts coverage with **both sides derived from the tree**, which is
+what keeps it clear of `boundary-guards.md`'s standing ban on a hardcoded per-root roster: a
+subsystem shipping no public header never enters the expected set, so unlike a roster it cannot fail
+on a correct tree. The left side deliberately does **not** reuse `HEADER_GLOB` — deriving the
+expectation from the value under test is circular and agrees with any narrowing. Proven both
+directions: clean tree exits 0 at 51 files, narrowed glob exits 2 naming the seven uncovered
+subsystems. `check-math-boundary.sh` and `check-rhi-boundary.sh` have the same shape of hole and are
+**not** fixed here (their scan sets are an extension list and a root list, not a subsystem glob) —
+open, and recorded below.
+
+### The project root was never made absolute
+
+`ProjectSession::root()` and `RecentProjects::paths` are both documented "absolute, normalized", and
+`set()`/`promoteRecent()` both *name their parameter* `absoluteRootUtf8` — four statements of one
+contract, enforced nowhere: `absolute()`/`weakly_canonical()` appeared nowhere under `editor/`.
+`main.cpp` passes `argv[1]` verbatim, so `aero_editor MyGame` wrote the literal string `MyGame` into
+the machine-wide recents file; launched later from a different directory (or from Finder, whose CWD
+is `/`) that entry resolves to a **different project** — the outcome `editor_app.cpp`'s own comment
+calls "worse than showing Welcome" — or to nothing, while `promoteRecent`'s byte-dedup keeps it as a
+second row for one project. Phase 3's AssetDatabase scans `paths.assets` off this same root.
+
+Resolved in `loadProjectFrom` and `createProject`, where a value *becomes* a root, and deliberately
+**not** inside `projectRootFromPath`: on Windows `/a/b` is rooted but **not absolute**, so doing it
+there would rewrite that function's normalization contract on one platform only and break the P35
+expectations on the MSVC lane alone. That is PR #60's standing lesson applied *before* the Windows
+lane found it rather than after. `absolute` rather than `weakly_canonical`, so a project reached
+through a symlink is not silently recorded under its target.
+
+### Open, deliberately not fixed here
+
+Ranked. Everything below was confirmed in the source; none is speculative.
+
+1. **`placeUnplacedPanels`' fallback docks to the dockspace ROOT, which on a restored layout is a
+   split node.** `DockBuilderDockWindow` on a not-yet-created window takes the settings branch and
+   writes `DockId` verbatim; `DockContextBindNodeToWindow` then sees a split node, undocks, and zeroes
+   `DockId` — so the fallback branch, the one the comment calls the safety net, is the one that cannot
+   work, and the ini degrades each launch. Reachable today when a slot's panels are *all* floating.
+   I26 never exercises it (its fixture always leaves Inspector docked). **Not fixed deliberately:**
+   this is the third defect in this exact code path, and the first two attempts (PRs #62, #63) each
+   shipped a wrong predicate — #62 "fixed nothing on the reporting machine". A fourth blind change to
+   ImGui docking, verifiable only by a human looking at a window, is how that sequence repeats. Fix
+   with the central-node dig plus a second I26 fixture (new panel, no placed slot-mate, split root),
+   and confirm on the machine.
+2. **`Selection::prune()` and `RootOrder::reconcile()` are called only from `HierarchyPanel::onDraw`**
+   — flagged independently by two reviewers. The shell skips `onDraw` whenever the panel is hidden,
+   collapsed, or tabbed behind another, so with the Hierarchy tabbed behind Assets nothing prunes.
+   Contained today only because every consumer re-guards with `alive()`. Belongs in `EditorApp::tick()`,
+   the Asset-Browser reconcile precedent.
+3. **`aero_editor_shell_test` is 390 cases behind one ctest entry.** One ASan abort kills every later
+   case and reports as a single failure — the S9/S10 cascade in 2.6.2's entry is the consequence, not
+   the cause. `tests/CMakeLists.txt` already sanctions `doctest_discover_tests`.
+4. **Both tools-OFF configurations are load-bearing and verified only by hand, per task.** The
+   cheapest closure is one extra Linux Debug lane: it needs no LLVM and skips the shadercross
+   bootstrap, so it is the *fastest* job in the matrix. Prefer it to a weekly schedule, which reports
+   that a configuration broke sometime in the last seven merges.
+5. **Neither the Hierarchy nor the Asset Browser's tree pane uses `ImGuiListClipper`**, while
+   `console_panel` and the Asset Browser's *contents* pane both do — an internal inconsistency, and
+   the Asset Browser additionally allocates a `std::string` per row per frame and never evicts its
+   listing cache. Phase 3.1.3 inherits both verbatim.
+6. **`writeTextFileAtomic` is atomic against process death, not machine death** — no `fsync` on the
+   temp file or the parent directory before/after the rename, while `text_file.hpp` advertises ATOMIC
+   unqualified. A power loss can land the rename without the data, replacing a good scene with a
+   truncated one after the user was told the save succeeded.
+7. **`ConsolePanel::applyPending` — the single mutating step the four-phase split exists for — has no
+   automated coverage**, nor does `LogHistory::appendAll`, whose `batch.clear()` postcondition keeps
+   `LogSink::take`'s debug assert true.
+8. **`check-project-no-delete.sh` has a transitive hole:** `createProject` reaches
+   `std::filesystem::remove`/`rename` one call away, inside `writeTextFileAtomic`, in a file the guard
+   never scans. Correct today (it touches only the temp path); the *promise* is narrower than it reads.
+9. **S11 is closable.** `createProject`'s `WriteFailed` branch is reachable under a POSIX
+   `RLIMIT_FSIZE` of 0: the directory creates succeed (no file data) and the 152-byte manifest write
+   fails, landing the branch with `assets/` and `scenes/` already on disk — which is exactly D7/INV-P4's
+   "nothing is removed" property, on the one branch that has never been proven.
+10. The recents cap is applied only on promote, so a hand-edited file of N entries is read and
+    rendered in full every frame. The pure parser's leniency is deliberate (E13) — cap in the loader.
+
+### Deliverables
+
+**The gate artifact `samples/phase-2-editor-scene/` does not exist**, and by the deliverable rule a
+phase without one is not finished. It cannot be fabricated here: the requirement is a scene *built in
+the editor by a human*, which is the whole point. Together with the Windows/Linux human passes — still
+zero for every Phase 2 task — that is the honest remaining Phase 2 debt. No git tags exist either,
+though docs/04 specifies `phase-0-complete` and Phases 0 and 1 are done.
+
+**Verification for this audit's own changes:** six guards green, 95/95 macos-debug and 95/95
+macos-release with `AERO_REQUIRE_GPU=1`, 6/6 tools-OFF, 19/19 reflect-OFF, clang-format and
+clang-tidy clean on every changed file (three real format violations were caught locally and fixed
+before commit — a local format pass never predicts CI, and this time it did not predict itself).
