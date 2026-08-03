@@ -2662,6 +2662,19 @@ watcher are the real answers); a `Copy GUID` context-menu item and any issues-li
 teaching `reflect-gen` to serialize a `Guid` field (3.4.x's — adding it now would be a reflection
 change with no consumer, and ADR-004's spine is untouched by this task).
 
+**One KNOWN DEFECT is carried forward deliberately, and it is 3.1.2's to close** (full statement in
+the code-review-round entry below): a symlinked directory inside the assets tree makes one physical
+file reachable via two relative paths, so it gets two records, a duplicate GUID, and a repair that
+rewrites the *shared* sidecar — which means **D6's zero-write property never holds for that tree and
+the asset's identity changes on every scan**. It is noisy rather than silent (one repair WARN per
+scan), and it needs `assets/link -> assets/real` to trigger, but it is a real identity-churn path.
+Both correct fixes were outside this task's scope: physical-identity dedup needs
+`<filesystem>` canonical/equivalent, which AC-30/INV-A6 forbid in `asset_database.cpp`, or 2.2.4's
+documented D13 ("a symlinked asset folder behaves like a real one") has to change. **3.1.2 is the
+right owner because it introduces the content hash** — with it, two paths hashing identically are
+provably the same content, which is the same primitive D8's orphan re-attachment needs. Do not close
+it by weakening the duplicate-repair rule; the repair is correct, the double-discovery is the bug.
+
 **Four findings from the build itself, recorded because they are the point, not colour:**
 
 1. **The `MAX_ASSETS` coverage gap, accepted deliberately.** AD23 drives `listDirectory`'s cheaper
