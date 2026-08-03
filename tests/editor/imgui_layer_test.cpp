@@ -2776,3 +2776,166 @@ TEST_CASE("editor: a registered panel that is not DOCKED in a restored layout ge
     std::error_code ec;
     std::filesystem::remove(iniFile, ec);
 }
+
+// ---- I27-I29: task 3.1.1's asset scan, driven through real frames -------------------------------
+// EVERY case below opts OUT of restoring the last project AND redirects the recents-file WRITE, the
+// SAME two-part discipline I18/I21-I26 use -- opening a project during create() (I27/I28/I29) or
+// swapping it at runtime (I28) both dirty the recents list, flushed on the very next tick(), and
+// `restoreLastProject = false` alone only ever suppresses the READ (BLOCKING-2, 2.6.1 code review).
+
+TEST_CASE("editor: the asset scan runs on open and the key space lines up (task 3.1.1, I27/AC-34/AC-35/AC-39/A16)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "asset scan i27", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    const std::string assetsRoot = created.root + "/assets";
+    const std::array<std::string, 3> leaves{"a.txt", "b.txt", "c.txt"};
+    for (const std::string& leaf : leaves) {
+        std::string assetPath = assetsRoot;
+        assetPath += "/";
+        assetPath += leaf;
+        REQUIRE(engine::editor::writeTextFileAtomic(assetPath, "hello").empty());
+    }
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(app->assetCount() == 3);
+    // A16: the panel's root and the database's root are the SAME string by construction -- this is
+    // the only reason `AssetBrowserPanel::selectedEntry` (relative to the panel's root) is a valid
+    // `AssetDatabase::findByPath` key. Proven directly, in the same case as the GUIDs below.
+    CHECK(app->assetBrowserRoot() == assetsRoot);
+    for (const std::string& leaf : leaves) {
+        std::string metaPath = assetsRoot;
+        metaPath += "/";
+        metaPath += leaf;
+        metaPath += ".meta";
+        CHECK(engine::editor::fileExists(metaPath));
+        const std::optional<engine::Guid> guid = app->assetGuidForPath(leaf);
+        REQUIRE(guid.has_value());
+        CHECK(guid->valid());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the asset scan follows a runtime project swap, one tick later (task 3.1.1, I28/AC-34, seed S22)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "asset scan i28", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string locationA = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome createdA = engine::editor::createProject(locationA, "GameA", "0.1.0");
+    REQUIRE(createdA.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(createdA.root + "/assets/only_in_a.txt", "a").empty());
+
+    const std::string locationB = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome createdB = engine::editor::createProject(locationB, "GameB", "0.1.0");
+    REQUIRE(createdB.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(createdB.root + "/assets/only_in_b.txt", "b").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = createdA.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    CHECK(app->assetGuidForPath("only_in_a.txt").has_value());
+
+    app->requestOpenProject(createdB.root);
+    // A8/I21's identical one-tick lag, restated for the database: the reconcile runs at the TOP of
+    // tick(), BEFORE drawShellUi()'s applyFileRequests() performs the swap -- so the FIRST tick after
+    // the request still reconciles against the PRE-swap project. One more plain tick is what makes the
+    // swap observable. This is the ONLY case a seed dropping the reconcile block reddens -- I27
+    // constructs with the correct root already and never exercises the reconcile at all.
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(app->assetGuidForPath("only_in_b.txt").has_value());
+    CHECK_FALSE(app->assetGuidForPath("only_in_a.txt").has_value());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: requestAssetRescan drives a manual rescan the Refresh button cannot reach from here "
+    "(task 3.1.1, I29/AC-38)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "asset scan i29", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    CHECK(app->assetCount() == 1);
+
+    // A file dropped on disk AFTER the scan is invisible until something asks for a rescan -- there is
+    // no filesystem watcher yet (3.1.4's deliverable). The panel's own Refresh button cannot be
+    // clicked from this ImGui-free-at-source TU, so requestAssetRescan() is the only mechanically
+    // drivable channel -- the requestUndo()/requestLayoutReset() shape, consumed on the very next
+    // tick() (no A8 lag: the flag is read at the TOP of tick(), before any swap-related processing).
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/second.txt", "two").empty());
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    CHECK(app->assetCount() == 2);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

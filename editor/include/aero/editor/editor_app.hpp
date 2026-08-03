@@ -4,11 +4,16 @@
 // registry, and the frame clock, and turns the loop into a callable tick() (run() is
 // `while (tick()) {}`), which is what makes it drivable N-frames-at-a-time from a test.
 
+#include <aero/core/guid.hpp>  // task 3.1.1: assetGuidForPath()'s return type (AC-39)
 #include <aero/core/time.hpp>
-#include <aero/editor/command_stack.hpp>  // a VALUE member needs the definition (the selection.hpp /
-                                          // panel_registry.hpp precedent), unlike panel_context.hpp,
-                                          // which holds a reference and forward-declares.
-#include <aero/editor/entity_ops.hpp>     // a VALUE member (rootOrder) needs RootOrder's definition
+#include <aero/editor/asset_database.hpp>  // task 3.1.1: a VALUE member (assetDatabase) needs the
+                                           // definition -- the command_stack.hpp/entity_ops.hpp
+                                           // precedent below. Transitively brings project_files.hpp,
+                                           // already a public editor header, ImGui/entt/<filesystem>-free.
+#include <aero/editor/command_stack.hpp>   // a VALUE member needs the definition (the selection.hpp /
+                                           // panel_registry.hpp precedent), unlike panel_context.hpp,
+                                           // which holds a reference and forward-declares.
+#include <aero/editor/entity_ops.hpp>      // a VALUE member (rootOrder) needs RootOrder's definition
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/scene_session.hpp>  // task 2.5.1: VALUE members SceneSession/FileFlow need the
@@ -187,6 +192,11 @@ public:
     // on disk after the run.
     [[nodiscard]] std::size_t recentProjectCount() const noexcept;
 
+    // ---- task 3.1.1: the asset scan. The black-box signature the GPU cases need, exactly the reason
+    // assetBrowserRoot() (2.6.1 A9) and recentProjectCount() (2.6.1 code review) exist. ----
+    [[nodiscard]] std::size_t assetCount() const noexcept;
+    [[nodiscard]] std::optional<Guid> assetGuidForPath(std::string_view relativePath) const noexcept;
+
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
     // Same effect as Edit > Undo / Ctrl+Z (Cmd+Z on macOS), applied on the NEXT tick -- the
@@ -219,6 +229,13 @@ public:
     void requestOpenProject(std::string_view path);  // guarded, NO dialog -- the D15 test seam
     void requestClearRecentProjects() noexcept;
 
+    // task 3.1.1 (AC-38): the requestUndo()/requestLayoutReset() shape -- applied on the NEXT tick,
+    // drained in the SAME reconcile expression as AssetBrowserPanel::takeRescanRequest(). This is what
+    // makes the request channel drivable through real frames from the ImGui-free
+    // aero_editor_imgui_test, which cannot click the panel's own Refresh button (it is ImGui-free at
+    // source).
+    void requestAssetRescan() noexcept;
+
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
@@ -245,10 +262,16 @@ private:
     bool redoRequested = false;
     World sceneWorld;
     Selection sceneSelection;
-    CommandStack commandStack;  // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
-                                // stays valid. command_stack.hpp's two static_asserts hold that line.
-    RootOrder rootOrder;        // task 2.4.2, D10 (accessor: roots()). entity_ops.hpp's two static_asserts
-                                // hold the same noexcept-move guarantee for this member.
+    CommandStack commandStack;          // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
+                                        // stays valid. command_stack.hpp's two static_asserts hold that line.
+    RootOrder rootOrder;                // task 2.4.2, D10 (accessor: roots()). entity_ops.hpp's two static_asserts
+                                        // hold the same noexcept-move guarantee for this member.
+    AssetDatabase assetDatabase;        // task 3.1.1 (D12) -- reconciled in tick(), never pushed. Own six
+                                        // static_asserts (asset_database.hpp) hold the noexcept-move
+                                        // guarantee this member needs.
+    GuidGenerator assetGuids{0};        // task 3.1.1 -- replaced in create() by fromEntropy(); one uint64,
+                                        // so this does not affect EditorApp's own `noexcept = default` move.
+    bool assetRescanRequested = false;  // task 3.1.1 (AC-38) -- consumed by the next tick()'s reconcile
     // Non-owning; owned by `registry`, which holds panels through unique_ptr -- so the Panel object
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.
