@@ -76,8 +76,21 @@ private:
     std::filesystem::path dirPath;
 };
 
+// A path built from UTF-8 BYTES, never from a narrow std::string: std::filesystem::path's
+// narrow-char constructor assumes the ACTIVE CODE PAGE on Windows, not UTF-8, so an emoji leaf
+// (U+1F680 -- four UTF-8 bytes, a UTF-16 surrogate pair) is written under a MANGLED name there while
+// resolving fine on macOS/Linux, where narrow paths already are UTF-8. This is `pathFromUtf8`
+// (project_files.cpp:29) and `TempDir::write` (project_files_test.cpp:69) in the test tier -- the
+// product code was always correct; only these helpers were not. Windows CI caught it on AD30, which
+// is the ONLY case here whose leaf leaves ASCII (2.2.4's own F18 case uses U+00DF, a BMP character
+// that survives a round trip through many code pages, so it never discriminated this).
+[[nodiscard]] std::filesystem::path pathOf(std::string_view utf8) {
+    const std::u8string bytes(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
+    return std::filesystem::path(bytes);
+}
+
 void writeFile(std::string_view absolutePath, std::string_view bytes) {
-    std::ofstream out(std::filesystem::path(std::string(absolutePath)), std::ios::binary | std::ios::trunc);
+    std::ofstream out(pathOf(absolutePath), std::ios::binary | std::ios::trunc);
     REQUIRE(static_cast<bool>(out));
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
@@ -90,8 +103,7 @@ struct Stat {
 
 [[nodiscard]] Stat statOf(std::string_view absolutePath) {
     std::error_code ec;
-    const std::string pathText(absolutePath);
-    const std::filesystem::path path{pathText};
+    const std::filesystem::path path = pathOf(absolutePath);
     Stat stat;
     stat.exists = std::filesystem::exists(path, ec) && !ec;
     if (!stat.exists) {
@@ -227,8 +239,8 @@ TEST_CASE("asset_database: a second rescan of a fully-described tree writes NOTH
     std::error_code aBackdateEc;
     std::error_code bBackdateEc;
     const auto backdated = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
-    std::filesystem::last_write_time(std::filesystem::path(dir.join("a.png.meta")), backdated, aBackdateEc);
-    std::filesystem::last_write_time(std::filesystem::path(dir.join("b.png.meta")), backdated, bBackdateEc);
+    std::filesystem::last_write_time(pathOf(dir.join("a.png.meta")), backdated, aBackdateEc);
+    std::filesystem::last_write_time(pathOf(dir.join("b.png.meta")), backdated, bBackdateEc);
     REQUIRE_FALSE(aBackdateEc);
     REQUIRE_FALSE(bBackdateEc);
 
@@ -551,7 +563,7 @@ TEST_CASE("asset_database: a listDirectory-level cap propagates into `truncated`
 
 TEST_CASE("asset_database: depth beyond MAX_TREE_DEPTH sets depthLimited (AD24, E23, seed S20)") {
     const TempDir dir;
-    std::filesystem::path deep(dir.utf8());
+    std::filesystem::path deep = pathOf(dir.utf8());
     std::error_code ec;
     // MAX_TREE_DEPTH is 32; build 34 nested directories so the walk is guaranteed to exceed it.
     for (int i = 0; i < 34; ++i) {
@@ -669,8 +681,7 @@ TEST_CASE("asset_database: x.meta and x.META both present -- byte-first wins, ot
     writeFile(dir.join("x.png.meta"), body);
 
     std::error_code ec;
-    std::filesystem::copy_file(std::filesystem::path(dir.join("x.png.meta")),
-                               std::filesystem::path(dir.join("x.png.META")), ec);
+    std::filesystem::copy_file(pathOf(dir.join("x.png.meta")), pathOf(dir.join("x.png.META")), ec);
     if (ec) {
         // A case-INSENSITIVE filesystem collapsed the second write onto the first -- skip cleanly,
         // never a failure (plan §S3, step 3): there is only ever one file here on such a filesystem.
