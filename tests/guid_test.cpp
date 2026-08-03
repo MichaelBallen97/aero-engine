@@ -9,6 +9,7 @@
 
 #include <doctest/doctest.h>
 
+#include <array>  // GU17's std::array<char, 33> -- reached transitively on libc++, not on MSVC (813bc4d)
 #include <cstdint>
 #include <optional>
 #include <set>
