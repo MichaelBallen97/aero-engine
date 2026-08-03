@@ -60,6 +60,8 @@ set(_nd_clean_body "// harmless, no delete/rename/copy call here\nvoid noop() {}
 _nd_seed("editor/src/project.cpp"      "${_nd_clean_body}")
 _nd_seed("editor/src/project_file.cpp" "${_nd_clean_body}")
 _nd_seed("editor/src/project_ui.cpp"   "${_nd_clean_body}")
+_nd_seed("editor/src/asset_meta.cpp"     "${_nd_clean_body}")
+_nd_seed("editor/src/asset_database.cpp" "${_nd_clean_body}")
 
 # --- Stage 1: clean tree -> exit 0. Silently proves the three self-tests pass too. -----------------
 _nd_run("stage 1 (clean)" 0 "${BASH}" "${SCRIPT}")
@@ -93,11 +95,28 @@ _nd_run("stage 5 (comment-only, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
 _nd_expect_substr("stage 5" "${_nd_out}" "project-no-delete guard: OK" TRUE)
 _nd_seed("editor/src/project.cpp" "${_nd_clean_body}")
 
-# --- Stage 6: canary -- one of the three named files goes missing -> exit 2. Vacuity refusal,
-# distinct from both 0 and 1. -------------------------------------------------------------------------
-file(REMOVE "${WORK_DIR}/src/editor/src/project_ui.cpp")
+# --- Stage 6: canary -- one of the FIVE named files goes missing -> exit 2. Vacuity refusal, distinct
+# from both 0 and 1. Retargeted (task 3.1.1) to one of the two files the widening added, so the
+# widening itself -- not just the original three -- is what the canary proves. -----------------------
+file(REMOVE "${WORK_DIR}/src/editor/src/asset_database.cpp")
 execute_process(COMMAND "${GIT}" -C "${WORK_DIR}/src" add -A)
 _nd_run("stage 6 (file missing)" 2 "${BASH}" "${SCRIPT}")
 _nd_expect_substr("stage 6" "${_nd_out}" "cannot self-verify" TRUE)
+_nd_seed("editor/src/asset_database.cpp" "${_nd_clean_body}")
+_nd_run("stage 6 (restored)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 7 (task 3.1.1): std::filesystem::remove seeded in asset_database.cpp -> exit 1. -----------
+_nd_seed("editor/src/asset_database.cpp" "void bad() { std::error_code ec; std::filesystem::remove(\"x\", ec); }\n")
+_nd_run("stage 7 (remove, asset_database.cpp)" 1 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 7" "${_nd_out}" "editor/src/asset_database.cpp:1" TRUE)
+_nd_seed("editor/src/asset_database.cpp" "${_nd_clean_body}")
+_nd_run("stage 7 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 8 (task 3.1.1): remove_all seeded in asset_meta.cpp -> exit 1. -----------------------------
+_nd_seed("editor/src/asset_meta.cpp" "void bad() { std::error_code ec; std::filesystem::remove_all(\"x\", ec); }\n")
+_nd_run("stage 8 (remove_all, asset_meta.cpp)" 1 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 8" "${_nd_out}" "editor/src/asset_meta.cpp:1" TRUE)
+_nd_seed("editor/src/asset_meta.cpp" "${_nd_clean_body}")
+_nd_run("stage 8 (cleaned)" 0 "${BASH}" "${SCRIPT}")
 
 message(STATUS "project-no-delete.no_delete_e2e: OK")
