@@ -20,11 +20,15 @@ find_package(glm CONFIG REQUIRED)
 # wrong fails at configure time, not build time.
 find_package(enkiTS CONFIG REQUIRED)
 
+# task 3.1.1 appends src/guid.cpp -- the Guid value type's text codec and entropy seed need a TU
+# (the vfs.cpp precedent). NO find_package and NO link entry: <random>, <chrono> and <atomic> are
+# standard library, exactly like 0.2.6's <filesystem>/<fstream>.
 add_library(aero_core STATIC
     src/log.cpp
     src/math/glm_backend.cpp
     src/jobs.cpp
     src/vfs.cpp
+    src/guid.cpp
 )
 add_library(aero::core ALIAS aero_core)
 
