@@ -27,7 +27,7 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 │  engine/          (5 platforms)                           │
 │                                                            │
 │  script/    quickjs-ng · bindings · hot reload            │
-│  assets/    AssetDatabase · GUIDs · cache                 │
+│  assets/    AssetDatabase · import cache · loaders        │
 │  scene/     EnTT · transforms · cameras · lights          │
 │  render/    render graph · PBR · shadows · culling        │
 │  physics/   Jolt wrapper                                  │
@@ -52,14 +52,17 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 
 ```
 /engine
-  /core        memory, handles, jobs, log, math (own types), VFS, time
+  /core        memory, handles, guid, jobs, log, math (own types), VFS, time
   /platform    SDL3 wrapper: window, input, audio device
   /rhi         abstraction over SDL_GPU
   /render      render graph, PBR, shadows, post, culling
   /scene       EnTT world, transform hierarchy, cameras, lights
   /physics     Jolt wrapper
   /audio       graph (public) → miniaudio backend (private)
-  /assets      AssetDatabase, GUIDs, cache, loaders
+  /assets      AssetDatabase, import cache, loaders
+               (the `Guid` value type lives in /engine/core beside Handle -- it is a
+               zero-dependency primitive that scene, render, script and runtime all need;
+               task 3.1.1 D1)
   /script      quickjs-ng, bindings, hot reload
   /reflect     entt::meta runtime (the GENERATOR lives in /tools)
 
@@ -173,6 +176,7 @@ Source (.blend / .fbx / .obj / .png / .wav / .ts)
         ▼
 glTF + .meta (GUID, import settings)
    ← the .meta goes to git; it is what keeps the GUID stable across machines
+   ← created by the editor's AssetDatabase (task 3.1.1); format in docs/09 §5
         │
         │  COOKER  (per platform)
         ▼
@@ -186,6 +190,12 @@ Cooked binary
         ▼
 game.pak  +  precompiled runtime  =  final build
 ```
+
+**There are ultimately two asset databases, and they are worth naming as such so this is not
+re-derived in three months.** The editor's (task 3.1.1, source-tree-backed, `.meta`-driven, scans a
+project's `assets/` folder and gives every source file a stable GUID) and the runtime's (Phase 5,
+`.pak`-backed, reads a cooked, packaged binary). They share the `Guid` value type — `/engine/core` —
+and nothing else: different storage, different lifetime, different consumers.
 
 ---
 
