@@ -201,11 +201,12 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # registered (ctest -N stays 95/6/19, AC-33).
 find_package(Threads REQUIRED)
 # task 3.1.1 joins this target with editor/asset_meta_test.cpp (the .meta v1 format + the pure
-# planner, cases AM1-AM27/AP1-AP14/AG1-AG5). UNCONDITIONAL, for the same reason project_test.cpp/
-# project_settings_test.cpp are: asset_meta.hpp depends on nothing but <aero/core/guid.hpp>, so it
-# inherits that gate-free property (D4/AC-17/INV-P5). Must be PRESENT in the reflect-OFF build, not
-# skipped -- prove it with --list-test-cases. Tier-0: no GPU, no window, no ImGui context. The link
-# line is UNCHANGED and no new ctest entry is registered (ctest -N stays 95/6/19, AC-46).
+# planner, cases AM1-AM27/AP1-AP14/AG1-AG5) and, in Step 3, editor/asset_database_test.cpp (the walk,
+# cases AD1-AD30 + AG6). UNCONDITIONAL, for the same reason project_test.cpp/project_settings_test.cpp
+# are: neither TU depends on reflection, so both inherit that gate-free property (D4/AC-17/INV-P5).
+# Both must be PRESENT in the reflect-OFF build, not skipped -- prove it with --list-test-cases.
+# Tier-0: no GPU, no window, no ImGui context. The link line is UNCHANGED and no new ctest entry is
+# registered (ctest -N stays 95/6/19, AC-46).
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -215,7 +216,7 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/scene_snapshot_test.cpp editor/structural_commands_test.cpp
                editor/scene_session_test.cpp editor/project_test.cpp
                editor/project_settings_test.cpp
-               editor/asset_meta_test.cpp)
+               editor/asset_meta_test.cpp editor/asset_database_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
