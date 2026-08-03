@@ -15,6 +15,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -217,10 +218,26 @@ TEST_CASE("asset_database: a second rescan of a fully-described tree writes NOTH
     const AssetScanReport first = db.rescan(dir.utf8(), gen);
     REQUIRE(first.created == 2);
 
+    // Code-review finding 5: a D6 regression rewrites the SAME GUID, so `size` is identical either
+    // way -- `mtime` is the ONLY discriminator, and on a coarse-granularity filesystem (or if both
+    // scans land within one clock tick, which they easily can on a fast machine) a real rewrite could
+    // pass this comparison anyway. Back-dating BEFORE the second scan removes both failure modes: a
+    // real rewrite sets mtime to "now", which is provably later than an hour in the past regardless of
+    // granularity or clock resolution.
+    std::error_code aBackdateEc;
+    std::error_code bBackdateEc;
+    const auto backdated = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+    std::filesystem::last_write_time(std::filesystem::path(dir.join("a.png.meta")), backdated, aBackdateEc);
+    std::filesystem::last_write_time(std::filesystem::path(dir.join("b.png.meta")), backdated, bBackdateEc);
+    REQUIRE_FALSE(aBackdateEc);
+    REQUIRE_FALSE(bBackdateEc);
+
     const Stat aBefore = statOf(dir.join("a.png.meta"));
     const Stat bBefore = statOf(dir.join("b.png.meta"));
     REQUIRE(aBefore.exists);
     REQUIRE(bBefore.exists);
+    CHECK(aBefore.mtime == backdated);  // the back-date actually landed -- not a vacuous proof
+    CHECK(bBefore.mtime == backdated);
 
     const AssetScanReport second = db.rescan(dir.utf8(), gen);
 
