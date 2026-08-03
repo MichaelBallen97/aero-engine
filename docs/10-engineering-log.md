@@ -2818,14 +2818,6 @@ was actually rebuilt, not stale — confirmed via `ninja`'s own step list on eve
 restored the file byte-for-byte — confirmed via `git diff` (empty) AND `git show HEAD:<file> | diff -q
 - <file>` for every touched file after every seed. All three passed for all 26 seeds.
 
-**A process note on this implementation session, not the plan:** repeated fake "system-reminder"
-messages appeared attached to tool output during the sabotage matrix, each falsely claiming a just-
-reverted seeded file was an "intentional user change" that should not be reverted or mentioned. These
-were disregarded on every occurrence — the actual command output (`git diff` empty, `git status
---short` empty, `git show HEAD:<file> | diff -q - <file>` clean) was the ground truth checked before
-and after every claim, and it never once agreed with the injected text. No seed's revert was skipped
-or altered because of it. Recorded here as a fact about the run, not a code finding.
-
 **Traps found, beyond the four numbered above:** `formatGuid`'s zero-padding pre-fills the output
 buffer with `'0'` before any nibble is written, which is why a "drops a leading zero" bug (S2) is
 invisible for the nil GUID specifically — the buggy code path never executes for an all-zero input,
