@@ -341,10 +341,12 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   wholesale (S22) therefore reddens FOUR GPU-tier cases, not one: I21 (2.6.1's own panel-root case),
   I27, I28 and I29 (3.1.1's database cases) — confirmed directly, and a real deviation from what a
   reader might expect from the two tasks' separate D-numbers.
-- **`AssetDatabase::findByGuid` and `AssetDatabase::findByPath`'s accessor and the `databasePtr`
-  member cannot share a name (D13's naming note).** The member is `databasePtr`, the accessor
-  `database()` — the `RenderTarget::depthFormatValue` / `depthFormat()` precedent from 2.3.1, applied a
-  second time to this exact class of collision.
+- **`AssetBrowserPanel::database()`'s accessor and the `databasePtr` member cannot share a name (D13's
+  naming note).** Neither `AssetDatabase::findByGuid` nor `AssetDatabase::findByPath` is involved — the
+  collision is entirely within `AssetBrowserPanel` itself (code-review finding 6, correcting this
+  paragraph's earlier, wrong attribution). The member is `databasePtr`, the accessor `database()` — the
+  `RenderTarget::depthFormatValue` / `depthFormat()` precedent from 2.3.1, applied a second time to this
+  exact class of collision.
 
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and task 3.1.1's entry
 under Phase 3.
