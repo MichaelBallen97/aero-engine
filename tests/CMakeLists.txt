@@ -200,6 +200,12 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # no GPU, no window, no ImGui context. The link line is UNCHANGED and no new ctest entry is
 # registered (ctest -N stays 95/6/19, AC-33).
 find_package(Threads REQUIRED)
+# task 3.1.1 joins this target with editor/asset_meta_test.cpp (the .meta v1 format + the pure
+# planner, cases AM1-AM27/AP1-AP14/AG1-AG5). UNCONDITIONAL, for the same reason project_test.cpp/
+# project_settings_test.cpp are: asset_meta.hpp depends on nothing but <aero/core/guid.hpp>, so it
+# inherits that gate-free property (D4/AC-17/INV-P5). Must be PRESENT in the reflect-OFF build, not
+# skipped -- prove it with --list-test-cases. Tier-0: no GPU, no window, no ImGui context. The link
+# line is UNCHANGED and no new ctest entry is registered (ctest -N stays 95/6/19, AC-46).
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -208,7 +214,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/command_stack_test.cpp editor/transform_command_test.cpp
                editor/scene_snapshot_test.cpp editor/structural_commands_test.cpp
                editor/scene_session_test.cpp editor/project_test.cpp
-               editor/project_settings_test.cpp)
+               editor/project_settings_test.cpp
+               editor/asset_meta_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -227,7 +234,12 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # reads the file's OWN SOURCE TEXT as a mechanical proof instead -- the same textual-grep principle
     # the five CI architecture guards already use, just run as a doctest case rather than a lint-job
     # script. A path, not a flag: a missing file is a REQUIRE failure, never a silent skip.
-    AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src")
+    AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src"
+    # task 3.1.1: the two committed asset-meta fixtures reach the UNGATED asset_meta_test.cpp. Same
+    # rule as AERO_PROJECT_FIXTURES_DIR above (2.5.2's D8, third application): not optional, not
+    # #ifdef-guarded. AG1-AG5 use describeMismatch's context window and never dumpActual, so nothing
+    # here writes anywhere and `ctest -j` has no collision surface at all.
+    AERO_ASSET_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/assets")
 # MOVED OUT of the if(AERO_REFLECT_TOOLS) block below, where task 2.5.2 put it: project_test.cpp is
 # UNGATED and includes tests/scene_golden_support.hpp, so this include root must exist in EVERY
 # configuration. The aero_editor_imgui_test precedent is at :106.

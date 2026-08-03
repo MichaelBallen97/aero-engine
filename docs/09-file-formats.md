@@ -63,9 +63,9 @@ off a cycle it is not itself part of) are hard errors.
 
 Ids carry **no cross-file or session stability promise** in v1: they are not GUIDs and not runtime
 handles. Task 1.4.2's loader maps `id -> live entity` in a load-time table and discards the table once
-the scene is instantiated. Asset-grade, cross-file-stable identity is the future `.meta` GUID system's
-job (Phase 2+) — upgrading scene entity ids to something GUID-like, if that is ever needed, is exactly
-the kind of breaking change the version field exists to gate.
+the scene is instantiated. Asset-grade, cross-file-stable identity is task 3.1.1's `.meta` GUID
+system's job (section 5) — upgrading scene entity ids to something GUID-like, if that is ever needed,
+is exactly the kind of breaking change the version field exists to gate.
 
 The **save** direction (task 1.4.2's `saveWorld`) assigns file ids `1..N` in the `World`'s entity
 iteration order. Entity `name`s **do** persist (task 2.2.1): the `World` stores an optional,
@@ -282,8 +282,11 @@ entities**, and a `parent` reference that was forward can become backward. A one
 therefore produces a whole-file diff. This is the behaviour today and it is pinned by a test.
 Stabilizing entity order across edits is a format-level decision — a stable sort key, a hierarchy
 walk, or persistent per-entity ids — with a migration question attached and an interaction with the
-future `.meta` GUID system (§2.2); it is unowned, and should be scoped before Phase 3's asset
-database makes scene diffs a daily concern.
+`.meta` GUID system (§2.2, §5). **Answered inline rather than deferred further (task 3.1.1):** it
+stays **unowned**. Phase 3's `AssetDatabase` (§5) gives *asset* files a stable cross-machine identity;
+it does not touch scene entity ids, and this task deliberately does not adopt that open question just
+because it landed in the same phase (2.2.5's lesson: do not attach an unrelated open item to a task
+that already has its own full surface). It remains scoped for whoever picks it up next.
 
 ## 3. Versioning & evolution
 
@@ -465,8 +468,92 @@ one WARN, an empty list, the editor keeps running — with one exception: an ind
 array element is skipped and the rest of the list is kept, so one corrupt row never costs the whole
 file. No golden fixtures; this format has no byte-stability requirement any caller depends on.
 
-## 5. Reserved for future formats
+## 5. Asset meta format v1
 
-- **`.meta` (asset GUID sidecars)** — Phase 2. Section appends here.
+> Enforced in code by `editor/src/asset_meta.cpp` (the pure parse/write/lifecycle half) and
+> `editor/src/asset_database.cpp` (the `<filesystem>`-and-disk half, task 3.1.1);
+> `tests/editor/asset_meta_test.cpp` and `tests/editor/asset_database_test.cpp` are its
+> machine-checkable form, including a two-fixture golden battery (§5.7) mirroring §4.8's design.
+
+### 5.1 Envelope
+
+One `.meta` per source asset, named `<full source file name>.meta`, in the same directory. Two root
+keys, in this exact order on save.
+
+| Key | Kind | Required | Rule | Error |
+|---|---|---|---|---|
+| `version` | number, integral | yes | must equal `1` | §5.4 |
+| `guid` | string | yes | exactly 32 hex digits, any case; must not be nil | §5.4 |
+
+`version` is validated first. Unknown root keys are WARNed (by the caller) and ignored, collected in
+document order.
+
+### 5.2 Identity
+
+The GUID is 128 random bits, minted once when the asset is first discovered and never changed. It is
+**not** an RFC 4122 UUID and carries no version or variant bits. The all-zero value is the reserved
+none sentinel and is never valid inside a `.meta`. Canonical text is 32 lowercase hex digits, high 64
+bits first; readers accept any case, writers always emit lowercase.
+
+### 5.3 Lifecycle
+
+> A `.meta` is written in exactly two situations: when an asset has none, and when two assets claim
+> one GUID. A valid `.meta` is never rewritten. An invalid one is never overwritten. A `.meta` whose
+> asset is gone is never deleted. Identity is preserved across a move or rename by the sidecar
+> travelling with the asset; an editor operation that moves an asset must move its sidecar in the same
+> operation.
+
+### 5.4 Error catalog
+
+Mirrors §4.7's shape; JSON-stage errors pass through with position, every other stage carries zeros.
+
+| Stage | Message |
+|---|---|
+| JSON | *(verbatim from the JSON parser, with position)* |
+| Envelope | `asset meta root must be a JSON object (found <kind>)` |
+| Envelope | `missing required key "version"` |
+| Envelope | `"version" must be an integer (found <kind-or-lexeme>)` |
+| Envelope | `unsupported asset meta format version <N> (this build reads version 1)` |
+| Envelope | `missing required key "guid"` |
+| Envelope | `"guid" must be a string (found <kind>)` |
+| Envelope | `"guid" must be 32 hexadecimal digits (found "<value>")` |
+| Envelope | `"guid" must not be the nil GUID` |
+
+Success-only warnings (document order, caller-emitted; the parser never logs):
+
+| Warning |
+|---|
+| `editor: asset meta '<relative path>' -- ignoring unknown key "<k>"` |
+
+### 5.5 Worked example
+
+The exact **65 bytes** a creation writes:
+
+```json
+{
+  "version": 1,
+  "guid": "a3f1c07e5b8d42198e6f0c3d7a2b4b92"
+}
+```
+
+### 5.6 Canonicalization
+
+§1's policy, unchanged. Key order fixed, never sorted by content.
+
+### 5.7 Golden fixtures
+
+`tests/fixtures/assets/` — content pins with **no regeneration path whatsoever** (§2.7/§4.8's design,
+third application), plus §4.8's standing warning restated: bytes are necessary and never sufficient,
+so every byte-fixpoint case is paired with a semantic case that reads the fixture without re-deriving
+it.
+
+### 5.8 Scope of v1
+
+Directories carry no `.meta`. Import settings, content hashes and dependency records are 3.1.2's and
+will arrive as additive root keys, which do **not** bump the version — and which are safe from an
+older reader precisely because §5.3 forbids rewriting a valid sidecar.
+
+## 6. Reserved for future formats
+
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
   applies unchanged. Section appends here.

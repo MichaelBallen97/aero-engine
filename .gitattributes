@@ -21,6 +21,12 @@ samples/phase-1-scene/scene.json text eol=lf
 *.project.json text eol=lf
 project.json   text eol=lf
 
+# Golden asset-meta fixtures are compared BYTE-FOR-BYTE by tests/editor/asset_meta_test.cpp
+# (task 3.1.1), and the database writes real .meta files into test temp directories whose bytes the
+# same battery compares. Unlike *.scene.json / *.project.json, ONE pattern suffices: `*.meta`
+# matches both `minimal.meta` and `wood.png.meta`. Verify with `git check-attr text eol -- <path>`.
+*.meta text eol=lf
+
 # Binary asset types (extended as asset work lands in Phase 3+)
 *.png binary
 *.jpg binary
