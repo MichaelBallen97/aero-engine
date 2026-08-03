@@ -27,6 +27,32 @@ void appendCapped(std::vector<std::string>& list, std::string entry) {
     }
 }
 
+// ASCII-only, locale-independent. NEVER std::tolower(char): UTF-8 continuation bytes are NEGATIVE as
+// char, which is UB and trips bugprone-signed-char-misuse (project_files.cpp:44-46's precedent,
+// copied TU-locally like every other file in this task that needs it -- asset_meta.cpp, project.cpp,
+// console_model.cpp -- there is no shared header for a two-line function).
+constexpr unsigned char foldAscii(unsigned char c) noexcept {
+    return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + ('a' - 'A')) : c;
+}
+
+// Code-review finding 2: the write-conflict guard's own comparator. Full-string, ASCII-case-
+// insensitive, no allocation -- deliberately unconditional on every platform (D7's "one rule, no
+// exceptions" reasoning): on a case-SENSITIVE filesystem this is merely conservative (two distinct
+// files never collide at the OS level, so refusing the write costs an identity this session but
+// destroys nothing); on a case-INSENSITIVE one it is what stops the destructive write from
+// happening at all.
+bool equalsAsciiCaseInsensitive(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (foldAscii(static_cast<unsigned char>(a[i])) != foldAscii(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 const std::string& AssetDatabase::root() const noexcept { return rootUtf8; }
@@ -93,6 +119,16 @@ AssetScanReport AssetDatabase::rescan(std::string newRootUtf8, GuidGenerator& ge
     // are both gone by the time it returns. Populated here, consulted in phase 5.
     std::unordered_map<std::string, Guid> onDiskGuidByPath;
     std::unordered_map<std::string, std::string> invalidReasonByPath;
+    // Code-review finding 2: every orphan's relative path, UNCAPPED -- report.orphans itself is
+    // capped at MAX_REPORTED_PER_CATEGORY and must never be the source of truth for a safety check.
+    // Consulted in phase 5, before any Created/Repaired write.
+    std::vector<std::string> allOrphanPaths;
+    const auto recordOrphan = [&](std::string_view dirRelPath, std::string_view metaName) {
+        std::string path = joinRelative(dirRelPath, metaName);
+        appendCapped(report.orphans, path);
+        ++report.orphanTotal;
+        allOrphanPaths.push_back(std::move(path));
+    };
 
     std::vector<std::string> stack;  // explicit stack of PENDING relative directory paths -- misc-no-recursion
     stack.emplace_back();            // "" == the root, already listed above (phase 1) -- never re-listed
@@ -172,8 +208,7 @@ AssetScanReport AssetDatabase::rescan(std::string newRootUtf8, GuidGenerator& ge
                 if (candidate == winner) {
                     continue;
                 }
-                appendCapped(report.orphans, joinRelative(dirRel, dirMetas[candidate]->name));
-                ++report.orphanTotal;
+                recordOrphan(dirRel, dirMetas[candidate]->name);
             }
 
             planEntry.metaPresent = true;
@@ -209,8 +244,7 @@ AssetScanReport AssetDatabase::rescan(std::string newRootUtf8, GuidGenerator& ge
         // on disk, untouched.
         for (std::size_t i = 0; i < dirMetas.size(); ++i) {
             if (!metaConsumed[i]) {
-                appendCapped(report.orphans, joinRelative(dirRel, dirMetas[i]->name));
-                ++report.orphanTotal;
+                recordOrphan(dirRel, dirMetas[i]->name);
             }
         }
 
@@ -232,11 +266,43 @@ AssetScanReport AssetDatabase::rescan(std::string newRootUtf8, GuidGenerator& ge
 
     // ---- phase 5: write and index ------------------------------------------------------------------
     records = std::move(plan.records);  // `plan.writeIndices` is a SEPARATE member -- still valid below
+    // Code-review finding 2: which indices got downgraded below -- consulted by the reporting loop so
+    // a conflict is reported exactly once, in report.writeConflicts, never doubled into
+    // report.invalidPaths too.
+    std::vector<bool> writeConflict(records.size(), false);
     for (const std::size_t index : plan.writeIndices) {
-        const AssetRecord& record = records[index];
+        AssetRecord& record = records[index];  // mutable: a conflict downgrades it below
+        const std::string metaRelPath = record.relativePath + std::string(ASSET_META_SUFFIX);
+
+        // D7/D8's "never destroy, never guess", extended to the write itself: a Created/Repaired
+        // write must never land on a path phase 3 already classified as an ORPHAN, compared
+        // ASCII-case-insensitively against the UNCAPPED list -- on a case-insensitive filesystem
+        // (APFS, NTFS -- most users) that write would silently replace a valid, unrelated orphaned
+        // sidecar (e.g. a case-only rename leaving `wood.png.meta` behind beside a new `Wood.png`)
+        // with a freshly-minted GUID, destroying a committed identity with no log, no guard and no
+        // test able to see it (the widened check-project-no-delete.sh guard cannot: this is a WRITE,
+        // not a `remove`). Checked on every platform, unconditionally (D7's "one rule, no
+        // exceptions"): on a case-SENSITIVE filesystem this is merely conservative.
+        const bool conflicts = std::any_of(
+            allOrphanPaths.begin(), allOrphanPaths.end(),
+            [&](const std::string& orphanPath) { return equalsAsciiCaseInsensitive(orphanPath, metaRelPath); });
+        if (conflicts) {
+            writeConflict[index] = true;
+            if (record.state == AssetMetaState::Created) {
+                --report.created;
+            } else if (record.state == AssetMetaState::Repaired) {
+                --report.repaired;
+            }
+            ++report.invalid;
+            record.state = AssetMetaState::Invalid;  // D7's posture: no identity this session
+            record.guid = Guid{};
+            appendCapped(report.writeConflicts, record.relativePath + ": collides with orphan '" + metaRelPath + "'");
+            ++report.writeConflictTotal;
+            continue;  // INV-A1 still holds: writeTextFileAtomic is not called for this record
+        }
+
         // INV-A1/AC-24: the ONE call site in the whole asset flow.
-        const std::string error = writeTextFileAtomic(
-            rootUtf8 + '/' + record.relativePath + std::string(ASSET_META_SUFFIX), writeMetaText(record.guid));
+        const std::string error = writeTextFileAtomic(rootUtf8 + '/' + metaRelPath, writeMetaText(record.guid));
         if (!error.empty()) {
             // A write failure does NOT abort the scan and removes nothing: the record keeps its
             // in-memory GUID (the editor stays usable) and the next scan retries.
@@ -251,7 +317,7 @@ AssetScanReport AssetDatabase::rescan(std::string newRootUtf8, GuidGenerator& ge
         if (record.state != AssetMetaState::Invalid) {
             byGuid.emplace_back(record.guid, index);  // INV-A7: an Invalid record is never reachable here
         }
-        if (record.state == AssetMetaState::Invalid) {
+        if (record.state == AssetMetaState::Invalid && !writeConflict[index]) {
             const auto reasonIt = invalidReasonByPath.find(record.relativePath);
             const std::string reason = (reasonIt != invalidReasonByPath.end()) ? (": " + reasonIt->second) : "";
             appendCapped(report.invalidPaths, record.relativePath + reason);

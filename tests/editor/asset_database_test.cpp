@@ -689,6 +689,54 @@ TEST_CASE("asset_database: x.meta and x.META both present -- byte-first wins, ot
     CHECK(report.orphans[0] == "x.png.meta");
 }
 
+TEST_CASE(
+    "asset_database: a Created write never lands on an orphan's path, case-insensitively (AD31, "
+    "code-review finding 2)") {
+    // The exact scenario from the finding: a case-only rename (wood.png -> Wood.png) leaves the old
+    // sidecar behind as a real, valid, ORPHANED .meta -- unconsumed because pairing is EXACT bytes
+    // (AC-19), so "wood.png.meta" never claims "Wood.png". Unlike AD29's x.meta/x.META, "Wood.png"
+    // and "wood.png.meta" are NOT case-variants of the same full name, so both coexist as distinct
+    // directory entries on ANY filesystem -- this case needs no case-insensitive-volume skip and must
+    // run everywhere (the finding's own requirement).
+    const TempDir dir;
+    writeFile(dir.join("Wood.png"), "w");
+    const std::string orphanBody = "{\n  \"version\": 1,\n  \"guid\": \"a3f1c07e5b8d42198e6f0c3d7a2b4b92\"\n}\n";
+    writeFile(dir.join("wood.png.meta"), orphanBody);
+
+    AssetDatabase db;
+    GuidGenerator gen(31);
+    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+
+    // The orphan is still reported, and its bytes are UNCHANGED -- the write that would have
+    // collided with it (case-insensitively) on disk never happened.
+    CHECK(report.orphanTotal == 1);
+    REQUIRE(report.orphans.size() == 1);
+    CHECK(report.orphans[0] == "wood.png.meta");
+    const auto onDisk = scene_golden::readBytes(dir.join("wood.png.meta"));
+    REQUIRE(onDisk.ok);
+    CHECK(onDisk.text == orphanBody);
+
+    // The conflict is reported in its OWN category, not folded into invalidPaths.
+    CHECK(report.writeConflictTotal == 1);
+    REQUIRE(report.writeConflicts.size() == 1);
+    CHECK(report.writeConflicts[0].find("Wood.png") != std::string::npos);
+    CHECK(report.invalidPaths.empty());
+
+    // "Wood.png" has no identity this session -- D7's own posture for an invalid sidecar (never Ok,
+    // never Created, no guid) -- and is counted among `invalid`, not `created`.
+    CHECK(report.created == 0);
+    CHECK(report.invalid == 1);
+    const AssetRecord* const record = db.findByPath("Wood.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->state == AssetMetaState::Invalid);
+    CHECK(record->guid == Guid{});
+    CHECK(db.findByGuid(record->guid) == nullptr);  // nil guid -> nullptr regardless (INV-A7)
+    // NOTE: no separate "Wood.png.meta was never written" check beyond the byte-identity assertion
+    // above -- on a case-INSENSITIVE filesystem, fileExists(".../Wood.png.meta") would read TRUE
+    // regardless (it resolves to the same entry as "wood.png.meta"), so it would prove nothing extra;
+    // the unchanged-bytes check already proves no write landed on that path.
+}
+
 TEST_CASE("asset_database: a non-ASCII filename round-trips end to end (AD30, E28)") {
     const TempDir dir;
     const std::string leaf = "\xF0\x9F\x9A\x80.png";  // an emoji leaf name

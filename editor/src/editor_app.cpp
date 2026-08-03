@@ -122,10 +122,16 @@ void logAssetScan(std::string_view root, const AssetScanReport& report) {
     }
     AERO_LOG_INFO("assets: '{}' -- {} files, {} .meta created, {} repaired, {} orphans, {} invalid", root,
                   report.filesSeen, report.created, report.repaired, report.orphanTotal, report.invalid);
-    logCappedWarn(root, "invalid asset meta file(s)", report.invalidPaths, report.invalid);
+    // report.invalid counts EVERY Invalid-state record, including one a write conflict downgraded
+    // (code-review finding 2) -- but that one is reported below, in its OWN category, never doubled
+    // into this one. Every write conflict increments BOTH counters exactly once, so subtracting is
+    // exact, not an estimate.
+    logCappedWarn(root, "invalid asset meta file(s)", report.invalidPaths, report.invalid - report.writeConflictTotal);
     logCappedWarn(root, "orphaned .meta file(s)", report.orphans, report.orphanTotal);
     logCappedWarn(root, "repaired duplicate GUID(s)", report.repairs, report.repaired);
     logCappedWarn(root, "asset meta write failure(s)", report.writeFailures, report.writeFailureTotal);
+    logCappedWarn(root, "write conflict(s) with an orphaned .meta file", report.writeConflicts,
+                  report.writeConflictTotal);
     logCappedWarn(root, "unknown key warning(s)", report.unknownKeyWarnings, report.unknownKeyTotal);
     if (report.truncated) {
         AERO_LOG_WARN("assets: '{}' -- scan truncated at the {} assets-seen cap (MAX_ASSETS)", root, MAX_ASSETS);

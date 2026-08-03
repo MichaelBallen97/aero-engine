@@ -28,6 +28,14 @@ struct AssetScanReport {
     std::vector<std::string> repairs;        // A9. capped; "<path>: <old guid> -> <new guid>"
     std::vector<std::string> writeFailures;  // capped; "<path>: <os reason>"
     std::size_t writeFailureTotal = 0;
+    // Code-review finding 2: a Created/Repaired write that would land on a path phase 3 already
+    // classified as an orphan (compared ASCII-case-insensitively) is refused rather than performed --
+    // on a case-insensitive filesystem that write would silently destroy the orphan's real, committed
+    // identity. The record involved is downgraded to AssetMetaState::Invalid with a nil guid (D7's own
+    // posture: no identity this session) and counted in `invalid`, not in `created`/`repaired`; capped;
+    // "<path>: collides with orphan '<meta path>'".
+    std::vector<std::string> writeConflicts;
+    std::size_t writeConflictTotal = 0;
     std::vector<std::string> unknownKeyWarnings;  // capped
     std::size_t unknownKeyTotal = 0;              // A9
     std::size_t skippedEntries = 0;               // A10 -- listDirectory::skipped, summed
