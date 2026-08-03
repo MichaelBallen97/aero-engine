@@ -33,19 +33,25 @@ const std::string& AssetDatabase::root() const noexcept { return rootUtf8; }
 std::size_t AssetDatabase::size() const noexcept { return records.size(); }
 
 const AssetRecord* AssetDatabase::findByPath(std::string_view relativePath) const noexcept {
-    const auto it = byPath.find(relativePath);
-    if (it == byPath.end()) {
+    // `records` is sorted byte-lexicographically by relativePath (planAssetMetas' own contract, AC-22)
+    // -- a std::lower_bound over the vector directly, never a std::string constructed from the
+    // std::string_view argument (that would allocate inside a noexcept function).
+    const auto it =
+        std::lower_bound(records.begin(), records.end(), relativePath,
+                         [](const AssetRecord& record, std::string_view path) { return record.relativePath < path; });
+    if (it == records.end() || it->relativePath != relativePath) {
         return nullptr;
     }
-    return &records[it->second];
+    return &*it;
 }
 
 const AssetRecord* AssetDatabase::findByGuid(Guid guid) const noexcept {
     if (!guid.valid()) {
         return nullptr;
     }
-    const auto it = byGuid.find(guid);
-    if (it == byGuid.end()) {
+    const auto it = std::lower_bound(byGuid.begin(), byGuid.end(), guid,
+                                     [](const std::pair<Guid, std::size_t>& entry, Guid g) { return entry.first < g; });
+    if (it == byGuid.end() || it->first != guid) {
         return nullptr;
     }
     return &records[it->second];
@@ -62,7 +68,6 @@ std::optional<Guid> AssetDatabase::guidForPath(std::string_view relativePath) co
 AssetScanReport AssetDatabase::rescan(std::string newRootUtf8, GuidGenerator& generator) {
     rootUtf8 = std::move(newRootUtf8);
     records.clear();
-    byPath.clear();
     byGuid.clear();
 
     AssetScanReport report;
@@ -240,11 +245,11 @@ AssetScanReport AssetDatabase::rescan(std::string newRootUtf8, GuidGenerator& ge
         }
     }
 
+    byGuid.reserve(records.size());
     for (std::size_t index = 0; index < records.size(); ++index) {
         const AssetRecord& record = records[index];
-        byPath.emplace(record.relativePath, index);
         if (record.state != AssetMetaState::Invalid) {
-            byGuid.emplace(record.guid, index);  // INV-A7: an Invalid record is never reachable here
+            byGuid.emplace_back(record.guid, index);  // INV-A7: an Invalid record is never reachable here
         }
         if (record.state == AssetMetaState::Invalid) {
             const auto reasonIt = invalidReasonByPath.find(record.relativePath);
@@ -259,6 +264,14 @@ AssetScanReport AssetDatabase::rescan(std::string newRootUtf8, GuidGenerator& ge
             appendCapped(report.repairs, record.relativePath + ": " + oldText + " -> " + formatGuid(record.guid));
         }
     }
+    // D9 guarantees every LIVE Guid is unique after planAssetMetas' repair pass, so this sort should
+    // never need to break a tie -- but a duplicate is handled deliberately, not assumed away: a STABLE
+    // sort preserves relativePath order among equal keys, so std::lower_bound's first match is the
+    // FIRST claimant by path, the same "first wins" rule std::unordered_map::emplace's silent-no-op-on
+    // -duplicate-key behaviour gave this method before the MSVC nothrow-move fallback replaced it.
+    std::stable_sort(
+        byGuid.begin(), byGuid.end(),
+        [](const std::pair<Guid, std::size_t>& a, const std::pair<Guid, std::size_t>& b) { return a.first < b.first; });
 
     return report;
 }

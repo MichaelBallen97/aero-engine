@@ -7,12 +7,11 @@
 #include <aero/editor/project_files.hpp>  // ScanStatus -- reused, never redeclared
 
 #include <cstddef>
-#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace engine::editor {
@@ -38,20 +37,6 @@ struct AssetScanReport {
     bool largeCreateNotice = false;               // A6 -- writeIndices > CREATE_NOTICE_THRESHOLD
 };
 
-// C++20 heterogeneous lookup (P0919R3): WITHOUT `is_transparent`, find(std::string_view) either
-// fails to compile or silently constructs a std::string -- which ALLOCATES, and an allocation
-// inside a noexcept function is a std::terminate path. Both accessors below are noexcept, so this
-// is load-bearing, not a micro-optimisation (plan A1).
-struct PathHash {
-    // is_transparent's spelling is fixed by the standard library's heterogeneous-lookup protocol
-    // (P0919R3) -- it cannot be renamed to fit this tree's naming convention.
-    // NOLINTNEXTLINE(readability-identifier-naming)
-    using is_transparent = void;
-    [[nodiscard]] std::size_t operator()(std::string_view path) const noexcept {
-        return std::hash<std::string_view>{}(path);
-    }
-};
-
 class AssetDatabase {
 public:
     [[nodiscard]] const std::string& root() const noexcept;
@@ -67,9 +52,17 @@ public:
 
 private:
     std::string rootUtf8;
-    std::vector<AssetRecord> records;  // sorted by relativePath
-    std::unordered_map<std::string, std::size_t, PathHash, std::equal_to<>> byPath;
-    std::unordered_map<Guid, std::size_t> byGuid;  // Invalid records ABSENT (INV-A7)
+    std::vector<AssetRecord> records;  // sorted by relativePath (planAssetMetas' own contract) --
+                                       // findByPath is a std::lower_bound over THIS vector directly.
+    // MSVC's std::unordered_map move CONSTRUCTOR is not noexcept (measured in CI: C2607 on the
+    // aggregate static_assert below, libc++/libstdc++ both hold, MSVC's STL does not) -- the
+    // documented fallback (plan A2 part 2), applied for real rather than staying theoretical. A
+    // sorted index vector is unconditionally nothrow-movable on all three standard libraries: no
+    // hash table, no bucket array, no allocator-equality question. Guid has operator< (AC-2), so
+    // std::lower_bound applies here exactly as it does to `records` above. Invalid records ABSENT
+    // (INV-A7); sorted by Guid, NOT by index -- rebuilt (sorted) once per rescan, not maintained
+    // incrementally.
+    std::vector<std::pair<Guid, std::size_t>> byGuid;
 };
 
 // F10 (editor_app.hpp): EditorApp's move is `noexcept = default`, so every value member must be
@@ -79,8 +72,7 @@ static_assert(std::is_nothrow_move_constructible_v<AssetDatabase>);
 static_assert(std::is_nothrow_move_assignable_v<AssetDatabase>);
 static_assert(std::is_nothrow_move_constructible_v<std::vector<AssetRecord>>);
 static_assert(std::is_nothrow_move_assignable_v<std::vector<AssetRecord>>);
-static_assert(
-    std::is_nothrow_move_assignable_v<std::unordered_map<std::string, std::size_t, PathHash, std::equal_to<>>>);
-static_assert(std::is_nothrow_move_assignable_v<std::unordered_map<Guid, std::size_t>>);
+static_assert(std::is_nothrow_move_constructible_v<std::vector<std::pair<Guid, std::size_t>>>);
+static_assert(std::is_nothrow_move_assignable_v<std::vector<std::pair<Guid, std::size_t>>>);
 
 }  // namespace engine::editor
