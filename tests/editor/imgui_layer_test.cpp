@@ -2953,8 +2953,9 @@ TEST_CASE(
 // `assetRescanRequested`, never as the right operand of an `||` whose left operand is
 // `assetRescanRequested` -- which is precisely the shape that let `||`'s short-circuit skip the call
 // (and therefore never drain the panel's flag) whenever `assetRescanRequested` was already true.
-TEST_CASE("editor_app: the reconcile drains the panel's rescan flag unconditionally (task 3.1.1, I30, "
-          "code-review finding 4)") {
+TEST_CASE(
+    "editor_app: the reconcile drains the panel's rescan flag unconditionally (task 3.1.1, I30, "
+    "code-review finding 4)") {
     constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/editor_app.cpp";
     const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
     REQUIRE(read.text.has_value());
