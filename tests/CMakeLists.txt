@@ -105,6 +105,13 @@ add_executable(aero_editor_imgui_test
 target_link_libraries(aero_editor_imgui_test PRIVATE
     doctest::doctest aero::editor_core aero::rhi aero::platform aero::core ${CMAKE_DL_LIBS})
 target_include_directories(aero_editor_imgui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # tests/ for rhi_test_support.hpp
+# code-review finding 4 (I30): the panel's own Refresh-button flag cannot be driven through a real
+# frame here (this target is ImGui-free at source and cannot synthesize a widget click -- the
+# AC-27/FileDialogHost precedent, the same reason PU1 in project_test.cpp reads project_ui.cpp's own
+# source text). I30 reads editor_app.cpp's own source text the identical way -- the
+# AERO_PROJECT_FIXTURES_DIR/AERO_EDITOR_SRC_DIR precedent, extended to this target for the first time.
+target_compile_definitions(aero_editor_imgui_test PRIVATE
+    AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src")
 add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 
 # ---------------------------------------------------------------------------------------------

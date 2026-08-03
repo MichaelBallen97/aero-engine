@@ -369,8 +369,13 @@ bool EditorApp::tick() {
     // opened during create()), since that mismatch never fires on tick 1.
     {
         std::string wanted = project.assetsRoot();
-        const bool refresh =
-            assetRescanRequested || (assetBrowserPanel != nullptr && assetBrowserPanel->takeRescanRequest());
+        // Code-review finding 4: `takeRescanRequest()` is DRAINED FIRST, unconditionally -- if it sat
+        // on the right of `assetRescanRequested ||` instead, `||`'s short-circuit would skip calling
+        // it whenever `assetRescanRequested` is already true, leaving the panel's own one-shot flag
+        // set and un-consumed. That flag would then survive this tick and trigger a SECOND, redundant
+        // synchronous scan next frame -- a real bug, not a style preference.
+        const bool panelRefresh = assetBrowserPanel != nullptr && assetBrowserPanel->takeRescanRequest();
+        const bool refresh = assetRescanRequested || panelRefresh;
         assetRescanRequested = false;
         if (assetDatabase.root() != wanted || refresh) {
             const AssetScanReport report = assetDatabase.rescan(std::move(wanted), assetGuids);

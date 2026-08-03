@@ -52,6 +52,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>   // I30: AERO_EDITOR_SRC_DIR's literal-concatenation target
 #include <system_error>  // std::error_code -- the non-throwing filesystem::remove overload
 #include <type_traits>   // task 2.4.2, I11: std::is_nothrow_move_constructible_v/assignable_v
 #include <vector>
@@ -2938,4 +2939,67 @@ TEST_CASE(
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ---- I30: code-review finding 4 -- the panel's OWN one-shot flag actually drains -----------------
+//
+// AssetBrowserPanel::takeRescanRequest() is only ever set by a real click on the Refresh button, and
+// this target is ImGui-free at source (it cannot synthesize a widget click -- the AC-27/FileDialogHost
+// precedent). There is therefore no way to drive the panel's flag to `true` through a real frame here
+// and observe the drain from the outside -- the exact reason `requestAssetRescan()` (EditorApp's OWN
+// flag) had to be invented for I29 above. What CAN be proven mechanically, the same way PU1
+// (project_test.cpp) proves ImGui::CloseCurrentPopup() bookkeeping no live test can drive: that
+// `takeRescanRequest()` is called and its result stored BEFORE it is combined with
+// `assetRescanRequested`, never as the right operand of an `||` whose left operand is
+// `assetRescanRequested` -- which is precisely the shape that let `||`'s short-circuit skip the call
+// (and therefore never drain the panel's flag) whenever `assetRescanRequested` was already true.
+TEST_CASE("editor_app: the reconcile drains the panel's rescan flag unconditionally (task 3.1.1, I30, "
+          "code-review finding 4)") {
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/editor_app.cpp";
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+    const std::string& text = *read.text;
+    REQUIRE_FALSE(text.empty());
+
+    // The regressed shape this proof must reject: `takeRescanRequest()` appearing on the SAME line as
+    // `assetRescanRequested ||` (the exact pattern the finding reported, whitespace notwithstanding).
+    // A textual scan line by line, since the fixed shape spreads the drain and the combine across two
+    // statements and the buggy shape fuses them into one.
+    std::vector<std::string_view> lines;
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        if (newline == std::string_view::npos) {
+            lines.push_back(remaining);
+            break;
+        }
+        lines.push_back(remaining.substr(0, newline));
+        remaining.remove_prefix(newline + 1U);
+    }
+
+    std::size_t combineLine = lines.size();
+    std::size_t drainLine = lines.size();
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const bool hasAssetRescanRequested = lines[i].find("assetRescanRequested") != std::string_view::npos;
+        const bool hasOr = lines[i].find("||") != std::string_view::npos;
+        const bool hasTake = lines[i].find("takeRescanRequest()") != std::string_view::npos;
+
+        // The regression: a single line combining BOTH the flag and the call is the short-circuit
+        // shape, regardless of which side it is written on -- `||` short-circuits its RIGHT operand.
+        INFO("line ", i, ": ", lines[i]);
+        REQUIRE_FALSE((hasAssetRescanRequested && hasOr && hasTake));
+
+        if (hasTake && drainLine == lines.size()) {
+            drainLine = i;  // FIRST occurrence -- the drain
+        }
+        if (hasAssetRescanRequested && hasOr && combineLine == lines.size()) {
+            combineLine = i;  // FIRST occurrence -- the combine
+        }
+    }
+
+    REQUIRE(drainLine != lines.size());
+    REQUIRE(combineLine != lines.size());
+    // The drain happens BEFORE the combine reads it -- proves the fix's ordering, not just the
+    // single-line negative check above (a belt-and-braces pair, the PU1 precedent again).
+    CHECK(drainLine < combineLine);
 }
