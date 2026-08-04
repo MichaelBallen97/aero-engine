@@ -14,6 +14,7 @@
 #include "asset_browser_panel.hpp"
 
 #include <aero/core/guid.hpp>
+#include <aero/editor/asset_cache.hpp>  // task 3.1.2: ImportChange, importChangeLabel() -- used directly below
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/panel_context.hpp>
@@ -70,6 +71,9 @@ void AssetBrowserPanel::setRoot(std::string rootPath) {
     // task 3.1.1: a rescan request recorded against the OLD root is meaningless against the new one --
     // EditorApp::tick() already rescans unconditionally on a root mismatch.
     rescanRequested = false;
+    // task 3.1.2 (A15): the SAME reasoning applies to a Reimport All request against the old root --
+    // 3.1.1's own easy-to-miss line, a second instance.
+    reimportRequested = false;
 }
 
 void AssetBrowserPanel::record(ActionKind kind, std::string path) { pending = PendingAction{kind, std::move(path)}; }
@@ -125,6 +129,16 @@ void AssetBrowserPanel::reconcile() {
 void AssetBrowserPanel::drawHeader() {
     if (ImGui::Button("Refresh")) {
         record(ActionKind::Refresh, {});  // D9: manual. A watcher is 3.1.4's deliverable.
+    }
+    // task 3.1.2 (§D-11): a second button, beside Refresh -- Reimport All is a strict superset (it also
+    // discards the committed import cache, AC-39). The panel still performs NO I/O (D7): the rescan
+    // itself runs in EditorApp::tick(), outside this draw walk, exactly like Refresh.
+    ImGui::SameLine();
+    if (ImGui::Button("Reimport All")) {
+        record(ActionKind::ReimportAll, {});
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Discard the import cache and re-hash every asset. Use this if the editor missed a change.");
     }
     ImGui::SameLine();
     // A LOCAL copy, never the member: INV-5 says only applyPending() writes showHidden.
@@ -412,6 +426,14 @@ void AssetBrowserPanel::drawFooter() {
                     } else {
                         labelScratch += elideGuid(rec->guid);
                     }
+                    // task 3.1.2 (§D-11): the import state, appended after the GUID segment -- STILL
+                    // inside this SAME `databasePtr != nullptr` block (a null database appends neither
+                    // segment, exactly as before). An invalid record has no identity, so it has no
+                    // import state either -- the footer already says "invalid .meta" for it above.
+                    if (rec != nullptr && rec->state != AssetMetaState::Invalid) {
+                        labelScratch += "  -  ";
+                        labelScratch += importChangeLabel(rec->change);
+                    }
                 }
             }
         }
@@ -465,6 +487,15 @@ void AssetBrowserPanel::applyPending() {
             showHidden = !showHidden;
             cache.clear();     // listings were filtered at SCAN time (D10), so the flag and the cache
             treeDirty = true;  // are ONE unit -- E11
+            break;
+        case ActionKind::ReimportAll:
+            // task 3.1.2 (A15): Reimport All is a strict superset of Refresh -- clear THIS panel's own
+            // listing cache (or it would render stale rows after the rescan) AND request the deeper,
+            // cache-discarding rescan via `reimportRequested`, NOT `rescanRequested`: EditorApp derives
+            // an ordinary refresh from a reimport request, never the other way around.
+            cache.clear();
+            treeDirty = true;
+            reimportRequested = true;
             break;
     }
 }

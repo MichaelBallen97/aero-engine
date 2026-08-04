@@ -16,6 +16,8 @@
 // presented, we take the proven visible path. The brief flash matches rhi_swapchain_test.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <aero/core/log.hpp>              // AERO_LOG_* + initLogging (cases B and C)
+#include <aero/editor/asset_cache.hpp>    // task 3.1.2: ImportChange, ASSET_CACHE_DIR_NAME/FILE_NAME/
+                                          // GITIGNORE_NAME -- I31's index-path/gitignore-path assertions
 #include <aero/editor/command_stack.hpp>  // task 2.4.1
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
@@ -3003,4 +3005,212 @@ TEST_CASE(
     // The drain happens BEFORE the combine reads it -- proves the fix's ordering, not just the
     // single-line negative check above (a belt-and-braces pair, the PU1 precedent again).
     CHECK(drainLine < combineLine);
+}
+
+// ---- I31-I33: task 3.1.2's import cache, driven through real frames -----------------------------
+// The SAME two-part discipline I27-I29 use: opt OUT of restoring the last project AND redirect the
+// recents-file WRITE (BLOCKING-2, restated a third time for a third task).
+
+TEST_CASE("editor: the import cache exists after the first scan and the second scan is free (task 3.1.2, I31)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import cache i31", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    const std::string assetsRoot = created.root + "/assets";
+    const std::array<std::string, 3> leaves{"a.txt", "b.txt", "c.txt"};
+    for (const std::string& leaf : leaves) {
+        std::string assetPath = assetsRoot;
+        assetPath += "/";
+        assetPath += leaf;
+        REQUIRE(engine::editor::writeTextFileAtomic(assetPath, "hello").empty());
+    }
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    // AC-35/D15: the first scan has nothing to compare against, so all 3 assets are New -- and the
+    // index is committed once, unconditionally, at the end of that first scan.
+    CHECK(app->assetCacheEntryCount() == 3);
+    CHECK(app->assetImportJobCount() == 3);
+
+    const std::filesystem::path indexPath = std::filesystem::path(created.root) /
+                                            std::string(engine::editor::ASSET_CACHE_DIR_NAME) /
+                                            std::string(engine::editor::ASSET_CACHE_FILE_NAME);
+    const std::filesystem::path gitignorePath = std::filesystem::path(created.root) /
+                                                std::string(engine::editor::ASSET_CACHE_DIR_NAME) /
+                                                std::string(engine::editor::ASSET_CACHE_GITIGNORE_NAME);
+    std::error_code existsEc;
+    REQUIRE(std::filesystem::exists(indexPath, existsEc));
+    REQUIRE_FALSE(existsEc);
+    REQUIRE(std::filesystem::exists(gitignorePath, existsEc));
+    REQUIRE_FALSE(existsEc);
+
+    std::error_code mtimeEc;
+    const std::filesystem::file_time_type mtimeBefore = std::filesystem::last_write_time(indexPath, mtimeEc);
+    REQUIRE_FALSE(mtimeEc);
+
+    // The panel's own Refresh button cannot be clicked from this ImGui-free-at-source TU -- I29's own
+    // channel, reused here for a PLAIN rescan (not a reimport): the second scan should find every asset
+    // already committed to the index and touch NOTHING on disk (D15's whole point).
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(app->assetImportJobCount() == 0);
+    const std::optional<engine::editor::ImportChange> change = app->assetImportChangeForPath("a.txt");
+    REQUIRE(change.has_value());
+    CHECK(*change == engine::editor::ImportChange::UpToDate);
+
+    const std::filesystem::file_time_type mtimeAfter = std::filesystem::last_write_time(indexPath, mtimeEc);
+    REQUIRE_FALSE(mtimeEc);
+    CHECK(mtimeBefore == mtimeAfter);  // D15: the second scan is FREE -- zero bytes written to the index
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: an edited asset is detected and the change is scoped to that file (task 3.1.2, I32)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import cache i32", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    const std::string assetsRoot = created.root + "/assets";
+    const std::array<std::string, 3> leaves{"a.txt", "b.txt", "c.txt"};
+    for (const std::string& leaf : leaves) {
+        std::string assetPath = assetsRoot;
+        assetPath += "/";
+        assetPath += leaf;
+        REQUIRE(engine::editor::writeTextFileAtomic(assetPath, "hello").empty());
+    }
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    CHECK(app->assetCacheEntryCount() == 3);
+
+    // Write a DIFFERENT LENGTH, never same-length bytes -- R-C1: on a volume with 1-second mtime
+    // granularity, a same-length rewrite within that window could still be vouched for by the (size,
+    // mtime) fast path and this case would flake.
+    std::string editedPath = assetsRoot;
+    editedPath += "/b.txt";
+    REQUIRE(engine::editor::writeTextFileAtomic(editedPath, "hello, much longer than before").empty());
+
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(app->assetImportJobCount() == 1);
+    const std::optional<engine::editor::ImportChange> editedChange = app->assetImportChangeForPath("b.txt");
+    REQUIRE(editedChange.has_value());
+    CHECK(*editedChange == engine::editor::ImportChange::SourceChanged);
+    const std::optional<engine::editor::ImportChange> unchangedA = app->assetImportChangeForPath("a.txt");
+    REQUIRE(unchangedA.has_value());
+    CHECK(*unchangedA == engine::editor::ImportChange::UpToDate);
+    const std::optional<engine::editor::ImportChange> unchangedC = app->assetImportChangeForPath("c.txt");
+    REQUIRE(unchangedC.has_value());
+    CHECK(*unchangedC == engine::editor::ImportChange::UpToDate);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: requestAssetReimport drives Reimport All without a button click (task 3.1.2, I33/AC-39, F9)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import cache i33", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    const std::string assetsRoot = created.root + "/assets";
+    const std::array<std::string, 3> leaves{"a.txt", "b.txt", "c.txt"};
+    for (const std::string& leaf : leaves) {
+        std::string assetPath = assetsRoot;
+        assetPath += "/";
+        assetPath += leaf;
+        REQUIRE(engine::editor::writeTextFileAtomic(assetPath, "hello").empty());
+    }
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // the first scan: every asset is New (3 jobs), and the index is committed
+    CHECK(app->assetImportJobCount() == 3);
+
+    // A plain rescan settles into the steady state this case's precondition ("New AGAIN", below)
+    // actually needs -- I31 already proves this transition on its own.
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    CHECK(app->assetImportJobCount() == 0);
+
+    // No panel exists in this ImGui-free-at-source TU to click Reimport All (human row 12) --
+    // requestAssetReimport() is the black-box channel, exactly as requestAssetRescan() was for I29.
+    app->requestAssetReimport();
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+    CHECK(app->assetImportJobCount() == 3);  // AC-39: every asset is New again -- the cache was discarded
+
+    // The FOLLOWING PLAIN rescan (not a second reimport) returns the count to 0 -- proving the reimport's
+    // own scan already committed a fresh index, not merely cleared the old one.
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    CHECK(app->assetImportJobCount() == 0);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }
