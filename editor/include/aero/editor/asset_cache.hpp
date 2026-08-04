@@ -12,9 +12,8 @@
 // one), which is precisely backwards from their lifetimes.
 //
 // Step 4 landed the format half: parseAssetCache/writeAssetCacheText/importChangeLabel, the format
-// types, and the constants. Step 6 (this revision) defines planImports and commitImports.
-// planReattachments is still DECLARED here but DEFINED in Step 7 -- a declaration with no definition
-// links fine only while unused, which is true until then.
+// types, and the constants. Step 6 defined planImports and commitImports. Step 7 (this revision)
+// defines planReattachments -- every function this header declares is now defined.
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
 
@@ -139,7 +138,7 @@ struct ReattachMatch {
     std::string fromAssetPath;  // the absent cache entry's recorded path, for the WARN
 };
 // ALL FIVE of D13's conditions, or nothing. `liveGuids` is every GUID a live sidecar already claims;
-// `livePaths` is every asset path this scan saw. DECLARED here; DEFINED in Step 7.
+// `livePaths` is every asset path this scan saw.
 [[nodiscard]] std::vector<ReattachMatch> planReattachments(const std::vector<ReattachCandidate>& candidates,
                                                            const std::vector<OrphanMeta>& orphans,
                                                            const AssetCacheIndex& previous,

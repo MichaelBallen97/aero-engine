@@ -6,8 +6,8 @@
 // two levels deep and both are walked with plain loops.
 //
 // Step 4 landed parseAssetCache / writeAssetCacheText / importChangeLabel / AssetCacheIndex::find.
-// Step 6 (this revision) adds planImports and commitImports, the pure change-detection cascade and
-// its commit. planReattachments is still declared in asset_cache.hpp but defined in Step 7.
+// Step 6 added planImports and commitImports, the pure change-detection cascade and its commit.
+// Step 7 (this revision) adds planReattachments, D13's orphan re-attachment.
 #include <aero/editor/asset_cache.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
@@ -594,6 +594,86 @@ AssetCacheIndex commitImports(const AssetCacheIndex& previous, const std::vector
     std::sort(result.entries.begin(), result.entries.end(),
               [](const AssetCacheEntry& a, const AssetCacheEntry& b) { return a.guid < b.guid; });
     return result;
+}
+
+std::vector<ReattachMatch> planReattachments(const std::vector<ReattachCandidate>& candidates,
+                                             const std::vector<OrphanMeta>& orphans, const AssetCacheIndex& previous,
+                                             const std::vector<Guid>& liveGuids,
+                                             const std::vector<std::string>& livePaths) {
+    // 1. byHash: contentHash -> indices of PREVIOUS entries whose path this scan did NOT see live.
+    // An entry whose path IS still live is filtered out HERE, before the hash map even exists -- two
+    // byte-identical LIVE files therefore never contend for either identity: content equality is
+    // deliberately never used for identity dedup (spec correction A12; IP36's whole point).
+    const std::unordered_set<std::string> livePathSet(livePaths.begin(), livePaths.end());
+    std::unordered_map<ContentHash, std::vector<std::size_t>> byHash;
+    for (std::size_t i = 0; i < previous.entries.size(); ++i) {
+        if (livePathSet.contains(previous.entries[i].path)) {
+            continue;  // still live this scan -- not a reattachment target
+        }
+        // Entries with `missing > 0` are FULLY eligible (D14): no filter on that field at all.
+        byHash[previous.entries[i].contentHash].push_back(i);
+    }
+
+    // 2. byGuidOrphans: guid -> orphan indices.
+    std::unordered_map<Guid, std::vector<std::size_t>> byGuidOrphans;
+    for (std::size_t i = 0; i < orphans.size(); ++i) {
+        byGuidOrphans[orphans[i].guid].push_back(i);
+    }
+
+    // 3. liveGuidSet.
+    const std::unordered_set<Guid> liveGuidSet(liveGuids.begin(), liveGuids.end());
+
+    // 4. Process candidates in SORTED relativePath order -- deterministic and independent of the
+    // caller's own vector order (INV-C3): "the first in sorted path order takes it" (AC-27).
+    std::vector<std::size_t> candidateOrder(candidates.size());
+    for (std::size_t i = 0; i < candidateOrder.size(); ++i) {
+        candidateOrder[i] = i;
+    }
+    std::sort(candidateOrder.begin(), candidateOrder.end(), [&candidates](std::size_t lhs, std::size_t rhs) {
+        return candidates[lhs].relativePath < candidates[rhs].relativePath;
+    });
+
+    std::vector<ReattachMatch> matches;
+    for (const std::size_t candidateIndex : candidateOrder) {
+        const ReattachCandidate& candidate = candidates[candidateIndex];
+
+        // Conditions 1 and 2 (candidate exists, its hash was computed) hold by the CALLER's contract
+        // -- ReattachCandidate::contentHash is not optional, unlike ImportInput's. Condition 3 starts
+        // the runtime work: byHash[H] must have EXACTLY ONE surviving element (two -> ambiguous ->
+        // nothing at all, not a guess -- IP28).
+        const auto hashIt = byHash.find(candidate.contentHash);
+        if (hashIt == byHash.end() || hashIt->second.size() != 1) {
+            continue;
+        }
+        const std::size_t previousEntryIndex = hashIt->second.front();
+        const AssetCacheEntry& previousEntry = previous.entries[previousEntryIndex];
+
+        // Condition 4: that entry's GUID is claimed by NO live sidecar.
+        if (liveGuidSet.contains(previousEntry.guid)) {
+            continue;
+        }
+
+        // Condition 5: byGuidOrphans[guid] has EXACTLY ONE element.
+        const auto orphanIt = byGuidOrphans.find(previousEntry.guid);
+        if (orphanIt == byGuidOrphans.end() || orphanIt->second.size() != 1) {
+            continue;
+        }
+        const OrphanMeta& orphan = orphans[orphanIt->second.front()];
+
+        ReattachMatch match;
+        match.candidateIndex = candidateIndex;
+        match.guid = previousEntry.guid;
+        match.fromMetaPath = orphan.relativePath;
+        match.fromAssetPath = previousEntry.path;
+        matches.push_back(std::move(match));
+
+        // Remove this GUID from further consideration in BOTH maps -- two candidates can never claim
+        // one identity (AC-27's "two candidates, one GUID" case, IP34).
+        byHash.erase(hashIt);
+        byGuidOrphans.erase(orphanIt);
+    }
+
+    return matches;
 }
 
 }  // namespace engine::editor

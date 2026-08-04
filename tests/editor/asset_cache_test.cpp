@@ -46,8 +46,12 @@ using engine::editor::ImportPlanEntry;
 using engine::editor::ImportPlanResult;
 using engine::editor::MAX_DEPENDENCIES_PER_ENTRY;
 using engine::editor::MISSING_SCAN_GRACE;
+using engine::editor::OrphanMeta;
 using engine::editor::parseAssetCache;
 using engine::editor::planImports;
+using engine::editor::planReattachments;
+using engine::editor::ReattachCandidate;
+using engine::editor::ReattachMatch;
 using engine::editor::writeAssetCacheText;
 
 namespace {
@@ -1072,4 +1076,195 @@ TEST_CASE(
     const AssetCacheIndex next = commitImports(previous, inputs, plan);
     REQUIRE(next.entries.size() == 1);
     CHECK(next.entries[0].path == "new/a.png");
+}
+
+// =====================================================================================================
+// IP -- planReattachments, D13's orphan re-attachment. All PURE, from std::vector literals (task 3.1.2
+// Step 7)
+// =====================================================================================================
+
+namespace {
+
+ReattachCandidate candidateOf(std::string relativePath, ContentHash contentHash) {
+    return ReattachCandidate{std::move(relativePath), contentHash};
+}
+
+OrphanMeta orphanOf(std::string relativePath, Guid guid) { return OrphanMeta{std::move(relativePath), guid}; }
+
+}  // namespace
+
+TEST_CASE(
+    "asset_cache: the canonical re-attachment -- one candidate, one absent entry, one orphan, no live "
+    "claimant (IP27, AC-27, D13)") {
+    const Guid oldGuid = guidOf(1);
+    const AssetCacheIndex previous = indexOf({cacheEntry(oldGuid, "old/wood.png", hashOf(50))});
+    const std::vector<ReattachCandidate> candidates = {candidateOf("new/wood.png", hashOf(50))};
+    const std::vector<OrphanMeta> orphans = {orphanOf("old/wood.png.meta", oldGuid)};
+    const std::vector<ReattachMatch> matches =
+        planReattachments(candidates, orphans, previous, /*liveGuids=*/{}, /*livePaths=*/{"new/wood.png"});
+    REQUIRE(matches.size() == 1);
+    CHECK(matches[0].candidateIndex == 0);
+    CHECK(matches[0].guid == oldGuid);
+    CHECK(matches[0].fromMetaPath == "old/wood.png.meta");
+    CHECK(matches[0].fromAssetPath == "old/wood.png");
+}
+
+TEST_CASE(
+    "asset_cache: condition 3 fails -- two absent entries share the candidate's hash -> no match (IP28, "
+    "AC-27, E10)") {
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(guidOf(1), "old1.png", hashOf(50)),
+        cacheEntry(guidOf(2), "old2.png", hashOf(50)),
+    });
+    const std::vector<ReattachCandidate> candidates = {candidateOf("new.png", hashOf(50))};
+    const std::vector<OrphanMeta> orphans = {orphanOf("old1.png.meta", guidOf(1)),
+                                             orphanOf("old2.png.meta", guidOf(2))};
+    const std::vector<ReattachMatch> matches = planReattachments(candidates, orphans, previous, {}, {"new.png"});
+    CHECK(matches.empty());
+}
+
+TEST_CASE(
+    "asset_cache: condition 4 fails -- a live asset already claims that GUID -> no match (IP29, AC-27, "
+    "seed S23, E12)") {
+    const Guid claimedGuid = guidOf(1);
+    const AssetCacheIndex previous = indexOf({cacheEntry(claimedGuid, "old.png", hashOf(50))});
+    const std::vector<ReattachCandidate> candidates = {candidateOf("new.png", hashOf(50))};
+    const std::vector<OrphanMeta> orphans = {orphanOf("old.png.meta", claimedGuid)};
+    const std::vector<ReattachMatch> matches =
+        planReattachments(candidates, orphans, previous, /*liveGuids=*/{claimedGuid}, /*livePaths=*/{"new.png"});
+    CHECK(matches.empty());
+}
+
+TEST_CASE(
+    "asset_cache: condition 5 fails -- two orphans parse to that GUID -> no match (IP30, AC-27, seed S22, "
+    "E11)") {
+    const Guid targetGuid = guidOf(1);
+    const AssetCacheIndex previous = indexOf({cacheEntry(targetGuid, "old.png", hashOf(50))});
+    const std::vector<ReattachCandidate> candidates = {candidateOf("new.png", hashOf(50))};
+    const std::vector<OrphanMeta> orphans = {orphanOf("a.meta", targetGuid), orphanOf("b.meta", targetGuid)};
+    const std::vector<ReattachMatch> matches = planReattachments(candidates, orphans, previous, {}, {"new.png"});
+    CHECK(matches.empty());
+}
+
+TEST_CASE("asset_cache: no orphan at all for the GUID -> no match (IP31, AC-27)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "old.png", hashOf(50))});
+    const std::vector<ReattachCandidate> candidates = {candidateOf("new.png", hashOf(50))};
+    const std::vector<ReattachMatch> matches = planReattachments(candidates, /*orphans=*/{}, previous, {}, {"new.png"});
+    CHECK(matches.empty());
+}
+
+TEST_CASE(
+    "asset_cache: the matching entry's path is still live this scan -> not a candidate at all -> no match "
+    "(IP32, AC-27)") {
+    const Guid guid = guidOf(1);
+    const AssetCacheIndex previous = indexOf({cacheEntry(guid, "still/here.png", hashOf(50))});
+    const std::vector<ReattachCandidate> candidates = {candidateOf("new.png", hashOf(50))};
+    const std::vector<OrphanMeta> orphans = {orphanOf("still/here.png.meta", guid)};
+    // "still/here.png" is STILL live this scan -- the previous entry is filtered out of byHash before
+    // it can ever be considered, regardless of the candidate's own hash.
+    const std::vector<ReattachMatch> matches =
+        planReattachments(candidates, orphans, previous, {}, {"new.png", "still/here.png"});
+    CHECK(matches.empty());
+}
+
+TEST_CASE("asset_cache: an entry with missing == 2 is fully eligible for re-attachment (IP33, D14 + D13)") {
+    const Guid oldGuid = guidOf(1);
+    const AssetCacheIndex previous =
+        indexOf({cacheEntry(oldGuid, "old.png", hashOf(50), ContentHash{}, "", 0, {}, /*missing=*/2)});
+    const std::vector<ReattachCandidate> candidates = {candidateOf("new.png", hashOf(50))};
+    const std::vector<OrphanMeta> orphans = {orphanOf("old.png.meta", oldGuid)};
+    const std::vector<ReattachMatch> matches = planReattachments(candidates, orphans, previous, {}, {"new.png"});
+    REQUIRE(matches.size() == 1);
+    CHECK(matches[0].guid == oldGuid);
+}
+
+TEST_CASE("asset_cache: two candidates, one GUID -- the first in sorted path order takes it (IP34, AC-27)") {
+    const Guid guid = guidOf(1);
+    const AssetCacheIndex previous = indexOf({cacheEntry(guid, "old.png", hashOf(50))});
+    const std::vector<ReattachCandidate> candidates = {candidateOf("z-second.png", hashOf(50)),
+                                                       candidateOf("a-first.png", hashOf(50))};
+    const std::vector<OrphanMeta> orphans = {orphanOf("old.png.meta", guid)};
+    const std::vector<ReattachMatch> matches =
+        planReattachments(candidates, orphans, previous, {}, {"a-first.png", "z-second.png"});
+    REQUIRE(matches.size() == 1);
+    // candidateIndex 1 is "a-first.png" -- alphabetically first, regardless of vector position; it
+    // does NOT silently steal the identity for "z-second.png" (vector index 0), which gets nothing.
+    CHECK(matches[0].candidateIndex == 1);
+    CHECK(matches[0].guid == guid);
+}
+
+TEST_CASE("asset_cache: two candidates with different hashes each match their own entry (IP35, AC-27)") {
+    const Guid guidA = guidOf(1);
+    const Guid guidB = guidOf(2);
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(guidA, "oldA.png", hashOf(50)),
+        cacheEntry(guidB, "oldB.png", hashOf(60)),
+    });
+    const std::vector<ReattachCandidate> candidates = {candidateOf("newA.png", hashOf(50)),
+                                                       candidateOf("newB.png", hashOf(60))};
+    const std::vector<OrphanMeta> orphans = {orphanOf("oldA.png.meta", guidA), orphanOf("oldB.png.meta", guidB)};
+    const std::vector<ReattachMatch> matches =
+        planReattachments(candidates, orphans, previous, {}, {"newA.png", "newB.png"});
+    REQUIRE(matches.size() == 2);
+    CHECK(matches[0].candidateIndex == 0);  // "newA.png" sorts first
+    CHECK(matches[0].guid == guidA);
+    CHECK(matches[1].candidateIndex == 1);
+    CHECK(matches[1].guid == guidB);
+}
+
+TEST_CASE(
+    "asset_cache: two byte-identical LIVE files produce no re-attachment and keep two identities (IP36, "
+    "seed S26, D9)") {
+    const Guid guidX = guidOf(1);
+    const Guid guidY = guidOf(2);
+    // Both entries are STILL LIVE this scan (both paths appear in livePaths) -- proving content
+    // equality is never used for identity dedup (spec correction A12): even a real candidate sharing
+    // that same hash finds nothing, because both potential targets are filtered out before byHash is
+    // even built.
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(guidX, "copy1.png", hashOf(50)),
+        cacheEntry(guidY, "copy2.png", hashOf(50)),
+    });
+    const std::vector<ReattachCandidate> candidates = {candidateOf("copy3.png", hashOf(50))};
+    const std::vector<OrphanMeta> orphans = {orphanOf("orphan.meta", guidOf(99))};  // unrelated, irrelevant
+    const std::vector<ReattachMatch> matches =
+        planReattachments(candidates, orphans, previous, {}, {"copy1.png", "copy2.png", "copy3.png"});
+    CHECK(matches.empty());
+}
+
+TEST_CASE("asset_cache: an empty (0-byte) candidate can match an empty absent entry (IP37, E13, A4)") {
+    const Guid oldGuid = guidOf(1);
+    const AssetCacheIndex previous = indexOf({cacheEntry(oldGuid, "old.bin", ContentHash{})});  // nil == empty file
+    const std::vector<ReattachCandidate> candidates = {candidateOf("new.bin", ContentHash{})};
+    const std::vector<OrphanMeta> orphans = {orphanOf("old.bin.meta", oldGuid)};
+    const std::vector<ReattachMatch> matches = planReattachments(candidates, orphans, previous, {}, {"new.bin"});
+    REQUIRE(matches.size() == 1);
+    CHECK(matches[0].guid == oldGuid);
+}
+
+TEST_CASE("asset_cache: the result is independent of candidate/orphan vector order (IP38, INV-C3)") {
+    const Guid guidA = guidOf(1);
+    const Guid guidB = guidOf(2);
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(guidA, "oldA.png", hashOf(50)),
+        cacheEntry(guidB, "oldB.png", hashOf(60)),
+    });
+    const ReattachCandidate candA = candidateOf("newA.png", hashOf(50));
+    const ReattachCandidate candB = candidateOf("newB.png", hashOf(60));
+    const OrphanMeta orphanA = orphanOf("oldA.png.meta", guidA);
+    const OrphanMeta orphanB = orphanOf("oldB.png.meta", guidB);
+    const std::vector<std::string> livePaths = {"newA.png", "newB.png"};
+
+    const std::vector<ReattachMatch> orderA =
+        planReattachments({candA, candB}, {orphanA, orphanB}, previous, {}, livePaths);
+    const std::vector<ReattachMatch> orderB =
+        planReattachments({candB, candA}, {orphanB, orphanA}, previous, {}, livePaths);
+
+    REQUIRE(orderA.size() == 2);
+    REQUIRE(orderB.size() == 2);
+    for (std::size_t i = 0; i < orderA.size(); ++i) {
+        CHECK(orderA[i].guid == orderB[i].guid);
+        CHECK(orderA[i].fromMetaPath == orderB[i].fromMetaPath);
+        CHECK(orderA[i].fromAssetPath == orderB[i].fromAssetPath);
+    }
 }

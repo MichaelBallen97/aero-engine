@@ -10,6 +10,8 @@
 // sidecar, never overwrite an invalid one, never delete an orphan, repair a duplicate
 // deterministically) is provable from a std::vector literal and a fixed seed.
 #include <aero/core/guid.hpp>
+#include <aero/editor/asset_cache.hpp>  // task 3.1.2: ImportChange, ContentHash. ONE WAY ONLY -- asset_cache.hpp
+                                        // must NEVER include this file (docs/09 §6.9 / plan A20).
 
 #include <cstddef>
 #include <cstdint>
@@ -76,18 +78,26 @@ struct MetaParseResult {
 
 // ---- the lifecycle, as a PURE function (D5-D9) ------------------------------------------------
 
-enum class AssetMetaState : std::uint8_t { Ok = 0, Created, Repaired, Invalid };
+// `Reattached` is APPENDED, never inserted (task 3.1.2, D13): AssetMetaState is serialized nowhere
+// (in-memory scan state only), so appending is safe; inserting would silently renumber `Invalid`,
+// which several tests compare by value.
+enum class AssetMetaState : std::uint8_t { Ok = 0, Created, Repaired, Invalid, Reattached };
 
 struct AssetRecord {
     std::string relativePath;  // '/'-separated, relative to the assets root
     Guid guid;                 // nil iff state == Invalid
     AssetMetaState state = AssetMetaState::Ok;
+    // ---- task 3.1.2, additive ----
+    ContentHash contentHash;  // MEANINGLESS unless `change` is neither Unhashable nor NotHashed --
+                              // all-zero is the EMPTY FILE's real digest, not a sentinel (plan A4).
+    ImportChange change = ImportChange::UpToDate;  // filled by AssetDatabase, not by planAssetMetas
 };
 
 struct AssetPlanEntry {
     std::string relativePath;
     std::optional<Guid> guid;  // nullopt == no sidecar, OR one that failed to parse
     bool metaPresent = false;
+    std::optional<Guid> reattachedGuid;  // task 3.1.2 (D13). Set ONLY by asset_database.cpp's phase 5.
 };
 
 struct AssetPlanResult {
@@ -96,6 +106,7 @@ struct AssetPlanResult {
     std::size_t created = 0;
     std::size_t repaired = 0;
     std::size_t invalid = 0;
+    std::size_t reattached = 0;  // task 3.1.2
 };
 
 // THE WHOLE OF D5-D9, as a pure function of (entries, seed). Sorts first (AC-22), so the result is
