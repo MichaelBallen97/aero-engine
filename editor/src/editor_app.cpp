@@ -28,12 +28,14 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #ifndef AERO_ENGINE_VERSION
     #define AERO_ENGINE_VERSION \
@@ -58,6 +60,95 @@ void* nativeWindowHandle(platform::Window* window) {
 // tick() for ProjectContext -- and a macro read three times is a macro that gets read a fourth
 // somewhere worse.
 constexpr std::string_view BUILD_ENGINE_VERSION = AERO_ENGINE_VERSION;
+
+// task 3.1.1 (INV-A3): the asset scan never logs itself -- asset_database.cpp returns a report and
+// this is the ONLY place that turns it into log records. One capped category, one WARN: the entries
+// already present (up to MAX_REPORTED_PER_CATEGORY) joined by "; ", with a "…and N more" tail when
+// `total` exceeds what the report kept. A `total == 0` category is silent -- this is what makes "a
+// scan of a clean, fully-metaed project logs exactly one INFO line and nothing else" true.
+void logCappedWarn(std::string_view root, std::string_view label, const std::vector<std::string>& entries,
+                   std::size_t total) {
+    if (total == 0) {
+        return;
+    }
+    std::string body;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (i > 0) {
+            body += "; ";
+        }
+        body += entries[i];
+    }
+    if (total > entries.size()) {
+        if (!entries.empty()) {
+            body += "; ";
+        }
+        body += "…and ";
+        body += std::to_string(total - entries.size());
+        body += " more";
+    }
+    AERO_LOG_WARN("assets: '{}' -- {} {}: {}", root, total, label, body);
+}
+
+// task 3.1.1 (D14/AC-40). Called from tick()'s reconcile block, AFTER rescan() returns (A6: a
+// pre-write announcement is unachievable through a function that returns a report, and buys nothing
+// anyway -- the Console panel's pumpLog() runs at the top of the NEXT tick, so a line logged "before
+// writing" would reach the screen at exactly the same frame as one logged after, since the scan
+// itself is synchronous inside this tick).
+void logAssetScan(std::string_view root, const AssetScanReport& report) {
+    if (report.status != ScanStatus::Ok) {
+        const char* reason = "unknown reason";  // enumerated so a new ScanStatus cannot be silent
+        switch (report.status) {
+            case ScanStatus::Missing:
+                reason = "the assets root is missing";
+                break;
+            case ScanStatus::NotADirectory:
+                reason = "the assets root is not a directory";
+                break;
+            case ScanStatus::Unreadable:
+                reason = "the assets root could not be read (permissions or I/O error)";
+                break;
+            case ScanStatus::Ok:
+                break;  // unreachable -- guarded by the enclosing `if`
+        }
+        AERO_LOG_WARN("assets: '{}' -- scan aborted: {}", root, reason);
+        return;  // phase 1's guard means nothing else in the report is meaningful (E1-E4)
+    }
+    if (report.largeCreateNotice) {
+        // A6: emitted FIRST among this scan's log lines, even though the writes themselves already
+        // happened -- explaining a multi-second first open after the fact serves D14's intent exactly
+        // as well as before it, since nothing reaches the screen until the frame after the scan ends.
+        AERO_LOG_INFO("assets: '{}' -- writing {} .meta files (more than {}); this scan may take a moment", root,
+                      report.created + report.repaired, CREATE_NOTICE_THRESHOLD);
+    }
+    AERO_LOG_INFO("assets: '{}' -- {} files, {} .meta created, {} repaired, {} orphans, {} invalid", root,
+                  report.filesSeen, report.created, report.repaired, report.orphanTotal, report.invalid);
+    // report.invalid counts EVERY Invalid-state record, including one a write conflict downgraded
+    // (code-review finding 2) -- but that one is reported below, in its OWN category, never doubled
+    // into this one. Every write conflict increments BOTH counters exactly once, so subtracting is
+    // exact, not an estimate.
+    logCappedWarn(root, "invalid asset meta file(s)", report.invalidPaths, report.invalid - report.writeConflictTotal);
+    logCappedWarn(root, "orphaned .meta file(s)", report.orphans, report.orphanTotal);
+    logCappedWarn(root, "repaired duplicate GUID(s)", report.repairs, report.repaired);
+    logCappedWarn(root, "asset meta write failure(s)", report.writeFailures, report.writeFailureTotal);
+    logCappedWarn(root, "write conflict(s) with an orphaned .meta file", report.writeConflicts,
+                  report.writeConflictTotal);
+    logCappedWarn(root, "unknown key warning(s)", report.unknownKeyWarnings, report.unknownKeyTotal);
+    if (report.truncated) {
+        AERO_LOG_WARN("assets: '{}' -- scan truncated at the {} assets-seen cap (MAX_ASSETS)", root, MAX_ASSETS);
+    }
+    if (report.depthLimited) {
+        AERO_LOG_WARN("assets: '{}' -- one or more directory trees exceeded the {}-level depth cap (MAX_TREE_DEPTH)",
+                      root, MAX_TREE_DEPTH);
+    }
+    if (report.skippedEntries > 0) {  // A10
+        AERO_LOG_WARN("assets: '{}' -- {} entries the OS refused to classify were skipped", root,
+                      report.skippedEntries);
+    }
+    if (report.unreadableDirs > 0) {  // A10
+        AERO_LOG_WARN("assets: '{}' -- {} sub-directories below the root could not be read and were skipped", root,
+                      report.unreadableDirs);
+    }
+}
 
 }  // namespace
 
@@ -115,6 +206,11 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     EditorApp app(std::move(*layer), ctx, config);
     app.window = &window;                                   // task 2.5.1, F14/A19
     app.dialogChannel = std::make_shared<DialogChannel>();  // never null on a LIVE app
+    // task 3.1.1: a real seed, before the project-open block below -- so the FIRST tick()'s scan (the
+    // reconcile block, triggered by AssetDatabase::root() starting empty) already draws real GUIDs
+    // rather than the placeholder seed-0 generator's pinned sequence. Nothing scans in create() itself
+    // (D12) -- the reconcile is tick()'s job alone.
+    app.assetGuids = GuidGenerator::fromEntropy();
     // The default layout is built on the FIRST DRAWN FRAME, not here (E3) — so panels registered by
     // the caller between create() and the first tick() are included.
     app.applyDefaultLayout = app.layer.wantsDefaultLayout();
@@ -262,10 +358,40 @@ bool EditorApp::tick() {
     // (editor_app.hpp:120-124) applied to a second panel. Null-checked: registerDefaultPanels == false
     // leaves the pointer null and this a no-op (E26). ONE allocation per frame, deliberately -- the
     // title push below has allocated one on every frame since task 2.5.1.
-    if (assetBrowserPanel != nullptr) {
+    //
+    // task 3.1.1 (D12): extended with the database's own reconcile, which runs FIRST -- the database
+    // rescans before the panel's root is pushed, so the first frame after a project opens already has
+    // GUIDs to show rather than displaying "no .meta" for one frame and correcting itself the next.
+    // Like the project swap above (A8), this whole block LAGS a runtime project swap by exactly one
+    // tick: this reconcile runs at the TOP of tick(), the swap happens inside drawShellUi ->
+    // applyFileRequests, called LATER in the same tick (imgui_layer_test.cpp's I21 records the
+    // identical one-tick lag for the panel-only case; I28 below re-proves it for the database).
+    // `refresh` combines the panel's one-shot Refresh-button flag with EditorApp::requestAssetRescan()
+    // (AC-38) -- the only way the ImGui-free GPU tier can drive a rescan without a real Refresh click.
+    // The panel's DATABASE POINTER is reconciled EVERY tick, unconditionally, decoupled from the root
+    // mismatch gate below: a raw pointer write has no side effects (unlike setRoot(), which clears the
+    // panel's whole UI state), and gating it on the SAME mismatch as setRoot would leave it null
+    // forever whenever the panel is already born with the correct root (the common case -- a project
+    // opened during create()), since that mismatch never fires on tick 1.
+    {
         std::string wanted = project.assetsRoot();
-        if (assetBrowserPanel->root() != wanted) {
-            assetBrowserPanel->setRoot(std::move(wanted));
+        // Code-review finding 4: `takeRescanRequest()` is DRAINED FIRST, unconditionally -- if it sat
+        // on the right of `assetRescanRequested ||` instead, `||`'s short-circuit would skip calling
+        // it whenever `assetRescanRequested` is already true, leaving the panel's own one-shot flag
+        // set and un-consumed. That flag would then survive this tick and trigger a SECOND, redundant
+        // synchronous scan next frame -- a real bug, not a style preference.
+        const bool panelRefresh = assetBrowserPanel != nullptr && assetBrowserPanel->takeRescanRequest();
+        const bool refresh = assetRescanRequested || panelRefresh;
+        assetRescanRequested = false;
+        if (assetDatabase.root() != wanted || refresh) {
+            const AssetScanReport report = assetDatabase.rescan(std::move(wanted), assetGuids);
+            logAssetScan(assetDatabase.root(), report);  // INV-A3: the ONLY logging site for the scan
+        }
+        if (assetBrowserPanel != nullptr) {
+            if (assetBrowserPanel->root() != assetDatabase.root()) {
+                assetBrowserPanel->setRoot(assetDatabase.root());
+            }
+            assetBrowserPanel->setDatabase(&assetDatabase);
         }
     }
     if (window != nullptr) {
@@ -370,6 +496,11 @@ std::string_view EditorApp::assetBrowserRoot() const noexcept {
 }
 std::size_t EditorApp::recentProjectCount() const noexcept { return recents.paths.size(); }
 
+std::size_t EditorApp::assetCount() const noexcept { return assetDatabase.size(); }
+std::optional<Guid> EditorApp::assetGuidForPath(std::string_view relativePath) const noexcept {
+    return assetDatabase.guidForPath(relativePath);
+}
+
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
 void EditorApp::requestUndo() noexcept { undoRequested = true; }
@@ -402,6 +533,10 @@ void EditorApp::requestOpenProject(std::string_view path) {
     projectFlow.requestedPath = path;
 }
 void EditorApp::requestClearRecentProjects() noexcept { projectFlow.clearRecentsRequested = true; }
+
+// task 3.1.1 (AC-38): the requestUndo()/requestLayoutReset() shape, drained in the SAME reconcile
+// expression as AssetBrowserPanel::takeRescanRequest() -- see tick()'s reconcile block above.
+void EditorApp::requestAssetRescan() noexcept { assetRescanRequested = true; }
 
 }  // namespace engine::editor
 

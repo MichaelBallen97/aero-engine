@@ -23,6 +23,7 @@ add_executable(aero_tests
     jobs_test.cpp
     time_test.cpp
     vfs_test.cpp
+    guid_test.cpp          # task 3.1.1 — engine::Guid: text codec, ordering, hash, seeded generator
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -104,6 +105,13 @@ add_executable(aero_editor_imgui_test
 target_link_libraries(aero_editor_imgui_test PRIVATE
     doctest::doctest aero::editor_core aero::rhi aero::platform aero::core ${CMAKE_DL_LIBS})
 target_include_directories(aero_editor_imgui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # tests/ for rhi_test_support.hpp
+# code-review finding 4 (I30): the panel's own Refresh-button flag cannot be driven through a real
+# frame here (this target is ImGui-free at source and cannot synthesize a widget click -- the
+# AC-27/FileDialogHost precedent, the same reason PU1 in project_test.cpp reads project_ui.cpp's own
+# source text). I30 reads editor_app.cpp's own source text the identical way -- the
+# AERO_PROJECT_FIXTURES_DIR/AERO_EDITOR_SRC_DIR precedent, extended to this target for the first time.
+target_compile_definitions(aero_editor_imgui_test PRIVATE
+    AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src")
 add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 
 # ---------------------------------------------------------------------------------------------
@@ -199,6 +207,13 @@ add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 # no GPU, no window, no ImGui context. The link line is UNCHANGED and no new ctest entry is
 # registered (ctest -N stays 95/6/19, AC-33).
 find_package(Threads REQUIRED)
+# task 3.1.1 joins this target with editor/asset_meta_test.cpp (the .meta v1 format + the pure
+# planner, cases AM1-AM27/AP1-AP14/AG1-AG5) and, in Step 3, editor/asset_database_test.cpp (the walk,
+# cases AD1-AD30 + AG6). UNCONDITIONAL, for the same reason project_test.cpp/project_settings_test.cpp
+# are: neither TU depends on reflection, so both inherit that gate-free property (D4/AC-17/INV-P5).
+# Both must be PRESENT in the reflect-OFF build, not skipped -- prove it with --list-test-cases.
+# Tier-0: no GPU, no window, no ImGui context. The link line is UNCHANGED and no new ctest entry is
+# registered (ctest -N stays 95/6/19, AC-46).
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -207,7 +222,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/command_stack_test.cpp editor/transform_command_test.cpp
                editor/scene_snapshot_test.cpp editor/structural_commands_test.cpp
                editor/scene_session_test.cpp editor/project_test.cpp
-               editor/project_settings_test.cpp)
+               editor/project_settings_test.cpp
+               editor/asset_meta_test.cpp editor/asset_database_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -226,7 +242,12 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # reads the file's OWN SOURCE TEXT as a mechanical proof instead -- the same textual-grep principle
     # the five CI architecture guards already use, just run as a doctest case rather than a lint-job
     # script. A path, not a flag: a missing file is a REQUIRE failure, never a silent skip.
-    AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src")
+    AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src"
+    # task 3.1.1: the two committed asset-meta fixtures reach the UNGATED asset_meta_test.cpp. Same
+    # rule as AERO_PROJECT_FIXTURES_DIR above (2.5.2's D8, third application): not optional, not
+    # #ifdef-guarded. AG1-AG5 use describeMismatch's context window and never dumpActual, so nothing
+    # here writes anywhere and `ctest -j` has no collision surface at all.
+    AERO_ASSET_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/assets")
 # MOVED OUT of the if(AERO_REFLECT_TOOLS) block below, where task 2.5.2 put it: project_test.cpp is
 # UNGATED and includes tests/scene_golden_support.hpp, so this include root must exist in EVERY
 # configuration. The aero_editor_imgui_test precedent is at :106.

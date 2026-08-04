@@ -219,7 +219,13 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   by ctest case `project-no-delete.no_delete_e2e`) makes `remove_all`/`std::filesystem::remove`/
   `std::filesystem::rename`/a bare `::copy` a hard CI failure the instant one is WRITTEN into
   `project.cpp`, `project_file.cpp` or `project_ui.cpp` — the untested `WriteFailed` branch cannot be
-  "fixed" with a rollback that would violate this rule even once a test could reach it.
+  "fixed" with a rollback that would violate this rule even once a test could reach it. **Task 3.1.1
+  widened the guard's allowlist from these three files to FIVE**, adding `asset_meta.cpp` and
+  `asset_database.cpp` (D7/D8's "an invalid `.meta` is never overwritten" / "an orphan is never
+  deleted" — see the Assets section below) — the guard's scope is now the project flow **and** the
+  asset flow, and its name stays narrower than its scope on purpose (a rename was considered and
+  rejected because it would touch the workflow YAML, the ctest case name, `CLAUDE.md` and this file,
+  each a place a rename can go half-done).
 - **`std::filesystem::create_directory`/`create_directories` on an ALREADY-EXISTING directory returns
   `false` with NO `error_code` set (measured, not assumed).** Deciding a scaffold failure from the
   bool return instead of from `ec` breaks the legal "adopt an existing empty directory" path every
@@ -275,4 +281,72 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   `groups[0].rows[N]` reads beside it.** In a Release lane, where there is no ASan, the same
   regression is silent UB rather than a clean abort.
 
-Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries.
+## Assets (task 3.1.1)
+
+- **A valid `.meta` is NEVER rewritten (D6).** A scan of a fully-described tree writes **zero bytes**
+  to disk — not "identical bytes", zero. `AssetDatabase::rescan` calls `writeTextFileAtomic` from
+  exactly ONE call site (INV-A1), and only for records the planner marked `Created` or `Repaired`; an
+  `Ok` record's `.meta` is untouched, mtime and all. Get this wrong and every user's repository dirties
+  itself the moment they open a project — sabotage seed S13 (a planner bug that flags a valid record
+  for write) is the most important seed in the whole matrix for exactly this reason.
+- **An invalid `.meta` is never overwritten (D7).** A parse failure, a bad version, a nil GUID — none
+  of them get "fixed" by a rewrite. One rule, no exceptions: a merge-conflicted sidecar still holds the
+  real GUID one `git checkout --theirs` away, and a carve-out for "obviously broken" cases gets applied
+  to that case by analogy the first time someone is in a hurry.
+- **An orphaned `.meta` is reported and left on disk, never deleted (D8).** A transient
+  `exists() == false` is indistinguishable from a real deletion, and the destructive reading is the
+  irreversible one. This is enforced doubly: by discipline in `asset_database.cpp`, and by the widened
+  `check-project-no-delete.sh` guard (see the Projects section above) — sabotage seed S21 (adding a
+  `std::filesystem::remove` call for an orphan) reddens the guard **before any test even runs**, and
+  `project-no-delete.no_delete_e2e` stays green throughout because it exercises the script against its
+  own hermetic scratch tree, not the real source — both facts together are the intended CI behavior.
+- **Duplicate GUIDs ARE repaired, deterministically (D9).** Sort byte-lexicographically by
+  project-relative path; the FIRST claimant keeps the GUID, every later one gets a fresh, unclaimed
+  GUID and is rewritten. The determinism (never case-folded — `'Z.png'` sorts before `'a.png'`, byte
+  order) is what stops two developers on two machines ping-ponging the "fix" back and forth forever.
+- **The move/rename invariant (INV-A8, D10) — a rule for 3.1.3 to meet, not yet enforced:** an editor
+  operation that moves, renames or copies an asset MUST move, rename or copy its `.meta` in the same
+  operation. A move that drops the sidecar is a silent identity loss — every scene reference to that
+  asset dangles, and **no test in this tree can see it** happen.
+- **The panel holds a `const AssetDatabase*`, reconciled every tick — never a reference member (D13).**
+  `EditorApp` is movable and `create()` returns `std::optional<EditorApp>`, so every live editor has
+  been through at least one move. A reference bound at panel-construction time binds to whatever
+  address the pre-move `EditorApp` happened to occupy. Sabotage seed S23 tried exactly this and — on
+  this machine, under ASan, through every test this tree drives — **reddened nothing**, a real,
+  documented coverage gap rather than proof the reference form is safe: the likely reason is that this
+  build's `EditorApp::create()` elides the conversion-move of its named local into the returned
+  `std::optional`, so the address a reference would have captured never actually moves on this specific
+  compiler/build combination. Do not read that green run as license to switch back to a reference.
+- **`.aero-tmp` is skipped by the scan, not deleted (D16).** `writeTextFileAtomic` transiently creates
+  `<path>.aero-tmp` inside the user's own assets tree; a killed editor leaves one behind. Without the
+  suffix check in `isScannableAssetName`, a leftover `wood.png.meta.aero-tmp` would itself be treated
+  as a scannable asset and given `wood.png.meta.aero-tmp.meta`.
+- **The panel's root and the database's root are the SAME string by construction (INV-A9/A16).** Both
+  are reconciled from `project.assetsRoot()` in the same `EditorApp::tick()` block, which is the only
+  reason `AssetBrowserPanel::selectedEntry` (relative to the panel's root) is a valid
+  `AssetDatabase::findByPath` key. If they ever diverge, the footer silently shows `no .meta` for
+  **every** file — no crash, no log, no red test (confirmed directly: sabotage seed S25, dropping the
+  panel's database-pointer reconcile, reddens nothing in this tree's automated suite either — AC-37's
+  whole surface is human validation rows 3 and 8).
+- **`asset_meta.cpp` and `asset_database.cpp` never log (INV-A3).** `rescan` returns a report; ALL
+  logging for the asset scan lives in `editor_app.cpp`'s `logAssetScan`, called from `tick()`'s
+  reconcile block AFTER `rescan()` returns — a pre-write announcement was considered (D14) and rejected
+  as unachievable through a report-returning function and worthless anyway, since the Console panel's
+  `pumpLog()` runs at the top of the NEXT tick regardless of when within the current tick a line was
+  logged.
+- **`EditorApp::tick()`'s reconcile block does double duty, and that is load-bearing to remember when
+  reading or changing it.** The block that scans the database (D12, task 3.1.1) is the SAME block that
+  already existed for the Asset Browser's panel-root reconcile (D10, task 2.6.1) — 3.1.1 extended the
+  existing block rather than adding a second one beside it. A seed that deletes "the reconcile block"
+  wholesale (S22) therefore reddens FOUR GPU-tier cases, not one: I21 (2.6.1's own panel-root case),
+  I27, I28 and I29 (3.1.1's database cases) — confirmed directly, and a real deviation from what a
+  reader might expect from the two tasks' separate D-numbers.
+- **`AssetBrowserPanel::database()`'s accessor and the `databasePtr` member cannot share a name (D13's
+  naming note).** Neither `AssetDatabase::findByGuid` nor `AssetDatabase::findByPath` is involved — the
+  collision is entirely within `AssetBrowserPanel` itself (code-review finding 6, correcting this
+  paragraph's earlier, wrong attribution). The member is `databasePtr`, the accessor `database()` — the
+  `RenderTarget::depthFormatValue` / `depthFormat()` precedent from 2.3.1, applied a second time to this
+  exact class of collision.
+
+Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and task 3.1.1's entry
+under Phase 3.

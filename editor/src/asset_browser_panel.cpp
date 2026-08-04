@@ -13,6 +13,9 @@
 //     (verified in imgui_widgets.cpp's TreeNodeBehavior). That is what makes this tree balance-free.
 #include "asset_browser_panel.hpp"
 
+#include <aero/core/guid.hpp>
+#include <aero/editor/asset_database.hpp>
+#include <aero/editor/asset_meta.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
 
@@ -41,6 +44,16 @@ constexpr const char* UNKNOWN_SIZE = "—";
 // ASan/UBSan).
 void textWrappedSafe(const std::string& text) { ImGui::TextWrapped("%s", text.c_str()); }
 
+// task 3.1.1 (§D-7): the footer's GUID segment is elided to keep the status line short -- the first 8
+// and last 4 of the 32-char canonical text, joined by a literal ellipsis (U+2026, three UTF-8 bytes),
+// matching this file's existing non-ASCII status glyph, UNKNOWN_SIZE.
+constexpr std::size_t GUID_PREFIX_LENGTH = 8;
+constexpr std::size_t GUID_SUFFIX_LENGTH = 4;
+std::string elideGuid(Guid guid) {
+    const std::string full = formatGuid(guid);
+    return full.substr(0, GUID_PREFIX_LENGTH) + "…" + full.substr(full.size() - GUID_SUFFIX_LENGTH);
+}
+
 }  // namespace
 
 AssetBrowserPanel::AssetBrowserPanel(std::string rootPath) : rootUtf8(std::move(rootPath)) {}
@@ -54,6 +67,9 @@ void AssetBrowserPanel::setRoot(std::string rootPath) {
     visibleRows.clear();
     pending = PendingAction{};
     treeDirty = true;
+    // task 3.1.1: a rescan request recorded against the OLD root is meaningless against the new one --
+    // EditorApp::tick() already rescans unconditionally on a root mismatch.
+    rescanRequested = false;
 }
 
 void AssetBrowserPanel::record(ActionKind kind, std::string path) { pending = PendingAction{kind, std::move(path)}; }
@@ -67,7 +83,13 @@ bool AssetBrowserPanel::ensureCached(const std::string& rel) {
     if (cache.contains(rel)) {
         return false;
     }
-    cache.emplace(rel, listDirectory(rootUtf8, rel, showHidden));
+    DirectoryListing listing = listDirectory(rootUtf8, rel, showHidden);
+    // task 3.1.1 (§D-7): filtered at CACHE-FILL time, not at draw time -- the footer count, the tree
+    // builder and the selection lookup then all agree, with no second filtered view to keep in sync.
+    // listDirectory itself is unchanged; only this cached copy drops sidecar rows.
+    std::erase_if(listing.entries,
+                  [](const FileEntry& entry) { return !entry.isDirectory && isMetaFileName(entry.name); });
+    cache.emplace(rel, std::move(listing));
     return true;
 }
 
@@ -377,6 +399,20 @@ void AssetBrowserPanel::drawFooter() {
             if (!it->isDirectory) {
                 labelScratch +=
                     it->sizeKnown ? ("  -  " + formatFileSize(it->size)) : std::string("  -  ") + UNKNOWN_SIZE;
+                // task 3.1.1 (§D-7): the selected file's identity, appended after the size segment.
+                // databasePtr is reconciled by EditorApp::tick() (D12/D13) -- nullptr before the first
+                // scan, never a dangling reference.
+                if (databasePtr != nullptr) {
+                    const AssetRecord* const rec = databasePtr->findByPath(selectedEntry);
+                    labelScratch += "  -  ";
+                    if (rec == nullptr) {
+                        labelScratch += "no .meta";
+                    } else if (rec->state == AssetMetaState::Invalid) {
+                        labelScratch += "invalid .meta";
+                    } else {
+                        labelScratch += elideGuid(rec->guid);
+                    }
+                }
             }
         }
     }
@@ -421,8 +457,9 @@ void AssetBrowserPanel::applyPending() {
             selectedEntry = action.path;
             break;
         case ActionKind::Refresh:
-            cache.clear();     // 3.1.4's watcher seam: `cache.clear(); treeDirty = true;` IS the whole
-            treeDirty = true;  // invalidation
+            cache.clear();           // 3.1.4's watcher seam: `cache.clear(); treeDirty = true;` IS the whole
+            treeDirty = true;        // invalidation
+            rescanRequested = true;  // task 3.1.1 (AC-38): drained by EditorApp::tick()'s reconcile
             break;
         case ActionKind::ToggleHidden:
             showHidden = !showHidden;

@@ -14,11 +14,23 @@
 #
 # THE INVARIANT: none of `remove_all`, `std::filesystem::remove`, `std::filesystem::rename`, or a
 # bare `::copy` (covers `std::filesystem::copy` and an `fs::copy` alias alike) may appear as CODE in
-# editor/src/project.cpp, editor/src/project_file.cpp or editor/src/project_ui.cpp -- the three files
-# that own every filesystem-writing line in the whole project flow (D7). This is deliberately an
-# ALLOWLIST OF THREE NAMED FILES, not a glob over editor/src/ -- the invariant is specific to the
-# project flow, and a glob would also flag legitimate deletion elsewhere in the editor (e.g. a future
-# asset-deletion feature) that this task's D7 says nothing about.
+# editor/src/project.cpp, editor/src/project_file.cpp, editor/src/project_ui.cpp,
+# editor/src/asset_meta.cpp or editor/src/asset_database.cpp -- the five files that own every
+# filesystem-writing line in the project flow (D7) AND the asset flow (task 3.1.1's D7 "an invalid
+# .meta is never overwritten" / D8 "an orphan is never deleted"). Widened from three files to five by
+# task 3.1.1: the same unreachable-by-test problem sabotage seed S11 documented for createProject's
+# rollback branch applies identically to "never overwrite an invalid .meta" and "never delete an
+# orphan", so they get the same enforcement rather than a second, parallel guard. This is deliberately
+# an ALLOWLIST OF NAMED FILES, not a glob over editor/src/ -- the invariant is specific to these two
+# flows, and a glob would also flag legitimate deletion elsewhere in the editor (e.g. a future
+# asset-deletion feature) that neither D7 says anything about. Note that the SCRIPT's NAME
+# ("project-no-delete") is narrower than its SCOPE for historical reasons -- a rename was considered
+# and rejected (D15/A12 of task 3.1.1's plan) because it would touch the workflow YAML step name, the
+# hermetic ctest case name, CLAUDE.md and .claude/rules/editor.md, each a place a rename can go
+# half-done; widening the allowlist costs none of that. `editor/src/text_file.cpp` is deliberately NOT
+# in this list -- it is the shared atomic-write primitive that BOTH flows call `writeTextFileAtomic`
+# through, and its internal `rename` is the mechanism that makes an atomic write atomic. The invariant
+# governs what the flow files may call directly, not the primitive they call.
 #
 # WHY COMMENT-STRIPPED (the check-scene-boundary.sh / check-rhi-boundary.sh precedent): a future
 # maintainer explaining WHY a call is forbidden, in a comment, must not itself trip the guard it is
@@ -32,13 +44,15 @@
 
 set -euo pipefail
 
-# The exact three files D7/INV-P4 governs. Order matches the "Files touched" table (project.hpp is
-# PURE and <filesystem>-free by construction -- AC-38 -- so it is not in this list at all; nothing to
-# scan there).
+# The five files D7/INV-P4 (project flow) and task 3.1.1's D7/D8 (asset flow) govern. Order matches
+# the "Files touched" table (project.hpp and asset_meta.hpp/asset_database.hpp are PURE and
+# <filesystem>-free by construction, so they are not in this list at all; nothing to scan there).
 readonly FORBIDDEN_FILES=(
   "editor/src/project.cpp"
   "editor/src/project_file.cpp"
   "editor/src/project_ui.cpp"
+  "editor/src/asset_meta.cpp"
+  "editor/src/asset_database.cpp"
 )
 
 # remove_all | std::filesystem::remove | std::filesystem::rename | ::copy -- exactly the four tokens
@@ -50,7 +64,7 @@ readonly FORBIDDEN_RE='(remove_all|std::filesystem::remove|std::filesystem::rena
 cd "$(git rev-parse --show-toplevel)"
 
 # --- Self-test 1: every named file must exist and be TRACKED. -------------------------------------
-# Without this, a rename of any of the three (project_file.cpp -> project_fs.cpp, say) would silently
+# Without this, a rename of any of the five (project_file.cpp -> project_fs.cpp, say) would silently
 # shrink the scan to fewer files instead of refusing to pass.
 for f in "${FORBIDDEN_FILES[@]}"; do
   if [ ! -f "$f" ]; then
@@ -101,27 +115,27 @@ for f in "${FORBIDDEN_FILES[@]}"; do
   if [ -n "$hits" ]; then
     while IFS= read -r hit; do
       n="${hit%%:*}"
-      violations="${violations}${f}:${n}: a filesystem delete/rename/copy call in the project flow (D7/INV-P4)
+      violations="${violations}${f}:${n}: a filesystem delete/rename/copy call in the project/asset flow (D7/INV-P4; task 3.1.1 D7/D8)
 "
     done <<< "$hits"
   fi
 done
 
 if [ -n "$violations" ]; then
-  echo "A delete/rename/copy call leaked into the project flow -- task 2.6.1 D7/INV-P4:" >&2
+  echo "A delete/rename/copy call leaked into the project or asset flow -- task 2.6.1 D7/INV-P4 and task 3.1.1 D7/D8:" >&2
   echo "$violations" >&2
   echo "" >&2
-  echo "Fix: a createProject failure must NEVER remove, rename or copy anything it already created," >&2
-  echo "     on ANY failure path. Leave the half-made directory inert and report the failure instead" >&2
-  echo "     (see .claude/rules/editor.md's \"Projects (task 2.6.1)\" section)." >&2
+  echo "Fix: a createProject failure, an invalid .meta, or an orphaned .meta must NEVER be removed," >&2
+  echo "     renamed or copied on ANY path. Leave it inert and report the failure/finding instead" >&2
+  echo "     (see .claude/rules/editor.md's \"Projects (task 2.6.1)\" and \"Assets (task 3.1.1)\" sections)." >&2
   if [ -n "${GITHUB_ACTIONS:-}" ]; then
     while IFS= read -r v; do
       [ -z "$v" ] && continue
       f="${v%%:*}"; rest="${v#*:}"; n="${rest%%:*}"
-      echo "::error file=${f},line=${n}::a filesystem delete/rename/copy call leaked into the project flow (task 2.6.1 D7/INV-P4). Never remove/rename/copy anything a createProject failure already created."
+      echo "::error file=${f},line=${n}::a filesystem delete/rename/copy call leaked into the project or asset flow (task 2.6.1 D7/INV-P4; task 3.1.1 D7/D8). Never remove/rename/copy anything these flows must leave alone."
     done <<< "$violations"
   fi
   exit 1
 fi
 
-echo "project-no-delete guard: OK -- ${#FORBIDDEN_FILES[@]} files scanned; no delete/rename/copy call in the project flow"
+echo "project-no-delete guard: OK -- ${#FORBIDDEN_FILES[@]} files scanned; no delete/rename/copy call in the project or asset flow"

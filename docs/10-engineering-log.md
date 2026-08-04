@@ -2594,3 +2594,376 @@ though docs/04 specifies `phase-0-complete` and Phases 0 and 1 are done.
 macos-release with `AERO_REQUIRE_GPU=1`, 6/6 tools-OFF, 19/19 reflect-OFF, clang-format and
 clang-tidy clean on every changed file (three real format violations were caught locally and fixed
 before commit — a local format pass never predicts CI, and this time it did not predict itself).
+
+---
+
+## Phase 3 — Asset Pipeline & 3D Content
+
+### Epic 3.1 — AssetDatabase · assets
+
+#### Task 3.1.1 — GUIDs + `.meta` files — OPENS Phase 3, Epic 3.1
+
+**3.1.1 gives every file in a project's assets tree a permanent 128-bit identity, recorded in a
+versioned JSON sidecar committed to git beside it, that survives renames, content edits, machine
+changes and fresh clones — without ever destroying, overwriting or silently rewriting anything the
+user owns.** Three layers: `engine::Guid` (a 16-byte trivially-copyable POD beside `Handle`, `core`),
+`planAssetMetas` (a pure lifecycle planner — every create/never-rewrite/never-overwrite/never-delete/
+repair-duplicates rule is provable from a `std::vector` literal and a fixed seed, no disk touched),
+and `AssetDatabase::rescan` (a five-phase, `<filesystem>`-free, `<fstream>`-free, non-recursive walk
+composed entirely from 2.2.4's `listDirectory` and 2.5.1/2.6.1's `text_file` primitives). This task
+**ends the four-task empty-`engine/`-diff streak** (2.5.1, 2.5.2, 2.6.1, 2.6.2) deliberately and
+minimally: one new header (`guid.hpp`), one new source (`guid.cpp`), one CMake line, zero new
+dependencies, zero new link entries. `engine/assets/` is deliberately left untouched (`.gitkeep`
+only) — it opens when a **runtime** consumer exists, Phase 5's pak table; the editor's AssetDatabase
+lives entirely in `/editor`.
+
+**Six commits landed the feature** (`323634e` Guid · `ee1136c` `.meta` format + planner · `0ba591e`
+AssetDatabase scan · `482939d` widened no-delete guard · `4304845` Asset Browser integration ·
+`64bd976` EditorApp integration), followed by this documentation commit. Branch
+`feat/3.1.1-guids-and-meta-files`, cut from `main @ 83af319`.
+
+**What shipped, in order:**
+1. `engine::Guid` — `hi`/`lo` `uint64_t` halves, nil = reserved none, 32-lowercase-hex canonical text
+   (`hi` first, so lexicographic order == numeric order), a seedable `splitmix64`-based
+   `GuidGenerator`. Not an RFC 4122 UUID — no version/variant bits, all 128 bits are random. Every
+   test in the tree pins exact values from a fixed seed; **no test anywhere touches an entropy
+   source.**
+2. The `.meta` v1 format (`asset_meta.hpp`/`.cpp`) — a two-key (`version`, `guid`), one-level JSON
+   document sharing scene v1's canonical form and two-layer strictness policy (unknown keys tolerated
+   and preserved; a *known* key with the wrong kind or value is a hard reject), plus `planAssetMetas`,
+   the pure planner. Two committed golden fixtures (`minimal.meta` 65 bytes, `unknown-keys.meta`) with
+   a byte-fixpoint battery, shipped in the SAME commit as the format, not after it.
+3. `AssetDatabase` (`asset_database.hpp`/`.cpp`) — the scan. Guard → explicit-stack walk → pair each
+   directory's assets against its own sidecars → plan → write-and-index. It never logs (INV-A3) and
+   never throws; a report is returned and `EditorApp` turns it into log records.
+4. The sixth architecture guard (`check-project-no-delete.sh`) widened from three files to five —
+   `asset_meta.cpp` and `asset_database.cpp` join the allowlist, because "an invalid `.meta` is never
+   overwritten" (D7) and "an orphan is never deleted" (D8) are the same class of safety-critical,
+   unreachable-by-ordinary-test rule 2.6.1's seed S11 already documented for `createProject`'s
+   rollback branch. The hermetic ctest case gained two new stages (7, 8) proving the widening is
+   red-on-violation, and the canary stage (6) was retargeted to one of the two new files, so the
+   widening itself — not just the original three-file scope — is what the vacuity refusal proves.
+5. The Asset Browser (`asset_browser_panel.{hpp,cpp}`) — `.meta` rows filtered at cache-fill time
+   (never at draw time, so the footer count, the tree builder and the selection lookup all agree with
+   one filtered view), a footer segment showing the selected file's elided GUID / `no .meta` /
+   `invalid .meta`, and plumbing (`setDatabase`, `database()`, `takeRescanRequest()`) for the
+   integration in Step 6.
+6. `EditorApp` integration — one `AssetDatabase` value member, one `GuidGenerator` seeded from
+   `fromEntropy()` at `create()`, and `tick()`'s existing 2.6.1 reconcile block extended (not
+   duplicated) to scan the database before pushing the panel's root, so the first frame after a
+   project opens already shows real GUIDs instead of "no .meta" self-correcting a frame later. Three
+   new GPU-tier cases (I27/I28/I29).
+
+**What was deliberately left out**, named so nobody re-derives it as an oversight: folder GUIDs (D11
+— directories get no `.meta` in v1); orphan re-attachment (D8 stands, re-attachment needs a content
+hash and is 3.1.2's); async scanning (the scan is synchronous and blocking on the frame a project
+opens, bounded by `MAX_ASSETS`/`MAX_TREE_DEPTH` and surfaced by a WARN — 3.1.2's cache and 3.1.4's
+watcher are the real answers); a `Copy GUID` context-menu item and any issues-list UI (3.1.3's); and
+teaching `reflect-gen` to serialize a `Guid` field (3.4.x's — adding it now would be a reflection
+change with no consumer, and ADR-004's spine is untouched by this task).
+
+**One KNOWN DEFECT is carried forward deliberately, and it is 3.1.2's to close** (full statement in
+the code-review-round entry below): a symlinked directory inside the assets tree makes one physical
+file reachable via two relative paths, so it gets two records, a duplicate GUID, and a repair that
+rewrites the *shared* sidecar — which means **D6's zero-write property never holds for that tree and
+the asset's identity changes on every scan**. It is noisy rather than silent (one repair WARN per
+scan), and it needs `assets/link -> assets/real` to trigger, but it is a real identity-churn path.
+Both correct fixes were outside this task's scope: physical-identity dedup needs
+`<filesystem>` canonical/equivalent, which AC-30/INV-A6 forbid in `asset_database.cpp`, or 2.2.4's
+documented D13 ("a symlinked asset folder behaves like a real one") has to change. **3.1.2 is the
+right owner because it introduces the content hash** — with it, two paths hashing identically are
+provably the same content, which is the same primitive D8's orphan re-attachment needs. Do not close
+it by weakening the duplicate-repair rule; the repair is correct, the double-discovery is the bug.
+
+**Four findings from the build itself, recorded because they are the point, not colour:**
+
+1. **The `MAX_ASSETS` coverage gap, accepted deliberately.** AD23 drives `listDirectory`'s cheaper
+   `MAX_ENTRIES_PER_DIRECTORY` cap (~10,001 files), not the `MAX_ASSETS = 50000` branch — creating
+   50,001 real files inside a Debug/ASan ctest case was measured and judged unaffordable, and
+   `MAX_ASSETS` was NOT lowered to make it cheap (a constant a test changes is a constant no test
+   pins, and a test-only injection seam was rejected for the same reason). `AssetScanReport::truncated`
+   stays plumbed and reachable through the `listDirectory`-level cap; the `MAX_ASSETS` branch itself
+   is a real, open, and now-documented coverage gap, the 2.6.1-S11 posture applied a second time.
+2. **The `AssetBrowserPanel` member/accessor name collision.** The plan's literal spelling used
+   `database` as both the private member and the public accessor, which does not compile (a data
+   member and a member function cannot share a name). Resolved with the tree's own precedent
+   (`RenderTarget::depthFormatValue` ↔ `depthFormat()`, cited in `.claude/rules/ci-portability.md`'s
+   "distinct name on accessor collision" rule): the member is `databasePtr`, the accessor stays
+   `database()`. This is the 2.3.1 `EditorCamera` trap recurring a second time — a plan's literal
+   identifier spelling is not proof it compiles.
+3. **The `setDatabase` gating ambiguity.** The plan's data-flow shorthand read `panel->setDatabase(&db)
+   on mismatch` without saying which mismatch. Read literally as gated on the SAME root-mismatch
+   comparison that drives `setRoot`, it would never fire on the commonest path — a project open at
+   launch, where the panel is born already holding the correct root (from `EditorAppConfig`/argv),
+   so `assetBrowserPanel->root() != assetDatabase.root()` is false from tick 1 onward and the pointer
+   would stay null forever, leaving the GUID footer permanently empty for every user who never swaps
+   projects mid-session. Resolved by calling `setDatabase(&assetDatabase)` **unconditionally, every
+   tick**, decoupled from the root-mismatch gate: a raw pointer write has no side effects (unlike
+   `setRoot()`, which clears the panel's whole UI state), so there is no cost to doing it every frame.
+   **Corrected justification (code-review finding 6):** this entry originally claimed the unconditional
+   call "is what makes I27 … actually see a populated database through the panel's own accessor" —
+   false as written: I27 never reads `AssetBrowserPanel::database()`, which has zero call sites in the
+   whole tree (`.claude/rules/editor.md` correctly records that sabotage seed S25, dropping this exact
+   reconcile, reddens nothing in the automated suite). The real reason unconditional matters is that
+   `EditorApp` is movable and `create()` returns `std::optional<EditorApp>` (D13) — a pointer set once
+   at construction would go stale across a move, so it is re-pushed at the top of every `tick()`,
+   before any panel draws, purely to stay valid across a move that may or may not have happened. The
+   panel's database pointer therefore has **no automated coverage at all**; AC-37's footer behaviour is
+   proven only by human validation rows 3 and 8, exactly as `.claude/rules/editor.md` already states.
+4. **The AD21 test-design bug found in Step 3, and the reason it matters beyond one test.** The first
+   draft of AD21 ("a left-behind `*.aero-tmp` is skipped, not deleted") planted a leftover
+   `wood.png.meta.aero-tmp` beside `wood.png`, but gave `wood.png` NO real sidecar — so `wood.png` was
+   `Created`, and `writeTextFileAtomic`'s own transient working file for that write
+   (`wood.png.meta.aero-tmp`, the atomic-rename mechanism every `.meta` write goes through) landed at
+   the EXACT path AD21's "leftover" occupied, and the legitimate create-write silently consumed and
+   replaced it before the test's own assertions ran. The behaviour under test was correct throughout;
+   the test was not proving what its own title claimed. Fixed by giving `wood.png` a real, valid
+   sidecar first, so no legitimate write ever touches `wood.png.meta.aero-tmp`'s path. **This exact
+   collision surfaced again, independently, during sabotage seed S13** (a planner bug that flags a
+   valid record for write): breaking D6 made `wood.png`'s ALREADY-VALID sidecar get rewritten too,
+   recreating the identical `wood.png.meta.aero-tmp` collision and consuming AD21's leftover file a
+   second, unrelated way — proof that the fixed test's isolation from `writeTextFileAtomic`'s own
+   working-file path is load-bearing, not cosmetic.
+
+**§A of the plan corrected the spec in sixteen places** (A1–A16) — none of them re-litigated here
+individually since the plan is the executable record, but two are worth restating because they are
+exactly the "measure, don't trust arithmetic" lesson this project keeps re-learning: the canonical
+`.meta` is **65 bytes**, not the spec's stated 59 (`{`+LF=2, `  "version": 1,`+LF=16,
+`  "guid": "<32 hex>"`+LF=45, `}`+LF=2); and `next()`'s nil-retry loop is **provably dead code today**
+(A12) — `hi` and `lo` are drawn from two distinct, consecutive generator states and `splitmix64`'s
+finaliser is a bijection on `uint64_t`, so a bijection cannot map two distinct inputs to zero, meaning
+both halves can never be zero at once. The loop is kept as defence in depth for a future generator
+whose halves could share one state or whose mixer is not a bijection, and its comment says so
+verbatim — sabotage seed S6 (below) proves the point directly rather than asserting it.
+
+**The `docs/09-file-formats.md` §5 reservation ("future .meta GUID system") is now the past tense** —
+replaced with a normative §5 (the format, the fixtures, the round-trip guarantees), with the old §6
+`.pak` reservation renumbered up by one and both forward-references it used to sit behind corrected.
+
+**Test inventory, measured fresh, not arithmetic'd:** `ctest -N` **95** tools-ON / **6** tools-OFF /
+**19** reflect-OFF — unchanged, because this task registers **zero** new ctest entries (all of its
+~120 new cases live inside the three existing TUs `aero_tests`, `aero_editor_shell_test` and
+`aero_editor_imgui_test`). `aero_tests` **363 → 389** (`GU1`–`GU26`, the seven-include `guid.hpp`
+codec/ordering/hash/generator battery). `aero_editor_shell_test` **390 → 467** (`AM1`–`AM27` naming/
+classification/parse/write; `AP1`–`AP14` the pure planner; `AG1`–`AG6` the golden battery; `AD1`–`AD30`
+the real-disk scan battery — **corrected from this entry's original "`AM1`–`AM40`"/"`AP1`–`AP18`",
+which were the plan's own predictions, not a measurement; `tests/CMakeLists.txt`'s own comment already
+had the true ranges right at the time this paragraph shipped, so the tree contradicted itself until
+code-review finding 6 caught it: re-measure with `--list-test-cases`, do not trust a plan's
+arithmetic, the 2.5.2 lesson yet again**) — **identical +77** in BOTH fresh tools-OFF configurations
+(`build/tools-off-3.1.1` 443, `build/reflect-off-3.1.1` 443, both containing all 77 `AM`/`AP`/`AG`/`AD`
+cases, confirmed by `--list-test-cases` rather than assumed), which is AC-17's whole claim: the format
+and the planner need no serialization and are therefore present, not skipped, in every reduced
+configuration. `aero_editor_imgui_test` **48 → 51** (`I27`, `I28`, `I29`). `aero_scene_serialize_test`
+and `aero_editor_inspector_test`: unchanged. `check-math-boundary.sh`: **246 → 249** (Step 1) **→ 252**
+(Step 2) **→ 255** (Step 3; unchanged through Steps 4–8) — nine new C-family files scanned, measured
+after `git add` at every step boundary. Guard count stays **six**, `check-project-no-delete.sh`'s own
+final line now reads "5 files scanned" instead of 3.
+
+**The sabotage matrix — all 26 seeds (S1–S26) plus all 3 mandatory second-order checks, run and
+confirmed against the real built binaries, not reasoned about.** Every seed was applied, confirmed
+PRESENT with `git diff` before trusting any verdict (the standing BSD-`sed`-false-PASS lesson), rebuilt
+(never a stale binary — confirmed via `ninja`'s own incremental-build step list), run through the full
+95-test `AERO_REQUIRE_GPU=1` suite, and reverted with the revert confirmed byte-for-byte clean against
+`HEAD` (`git show HEAD:<file> | diff -q - <file>`) before the next seed began. **Seven seeds matched
+their prediction exactly** (S7, S8, S9, S10, S18, S19, S20). **Six were confirmed non-discriminators**
+(S4 — `parseGuid`'s length-31 acceptance, masked by `std::string`'s guaranteed null terminator and
+ASan's non-tracking of a string literal's storage; S6 — A12's dead retry loop; S23 — the
+reference-vs-pointer coverage gap; S24 — `byGuid` indexing an Invalid record, masked by `findByGuid`'s
+own independent nil-guid guard; S25/S26 — "no test reads the footer" / "no test builds an unreadable
+sub-directory"), and **S17's own predicted contingency** ("if nothing else reddens, that IS the
+finding") also came true exactly as written. **Corrected count (code-review finding 6): this entry's
+own original text read "Four … the remaining fourteen", which accounted for only 25 of the 26 seeds,
+silently dropping S17, and separately filed S4 and S24 under "differently-shaped" even though their
+OWN bullets below say they redden NOTHING — the defining property of a non-discriminator, not of a
+differently-shaped result. 7 + 6 + 1 + 12 = 26.** The remaining **twelve**
+seeds (S1–S3, S5, S11–S16, S21, S22) reddened a real but **differently-shaped** set than predicted —
+every one of those differences is a genuine finding about which test actually discriminates which bug,
+not a failure of the matrix. (S4's and S24's own bullets are kept below for their diagnostic detail —
+they explain two of the six confirmed non-discriminators above, not two of the twelve
+differently-shaped seeds.)
+
+- **S1/S2/S3 (formatGuid corruptions)** each reddened a DIFFERENT subset of the `AG1`/`AG2`/`AG3`
+  golden trio than predicted, because the committed fixture's pinned GUID (`a3f1c07e…`) has specific
+  bit patterns (a nonzero leading nibble, distinct `hi`/`lo` halves) that make some corruptions
+  invisible to it and others fully visible — S2 (leading-zero-drop) in particular reddens NOTHING at
+  the golden-fixture layer, because neither committed fixture's GUID has a leading zero nibble.
+- **S4 (`parseGuid` accepts length 31)** reddens NOTHING at all, confirmed and traced precisely:
+  `std::string`'s guaranteed null terminator at `text[size()]` and ASan's non-tracking of a global
+  string-literal's storage both independently mask the off-by-one for the two length probes GU13
+  actually uses.
+- **S5/S9/S10 (parser-order and validation bugs)** each cascaded one layer up, from `asset_meta.cpp`'s
+  own `AM`-family cases into the `AssetDatabase`-level `AD`-family cases that plant a real sidecar on
+  real disk and read it back through the whole scan — a useful confirmation that the two layers'
+  test suites overlap in coverage rather than leaving a gap between them.
+- **S11/S12 (writeMetaText corruptions)** are non-discriminators for exactly TWO of the five predicted
+  cases (`AG2`, `AD7`) for the identical, structural reason 2.5.2's S12 and 2.6.1's S9 already
+  documented: both are SELF-consistency checks (a second cycle against the first; a fresh call against
+  itself) that stay internally consistent under a corruption applied uniformly to both sides of the
+  comparison. `AM25`/`AM26`/`AG6` — not named in the prediction — are what actually catch it.
+- **S13 (breaking D6, the most important seed in the matrix)** and **S14 (writing an Invalid record)**
+  each reddened SEVEN cases, not the two headline ones each prediction named — the wider cascade is
+  every other test in the same family that also plants a valid/invalid sidecar and checks it survives
+  untouched. S13's cascade includes a genuinely interesting, independently-confirmed replay of Step 3's
+  own AD21 test-design finding (see item 4 above): the seed's erroneous rewrite of `wood.png`'s ALREADY
+  valid sidecar recreates the exact `wood.png.meta.aero-tmp` collision that finding describes.
+- **S15 (case-folded sort)** reddens only ONE of its two same-labelled predicted cases: `AP10`
+  (asserting `'Z.png'` precedes `'a.png'`, byte-order-specific) reddens; `AP9` ("shuffled input gives
+  an identical result"), despite literally carrying `seed S15` in its own title, does not — because
+  `AP9` only proves sort-order-independence-of-input, a property any consistent comparator satisfies
+  regardless of WHICH ordering rule is in force. `AP9` cannot discriminate the rule; `AP10` can.
+- **S16 (repair rewrites the keeper)** reddened its whole family plus two more (`AD17`, `AD18`) not
+  individually named.
+- **S17 (case-sensitive `isMetaFileName`)** confirms the plan's own flagged contingency verbatim:
+  only the `AM`-layer cases redden; nothing at the `AssetDatabase` layer does, because this machine's
+  APFS volume is case-insensitive, so no `AD` case can even construct the `x.meta`/`x.META` pair the
+  regression would need to be visible through a real scan — a genuine, machine-dependent coverage gap
+  the plan predicted before it was run.
+- **S21 (an orphan gets deleted)** confirms BOTH of its predicted facts exactly — the widened guard
+  fails BEFORE any test runs, and `project-no-delete.no_delete_e2e` stays green because it tests the
+  script against its own scratch tree — and, going one step further than the plan's own prediction
+  (since this invocation's instructions required actually building and running the suite anyway, not
+  stopping at the guard failure), a real functional test (`AD15`) independently reddens too once the
+  code actually runs, confirming defense-in-depth: the static guard and a live behavioural test each
+  independently catch the same class of violation.
+- **S22 (deleting the whole reconcile block) is the one MAJOR, confirmed deviation from the plan's own
+  prediction, not a coverage nuance.** Predicted "I28 and ONLY I28"; actual is FOUR cases — `I21`
+  (2.6.1's own case), `I27`, `I28`, `I29`. Root cause, traced to source: the block D12 extends is the
+  SAME block that already existed for 2.6.1's panel-root reconcile (D10) — 3.1.1 rewrote the existing
+  block into the shape its own "Data flow" diagram shows, it did not add a second block beside the
+  first. Deleting "the reconcile block" wholesale therefore deletes BOTH reconciles at once, and `I21`
+  (which asserts the panel's root followed a runtime project swap) fails for exactly the reason 2.6.1
+  wrote it to prove. `I27` ALSO reddens, for a reason the plan's own explanation gets half right: the
+  PANEL's root is seeded correctly at construction (`AssetBrowserPanel(app.project.assetsRoot())` in
+  `create()`), independent of the reconcile — but the DATABASE is not: `create()` deliberately does
+  not scan (D12's own stated design), so `assetCount()` stays 0 until the FIRST `tick()` reconcile
+  runs `assetDatabase.rescan(...)`, and `I27` ticks exactly once to exercise that first scan.
+- **S24 (`byGuid` indexes Invalid records too)** reddens NOTHING, confirmed and traced: `findByGuid`
+  carries its OWN independent guard (`if (!guid.valid()) return nullptr;`) that runs before the
+  corrupted map is even consulted, and an `Invalid` record's `guid` is always nil by construction — so
+  `AD27`'s own probe for this never gets far enough to observe the corrupted `byGuid`. `INV-A7` still
+  holds in spirit for this record shape through a second, independent mechanism even with the first
+  one broken; a discriminator would need an Invalid record with a non-nil guid, which the current
+  `AssetMetaState` contract makes impossible to construct.
+
+**The three mandatory second-order checks, run for every one of the 26 seeds, no exceptions:** (1) the
+seed was actually present — `git diff` shown and grepped before trusting any verdict; (2) the suite
+was actually rebuilt, not stale — confirmed via `ninja`'s own step list on every build; (3) the revert
+restored the file byte-for-byte — confirmed via `git diff` (empty) AND `git show HEAD:<file> | diff -q
+- <file>` for every touched file after every seed. All three passed for all 26 seeds.
+
+**Traps found, beyond the four numbered above:** `formatGuid`'s zero-padding pre-fills the output
+buffer with `'0'` before any nibble is written, which is why a "drops a leading zero" bug (S2) is
+invisible for the nil GUID specifically — the buggy code path never executes for an all-zero input,
+and the correct-looking output is coincidental, not a passing property. `writeTextFileAtomic`'s own
+`<path>.aero-tmp` working file occupies the SAME namespace `isScannableAssetName`'s `.aero-tmp` suffix
+check is built to exclude — any test planting a "leftover `.aero-tmp`" fixture beside an asset that
+will ALSO be legitimately written must give that asset a valid sidecar first, or the legitimate write's
+own working file silently consumes the planted fixture before the test's assertions run (found twice,
+independently, in this task alone — see finding 4 and S13 above).
+
+**Verification for this task:** six guards green; 95/95 `macos-debug` and 95/95 `macos-release` with
+`AERO_REQUIRE_GPU=1`; 6/6 tools-OFF and 19/19 reflect-OFF, both measured fresh (`build/tools-off-3.1.1`,
+`build/reflect-off-3.1.1`), never trusted from a stale directory (2.6.2's §A3 lesson, applied a third
+time); `check-math-boundary.sh` **255**; every changed file confirmed byte-identical to `HEAD` after
+every one of the 26 sabotage reverts.
+
+##### Task 3.1.1 — code-review round (7 findings, 2 blocking, all fixed on the same branch)
+
+Six commits on PR #65's own branch. CI on that PR went red on the Windows/MSVC lane. Two findings below
+(1 and 3) are what a macOS/Linux-only local gate structurally cannot see, and both are BLOCKING — the
+tree was never green on all three lanes until they were fixed.
+
+1. **BLOCKING — `tests/guid_test.cpp` used `std::array<char, 33>` (GU17) without including `<array>`.**
+   Reached transitively through libc++ only, exactly the `imgui_layer_test.cpp:47`/`project_files.cpp:8`
+   class of failure this tree has already paid for twice. One-line fix, in the file's own sorted include
+   order, with the same comment style as the precedent.
+2. **BLOCKING — a `Created`/`Repaired` write could destroy a valid orphaned sidecar on any
+   case-insensitive filesystem (APFS, NTFS — most users).** The scenario: a case-only rename
+   (`wood.png` → `Wood.png`) leaves `wood.png.meta` behind as a real, valid, ORPHANED sidecar (pairing
+   is exact bytes, AC-19, so it never claims the renamed asset). The scan then mints a fresh GUID for
+   `Wood.png` and writes `Wood.png.meta` — which on a case-insensitive filesystem **is**
+   `wood.png.meta`, and `writeTextFileAtomic`'s atomic rename silently replaces it. A committed GUID is
+   destroyed, every scene reference to that asset dangles, and the same scan's own log says the file
+   was preserved — this contradicts D8 head-on, and neither the no-delete guard (a WRITE, not a
+   `remove`) nor any existing test (AD29's own anti-vacuity note says a case-insensitive filesystem
+   short-circuits it) could see it. **Fixed** by checking every Created/Repaired write, before it
+   happens, against the walk's own UNCAPPED orphan list, ASCII-case-insensitively, on every platform
+   unconditionally (D7's "one rule, no exceptions" — conservative on a case-sensitive filesystem,
+   load-bearing on a case-insensitive one). A conflicting write is refused; the record is downgraded to
+   `AssetMetaState::Invalid` with a nil guid (D7's own posture: no identity this session) and reported
+   in a new capped `AssetScanReport::writeConflicts` list with its own total, never folded into
+   `invalidPaths` (verified by construction: every conflict increments both `report.invalid` and
+   `report.writeConflictTotal` exactly once, so `logAssetScan`'s "invalid asset meta file(s)" WARN
+   subtracts the latter from the former to keep its own total exact). New case **AD31** — the exact
+   scenario, which (unlike AD29's `x.meta`/`x.META`) needs no case-insensitive-volume skip, since
+   `Wood.png` and `wood.png.meta` are not case-variants of the same full name and coexist as distinct
+   directory entries on any filesystem. Verified against a seeded regression that disabled the guard:
+   on this machine's own APFS volume the orphan's bytes were actually destroyed, confirming this is a
+   real, exploitable bug here and not merely a theoretical one.
+3. **BLOCKING (Windows CI, found after the local round) — MSVC's `std::unordered_map` move
+   CONSTRUCTOR is not `noexcept`, reddening `asset_database.hpp`'s aggregate `static_assert` (C2607)
+   before a single test could run.** The plan's own §A2 part 2 anticipated this failure class for move
+   ASSIGNMENT; the real regression landed one level up, on move CONSTRUCTION, on the same member — a
+   detail worth recording precisely because it is not the exact case the plan described. Fixed exactly
+   as documented, not improvised: `byPath` disappears entirely (`records` is already sorted by
+   `relativePath`, so `findByPath` is a `std::lower_bound` directly over it) and `byGuid` becomes a
+   `std::vector<std::pair<Guid, std::size_t>>` sorted by `Guid` (`operator<`, AC-2), rebuilt with a
+   STABLE sort after every rescan so the "first claimant wins" property `std::unordered_map::emplace`'s
+   silent-no-op-on-duplicate-key gave this method survives the swap exactly. Both accessors stay
+   `noexcept` and allocate nothing — the comparator compares `std::string` against `std::string_view`
+   without constructing a `std::string`. `PathHash` is deleted with `byPath`; `std::hash<Guid>` is
+   untouched (still required by AC-3, still used by `planAssetMetas`' own local duplicate map, which has
+   no movability requirement at all).
+4. **The `||` short-circuit left the Asset Browser panel's own one-shot Refresh flag undrained.**
+   `EditorApp::tick()`'s reconcile read
+   `assetRescanRequested || (assetBrowserPanel != nullptr && assetBrowserPanel->takeRescanRequest())` —
+   when `assetRescanRequested` was already true, `takeRescanRequest()` was never CALLED, so a Refresh
+   click landing the same frame as a `requestAssetRescan()` call would survive un-consumed and trigger a
+   second, redundant synchronous scan the following frame. It also left the panel's own half of AC-38
+   with zero automated coverage, since I29's left operand is always true. **Fixed** by draining the
+   panel into a named local FIRST, unconditionally, then combining. New case **I30**: since this target
+   is ImGui-free at source and cannot synthesize a Refresh-button click (the AC-27/FileDialogHost
+   precedent), I30 is a mechanical, source-text-reading proof — the PU1 precedent (`project_test.cpp`),
+   extended to a second target for the first time (`AERO_EDITOR_SRC_DIR` is now also defined for
+   `aero_editor_imgui_test`) — that the drain statement precedes the combine statement in
+   `editor_app.cpp`'s own source, and that no line fuses `assetRescanRequested`, `||` and
+   `takeRescanRequest()` together (the exact shape of the regression). Verified against a seeded
+   revert of the fix: I30 catches it directly, by name and line number.
+5. **AD8's D6 proof rested on timestamp granularity alone.** A D6 regression rewrites the SAME GUID, so
+   `size` is unchanged — `mtime` is the entire discriminator, and on a coarse-granularity filesystem, or
+   two scans landing within one clock tick, the case could pass with the bug present. **Fixed** by
+   back-dating both sidecars by an hour (`std::filesystem::last_write_time`, the `error_code` overload)
+   immediately before the second scan, so any real rewrite necessarily moves `mtime` forward regardless
+   of granularity. Verified against a seeded "rewrite everything" regression: caught, then reverted.
+6. **Four claims about the code that had stopped being true, the Phase 2 audit's standing lesson
+   recurring a fourth time.** (a) `AM1`–`AM27`/`AP1`–`AP14`, not the plan's own predicted
+   `AM1`–`AM40`/`AP1`–`AP18` — corrected everywhere in `CLAUDE.md` and in this file (both the original
+   landing paragraph above and this one), while `tests/CMakeLists.txt`'s own comment had the true ranges
+   right the whole time. (b) The `setDatabase` unconditional-call justification above (item 3) claimed
+   it "makes I27 … actually see a populated database through the panel's own accessor" — false: I27
+   never calls `AssetBrowserPanel::database()`, which has zero call sites in the tree; the real reason
+   is keeping the pointer valid across an `EditorApp` move (D13), and the panel's database pointer has
+   NO automated coverage at all, exactly as `.claude/rules/editor.md` already says for sabotage seed
+   S25. Corrected in place, item 3 above. (c) `.claude/rules/editor.md`'s naming-collision paragraph
+   attributed the accessor/member collision to `AssetDatabase::findByGuid`/`findByPath` — neither is
+   involved; the collision is `AssetBrowserPanel::database()` vs. its own `databasePtr` member.
+   Corrected in that file. (d) The sabotage classification's arithmetic accounted for only 25 of the 26
+   seeds (silently dropping S17) and filed S4 and S24 under "differently-shaped" even though their own
+   bullets say they redden NOTHING — the defining property of a non-discriminator. Corrected above and
+   in `CLAUDE.md`: **six** non-discriminators (S4, S6, S23, S24, S25, S26), not four; **twelve**
+   differently-shaped seeds (S1–S3, S5, S11–S16, S21, S22), not fourteen; 7 + 6 + 1 + 12 = 26.
+
+**Deliberately out of scope, documented separately rather than fixed here:** a symlinked directory
+making one physical file reachable via two paths (duplicate GUID; a repair rewrites the shared sidecar
+on every scan) needs either physical-identity dedup via `<filesystem>` canonical/equivalent — which
+AC-30/INV-A6 forbid in `asset_database.cpp` — or a change to 2.2.4's documented D13 behaviour. Both are
+architectural decisions outside a code-review round's scope.
+
+**Test inventory after this round, re-measured, not carried forward from the landing numbers above:**
+`aero_tests` **389** (unchanged — finding 1 is an include fix, no new case). `aero_editor_shell_test`
+**467 → 468** (`AD31`, finding 2). `aero_editor_imgui_test` **51 → 52** (`I30`, finding 4). Both
+tools-OFF configurations, freshly rebuilt, confirmed **444/444** (`ctest -N` unchanged at 6/19) —
+AC-17's claim still holds after the round. `check-math-boundary.sh`: **255** (unchanged — no new
+tracked file; the round only edits existing ones). `check-project-no-delete.sh`: **5** files scanned
+(unchanged).

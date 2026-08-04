@@ -29,6 +29,11 @@
 
 namespace engine::editor {
 
+// Forward-declared, never #included here: the header only needs the NAME for a pointer member (D13
+// of task 3.1.1's plan) -- the ViewportPanel/ConsolePanel precedent, applied a fourth time. The .cpp
+// includes <aero/editor/asset_database.hpp>.
+class AssetDatabase;
+
 class AssetBrowserPanel final : public Panel {
 public:
     explicit AssetBrowserPanel(std::string rootPath);
@@ -50,6 +55,24 @@ public:
     // open set, the current directory and the selection, so no stale row can survive it (E18).
     void setRoot(std::string rootPath);
     [[nodiscard]] const std::string& root() const noexcept { return rootUtf8; }
+
+    // task 3.1.1 -- the reconcile block's other half (D12). A non-owning, NEVER-owning pointer: this
+    // panel does not scan disk (D7 stays true), EditorApp does, in tick(), outside the draw walk.
+    // NEVER a reference (D13): EditorApp is movable and create() returns std::optional<EditorApp>, so
+    // a reference bound at construction would dangle the moment the returned optional is moved from.
+    // The member is `databasePtr`, not `database` -- a data member and a member function cannot share
+    // a name (the `RenderTarget::depthFormatValue` / `depthFormat()` precedent, ci-portability.md's
+    // "distinct name on accessor collision" rule).
+    void setDatabase(const AssetDatabase* db) noexcept { databasePtr = db; }
+    [[nodiscard]] const AssetDatabase* database() const noexcept { return databasePtr; }
+
+    // One-shot, read-and-clear (AC-38): the Refresh button's ActionKind::Refresh arm sets it; the
+    // reconcile block drains it in the same expression as the database's own root comparison.
+    [[nodiscard]] bool takeRescanRequest() noexcept {
+        const bool requested = rescanRequested;
+        rescanRequested = false;
+        return requested;
+    }
 
 private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.
@@ -88,6 +111,8 @@ private:
     PendingAction pending;
     bool showHidden = false;
     bool treeDirty = true;
+    const AssetDatabase* databasePtr = nullptr;  // task 3.1.1 -- reconciled, never owned (D13)
+    bool rescanRequested = false;                // task 3.1.1 -- one-shot, drained by takeRescanRequest()
 };
 
 }  // namespace engine::editor
