@@ -5,20 +5,24 @@
 // (project_files.hpp:15-16's convention, applied a second time): the caller (scene_session.cpp's
 // openSceneFile/saveSceneFile, project_file.cpp's loadProjectFrom/createProject) knows both the path
 // and the outcome, this TU only the outcome.
+#include <aero/core/content_hash.hpp>
 #include <aero/editor/text_file.hpp>
 
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <ios>
 #include <iterator>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace engine::editor {
 
@@ -99,6 +103,55 @@ std::string writeTextFileAtomic(std::string_view absolutePathUtf8, std::string_v
 bool fileExists(std::string_view absolutePathUtf8) {
     std::error_code ec;
     return std::filesystem::exists(pathFromUtf8(absolutePathUtf8), ec);
+}
+
+FileHashResult hashFileContents(std::string_view absolutePathUtf8) {
+    std::error_code ec;
+    const std::filesystem::path fsPath = pathFromUtf8(absolutePathUtf8);
+    if (std::filesystem::is_directory(fsPath, ec)) {
+        return {std::nullopt, "path is a directory", 0};
+    }
+    // BINARY, exactly like readTextFile above: text mode on Windows would rewrite "\r\n", making the
+    // same file hash differently there (TF17).
+    std::ifstream in(fsPath, std::ios::binary);
+    if (!in) {
+        return {std::nullopt, std::strerror(errno), 0};
+    }
+
+    // One heap allocation per call, sized at the CHUNK, not the file: a 2 GB source never becomes a
+    // 2 GB buffer. Deliberately NOT a `static thread_local` -- hidden state in a leaf primitive.
+    std::vector<char> buffer(HASH_CHUNK_BYTES);
+    ContentHasher hasher;
+    std::uint64_t bytesRead = 0;
+    while (true) {
+        in.read(buffer.data(), static_cast<std::streamsize>(HASH_CHUNK_BYTES));
+        const std::streamsize got = in.gcount();
+        if (got <= 0) {
+            break;
+        }
+        hasher.update(std::as_bytes(std::span<const char>(buffer.data(), static_cast<std::size_t>(got))));
+        bytesRead += static_cast<std::uint64_t>(got);
+    }
+    // .bad(), NOT .fail(): fail() is set by the EOF that ends the loop above, which is the ordinary,
+    // successful termination -- not a read error (readTextFile's rule above, applied here too).
+    if (in.bad()) {
+        return {std::nullopt, "read failed", bytesRead};
+    }
+    return {hasher.finish(), {}, bytesRead};
+}
+
+std::string ensureDirectory(std::string_view absolutePathUtf8) {
+    std::error_code ec;
+    const std::filesystem::path p = pathFromUtf8(absolutePathUtf8);
+    std::filesystem::create_directories(p, ec);  // the BOOL RETURN IS DELIBERATELY IGNORED (2.6.1 S22)
+    if (!ec) {
+        return {};
+    }
+    std::error_code dirEc;  // a race: another process created it between the two calls above
+    if (std::filesystem::is_directory(p, dirEc) && !dirEc) {
+        return {};
+    }
+    return ec.message();
 }
 
 }  // namespace engine::editor
