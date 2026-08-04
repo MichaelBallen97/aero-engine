@@ -314,12 +314,21 @@ DirectoryListing listDirectory(std::string_view rootUtf8, std::string_view relPa
                     brokenEntry.name = std::move(name);
                     // isDirectory and sizeKnown both stay false -- deliberately NOT a "0 B" lie, and
                     // deliberately not a directory (the tree pane must not offer to descend into it).
+                    // task 3.1.2: we KNOW this is a symlink -- symlink_status just said so above --
+                    // and mtimeKnown/sizeKnown both stay false (F3), so a broken symlink always misses
+                    // the fast path, always attempts a hash, and always fails it (Unhashable, never
+                    // cached). No special case anywhere else.
+                    brokenEntry.isSymlink = true;
                     out.entries.push_back(std::move(brokenEntry));
                 }
             } else {
                 FileEntry fileEntry;
                 fileEntry.name = std::move(name);
                 fileEntry.isDirectory = isDir;
+                // task 3.1.2 (plan A3): FREE on every platform -- __get_sym_ft returns the type
+                // cached from the OS's own directory record; it never stats.
+                std::error_code symEc;
+                fileEntry.isSymlink = entry.is_symlink(symEc) && !symEc;
                 if (!isDir) {
                     std::error_code sizeEc;
                     const std::uintmax_t bytes = entry.file_size(sizeEc);
@@ -330,6 +339,20 @@ DirectoryListing listDirectory(std::string_view rootUtf8, std::string_view relPa
                     // on failure both fields stay at their defaults -> the panel renders "—" (AC-6).
                     // NOT a "0 B" lie. Reachable for a file whose size the OS refuses even though its
                     // type resolved; the broken-symlink path is the entryEc branch above.
+                    //
+                    // task 3.1.2 (plan A3, measured against this SDK's own libc++): COSTS ONE EXTRA
+                    // stat PER FILE on libc++/libstdc++, and NOTHING on MSVC (directory_entry caches
+                    // size+mtime from WIN32_FIND_DATAW there). Taken deliberately: what it buys is not
+                    // reading the file's BYTES at all, which is orders of magnitude more expensive.
+                    // entry.refresh() would fold this into one stat but changes the broken-symlink
+                    // discrimination 2.2.4's code review had to fix once -- recorded as the documented
+                    // optimization, not taken here (see Step 3's measurement in the engineering log).
+                    std::error_code timeEc;
+                    const std::filesystem::file_time_type stamp = entry.last_write_time(timeEc);
+                    if (!timeEc) {
+                        fileEntry.mtime = static_cast<std::int64_t>(stamp.time_since_epoch().count());
+                        fileEntry.mtimeKnown = true;
+                    }
                 }
                 out.entries.push_back(std::move(fileEntry));
             }
@@ -346,6 +369,22 @@ DirectoryListing listDirectory(std::string_view rootUtf8, std::string_view relPa
 
     std::sort(out.entries.begin(), out.entries.end(), entryOrderLess);  // D11/F19
     return out;
+}
+
+std::string canonicalDirectory(std::string_view absolutePathUtf8) {
+    if (absolutePathUtf8.empty()) {
+        return {};
+    }
+    std::error_code ec;
+    const std::filesystem::path resolved = std::filesystem::canonical(pathFromUtf8(absolutePathUtf8), ec);
+    if (ec) {
+        return {};  // absent, unreadable, or a broken link
+    }
+    std::error_code dirEc;
+    if (!std::filesystem::is_directory(resolved, dirEc) || dirEc) {
+        return {};
+    }
+    return utf8FromPath(resolved);
 }
 
 }  // namespace engine::editor

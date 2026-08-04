@@ -85,8 +85,22 @@ private:
     std::filesystem::path dirPath;
 };
 
-FileEntry dirEntry(std::string name) { return FileEntry{std::move(name), 0, true, false}; }
-FileEntry fileEntry(std::string name, std::uint64_t size = 0) { return FileEntry{std::move(name), size, false, true}; }
+// task 3.1.2: this file's TempDir (above) has no `join`, unlike asset_database_test.cpp's/
+// text_file_test.cpp's copies -- a small local helper for the new canonicalDirectory cases below.
+std::string joinPath(const TempDir& tmp, std::string_view leaf) {
+    std::string result = tmp.utf8();
+    result += '/';
+    result += leaf;
+    return result;
+}
+
+// task 3.1.2 (plan A2): DESIGNATED initializers, as defence in depth for the NEXT field addition --
+// these used to be POSITIONAL, and inserting a field ahead of `isDirectory` would have silently
+// re-mapped both (bool -> int64 is a promotion, not a narrowing, so nothing diagnoses it).
+FileEntry dirEntry(std::string name) { return FileEntry{.name = std::move(name), .isDirectory = true}; }
+FileEntry fileEntry(std::string name, std::uint64_t size = 0) {
+    return FileEntry{.name = std::move(name), .size = size, .sizeKnown = true};
+}
 
 // Index a listing by name; -1 when absent. Keeps the assertions readable.
 std::ptrdiff_t indexOf(const DirectoryListing& listing, std::string_view name) {
@@ -583,6 +597,130 @@ TEST_CASE("editor: buildVisibleTree terminates on a symlink cycle at MAX_TREE_DE
     CHECK(out.size() == engine::editor::MAX_TREE_DEPTH);
     REQUIRE_FALSE(out.empty());
     CHECK(out.back().depth == engine::editor::MAX_TREE_DEPTH - 1);
+}
+
+TEST_CASE("editor: listDirectory fills mtime for a real file, and mtimeKnown is true (plan A3)") {
+    const TempDir tmp;
+    tmp.write("file.txt", "hello");
+    const DirectoryListing listing = engine::editor::listDirectory(tmp.utf8(), "", false);
+    const std::ptrdiff_t idx = indexOf(listing, "file.txt");
+    REQUIRE(idx >= 0);
+    CHECK(listing.entries[static_cast<std::size_t>(idx)].mtimeKnown);
+    CHECK(listing.entries[static_cast<std::size_t>(idx)].mtime != 0);
+}
+
+TEST_CASE("editor: listDirectory's mtime is LIVE -- it changes after a rewrite (plan A3)") {
+    // Do NOT sleep past the filesystem's granularity: writing a DIFFERENT SIZE too means the case
+    // cannot flake on a 1-second-granularity volume -- either the mtime or the size must differ.
+    const TempDir tmp;
+    tmp.write("file.txt", "hello");
+    const DirectoryListing before = engine::editor::listDirectory(tmp.utf8(), "", false);
+    const std::ptrdiff_t beforeIdx = indexOf(before, "file.txt");
+    REQUIRE(beforeIdx >= 0);
+    const std::int64_t beforeMtime = before.entries[static_cast<std::size_t>(beforeIdx)].mtime;
+    const std::uint64_t beforeSize = before.entries[static_cast<std::size_t>(beforeIdx)].size;
+
+    tmp.write("file.txt", "hello, much longer than before now");
+    const DirectoryListing after = engine::editor::listDirectory(tmp.utf8(), "", false);
+    const std::ptrdiff_t afterIdx = indexOf(after, "file.txt");
+    REQUIRE(afterIdx >= 0);
+    CHECK((after.entries[static_cast<std::size_t>(afterIdx)].mtime != beforeMtime ||
+           after.entries[static_cast<std::size_t>(afterIdx)].size != beforeSize));
+}
+
+TEST_CASE(
+    "editor: listDirectory's mtimeKnown is false and isSymlink is true for a dangling symlink "
+    "(F3, symlink-capable hosts only)") {
+    const TempDir tmp;
+    std::error_code ec;
+    std::filesystem::create_symlink("aero-definitely-no-such-target-3.1.2-mtime", tmp.path() / "dangling.txt", ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_symlink (Windows needs Developer Mode)");
+    } else {
+        const DirectoryListing listing = engine::editor::listDirectory(tmp.utf8(), "", false);
+        const std::ptrdiff_t idx = indexOf(listing, "dangling.txt");
+        REQUIRE(idx >= 0);
+        const FileEntry& entry = listing.entries[static_cast<std::size_t>(idx)];
+        CHECK_FALSE(entry.mtimeKnown);
+        CHECK(entry.isSymlink);
+    }
+}
+
+TEST_CASE(
+    "editor: listDirectory's isSymlink is true for a symlinked directory, false for a real one "
+    "(D9, symlink-capable hosts only)") {
+    const TempDir tmp;
+    tmp.makeDir("real");
+    std::error_code ec;
+    std::filesystem::create_directory_symlink(tmp.path() / "real", tmp.path() / "link", ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_directory_symlink (Windows needs Developer Mode)");
+    } else {
+        const DirectoryListing listing = engine::editor::listDirectory(tmp.utf8(), "", false);
+        const std::ptrdiff_t realIdx = indexOf(listing, "real");
+        const std::ptrdiff_t linkIdx = indexOf(listing, "link");
+        REQUIRE(realIdx >= 0);
+        REQUIRE(linkIdx >= 0);
+        CHECK_FALSE(listing.entries[static_cast<std::size_t>(realIdx)].isSymlink);
+        CHECK(listing.entries[static_cast<std::size_t>(linkIdx)].isSymlink);
+    }
+}
+
+TEST_CASE("editor: listDirectory's isSymlink is false for an ordinary file (D9)") {
+    const TempDir tmp;
+    tmp.write("plain.txt", "x");
+    const DirectoryListing listing = engine::editor::listDirectory(tmp.utf8(), "", false);
+    const std::ptrdiff_t idx = indexOf(listing, "plain.txt");
+    REQUIRE(idx >= 0);
+    CHECK_FALSE(listing.entries[static_cast<std::size_t>(idx)].isSymlink);
+}
+
+TEST_CASE("editor: canonicalDirectory resolves the same real directory reached by two routes (D9, INV-C9)") {
+    const TempDir tmp;
+    tmp.makeDir("a/b");
+    const std::string direct = engine::editor::canonicalDirectory(joinPath(tmp, "a/b"));
+    const std::string indirect = engine::editor::canonicalDirectory(joinPath(tmp, "a/./b"));
+    CHECK_FALSE(direct.empty());
+    CHECK(direct == indirect);
+}
+
+TEST_CASE(
+    "editor: canonicalDirectory on a symlinked directory returns the target's path "
+    "(AC-31, D9, symlink-capable hosts only)") {
+    const TempDir tmp;
+    tmp.makeDir("real");
+    std::error_code ec;
+    std::filesystem::create_directory_symlink(tmp.path() / "real", tmp.path() / "link", ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_directory_symlink (Windows needs Developer Mode)");
+    } else {
+        const std::string viaLink = engine::editor::canonicalDirectory(joinPath(tmp, "link"));
+        const std::string viaTarget = engine::editor::canonicalDirectory(joinPath(tmp, "real"));
+        CHECK_FALSE(viaLink.empty());
+        CHECK(viaLink == viaTarget);
+    }
+}
+
+TEST_CASE("editor: canonicalDirectory returns \"\" for a missing path and for a file (D9)") {
+    const TempDir tmp;
+    tmp.write("plain.txt", "x");
+    CHECK(engine::editor::canonicalDirectory(joinPath(tmp, "nope")).empty());
+    CHECK(engine::editor::canonicalDirectory(joinPath(tmp, "plain.txt")).empty());
+}
+
+TEST_CASE("editor: canonicalDirectory returns \"\" for a broken symlink (D9, symlink-capable hosts only)") {
+    const TempDir tmp;
+    std::error_code ec;
+    std::filesystem::create_symlink("aero-definitely-no-such-target-3.1.2-canon", tmp.path() / "dangling", ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_symlink (Windows needs Developer Mode)");
+    } else {
+        CHECK(engine::editor::canonicalDirectory(joinPath(tmp, "dangling")).empty());
+    }
+}
+
+TEST_CASE("editor: canonicalDirectory(\"\") returns \"\" (D9)") {
+    CHECK(engine::editor::canonicalDirectory("").empty());
 }
 
 TEST_CASE("editor: buildVisibleTree reuses `out` without leaving a survivor (D15)") {
