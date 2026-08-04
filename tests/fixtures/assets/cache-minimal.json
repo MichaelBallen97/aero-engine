@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "hashAlgorithm": "murmur3-x64-128",
+  "entries": [
+    {
+      "guid": "a3f1c07e5b8d42198e6f0c3d7a2b4b92",
+      "path": "textures/wood.png",
+      "size": 4096,
+      "mtime": 1234567890123456789,
+      "contentHash": "1a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "metaHash": "9f8e7d6c5b4a3928170615243f4e5d6c",
+      "importer": "",
+      "importerVersion": 0,
+      "dependencies": [],
+      "missing": 0
+    }
+  ]
+}

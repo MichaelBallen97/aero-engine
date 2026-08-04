@@ -223,6 +223,14 @@ find_package(Threads REQUIRED)
 # text_file.hpp depends on neither reflection nor entt, so it must be PRESENT in the reflect-OFF
 # build, not skipped -- prove it with --list-test-cases. Tier-0: no GPU, no window, no ImGui context.
 # The link line is UNCHANGED and no new ctest entry is registered.
+#
+# task 3.1.2, Step 4 joins this target with editor/asset_cache_test.cpp -- the import cache index v1
+# format (parseAssetCache/writeAssetCacheText/importChangeLabel/AssetCacheIndex::find, cases
+# IC1-IC34/IG1-IG5). UNCONDITIONAL, for the same reason asset_meta_test.cpp is (D4/AC-17/INV-P5):
+# asset_cache.hpp depends on nothing but content_hash.hpp/guid.hpp, so it must be PRESENT in the
+# reflect-OFF build, not skipped -- prove it with --list-test-cases, which must show a DIFFERENT
+# total in the two reduced configurations than it did before this step, not the same one twice.
+# Tier-0. The link line is UNCHANGED and no new ctest entry is registered (ctest -N stays 95/6/19).
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -233,7 +241,7 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/scene_session_test.cpp editor/project_test.cpp
                editor/project_settings_test.cpp
                editor/asset_meta_test.cpp editor/asset_database_test.cpp
-               editor/text_file_test.cpp)
+               editor/text_file_test.cpp editor/asset_cache_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

@@ -549,11 +549,122 @@ it.
 
 ### 5.8 Scope of v1
 
-Directories carry no `.meta`. Import settings, content hashes and dependency records are 3.1.2's and
-will arrive as additive root keys, which do **not** bump the version — and which are safe from an
-older reader precisely because §5.3 forbids rewriting a valid sidecar.
+Directories carry no `.meta`. Content hashes and dependency records did NOT arrive here: task 3.1.2
+put them in §6's machine-local import cache instead, and this prediction was wrong. A hash in a
+committed file would need a third write path (repealing §5.3's never-rewrite rule), would dirty two
+files on every save, and would put unresolvable merge conflicts on derived data. Import settings are
+still expected here — they are user intent, they must be committed, and they must survive a machine
+change — and are 3.2's to define; §6's `metaHash` already invalidates an import when they change.
 
-## 6. Reserved for future formats
+## 6. Asset import cache index v1
+
+> Enforced in code by `editor/src/asset_cache.cpp` (the pure parse/write/change-detection half, task
+> 3.1.2); `tests/editor/asset_cache_test.cpp` is its machine-checkable form, including a three-fixture
+> golden battery (§6.7) mirroring §5.7's design.
+
+### 6.1 Nature
+
+Derived, machine-local, disposable. One file per project at `<projectRoot>/Library/asset-cache.json`,
+never committed, never merged, never compared across machines. **This section's strictness policy is
+deliberately the INVERSE of §5's** — §6.3 states the contrast in full.
+
+### 6.2 Envelope
+
+Three root keys, in this exact order on save.
+
+| Key | Kind | Required | Rule |
+|---|---|---|---|
+| `version` | number, integral | yes | must equal `1` |
+| `hashAlgorithm` | string | yes | must equal `"murmur3-x64-128"` |
+| `entries` | array of objects | yes | see below; sorted by `guid` on write |
+
+`version` is validated first, then `hashAlgorithm`, then `entries`. Ten entry keys, in this exact
+order on save.
+
+| Key | Kind | Required | Rule |
+|---|---|---|---|
+| `guid` | string | yes | exactly 32 hex digits, any case; **must not be nil** (the only field this format forbids nil for) |
+| `path` | string | yes | project-relative, informational; a move updates it without invalidating the entry |
+| `size` | number, integral | yes | bytes observed at the scan that produced this entry |
+| `mtime` | number, integral | yes | OPAQUE, machine-local `file_time_type` ticks — see §6.5 |
+| `contentHash` | string | yes | exactly 32 hex digits, any case; **MAY be all-zero** — the empty file's digest is a legitimate value, never rejected |
+| `metaHash` | string | yes | same rule as `contentHash`, over the whole sidecar's bytes |
+| `importer` | string | no, default `""` | "" until 3.2 registers an importer |
+| `importerVersion` | number, integral | no, default `0` | |
+| `dependencies` | array of strings | no, default `[]` | each element exactly 32 hex digits |
+| `missing` | number, integral | no, default `0` | consecutive scans this entry's asset was absent (§6.6's grace) |
+
+Canonical form is §1's, unchanged: UTF-8, no BOM, LF, 2-space indent, one trailing newline. Optional
+keys are **always written**, never omitted when defaulted, so a reader never has to distinguish
+absent from default.
+
+### 6.3 Strictness
+
+The envelope (`version`/`hashAlgorithm`/`entries`) is checked exactly like §5's: the first violation
+discards the WHOLE document, and the next successful scan overwrites the file atomically — **nothing
+in this format is ever deleted from disk: a discard means do not carry the entries forward.** Below
+that, the policy inverts: a malformed **entry** is dropped silently (counted, never named) and every
+other entry survives, and an unknown key at **either** level — root or entry — is ignored with no
+warning of any kind, because a newer build wrote it and this build cannot act on it. §5's `.meta`
+takes the opposite position on unknown keys (WARN + ignore) because a `.meta` is a committed,
+human-visible file a user might want to know about; this index is neither.
+
+### 6.4 Identity vs. content
+
+The `guid` is §5's identity: stable, committed, path-independent. The `contentHash` is this section's
+fingerprint: unstable by design, machine-derivable, never committed. Two different 128-bit values
+with different lifetimes; never substitute one for the other.
+
+### 6.5 The mtime field, and why it is a number
+
+`mtime` is an opaque `file_time_type` tick count, never a calendar date and never comparable across
+machines or filesystems. It is a JSON **number**, not a string, because this tree's JSON DOM
+(`engine::JsonValue`) stores a number's validated lexeme verbatim and converts at access time, so a
+19-significant-digit tick count (`> 2^53`) round-trips through `std::to_chars`/`std::from_chars`
+exactly — a future parser that pre-parses numbers to `double` would silently corrupt every value past
+`2^53`. This is F1's dependency, made explicit: the minimal golden fixture (§6.7) pins its `mtime` at
+19 digits on purpose, so that regression is caught the moment it is introduced.
+
+### 6.6 Canonicalization
+
+Entries sorted by `guid`; key order fixed at both levels; never sorted by content. Determinism is
+load-bearing — the index is written only when its text differs from the text it was read from (task
+3.1.2's D15), so a non-deterministic writer would reintroduce a per-scan write.
+
+### 6.7 Golden fixtures
+
+`tests/fixtures/assets/cache-minimal.json`, `cache-dependencies.json` and `cache-damaged.json` —
+content pins with **no regeneration path whatsoever** (§5.7's design, a second application), plus the
+standing warning restated: bytes are necessary and never sufficient, so every byte-fixpoint case is
+paired with a semantic case that reads the fixture without re-deriving it.
+
+### 6.8 Scope of v1
+
+No cooked artifacts (a future task adds an `artifacts` key, additively). No per-importer settings
+(§5's `.meta` owns user intent once 3.2 defines it). No cross-project sharing, no shared cache server,
+no artifact deduplication by hash.
+
+### 6.9 Error catalog
+
+Envelope errors discard the whole document.
+
+| Stage | Message |
+|---|---|
+| JSON | *(verbatim from the JSON parser, with position)* |
+| Envelope | `asset cache root must be a JSON object (found <kind>)` |
+| Envelope | `missing required key "version"` |
+| Envelope | `"version" must be an integer (found <kind-or-lexeme>)` |
+| Envelope | `unsupported asset cache format version <N> (this build reads version 1)` |
+| Envelope | `missing required key "hashAlgorithm"` |
+| Envelope | `"hashAlgorithm" must be a string (found <kind>)` |
+| Envelope | `unsupported hash algorithm "<X>" (this build writes "murmur3-x64-128")` |
+| Envelope | `missing required key "entries"` |
+| Envelope | `"entries" must be an array (found <kind>)` |
+
+A per-**entry** failure is silent and counted (`droppedEntries`/`droppedDependencies`), never a
+message — §6.3's inversion of §5's policy.
+
+## 7. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
   applies unchanged. Section appends here.
