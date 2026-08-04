@@ -5,10 +5,9 @@
 // no logging (INV-A3): status is RETURNED, never printed. No recursion anywhere -- the document is
 // two levels deep and both are walked with plain loops.
 //
-// THIS STEP LANDS ONLY parseAssetCache / writeAssetCacheText / importChangeLabel / AssetCacheIndex::
-// find. planImports / commitImports / planReattachments are declared in asset_cache.hpp but defined
-// in Steps 6/7 -- nothing in this file or its test calls them, so the missing definitions do not
-// trip the linker.
+// Step 4 landed parseAssetCache / writeAssetCacheText / importChangeLabel / AssetCacheIndex::find.
+// Step 6 (this revision) adds planImports and commitImports, the pure change-detection cascade and
+// its commit. planReattachments is still declared in asset_cache.hpp but defined in Step 7.
 #include <aero/editor/asset_cache.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
@@ -21,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -395,6 +395,205 @@ std::string_view importChangeLabel(ImportChange change) noexcept {
             break;
     }
     return label;
+}
+
+ImportPlanResult planImports(std::vector<ImportInput> inputs, const AssetCacheIndex& previous) {
+    // 1. Sort byte-lexicographically FIRST (AC-21, seed S11): std::string's `<` is a byte comparison,
+    // never case-folded -- so the result is independent of walk order and of the OS.
+    std::sort(inputs.begin(), inputs.end(),
+              [](const ImportInput& a, const ImportInput& b) { return a.relativePath < b.relativePath; });
+
+    ImportPlanResult result;
+    result.entries.reserve(inputs.size());
+
+    // 2. Own-cause pass, in EXACTLY this order per input (AC-22) -- a switch-free if/else-if chain,
+    // never independent flags: the source could not be hashed beats every other cause, then New, then
+    // SourceChanged, then MetaChanged, then ImporterChanged, else UpToDate.
+    for (const ImportInput& input : inputs) {
+        ImportPlanEntry entry;
+        entry.guid = input.guid;
+        entry.relativePath = input.relativePath;
+
+        if (!input.contentHash.has_value()) {
+            entry.change = input.hashSkippedByBudget ? ImportChange::NotHashed : ImportChange::Unhashable;
+        } else {
+            const AssetCacheEntry* previousEntry = previous.find(input.guid);
+            if (previousEntry == nullptr) {
+                entry.change = ImportChange::New;
+            } else if (previousEntry->contentHash != *input.contentHash) {
+                entry.change = ImportChange::SourceChanged;
+            } else if (previousEntry->metaHash != input.metaHash) {
+                entry.change = ImportChange::MetaChanged;
+            } else if (previousEntry->importer != input.importer ||
+                       previousEntry->importerVersion != input.importerVersion) {
+                entry.change = ImportChange::ImporterChanged;
+            } else {
+                entry.change = ImportChange::UpToDate;
+            }
+        }
+        result.entries.push_back(std::move(entry));
+    }
+
+    // 3. Build the REVERSE edge map once, from the PREVIOUS index's own dependency lists -- for each
+    // input index `i` with a previous entry, for each `dep` in that entry's dependencies,
+    // `dependents[dep]` gains `i`. In the SAME pass: if `dep` names no input in this scan's GUID set,
+    // its dependent's input vanished, so `i` is marked dirty-by-dangling directly (D12) -- it can never
+    // be reached through the worklist below, because a GUID with no input never enters `result.entries`
+    // and so is never popped.
+    std::unordered_map<Guid, std::size_t> inputIndexByGuid;
+    inputIndexByGuid.reserve(result.entries.size());
+    for (std::size_t i = 0; i < result.entries.size(); ++i) {
+        inputIndexByGuid.emplace(result.entries[i].guid, i);
+    }
+
+    std::unordered_map<Guid, std::vector<std::size_t>> dependents;
+    for (std::size_t i = 0; i < result.entries.size(); ++i) {
+        const AssetCacheEntry* previousEntry = previous.find(result.entries[i].guid);
+        if (previousEntry == nullptr) {
+            continue;
+        }
+        for (const Guid& dep : previousEntry->dependencies) {
+            if (!inputIndexByGuid.contains(dep)) {
+                // Dangling: `dep` has no input this scan (E24-adjacent -- the dependency itself is
+                // gone). Marked directly, subject to the same clean -> dirty transition rule as the
+                // worklist below, so a node already dirty for its own reason keeps that reason (AC-22).
+                if (result.entries[i].change == ImportChange::UpToDate) {
+                    result.entries[i].change = ImportChange::DependencyChanged;
+                }
+                continue;
+            }
+            dependents[dep].push_back(i);
+        }
+    }
+
+    // 4. Worklist over reverse edges (AC-24) -- seeded with every index whose change is not UpToDate
+    // (own-cause AND dangling, both already settled above). A dependent is marked and PUSHED only on
+    // the clean -> dirty transition, so it enters the queue at most once and this loop is O(V+E) on ANY
+    // graph, cycles included. Deliberately: no `visited` set, no cycle detection, no recursion. A cycle
+    // containing a dirty node makes every member DependencyChanged (both cycle members are reachable
+    // from each other); a cycle containing none is never seeded and stays untouched.
+    std::vector<std::size_t> queue;
+    for (std::size_t i = 0; i < result.entries.size(); ++i) {
+        if (result.entries[i].change != ImportChange::UpToDate) {
+            queue.push_back(i);
+        }
+    }
+    for (std::size_t queueHead = 0; queueHead < queue.size(); ++queueHead) {
+        const std::size_t poppedIndex = queue[queueHead];
+        const auto dependentsIt = dependents.find(result.entries[poppedIndex].guid);
+        if (dependentsIt == dependents.end()) {
+            continue;
+        }
+        for (const std::size_t dependentIndex : dependentsIt->second) {
+            if (result.entries[dependentIndex].change == ImportChange::UpToDate) {
+                result.entries[dependentIndex].change = ImportChange::DependencyChanged;
+                queue.push_back(dependentIndex);
+            }
+        }
+    }
+
+    // 5. Collect jobIndices (every non-UpToDate index, in sorted-path order -- entries is already in
+    // that order from step 1) and the six counts. `changed` folds SourceChanged + MetaChanged +
+    // ImporterChanged for the LOG LINE only; the per-asset reason stays exact on ImportPlanEntry::change.
+    for (std::size_t i = 0; i < result.entries.size(); ++i) {
+        switch (result.entries[i].change) {
+            case ImportChange::UpToDate:
+                ++result.upToDate;
+                break;
+            case ImportChange::New:
+                ++result.newAssets;
+                result.jobIndices.push_back(i);
+                break;
+            case ImportChange::SourceChanged:
+            case ImportChange::MetaChanged:
+            case ImportChange::ImporterChanged:
+                ++result.changed;
+                result.jobIndices.push_back(i);
+                break;
+            case ImportChange::DependencyChanged:
+                ++result.dependencyChanged;
+                result.jobIndices.push_back(i);
+                break;
+            case ImportChange::Unhashable:
+                ++result.unhashable;
+                result.jobIndices.push_back(i);
+                break;
+            case ImportChange::NotHashed:
+                ++result.notHashed;
+                result.jobIndices.push_back(i);
+                break;
+        }
+    }
+
+    return result;
+}
+
+AssetCacheIndex commitImports(const AssetCacheIndex& previous, const std::vector<ImportInput>& inputs,
+                              const ImportPlanResult& plan) {
+    // `plan` names each input's REASON, which this function does not need: the one decision it makes
+    // per input -- "was a hash resolved this scan?" -- reads `ImportInput::contentHash`'s engagement
+    // directly (A19), which is exactly equivalent (contentHash is nullopt IFF change is Unhashable or
+    // NotHashed) and keeps this function correct even if a caller's `plan` was computed against a
+    // DIFFERENT `previous` snapshot than the one given here. Declared for symmetry with planImports's
+    // signature; unused by this algorithm.
+    (void)plan;
+
+    AssetCacheIndex result;
+    result.entries.reserve(previous.entries.size() + inputs.size());
+
+    std::unordered_set<Guid> seenGuids;
+    seenGuids.reserve(inputs.size());
+
+    // One pass over the inputs: a hash resolved this scan commits a FRESH entry; no hash preserves the
+    // previous entry VERBATIM (AC-25/INV-C4), fabricating nothing.
+    for (const ImportInput& input : inputs) {
+        seenGuids.insert(input.guid);
+        if (input.contentHash.has_value()) {
+            const AssetCacheEntry* previousEntry = previous.find(input.guid);
+            AssetCacheEntry entry;
+            entry.guid = input.guid;
+            entry.path = input.relativePath;  // D11/E8: a move updates the path without invalidating it
+            entry.size = input.size;
+            entry.mtime = input.mtime;
+            entry.contentHash = *input.contentHash;
+            entry.metaHash = input.metaHash;
+            entry.importer = input.importer;
+            entry.importerVersion = input.importerVersion;
+            // Dependencies are CARRIED OVER from the previous entry, never emptied -- inventing an
+            // empty list would silently erase a future importer's edges the first time an older build
+            // ran (D-6). Empty when there was no previous entry for this GUID.
+            entry.dependencies = previousEntry != nullptr ? previousEntry->dependencies : std::vector<Guid>{};
+            entry.missing = 0;  // A19: seen this scan, however it was classified
+            result.entries.push_back(std::move(entry));
+        } else {
+            // Unhashable / NotHashed: no hash was resolved this scan. Copy the previous entry forward
+            // VERBATIM, `missing` included -- and commit NO entry at all when there was none (a
+            // NotHashed asset must never appear up to date; R-C2, seed S15).
+            const AssetCacheEntry* previousEntry = previous.find(input.guid);
+            if (previousEntry != nullptr) {
+                result.entries.push_back(*previousEntry);
+            }
+        }
+    }
+
+    // Then one pass over `previous`: a GUID this scan never saw at all gets `missing + 1`, retained
+    // while that value is <= MISSING_SCAN_GRACE, dropped when it would exceed it (A19: survives at 3,
+    // dropped on the scan that would make it 4).
+    for (const AssetCacheEntry& previousEntry : previous.entries) {
+        if (seenGuids.contains(previousEntry.guid)) {
+            continue;  // already handled above, one way or the other
+        }
+        if (previousEntry.missing + 1 > MISSING_SCAN_GRACE) {
+            continue;  // dropped
+        }
+        AssetCacheEntry carried = previousEntry;
+        carried.missing += 1;
+        result.entries.push_back(std::move(carried));
+    }
+
+    std::sort(result.entries.begin(), result.entries.end(),
+              [](const AssetCacheEntry& a, const AssetCacheEntry& b) { return a.guid < b.guid; });
+    return result;
 }
 
 }  // namespace engine::editor

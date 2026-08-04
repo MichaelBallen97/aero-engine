@@ -38,10 +38,16 @@ using engine::editor::AssetCacheEntry;
 using engine::editor::AssetCacheIndex;
 using engine::editor::AssetCacheParseResult;
 using engine::editor::CacheLoadOutcome;
+using engine::editor::commitImports;
 using engine::editor::ImportChange;
 using engine::editor::importChangeLabel;
+using engine::editor::ImportInput;
+using engine::editor::ImportPlanEntry;
+using engine::editor::ImportPlanResult;
 using engine::editor::MAX_DEPENDENCIES_PER_ENTRY;
+using engine::editor::MISSING_SCAN_GRACE;
 using engine::editor::parseAssetCache;
+using engine::editor::planImports;
 using engine::editor::writeAssetCacheText;
 
 namespace {
@@ -596,4 +602,474 @@ TEST_CASE("asset_cache: cache-dependencies.json's raw bytes name version 1 and m
     REQUIRE(fixture.ok);
     CHECK(fixture.text.find("\"version\": 1,") != std::string::npos);
     CHECK(fixture.text.find("\"hashAlgorithm\": \"murmur3-x64-128\"") != std::string::npos);
+}
+
+// =====================================================================================================
+// IP -- planImports / commitImports, all PURE, from std::vector literals, no disk, no clock (task
+// 3.1.2 Step 6)
+// =====================================================================================================
+
+namespace {
+
+Guid guidOf(std::uint64_t n) { return Guid{n, n}; }
+ContentHash hashOf(std::uint64_t n) { return ContentHash{n, n}; }
+
+AssetCacheEntry cacheEntry(Guid guid, std::string path, ContentHash contentHash, ContentHash metaHash = ContentHash{},
+                           std::string importer = "", std::uint32_t importerVersion = 0,
+                           std::vector<Guid> dependencies = {}, std::uint32_t missing = 0) {
+    AssetCacheEntry entry;
+    entry.guid = guid;
+    entry.path = std::move(path);
+    entry.contentHash = contentHash;
+    entry.metaHash = metaHash;
+    entry.importer = std::move(importer);
+    entry.importerVersion = importerVersion;
+    entry.dependencies = std::move(dependencies);
+    entry.missing = missing;
+    return entry;
+}
+
+ImportInput importInput(Guid guid, std::string relativePath, std::optional<ContentHash> contentHash,
+                        ContentHash metaHash = ContentHash{}, std::string importer = "",
+                        std::uint32_t importerVersion = 0, bool hashSkippedByBudget = false) {
+    ImportInput input;
+    input.guid = guid;
+    input.relativePath = std::move(relativePath);
+    input.contentHash = contentHash;
+    input.metaHash = metaHash;
+    input.importer = std::move(importer);
+    input.importerVersion = importerVersion;
+    input.hashSkippedByBudget = hashSkippedByBudget;
+    return input;
+}
+
+AssetCacheIndex indexOf(std::vector<AssetCacheEntry> entries) {
+    AssetCacheIndex index;
+    index.entries = std::move(entries);
+    std::sort(index.entries.begin(), index.entries.end(),
+              [](const AssetCacheEntry& a, const AssetCacheEntry& b) { return a.guid < b.guid; });
+    return index;
+}
+
+const ImportPlanEntry* findEntry(const ImportPlanResult& result, Guid guid) {
+    for (const ImportPlanEntry& entry : result.entries) {
+        if (entry.guid == guid) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+TEST_CASE("asset_cache: planImports on empty input (IP1, AC-21)") {
+    const AssetCacheIndex previous;
+    const ImportPlanResult result = planImports({}, previous);
+    CHECK(result.entries.empty());
+    CHECK(result.jobIndices.empty());
+    CHECK(result.upToDate == 0);
+    CHECK(result.newAssets == 0);
+    CHECK(result.changed == 0);
+    CHECK(result.dependencyChanged == 0);
+    CHECK(result.unhashable == 0);
+    CHECK(result.notHashed == 0);
+}
+
+TEST_CASE("asset_cache: New for its own cause -- no entry for the GUID (IP2, AC-22)") {
+    const AssetCacheIndex previous;  // empty: no entry can possibly match
+    const ImportPlanResult result =
+        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::New);
+    CHECK(result.newAssets == 1);
+    CHECK(result.jobIndices == std::vector<std::size_t>{0});
+}
+
+TEST_CASE("asset_cache: SourceChanged for its own cause (IP3, AC-22, seed S13/S14)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
+    const ImportPlanResult result =
+        planImports({importInput(guidOf(1), "a.png", hashOf(999), hashOf(20), "gltf", 3)}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::SourceChanged);
+    CHECK(result.changed == 1);
+}
+
+TEST_CASE("asset_cache: MetaChanged for its own cause (IP4, AC-22)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
+    const ImportPlanResult result =
+        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(999), "gltf", 3)}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::MetaChanged);
+    CHECK(result.changed == 1);
+}
+
+TEST_CASE("asset_cache: ImporterChanged for its own cause (IP5, AC-22, D16)") {
+    // A hand-built previous entry with importer "gltf"; the input names a different importer text.
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
+    const ImportPlanResult result =
+        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), "obj", 3)}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::ImporterChanged);
+    CHECK(result.changed == 1);
+
+    // The importer VERSION alone differing is the same cause.
+    const ImportPlanResult versionResult =
+        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 4)}, previous);
+    REQUIRE(versionResult.entries.size() == 1);
+    CHECK(versionResult.entries[0].change == ImportChange::ImporterChanged);
+}
+
+TEST_CASE("asset_cache: Unhashable -- contentHash nullopt, not budget-skipped (IP6, AC-22)") {
+    const AssetCacheIndex previous;
+    const ImportPlanResult result = planImports(
+        {importInput(guidOf(1), "a.png", std::nullopt, hashOf(20), "", 0, /*hashSkippedByBudget=*/false)}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::Unhashable);
+    CHECK(result.unhashable == 1);
+}
+
+TEST_CASE("asset_cache: NotHashed -- contentHash nullopt, budget-skipped (IP7, AC-22)") {
+    const AssetCacheIndex previous;
+    const ImportPlanResult result = planImports(
+        {importInput(guidOf(1), "a.png", std::nullopt, hashOf(20), "", 0, /*hashSkippedByBudget=*/true)}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::NotHashed);
+    CHECK(result.notHashed == 1);
+}
+
+TEST_CASE("asset_cache: UpToDate when nothing differs (IP8, AC-22, seed S13)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
+    const ImportPlanResult result =
+        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::UpToDate);
+    CHECK(result.upToDate == 1);
+    CHECK(result.jobIndices.empty());
+}
+
+TEST_CASE(
+    "asset_cache: PRECEDENCE -- New wins when SourceChanged/MetaChanged/ImporterChanged also conceptually "
+    "apply (IP9, AC-22)") {
+    // No previous entry AT ALL: every other own-cause is vacuously "different from nothing", but New
+    // is checked first in the chain and there is nothing to compare against for the rest.
+    const AssetCacheIndex previous;
+    const ImportPlanResult result =
+        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::New);
+}
+
+TEST_CASE("asset_cache: PRECEDENCE -- SourceChanged wins over MetaChanged and ImporterChanged (IP10, AC-22)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
+    // contentHash, metaHash AND importer all differ from the previous entry at once.
+    const ImportPlanResult result =
+        planImports({importInput(guidOf(1), "a.png", hashOf(999), hashOf(888), "obj", 7)}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::SourceChanged);
+}
+
+TEST_CASE(
+    "asset_cache: PRECEDENCE -- MetaChanged wins over ImporterChanged; Unhashable beats every own-cause "
+    "(IP11, AC-22)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
+    // Same contentHash (SourceChanged does not apply); metaHash AND importer both differ.
+    const ImportPlanResult metaWins =
+        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(888), "obj", 7)}, previous);
+    REQUIRE(metaWins.entries.size() == 1);
+    CHECK(metaWins.entries[0].change == ImportChange::MetaChanged);
+
+    // Identical construction, but this scan could not read the bytes at all -- Unhashable wins over
+    // every own-cause, including one that would otherwise have won (MetaChanged here).
+    const ImportPlanResult unhashableWins = planImports(
+        {importInput(guidOf(1), "a.png", std::nullopt, hashOf(888), "obj", 7, /*hashSkippedByBudget=*/false)},
+        previous);
+    REQUIRE(unhashableWins.entries.size() == 1);
+    CHECK(unhashableWins.entries[0].change == ImportChange::Unhashable);
+}
+
+TEST_CASE("asset_cache: a shuffled input produces an identical result (IP12, AC-21, seed S11)") {
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(guidOf(1), "a.png", hashOf(1)),
+        cacheEntry(guidOf(2), "b.png", hashOf(999)),  // will report SourceChanged
+    });
+    const std::vector<ImportInput> orderA = {
+        importInput(guidOf(1), "a.png", hashOf(1)),
+        importInput(guidOf(2), "b.png", hashOf(2)),
+        importInput(guidOf(3), "c.png", hashOf(3)),
+    };
+    const std::vector<ImportInput> orderB = {orderA[2], orderA[0], orderA[1]};
+    const std::vector<ImportInput> orderC = {orderA[1], orderA[2], orderA[0]};
+
+    const ImportPlanResult resultA = planImports(orderA, previous);
+    const ImportPlanResult resultB = planImports(orderB, previous);
+    const ImportPlanResult resultC = planImports(orderC, previous);
+
+    REQUIRE(resultA.entries.size() == 3);
+    REQUIRE(resultB.entries.size() == 3);
+    REQUIRE(resultC.entries.size() == 3);
+    for (std::size_t i = 0; i < resultA.entries.size(); ++i) {
+        CHECK(resultA.entries[i].guid == resultB.entries[i].guid);
+        CHECK(resultA.entries[i].relativePath == resultB.entries[i].relativePath);
+        CHECK(resultA.entries[i].change == resultB.entries[i].change);
+        CHECK(resultA.entries[i].guid == resultC.entries[i].guid);
+        CHECK(resultA.entries[i].relativePath == resultC.entries[i].relativePath);
+        CHECK(resultA.entries[i].change == resultC.entries[i].change);
+    }
+    CHECK(resultA.jobIndices == resultB.jobIndices);
+    CHECK(resultA.jobIndices == resultC.jobIndices);
+}
+
+TEST_CASE("asset_cache: entries are sorted byte-lexicographically -- 'Z.png' precedes 'a.png' (IP13, AC-21)") {
+    const AssetCacheIndex previous;
+    const ImportPlanResult result =
+        planImports({importInput(guidOf(2), "a.png", hashOf(2)), importInput(guidOf(1), "Z.png", hashOf(1))}, previous);
+    REQUIRE(result.entries.size() == 2);
+    CHECK(result.entries[0].relativePath == "Z.png");
+    CHECK(result.entries[1].relativePath == "a.png");
+}
+
+TEST_CASE(
+    "asset_cache: transitive A -> B -> C, C changed marks both B and A DependencyChanged (IP14, AC-23, "
+    "seed S18)") {
+    const Guid a = guidOf(1);
+    const Guid b = guidOf(2);
+    const Guid c = guidOf(3);
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(a, "a.mat", hashOf(1), ContentHash{}, "", 0, {b}),
+        cacheEntry(b, "b.png", hashOf(2), ContentHash{}, "", 0, {c}),
+        cacheEntry(c, "c.psd", hashOf(3)),
+    });
+    const ImportPlanResult result = planImports(
+        {
+            importInput(a, "a.mat", hashOf(1)),    // unchanged own-cause
+            importInput(b, "b.png", hashOf(2)),    // unchanged own-cause
+            importInput(c, "c.psd", hashOf(999)),  // SourceChanged
+        },
+        previous);
+    REQUIRE(result.entries.size() == 3);
+    CHECK(findEntry(result, c)->change == ImportChange::SourceChanged);
+    CHECK(findEntry(result, b)->change == ImportChange::DependencyChanged);
+    CHECK(findEntry(result, a)->change == ImportChange::DependencyChanged);
+}
+
+TEST_CASE("asset_cache: a four-deep chain propagates all the way (IP15, AC-23)") {
+    const Guid a = guidOf(1);
+    const Guid b = guidOf(2);
+    const Guid c = guidOf(3);
+    const Guid d = guidOf(4);
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(a, "a", hashOf(1), ContentHash{}, "", 0, {b}),
+        cacheEntry(b, "b", hashOf(2), ContentHash{}, "", 0, {c}),
+        cacheEntry(c, "c", hashOf(3), ContentHash{}, "", 0, {d}),
+        cacheEntry(d, "d", hashOf(4)),
+    });
+    const ImportPlanResult result = planImports(
+        {
+            importInput(a, "a", hashOf(1)), importInput(b, "b", hashOf(2)), importInput(c, "c", hashOf(3)),
+            importInput(d, "d", hashOf(999)),  // SourceChanged
+        },
+        previous);
+    REQUIRE(result.entries.size() == 4);
+    CHECK(findEntry(result, d)->change == ImportChange::SourceChanged);
+    CHECK(findEntry(result, c)->change == ImportChange::DependencyChanged);
+    CHECK(findEntry(result, b)->change == ImportChange::DependencyChanged);
+    CHECK(findEntry(result, a)->change == ImportChange::DependencyChanged);
+}
+
+TEST_CASE("asset_cache: a diamond marks each node ONCE -- no duplicates in jobIndices (IP16, AC-23)") {
+    const Guid a = guidOf(1);
+    const Guid b = guidOf(2);
+    const Guid c = guidOf(3);
+    const Guid d = guidOf(4);
+    // D depends on B and C; both B and C depend on A.
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(a, "a", hashOf(1)),
+        cacheEntry(b, "b", hashOf(2), ContentHash{}, "", 0, {a}),
+        cacheEntry(c, "c", hashOf(3), ContentHash{}, "", 0, {a}),
+        cacheEntry(d, "d", hashOf(4), ContentHash{}, "", 0, {b, c}),
+    });
+    const ImportPlanResult result = planImports(
+        {
+            importInput(a, "a", hashOf(999)),  // SourceChanged
+            importInput(b, "b", hashOf(2)),
+            importInput(c, "c", hashOf(3)),
+            importInput(d, "d", hashOf(4)),
+        },
+        previous);
+    REQUIRE(result.entries.size() == 4);
+    CHECK(findEntry(result, a)->change == ImportChange::SourceChanged);
+    CHECK(findEntry(result, b)->change == ImportChange::DependencyChanged);
+    CHECK(findEntry(result, c)->change == ImportChange::DependencyChanged);
+    CHECK(findEntry(result, d)->change == ImportChange::DependencyChanged);
+    CHECK(result.jobIndices.size() == 4);
+    std::vector<std::size_t> sortedJobIndices = result.jobIndices;
+    std::sort(sortedJobIndices.begin(), sortedJobIndices.end());
+    CHECK(std::adjacent_find(sortedJobIndices.begin(), sortedJobIndices.end()) == sortedJobIndices.end());
+}
+
+TEST_CASE("asset_cache: a dangling dependency marks its dependent DependencyChanged (IP17, AC-23, seed S20)") {
+    const Guid onlyNode = guidOf(1);
+    const Guid missing = guidOf(2);  // no entry, no input, this scan or ever
+    const AssetCacheIndex previous =
+        indexOf({cacheEntry(onlyNode, "only.mat", hashOf(1), ContentHash{}, "", 0, {missing})});
+    const ImportPlanResult result = planImports({importInput(onlyNode, "only.mat", hashOf(1))}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::DependencyChanged);
+}
+
+TEST_CASE(
+    "asset_cache: a cycle A -> B -> A with B's source changed terminates and marks both (IP18, AC-24, "
+    "seed S19)") {
+    // planImports's worklist pushes a node only on the clean->dirty transition (D-6 step 4), so this
+    // call is PROVEN to terminate in O(V+E) regardless of the cycle -- there is no visited set, no
+    // cycle detection and no recursion to get wrong. This case's "hard bound" is therefore the call
+    // itself: a non-terminating implementation would hang the test binary rather than reach the CHECKs
+    // below (2.2.4's S6 lesson), which is the strongest verdict a hermetic doctest case can assert
+    // without a threading harness this task does not warrant.
+    const Guid a = guidOf(1);
+    const Guid b = guidOf(2);
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(a, "a", hashOf(1), ContentHash{}, "", 0, {b}),
+        cacheEntry(b, "b", hashOf(2), ContentHash{}, "", 0, {a}),
+    });
+    const ImportPlanResult result =
+        planImports({importInput(a, "a", hashOf(1)), importInput(b, "b", hashOf(999))}, previous);
+    REQUIRE(result.entries.size() == 2);
+    CHECK(findEntry(result, b)->change == ImportChange::SourceChanged);
+    CHECK(findEntry(result, a)->change == ImportChange::DependencyChanged);
+    CHECK(result.jobIndices.size() == 2);
+}
+
+TEST_CASE("asset_cache: a clean cycle stays entirely UpToDate (IP19, AC-24, E27)") {
+    const Guid a = guidOf(1);
+    const Guid b = guidOf(2);
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(a, "a", hashOf(1), ContentHash{}, "", 0, {b}),
+        cacheEntry(b, "b", hashOf(2), ContentHash{}, "", 0, {a}),
+    });
+    const ImportPlanResult result =
+        planImports({importInput(a, "a", hashOf(1)), importInput(b, "b", hashOf(2))}, previous);
+    REQUIRE(result.entries.size() == 2);
+    CHECK(findEntry(result, a)->change == ImportChange::UpToDate);
+    CHECK(findEntry(result, b)->change == ImportChange::UpToDate);
+    CHECK(result.jobIndices.empty());
+}
+
+TEST_CASE("asset_cache: a self-loop (A depends on A), clean and dirty (IP20, AC-24)") {
+    const Guid a = guidOf(1);
+    const AssetCacheIndex cleanPrevious = indexOf({cacheEntry(a, "a", hashOf(1), ContentHash{}, "", 0, {a})});
+    const ImportPlanResult cleanResult = planImports({importInput(a, "a", hashOf(1))}, cleanPrevious);
+    REQUIRE(cleanResult.entries.size() == 1);
+    CHECK(cleanResult.entries[0].change == ImportChange::UpToDate);
+
+    const ImportPlanResult dirtyResult = planImports({importInput(a, "a", hashOf(999))}, cleanPrevious);
+    REQUIRE(dirtyResult.entries.size() == 1);
+    // A's own source changed is an OWN cause, not a self-inflicted DependencyChanged.
+    CHECK(dirtyResult.entries[0].change == ImportChange::SourceChanged);
+    CHECK(dirtyResult.jobIndices.size() == 1);
+}
+
+TEST_CASE(
+    "asset_cache: commitImports writes an entry ONLY for an input with a resolved hash (IP21, AC-25, "
+    "seed S15)") {
+    const AssetCacheIndex previous;
+    const std::vector<ImportInput> inputs = {
+        importInput(guidOf(1), "a.png", hashOf(10)),                                 // hashed -> committed
+        importInput(guidOf(2), "b.png", std::nullopt, ContentHash{}, "", 0, false),  // Unhashable, no previous
+    };
+    const ImportPlanResult plan = planImports(inputs, previous);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].guid == guidOf(1));
+    CHECK(next.find(guidOf(2)) == nullptr);
+}
+
+TEST_CASE(
+    "asset_cache: an Unhashable input's previous entry is preserved byte-for-byte, and nothing is "
+    "fabricated when there was none (IP22, AC-25, seed S16)") {
+    const AssetCacheEntry richPrevious =
+        cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3, {guidOf(9)}, 1);
+    const AssetCacheIndex previous = indexOf({richPrevious});
+    const std::vector<ImportInput> inputs = {
+        importInput(guidOf(1), "a.png", std::nullopt, ContentHash{}, "", 0, false),  // Unhashable
+    };
+    const ImportPlanResult plan = planImports(inputs, previous);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    const AssetCacheEntry& preserved = next.entries[0];
+    CHECK(preserved.guid == richPrevious.guid);
+    CHECK(preserved.path == richPrevious.path);
+    CHECK(preserved.size == richPrevious.size);
+    CHECK(preserved.mtime == richPrevious.mtime);
+    CHECK(preserved.contentHash == richPrevious.contentHash);
+    CHECK(preserved.metaHash == richPrevious.metaHash);
+    CHECK(preserved.importer == richPrevious.importer);
+    CHECK(preserved.importerVersion == richPrevious.importerVersion);
+    CHECK(preserved.dependencies == richPrevious.dependencies);
+    CHECK(preserved.missing == richPrevious.missing);  // NOT reset -- verbatim means verbatim
+}
+
+TEST_CASE("asset_cache: a NotHashed input is not committed as up to date (IP23, AC-30, seed S15)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20))});
+    const std::vector<ImportInput> inputs = {
+        importInput(guidOf(1), "a.png", std::nullopt, hashOf(20), "", 0, /*hashSkippedByBudget=*/true)};
+    const ImportPlanResult plan = planImports(inputs, previous);
+    REQUIRE(plan.entries.size() == 1);
+    CHECK(plan.entries[0].change == ImportChange::NotHashed);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].contentHash == hashOf(10));  // the OLD hash, never fabricated as fresh
+
+    // A re-run against the resulting index still reports it as needing work, not UpToDate.
+    const ImportPlanResult replan = planImports(inputs, next);
+    REQUIRE(replan.entries.size() == 1);
+    CHECK(replan.entries[0].change == ImportChange::NotHashed);
+}
+
+TEST_CASE(
+    "asset_cache: the grace counter -- absent once retains at 1, absent 3x retains at 3, a 4th absence "
+    "drops it (IP24, AC-26, seed S21)") {
+    const AssetCacheEntry entry = cacheEntry(guidOf(1), "a.png", hashOf(10));
+    const AssetCacheIndex freshIndex = indexOf({entry});
+    const ImportPlanResult emptyPlan = planImports({}, freshIndex);
+
+    const AssetCacheIndex afterOne = commitImports(freshIndex, {}, emptyPlan);
+    REQUIRE(afterOne.entries.size() == 1);
+    CHECK(afterOne.entries[0].missing == 1);
+
+    // Simulate two more absent scans by feeding the previous result back in.
+    const AssetCacheIndex afterTwo = commitImports(afterOne, {}, planImports({}, afterOne));
+    REQUIRE(afterTwo.entries.size() == 1);
+    CHECK(afterTwo.entries[0].missing == 2);
+
+    const AssetCacheIndex afterThree = commitImports(afterTwo, {}, planImports({}, afterTwo));
+    REQUIRE(afterThree.entries.size() == 1);
+    CHECK(afterThree.entries[0].missing == MISSING_SCAN_GRACE);
+    CHECK(MISSING_SCAN_GRACE == 3);
+
+    // The scan that would make it 4 drops the entry instead.
+    const AssetCacheIndex afterFour = commitImports(afterThree, {}, planImports({}, afterThree));
+    CHECK(afterFour.entries.empty());
+}
+
+TEST_CASE("asset_cache: seeing the GUID again resets missing to 0 (IP25, AC-26)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), ContentHash{}, "", 0, {}, 2)});
+    const std::vector<ImportInput> inputs = {importInput(guidOf(1), "a.png", hashOf(999))};
+    const ImportPlanResult plan = planImports(inputs, previous);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].missing == 0);
+}
+
+TEST_CASE(
+    "asset_cache: a moved asset (same GUID, same hashes, different path) stays UpToDate and the entry's "
+    "path is updated (IP26, D11, E8)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "old/a.png", hashOf(10), hashOf(20))});
+    const std::vector<ImportInput> inputs = {importInput(guidOf(1), "new/a.png", hashOf(10), hashOf(20))};
+    const ImportPlanResult plan = planImports(inputs, previous);
+    REQUIRE(plan.entries.size() == 1);
+    CHECK(plan.entries[0].change == ImportChange::UpToDate);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].path == "new/a.png");
 }

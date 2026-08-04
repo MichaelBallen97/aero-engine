@@ -11,10 +11,10 @@
 // 3.1.1, a settled, committed format) depend on the cache (this task's disposable, machine-local
 // one), which is precisely backwards from their lifetimes.
 //
-// THIS STEP LANDS ONLY THE FORMAT HALF: parseAssetCache/writeAssetCacheText/importChangeLabel, the
-// format types, and the constants. planImports/commitImports/planReattachments are DECLARED here
-// (so the header's final shape is visible from the first commit) but DEFINED in Steps 6/7 -- a
-// declaration with no definition links fine only while unused, which is true until then.
+// Step 4 landed the format half: parseAssetCache/writeAssetCacheText/importChangeLabel, the format
+// types, and the constants. Step 6 (this revision) defines planImports and commitImports.
+// planReattachments is still DECLARED here but DEFINED in Step 7 -- a declaration with no definition
+// links fine only while unused, which is true until then.
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
 
@@ -117,11 +117,9 @@ struct ImportPlanResult {
     std::size_t upToDate = 0, newAssets = 0, changed = 0, dependencyChanged = 0;
     std::size_t unhashable = 0, notHashed = 0;
 };
-// DECLARED here; DEFINED in Step 6.
 [[nodiscard]] ImportPlanResult planImports(std::vector<ImportInput> inputs, const AssetCacheIndex& previous);
 
 // ---- the commit, as a PURE function (D14/D16) -------------------------------------------------------
-// DECLARED here; DEFINED in Step 6.
 [[nodiscard]] AssetCacheIndex commitImports(const AssetCacheIndex& previous, const std::vector<ImportInput>& inputs,
                                             const ImportPlanResult& plan);
 
