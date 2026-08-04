@@ -180,15 +180,17 @@ jobs:
       - name: Project and asset flows — no delete/rename/copy
         shell: bash
         # Sixth architecture guard (task 2.6.1, code-review round; D7/INV-P4; widened by task 3.1.1 to
-        # cover the asset flow's D7/D8). A createProject failure must never remove, rename or copy
-        # anything it already created, on any failure path; an invalid .meta is never overwritten and
-        # an orphaned .meta is never deleted. Like the platform/rhi/scene/golden-rule guards this is a
-        # SCRIPT, not a bare grep, so a comment explaining WHY a call is forbidden never trips the check
-        # it is describing. Scoped to exactly five named files across the two flows
-        # (editor/src/project.cpp, project_file.cpp, project_ui.cpp, asset_meta.cpp, asset_database.cpp),
-        # not a glob over editor/src/ -- the invariant is specific to these two flows. The script's name
-        # is narrower than its scope for historical reasons (a rename was considered and rejected, see
-        # the script's own header). Proven red-on-violation by the hermetic ctest case
+        # cover the asset flow's D7/D8, and by task 3.1.2 to cover the import cache's D18). A
+        # createProject failure must never remove, rename or copy anything it already created, on any
+        # failure path; an invalid .meta is never overwritten and an orphaned .meta is never deleted;
+        # a stale cache entry is discarded from the in-memory index, never removed as a file. Like the
+        # platform/rhi/scene/golden-rule guards this is a SCRIPT, not a bare grep, so a comment
+        # explaining WHY a call is forbidden never trips the check it is describing. Scoped to exactly
+        # six named files across the three flows (editor/src/project.cpp, project_file.cpp,
+        # project_ui.cpp, asset_meta.cpp, asset_database.cpp, asset_cache.cpp), not a glob over
+        # editor/src/ -- the invariant is specific to these three flows. The script's name is narrower
+        # than its scope for historical reasons (a rename was considered and rejected, see the
+        # script's own header). Proven red-on-violation by the hermetic ctest case
         # project-no-delete.no_delete_e2e.
         run: bash .github/scripts/check-project-no-delete.sh
 

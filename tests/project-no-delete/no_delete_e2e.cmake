@@ -62,6 +62,7 @@ _nd_seed("editor/src/project_file.cpp" "${_nd_clean_body}")
 _nd_seed("editor/src/project_ui.cpp"   "${_nd_clean_body}")
 _nd_seed("editor/src/asset_meta.cpp"     "${_nd_clean_body}")
 _nd_seed("editor/src/asset_database.cpp" "${_nd_clean_body}")
+_nd_seed("editor/src/asset_cache.cpp"    "${_nd_clean_body}")
 
 # --- Stage 1: clean tree -> exit 0. Silently proves the three self-tests pass too. -----------------
 _nd_run("stage 1 (clean)" 0 "${BASH}" "${SCRIPT}")
@@ -95,14 +96,14 @@ _nd_run("stage 5 (comment-only, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
 _nd_expect_substr("stage 5" "${_nd_out}" "project-no-delete guard: OK" TRUE)
 _nd_seed("editor/src/project.cpp" "${_nd_clean_body}")
 
-# --- Stage 6: canary -- one of the FIVE named files goes missing -> exit 2. Vacuity refusal, distinct
-# from both 0 and 1. Retargeted (task 3.1.1) to one of the two files the widening added, so the
-# widening itself -- not just the original three -- is what the canary proves. -----------------------
-file(REMOVE "${WORK_DIR}/src/editor/src/asset_database.cpp")
+# --- Stage 6: canary -- one of the SIX named files goes missing -> exit 2. Vacuity refusal, distinct
+# from both 0 and 1. Retargeted (task 3.1.2) to asset_cache.cpp -- the file THIS task's widening
+# added -- so the widening itself, not just task 3.1.1's, is what the canary proves. -----------------
+file(REMOVE "${WORK_DIR}/src/editor/src/asset_cache.cpp")
 execute_process(COMMAND "${GIT}" -C "${WORK_DIR}/src" add -A)
 _nd_run("stage 6 (file missing)" 2 "${BASH}" "${SCRIPT}")
 _nd_expect_substr("stage 6" "${_nd_out}" "cannot self-verify" TRUE)
-_nd_seed("editor/src/asset_database.cpp" "${_nd_clean_body}")
+_nd_seed("editor/src/asset_cache.cpp" "${_nd_clean_body}")
 _nd_run("stage 6 (restored)" 0 "${BASH}" "${SCRIPT}")
 
 # --- Stage 7 (task 3.1.1): std::filesystem::remove seeded in asset_database.cpp -> exit 1. -----------
@@ -118,5 +119,13 @@ _nd_run("stage 8 (remove_all, asset_meta.cpp)" 1 "${BASH}" "${SCRIPT}")
 _nd_expect_substr("stage 8" "${_nd_out}" "editor/src/asset_meta.cpp:1" TRUE)
 _nd_seed("editor/src/asset_meta.cpp" "${_nd_clean_body}")
 _nd_run("stage 8 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 9 (task 3.1.2): std::filesystem::rename seeded in asset_cache.cpp -> exit 1. Rename, not
+# remove, so the four forbidden forms stay spread across the stages rather than clustering. -----------
+_nd_seed("editor/src/asset_cache.cpp" "void bad() { std::error_code ec; std::filesystem::rename(\"x\", \"y\", ec); }\n")
+_nd_run("stage 9 (rename, asset_cache.cpp)" 1 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 9" "${_nd_out}" "editor/src/asset_cache.cpp:1" TRUE)
+_nd_seed("editor/src/asset_cache.cpp" "${_nd_clean_body}")
+_nd_run("stage 9 (cleaned)" 0 "${BASH}" "${SCRIPT}")
 
 message(STATUS "project-no-delete.no_delete_e2e: OK")
