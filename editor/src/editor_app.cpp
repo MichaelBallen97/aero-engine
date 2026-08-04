@@ -384,7 +384,13 @@ bool EditorApp::tick() {
         const bool refresh = assetRescanRequested || panelRefresh;
         assetRescanRequested = false;
         if (assetDatabase.root() != wanted || refresh) {
-            const AssetScanReport report = assetDatabase.rescan(std::move(wanted), assetGuids);
+            // task 3.1.2: rescan now takes the project root and the assets root as two SEPARATE
+            // parameters (D-9) -- <assetsRoot>/.. is wrong the moment paths.assets is nested or ".",
+            // and deriving it would put the cache inside the user's own asset tree (A7/AC-38). The
+            // project root is a named local FIRST (the 2.6.1 FileDialogHost::projectRoot lesson):
+            // project.root() returns a std::string_view bound to the live ProjectSession.
+            const std::string projectRootForScan = std::string(project.root());
+            const AssetScanReport report = assetDatabase.rescan(projectRootForScan, std::move(wanted), assetGuids);
             logAssetScan(assetDatabase.root(), report);  // INV-A3: the ONLY logging site for the scan
         }
         if (assetBrowserPanel != nullptr) {
