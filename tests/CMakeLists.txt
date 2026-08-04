@@ -24,6 +24,7 @@ add_executable(aero_tests
     time_test.cpp
     vfs_test.cpp
     guid_test.cpp          # task 3.1.1 — engine::Guid: text codec, ordering, hash, seeded generator
+    content_hash_test.cpp  # task 3.1.2 — engine::ContentHash: MurmurHash3 x64_128, text codec, ordering, incremental hasher
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
