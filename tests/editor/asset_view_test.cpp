@@ -308,6 +308,23 @@ TEST_CASE("asset view: searchAssets preserves order and fills recordIndex (AV39)
     CHECK(result.hits[2].recordIndex == 2);
 }
 
+TEST_CASE("asset view: searchAssets matches the LEAF, never a parent directory segment (AV39b, D5, seed S14)") {
+    // AV36 proves matchesFilter itself never fuzzy-matches a query against unrelated bytes -- it does
+    // NOT exercise searchAssets' own leaf-extraction call site, since it calls matchesFilter directly
+    // with an already-bare leaf. This case closes that gap: "wood" is a real PARENT DIRECTORY segment
+    // of the one record below, and must NOT match, because searchAssets is documented (D5) to search
+    // leaves only. Found by direct sabotage (S14: passing record.relativePath instead of the leaf to
+    // matchesFilter) -- the existing suite stayed 739/739 green against that seed before this case was
+    // added, which is exactly the coverage gap this closes.
+    std::vector<AssetRecord> records(1);
+    records[0].relativePath = "wood/plank.png";
+    AssetFilter filter;
+    filter.query = "wood";
+    const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter);
+    CHECK(result.hits.empty());
+    CHECK(result.total == 0);
+}
+
 TEST_CASE("asset view: total is UNCAPPED while hits is capped (AV40, AC-14, seed S15)") {
     std::vector<AssetRecord> records(5);
     for (std::size_t i = 0; i < records.size(); ++i) {
