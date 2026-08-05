@@ -44,6 +44,8 @@ namespace engine::editor {
 // of task 3.1.1's plan) -- the ViewportPanel/ConsolePanel precedent, applied a fourth time. The .cpp
 // includes <aero/editor/asset_database.hpp>.
 class AssetDatabase;
+struct AssetScanReport;  // task 3.1.3 -- the SAME forward-declaration-only precedent, applied to a
+                         // pointer member's element type.
 
 class AssetBrowserPanel final : public Panel {
 public:
@@ -79,6 +81,11 @@ public:
     // "distinct name on accessor collision" rule).
     void setDatabase(const AssetDatabase* db) noexcept { databasePtr = db; }
     [[nodiscard]] const AssetDatabase* database() const noexcept { return databasePtr; }
+
+    // task 3.1.3 (D11): the SAME reconcile shape as setDatabase() above -- a non-owning, NEVER-owning
+    // pointer, reconciled unconditionally every tick, never a reference (the identical D13 reasoning).
+    // "The report IS the issues list": no second computation, no second source of truth.
+    void setScanReport(const AssetScanReport* report) noexcept { reportPtr = report; }
 
     // One-shot, read-and-clear (AC-38): the Refresh button's ActionKind::Refresh arm sets it; the
     // reconcile block drains it in the same expression as the database's own root comparison.
@@ -125,6 +132,9 @@ private:
         ClearSearch,    // path: unused -- task 3.1.3, Step 8, APPENDED
         SetKindFilter,  // path: "all" or a single digit (static_cast<int>(AssetKind)) -- Step 8, APPENDED
         RevealPath,     // path: the full relative path a double-clicked search hit named -- Step 8, APPENDED
+        // path: the orphan's project-relative .meta path -- task 3.1.3, Step 9, APPENDED. Sets
+        // pendingOrphanDelete and NOTHING else; the modal that turns this into a real delete is Step 11.
+        RequestDeleteOrphan,
     };
     struct PendingAction {
         ActionKind kind = ActionKind::None;
@@ -145,6 +155,7 @@ private:
     // caption so a project-wide result stays identifiable outside its own directory.
     void drawTile(const FileEntry& entry, const std::string& rel, float tileW, float tileH, float tileEdge, float pad,
                   bool isSearchHit);
+    void drawIssues();    // phase 4b -- task 3.1.3, Step 9 (D11)
     void drawFooter();    // phase 5
     void applyPending();  // the ONE mutating switch
     // task 3.1.3, Step 8: rebuilds `searchRows` from the COMMITTED filter -- called from applyPending
@@ -191,6 +202,11 @@ private:
     AssetFilter filter;        // COMMITTED; the search box edits a SCRATCH copy (queryScratch)
     std::string queryScratch;  // per-frame scratch, NOT model state
     SearchResult searchRows;   // rebuilt in applyPending() when the query/kind filter changes
+
+    // task 3.1.3, Step 9 -- the retained scan report (D11) and the delete confirmation's own state.
+    const AssetScanReport* reportPtr = nullptr;  // reconciled, never owned (the databasePtr precedent)
+    std::string pendingOrphanDelete;             // "" == no modal open
+    bool issuesOpen = false;
 };
 
 }  // namespace engine::editor

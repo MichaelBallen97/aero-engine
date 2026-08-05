@@ -451,14 +451,18 @@ bool EditorApp::tick() {
             // project root is a named local FIRST (the 2.6.1 FileDialogHost::projectRoot lesson):
             // project.root() returns a std::string_view bound to the live ProjectSession.
             const std::string projectRootForScan = std::string(project.root());
-            const AssetScanReport report = assetDatabase.rescan(projectRootForScan, std::move(wanted), assetGuids);
-            logAssetScan(assetDatabase.root(), report);  // INV-A3: the ONLY logging site for the scan
+            // task 3.1.3: RETAINED, not discarded -- the Issues section reads this same report through
+            // the panel's own reconciled pointer, below.
+            lastAssetReport = assetDatabase.rescan(projectRootForScan, std::move(wanted), assetGuids);
+            logAssetScan(assetDatabase.root(), lastAssetReport);  // INV-A3: the ONLY logging site
         }
         if (assetBrowserPanel != nullptr) {
             if (assetBrowserPanel->root() != assetDatabase.root()) {
                 assetBrowserPanel->setRoot(assetDatabase.root());
             }
             assetBrowserPanel->setDatabase(&assetDatabase);
+            // task 3.1.3: unconditional, same block, same reasoning as setDatabase() above (F14).
+            assetBrowserPanel->setScanReport(&lastAssetReport);
         }
     }
     if (window != nullptr) {

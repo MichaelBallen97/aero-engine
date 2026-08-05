@@ -755,6 +755,68 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
     ImGui::EndChild();  // UNCONDITIONAL -- F9
 }
 
+// ---- phase 4b: issues (task 3.1.3, Step 9, D11) -------------------------------------------------
+// "The report IS the issues list" -- no new computation, no second source of truth. Shown ONLY when
+// the total is non-zero (no ride-along empty header on a clean project).
+void AssetBrowserPanel::drawIssues() {
+    if (reportPtr == nullptr) {
+        return;
+    }
+    const AssetScanReport& report = *reportPtr;
+    // Code-review finding 2 (3.1.1): report.invalid counts EVERY Invalid-state record, INCLUDING one
+    // a write conflict downgraded -- report.invalidPaths already excludes those, so the count shown
+    // here must subtract writeConflictTotal too, or the two would silently disagree (logAssetScan's
+    // own identical subtraction, editor_app.cpp).
+    const std::size_t invalidOnly = report.invalid - report.writeConflictTotal;
+    const std::size_t total = report.orphanTotal + invalidOnly + report.aliasedDirTotal + report.writeFailureTotal +
+                              report.writeConflictTotal + report.hashFailureTotal;
+    if (total == 0) {
+        return;
+    }
+
+    labelScratch = "Issues (" + std::to_string(total) + ")";
+    if (ImGui::CollapsingHeader(labelScratch.c_str())) {
+        if (report.orphanTotal > 0) {
+            ImGui::TextUnformatted("Orphaned .meta files:");
+            for (std::size_t i = 0; i < report.orphans.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::TextUnformatted(report.orphans[i].c_str());  // E20 -- never a format string
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Delete .meta")) {
+                    record(ActionKind::RequestDeleteOrphan, report.orphans[i]);
+                }
+                ImGui::PopID();  // no continue/break/return between Push and Pop
+            }
+            if (report.orphanTotal > report.orphans.size()) {
+                labelScratch = "…and " + std::to_string(report.orphanTotal - report.orphans.size()) + " more";
+                ImGui::TextUnformatted(labelScratch.c_str());
+            }
+        }
+
+        // Spec A9: an invalid .meta still holds a real GUID one `git checkout --theirs` away -- text
+        // only, deliberately NO action offered.
+        const auto drawCategory = [this](const char* heading, const std::vector<std::string>& entries,
+                                         std::size_t totalCount) {
+            if (totalCount == 0) {
+                return;
+            }
+            ImGui::TextUnformatted(heading);
+            for (const std::string& line : entries) {
+                ImGui::TextUnformatted(line.c_str());  // E20 -- never a format string
+            }
+            if (totalCount > entries.size()) {
+                labelScratch = "…and " + std::to_string(totalCount - entries.size()) + " more";
+                ImGui::TextUnformatted(labelScratch.c_str());
+            }
+        };
+        drawCategory("Invalid .meta files (no action offered):", report.invalidPaths, invalidOnly);
+        drawCategory("Aliased directories:", report.aliasedDirs, report.aliasedDirTotal);
+        drawCategory("Sidecar write failures:", report.writeFailures, report.writeFailureTotal);
+        drawCategory("Write conflicts with an orphaned .meta:", report.writeConflicts, report.writeConflictTotal);
+        drawCategory("Asset hash failures:", report.hashFailures, report.hashFailureTotal);
+    }
+}
+
 // ---- phase 5: footer ---------------------------------------------------------------------------
 void AssetBrowserPanel::drawFooter() {
     const DirectoryListing* const listing = cached(currentDir);
@@ -972,6 +1034,11 @@ void AssetBrowserPanel::applyPending() {
             queryScratch.clear();
             searchRows = SearchResult{};
             break;
+        case ActionKind::RequestDeleteOrphan:
+            // task 3.1.3, Step 9: sets pendingOrphanDelete and NOTHING else -- the modal that opens on
+            // it, confirms it, and turns it into a real delete is Step 11 (§D-9).
+            pendingOrphanDelete = action.path;
+            break;
     }
 }
 
@@ -1068,6 +1135,7 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     } else {
         drawContentsList(paneHeight);
     }
+    drawIssues();    // 4b -- task 3.1.3, Step 9
     drawFooter();    // 5
     applyPending();  // the ONLY place anything mutates
 }

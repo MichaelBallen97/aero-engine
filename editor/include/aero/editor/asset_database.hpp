@@ -159,5 +159,12 @@ static_assert(std::is_nothrow_move_constructible_v<AssetCacheIndex>);
 static_assert(std::is_nothrow_move_assignable_v<AssetCacheIndex>);
 static_assert(std::is_nothrow_move_constructible_v<ImportPlanResult>);
 static_assert(std::is_nothrow_move_assignable_v<ImportPlanResult>);
+// task 3.1.3 (A19): EditorApp gains its own `AssetScanReport lastAssetReport` value member, held to
+// the SAME `noexcept = default` move requirement -- asserted here, beside AssetDatabase's own ten,
+// because AssetScanReport is defined in this same header. 3.1.2's R9 fired for real on MSVC once
+// already; the fallback if either ever reddens on a lane this machine cannot test is NOT to relax the
+// assert, but to hold the report indirectly (3.1.1's BLOCKING-2 precedent).
+static_assert(std::is_nothrow_move_constructible_v<AssetScanReport>);
+static_assert(std::is_nothrow_move_assignable_v<AssetScanReport>);
 
 }  // namespace engine::editor

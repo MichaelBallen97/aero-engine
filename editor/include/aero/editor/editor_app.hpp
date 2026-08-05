@@ -287,13 +287,16 @@ private:
     bool redoRequested = false;
     World sceneWorld;
     Selection sceneSelection;
-    CommandStack commandStack;            // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
-                                          // stays valid. command_stack.hpp's two static_asserts hold that line.
-    RootOrder rootOrder;                  // task 2.4.2, D10 (accessor: roots()). entity_ops.hpp's two static_asserts
-                                          // hold the same noexcept-move guarantee for this member.
-    AssetDatabase assetDatabase;          // task 3.1.1 (D12) -- reconciled in tick(), never pushed. Own six
-                                          // static_asserts (asset_database.hpp) hold the noexcept-move
-                                          // guarantee this member needs.
+    CommandStack commandStack;    // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
+                                  // stays valid. command_stack.hpp's two static_asserts hold that line.
+    RootOrder rootOrder;          // task 2.4.2, D10 (accessor: roots()). entity_ops.hpp's two static_asserts
+                                  // hold the same noexcept-move guarantee for this member.
+    AssetDatabase assetDatabase;  // task 3.1.1 (D12) -- reconciled in tick(), never pushed. Own six
+                                  // static_asserts (asset_database.hpp) hold the noexcept-move
+                                  // guarantee this member needs.
+    // task 3.1.3 (A19): the RETAINED scan report -- the Issues section reads it through
+    // AssetBrowserPanel::setScanReport(), reconciled in the SAME block as assetDatabase itself (F14).
+    AssetScanReport lastAssetReport;
     GuidGenerator assetGuids{0};          // task 3.1.1 -- replaced in create() by fromEntropy(); one uint64,
                                           // so this does not affect EditorApp's own `noexcept = default` move.
     bool assetRescanRequested = false;    // task 3.1.1 (AC-38) -- consumed by the next tick()'s reconcile
