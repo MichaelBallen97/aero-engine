@@ -2967,3 +2967,341 @@ tools-OFF configurations, freshly rebuilt, confirmed **444/444** (`ctest -N` unc
 AC-17's claim still holds after the round. `check-math-boundary.sh`: **255** (unchanged — no new
 tracked file; the round only edits existing ones). `check-project-no-delete.sh`: **5** files scanned
 (unchanged).
+
+#### Task 3.1.2 — Import cache & dependency tracking — closes two inherited deferrals
+
+**3.1.2 gives the editor a memory of what it last observed about every identified asset — its
+content, its sidecar, its importer and its dependencies — so a scan can name, per asset, exactly why
+it would (or would not) be re-imported, without reading a single byte of an unchanged asset and
+without ever writing, overwriting or destroying anything the user owns.** The one sentence the task
+exists to make true: open a project twice, and the second open reads not one byte of any asset,
+writes not one byte anywhere, and reports `N up to date, 0 new, 0 changed`. It also **closes two
+things 3.1.1 deliberately deferred**: the D8 orphan-re-attachment deferral (a moved asset with no
+sidecar gets its old GUID back, on five simultaneous conditions, never a heuristic) and the
+carried-forward symlinked-directory duplicate-GUID defect (a symlinked folder no longer gives one
+physical file two records — closed by canonical-path directory dedup, not by the content hash the
+original 3.1.1 entry wrongly predicted would close it; see the correction below).
+
+**Ten commits landed the feature** (`195f0a1` `ContentHash` · `8f8a6b5` `hashFileContents`/
+`ensureDirectory` · `045284b` `FileEntry` mtime+symlink, `canonicalDirectory` · `d808960` the index
+format v1 + docs/09 §6 · `95bfdf1` the no-delete guard widened to six · `aa99dc9` `planImports`/
+`commitImports` · `7e71338` `planReattachments` + `Reattached` · `af420c6` the eight-phase scan +
+alias dedup · `a385e98` the editor surface + I31–I33 · `f7198fc` the sabotage-matrix gap fixes),
+followed by this documentation commit as the eleventh. Branch
+`feat/3.1.2-import-cache-and-dependency-tracking`, cut from `main @ a651e28`.
+
+**What shipped, in order:**
+1. `engine::ContentHash` (`engine/core`, beside `Guid`) — MurmurHash3 x64_128 seed 0, explicit
+   little-endian loads, pure `uint64` arithmetic (byte-identical on all three platforms, UBSan-clean),
+   a 32-lowercase-hex canonical text form (`hi` first, big-endian per word — the same convention
+   `Guid` uses), and an incremental hasher that lets a multi-gigabyte file be hashed in bounded chunks.
+   A distinct type from `Guid` with no conversion either way, so `findByGuid(someHash)` is a compile
+   error rather than a lookup that silently fails forever. The engine diff is again exactly three
+   paths (`engine/core/CMakeLists.txt`, `content_hash.hpp`, `content_hash.cpp`) — the same minimal
+   shape 3.1.1 used to end the four-task empty-`engine/`-diff streak, now used a second time.
+2. `hashFileContents`/`ensureDirectory` (`editor/src/text_file.cpp`) — streaming, 1 MiB chunks, never
+   materializing the file (a 2 GB source must never become a 2 GB `std::string`), binary on both
+   sides, the `error_code` overload everywhere, never throws, never logs. **The first test TU these
+   three disk primitives (`readTextFile`/`writeTextFileAtomic`/`fileExists`) have ever had**
+   (`tests/editor/text_file_test.cpp`, new — see A1 below) ships in the same commit.
+3. `FileEntry` gains `mtime`/`mtimeKnown`/`isSymlink`, **appended, never inserted** (A2 below), and
+   `project_files.cpp` gains `canonicalDirectory` — a dedup key and nothing else; it never reaches a
+   record, a report or the cache.
+4. The asset import cache index v1 format (`docs/09-file-formats.md` §6, normative) — three root
+   keys, ten entry keys, a fixed order, a byte fixpoint over both a single-entry and a multi-entry
+   fixture, and a strictness policy that is the deliberate **inverse** of `.meta`'s: a damaged index
+   is discarded whole and rebuilt, never repaired; a malformed entry is dropped and the rest survive;
+   unknown keys are ignored **silently**, no WARN, because a newer build wrote them and the user
+   cannot act on them (D7). `mtime` is a JSON **number**, never a string, because this tree's DOM
+   stores number lexemes verbatim and a 19-digit tick count must round-trip exactly past 2^53 — the
+   committed minimal fixture pins the digit count on purpose (F1).
+5. The sixth architecture guard widened a second time, from **five files to six** —
+   `editor/src/asset_cache.cpp` joins the allowlist (D18), with the header comment's nuance recorded
+   because it reads like a contradiction of D7: the cache's *data* is disposable, but nothing in this
+   task deletes a file to dispose of it. The hermetic ctest case gained a ninth stage and its
+   missing-file canary was retargeted at the new entry, so the widening itself is proven
+   red-on-violation.
+6. `planImports`/`commitImports` (`asset_cache.cpp`) — the pure change-detection half. `planImports`
+   names, per asset, exactly why it would be re-imported, in a fixed precedence order, from a
+   byte-sorted input so the answer never depends on walk order; the dependency cascade is a monotone
+   worklist over reverse edges, seeded with every already-dirty node and pushing only on the
+   clean-to-dirty transition, so it terminates in O(V+E) on **any** graph — cycles included — with no
+   cycle detection, no visited set and no recursion, because a cycle is a set of nodes that all become
+   dirty together, which is the correct answer. `commitImports` never fabricates a hash: an unreadable
+   or unbudgeted asset keeps its previous entry or has none, because a false `UpToDate` is the one
+   failure this task must never produce (R-C2). An entry whose GUID is momentarily absent survives
+   `MISSING_SCAN_GRACE` (3) scans before it is dropped, so a git checkout or a sync mid-flight cannot
+   destroy the only record that could later re-attach it.
+7. `planReattachments` — five conditions, **all** required, no heuristics: the candidate has no
+   sidecar; its content hash was computed this scan (not skipped by budget); exactly one previous
+   cache entry has that hash **and** a path this scan no longer sees; that entry's GUID is claimed by
+   no live asset; and exactly one orphaned sidecar on disk parses to that GUID. Any failure produces
+   nothing — silence, not a near-miss log. Fires only on exact byte equality, which is what makes a
+   "wrong" answer harmless: the referenced bytes are identical either way, which is why re-attaching
+   by name similarity or file size stays rejected — those are *usually* right, the worst kind. The old
+   sidecar is never deleted.
+8. The eight-phase scan (`asset_database.cpp`, five phases become eight: load the index, hash what
+   the `(size, mtime)` fast path could not vouch for, re-attach orphans before identity is planned).
+   The index is written **only** when its text differs from the text it was read from, extending
+   3.1.1's zero-write rule to a second file — a scan of an unchanged project now writes zero bytes
+   anywhere, not "identical bytes" (D15/INV-C5). The walk dedups **directories** by canonical path,
+   closing the carried-forward symlink defect (see the D9 correction below). Two deviations from the
+   plan, both logged in the code and restated here: `rescan()`'s call site in `editor_app.cpp` needed
+   a one-line update (project root and assets root as two separate arguments); and `invalidateCache()`
+   needed a one-shot flag, because the plan's own phase-3 snippet reloaded the cache from disk
+   unconditionally on every scan, which would have silently undone the in-memory clear before phase 4
+   ever ran — this is **the `invalidateCache()` defect**, found from a failing test, not by reading
+   (see below).
+9. The editor surface (`asset_browser_panel.{hpp,cpp}`, `editor_app.{hpp,cpp}`) — a Reimport All
+   button beside Refresh, the selected file's import-state segment appended to the footer, and
+   `tick()`'s reconcile draining **both** one-shots first and unconditionally, neither on the right of
+   a `\|\|` (a bug this tree already shipped once, in 3.1.1's own code-review round). Three new
+   GPU-tier cases (I31–I33). A scan of a clean, fully-cached project logs exactly two INFO lines and
+   nothing else.
+10. The sabotage-matrix gap fixes (`f7198fc`) — see the sabotage section below; four real,
+    test-invisible defects, all fixed, none of them behavioural regressions found in the shipped code
+    itself.
+
+**What was deliberately left out**, named so nobody re-derives it as an oversight: no importer runs
+(D16 — nothing in this tree has ever imported anything; `importer`/`importerVersion` are plumbed and
+inert); no cooked artifacts (3.3's `artifacts` key, additive); no per-asset cache files, one index for
+the whole project (A7 weighs the alternative and defers it to 3.3 if `parseAssetCache`'s wall time
+ever demands it — see the measurement below); no async hashing (A19 of the spec — the scan is
+synchronous and bounded by the hash budget, surfaced by a WARN; 3.1.4's watcher is the real answer);
+no cycle report (A18 — a cycle needs no detection code at all, by construction, so there is nothing to
+report); and no `Delete orphaned .meta` action (3.1.3's — this task reports an orphan and leaves it,
+exactly as 3.1.1's D8 already required for every other kind of orphan).
+
+**Both inherited items are now CLOSED, not carried forward.** The D8 orphan-re-attachment deferral is
+closed by `planReattachments`' five conditions (item 7 above; `AD46` proves it end to end: rename a
+file without its sidecar, the GUID survives, and the old sidecar is still present byte for byte). The
+symlinked-directory duplicate-GUID defect is closed by canonical-path directory dedup (item 8 above;
+`AD40` is the defect's own regression test, and `AD41`/`IP36` are the two "identical copies keep two
+identities" cases that prove content-equality dedup was never the right mechanism).
+
+**The D9 rationale correction — recorded here because the earlier paragraph in this same file was
+wrong, and the wrongness matters.** 3.1.1's own entry above says *"3.1.2 is the right owner because it
+introduces the content hash — with it, two paths hashing identically are provably the same content."*
+**That is false as written, and this task's own plan caught and corrected it (§A/D9-A12) before any
+code was written to the wrong design.** A content hash proves two *paths* hold the same *bytes*; it
+cannot distinguish one physical file reached twice through a symlink from two legitimate, independent
+files that simply happen to be byte-identical (two copies of the same stock texture, say). Deduping by
+content hash would have silently deleted the identity of every duplicated asset in every project — the
+opposite of what D6/D8 exist to prevent. The defect is a **physical-identity** problem and needed
+`canonicalDirectory` (physical path, symlinks resolved), which this task placed in `project_files.cpp`
+precisely so `asset_database.cpp` still includes no `<filesystem>` (INV-A6 survives untouched). The
+correct, narrow claim: 3.1.2 owns the fix because it is the task that finally has somewhere principled
+to put the `<filesystem>`-touching helper, not because of anything the content hash itself proves. File
+symlinks and hardlinks are deliberately **not** deduped — only a symlinked *directory*, by its resolved
+canonical path — and 2.2.4's D13 ("a symlinked asset folder behaves like a real one") remains true for
+the Asset Browser and changes only for the asset scan; the split is recorded explicitly in
+`.claude/rules/editor.md`.
+
+**Findings from the build itself, named explicitly because they are the point, not colour:**
+
+1. **A1 — `tests/editor/text_file_test.cpp` did not exist.** The spec said the disk primitives'
+   coverage would be "extended"; measured at `a651e28`, there was no such file — `readTextFile`,
+   `writeTextFileAtomic` and `fileExists` had only ever been exercised incidentally, through the scene
+   and project test batteries. Created as a new, unconditional TU on `aero_editor_shell_test`
+   (`TF1`–`TF22`), the honest home for `hashFileContents`/`ensureDirectory` and the first direct
+   coverage the three older primitives have ever had.
+2. **A2 — inserting `mtime` between `size` and `isDirectory` would have silently re-mapped two
+   positional aggregate initializers in `project_files_test.cpp`.** `bool → std::int64_t` is an
+   integral promotion, not a narrowing conversion, so nothing diagnoses it — a `dirEntry("x")` helper
+   would have silently started building a *file*. Fixed by appending the three new fields after
+   `sizeKnown` instead of inserting them, and converting both helpers to designated initializers in
+   the same commit as defence in depth for the *next* field addition.
+3. **A3 — the spec's claim that `mtime` is "effectively free" once `listDirectory` has already
+   stat'd every file is FALSE on libc++ and libstdc++.** Reading the SDK's own
+   `__filesystem/directory_entry.h`: `is_symlink`/`is_directory` return the type POSIX `readdir`
+   already cached — zero syscalls — but `last_write_time` reaches the un-cached branch and issues a
+   **second, independent `stat`**. `isSymlink` is free everywhere; `mtime` costs one extra `stat` per
+   file on POSIX and nothing on Windows (`FindFirstFileW` already returns it). Taken deliberately —
+   what this task removes is *reading every asset's bytes*, three to six orders of magnitude more
+   expensive than a warm `stat` — and `entry.refresh(ec)` was deliberately **not** added, because it
+   would change the dangling-symlink asymmetry 2.2.4's code review already had to discover and fix
+   once, on a behaviour this machine cannot verify against Windows or Linux.
+4. **A4 — MurmurHash3 x64_128 of the empty input with seed 0 is ALL ZEROS**, so `hashBytes({})`
+   returns a nil `ContentHash` and `valid()` is false for it. Verified, not recalled: the canonical
+   public-domain reference was fetched, compiled and run in a scratch directory (see the AC-6
+   cross-check below), and it is arithmetic, not luck — every finalization step for `len == 0` is an
+   xor-shift or a multiply, and `fmix64(0) == 0`. **Four consequences:** (i) the empty-input literal
+   has essentially zero discriminating power as a sabotage discriminator — confirmed directly by seed
+   S2 below; (ii) `AssetRecord::contentHash` cannot be documented "nil when unhashed", since nil is a
+   legitimate value — the real discriminator is `AssetRecord::change` (`Unhashable`/`NotHashed` mean
+   "no hash this scan"); (iii) `parseAssetCache` **accepts** a nil `contentHash`/`metaHash` — only
+   `guid` may never be nil — or every zero-byte asset would be `New` forever; (iv)
+   `ContentHash::valid()`'s header comment says explicitly it is not a "was this hashed?" flag — the
+   only such flag is engagement of `std::optional<ContentHash>`.
+5. **A7 — the spec's phase-1 instruction to compute a "relative path" for `Library/` needs
+   `<filesystem>`, which `asset_database.cpp` may not include (INV-A6).** Resolved by reusing D9's own
+   `canonicalDirectory` machinery: the library directory's canonical path is computed once, and a
+   child directory whose canonical path matches it is skipped in the walk rather than descended into
+   — no new string logic, no new helper, one comparison inside a loop that already computes exactly
+   this value for every child. Two corollaries make it safe on the *first* scan: `Library/.gitignore`
+   is dot-prefixed, so `listDirectory(..., includeHidden=false)` never lists it; and `Library/` is
+   created only in phase 8, after the walk, so the first scan cannot see it at all.
+6. **A9 — a defaulted parameter, not a mutable constant, applied TWICE.** `rescan`'s `hashBudgetBytes`
+   and (in the `f7198fc` gap-closing round) `parseAssetCache`'s `maxEntries` both take the shape
+   `listDirectory(root, rel, includeHidden)` already established: production calls with the default,
+   so the real constant (`MAX_HASH_BYTES_PER_SCAN`, `MAX_CACHE_ENTRIES = 200000`) is what every real
+   scan exercises and stays pinned at its own declaration, while a test reaches the budget/truncation
+   branch by passing a small value — settled with the user four days before this task started (3.1.1's
+   §W5/AD23), and re-applied rather than re-litigated.
+7. **A10 — the metaHash defect, the most important completion in this task.** `metaHash` for a
+   newly-written sidecar (`Created`/`Repaired`/`Reattached`) has no sidecar to read at plan time — the
+   sidecar is written later, in phase 7. The obvious reading (commit `metaHash = nil` for those
+   records) makes the **very next** scan read the real sidecar, compute a real digest, see a mismatch
+   against the nil it committed, and report every freshly-created asset as `MetaChanged` — which would
+   fail human-validation row 2, the exact demonstration this task exists to produce. Fixed: phase 7
+   computes the digest of the text it actually wrote and records it; phase 8 reads that digest for
+   every record, whatever its state; and a write **failure** excludes that record from the cache
+   entirely — the bytes on disk are not the bytes that were hashed, and committing a hash for a file
+   this scan failed to write is exactly the false-`UpToDate` R-C2 forbids. `AD62` pins the fix
+   directly (a freshly created asset is `UpToDate` on the very next scan); `AD53` pins the write-failure
+   exclusion.
+
+**The `invalidateCache()` defect** (found from a failing test while implementing Step 8, not by
+reading): the plan's own phase-3 snippet reloaded the cache index from disk unconditionally on entry,
+which made a call to `invalidateCache()` a silent no-op — the in-memory clear it performed was
+immediately undone before phase 4 ever ran, and AC-35 (Reimport All actually re-hashes everything) was
+structurally unobservable by any test. Fixed with a one-shot `cacheInvalidated` flag, consumed by
+exactly the next phase 3 and never left set across a scan that could not run at all (an empty root,
+say). This mattered beyond the one test: `Reimport All` is the user's entire escape hatch for a
+corrupted or stale cache, and the unfixed code would have made the button do nothing while reporting
+success.
+
+**The amended INV-A1 / AC-32.** 3.1.1's invariant — "exactly one `writeTextFileAtomic` call site" —
+is unsatisfiable as literally restated for this task, because D6 (`Library/.gitignore`, written once
+on first scan) and D15 (the index itself) both mandate additional writes. There are now **three** call
+sites in `asset_database.cpp`: exactly **one** built from the **assets** root (still behind the
+case-insensitive write-conflict guard 3.1.1's code review added) and exactly **two** built from the
+**library** directory. Each path is assembled into a named local first (`metaAbsolutePath`,
+`ignorePath`, `indexPath`), which is what keeps the amended invariant grep-decidable rather than
+heuristic. The invariant's real content — one guarded write path into the user's own tree, everything
+else confined to derived, disposable data — holds exactly as before.
+
+**The AC-6 cross-check record.** The canonical public-domain MurmurHash3 reference
+(`aappleby/smhasher`, `src/MurmurHash3.cpp`) was fetched from
+`https://raw.githubusercontent.com/aappleby/smhasher/master/src/MurmurHash3.cpp`, SHA-256
+`30f121ed155ebf336af398aabb7d8d157afdfafc8d981e7b48d2a1ceb4b63e4e`, compiled with
+`clang++ -std=c++20 -O2` and run in a scratch directory. The published SMHasher `VerificationTest`
+value for Murmur3F (x64_128) reproduced exactly as `0x6384BA69`. Two pinned inputs, both cross-checked
+independently a second time from the published algorithm and matching exactly:
+`"The quick brown fox jumps over the lazy dog"` → `e34bbc7bbc071b6c7a433ca9c49a9347`, and the
+1 048 581-byte repeating pattern the spec names → `912d8bc874074f7eb99738f4eaeb2311`. **The word-order
+trap, worth stating precisely because a naive comparison would call this a mismatch:** the reference's
+own raw buffer dump for the fox case reads `6c1b07bc7bbc4be3…` — this tree's `formatContentHash`
+deliberately emits `hi` first, big-endian per word (the same convention `formatGuid` already uses), so
+the two hex strings are genuinely the same 128-bit value read in a different, chosen byte order, not a
+discrepancy.
+
+**Three measurements, taken on this machine (macOS arm64, `macos-debug`, ASan+UBSan — the build every
+other measurement in this project has been taken from, so the number is comparable across tasks even
+though it is not release-representative):**
+- **A3's extra-`stat` cost** — measured directly against the SDK's own `directory_entry`
+  implementation (not timed): ~7–9 ms of extra wall time per 5 000-file `listDirectory` call
+  (~45–50% of that call's own time in isolation), all of it the second `stat` `last_write_time` issues.
+- **`AssetDatabase::rescan` wall time over a synthetic 5 000-file tree** (a standalone harness linked
+  against this tree's own built `aero_editor_core`/`aero_core`/`aero_scene` static libraries, run
+  twice for stability): a **cold** scan (5 000 new files, 5 000 `.meta` writes, 5 000 hashes) took
+  **~60.6 s**; the immediately following **warm** scan of the identical, unchanged tree (0 created, 0
+  bytes read, the D15 fast path exercised throughout) took **~7.3–7.4 s**. Both numbers are Debug/ASan
+  — a Release build with no sanitizer instrumentation would be substantially faster — but they are the
+  first real measurement of the scan's own wall time this project has recorded, and the ratio (roughly
+  8×) is the number that matters: the warm path is doing real work (5 000 stats plus 5 000 sidecar
+  reads plus the index comparison) even though it writes nothing.
+- **`parseAssetCache` wall time for a synthetic 5 000-entry index**: **~336–355 ms**. Linear in entry
+  count and small enough that A7's per-asset `Library/Artifacts/` alternative is not warranted yet —
+  recorded as the number 3.3 should re-measure against before deciding, not acted on here.
+
+**Test inventory, measured fresh with `--list-test-cases`, not arithmetic'd:** `ctest -N` **95**
+tools-ON / **6** tools-OFF / **19** reflect-OFF — unchanged, this task registers **zero** new ctest
+entries (every new case lives inside an existing TU). `aero_tests` **389 → 415**
+(`tests/content_hash_test.cpp` `CH1`–`CH26`, the `ContentHash` codec/order/hash-mix/MurmurHash3
+battery — a new TU, `aero_tests`' first for this task). `aero_editor_shell_test` **468 → 617**
+(`tests/editor/text_file_test.cpp` `TF1`–`TF22`, new; `tests/editor/asset_cache_test.cpp`
+`IC1`–`IC34`/`IG1`–`IG6`/`IP1`–`IP40`, new; `tests/editor/asset_database_test.cpp` `AD32`–`AD62`,
+extended — **617 measured directly with `--list-test-cases`, not derived by addition**, the standing
+lesson this project keeps re-verifying rather than re-learning the hard way a third time).
+`aero_editor_imgui_test` **52 → 56** (`I31`–`I34`: the cache survives a project reopen, an edit is
+detected and scoped to the changed file, `Reimport All` drives a full re-hash through its one-shot
+channel, and `I34` mechanically proves the reimport flag drains unconditionally). `aero_scene_serialize_test`
+and `aero_editor_inspector_test`: **23**/**22**, both unchanged. Both reduced configurations, freshly
+rebuilt for this documentation step rather than trusted from a stale directory (`build/tools-off-3.1.2`,
+`build/reflect-off-3.1.2`): `ctest -N` **6**/**19**, unchanged, and — this is the number that actually
+proves AC-17's claim for this task — `aero_editor_shell_test`'s own `--count` reads **593** in *both*
+reduced configurations, up from the 589 measured before commit 10's four new shell cases landed, so the
+format and the three planners are present, not skipped, in every reduced configuration; all six ctest
+entries and all nineteen respectively still pass 100%. `check-math-boundary.sh`: **255 → 262** (nine
+new/extended C-family files scanned across Steps 1–8, unchanged through Steps 9–11 since docs are not
+C-family) — measured after `git add` at every step boundary, never assumed. Guard count stays **six**;
+`check-project-no-delete.sh`'s own final line now reads **"6 files scanned"**, up from 5.
+
+**The sabotage matrix — 31 seeds (S1–S28, S27b, S29–S31) plus all 3 mandatory second-order checks, run
+and confirmed against the real built binaries, not reasoned about.** Every seed was applied, confirmed
+**present** with `git diff` before trusting any verdict (the standing BSD-`sed`-false-PASS lesson),
+rebuilt (never a stale binary), run through the full `AERO_REQUIRE_GPU=1` suite, and reverted with the
+revert confirmed byte-for-byte clean against `HEAD` before the next seed began. **Exact arithmetic: 8
+matched their prediction** (S2, S8, S9, S20, S22, S23, S30, S31) **+ 2 confirmed non-discriminators**
+(S1 — `readLe64`'s aligned-load shortcut is invisible on any little-endian, non-strict-alignment
+target this project builds for; S6 — `hashFileContents` implemented as `readTextFile` + `hashBytes`
+breaks a memory property, not a correctness one, so nothing functional reddens) **+ 1 predicted
+contingency came true** (S28 — the Reimport All one-shot moving to the right of a `\|\|` reddens
+nothing through `I33` alone, exactly as the plan's own honest prediction said it might, because `I33`'s
+second tick never sets `assetReimportRequested`; **this is precisely the gap `f7198fc`'s `I34` was
+written to close**) **+ 20 differently-shaped findings, every one a genuine discovery about which test
+actually discriminates which bug, not a failure of the matrix. 8 + 2 + 1 + 20 = 31.**
+
+The notable differently-shaped findings, beyond the four `f7198fc` fixed outright (§ above):
+- **S5 (`formatContentHash` emits `lo` first) reddened TWENTY cases against four predicted**
+  (`CH12`/`CH21`/`CH22`/`IG1`) — the word-order convention this task's own AC-6 cross-check record
+  above had to state precisely is exercised by every case that round-trips a hash through text, not
+  only the four the plan named.
+- **S19 (the cascade enqueues on every visit instead of only on the clean→dirty transition) revealed
+  that `IP18`/`IP20` HANG rather than fail an assertion on a non-terminating cascade.** The plan's own
+  §B claim — "written with a hard bound so it fails an assertion, never hangs" — is **wrong**, measured
+  directly. An iteration cap was considered and rejected as the fix: it would be a disguised cycle
+  detector, which D12 explicitly forbids (a cycle is supposed to converge by becoming uniformly dirty,
+  not by hitting a cap). Left as a real, documented risk: a regression here costs a hung CI job, not a
+  red one, until a human notices the timeout. Recorded rather than silently patched around.
+- **S28 reddened nothing**, exactly the contingency above — and the `cacheTruncated` flag it touches
+  tangentially was found, while investigating this seed, to be **entirely unasserted anywhere in the
+  suite** until `f7198fc`'s `IC25` closed it (via the A9-pattern defaulted `maxEntries` parameter,
+  applied a second time).
+- **S13/S14 (breaking the fast path; comparing only `size`, not `mtime`) each confirmed exactly as
+  predicted** (`AD33`, `AD37`) — the two seeds most directly testing "the cache's whole reason to
+  exist" needed no correction.
+- **S24 (re-attachment deletes the old sidecar) reproduced 3.1.1's own S21 finding exactly, one task
+  later:** the widened no-delete guard fails **before any test even runs**
+  (`check-project-no-delete.sh` exits 1), and `project-no-delete.no_delete_e2e` stays green throughout
+  because it exercises the script against its own hermetic scratch tree, never the real source — both
+  facts together are the intended behaviour, not a contradiction.
+
+**AD45's unreachable branch.** On this machine's APFS volume, `listDirectory`'s `is_directory()` and
+`canonicalDirectory()` never disagree — proven with four separate constructions (a dangling symlink, a
+`chmod`-000 target, a mutual symlink cycle, a 60-hop symlink chain) — so the WARN for "could not be
+resolved" is unreachable from any test this tree can run here. The defensive branch stays in
+production code regardless: `AD45` documents the gap and reports it as a real, open, machine-dependent
+coverage limitation rather than asserting coverage that does not exist, the same posture 3.1.1's S17
+took for its own case-insensitive-filesystem gap.
+
+**A process note worth recording, not colour.** During this task's execution, one subagent invocation
+died mid-run and left sabotage seed **S3** (the `ContentHasher` carry-buffer top-up deletion) present
+in the working tree, uncommitted. It was caught by inspecting `git diff` before trusting the tree as
+clean and before starting the next seed — **a dead agent process is not evidence of a clean working
+tree**, and the standing "confirm the seed landed, confirm the revert landed" discipline this project
+already practices for every sabotage seed is exactly what caught it here, on the meta-level of the
+process itself rather than on any one seed's own prediction.
+
+**The three mandatory second-order checks, run for every one of the 31 seeds, no exceptions:** (1) the
+seed was actually present — `git diff` shown before trusting any verdict; (2) the suite was actually
+rebuilt, not stale — confirmed via the build tool's own incremental step list on every build; (3) the
+revert restored the file byte-for-byte — confirmed via `git diff` (empty) for every touched file after
+every seed. All three passed for all 31 seeds.
+
+**Verification for this task:** six guards green; the full `ctest --preset macos-debug` suite passing
+100% of 95 (~163 s, `AERO_REQUIRE_GPU=1`); both reduced configurations freshly rebuilt and passing
+100% (6/6 tools-OFF, 19/19 reflect-OFF), `aero_editor_shell_test` reading **593** doctest cases in each;
+`check-math-boundary.sh` **262**; `check-project-no-delete.sh` **6 files scanned**; every changed file
+confirmed byte-identical to `HEAD` after every one of the 31 sabotage reverts.

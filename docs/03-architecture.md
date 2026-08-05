@@ -60,9 +60,9 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
   /physics     Jolt wrapper
   /audio       graph (public) → miniaudio backend (private)
   /assets      AssetDatabase, import cache, loaders
-               (the `Guid` value type lives in /engine/core beside Handle -- it is a
-               zero-dependency primitive that scene, render, script and runtime all need;
-               task 3.1.1 D1)
+               (the `Guid` and `ContentHash` value types live in /engine/core beside Handle --
+               zero-dependency primitives that scene, render, script, runtime and /tools all
+               need; tasks 3.1.1 D1 and 3.1.2 D1)
   /script      quickjs-ng, bindings, hot reload
   /reflect     entt::meta runtime (the GENERATOR lives in /tools)
 
@@ -195,7 +195,10 @@ game.pak  +  precompiled runtime  =  final build
 re-derived in three months.** The editor's (task 3.1.1, source-tree-backed, `.meta`-driven, scans a
 project's `assets/` folder and gives every source file a stable GUID) and the runtime's (Phase 5,
 `.pak`-backed, reads a cooked, packaged binary). They share the `Guid` value type — `/engine/core` —
-and nothing else: different storage, different lifetime, different consumers.
+and nothing else: different storage, different lifetime, different consumers. The editor's database
+also owns a **machine-local, never-committed import cache** at `<projectRoot>/Library/` (task 3.1.2),
+which the runtime's has no analogue of — the runtime reads a cooked `.pak`, never a source tree, so it
+has nothing to cache an import decision against.
 
 ---
 
