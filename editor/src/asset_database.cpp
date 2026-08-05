@@ -96,7 +96,8 @@ constexpr bool isInvalidPlanEntry(const AssetPlanEntry& entry) noexcept {
 
 const std::string& AssetDatabase::root() const noexcept { return rootUtf8; }
 const std::string& AssetDatabase::projectRoot() const noexcept { return projectRootUtf8; }
-std::size_t AssetDatabase::size() const noexcept { return records.size(); }
+std::size_t AssetDatabase::size() const noexcept { return recordList.size(); }
+std::span<const AssetRecord> AssetDatabase::records() const noexcept { return recordList; }  // task 3.1.3
 std::size_t AssetDatabase::cacheSize() const noexcept { return cache.entries.size(); }
 const ImportPlanResult& AssetDatabase::importPlan() const noexcept { return plan; }
 
@@ -120,9 +121,9 @@ const AssetRecord* AssetDatabase::findByPath(std::string_view relativePath) cons
     // -- a std::lower_bound over the vector directly, never a std::string constructed from the
     // std::string_view argument (that would allocate inside a noexcept function).
     const auto it =
-        std::lower_bound(records.begin(), records.end(), relativePath,
+        std::lower_bound(recordList.begin(), recordList.end(), relativePath,
                          [](const AssetRecord& record, std::string_view path) { return record.relativePath < path; });
-    if (it == records.end() || it->relativePath != relativePath) {
+    if (it == recordList.end() || it->relativePath != relativePath) {
         return nullptr;
     }
     return &*it;
@@ -137,7 +138,7 @@ const AssetRecord* AssetDatabase::findByGuid(Guid guid) const noexcept {
     if (it == byGuid.end() || it->first != guid) {
         return nullptr;
     }
-    return &records[it->second];
+    return &recordList[it->second];
 }
 
 std::optional<Guid> AssetDatabase::guidForPath(std::string_view relativePath) const noexcept {
@@ -152,7 +153,7 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
                                       GuidGenerator& generator, std::uint64_t hashBudgetBytes) {
     projectRootUtf8 = std::move(newProjectRootUtf8);
     rootUtf8 = std::move(newAssetsRootUtf8);
-    records.clear();
+    recordList.clear();
     byGuid.clear();
     plan = ImportPlanResult{};
 
@@ -546,17 +547,17 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
     report.largeCreateNotice = planResult.writeIndices.size() > CREATE_NOTICE_THRESHOLD;
 
     // ---- phase 7: write and index ------------------------------------------------------------------
-    records = std::move(planResult.records);  // `planResult.writeIndices` stays valid -- separate member
+    recordList = std::move(planResult.records);  // `planResult.writeIndices` stays valid -- separate member
     // Code-review finding 2: which indices got downgraded below -- consulted by the reporting loop so
     // a conflict is reported exactly once, in report.writeConflicts, never doubled into
     // report.invalidPaths too.
-    std::vector<bool> writeConflict(records.size(), false);
+    std::vector<bool> writeConflict(recordList.size(), false);
     // task 3.1.2 (A10): a write FAILURE excludes that record from phase 8's inputs entirely -- the
     // bytes on disk are not the bytes we would have hashed, and committing a hash for a file we did
     // not manage to write is exactly the false-UpToDate R-C2 forbids.
-    std::vector<bool> writeFailed(records.size(), false);
+    std::vector<bool> writeFailed(recordList.size(), false);
     for (const std::size_t index : planResult.writeIndices) {
-        AssetRecord& record = records[index];  // mutable: a conflict downgrades it below
+        AssetRecord& record = recordList[index];  // mutable: a conflict downgrades it below
         const std::string metaRelPath = record.relativePath + std::string(ASSET_META_SUFFIX);
 
         // D7/D8's "never destroy, never guess", extended to the write itself: a Created/Repaired/
@@ -609,9 +610,9 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
         }
     }
 
-    byGuid.reserve(records.size());
-    for (std::size_t index = 0; index < records.size(); ++index) {
-        const AssetRecord& record = records[index];
+    byGuid.reserve(recordList.size());
+    for (std::size_t index = 0; index < recordList.size(); ++index) {
+        const AssetRecord& record = recordList[index];
         if (record.state != AssetMetaState::Invalid) {
             byGuid.emplace_back(record.guid, index);  // INV-A7: an Invalid record is never reachable here
         }
@@ -638,9 +639,9 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
 
     // ---- phase 8: plan imports and commit ----------------------------------------------------------
     std::vector<ImportInput> inputs;
-    inputs.reserve(records.size());
-    for (std::size_t index = 0; index < records.size(); ++index) {
-        const AssetRecord& record = records[index];
+    inputs.reserve(recordList.size());
+    for (std::size_t index = 0; index < recordList.size(); ++index) {
+        const AssetRecord& record = recordList[index];
         if (record.state == AssetMetaState::Invalid || writeFailed[index]) {
             continue;  // no identity (D11/INV-C1), or the bytes on disk are not what we would hash (A10)
         }
@@ -672,18 +673,18 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
     {
         std::size_t recordCursor = 0;
         for (const ImportPlanEntry& entry : plan.entries) {
-            while (recordCursor < records.size() && records[recordCursor].relativePath < entry.relativePath) {
+            while (recordCursor < recordList.size() && recordList[recordCursor].relativePath < entry.relativePath) {
                 ++recordCursor;
             }
-            if (recordCursor < records.size() && records[recordCursor].relativePath == entry.relativePath) {
-                records[recordCursor].change = entry.change;
+            if (recordCursor < recordList.size() && recordList[recordCursor].relativePath == entry.relativePath) {
+                recordList[recordCursor].change = entry.change;
             }
         }
     }
     // EVERY record's contentHash, independent of whether it became an import input at all -- a record
     // this scan never hashed simply keeps the default, all-zero ContentHash (also the empty file's
     // real digest, plan A4 -- `change` is the only trustworthy "was this real?" signal).
-    for (AssetRecord& record : records) {
+    for (AssetRecord& record : recordList) {
         const auto hashIt = hashByPath.find(record.relativePath);
         record.contentHash = hashIt != hashByPath.end() ? hashIt->second : ContentHash{};
     }
