@@ -84,7 +84,16 @@ that way.
 - `Escape` does **not** quit. Esc is the universal *dismiss* key in an editor.
 - Unimplemented menu items ship `enabled = false` with a tooltip naming the owning task —
   never a dead handler behind a stub.
-- `<imgui_stdlib.h>` is included **flat**, not under `misc/cpp/` (vcpkg installs it flat).
+- **`<imgui_stdlib.h>` is never included at all, and this line used to say the opposite.** Every text
+  field in this tree goes through `engine::editor::inputTextString` (`editor/src/text_input.hpp`,
+  promoted to a shared TU at task 2.2.2), a hand-rolled `ImGui::InputText(const char*, std::string*, ...)`
+  wrapper — because vcpkg's prebuilt `imguid.lib` ships `imgui_stdlib.cpp.obj` built **without** ASan,
+  and linking an unsanitized object into the Windows Debug lane's ASan-instrumented binary is an
+  LNK2038 runtime-library mismatch. `git grep -n 'imgui_stdlib' -- editor/ tests/` finds only
+  `text_input.hpp`'s own comments explaining why it exists, never an `#include`. Task 3.1.3's search
+  box (A1) uses `inputTextString` a second time, for the identical reason; do not reach for
+  `imgui_stdlib.h` "because it's the standard ImGui helper" — it is specifically the one header this
+  project cannot link against on one of its three CI lanes.
 
 ## Undo/redo
 
@@ -414,5 +423,77 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   Do not add `entry.refresh(ec)` to make it "free" — that changes the dangling-symlink asymmetry
   2.2.4's code review already had to discover and fix once.
 
-Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1 and
-3.1.2's entries under Phase 3.
+## Asset browser v1 (task 3.1.3)
+
+- **Thumbnails are a strict two-phase system, and the phases live in different TUs on purpose.**
+  `editor/include/aero/editor/thumbnail_cache.hpp` (`ThumbnailLedger`) is PURE — no ImGui, no
+  `<filesystem>`, no GPU — and owns only the key, the `Absent`/`Ready`/`Failed`/`Skipped` state
+  machine, and a budget/LRU eviction policy; `editor/src/thumbnail_store.hpp` (src-private) is the
+  ONLY stb_image TU and the ONLY GPU-touching TU for thumbnails, and does the actual
+  read → decode → resample → upload. Nothing above the pair (the panel, `EditorApp`) ever sees a
+  decoded pixel or an `rhi::TextureHandle` — only `ThumbnailState`/`ThumbnailKey`.
+- **A `ThumbnailKey` is `{Guid, ContentHash}`, never a bare `Guid`.** A record whose content hash was
+  never computed this scan (skipped by budget, or `metaWriteFailed`) has no valid key at all and is
+  never touched — a garbage/zero key would decode a file that was never actually hashed. Dropping
+  either guard is sabotage seeds S9/S10, both `I36`-visible only when the GPU-tier test's own budget
+  is small enough to force an un-hashed record into existence.
+- **`Failed` and `Skipped` are STICKY, and `nextDecodes()` is where that stickiness is enforced — not
+  at the call site, where a future edit could forget it.** A file that failed to decode once is never
+  retried, forever, in the same session: `nextDecodes` returns `Absent` keys only, oldest-touched
+  first. This is the single most important property in the whole subsystem (D9) — without it, a
+  broken image in a folder re-reads and re-fails every tick, forever, at the decode budget's full
+  rate.
+- **Eviction excludes anything touched THIS frame, even when that leaves the resident count above the
+  cap.** Evicting a tile that is currently on screen would decode it again next tick, forever, in any
+  folder with more visible tiles than `MAX_THUMBNAILS_RESIDENT` (E12) — a thrash loop, not a bug that
+  merely wastes memory.
+- **`serviceThumbnails()` runs OUTSIDE the ImGui draw walk, in the same slot as `renderScene()`
+  (`EditorApp::tick()`, between `drawShellUi` and `endFrame`), never from inside `onDraw()`.** This is
+  a real, load-bearing architectural rule, but **no automated test tier can see it violated in the
+  general case** — sabotage proved this precisely: moving the call to the very START of `onDraw()`
+  (before any tile has been touched that frame) DOES redden four GPU-tier cases, because thumbnails
+  then decode a full frame behind their own visibility; moving it to the natural END of `onDraw()`
+  (after every tile has already been drawn and touched) reddens nothing at all, 64/64 green. Get the
+  call site right by construction — human validation row 4 ("never stutters") is this rule's only
+  general-case cover.
+- **`fitRgbaIntoTile`'s box-filter resampler is 100% INTEGER — no floating point anywhere.** This is
+  what makes a decoded thumbnail's output bytes identical on macOS, Windows and Linux, and therefore
+  assertable in a portable test at all; a float accumulation would be exactly representable for the
+  sample counts this project's images produce (≤ 500 000 uint8 samples fit exactly below 2²⁴), so a
+  seed swapping in `float` accumulation is a documented, machine-dependent non-discriminator here
+  (S7) — never read that as license to introduce floating point into this one function.
+- **The orphan-`.meta`-delete action re-verifies ALL FIVE conditions on the real filesystem, in a
+  fixed order, immediately before deleting — never trusts a stale scan result.** `validateOrphanPath`
+  (no `..` segment, no absolute path, no drive letter, no `\` separator, a real `.meta` filename) →
+  the sidecar still exists → it still reads as text → it still parses as a `.meta` v1 sidecar with a
+  valid GUID → **the asset it describes does not exist again** (the race-closing check: something
+  could have re-created the asset between the scan and the click). Any single failure refuses the
+  delete and leaves the file untouched — never a partial state, never a "probably fine" heuristic.
+  Reordering this sequence (sabotage seed S22) is the single most important seed in the delete half:
+  it reddens every "still on disk after a refusal" case in the suite simultaneously.
+- **Check B (`check-project-no-delete.sh`) is a POSITIVE two-file allowlist, added beside Check A's
+  six-file denylist, not instead of it.** Check A only catches a delete/rename/copy written into one
+  of six NAMED files; a new destructive call in a SEVENTH, unnamed `editor/src/*.cpp` file passes
+  Check A silently. Check B closes that hole by scanning every tracked `editor/src/*.cpp` and refusing
+  a `remove_all`/`std::filesystem::remove`/`std::filesystem::rename` outside
+  `PERMITTED_DELETERS = {text_file.cpp, asset_actions.cpp}`. **`::copy` is deliberately NOT in Check
+  B's pattern** — unlike Check A's `FORBIDDEN_RE`, Check B's `DELETE_RE` would false-positive on the
+  first ordinary `std::copy` (an `<algorithm>` call, not a filesystem one) written anywhere under
+  `editor/src/`, and a guard that cries wolf is a guard that gets relaxed. `text_file.cpp` is
+  permitted because its internal `rename` IS the mechanism that makes `writeTextFileAtomic` atomic;
+  `asset_actions.cpp` is permitted because it holds the ONE sanctioned orphan-sidecar delete (D12/D13
+  above). A third self-test (B-self-test 3) makes renaming `asset_actions.cpp` without updating
+  `PERMITTED_DELETERS` fail LOUDLY (exit 2, "cannot self-verify") rather than silently widening the
+  check to "nobody is permitted, so nothing matches, so we pass" (sabotage seed S24).
+- **`inputTextString`, not `imgui_stdlib.h`, for the search box (A1)** — see the corrected
+  `<imgui_stdlib.h>` entry in the ImGui section above; this task's search box is imgui_stdlib.h's
+  second confirmed non-use, not its first.
+- **A hidden Asset Browser panel still runs `serviceThumbnails()` every tick (A5/AC-34).** The
+  thumbnail budget/eviction pass is NOT gated on the panel's own visibility — a tabbed-away Asset
+  Browser keeps decoding and evicting exactly as if it were on screen. This is a deliberate choice,
+  not an oversight: gating the service call on visibility would make "switch to the Assets tab" a
+  visible multi-tick stutter every time, trading a background cost nobody sees for a foreground one
+  everybody would.
+
+Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2
+and 3.1.3's entries under Phase 3.

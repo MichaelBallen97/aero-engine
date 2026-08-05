@@ -33,12 +33,14 @@ Subtasks:
 - Content-hash cache keyed by source + import settings
 - Dependency tracking (e.g. material → texture) and cascade invalidation
 
-### 3.1.3 Asset browser v1 · P1 · M · depends: 3.1.1, 2.2.4
+### 3.1.3 Asset browser v1 · P1 · L · depends: 3.1.1, 2.2.4
+_(Sized up from M to L: it also surfaces the scan's issues list and the one user-initiated
+orphan-`.meta`-delete action 3.1.1's D8 and 3.1.2's D13 both deferred here.)_
 **Goal:** upgrade the 2.2.4 stub into the real thing.
-**Deliverable:** browser with thumbnails, type icons, drag-into-scene, and search.
+**Deliverable:** browser with thumbnails, type icons, and search.
 Subtasks:
 - Thumbnails + type icons
-- Drag into scene/hierarchy; search/filter
+- Search/filter
 
 ### 3.1.4 Hot-reload file watcher · P2 · M · depends: 3.1.2
 **Goal:** edit a texture in Photoshop, see it update in the viewport (audit D12; deeper hot reload → v2).
@@ -46,6 +48,16 @@ Subtasks:
 Subtasks:
 - FS watcher on the project's `assets/`
 - Re-import + in-place refresh of GPU resources
+
+### 3.1.5 Drag-into-scene · P1 · S · depends: 3.1.3, 3.2.1
+**Goal:** drag an asset tile from the browser into the Hierarchy/Viewport to create a referencing
+entity — excised from 3.1.3 (D2) because nothing in `engine::scene` can point at an asset until
+3.2.1 lands (`engine::MeshRenderer` has no asset-referencing field today; `git grep -ln 'Guid' --
+engine/scene/` is empty).
+**Deliverable:** a dropped mesh/texture asset creates or updates an entity that actually references it.
+Subtasks:
+- `BeginDragDropSource`/`AcceptDragDropPayload` wiring on an asset tile
+- The referencing component write, once 3.2.1 gives it something to reference
 
 ---
 
