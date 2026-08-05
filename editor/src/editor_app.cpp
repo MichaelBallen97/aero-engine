@@ -437,9 +437,14 @@ bool EditorApp::tick() {
         // task 3.1.3 (D12): a THIRD one-shot, drained as its OWN statement for the identical F9 reason
         // -- putting takeOrphanDeleteRequest() on the right of a `||` would skip the drain whenever an
         // earlier term was already true, stranding the request until the next frame. I42 is its
-        // mechanical proof.
-        const std::string orphanToDelete =
+        // mechanical proof. TWO sources feed it (the panel's own confirmed modal, and EditorApp's own
+        // requestOrphanDelete() -- the GPU tier's only channel, §Q Q1), each drained here as its own
+        // statement, unconditionally, before either is inspected.
+        const std::string panelOrphanToDelete =
             assetBrowserPanel != nullptr ? assetBrowserPanel->takeOrphanDeleteRequest() : std::string{};
+        const std::string editorOrphanToDelete = std::move(requestedOrphanDelete);
+        requestedOrphanDelete.clear();
+        const std::string& orphanToDelete = !panelOrphanToDelete.empty() ? panelOrphanToDelete : editorOrphanToDelete;
         bool orphanHandled = false;
         if (!orphanToDelete.empty()) {
             const OrphanDeleteResult result = deleteOrphanMeta(assetDatabase.root(), orphanToDelete);
@@ -635,6 +640,7 @@ std::size_t EditorApp::thumbnailResidentCount() const noexcept {
 std::size_t EditorApp::thumbnailLoadAttempts() const noexcept {
     return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailLoadAttempts() : std::size_t{0};
 }
+std::size_t EditorApp::assetOrphanCount() const noexcept { return lastAssetReport.orphanTotal; }
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
@@ -676,6 +682,10 @@ void EditorApp::requestAssetRescan() noexcept { assetRescanRequested = true; }
 // task 3.1.2 (AC-39): the requestAssetRescan() shape verbatim, drained in the SAME reconcile expression
 // as AssetBrowserPanel::takeReimportRequest() (F9) -- see tick()'s reconcile block above.
 void EditorApp::requestAssetReimport() noexcept { assetReimportRequested = true; }
+
+// task 3.1.3 (§Q Q1): the requestAssetRescan()/requestAssetReimport() shape, a third instance -- see
+// tick()'s reconcile block above for the drain.
+void EditorApp::requestOrphanDelete(std::string_view relativeMetaPath) { requestedOrphanDelete = relativeMetaPath; }
 
 }  // namespace engine::editor
 

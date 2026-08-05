@@ -217,6 +217,11 @@ public:
     [[nodiscard]] std::size_t thumbnailResidentCount() const noexcept;
     [[nodiscard]] std::size_t thumbnailLoadAttempts() const noexcept;
 
+    // task 3.1.3, Step 12: the A12 precedent, applied to the retained scan report -- I41 needs to
+    // observe the orphan-delete round trip's effect on the Issues list from outside, and there is no
+    // other black-box signature for it.
+    [[nodiscard]] std::size_t assetOrphanCount() const noexcept;
+
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
     // Same effect as Edit > Undo / Ctrl+Z (Cmd+Z on macOS), applied on the NEXT tick -- the
@@ -261,6 +266,12 @@ public:
     // the ImGui-free GPU tier can drive Reimport All (I33) without clicking the panel's own button.
     void requestAssetReimport() noexcept;
 
+    // task 3.1.3 (§Q Q1): the requestAssetRescan()/requestAssetReimport() shape, a THIRD instance --
+    // folds into `orphanToDelete` in tick()'s reconcile block BEFORE the panel's own drain, as its own
+    // statement (the identical F9 rule). The GPU tier is ImGui-free at source and cannot click the
+    // modal's Delete button, so this is the only way I41 can drive the delete round trip at all.
+    void requestOrphanDelete(std::string_view relativeMetaPath);
+
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
@@ -301,6 +312,10 @@ private:
                                           // so this does not affect EditorApp's own `noexcept = default` move.
     bool assetRescanRequested = false;    // task 3.1.1 (AC-38) -- consumed by the next tick()'s reconcile
     bool assetReimportRequested = false;  // task 3.1.2 (AC-39) -- consumed the same way, alongside it
+    // task 3.1.3 -- the requestAssetRescan()/requestAssetReimport() shape, a third instance. "" ==
+    // nothing requested; consumed by the next tick()'s reconcile block, folded into `orphanToDelete`
+    // alongside the panel's own one-shot.
+    std::string requestedOrphanDelete;
     // Non-owning; owned by `registry`, which holds panels through unique_ptr -- so the Panel object
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.
