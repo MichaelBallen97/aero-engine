@@ -27,6 +27,7 @@
 #include <system_error>
 #include <vector>
 
+using engine::ContentHash;
 using engine::formatGuid;
 using engine::Guid;
 using engine::GuidGenerator;
@@ -1619,6 +1620,56 @@ TEST_CASE("asset_database: a newly created asset is UpToDate on the VERY NEXT sc
     const AssetRecord* const record = db.findByPath("a.png");
     REQUIRE(record != nullptr);
     CHECK(record->change == ImportChange::UpToDate);
+}
+
+TEST_CASE(
+    "asset_database: a fast-path collision on a pre-repair duplicate GUID is refused, so the repaired "
+    "record's contentHash is its OWN content's hash (AD63, code-review finding 2)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "aaaa");  // 4 bytes
+    AssetDatabase db;
+    GuidGenerator gen(63);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.created == 1);
+    const AssetRecord* const aFirst = db.findByPath("a.png");
+    REQUIRE(aFirst != nullptr);
+    const ContentHash aHash = aFirst->contentHash;
+    const Stat aStat = statOf(dir.join("a.png"));
+    REQUIRE(aStat.exists);
+
+    // z.png claims the SAME on-disk GUID as a.png (a genuine duplicate -- exactly what D9's repair pass
+    // exists to fix), with the SAME byte length but DIFFERENT bytes, and its mtime forced to match
+    // a.png's exactly -- both halves of the (size, mtime) fast path the finding's bug exploits.
+    writeFile(dir.join("z.png"), "zzzz");
+    const auto aMetaBytes = scene_golden::readBytes(dir.join("a.png.meta"));
+    REQUIRE(aMetaBytes.ok);
+    writeFile(dir.join("z.png.meta"), aMetaBytes.text);  // literally the same sidecar bytes -- same GUID
+    std::error_code ec;
+    std::filesystem::last_write_time(pathOf(dir.join("z.png")), aStat.mtime, ec);
+    REQUIRE_FALSE(ec);
+    const Stat zStat = statOf(dir.join("z.png"));
+    REQUIRE(zStat.exists);
+    REQUIRE(zStat.size == aStat.size);    // the size half of the fast path
+    REQUIRE(zStat.mtime == aStat.mtime);  // the mtime half of the fast path
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.repaired == 1);
+
+    const AssetRecord* const aSecond = db.findByPath("a.png");
+    const AssetRecord* const zSecond = db.findByPath("z.png");
+    REQUIRE(aSecond != nullptr);
+    REQUIRE(zSecond != nullptr);
+    CHECK(zSecond->state == AssetMetaState::Repaired);
+    CHECK(zSecond->guid != aSecond->guid);
+
+    // The bug: z.png's committed contentHash equals a.png's (the cache entry the shared, pre-repair GUID
+    // wrongly vouched for). The fix: neither entry may take the fast path while the GUID is still
+    // claimed twice, so z.png is genuinely re-hashed and its contentHash is its OWN content's digest.
+    const engine::editor::FileHashResult zTrueHash = engine::editor::hashFileContents(dir.join("z.png"));
+    REQUIRE(zTrueHash.hash.has_value());
+    CHECK(zSecond->contentHash == *zTrueHash.hash);
+    CHECK(zSecond->contentHash != aHash);
+    CHECK(aSecond->contentHash == aHash);  // a.png's own hash is unaffected either way
 }
 
 // ---- the golden battery's database-dependent case (docs/09 §5.7) --------------------------------

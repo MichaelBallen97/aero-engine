@@ -571,7 +571,15 @@ std::optional<Guid> EditorApp::assetGuidForPath(std::string_view relativePath) c
 // legitimately zero/UpToDate value (plan A4).
 std::optional<ImportChange> EditorApp::assetImportChangeForPath(std::string_view relativePath) const noexcept {
     const AssetRecord* const record = assetDatabase.findByPath(relativePath);
-    return record != nullptr ? std::optional<ImportChange>(record->change) : std::nullopt;
+    // Code-review finding 3: `change` is never assigned for an Invalid or write-failed record (phase 8
+    // excludes both from its inputs) -- it stays at its ImportChange::UpToDate default either way, so
+    // reading it unguarded for either would misreport a file with no sidecar and no cache entry as "up
+    // to date". Mirrors the Asset Browser footer's own guard, extended to cover the write-failed case
+    // the footer did not.
+    if (record == nullptr || record->state == AssetMetaState::Invalid || record->metaWriteFailed) {
+        return std::nullopt;
+    }
+    return record->change;
 }
 std::optional<ContentHash> EditorApp::assetContentHashForPath(std::string_view relativePath) const noexcept {
     const AssetRecord* const record = assetDatabase.findByPath(relativePath);

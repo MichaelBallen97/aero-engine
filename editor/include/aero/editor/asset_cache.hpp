@@ -80,16 +80,24 @@ struct AssetCacheParseResult {
 [[nodiscard]] std::string writeAssetCacheText(const AssetCacheIndex& index);  // canonical, one '\n'
 
 // ---- change detection + the cascade, as a PURE function (D12) --------------------------------------
-// ORDER IS PRECEDENCE (AC-22): when several causes apply, the FIRST in this enum is reported.
+// ORDER IS PRECEDENCE (AC-22) for the OWN-CAUSE pass only (planImports step 2: New, then
+// SourceChanged, then MetaChanged, then ImporterChanged, else UpToDate) -- the FIRST of those four
+// that applies is reported. Unhashable/NotHashed are decided BEFORE that pass even runs (whichever
+// applies wins outright, with no previous-entry comparison at all), and DependencyChanged is decided
+// in a SEPARATE, LATER pass (step 3/4's worklist) that only ever overwrites an entry still UpToDate --
+// so Unhashable and NotHashed both win over DependencyChanged in practice, the reverse of this enum's
+// own declaration order. Corrected here (code-review finding 5) to match the implementation, which is
+// the more useful behaviour and is not being changed: a source that could not be read this scan is a
+// more actionable fact than "some dependency, possibly unrelated, changed," and is worth keeping.
 enum class ImportChange : std::uint8_t {
     UpToDate = 0,
     New,                // no entry for this GUID
     SourceChanged,      // contentHash differs
     MetaChanged,        // metaHash differs -- identity repaired, or import settings edited (D4)
     ImporterChanged,    // importer id / version differ from what the cache recorded (D16)
-    DependencyChanged,  // a TRANSITIVE dependency is dirty, or gone (D12)
-    Unhashable,         // the source could not be read this scan
-    NotHashed,          // the per-scan hash budget was exhausted before reaching it (D10)
+    DependencyChanged,  // a TRANSITIVE dependency is dirty, or gone (D12) -- loses to Unhashable/NotHashed
+    Unhashable,         // the source could not be read this scan -- wins over DependencyChanged
+    NotHashed,          // the per-scan hash budget was exhausted before reaching it (D10) -- ditto
 };
 // The footer/log text. A switch with NO default:, so a future enumerator is a -Wswitch warning rather
 // than a silent "unknown" (logAssetScan's ScanStatus switch is the precedent).

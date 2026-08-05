@@ -3280,3 +3280,72 @@ TEST_CASE(
     // Half 2, the ordering check -- the half that survives a clang-format line break after the `||`.
     CHECK(drainLine < combineLine);
 }
+
+TEST_CASE(
+    "editor: a write-failed record's import state is not reported as up to date (task 3.1.2, code-review "
+    "finding 3, I35)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import cache i35", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    const std::string assetsRoot = created.root + "/assets";
+    const std::string assetPath = assetsRoot + "/a.txt";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetPath, "hello").empty());
+
+    // AD25's own pattern: a read-only assets root makes phase 7's sidecar write fail while the
+    // in-memory record (state Created, no identity written to disk) is kept.
+    std::error_code ec;
+    std::filesystem::permissions(assetsRoot, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace, ec);
+    REQUIRE_FALSE(ec);
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // the first scan attempts to write a.txt.meta and fails
+    CHECK(app->presentedLastFrame());
+
+    std::error_code restoreEc;
+    std::filesystem::permissions(assetsRoot, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace,
+                                 restoreEc);
+
+    std::error_code existsEc;
+    const std::string metaPath = assetPath + ".meta";
+    if (std::filesystem::exists(metaPath, existsEc) && !existsEc) {
+        MESSAGE("running as a user for whom a read-only directory does not block file creation -- seed did not land");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("a.txt");
+    REQUIRE(guid.has_value());
+    CHECK(guid->valid());  // the in-memory identity survives the write failure (AD25's own rule)
+
+    // The whole point of the finding: NOT "up to date" -- the sidecar never landed and nothing was
+    // hashed under it, so the accessor must refuse rather than report a stale default.
+    const std::optional<engine::editor::ImportChange> change = app->assetImportChangeForPath("a.txt");
+    CHECK_FALSE(change.has_value());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

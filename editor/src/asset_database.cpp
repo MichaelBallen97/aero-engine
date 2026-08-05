@@ -407,6 +407,18 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
         return planEntries[a].relativePath < planEntries[b].relativePath;
     });
 
+    // Code-review finding 2: how many planEntries claim EACH on-disk GUID this scan -- counted BEFORE
+    // the fast-path loop below, because phase 4 runs before phase 6's planAssetMetas repairs a
+    // duplicate. Two entries sharing a pre-repair GUID must never both consult the SAME cache entry:
+    // the later one (which phase 6 will give a fresh GUID) would otherwise take the fast path and
+    // inherit the FIRST one's contentHash under its own new identity.
+    std::unordered_map<Guid, std::size_t> onDiskGuidCounts;
+    for (const AssetPlanEntry& entry : planEntries) {
+        if (entry.guid.has_value()) {
+            ++onDiskGuidCounts[*entry.guid];
+        }
+    }
+
     // ---- phase 4: hash -------------------------------------------------------------------------------
     std::unordered_map<std::string, ContentHash> hashByPath;
     std::unordered_set<std::string> skippedByBudget;
@@ -419,8 +431,12 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
         const auto sizeMtimeIt = sizeMtimeByPath.find(entry.relativePath);
         const bool sizeMtimeKnown = sizeMtimeIt != sizeMtimeByPath.end() && sizeMtimeIt->second.known;
 
+        // Code-review finding 2: refuse the fast path for a GUID more than one on-disk sidecar claims
+        // THIS scan -- see onDiskGuidCounts' own comment above.
+        const bool guidUniqueThisScan = entry.guid.has_value() && onDiskGuidCounts.find(*entry.guid)->second == 1;
+
         bool reusedFromCache = false;
-        if (sizeMtimeKnown && entry.guid.has_value()) {
+        if (sizeMtimeKnown && guidUniqueThisScan) {
             const AssetCacheEntry* const cacheEntry = cache.find(*entry.guid);
             if (cacheEntry != nullptr && cacheEntry->size == sizeMtimeIt->second.size &&
                 cacheEntry->mtime == sizeMtimeIt->second.mtime) {
@@ -581,6 +597,10 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
             appendCapped(report.writeFailures, record.relativePath + ": " + error);
             ++report.writeFailureTotal;
             writeFailed[index] = true;
+            // Code-review finding 3: the record's own flag, so a READER of `records` directly (the
+            // accessor, the footer) can refuse to report `change` for it without needing this local
+            // vector, which does not survive past this function.
+            record.metaWriteFailed = true;
         } else {
             // A10: metaHash is the digest of the TEXT WE JUST WROTE, not nil -- the obvious "nil for a
             // fresh sidecar" reading would make every fresh asset report MetaChanged forever, starting

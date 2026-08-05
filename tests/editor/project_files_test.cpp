@@ -723,6 +723,28 @@ TEST_CASE("editor: canonicalDirectory(\"\") returns \"\" (D9)") {
     CHECK(engine::editor::canonicalDirectory("").empty());
 }
 
+TEST_CASE(
+    "editor: canonicalDirectory never returns a backslash, even one that is part of a directory's OWN "
+    "name (code-review finding 1, D9, INV-C9)") {
+    // Code-review finding 1: canonicalDirectory's result is a DEDUP KEY, compared byte-for-byte against
+    // a forward-slash-joined child path elsewhere -- it must always be in the GENERIC (forward-slash)
+    // form. This machine's native separator is already '/', so it can never reproduce Windows's
+    // backslash-native u8string() output directly; a backslash is nonetheless a perfectly legal POSIX
+    // filename byte (only '/' and NUL are forbidden), so a directory literally NAMED with one exercises
+    // the exact same normalization call inside canonicalDirectory, proving the MECHANISM rather than
+    // relying on a platform this suite cannot run on.
+    const TempDir tmp;
+    std::error_code ec;
+    std::filesystem::create_directory(tmp.path() / "a\\b", ec);
+    if (ec) {
+        MESSAGE("skipped: this filesystem refuses a backslash byte in a directory name");
+    } else {
+        const std::string result = engine::editor::canonicalDirectory(joinPath(tmp, "a\\b"));
+        CHECK_FALSE(result.empty());
+        CHECK(result.find('\\') == std::string::npos);
+    }
+}
+
 TEST_CASE("editor: buildVisibleTree reuses `out` without leaving a survivor (D15)") {
     Cache large;
     std::vector<FileEntry> manyDirs;

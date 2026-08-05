@@ -430,7 +430,11 @@ void AssetBrowserPanel::drawFooter() {
                     // inside this SAME `databasePtr != nullptr` block (a null database appends neither
                     // segment, exactly as before). An invalid record has no identity, so it has no
                     // import state either -- the footer already says "invalid .meta" for it above.
-                    if (rec != nullptr && rec->state != AssetMetaState::Invalid) {
+                    // Code-review finding 3: a write-failed record (state still Created/Repaired/
+                    // Reattached) never got a `change` assigned either -- its default UpToDate would
+                    // otherwise render "up to date" for a file with no sidecar on disk, so the segment
+                    // is omitted for it exactly as it already is for Invalid.
+                    if (rec != nullptr && rec->state != AssetMetaState::Invalid && !rec->metaWriteFailed) {
                         labelScratch += "  -  ";
                         labelScratch += importChangeLabel(rec->change);
                     }

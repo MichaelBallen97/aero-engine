@@ -384,7 +384,17 @@ std::string canonicalDirectory(std::string_view absolutePathUtf8) {
     if (!std::filesystem::is_directory(resolved, dirEc) || dirEc) {
         return {};
     }
-    return utf8FromPath(resolved);
+    // Code-review finding 1: this return value is a DEDUP KEY ONLY (INV-C9 forbids it from ever being
+    // stored in a record, put in a report, written to the cache, or shown to the user) -- never a
+    // display path. asset_database.cpp's D9 fast path derives a non-symlink child's canonical path by
+    // string-joining with '/' (dir.canonical + '/' + entry.name), so this function's own return value
+    // must ALWAYS be in that same generic, forward-slash form, or the two never compare equal on a
+    // platform whose native separator is '\\'. utf8FromPath() itself stays native-separated on purpose
+    // (rootDisplayName / ProjectSession::root() need that, backslash-separated on Windows by design) --
+    // the normalization happens HERE and only here, right before returning.
+    std::string result = utf8FromPath(resolved);
+    std::replace(result.begin(), result.end(), '\\', '/');
+    return result;
 }
 
 }  // namespace engine::editor

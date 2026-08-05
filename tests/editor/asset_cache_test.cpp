@@ -25,6 +25,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -987,6 +988,30 @@ TEST_CASE("asset_cache: a dangling dependency marks its dependent DependencyChan
 }
 
 TEST_CASE(
+    "asset_cache: Unhashable wins over a dirty dependency too, not just over the other own-causes (IP42, "
+    "AC-22, code-review finding 5)") {
+    // IP11 already proves Unhashable beats every OWN-cause (New/SourceChanged/MetaChanged/
+    // ImporterChanged). DependencyChanged is decided separately, in step 3/4's LATER pass, which only
+    // ever overwrites an entry still UpToDate -- so an input already marked Unhashable in step 2 must
+    // stay Unhashable even when its dependency is genuinely dirty this same scan.
+    const Guid node = guidOf(1);
+    const Guid dependency = guidOf(2);
+    const AssetCacheIndex previous = indexOf({
+        cacheEntry(node, "a.mat", hashOf(1), ContentHash{}, "", 0, {dependency}),
+        cacheEntry(dependency, "dep.png", hashOf(5)),
+    });
+    const std::vector<ImportInput> inputs = {
+        importInput(node, "a.mat", std::nullopt, ContentHash{}, "", 0, /*hashSkippedByBudget=*/false),
+        importInput(dependency, "dep.png", hashOf(999)),  // SourceChanged -- a genuinely dirty dependency
+    };
+    const ImportPlanResult result = planImports(inputs, previous);
+    REQUIRE(findEntry(result, dependency) != nullptr);
+    CHECK(findEntry(result, dependency)->change == ImportChange::SourceChanged);
+    REQUIRE(findEntry(result, node) != nullptr);
+    CHECK(findEntry(result, node)->change == ImportChange::Unhashable);
+}
+
+TEST_CASE(
     "asset_cache: a cycle A -> B -> A with B's source changed terminates and marks both (IP18, AC-24, "
     "seed S19)") {
     // planImports's worklist pushes a node only on the clean->dirty transition (D-6 step 4), so this
@@ -1115,7 +1140,8 @@ TEST_CASE(
     cached.mtime = 1700000000;
     const AssetCacheIndex previous = indexOf({cached});
 
-    ImportInput input = importInput(guidOf(1), "a.png", std::nullopt, ContentHash{}, "", 0, /*budget=*/false);
+    ImportInput input =
+        importInput(guidOf(1), "a.png", std::nullopt, ContentHash{}, "", 0, /*hashSkippedByBudget=*/false);
     input.size = 999999;       // what THIS scan stat()ed -- deliberately UNEQUAL to the cached value
     input.mtime = 1800000000;  // ditto: a real edit that could not be read back
     const std::vector<ImportInput> inputs = {input};
@@ -1140,7 +1166,8 @@ TEST_CASE(
     cached.mtime = -86400;  // a legitimately pre-1970 mtime, so a "refresh" cannot coincide with it
     const AssetCacheIndex previous = indexOf({cached});
 
-    ImportInput input = importInput(guidOf(1), "big.bin", std::nullopt, hashOf(20), "gltf", 3, /*budget=*/true);
+    ImportInput input =
+        importInput(guidOf(1), "big.bin", std::nullopt, hashOf(20), "gltf", 3, /*hashSkippedByBudget=*/true);
     input.size = 8ULL * 1024 * 1024 * 1024;  // the budget ran out precisely BECAUSE it is enormous
     input.mtime = 1800000000;
     const std::vector<ImportInput> inputs = {input};
@@ -1180,6 +1207,21 @@ TEST_CASE(
     // The scan that would make it 4 drops the entry instead.
     const AssetCacheIndex afterFour = commitImports(afterThree, {}, planImports({}, afterThree));
     CHECK(afterFour.entries.empty());
+}
+
+TEST_CASE(
+    "asset_cache: a missing counter at UINT32_MAX is dropped, not kept immortal by wraparound (IP41, "
+    "AC-26, code-review finding 4)") {
+    // Reachable from a hand-edited or corrupt index -- parseAssetCache accepts any asU64 for "missing"
+    // and truncates it into a std::uint32_t. The old comparison read
+    // `previousEntry.missing + 1 > MISSING_SCAN_GRACE`: both operands are std::uint32_t, so
+    // UINT32_MAX + 1 wraps to 0, which is never > MISSING_SCAN_GRACE -- the entry survived, and
+    // `carried.missing += 1` wrapped it right back to 0, making it immortal.
+    AssetCacheEntry entry = cacheEntry(guidOf(1), "a.png", hashOf(10));
+    entry.missing = std::numeric_limits<std::uint32_t>::max();
+    const AssetCacheIndex previous = indexOf({entry});
+    const AssetCacheIndex next = commitImports(previous, {}, planImports({}, previous));
+    CHECK(next.entries.empty());
 }
 
 TEST_CASE("asset_cache: seeing the GUID again resets missing to 0 (IP25, AC-26)") {

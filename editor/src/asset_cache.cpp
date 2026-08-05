@@ -583,7 +583,12 @@ AssetCacheIndex commitImports(const AssetCacheIndex& previous, const std::vector
         if (seenGuids.contains(previousEntry.guid)) {
             continue;  // already handled above, one way or the other
         }
-        if (previousEntry.missing + 1 > MISSING_SCAN_GRACE) {
+        // Code-review finding 4: compared as `>=`, never `previousEntry.missing + 1 > GRACE` -- both
+        // operands are std::uint32_t, so a hand-edited or corrupt index (parseAssetCache accepts any
+        // asU64 and truncates it) can hold `missing == UINT32_MAX`, and `UINT32_MAX + 1` wraps to 0 in
+        // that comparison, which is never `> GRACE`: the entry survives, `missing` wraps right back to
+        // 0 below, and it becomes immortal. This form never adds 1 at all, so it cannot wrap.
+        if (previousEntry.missing >= MISSING_SCAN_GRACE) {
             continue;  // dropped
         }
         AssetCacheEntry carried = previousEntry;
