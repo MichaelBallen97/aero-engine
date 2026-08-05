@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "hashAlgorithm": "murmur3-x64-128",
+  "entries": [
+    {
+      "guid": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "path": "material.mat",
+      "size": 512,
+      "mtime": 1700000000,
+      "contentHash": "11111111111111111111111111111111",
+      "metaHash": "99999999999999999999999999999999",
+      "importer": "",
+      "importerVersion": 0,
+      "dependencies": [
+        "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      ],
+      "missing": 0
+    },
+    {
+      "guid": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "path": "albedo.png",
+      "size": 262144,
+      "mtime": 1700000100,
+      "contentHash": "22222222222222222222222222222222",
+      "metaHash": "88888888888888888888888888888888",
+      "importer": "",
+      "importerVersion": 0,
+      "dependencies": [
+        "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+      ],
+      "missing": 0
+    },
+    {
+      "guid": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "path": "source.psd",
+      "size": 4194304,
+      "mtime": 1700000200,
+      "contentHash": "33333333333333333333333333333333",
+      "metaHash": "77777777777777777777777777777777",
+      "importer": "",
+      "importerVersion": 0,
+      "dependencies": [
+        "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+      ],
+      "missing": 0
+    }
+  ]
+}

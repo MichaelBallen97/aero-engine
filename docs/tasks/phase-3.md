@@ -24,7 +24,9 @@ Subtasks:
 - GUID generation + `.meta` schema (versioned)
 - `.meta` lifecycle: create on discovery, preserve on move/rename
 
-### 3.1.2 Import cache & dependency tracking · P0 · M · depends: 3.1.1
+### 3.1.2 Import cache & dependency tracking · P0 · L · depends: 3.1.1
+_(Sized up from M to L: it also closes 3.1.1's D8 orphan-re-attachment deferral and the
+carried-forward symlinked-directory duplicate-GUID defect (R1/AC-49).)_
 **Goal:** import once, reuse until content changes.
 **Deliverable:** content-hash-based cache with invalidation; only changed assets re-import.
 Subtasks:

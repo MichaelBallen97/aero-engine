@@ -74,6 +74,14 @@ public:
         return requested;
     }
 
+    // task 3.1.2 (§D-11/A15): the `takeRescanRequest()` shape verbatim, for the Reimport All button's
+    // OWN one-shot -- a strict superset of Refresh (it also discards the committed import cache, AC-39).
+    [[nodiscard]] bool takeReimportRequest() noexcept {
+        const bool requested = reimportRequested;
+        reimportRequested = false;
+        return requested;
+    }
+
 private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.
     enum class ActionKind : std::uint8_t {
@@ -83,6 +91,7 @@ private:
         SelectEntry,   // path: the entry to select (relative to the root)
         Refresh,       // path: unused
         ToggleHidden,  // path: unused
+        ReimportAll,   // path: unused -- task 3.1.2, APPENDED (never inserted -- performance-enum-size)
     };
     struct PendingAction {
         ActionKind kind = ActionKind::None;
@@ -113,6 +122,7 @@ private:
     bool treeDirty = true;
     const AssetDatabase* databasePtr = nullptr;  // task 3.1.1 -- reconciled, never owned (D13)
     bool rescanRequested = false;                // task 3.1.1 -- one-shot, drained by takeRescanRequest()
+    bool reimportRequested = false;              // task 3.1.2 -- one-shot, drained by takeReimportRequest() (A15)
 };
 
 }  // namespace engine::editor

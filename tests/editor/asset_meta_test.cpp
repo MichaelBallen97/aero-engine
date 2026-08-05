@@ -262,6 +262,15 @@ namespace {
 AssetPlanEntry entryOk(std::string_view path, Guid guid) { return AssetPlanEntry{std::string(path), guid, true}; }
 AssetPlanEntry entryMissing(std::string_view path) { return AssetPlanEntry{std::string(path), std::nullopt, false}; }
 AssetPlanEntry entryInvalid(std::string_view path) { return AssetPlanEntry{std::string(path), std::nullopt, true}; }
+// task 3.1.2 (D13/A14) -- designated initializers, since `reattachedGuid` is the FOURTH field and the
+// three helpers above stay on the original 3-positional-argument form (AssetPlanEntry::reattachedGuid
+// is APPENDED, never inserted, so every 3.1.1 literal keeps its exact original meaning; AP20 pins it).
+AssetPlanEntry entryReattached(std::string_view path, Guid reattachedGuid) {
+    return AssetPlanEntry{.relativePath = std::string(path),
+                          .guid = std::nullopt,
+                          .metaPresent = false,
+                          .reattachedGuid = reattachedGuid};
+}
 }  // namespace
 
 TEST_CASE("asset_meta: planAssetMetas on empty input (AP1)") {
@@ -448,10 +457,13 @@ TEST_CASE("asset_meta: counts are consistent with writeIndices in a mixed tree (
     };
     const AssetPlanResult result = planAssetMetas(std::move(entries), gen);
     REQUIRE(result.records.size() == 5);
-    CHECK(result.created + result.repaired == result.writeIndices.size());
+    // task 3.1.2 (A14): the invariant gained a third term, `reattached` -- updated here, the only
+    // place this task changes an existing 3.1.1 assertion (D-10's documented caveat).
+    CHECK(result.created + result.repaired + result.reattached == result.writeIndices.size());
     CHECK(result.created == 1);
     CHECK(result.repaired == 1);
     CHECK(result.invalid == 1);
+    CHECK(result.reattached == 0);
 }
 
 TEST_CASE("asset_meta: records stay sorted and every writeIndex is in range and unique (AP13)") {
@@ -483,6 +495,116 @@ TEST_CASE("asset_meta: planAssetMetas is deterministic for a fixed seed (AP14, D
         CHECK(resultA.records[i].state == resultB.records[i].state);
     }
     CHECK(resultA.writeIndices == resultB.writeIndices);
+}
+
+// ---- the reattachedGuid arm, task 3.1.2 (D13/A14) --------------------------------------------------
+
+TEST_CASE(
+    "asset_meta: a reattachedGuid entry becomes Reattached, keeps that exact GUID, is written, and consumes "
+    "NO GUID from the generator (AP15, D13, A14)") {
+    const Guid reattached{7, 7};
+    GuidGenerator gen(15);
+    std::vector<AssetPlanEntry> entries{entryReattached("a.png", reattached)};
+    const AssetPlanResult result = planAssetMetas(std::move(entries), gen);
+    REQUIRE(result.records.size() == 1);
+    CHECK(result.records[0].guid == reattached);
+    CHECK(result.records[0].state == AssetMetaState::Reattached);
+    REQUIRE(result.writeIndices.size() == 1);
+    CHECK(result.writeIndices[0] == 0);
+
+    // generator.next() was NOT consumed: a FRESH generator with the SAME seed draws the SAME value
+    // `gen` would draw next -- if planAssetMetas had called next() even once, the two would diverge.
+    GuidGenerator freshGen(15);
+    CHECK(gen.next() == freshGen.next());
+}
+
+TEST_CASE("asset_meta: a Reattached GUID colliding with an Ok record's is repaired like any other (AP16, D13)") {
+    const Guid shared{8, 8};
+    GuidGenerator gen(16);
+    // 'a.png' sorts first -> claims `shared` first, as Ok. 'z.png' sorts second -> the Reattached
+    // arm settles it to `shared` in step 2, then step 3's claim map finds it already taken and
+    // repairs it -- exactly like any other second claimant (D-10's documented arm).
+    std::vector<AssetPlanEntry> entries{entryOk("a.png", shared), entryReattached("z.png", shared)};
+    const AssetPlanResult result = planAssetMetas(std::move(entries), gen);
+    REQUIRE(result.records.size() == 2);
+    CHECK(result.records[0].relativePath == "a.png");
+    CHECK(result.records[0].state == AssetMetaState::Ok);
+    CHECK(result.records[0].guid == shared);
+    CHECK(result.records[1].relativePath == "z.png");
+    CHECK(result.records[1].state == AssetMetaState::Repaired);
+    CHECK(result.records[1].guid != shared);
+}
+
+TEST_CASE("asset_meta: created + repaired + reattached == writeIndices.size() in a mixed tree (AP17, A14)") {
+    GuidGenerator gen(17);
+    const Guid shared{9, 9};
+    std::vector<AssetPlanEntry> entries{
+        entryOk("a.png", Guid{1, 1}),          // Ok, no write
+        entryInvalid("b.png"),                 // Invalid, no write
+        entryMissing("c.png"),                 // Created, write
+        entryReattached("d.png", Guid{5, 5}),  // Reattached, write
+        entryOk("e.png", shared),              // Ok (first claimant), no write
+        entryOk("f.png", shared),              // Repaired (second claimant), write
+    };
+    const AssetPlanResult result = planAssetMetas(std::move(entries), gen);
+    REQUIRE(result.records.size() == 6);
+    CHECK(result.created + result.repaired + result.reattached == result.writeIndices.size());
+    CHECK(result.created == 1);
+    CHECK(result.repaired == 1);
+    CHECK(result.reattached == 1);
+    CHECK(result.invalid == 1);
+}
+
+TEST_CASE("asset_meta: reattached is counted separately from created (AP18, A14)") {
+    GuidGenerator gen(18);
+    std::vector<AssetPlanEntry> entries{entryMissing("a.png"), entryReattached("b.png", Guid{3, 3})};
+    const AssetPlanResult result = planAssetMetas(std::move(entries), gen);
+    REQUIRE(result.records.size() == 2);
+    CHECK(result.created == 1);
+    CHECK(result.reattached == 1);
+    CHECK(result.repaired == 0);
+    REQUIRE(result.writeIndices.size() == 2);
+}
+
+TEST_CASE(
+    "asset_meta: metaPresent == true wins over a set reattachedGuid -- the sidecar's own identity is kept "
+    "(AP19, A14)") {
+    GuidGenerator gen(19);
+    const Guid sidecarGuid{4, 4};
+    const Guid wouldBeReattached{6, 6};
+    // The caller never actually does this (asset_database.cpp's phase 5 only ever sets reattachedGuid
+    // for a METALESS entry) -- but the arm order in planAssetMetas makes the combination decidable
+    // rather than undefined: metaPresent's arm is checked FIRST for the Invalid case, and the
+    // reattachedGuid arm is gated on `!metaPresent`, so a present sidecar always wins.
+    std::vector<AssetPlanEntry> entries{AssetPlanEntry{
+        .relativePath = "a.png", .guid = sidecarGuid, .metaPresent = true, .reattachedGuid = wouldBeReattached}};
+    const AssetPlanResult result = planAssetMetas(std::move(entries), gen);
+    REQUIRE(result.records.size() == 1);
+    CHECK(result.records[0].state == AssetMetaState::Ok);
+    CHECK(result.records[0].guid == sidecarGuid);
+    CHECK(result.records[0].guid != wouldBeReattached);
+    CHECK(result.writeIndices.empty());  // Ok is never written (D6)
+}
+
+TEST_CASE(
+    "asset_meta: every 3.1.1-shaped entry (reattachedGuid == nullopt by default) reproduces PRE-3.1.2 "
+    "behavior exactly (AP20, A14)") {
+    // entryOk/entryMissing/entryInvalid all still construct via the ORIGINAL 3-positional-argument
+    // form, unchanged since 3.1.1 -- possible only because AssetPlanEntry::reattachedGuid is APPENDED,
+    // never inserted. This is the one place this task's asset_meta change is verified in isolation
+    // from any Reattached record at all; every pre-existing AP1-AP14 case is re-run untouched as
+    // further proof (task report).
+    GuidGenerator gen(20);
+    std::vector<AssetPlanEntry> entries{entryOk("a.png", Guid{1, 1}), entryMissing("b.png"), entryInvalid("c.png")};
+    for (const AssetPlanEntry& entry : entries) {
+        CHECK_FALSE(entry.reattachedGuid.has_value());
+    }
+    const AssetPlanResult result = planAssetMetas(std::move(entries), gen);
+    REQUIRE(result.records.size() == 3);
+    CHECK(result.records[0].state == AssetMetaState::Ok);
+    CHECK(result.records[1].state == AssetMetaState::Created);
+    CHECK(result.records[2].state == AssetMetaState::Invalid);
+    CHECK(result.reattached == 0);
 }
 
 // ---- the golden battery (docs/09 §5.7) -------------------------------------------------------------

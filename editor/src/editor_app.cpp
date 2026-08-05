@@ -148,6 +148,48 @@ void logAssetScan(std::string_view root, const AssetScanReport& report) {
         AERO_LOG_WARN("assets: '{}' -- {} sub-directories below the root could not be read and were skipped", root,
                       report.unreadableDirs);
     }
+
+    // task 3.1.2 (A16/§D-12): everything below is NEW, and every line of it sits AFTER the non-Ok early
+    // return above -- an aborted scan has nothing meaningful left to report (E1-E4), so nothing below
+    // may run for it. The 3.1.1 INFO line directly above this comment is BYTE-UNCHANGED (F10; 3.1.1's
+    // human row 2 asserts its exact wording), which is why this task's own line is a SECOND, separate
+    // INFO rather than an extension of the first. A scan of a clean, unchanged, fully-cached project
+    // therefore logs exactly the two INFO lines and nothing else.
+    AERO_LOG_INFO(
+        "assets: '{}' -- import cache: {} up to date, {} new, {} changed, {} dependency ({} files hashed, "
+        "{} B read, {} from cache)",
+        root, report.upToDate, report.newAssets, report.changed, report.dependencyChanged, report.hashed,
+        report.hashedBytes, report.fastPathHits);
+    if (!report.cacheDiscardReason.empty()) {
+        // D7/E20: an INFO, not a WARN -- a cache format-version bump is expected evolution, not
+        // something the user must act on.
+        AERO_LOG_INFO("assets: '{}' -- import cache discarded: {}", root, report.cacheDiscardReason);
+    }
+    if (report.largeHashNotice) {
+        AERO_LOG_INFO("assets: '{}' -- hashing {} B this scan (more than {} B); this scan may take a moment", root,
+                      report.hashedBytes, HASH_NOTICE_THRESHOLD_BYTES);
+    }
+    logCappedWarn(root, "re-attached orphan(s)", report.reattachments, report.reattachmentTotal);
+    logCappedWarn(root, "asset hash failure(s)", report.hashFailures, report.hashFailureTotal);
+    logCappedWarn(root, "aliased directory path(s)", report.aliasedDirs, report.aliasedDirTotal);
+    if (!report.cacheWriteError.empty()) {
+        AERO_LOG_WARN("assets: '{}' -- import cache write failed: {}", root, report.cacheWriteError);
+    }
+    if (report.hashBudgetExhausted) {
+        AERO_LOG_WARN(
+            "assets: '{}' -- scan stopped hashing at the {} B per-scan cap (MAX_HASH_BYTES_PER_SCAN); "
+            "press Refresh to continue",
+            root, MAX_HASH_BYTES_PER_SCAN);
+    }
+    if (report.cacheTruncated) {
+        AERO_LOG_WARN("assets: '{}' -- import cache truncated at the {} entries cap (MAX_CACHE_ENTRIES)", root,
+                      MAX_CACHE_ENTRIES);
+    }
+    if (report.cacheDepsDropped > 0) {
+        AERO_LOG_WARN(
+            "assets: '{}' -- {} dependency link(s) dropped past the {}-per-entry cap (MAX_DEPENDENCIES_PER_ENTRY)",
+            root, report.cacheDepsDropped, MAX_DEPENDENCIES_PER_ENTRY);
+    }
 }
 
 }  // namespace
@@ -373,18 +415,41 @@ bool EditorApp::tick() {
     // panel's whole UI state), and gating it on the SAME mismatch as setRoot would leave it null
     // forever whenever the panel is already born with the correct root (the common case -- a project
     // opened during create()), since that mismatch never fires on tick 1.
+    //
+    // task 3.1.2 (§D-12/F9): the SAME block gains a SECOND one-shot, Reimport All, alongside Refresh --
+    // pressing it (or its GPU-tier equivalent, requestAssetReimport()) discards the committed import
+    // cache BEFORE this scan runs (AC-39: AssetDatabase::invalidateCache() clears both the in-memory
+    // index and D15's own write comparand), so every asset re-hashes from scratch this pass instead of
+    // taking its cached (size, mtime) fast path.
     {
         std::string wanted = project.assetsRoot();
-        // Code-review finding 4: `takeRescanRequest()` is DRAINED FIRST, unconditionally -- if it sat
-        // on the right of `assetRescanRequested ||` instead, `||`'s short-circuit would skip calling
-        // it whenever `assetRescanRequested` is already true, leaving the panel's own one-shot flag
-        // set and un-consumed. That flag would then survive this tick and trigger a SECOND, redundant
-        // synchronous scan next frame -- a real bug, not a style preference.
+        // F9 (3.1.2), extending code-review finding 4 (3.1.1): BOTH one-shots are drained FIRST,
+        // unconditionally, each as its OWN statement -- never on the right of a `flagAlreadyKnown ||
+        // ...` expression, whose short-circuit would then skip the drain call entirely and leave that
+        // one-shot set, un-consumed, to trigger a SECOND, redundant scan next frame. This tree has
+        // shipped that exact bug once already (I30 is its mechanical proof).
         const bool panelRefresh = assetBrowserPanel != nullptr && assetBrowserPanel->takeRescanRequest();
+        const bool panelReimport = assetBrowserPanel != nullptr && assetBrowserPanel->takeReimportRequest();
         const bool refresh = assetRescanRequested || panelRefresh;
+        const bool reimport = assetReimportRequested || panelReimport;
         assetRescanRequested = false;
-        if (assetDatabase.root() != wanted || refresh) {
-            const AssetScanReport report = assetDatabase.rescan(std::move(wanted), assetGuids);
+        assetReimportRequested = false;
+        if (reimport) {
+            // AC-39/AC-35: discard the committed index BEFORE the scan below runs, so every asset
+            // re-hashes from scratch this pass rather than taking its cached (size, mtime) fast path.
+            // What makes that work is the one-shot invalidateCache() arms, which the next scan's phase
+            // 3 consults to skip its reload -- without it the file on disk would simply be read back
+            // in before phase 4 ever ran (AssetDatabase's own comments on the method and the flag).
+            assetDatabase.invalidateCache();
+        }
+        if (assetDatabase.root() != wanted || refresh || reimport) {
+            // task 3.1.2: rescan now takes the project root and the assets root as two SEPARATE
+            // parameters (D-9) -- <assetsRoot>/.. is wrong the moment paths.assets is nested or ".",
+            // and deriving it would put the cache inside the user's own asset tree (A7/AC-38). The
+            // project root is a named local FIRST (the 2.6.1 FileDialogHost::projectRoot lesson):
+            // project.root() returns a std::string_view bound to the live ProjectSession.
+            const std::string projectRootForScan = std::string(project.root());
+            const AssetScanReport report = assetDatabase.rescan(projectRootForScan, std::move(wanted), assetGuids);
             logAssetScan(assetDatabase.root(), report);  // INV-A3: the ONLY logging site for the scan
         }
         if (assetBrowserPanel != nullptr) {
@@ -501,6 +566,28 @@ std::optional<Guid> EditorApp::assetGuidForPath(std::string_view relativePath) c
     return assetDatabase.guidForPath(relativePath);
 }
 
+// task 3.1.2 (§D-12): findByPath's record already carries both fields (asset_meta.hpp); std::optional
+// on the return, not the record's own value, distinguishes "no record for this path" from a real,
+// legitimately zero/UpToDate value (plan A4).
+std::optional<ImportChange> EditorApp::assetImportChangeForPath(std::string_view relativePath) const noexcept {
+    const AssetRecord* const record = assetDatabase.findByPath(relativePath);
+    // Code-review finding 3: `change` is never assigned for an Invalid or write-failed record (phase 8
+    // excludes both from its inputs) -- it stays at its ImportChange::UpToDate default either way, so
+    // reading it unguarded for either would misreport a file with no sidecar and no cache entry as "up
+    // to date". Mirrors the Asset Browser footer's own guard, extended to cover the write-failed case
+    // the footer did not.
+    if (record == nullptr || record->state == AssetMetaState::Invalid || record->metaWriteFailed) {
+        return std::nullopt;
+    }
+    return record->change;
+}
+std::optional<ContentHash> EditorApp::assetContentHashForPath(std::string_view relativePath) const noexcept {
+    const AssetRecord* const record = assetDatabase.findByPath(relativePath);
+    return record != nullptr ? std::optional<ContentHash>(record->contentHash) : std::nullopt;
+}
+std::size_t EditorApp::assetCacheEntryCount() const noexcept { return assetDatabase.cacheSize(); }
+std::size_t EditorApp::assetImportJobCount() const noexcept { return assetDatabase.importPlan().jobIndices.size(); }
+
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
 void EditorApp::requestUndo() noexcept { undoRequested = true; }
@@ -537,6 +624,10 @@ void EditorApp::requestClearRecentProjects() noexcept { projectFlow.clearRecents
 // task 3.1.1 (AC-38): the requestUndo()/requestLayoutReset() shape, drained in the SAME reconcile
 // expression as AssetBrowserPanel::takeRescanRequest() -- see tick()'s reconcile block above.
 void EditorApp::requestAssetRescan() noexcept { assetRescanRequested = true; }
+
+// task 3.1.2 (AC-39): the requestAssetRescan() shape verbatim, drained in the SAME reconcile expression
+// as AssetBrowserPanel::takeReimportRequest() (F9) -- see tick()'s reconcile block above.
+void EditorApp::requestAssetReimport() noexcept { assetReimportRequested = true; }
 
 }  // namespace engine::editor
 

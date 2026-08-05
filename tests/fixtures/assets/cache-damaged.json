@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "hashAlgorithm": "murmur3-x64-128",
+  "unknownRootKey": "ignored -- a newer build wrote this and this build cannot act on it",
+  "entries": [
+    {
+      "guid": "a3f1c07e5b8d42198e6f0c3d7a2b4b92",
+      "path": "mesh.gltf",
+      "size": 2048,
+      "mtime": 1000000000,
+      "contentHash": "cafebabecafebabecafebabecafebabe",
+      "metaHash": "deadbeefdeadbeefdeadbeefdeadbeef",
+      "importer": "",
+      "importerVersion": 0,
+      "dependencies": [],
+      "missing": 0,
+      "unknownEntryKey": "also ignored"
+    },
+    {
+      "path": "broken-no-guid.png",
+      "size": 100,
+      "mtime": 1000000001,
+      "contentHash": "00000000000000000000000000000000",
+      "metaHash": "00000000000000000000000000000000",
+      "importer": "",
+      "importerVersion": 0,
+      "dependencies": [],
+      "missing": 0
+    },
+    {
+      "guid": "1234567890abcdef1234567890abcdef",
+      "path": "broken-bad-hash.png",
+      "size": 200,
+      "mtime": 1000000002,
+      "contentHash": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "metaHash": "00000000000000000000000000000000",
+      "importer": "",
+      "importerVersion": 0,
+      "dependencies": [],
+      "missing": 0
+    },
+    {
+      "guid": "a3f1c07e5b8d42198e6f0c3d7a2b4b92",
+      "path": "mesh-duplicate.gltf",
+      "size": 2049,
+      "mtime": 1000000003,
+      "contentHash": "cafebabecafebabecafebabecafebabe",
+      "metaHash": "deadbeefdeadbeefdeadbeefdeadbeef",
+      "importer": "",
+      "importerVersion": 0,
+      "dependencies": [],
+      "missing": 0
+    }
+  ]
+}

@@ -23,12 +23,17 @@ find_package(enkiTS CONFIG REQUIRED)
 # task 3.1.1 appends src/guid.cpp -- the Guid value type's text codec and entropy seed need a TU
 # (the vfs.cpp precedent). NO find_package and NO link entry: <random>, <chrono> and <atomic> are
 # standard library, exactly like 0.2.6's <filesystem>/<fstream>.
+#
+# task 3.1.2 appends src/content_hash.cpp -- ContentHash's MurmurHash3 body and text codec need a
+# TU, exactly as guid.cpp did. NO find_package and NO link entry: <array>, <bit>, <cstdint> and
+# <span> are standard library.
 add_library(aero_core STATIC
     src/log.cpp
     src/math/glm_backend.cpp
     src/jobs.cpp
     src/vfs.cpp
     src/guid.cpp
+    src/content_hash.cpp
 )
 add_library(aero::core ALIAS aero_core)
 

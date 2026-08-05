@@ -1,5 +1,6 @@
 // tests/editor/asset_database_test.cpp -- task 3.1.1: AssetDatabase's scan over a real filesystem
-// tree. A TU of aero_editor_shell_test, which supplies main() from shell_test.cpp -- do NOT define
+// tree; task 3.1.2 extends it with the import cache, alias dedup and dependency tracking (AD32-AD62).
+// A TU of aero_editor_shell_test, which supplies main() from shell_test.cpp -- do NOT define
 // DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN here.
 //
 // UNGATED (D4/AC-17/INV-P5, the project_test.cpp precedent): asset_database.hpp depends on nothing
@@ -26,16 +27,22 @@
 #include <system_error>
 #include <vector>
 
+using engine::ContentHash;
 using engine::formatGuid;
 using engine::Guid;
 using engine::GuidGenerator;
 using engine::editor::ASSET_META_SUFFIX;
+using engine::editor::AssetCacheParseResult;
 using engine::editor::AssetDatabase;
 using engine::editor::AssetMetaState;
 using engine::editor::AssetRecord;
 using engine::editor::AssetScanReport;
+using engine::editor::CacheLoadOutcome;
 using engine::editor::fileExists;
+using engine::editor::ImportChange;
+using engine::editor::parseAssetCache;
 using engine::editor::ScanStatus;
+using engine::editor::writeAssetCacheText;
 using engine::editor::writeMetaText;
 
 namespace {
@@ -121,7 +128,7 @@ struct Stat {
 TEST_CASE("asset_database: rescan(\"\") is Missing, empty, zero writes (AD1, E1)") {
     AssetDatabase db;
     GuidGenerator gen(1);
-    const AssetScanReport report = db.rescan("", gen);
+    const AssetScanReport report = db.rescan("", "", gen);
     CHECK(report.status == ScanStatus::Missing);
     CHECK(db.size() == 0);
     CHECK(report.created == 0);
@@ -132,7 +139,7 @@ TEST_CASE("asset_database: a configured but absent root is Missing (AD2, E2)") {
     const TempDir dir;
     AssetDatabase db;
     GuidGenerator gen(2);
-    const AssetScanReport report = db.rescan(dir.join("does-not-exist"), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.join("does-not-exist"), gen);
     CHECK(report.status == ScanStatus::Missing);
     CHECK(db.size() == 0);
     CHECK_FALSE(std::filesystem::exists(dir.join("does-not-exist")));  // nothing created on disk
@@ -143,7 +150,7 @@ TEST_CASE("asset_database: a root that is a FILE is NotADirectory (AD3, E3)") {
     writeFile(dir.join("not-a-dir"), "x");
     AssetDatabase db;
     GuidGenerator gen(3);
-    const AssetScanReport report = db.rescan(dir.join("not-a-dir"), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.join("not-a-dir"), gen);
     CHECK(report.status == ScanStatus::NotADirectory);
     CHECK(db.size() == 0);
 }
@@ -159,7 +166,7 @@ TEST_CASE("asset_database: an unreadable root is Unreadable (AD4, E4)") {
 
     AssetDatabase db;
     GuidGenerator gen(4);
-    const AssetScanReport report = db.rescan(target, gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), target, gen);
 
     // Restore BEFORE any assertion can fail loudly and BEFORE ~TempDir runs (project_test.cpp:980's rule).
     std::error_code restoreEc;
@@ -178,7 +185,7 @@ TEST_CASE("asset_database: an empty directory scans clean (AD5, E5)") {
     const TempDir dir;
     AssetDatabase db;
     GuidGenerator gen(5);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.status == ScanStatus::Ok);
     CHECK(db.size() == 0);
     CHECK(report.created == 0);
@@ -194,7 +201,7 @@ TEST_CASE("asset_database: three loose files are all Created, with sidecars on d
 
     AssetDatabase db;
     GuidGenerator gen(6);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.status == ScanStatus::Ok);
     CHECK(db.size() == 3);
     CHECK(report.created == 3);
@@ -212,7 +219,7 @@ TEST_CASE("asset_database: a created sidecar's bytes equal writeMetaText(record.
     writeFile(dir.join("a.png"), "a");
     AssetDatabase db;
     GuidGenerator gen(7);
-    db.rescan(dir.utf8(), gen);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
     const AssetRecord* const record = db.findByPath("a.png");
     REQUIRE(record != nullptr);
     const auto onDisk = scene_golden::readBytes(dir.join("a.png.meta"));
@@ -227,7 +234,7 @@ TEST_CASE("asset_database: a second rescan of a fully-described tree writes NOTH
     writeFile(dir.join("b.png"), "b");
     AssetDatabase db;
     GuidGenerator gen(8);
-    const AssetScanReport first = db.rescan(dir.utf8(), gen);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
     REQUIRE(first.created == 2);
 
     // Code-review finding 5: a D6 regression rewrites the SAME GUID, so `size` is identical either
@@ -251,7 +258,7 @@ TEST_CASE("asset_database: a second rescan of a fully-described tree writes NOTH
     CHECK(aBefore.mtime == backdated);  // the back-date actually landed -- not a vacuous proof
     CHECK(bBefore.mtime == backdated);
 
-    const AssetScanReport second = db.rescan(dir.utf8(), gen);
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
 
     const Stat aAfter = statOf(dir.join("a.png.meta"));
     const Stat bAfter = statOf(dir.join("b.png.meta"));
@@ -268,10 +275,10 @@ TEST_CASE("asset_database: the second scan's GUIDs equal the first's, per path (
     writeFile(dir.join("a.png"), "a");
     AssetDatabase db;
     GuidGenerator gen(9);
-    db.rescan(dir.utf8(), gen);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
     const std::optional<Guid> firstGuid = db.guidForPath("a.png");
     REQUIRE(firstGuid.has_value());
-    db.rescan(dir.utf8(), gen);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
     const std::optional<Guid> secondGuid = db.guidForPath("a.png");
     REQUIRE(secondGuid.has_value());
     CHECK(*firstGuid == *secondGuid);
@@ -285,7 +292,7 @@ TEST_CASE("asset_database: unparseable JSON is Invalid and untouched (AD10, E7, 
     writeFile(dir.join("a.png.meta"), "not json at all");
     AssetDatabase db;
     GuidGenerator gen(10);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.invalid == 1);
     const AssetRecord* const record = db.findByPath("a.png");
     REQUIRE(record != nullptr);
@@ -302,7 +309,7 @@ TEST_CASE("asset_database: a zero-byte sidecar is Invalid, same rule, no carve-o
     writeFile(dir.join("a.png.meta"), "");
     AssetDatabase db;
     GuidGenerator gen(11);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.invalid == 1);
     const auto onDisk = scene_golden::readBytes(dir.join("a.png.meta"));
     REQUIRE(onDisk.ok);
@@ -316,7 +323,7 @@ TEST_CASE("asset_database: an unsupported version is Invalid, file untouched (AD
     writeFile(dir.join("a.png.meta"), body);
     AssetDatabase db;
     GuidGenerator gen(12);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.invalid == 1);
     REQUIRE(report.invalidPaths.size() == 1);
     CHECK(report.invalidPaths[0].find('2') != std::string::npos);  // names the offending version
@@ -339,7 +346,7 @@ TEST_CASE("asset_database: a dashed / short / nil guid is Invalid, file untouche
 
     AssetDatabase db;
     GuidGenerator gen(13);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.invalid == 3);
     for (const std::string_view leaf : {"a.png", "b.png", "c.png"}) {
         const AssetRecord* const record = db.findByPath(leaf);
@@ -362,7 +369,7 @@ TEST_CASE("asset_database: unknown keys are tolerated, GUID used, sidecar not re
 
     AssetDatabase db;
     GuidGenerator gen(14);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
 
     CHECK(report.unknownKeyTotal == 2);
     const AssetRecord* const record = db.findByPath("a.png");
@@ -381,7 +388,7 @@ TEST_CASE("asset_database: an orphaned sidecar is reported and left alone (AD15,
     writeFile(dir.join("gone.png.meta"), body);
     AssetDatabase db;
     GuidGenerator gen(15);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.orphanTotal == 1);
     REQUIRE(report.orphans.size() == 1);
     CHECK(report.orphans[0] == "gone.png.meta");
@@ -401,7 +408,7 @@ TEST_CASE("asset_database: two assets sharing one GUID: first keeps it, other re
 
     AssetDatabase db;
     GuidGenerator gen(16);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
 
     CHECK(report.repaired == 1);
     const AssetRecord* const keeper = db.findByPath("a.png");
@@ -430,7 +437,7 @@ TEST_CASE("asset_database: three assets, one GUID -> two repairs, mutually disti
 
     AssetDatabase db;
     GuidGenerator gen(17);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
 
     CHECK(report.repaired == 2);
     const Guid mGuid = *db.guidForPath("m.png");
@@ -450,7 +457,7 @@ TEST_CASE("asset_database: repair determinism -- WHICH asset is repaired is seed
     writeFile(dirA.join("z.png.meta"), body);
     AssetDatabase dbA;
     GuidGenerator genA(101);
-    dbA.rescan(dirA.utf8(), genA);
+    dbA.rescan(dirA.utf8(), dirA.utf8(), genA);
 
     const TempDir dirB;
     writeFile(dirB.join("a.png"), "a");
@@ -459,7 +466,7 @@ TEST_CASE("asset_database: repair determinism -- WHICH asset is repaired is seed
     writeFile(dirB.join("z.png.meta"), body);
     AssetDatabase dbB;
     GuidGenerator genB(202);  // a DIFFERENT seed
-    dbB.rescan(dirB.utf8(), genB);
+    dbB.rescan(dirB.utf8(), dirB.utf8(), genB);
 
     CHECK(dbA.findByPath("z.png")->state == AssetMetaState::Repaired);
     CHECK(dbB.findByPath("z.png")->state == AssetMetaState::Repaired);
@@ -479,7 +486,7 @@ TEST_CASE("asset_database: nested directories to depth 4 all get sidecars at the
 
     AssetDatabase db;
     GuidGenerator gen(19);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.created == 1);
     const AssetRecord* const record = db.findByPath("a/b/c/leaf.png");
     REQUIRE(record != nullptr);
@@ -497,7 +504,7 @@ TEST_CASE("asset_database: a .git/ directory is never descended into (AD20, E20,
 
     AssetDatabase db;
     GuidGenerator gen(20);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(db.size() == 1);
     CHECK(report.filesSeen == 1);
     CHECK(db.findByPath("visible.png") != nullptr);
@@ -518,7 +525,7 @@ TEST_CASE("asset_database: a left-behind *.aero-tmp is skipped, not deleted (AD2
 
     AssetDatabase db;
     GuidGenerator gen(21);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(db.size() == 1);
     CHECK(report.filesSeen == 1);
     CHECK(report.created == 0);
@@ -538,7 +545,7 @@ TEST_CASE("asset_database: the OS-noise names are skipped (AD22, E21)") {
 
     AssetDatabase db;
     GuidGenerator gen(22);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(db.size() == 1);
     CHECK(report.filesSeen == 1);
     CHECK(db.findByPath("real.png") != nullptr);
@@ -557,7 +564,7 @@ TEST_CASE("asset_database: a listDirectory-level cap propagates into `truncated`
     }
     AssetDatabase db;
     GuidGenerator gen(23);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.truncated);
 }
 
@@ -576,7 +583,7 @@ TEST_CASE("asset_database: depth beyond MAX_TREE_DEPTH sets depthLimited (AD24, 
 
     AssetDatabase db;
     GuidGenerator gen(24);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.depthLimited);
     CHECK(db.findByPath("shallow.png") != nullptr);
 }
@@ -593,7 +600,7 @@ TEST_CASE("asset_database: a read-only root: every write fails, nothing is remov
 
     AssetDatabase db;
     GuidGenerator gen(25);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
 
     std::error_code restoreEc;
     std::filesystem::permissions(dir.utf8(), std::filesystem::perms::owner_all, std::filesystem::perm_options::replace,
@@ -620,7 +627,7 @@ TEST_CASE("asset_database: findByPath / guidForPath agree; a miss is nullopt (AD
     writeFile(dir.join("a.png"), "a");
     AssetDatabase db;
     GuidGenerator gen(26);
-    db.rescan(dir.utf8(), gen);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
 
     const AssetRecord* const hit = db.findByPath("a.png");
     REQUIRE(hit != nullptr);
@@ -639,7 +646,7 @@ TEST_CASE("asset_database: findByGuid round-trips; nil and Invalid are unreachab
     writeFile(dir.join("bad.png.meta"), "not json");
     AssetDatabase db;
     GuidGenerator gen(27);
-    db.rescan(dir.utf8(), gen);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
 
     const AssetRecord* const good = db.findByPath("a.png");
     REQUIRE(good != nullptr);
@@ -663,11 +670,11 @@ TEST_CASE("asset_database: rescanning a DIFFERENT root fully replaces the conten
 
     AssetDatabase db;
     GuidGenerator gen(28);
-    db.rescan(dirA.utf8(), gen);
+    db.rescan(dirA.utf8(), dirA.utf8(), gen);
     REQUIRE(db.findByPath("a.png") != nullptr);
     const Guid oldGuid = *db.guidForPath("a.png");
 
-    db.rescan(dirB.utf8(), gen);
+    db.rescan(dirB.utf8(), dirB.utf8(), gen);
     CHECK(db.findByPath("a.png") == nullptr);
     CHECK(db.findByGuid(oldGuid) == nullptr);
     CHECK(db.findByPath("b.png") != nullptr);
@@ -691,7 +698,7 @@ TEST_CASE("asset_database: x.meta and x.META both present -- byte-first wins, ot
 
     AssetDatabase db;
     GuidGenerator gen(29);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     const AssetRecord* const record = db.findByPath("x.png");
     REQUIRE(record != nullptr);
     CHECK(record->state == AssetMetaState::Ok);  // "x.png.META" < "x.png.meta" (byte order): it wins
@@ -716,7 +723,7 @@ TEST_CASE(
 
     AssetDatabase db;
     GuidGenerator gen(31);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
 
     // The orphan is still reported, and its bytes are UNCHANGED -- the write that would have
     // collided with it (case-insensitively) on disk never happened.
@@ -755,12 +762,914 @@ TEST_CASE("asset_database: a non-ASCII filename round-trips end to end (AD30, E2
 
     AssetDatabase db;
     GuidGenerator gen(30);
-    const AssetScanReport report = db.rescan(dir.utf8(), gen);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.created == 1);
     const AssetRecord* const record = db.findByPath(leaf);
     REQUIRE(record != nullptr);
     CHECK(record->relativePath == leaf);
     CHECK(fileExists(dir.join(leaf + std::string(ASSET_META_SUFFIX))));
+}
+
+// ---- task 3.1.2: the import cache, alias dedup and dependency tracking (AD32-AD62) --------------
+// Every case below passes the SAME string as both the project root and the assets root unless the
+// case is specifically about the two roots diverging (AD54, AD60, AD61) -- the "." layout (docs/09
+// §4.4), matching AD61's own explicit coverage of it.
+
+TEST_CASE("asset_database: first scan of three loose files creates the cache under Library/ (AD32, E3, AC-37)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    writeFile(dir.join("b.png"), "b");
+    writeFile(dir.join("c.png"), "c");
+
+    AssetDatabase db;
+    GuidGenerator gen(32);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.newAssets == 3);
+    CHECK(report.hashed == 3);
+    CHECK(report.cacheWritten);
+    CHECK(db.cacheSize() == 3);
+    CHECK(fileExists(dir.join("Library/asset-cache.json")));
+    CHECK(fileExists(dir.join("Library/.gitignore")));
+}
+
+TEST_CASE("asset_database: a second rescan reads ZERO asset bytes (AD33, AC-28, seed S13)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    writeFile(dir.join("b.png"), "b");
+    writeFile(dir.join("c.png"), "c");
+    AssetDatabase db;
+    GuidGenerator gen(33);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.hashed == 0);
+    CHECK(second.hashedBytes == 0);
+    CHECK(second.fastPathHits == 3);
+}
+
+TEST_CASE(
+    "asset_database: a second rescan writes ZERO bytes anywhere, assets AND Library (AD34, AC-29, INV-C5, seed "
+    "S17)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    writeFile(dir.join("b.png"), "b");
+    AssetDatabase db;
+    GuidGenerator gen(34);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.cacheWritten);
+
+    // Back-date every artifact from the first scan by an hour BEFORE the second scan -- AD8's own
+    // rule, extended to the cache index and its .gitignore: mtime is the only discriminator of a real
+    // rewrite, and identical bytes would false-pass this comparison (R-C3) if it compared content.
+    const auto backdated = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+    const std::vector<std::string> artifacts = {dir.join("a.png.meta"), dir.join("b.png.meta"),
+                                                dir.join("Library/asset-cache.json"), dir.join("Library/.gitignore")};
+    for (const std::string& path : artifacts) {
+        std::error_code ec;
+        std::filesystem::last_write_time(pathOf(path), backdated, ec);
+        REQUIRE_FALSE(ec);
+    }
+
+    std::vector<Stat> before;
+    for (const std::string& path : artifacts) {
+        before.push_back(statOf(path));
+        REQUIRE(before.back().exists);
+        CHECK(before.back().mtime == backdated);
+    }
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK_FALSE(second.cacheWritten);
+
+    for (std::size_t i = 0; i < artifacts.size(); ++i) {
+        const Stat after = statOf(artifacts[i]);
+        CHECK(after.size == before[i].size);
+        CHECK(after.mtime == before[i].mtime);
+    }
+}
+
+TEST_CASE(
+    "asset_database: Library/.gitignore holds the exact text, and a hand-edited one is preserved (AD35, AC-37, "
+    "E35, D6)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(35);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    const auto gitignore = scene_golden::readBytes(dir.join("Library/.gitignore"));
+    REQUIRE(gitignore.ok);
+    CHECK(gitignore.text == std::string(engine::editor::LIBRARY_GITIGNORE_TEXT));
+
+    // Hand-edit it and back-date it, then force the index to actually be rewritten (a real content
+    // change) -- the .gitignore itself must stay untouched regardless: D6/E35's "written ONLY when
+    // absent" rule, one file over from .meta's.
+    writeFile(dir.join("Library/.gitignore"), "# hand-edited\n");
+    std::error_code ec;
+    const auto backdated = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+    std::filesystem::last_write_time(pathOf(dir.join("Library/.gitignore")), backdated, ec);
+    REQUIRE_FALSE(ec);
+    const Stat before = statOf(dir.join("Library/.gitignore"));
+    REQUIRE(before.exists);
+
+    writeFile(dir.join("b.png"), "b");  // a real change -- phase 8 re-enters the write branch
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    const Stat after = statOf(dir.join("Library/.gitignore"));
+    CHECK(after.size == before.size);
+    CHECK(after.mtime == before.mtime);
+    const auto handEdited = scene_golden::readBytes(dir.join("Library/.gitignore"));
+    REQUIRE(handEdited.ok);
+    CHECK(handEdited.text == "# hand-edited\n");
+}
+
+TEST_CASE("asset_database: an edited file is SourceChanged, exactly one job (AD36, E5)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    writeFile(dir.join("b.png"), "bb");
+    AssetDatabase db;
+    GuidGenerator gen(36);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    writeFile(dir.join("a.png"), "aaaaaaaaaa");  // a different LENGTH -- never flakes on 1s-granularity (R-C1)
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    CHECK(second.changed == 1);
+    CHECK(db.importPlan().jobIndices.size() == 1);
+    const AssetRecord* const record = db.findByPath("a.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->change == ImportChange::SourceChanged);
+}
+
+TEST_CASE("asset_database: same size, different mtime forces a re-hash that finds SourceChanged (AD37, seed S14)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "aaa");
+    AssetDatabase db;
+    GuidGenerator gen(37);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    // Same LENGTH, different bytes, and an mtime bumped forward so the (size, mtime) fast path cannot
+    // fire -- the file must actually be re-hashed to notice the content changed.
+    writeFile(dir.join("a.png"), "bbb");
+    std::error_code ec;
+    std::filesystem::last_write_time(pathOf(dir.join("a.png")),
+                                     std::filesystem::file_time_type::clock::now() + std::chrono::hours(1), ec);
+    REQUIRE_FALSE(ec);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.hashed == 1);
+    CHECK(second.fastPathHits == 0);
+    const AssetRecord* const record = db.findByPath("a.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->change == ImportChange::SourceChanged);
+}
+
+TEST_CASE("asset_database: touch-but-unchanged is re-hashed once, then the THIRD scan is free (AD38, E6)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "aaa");
+    AssetDatabase db;
+    GuidGenerator gen(38);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    std::error_code ec;
+    std::filesystem::last_write_time(pathOf(dir.join("a.png")),
+                                     std::filesystem::file_time_type::clock::now() + std::chrono::hours(1), ec);
+    REQUIRE_FALSE(ec);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.hashed == 1);
+    CHECK(second.upToDate == 1);  // bytes identical -> UpToDate, not SourceChanged
+    const AssetRecord* const afterSecond = db.findByPath("a.png");
+    REQUIRE(afterSecond != nullptr);
+    CHECK(afterSecond->change == ImportChange::UpToDate);
+
+    const AssetScanReport third = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(third.hashed == 0);
+    CHECK(third.fastPathHits == 1);
+}
+
+TEST_CASE("asset_database: a moved asset (with its sidecar) keeps its GUID, UpToDate, hashed==0 (AD39, E8, D11)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(39);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid original = *db.guidForPath("a.png");
+
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("moved"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::rename(pathOf(dir.join("a.png")), pathOf(dir.join("moved/a.png")), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::rename(pathOf(dir.join("a.png.meta")), pathOf(dir.join("moved/a.png.meta")), ec);
+    REQUIRE_FALSE(ec);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.hashed == 0);
+    CHECK(second.fastPathHits == 1);
+    CHECK(db.findByPath("a.png") == nullptr);
+    const AssetRecord* const moved = db.findByPath("moved/a.png");
+    REQUIRE(moved != nullptr);
+    CHECK(moved->guid == original);
+    CHECK(moved->change == ImportChange::UpToDate);
+}
+
+TEST_CASE(
+    "asset_database: assets/link -> assets/real dedups by canonical path, closing the carried-forward defect "
+    "(AD40, AC-31, seed S25, E14, symlink-capable hosts only)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("real"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("real/a.png"), "a");
+    std::filesystem::create_directory_symlink(pathOf(dir.join("real")), pathOf(dir.join("link")), ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_directory_symlink (Windows needs Developer Mode)");
+        return;
+    }
+
+    AssetDatabase db;
+    GuidGenerator gen(40);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    CHECK(db.size() == 1);  // ONE record for the physical file, not two
+    CHECK(first.repaired == 0);
+    CHECK(first.aliasedDirTotal == 1);
+    REQUIRE(first.aliasedDirs.size() == 1);
+    CHECK(first.aliasedDirs[0].find("link") != std::string::npos);
+    CHECK(first.aliasedDirs[0].find("real") != std::string::npos);
+
+    std::error_code backdateEc;
+    const auto backdated = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+    std::filesystem::last_write_time(pathOf(dir.join("real/a.png.meta")), backdated, backdateEc);
+    REQUIRE_FALSE(backdateEc);
+    std::filesystem::last_write_time(pathOf(dir.join("Library/asset-cache.json")), backdated, backdateEc);
+    REQUIRE_FALSE(backdateEc);
+    const Stat metaBackdated = statOf(dir.join("real/a.png.meta"));
+    const Stat cacheBackdated = statOf(dir.join("Library/asset-cache.json"));
+    REQUIRE(metaBackdated.exists);
+    REQUIRE(cacheBackdated.exists);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(db.size() == 1);
+    CHECK(second.repaired == 0);
+    CHECK_FALSE(second.cacheWritten);
+    const Stat metaAfter = statOf(dir.join("real/a.png.meta"));
+    const Stat cacheAfter = statOf(dir.join("Library/asset-cache.json"));
+    CHECK(metaAfter.size == metaBackdated.size);
+    CHECK(metaAfter.mtime == metaBackdated.mtime);
+    CHECK(cacheAfter.size == cacheBackdated.size);
+    CHECK(cacheAfter.mtime == cacheBackdated.mtime);
+}
+
+TEST_CASE(
+    "asset_database: two byte-identical files in different directories keep two identities (AD41, seed S26, E18)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("x"), ec);
+    std::filesystem::create_directories(dir.join("y"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("x/a.png"), "same bytes");
+    writeFile(dir.join("y/a.png"), "same bytes");
+
+    AssetDatabase db;
+    GuidGenerator gen(41);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    CHECK(db.size() == 2);
+    const AssetRecord* const x = db.findByPath("x/a.png");
+    const AssetRecord* const y = db.findByPath("y/a.png");
+    REQUIRE(x != nullptr);
+    REQUIRE(y != nullptr);
+    CHECK(x->guid != y->guid);
+    CHECK(report.repaired == 0);
+    CHECK(fileExists(dir.join("x/a.png.meta")));
+    CHECK(fileExists(dir.join("y/a.png.meta")));
+}
+
+TEST_CASE(
+    "asset_database: a FILE symlink to another asset gets its own sidecar and GUID (AD42, E18, D9, symlink-capable "
+    "hosts only)") {
+    const TempDir dir;
+    writeFile(dir.join("real.png"), "r");
+    std::error_code ec;
+    std::filesystem::create_symlink(pathOf(dir.join("real.png")), pathOf(dir.join("link.png")), ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_symlink (Windows needs Developer Mode)");
+        return;
+    }
+
+    AssetDatabase db;
+    GuidGenerator gen(42);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    CHECK(db.size() == 2);
+    const AssetRecord* const real = db.findByPath("real.png");
+    const AssetRecord* const link = db.findByPath("link.png");
+    REQUIRE(real != nullptr);
+    REQUIRE(link != nullptr);
+    CHECK(real->guid != link->guid);
+    CHECK(report.repaired == 0);
+    CHECK(fileExists(dir.join("real.png.meta")));
+    CHECK(fileExists(dir.join("link.png.meta")));
+}
+
+TEST_CASE(
+    "asset_database: a symlinked directory pointing OUTSIDE the project is scanned once, normally (AD43, E15, "
+    "symlink-capable hosts only)") {
+    const TempDir dir;
+    const TempDir outside;
+    writeFile(outside.join("ext.png"), "e");
+    std::error_code ec;
+    std::filesystem::create_directory_symlink(pathOf(outside.utf8()), pathOf(dir.join("external")), ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_directory_symlink (Windows needs Developer Mode)");
+        return;
+    }
+
+    AssetDatabase db;
+    GuidGenerator gen(43);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    CHECK(report.aliasedDirTotal == 0);
+    const AssetRecord* const record = db.findByPath("external/ext.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->state == AssetMetaState::Created);
+    CHECK(fileExists(outside.join("ext.png.meta")));
+}
+
+TEST_CASE(
+    "asset_database: a symlink cycle terminates on the first repeat, no depth limit needed (AD44, E16, "
+    "symlink-capable hosts only)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("a"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("a/leaf.png"), "x");
+    std::filesystem::create_directory_symlink(pathOf(dir.join("a")), pathOf(dir.join("a/link")), ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_directory_symlink (Windows needs Developer Mode)");
+        return;
+    }
+
+    AssetDatabase db;
+    GuidGenerator gen(44);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    CHECK_FALSE(report.depthLimited);
+    CHECK(report.aliasedDirTotal >= 1);
+    const AssetRecord* const record = db.findByPath("a/leaf.png");
+    REQUIRE(record != nullptr);
+    CHECK(db.size() == 1);
+}
+
+TEST_CASE("asset_database: a symlinked directory whose target cannot be resolved is not descended into (AD45, E17)") {
+    const TempDir dir;
+    std::error_code ec;
+    // Measured directly against this build's OWN listDirectory (task 3.1.2's engineering-log entry),
+    // not assumed: on this platform (macOS/APFS/libc++) a dangling directory-style symlink is
+    // classified isDirectory == false BY THE WALK ITSELF (project_files.cpp's review-gap-1 precedent
+    // -- is_directory() fails FIRST for an unresolvable target, so it is listed as a size-unknown
+    // FILE, never a directory). That makes the "could not be resolved" WARN inside the D9 alias-dedup
+    // branch (isDirectory == true but canonicalDirectory then fails) UNREACHABLE through a dangling
+    // symlink, a mutual two-link cycle, or a 60-hop dangling chain alike -- all three were tried and
+    // all three agree with canonicalDirectory rather than diverging from it. The branch stays in
+    // production as defence in depth for a platform where the two checks CAN disagree (untested here).
+    std::filesystem::create_symlink("aero-definitely-no-such-target-3.1.2-scan", pathOf(dir.join("dangling")), ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_symlink (Windows needs Developer Mode)");
+        return;
+    }
+
+    AssetDatabase db;
+    GuidGenerator gen(45);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    if (report.aliasedDirTotal == 0) {
+        MESSAGE(
+            "skipped: on this platform a dangling symlink is classified isDirectory==false by listDirectory, so "
+            "the D9 'could not be resolved' branch is unreachable through any symlink construction -- measured "
+            "directly (AD45, a real, documented coverage gap)");
+        return;
+    }
+    REQUIRE(report.aliasedDirs.size() >= 1);
+    CHECK(report.aliasedDirs[0].find("could not be resolved") != std::string::npos);
+    CHECK(db.size() == 0);
+}
+
+TEST_CASE("asset_database: orphan re-attachment end to end (AD46, AC-27, D13, seed S24)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "hello world");
+    AssetDatabase db;
+    GuidGenerator gen(46);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid original = *db.guidForPath("a.png");
+    const auto originalMeta = scene_golden::readBytes(dir.join("a.png.meta"));
+    REQUIRE(originalMeta.ok);
+
+    // Rename the ASSET but leave its sidecar behind (a rename tool that only moved the source file) --
+    // "a.png.meta" is now an ORPHAN, and "b.png" is byte-identical to the old "a.png", so it re-attaches.
+    std::error_code ec;
+    std::filesystem::rename(pathOf(dir.join("a.png")), pathOf(dir.join("b.png")), ec);
+    REQUIRE_FALSE(ec);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    CHECK(second.reattachmentTotal == 1);
+    REQUIRE(second.reattachments.size() == 1);
+    CHECK(second.reattachments[0].find("b.png") != std::string::npos);
+    CHECK(second.reattachments[0].find("a.png.meta") != std::string::npos);
+
+    const AssetRecord* const record = db.findByPath("b.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->guid == original);
+    CHECK(record->state == AssetMetaState::Reattached);
+    CHECK(fileExists(dir.join("b.png.meta")));
+
+    // The OLD sidecar is untouched, byte for byte -- D8's "never delete an orphan", extended.
+    const auto oldMetaAfter = scene_golden::readBytes(dir.join("a.png.meta"));
+    REQUIRE(oldMetaAfter.ok);
+    CHECK(oldMetaAfter.text == originalMeta.text);
+}
+
+TEST_CASE(
+    "asset_database: a consumed orphan is reported once, never doubled into orphans (AD47, section 6.8 phase 5)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "content");
+    AssetDatabase db;
+    GuidGenerator gen(47);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    std::error_code ec;
+    std::filesystem::rename(pathOf(dir.join("a.png")), pathOf(dir.join("b.png")), ec);
+    REQUIRE_FALSE(ec);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.reattachmentTotal == 1);
+    CHECK(second.orphanTotal == 0);
+    CHECK(second.orphans.empty());
+}
+
+TEST_CASE(
+    "asset_database: delete + add a byte-DIFFERENT file -> fresh GUID, orphan, no re-attachment (AD48, "
+    "E9-negative)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "original");
+    AssetDatabase db;
+    GuidGenerator gen(48);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid original = *db.guidForPath("a.png");
+
+    std::error_code ec;
+    std::filesystem::remove(pathOf(dir.join("a.png")), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("b.png"), "totally different bytes");
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.reattachmentTotal == 0);
+    CHECK(second.orphanTotal == 1);
+    const AssetRecord* const record = db.findByPath("b.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->guid != original);
+    CHECK(record->state == AssetMetaState::Created);
+}
+
+TEST_CASE(
+    "asset_database: a hand-written dependency edge drives a cascade through a real scan (AD49, AC-23 end to "
+    "end)") {
+    // What this case proves is that a dependency edge READ BACK FROM THE INDEX FILE reaches planImports
+    // through a real scan at all -- the plumbing, end to end, on real bytes. It does NOT test
+    // TRANSITIVITY: there is exactly ONE hand-written edge here, so the cascade only ever runs one hop
+    // and an implementation that stopped at depth 1 would leave this case green. IP14 (A -> B -> C),
+    // IP15 (four deep) and IP16 (a diamond) carry transitivity, at the pure tier where a multi-level
+    // graph costs a std::vector literal instead of a filesystem.
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a-content");
+    writeFile(dir.join("b.png"), "b-content");
+    AssetDatabase db;
+    GuidGenerator gen(49);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid aGuid = *db.guidForPath("a.png");
+    const Guid bGuid = *db.guidForPath("b.png");
+
+    // Hand-edit the index: A now DEPENDS ON B, exactly the shape a future importer (3.2) would record.
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    bool foundA = false;
+    for (auto& entry : parsed.index.entries) {
+        if (entry.guid == aGuid) {
+            entry.dependencies = {bGuid};
+            foundA = true;
+        }
+    }
+    REQUIRE(foundA);
+    writeFile(dir.join("Library/asset-cache.json"), writeAssetCacheText(parsed.index));
+
+    // Edit B -- a real content change, a different LENGTH (R-C1).
+    writeFile(dir.join("b.png"), "b-content-edited-with-more-bytes");
+
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    const AssetRecord* const aRecord = db.findByPath("a.png");
+    const AssetRecord* const bRecord = db.findByPath("b.png");
+    REQUIRE(aRecord != nullptr);
+    REQUIRE(bRecord != nullptr);
+    CHECK(bRecord->change == ImportChange::SourceChanged);
+    CHECK(aRecord->change == ImportChange::DependencyChanged);
+    CHECK(report.dependencyChanged == 1);
+    CHECK(report.changed == 1);
+}
+
+TEST_CASE("asset_database: a damaged index (bad version) is discarded whole and rebuilt (AD50, E20, seed S10)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(50);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("Library"), ec);
+    writeFile(dir.join("Library/asset-cache.json"),
+              "{\n  \"version\": 99,\n  \"hashAlgorithm\": \"murmur3-x64-128\",\n  \"entries\": []\n}\n");
+
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.cacheDiscardReason == "unsupported asset cache format version 99 (this build reads version 1)");
+    CHECK(db.findByPath("a.png") != nullptr);
+    CHECK(db.cacheSize() == 1);  // rebuilt from this scan's own fresh hash
+    CHECK(fileExists(dir.join("Library/asset-cache.json")));
+}
+
+TEST_CASE("asset_database: an index with ONE malformed entry drops only it (AD51, E21, seed S9)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    writeFile(dir.join("b.png"), "b");
+    AssetDatabase db;
+    GuidGenerator gen(51);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid bGuid = *db.guidForPath("b.png");
+
+    // Hand-author an index where B's entry is complete and A's is missing "path" -- parseAssetCache
+    // drops only the malformed ELEMENT (AC-16), never the whole document.
+    std::string text = "{\n  \"version\": 1,\n  \"hashAlgorithm\": \"murmur3-x64-128\",\n  \"entries\": [\n";
+    text += R"(    {"guid": ")" + std::string(32, '1') + "\"},\n";
+    text += R"(    {"guid": ")" + formatGuid(bGuid) + R"(", "path": "b.png", "size": 1, "mtime": 0, "contentHash": ")" +
+            std::string(32, '0') + R"(", "metaHash": ")" + std::string(32, '0') + "\"}\n";
+    text += "  ]\n}\n";
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("Library"), ec);
+    writeFile(dir.join("Library/asset-cache.json"), text);
+
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.cacheEntriesLoaded == 1);     // only B survived
+    CHECK(report.cacheEntriesDropped == 1);    // A's malformed element
+    CHECK(report.cacheDiscardReason.empty());  // NOT a whole-document discard
+    const AssetRecord* const aRecord = db.findByPath("a.png");
+    const AssetRecord* const bRecord = db.findByPath("b.png");
+    REQUIRE(aRecord != nullptr);
+    REQUIRE(bRecord != nullptr);
+    CHECK(aRecord->change == ImportChange::New);  // no cache entry survived for A's real guid
+}
+
+TEST_CASE("asset_database: an absent index is Absent, everything New, no discard reason (AD52, E19)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(52);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.cacheEntriesLoaded == 0);
+    CHECK(report.cacheDiscardReason.empty());
+    CHECK(report.newAssets == 1);
+    const AssetRecord* const record = db.findByPath("a.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->change == ImportChange::New);
+}
+
+TEST_CASE("asset_database: a read-only project root leaves cacheWriteError set, nothing removed (AD53, E33, AC-37)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(53);
+
+    std::error_code ec;
+    std::filesystem::permissions(dir.utf8(), std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace, ec);
+    REQUIRE_FALSE(ec);
+
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    std::error_code restoreEc;
+    std::filesystem::permissions(dir.utf8(), std::filesystem::perms::owner_all, std::filesystem::perm_options::replace,
+                                 restoreEc);
+
+    if (report.writeFailureTotal == 0 && report.cacheWriteError.empty()) {
+        MESSAGE("running as a user for whom a read-only directory does not block file creation -- seed did not land");
+        return;
+    }
+    CHECK_FALSE(report.cacheWriteError.empty());
+    CHECK(fileExists(dir.join("a.png")));
+    CHECK(db.size() == 1);
+
+    // A10's own pinned case: the .meta write for a.png failed too (same read-only root), so phase 8
+    // must exclude it from the import inputs entirely -- committing a hash for a file we never
+    // confirmed we wrote is exactly the false-UpToDate R-C2 forbids. No entry for it survives.
+    if (report.writeFailureTotal > 0) {
+        CHECK(db.cacheSize() == 0);
+    }
+}
+
+TEST_CASE(
+    "asset_database: a missing assets root leaves an existing cache index completely untouched (AD54, AC-36, "
+    "E2)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("assets"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("assets/a.png"), "a");
+
+    AssetDatabase db;
+    GuidGenerator gen(54);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.join("assets"), gen);
+    REQUIRE(first.status == ScanStatus::Ok);
+    REQUIRE(fileExists(dir.join("Library/asset-cache.json")));
+
+    const Stat before = statOf(dir.join("Library/asset-cache.json"));
+    REQUIRE(before.exists);
+
+    // The assets root vanishes -- the project root (and its Library/) stays completely valid.
+    std::filesystem::remove_all(dir.join("assets"), ec);
+    REQUIRE_FALSE(ec);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.join("assets"), gen);
+    CHECK(second.status == ScanStatus::Missing);
+
+    const Stat after = statOf(dir.join("Library/asset-cache.json"));
+    CHECK(after.size == before.size);
+    CHECK(after.mtime == before.mtime);
+}
+
+TEST_CASE(
+    "asset_database: the hash budget leaves later files NotHashed and commits none of them (AD55, AC-30, seed "
+    "S15, E29)") {
+    const TempDir dir;
+    const std::string hundred(100, 'x');
+    writeFile(dir.join("a.png"), hundred);
+    writeFile(dir.join("b.png"), hundred);
+    writeFile(dir.join("c.png"), hundred);
+    writeFile(dir.join("d.png"), hundred);
+
+    AssetDatabase db;
+    GuidGenerator gen(55);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen, /*hashBudgetBytes=*/64);
+
+    CHECK(report.hashBudgetExhausted);
+    CHECK(report.hashed == 1);
+    CHECK(report.notHashed == 3);
+    CHECK(db.cacheSize() == 1);  // NotHashed assets commit NOTHING (R-C2's forbidden false UpToDate)
+
+    std::size_t notHashedCount = 0;
+    for (const std::string_view leaf : {"a.png", "b.png", "c.png", "d.png"}) {
+        const AssetRecord* const record = db.findByPath(leaf);
+        REQUIRE(record != nullptr);
+        if (record->change == ImportChange::NotHashed) {
+            ++notHashedCount;
+        }
+    }
+    CHECK(notHashedCount == 3);
+
+    // A second scan with the DEFAULT budget makes progress: the remaining three are hashed and committed.
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK_FALSE(second.hashBudgetExhausted);
+    CHECK(second.hashed == 3);
+    CHECK(db.cacheSize() == 4);
+}
+
+TEST_CASE("asset_database: a single file bigger than the whole budget is still hashed to completion once (AD56, E30)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), std::string(100, 'y'));
+    AssetDatabase db;
+    GuidGenerator gen(56);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen, /*hashBudgetBytes=*/8);
+
+    CHECK(report.hashed == 1);
+    CHECK(report.hashedBytes == 100);
+    CHECK_FALSE(report.hashBudgetExhausted);
+    const AssetRecord* const record = db.findByPath("a.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->contentHash.valid());
+    CHECK(db.cacheSize() == 1);
+}
+
+TEST_CASE("asset_database: an unreadable asset is Unhashable, previous entry preserved, nothing removed (AD57, E31)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(57);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(db.cacheSize() == 1);
+    const Guid guid = *db.guidForPath("a.png");
+
+    std::error_code ec;
+    std::filesystem::last_write_time(pathOf(dir.join("a.png")),
+                                     std::filesystem::file_time_type::clock::now() + std::chrono::hours(1), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::permissions(pathOf(dir.join("a.png")), std::filesystem::perms::none,
+                                 std::filesystem::perm_options::replace, ec);
+    REQUIRE_FALSE(ec);
+
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    std::error_code restoreEc;
+    std::filesystem::permissions(pathOf(dir.join("a.png")), std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::replace, restoreEc);
+
+    if (report.hashFailureTotal == 0) {
+        MESSAGE("running as a user for whom chmod 000 does not block reads (e.g. root) -- seed did not land");
+        return;
+    }
+    CHECK(report.hashFailureTotal == 1);
+    REQUIRE(report.hashFailures.size() == 1);
+    CHECK(report.hashFailures[0].find("a.png") != std::string::npos);
+    const AssetRecord* const record = db.findByPath("a.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->change == ImportChange::Unhashable);
+    CHECK(record->guid == guid);
+    CHECK(db.cacheSize() == 1);  // the PREVIOUS entry preserved verbatim, nothing removed
+    CHECK(db.findByGuid(guid) != nullptr);
+}
+
+TEST_CASE(
+    "asset_database: invalidateCache() makes every asset New next scan and rewrites the index (AD58, AC-35, E40)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(58);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(db.cacheSize() == 1);
+
+    std::error_code ec;
+    const auto backdated = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+    std::filesystem::last_write_time(pathOf(dir.join("Library/asset-cache.json")), backdated, ec);
+    REQUIRE_FALSE(ec);
+    const Stat before = statOf(dir.join("Library/asset-cache.json"));
+    REQUIRE(before.exists);
+
+    db.invalidateCache();
+    CHECK(db.cacheSize() == 0);
+
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.newAssets == 1);
+    CHECK(report.cacheWritten);
+    const Stat after = statOf(dir.join("Library/asset-cache.json"));
+    CHECK(after.mtime != before.mtime);
+}
+
+TEST_CASE("asset_database: rescanning a DIFFERENT project fully replaces the cache too (AD59, E41)") {
+    const TempDir dirA;
+    writeFile(dirA.join("a.png"), "a");
+    const TempDir dirB;
+    writeFile(dirB.join("b.png"), "b");
+
+    AssetDatabase db;
+    GuidGenerator gen(59);
+    db.rescan(dirA.utf8(), dirA.utf8(), gen);
+    REQUIRE(db.cacheSize() == 1);
+    REQUIRE(db.projectRoot() == dirA.utf8());
+
+    db.rescan(dirB.utf8(), dirB.utf8(), gen);
+    CHECK(db.projectRoot() == dirB.utf8());
+    CHECK(db.cacheSize() == 1);
+    CHECK(db.findByPath("a.png") == nullptr);
+    CHECK(db.findByPath("b.png") != nullptr);
+    CHECK(fileExists(dirB.join("Library/asset-cache.json")));
+}
+
+TEST_CASE(
+    "asset_database: the index lands at <projectRoot>/Library/asset-cache.json for all three layouts (AD60, "
+    "AC-38, seeds S27/S27b)") {
+    // Layout 1: default -- the assets root is a direct subdirectory "assets" of the project root.
+    {
+        const TempDir dir;
+        std::error_code ec;
+        std::filesystem::create_directories(dir.join("assets"), ec);
+        REQUIRE_FALSE(ec);
+        writeFile(dir.join("assets/a.png"), "a");
+        AssetDatabase db;
+        GuidGenerator gen(601);
+        db.rescan(dir.utf8(), dir.join("assets"), gen);
+        CHECK(fileExists(dir.join("Library/asset-cache.json")));
+    }
+    // Layout 2: nested -- "content/assets".
+    {
+        const TempDir dir;
+        std::error_code ec;
+        std::filesystem::create_directories(dir.join("content/assets"), ec);
+        REQUIRE_FALSE(ec);
+        writeFile(dir.join("content/assets/a.png"), "a");
+        AssetDatabase db;
+        GuidGenerator gen(602);
+        db.rescan(dir.utf8(), dir.join("content/assets"), gen);
+        CHECK(fileExists(dir.join("Library/asset-cache.json")));
+        CHECK_FALSE(fileExists(dir.join("content/Library/asset-cache.json")));
+    }
+    // Layout 3: "." -- the assets root IS the project root.
+    {
+        const TempDir dir;
+        writeFile(dir.join("a.png"), "a");
+        AssetDatabase db;
+        GuidGenerator gen(603);
+        db.rescan(dir.utf8(), dir.utf8(), gen);
+        CHECK(fileExists(dir.join("Library/asset-cache.json")));
+    }
+}
+
+TEST_CASE("asset_database: with paths.assets == \".\" the walk skips Library/ entirely (AD61, AC-38, seed S27)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(61);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(fileExists(dir.join("Library/asset-cache.json")));
+
+    // A second scan re-walks the SAME tree, which now contains Library/ -- it must still be excluded.
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(db.findByPath("Library/asset-cache.json") == nullptr);
+    CHECK(db.findByPath("Library/.gitignore") == nullptr);
+    CHECK_FALSE(fileExists(dir.join("Library/asset-cache.json.meta")));
+    CHECK_FALSE(fileExists(dir.join("Library/.gitignore.meta")));
+    CHECK(second.aliasedDirTotal == 0);  // A7: our own output is excluded silently, never reported
+    CHECK(db.size() == 1);               // only a.png -- Library/'s contents never entered the walk at all
+}
+
+TEST_CASE("asset_database: a newly created asset is UpToDate on the VERY NEXT scan (AD62, A10, AC-28/AC-29)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(62);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.created == 1);
+    REQUIRE(first.newAssets == 1);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.upToDate == 1);
+    CHECK(second.newAssets == 0);
+    CHECK(second.changed == 0);
+    const AssetRecord* const record = db.findByPath("a.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->change == ImportChange::UpToDate);
+}
+
+TEST_CASE(
+    "asset_database: a fast-path collision on a pre-repair duplicate GUID is refused, so the repaired "
+    "record's contentHash is its OWN content's hash (AD63, code-review finding 2)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "aaaa");  // 4 bytes
+    AssetDatabase db;
+    GuidGenerator gen(63);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.created == 1);
+    const AssetRecord* const aFirst = db.findByPath("a.png");
+    REQUIRE(aFirst != nullptr);
+    const ContentHash aHash = aFirst->contentHash;
+    const Stat aStat = statOf(dir.join("a.png"));
+    REQUIRE(aStat.exists);
+
+    // z.png claims the SAME on-disk GUID as a.png (a genuine duplicate -- exactly what D9's repair pass
+    // exists to fix), with the SAME byte length but DIFFERENT bytes, and its mtime forced to match
+    // a.png's exactly -- both halves of the (size, mtime) fast path the finding's bug exploits.
+    writeFile(dir.join("z.png"), "zzzz");
+    const auto aMetaBytes = scene_golden::readBytes(dir.join("a.png.meta"));
+    REQUIRE(aMetaBytes.ok);
+    writeFile(dir.join("z.png.meta"), aMetaBytes.text);  // literally the same sidecar bytes -- same GUID
+    std::error_code ec;
+    std::filesystem::last_write_time(pathOf(dir.join("z.png")), aStat.mtime, ec);
+    REQUIRE_FALSE(ec);
+    const Stat zStat = statOf(dir.join("z.png"));
+    REQUIRE(zStat.exists);
+    REQUIRE(zStat.size == aStat.size);    // the size half of the fast path
+    REQUIRE(zStat.mtime == aStat.mtime);  // the mtime half of the fast path
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.repaired == 1);
+
+    const AssetRecord* const aSecond = db.findByPath("a.png");
+    const AssetRecord* const zSecond = db.findByPath("z.png");
+    REQUIRE(aSecond != nullptr);
+    REQUIRE(zSecond != nullptr);
+    CHECK(zSecond->state == AssetMetaState::Repaired);
+    CHECK(zSecond->guid != aSecond->guid);
+
+    // The bug: z.png's committed contentHash equals a.png's (the cache entry the shared, pre-repair GUID
+    // wrongly vouched for). The fix: neither entry may take the fast path while the GUID is still
+    // claimed twice, so z.png is genuinely re-hashed and its contentHash is its OWN content's digest.
+    const engine::editor::FileHashResult zTrueHash = engine::editor::hashFileContents(dir.join("z.png"));
+    REQUIRE(zTrueHash.hash.has_value());
+    CHECK(zSecond->contentHash == *zTrueHash.hash);
+    CHECK(zSecond->contentHash != aHash);
+    CHECK(aSecond->contentHash == aHash);  // a.png's own hash is unaffected either way
 }
 
 // ---- the golden battery's database-dependent case (docs/09 §5.7) --------------------------------
@@ -770,7 +1679,7 @@ TEST_CASE("asset_database: a freshly created sidecar matches minimal.meta modulo
     writeFile(dir.join("a.png"), "a");
     AssetDatabase db;
     GuidGenerator gen(6006);
-    db.rescan(dir.utf8(), gen);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
     const AssetRecord* const record = db.findByPath("a.png");
     REQUIRE(record != nullptr);
 

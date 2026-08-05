@@ -4,8 +4,11 @@
 // registry, and the frame clock, and turns the loop into a callable tick() (run() is
 // `while (tick()) {}`), which is what makes it drivable N-frames-at-a-time from a test.
 
-#include <aero/core/guid.hpp>  // task 3.1.1: assetGuidForPath()'s return type (AC-39)
+#include <aero/core/content_hash.hpp>  // task 3.1.2: assetContentHashForPath()'s return type
+#include <aero/core/guid.hpp>          // task 3.1.1: assetGuidForPath()'s return type (AC-39)
 #include <aero/core/time.hpp>
+#include <aero/editor/asset_cache.hpp>     // task 3.1.2: ImportChange -- assetImportChangeForPath()'s return
+                                           // type; used directly, not left to transitively arrive.
 #include <aero/editor/asset_database.hpp>  // task 3.1.1: a VALUE member (assetDatabase) needs the
                                            // definition -- the command_stack.hpp/entity_ops.hpp
                                            // precedent below. Transitively brings project_files.hpp,
@@ -197,6 +200,15 @@ public:
     [[nodiscard]] std::size_t assetCount() const noexcept;
     [[nodiscard]] std::optional<Guid> assetGuidForPath(std::string_view relativePath) const noexcept;
 
+    // ---- task 3.1.2: the import cache. Same black-box-signature reasoning as assetCount() /
+    // assetGuidForPath() above (§D-12): without these, I31-I33 would have no way to observe the cache
+    // from outside AssetDatabase. std::optional on the first two so "no record" is distinguishable from
+    // "up to date" and from the empty file's legitimately all-zero hash (plan A4).
+    [[nodiscard]] std::optional<ImportChange> assetImportChangeForPath(std::string_view relativePath) const noexcept;
+    [[nodiscard]] std::optional<ContentHash> assetContentHashForPath(std::string_view relativePath) const noexcept;
+    [[nodiscard]] std::size_t assetCacheEntryCount() const noexcept;
+    [[nodiscard]] std::size_t assetImportJobCount() const noexcept;
+
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
     // Same effect as Edit > Undo / Ctrl+Z (Cmd+Z on macOS), applied on the NEXT tick -- the
@@ -236,6 +248,11 @@ public:
     // source).
     void requestAssetRescan() noexcept;
 
+    // task 3.1.2 (AC-39): the requestAssetRescan() shape verbatim -- applied on the NEXT tick, drained
+    // in the SAME reconcile expression as AssetBrowserPanel::takeReimportRequest() (F9). The only way
+    // the ImGui-free GPU tier can drive Reimport All (I33) without clicking the panel's own button.
+    void requestAssetReimport() noexcept;
+
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
@@ -262,16 +279,17 @@ private:
     bool redoRequested = false;
     World sceneWorld;
     Selection sceneSelection;
-    CommandStack commandStack;          // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
-                                        // stays valid. command_stack.hpp's two static_asserts hold that line.
-    RootOrder rootOrder;                // task 2.4.2, D10 (accessor: roots()). entity_ops.hpp's two static_asserts
-                                        // hold the same noexcept-move guarantee for this member.
-    AssetDatabase assetDatabase;        // task 3.1.1 (D12) -- reconciled in tick(), never pushed. Own six
-                                        // static_asserts (asset_database.hpp) hold the noexcept-move
-                                        // guarantee this member needs.
-    GuidGenerator assetGuids{0};        // task 3.1.1 -- replaced in create() by fromEntropy(); one uint64,
-                                        // so this does not affect EditorApp's own `noexcept = default` move.
-    bool assetRescanRequested = false;  // task 3.1.1 (AC-38) -- consumed by the next tick()'s reconcile
+    CommandStack commandStack;            // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
+                                          // stays valid. command_stack.hpp's two static_asserts hold that line.
+    RootOrder rootOrder;                  // task 2.4.2, D10 (accessor: roots()). entity_ops.hpp's two static_asserts
+                                          // hold the same noexcept-move guarantee for this member.
+    AssetDatabase assetDatabase;          // task 3.1.1 (D12) -- reconciled in tick(), never pushed. Own six
+                                          // static_asserts (asset_database.hpp) hold the noexcept-move
+                                          // guarantee this member needs.
+    GuidGenerator assetGuids{0};          // task 3.1.1 -- replaced in create() by fromEntropy(); one uint64,
+                                          // so this does not affect EditorApp's own `noexcept = default` move.
+    bool assetRescanRequested = false;    // task 3.1.1 (AC-38) -- consumed by the next tick()'s reconcile
+    bool assetReimportRequested = false;  // task 3.1.2 (AC-39) -- consumed the same way, alongside it
     // Non-owning; owned by `registry`, which holds panels through unique_ptr -- so the Panel object
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.

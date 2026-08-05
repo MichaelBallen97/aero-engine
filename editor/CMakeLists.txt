@@ -54,6 +54,7 @@ add_library(aero_editor_core STATIC
     src/project_settings_panel.cpp # task 2.6.2 -- the read-only Project Settings panel (the only ImGui in it)
     src/asset_meta.cpp          # task 3.1.1 -- the .meta v1 format + the pure lifecycle planner
     src/asset_database.cpp      # task 3.1.1 -- the scan; <filesystem>-FREE and <fstream>-FREE by rule (D4)
+    src/asset_cache.cpp         # task 3.1.2 -- the import-cache index format + the three pure planners
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

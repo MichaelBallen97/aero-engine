@@ -10,7 +10,8 @@
 // READ-ONLY BY CONTRACT (D19/INV-6): nothing here creates, renames, moves, deletes or writes
 // anything, and nothing here opens an output stream. Task 3.1.3 replaces the PANEL on top of this
 // model and keeps these helpers; task 3.1.1 adds GUIDs/.meta beside them. Changing that must be a
-// deliberate decision, not an accident.
+// deliberate decision, not an accident. task 3.1.2's canonicalDirectory extends this rule: it
+// RESOLVES a path; like everything else here it creates, renames, moves and writes nothing.
 //
 // NOTHING HERE LOGS. A scan runs from the panel's per-frame reconcile, so anything logged here would
 // log every frame (E1). Status is RETURNED, never printed.
@@ -44,6 +45,14 @@ struct FileEntry {
                              // which is why this is a flag and not a sentinel 0 (AC-6/E6). A BROKEN
                              // SYMLINK lands here too: isDirectory == false, sizeKnown == false, so it
                              // is LISTED and renders "—" rather than silently vanishing (review gap 1).
+    // ---- task 3.1.2: APPENDED, never inserted. tests/editor/project_files_test.cpp:88-89 hold two
+    // POSITIONAL aggregate initializers; inserting a field ahead of `isDirectory` re-maps them
+    // silently (bool -> int64 is a promotion, not a narrowing, so nothing diagnoses it). Both helpers
+    // were converted to designated initializers in the same commit as defence in depth for the NEXT
+    // field addition.
+    std::int64_t mtime = 0;   // OPAQUE file_time_type ticks (docs/09 §6.5). Never a date.
+    bool mtimeKnown = false;  // false for a broken symlink and any entry the OS refused (F3)
+    bool isSymlink = false;   // symlink_status, NOT the followed status (D9)
 };
 
 struct DirectoryListing {
@@ -136,5 +145,13 @@ void buildVisibleTree(const std::function<const DirectoryListing*(const std::str
 // (E20); returns a listing whose `status` says what happened. `relPath` is '/'-separated and
 // root-relative; "" means the root itself. An EMPTY `rootUtf8` is ScanStatus::Missing (E2).
 [[nodiscard]] DirectoryListing listDirectory(std::string_view rootUtf8, std::string_view relPath, bool includeHidden);
+
+// task 3.1.2 (D9): the PHYSICAL path of a directory, symlinks resolved. "" on ANY failure -- a caller
+// that cannot prove two paths are distinct must refuse to descend, never guess. READ-ONLY, like
+// everything else here: it resolves; it does not create, move or normalize anything on disk.
+// Deliberately NOT used to record or display a path anywhere -- project roots are `absolute`, not
+// `weakly_canonical`, ON PURPOSE (a project reached through a symlink must not be silently recorded
+// under its target). THIS VALUE IS A DEDUP KEY AND NOTHING ELSE (INV-C9).
+[[nodiscard]] std::string canonicalDirectory(std::string_view absolutePathUtf8);
 
 }  // namespace engine::editor

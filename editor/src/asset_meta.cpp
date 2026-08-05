@@ -210,6 +210,16 @@ AssetPlanResult planAssetMetas(std::vector<AssetPlanEntry> entries, GuidGenerato
         record.relativePath = std::move(entry.relativePath);
         if (entry.metaPresent && !entry.guid.has_value()) {
             record.state = AssetMetaState::Invalid;  // nil GUID, no write (AC-25/27)
+        } else if (!entry.metaPresent && entry.reattachedGuid.has_value()) {
+            // task 3.1.2 (D13/A14) -- BEFORE the plain "!metaPresent" arm, so a metaless asset that
+            // asset_database.cpp's phase 5 matched to an orphaned identity is REATTACHED, never minted
+            // a fresh one. Never calls generator.next(): the GUID it takes was already in use. An
+            // entry with metaPresent == true is never reached here even if reattachedGuid happens to
+            // be engaged (the caller never does this) -- it falls through to the Ok arm below and
+            // keeps the SIDECAR's own identity, which is what makes that case decidable rather than
+            // undefined.
+            record.guid = *entry.reattachedGuid;
+            record.state = AssetMetaState::Reattached;
         } else if (!entry.metaPresent) {
             record.guid = generator.next();
             record.state = AssetMetaState::Created;
@@ -220,11 +230,14 @@ AssetPlanResult planAssetMetas(std::vector<AssetPlanEntry> entries, GuidGenerato
         result.records.push_back(std::move(record));
     }
 
-    // 3. Second pass: duplicate repair (D9), in SORTED order. The first claimant (Ok or Created) of a
-    // GUID keeps it; every LATER claimant gets a fresh, unclaimed GUID and becomes Repaired. Created
-    // GUIDs are inserted into the SAME claim map, so a pathological seed that mints a colliding value
-    // is caught by this one code path rather than a second one. Invalid records are never inserted
-    // and never repaired (INV-A7) -- their GUID is nil, which is never a legitimate claim.
+    // 3. Second pass: duplicate repair (D9), in SORTED order. The first claimant (Ok, Created OR
+    // Reattached -- task 3.1.2, D13 condition 4 makes this unreachable in practice, but the general
+    // "skip only if Invalid" rule below already covers it, defence in depth) of a GUID keeps it; every
+    // LATER claimant gets a fresh, unclaimed GUID and becomes Repaired -- INCLUDING a Reattached
+    // record that loses the claim, exactly like any other state. Created GUIDs are inserted into the
+    // SAME claim map, so a pathological seed that mints a colliding value is caught by this one code
+    // path rather than a second one. Invalid records are never inserted and never repaired (INV-A7) --
+    // their GUID is nil, which is never a legitimate claim.
     std::unordered_map<Guid, std::size_t> claimedBy;
     for (std::size_t i = 0; i < result.records.size(); ++i) {
         AssetRecord& record = result.records[i];
@@ -248,8 +261,8 @@ AssetPlanResult planAssetMetas(std::vector<AssetPlanEntry> entries, GuidGenerato
     // 4. Tally from the SETTLED state, in one final pass -- so a record whose state changed twice
     // (Created in step 2, then Repaired in step 3 by a colliding fresh GUID) is counted, and its
     // .meta scheduled for write, EXACTLY once. writeIndices is therefore in ascending order by
-    // construction and every AC-24 invariant (`created + repaired == writeIndices.size()`) holds
-    // even under that pathological case.
+    // construction and every invariant (`created + repaired + reattached == writeIndices.size()`,
+    // task 3.1.2's A14) holds even under that pathological case.
     for (std::size_t i = 0; i < result.records.size(); ++i) {
         switch (result.records[i].state) {
             case AssetMetaState::Created:
@@ -258,6 +271,10 @@ AssetPlanResult planAssetMetas(std::vector<AssetPlanEntry> entries, GuidGenerato
                 break;
             case AssetMetaState::Repaired:
                 ++result.repaired;
+                result.writeIndices.push_back(i);
+                break;
+            case AssetMetaState::Reattached:
+                ++result.reattached;
                 result.writeIndices.push_back(i);
                 break;
             case AssetMetaState::Invalid:

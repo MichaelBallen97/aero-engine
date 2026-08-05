@@ -223,9 +223,11 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   widened the guard's allowlist from these three files to FIVE**, adding `asset_meta.cpp` and
   `asset_database.cpp` (D7/D8's "an invalid `.meta` is never overwritten" / "an orphan is never
   deleted" — see the Assets section below) — the guard's scope is now the project flow **and** the
-  asset flow, and its name stays narrower than its scope on purpose (a rename was considered and
-  rejected because it would touch the workflow YAML, the ctest case name, `CLAUDE.md` and this file,
-  each a place a rename can go half-done).
+  asset flow. **Task 3.1.2 widened it a second time, from five files to SIX**, adding
+  `asset_cache.cpp` (D18) — see the Import cache section below for the nuance that widening needed.
+  Its name stays narrower than its scope on purpose (a rename was considered and rejected both times
+  because it would touch the workflow YAML, the ctest case name, `CLAUDE.md` and this file, each a
+  place a rename can go half-done).
 - **`std::filesystem::create_directory`/`create_directories` on an ALREADY-EXISTING directory returns
   `false` with NO `error_code` set (measured, not assumed).** Deciding a scaffold failure from the
   bool return instead of from `ec` breaks the legal "adopt an existing empty directory" path every
@@ -348,5 +350,69 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   `RenderTarget::depthFormatValue` / `depthFormat()` precedent from 2.3.1, applied a second time to this
   exact class of collision.
 
-Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and task 3.1.1's entry
-under Phase 3.
+## Import cache (task 3.1.2)
+
+- **The cache is NEVER in `.meta` (D3).** `.meta` v1 is untouched by this task: no new key, no version
+  bump, no parser change beyond the additive `Reattached` state. A content hash in a committed file
+  would need a third write path, repealing D6 — the whole reason the cache lives at
+  `<projectRoot>/Library/asset-cache.json` instead.
+- **Derived data is disposable (D7), and the policy is the deliberate INVERSE of `.meta`'s.** `.meta`
+  discards a bad key and preserves everything else, because losing a `.meta` loses an identity
+  permanently. The cache discards the WHOLE file on any structural failure and never repairs a single
+  bad entry, because losing the cache costs exactly one re-import — the cheaper failure mode gets the
+  cheaper, blunter policy.
+- **A scan of an unchanged project writes ZERO bytes anywhere (D15 / INV-C5) — not "identical bytes",
+  zero — and now across TWO files, not one.** The index is written only when its text differs from the
+  text it was read from. The writer must stay deterministic (fixed key order, entries sorted by
+  `guid`), because non-determinism silently reintroduces a per-scan write with no error and no failing
+  test to catch it.
+- **The cache is keyed by GUID, never by path (D11).** Moving an asset together with its sidecar must
+  not invalidate its import — the entry's `path` is updated in place, its `contentHash` stays valid.
+  An asset with no valid identity (no `.meta`, or an invalid one) is never in the cache at all.
+- **Orphan re-attachment needs ALL FIVE of D13's conditions, or it does nothing — never a near-miss
+  log.** The candidate has no sidecar; its content hash was computed this scan (not skipped by budget);
+  exactly one previous cache entry has that hash **and** a path this scan no longer sees; that entry's
+  GUID is claimed by no live asset; and exactly one orphaned sidecar on disk parses to that GUID. Any
+  one condition failing means nothing happens — no match, no partial state. The old, now-redundant
+  sidecar is never deleted; a "Delete orphaned .meta" action is user-initiated and is 3.1.3's, not
+  this task's.
+- **D9 and its correction — the alias rule is DIRECTORY-ONLY and keys on canonical path, never on
+  content.** A content hash CANNOT fix the symlinked-directory duplicate-GUID defect: it cannot
+  distinguish one file reached twice from two legitimate identical copies, and using it to suppress a
+  second record would silently delete the identity of every duplicated texture in every project.
+  File-level symlinks and hardlinks are deliberately **not** deduped — only a symlinked *directory*,
+  by its resolved canonical path. **This corrects an earlier, wrong rationale recorded in
+  `docs/10-engineering-log.md`'s 3.1.1 entry**, which said the content hash was why 3.1.2 would own
+  this defect; it was not, and the correction is recorded in that same file. 2.2.4's D13 ("a symlinked
+  asset folder behaves like a real one") **remains true for the Asset Browser** and changes **only for
+  the asset scan** — the split is deliberate, record it explicitly whenever either D13 is cited.
+- **D18's guard nuance, easy to misread as a contradiction of D7.** The cache's DATA is disposable, but
+  nothing in this task deletes a file to dispose of it: a discard means "do not carry entries
+  forward", `Reimport All` means clear the in-memory index, a rebuild means an atomic overwrite. Listing
+  `asset_cache.cpp` in `check-project-no-delete.sh`'s allowlist costs nothing today and stops a future
+  "clean the Library folder" `remove_all` from being written without a review; if that is ever wanted,
+  it is a deliberate, reviewed relaxation that must delete only inside `Library/`, never inside the
+  assets tree.
+- **The amended INV-A1.** 3.1.1's "exactly one `writeTextFileAtomic` call site" was about the assets
+  tree only. This task adds two more call sites, both building their path from the library directory —
+  the amended invariant is exactly **one** call built from the **assets** root and exactly **two**
+  built from the **library** directory, each path assembled into a named local first
+  (`metaAbsolutePath`, `ignorePath`, `indexPath`) so the invariant stays grep-decidable rather than
+  heuristic.
+- **A4's trap carries over from `Guid` to `ContentHash`.** `ContentHash::valid()` is false for the
+  digest of the empty input, which is a perfectly legitimate value — it is NOT a "was this hashed?"
+  flag. The only such flag is engagement of `std::optional<ContentHash>`. `parseAssetCache` accepts a
+  nil `contentHash`/`metaHash`; only `guid` may never be nil.
+- **A2's trap: `FileEntry`'s three new fields (`mtime`, `mtimeKnown`, `isSymlink`) are APPENDED, never
+  inserted.** `tests/editor/project_files_test.cpp` holds two positional aggregate initializers of
+  `FileEntry`; inserting a field ahead of `isDirectory` would silently re-map them (`bool` → `int64` is
+  a promotion, not a narrowing conversion, so nothing diagnoses it). Both helpers were converted to
+  designated initializers as defence in depth for the *next* field addition.
+- **A3's cost, measured, not assumed.** `isSymlink` is free everywhere (the cached `d_type`/symlink
+  status from the directory iteration). `mtime` costs one extra `stat` per file on POSIX (libc++ and
+  libstdc++ both take the uncached branch) and nothing on Windows (`FindFirstFileW` already returns it).
+  Do not add `entry.refresh(ec)` to make it "free" — that changes the dangling-symlink asymmetry
+  2.2.4's code review already had to discover and fix once.
+
+Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1 and
+3.1.2's entries under Phase 3.

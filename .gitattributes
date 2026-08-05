@@ -27,6 +27,13 @@ project.json   text eol=lf
 # matches both `minimal.meta` and `wood.png.meta`. Verify with `git check-attr text eol -- <path>`.
 *.meta text eol=lf
 
+# Golden asset-cache fixtures are compared BYTE-FOR-BYTE by tests/editor/asset_cache_test.cpp
+# (task 3.1.2). `*.scene.json` / `*.project.json` do NOT match `cache-minimal.json`, so this is a
+# PATH pattern rather than a suffix one -- the same glob trap recorded above for
+# samples/phase-1-scene/scene.json and for a bare project.json, and verified the same way.
+# Verify with `git check-attr text eol -- <path>`.
+tests/fixtures/assets/*.json text eol=lf
+
 # Binary asset types (extended as asset work lands in Phase 3+)
 *.png binary
 *.jpg binary
