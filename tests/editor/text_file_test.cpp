@@ -385,7 +385,11 @@ TEST_CASE("text_file: readFileBytes round-trips a file byte for byte, including 
     // truncates at the embedded NUL (its `const char*` constructor stops there), which is exactly
     // what clang-tidy's bugprone-string-literal-with-embedded-nul exists to catch.
     const std::string content("before\0after", 12);
-    const std::string path = tmp.join("nul.bin");
+    // NEVER "nul.bin": Windows reserves the device name NUL (and CON/PRN/AUX/COM#/LPT#) regardless
+    // of extension -- CreateFile treats "nul.<anything>" as the NUL device, not a real file, so a
+    // write there silently discards every byte and the read that follows fails. Measured on the
+    // Windows CI lane: deterministic, not a flake.
+    const std::string path = tmp.join("embedded-nul.bin");
     writeBytes(path, content);
 
     const FileBytesResult result = readFileBytes(path, 1024);
