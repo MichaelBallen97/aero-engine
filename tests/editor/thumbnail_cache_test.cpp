@@ -25,8 +25,6 @@ using engine::ContentHash;
 using engine::Guid;
 using engine::GuidGenerator;
 using engine::editor::fitRgbaIntoTile;
-using engine::editor::MAX_THUMBNAIL_DECODES_PER_TICK;
-using engine::editor::THUMBNAIL_EDGE_TEXELS;
 using engine::editor::ThumbnailKey;
 using engine::editor::ThumbnailLedger;
 using engine::editor::ThumbnailState;
@@ -112,7 +110,7 @@ TEST_CASE("thumbnail cache: nextDecodes returns oldest-touched first across 5 ke
     std::vector<ThumbnailKey> keys;
     for (int i = 0; i < 5; ++i) {
         keys.push_back(keyFrom(gen));
-        ledger.touch(keys.back(), static_cast<std::uint64_t>(i + 1));
+        ledger.touch(keys.back(), static_cast<std::uint64_t>(i) + 1U);
     }
     const std::vector<ThumbnailKey> next = ledger.nextDecodes(5);
     REQUIRE(next.size() == 5);
@@ -195,7 +193,7 @@ TEST_CASE("thumbnail cache: evictions returns least-recently-touched first (TC14
     std::vector<ThumbnailKey> keys;
     for (int i = 0; i < 5; ++i) {
         keys.push_back(keyFrom(gen));
-        ledger.touch(keys.back(), static_cast<std::uint64_t>(i + 1));
+        ledger.touch(keys.back(), static_cast<std::uint64_t>(i) + 1U);
         ledger.markReady(keys.back());
     }
     const std::vector<ThumbnailKey> evicted = ledger.evictions(2, 999);
@@ -374,7 +372,7 @@ TEST_CASE("thumbnail cache: degenerate inputs yield an empty vector (TC25, contr
 }
 
 TEST_CASE("thumbnail cache: a short source span yields an empty vector (TC26, contract)") {
-    std::vector<std::uint8_t> src(4 * 4 * 4 - 1, 0);  // one byte short
+    std::vector<std::uint8_t> src(std::size_t{4} * 4 * 4 - 1, 0);  // one byte short
     CHECK(fitRgbaIntoTile(std::span<const std::uint8_t>(src), 4, 4, 8).empty());
 }
 
@@ -382,7 +380,7 @@ TEST_CASE(
     "thumbnail cache: a 2:1 checkerboard downscale is byte-compared against hand computation (TC27, AC-6, seed S6)") {
     // A 4x4 two-colour checkerboard, downscaled to 2x2 (edge=2, source fits exactly -- srcW==edge*2).
     // Quadrant (0,0) [rows 0-1, cols 0-1] is all {10,20,30,40}; the rest is {200,210,220,230}.
-    std::vector<std::uint8_t> src(4 * 4 * 4, 0);
+    std::vector<std::uint8_t> src(std::size_t{4} * 4 * 4, 0);
     for (std::uint32_t y = 0; y < 4; ++y) {
         for (std::uint32_t x = 0; x < 4; ++x) {
             const std::size_t idx = (static_cast<std::size_t>(y) * 4 + x) * 4;
@@ -410,7 +408,7 @@ TEST_CASE(
 
 TEST_CASE("thumbnail cache: a 4:1 downscale of a gradient -- three texels byte-compared (TC28, seed S6)") {
     // 8x8 gradient, red channel = x*10 (0,10,...,70), downscaled to 2x2 (4:1 in both axes).
-    std::vector<std::uint8_t> src(8 * 8 * 4, 0);
+    std::vector<std::uint8_t> src(std::size_t{8} * 8 * 4, 0);
     for (std::uint32_t y = 0; y < 8; ++y) {
         for (std::uint32_t x = 0; x < 8; ++x) {
             const std::size_t idx = (static_cast<std::size_t>(y) * 8 + x) * 4;
@@ -433,7 +431,7 @@ TEST_CASE("thumbnail cache: a 4:1 downscale of a gradient -- three texels byte-c
 
 TEST_CASE("thumbnail cache: the divisor is the SAMPLE COUNT, not the destination width (TC29, seed S6)") {
     // 3x3 -> 1x1: nine known values, integer mean, not sum and not the first sample.
-    std::vector<std::uint8_t> src(3 * 3 * 4, 0);
+    std::vector<std::uint8_t> src(std::size_t{3} * 3 * 4, 0);
     const std::array<std::uint8_t, 9> values{1, 2, 3, 4, 5, 6, 7, 8, 9};
     for (std::size_t i = 0; i < 9; ++i) {
         src[(i * 4) + 0] = values[i];
@@ -513,7 +511,7 @@ TEST_CASE("thumbnail cache: the letterbox is transparent black on all four margi
 }
 
 TEST_CASE("thumbnail cache: alpha is carried through a 2:1 reduction (TC35, E8)") {
-    std::vector<std::uint8_t> src(4 * 4 * 4, 0);
+    std::vector<std::uint8_t> src(std::size_t{4} * 4 * 4, 0);
     for (std::size_t i = 0; i < src.size(); i += 4) {
         src[i + 3] = 128;  // 50% alpha, uniform
     }
@@ -553,9 +551,9 @@ TEST_CASE("thumbnail cache: the accumulator does not overflow at the 500 000-sam
     // REAL risk this guards is a narrower or shared accumulator elsewhere; asserted here at the
     // documented worst case regardless): the mean of an all-255 input must be exactly 255, not a
     // wrapped or truncated value.
-    constexpr std::uint32_t stripWidth = 64000000;
-    std::vector<std::uint8_t> src(static_cast<std::size_t>(stripWidth) * 1 * 4, 255);
-    const std::vector<std::uint8_t> tile = fitRgbaIntoTile(std::span<const std::uint8_t>(src), stripWidth, 1, 128);
+    constexpr std::uint32_t STRIP_WIDTH = 64000000;
+    std::vector<std::uint8_t> src(static_cast<std::size_t>(STRIP_WIDTH) * 1 * 4, 255);
+    const std::vector<std::uint8_t> tile = fitRgbaIntoTile(std::span<const std::uint8_t>(src), STRIP_WIDTH, 1, 128);
     REQUIRE(tile.size() == 128ULL * 128ULL * 4ULL);
     const std::size_t rowY = (128 - 1) / 2;
     for (std::uint32_t x = 0; x < 128; ++x) {

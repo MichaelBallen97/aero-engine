@@ -381,8 +381,10 @@ TEST_CASE("text_file: ensureDirectory(\"\") returns a non-empty reason and creat
 
 TEST_CASE("text_file: readFileBytes round-trips a file byte for byte, including embedded NULs (TF23, AC-9, seed S13)") {
     const TempDir tmp;
-    std::string content = "before\0after";
-    content.resize(12);  // keep the embedded NUL -- a C-string literal above would truncate at it
+    // The (pointer, length) constructor, NOT `std::string content = "before\0after";` -- the LATTER
+    // truncates at the embedded NUL (its `const char*` constructor stops there), which is exactly
+    // what clang-tidy's bugprone-string-literal-with-embedded-nul exists to catch.
+    const std::string content("before\0after", 12);
     const std::string path = tmp.join("nul.bin");
     writeBytes(path, content);
 

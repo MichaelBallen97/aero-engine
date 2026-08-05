@@ -1,5 +1,5 @@
 // tests/editor/asset_view_test.cpp -- task 3.1.3, Step 1: the asset browser's presentation model
-// (kinds, icons, filter, whole-project search, grid column math). A TU of aero_editor_shell_test,
+// (KINDS, icons, filter, whole-project search, grid column math). A TU of aero_editor_shell_test,
 // which supplies main() from shell_test.cpp -- do NOT define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN here.
 //
 // UNGATED (D4/AC-17/INV-P5, the asset_meta_test.cpp precedent): asset_view.hpp depends on nothing but
@@ -37,9 +37,9 @@ using engine::editor::tileEdgeFontMultiple;
 using engine::editor::TileSize;
 
 TEST_CASE("asset view: every Texture extension classifies as Texture (AV1)") {
-    constexpr std::array<std::string_view, 10> exts{"png", "jpg", "jpeg", "tga",  "bmp",
+    constexpr std::array<std::string_view, 10> EXTS{"png", "jpg", "jpeg", "tga",  "bmp",
                                                     "gif", "hdr", "psd",  "ktx2", "dds"};
-    for (const std::string_view ext : exts) {
+    for (const std::string_view ext : EXTS) {
         const std::string name = std::string("x.") + std::string(ext);
         INFO("ext: ", std::string(ext));
         CHECK(classifyAssetKind(name, false) == AssetKind::Texture);
@@ -50,8 +50,8 @@ TEST_CASE("asset view: every Model extension classifies as Model (AV2)") {
     // The extension table itself is 8 entries (gltf glb fbx obj blend dae ply stl); the plan's own
     // table comment lists all 8 verbatim even though its AV2 summary line says "(7)" -- a counting
     // slip in the plan text, not in the extension list. All 8 are proven here.
-    constexpr std::array<std::string_view, 8> exts{"gltf", "glb", "fbx", "obj", "blend", "dae", "ply", "stl"};
-    for (const std::string_view ext : exts) {
+    constexpr std::array<std::string_view, 8> EXTS{"gltf", "glb", "fbx", "obj", "blend", "dae", "ply", "stl"};
+    for (const std::string_view ext : EXTS) {
         const std::string name = std::string("x.") + std::string(ext);
         INFO("ext: ", std::string(ext));
         CHECK(classifyAssetKind(name, false) == AssetKind::Model);
@@ -59,16 +59,16 @@ TEST_CASE("asset view: every Model extension classifies as Model (AV2)") {
 }
 
 TEST_CASE("asset view: every Audio extension classifies as Audio (AV3)") {
-    constexpr std::array<std::string_view, 4> exts{"wav", "mp3", "ogg", "flac"};
-    for (const std::string_view ext : exts) {
+    constexpr std::array<std::string_view, 4> EXTS{"wav", "mp3", "ogg", "flac"};
+    for (const std::string_view ext : EXTS) {
         const std::string name = std::string("x.") + std::string(ext);
         CHECK(classifyAssetKind(name, false) == AssetKind::Audio);
     }
 }
 
 TEST_CASE("asset view: every Text extension classifies as Text (AV4)") {
-    constexpr std::array<std::string_view, 7> exts{"json", "txt", "md", "hlsl", "glsl", "ts", "js"};
-    for (const std::string_view ext : exts) {
+    constexpr std::array<std::string_view, 7> EXTS{"json", "txt", "md", "hlsl", "glsl", "ts", "js"};
+    for (const std::string_view ext : EXTS) {
         const std::string name = std::string("x.") + std::string(ext);
         CHECK(classifyAssetKind(name, false) == AssetKind::Text);
     }
@@ -114,8 +114,8 @@ TEST_CASE("asset view: an empty name is Unknown, or Folder when isDirectory (AV1
 }
 
 TEST_CASE("asset view: classifyAssetKind is total (AV14)") {
-    constexpr std::array<std::string_view, 6> unknowns{"a.zip", "a.exe", "a.rar", "a.7z", "a.iso", "a.bin"};
-    for (const std::string_view name : unknowns) {
+    constexpr std::array<std::string_view, 6> UNKNOWNS{"a.zip", "a.exe", "a.rar", "a.7z", "a.iso", "a.bin"};
+    for (const std::string_view name : UNKNOWNS) {
         const AssetKind kind = classifyAssetKind(name, false);
         CHECK((kind == AssetKind::Folder || kind == AssetKind::Texture || kind == AssetKind::Model ||
                kind == AssetKind::Audio || kind == AssetKind::Text || kind == AssetKind::Unknown));
@@ -123,8 +123,8 @@ TEST_CASE("asset view: classifyAssetKind is total (AV14)") {
 }
 
 TEST_CASE("asset view: isThumbnailDecodable true for the stb-readable subset (AV15)") {
-    constexpr std::array<std::string_view, 8> exts{"png", "jpg", "jpeg", "tga", "bmp", "gif", "hdr", "psd"};
-    for (const std::string_view ext : exts) {
+    constexpr std::array<std::string_view, 8> EXTS{"png", "jpg", "jpeg", "tga", "bmp", "gif", "hdr", "psd"};
+    for (const std::string_view ext : EXTS) {
         const std::string name = std::string("x.") + std::string(ext);
         CHECK(isThumbnailDecodable(name));
     }
@@ -167,10 +167,10 @@ TEST_CASE("asset view: iconLabelFor on a non-ASCII extension is FILE (AV23)") {
 }
 
 TEST_CASE("asset view: iconLabelFor is always <= 4 chars and ASCII uppercase (AV24)") {
-    constexpr std::array<std::string_view, 20> names{
+    constexpr std::array<std::string_view, 20> NAMES{
         "a.png",  "a.jpeg", "a.gltf", "a.blend", "a.blend2", "a.wav", "a.mp3", "a.hlsl", "a.glsl", "a.md",
         "a.json", "a.dds",  "a.ktx2", "a.tga",   "a.bmp",    "a.gif", "a.hdr", "a.psd",  "a.fbx",  "a.stl"};
-    for (const std::string_view name : names) {
+    for (const std::string_view name : NAMES) {
         const std::string label = iconLabelFor(name);
         INFO("name: ", std::string(name), " label: ", label);
         CHECK(label.size() <= 4);
@@ -182,9 +182,9 @@ TEST_CASE("asset view: iconLabelFor is always <= 4 chars and ASCII uppercase (AV
 }
 
 TEST_CASE("asset view: iconColorFor is total and stable across calls (AV25)") {
-    constexpr std::array<AssetKind, 6> kinds{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+    constexpr std::array<AssetKind, 6> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                              AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
-    for (const AssetKind kind : kinds) {
+    for (const AssetKind kind : KINDS) {
         const auto c1 = iconColorFor(kind);
         const auto c2 = iconColorFor(kind);
         CHECK(c1.r == c2.r);
@@ -195,12 +195,12 @@ TEST_CASE("asset view: iconColorFor is total and stable across calls (AV25)") {
 }
 
 TEST_CASE("asset view: iconColorFor gives distinct colours to every kind (AV26)") {
-    constexpr std::array<AssetKind, 6> kinds{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+    constexpr std::array<AssetKind, 6> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                              AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
-    for (std::size_t i = 0; i < kinds.size(); ++i) {
-        for (std::size_t j = i + 1; j < kinds.size(); ++j) {
-            const auto a = iconColorFor(kinds[i]);
-            const auto b = iconColorFor(kinds[j]);
+    for (std::size_t i = 0; i < KINDS.size(); ++i) {
+        for (std::size_t j = i + 1; j < KINDS.size(); ++j) {
+            const auto a = iconColorFor(KINDS[i]);
+            const auto b = iconColorFor(KINDS[j]);
             const bool distinct = a.r != b.r || a.g != b.g || a.b != b.b;
             INFO("i: ", i, " j: ", j);
             CHECK(distinct);
@@ -209,9 +209,9 @@ TEST_CASE("asset view: iconColorFor gives distinct colours to every kind (AV26)"
 }
 
 TEST_CASE("asset view: assetKindLabel is total and non-empty (AV27)") {
-    constexpr std::array<AssetKind, 6> kinds{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+    constexpr std::array<AssetKind, 6> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                              AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
-    for (const AssetKind kind : kinds) {
+    for (const AssetKind kind : KINDS) {
         CHECK_FALSE(assetKindLabel(kind).empty());
     }
 }
@@ -260,7 +260,7 @@ TEST_CASE("asset view: matchesFilter is ASCII-case-insensitive on the query (AV3
 }
 
 TEST_CASE("asset view: an empty query matches everything with anyKind (AV35)") {
-    AssetFilter filter;
+    const AssetFilter filter;
     CHECK(matchesFilter("anything.xyz", false, filter));
     CHECK(matchesFilter("folder", true, filter));
 }
@@ -323,7 +323,7 @@ TEST_CASE("asset view: total is UNCAPPED while hits is capped (AV40, AC-14, seed
 
 TEST_CASE("asset view: an empty span is zero hits, zero total, not truncated (AV41)") {
     const std::vector<AssetRecord> records;
-    AssetFilter filter;
+    const AssetFilter filter;
     const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter);
     CHECK(result.hits.empty());
     CHECK(result.total == 0);
@@ -335,7 +335,7 @@ TEST_CASE("asset view: cap == 0 gives zero hits but the full total, and truncate
     for (std::size_t i = 0; i < records.size(); ++i) {
         records[i].relativePath = std::to_string(i) + ".txt";
     }
-    AssetFilter filter;
+    const AssetFilter filter;
     const SearchResult result = searchAssets(std::span<const AssetRecord>(records), filter, /*cap=*/0);
     CHECK(result.hits.empty());
     CHECK(result.total == 3);
