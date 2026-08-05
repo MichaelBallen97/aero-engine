@@ -231,6 +231,14 @@ find_package(Threads REQUIRED)
 # reflect-OFF build, not skipped -- prove it with --list-test-cases, which must show a DIFFERENT
 # total in the two reduced configurations than it did before this step, not the same one twice.
 # Tier-0. The link line is UNCHANGED and no new ctest entry is registered (ctest -N stays 95/6/19).
+#
+# task 3.1.3 joins this target with editor/asset_view_test.cpp (Step 1: kinds/icons/filter/search/grid
+# math, cases AV1-AV42), editor/thumbnail_cache_test.cpp (Step 4: the ledger/budget/LRU/resampler,
+# cases TC1-TC38) and editor/asset_actions_test.cpp (Step 9: the orphan-delete planner + action,
+# cases AA1-AA22) -- all three UNCONDITIONAL, for the identical reason asset_meta_test.cpp is: none
+# depends on reflection or entt, so all three must be PRESENT in both reduced configurations, not
+# skipped -- prove it with --list-test-cases. Tier-0. The link line is UNCHANGED and no new ctest
+# entry is registered (ctest -N stays 95/6/19, §V1).
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -241,7 +249,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/scene_session_test.cpp editor/project_test.cpp
                editor/project_settings_test.cpp
                editor/asset_meta_test.cpp editor/asset_database_test.cpp
-               editor/text_file_test.cpp editor/asset_cache_test.cpp)
+               editor/text_file_test.cpp editor/asset_cache_test.cpp
+               editor/asset_view_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
