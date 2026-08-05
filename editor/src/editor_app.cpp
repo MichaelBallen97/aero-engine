@@ -301,7 +301,9 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
             app.consolePanel = app.registry.emplace<ConsolePanel>(std::move(*logScope));
         }
         AERO_LOG_INFO("editor: assets root '{}'", app.project.assetsRoot());
-        app.assetBrowserPanel = app.registry.emplace<AssetBrowserPanel>(app.project.assetsRoot());
+        // task 3.1.3 (A17): the device is passed AT CONSTRUCTION, not reconciled -- unlike the
+        // project root, it can never change during a session.
+        app.assetBrowserPanel = app.registry.emplace<AssetBrowserPanel>(app.project.assetsRoot(), &device);
         // task 2.6.2 (D12): LAST. Inspector registers before it and therefore stays the selected tab
         // in the shared Right dock node (the Console-before-Assets property), and no existing panel's
         // index shifts, so every index-based assertion in the tree keeps its meaning. Its return value
@@ -506,6 +508,11 @@ bool EditorApp::tick() {
     if (viewportPanel != nullptr) {
         viewportPanel->renderScene(sceneWorld);
     }
+    // task 3.1.3 (D8): serviceThumbnails() is the ONLY thumbnail mutator, and it runs here -- the
+    // SECOND occupant of the slot between drawShellUi and endFrame, the renderScene precedent.
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->serviceThumbnails();
+    }
     presented = layer.endFrame(config.clearColor);
     if (fileFlow.quitConfirmed) {
         // File > Exit / Ctrl+Q / the window [X] -- all AFTER the guard said yes (task 2.5.1 D1). This
@@ -587,6 +594,21 @@ std::optional<ContentHash> EditorApp::assetContentHashForPath(std::string_view r
 }
 std::size_t EditorApp::assetCacheEntryCount() const noexcept { return assetDatabase.cacheSize(); }
 std::size_t EditorApp::assetImportJobCount() const noexcept { return assetDatabase.importPlan().jobIndices.size(); }
+
+// task 3.1.3 (A12): forwarded, 0 when no Asset Browser panel is registered -- the
+// assetCacheEntryCount() shape verbatim.
+std::size_t EditorApp::thumbnailReadyCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailReadyCount() : std::size_t{0};
+}
+std::size_t EditorApp::thumbnailUnavailableCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailUnavailableCount() : std::size_t{0};
+}
+std::size_t EditorApp::thumbnailResidentCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailResidentCount() : std::size_t{0};
+}
+std::size_t EditorApp::thumbnailLoadAttempts() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailLoadAttempts() : std::size_t{0};
+}
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }

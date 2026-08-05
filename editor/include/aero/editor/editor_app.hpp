@@ -209,6 +209,14 @@ public:
     [[nodiscard]] std::size_t assetCacheEntryCount() const noexcept;
     [[nodiscard]] std::size_t assetImportJobCount() const noexcept;
 
+    // ---- task 3.1.3: thumbnails. The assetCacheEntryCount() shape verbatim (A12) -- without these,
+    // I36-I38 would have no way to observe the store/ledger from outside AssetBrowserPanel, which is
+    // src-private. Each returns 0 when no Asset Browser panel is registered.
+    [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept;
+    [[nodiscard]] std::size_t thumbnailUnavailableCount() const noexcept;
+    [[nodiscard]] std::size_t thumbnailResidentCount() const noexcept;
+    [[nodiscard]] std::size_t thumbnailLoadAttempts() const noexcept;
+
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
     // Same effect as Edit > Undo / Ctrl+Z (Cmd+Z on macOS), applied on the NEXT tick -- the

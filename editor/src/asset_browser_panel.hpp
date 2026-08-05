@@ -21,12 +21,22 @@
 #include <aero/editor/asset_view.hpp>  // task 3.1.3 -- AssetViewMode, TileSize (pure enums, ImGui-free)
 #include <aero/editor/panel.hpp>
 #include <aero/editor/project_files.hpp>
+#include <aero/editor/thumbnail_cache.hpp>  // task 3.1.3 -- ThumbnailKey/ThumbnailLedger (pure, GPU-free)
 
+#include "thumbnail_store.hpp"  // task 3.1.3 -- src-private: the ONLY stb/GPU TU for thumbnails
+
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
+
+namespace engine::rhi {
+class Device;  // forward-declared, never #included here (A17) -- viewport_panel.hpp:19-21's shape
+}  // namespace engine::rhi
 
 namespace engine::editor {
 
@@ -37,7 +47,10 @@ class AssetDatabase;
 
 class AssetBrowserPanel final : public Panel {
 public:
-    explicit AssetBrowserPanel(std::string rootPath);
+    // task 3.1.3 (A17): `device` defaults to nullptr, which keeps thumbnails deliberately unavailable
+    // (E13/AC-11) -- store.available() stays false, drawTile falls back to the icon path forever, and
+    // nothing crashes. EditorApp::create() always passes a real device.
+    explicit AssetBrowserPanel(std::string rootPath, rhi::Device* device = nullptr);
 
     // FROZEN (D20/INV-1): "Assets" is the ImGui window name AND the imgui.ini settings key
     // (panel.hpp:46-47), and it has been written into every aero_editor.ini since 2.1.3. Renaming it
@@ -83,6 +96,19 @@ public:
         return requested;
     }
 
+    // task 3.1.3 (D8): the ONLY thumbnail mutator, called from EditorApp::tick() OUTSIDE the draw
+    // walk (the ViewportPanel::renderScene precedent) -- touches visible keys, evicts beyond the cap
+    // BEFORE decoding (so the bound stated in the footer is exactly true), then decodes at most
+    // MAX_THUMBNAIL_DECODES_PER_TICK Absent keys.
+    void serviceThumbnails();
+
+    // task 3.1.3 (A12): black-box observability for the GPU tier, forwarded by EditorApp -- the
+    // assetCacheEntryCount() shape verbatim.
+    [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept { return ledger.readyCount(); }
+    [[nodiscard]] std::size_t thumbnailUnavailableCount() const noexcept { return ledger.unavailableCount(); }
+    [[nodiscard]] std::size_t thumbnailResidentCount() const noexcept { return store.residentCount(); }
+    [[nodiscard]] std::size_t thumbnailLoadAttempts() const noexcept { return store.loadAttempts(); }
+
 private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.
     enum class ActionKind : std::uint8_t {
@@ -116,6 +142,13 @@ private:
     void openAncestors(const std::string& path);  // iterative; never opens `path` itself (C9)
     [[nodiscard]] const DirectoryListing* cached(const std::string& rel) const;
 
+    // task 3.1.3 (INV-V3): std::nullopt unless ALL SEVEN conditions hold -- in ONE function so no
+    // call site can forget one. See the .cpp for the full list.
+    [[nodiscard]] std::optional<ThumbnailKey> thumbnailKeyFor(const FileEntry& entry, const std::string& rel) const;
+    // "" when the record behind `key` has vanished (a rescan raced the decode) -- the caller treats
+    // an empty path as Failed, never as "try again".
+    [[nodiscard]] std::string absolutePathFor(const ThumbnailKey& key) const;
+
     std::string rootUtf8;
     std::string currentDir;     // relative; "" == the root
     std::string selectedEntry;  // relative; "" == nothing selected
@@ -135,6 +168,13 @@ private:
     // "resets to Grid/Medium on relaunch" limitation).
     AssetViewMode viewMode = AssetViewMode::Grid;
     TileSize tileSize = TileSize::Medium;
+
+    // task 3.1.3, Step 7 -- the two-phase thumbnail wiring (D8). `store`/`ledger` are member-named,
+    // not `databasePtr`-style pointers: ThumbnailStore/ThumbnailLedger are OWNED here, one per panel.
+    ThumbnailLedger ledger;
+    ThumbnailStore store;
+    std::vector<ThumbnailKey> visibleThumbnailKeys;  // per-frame scratch, cleared in phase 1
+    std::uint64_t frameCounter = 0;                  // the LRU's clock; monotonic, NEVER wall time
 };
 
 }  // namespace engine::editor
