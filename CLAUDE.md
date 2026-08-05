@@ -84,7 +84,8 @@ budget/eviction, orphan-delete-round-trip and mechanical source-text GPU-tier ca
 code-review round's I43). Both reduced
 configurations, freshly rebuilt for this documentation step (`build/tools-off-3.1.3`,
 `build/reflect-off-3.1.3`): `ctest -N` **6**/**19** unchanged, `aero_editor_shell_test`'s own doctest
-`--count` reads **716** in **both**, all passing 100%. `aero_scene_serialize_test` **23** and
+`--count` reads **729** in **both**, all passing 100% (6/6 and 19/19), re-measured after the
+code-review round on freshly configured directories. `aero_scene_serialize_test` **23** and
 `aero_editor_inspector_test` **22**, both unchanged since 3.1.1. `aero_editor_core` sources **46** (42
 before this task → +4: `asset_view.{hpp,cpp}`, `thumbnail_cache.{hpp,cpp}`, `thumbnail_store.{hpp,cpp}`,
 `asset_actions.{hpp,cpp}`) — one new `find_package(Stb REQUIRED)` plus one new

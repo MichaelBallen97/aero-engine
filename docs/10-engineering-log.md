@@ -3470,7 +3470,9 @@ revert restored the file byte-for-byte — confirmed via `git diff` (empty) **an
 checks, Check A's six-file denylist and Check B's two-file positive allowlist); the full
 `ctest --preset macos-debug` suite passing 100% of 95 (`AERO_REQUIRE_GPU=1`); both reduced
 configurations freshly rebuilt and passing 100% (6/6 tools-OFF, 19/19 reflect-OFF),
-`aero_editor_shell_test` reading **716** doctest cases in each. Measured inventory, not carried
+`aero_editor_shell_test` reading **729** doctest cases in each (re-measured after the code-review
+round, on directories configured from scratch — a stale build directory reports a stale number, 2.6.2's
+A3). Measured inventory, not carried
 forward: `aero_tests` **415** (unchanged — zero engine paths touched), `aero_editor_shell_test`
 **753** (was **621** before this task; **+132**: `asset_view_test.cpp` AV1–AV42 (+AV39b) new TU,
 `thumbnail_cache_test.cpp` TC1–TC38 new TU, `asset_actions_test.cpp` AA1–AA22 new TU, plus
