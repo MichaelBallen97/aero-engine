@@ -113,14 +113,18 @@ private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.
     enum class ActionKind : std::uint8_t {
         None = 0,
-        Navigate,      // path: the directory to make current
-        ToggleDir,     // path: the directory whose expansion flips
-        SelectEntry,   // path: the entry to select (relative to the root)
-        Refresh,       // path: unused
-        ToggleHidden,  // path: unused
-        ReimportAll,   // path: unused -- task 3.1.2, APPENDED (never inserted -- performance-enum-size)
-        SetViewMode,   // path: "grid" or "list" -- task 3.1.3, Step 6, APPENDED
-        SetTileSize,   // path: "small"/"medium"/"large" -- task 3.1.3, Step 6, APPENDED
+        Navigate,       // path: the directory to make current
+        ToggleDir,      // path: the directory whose expansion flips
+        SelectEntry,    // path: the entry to select (relative to the root)
+        Refresh,        // path: unused
+        ToggleHidden,   // path: unused
+        ReimportAll,    // path: unused -- task 3.1.2, APPENDED (never inserted -- performance-enum-size)
+        SetViewMode,    // path: "grid" or "list" -- task 3.1.3, Step 6, APPENDED
+        SetTileSize,    // path: "small"/"medium"/"large" -- task 3.1.3, Step 6, APPENDED
+        SetQuery,       // path: the new query text -- task 3.1.3, Step 8, APPENDED
+        ClearSearch,    // path: unused -- task 3.1.3, Step 8, APPENDED
+        SetKindFilter,  // path: "all" or a single digit (static_cast<int>(AssetKind)) -- Step 8, APPENDED
+        RevealPath,     // path: the full relative path a double-clicked search hit named -- Step 8, APPENDED
     };
     struct PendingAction {
         ActionKind kind = ActionKind::None;
@@ -136,9 +140,16 @@ private:
     // drawContentsPane, renamed and otherwise BYTE-IDENTICAL (D3/AC-2); drawContentsGrid is new.
     void drawContentsList(float paneHeight);
     void drawContentsGrid(float paneHeight);
-    void drawTile(const FileEntry& entry, const std::string& rel, float tileW, float tileH, float tileEdge, float pad);
-    void drawFooter();                            // phase 5
-    void applyPending();                          // the ONE mutating switch
+    // task 3.1.3, Step 8: `isSearchHit` changes the double-click semantics (RevealPath instead of
+    // Navigate -- a search hit is always a file, never a folder) and folds the parent folder into the
+    // caption so a project-wide result stays identifiable outside its own directory.
+    void drawTile(const FileEntry& entry, const std::string& rel, float tileW, float tileH, float tileEdge, float pad,
+                  bool isSearchHit);
+    void drawFooter();    // phase 5
+    void applyPending();  // the ONE mutating switch
+    // task 3.1.3, Step 8: rebuilds `searchRows` from the COMMITTED filter -- called from applyPending
+    // ONLY (SetQuery/SetKindFilter), never from the draw walk, so the draw walk never searches.
+    void refreshSearchRows();
     void openAncestors(const std::string& path);  // iterative; never opens `path` itself (C9)
     [[nodiscard]] const DirectoryListing* cached(const std::string& rel) const;
 
@@ -175,6 +186,11 @@ private:
     ThumbnailStore store;
     std::vector<ThumbnailKey> visibleThumbnailKeys;  // per-frame scratch, cleared in phase 1
     std::uint64_t frameCounter = 0;                  // the LRU's clock; monotonic, NEVER wall time
+
+    // task 3.1.3, Step 8 -- the whole-project search (D5: AssetDatabase::records() IS the index).
+    AssetFilter filter;        // COMMITTED; the search box edits a SCRATCH copy (queryScratch)
+    std::string queryScratch;  // per-frame scratch, NOT model state
+    SearchResult searchRows;   // rebuilt in applyPending() when the query/kind filter changes
 };
 
 }  // namespace engine::editor

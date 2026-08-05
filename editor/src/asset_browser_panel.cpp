@@ -20,6 +20,8 @@
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
 
+#include "text_input.hpp"  // task 3.1.3 (A1): inputTextString -- NEVER imgui_stdlib (Windows Debug LNK2038)
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -121,6 +123,11 @@ void AssetBrowserPanel::setRoot(std::string rootPath) {
     // against the new one -- both are cleared together, exactly like the cache/tree state above.
     ledger.clear();
     store.clear();
+    // task 3.1.3, Step 8: a project-wide search against the OLD project's records is meaningless
+    // against the new one -- the SAME reasoning, a third time.
+    filter = AssetFilter{};
+    queryScratch.clear();
+    searchRows = SearchResult{};
 }
 
 void AssetBrowserPanel::record(ActionKind kind, std::string path) { pending = PendingAction{kind, std::move(path)}; }
@@ -228,6 +235,48 @@ void AssetBrowserPanel::drawHeader() {
                     break;
             }
         }
+    }
+
+    // task 3.1.3, Step 8: the search box and the kind filter, on the SAME wrapping row (§D-7).
+    // `queryScratch` is a local copy the InputText widget edits directly (A1's inputTextString) --
+    // reseeded from the COMMITTED value first, so a query cleared/changed by anything OTHER than
+    // typing (ClearSearch, RevealPath) is reflected here too. A SetQuery action is recorded only when
+    // the buffer diverges from the committed value, the same "record, never write" discipline every
+    // other control on this row already follows (INV-5).
+    ImGui::SameLine();
+    queryScratch = filter.query;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0F);
+    engine::editor::inputTextString("##search", queryScratch, ImGuiInputTextFlags_None);
+    if (queryScratch != filter.query) {
+        record(ActionKind::SetQuery, queryScratch);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x")) {
+        record(ActionKind::ClearSearch, {});
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Clear the search");
+    }
+
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0F);
+    constexpr std::array<AssetKind, 6> KIND_OPTIONS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+                                                    AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
+    labelScratch = filter.anyKind ? std::string("All") : std::string(assetKindLabel(filter.kind));
+    if (ImGui::BeginCombo("##kindFilter", labelScratch.c_str())) {
+        if (ImGui::Selectable("All", filter.anyKind)) {
+            record(ActionKind::SetKindFilter, "all");
+        }
+        for (const AssetKind kind : KIND_OPTIONS) {
+            const bool selected = !filter.anyKind && filter.kind == kind;
+            labelScratch = std::string(assetKindLabel(kind));
+            ImGui::PushID(static_cast<int>(kind));
+            if (ImGui::Selectable(labelScratch.c_str(), selected)) {
+                record(ActionKind::SetKindFilter, std::to_string(static_cast<int>(kind)));
+            }
+            ImGui::PopID();  // no continue/break/return between Push and Pop
+        }
+        ImGui::EndCombo();
     }
 
     // The breadcrumb: root / a / b, every segment clickable (AC-3).
@@ -353,6 +402,54 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
 // caller now chooses between this and drawContentsGrid below.
 void AssetBrowserPanel::drawContentsList(float paneHeight) {
     ImGui::BeginChild("##contents", ImVec2(0.0F, paneHeight), ImGuiChildFlags_Borders);
+    if (!filter.query.empty()) {
+        // task 3.1.3, Step 8 (AC-14/E15/E16): the SAME "No assets match" / two-column shape as the
+        // directory listing below, over searchRows instead. The Name column shows the FULL relative
+        // path (there is no single directory context to omit it against); the Size column is always
+        // "—" -- a search hit carries no size (AssetRecord tracks identity and content, not bytes).
+        if (searchRows.hits.empty()) {
+            ImGui::TextUnformatted("No assets match");
+        } else {
+            const ImVec2 tableSize(0.0F, ImGui::GetContentRegionAvail().y);
+            const ImGuiTableFlags tableFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
+                                               ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Resizable;
+            if (ImGui::BeginTable("##search-entries", 2, tableFlags, tableSize)) {  // F10: End ONLY if true
+                const float sizeColumnWidth = ImGui::GetFontSize() * SIZE_COLUMN_FONT_MULTIPLE;
+                ImGui::TableSetupColumn("Name");
+                ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, sizeColumnWidth);
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableHeadersRow();
+
+                ImGuiListClipper clipper;
+                clipper.Begin(static_cast<int>(searchRows.hits.size()));
+                while (clipper.Step()) {
+                    for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                        const SearchHit& hit = searchRows.hits[static_cast<std::size_t>(i)];
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::PushID(i);
+                        const ImGuiSelectableFlags selFlags =
+                            ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick;
+                        if (ImGui::Selectable("##row", hit.relativePath == selectedEntry, selFlags)) {
+                            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                                record(ActionKind::RevealPath, hit.relativePath);
+                            } else {
+                                record(ActionKind::SelectEntry, hit.relativePath);
+                            }
+                        }
+                        ImGui::SameLine(0.0F, 0.0F);
+                        ImGui::TextUnformatted(hit.relativePath.c_str());
+                        ImGui::PopID();  // no continue/break/return between Push and Pop
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::TextUnformatted(UNKNOWN_SIZE);
+                    }
+                }
+                ImGui::EndTable();  // ONLY because BeginTable returned true (F10)
+            }
+        }
+        ImGui::EndChild();  // UNCONDITIONAL -- F9
+        return;
+    }
     // DELIBERATELY NOT guarded by the return value, unlike ##dirs above (plan §Approaches C): the
     // table path infers no state from a widget's return, so submitting into a clipped child is
     // harmless -- and leaving it live is what keeps BeginTable's asymmetric conditional EndTable a
@@ -459,7 +556,7 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
 
 // ---- phase 4 (grid): task 3.1.3, Step 6 -----------------------------------------------------------
 void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel, float tileW, float tileH,
-                                 float tileEdge, float pad) {
+                                 float tileEdge, float pad, bool isSearchHit) {
     const ImVec2 tileDims(tileW, tileH);
     const ImVec2 itemMin = ImGui::GetCursorScreenPos();
     // A single Selectable over the WHOLE tile (2.2.4's ##row idiom, applied to a 2-D item): keeps a
@@ -467,7 +564,15 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
     // drawn on the draw list (never through Selectable's own label), so "##" renders literally (E19).
     const ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
     if (ImGui::Selectable("##tile", rel == selectedEntry, selFlags, tileDims)) {
-        if (entry.isDirectory && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        // task 3.1.3 (AC-15): a search hit is ALWAYS a file (searchAssets never matches a folder), so
+        // its double-click semantics are RevealPath, not Navigate.
+        if (isSearchHit) {
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                record(ActionKind::RevealPath, rel);
+            } else {
+                record(ActionKind::SelectEntry, rel);
+            }
+        } else if (entry.isDirectory && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
             record(ActionKind::Navigate, rel);
         } else {
             record(ActionKind::SelectEntry, rel);
@@ -519,9 +624,18 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
     }
 
     // The caption: leaf name, wrapped to at most TILE_CAPTION_LINES and ellipsised beyond that (A15).
-    // A15's 8-argument AddText overload -- imgui.h:3477 -- is the only one with a wrap width.
+    // A15's 8-argument AddText overload -- imgui.h:3477 -- is the only one with a wrap width. A search
+    // hit folds its containing folder into the SAME caption (the plan's own "subtitled" requirement),
+    // so it stays identifiable outside the directory the user is currently browsing (AC-15).
+    std::string captionSource = entry.name;
+    if (isSearchHit) {
+        const std::string parent = parentOf(rel);
+        if (!parent.empty()) {
+            captionSource = parent + "/" + entry.name;
+        }
+    }
     const float wrapWidth = tileW - (2.0F * pad);
-    const std::string caption = elideForCaption(std::string(entry.name), wrapWidth);
+    const std::string caption = elideForCaption(captionSource, wrapWidth);
     const ImVec2 captionPos(itemMin.x + pad, iconMax.y + pad);
     drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize(), captionPos, IM_COL32_WHITE, caption.c_str(), nullptr,
                       wrapWidth, nullptr);
@@ -529,7 +643,49 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
 
 void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
     ImGui::BeginChild("##contents", ImVec2(0.0F, paneHeight), ImGuiChildFlags_Borders);
-    const DirectoryListing* const listing = cached(currentDir);
+    const bool searching = !filter.query.empty();
+    const DirectoryListing* const listing = searching ? nullptr : cached(currentDir);
+    if (searching) {
+        // task 3.1.3, Step 8 (AC-14/E15/E16): a project-wide search routes here instead of the cached
+        // DirectoryListing -- the status/`Scanning…`/`No project directory` early-outs below are for
+        // the directory path only; a search's own empty state is "No assets match", never a blank pane.
+        if (searchRows.hits.empty()) {
+            ImGui::TextUnformatted("No assets match");
+        } else {
+            const float tileEdge = ImGui::GetFontSize() * tileEdgeFontMultiple(tileSize);
+            const float pad = ImGui::GetFontSize() * TILE_CAPTION_PAD_FONT_MULTIPLE;
+            const float captionH = static_cast<float>(TILE_CAPTION_LINES) * ImGui::GetTextLineHeight();
+            const float tileW = tileEdge + (2.0F * pad);
+            const float tileH = tileEdge + captionH + (3.0F * pad);
+            const float spacing = ImGui::GetStyle().ItemSpacing.x;
+            const float rowHeight = tileH + ImGui::GetStyle().ItemSpacing.y;
+            const int columns = gridColumnsFor(ImGui::GetContentRegionAvail().x, tileW, spacing);
+            const int rows = (static_cast<int>(searchRows.hits.size()) + columns - 1) / columns;
+            ImGuiListClipper clipper;
+            clipper.Begin(rows, rowHeight);
+            while (clipper.Step()) {
+                for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
+                    for (int c = 0; c < columns; ++c) {
+                        const int index = (r * columns) + c;
+                        if (index >= static_cast<int>(searchRows.hits.size())) {
+                            break;
+                        }
+                        if (c > 0) {
+                            ImGui::SameLine();
+                        }
+                        const SearchHit& hit = searchRows.hits[static_cast<std::size_t>(index)];
+                        FileEntry synthetic;  // a search hit is ALWAYS a file (D5) -- no size is tracked
+                        synthetic.name = std::string(leafOf(hit.relativePath));
+                        ImGui::PushID(index);
+                        drawTile(synthetic, hit.relativePath, tileW, tileH, tileEdge, pad, /*isSearchHit=*/true);
+                        ImGui::PopID();
+                    }
+                }
+            }
+        }
+        ImGui::EndChild();  // UNCONDITIONAL -- F9
+        return;
+    }
     if (listing == nullptr) {
         ImGui::TextUnformatted("Scanning...");
     } else if (rootUtf8.empty()) {
@@ -590,7 +746,7 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
                     const FileEntry& entry = items[static_cast<std::size_t>(index)];
                     const std::string rel = joinRelative(currentDir, entry.name);
                     ImGui::PushID(index);
-                    drawTile(entry, rel, tileW, tileH, tileEdge, pad);
+                    drawTile(entry, rel, tileW, tileH, tileEdge, pad, /*isSearchHit=*/false);
                     ImGui::PopID();  // no continue/break/return inside drawTile
                 }
             }
@@ -669,6 +825,18 @@ void AssetBrowserPanel::drawFooter() {
             }
         }
     }
+    // task 3.1.3, Step 8 (AC-14/AC-28): APPENDED, never replacing -- the search summary, shown only
+    // while a query is committed. `total` is the UNCAPPED match count (seed S15); `truncated` names
+    // the cap explicitly rather than letting "showing the first 2000" read as "this is everything".
+    if (!filter.query.empty()) {
+        if (!labelScratch.empty()) {
+            labelScratch += "   |   ";
+        }
+        labelScratch += std::to_string(searchRows.total) + " matches";
+        if (searchRows.truncated) {
+            labelScratch += "  -  truncated (cap: " + std::to_string(MAX_SEARCH_RESULTS) + ")";
+        }
+    }
     // task 3.1.3 (AC-28): APPENDED, never replacing -- the thumbnail summary, shown only when
     // non-zero. `readyCount`/`unavailableCount` forward straight to the ledger (thumbnailReadyCount()/
     // thumbnailUnavailableCount() are the SAME two calls, exposed for the GPU tier).
@@ -699,6 +867,18 @@ void AssetBrowserPanel::openAncestors(const std::string& path) {
         openDirs.insert(cursor);
         cursor = parentOf(cursor);
     }
+}
+
+// task 3.1.3, Step 8: called from applyPending() ONLY -- searchAssets is a real O(records) walk, and
+// running it from the draw walk (once per frame, regardless of whether the query changed) would be
+// the exact "the panel performs I/O in the draw walk" mistake this task's own gates grep for. An
+// empty query or a null database both clear the result, never leaving a stale one behind.
+void AssetBrowserPanel::refreshSearchRows() {
+    if (filter.query.empty() || databasePtr == nullptr) {
+        searchRows = SearchResult{};
+        return;
+    }
+    searchRows = searchAssets(databasePtr->records(), filter);
 }
 
 void AssetBrowserPanel::applyPending() {
@@ -759,6 +939,38 @@ void AssetBrowserPanel::applyPending() {
             } else {
                 tileSize = TileSize::Medium;
             }
+            break;
+        case ActionKind::SetQuery:
+            filter.query = action.path;
+            refreshSearchRows();
+            break;
+        case ActionKind::ClearSearch:
+            filter.query.clear();
+            queryScratch.clear();
+            searchRows = SearchResult{};
+            break;
+        case ActionKind::SetKindFilter:
+            if (action.path == "all") {
+                filter.anyKind = true;
+            } else if (!action.path.empty()) {
+                // A single digit, 0-5 -- static_cast<int>(AssetKind) (§D-7's PendingAction shape).
+                // No std::stoi: the no-exceptions rule (docs/04) extends to this control-flow path too.
+                filter.anyKind = false;
+                filter.kind = static_cast<AssetKind>(action.path[0] - '0');
+            }
+            refreshSearchRows();
+            break;
+        case ActionKind::RevealPath:
+            // task 3.1.3 (AC-15): a double-clicked search hit navigates to its containing folder,
+            // selects it, and expands the tree to reveal it -- in ONE arm, because `pending` is a
+            // single last-writer-wins slot and this needs Navigate's effect AND SelectEntry's.
+            currentDir = parentOf(action.path);
+            selectedEntry = action.path;
+            openAncestors(action.path);
+            treeDirty = true;
+            filter.query.clear();
+            queryScratch.clear();
+            searchRows = SearchResult{};
             break;
     }
 }
