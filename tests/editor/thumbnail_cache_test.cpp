@@ -288,8 +288,13 @@ TEST_CASE("thumbnail cache: same Guid, different ContentHash -- distinct entries
     b.hash = ContentHash{.hi = 2, .lo = 2};
 
     ThumbnailLedger ledger;
-    ledger.touch(a, 1);
+    // `b` (the LARGER hash) is touched FIRST, `a` (the SMALLER hash) SECOND -- the order that actually
+    // exercises a guid-only equality bug: std::lower_bound for `a` lands ON `b`'s entry (b is not < a),
+    // so a comparison that drops the hash half would wrongly treat them as the same entry. Touching in
+    // the other order never reaches that code path at all (found directly: sabotage seed S8 left this
+    // case green in its original a-then-b order).
     ledger.touch(b, 1);
+    ledger.touch(a, 1);
     ledger.markReady(a);
     CHECK(ledger.stateOf(a) == ThumbnailState::Ready);
     CHECK(ledger.stateOf(b) == ThumbnailState::Absent);

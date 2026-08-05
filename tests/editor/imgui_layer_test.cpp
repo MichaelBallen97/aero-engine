@@ -3422,11 +3422,21 @@ TEST_CASE(
                                            .restoreLastProject = false,
                                            .recentProjectsPath = uniqueRecentsFile()});
     REQUIRE(app.has_value());
-    REQUIRE(app->tick());  // the scan: 4 New assets
+    // The baseline is read BEFORE the FIRST tick, not after -- the scan tick ALSO draws (drawShellUi
+    // runs every tick unconditionally) and therefore ALSO calls serviceThumbnails() once, so all 4
+    // assets are already visible and touched by the time that first tick() returns. Reading the
+    // baseline afterward would hide a seed that decodes everything in that single first burst (found
+    // directly: sabotage seed S4 stayed green against the ORIGINAL, later-baseline shape of this case).
+    std::size_t previousAttempts = app->thumbnailLoadAttempts();  // 0 -- no tick has run yet
+    REQUIRE(app->tick());                                         // the scan: 4 New assets
     CHECK(app->presentedLastFrame());
     CHECK(app->assetCount() == 4);
+    {
+        const std::size_t attempts = app->thumbnailLoadAttempts();
+        CHECK(attempts - previousAttempts <= engine::editor::MAX_THUMBNAIL_DECODES_PER_TICK);
+        previousAttempts = attempts;
+    }
 
-    std::size_t previousAttempts = app->thumbnailLoadAttempts();
     for (int i = 0; i < 30; ++i) {
         REQUIRE(app->tick());
         const std::size_t attempts = app->thumbnailLoadAttempts();
