@@ -56,6 +56,7 @@ add_library(aero_editor_core STATIC
     src/asset_database.cpp      # task 3.1.1 -- the scan; <filesystem>-FREE and <fstream>-FREE by rule (D4)
     src/asset_cache.cpp         # task 3.1.2 -- the import-cache index format + the three pure planners
     src/asset_view.cpp          # task 3.1.3 -- kinds, icons, filter/search, grid math (PURE)
+    src/thumbnail_cache.cpp     # task 3.1.3 -- key/state/LRU/budget + the box resampler (PURE, no GPU)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

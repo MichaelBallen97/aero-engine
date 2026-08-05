@@ -250,7 +250,7 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/project_settings_test.cpp
                editor/asset_meta_test.cpp editor/asset_database_test.cpp
                editor/text_file_test.cpp editor/asset_cache_test.cpp
-               editor/asset_view_test.cpp)
+               editor/asset_view_test.cpp editor/thumbnail_cache_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
