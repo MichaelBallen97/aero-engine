@@ -117,6 +117,18 @@ public:
     // it through the SAME applyPending() arm a click would.
     void requestReimportAll() noexcept;
 
+    // code-review finding 4: the same seam, three more times. The GPU tier is ImGui-free at source, so
+    // it cannot flip the Grid/List radio, type in the search box, or click an orphan's Delete button --
+    // which left drawContentsList()'s search branch (an asymmetric BeginTable/EndTable pair plus a
+    // clipper), drawContentsGrid()'s search branch, and the confirmation modal executed by NO test at
+    // all. Each records exactly the action a real widget records, so the next onDraw() drains it
+    // through the SAME applyPending() arm the widget would. One action per frame (`pending` is a single
+    // slot), so a caller ticks between them.
+    void requestViewMode(AssetViewMode mode) noexcept;
+    void requestSearchQuery(std::string query);
+    void requestKindFilter(std::string kind);
+    void requestDeleteOrphanClick(std::string relativeMetaPath);
+
     // task 3.1.3, Step 11: one-shot, read-and-clear -- the takeRescanRequest() shape, a third
     // instance (F9). Set only by the modal's Delete button confirming; drained by EditorApp::tick()'s
     // reconcile block, as its OWN statement (I42's mechanical proof).
@@ -132,6 +144,16 @@ public:
     [[nodiscard]] std::size_t thumbnailUnavailableCount() const noexcept { return ledger.unavailableCount(); }
     [[nodiscard]] std::size_t thumbnailResidentCount() const noexcept { return store.residentCount(); }
     [[nodiscard]] std::size_t thumbnailLoadAttempts() const noexcept { return store.loadAttempts(); }
+
+    // code-review finding 4: the same black-box observability, for the SEARCH half. Without these a
+    // GPU-tier case can drive the seams above and still prove nothing -- the branch it means to cover
+    // is entered only when `searchRows.hits` is non-empty, so a case that silently searched zero
+    // records would pass while executing none of the code it names. (Exactly that happened once: a
+    // deliberately unbalanced EndTable failed to redden I39 because the panel was tabbed behind the
+    // Console and never drew at all.)
+    [[nodiscard]] std::size_t searchHitCount() const noexcept { return searchRows.hits.size(); }
+    [[nodiscard]] bool listViewActive() const noexcept { return viewMode == AssetViewMode::List; }
+    [[nodiscard]] bool deleteModalPending() const noexcept { return !pendingOrphanDelete.empty(); }
 
 private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.

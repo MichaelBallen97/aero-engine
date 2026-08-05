@@ -71,12 +71,17 @@ Test inventory at HEAD, **re-measured, not carried forward**: **95** ctest entri
 **6** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`, **19** with `-DAERO_REFLECT_TOOLS=OFF`
 alone — unchanged by task 3.1.3 (zero new ctest entries; every new case lives inside an existing TU).
 `aero_tests` **415** (unchanged — 3.1.3 touches zero `engine/` paths). `aero_editor_shell_test`
-**740** (617 after 3.1.2 → +123 at 3.1.3: `tests/editor/asset_view_test.cpp` AV1–AV42 plus AV39b, a
+**753** (**621** after 3.1.2 → **+132** at 3.1.3: `tests/editor/asset_view_test.cpp` AV1–AV42 plus AV39b, a
 new TU; `tests/editor/thumbnail_cache_test.cpp` TC1–TC38, a new TU; `tests/editor/asset_actions_test.cpp`
 AA1–AA22, a new TU; `tests/editor/text_file_test.cpp` and `tests/editor/asset_database_test.cpp`
-extended in place. **740 measured directly with `--list-test-cases`, never derived by addition**).
-`aero_editor_imgui_test` **64** (57 after 3.1.2 → +7 at 3.1.3: I36–I42, the real-thumbnail-decode,
-budget/eviction, orphan-delete-round-trip and mechanical source-text GPU-tier cases). Both reduced
+extended in place, plus the code-review round's own cases. **753 measured directly with
+`--list-test-cases`, never derived by addition** — and the baseline is **621**, measured at `94e57e7`,
+not the **617** this file and the 3.1.2 log entry both carried forward: that stale figure survived into
+3.1.3's first draft and produced a wrong `+123`, which is precisely the class of error AC-30 exists to
+prevent. Both numbers are now measured, neither is derived).
+`aero_editor_imgui_test` **65** (57 after 3.1.2 → +8 at 3.1.3: I36–I42, the real-thumbnail-decode,
+budget/eviction, orphan-delete-round-trip and mechanical source-text GPU-tier cases, plus the
+code-review round's I43). Both reduced
 configurations, freshly rebuilt for this documentation step (`build/tools-off-3.1.3`,
 `build/reflect-off-3.1.3`): `ctest -N` **6**/**19** unchanged, `aero_editor_shell_test`'s own doctest
 `--count` reads **716** in **both**, all passing 100%. `aero_scene_serialize_test` **23** and

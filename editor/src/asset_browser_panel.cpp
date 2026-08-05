@@ -1241,6 +1241,26 @@ void AssetBrowserPanel::serviceThumbnails() {
 // the ImGui-free-at-source GPU tier has no other way to press a widget.
 void AssetBrowserPanel::requestReimportAll() noexcept { record(ActionKind::ReimportAll, {}); }
 
+// code-review finding 4: each records EXACTLY what the corresponding widget records -- the radio
+// (drawHeader's "grid"/"list"), the search box (SetQuery, or ClearSearch for an empty string, which
+// is what the Clear button does), the kind combo, and an orphan row's Delete button. Nothing here
+// bypasses applyPending(); the seam ends at record(), so every one of these still travels the one
+// mutation path INV-5 names.
+void AssetBrowserPanel::requestViewMode(AssetViewMode mode) noexcept {
+    record(ActionKind::SetViewMode, mode == AssetViewMode::Grid ? "grid" : "list");
+}
+void AssetBrowserPanel::requestSearchQuery(std::string query) {
+    if (query.empty()) {
+        record(ActionKind::ClearSearch, {});
+        return;
+    }
+    record(ActionKind::SetQuery, std::move(query));
+}
+void AssetBrowserPanel::requestKindFilter(std::string kind) { record(ActionKind::SetKindFilter, std::move(kind)); }
+void AssetBrowserPanel::requestDeleteOrphanClick(std::string relativeMetaPath) {
+    record(ActionKind::RequestDeleteOrphan, std::move(relativeMetaPath));
+}
+
 // ---- the frame ---------------------------------------------------------------------------------
 void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context is IGNORED
     reconcile();                                             // 1 -- the only I/O

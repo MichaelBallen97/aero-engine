@@ -630,6 +630,17 @@ std::size_t EditorApp::assetImportJobCount() const noexcept { return assetDataba
 
 // task 3.1.3 (A12): forwarded, 0 when no Asset Browser panel is registered -- the
 // assetCacheEntryCount() shape verbatim.
+// code-review finding 4: the search half's observability, same null-checked shape.
+std::size_t EditorApp::assetBrowserSearchHitCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->searchHitCount() : std::size_t{0};
+}
+bool EditorApp::assetBrowserListViewActive() const noexcept {
+    return assetBrowserPanel != nullptr && assetBrowserPanel->listViewActive();
+}
+bool EditorApp::assetBrowserDeleteModalPending() const noexcept {
+    return assetBrowserPanel != nullptr && assetBrowserPanel->deleteModalPending();
+}
+
 std::size_t EditorApp::thumbnailReadyCount() const noexcept {
     return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailReadyCount() : std::size_t{0};
 }
@@ -698,6 +709,29 @@ void EditorApp::requestOrphanDelete(std::string_view relativeMetaPath) { request
 void EditorApp::requestAssetBrowserReimportAll() noexcept {
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->requestReimportAll();
+    }
+}
+
+// code-review finding 4: the same null-checked forward, four more times. Each is a no-op when no Asset
+// Browser panel is registered, exactly as requestAssetBrowserReimportAll() above.
+void EditorApp::requestAssetBrowserViewMode(AssetViewMode mode) noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestViewMode(mode);
+    }
+}
+void EditorApp::requestAssetBrowserSearch(std::string_view query) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestSearchQuery(std::string(query));
+    }
+}
+void EditorApp::requestAssetBrowserKindFilter(std::string_view kind) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestKindFilter(std::string(kind));
+    }
+}
+void EditorApp::requestAssetBrowserDeleteOrphanClick(std::string_view relativeMetaPath) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestDeleteOrphanClick(std::string(relativeMetaPath));
     }
 }
 

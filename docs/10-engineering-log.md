@@ -3472,10 +3472,10 @@ checks, Check A's six-file denylist and Check B's two-file positive allowlist); 
 configurations freshly rebuilt and passing 100% (6/6 tools-OFF, 19/19 reflect-OFF),
 `aero_editor_shell_test` reading **716** doctest cases in each. Measured inventory, not carried
 forward: `aero_tests` **415** (unchanged — zero engine paths touched), `aero_editor_shell_test`
-**740** (was 617 before this task; +123: `asset_view_test.cpp` AV1–AV42 (+AV39b) new TU,
+**753** (was **621** before this task; **+132**: `asset_view_test.cpp` AV1–AV42 (+AV39b) new TU,
 `thumbnail_cache_test.cpp` TC1–TC38 new TU, `asset_actions_test.cpp` AA1–AA22 new TU, plus
-`text_file_test.cpp`/`asset_database_test.cpp` extended in place), `aero_editor_imgui_test` **64**
-(was 57; +7: I36–I42), `aero_scene_serialize_test`/`aero_editor_inspector_test` **23**/**22**, both
+`text_file_test.cpp`/`asset_database_test.cpp` extended in place and the code-review round's own
+cases), `aero_editor_imgui_test` **65** (was 57; +8: I36–I42 plus the code-review round's I43), `aero_scene_serialize_test`/`aero_editor_inspector_test` **23**/**22**, both
 unchanged. `aero_editor_core` sources **46** (was 42 — the four new TUs). `check-math-boundary.sh`
 **262 → 273** (eleven new C-family files: the four new `/editor` pairs' eight files plus three new
 test TUs — `asset_view_test.cpp`, `thumbnail_cache_test.cpp`, `asset_actions_test.cpp`);
@@ -3483,3 +3483,63 @@ test TUs — `asset_view_test.cpp`, `thumbnail_cache_test.cpp`, `asset_actions_t
 two-file `PERMITTED_DELETERS` allowlist is new this task, and its own final banner line now reports
 both counts (six files for Check A, the full `editor/src/*.cpp` count for Check B). Every changed
 file confirmed byte-identical to `HEAD` after every one of the 35 sabotage reverts.
+
+**The code-review round (PR #67) found 11 findings, 3 BLOCKING — and it found them against a fully
+green gate.** That is the entry's most important sentence: 95/95 ctest, six green guards, 35 sabotage
+seeds, and all three CI platforms were green at `628bbfc` when the review started. A green matrix was
+not evidence.
+
+- **BLOCKING 1 — a real use-after-free of GPU textures, invisible on macOS by construction.**
+  `applyPending()` is the last statement of `onDraw()`, so the `ReimportAll` arm's `store.clear()`
+  destroyed every `rhi::TextureHandle` whose native `SDL_GPUTexture*` `drawTile` had already written
+  into that frame's ImGui draw list; `endFrame()` then bound the freed pointer.
+  `SDL_ReleaseGPUTexture` frees **synchronously** on Vulkan (`SDL_gpu_vulkan.c:7070-7073`) and D3D12
+  (`SDL_gpu_d3d12.c:1460-1463`) — *"Containers are just client handles, so we can destroy
+  immediately"* — and only **defers** on Metal (`SDL_gpu_metal.m:936-944`). So the defect was
+  deterministic on Linux and Windows, in this task's own headline scenario, and **structurally
+  unreachable on the only platform with a human pass**. Fixed by deferring the teardown to a flag
+  drained by `serviceThumbnails()`, after its touch loop so keys drawn this frame are protected from
+  eviction by E12's own rule. **No test caught it because `I33` drives
+  `EditorApp::requestAssetReimport()`, a different path that never touches the panel's `pending` at
+  all** — the seam `requestAssetBrowserReimportAll()` exists to close exactly that.
+- **BLOCKING 2** — AC-13's first clause was never implemented: `refreshSearchRows()` early-returned on
+  an empty query and neither content view consulted `filter` for the directory listing, so the kind
+  combo was a **dead control** without a search term. `AV37`/`AV38` proved `matchesFilter` correct and
+  nothing wired it to the listing — model coverage mistaken for feature coverage.
+- **BLOCKING 3** — `drawFooter` resolved the selection by leaf name inside the *current* directory's
+  listing while a search hit records a full relative path. Usually the footer went blank; when a
+  same-named file existed in the current directory it paired the **search hit's path and GUID with a
+  different file's size**, presenting two files as one record.
+
+**Finding 8, recorded rather than fixed — `uploadTexture` is a full device stall, twice per tick.**
+`Device::uploadTexture` ends in `SDL_SubmitGPUCommandBufferAndAcquireFence` +
+`SDL_WaitForGPUFences` (`engine/rhi/src/sdl_gpu_backend.cpp:1620-1631`), and `device.hpp:134-141`
+documents it in its own words as *"blocking"* and *"NOT a per-frame path"*. This task nevertheless
+issues up to `MAX_THUMBNAIL_DECODES_PER_TICK = 2` of them per tick from `serviceThumbnails()`, inside
+the frame. **This is human validation row 4's ("40 photos, progressive fill-in, no stutter") first
+suspect, and it is a contradiction with the RHI's own stated contract, not an oversight.** It is left
+as-is deliberately: the budget of 2 came from that same warning rather than from a measurement, no
+stutter has actually been observed yet, and the alternatives (a non-blocking upload path, a staging
+queue) are **engine** changes — this task holds zero `engine/` paths, and the RHI is treated as
+sacred. If row 4 fails on any platform, lower the budget first and measure before touching the RHI.
+
+**Finding 4's fix produced a second-order lesson worth more than the fix.** Extending `I39` to cover
+the List view, both search branches and the confirmation modal required four new `EditorApp` seams —
+and the first two attempts at the test **passed while executing none of the code they named**. The
+Assets panel shares `DockSlot::Bottom` with the Console, `drawPanels()` calls `onDraw()` only when
+`ImGui::Begin()` returns true (`shell_ui.cpp:356`), and a tabbed-behind panel therefore never drains
+`pending` at all. A deliberately unbalanced `EndTable()` seeded into the List search branch failed to
+redden the case twice — once because the panel never drew, and once more even after focusing it,
+which exposed the real finding below. The case now `REQUIRE`s `assetBrowserListViewActive()` and
+`assetBrowserSearchHitCount() > 0` **before** the frames that matter, so it cannot silently degrade to
+covering nothing again, and `requestPanelFocus` must be issued **after** the dock layout exists — a
+focus requested before the first tick lands while `buildDefaultLayout` is still running and does
+nothing.
+
+**A correction to this project's own stated rule: a presented frame is NOT proof of ImGui call
+balance in this build.** `.claude/rules/editor.md` says an unbalanced call is an `IM_ASSERT` abort.
+ImGui 1.92.8 ships `ConfigErrorRecovery = true`, and a `BeginTable` with its `EndTable` deleted leaves
+`I39` **43/43 green** — verified directly, with a control seed proving the build was picking the edit
+up. The GPU-tier cases therefore prove the draw paths **execute** (which is what makes ASan/UBSan and
+any bad read inside them meaningful), but AC-21's balance claim rests on the source and on the human
+rows, exactly as the modal's does. Do not read a green GPU tier as balance proof.

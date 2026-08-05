@@ -9,6 +9,10 @@
 #include <aero/core/time.hpp>
 #include <aero/editor/asset_cache.hpp>     // task 3.1.2: ImportChange -- assetImportChangeForPath()'s return
                                            // type; used directly, not left to transitively arrive.
+#include <aero/editor/asset_view.hpp>      // code-review finding 4: AssetViewMode, by VALUE in
+                                           // requestAssetBrowserViewMode's signature -- used directly,
+                                           // not left to arrive transitively. ImGui-free (A17), so it
+                                           // does not breach this header's ImGui-FREE-BY-RULE contract.
 #include <aero/editor/asset_database.hpp>  // task 3.1.1: a VALUE member (assetDatabase) needs the
                                            // definition -- the command_stack.hpp/entity_ops.hpp
                                            // precedent below. Transitively brings project_files.hpp,
@@ -212,6 +216,14 @@ public:
     // ---- task 3.1.3: thumbnails. The assetCacheEntryCount() shape verbatim (A12) -- without these,
     // I36-I38 would have no way to observe the store/ledger from outside AssetBrowserPanel, which is
     // src-private. Each returns 0 when no Asset Browser panel is registered.
+    // code-review finding 4: the search half's black-box observability. A GPU-tier case that drives
+    // the search seams must be able to ASSERT it actually produced hits -- the List/Grid search
+    // branches are entered only when there is at least one, so without this a case can drive every
+    // seam, execute none of the code it names, and still pass.
+    [[nodiscard]] std::size_t assetBrowserSearchHitCount() const noexcept;
+    [[nodiscard]] bool assetBrowserListViewActive() const noexcept;
+    [[nodiscard]] bool assetBrowserDeleteModalPending() const noexcept;
+
     [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept;
     [[nodiscard]] std::size_t thumbnailUnavailableCount() const noexcept;
     [[nodiscard]] std::size_t thumbnailResidentCount() const noexcept;
@@ -289,6 +301,20 @@ public:
     // D3), and the ImGui-free-at-source GPU tier has no other way to make a LATER tick draw a
     // specific tabbed-behind panel again. An unknown id is a silent no-op.
     void requestPanelFocus(std::string_view panelId);
+
+    // code-review finding 4 (task 3.1.3): the remaining Asset Browser controls the ImGui-free-at-source
+    // GPU tier cannot operate -- the Grid/List radio, the search box, the kind combo, and an orphan
+    // row's Delete button. Without these, drawContentsList()'s search branch (an asymmetric
+    // BeginTable/EndTable pair plus a clipper), drawContentsGrid()'s search branch, and the delete
+    // confirmation modal were executed by NO test at all, and defaulting the view to Grid had silently
+    // removed the table-path coverage every GPU case used to give the List view for free.
+    // Each queues the SAME action its widget queues, drained by the next onDraw()'s applyPending();
+    // each is a no-op when no Asset Browser panel is registered. `pending` holds ONE action, so a
+    // caller ticks between calls. `kind` is "all" or a single digit -- static_cast<int>(AssetKind).
+    void requestAssetBrowserViewMode(AssetViewMode mode) noexcept;
+    void requestAssetBrowserSearch(std::string_view query);  // "" clears, exactly as the Clear button
+    void requestAssetBrowserKindFilter(std::string_view kind);
+    void requestAssetBrowserDeleteOrphanClick(std::string_view relativeMetaPath);
 
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer

@@ -3587,17 +3587,106 @@ TEST_CASE("editor: every asset browser draw path stays balanced (task 3.1.3, I39
                                            .restoreLastProject = false,
                                            .recentProjectsPath = uniqueRecentsFile()});
     REQUIRE(app.has_value());
-    REQUIRE(app->tick());  // Grid, default -- balance already exercised by every other GPU case above
+    // code-review finding 4: this case used to drive three plain Grid-view ticks and CONCEDE, in its
+    // own comment, that it could not reach the search box -- which left drawContentsList()'s search
+    // branch (an asymmetric BeginTable/EndTable pair plus an ImGuiListClipper), drawContentsGrid()'s
+    // search branch, and the delete confirmation modal executed by NO test at all. Worse, defaulting
+    // the view to Grid had silently REMOVED the table-path coverage every pre-3.1.3 GPU case gave the
+    // List view for free. The four new EditorApp seams drive each of them for real.
+    //
+    // WHAT `presentedLastFrame()` DOES AND DOES NOT PROVE HERE -- measured, not assumed. ImGui 1.92.8
+    // ships ConfigErrorRecovery = true, so an unbalanced BeginTable/EndTable is silently REPAIRED
+    // rather than aborting: deleting this branch's EndTable() and re-running this case leaves it
+    // 43/43 GREEN (verified directly, with a control seed proving the build was picking the edit up).
+    // So these ticks prove the paths EXECUTE -- which is the coverage finding 4 asked for, and enough
+    // for ASan/UBSan and any crash or bad read inside them to be caught -- but they are NOT a proof of
+    // ImGui call balance on their own. AC-21's balance claim rests on the source and on human rows,
+    // exactly as it does for the modal. Do not upgrade this comment to "balance proven" on a green run.
+    //
+    // `pending` holds exactly ONE action, so each request gets its own tick to be drained.
+    REQUIRE(app->tick());  // 1: Grid, default, Issues populated by the orphan above
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 2: let the default dock layout settle before focusing anything
     CHECK(app->presentedLastFrame());
 
-    REQUIRE(app->tick());  // a second frame with the Issues section now populated
+    // The Assets panel shares DockSlot::Bottom with the Console, and whichever tab wins the FIRST
+    // frame stays active forever with no further signal. drawPanels() calls onDraw() ONLY when
+    // ImGui::Begin() returns true (shell_ui.cpp:356), so a tabbed-behind panel never drains
+    // `pending` -- every request below would be recorded into a panel that never draws, and this
+    // case would pass while proving NOTHING.
+    //
+    // Found exactly that way, twice: a deliberately unbalanced EndTable in the List search branch
+    // failed to redden this case, and the assertions below then showed why. The focus must also come
+    // AFTER the layout exists -- requesting it before the first tick lands while buildDefaultLayout
+    // is still running and does nothing.
+    app->requestPanelFocus("Assets");
+    REQUIRE(app->tick());  // 3: focus applied before DockSpaceOverViewport, so it lands this frame
     CHECK(app->presentedLastFrame());
 
-    // A search with zero results -- no in-process way to type into the search box from this
-    // ImGui-free-at-source TU; the balance surface is identical to the two frames already driven
-    // above regardless of `filter.query`'s value, so a third plain tick covers it.
-    REQUIRE(app->tick());
+    // --- the Issues section, OPEN (it draws closed by default) ---------------------------------
+    // Issues opens via its own CollapsingHeader, which this TU cannot click; the modal request below
+    // draws the section's body regardless, so the open path is covered there.
+
+    // --- List view, no search: the table path pre-3.1.3 cases used to cover for free ------------
+    app->requestAssetBrowserViewMode(engine::editor::AssetViewMode::List);
+    REQUIRE(app->tick());  // 2: drains SetViewMode
     CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 3: first frame actually DRAWN as List
+    CHECK(app->presentedLastFrame());
+
+    // --- List view, WITH a search hit: BeginTable/EndTable + the clipper, previously uncovered ---
+    app->requestAssetBrowserSearch("a");  // matches a.png
+    REQUIRE(app->tick());                 // 4: drains SetQuery, rebuilds searchRows
+    CHECK(app->presentedLastFrame());
+    // LOAD-BEARING, not decorative: the table branch is entered ONLY when there is at least one hit,
+    // so without this REQUIRE the whole case can drive every seam, draw the plain listing, and pass
+    // while executing none of the code it names.
+    REQUIRE(app->assetBrowserListViewActive());
+    REQUIRE(app->assetBrowserSearchHitCount() > 0);
+    REQUIRE(app->tick());  // 5: first frame drawn through drawContentsList's search branch
+    CHECK(app->presentedLastFrame());
+
+    // --- List view, search with ZERO results: the "No assets match" arm -------------------------
+    app->requestAssetBrowserSearch("zzz-no-such-asset");
+    REQUIRE(app->tick());  // 6
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 7
+    CHECK(app->presentedLastFrame());
+
+    // --- back to Grid, still searching: drawContentsGrid's search branch ------------------------
+    app->requestAssetBrowserViewMode(engine::editor::AssetViewMode::Grid);
+    REQUIRE(app->tick());  // 8
+    CHECK(app->presentedLastFrame());
+    app->requestAssetBrowserSearch("a");
+    REQUIRE(app->tick());  // 9
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 10: first frame drawn through the grid's search branch
+    CHECK(app->presentedLastFrame());
+
+    // --- the kind filter, composed with the query (AC-13's second clause) -----------------------
+    app->requestAssetBrowserKindFilter("all");
+    REQUIRE(app->tick());  // 11
+    CHECK(app->presentedLastFrame());
+
+    // --- clear the search, back to the plain directory listing ----------------------------------
+    app->requestAssetBrowserSearch("");
+    REQUIRE(app->tick());  // 12: drains ClearSearch
+    CHECK(app->presentedLastFrame());
+
+    // --- the delete CONFIRMATION MODAL, previously executed by no test at all --------------------
+    // I41 drives EditorApp::requestOrphanDelete(), which performs the delete directly and bypasses
+    // this modal entirely. This drives the panel's OWN orphan Delete button instead, so the modal
+    // actually opens and draws -- and, crucially, is DISMISSED without confirming, proving the
+    // sidecar survives a modal that was opened and abandoned.
+    app->requestAssetBrowserDeleteOrphanClick("gone.png.meta");
+    REQUIRE(app->tick());  // 13: drains RequestDeleteOrphan, sets pendingOrphanDelete
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 14: the modal is open and drawing
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 15: still open, still balanced
+    CHECK(app->presentedLastFrame());
+    // Never confirmed, so the orphan is still on disk -- the delete half of AC-17/AC-20.
+    CHECK(engine::editor::fileExists(assetsRoot + "/gone.png.meta"));
 
     app->requestQuit();
     CHECK(app->tick() == false);
