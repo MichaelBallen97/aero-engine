@@ -24,6 +24,7 @@
             ]
         },
         "spdlog",
+        "stb",
         "tracy"
     ]
 }
