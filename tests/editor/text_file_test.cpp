@@ -431,7 +431,7 @@ TEST_CASE("text_file: readFileBytes refuses a file one byte OVER maxBytes, size 
     const FileBytesResult result = readFileBytes(path, 64);
     CHECK_FALSE(result.bytes.has_value());
     CHECK_FALSE(result.error.empty());
-    CHECK(result.size == 65);  // seed S33: the caller can report what tripped the cap
+    CHECK(result.size == 65);    // seed S33: the caller can report what tripped the cap
     CHECK(result.refusedByCap);  // code-review finding 6: the DISCRIMINATED signal, pinned here
 }
 

@@ -379,8 +379,7 @@ TEST_CASE("asset view: filterEntriesByKind with anyKind returns every index, in 
     CHECK(indices[2] == 2);
 }
 
-TEST_CASE(
-    "asset view: filterEntriesByKind(Texture) keeps only Texture files, and NO directory (AV44, AC-13)") {
+TEST_CASE("asset view: filterEntriesByKind(Texture) keeps only Texture files, and NO directory (AV44, AC-13)") {
     std::vector<FileEntry> entries(4);
     entries[0].name = "wood.png";
     entries[1].name = "tex";

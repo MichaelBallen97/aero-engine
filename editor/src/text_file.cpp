@@ -160,7 +160,7 @@ FileBytesResult readFileBytes(std::string_view absolutePathUtf8, std::uint64_t m
     if (result.size > maxBytes) {
         result.error = "file is too large";
         result.refusedByCap = true;  // code-review finding 6: the DISCRIMINATED signal, not the string
-        return result;  // `size` stays filled (seed S33) -- the caller can report what tripped the cap
+        return result;               // `size` stays filled (seed S33) -- the caller can report what tripped the cap
     }
 
     // BINARY, exactly like readTextFile/hashFileContents above.

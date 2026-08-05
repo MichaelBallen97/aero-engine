@@ -79,7 +79,7 @@ struct AssetFilter {
 // satisfies matchesFilter, in `entries`' own order (never reordered). filter.anyKind == true (the
 // default) returns every index unfiltered -- the common, cheapest case.
 [[nodiscard]] std::vector<std::size_t> filterEntriesByKind(std::span<const FileEntry> entries,
-                                                            const AssetFilter& filter);
+                                                           const AssetFilter& filter);
 
 inline constexpr std::size_t MAX_SEARCH_RESULTS = 2000;
 
