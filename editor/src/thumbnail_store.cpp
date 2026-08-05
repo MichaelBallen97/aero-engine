@@ -70,9 +70,11 @@ ThumbnailState ThumbnailStore::load(const ThumbnailKey& key, std::string_view ab
     const FileBytesResult fileResult = readFileBytes(absolutePathUtf8, MAX_THUMBNAIL_SOURCE_BYTES);
     if (!fileResult.bytes.has_value()) {
         // A size over the cap and any OS failure both land here -- the cap-exceeded case reports
-        // Skipped so it never re-attempts; readFileBytes itself cannot distinguish "too large" from
-        // "OS error" any other way, so both are folded through the same explicit check below.
-        return fileResult.error == "file is too large" ? ThumbnailState::Skipped : ThumbnailState::Failed;
+        // Skipped so it never re-attempts. code-review finding 6: discriminated on
+        // FileBytesResult::refusedByCap, a bool `readFileBytes` sets explicitly -- NEVER on
+        // `fileResult.error`'s exact text, which used to be a literal owned by a DIFFERENT TU
+        // (text_file.cpp) with nothing pinning the two together.
+        return fileResult.refusedByCap ? ThumbnailState::Skipped : ThumbnailState::Failed;
     }
     const std::string& bytes = *fileResult.bytes;
 

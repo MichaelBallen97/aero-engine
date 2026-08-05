@@ -3,11 +3,13 @@
 // which supplies main() from shell_test.cpp -- do NOT define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN here.
 //
 // UNGATED (D4/AC-17/INV-P5, the asset_meta_test.cpp precedent): asset_view.hpp depends on nothing but
-// asset_meta.hpp, which itself depends on nothing but guid.hpp -- neither needs reflection, so every
-// case here must be PRESENT and PASSING in all three build configurations -- prove it with
-// --list-test-cases. Tier-0: no GPU, no window, no ImGui context, no disk I/O, no entropy source.
+// asset_meta.hpp and project_files.hpp (code-review BLOCKING-2 added the latter, for
+// filterEntriesByKind's FileEntry parameter) -- neither needs reflection, so every case here must be
+// PRESENT and PASSING in all three build configurations -- prove it with --list-test-cases. Tier-0: no
+// GPU, no window, no ImGui context, no disk I/O, no entropy source.
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_view.hpp>
+#include <aero/editor/project_files.hpp>
 
 #include <doctest/doctest.h>
 
@@ -26,6 +28,8 @@ using engine::editor::AssetKind;
 using engine::editor::assetKindLabel;
 using engine::editor::AssetRecord;
 using engine::editor::classifyAssetKind;
+using engine::editor::FileEntry;
+using engine::editor::filterEntriesByKind;
 using engine::editor::gridColumnsFor;
 using engine::editor::iconColorFor;
 using engine::editor::iconLabelFor;
@@ -357,4 +361,73 @@ TEST_CASE("asset view: cap == 0 gives zero hits but the full total, and truncate
     CHECK(result.hits.empty());
     CHECK(result.total == 3);
     CHECK(result.truncated);
+}
+
+// ---- filterEntriesByKind: code-review BLOCKING-2 (AC-13's first clause) -------------------------
+
+TEST_CASE("asset view: filterEntriesByKind with anyKind returns every index, in order (AV43)") {
+    std::vector<FileEntry> entries(3);
+    entries[0].name = "wood.png";
+    entries[1].name = "tex";
+    entries[1].isDirectory = true;
+    entries[2].name = "readme.txt";
+    const AssetFilter filter;  // anyKind == true (the default)
+    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter);
+    REQUIRE(indices.size() == 3);
+    CHECK(indices[0] == 0);
+    CHECK(indices[1] == 1);
+    CHECK(indices[2] == 2);
+}
+
+TEST_CASE(
+    "asset view: filterEntriesByKind(Texture) keeps only Texture files, and NO directory (AV44, AC-13)") {
+    std::vector<FileEntry> entries(4);
+    entries[0].name = "wood.png";
+    entries[1].name = "tex";
+    entries[1].isDirectory = true;  // classifies Folder, never Texture -- matchesFilter's own rule
+    entries[2].name = "readme.txt";
+    entries[3].name = "stone.jpg";
+    AssetFilter filter;
+    filter.anyKind = false;
+    filter.kind = AssetKind::Texture;
+    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter);
+    REQUIRE(indices.size() == 2);
+    CHECK(indices[0] == 0);  // wood.png
+    CHECK(indices[1] == 3);  // stone.jpg
+}
+
+TEST_CASE("asset view: filterEntriesByKind(Folder) keeps ONLY directories (AV45)") {
+    std::vector<FileEntry> entries(3);
+    entries[0].name = "wood.png";
+    entries[1].name = "tex";
+    entries[1].isDirectory = true;
+    entries[2].name = "sfx";
+    entries[2].isDirectory = true;
+    AssetFilter filter;
+    filter.anyKind = false;
+    filter.kind = AssetKind::Folder;
+    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter);
+    REQUIRE(indices.size() == 2);
+    CHECK(indices[0] == 1);
+    CHECK(indices[1] == 2);
+}
+
+TEST_CASE("asset view: filterEntriesByKind over an empty span is an empty result (AV46)") {
+    const std::vector<FileEntry> entries;
+    AssetFilter filter;
+    filter.anyKind = false;
+    filter.kind = AssetKind::Audio;
+    CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), filter).empty());
+}
+
+TEST_CASE(
+    "asset view: filterEntriesByKind(Texture) with NO texture present is an empty result, not a crash "
+    "(AV47)") {
+    std::vector<FileEntry> entries(2);
+    entries[0].name = "readme.txt";
+    entries[1].name = "notes.md";
+    AssetFilter filter;
+    filter.anyKind = false;
+    filter.kind = AssetKind::Texture;
+    CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), filter).empty());
 }

@@ -3754,3 +3754,108 @@ TEST_CASE(
     }
     REQUIRE(drainLine != lines.size());
 }
+
+// ---- I43: code-review BLOCKING-1 -- Reimport All must not free a texture this SAME frame's draw
+// walk already wrote into the ImGui draw list --------------------------------------------------------
+//
+// The bug (before the fix): AssetBrowserPanel::applyPending()'s ReimportAll arm called
+// `ledger.clear(); store.clear();` DIRECTLY, from INSIDE the draw walk, AFTER drawContentsGrid's
+// drawTile() had already baked every Ready thumbnail's native texture pointer into THIS frame's ImGui
+// draw list. EditorApp::tick()'s later `layer.endFrame()` then submitted that draw data referencing
+// the freed pointer -- a use-after-free that is SYNCHRONOUS on Vulkan/D3D12 and only deferred (hence
+// silent) on Metal, which is why this stayed green on macOS CI while it would abort under ASan on
+// Linux/Windows. `EditorApp::requestAssetReimport()` (task 3.1.2, I33) cannot reproduce this: it drives
+// a DIFFERENT path (the deep rescan itself) that never touches the panel's `pending` at all, so this
+// arm never runs at all through that channel.
+//
+// The portable, platform-independent signature: with the OLD code, `ledger.clear()` ran synchronously
+// inside applyPending(), wiping the just-touched key back to Absent -- and since the decode budget (2)
+// covers this single asset, `serviceThumbnails()`'s OWN decode pass (later in the SAME tick) instantly
+// re-decodes and re-uploads it, so `thumbnailReadyCount()` bounces back to 1 by the time the tick
+// returns and does NOT discriminate on its own. `thumbnailLoadAttempts()` does: a redundant SAME-TICK
+// decode is exactly the symptom of "the ledger forgot an entry it should not have", so the OLD code
+// increments it on the triggering tick, while the FIX (which excludes anything touched THIS frame, the
+// SAME protection normal cap eviction already relies on, E12) never wipes the entry at all and needs no
+// redundant redecode. This reproduces the exact same-tick draw-then-clear race the finding describes,
+// deterministically on every OS, with no dependency on ASan actually catching the freed pointer -- and
+// it is the DIRECT symptom of the destroy the fix removes, not a mere proxy for it.
+TEST_CASE(
+    "editor: Reimport All does not free a thumbnail drawn on the SAME tick (task 3.1.3 code review, "
+    "BLOCKING-1)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    // A LARGER window than this file's other GPU cases (I36-I42 use 320x180): the Bottom dock slot
+    // "Assets" shares with Console (D3) is one of five competing slots, and at 320x180 it settles to a
+    // sliver too short to show even one row -- ImGuiListClipper then legitimately reports zero visible
+    // rows and drawTile() is never called, silently. Confirmed directly: at 320x180 the tile draws only
+    // on the dockspace's very first frame and never again; at 1280x800 it draws every tick.
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "reimport all i43", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(writeBinaryFixture(assetsRoot + "/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+
+    // "Assets" shares its dock slot with "Console" (D3); whichever wins the FIRST frame's tab stays
+    // active forever afterward with no further per-frame signal, and it is NOT guaranteed to be
+    // "Assets" -- requestPanelFocus keeps it the active tab (and therefore actually DRAWN, phase 4
+    // included) on every tick this test needs it to be, the ONLY way this ImGui-free-at-source TU can
+    // ask for that (code-review BLOCKING-1 test seam). Re-requested every tick, matching
+    // requestPanelFocus's own one-shot-per-tick contract.
+    //
+    // Tick until the single thumbnail becomes Ready AND drawn (I36's own "tick until ready" shape),
+    // then a few extra margin ticks confirming BOTH stay true -- the state the triggering tick needs.
+    bool ready = false;
+    for (int i = 0; i < 30 && !ready; ++i) {
+        app->requestPanelFocus("Assets");
+        REQUIRE(app->tick());
+        ready = app->thumbnailReadyCount() > 0;
+    }
+    REQUIRE(ready);
+    for (int i = 0; i < 3; ++i) {
+        app->requestPanelFocus("Assets");
+        REQUIRE(app->tick());
+        REQUIRE(app->thumbnailReadyCount() > 0);
+    }
+    CHECK(app->presentedLastFrame());
+    const std::size_t attemptsBeforeTrigger = app->thumbnailLoadAttempts();
+
+    // Queue the panel's OWN ReimportAll arm BEFORE the next tick() -- record(ActionKind::ReimportAll)
+    // is set immediately, so the VERY NEXT tick's onDraw() draws the still-Ready tile (phase 4, baking
+    // its texture pointer into THIS frame's draw list) and only THEN drains `pending` in applyPending()
+    // -- the exact same-tick ordering a real button click produces.
+    app->requestPanelFocus("Assets");
+    app->requestAssetBrowserReimportAll();
+    REQUIRE(app->tick());  // the triggering tick: draw, then applyPending(), then serviceThumbnails()
+    CHECK(app->presentedLastFrame());
+
+    // THE discriminator (see the comment above the test): the fix never wipes a key touched this SAME
+    // tick, so it needs no redundant redecode, and thumbnailLoadAttempts() stays UNCHANGED across the
+    // triggering tick. thumbnailReadyCount() is kept as a sanity check -- true either way, since the
+    // pre-fix code's redundant same-tick redecode also lands Ready, just via a NEW texture that leaves
+    // the OLD one dangling in the draw list already built this frame.
+    CHECK(app->thumbnailLoadAttempts() == attemptsBeforeTrigger);
+    CHECK(app->thumbnailReadyCount() > 0);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

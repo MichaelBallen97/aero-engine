@@ -432,6 +432,7 @@ TEST_CASE("text_file: readFileBytes refuses a file one byte OVER maxBytes, size 
     CHECK_FALSE(result.bytes.has_value());
     CHECK_FALSE(result.error.empty());
     CHECK(result.size == 65);  // seed S33: the caller can report what tripped the cap
+    CHECK(result.refusedByCap);  // code-review finding 6: the DISCRIMINATED signal, pinned here
 }
 
 TEST_CASE("text_file: readFileBytes never OPENS a refused file (TF27, seed S12)") {
@@ -476,6 +477,7 @@ TEST_CASE("text_file: readFileBytes on a directory returns disengaged with a non
     const FileBytesResult result = readFileBytes(tmp.utf8(), 1024);
     CHECK_FALSE(result.bytes.has_value());
     CHECK_FALSE(result.error.empty());
+    CHECK_FALSE(result.refusedByCap);  // code-review finding 6 -- an OS refusal, never the cap
 }
 
 TEST_CASE("text_file: readFileBytes on a missing path returns disengaged, size == 0 (TF30, AC-9)") {
@@ -484,6 +486,7 @@ TEST_CASE("text_file: readFileBytes on a missing path returns disengaged, size =
     CHECK_FALSE(result.bytes.has_value());
     CHECK_FALSE(result.error.empty());
     CHECK(result.size == 0);
+    CHECK_FALSE(result.refusedByCap);  // code-review finding 6 -- an OS refusal, never the cap
 }
 
 TEST_CASE("text_file: readFileBytes on an unreadable file returns disengaged (TF31, AC-9)") {
@@ -505,6 +508,7 @@ TEST_CASE("text_file: readFileBytes on an unreadable file returns disengaged (TF
         const FileBytesResult result = readFileBytes(path, 1024);
         CHECK_FALSE(result.bytes.has_value());
         CHECK_FALSE(result.error.empty());
+        CHECK_FALSE(result.refusedByCap);  // code-review finding 6 -- an OS refusal, never the cap
 
         std::filesystem::permissions(fsPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace,
                                      ec);

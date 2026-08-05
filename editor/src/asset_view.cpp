@@ -243,6 +243,17 @@ bool matchesFilter(std::string_view leafName, bool isDirectory, const AssetFilte
     return false;
 }
 
+std::vector<std::size_t> filterEntriesByKind(std::span<const FileEntry> entries, const AssetFilter& filter) {
+    std::vector<std::size_t> indices;
+    indices.reserve(entries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (matchesFilter(entries[i].name, entries[i].isDirectory, filter)) {
+            indices.push_back(i);
+        }
+    }
+    return indices;
+}
+
 SearchResult searchAssets(std::span<const AssetRecord> records, const AssetFilter& filter, std::size_t cap) {
     SearchResult result;
     for (std::size_t i = 0; i < records.size(); ++i) {

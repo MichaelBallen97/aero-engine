@@ -4,7 +4,8 @@
 // NOTHING HERE LOGS (INV-V8): every rule below is provable from a std::vector or std::span literal
 // with no context of any kind -- classification, icons, the filter, the whole-project search and the
 // grid's column math all live here.
-#include <aero/editor/asset_meta.hpp>  // AssetRecord
+#include <aero/editor/asset_meta.hpp>     // AssetRecord
+#include <aero/editor/project_files.hpp>  // FileEntry -- code-review BLOCKING-2 (filterEntriesByKind)
 
 #include <cstddef>
 #include <cstdint>
@@ -69,6 +70,16 @@ struct AssetFilter {
 // every asset in a well-named folder becomes a hit and the feature is useless. A directory only ever
 // matches AssetKind::Folder.
 [[nodiscard]] bool matchesFilter(std::string_view leafName, bool isDirectory, const AssetFilter& filter) noexcept;
+
+// code-review BLOCKING-2 (AC-13's first clause: "Textures alone filters the current directory"): the
+// WIRING matchesFilter needs to actually filter a directory listing when no query is set -- the panel
+// had matchesFilter (and its own tests, AV37/AV38) but never called it for the non-search path, so
+// choosing a kind with an empty search box changed nothing on screen. Pure over a span, provable from
+// a std::vector<FileEntry> literal: returns the INDICES into `entries` whose (name, isDirectory)
+// satisfies matchesFilter, in `entries`' own order (never reordered). filter.anyKind == true (the
+// default) returns every index unfiltered -- the common, cheapest case.
+[[nodiscard]] std::vector<std::size_t> filterEntriesByKind(std::span<const FileEntry> entries,
+                                                            const AssetFilter& filter);
 
 inline constexpr std::size_t MAX_SEARCH_RESULTS = 2000;
 

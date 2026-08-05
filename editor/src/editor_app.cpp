@@ -509,12 +509,14 @@ bool EditorApp::tick() {
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
                     .placeUnplacedPanels = placeUnplacedPanels,
                     .undoRequested = undoRequested,
-                    .redoRequested = redoRequested};
+                    .redoRequested = redoRequested,
+                    .focusPanelId = requestedPanelFocus};
     // Consumed: a request never survives the tick that carried it. Unlike applyDefaultLayout below,
     // these are NOT read back out of `ui` -- drawShellUi clears them as it applies them, and reading
     // them back would re-arm the request every frame (task 2.4.1).
     undoRequested = false;
     redoRequested = false;
+    requestedPanelFocus.clear();  // code-review BLOCKING-1 test seam -- the SAME "never re-armed" rule
     // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1);
     // commandStack is the editor's ONE undo history (task 2.4.1 D7); rootOrder is the editor's ONE
     // display order among root entities (task 2.4.2 D10); project is the open project (task 2.6.2
@@ -686,6 +688,24 @@ void EditorApp::requestAssetReimport() noexcept { assetReimportRequested = true;
 // task 3.1.3 (§Q Q1): the requestAssetRescan()/requestAssetReimport() shape, a third instance -- see
 // tick()'s reconcile block above for the drain.
 void EditorApp::requestOrphanDelete(std::string_view relativeMetaPath) { requestedOrphanDelete = relativeMetaPath; }
+
+// code-review BLOCKING-1: forwards DIRECTLY to the panel's own requestReimportAll() -- there is no
+// one-shot flag to drain here (unlike requestAssetRescan()/requestAssetReimport()/requestOrphanDelete()
+// above): AssetBrowserPanel::requestReimportAll() itself already just sets `pending`, the identical
+// thing a real button click does, and that is exactly what needs to happen before the NEXT tick()'s
+// onDraw() runs. assetBrowserPanel is non-owning, owned by `registry` (F17's precedent) and always
+// null-checked.
+void EditorApp::requestAssetBrowserReimportAll() noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestReimportAll();
+    }
+}
+
+// code-review BLOCKING-1 test seam: stores the id for tick()'s ShellUiState construction to carry --
+// see ShellUiState::focusPanelId's own comment for why this exists and drawShellUi's own new block for
+// where it is applied (BEFORE DockSpaceOverViewport, the "Edit > Project Settings..." click's own
+// timing requirement, generalised).
+void EditorApp::requestPanelFocus(std::string_view panelId) { requestedPanelFocus = panelId; }
 
 }  // namespace engine::editor
 

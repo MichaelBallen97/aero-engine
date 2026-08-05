@@ -232,6 +232,17 @@ while IFS= read -r f; do
   fi
 done < <(git ls-files -- 'editor/src/*.cpp')
 
+# code-review finding 7 (boundary-guards.md's "every guard needs an anti-vacuity canary"): Check B's
+# own scan count was printed but never ASSERTED non-zero, and the two allowlisted files are SKIPPED by
+# the scan loop above -- so nothing proved the `git ls-files -- 'editor/src/*.cpp'` glob returned
+# anything at all. A future move of editor/src (or a typo in the glob) would leave this printing
+# "0 ... scanned" and exiting 0, silently disabling Check B entirely.
+if [ "$checkBScanned" -eq 0 ]; then
+  echo "::error::project-no-delete guard (Check B): 0 files matched 'editor/src/*.cpp' -- refusing to" >&2
+  echo "         pass on an empty scan (anti-vacuity canary; boundary-guards.md)." >&2
+  exit 2
+fi
+
 if [ -n "$checkBViolations" ]; then
   echo "A delete/rename call was found in a file NOT in Check B's PERMITTED_DELETERS allowlist (task 3.1.3 D13):" >&2
   echo "$checkBViolations" >&2

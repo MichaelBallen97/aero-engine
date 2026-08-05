@@ -109,6 +109,14 @@ public:
     // MAX_THUMBNAIL_DECODES_PER_TICK Absent keys.
     void serviceThumbnails();
 
+    // code-review BLOCKING-1: the ImGui-free-at-source GPU tier cannot click the Reimport All button,
+    // and EditorApp::requestAssetReimport() (task 3.1.2) drives a DIFFERENT path (the deep rescan
+    // itself) that never touches `pending` at all -- it cannot reproduce the same-tick draw-then-clear
+    // race this finding fixed. This is the identical effect a real click on the button has: it queues
+    // ActionKind::ReimportAll exactly as record() would from drawHeader(), so the NEXT onDraw() drains
+    // it through the SAME applyPending() arm a click would.
+    void requestReimportAll() noexcept;
+
     // task 3.1.3, Step 11: one-shot, read-and-clear -- the takeRescanRequest() shape, a third
     // instance (F9). Set only by the modal's Delete button confirming; drained by EditorApp::tick()'s
     // reconcile block, as its OWN statement (I42's mechanical proof).
@@ -206,6 +214,15 @@ private:
     ThumbnailStore store;
     std::vector<ThumbnailKey> visibleThumbnailKeys;  // per-frame scratch, cleared in phase 1
     std::uint64_t frameCounter = 0;                  // the LRU's clock; monotonic, NEVER wall time
+    // code-review BLOCKING-1: set by applyPending()'s ReimportAll arm, consumed by the NEXT
+    // serviceThumbnails() call -- NEVER an immediate ledger.clear()/store.clear() from inside the draw
+    // walk (that destroyed a texture this SAME frame's drawTile() had already written into the ImGui
+    // draw list, a use-after-free that is synchronous on Vulkan/D3D12 and merely deferred on Metal).
+    // serviceThumbnails() drains this AFTER its own touch loop, so anything drawn (and therefore
+    // touched) THIS frame is excluded by the SAME evictions()-vs-`currentFrame` rule that already
+    // protects normal cap eviction (E12) -- it survives one more tick, harmlessly, rather than being
+    // destroyed before this frame's endFrame() has consumed the draw data that references it.
+    bool pendingThumbnailReimportClear = false;
 
     // task 3.1.3, Step 8 -- the whole-project search (D5: AssetDatabase::records() IS the index).
     AssetFilter filter;        // COMMITTED; the search box edits a SCRATCH copy (queryScratch)
@@ -217,6 +234,9 @@ private:
     std::string pendingOrphanDelete;             // "" == no modal open
     std::string confirmedOrphanDelete;           // task 3.1.3, Step 11 -- one-shot, drained by
                                                  // takeOrphanDeleteRequest()
+    // code-review finding 10: authoritative over ImGui's own per-id CollapsingHeader persistence,
+    // which the "Issues (N)" label's changing id would otherwise silently defeat (drawIssues()'s
+    // own comment has the full reasoning) -- the D5 precedent drawTreePane's `row.open` already sets.
     bool issuesOpen = false;
 };
 

@@ -272,6 +272,24 @@ public:
     // modal's Delete button, so this is the only way I41 can drive the delete round trip at all.
     void requestOrphanDelete(std::string_view relativeMetaPath);
 
+    // code-review BLOCKING-1 (task 3.1.3): drives the Asset Browser panel's OWN ActionKind::ReimportAll
+    // arm -- the SAME effect a real click on the panel's Reimport All button has -- rather than
+    // requestAssetReimport()'s deep-rescan path above, which never touches the panel's `pending` at
+    // all and therefore cannot reproduce the same-tick draw-then-clear race that fix closed. Applied
+    // IMMEDIATELY (there is no one-shot flag to drain): a no-op when no Asset Browser panel is
+    // registered. No-op when called before create() returns a live app.
+    void requestAssetBrowserReimportAll() noexcept;
+
+    // code-review BLOCKING-1 test seam (task 3.1.3): the "Edit > Project Settings..." menu item's own
+    // two calls (show + ImGui::SetWindowFocus), generalised to any panel id and reachable without a
+    // click. Applied on the NEXT tick, BEFORE the dockspace processes tab selection that same frame
+    // (ShellUiState::focusPanelId's own comment has the full ImGui-internals citation) -- the
+    // requestLayoutReset()/requestUndo() shape. Exists because a panel sharing a dock slot keeps
+    // whichever tab won the FIRST frame active forever afterward with no further signal (Console/Assets,
+    // D3), and the ImGui-free-at-source GPU tier has no other way to make a LATER tick draw a
+    // specific tabbed-behind panel again. An unknown id is a silent no-op.
+    void requestPanelFocus(std::string_view panelId);
+
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
@@ -316,6 +334,9 @@ private:
     // nothing requested; consumed by the next tick()'s reconcile block, folded into `orphanToDelete`
     // alongside the panel's own one-shot.
     std::string requestedOrphanDelete;
+    // code-review BLOCKING-1 test seam -- "" == nothing requested; consumed by the next tick()'s
+    // construction of ShellUiState (ShellUiState::focusPanelId's own comment), never re-armed.
+    std::string requestedPanelFocus;
     // Non-owning; owned by `registry`, which holds panels through unique_ptr -- so the Panel object
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.

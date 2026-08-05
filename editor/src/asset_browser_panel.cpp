@@ -505,11 +505,18 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
                 ImGui::TableSetColumnIndex(1);  // the size cell stays empty
             }
 
+            // code-review BLOCKING-2 (AC-13): filters by the kind combo ALONE -- `filter.query` is
+            // guaranteed empty here (the branch above returns for a non-empty query), so
+            // matchesFilter's own substring clause is always a no-op and this call is exactly "apply
+            // the kind filter". `filter.anyKind == true` (the default) returns every index, so this
+            // costs nothing extra in the common case beyond one small per-frame scratch vector -- the
+            // SAME "not persisted, rebuilt every frame" posture `breadcrumb` already has above.
+            const std::vector<std::size_t> kindFiltered = filterEntriesByKind(listing->entries, filter);
             ImGuiListClipper clipper;  // F14 -- only the visible rows are submitted (AC-12)
-            clipper.Begin(static_cast<int>(listing->entries.size()));
+            clipper.Begin(static_cast<int>(kindFiltered.size()));
             while (clipper.Step()) {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-                    const FileEntry& entry = listing->entries[static_cast<std::size_t>(i)];
+                    const FileEntry& entry = listing->entries[kindFiltered[static_cast<std::size_t>(i)]];
                     ImGui::TableNextRow();
                     ImGui::TableSetColumnIndex(0);  // a TableNextRow with no column index draws
                                                     // NOTHING, silently (imgui.h:910)
@@ -734,21 +741,25 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
             ImGui::PopID();
         }
 
+        // code-review BLOCKING-2 (AC-13): the drawContentsList precedent immediately above, applied
+        // here too -- `filter.query` is guaranteed empty in this branch, so filterEntriesByKind is
+        // exactly "apply the kind filter alone", and costs nothing extra when filter.anyKind (default).
+        const std::vector<std::size_t> kindFiltered = filterEntriesByKind(listing->entries, filter);
         const std::vector<FileEntry>& items = listing->entries;
-        const int rows = (static_cast<int>(items.size()) + columns - 1) / columns;
+        const int rows = (static_cast<int>(kindFiltered.size()) + columns - 1) / columns;
         ImGuiListClipper clipper;  // clips ROWS OF TILES, not tiles
         clipper.Begin(rows, rowHeight);
         while (clipper.Step()) {
             for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
                 for (int c = 0; c < columns; ++c) {
                     const int index = (r * columns) + c;
-                    if (index >= static_cast<int>(items.size())) {
+                    if (index >= static_cast<int>(kindFiltered.size())) {
                         break;  // BEFORE any PushID -- there is NEVER a break between a Push/Pop pair
                     }
                     if (c > 0) {
                         ImGui::SameLine();  // restores the PREVIOUS line's Y (why one row == rowHeight)
                     }
-                    const FileEntry& entry = items[static_cast<std::size_t>(index)];
+                    const FileEntry& entry = items[kindFiltered[static_cast<std::size_t>(index)]];
                     const std::string rel = joinRelative(currentDir, entry.name);
                     ImGui::PushID(index);
                     drawTile(entry, rel, tileW, tileH, tileEdge, pad, /*isSearchHit=*/false);
@@ -828,7 +839,15 @@ void AssetBrowserPanel::drawIssues() {
     }
 
     labelScratch = "Issues (" + std::to_string(total) + ")";
-    if (ImGui::CollapsingHeader(labelScratch.c_str())) {
+    // code-review finding 10: `issuesOpen` is OUR OWN state, authoritative over ImGui's -- the SAME
+    // D5 reasoning drawTreePane already applies (`ImGui::SetNextItemOpen(row.open, ImGuiCond_Always)`).
+    // It is load-bearing here for a reason the tree pane does not have: this header's label EMBEDS
+    // `total`, so its ImGui id changes every time the issue count does (a Refresh, an orphan delete)
+    // -- WITHOUT this, ImGui's own per-id open/closed persistence would silently reset to closed on
+    // every such change, because a new id has no memory of the old one's state.
+    ImGui::SetNextItemOpen(issuesOpen, ImGuiCond_Always);
+    issuesOpen = ImGui::CollapsingHeader(labelScratch.c_str());
+    if (issuesOpen) {
         if (report.orphanTotal > 0) {
             ImGui::TextUnformatted("Orphaned .meta files:");
             for (std::size_t i = 0; i < report.orphans.size(); ++i) {
@@ -898,24 +917,43 @@ void AssetBrowserPanel::drawFooter() {
     // A non-Ok status contributes NOTHING here: the right pane already explains it, and duplicating
     // the message in the footer was never wanted.
     if (!selectedEntry.empty()) {
-        // E10: looked up in the CURRENT listing every frame, so a selection whose file disappeared
-        // simply stops rendering. No invalidation pass, no dangling state.
-        const std::string_view leaf = leafOf(selectedEntry);
-        const auto it = std::find_if(listing->entries.begin(), listing->entries.end(),
-                                     [leaf](const FileEntry& e) { return e.name == leaf; });
-        if (it != listing->entries.end()) {
+        // code-review BLOCKING-3: matched by the FULL relative path, never by leaf name alone -- a
+        // leaf-only lookup either misses every search hit (selectedEntry is a path outside currentDir)
+        // or, on a same-leaf-name collision, silently pairs one file's identity with a DIFFERENT
+        // file's size. `rec` is looked up unconditionally (when a database exists) so a search hit
+        // whose parent directory was never navigated to can still resolve its identity even though it
+        // is not a member of THIS listing.
+        const std::size_t idx = findEntryByRelativePath(listing->entries, currentDir, selectedEntry);
+        const bool inCurrentListing = idx < listing->entries.size();
+        const AssetRecord* const rec = databasePtr != nullptr ? databasePtr->findByPath(selectedEntry) : nullptr;
+        // E10, preserved: a selection that is NEITHER a member of the current listing NOR known to the
+        // database has simply vanished (deleted outside the editor, then rescanned) -- nothing renders,
+        // exactly as before. AC-15 is what ADDS the `rec != nullptr` half: a search hit's record still
+        // exists in the database even though its directory was never navigated to.
+        if (inCurrentListing || rec != nullptr) {
             if (!labelScratch.empty()) {
                 labelScratch += "   |   ";
             }
             labelScratch += selectedEntry;
-            if (!it->isDirectory) {
-                labelScratch +=
-                    it->sizeKnown ? ("  -  " + formatFileSize(it->size)) : std::string("  -  ") + UNKNOWN_SIZE;
+            // D5: a record NEVER describes a directory (AssetDatabase records only files), so
+            // `rec != nullptr` alone already implies a file; `selectedIsDirectory` only matters for the
+            // inCurrentListing branch.
+            const bool selectedIsDirectory = inCurrentListing && listing->entries[idx].isDirectory;
+            if (!selectedIsDirectory) {
+                if (inCurrentListing) {
+                    const FileEntry& entry = listing->entries[idx];
+                    labelScratch +=
+                        entry.sizeKnown ? ("  -  " + formatFileSize(entry.size)) : std::string("  -  ") + UNKNOWN_SIZE;
+                } else {
+                    // code-review BLOCKING-3: NEVER another file's size -- the exact bug this fixes. A
+                    // search hit's size is simply unknown from here; AssetRecord tracks identity and
+                    // content, never bytes (Step 8's own rule for the search table).
+                    labelScratch += std::string("  -  ") + UNKNOWN_SIZE;
+                }
                 // task 3.1.1 (§D-7): the selected file's identity, appended after the size segment.
                 // databasePtr is reconciled by EditorApp::tick() (D12/D13) -- nullptr before the first
                 // scan, never a dangling reference.
                 if (databasePtr != nullptr) {
-                    const AssetRecord* const rec = databasePtr->findByPath(selectedEntry);
                     labelScratch += "  -  ";
                     if (rec == nullptr) {
                         labelScratch += "no .meta";
@@ -928,10 +966,10 @@ void AssetBrowserPanel::drawFooter() {
                     // inside this SAME `databasePtr != nullptr` block (a null database appends neither
                     // segment, exactly as before). An invalid record has no identity, so it has no
                     // import state either -- the footer already says "invalid .meta" for it above.
-                    // Code-review finding 3: a write-failed record (state still Created/Repaired/
-                    // Reattached) never got a `change` assigned either -- its default UpToDate would
-                    // otherwise render "up to date" for a file with no sidecar on disk, so the segment
-                    // is omitted for it exactly as it already is for Invalid.
+                    // Code-review finding 3 (task 3.1.2): a write-failed record (state still
+                    // Created/Repaired/Reattached) never got a `change` assigned either -- its default
+                    // UpToDate would otherwise render "up to date" for a file with no sidecar on disk,
+                    // so the segment is omitted for it exactly as it already is for Invalid.
                     if (rec != nullptr && rec->state != AssetMetaState::Invalid && !rec->metaWriteFailed) {
                         labelScratch += "  -  ";
                         labelScratch += importChangeLabel(rec->change);
@@ -1038,9 +1076,15 @@ void AssetBrowserPanel::applyPending() {
             treeDirty = true;
             reimportRequested = true;
             // task 3.1.3 (E26): every asset re-hashes, so every existing ContentHash -- and therefore
-            // every existing ThumbnailKey -- is about to become stale. Clear both together.
-            ledger.clear();
-            store.clear();
+            // every existing ThumbnailKey -- is about to become stale. code-review BLOCKING-1: this
+            // used to be an IMMEDIATE `ledger.clear(); store.clear();` right here -- INSIDE the draw
+            // walk, AFTER drawContentsGrid/drawTile (above, this SAME onDraw() call) had already
+            // written every ready thumbnail's native texture pointer into THIS frame's ImGui draw
+            // list. Destroying it here freed that pointer before EditorApp::tick()'s endFrame() ever
+            // consumed it -- synchronous on Vulkan/D3D12, only deferred (and therefore silent) on
+            // Metal. Set a flag instead; serviceThumbnails() (which runs OUTSIDE the draw walk, D8's
+            // own rule) drains it safely.
+            pendingThumbnailReimportClear = true;
             break;
         case ActionKind::SetViewMode:
             // task 3.1.3, Step 6 -- the path carries "grid" or "list" (§D-7's PendingAction shape).
@@ -1146,6 +1190,24 @@ void AssetBrowserPanel::serviceThumbnails() {
         ledger.touch(key, frameCounter);
     }
     visibleThumbnailKeys.clear();
+
+    // code-review BLOCKING-1: the ReimportAll flag, drained HERE -- after the touch loop above, so
+    // anything drawn (and therefore touched) THIS SAME frame is already marked at `frameCounter` and
+    // is excluded by evictions()'s own "never evict a key touched at currentFrame" rule (E12). A key
+    // still visible next tick is touched again and survives again, forever, at zero cost beyond
+    // holding a possibly-stale (but never dangling) texture one tick longer; a key whose content
+    // actually changed gets a brand-new ThumbnailKey once EditorApp's own rescan (reimportRequested,
+    // set above) completes and is decoded fresh regardless. `evictions(0, frameCounter)` reads as
+    // "every Ready key beyond a cap of zero" -- i.e. every Ready key that eviction's own protection
+    // does not shield.
+    if (pendingThumbnailReimportClear) {
+        pendingThumbnailReimportClear = false;
+        for (const ThumbnailKey& key : ledger.evictions(0, frameCounter)) {
+            store.destroy(key);
+            ledger.forget(key);
+        }
+    }
+
     // EVICTION RUNS BEFORE DECODING, DELIBERATELY (INV-V5, seed S3): the other order lets the
     // resident count exceed the cap by up to MAX_THUMBNAIL_DECODES_PER_TICK for a tick, which makes
     // the bound this task states in a FOOTER a lie.
@@ -1172,6 +1234,12 @@ void AssetBrowserPanel::serviceThumbnails() {
         }
     }
 }
+
+// code-review BLOCKING-1: identical in effect to a real click on the Reimport All button --
+// record(ActionKind::ReimportAll, {}) is exactly what drawHeader() calls when the button returns
+// true. EditorApp forwards to this from a new public hook (requestAssetBrowserReimportAll()) because
+// the ImGui-free-at-source GPU tier has no other way to press a widget.
+void AssetBrowserPanel::requestReimportAll() noexcept { record(ActionKind::ReimportAll, {}); }
 
 // ---- the frame ---------------------------------------------------------------------------------
 void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context is IGNORED

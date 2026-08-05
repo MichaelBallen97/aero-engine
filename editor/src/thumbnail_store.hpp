@@ -38,7 +38,13 @@ public:
 
     // Black-box observability, the ViewportPanel::logRecordCount() / 2.2.5 D16 precedent. These exist
     // so I36/I37 can assert "no tick decoded more than the budget" and "a Failed key was read exactly
-    // once, ever" -- neither is observable from outside otherwise. Monotonic; reset only by clear().
+    // once, ever" -- neither is observable from outside otherwise. Monotonic for the LIFETIME OF THIS
+    // OBJECT -- code-review finding 9 corrects this comment, which used to say "reset only by clear()":
+    // clear() (below) only ever touches `textures`, never `attempts`, so a ReimportAll or a project
+    // swap (both of which call clear()) does NOT reset this counter. The only ways it returns to zero
+    // are a fresh ThumbnailStore construction or being move-assigned INTO from one (the move
+    // constructor/assignment copy `other.attempts` verbatim, so a moved-FROM store's count transfers
+    // with it -- see thumbnail_store.cpp).
     [[nodiscard]] std::size_t loadAttempts() const noexcept;
     [[nodiscard]] std::size_t residentCount() const noexcept;
 

@@ -60,6 +60,12 @@ struct FileBytesResult {
     std::string error;                 // OS reason, or "file is too large"; "" iff `bytes` engaged
     std::uint64_t size = 0;            // the observed size, filled EVEN WHEN REFUSED, so the caller
                                        // can report the number that tripped the cap (seed S33)
+    // code-review finding 6: the DISCRIMINATED signal for "refused by the maxBytes cap specifically",
+    // never a string comparison against `error`'s text. `thumbnail_store.cpp` used to test
+    // `fileResult.error == "file is too large"` against a literal owned by THIS TU -- a message wording
+    // change there would silently turn Skipped into Failed with no test able to catch it (TF26 only
+    // asserted `error` was non-empty, never its exact text). Pin the outcome here instead, on a bool.
+    bool refusedByCap = false;
 };
 // A directory, a missing file and an unreadable file each return a disengaged `bytes` with the OS
 // reason, exactly like readTextFile.

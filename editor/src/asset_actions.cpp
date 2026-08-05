@@ -25,6 +25,30 @@ std::filesystem::path pathFromUtf8(std::string_view utf8) {
     return std::filesystem::path(bytes);
 }
 
+// code-review finding 5: a pure STRING check, deliberately never std::filesystem::path::is_absolute()
+// -- project.hpp:90-93's own A19 rationale, copied here: on Windows is_absolute("/shared") is FALSE
+// (no root name), so a POSIX-rooted value would sail through a check meant to require ONE. Non-empty,
+// and starts with '/' (POSIX, and the forward-slash form this tree's own roots already use) or a
+// two-character ASCII drive-letter prefix ("C:", whatever follows). Deliberately NOT full UNC/registry
+// validation -- this is a REFUSAL gate for an obviously-wrong root (an empty string, or a bare relative
+// path), not a general path-legality checker; validateOrphanPath above already owns the relative half.
+bool looksLikeAnAbsoluteRoot(std::string_view root) noexcept {
+    if (root.empty()) {
+        return false;
+    }
+    if (root.front() == '/') {
+        return true;
+    }
+    if (root.size() >= 2) {
+        const char first = root[0];
+        const bool isAsciiLetter = (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z');
+        if (isAsciiLetter && root[1] == ':') {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 OrphanDeleteRefusal validateOrphanPath(std::string_view relativeMetaPath) noexcept {
@@ -70,6 +94,17 @@ OrphanDeleteRefusal validateOrphanPath(std::string_view relativeMetaPath) noexce
 
 OrphanDeleteResult deleteOrphanMeta(std::string_view assetsRootUtf8, std::string_view relativeMetaPath) {
     OrphanDeleteResult result;
+
+    // 0: refuse an empty or non-absolute root EXPLICITLY, before it is ever concatenated into a path
+    // (code-review finding 5). An empty root plus "/" plus a relative path resolves to the filesystem
+    // ROOT ("" + "/" + "wood.png.meta" -> "/wood.png.meta") -- AssetDatabase::root() is genuinely empty
+    // with no project open, and this function has no other guard against that. Reusing EscapesRoot: an
+    // unresolvable root is conceptually the same failure as a path that escapes a real one.
+    if (!looksLikeAnAbsoluteRoot(assetsRootUtf8)) {
+        result.refusal = OrphanDeleteRefusal::EscapesRoot;
+        result.message = "the assets root is empty or not absolute";
+        return result;
+    }
 
     // 1: refuse before any disk touch (E24).
     const OrphanDeleteRefusal pathRefusal = validateOrphanPath(relativeMetaPath);

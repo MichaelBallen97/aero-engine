@@ -35,7 +35,9 @@ struct OrphanDeleteResult {
 [[nodiscard]] OrphanDeleteRefusal validateOrphanPath(std::string_view relativeMetaPath) noexcept;
 
 // THE ACTION. Re-verifies EVERYTHING from disk, in a fixed order, then removes exactly ONE file.
-// NEVER throws. NEVER logs (INV-A3's posture extended to this TU): it RETURNS a result.
+// NEVER throws. NEVER logs (INV-A3's posture extended to this TU): it RETURNS a result. An empty or
+// non-absolute `assetsRootUtf8` is refused explicitly, as `EscapesRoot` (code-review finding 5) --
+// without this an empty root would resolve "" + "/" + relativeMetaPath to the filesystem ROOT.
 [[nodiscard]] OrphanDeleteResult deleteOrphanMeta(std::string_view assetsRootUtf8, std::string_view relativeMetaPath);
 
 }  // namespace engine::editor

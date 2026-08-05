@@ -292,8 +292,32 @@ TEST_CASE("asset actions: a directory named x.meta is refused, directory intact 
     CHECK(std::filesystem::is_directory(pathOf(dir.join("x.meta")), ec));
 }
 
-TEST_CASE("asset actions: an empty assetsRootUtf8 -> Missing, nothing touched (AA22, E16)") {
+TEST_CASE(
+    "asset actions: an empty assetsRootUtf8 -> EscapesRoot, refused explicitly, nothing touched (AA22, "
+    "E16, code-review finding 5)") {
+    // code-review finding 5: the OLD verdict here was Missing, true only because "/wood.png.meta"
+    // happened not to exist on this machine -- not because the code refused an unresolvable root. The
+    // root is now validated BEFORE assetsRootUtf8 is ever concatenated into a path at all.
     const OrphanDeleteResult result = deleteOrphanMeta("", "wood.png.meta");
     CHECK_FALSE(result.deleted);
-    CHECK(result.refusal == OrphanDeleteRefusal::Missing);
+    CHECK(result.refusal == OrphanDeleteRefusal::EscapesRoot);
+}
+
+TEST_CASE(
+    "asset actions: a RELATIVE (non-absolute) assetsRootUtf8 -> EscapesRoot, refused explicitly (AA23, "
+    "code-review finding 5)") {
+    const OrphanDeleteResult result = deleteOrphanMeta("relative/root", "wood.png.meta");
+    CHECK_FALSE(result.deleted);
+    CHECK(result.refusal == OrphanDeleteRefusal::EscapesRoot);
+}
+
+TEST_CASE(
+    "asset actions: a real, absolute assetsRootUtf8 is accepted by the root guard -- a genuine orphan "
+    "still deletes (AA24, code-review finding 5, no regression)") {
+    const TempDir dir;
+    GuidGenerator gen(24);
+    REQUIRE(writeTextFileAtomic(dir.join("wood.png.meta"), writeMetaText(gen.next())).empty());
+    const OrphanDeleteResult result = deleteOrphanMeta(dir.utf8(), "wood.png.meta");
+    CHECK(result.deleted);
+    CHECK(result.message.empty());
 }
