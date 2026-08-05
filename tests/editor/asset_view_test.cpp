@@ -41,7 +41,7 @@ TEST_CASE("asset view: every Texture extension classifies as Texture (AV1)") {
                                                     "gif", "hdr", "psd",  "ktx2", "dds"};
     for (const std::string_view ext : exts) {
         const std::string name = std::string("x.") + std::string(ext);
-        INFO("ext: ", ext);
+        INFO("ext: ", std::string(ext));
         CHECK(classifyAssetKind(name, false) == AssetKind::Texture);
     }
 }
@@ -53,7 +53,7 @@ TEST_CASE("asset view: every Model extension classifies as Model (AV2)") {
     constexpr std::array<std::string_view, 8> exts{"gltf", "glb", "fbx", "obj", "blend", "dae", "ply", "stl"};
     for (const std::string_view ext : exts) {
         const std::string name = std::string("x.") + std::string(ext);
-        INFO("ext: ", ext);
+        INFO("ext: ", std::string(ext));
         CHECK(classifyAssetKind(name, false) == AssetKind::Model);
     }
 }
@@ -172,7 +172,7 @@ TEST_CASE("asset view: iconLabelFor is always <= 4 chars and ASCII uppercase (AV
         "a.json", "a.dds",  "a.ktx2", "a.tga",   "a.bmp",    "a.gif", "a.hdr", "a.psd",  "a.fbx",  "a.stl"};
     for (const std::string_view name : names) {
         const std::string label = iconLabelFor(name);
-        INFO("name: ", name, " label: ", label);
+        INFO("name: ", std::string(name), " label: ", label);
         CHECK(label.size() <= 4);
         for (const char c : label) {
             const auto uc = static_cast<unsigned char>(c);
