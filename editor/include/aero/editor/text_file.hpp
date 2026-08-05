@@ -50,4 +50,19 @@ struct FileHashResult {
 // for an existing directory (2.6.1's measured trap, its sabotage seed S22).
 [[nodiscard]] std::string ensureDirectory(std::string_view absolutePathUtf8);
 
+// task 3.1.3 (§D-4): the byte-level, capped, binary, never-throws-never-logs primitive the thumbnail
+// loader needs. Refuses a file larger than `maxBytes` from std::filesystem::file_size ALONE -- it
+// NEVER OPENS such a file. That is the whole difference from readTextFile above (which has no cap
+// and materialises everything through an istreambuf_iterator). Binary on BOTH sides, for the same
+// load-bearing reason text_file.cpp:57-60 states for readTextFile.
+struct FileBytesResult {
+    std::optional<std::string> bytes;  // engaged == success. std::string is a BYTE container here.
+    std::string error;                 // OS reason, or "file is too large"; "" iff `bytes` engaged
+    std::uint64_t size = 0;            // the observed size, filled EVEN WHEN REFUSED, so the caller
+                                       // can report the number that tripped the cap (seed S33)
+};
+// A directory, a missing file and an unreadable file each return a disengaged `bytes` with the OS
+// reason, exactly like readTextFile.
+[[nodiscard]] FileBytesResult readFileBytes(std::string_view absolutePathUtf8, std::uint64_t maxBytes);
+
 }  // namespace engine::editor
