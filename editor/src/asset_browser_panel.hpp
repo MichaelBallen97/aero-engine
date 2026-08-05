@@ -18,6 +18,7 @@
 // EVERY walk is an explicit stack, never a recursive function (INV-4/F23).
 //
 // READ-ONLY BY CONTRACT (D19): this panel creates, renames, moves, deletes and opens nothing.
+#include <aero/editor/asset_view.hpp>  // task 3.1.3 -- AssetViewMode, TileSize (pure enums, ImGui-free)
 #include <aero/editor/panel.hpp>
 #include <aero/editor/project_files.hpp>
 
@@ -92,6 +93,8 @@ private:
         Refresh,       // path: unused
         ToggleHidden,  // path: unused
         ReimportAll,   // path: unused -- task 3.1.2, APPENDED (never inserted -- performance-enum-size)
+        SetViewMode,   // path: "grid" or "list" -- task 3.1.3, Step 6, APPENDED
+        SetTileSize,   // path: "small"/"medium"/"large" -- task 3.1.3, Step 6, APPENDED
     };
     struct PendingAction {
         ActionKind kind = ActionKind::None;
@@ -103,10 +106,14 @@ private:
     void reconcile();                                // phase 1 -- the ONLY place I/O happens
     void drawHeader();                               // phase 2
     void drawTreePane(float paneHeight);             // phase 3
-    void drawContentsPane(float paneHeight);         // phase 4
-    void drawFooter();                               // phase 5
-    void applyPending();                             // the ONE mutating switch
-    void openAncestors(const std::string& path);     // iterative; never opens `path` itself (C9)
+    // phase 4 -- task 3.1.3, Step 6: ONE child (##contents), TWO bodies. drawContentsList is today's
+    // drawContentsPane, renamed and otherwise BYTE-IDENTICAL (D3/AC-2); drawContentsGrid is new.
+    void drawContentsList(float paneHeight);
+    void drawContentsGrid(float paneHeight);
+    void drawTile(const FileEntry& entry, const std::string& rel, float tileW, float tileH, float tileEdge, float pad);
+    void drawFooter();                            // phase 5
+    void applyPending();                          // the ONE mutating switch
+    void openAncestors(const std::string& path);  // iterative; never opens `path` itself (C9)
     [[nodiscard]] const DirectoryListing* cached(const std::string& rel) const;
 
     std::string rootUtf8;
@@ -123,6 +130,11 @@ private:
     const AssetDatabase* databasePtr = nullptr;  // task 3.1.1 -- reconciled, never owned (D13)
     bool rescanRequested = false;                // task 3.1.1 -- one-shot, drained by takeRescanRequest()
     bool reimportRequested = false;              // task 3.1.2 -- one-shot, drained by takeReimportRequest() (A15)
+
+    // task 3.1.3, Step 6 -- D3/D4: SESSION state, deliberately not persisted (AC-34/D4's documented
+    // "resets to Grid/Medium on relaunch" limitation).
+    AssetViewMode viewMode = AssetViewMode::Grid;
+    TileSize tileSize = TileSize::Medium;
 };
 
 }  // namespace engine::editor

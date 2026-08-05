@@ -21,6 +21,7 @@
 #include <aero/editor/project_files.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <imgui.h>
 #include <string>
@@ -53,6 +54,45 @@ constexpr std::size_t GUID_SUFFIX_LENGTH = 4;
 std::string elideGuid(Guid guid) {
     const std::string full = formatGuid(guid);
     return full.substr(0, GUID_PREFIX_LENGTH) + "…" + full.substr(full.size() - GUID_SUFFIX_LENGTH);
+}
+
+// task 3.1.3 (A15): the tile caption's own truncation policy. ImGui offers no ellipsis for draw-list
+// text, so this measures with ImGui::CalcTextSize and truncates by hand -- the LONGEST byte prefix
+// whose (prefix + ellipsis) still fits TILE_CAPTION_LINES lines at `wrapWidth`, landing on a UTF-8
+// boundary (never slicing a multi-byte sequence). Needs a live ImGui context (CalcTextSize/
+// GetTextLineHeight), so it lives here, not in asset_view.cpp (which stays ImGui-free).
+std::string elideForCaption(const std::string& name, float wrapWidth) {
+    const float twoLineHeight = static_cast<float>(TILE_CAPTION_LINES) * ImGui::GetTextLineHeight();
+    const ImVec2 full = ImGui::CalcTextSize(name.c_str(), nullptr, false, wrapWidth);
+    if (full.y <= twoLineHeight) {
+        return name;
+    }
+    std::size_t lo = 0;
+    std::size_t hi = name.size();
+    while (lo < hi) {
+        const std::size_t mid = lo + ((hi - lo + 1) / 2);
+        std::size_t cut = mid;
+        while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0U) == 0x80U) {
+            --cut;  // step back to a UTF-8 boundary
+        }
+        if (cut == 0) {
+            hi = 0;
+            break;
+        }
+        std::string candidate(name, 0, cut);
+        candidate += "…";
+        const ImVec2 size = ImGui::CalcTextSize(candidate.c_str(), nullptr, false, wrapWidth);
+        if (size.y <= twoLineHeight) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    std::size_t finalCut = lo;
+    while (finalCut > 0 && (static_cast<unsigned char>(name[finalCut]) & 0xC0U) == 0x80U) {
+        --finalCut;
+    }
+    return name.substr(0, finalCut) + "…";
 }
 
 }  // namespace
@@ -145,6 +185,36 @@ void AssetBrowserPanel::drawHeader() {
     bool hiddenUi = showHidden;
     if (ImGui::Checkbox("Show hidden", &hiddenUi)) {
         record(ActionKind::ToggleHidden, {});
+    }
+
+    // task 3.1.3, Step 6: the view toggle and the tile-size combo, on the SAME wrapping row (§D-7).
+    // Each records ONE action; applyPending() is the only writer (INV-5 unchanged).
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Grid", viewMode == AssetViewMode::Grid)) {
+        record(ActionKind::SetViewMode, "grid");
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("List", viewMode == AssetViewMode::List)) {
+        record(ActionKind::SetViewMode, "list");
+    }
+    if (viewMode == AssetViewMode::Grid) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0F);
+        constexpr std::array<const char*, 3> SIZE_LABELS{"Small", "Medium", "Large"};
+        int sizeIndex = static_cast<int>(tileSize);
+        if (ImGui::Combo("##tileSize", &sizeIndex, SIZE_LABELS.data(), static_cast<int>(SIZE_LABELS.size()))) {
+            switch (static_cast<TileSize>(sizeIndex)) {
+                case TileSize::Small:
+                    record(ActionKind::SetTileSize, "small");
+                    break;
+                case TileSize::Medium:
+                    record(ActionKind::SetTileSize, "medium");
+                    break;
+                case TileSize::Large:
+                    record(ActionKind::SetTileSize, "large");
+                    break;
+            }
+        }
     }
 
     // The breadcrumb: root / a / b, every segment clickable (AC-3).
@@ -266,7 +336,9 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
 }
 
 // ---- phase 4: the right pane (the current directory's contents) ---------------------------------
-void AssetBrowserPanel::drawContentsPane(float paneHeight) {
+// task 3.1.3, Step 6: renamed from drawContentsPane -- BYTE-IDENTICAL otherwise (D3/AC-2). The
+// caller now chooses between this and drawContentsGrid below.
+void AssetBrowserPanel::drawContentsList(float paneHeight) {
     ImGui::BeginChild("##contents", ImVec2(0.0F, paneHeight), ImGuiChildFlags_Borders);
     // DELIBERATELY NOT guarded by the return value, unlike ##dirs above (plan §Approaches C): the
     // table path infers no state from a widget's return, so submitting into a clipped child is
@@ -367,6 +439,130 @@ void AssetBrowserPanel::drawContentsPane(float paneHeight) {
                 }
             }
             ImGui::EndTable();  // ONLY because BeginTable returned true (F10)
+        }
+    }
+    ImGui::EndChild();  // UNCONDITIONAL -- F9
+}
+
+// ---- phase 4 (grid): task 3.1.3, Step 6 -----------------------------------------------------------
+void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel, float tileW, float tileH,
+                                 float tileEdge, float pad) {
+    const ImVec2 tileDims(tileW, tileH);
+    const ImVec2 itemMin = ImGui::GetCursorScreenPos();
+    // A single Selectable over the WHOLE tile (2.2.4's ##row idiom, applied to a 2-D item): keeps a
+    // file named "readme##v2.png" hit-testable as one item with one id, while the caption below is
+    // drawn on the draw list (never through Selectable's own label), so "##" renders literally (E19).
+    const ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
+    if (ImGui::Selectable("##tile", rel == selectedEntry, selFlags, tileDims)) {
+        if (entry.isDirectory && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            record(ActionKind::Navigate, rel);
+        } else {
+            record(ActionKind::SelectEntry, rel);
+        }
+    }
+
+    ImDrawList* const drawList = ImGui::GetWindowDrawList();
+    const ImVec2 iconMin(itemMin.x + pad, itemMin.y + pad);
+    const ImVec2 iconMax(iconMin.x + tileEdge, iconMin.y + tileEdge);
+    const float rounding = ImGui::GetStyle().FrameRounding;
+
+    // task 3.1.3, Step 7 wires a real decoded thumbnail in here (nativeTextureFor); Step 6 draws ONLY
+    // the generated type icon -- the icon path is what a Skipped/Failed/no-database entry falls back
+    // to forever, so it must exist and be correct before anything else is layered on top of it.
+    const AssetKind kind = classifyAssetKind(entry.name, entry.isDirectory);
+    const IconColor color = iconColorFor(kind);
+    const ImU32 fillColor = IM_COL32(color.r, color.g, color.b, color.a);
+    drawList->AddRectFilled(iconMin, iconMax, fillColor, rounding);
+    if (entry.isDirectory) {
+        // D6: a folder is a two-rect glyph in a fixed colour -- a small "tab" atop the body, both in
+        // the SAME icon colour so it reads as one shape rather than two overlapping tiles.
+        const float tabWidth = (iconMax.x - iconMin.x) * 0.45F;
+        const float tabHeight = (iconMax.y - iconMin.y) * 0.18F;
+        const ImU32 tabColor = IM_COL32(color.r, color.g, color.b, 255U);
+        drawList->AddRectFilled(iconMin, ImVec2(iconMin.x + tabWidth, iconMin.y + tabHeight), tabColor, rounding);
+    } else {
+        labelScratch = iconLabelFor(entry.name);
+        const ImVec2 textSize = ImGui::CalcTextSize(labelScratch.c_str());
+        const ImVec2 textPos((iconMin.x + iconMax.x - textSize.x) * 0.5F, (iconMin.y + iconMax.y - textSize.y) * 0.5F);
+        drawList->AddText(textPos, IM_COL32_WHITE, labelScratch.c_str());
+    }
+
+    // The caption: leaf name, wrapped to at most TILE_CAPTION_LINES and ellipsised beyond that (A15).
+    // A15's 8-argument AddText overload -- imgui.h:3477 -- is the only one with a wrap width.
+    const float wrapWidth = tileW - (2.0F * pad);
+    const std::string caption = elideForCaption(std::string(entry.name), wrapWidth);
+    const ImVec2 captionPos(itemMin.x + pad, iconMax.y + pad);
+    drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize(), captionPos, IM_COL32_WHITE, caption.c_str(), nullptr,
+                      wrapWidth, nullptr);
+}
+
+void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
+    ImGui::BeginChild("##contents", ImVec2(0.0F, paneHeight), ImGuiChildFlags_Borders);
+    const DirectoryListing* const listing = cached(currentDir);
+    if (listing == nullptr) {
+        ImGui::TextUnformatted("Scanning...");
+    } else if (rootUtf8.empty()) {
+        ImGui::TextUnformatted("No project directory");
+    } else if (listing->status != ScanStatus::Ok) {
+        const std::string full = currentDir.empty() ? rootUtf8 : rootUtf8 + "/" + currentDir;
+        switch (listing->status) {
+            case ScanStatus::Missing:
+                textWrappedSafe("Directory not found:\n" + full);
+                break;
+            case ScanStatus::NotADirectory:
+                textWrappedSafe("Not a directory:\n" + full);
+                break;
+            case ScanStatus::Unreadable:
+                textWrappedSafe("Cannot read this directory (permission denied or I/O error):\n" + full);
+                break;
+            case ScanStatus::Ok:
+                break;  // unreachable; enumerated so a new status cannot be added silently
+        }
+    } else {
+        // A16 -- the exact geometry, computed once per call, all DPI-proportional.
+        const float tileEdge = ImGui::GetFontSize() * tileEdgeFontMultiple(tileSize);
+        const float pad = ImGui::GetFontSize() * TILE_CAPTION_PAD_FONT_MULTIPLE;
+        const float captionH = static_cast<float>(TILE_CAPTION_LINES) * ImGui::GetTextLineHeight();
+        const float tileW = tileEdge + (2.0F * pad);
+        const float tileH = tileEdge + captionH + (3.0F * pad);
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float rowHeight = tileH + ImGui::GetStyle().ItemSpacing.y;  // A16 -- EXACT, not a guess
+        const int columns = gridColumnsFor(ImGui::GetContentRegionAvail().x, tileW, spacing);
+
+        // The ".." tile, when not at the root -- outside the clipper, always visible, always first,
+        // and ALWAYS ALONE ON ITS OWN ROW (AC-3's own rule, preserved from the list view). Sharing a
+        // row with the clipper-driven grid below would need the clipper's row math to know about one
+        // extra leading cell; keeping ".." on its own row avoids that coupling entirely and matches
+        // the list view's own treatment (its own dedicated row, never merged with a file row).
+        if (!currentDir.empty()) {
+            ImGui::PushID(-1);
+            if (ImGui::Selectable("..", false, ImGuiSelectableFlags_None, ImVec2(tileW, tileH))) {
+                record(ActionKind::Navigate, parentOf(currentDir));
+            }
+            ImGui::PopID();
+        }
+
+        const std::vector<FileEntry>& items = listing->entries;
+        const int rows = (static_cast<int>(items.size()) + columns - 1) / columns;
+        ImGuiListClipper clipper;  // clips ROWS OF TILES, not tiles
+        clipper.Begin(rows, rowHeight);
+        while (clipper.Step()) {
+            for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
+                for (int c = 0; c < columns; ++c) {
+                    const int index = (r * columns) + c;
+                    if (index >= static_cast<int>(items.size())) {
+                        break;  // BEFORE any PushID -- there is NEVER a break between a Push/Pop pair
+                    }
+                    if (c > 0) {
+                        ImGui::SameLine();  // restores the PREVIOUS line's Y (why one row == rowHeight)
+                    }
+                    const FileEntry& entry = items[static_cast<std::size_t>(index)];
+                    const std::string rel = joinRelative(currentDir, entry.name);
+                    ImGui::PushID(index);
+                    drawTile(entry, rel, tileW, tileH, tileEdge, pad);
+                    ImGui::PopID();  // no continue/break/return inside drawTile
+                }
+            }
         }
     }
     ImGui::EndChild();  // UNCONDITIONAL -- F9
@@ -501,6 +697,19 @@ void AssetBrowserPanel::applyPending() {
             treeDirty = true;
             reimportRequested = true;
             break;
+        case ActionKind::SetViewMode:
+            // task 3.1.3, Step 6 -- the path carries "grid" or "list" (§D-7's PendingAction shape).
+            viewMode = action.path == "grid" ? AssetViewMode::Grid : AssetViewMode::List;
+            break;
+        case ActionKind::SetTileSize:
+            if (action.path == "small") {
+                tileSize = TileSize::Small;
+            } else if (action.path == "large") {
+                tileSize = TileSize::Large;
+            } else {
+                tileSize = TileSize::Medium;
+            }
+            break;
     }
 }
 
@@ -514,9 +723,13 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     const float paneHeight = std::max(ImGui::GetContentRegionAvail().y - footerHeight, 1.0F);
     drawTreePane(paneHeight);  // 3
     ImGui::SameLine();
-    drawContentsPane(paneHeight);  // 4
-    drawFooter();                  // 5
-    applyPending();                // the ONLY place anything mutates
+    if (viewMode == AssetViewMode::Grid) {  // task 3.1.3, Step 6 -- one child, two bodies (§D-7)
+        drawContentsGrid(paneHeight);
+    } else {
+        drawContentsList(paneHeight);
+    }
+    drawFooter();    // 5
+    applyPending();  // the ONLY place anything mutates
 }
 
 }  // namespace engine::editor
