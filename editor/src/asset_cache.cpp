@@ -74,7 +74,7 @@ const AssetCacheEntry* AssetCacheIndex::find(Guid guid) const noexcept {
 
 // parseAssetCache's order is load-bearing: it is what makes AC-14's "version-first" property and
 // every "exact first error" assertion true. Written in EXACTLY this order; do not reorder for style.
-AssetCacheParseResult parseAssetCache(std::string_view text) {
+AssetCacheParseResult parseAssetCache(std::string_view text, std::size_t maxEntries) {
     const JsonParseResult parsed = parseJson(text);
     // NOT `!parsed.ok()`: bugprone-unchecked-optional-access cannot connect an opaque out-of-line
     // ok() to `value` (project.cpp:151-155's precedent, asset_meta.cpp's second application).
@@ -130,7 +130,7 @@ AssetCacheParseResult parseAssetCache(std::string_view text) {
     // it was never actually going to keep.
     std::unordered_set<Guid> claimed;
     for (const JsonValue& element : entriesField->elements()) {
-        if (result.index.entries.size() >= MAX_CACHE_ENTRIES) {
+        if (result.index.entries.size() >= maxEntries) {
             result.truncated = true;
             break;
         }

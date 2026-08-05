@@ -3002,8 +3002,12 @@ TEST_CASE(
 
     REQUIRE(drainLine != lines.size());
     REQUIRE(combineLine != lines.size());
-    // The drain happens BEFORE the combine reads it -- proves the fix's ordering, not just the
-    // single-line negative check above (a belt-and-braces pair, the PU1 precedent again).
+    // The drain happens BEFORE the combine reads it. NOT merely belt-and-braces beside the negative
+    // check above: it is the only half of this proof that survives clang-format WRAPPING the fused
+    // shape. With a marginally longer right operand the formatter breaks the line after the `||`,
+    // which puts `assetRescanRequested ||` and `takeRescanRequest()` on two different lines and slips
+    // past every line-based check -- but never in that order. See I34 below, this case's sibling for
+    // task 3.1.2's second one-shot, which states the same reasoning in full.
     CHECK(drainLine < combineLine);
 }
 
@@ -3213,4 +3217,66 @@ TEST_CASE("editor: requestAssetReimport drives Reimport All without a button cli
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ---- I34: task 3.1.2's SECOND one-shot -- Reimport All -- drains unconditionally too --------------
+//
+// I30's exact algorithm, retargeted at the `takeReimportRequest()` / `reimport` pair, and needed for a
+// reason I33 above cannot cover: `assetReimportRequested` is the ONLY flag ever set in this TU (there
+// is no panel here to click Reimport All), so seeding the fused shape
+//     const bool reimport = assetReimportRequested || (assetBrowserPanel != nullptr && ...->take...());
+// leaves I33 -- and every other case in this tree -- green. Confirmed by direct sabotage (seed S28
+// reddens nothing), which is what makes a mechanical source-text proof the only available discriminator.
+//
+// BOTH halves below are load-bearing, and the ORDERING half is the one that carries the weight. The
+// plan's §V6 grep gate and the single-line negative check each fire only while the fused expression
+// fits on ONE line; with a marginally longer right operand clang-format breaks after the `||`, leaving
+// `assetReimportRequested ||` on one line and `takeReimportRequest()` on the next -- past every
+// line-based check. What survives that wrapping is `drainLine < combineLine`: a fused expression can
+// only ever place the call ON or AFTER the combine, never before it.
+TEST_CASE(
+    "editor_app: the reconcile drains the panel's reimport flag unconditionally (task 3.1.2, I34, "
+    "AC-39, seed S28)") {
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/editor_app.cpp";
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+    const std::string& text = *read.text;
+    REQUIRE_FALSE(text.empty());
+
+    std::vector<std::string_view> lines;
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        if (newline == std::string_view::npos) {
+            lines.push_back(remaining);
+            break;
+        }
+        lines.push_back(remaining.substr(0, newline));
+        remaining.remove_prefix(newline + 1U);
+    }
+
+    std::size_t combineLine = lines.size();
+    std::size_t drainLine = lines.size();
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const bool hasAssetReimportRequested = lines[i].find("assetReimportRequested") != std::string_view::npos;
+        const bool hasOr = lines[i].find("||") != std::string_view::npos;
+        const bool hasTake = lines[i].find("takeReimportRequest()") != std::string_view::npos;
+
+        // Half 1, the negative check: a single line carrying BOTH the flag and the call is the
+        // short-circuit shape, whichever side it is written on -- `||` short-circuits its RIGHT operand.
+        INFO("line ", i, ": ", lines[i]);
+        REQUIRE_FALSE((hasAssetReimportRequested && hasOr && hasTake));
+
+        if (hasTake && drainLine == lines.size()) {
+            drainLine = i;  // FIRST occurrence -- the drain
+        }
+        if (hasAssetReimportRequested && hasOr && combineLine == lines.size()) {
+            combineLine = i;  // FIRST occurrence -- the combine
+        }
+    }
+
+    REQUIRE(drainLine != lines.size());
+    REQUIRE(combineLine != lines.size());
+    // Half 2, the ordering check -- the half that survives a clang-format line break after the `||`.
+    CHECK(drainLine < combineLine);
 }

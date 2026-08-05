@@ -101,10 +101,13 @@ std::size_t AssetDatabase::cacheSize() const noexcept { return cache.entries.siz
 const ImportPlanResult& AssetDatabase::importPlan() const noexcept { return plan; }
 
 void AssetDatabase::invalidateCache() noexcept {
-    // AC-35: BOTH must go together -- clearing only `cache` would leave `cacheTextOnDisk` holding the
-    // OLD text, so a rebuilt-from-scratch index could compare equal to it and D15's write would be
-    // silently skipped (a Reimport All that does not actually rewrite).
     cache = AssetCacheIndex{};
+    // Defensive, and NOT load-bearing -- stated plainly because an earlier comment here claimed these
+    // two lines "must go together" and no test can hold that claim: phase 3 clears `cacheTextOnDisk`
+    // unconditionally, ahead of the `cacheInvalidated` branch, so deleting this line reddens nothing.
+    // Keep it anyway (it costs nothing and it keeps the object self-consistent between the call and
+    // the next scan), but the invariant that ACTUALLY protects a Reimport All from silently skipping
+    // its rewrite is the skip-the-reload branch in phase 3, which AD58 covers.
     cacheTextOnDisk.clear();
     // Logged deviation (asset_database.hpp's comment beside the member): phase 3 otherwise reloads
     // BOTH fields straight back from disk on the very next scan, before phase 4 ever runs, making this

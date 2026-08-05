@@ -245,8 +245,15 @@ TEST_CASE("ContentHash: a one-bit change in a 64-byte buffer changes the hash (C
 }
 
 TEST_CASE("ContentHash: length extension -- \"abc\" vs \"abc\\0\" differ (CH24, AC-4, seed S4)") {
-    // Proves h1 ^= totalLength is LIVE: without it, appending a trailing zero byte to a buffer whose
-    // tail byte count already accounts for it could hash identically.
+    // Proves the LENGTH reaches the finalization at all: these two inputs produce an IDENTICAL `k1`
+    // out of the tail switch (case 4 xors byteAt(3) == 0 into bits 24-31 and falls through to the
+    // same three bytes case 3 mixes), so only `totalLength` can separate them.
+    //
+    // It does NOT prove `h1 ^= totalLength` specifically is live, which this comment used to claim.
+    // Measured: delete that one line and this case stays GREEN -- length still enters through
+    // `h2 ^= totalLength` and then reaches h1 via `h1 += h2`. CH21/CH22's pinned literals are what
+    // catch a dropped `h1 ^= totalLength`; this case catches a finalization that ignores length
+    // entirely.
     const std::array<std::byte, 3> abc{std::byte{'a'}, std::byte{'b'}, std::byte{'c'}};
     const std::array<std::byte, 4> abcNul{std::byte{'a'}, std::byte{'b'}, std::byte{'c'}, std::byte{0}};
     CHECK(hashBytes(abc) != hashBytes(abcNul));

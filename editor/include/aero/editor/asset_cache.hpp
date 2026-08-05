@@ -70,7 +70,13 @@ struct AssetCacheParseResult {
     std::size_t droppedDependencies = 0;  // MAX_DEPENDENCIES_PER_ENTRY excess (E25)
     bool truncated = false;               // MAX_CACHE_ENTRIES
 };
-[[nodiscard]] AssetCacheParseResult parseAssetCache(std::string_view text);
+// `maxEntries` is a DEFAULTED PARAMETER, not a test-only seam and not a mutable constant -- plan A9's
+// decision, applied a second time (AssetDatabase::rescan's `hashBudgetBytes` is the first). Production
+// calls this with the default, so the REAL MAX_CACHE_ENTRIES is what every scan exercises and the
+// constant stays pinned at its own declaration above; a test passes a small value to reach the
+// truncation branch in microseconds instead of the ~10.8s a 200 001-entry document costs under ASan.
+// A test that passes a cap is testing the CAP MECHANISM, which is exactly the thing under test.
+[[nodiscard]] AssetCacheParseResult parseAssetCache(std::string_view text, std::size_t maxEntries = MAX_CACHE_ENTRIES);
 [[nodiscard]] std::string writeAssetCacheText(const AssetCacheIndex& index);  // canonical, one '\n'
 
 // ---- change detection + the cascade, as a PURE function (D12) --------------------------------------

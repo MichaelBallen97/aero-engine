@@ -97,9 +97,10 @@ public:
     [[nodiscard]] std::optional<Guid> guidForPath(std::string_view relativePath) const noexcept;
 
     // ---- task 3.1.2 --------------------------------------------------------------------------------
-    void invalidateCache() noexcept;  // clears the in-memory index AND D15's comparand (AC-35) -- BOTH,
-                                      // or a rebuilt-from-scratch index would compare equal to the OLD
-                                      // comparand and the rewrite would be silently skipped.
+    // Clears the in-memory index and arms the one-shot below, so the NEXT scan skips phase 3's reload
+    // (AC-35). It also clears `cacheTextOnDisk`, but defensively, not load-bearingly: phase 3 clears
+    // that field unconditionally anyway. The .cpp says so at the line itself.
+    void invalidateCache() noexcept;
     [[nodiscard]] std::size_t cacheSize() const noexcept;
     [[nodiscard]] const ImportPlanResult& importPlan() const noexcept;  // 3.2's seam (D16)
 

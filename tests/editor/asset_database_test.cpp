@@ -1237,6 +1237,12 @@ TEST_CASE(
 TEST_CASE(
     "asset_database: a hand-written dependency edge drives a cascade through a real scan (AD49, AC-23 end to "
     "end)") {
+    // What this case proves is that a dependency edge READ BACK FROM THE INDEX FILE reaches planImports
+    // through a real scan at all -- the plumbing, end to end, on real bytes. It does NOT test
+    // TRANSITIVITY: there is exactly ONE hand-written edge here, so the cascade only ever runs one hop
+    // and an implementation that stopped at depth 1 would leave this case green. IP14 (A -> B -> C),
+    // IP15 (four deep) and IP16 (a diamond) carry transitivity, at the pure tier where a multi-level
+    // graph costs a std::vector literal instead of a filesystem.
     const TempDir dir;
     writeFile(dir.join("a.png"), "a-content");
     writeFile(dir.join("b.png"), "b-content");

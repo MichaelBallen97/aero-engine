@@ -10,9 +10,9 @@
 // no ImGui context, no disk I/O at all -- parseAssetCache/writeAssetCacheText touch no filesystem;
 // only the three golden-fixture reads below touch disk, through scene_golden::readBytes.
 //
-// This step lands ONLY the format's coverage (IC1-IC33, IG1-IG5). planImports/commitImports/
-// planReattachments are declared in asset_cache.hpp but defined in Steps 6/7 -- this file calls
-// none of them.
+// Coverage, measured from this file rather than carried forward from the plan: IC1-IC34 (the format),
+// IG1-IG6 (the golden battery over the committed fixtures), IP1-IP26 and IP39-IP40 (planImports /
+// commitImports), IP27-IP38 (planReattachments).
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
 #include <aero/editor/asset_cache.hpp>
@@ -44,6 +44,7 @@ using engine::editor::importChangeLabel;
 using engine::editor::ImportInput;
 using engine::editor::ImportPlanEntry;
 using engine::editor::ImportPlanResult;
+using engine::editor::MAX_CACHE_ENTRIES;
 using engine::editor::MAX_DEPENDENCIES_PER_ENTRY;
 using engine::editor::MISSING_SCAN_GRACE;
 using engine::editor::OrphanMeta;
@@ -81,8 +82,8 @@ TEST_CASE("asset_cache: parseAssetCache succeeds on all three committed fixtures
         const AssetCacheParseResult result = parseAssetCache(bytes.text);
         CHECK(result.outcome == CacheLoadOutcome::Ok);
         // The steady-state, every-scan-in-practice case: nowhere NEAR MAX_CACHE_ENTRIES, so
-        // `truncated` stays false. The `true` branch is a documented, deliberate coverage gap --
-        // see the comment where IC25 used to be, above the MAX_DEPENDENCIES_PER_ENTRY case.
+        // `truncated` stays false. The `true` branch is covered by IC25 below, through the
+        // `maxEntries` seam -- not by this case.
         CHECK_FALSE(result.truncated);
     }
 }
@@ -285,27 +286,73 @@ TEST_CASE("asset_cache: unknown keys at BOTH levels are ignored SILENTLY (IC24, 
     // MetaParseResult::unknownKeys, this format's policy is inverted (D7/§6.3): no report at all.
 }
 
-// IC25 -- MAX_CACHE_ENTRIES truncation -- DELIBERATELY NOT EXERCISED AT THE REAL CONSTANT. Measured
-// at implementation time (a standalone ASan/Debug harness, this machine, this compiler): parsing a
-// document built from the smallest input that can reach MAX_CACHE_ENTRIES=200000 -- 200 001 tiny but
-// syntactically complete, unique, valid entries -- took ~10.8s, five times the plan's ~2s ASan-lane
-// budget. The cost is LINEAR in entry count, not quadratic (5000 -> 0.28s, 20000 -> 1.05s,
-// 50000 -> 2.71s, 100000 -> 5.42s, 200001 -> 10.81s) -- this is not an algorithmic bug in
-// parseAssetCache, it is the inherent per-node cost of this tree's JsonValue DOM (one
-// std::variant<std::monostate,bool,JsonNumber,std::string,vector<JsonValue>,vector<JsonMember>> plus
-// several heap allocations per entry) under ASan's redzones, multiplied by 200 001.
+// IC25 -- the entry cap. The REAL constant is deliberately NOT reached: the smallest input that can
+// reach MAX_CACHE_ENTRIES=200000 -- 200 001 tiny but syntactically complete, unique, valid entries --
+// was measured at ~10.8s under ASan on this machine, five times the plan's ~2s ASan-lane budget. The
+// cost is LINEAR in entry count, not quadratic (5000 -> 0.28s, 20000 -> 1.05s, 50000 -> 2.71s,
+// 100000 -> 5.42s, 200001 -> 10.81s) -- not an algorithmic bug in parseAssetCache, but the inherent
+// per-node cost of this tree's JsonValue DOM under ASan's redzones, multiplied by 200 001.
 //
-// Unlike 3.1.1's AD23 (which substituted a SMALLER, independent cap -- MAX_ENTRIES_PER_DIRECTORY --
-// that sets the identical `truncated` bit through a completely different code path, `listDirectory`),
-// this format has no second, cheaper truncation source to redirect through: MAX_CACHE_ENTRIES is the
-// ONLY thing that can set `truncated` in parseAssetCache. There is no substitute mechanism.
+// The plan's R7 weighed exactly two options -- "document the gap" against "lower the constant" -- and
+// considered no third. There is one: a SEAM. `maxEntries` is plan A9's defaulted parameter applied to
+// this function (asset_cache.hpp states the rule at the declaration): MAX_CACHE_ENTRIES stays 200000,
+// stays pinned at its own declaration and is what production exercises, while a test reaches the
+// branch in microseconds. Nothing here rewrites a constant, so 3.1.1's AD23/AD9 rule ("a constant a
+// test changes is a constant no test pins") is untouched.
 //
-// Per plan A9's documented fallback ("record the budget branch as a deliberate coverage gap ... keep
-// every flag plumbed ... rather than lowering the constant"): MAX_CACHE_ENTRIES stays 200000 (a
-// constant a test changes is a constant no test pins -- 3.1.1's AD23/AD9 rule, unchanged here), and
-// the `truncated == true` branch is a GENUINE, OPEN COVERAGE GAP, not a passing test in disguise.
-// Recorded here for docs/10-engineering-log.md to carry forward. The `truncated == false` branch (the
-// steady-state, every-scan-in-practice case) IS covered -- see IC1's explicit assertion below.
+// WHAT REMAINS AN OPEN GAP, and only this: `report.cacheTruncated = parsed.truncated` in
+// asset_database.cpp's phase 3. `rescan` takes no entry cap and is not given one for a test's sake,
+// so reaching that assignment still needs a real 200 001-entry file on disk -- the same ~10.8s plus
+// the write. The flag's PRODUCER is covered below; its PROPAGATION into AssetScanReport is not, and
+// no case in this tree asserts `AssetScanReport::cacheTruncated == true`.
+
+namespace {
+// N syntactically complete, unique, valid entries -- the cheapest input that can reach any cap.
+std::string cacheDocWithEntries(std::size_t count) {
+    std::string doc = R"({"version": 1, "hashAlgorithm": "murmur3-x64-128", "entries": [)";
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i != 0) {
+            doc += ',';
+        }
+        const Guid guid{static_cast<std::uint64_t>(i) + 1U, 7};
+        doc += R"({"guid": ")";
+        doc += formatGuid(guid);
+        doc += R"(", "path": "a)";
+        doc += std::to_string(i);
+        doc += R"(.png", "size": 1, "mtime": 1, "contentHash": ")";
+        doc += GOOD_CONTENT_HASH;
+        doc += R"(", "metaHash": ")";
+        doc += GOOD_META_HASH;
+        doc += R"("})";
+    }
+    doc += "]}";
+    return doc;
+}
+}  // namespace
+
+TEST_CASE("asset_cache: exceeding the entry cap truncates; being exactly AT it does not (IC25, D10, AC-16)") {
+    // Five entries, a cap of three: the first three are admitted, and the fourth trips the guard at
+    // the TOP of the loop, which sets `truncated` and stops the walk.
+    const AssetCacheParseResult over = parseAssetCache(cacheDocWithEntries(5), /*maxEntries=*/3);
+    CHECK(over.outcome == CacheLoadOutcome::Ok);
+    CHECK(over.truncated);
+    CHECK(over.index.entries.size() == 3);
+    CHECK(over.droppedEntries == 0);  // truncation is NOT a per-entry drop: a different counter entirely
+
+    // Exactly at the cap: every entry is admitted and `truncated` stays false, because no further
+    // element exists to reach the guard. The off-by-one this pins is the whole reason for the pair.
+    const AssetCacheParseResult atLimit = parseAssetCache(cacheDocWithEntries(3), /*maxEntries=*/3);
+    CHECK(atLimit.outcome == CacheLoadOutcome::Ok);
+    CHECK_FALSE(atLimit.truncated);
+    CHECK(atLimit.index.entries.size() == 3);
+
+    // The DEFAULT overload admits all five -- proof the cap above came from the ARGUMENT and that
+    // MAX_CACHE_ENTRIES itself is untouched and still what an unqualified call uses.
+    const AssetCacheParseResult defaulted = parseAssetCache(cacheDocWithEntries(5));
+    CHECK_FALSE(defaulted.truncated);
+    CHECK(defaulted.index.entries.size() == 5);
+    CHECK(MAX_CACHE_ENTRIES == 200000U);
+}
 
 TEST_CASE("asset_cache: MAX_DEPENDENCIES_PER_ENTRY excess is dropped, counted, and the entry SURVIVES (IC26, E25)") {
     std::string deps;
@@ -606,6 +653,24 @@ TEST_CASE("asset_cache: cache-dependencies.json's raw bytes name version 1 and m
     REQUIRE(fixture.ok);
     CHECK(fixture.text.find("\"version\": 1,") != std::string::npos);
     CHECK(fixture.text.find("\"hashAlgorithm\": \"murmur3-x64-128\"") != std::string::npos);
+}
+
+TEST_CASE("asset_cache: cache-dependencies.json is a MULTI-ENTRY fixpoint, in GUID order (IG6, AC-18)") {
+    // IG1/IG2 run over cache-minimal.json, which holds exactly ONE entry and is therefore a fixpoint
+    // under ANY ordering whatsoever -- measured, not assumed: a writer sorting by `path` instead of by
+    // `guid` leaves both of them green, and only IC30 catches it. This fixture holds THREE entries
+    // whose path order (albedo.png, material.mat, source.psd) and GUID order (a1a1..., b2b2...,
+    // c3c3...) DISAGREE, so AC-18's sort-by-GUID claim is carried by the golden tier too, against real
+    // committed bytes rather than a hand-built index.
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(DEPENDENCIES_FIXTURE);
+    REQUIRE(fixture.ok);
+    CHECK(scene_golden::hygieneComplaint(fixture.text).empty());
+    const AssetCacheParseResult parsed = parseAssetCache(fixture.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    REQUIRE(parsed.index.entries.size() == 3);
+    const std::string written = writeAssetCacheText(parsed.index);
+    INFO(scene_golden::describeMismatch(fixture.text, written));
+    CHECK(written == fixture.text);
 }
 
 // =====================================================================================================
@@ -925,11 +990,15 @@ TEST_CASE(
     "asset_cache: a cycle A -> B -> A with B's source changed terminates and marks both (IP18, AC-24, "
     "seed S19)") {
     // planImports's worklist pushes a node only on the clean->dirty transition (D-6 step 4), so this
-    // call is PROVEN to terminate in O(V+E) regardless of the cycle -- there is no visited set, no
-    // cycle detection and no recursion to get wrong. This case's "hard bound" is therefore the call
-    // itself: a non-terminating implementation would hang the test binary rather than reach the CHECKs
-    // below (2.2.4's S6 lesson), which is the strongest verdict a hermetic doctest case can assert
-    // without a threading harness this task does not warrant.
+    // call terminates in O(V+E) regardless of the cycle -- there is no visited set, no cycle detection
+    // and no recursion to get wrong.
+    //
+    // READ THE FAILURE MODE PLAINLY: this case has NO hard bound of any kind. The plan's §B and §9
+    // both claim it "fails an assertion rather than hanging"; that claim is WRONG. Measured against a
+    // seeded enqueue-on-every-visit implementation, IP18 and IP20 each ran past a 20-second alarm --
+    // a non-terminating cascade HANGS the test binary and is reported by ctest's timeout, never by a
+    // failed CHECK. That is accepted deliberately: an iteration cap here would be a cycle detector in
+    // disguise, and D12 forbids one. The CHECKs below are reached only if the call returns at all.
     const Guid a = guidOf(1);
     const Guid b = guidOf(2);
     const AssetCacheIndex previous = indexOf({
@@ -1028,6 +1097,63 @@ TEST_CASE("asset_cache: a NotHashed input is not committed as up to date (IP23, 
     const ImportPlanResult replan = planImports(inputs, next);
     REQUIRE(replan.entries.size() == 1);
     CHECK(replan.entries[0].change == ImportChange::NotHashed);
+}
+
+// IP39/IP40 -- the shape IP22 and IP23 cannot see, and the reason "verbatim" has to be spelled out
+// field by field. Both of those cases leave the cached entry AND the input at (size, mtime) == (0, 0),
+// so a commit that carried the previous entry forward but REFRESHED its `size`/`mtime` to this scan's
+// observed values would still compare equal to the fixture and both would stay green. That is not a
+// hypothetical: it is the realistic form of the R-C2 regression, and it is the one outcome this task
+// must never produce -- a refreshed (size, mtime) makes the NEXT scan's fast path vouch for bytes
+// nobody ever hashed, i.e. a false UpToDate. The pair below is the only input shape where it shows.
+
+TEST_CASE(
+    "asset_cache: an Unhashable input's cached (size, mtime) survive a scan that OBSERVED different "
+    "ones (IP39, AC-25, INV-C4, seed S15b)") {
+    AssetCacheEntry cached = cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3, {guidOf(9)}, 1);
+    cached.size = 4096;
+    cached.mtime = 1700000000;
+    const AssetCacheIndex previous = indexOf({cached});
+
+    ImportInput input = importInput(guidOf(1), "a.png", std::nullopt, ContentHash{}, "", 0, /*budget=*/false);
+    input.size = 999999;       // what THIS scan stat()ed -- deliberately UNEQUAL to the cached value
+    input.mtime = 1800000000;  // ditto: a real edit that could not be read back
+    const std::vector<ImportInput> inputs = {input};
+
+    const ImportPlanResult plan = planImports(inputs, previous);
+    REQUIRE(plan.entries.size() == 1);
+    REQUIRE(plan.entries[0].change == ImportChange::Unhashable);
+
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].size == 4096);         // the CACHED value, never this scan's observation
+    CHECK(next.entries[0].mtime == 1700000000);  // ditto -- "verbatim" covers these two as well
+    CHECK(next.entries[0].contentHash == hashOf(10));
+    CHECK(next.entries[0].missing == 1);
+}
+
+TEST_CASE(
+    "asset_cache: a NotHashed input's cached (size, mtime) survive a scan that OBSERVED different "
+    "ones (IP40, AC-25, INV-C4, seed S15b)") {
+    AssetCacheEntry cached = cacheEntry(guidOf(1), "big.bin", hashOf(10), hashOf(20), "gltf", 3, {}, 0);
+    cached.size = 64;
+    cached.mtime = -86400;  // a legitimately pre-1970 mtime, so a "refresh" cannot coincide with it
+    const AssetCacheIndex previous = indexOf({cached});
+
+    ImportInput input = importInput(guidOf(1), "big.bin", std::nullopt, hashOf(20), "gltf", 3, /*budget=*/true);
+    input.size = 8ULL * 1024 * 1024 * 1024;  // the budget ran out precisely BECAUSE it is enormous
+    input.mtime = 1800000000;
+    const std::vector<ImportInput> inputs = {input};
+
+    const ImportPlanResult plan = planImports(inputs, previous);
+    REQUIRE(plan.entries.size() == 1);
+    REQUIRE(plan.entries[0].change == ImportChange::NotHashed);
+
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].size == 64);
+    CHECK(next.entries[0].mtime == -86400);
+    CHECK(next.entries[0].contentHash == hashOf(10));
 }
 
 TEST_CASE(
@@ -1217,10 +1343,15 @@ TEST_CASE(
     "seed S26, D9)") {
     const Guid guidX = guidOf(1);
     const Guid guidY = guidOf(2);
-    // Both entries are STILL LIVE this scan (both paths appear in livePaths) -- proving content
-    // equality is never used for identity dedup (spec correction A12): even a real candidate sharing
-    // that same hash finds nothing, because both potential targets are filtered out before byHash is
-    // even built.
+    // Both entries are STILL LIVE this scan (both paths appear in livePaths), and the OUTCOME this
+    // pins is the one that matters: two byte-identical live files keep two identities and a third
+    // copy steals neither. Content equality is never used for identity dedup (spec correction A12).
+    //
+    // This case cannot see the MECHANISM its earlier comment described. Removing A12's live-path
+    // filter puts BOTH entries in byHash[H], and condition 3's `size() != 1` then rejects the
+    // candidate anyway -- a different guard reaching the same answer, so this case stays green.
+    // IP32 is the real discriminator for that filter: there, a single absent entry sails through
+    // every remaining condition and produces a match the moment the filter is gone.
     const AssetCacheIndex previous = indexOf({
         cacheEntry(guidX, "copy1.png", hashOf(50)),
         cacheEntry(guidY, "copy2.png", hashOf(50)),

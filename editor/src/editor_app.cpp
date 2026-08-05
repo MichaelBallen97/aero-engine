@@ -437,9 +437,9 @@ bool EditorApp::tick() {
         if (reimport) {
             // AC-39/AC-35: discard the committed index BEFORE the scan below runs, so every asset
             // re-hashes from scratch this pass rather than taking its cached (size, mtime) fast path.
-            // invalidateCache() clears BOTH the in-memory index and D15's write comparand -- clearing
-            // only the former would let a rebuilt-from-scratch index compare equal to the OLD comparand
-            // and silently skip the rewrite (AssetDatabase's own header comment on this method).
+            // What makes that work is the one-shot invalidateCache() arms, which the next scan's phase
+            // 3 consults to skip its reload -- without it the file on disk would simply be read back
+            // in before phase 4 ever ran (AssetDatabase's own comments on the method and the flag).
             assetDatabase.invalidateCache();
         }
         if (assetDatabase.root() != wanted || refresh || reimport) {

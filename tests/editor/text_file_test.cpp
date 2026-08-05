@@ -185,7 +185,14 @@ TEST_CASE("text_file: hashFileContents on a small file matches hashBytes exactly
     CHECK(*result.hash == hashOf(content));
 }
 
-TEST_CASE("text_file: hashFileContents on exactly HASH_CHUNK_BYTES matches hashBytes (TF8, AC-8, seed S3)") {
+// TF8/TF9/TF10 pin that STREAMING a file agrees with hashing its bytes in one call at, one under and
+// one over the read-chunk size. What they do NOT do -- and what an earlier reading of "seed S3" in
+// these titles implied -- is discriminate a ContentHasher CARRY regression. HASH_CHUNK_BYTES is 1 MiB,
+// a multiple of 16, so every read() but the last hands update() a whole number of blocks and leaves
+// carryLength == 0; the carry top-up branch at the head of update() is therefore never entered at ANY
+// file size reachable through hashFileContents. Measured: delete that whole branch and TF8-TF11 stay
+// green. CH25's adversarial splits (tests/content_hash_test.cpp) are the only thing that catches it.
+TEST_CASE("text_file: hashFileContents on exactly HASH_CHUNK_BYTES matches hashBytes (TF8, AC-8)") {
     const TempDir tmp;
     const std::string path = tmp.join("exact-chunk.bin");
     const std::string content = makePattern(HASH_CHUNK_BYTES);
@@ -209,9 +216,10 @@ TEST_CASE("text_file: hashFileContents one byte UNDER HASH_CHUNK_BYTES matches h
     CHECK(*result.hash == hashOf(content));
 }
 
-TEST_CASE("text_file: hashFileContents one byte OVER HASH_CHUNK_BYTES matches hashBytes (TF10, AC-8, seed S3)") {
-    // The carry crosses a chunk boundary here: HASH_CHUNK_BYTES bytes fill exactly one read(), and the
-    // one extra byte forces a second, short read().
+TEST_CASE("text_file: hashFileContents one byte OVER HASH_CHUNK_BYTES matches hashBytes (TF10, AC-8)") {
+    // Two read()s: HASH_CHUNK_BYTES bytes fill exactly one, and the one extra byte forces a second,
+    // short one. The carry is WRITTEN here (one leftover byte awaiting finish()) but never TOPPED UP,
+    // since the first read handed update() a whole number of 16-byte blocks -- see the note above TF8.
     const TempDir tmp;
     const std::string path = tmp.join("over-chunk.bin");
     const std::string content = makePattern(HASH_CHUNK_BYTES + 1U);
