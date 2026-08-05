@@ -3,6 +3,8 @@
 #include <aero/core/log.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/time.hpp>
+#include <aero/editor/asset_actions.hpp>  // task 3.1.3: deleteOrphanMeta/OrphanDeleteResult -- the
+                                          // reconcile block's third one-shot drain
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>
@@ -432,7 +434,27 @@ bool EditorApp::tick() {
         // shipped that exact bug once already (I30 is its mechanical proof).
         const bool panelRefresh = assetBrowserPanel != nullptr && assetBrowserPanel->takeRescanRequest();
         const bool panelReimport = assetBrowserPanel != nullptr && assetBrowserPanel->takeReimportRequest();
-        const bool refresh = assetRescanRequested || panelRefresh;
+        // task 3.1.3 (D12): a THIRD one-shot, drained as its OWN statement for the identical F9 reason
+        // -- putting takeOrphanDeleteRequest() on the right of a `||` would skip the drain whenever an
+        // earlier term was already true, stranding the request until the next frame. I42 is its
+        // mechanical proof.
+        const std::string orphanToDelete =
+            assetBrowserPanel != nullptr ? assetBrowserPanel->takeOrphanDeleteRequest() : std::string{};
+        bool orphanHandled = false;
+        if (!orphanToDelete.empty()) {
+            const OrphanDeleteResult result = deleteOrphanMeta(assetDatabase.root(), orphanToDelete);
+            if (result.deleted) {
+                AERO_LOG_INFO("editor: deleted orphaned sidecar '{}'", orphanToDelete);
+            } else {
+                AERO_LOG_WARN("editor: refused to delete '{}' -- {}", orphanToDelete, result.message);
+            }
+            // A REFUSAL still rescans: every refusal reason (Missing, AssetPresent, NotAMeta) means
+            // "the tree changed under us", so the Issues list the user is looking at is stale either
+            // way. The deletion therefore happens BEFORE the refresh/reimport test below, so the
+            // delete and the rescan that observes it are ONE pass, not two ticks apart (seed S28).
+            orphanHandled = true;
+        }
+        const bool refresh = assetRescanRequested || panelRefresh || orphanHandled;
         const bool reimport = assetReimportRequested || panelReimport;
         assetRescanRequested = false;
         assetReimportRequested = false;

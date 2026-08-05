@@ -109,6 +109,15 @@ public:
     // MAX_THUMBNAIL_DECODES_PER_TICK Absent keys.
     void serviceThumbnails();
 
+    // task 3.1.3, Step 11: one-shot, read-and-clear -- the takeRescanRequest() shape, a third
+    // instance (F9). Set only by the modal's Delete button confirming; drained by EditorApp::tick()'s
+    // reconcile block, as its OWN statement (I42's mechanical proof).
+    [[nodiscard]] std::string takeOrphanDeleteRequest() noexcept {
+        std::string requested = std::move(confirmedOrphanDelete);
+        confirmedOrphanDelete.clear();
+        return requested;
+    }
+
     // task 3.1.3 (A12): black-box observability for the GPU tier, forwarded by EditorApp -- the
     // assetCacheEntryCount() shape verbatim.
     [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept { return ledger.readyCount(); }
@@ -206,6 +215,8 @@ private:
     // task 3.1.3, Step 9 -- the retained scan report (D11) and the delete confirmation's own state.
     const AssetScanReport* reportPtr = nullptr;  // reconciled, never owned (the databasePtr precedent)
     std::string pendingOrphanDelete;             // "" == no modal open
+    std::string confirmedOrphanDelete;           // task 3.1.3, Step 11 -- one-shot, drained by
+                                                 // takeOrphanDeleteRequest()
     bool issuesOpen = false;
 };
 

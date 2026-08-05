@@ -128,6 +128,11 @@ void AssetBrowserPanel::setRoot(std::string rootPath) {
     filter = AssetFilter{};
     queryScratch.clear();
     searchRows = SearchResult{};
+    // task 3.1.3, Step 11: an orphan path named against the OLD root is meaningless against the new
+    // one -- the SAME reasoning, a fourth time. A modal left open across a project swap would confirm
+    // a delete against the wrong tree.
+    pendingOrphanDelete.clear();
+    confirmedOrphanDelete.clear();
 }
 
 void AssetBrowserPanel::record(ActionKind kind, std::string path) { pending = PendingAction{kind, std::move(path)}; }
@@ -759,6 +764,54 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
 // "The report IS the issues list" -- no new computation, no second source of truth. Shown ONLY when
 // the total is non-zero (no ride-along empty header on a clean project).
 void AssetBrowserPanel::drawIssues() {
+    // task 3.1.3, Step 11: the delete-confirmation modal. Opened by applyPending() setting
+    // pendingOrphanDelete (never from inside this draw walk); 2.5.1's shell_ui.cpp:247-302 shape
+    // verbatim, retargeted at this action.
+    constexpr const char* DELETE_MODAL_ID = "Delete orphaned .meta?";
+    if (!pendingOrphanDelete.empty()) {
+        if (!ImGui::IsPopupOpen(DELETE_MODAL_ID)) {
+            ImGui::OpenPopup(DELETE_MODAL_ID);
+        }
+        // F13: EndPopup ONLY when BeginPopupModal returned true -- the BeginMenu family, not the Begin one.
+        if (ImGui::BeginPopupModal(DELETE_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            // C7/E20: the exact project-relative path through TextWrapped's "%s" form -- NEVER as a
+            // bare format string. A path containing '%' would otherwise be a format bug.
+            ImGui::TextWrapped("%s", pendingOrphanDelete.c_str());
+            ImGui::TextDisabled("The asset it described no longer exists; the file itself is not touched.");
+            ImGui::Separator();
+            if (ImGui::Button("Delete")) {
+                confirmedOrphanDelete = pendingOrphanDelete;  // nothing touches disk here (D9)
+                pendingOrphanDelete.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SetItemDefaultFocus();  // Enter == Delete
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                pendingOrphanDelete.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            // ImGui CANNOT dismiss a MODAL with Escape: NavUpdateCancelRequest's popup branch excludes
+            // ImGuiWindowFlags_Modal (imgui.cpp:15032) and BeginPopupModal always sets it
+            // (imgui.cpp:13232) -- and the editor does not enable ImGuiConfigFlags_NavEnableKeyboard at
+            // all (imgui_layer.cpp:79), so that path is doubly dead. Esc is the universal DISMISS key
+            // (.claude/rules/editor.md), so we bind it OURSELVES, HERE, inside the body -- repeat=false,
+            // one press = one Cancel. Deliberately NOT the global-route chord mechanism used elsewhere:
+            // the editor-chord rule exists so a focused InputText can win a chord back, but a modal
+            // already blocks every other window, and a global Escape route would also fire on the
+            // frames the modal is NOT up.
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                pendingOrphanDelete.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        } else {
+            // A SAFETY NET, not the Esc mechanism above: in 1.92.8 the only thing that can reach here
+            // is a PROGRAMMATIC close, because a modal also swallows outside clicks. Treating it as
+            // Cancel keeps the flow from wedging with pendingOrphanDelete stuck non-empty.
+            pendingOrphanDelete.clear();
+        }
+    }
+
     if (reportPtr == nullptr) {
         return;
     }
