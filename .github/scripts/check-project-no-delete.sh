@@ -148,4 +148,105 @@ if [ -n "$violations" ]; then
   exit 1
 fi
 
-echo "project-no-delete guard: OK -- ${#FORBIDDEN_FILES[@]} files scanned; no delete/rename/copy call in the project, asset or cache flow"
+# --- Check B (task 3.1.3, D13): the POSITIVE half. -------------------------------------------------
+# Check A above is a DENYLIST of six named files, which means a delete written into a SEVENTH file
+# passes it silently. This check closes that hole: across EVERY tracked editor/src/*.cpp, a
+# filesystem delete or rename may appear only in the two files that are allowed to have one.
+#
+# `::copy` is deliberately NOT in this pattern, and the reason is not the one Check A has. `::copy`
+# matches `std::copy` -- the ordinary <algorithm> call. Check A's six files are hand-picked and none
+# of them calls it (verified: `git grep -nE '::copy' -- 'editor/src/*.cpp'` is empty today), but a
+# GLOB over every editor/src TU would false-positive the first time anyone writes one, and a guard
+# that cries wolf is a guard that gets relaxed.
+readonly DELETE_RE='(remove_all|std::filesystem::remove|std::filesystem::rename)'
+readonly PERMITTED_DELETERS=(
+  "editor/src/text_file.cpp"      # the atomic-write primitive: its rename IS what makes a write atomic
+  "editor/src/asset_actions.cpp"  # task 3.1.3 (D12): the ONE user-initiated orphan-sidecar deletion
+)
+
+# --- B-self-test 1: the regex fires on each of the three forbidden forms, and NOT on std::copy. ----
+for probe in \
+  'std::filesystem::remove_all(target, ec);' \
+  'std::filesystem::remove(target, ec);' \
+  'std::filesystem::rename(target, dest, ec);'; do
+  if ! printf '%s\n' "$probe" | grep -qE "$DELETE_RE"; then
+    echo "::error::project-no-delete guard (Check B): DELETE_RE in $0 no longer matches '$probe' -- it is" >&2
+    echo "         vacuous for that form. Fix DELETE_RE." >&2
+    exit 2
+  fi
+done
+if printf '%s\n' 'std::copy(a, b, out);' | grep -qE "$DELETE_RE"; then
+  echo "::error::project-no-delete guard (Check B): DELETE_RE in $0 over-matches std::copy -- fix the regex." >&2
+  exit 2
+fi
+
+# --- B-self-test 2: comment-stripping is load-bearing and does not over-match. ---------------------
+if printf '// never call std::filesystem::remove here\n' | sed 's|//.*||' | grep -qE "$DELETE_RE"; then
+  echo "::error::project-no-delete guard (Check B): comment-stripping in $0 is broken -- a pure comment" >&2
+  echo "         line still matches." >&2
+  exit 2
+fi
+
+# --- B-self-test 3 (the important one): every PERMITTED_DELETERS entry must exist and be tracked. --
+# Renaming asset_actions.cpp must fail the guard LOUDLY (exit 2), not silently widen the check to
+# "nobody is permitted, and nothing matched, so we pass" (seed S24).
+for f in "${PERMITTED_DELETERS[@]}"; do
+  if [ ! -f "$f" ]; then
+    echo "::error::project-no-delete guard (Check B): '$f' is missing. Was it renamed? The guard cannot self-verify," >&2
+    echo "         so it is refusing to pass. Update PERMITTED_DELETERS in $0." >&2
+    exit 2
+  fi
+  if [ -z "$(git ls-files -- "$f")" ]; then
+    echo "::error::project-no-delete guard (Check B): '$f' exists but is not tracked by git -- refusing" >&2
+    echo "         to pass rather than silently scanning nothing for this file." >&2
+    exit 2
+  fi
+done
+
+is_permitted() {
+  local candidate="$1"
+  for permitted in "${PERMITTED_DELETERS[@]}"; do
+    if [ "$candidate" = "$permitted" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+checkBViolations=""
+checkBScanned=0
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  checkBScanned=$((checkBScanned + 1))
+  if is_permitted "$f"; then
+    continue
+  fi
+  stripped="$(nl -ba -w1 -s: "$f" | sed -E 's|//.*||')"
+  hits="$(printf '%s\n' "$stripped" | grep -E "$DELETE_RE" || true)"
+  if [ -n "$hits" ]; then
+    while IFS= read -r hit; do
+      n="${hit%%:*}"
+      checkBViolations="${checkBViolations}${f}:${n}: a filesystem delete/rename call outside the two permitted files (task 3.1.3 D13)
+"
+    done <<< "$hits"
+  fi
+done < <(git ls-files -- 'editor/src/*.cpp')
+
+if [ -n "$checkBViolations" ]; then
+  echo "A delete/rename call was found in a file NOT in Check B's PERMITTED_DELETERS allowlist (task 3.1.3 D13):" >&2
+  echo "$checkBViolations" >&2
+  echo "" >&2
+  echo "Fix: only editor/src/text_file.cpp (the atomic-write rename) and editor/src/asset_actions.cpp" >&2
+  echo "     (the one sanctioned orphan-sidecar delete) may call remove_all/std::filesystem::remove/" >&2
+  echo "     std::filesystem::rename. A new destructive path is a deliberate, reviewed change." >&2
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    while IFS= read -r v; do
+      [ -z "$v" ] && continue
+      f="${v%%:*}"; rest="${v#*:}"; n="${rest%%:*}"
+      echo "::error file=${f},line=${n}::a filesystem delete/rename call outside the two permitted files (task 3.1.3 D13)."
+    done <<< "$checkBViolations"
+  fi
+  exit 1
+fi
+
+echo "project-no-delete guard: OK -- Check A: ${#FORBIDDEN_FILES[@]} files scanned, no delete/rename/copy in the project, asset or cache flow; Check B: ${checkBScanned} editor/src/*.cpp scanned, delete/rename confined to ${#PERMITTED_DELETERS[@]} permitted files"
