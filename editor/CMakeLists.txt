@@ -11,6 +11,9 @@ find_package(imguizmo CONFIG REQUIRED)  # 1.10, MIT, static-only (vcpkg.json, ta
                                         # target carries NO interface link libraries (imgui reaches
                                         # it as PRIVATE include dirs), so this adds nothing else.
 find_package(SDL3  CONFIG REQUIRED)    # editor speaks SDL/SDL_GPU directly (far side of the boundary)
+find_package(Stb REQUIRED)   # task 3.1.3 (D1): header-only. The port ships FindStb.cmake + a
+                             # vcpkg-cmake-wrapper (§G-6); there is NO imported target, so the consumer
+                             # spelling is ${Stb_INCLUDE_DIR}. Editor-ONLY by docs/03:91.
 
 add_library(aero_editor_core STATIC
     src/imgui_layer.cpp
@@ -55,9 +58,19 @@ add_library(aero_editor_core STATIC
     src/asset_meta.cpp          # task 3.1.1 -- the .meta v1 format + the pure lifecycle planner
     src/asset_database.cpp      # task 3.1.1 -- the scan; <filesystem>-FREE and <fstream>-FREE by rule (D4)
     src/asset_cache.cpp         # task 3.1.2 -- the import-cache index format + the three pure planners
+    src/asset_view.cpp          # task 3.1.3 -- kinds, icons, filter/search, grid math (PURE)
+    src/thumbnail_cache.cpp     # task 3.1.3 -- key/state/LRU/budget + the box resampler (PURE, no GPU)
+    src/thumbnail_store.cpp     # task 3.1.3 -- the ONLY stb_image TU; RHI texture lifetime
+    src/asset_actions.cpp       # task 3.1.3 -- the ONE sanctioned deletion (D12/D13)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# SYSTEM so nothing lints or warns on a vendored header we neither own nor may patch. PRIVATE for the
+# same reason imgui is. NOTE (A13): this does NOT confine stb_image.h to one TU -- FindStb resolves to
+# vcpkg's SHARED per-triplet include root, which is already on every doctest-linking target's compile
+# line (R12). INV-V10 is held by the §V6 grep and by review, exactly like the ImGui-free-public-header
+# rule. Do not claim enforcement that does not exist.
+target_include_directories(aero_editor_core SYSTEM PRIVATE ${Stb_INCLUDE_DIR})
 find_package(EnTT CONFIG REQUIRED)   # header-only; a manifest dependency since 1.1.3 -- no vcpkg change
 target_link_libraries(aero_editor_core
     # aero::scene is PUBLIC because panel_context.hpp / editor_app.hpp surface engine::World and

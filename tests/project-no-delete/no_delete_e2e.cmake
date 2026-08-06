@@ -63,6 +63,11 @@ _nd_seed("editor/src/project_ui.cpp"   "${_nd_clean_body}")
 _nd_seed("editor/src/asset_meta.cpp"     "${_nd_clean_body}")
 _nd_seed("editor/src/asset_database.cpp" "${_nd_clean_body}")
 _nd_seed("editor/src/asset_cache.cpp"    "${_nd_clean_body}")
+# task 3.1.3 (D13): Check B's own PERMITTED_DELETERS entries, plus a THIRD, ordinary file that must
+# stay clean throughout -- the hole Check B exists to close.
+_nd_seed("editor/src/text_file.cpp"          "${_nd_clean_body}")
+_nd_seed("editor/src/asset_actions.cpp"      "${_nd_clean_body}")
+_nd_seed("editor/src/asset_browser_panel.cpp" "${_nd_clean_body}")
 
 # --- Stage 1: clean tree -> exit 0. Silently proves the three self-tests pass too. -----------------
 _nd_run("stage 1 (clean)" 0 "${BASH}" "${SCRIPT}")
@@ -127,5 +132,30 @@ _nd_run("stage 9 (rename, asset_cache.cpp)" 1 "${BASH}" "${SCRIPT}")
 _nd_expect_substr("stage 9" "${_nd_out}" "editor/src/asset_cache.cpp:1" TRUE)
 _nd_seed("editor/src/asset_cache.cpp" "${_nd_clean_body}")
 _nd_run("stage 9 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 10 (task 3.1.3, D13): std::filesystem::remove seeded in a SEVENTH file
+# (asset_browser_panel.cpp) -> exit 1. This is the hole Check B exists to close -- Check A alone
+# would stay green on it, since asset_browser_panel.cpp is not one of its six named files. -----------
+_nd_seed("editor/src/asset_browser_panel.cpp"
+         "void bad() { std::error_code ec; std::filesystem::remove(\"x\", ec); }\n")
+_nd_run("stage 10 (remove, asset_browser_panel.cpp -- Check B's own hole)" 1 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 10" "${_nd_out}" "editor/src/asset_browser_panel.cpp:1" TRUE)
+_nd_seed("editor/src/asset_browser_panel.cpp" "${_nd_clean_body}")
+_nd_run("stage 10 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 11 (A9): std::copy seeded in the same seventh file -> exit 0. The false-positive proof. ---
+_nd_seed("editor/src/asset_browser_panel.cpp" "void ok() { int a[1]; int b[1]; std::copy(a, a + 1, b); }\n")
+_nd_run("stage 11 (std::copy, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 11" "${_nd_out}" "project-no-delete guard: OK" TRUE)
+_nd_seed("editor/src/asset_browser_panel.cpp" "${_nd_clean_body}")
+
+# --- Stage 12 (seed S24): asset_actions.cpp -- Check B's own PERMITTED_DELETERS entry -- goes
+# missing -> exit 2, "cannot self-verify". The allowlist's own vacuity refusal. ------------------------
+file(REMOVE "${WORK_DIR}/src/editor/src/asset_actions.cpp")
+execute_process(COMMAND "${GIT}" -C "${WORK_DIR}/src" add -A)
+_nd_run("stage 12 (asset_actions.cpp missing -- Check B cannot self-verify)" 2 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 12" "${_nd_out}" "cannot self-verify" TRUE)
+_nd_seed("editor/src/asset_actions.cpp" "${_nd_clean_body}")
+_nd_run("stage 12 (restored)" 0 "${BASH}" "${SCRIPT}")
 
 message(STATUS "project-no-delete.no_delete_e2e: OK")

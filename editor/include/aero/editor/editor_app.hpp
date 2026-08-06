@@ -9,6 +9,10 @@
 #include <aero/core/time.hpp>
 #include <aero/editor/asset_cache.hpp>     // task 3.1.2: ImportChange -- assetImportChangeForPath()'s return
                                            // type; used directly, not left to transitively arrive.
+#include <aero/editor/asset_view.hpp>      // code-review finding 4: AssetViewMode, by VALUE in
+                                           // requestAssetBrowserViewMode's signature -- used directly,
+                                           // not left to arrive transitively. ImGui-free (A17), so it
+                                           // does not breach this header's ImGui-FREE-BY-RULE contract.
 #include <aero/editor/asset_database.hpp>  // task 3.1.1: a VALUE member (assetDatabase) needs the
                                            // definition -- the command_stack.hpp/entity_ops.hpp
                                            // precedent below. Transitively brings project_files.hpp,
@@ -209,6 +213,27 @@ public:
     [[nodiscard]] std::size_t assetCacheEntryCount() const noexcept;
     [[nodiscard]] std::size_t assetImportJobCount() const noexcept;
 
+    // ---- task 3.1.3: thumbnails. The assetCacheEntryCount() shape verbatim (A12) -- without these,
+    // I36-I38 would have no way to observe the store/ledger from outside AssetBrowserPanel, which is
+    // src-private. Each returns 0 when no Asset Browser panel is registered.
+    // code-review finding 4: the search half's black-box observability. A GPU-tier case that drives
+    // the search seams must be able to ASSERT it actually produced hits -- the List/Grid search
+    // branches are entered only when there is at least one, so without this a case can drive every
+    // seam, execute none of the code it names, and still pass.
+    [[nodiscard]] std::size_t assetBrowserSearchHitCount() const noexcept;
+    [[nodiscard]] bool assetBrowserListViewActive() const noexcept;
+    [[nodiscard]] bool assetBrowserDeleteModalPending() const noexcept;
+
+    [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept;
+    [[nodiscard]] std::size_t thumbnailUnavailableCount() const noexcept;
+    [[nodiscard]] std::size_t thumbnailResidentCount() const noexcept;
+    [[nodiscard]] std::size_t thumbnailLoadAttempts() const noexcept;
+
+    // task 3.1.3, Step 12: the A12 precedent, applied to the retained scan report -- I41 needs to
+    // observe the orphan-delete round trip's effect on the Issues list from outside, and there is no
+    // other black-box signature for it.
+    [[nodiscard]] std::size_t assetOrphanCount() const noexcept;
+
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
     // Same effect as Edit > Undo / Ctrl+Z (Cmd+Z on macOS), applied on the NEXT tick -- the
@@ -253,6 +278,44 @@ public:
     // the ImGui-free GPU tier can drive Reimport All (I33) without clicking the panel's own button.
     void requestAssetReimport() noexcept;
 
+    // task 3.1.3 (§Q Q1): the requestAssetRescan()/requestAssetReimport() shape, a THIRD instance --
+    // folds into `orphanToDelete` in tick()'s reconcile block BEFORE the panel's own drain, as its own
+    // statement (the identical F9 rule). The GPU tier is ImGui-free at source and cannot click the
+    // modal's Delete button, so this is the only way I41 can drive the delete round trip at all.
+    void requestOrphanDelete(std::string_view relativeMetaPath);
+
+    // code-review BLOCKING-1 (task 3.1.3): drives the Asset Browser panel's OWN ActionKind::ReimportAll
+    // arm -- the SAME effect a real click on the panel's Reimport All button has -- rather than
+    // requestAssetReimport()'s deep-rescan path above, which never touches the panel's `pending` at
+    // all and therefore cannot reproduce the same-tick draw-then-clear race that fix closed. Applied
+    // IMMEDIATELY (there is no one-shot flag to drain): a no-op when no Asset Browser panel is
+    // registered. No-op when called before create() returns a live app.
+    void requestAssetBrowserReimportAll() noexcept;
+
+    // code-review BLOCKING-1 test seam (task 3.1.3): the "Edit > Project Settings..." menu item's own
+    // two calls (show + ImGui::SetWindowFocus), generalised to any panel id and reachable without a
+    // click. Applied on the NEXT tick, BEFORE the dockspace processes tab selection that same frame
+    // (ShellUiState::focusPanelId's own comment has the full ImGui-internals citation) -- the
+    // requestLayoutReset()/requestUndo() shape. Exists because a panel sharing a dock slot keeps
+    // whichever tab won the FIRST frame active forever afterward with no further signal (Console/Assets,
+    // D3), and the ImGui-free-at-source GPU tier has no other way to make a LATER tick draw a
+    // specific tabbed-behind panel again. An unknown id is a silent no-op.
+    void requestPanelFocus(std::string_view panelId);
+
+    // code-review finding 4 (task 3.1.3): the remaining Asset Browser controls the ImGui-free-at-source
+    // GPU tier cannot operate -- the Grid/List radio, the search box, the kind combo, and an orphan
+    // row's Delete button. Without these, drawContentsList()'s search branch (an asymmetric
+    // BeginTable/EndTable pair plus a clipper), drawContentsGrid()'s search branch, and the delete
+    // confirmation modal were executed by NO test at all, and defaulting the view to Grid had silently
+    // removed the table-path coverage every GPU case used to give the List view for free.
+    // Each queues the SAME action its widget queues, drained by the next onDraw()'s applyPending();
+    // each is a no-op when no Asset Browser panel is registered. `pending` holds ONE action, so a
+    // caller ticks between calls. `kind` is "all" or a single digit -- static_cast<int>(AssetKind).
+    void requestAssetBrowserViewMode(AssetViewMode mode) noexcept;
+    void requestAssetBrowserSearch(std::string_view query);  // "" clears, exactly as the Clear button
+    void requestAssetBrowserKindFilter(std::string_view kind);
+    void requestAssetBrowserDeleteOrphanClick(std::string_view relativeMetaPath);
+
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
@@ -279,17 +342,27 @@ private:
     bool redoRequested = false;
     World sceneWorld;
     Selection sceneSelection;
-    CommandStack commandStack;            // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
-                                          // stays valid. command_stack.hpp's two static_asserts hold that line.
-    RootOrder rootOrder;                  // task 2.4.2, D10 (accessor: roots()). entity_ops.hpp's two static_asserts
-                                          // hold the same noexcept-move guarantee for this member.
-    AssetDatabase assetDatabase;          // task 3.1.1 (D12) -- reconciled in tick(), never pushed. Own six
-                                          // static_asserts (asset_database.hpp) hold the noexcept-move
-                                          // guarantee this member needs.
+    CommandStack commandStack;    // F15: noexcept-movable, so EditorApp's own `noexcept = default` move
+                                  // stays valid. command_stack.hpp's two static_asserts hold that line.
+    RootOrder rootOrder;          // task 2.4.2, D10 (accessor: roots()). entity_ops.hpp's two static_asserts
+                                  // hold the same noexcept-move guarantee for this member.
+    AssetDatabase assetDatabase;  // task 3.1.1 (D12) -- reconciled in tick(), never pushed. Own six
+                                  // static_asserts (asset_database.hpp) hold the noexcept-move
+                                  // guarantee this member needs.
+    // task 3.1.3 (A19): the RETAINED scan report -- the Issues section reads it through
+    // AssetBrowserPanel::setScanReport(), reconciled in the SAME block as assetDatabase itself (F14).
+    AssetScanReport lastAssetReport;
     GuidGenerator assetGuids{0};          // task 3.1.1 -- replaced in create() by fromEntropy(); one uint64,
                                           // so this does not affect EditorApp's own `noexcept = default` move.
     bool assetRescanRequested = false;    // task 3.1.1 (AC-38) -- consumed by the next tick()'s reconcile
     bool assetReimportRequested = false;  // task 3.1.2 (AC-39) -- consumed the same way, alongside it
+    // task 3.1.3 -- the requestAssetRescan()/requestAssetReimport() shape, a third instance. "" ==
+    // nothing requested; consumed by the next tick()'s reconcile block, folded into `orphanToDelete`
+    // alongside the panel's own one-shot.
+    std::string requestedOrphanDelete;
+    // code-review BLOCKING-1 test seam -- "" == nothing requested; consumed by the next tick()'s
+    // construction of ShellUiState (ShellUiState::focusPanelId's own comment), never re-armed.
+    std::string requestedPanelFocus;
     // Non-owning; owned by `registry`, which holds panels through unique_ptr -- so the Panel object
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.

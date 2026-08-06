@@ -31,11 +31,13 @@
 
 using engine::ContentHash;
 using engine::editor::ensureDirectory;
+using engine::editor::FileBytesResult;
 using engine::editor::fileExists;
 using engine::editor::FileHashResult;
 using engine::editor::FileReadResult;
 using engine::editor::HASH_CHUNK_BYTES;
 using engine::editor::hashFileContents;
+using engine::editor::readFileBytes;
 using engine::editor::readTextFile;
 using engine::editor::writeTextFileAtomic;
 
@@ -373,4 +375,157 @@ TEST_CASE("text_file: ensureDirectory whose parent is a FILE returns a non-empty
 
 TEST_CASE("text_file: ensureDirectory(\"\") returns a non-empty reason and creates nothing (TF22, AC-9)") {
     CHECK_FALSE(ensureDirectory("").empty());
+}
+
+// ---- task 3.1.3 (§D-4): readFileBytes -- a capped, binary, never-throwing file read ---------------
+
+TEST_CASE("text_file: readFileBytes round-trips a file byte for byte, including embedded NULs (TF23, AC-9, seed S13)") {
+    const TempDir tmp;
+    // The (pointer, length) constructor, NOT `std::string content = "before\0after";` -- the LATTER
+    // truncates at the embedded NUL (its `const char*` constructor stops there), which is exactly
+    // what clang-tidy's bugprone-string-literal-with-embedded-nul exists to catch.
+    const std::string content("before\0after", 12);
+    // NEVER "nul.bin": Windows reserves the device name NUL (and CON/PRN/AUX/COM#/LPT#) regardless
+    // of extension -- CreateFile treats "nul.<anything>" as the NUL device, not a real file, so a
+    // write there silently discards every byte and the read that follows fails. Measured on the
+    // Windows CI lane: deterministic, not a flake.
+    const std::string path = tmp.join("embedded-nul.bin");
+    writeBytes(path, content);
+
+    const FileBytesResult result = readFileBytes(path, 1024);
+    REQUIRE(result.bytes.has_value());
+    CHECK(*result.bytes == content);
+    CHECK(result.error.empty());
+    CHECK(result.size == content.size());
+}
+
+TEST_CASE("text_file: readFileBytes round-trips CRLF unchanged -- binary on both sides (TF24, seed S13)") {
+    const TempDir tmp;
+    const std::string content = "line one\r\nline two\r\n";
+    const std::string path = tmp.join("crlf.bin");
+    writeBytes(path, content);
+
+    const FileBytesResult result = readFileBytes(path, 1024);
+    REQUIRE(result.bytes.has_value());
+    CHECK(*result.bytes == content);
+}
+
+TEST_CASE("text_file: readFileBytes succeeds for a file exactly AT maxBytes (TF25, AC-9)") {
+    const TempDir tmp;
+    const std::string content = makePattern(64);
+    const std::string path = tmp.join("exact.bin");
+    writeBytes(path, content);
+
+    const FileBytesResult result = readFileBytes(path, 64);
+    REQUIRE(result.bytes.has_value());
+    CHECK(result.bytes->size() == 64);
+    CHECK(result.size == 64);
+}
+
+TEST_CASE("text_file: readFileBytes refuses a file one byte OVER maxBytes, size still filled (TF26, AC-9, seed S33)") {
+    const TempDir tmp;
+    const std::string content = makePattern(65);
+    const std::string path = tmp.join("over.bin");
+    writeBytes(path, content);
+
+    const FileBytesResult result = readFileBytes(path, 64);
+    CHECK_FALSE(result.bytes.has_value());
+    CHECK_FALSE(result.error.empty());
+    CHECK(result.size == 65);    // seed S33: the caller can report what tripped the cap
+    CHECK(result.refusedByCap);  // code-review finding 6: the DISCRIMINATED signal, pinned here
+}
+
+TEST_CASE("text_file: readFileBytes never OPENS a refused file (TF27, seed S12)") {
+    const TempDir tmp;
+    const std::string content = makePattern(200);
+    const std::string path = tmp.join("refused.bin");
+    writeBytes(path, content);
+
+    const FileBytesResult refused = readFileBytes(path, 10);
+    CHECK_FALSE(refused.bytes.has_value());
+    // The `size` the refusal reported must equal file_size's own answer -- the only portable proxy
+    // for "this came from a stat, not an open+read": if the primitive had opened and partially
+    // consumed the stream, a later full read would still succeed identically, which this asserts too.
+    std::error_code ec;
+    const std::uintmax_t osSize = std::filesystem::file_size(pathOf(path), ec);
+    REQUIRE_FALSE(ec);
+    CHECK(refused.size == static_cast<std::uint64_t>(osSize));
+
+    const FileBytesResult full = readFileBytes(path, 1024);
+    REQUIRE(full.bytes.has_value());
+    CHECK(*full.bytes == content);
+}
+
+TEST_CASE("text_file: readFileBytes -- maxBytes == 0 refuses 1 byte, accepts 0 bytes (TF28, boundary)") {
+    const TempDir tmp;
+    const std::string onePath = tmp.join("one.bin");
+    writeBytes(onePath, "x");
+    const FileBytesResult refused = readFileBytes(onePath, 0);
+    CHECK_FALSE(refused.bytes.has_value());
+    CHECK(refused.size == 1);
+
+    const std::string zeroPath = tmp.join("zero.bin");
+    writeBytes(zeroPath, "");
+    const FileBytesResult accepted = readFileBytes(zeroPath, 0);
+    REQUIRE(accepted.bytes.has_value());
+    CHECK(accepted.bytes->empty());
+    CHECK(accepted.size == 0);
+}
+
+TEST_CASE("text_file: readFileBytes on a directory returns disengaged with a non-empty error (TF29, AC-9)") {
+    const TempDir tmp;
+    const FileBytesResult result = readFileBytes(tmp.utf8(), 1024);
+    CHECK_FALSE(result.bytes.has_value());
+    CHECK_FALSE(result.error.empty());
+    CHECK_FALSE(result.refusedByCap);  // code-review finding 6 -- an OS refusal, never the cap
+}
+
+TEST_CASE("text_file: readFileBytes on a missing path returns disengaged, size == 0 (TF30, AC-9)") {
+    const TempDir tmp;
+    const FileBytesResult result = readFileBytes(tmp.join("nope.bin"), 1024);
+    CHECK_FALSE(result.bytes.has_value());
+    CHECK_FALSE(result.error.empty());
+    CHECK(result.size == 0);
+    CHECK_FALSE(result.refusedByCap);  // code-review finding 6 -- an OS refusal, never the cap
+}
+
+TEST_CASE("text_file: readFileBytes on an unreadable file returns disengaged (TF31, AC-9)") {
+#if defined(_WIN32)
+    MESSAGE("skipped on Windows: POSIX permission semantics do not apply");
+#else
+    if (geteuid() == 0) {
+        MESSAGE("skipped as root: the mode bits are ignored, so this case would pass vacuously");
+    } else {
+        const TempDir tmp;
+        const std::string path = tmp.join("locked.bin");
+        writeBytes(path, "secret");
+        const std::filesystem::path fsPath = pathOf(path);
+
+        std::error_code ec;
+        std::filesystem::permissions(fsPath, std::filesystem::perms::none, std::filesystem::perm_options::replace, ec);
+        REQUIRE_FALSE(ec);
+
+        const FileBytesResult result = readFileBytes(path, 1024);
+        CHECK_FALSE(result.bytes.has_value());
+        CHECK_FALSE(result.error.empty());
+        CHECK_FALSE(result.refusedByCap);  // code-review finding 6 -- an OS refusal, never the cap
+
+        std::filesystem::permissions(fsPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace,
+                                     ec);
+        CHECK_FALSE(ec);  // restored BEFORE ~TempDir, or the cleanup itself fails
+    }
+#endif
+}
+
+TEST_CASE(
+    "text_file: readFileBytes round-trips a 1 MiB deterministic pattern with no chunk-boundary bug (TF32, AC-9)") {
+    const TempDir tmp;
+    const std::string content = makePattern(1024ULL * 1024ULL);
+    const std::string path = tmp.join("big.bin");
+    writeBytes(path, content);
+
+    const FileBytesResult result = readFileBytes(path, 2ULL * 1024ULL * 1024ULL);
+    REQUIRE(result.bytes.has_value());
+    CHECK(*result.bytes == content);
+    CHECK(result.size == content.size());
 }

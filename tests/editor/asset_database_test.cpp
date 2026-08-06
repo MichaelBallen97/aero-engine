@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -1670,6 +1671,91 @@ TEST_CASE(
     CHECK(zSecond->contentHash == *zTrueHash.hash);
     CHECK(zSecond->contentHash != aHash);
     CHECK(aSecond->contentHash == aHash);  // a.png's own hash is unaffected either way
+}
+
+// ---- task 3.1.3 (D6): records() -- the search index -----------------------------------------------
+
+TEST_CASE("asset_database: records().size() == size() after a real scan (AD64, AC-12)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    writeFile(dir.join("b.txt"), "b");
+    AssetDatabase db;
+    GuidGenerator gen(64);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(db.records().size() == db.size());
+    CHECK(db.records().size() == 2);
+}
+
+TEST_CASE("asset_database: the span is sorted byte-lexicographically by relativePath (AD65, D5)") {
+    const TempDir dir;
+    writeFile(dir.join("Z.png"), "z");
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(65);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const std::span<const AssetRecord> records = db.records();
+    REQUIRE(records.size() == 2);
+    // Byte order, never case-folded: 'Z' (0x5A) sorts before 'a' (0x61).
+    CHECK(records[0].relativePath == "Z.png");
+    CHECK(records[1].relativePath == "a.png");
+}
+
+TEST_CASE("asset_database: every findByPath(r.relativePath) points INTO the span (AD66)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    writeFile(dir.join("b.png"), "b");
+    writeFile(dir.join("c.png"), "c");
+    AssetDatabase db;
+    GuidGenerator gen(66);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const std::span<const AssetRecord> records = db.records();
+    for (const AssetRecord& record : records) {
+        const AssetRecord* const found = db.findByPath(record.relativePath);
+        REQUIRE(found != nullptr);
+        CHECK(found >= records.data());
+        CHECK(found < records.data() + records.size());
+    }
+}
+
+TEST_CASE("asset_database: the span is empty for a Missing root (AD67, E16)") {
+    AssetDatabase db;
+    GuidGenerator gen(67);
+    const AssetScanReport report = db.rescan("", "", gen);
+    CHECK(report.status == ScanStatus::Missing);
+    CHECK(db.records().empty());
+}
+
+TEST_CASE("asset_database: the span survives a second rescan and reflects an added file (AD68, AC-12)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(68);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(db.records().size() == 1);
+    writeFile(dir.join("b.png"), "b");
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(db.records().size() == 2);
+}
+
+TEST_CASE("asset_database: an Invalid record IS in the span (AD69, §D-6)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    writeFile(dir.join("a.png.meta"), "not json");  // unparseable -- Invalid, nil guid
+    AssetDatabase db;
+    GuidGenerator gen(69);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.invalid == 1);
+    bool found = false;
+    for (const AssetRecord& record : db.records()) {
+        if (record.relativePath == "a.png") {
+            found = true;
+            CHECK(record.state == AssetMetaState::Invalid);
+            CHECK_FALSE(record.guid.valid());
+        }
+    }
+    CHECK(found);
+    // still findable by path, per §D-6's own comment
+    CHECK(db.findByPath("a.png") != nullptr);
 }
 
 // ---- the golden battery's database-dependent case (docs/09 §5.7) --------------------------------

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <functional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -121,6 +122,20 @@ std::string_view leafOf(std::string_view rel) noexcept {
     // function (bugprone-exception-escape, --warnings-as-errors in CI). The pointer+size constructor
     // IS noexcept, and `slash + 1 <= rel.size()` holds by construction since rfind found a character.
     return std::string_view(rel.data() + slash + 1U, rel.size() - slash - 1U);
+}
+
+// code-review BLOCKING-3: pure, allocating only the joinRelative() candidate each iteration -- the
+// SAME shape drawContentsList/drawContentsGrid already build per row (`rel == selectedEntry`) for the
+// Selectable highlight, extracted so drawFooter() can use the IDENTICAL predicate instead of matching
+// by leaf name alone.
+std::size_t findEntryByRelativePath(std::span<const FileEntry> entries, std::string_view currentDir,
+                                    std::string_view selectedEntry) {
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (joinRelative(currentDir, entries[i].name) == selectedEntry) {
+            return i;
+        }
+    }
+    return entries.size();
 }
 
 std::size_t depthOf(std::string_view rel) noexcept {

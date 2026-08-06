@@ -20,6 +20,7 @@
 #include <map>
 #include <random>
 #include <set>
+#include <span>  // code-review BLOCKING-3: findEntryByRelativePath
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -32,6 +33,7 @@
 
 using engine::editor::DirectoryListing;
 using engine::editor::FileEntry;
+using engine::editor::findEntryByRelativePath;
 using engine::editor::ScanStatus;
 using engine::editor::TreeRow;
 
@@ -770,4 +772,58 @@ TEST_CASE("editor: buildVisibleTree reuses `out` without leaving a survivor (D15
     // (b) ...and a `out = std::vector<TreeRow>{}` / swap implementation reds here. BOTH assertions,
     // because either alone passes for the implementation the other forbids (the 2.2.2 D15 lesson).
     CHECK(out.capacity() == capacityAfterLarge);
+}
+
+// ---- findEntryByRelativePath: code-review BLOCKING-3 (the footer's leaf-name collision) ----------
+
+TEST_CASE("editor: findEntryByRelativePath finds a member by its full relative path (code review BLOCKING-3)") {
+    std::vector<FileEntry> entries(2);
+    entries[0].name = "a.png";
+    entries[1].name = "b.png";
+    CHECK(findEntryByRelativePath(std::span<const FileEntry>(entries), "assets", "assets/b.png") == 1);
+    CHECK(findEntryByRelativePath(std::span<const FileEntry>(entries), "assets", "assets/a.png") == 0);
+}
+
+TEST_CASE("editor: findEntryByRelativePath at the ROOT (currentDir == \"\") (code review BLOCKING-3)") {
+    std::vector<FileEntry> entries(1);
+    entries[0].name = "a.png";
+    CHECK(findEntryByRelativePath(std::span<const FileEntry>(entries), "", "a.png") == 0);
+}
+
+TEST_CASE(
+    "editor: findEntryByRelativePath returns entries.size() for a path outside currentDir -- NEVER "
+    "a leaf-name match against a different file (code review BLOCKING-3, the actual bug)") {
+    // The exact collision the finding describes: "wood.png" exists in BOTH "dirA" and "dirB". The
+    // listing here is "dirA"'s own; the selection is "dirB/wood.png" -- a DIFFERENT file that merely
+    // shares a leaf name. A leaf-only lookup would wrongly match index 0 and pair "dirB/wood.png"'s
+    // identity with "dirA/wood.png"'s size -- this must find NOTHING instead.
+    std::vector<FileEntry> entries(1);
+    entries[0].name = "wood.png";
+    const std::size_t result = findEntryByRelativePath(std::span<const FileEntry>(entries), "dirA", "dirB/wood.png");
+    CHECK(result == entries.size());
+}
+
+TEST_CASE(
+    "editor: findEntryByRelativePath returns entries.size() for a genuinely absent selection (code "
+    "review BLOCKING-3, E10 preserved)") {
+    std::vector<FileEntry> entries(1);
+    entries[0].name = "a.png";
+    const std::size_t result =
+        findEntryByRelativePath(std::span<const FileEntry>(entries), "assets", "assets/vanished.png");
+    CHECK(result == entries.size());
+}
+
+TEST_CASE("editor: findEntryByRelativePath over an empty span returns 0 == entries.size() (code review BLOCKING-3)") {
+    const std::vector<FileEntry> entries;
+    CHECK(findEntryByRelativePath(std::span<const FileEntry>(entries), "assets", "assets/a.png") == 0);
+    CHECK(findEntryByRelativePath(std::span<const FileEntry>(entries), "assets", "assets/a.png") == entries.size());
+}
+
+TEST_CASE(
+    "editor: findEntryByRelativePath matches a DIRECTORY entry the same way as a file (code review "
+    "BLOCKING-3)") {
+    std::vector<FileEntry> entries(1);
+    entries[0].name = "tex";
+    entries[0].isDirectory = true;
+    CHECK(findEntryByRelativePath(std::span<const FileEntry>(entries), "assets", "assets/tex") == 0);
 }

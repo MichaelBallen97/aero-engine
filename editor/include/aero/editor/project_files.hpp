@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <functional>
 #include <set>
+#include <span>  // code-review BLOCKING-3: findEntryByRelativePath's parameter
 #include <string>
 #include <string_view>
 #include <vector>
@@ -107,6 +108,17 @@ inline constexpr std::size_t MAX_ENTRIES_EXAMINED = 2 * MAX_ENTRIES_PER_DIRECTOR
 // "assets/textures" -> "textures";  "assets" -> "assets";  "" -> "".
 // POINTS INTO `rel`: never call it on a temporary whose lifetime ends before the result is used.
 [[nodiscard]] std::string_view leafOf(std::string_view rel) noexcept;
+
+// code-review BLOCKING-3 (task 3.1.3): finds `selectedEntry`'s own row within `entries` by its FULL
+// relative path -- joinRelative(currentDir, entry.name) -- NEVER by leaf name alone. Two files in
+// different directories CAN share a leaf name, and a leaf-only lookup silently pairs one file's
+// identity with a DIFFERENT file's size; a search hit's `selectedEntry` (always a full relative path,
+// never merely a leaf) usually is not a member of `entries` at all, in which case a leaf-only lookup
+// finds nothing OR -- worse, on a same-leaf-name collision -- finds the WRONG file. Returns
+// entries.size() (an invalid index the caller must check) when there is no member whose full path
+// equals `selectedEntry`.
+[[nodiscard]] std::size_t findEntryByRelativePath(std::span<const FileEntry> entries, std::string_view currentDir,
+                                                  std::string_view selectedEntry);
 
 // "" -> 0; "assets" -> 1; "assets/textures" -> 2.
 [[nodiscard]] std::size_t depthOf(std::string_view rel) noexcept;

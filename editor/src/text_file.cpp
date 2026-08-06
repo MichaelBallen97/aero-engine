@@ -140,6 +140,54 @@ FileHashResult hashFileContents(std::string_view absolutePathUtf8) {
     return {hasher.finish(), {}, bytesRead};
 }
 
+FileBytesResult readFileBytes(std::string_view absolutePathUtf8, std::uint64_t maxBytes) {
+    FileBytesResult result;
+    std::error_code ec;
+    const std::filesystem::path fsPath = pathFromUtf8(absolutePathUtf8);
+    // file_size(directory) is unspecified by the standard and does NOT reliably set `ec` on every
+    // platform (verified: it happily returns a directory's own on-disk size on some POSIX libcs) --
+    // the readTextFile precedent's explicit is_directory guard, applied here first.
+    if (std::filesystem::is_directory(fsPath, ec)) {
+        result.error = "path is a directory";
+        return result;
+    }
+    const std::uintmax_t rawSize = std::filesystem::file_size(fsPath, ec);
+    if (ec) {
+        result.error = ec.message();
+        return result;  // missing, or unreadable
+    }
+    result.size = static_cast<std::uint64_t>(rawSize);
+    if (result.size > maxBytes) {
+        result.error = "file is too large";
+        result.refusedByCap = true;  // code-review finding 6: the DISCRIMINATED signal, not the string
+        return result;               // `size` stays filled (seed S33) -- the caller can report what tripped the cap
+    }
+
+    // BINARY, exactly like readTextFile/hashFileContents above.
+    std::ifstream in(fsPath, std::ios::binary);
+    if (!in) {
+        result.error = std::strerror(errno);
+        return result;
+    }
+    // resize + read, NOT istreambuf_iterator (§D-4): the allocation is EXACT, and a truncated read is
+    // detectable via in.gcount() rather than silently accepting a short buffer.
+    std::string data;
+    data.resize(static_cast<std::size_t>(result.size));
+    if (result.size > 0) {
+        in.read(data.data(), static_cast<std::streamsize>(result.size));
+        if (static_cast<std::uint64_t>(in.gcount()) != result.size) {
+            result.error = "read failed";
+            return result;
+        }
+    }
+    if (in.bad()) {
+        result.error = "read failed";
+        return result;
+    }
+    result.bytes = std::move(data);
+    return result;
+}
+
 std::string ensureDirectory(std::string_view absolutePathUtf8) {
     std::error_code ec;
     const std::filesystem::path p = pathFromUtf8(absolutePathUtf8);

@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -96,6 +97,13 @@ public:
     [[nodiscard]] const AssetRecord* findByGuid(Guid guid) const noexcept;  // nullptr for nil
     [[nodiscard]] std::optional<Guid> guidForPath(std::string_view relativePath) const noexcept;
 
+    // task 3.1.3 (D5): THE SEARCH INDEX. The vector is already sorted byte-lexicographically by
+    // relativePath and already excludes sidecars, hidden names and .aero-tmp leftovers, so a caller
+    // needs nothing but a view of it. Invalid records ARE included: they carry a nil guid and
+    // therefore no thumbnail key, but a user searching for a file must still find it. The span is
+    // valid until the next rescan(), exactly like every AssetRecord* the other accessors return.
+    [[nodiscard]] std::span<const AssetRecord> records() const noexcept;
+
     // ---- task 3.1.2 --------------------------------------------------------------------------------
     // Clears the in-memory index and arms the one-shot below, so the NEXT scan skips phase 3's reload
     // (AC-35). It also clears `cacheTextOnDisk`, but defensively, not load-bearingly: phase 3 clears
@@ -106,16 +114,21 @@ public:
 
 private:
     std::string rootUtf8;
-    std::string projectRootUtf8;       // task 3.1.2 -- NEVER derived from rootUtf8 (AC-38, seed S27b):
-                                       // <assetsRoot>/.. is wrong the moment paths.assets is nested or "."
-    std::vector<AssetRecord> records;  // sorted by relativePath (planAssetMetas' own contract) --
-                                       // findByPath is a std::lower_bound over THIS vector directly.
+    std::string projectRootUtf8;  // task 3.1.2 -- NEVER derived from rootUtf8 (AC-38, seed S27b):
+                                  // <assetsRoot>/.. is wrong the moment paths.assets is nested or "."
+    // task 3.1.3 (A18, deviation logged): named `recordList`, NOT `records` -- the plan's own §D-6
+    // text says "one line in the .cpp (`return records;`)", but this member and the new public
+    // `records()` accessor cannot share an identifier (a duplicate-member compile error, caught by
+    // the very first build of this step). Renamed on the `databasePtr`/`database()` precedent
+    // (3.1.1's D13 naming note): a data member and a member function never share a name.
+    std::vector<AssetRecord> recordList;  // sorted by relativePath (planAssetMetas' own contract) --
+                                          // findByPath is a std::lower_bound over THIS vector directly.
     // MSVC's std::unordered_map move CONSTRUCTOR is not noexcept (measured in CI: C2607 on the
     // aggregate static_assert below, libc++/libstdc++ both hold, MSVC's STL does not) -- the
     // documented fallback (plan A2 part 2), applied for real rather than staying theoretical. A
     // sorted index vector is unconditionally nothrow-movable on all three standard libraries: no
     // hash table, no bucket array, no allocator-equality question. Guid has operator< (AC-2), so
-    // std::lower_bound applies here exactly as it does to `records` above. Invalid records ABSENT
+    // std::lower_bound applies here exactly as it does to `recordList` above. Invalid records ABSENT
     // (INV-A7); sorted by Guid, NOT by index -- rebuilt (sorted) once per rescan, not maintained
     // incrementally.
     std::vector<std::pair<Guid, std::size_t>> byGuid;
@@ -146,5 +159,12 @@ static_assert(std::is_nothrow_move_constructible_v<AssetCacheIndex>);
 static_assert(std::is_nothrow_move_assignable_v<AssetCacheIndex>);
 static_assert(std::is_nothrow_move_constructible_v<ImportPlanResult>);
 static_assert(std::is_nothrow_move_assignable_v<ImportPlanResult>);
+// task 3.1.3 (A19): EditorApp gains its own `AssetScanReport lastAssetReport` value member, held to
+// the SAME `noexcept = default` move requirement -- asserted here, beside AssetDatabase's own ten,
+// because AssetScanReport is defined in this same header. 3.1.2's R9 fired for real on MSVC once
+// already; the fallback if either ever reddens on a lane this machine cannot test is NOT to relax the
+// assert, but to hold the report indirectly (3.1.1's BLOCKING-2 precedent).
+static_assert(std::is_nothrow_move_constructible_v<AssetScanReport>);
+static_assert(std::is_nothrow_move_assignable_v<AssetScanReport>);
 
 }  // namespace engine::editor

@@ -5,6 +5,8 @@
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/scene_session.hpp>  // task 2.5.1: FileMenuContext names FileFlow/FileDialogHost
 
+#include <string>  // code-review BLOCKING-1: ShellUiState::focusPanelId
+
 namespace engine::editor {
 
 struct ShellUiState {
@@ -25,6 +27,16 @@ struct ShellUiState {
     // back by tick(), because reading them back would re-arm the request every frame.
     bool undoRequested = false;
     bool redoRequested = false;
+    // code-review BLOCKING-1 test seam (task 3.1.3): IN, consumed by drawShellUi -- selects (and
+    // shows) the panel named here as the active TAB in its dock node, the "Edit > Project
+    // Settings..." click's OWN two calls (panels.setVisible + ImGui::SetWindowFocus) applied
+    // generically instead of to one hardcoded id. Needed because the ImGui-free-at-source GPU tier
+    // cannot click a tab, and the Asset Browser shares its dock slot with Console (D3) -- ImGui keeps
+    // whichever tab won the FIRST frame active forever afterward, with no further per-frame signal,
+    // so a test that needs the SAME panel drawn on a LATER tick has no other way to ask for it. "" (the
+    // default) does nothing. Cleared once consumed, never re-armed -- the identical
+    // undoRequested/redoRequested posture above.
+    std::string focusPanelId;
 };
 
 // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does NOT

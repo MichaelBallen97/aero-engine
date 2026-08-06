@@ -18,6 +18,7 @@
 #include <aero/core/log.hpp>              // AERO_LOG_* + initLogging (cases B and C)
 #include <aero/editor/asset_cache.hpp>    // task 3.1.2: ImportChange, ASSET_CACHE_DIR_NAME/FILE_NAME/
                                           // GITIGNORE_NAME -- I31's index-path/gitignore-path assertions
+#include <aero/editor/asset_meta.hpp>     // task 3.1.3: writeMetaText, for I39/I41's orphan fixtures
 #include <aero/editor/command_stack.hpp>  // task 2.4.1
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
@@ -33,6 +34,7 @@
 #include <aero/editor/selection.hpp>
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2
 #include <aero/editor/text_file.hpp>          // task 2.6.1: writeTextFileAtomic, for I23/I24's recents file
+#include <aero/editor/thumbnail_cache.hpp>    // task 3.1.3: MAX_THUMBNAIL_DECODES_PER_TICK, MAX_THUMBNAILS_RESIDENT
 #include <aero/editor/transform_command.hpp>  // task 2.4.1
 #include <aero/editor/transform_ops.hpp>      // task 2.4.1
 #include <aero/platform/platform.hpp>
@@ -113,6 +115,42 @@ struct QuietTraceLogging {
         std::filesystem::temp_directory_path() / ("aero_imgui_layer_recents_" + std::to_string(++counter) + ".json");
     const std::u8string bytes = file.u8string();
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+// task 3.1.3 (I36-I38): four REAL, tiny (2x2 truecolor) PNGs, byte-for-byte from a literal array --
+// generated once, offline, with Python's zlib (a standard, conformant PNG: signature + IHDR (color
+// type 2, 8-bit) + one zlib-compressed IDAT with a filter-type-0 byte per scanline + IEND). Verified
+// by round-tripping through zlib.decompress before being pasted here. Never generated at test time --
+// this TU is ImGui-free at source and links no image encoder (INV-V10 stays true: stb_image itself is
+// STILL confined to thumbnail_store.cpp; nothing here decodes or encodes anything).
+constexpr std::array<unsigned char, 73> TINY_PNG_RED{
+    137, 80, 78, 71, 13,  10,  26,  10,  0,  0,   0,  13, 73, 72, 68, 82, 0,   0,   0,  2,   0,   0,   0,  2,  8,
+    2,   0,  0,  0,  253, 212, 154, 115, 0,  0,   0,  16, 73, 68, 65, 84, 120, 218, 99, 248, 207, 192, 0,  68, 12,
+    16,  10, 0,  31, 238, 3,   253, 99,  94, 187, 91, 0,  0,  0,  0,  73, 69,  78,  68, 174, 66,  96,  130};
+constexpr std::array<unsigned char, 72> TINY_PNG_GREEN{
+    137, 80, 78, 71, 13, 10,  26,  10,  0,   0,  0, 13,  73, 72, 68, 82, 0,  0,   0,   2,  0,   0,   0,   2,
+    8,   2,  0,  0,  0,  253, 212, 154, 115, 0,  0, 0,   15, 73, 68, 65, 84, 120, 218, 99, 96,  248, 207, 0,
+    66,  16, 10, 0,  27, 242, 3,   253, 212, 47, 4, 128, 0,  0,  0,  0,  73, 69,  78,  68, 174, 66,  96,  130};
+constexpr std::array<unsigned char, 72> TINY_PNG_BLUE{
+    137, 80, 78, 71, 13, 10,  26,  10,  0,   0,   0,   13,  73, 72, 68, 82, 0,  0,   0,   2,  0,   0,  0,   2,
+    8,   2,  0,  0,  0,  253, 212, 154, 115, 0,   0,   0,   15, 73, 68, 65, 84, 120, 218, 99, 96,  96, 248, 15,
+    70,  96, 10, 0,  23, 246, 3,   253, 199, 144, 139, 180, 0,  0,  0,  0,  73, 69,  78,  68, 174, 66, 96,  130};
+constexpr std::array<unsigned char, 73> TINY_PNG_YELLOW{
+    137, 80, 78, 71, 13,  10,  26,  10,  0,   0,   0,  13, 73, 72, 68, 82, 0,   0,   0,  2,   0,   0,   0,  2,   8,
+    2,   0,  0,  0,  253, 212, 154, 115, 0,   0,   0,  16, 73, 68, 65, 84, 120, 218, 99, 248, 255, 159, 1,  136, 24,
+    32,  20, 0,  59, 210, 7,   249, 37,  110, 227, 55, 0,  0,  0,  0,  73, 69,  78,  68, 174, 66,  96,  130};
+
+// A valid PNG name whose BYTES are ASCII text (R3's chosen corrupt-image shape): it fails at
+// stbi_info_from_memory, whose byte reader is bounds-checked by construction, before any decode loop
+// ever runs -- never a truncated real PNG, which risks the UBSan-abort surface R3 documents.
+constexpr std::string_view CORRUPT_PNG_BYTES = "this is not a png file, just ascii text pretending to be one";
+
+// task 3.1.3: writes raw bytes (never text) through writeTextFileAtomic, which is binary on both
+// sides already (text_file.cpp) -- a byte array reinterpreted as a string_view is exactly what it
+// expects.
+[[nodiscard]] std::string writeBinaryFixture(const std::string& path, const unsigned char* data, std::size_t size) {
+    const std::string_view bytes(reinterpret_cast<const char*>(data), size);
+    return engine::editor::writeTextFileAtomic(path, bytes);
 }
 }  // namespace
 
@@ -3344,6 +3382,567 @@ TEST_CASE(
     // hashed under it, so the accessor must refuse rather than report a stale default.
     const std::optional<engine::editor::ImportChange> change = app->assetImportChangeForPath("a.txt");
     CHECK_FALSE(change.has_value());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- I36-I42: task 3.1.3's thumbnails, the grid, search and the orphan delete, through real frames -
+
+TEST_CASE(
+    "editor: real thumbnails decode within the per-tick budget and eventually become ready (task 3.1.3, "
+    "I36, AC-6/AC-8, seeds S4/S8/S9)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "thumbnails i36", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(writeBinaryFixture(assetsRoot + "/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/b.png", TINY_PNG_GREEN.data(), TINY_PNG_GREEN.size()).empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/c.png", TINY_PNG_BLUE.data(), TINY_PNG_BLUE.size()).empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/d.png", TINY_PNG_YELLOW.data(), TINY_PNG_YELLOW.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    // The baseline is read BEFORE the FIRST tick, not after -- the scan tick ALSO draws (drawShellUi
+    // runs every tick unconditionally) and therefore ALSO calls serviceThumbnails() once, so all 4
+    // assets are already visible and touched by the time that first tick() returns. Reading the
+    // baseline afterward would hide a seed that decodes everything in that single first burst (found
+    // directly: sabotage seed S4 stayed green against the ORIGINAL, later-baseline shape of this case).
+    std::size_t previousAttempts = app->thumbnailLoadAttempts();  // 0 -- no tick has run yet
+    REQUIRE(app->tick());                                         // the scan: 4 New assets
+    CHECK(app->presentedLastFrame());
+    CHECK(app->assetCount() == 4);
+    {
+        const std::size_t attempts = app->thumbnailLoadAttempts();
+        CHECK(attempts - previousAttempts <= engine::editor::MAX_THUMBNAIL_DECODES_PER_TICK);
+        previousAttempts = attempts;
+    }
+
+    for (int i = 0; i < 30; ++i) {
+        REQUIRE(app->tick());
+        const std::size_t attempts = app->thumbnailLoadAttempts();
+        // AC-8/seed S4: never more than the budget between two consecutive ticks.
+        CHECK(attempts - previousAttempts <= engine::editor::MAX_THUMBNAIL_DECODES_PER_TICK);
+        previousAttempts = attempts;
+    }
+    CHECK(app->presentedLastFrame());
+    CHECK(app->thumbnailReadyCount() > 0);  // AC-6 -- at least one real thumbnail became Ready
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a corrupt image is counted unavailable and never retried (task 3.1.3, I37, INV-V4/AC-9, "
+    "seed S1)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "thumbnails i37", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    // R3: chosen to fail at stbi_info_from_memory, never reaching a decode loop -- ASCII text named
+    // ".png", not a truncated real PNG.
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/bad.png", CORRUPT_PNG_BYTES).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    CHECK(app->assetCount() == 1);
+
+    std::size_t attemptsAfterFirst = 0;
+    for (int i = 0; i < 20; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->thumbnailUnavailableCount() == 1);  // INV-V4: sticky, never Ready
+        if (i == 0) {
+            attemptsAfterFirst = app->thumbnailLoadAttempts();
+        } else {
+            // AC-9: attempts PLATEAU -- a Failed key is read exactly once, ever.
+            CHECK(app->thumbnailLoadAttempts() == attemptsAfterFirst);
+        }
+    }
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the resident thumbnail count never exceeds the cap (task 3.1.3, I38, INV-V5, E12, seeds S2/S3)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "thumbnails i38", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    // More files than the small 320x180 window can show at once -- the content itself is IDENTICAL
+    // (only the GUID differs per file, which is all a ThumbnailKey needs) since this case tests the
+    // CAP, not visual variety.
+    constexpr int FILE_COUNT = 40;
+    for (int i = 0; i < FILE_COUNT; ++i) {
+        const std::string path = assetsRoot + "/img" + std::to_string(i) + ".png";
+        REQUIRE(writeBinaryFixture(path, TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    }
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    CHECK(app->assetCount() == FILE_COUNT);
+
+    bool everNonZero = false;
+    for (int i = 0; i < 60; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->thumbnailResidentCount() <= engine::editor::MAX_THUMBNAILS_RESIDENT);
+        if (app->thumbnailResidentCount() > 0) {
+            everNonZero = true;
+        }
+    }
+    CHECK(everNonZero);  // anti-vacuity -- the bound was actually exercised, not merely never reached
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: every asset browser draw path stays balanced (task 3.1.3, I39, AC-21)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "thumbnails i39", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(writeBinaryFixture(assetsRoot + "/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    // An orphan, so the Issues section actually draws content (both open and closed).
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/gone.png.meta",
+                                                engine::editor::writeMetaText(engine::GuidGenerator(39).next()))
+                .empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    // code-review finding 4: this case used to drive three plain Grid-view ticks and CONCEDE, in its
+    // own comment, that it could not reach the search box -- which left drawContentsList()'s search
+    // branch (an asymmetric BeginTable/EndTable pair plus an ImGuiListClipper), drawContentsGrid()'s
+    // search branch, and the delete confirmation modal executed by NO test at all. Worse, defaulting
+    // the view to Grid had silently REMOVED the table-path coverage every pre-3.1.3 GPU case gave the
+    // List view for free. The four new EditorApp seams drive each of them for real.
+    //
+    // WHAT `presentedLastFrame()` DOES AND DOES NOT PROVE HERE -- measured, not assumed. ImGui 1.92.8
+    // ships ConfigErrorRecovery = true, so an unbalanced BeginTable/EndTable is silently REPAIRED
+    // rather than aborting: deleting this branch's EndTable() and re-running this case leaves it
+    // 43/43 GREEN (verified directly, with a control seed proving the build was picking the edit up).
+    // So these ticks prove the paths EXECUTE -- which is the coverage finding 4 asked for, and enough
+    // for ASan/UBSan and any crash or bad read inside them to be caught -- but they are NOT a proof of
+    // ImGui call balance on their own. AC-21's balance claim rests on the source and on human rows,
+    // exactly as it does for the modal. Do not upgrade this comment to "balance proven" on a green run.
+    //
+    // `pending` holds exactly ONE action, so each request gets its own tick to be drained.
+    REQUIRE(app->tick());  // 1: Grid, default, Issues populated by the orphan above
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 2: let the default dock layout settle before focusing anything
+    CHECK(app->presentedLastFrame());
+
+    // The Assets panel shares DockSlot::Bottom with the Console, and whichever tab wins the FIRST
+    // frame stays active forever with no further signal. drawPanels() calls onDraw() ONLY when
+    // ImGui::Begin() returns true (shell_ui.cpp:356), so a tabbed-behind panel never drains
+    // `pending` -- every request below would be recorded into a panel that never draws, and this
+    // case would pass while proving NOTHING.
+    //
+    // Found exactly that way, twice: a deliberately unbalanced EndTable in the List search branch
+    // failed to redden this case, and the assertions below then showed why. The focus must also come
+    // AFTER the layout exists -- requesting it before the first tick lands while buildDefaultLayout
+    // is still running and does nothing.
+    app->requestPanelFocus("Assets");
+    REQUIRE(app->tick());  // 3: focus applied before DockSpaceOverViewport, so it lands this frame
+    CHECK(app->presentedLastFrame());
+
+    // --- the Issues section, OPEN (it draws closed by default) ---------------------------------
+    // Issues opens via its own CollapsingHeader, which this TU cannot click; the modal request below
+    // draws the section's body regardless, so the open path is covered there.
+
+    // --- List view, no search: the table path pre-3.1.3 cases used to cover for free ------------
+    app->requestAssetBrowserViewMode(engine::editor::AssetViewMode::List);
+    REQUIRE(app->tick());  // 2: drains SetViewMode
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 3: first frame actually DRAWN as List
+    CHECK(app->presentedLastFrame());
+
+    // --- List view, WITH a search hit: BeginTable/EndTable + the clipper, previously uncovered ---
+    app->requestAssetBrowserSearch("a");  // matches a.png
+    REQUIRE(app->tick());                 // 4: drains SetQuery, rebuilds searchRows
+    CHECK(app->presentedLastFrame());
+    // LOAD-BEARING, not decorative: the table branch is entered ONLY when there is at least one hit,
+    // so without this REQUIRE the whole case can drive every seam, draw the plain listing, and pass
+    // while executing none of the code it names.
+    REQUIRE(app->assetBrowserListViewActive());
+    REQUIRE(app->assetBrowserSearchHitCount() > 0);
+    REQUIRE(app->tick());  // 5: first frame drawn through drawContentsList's search branch
+    CHECK(app->presentedLastFrame());
+
+    // --- List view, search with ZERO results: the "No assets match" arm -------------------------
+    app->requestAssetBrowserSearch("zzz-no-such-asset");
+    REQUIRE(app->tick());  // 6
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 7
+    CHECK(app->presentedLastFrame());
+
+    // --- back to Grid, still searching: drawContentsGrid's search branch ------------------------
+    app->requestAssetBrowserViewMode(engine::editor::AssetViewMode::Grid);
+    REQUIRE(app->tick());  // 8
+    CHECK(app->presentedLastFrame());
+    app->requestAssetBrowserSearch("a");
+    REQUIRE(app->tick());  // 9
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 10: first frame drawn through the grid's search branch
+    CHECK(app->presentedLastFrame());
+
+    // --- the kind filter, composed with the query (AC-13's second clause) -----------------------
+    app->requestAssetBrowserKindFilter("all");
+    REQUIRE(app->tick());  // 11
+    CHECK(app->presentedLastFrame());
+
+    // --- clear the search, back to the plain directory listing ----------------------------------
+    app->requestAssetBrowserSearch("");
+    REQUIRE(app->tick());  // 12: drains ClearSearch
+    CHECK(app->presentedLastFrame());
+
+    // --- the delete CONFIRMATION MODAL, previously executed by no test at all --------------------
+    // I41 drives EditorApp::requestOrphanDelete(), which performs the delete directly and bypasses
+    // this modal entirely. This drives the panel's OWN orphan Delete button instead, so the modal
+    // actually opens and draws -- and, crucially, is DISMISSED without confirming, proving the
+    // sidecar survives a modal that was opened and abandoned.
+    app->requestAssetBrowserDeleteOrphanClick("gone.png.meta");
+    REQUIRE(app->tick());  // 13: drains RequestDeleteOrphan, sets pendingOrphanDelete
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 14: the modal is open and drawing
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 15: still open, still balanced
+    CHECK(app->presentedLastFrame());
+    // Never confirmed, so the orphan is still on disk -- the delete half of AC-17/AC-20.
+    CHECK(engine::editor::fileExists(assetsRoot + "/gone.png.meta"));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a project swap clears the thumbnail store and ledger (task 3.1.3, I40, INV-V6/E27, seed "
+    "S26)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "thumbnails i40", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string locationA = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome createdA = engine::editor::createProject(locationA, "GameA", "0.1.0");
+    REQUIRE(createdA.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(writeBinaryFixture(createdA.root + "/assets/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    const std::string locationB = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome createdB = engine::editor::createProject(locationB, "GameB", "0.1.0");
+    REQUIRE(createdB.problem == engine::editor::CreateProblem::Ok);
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = createdA.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->thumbnailReadyCount() > 0);
+
+    app->requestOpenProject(createdB.root);
+    // A8/I21's identical one-tick lag, restated for the thumbnail store: the reconcile runs at the TOP
+    // of tick(), BEFORE drawShellUi()'s applyFileRequests() performs the swap.
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    CHECK(app->thumbnailResidentCount() == 0);
+    CHECK(app->thumbnailReadyCount() == 0);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the orphan-delete round trip via requestOrphanDelete (task 3.1.3, I41, AC-18/AC-19, seeds "
+    "S27/S28)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "orphan delete i41", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    const std::string orphanMetaPath = assetsRoot + "/gone.png.meta";
+    REQUIRE(engine::editor::writeTextFileAtomic(orphanMetaPath,
+                                                engine::editor::writeMetaText(engine::GuidGenerator(41).next()))
+                .empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // the first scan finds the orphan
+    CHECK(app->assetOrphanCount() == 1);
+    REQUIRE(engine::editor::fileExists(orphanMetaPath));
+
+    // The GPU tier is ImGui-free at source and cannot click the modal's Delete button --
+    // requestOrphanDelete() is the only channel (§Q Q1), the requestAssetRescan() shape verbatim.
+    app->requestOrphanDelete("gone.png.meta");
+    REQUIRE(app->tick());  // ONE tick: the delete and the rescan that observes it are one pass (S28)
+    CHECK(app->presentedLastFrame());
+
+    CHECK_FALSE(engine::editor::fileExists(orphanMetaPath));
+    CHECK(app->assetOrphanCount() == 0);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- I42: mechanical source-text proof (A20, F9, seed S31), the I30/I34 shape's third instance -----
+//
+// This task's own drain does not use the `flag || take()` shape I30/I34 guard against (there is no
+// boolean flag to OR against for the orphan-delete one-shot) -- it reads
+// `assetBrowserPanel->takeOrphanDeleteRequest()` into a named local directly. The invariant that
+// actually matters here is unchanged: the call must never be fused into a `||` expression by a future
+// edit, which would let short-circuit evaluation skip the drain. This proof is broader than I30/I34's
+// line-local check for exactly that reason -- it flags takeOrphanDeleteRequest() sharing ANY line with
+// `||`, not merely one naming a specific flag.
+TEST_CASE(
+    "editor_app: takeOrphanDeleteRequest is drained as its own statement, never fused with || (task "
+    "3.1.3, I42, A20, F9, seed S31)") {
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/editor_app.cpp";
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+    const std::string& text = *read.text;
+    REQUIRE_FALSE(text.empty());
+
+    std::vector<std::string_view> lines;
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        if (newline == std::string_view::npos) {
+            lines.push_back(remaining);
+            break;
+        }
+        lines.push_back(remaining.substr(0, newline));
+        remaining.remove_prefix(newline + 1U);
+    }
+
+    std::size_t drainLine = lines.size();
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        // Comment-stripped BEFORE matching (the shell guards' own load-bearing rule, applied here too)
+        // -- this task's own prose explaining the invariant legitimately names both tokens on one
+        // line, and a check that cannot tell code from comment is not a mechanical proof at all.
+        const std::string_view line = lines[i];
+        const std::size_t commentStart = line.find("//");
+        const std::string_view code = commentStart == std::string_view::npos ? line : line.substr(0, commentStart);
+        const bool hasTake = code.find("takeOrphanDeleteRequest()") != std::string_view::npos;
+        const bool hasOr = code.find("||") != std::string_view::npos;
+        INFO("line ", i, ": ", line);
+        REQUIRE_FALSE((hasTake && hasOr));
+        if (hasTake && drainLine == lines.size()) {
+            drainLine = i;  // FIRST occurrence -- the drain
+        }
+    }
+    REQUIRE(drainLine != lines.size());
+}
+
+// ---- I43: code-review BLOCKING-1 -- Reimport All must not free a texture this SAME frame's draw
+// walk already wrote into the ImGui draw list --------------------------------------------------------
+//
+// The bug (before the fix): AssetBrowserPanel::applyPending()'s ReimportAll arm called
+// `ledger.clear(); store.clear();` DIRECTLY, from INSIDE the draw walk, AFTER drawContentsGrid's
+// drawTile() had already baked every Ready thumbnail's native texture pointer into THIS frame's ImGui
+// draw list. EditorApp::tick()'s later `layer.endFrame()` then submitted that draw data referencing
+// the freed pointer -- a use-after-free that is SYNCHRONOUS on Vulkan/D3D12 and only deferred (hence
+// silent) on Metal, which is why this stayed green on macOS CI while it would abort under ASan on
+// Linux/Windows. `EditorApp::requestAssetReimport()` (task 3.1.2, I33) cannot reproduce this: it drives
+// a DIFFERENT path (the deep rescan itself) that never touches the panel's `pending` at all, so this
+// arm never runs at all through that channel.
+//
+// The portable, platform-independent signature: with the OLD code, `ledger.clear()` ran synchronously
+// inside applyPending(), wiping the just-touched key back to Absent -- and since the decode budget (2)
+// covers this single asset, `serviceThumbnails()`'s OWN decode pass (later in the SAME tick) instantly
+// re-decodes and re-uploads it, so `thumbnailReadyCount()` bounces back to 1 by the time the tick
+// returns and does NOT discriminate on its own. `thumbnailLoadAttempts()` does: a redundant SAME-TICK
+// decode is exactly the symptom of "the ledger forgot an entry it should not have", so the OLD code
+// increments it on the triggering tick, while the FIX (which excludes anything touched THIS frame, the
+// SAME protection normal cap eviction already relies on, E12) never wipes the entry at all and needs no
+// redundant redecode. This reproduces the exact same-tick draw-then-clear race the finding describes,
+// deterministically on every OS, with no dependency on ASan actually catching the freed pointer -- and
+// it is the DIRECT symptom of the destroy the fix removes, not a mere proxy for it.
+TEST_CASE(
+    "editor: Reimport All does not free a thumbnail drawn on the SAME tick (task 3.1.3 code review, "
+    "BLOCKING-1)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    // A LARGER window than this file's other GPU cases (I36-I42 use 320x180): the Bottom dock slot
+    // "Assets" shares with Console (D3) is one of five competing slots, and at 320x180 it settles to a
+    // sliver too short to show even one row -- ImGuiListClipper then legitimately reports zero visible
+    // rows and drawTile() is never called, silently. Confirmed directly: at 320x180 the tile draws only
+    // on the dockspace's very first frame and never again; at 1280x800 it draws every tick.
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "reimport all i43", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(writeBinaryFixture(assetsRoot + "/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+
+    // "Assets" shares its dock slot with "Console" (D3); whichever wins the FIRST frame's tab stays
+    // active forever afterward with no further per-frame signal, and it is NOT guaranteed to be
+    // "Assets" -- requestPanelFocus keeps it the active tab (and therefore actually DRAWN, phase 4
+    // included) on every tick this test needs it to be, the ONLY way this ImGui-free-at-source TU can
+    // ask for that (code-review BLOCKING-1 test seam). Re-requested every tick, matching
+    // requestPanelFocus's own one-shot-per-tick contract.
+    //
+    // Tick until the single thumbnail becomes Ready AND drawn (I36's own "tick until ready" shape),
+    // then a few extra margin ticks confirming BOTH stay true -- the state the triggering tick needs.
+    bool ready = false;
+    for (int i = 0; i < 30 && !ready; ++i) {
+        app->requestPanelFocus("Assets");
+        REQUIRE(app->tick());
+        ready = app->thumbnailReadyCount() > 0;
+    }
+    REQUIRE(ready);
+    for (int i = 0; i < 3; ++i) {
+        app->requestPanelFocus("Assets");
+        REQUIRE(app->tick());
+        REQUIRE(app->thumbnailReadyCount() > 0);
+    }
+    CHECK(app->presentedLastFrame());
+    const std::size_t attemptsBeforeTrigger = app->thumbnailLoadAttempts();
+
+    // Queue the panel's OWN ReimportAll arm BEFORE the next tick() -- record(ActionKind::ReimportAll)
+    // is set immediately, so the VERY NEXT tick's onDraw() draws the still-Ready tile (phase 4, baking
+    // its texture pointer into THIS frame's draw list) and only THEN drains `pending` in applyPending()
+    // -- the exact same-tick ordering a real button click produces.
+    app->requestPanelFocus("Assets");
+    app->requestAssetBrowserReimportAll();
+    REQUIRE(app->tick());  // the triggering tick: draw, then applyPending(), then serviceThumbnails()
+    CHECK(app->presentedLastFrame());
+
+    // THE discriminator (see the comment above the test): the fix never wipes a key touched this SAME
+    // tick, so it needs no redundant redecode, and thumbnailLoadAttempts() stays UNCHANGED across the
+    // triggering tick. thumbnailReadyCount() is kept as a sanity check -- true either way, since the
+    // pre-fix code's redundant same-tick redecode also lands Ready, just via a NEW texture that leaves
+    // the OLD one dangling in the draw list already built this frame.
+    CHECK(app->thumbnailLoadAttempts() == attemptsBeforeTrigger);
+    CHECK(app->thumbnailReadyCount() > 0);
 
     app->requestQuit();
     CHECK(app->tick() == false);

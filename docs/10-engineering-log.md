@@ -3305,3 +3305,243 @@ every seed. All three passed for all 31 seeds.
 100% (6/6 tools-OFF, 19/19 reflect-OFF), `aero_editor_shell_test` reading **593** doctest cases in each;
 `check-math-boundary.sh` **262**; `check-project-no-delete.sh` **6 files scanned**; every changed file
 confirmed byte-identical to `HEAD` after every one of the 31 sabotage reverts.
+
+#### Task 3.1.3 — Asset browser v1
+
+**3.1.3 upgrades 2.2.4's read-only file lister into the real Asset Browser: a thumbnail grid with
+generated type icons and real decoded image previews, a project-wide search with a kind filter, the
+list view preserved verbatim, a surfaced Issues list reading the scan report 3.1.1/3.1.2 already
+compute, and the one user-initiated destructive action this whole subsystem permits — deleting an
+orphaned `.meta` sidecar, closing both 3.1.1's D8 and 3.1.2's D13 deferrals in the same task.** Four
+new `/editor` pairs: `asset_view.{hpp,cpp}` (pure — kinds, icons, filter/search, grid geometry, no
+ImGui/`<filesystem>`/GPU), `thumbnail_cache.{hpp,cpp}` (pure — the key, the state machine, the
+budget/LRU ledger, and a deterministic INTEGER box resampler, no floating point anywhere so the
+output is byte-identical across macOS/Windows/Linux), `thumbnail_store.{hpp,cpp}` (src-private — the
+ONLY stb_image TU and the ONLY GPU-touching TU for thumbnails; `STBI_NO_STDIO`/`STBI_NO_FAILURE_STRINGS`
+keep it disk-primitive-free and text-free), and `asset_actions.{hpp,cpp}` (the fifth editor TU to
+include `<filesystem>`, holding exactly one `std::filesystem::remove` call, gated by a six-step
+re-verify-everything-before-deleting algorithm). `vcpkg.json` gained one new port, `stb` — editor-only,
+confined to `thumbnail_store.cpp` by file placement (no third-party image-decode type crosses any
+public header). **Zero paths under `engine/`** — the empty-`engine/`-diff streak 3.1.1 ended and 3.1.2
+repeated restarts at one here; 3.1.3 needed no engine change at all, exactly as the plan predicted
+(`engine::MeshRenderer` has no asset-referencing field yet).
+
+**Drag-into-scene was excised into a new task, 3.1.5 (D2), not shipped here.** Verified directly before
+cutting it: `engine::MeshRenderer` is `{std::uint32_t primitive AERO_RANGE(0,2); Vec3 color
+AERO_COLOR;}`, pinned by `static_assert(sizeof(MeshRenderer) == 4 * sizeof(float))`, and
+`git grep -ln 'Guid' -- engine/scene/` is empty — nothing in `engine::scene` can point at an asset
+today, so a drop could only create an entity that does not and cannot refer to the dropped file,
+invisible now and still wrong once 3.2.1 gives assets something to be referenced by. `docs/tasks/phase-3.md`
+is amended accordingly: 3.1.3's size `M → L` (it also carries the Issues list and the orphan-delete
+action neither original subtask named), its second subtask renamed to "Search/filter", and a new
+3.1.5 row appended to Epic 3.1 depending on `3.1.3, 3.2.1`; 3.1.4 (hot-reload) keeps its number and
+its dependency on 3.1.2 untouched.
+
+**Build-time findings, three of them CI-only and deterministic, none of them a design flaw:**
+- **MSVC's `<string_view>`/`<ostream>` completeness trap, a new instance of an old class.** `INFO("ext:
+  ", ext)` with `ext` a `std::string_view` cascaded into an MSVC STL compile error inside
+  `<__msvc_string_view.hpp>`. Fixed by converting to `std::string` at every affected call site — the
+  same fix class this project has now hit more than once, never in a way a macOS-local build can see.
+- **Linux clang-tidy, nine findings, all mechanical:** `bugprone-string-literal-with-embedded-nul`
+  (`"before\0after"` truncates silently at the embedded NUL — fixed via the `(ptr, len)` constructor),
+  two `misc-unused-using-decls`, a `bugprone-misplaced-widening-cast`, a
+  `bugprone-implicit-widening-of-multiplication-result`, and a `readability-identifier-naming` local
+  constexpr rename to `SCREAMING_SNAKE_CASE`.
+- **A Windows-only, fully deterministic failure: a test fixture literally named `nul.bin`.** Windows
+  treats `NUL` as a reserved device name **regardless of extension** — the write silently discarded
+  every byte, and the read-back assertion failed. Confirmed deterministic (re-run, identical failure)
+  before fixing: renamed to `embedded-nul.bin`, and replaced the truncating literal-assignment with the
+  explicit-length `std::string(ptr, len)` constructor already used elsewhere in the same file. After
+  this fix all three CI lanes, lint and the vcpkg-baseline guard went green together — **Step 5's own
+  isolated CI round (the point of pushing it alone) needed no `stb`/UBSan contingency at all**; every
+  finding was in this task's own new test code, not in the new dependency.
+- **A duplicate-member compile error the plan's own text would have caused.** §D-6 said `return
+  records;` for the new `AssetDatabase::records()` accessor, but the private member was ALSO already
+  named `records`. Fixed by renaming the private member to `recordList`, the identical
+  `databasePtr`/`database()` naming-collision precedent 3.1.1 already established for exactly this
+  class of clash. Logged as a minor deviation, not a stop.
+- **A UBSan abort on `+inf → int`.** `gridColumnsFor(inf, 64, 8)` cast an infinite quotient to `int`,
+  which is undefined behaviour, not merely a warning. Fixed with a `MAX_REPRESENTABLE_COLUMNS` clamp
+  before the final cast — the same "NaN/inf must never reach a narrowing cast" discipline this project
+  already applies elsewhere in `core/math`.
+- **A grid-layout design bug caught in review before any test ran:** drawing `".."` then `SameLine()`
+  ahead of the clipper-driven grid loop would have made row 0 hold `columns + 1` tiles. Fixed by giving
+  `".."` its own dedicated row unconditionally, matching the List view's own existing treatment — no
+  `SameLine()` after it at all.
+- **A doctest `REQUIRE_FALSE` "Expression Too Complex" trap, the third time this exact shape has hit
+  this tree.** `REQUIRE_FALSE(hasTake && hasOr)` in I42's mechanical source-text proof needed the extra
+  parens `REQUIRE_FALSE((hasTake && hasOr))` doctest's expression-decomposition requires for a raw
+  `&&` — I30/I34 already carry this exact idiom in the same file.
+- **I42's own mechanical proof initially false-failed on its own explanatory comment**, which
+  legitimately contains both `takeOrphanDeleteRequest()` and `\|\|` on one line. Fixed by
+  comment-stripping before matching (cut at `//`), mirroring the shell guard scripts' own load-bearing
+  comment-stripping rule — a check that cannot tell code from comment is not a mechanical proof.
+
+**Two genuine test-quality gaps, found by sabotage and fixed, not merely logged (commit `2f19c52` and
+the sabotage-completion commit `acb52fe`):**
+- **I36's baseline-attempt count was captured AFTER the first `tick()`, not before** — hiding a decode
+  burst that happens entirely within that first tick (found directly: sabotage seed S4 stayed green
+  against the original, later-baseline shape of the case). Fixed by reading
+  `app->thumbnailLoadAttempts()` (== 0, no tick has run yet) before the first `tick()` call.
+- **TC20's touch order never exercised the vulnerable `std::lower_bound` collision path a hash-dropping
+  `ThumbnailKey::operator==` (seed S8) would expose** — the smaller-hash key was touched first, the
+  larger-hash key second, which never forces the comparator through the case that matters. Fixed by
+  swapping the touch order; confirmed it now reddens correctly under S8.
+- **`searchAssets`' own leaf-vs-full-path extraction had NO test that actually exercised it.** The
+  plan named `AV36` as S14's discriminator, but `AV36` calls `matchesFilter` directly with an
+  already-bare leaf (`"plank.png"`) and never reaches `searchAssets`' own leaf-slicing call site — a
+  seed passing `record.relativePath` straight through instead of the sliced leaf stayed **739/739
+  green**. Added `AV39b`: a record under a directory literally named after the query, asserting zero
+  hits — confirmed it passes against real code and reddens under the S14 mutation. This is a genuine,
+  differently-shaped finding, not a contingency: the plan's own claimed discriminator for S14 does not
+  actually discriminate it.
+
+**The sabotage matrix — all 35 seeds (S1–S35), plus all 3 mandatory second-order checks per seed, run
+and confirmed against the real built binaries.** Every seed was applied, confirmed **present** with
+`git diff` before trusting any verdict, rebuilt (never a stale binary — confirmed via the build tool's
+own incremental step list), run through the relevant suite(s) (targeted binaries for most seeds,
+reserving full-`ctest` runs for the highest-risk/broadest-blast-radius seeds — S23 and S35, which
+touch the architecture guard itself, were additionally confirmed against the hermetic
+`project-no-delete.no_delete_e2e` ctest case, not merely the raw script), and reverted with the
+revert confirmed byte-for-byte clean against `HEAD` (`git diff` empty **and**
+`git show HEAD:<file> | diff -q - <file>`) before the next seed began. **Exact arithmetic: 23 matched
+their prediction** (S1, S2, S4, S5, S6, S8, S12, S15, S16, S18, S19, S20, S21, S22, S23, S24, S26,
+S28, S29, S31, S32, S33, S35) **+ 7 confirmed non-discriminators** (S3, S7, S9, S10, S11, S30, S34)
+**+ 0 predicted contingencies** **+ 5 differently-shaped findings** (S13, S14, S17, S25, S27) —
+**23 + 7 + 0 + 5 = 35.**
+
+**The eight seeds the task explicitly required regardless of prediction (S3, S7, S9, S10, S11, S25,
+S30, S34) — every one run, every one recorded honestly:**
+- **S3, S7, S9, S10, S11** — all five confirmed non-discriminators exactly as predicted, on this
+  machine, in this build. No invented coverage was added for any of them; each stays a documented,
+  machine-dependent gap, the 3.1.1 S17 posture applied a fifth time.
+- **S25 (`serviceThumbnails()` called from inside `onDraw` instead of after `renderScene`) is the one
+  nuanced result in the whole matrix.** Seeded literally at the very START of `onDraw()` — before any
+  tile's `touch()` call has run that frame — it reddened **4 GPU-tier cases** (I36, I37, I38 and one
+  more), because thumbnails decode a full frame behind their own visibility. Seeded instead at the
+  natural END of `onDraw()` (after every tile has been drawn and touched that frame, still structurally
+  "inside the draw walk"), it matched the plan's own prediction exactly: **64/64 green**, confirming
+  §V6's grep cannot see this class of violation and only human row 4 ("never stutters") covers it.
+  Both placements are legitimate readings of "called from inside `onDraw`"; the first is a stronger,
+  differently-shaped finding worth recording precisely rather than discarding in favour of the
+  matching result.
+- **S30 (`~ThumbnailStore` does not destroy its textures) matched its non-discriminator prediction
+  exactly under ASan — 64/64 tests stayed green, because `rhi::TextureHandle` is not a heap allocation
+  ASan tracks** — but the run's own log carried `rhi: ~Device releasing 1 leaked texture(s)`, the RHI
+  layer's own destroy-accounting catching what ASan cannot. This confirms, rather than merely asserts,
+  the plan's own stated rationale: AC-10's leak claim rests on the RHI's own accounting and on
+  `I38`/`I40`'s resident counts, never on ASan.
+- **S34 (the grid clipper's `items_height` omits `ItemSpacing.y`) matched its non-discriminator
+  prediction exactly** — 739/740 unit + 64/64 GPU cases all stayed green; only a human's own eyes on a
+  scrolled grid (human row 3) can ever catch a wrong scroll-range estimate.
+
+**Two further differently-shaped findings beyond S14 and S25, both real and both left as documented
+gaps rather than patched into artificial coverage:**
+- **S13 (`readFileBytes` opens in text mode) is invisible on this machine, and that is expected, not a
+  gap in the seeding.** `std::ifstream`'s text-mode CRLF translation is a Windows-only behaviour;
+  on macOS/Linux, text mode and binary mode read identical bytes, so `TF23`/`TF24` cannot discriminate
+  it here by construction — the identical asymmetry `text_file.cpp`'s own comments already document
+  for `readTextFile`/`hashFileContents`. This is real evidence the seed is a genuine, Windows-only
+  discriminator, not evidence the guard is weak.
+- **S17 (`classifyAssetKind` folds case with `std::tolower(char)`/the C locale) did not redden `AV11`/
+  `AV12`, and clang-tidy's `bugprone-signed-char-misuse` did not fire on either a `static_cast`-guarded
+  or a naive `std::tolower(c)` shape tried in isolation on this toolchain.** `AV11`'s inputs are pure
+  ASCII, where `std::tolower` and the manual fold agree exactly; `AV12`'s non-ASCII input short-circuits
+  on a length mismatch in `extensionEqualsFolded` before folding is ever reached, so neither case's
+  assertion depends on which folding function is used. The plan's own comment in `asset_view.cpp`
+  citing this check as "two independent nets" is not reproduced by this seeding on this LLVM 18 build;
+  recorded as a real, differently-shaped finding rather than silently assumed to still hold.
+- **S27 (`EditorApp` drops the `setScanReport` reconcile) is a genuine NON-discriminator across the
+  WHOLE suite, not narrower than predicted.** `assetOrphanCount()` — the accessor `I41` actually
+  asserts on — reads `EditorApp::lastAssetReport` directly, never through the panel's reconciled
+  pointer `setScanReport` maintains; dropping that reconcile therefore leaves `I41` (and every other
+  GPU case) fully green. The Issues list `drawIssues()` renders is the reconcile's entire observable
+  effect, and no test tier in this tree renders pixels — so this reconcile's whole proof surface is
+  human validation, the identical posture the plan itself states for `S25` but did not state for `S27`.
+
+**The three mandatory second-order checks, run for every one of the 35 seeds, no exceptions:** (1) the
+seed was actually present — `git diff` shown before trusting any verdict; (2) the suite was actually
+rebuilt, not stale — confirmed via the build tool's own incremental step list on every build; (3) the
+revert restored the file byte-for-byte — confirmed via `git diff` (empty) **and**
+`git show HEAD:<file> | diff -q -` for every touched file after every seed. All three passed for all
+35 seeds.
+
+**Verification for this task:** six guards green (`check-project-no-delete.sh` now running **two**
+checks, Check A's six-file denylist and Check B's two-file positive allowlist); the full
+`ctest --preset macos-debug` suite passing 100% of 95 (`AERO_REQUIRE_GPU=1`); both reduced
+configurations freshly rebuilt and passing 100% (6/6 tools-OFF, 19/19 reflect-OFF),
+`aero_editor_shell_test` reading **729** doctest cases in each (re-measured after the code-review
+round, on directories configured from scratch — a stale build directory reports a stale number, 2.6.2's
+A3). Measured inventory, not carried
+forward: `aero_tests` **415** (unchanged — zero engine paths touched), `aero_editor_shell_test`
+**753** (was **621** before this task; **+132**: `asset_view_test.cpp` AV1–AV42 (+AV39b) new TU,
+`thumbnail_cache_test.cpp` TC1–TC38 new TU, `asset_actions_test.cpp` AA1–AA22 new TU, plus
+`text_file_test.cpp`/`asset_database_test.cpp` extended in place and the code-review round's own
+cases), `aero_editor_imgui_test` **65** (was 57; +8: I36–I42 plus the code-review round's I43), `aero_scene_serialize_test`/`aero_editor_inspector_test` **23**/**22**, both
+unchanged. `aero_editor_core` sources **46** (was 42 — the four new TUs). `check-math-boundary.sh`
+**262 → 273** (eleven new C-family files: the four new `/editor` pairs' eight files plus three new
+test TUs — `asset_view_test.cpp`, `thumbnail_cache_test.cpp`, `asset_actions_test.cpp`);
+`check-project-no-delete.sh`'s six-file Check A allowlist is unchanged in count; Check B's own
+two-file `PERMITTED_DELETERS` allowlist is new this task, and its own final banner line now reports
+both counts (six files for Check A, the full `editor/src/*.cpp` count for Check B). Every changed
+file confirmed byte-identical to `HEAD` after every one of the 35 sabotage reverts.
+
+**The code-review round (PR #67) found 11 findings, 3 BLOCKING — and it found them against a fully
+green gate.** That is the entry's most important sentence: 95/95 ctest, six green guards, 35 sabotage
+seeds, and all three CI platforms were green at `628bbfc` when the review started. A green matrix was
+not evidence.
+
+- **BLOCKING 1 — a real use-after-free of GPU textures, invisible on macOS by construction.**
+  `applyPending()` is the last statement of `onDraw()`, so the `ReimportAll` arm's `store.clear()`
+  destroyed every `rhi::TextureHandle` whose native `SDL_GPUTexture*` `drawTile` had already written
+  into that frame's ImGui draw list; `endFrame()` then bound the freed pointer.
+  `SDL_ReleaseGPUTexture` frees **synchronously** on Vulkan (`SDL_gpu_vulkan.c:7070-7073`) and D3D12
+  (`SDL_gpu_d3d12.c:1460-1463`) — *"Containers are just client handles, so we can destroy
+  immediately"* — and only **defers** on Metal (`SDL_gpu_metal.m:936-944`). So the defect was
+  deterministic on Linux and Windows, in this task's own headline scenario, and **structurally
+  unreachable on the only platform with a human pass**. Fixed by deferring the teardown to a flag
+  drained by `serviceThumbnails()`, after its touch loop so keys drawn this frame are protected from
+  eviction by E12's own rule. **No test caught it because `I33` drives
+  `EditorApp::requestAssetReimport()`, a different path that never touches the panel's `pending` at
+  all** — the seam `requestAssetBrowserReimportAll()` exists to close exactly that.
+- **BLOCKING 2** — AC-13's first clause was never implemented: `refreshSearchRows()` early-returned on
+  an empty query and neither content view consulted `filter` for the directory listing, so the kind
+  combo was a **dead control** without a search term. `AV37`/`AV38` proved `matchesFilter` correct and
+  nothing wired it to the listing — model coverage mistaken for feature coverage.
+- **BLOCKING 3** — `drawFooter` resolved the selection by leaf name inside the *current* directory's
+  listing while a search hit records a full relative path. Usually the footer went blank; when a
+  same-named file existed in the current directory it paired the **search hit's path and GUID with a
+  different file's size**, presenting two files as one record.
+
+**Finding 8, recorded rather than fixed — `uploadTexture` is a full device stall, twice per tick.**
+`Device::uploadTexture` ends in `SDL_SubmitGPUCommandBufferAndAcquireFence` +
+`SDL_WaitForGPUFences` (`engine/rhi/src/sdl_gpu_backend.cpp:1620-1631`), and `device.hpp:134-141`
+documents it in its own words as *"blocking"* and *"NOT a per-frame path"*. This task nevertheless
+issues up to `MAX_THUMBNAIL_DECODES_PER_TICK = 2` of them per tick from `serviceThumbnails()`, inside
+the frame. **This is human validation row 4's ("40 photos, progressive fill-in, no stutter") first
+suspect, and it is a contradiction with the RHI's own stated contract, not an oversight.** It is left
+as-is deliberately: the budget of 2 came from that same warning rather than from a measurement, no
+stutter has actually been observed yet, and the alternatives (a non-blocking upload path, a staging
+queue) are **engine** changes — this task holds zero `engine/` paths, and the RHI is treated as
+sacred. If row 4 fails on any platform, lower the budget first and measure before touching the RHI.
+
+**Finding 4's fix produced a second-order lesson worth more than the fix.** Extending `I39` to cover
+the List view, both search branches and the confirmation modal required four new `EditorApp` seams —
+and the first two attempts at the test **passed while executing none of the code they named**. The
+Assets panel shares `DockSlot::Bottom` with the Console, `drawPanels()` calls `onDraw()` only when
+`ImGui::Begin()` returns true (`shell_ui.cpp:356`), and a tabbed-behind panel therefore never drains
+`pending` at all. A deliberately unbalanced `EndTable()` seeded into the List search branch failed to
+redden the case twice — once because the panel never drew, and once more even after focusing it,
+which exposed the real finding below. The case now `REQUIRE`s `assetBrowserListViewActive()` and
+`assetBrowserSearchHitCount() > 0` **before** the frames that matter, so it cannot silently degrade to
+covering nothing again, and `requestPanelFocus` must be issued **after** the dock layout exists — a
+focus requested before the first tick lands while `buildDefaultLayout` is still running and does
+nothing.
+
+**A correction to this project's own stated rule: a presented frame is NOT proof of ImGui call
+balance in this build.** `.claude/rules/editor.md` says an unbalanced call is an `IM_ASSERT` abort.
+ImGui 1.92.8 ships `ConfigErrorRecovery = true`, and a `BeginTable` with its `EndTable` deleted leaves
+`I39` **43/43 green** — verified directly, with a control seed proving the build was picking the edit
+up. The GPU-tier cases therefore prove the draw paths **execute** (which is what makes ASan/UBSan and
+any bad read inside them meaningful), but AC-21's balance claim rests on the source and on the human
+rows, exactly as the modal's does. Do not read a green GPU tier as balance proof.

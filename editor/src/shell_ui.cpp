@@ -15,6 +15,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>  // DockBuilder* (2.1.1 precedent)
 #include <string>
+#include <utility>  // code-review BLOCKING-1: std::move(state.focusPanelId)
 
 // <ImGuizmo.h> deliberately follows <imgui.h> and lives in its own trailing include block: it does
 // NOT include imgui.h (it forward-declares ImGuiWindow, then names ImDrawList / ImVec2 / ImU32 /
@@ -526,6 +527,19 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         applyFileRequests(cmd, context.commands, fileMenu.session, fileMenu.flow, fileMenu.dialogs, fileMenu.project);
     }
     applyHistoryRequests(context, state);  // task 2.4.1, D19/AC-21
+    // code-review BLOCKING-1 test seam: the SAME two calls the "Edit > Project Settings..." menu item
+    // makes (drawMenuBar, above) -- applied generically and BEFORE DockSpaceOverViewport, for the
+    // identical reason that click's own comment states: dock nodes update INSIDE
+    // DockSpaceOverViewport, which runs immediately below, so the focus lands with no one-frame lag.
+    // An unknown id is a silent no-op, matching SetWindowFocus's own documented behaviour.
+    if (!state.focusPanelId.empty()) {
+        const std::string requestedId = std::move(state.focusPanelId);
+        state.focusPanelId.clear();
+        if (panels.find(requestedId.c_str()) != nullptr) {
+            panels.setVisible(requestedId.c_str(), true);
+            ImGui::SetWindowFocus(requestedId.c_str());
+        }
+    }
     const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
     if (state.applyDefaultLayout) {
         state.applyDefaultLayout = false;

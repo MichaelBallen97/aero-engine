@@ -3,6 +3,8 @@
 #include <aero/core/log.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/time.hpp>
+#include <aero/editor/asset_actions.hpp>  // task 3.1.3: deleteOrphanMeta/OrphanDeleteResult -- the
+                                          // reconcile block's third one-shot drain
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>
@@ -301,7 +303,9 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
             app.consolePanel = app.registry.emplace<ConsolePanel>(std::move(*logScope));
         }
         AERO_LOG_INFO("editor: assets root '{}'", app.project.assetsRoot());
-        app.assetBrowserPanel = app.registry.emplace<AssetBrowserPanel>(app.project.assetsRoot());
+        // task 3.1.3 (A17): the device is passed AT CONSTRUCTION, not reconciled -- unlike the
+        // project root, it can never change during a session.
+        app.assetBrowserPanel = app.registry.emplace<AssetBrowserPanel>(app.project.assetsRoot(), &device);
         // task 2.6.2 (D12): LAST. Inspector registers before it and therefore stays the selected tab
         // in the shared Right dock node (the Console-before-Assets property), and no existing panel's
         // index shifts, so every index-based assertion in the tree keeps its meaning. Its return value
@@ -430,7 +434,32 @@ bool EditorApp::tick() {
         // shipped that exact bug once already (I30 is its mechanical proof).
         const bool panelRefresh = assetBrowserPanel != nullptr && assetBrowserPanel->takeRescanRequest();
         const bool panelReimport = assetBrowserPanel != nullptr && assetBrowserPanel->takeReimportRequest();
-        const bool refresh = assetRescanRequested || panelRefresh;
+        // task 3.1.3 (D12): a THIRD one-shot, drained as its OWN statement for the identical F9 reason
+        // -- putting takeOrphanDeleteRequest() on the right of a `||` would skip the drain whenever an
+        // earlier term was already true, stranding the request until the next frame. I42 is its
+        // mechanical proof. TWO sources feed it (the panel's own confirmed modal, and EditorApp's own
+        // requestOrphanDelete() -- the GPU tier's only channel, §Q Q1), each drained here as its own
+        // statement, unconditionally, before either is inspected.
+        const std::string panelOrphanToDelete =
+            assetBrowserPanel != nullptr ? assetBrowserPanel->takeOrphanDeleteRequest() : std::string{};
+        const std::string editorOrphanToDelete = std::move(requestedOrphanDelete);
+        requestedOrphanDelete.clear();
+        const std::string& orphanToDelete = !panelOrphanToDelete.empty() ? panelOrphanToDelete : editorOrphanToDelete;
+        bool orphanHandled = false;
+        if (!orphanToDelete.empty()) {
+            const OrphanDeleteResult result = deleteOrphanMeta(assetDatabase.root(), orphanToDelete);
+            if (result.deleted) {
+                AERO_LOG_INFO("editor: deleted orphaned sidecar '{}'", orphanToDelete);
+            } else {
+                AERO_LOG_WARN("editor: refused to delete '{}' -- {}", orphanToDelete, result.message);
+            }
+            // A REFUSAL still rescans: every refusal reason (Missing, AssetPresent, NotAMeta) means
+            // "the tree changed under us", so the Issues list the user is looking at is stale either
+            // way. The deletion therefore happens BEFORE the refresh/reimport test below, so the
+            // delete and the rescan that observes it are ONE pass, not two ticks apart (seed S28).
+            orphanHandled = true;
+        }
+        const bool refresh = assetRescanRequested || panelRefresh || orphanHandled;
         const bool reimport = assetReimportRequested || panelReimport;
         assetRescanRequested = false;
         assetReimportRequested = false;
@@ -449,14 +478,18 @@ bool EditorApp::tick() {
             // project root is a named local FIRST (the 2.6.1 FileDialogHost::projectRoot lesson):
             // project.root() returns a std::string_view bound to the live ProjectSession.
             const std::string projectRootForScan = std::string(project.root());
-            const AssetScanReport report = assetDatabase.rescan(projectRootForScan, std::move(wanted), assetGuids);
-            logAssetScan(assetDatabase.root(), report);  // INV-A3: the ONLY logging site for the scan
+            // task 3.1.3: RETAINED, not discarded -- the Issues section reads this same report through
+            // the panel's own reconciled pointer, below.
+            lastAssetReport = assetDatabase.rescan(projectRootForScan, std::move(wanted), assetGuids);
+            logAssetScan(assetDatabase.root(), lastAssetReport);  // INV-A3: the ONLY logging site
         }
         if (assetBrowserPanel != nullptr) {
             if (assetBrowserPanel->root() != assetDatabase.root()) {
                 assetBrowserPanel->setRoot(assetDatabase.root());
             }
             assetBrowserPanel->setDatabase(&assetDatabase);
+            // task 3.1.3: unconditional, same block, same reasoning as setDatabase() above (F14).
+            assetBrowserPanel->setScanReport(&lastAssetReport);
         }
     }
     if (window != nullptr) {
@@ -476,12 +509,14 @@ bool EditorApp::tick() {
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
                     .placeUnplacedPanels = placeUnplacedPanels,
                     .undoRequested = undoRequested,
-                    .redoRequested = redoRequested};
+                    .redoRequested = redoRequested,
+                    .focusPanelId = requestedPanelFocus};
     // Consumed: a request never survives the tick that carried it. Unlike applyDefaultLayout below,
     // these are NOT read back out of `ui` -- drawShellUi clears them as it applies them, and reading
     // them back would re-arm the request every frame (task 2.4.1).
     undoRequested = false;
     redoRequested = false;
+    requestedPanelFocus.clear();  // code-review BLOCKING-1 test seam -- the SAME "never re-armed" rule
     // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1);
     // commandStack is the editor's ONE undo history (task 2.4.1 D7); rootOrder is the editor's ONE
     // display order among root entities (task 2.4.2 D10); project is the open project (task 2.6.2
@@ -505,6 +540,11 @@ bool EditorApp::tick() {
     // leaves the colour texture sampler-readable the instant our pass ends). NOT an ImGui call.
     if (viewportPanel != nullptr) {
         viewportPanel->renderScene(sceneWorld);
+    }
+    // task 3.1.3 (D8): serviceThumbnails() is the ONLY thumbnail mutator, and it runs here -- the
+    // SECOND occupant of the slot between drawShellUi and endFrame, the renderScene precedent.
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->serviceThumbnails();
     }
     presented = layer.endFrame(config.clearColor);
     if (fileFlow.quitConfirmed) {
@@ -588,6 +628,33 @@ std::optional<ContentHash> EditorApp::assetContentHashForPath(std::string_view r
 std::size_t EditorApp::assetCacheEntryCount() const noexcept { return assetDatabase.cacheSize(); }
 std::size_t EditorApp::assetImportJobCount() const noexcept { return assetDatabase.importPlan().jobIndices.size(); }
 
+// task 3.1.3 (A12): forwarded, 0 when no Asset Browser panel is registered -- the
+// assetCacheEntryCount() shape verbatim.
+// code-review finding 4: the search half's observability, same null-checked shape.
+std::size_t EditorApp::assetBrowserSearchHitCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->searchHitCount() : std::size_t{0};
+}
+bool EditorApp::assetBrowserListViewActive() const noexcept {
+    return assetBrowserPanel != nullptr && assetBrowserPanel->listViewActive();
+}
+bool EditorApp::assetBrowserDeleteModalPending() const noexcept {
+    return assetBrowserPanel != nullptr && assetBrowserPanel->deleteModalPending();
+}
+
+std::size_t EditorApp::thumbnailReadyCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailReadyCount() : std::size_t{0};
+}
+std::size_t EditorApp::thumbnailUnavailableCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailUnavailableCount() : std::size_t{0};
+}
+std::size_t EditorApp::thumbnailResidentCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailResidentCount() : std::size_t{0};
+}
+std::size_t EditorApp::thumbnailLoadAttempts() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailLoadAttempts() : std::size_t{0};
+}
+std::size_t EditorApp::assetOrphanCount() const noexcept { return lastAssetReport.orphanTotal; }
+
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
 void EditorApp::requestUndo() noexcept { undoRequested = true; }
@@ -628,6 +695,51 @@ void EditorApp::requestAssetRescan() noexcept { assetRescanRequested = true; }
 // task 3.1.2 (AC-39): the requestAssetRescan() shape verbatim, drained in the SAME reconcile expression
 // as AssetBrowserPanel::takeReimportRequest() (F9) -- see tick()'s reconcile block above.
 void EditorApp::requestAssetReimport() noexcept { assetReimportRequested = true; }
+
+// task 3.1.3 (§Q Q1): the requestAssetRescan()/requestAssetReimport() shape, a third instance -- see
+// tick()'s reconcile block above for the drain.
+void EditorApp::requestOrphanDelete(std::string_view relativeMetaPath) { requestedOrphanDelete = relativeMetaPath; }
+
+// code-review BLOCKING-1: forwards DIRECTLY to the panel's own requestReimportAll() -- there is no
+// one-shot flag to drain here (unlike requestAssetRescan()/requestAssetReimport()/requestOrphanDelete()
+// above): AssetBrowserPanel::requestReimportAll() itself already just sets `pending`, the identical
+// thing a real button click does, and that is exactly what needs to happen before the NEXT tick()'s
+// onDraw() runs. assetBrowserPanel is non-owning, owned by `registry` (F17's precedent) and always
+// null-checked.
+void EditorApp::requestAssetBrowserReimportAll() noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestReimportAll();
+    }
+}
+
+// code-review finding 4: the same null-checked forward, four more times. Each is a no-op when no Asset
+// Browser panel is registered, exactly as requestAssetBrowserReimportAll() above.
+void EditorApp::requestAssetBrowserViewMode(AssetViewMode mode) noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestViewMode(mode);
+    }
+}
+void EditorApp::requestAssetBrowserSearch(std::string_view query) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestSearchQuery(std::string(query));
+    }
+}
+void EditorApp::requestAssetBrowserKindFilter(std::string_view kind) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestKindFilter(std::string(kind));
+    }
+}
+void EditorApp::requestAssetBrowserDeleteOrphanClick(std::string_view relativeMetaPath) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestDeleteOrphanClick(std::string(relativeMetaPath));
+    }
+}
+
+// code-review BLOCKING-1 test seam: stores the id for tick()'s ShellUiState construction to carry --
+// see ShellUiState::focusPanelId's own comment for why this exists and drawShellUi's own new block for
+// where it is applied (BEFORE DockSpaceOverViewport, the "Edit > Project Settings..." click's own
+// timing requirement, generalised).
+void EditorApp::requestPanelFocus(std::string_view panelId) { requestedPanelFocus = panelId; }
 
 }  // namespace engine::editor
 
