@@ -728,14 +728,26 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
         const float rowHeight = tileH + ImGui::GetStyle().ItemSpacing.y;  // A16 -- EXACT, not a guess
         const int columns = gridColumnsFor(ImGui::GetContentRegionAvail().x, tileW, spacing);
 
-        // The ".." tile, when not at the root -- outside the clipper, always visible, always first,
-        // and ALWAYS ALONE ON ITS OWN ROW (AC-3's own rule, preserved from the list view). Sharing a
-        // row with the clipper-driven grid below would need the clipper's row math to know about one
-        // extra leading cell; keeping ".." on its own row avoids that coupling entirely and matches
-        // the list view's own treatment (its own dedicated row, never merged with a file row).
+        // The parent-directory affordance, when not at the root -- outside the clipper, always visible,
+        // always first. It is a FULL-WIDTH BAR ONE TEXT LINE TALL, not a tile: as a tile it was a bare
+        // Selectable sized tileW x tileH with ImGui drawing the label at its top-left corner, so it
+        // rendered as a large empty rectangle (a solid accent-coloured block once hovered) with the
+        // rest of its row blank -- visibly unlike every real tile beside it, which draws an icon rect
+        // and a centred caption. Reported from the 3.1.3 human pass.
+        //
+        // "<" and ".." are DELIBERATELY ASCII. This editor still loads no font of its own (the Unicode
+        // font is unowned, five tasks on from 2.2.4), so an arrow glyph like U+2190 is far outside
+        // ImGui's default range and would render as a missing-glyph box -- a worse regression than the
+        // block it replaces.
+        //
+        // Keeping it off the grid flow is UNCHANGED and still load-bearing: sharing a row with the
+        // clipper-driven grid below would make the clipper's row math account for one leading cell.
+        // A full-width bar is off that flow just as the old full-row tile was, so `rowHeight` and
+        // `rows` below are untouched by this change.
         if (!currentDir.empty()) {
             ImGui::PushID(-1);
-            if (ImGui::Selectable("..", false, ImGuiSelectableFlags_None, ImVec2(tileW, tileH))) {
+            const ImVec2 barSize(ImGui::GetContentRegionAvail().x, 0.0F);  // y == 0 -> one text line
+            if (ImGui::Selectable("<  ..", false, ImGuiSelectableFlags_None, barSize)) {
                 record(ActionKind::Navigate, parentOf(currentDir));
             }
             ImGui::PopID();

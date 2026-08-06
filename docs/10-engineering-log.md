@@ -3545,3 +3545,25 @@ ImGui 1.92.8 ships `ConfigErrorRecovery = true`, and a `BeginTable` with its `En
 up. The GPU-tier cases therefore prove the draw paths **execute** (which is what makes ASan/UBSan and
 any bad read inside them meaningful), but AC-21's balance claim rests on the source and on the human
 rows, exactly as the modal's does. Do not read a green GPU tier as balance proof.
+
+**macOS human validation: ✅ PASS 16/16 (2026-08-06), on merge commit `aa914fb`** — every row run and
+passed as written, including row 4 (the stutter row: **the two-per-tick blocking fence sync did NOT
+produce an observable stutter on this machine**, so the budget of 2 stands unmeasured-but-unrefuted on
+Metal, and the finding-8 contingency was not needed) and row 13 (Esc dismissing the delete modal, the
+hand-bound check's only possible proof). Windows and Linux rows remain pending, as for every task since
+Phase 2.
+
+**The one defect the human pass found, fixed after the merge: the grid's `..` element.** It was a bare
+`Selectable` sized `tileW x tileH` with ImGui drawing the label at its top-left, so it rendered as a
+large empty rectangle — a solid accent-coloured block once hovered — with the rest of its row blank,
+visibly unlike every real tile beside it (which draws an icon rect and a centred caption). Replaced
+with a **full-width bar one text line tall**, which also reclaims the whole wasted row. Two things this
+fix deliberately did NOT do: it did not move `..` into the grid flow (that would make the clipper's row
+math account for one leading cell — the coupling the original comment correctly refused, and a
+full-width bar is off that flow exactly as the full-row tile was, so `rowHeight`/`rows` are untouched);
+and it did not use an arrow glyph. **`"<  .."` is ASCII on purpose** — this editor still loads no font
+of its own, so U+2190 is far outside ImGui's default glyph range and would render as a missing-glyph
+box, a worse regression than the block it replaces. Worth noting while here: `asset_browser_panel.cpp`
+already ships `"—"` (U+2014, `UNKNOWN_SIZE`) and `"…"` (U+2026, the GUID and caption elision), both of
+which are outside that same default range — **whether they render correctly is unverified**, and the
+still-unowned Unicode font is the real fix for all three.
