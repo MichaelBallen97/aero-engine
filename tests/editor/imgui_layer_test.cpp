@@ -4391,12 +4391,96 @@ TEST_CASE("editor: a manual rescan is not re-reported by the watcher (task 3.1.4
     // exposes trigger/sweep/entry COUNTS, never diff CONTENT, so no assertion reachable through this
     // black-box surface can tell "one legitimate bundled trigger" from "one bundled trigger that also
     // silently repeats an already-known path" -- AW42 cannot either, for the identical reason the plan
-    // itself predicted (it drives the method directly, with nothing to diverge from). This is a
-    // genuine, confirmed coverage gap in the noteExternalScan() call site, not a flaw in this
-    // assertion: closing it needs a new EditorApp seam (e.g. surfacing lastDiff() path-level content),
-    // which is beyond what a sabotage-matrix finding licenses adding on its own.
+    // itself predicted (it drives the method directly, with nothing to diverge from).
+    //
+    // CORRECTED by the code-review round: the conclusion originally recorded here -- that closing this
+    // needs a NEW EditorApp seam surfacing lastDiff() content -- was WRONG. The gap is closable through
+    // the existing accessors; what defeated both attempts was this scenario's POISON FILE, not the
+    // accessor surface. See I51 immediately below, which discriminates the call site with a
+    // modification (no sidecar echo to hide a duplicate inside) and a sweep that provably cannot
+    // complete on the manual-rescan tick. THIS case's assertion is still correct and still worth
+    // keeping -- it just is not the one that covers the call site.
     REQUIRE(tickToQuiescence(*app));
     CHECK(app->assetWatchTriggerCount() == triggersBeforeManual + 1);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// I51 -- noteExternalScan()'s CALL SITE, discriminated. Added by the code-review round, which
+// disagreed with I50's "needs a new EditorApp seam" conclusion and was right: the gap is closable
+// through the existing black-box surface. I50's two designs both failed for one shared reason -- both
+// used a PERMANENTLY UNSETTLED poison file, so the eventual forced fire produces a trigger whether or
+// not the call ran, and the re-reported path merely rides along inside it. That collapses the signal
+// from "0 vs 1 trigger" to "2 vs 3 items inside one trigger", which no count can see.
+//
+// Two changes make it discriminate:
+//   * a MODIFICATION, not an addition. D6 says a valid .meta is never rewritten, and the content hash
+//     lives in Library/asset-cache.json (excluded, D4), so a modification produces NO sidecar echo --
+//     there is no other candidate change in the tree for a duplicate to hide inside.
+//   * dirsPerPoll == 1 over a TWO-directory tree, so the tick carrying the manual rescan provably
+//     cannot complete a sweep. That is what forces watchFired == false, which is the only branch that
+//     reaches noteExternalScan() at all.
+//
+// WITH the call:    committed = lastProbe (new stamp) -> the next sweep sees nothing -> delta 0.
+// WITHOUT the call: committed keeps the OLD stamp while lastProbe holds the new one -> that same
+//                   sweep finds a STABLE Modified, settles it, and fires -> delta 1.
+TEST_CASE("imgui_layer: a manual rescan while deferring is not re-reported (I51, AC-27)") {
+    engine::platform::Context ctx;
+    REQUIRE(ctx.valid());
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "watcher i51", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string target = created.root + "/assets/first.txt";
+    REQUIRE(engine::editor::writeTextFileAtomic(target, "one").empty());
+    {
+        // A second directory, so dirsPerPoll == 1 guarantees a sweep spans at least two ticks.
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(created.root + "/assets/sub"), ec);
+        REQUIRE_FALSE(ec);
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 1, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(tickToQuiescence(*app));
+
+    // Toggling around the write removes the only nondeterminism: a sweep already in flight would
+    // otherwise observe the new bytes at an unpredictable point in its cursor walk. setEnabled(false)
+    // abandons that sweep and leaves committed/lastProbe untouched; setEnabled(true) zeroes the
+    // cooldown so the next poll starts a clean sweep.
+    app->requestAssetWatchToggle(false);
+    REQUIRE(engine::editor::writeTextFileAtomic(target, "one, but genuinely longer now").empty());
+    app->requestAssetWatchToggle(true);
+    REQUIRE(app->tick());  // drain the toggle request through the reconcile block
+
+    // This sweep MUST defer: the probe carries the new stamp, lastProbe still the old one, so
+    // settlement condition 1 (stability against the PREVIOUS COMPLETED SWEEP) refuses it.
+    REQUIRE(tickSweeps(*app, 1));
+    const std::uint64_t before = app->assetWatchTriggerCount();
+
+    app->requestAssetRescan();
+    REQUIRE(app->tick());  // one dir of two -> no sweep completes -> watchFired == false
+
+    REQUIRE(tickToQuiescence(*app));
+    CHECK(app->assetWatchTriggerCount() == before);
 
     app->requestQuit();
     CHECK(app->tick() == false);

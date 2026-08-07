@@ -461,6 +461,42 @@ TEST_CASE("asset_watcher: a created file is detected exactly once and never agai
     CHECK(watcher.status().triggers == 1);
 }
 
+// AC-6's ONLY proof, added by the code-review round. §T cited AW30/AW33 for it, but neither reaches
+// the criterion: AW30 writes at the assets ROOT, AW33 creates and removes a directory at the ROOT, and
+// the one case that writes into a subdirectory at all (AW29's "sub/b.txt") does so in its BASELINE and
+// asserts the opposite -- that nothing fires. Nothing anywhere wrote into a subdirectory AFTER a
+// baseline and asserted a fire, so "the sweep covers the whole assets tree, not the visible subset"
+// was structurally certain (the file arm has no depth dependence) but entirely unasserted.
+TEST_CASE("asset_watcher: a change inside a SUBDIRECTORY is detected (AW30b, AC-6)") {
+    const TempDir tmp;
+    tmp.write("a.txt", "hello");
+    tmp.write("sub/deep/b.txt", "world");  // TWO levels down: the sweep must descend, not just list
+
+    engine::editor::AssetWatcher watcher;
+    watcher.configure({.dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0});
+    watcher.setRoot(tmp.utf8(), tmp.utf8());
+    FakeClock clock;
+    syncNow(clock);
+    (void)pollUntilSweep(watcher, clock);  // baseline, priming -- never a trigger
+    CHECK(watcher.status().triggers == 0);
+
+    // A brand-new file nested two directories below the root, with nothing at the root changing.
+    tmp.write("sub/deep/new.txt", "content");
+    syncNow(clock);
+    CHECK(pollUntilSweep(watcher, clock));
+
+    // And a MODIFICATION nested just as deep -- the path that needs both settlement conditions, where
+    // an addition needs only the age one (§A-2). Modifying takes two sweeps at settleMs == 0: one to
+    // observe the new stamp, one to find it stable against that observation.
+    const std::uint64_t afterAdd = watcher.status().triggers;
+    tmp.write("sub/deep/b.txt", "world, but genuinely longer now");
+    syncNow(clock);
+    (void)pollUntilSweep(watcher, clock);
+    syncNow(clock);
+    (void)pollUntilSweep(watcher, clock);
+    CHECK(watcher.status().triggers > afterAdd);
+}
+
 TEST_CASE("asset_watcher: a removed file is detected (AW31, AC-3)") {
     const TempDir tmp;
     tmp.write("a.txt", "hello");
