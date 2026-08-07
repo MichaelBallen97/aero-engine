@@ -17,6 +17,7 @@
 #include <aero/editor/asset_cache.hpp>  // task 3.1.2: ImportChange, importChangeLabel() -- used directly below
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_meta.hpp>
+#include <aero/editor/asset_watcher.hpp>  // task 3.1.4 -- WatchStatus, read through the reconciled pointer
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
 
@@ -204,6 +205,28 @@ void AssetBrowserPanel::drawHeader() {
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Discard the import cache and re-hash every asset. Use this if the editor missed a change.");
+    }
+    // task 3.1.4 (D10/AC-35): SESSION state, deliberately not persisted -- 3.1.3's D4 posture
+    // verbatim (view mode and tile size take the same one, with the same documented "resets on
+    // relaunch" limitation). EditorAppConfig is per-launch; project.json is a shared, committed,
+    // per-PROJECT file and the wrong home for a per-MACHINE performance escape hatch; and there is no
+    // editor preference store to put it in.
+    ImGui::SameLine();
+    // A LOCAL copy, never a member: INV-5 says only applyPending() writes model state. The TRUTH
+    // lives on EditorApp's AssetWatcher; this reads it through the reconciled pointer and, when that
+    // pointer is null (no watcher pushed yet), renders a DISABLED, unchecked box rather than lying.
+    bool autoUi = watchStatusPtr != nullptr && watchStatusPtr->enabled;
+    ImGui::BeginDisabled(watchStatusPtr == nullptr);  // 1:1 with EndDisabled; no continue/return between
+    if (ImGui::Checkbox("Auto-refresh", &autoUi)) {
+        record(ActionKind::SetAutoRefresh, autoUi ? "1" : "0");
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) {
+        // A DISABLED item is not hovered without ImGuiHoveredFlags_AllowWhenDisabled, so this tooltip
+        // correctly does not appear before a watcher has been reconciled.
+        ImGui::SetTooltip(
+            "Watch the assets folder and rescan automatically when files change.\n"
+            "Turn this off on very large projects or network drives.");
     }
     ImGui::SameLine();
     // A LOCAL copy, never the member: INV-5 says only applyPending() writes showHidden.
@@ -1017,6 +1040,31 @@ void AssetBrowserPanel::drawFooter() {
         }
     }
 
+    // task 3.1.4 (AC-36): APPENDED, never replacing -- the watcher's condition, in a fixed precedence
+    // order so the most ACTIONABLE condition wins. Omitted entirely when no watcher has been
+    // reconciled yet, which is honest: the panel does not know.
+    // ASCII ONLY. This editor loads no font of its own -- its one font is ImGui's ProggyClean (Basic
+    // + Extended Latin) -- so a non-ASCII glyph renders as a missing-glyph box. That is 3.1.3's own
+    // post-merge fix, applied here as a rule rather than rediscovered.
+    if (watchStatusPtr != nullptr) {
+        if (!labelScratch.empty()) {
+            labelScratch += "   |   ";
+        }
+        if (!watchStatusPtr->enabled) {
+            labelScratch += "Auto-refresh off";
+        } else if (watchStatusPtr->rootUnreadable) {
+            labelScratch += "Watch paused -- assets folder unreadable";
+        } else if (watchStatusPtr->truncated) {
+            labelScratch += "Watching (partial -- tree exceeds the scan limit)";
+        } else if (watchStatusPtr->deferredSweeps > 0) {
+            labelScratch += "Watching -- settling (" + std::to_string(watchStatusPtr->deferredSweeps) + ")";
+        } else if (watchStatusPtr->unreadableDirs > 0) {
+            labelScratch += "Watching (" + std::to_string(watchStatusPtr->unreadableDirs) + " folder(s) unreadable)";
+        } else {
+            labelScratch += "Watching";
+        }
+    }
+
     if (labelScratch.empty()) {
         return;  // an unusable directory with nothing selected -- the right pane carries the message
     }
@@ -1148,6 +1196,13 @@ void AssetBrowserPanel::applyPending() {
             // it, confirms it, and turns it into a real delete is Step 11 (§D-9).
             pendingOrphanDelete = action.path;
             break;
+        case ActionKind::SetAutoRefresh:
+            // task 3.1.4 (D10): RECORDS a request and NOTHING else -- no direct call into the
+            // watcher, which this panel cannot reach and must not (2.6.1's AC-46 rule: a control
+            // records a request; consumption happens outside the draw walk, in EditorApp's
+            // reconcile). The one mutation path INV-5 names is unchanged.
+            watchToggleRequest = action.path == "1";
+            break;
     }
 }
 
@@ -1220,6 +1275,44 @@ void AssetBrowserPanel::serviceThumbnails() {
         }
     }
 
+    // task 3.1.4 (D9/AC-31): drained HERE -- after the touch loop above, so every key drawn this
+    // frame is already marked at `frameCounter` and is excluded by supersededBy's own currentFrame
+    // rule, the same protection E12 gives ordinary eviction. NEVER from onDraw(): 3.1.3's BLOCKING-1,
+    // where SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan (SDL_gpu_vulkan.c:7070-7073) and
+    // D3D12 (SDL_gpu_d3d12.c:1460-1463) and only DEFERS on Metal (SDL_gpu_metal.m:936-944).
+    //
+    // What this exists for: ThumbnailKey is {Guid, ContentHash}, so an edited texture already gets a
+    // FRESH key and re-decodes for free. What needs code is the OLD key -- its GPU texture is now
+    // unreachable forever, and under LRU alone it survives until 256 residents push it out.
+    // Iterating in Photoshop therefore strands one dead 128x128 RGBA8 texture per save.
+    if (pendingSupersededSweep) {
+        pendingSupersededSweep = false;
+        if (databasePtr != nullptr) {
+            liveKeyScratch.clear();
+            abstainingScratch.clear();
+            for (const AssetRecord& assetRecord : databasePtr->records()) {
+                // metaWriteFailed FIRST -- a failed sidecar write leaves `change` at its default
+                // UpToDate for a file whose bytes on disk are not what was hashed (3.1.2's own
+                // code-review finding 3). An all-zero contentHash is the EMPTY FILE's real digest,
+                // not a sentinel, so the ONLY "was this hashed?" test is the `change` enum (3.1.2 A4).
+                const bool hashUsable = !assetRecord.metaWriteFailed && assetRecord.guid.valid() &&
+                                        assetRecord.change != ImportChange::NotHashed &&
+                                        assetRecord.change != ImportChange::Unhashable;
+                if (hashUsable) {
+                    liveKeyScratch.push_back(ThumbnailKey{.guid = assetRecord.guid, .hash = assetRecord.contentHash});
+                } else if (assetRecord.guid.valid()) {
+                    abstainingScratch.push_back(assetRecord.guid);  // AC-32: NO OPINION about its keys
+                }
+            }
+            std::sort(liveKeyScratch.begin(), liveKeyScratch.end());  // supersededBy's precondition
+            std::sort(abstainingScratch.begin(), abstainingScratch.end());
+            for (const ThumbnailKey& key : ledger.supersededBy(liveKeyScratch, abstainingScratch, frameCounter)) {
+                store.destroy(key);
+                ledger.forget(key);
+            }
+        }
+    }
+
     // EVICTION RUNS BEFORE DECODING, DELIBERATELY (INV-V5, seed S3): the other order lets the
     // resident count exceed the cap by up to MAX_THUMBNAIL_DECODES_PER_TICK for a tick, which makes
     // the bound this task states in a FOOTER a lie.
@@ -1252,6 +1345,14 @@ void AssetBrowserPanel::serviceThumbnails() {
 // true. EditorApp forwards to this from a new public hook (requestAssetBrowserReimportAll()) because
 // the ImGui-free-at-source GPU tier has no other way to press a widget.
 void AssetBrowserPanel::requestReimportAll() noexcept { record(ActionKind::ReimportAll, {}); }
+
+// task 3.1.4: 2.2.4's watcher seam, made callable. EXACTLY the two statements ActionKind::Refresh's
+// arm performs, and deliberately NOT the third (`rescanRequested = true`): the caller is EditorApp,
+// which has just FINISHED a rescan -- asking for another one would be a loop.
+void AssetBrowserPanel::invalidateListings() {
+    cache.clear();
+    treeDirty = true;
+}
 
 // code-review finding 4: each records EXACTLY what the corresponding widget records -- the radio
 // (drawHeader's "grid"/"list"), the search box (SetQuery, or ClearSearch for an empty string, which

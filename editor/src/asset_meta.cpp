@@ -114,6 +114,10 @@ bool isScannableAssetName(std::string_view fileName) noexcept {
     return true;
 }
 
+bool isWatchableAssetName(std::string_view fileName) noexcept {
+    return isScannableAssetName(fileName) || isMetaFileName(fileName);
+}
+
 // parseMeta's order is load-bearing: it is what makes AC-13's "version-first" property and every
 // "exact first error" assertion true. Written in EXACTLY this order; do not reorder for style.
 MetaParseResult parseMeta(std::string_view text) {

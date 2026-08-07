@@ -255,6 +255,14 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // rather than the placeholder seed-0 generator's pinned sequence. Nothing scans in create() itself
     // (D12) -- the reconcile is tick()'s job alone.
     app.assetGuids = GuidGenerator::fromEntropy();
+    // task 3.1.4: configure() writes the tunables AND establishes the enabled state -- it mirrors
+    // cfg.enabled into the status itself. A setEnabled(config.assetWatch.enabled) beside it was here
+    // originally, described in three places as "what normalises the phase"; it was provably DEAD,
+    // because setEnabled early-returns on `cfg.enabled == on` and configure() has just made that true
+    // by construction. Removed rather than left as a statement a future reader would trust. Nothing
+    // sweeps in create() -- the first poll() is tick()'s job alone, exactly as the first scan is
+    // (3.1.1 D12), and that first poll() sets the phase regardless.
+    app.assetWatcher.configure(config.assetWatch);
     // The default layout is built on the FIRST DRAWN FRAME, not here (E3) — so panels registered by
     // the caller between create() and the first tick() are included.
     app.applyDefaultLayout = app.layer.wantsDefaultLayout();
@@ -349,6 +357,10 @@ bool EditorApp::tick() {
                 break;
             case platform::EventType::WindowFocusGained:
                 windowFocused = true;
+                // task 3.1.4 (D6/AC-25): the alt-tab-back path, and the whole of it. Sweeps continue
+                // (slower) while unfocused, so a change made in another application is usually
+                // already SETTLED by the time focus returns and the first post-focus sweep fires it.
+                assetWatcher.requestImmediateSweep();
                 break;
             case platform::EventType::WindowFocusLost:
                 windowFocused = false;
@@ -427,6 +439,24 @@ bool EditorApp::tick() {
     // taking its cached (size, mtime) fast path.
     {
         std::string wanted = project.assetsRoot();
+        // task 3.1.4: HOISTED out of the rescan branch below, because setRoot() needs it first. The
+        // named local is MANDATORY, not style: project.root() returns a std::string_view bound to the
+        // live ProjectSession (2.6.1's FileDialogHost::projectRoot lesson).
+        const std::string projectRootForScan = std::string(project.root());
+        // task 3.1.4: the watcher's roots are reconciled from the SAME `wanted` string, in the SAME
+        // block -- the FOURTH occupant (2.6.1's panel root, 3.1.1's database, 3.1.3's report, 3.1.4's
+        // watcher). 3.1.2's D9 two-parameter rule applies here exactly as it does to rescan():
+        // <assetsRoot>/.. is wrong the moment paths.assets is nested or ".", and getting it wrong
+        // computes the wrong Library/ path -- the ONE exclusion no normal project can test (D4/AC-16).
+        if (assetWatcher.root() != wanted) {
+            assetWatcher.setRoot(projectRootForScan, wanted);
+        }
+        // task 3.1.4: the poll runs BEFORE the drains below, so a change it detects becomes THIS tick's
+        // rescan rather than next tick's. It is the ONLY statement in this block that touches the disk
+        // outside rescan() itself, it opens at most cfg.dirsPerPoll directories, and it reads no file
+        // (AC-23).
+        const bool watchFired = assetWatcher.poll(frameClock.deltaSeconds());
+
         // F9 (3.1.2), extending code-review finding 4 (3.1.1): BOTH one-shots are drained FIRST,
         // unconditionally, each as its OWN statement -- never on the right of a `flagAlreadyKnown ||
         // ...` expression, whose short-circuit would then skip the drain call entirely and leave that
@@ -459,7 +489,7 @@ bool EditorApp::tick() {
             // delete and the rescan that observes it are ONE pass, not two ticks apart (seed S28).
             orphanHandled = true;
         }
-        const bool refresh = assetRescanRequested || panelRefresh || orphanHandled;
+        const bool refresh = assetRescanRequested || panelRefresh || orphanHandled || watchFired;  // task 3.1.4
         const bool reimport = assetReimportRequested || panelReimport;
         assetRescanRequested = false;
         assetReimportRequested = false;
@@ -475,13 +505,27 @@ bool EditorApp::tick() {
             // task 3.1.2: rescan now takes the project root and the assets root as two SEPARATE
             // parameters (D-9) -- <assetsRoot>/.. is wrong the moment paths.assets is nested or ".",
             // and deriving it would put the cache inside the user's own asset tree (A7/AC-38). The
-            // project root is a named local FIRST (the 2.6.1 FileDialogHost::projectRoot lesson):
-            // project.root() returns a std::string_view bound to the live ProjectSession.
-            const std::string projectRootForScan = std::string(project.root());
+            // project root is the named local hoisted to the top of this block, above (task 3.1.4).
             // task 3.1.3: RETAINED, not discarded -- the Issues section reads this same report through
             // the panel's own reconciled pointer, below.
             lastAssetReport = assetDatabase.rescan(projectRootForScan, std::move(wanted), assetGuids);
             logAssetScan(assetDatabase.root(), lastAssetReport);  // INV-A3: the ONLY logging site
+            if (watchFired) {
+                // task 3.1.4 (AC-37): the watcher's ONE line, and the ONLY place anything about the
+                // watcher is ever logged. COUNTS, not paths -- a 500-file batch must not print 500
+                // lines -- plus the FIRST changed path as an anchor, which is what makes the report
+                // actionable without being a dump.
+                // d.changes.front() is safe ONLY because watchFired is true, and poll() returns true
+                // only when diff.changes is non-empty (finishSweep returns false on an empty change
+                // set). This coupling is exactly what a later edit breaks silently.
+                const WatchDiff& d = assetWatcher.lastDiff();
+                AERO_LOG_INFO("assets: watcher detected {} change(s) (first: '{}') -- rescanning", d.changes.size(),
+                              d.changes.front().path);
+            } else {
+                // task 3.1.4: a rescan we did NOT cause -- adopt the last completed sweep as the
+                // baseline so the watcher does not report those same changes again (Q7/AC-27).
+                assetWatcher.noteExternalScan();
+            }
         }
         if (assetBrowserPanel != nullptr) {
             if (assetBrowserPanel->root() != assetDatabase.root()) {
@@ -490,6 +534,22 @@ bool EditorApp::tick() {
             assetBrowserPanel->setDatabase(&assetDatabase);
             // task 3.1.3: unconditional, same block, same reasoning as setDatabase() above (F14).
             assetBrowserPanel->setScanReport(&lastAssetReport);
+            assetBrowserPanel->setWatchStatus(&assetWatcher.status());  // task 3.1.4 (D10)
+            // task 3.1.4 (D8/AC-30): ONE signal drives BOTH downstream refreshes, for EVERY trigger --
+            // the watcher, both buttons, requestAssetRescan(), an orphan delete, and a root change
+            // alike.
+            if (assetDatabase.generation() != lastAssetGeneration) {
+                lastAssetGeneration = assetDatabase.generation();
+                assetBrowserPanel->invalidateListings();
+                assetBrowserPanel->notifyDatabaseRescanned();
+            }
+            // task 3.1.4: F9 -- drained as its OWN statement, unconditionally, BEFORE it is inspected.
+            // This tree has shipped the `||`-short-circuit bug once (I30 is its mechanical proof) and
+            // guarded against it three times since; this is the fourth.
+            const std::optional<bool> watchToggle = assetBrowserPanel->takeWatchToggleRequest();
+            if (watchToggle.has_value()) {
+                assetWatcher.setEnabled(*watchToggle);
+            }
         }
     }
     if (window != nullptr) {
@@ -655,6 +715,14 @@ std::size_t EditorApp::thumbnailLoadAttempts() const noexcept {
 }
 std::size_t EditorApp::assetOrphanCount() const noexcept { return lastAssetReport.orphanTotal; }
 
+// task 3.1.4 (AC-38): the assetCount()/thumbnailReadyCount() shape verbatim. AssetWatcher is a
+// private member, so without these the whole detect -> rescan -> refresh loop has no black-box
+// signature at all and every GPU-tier case would be unwritable.
+bool EditorApp::assetWatchEnabled() const noexcept { return assetWatcher.enabled(); }
+std::uint64_t EditorApp::assetWatchSweepCount() const noexcept { return assetWatcher.status().sweepsCompleted; }
+std::uint64_t EditorApp::assetWatchTriggerCount() const noexcept { return assetWatcher.status().triggers; }
+std::size_t EditorApp::assetWatchEntryCount() const noexcept { return assetWatcher.status().entriesSeen; }
+
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
 void EditorApp::requestUndo() noexcept { undoRequested = true; }
@@ -734,6 +802,11 @@ void EditorApp::requestAssetBrowserDeleteOrphanClick(std::string_view relativeMe
         assetBrowserPanel->requestDeleteOrphanClick(std::string(relativeMetaPath));
     }
 }
+
+// task 3.1.4 (D10): applied IMMEDIATELY -- there is no one-shot to drain, because this writes the
+// watcher EditorApp itself owns (unlike the panel-facing request hooks above, which must queue a
+// `pending` action for the next onDraw()). The requestAssetBrowserReimportAll() posture, one layer up.
+void EditorApp::requestAssetWatchToggle(bool on) noexcept { assetWatcher.setEnabled(on); }
 
 // code-review BLOCKING-1 test seam: stores the id for tick()'s ShellUiState construction to carry --
 // see ShellUiState::focusPanelId's own comment for why this exists and drawShellUi's own new block for

@@ -151,7 +151,7 @@ inline constexpr std::size_t MAX_ENTRIES_EXAMINED = 2 * MAX_ENTRIES_PER_DIRECTOR
 void buildVisibleTree(const std::function<const DirectoryListing*(const std::string&)>& listingFor,
                       const std::set<std::string>& openDirs, std::vector<TreeRow>& out);
 
-// ---- the two functions that actually touch the disk (project_files.cpp) ----
+// ---- the functions that actually touch the disk or the file clock (project_files.cpp) ----
 
 // Enumerate `rootUtf8 / relPath`. NEVER THROWS -- every call site uses the std::error_code overload
 // (E20); returns a listing whose `status` says what happened. `relPath` is '/'-separated and
@@ -165,5 +165,17 @@ void buildVisibleTree(const std::function<const DirectoryListing*(const std::str
 // `weakly_canonical`, ON PURPOSE (a project reached through a symlink must not be silently recorded
 // under its target). THIS VALUE IS A DEDUP KEY AND NOTHING ELSE (INV-C9).
 [[nodiscard]] std::string canonicalDirectory(std::string_view absolutePathUtf8);
+
+// task 3.1.4: "now", in FileEntry::mtime's OWN opaque domain (docs/09 §6.5 -- ticks, never a date).
+// Spelled through std::filesystem::file_time_type::clock so it is BY CONSTRUCTION the same clock that
+// produced every FileEntry::mtime in this tree (see listDirectory's last_write_time call), with no
+// assumption about std::chrono::file_clock's availability or period on the three standard libraries.
+// NEVER a wall-clock date; comparable ONLY to another value from this same clock. READ-ONLY, like
+// everything else here.
+[[nodiscard]] std::int64_t currentFileTimeTicks() noexcept;
+
+// task 3.1.4: `ms` milliseconds expressed in that same domain, for a DURATION comparison.
+// TRUNCATING, like every conversion in this file (formatFileSize's precedent).
+[[nodiscard]] std::int64_t fileTimeTicksFromMillis(std::int64_t ms) noexcept;
 
 }  // namespace engine::editor

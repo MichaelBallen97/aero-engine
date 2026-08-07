@@ -51,6 +51,14 @@ inline constexpr std::size_t CREATE_NOTICE_THRESHOLD = 1000;
 // it). Directories are never scannable asset names either -- the caller filters by isDirectory first.
 [[nodiscard]] bool isScannableAssetName(std::string_view fileName) noexcept;
 
+// task 3.1.4 (D4): "a name the SCAN can see" -- EXACTLY isScannableAssetName(name) ||
+// isMetaFileName(name), and defined HERE, beside the two predicates it composes, so a future change
+// to either flows into the watcher automatically instead of being remembered. The watcher's visible
+// set MUST equal the scan's, or a file the watcher sees and the scan ignores triggers a rescan that
+// changes nothing, then triggers again next sweep, forever -- `.DS_Store` alone would do it on every
+// macOS machine.
+[[nodiscard]] bool isWatchableAssetName(std::string_view fileName) noexcept;
+
 // ---- the format -----------------------------------------------------------------------------------
 
 enum class MetaError : std::uint8_t {

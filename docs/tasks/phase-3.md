@@ -49,6 +49,10 @@ Subtasks:
 - FS watcher on the project's `assets/`
 - Re-import + in-place refresh of GPU resources
 
+A native OS watcher (FSEvents / `ReadDirectoryChangesW` / inotify) was considered and deliberately
+deferred — see `docs/10-engineering-log.md`'s 3.1.4 entry for the reasoning and the conditions that
+would reverse it.
+
 ### 3.1.5 Drag-into-scene · P1 · S · depends: 3.1.3, 3.2.1
 **Goal:** drag an asset tile from the browser into the Hierarchy/Viewport to create a referencing
 entity — excised from 3.1.3 (D2) because nothing in `engine::scene` can point at an asset until

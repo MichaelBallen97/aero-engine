@@ -495,5 +495,101 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   visible multi-tick stutter every time, trading a background cost nobody sees for a foreground one
   everybody would.
 
-Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2
-and 3.1.3's entries under Phase 3.
+## Hot-reload watcher (task 3.1.4)
+
+- **The watcher's VISIBLE SET must equal the scan's, byte for byte, or the editor rescans forever
+  (D4/INV-W3).** If the watcher observes one file the scan ignores, and that file changes, the
+  watcher fires a rescan; the rescan writes nothing and reports nothing; the watcher fires again next
+  sweep; forever. `.DS_Store` alone would do it on every macOS machine. The equality is held by
+  `isWatchableAssetName` (`asset_meta.hpp` — exactly `isScannableAssetName(n) || isMetaFileName(n)`,
+  defined beside the two predicates it composes) plus IDENTICAL traversal bounds:
+  `includeHidden=false`, `MAX_TREE_DEPTH`, `MAX_ASSETS`, the symlink-only `canonicalDirectory`
+  optimisation, and the canonical `Library/` exclusion. **A change to either walk is a change to
+  both.**
+- **`Library/` is excluded by CANONICAL PATH, derived from the PROJECT root — never from
+  `assetsRoot + "/.."`.** `paths.assets` is user-configurable, and a project whose assets root is
+  `"."` puts `Library/` inside the watched tree, where every scan may rewrite
+  `Library/asset-cache.json`. **This is the one exclusion no normal project's tests can reach**, and
+  `AW34`'s `Library/` arm — driven with an assets root equal to the project root — is the only place
+  in the tree that proves it (sabotage confirmed `AW41`'s arm (c), a project-root-only variant, also
+  discriminates the same guard).
+- **A sub-directory whose listing FAILS carries its committed children forward; an unreadable ROOT
+  aborts the sweep (D5/INV-W6).** An antivirus lock, a cloud-sync pass or a permission change would
+  otherwise present as "every file under it was deleted" — which means dropped records, orphan
+  reports, released GPU thumbnails, and the exact reverse one sweep later. **Absence observed through
+  a failure is not absence.** This is 3.1.1 D8's instinct ("an orphan is reported and left on disk,
+  never deleted") and `canonicalDirectory`'s ("a caller that cannot prove two paths are distinct must
+  refuse to descend, never guess"), applied a third time.
+- **Settlement has TWO conditions and both are decided in `isSettled`, never at a call site
+  (INV-W4).** Age alone is wrong on Windows (NTFS does not flush last-write-time while a handle is
+  open, so a 2 GB copy can present a stale, OLD mtime for its whole duration); stability alone is
+  wrong on FAT32/HFS+ (a 1–2 s mtime quantum makes two same-size writes indistinguishable). That is
+  why `WATCH_SETTLE_MS` is **2000** — above FAT32's own quantum, not merely "a bit".
+- **An unsettled entry's stamp never enters `committed` (INV-W5/AC-12)**, including on a FORCED fire:
+  `applyChanges` applies only the settled changes. The single sanctioned exception is
+  `noteExternalScan()`, which adopts `lastProbe` wholesale — safe because a torn stamp means the file
+  was still growing, so its final stamp necessarily differs and the next two sweeps still report it.
+  Do not "fix" that into `primeOnNextSweep`.
+- **`asset_watcher.{hpp,cpp}` never log, never write, never rename, never copy and never delete
+  (INV-W1).** `asset_watcher.cpp` must **never** be added to `check-project-no-delete.sh`'s Check B
+  `PERMITTED_DELETERS` allowlist — being outside it is exactly what makes a future
+  `std::filesystem::remove` there a hard CI failure. It is also `<filesystem>`-free, `<fstream>`-free,
+  `<thread>`/`<mutex>`/`<atomic>`-free, and performs **zero file reads**: `poll()` opens directories
+  and reads nothing.
+- **The watcher POLLS, and that is a decision with recorded reversal conditions, not a default.** No
+  FSEvents, no `ReadDirectoryChangesW`, no inotify, no owned thread, no `#ifdef` —
+  `git grep -n '_WIN32\|__APPLE__\|__linux__' -- editor/` and `git grep -n 'JobSystem' -- editor/`
+  are both **empty**, and this task keeps them that way. A native backend replaces `poll()` behind the
+  same `AssetWatcher` seam without touching a consumer, and only once a measured sweep cost exceeds
+  ~2 ms/tick or a script-reload loop makes 1–2 s of latency painful.
+- **GPU textures are destroyed ONLY from `serviceThumbnails()`, only AFTER its touch loop, and only
+  for keys not touched at `currentFrame` (D9/INV-W8).** `ThumbnailLedger::supersededBy` takes
+  `currentFrame` as a PARAMETER precisely so this is structural rather than a call-site convention.
+  This is 3.1.3's BLOCKING-1: `SDL_ReleaseGPUTexture` frees synchronously on Vulkan/D3D12 and only
+  defers on Metal, so the bug is deterministic on Windows and Linux and invisible on the only
+  platform with a human pass. **Confirmed directly**: sabotage seed S23 (moving the sweep into
+  `onDraw()`) reddened no runtime test on Metal, matching 3.1.3's own S25 precedent exactly, and is
+  caught only by a human reading `git grep -n 'supersededBy' -- editor/src/`'s two lines and noticing
+  which function the call now sits inside.
+- **`AssetDatabase::generation()` is the ONE signal that drives every downstream refresh (D8).** It is
+  bumped as the FIRST statement of `rescan()` — not the last — because `rescan()` has three return
+  paths. Do not derive "a scan happened" from the report's contents or from `assetRescanRequested`;
+  both miss a path.
+- **`EditorApp::tick()`'s reconcile block now does QUADRUPLE duty** — 2.6.1's panel root, 3.1.1's
+  database, 3.1.3's report, and 3.1.4's watcher. Extend it; never twin it. A seed that deletes the
+  block wholesale reddens a growing number of GPU cases (four at 3.1.1; more now) — confirmed
+  directly: sabotage seed S15 (skipping ONE STATEMENT inside it, the priming branch, not even the
+  whole block) already reddens **twelve** tier-0 cases by itself, since every case that builds a
+  quiescent baseline depends on the very first sweep priming silently.
+- **`AssetWatcher` holds no `std::unordered_map` and no `std::set` (INV-W9).** It is a value member of
+  `EditorApp`, whose move is `noexcept = default`; MSVC's node-based containers are not
+  nothrow-movable (3.1.2's R9, measured in CI as C2607). Sorted `std::vector`s only, with the
+  `recordList` / `byGuid` / `ThumbnailLedger::entries` precedents. **Confirmed as a Windows-only
+  discriminator**: sabotage seed S25 (swapping `visitedCanonical` for a `std::set`) compiles clean and
+  reddens nothing on macOS/libc++, whose `std::set` move constructor happens to be `noexcept` too —
+  the aggregate `static_assert`s are the ONLY thing standing between this and a real MSVC C2607.
+- **The FIRST scan of a fresh project WRITES `.meta` sidecars, which the next sweep legitimately sees
+  as additions and acts on exactly once (D4/E17) — and this is NOT limited to the first scan.**
+  **Confirmed directly, correcting the task's own plan**: ANY brand-new file with no prior sidecar
+  produces the SAME two-trigger echo (the file, then its freshly-written `.meta`) — a plan draft that
+  asserts `+1` trigger for a later file is wrong for the identical reason the first-scan case is `+2`,
+  not `+1`. Every GPU-tier case in this task ticks to QUIESCENCE first and asserts a trigger-count
+  DELTA, never an absolute value, and — after any write of a genuinely new file — a SECOND quiescence,
+  never a fixed sweep count.
+- **Proving `noteExternalScan()`'s call site needs a MODIFICATION and a sweep that cannot complete —
+  never a poison file.** Two independently-designed GPU-tier scenarios (`I50`'s) both failed to
+  discriminate the call site, and the conclusion first recorded here — that no count-only accessor
+  ever could, and that closing it needed a new seam exposing `lastDiff()`'s paths — was **wrong**, as
+  the code-review round showed. The defeating property was the scenarios' own **permanently unsettled
+  poison file**: the eventual forced fire produces a trigger whether or not the call ran, so the
+  re-reported path merely rides along inside it and the signal collapses from "0 vs 1 trigger" to
+  "2 vs 3 items inside one trigger". `I51` closes it with the existing accessors: a **modification**
+  (D6 never rewrites a valid `.meta`, and the hash lives in the excluded `Library/`, so there is no
+  sidecar echo for a duplicate to hide inside) plus `dirsPerPoll == 1` over a two-directory tree, so
+  the tick carrying the manual rescan provably cannot complete a sweep and `watchFired` is therefore
+  false — the only branch that reaches `noteExternalScan()`. With the call, delta 0; without it,
+  delta 1. **The general lesson: a scenario that ends in a FORCED fire cannot discriminate anything
+  about what a trigger contained, because the trigger was going to happen regardless.**
+
+Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
+3.1.3 and 3.1.4's entries under Phase 3.

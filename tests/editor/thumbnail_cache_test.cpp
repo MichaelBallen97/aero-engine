@@ -568,3 +568,225 @@ TEST_CASE("thumbnail cache: the accumulator does not overflow at the 500 000-sam
         }
     }
 }
+
+// ================================================================================================
+// supersededBy -- TC39-TC50 (task 3.1.4, D9)
+// ================================================================================================
+
+TEST_CASE("thumbnail cache: a Ready key whose guid's hash changed IS superseded (TC39, AC-31's pure half)") {
+    GuidGenerator gen(39);
+    const Guid g1 = gen.next();
+    const ThumbnailKey h1{.guid = g1, .hash = ContentHash{.hi = 1, .lo = 1}};
+    const ThumbnailKey h2{.guid = g1, .hash = ContentHash{.hi = 2, .lo = 2}};
+    ThumbnailLedger ledger;
+    ledger.touch(h1, 1);
+    ledger.markReady(h1);
+
+    const std::vector<ThumbnailKey> live{h2};
+    const std::vector<Guid> abstaining;
+    const std::vector<ThumbnailKey> result =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/2);
+    REQUIRE(result.size() == 1);
+    CHECK(result[0] == h1);
+}
+
+TEST_CASE("thumbnail cache: a Ready key whose guid vanished entirely IS superseded (TC40)") {
+    GuidGenerator gen(40);
+    const ThumbnailKey key = keyFrom(gen);
+    ThumbnailLedger ledger;
+    ledger.touch(key, 1);
+    ledger.markReady(key);
+
+    const std::vector<ThumbnailKey> live;
+    const std::vector<Guid> abstaining;
+    const std::vector<ThumbnailKey> result =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/2);
+    REQUIRE(result.size() == 1);
+    CHECK(result[0] == key);
+}
+
+TEST_CASE("thumbnail cache: a key still present in liveKeys is NOT superseded (TC41)") {
+    GuidGenerator gen(41);
+    const ThumbnailKey key = keyFrom(gen);
+    ThumbnailLedger ledger;
+    ledger.touch(key, 1);
+    ledger.markReady(key);
+
+    const std::vector<ThumbnailKey> live{key};
+    const std::vector<Guid> abstaining;
+    const std::vector<ThumbnailKey> result =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/2);
+    CHECK(result.empty());
+}
+
+TEST_CASE("thumbnail cache: an abstaining guid's key is NEVER superseded (TC42, AC-32)") {
+    GuidGenerator gen(42);
+    const ThumbnailKey key = keyFrom(gen);
+    ThumbnailLedger ledger;
+    ledger.touch(key, 1);
+    ledger.markReady(key);
+
+    const std::vector<ThumbnailKey> live;
+    const std::vector<Guid> abstaining{key.guid};
+    const std::vector<ThumbnailKey> result =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/2);
+    CHECK(result.empty());
+}
+
+TEST_CASE(
+    "thumbnail cache: a key touched THIS frame is never destroyed, even if otherwise superseded "
+    "(TC43, AC-33)") {
+    GuidGenerator gen(43);
+    const ThumbnailKey key = keyFrom(gen);
+    ThumbnailLedger ledger;
+    ledger.touch(key, 7);
+    ledger.markReady(key);
+    ledger.touch(key, 7);  // touched again AT frame 7 -- the current frame under test
+
+    const std::vector<ThumbnailKey> live;
+    const std::vector<Guid> abstaining;
+    const std::vector<ThumbnailKey> result =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/7);
+    CHECK(result.empty());
+}
+
+TEST_CASE("thumbnail cache: the SAME key, queried a frame later, IS superseded (TC44)") {
+    GuidGenerator gen(44);
+    const ThumbnailKey key = keyFrom(gen);
+    ThumbnailLedger ledger;
+    ledger.touch(key, 7);
+    ledger.markReady(key);
+
+    const std::vector<ThumbnailKey> live;
+    const std::vector<Guid> abstaining;
+    const std::vector<ThumbnailKey> result =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/8);
+    REQUIRE(result.size() == 1);
+    CHECK(result[0] == key);
+}
+
+TEST_CASE("thumbnail cache: a stale Failed key and a stale Skipped key are BOTH superseded (TC45)") {
+    GuidGenerator gen(45);
+    const ThumbnailKey failed = keyFrom(gen);
+    const ThumbnailKey skipped = keyFrom(gen);
+    ThumbnailLedger ledger;
+    ledger.touch(failed, 1);
+    ledger.markFailed(failed);
+    ledger.touch(skipped, 1);
+    ledger.markSkipped(skipped);
+
+    const std::vector<ThumbnailKey> live;
+    const std::vector<Guid> abstaining;
+    const std::vector<ThumbnailKey> result =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/2);
+    CHECK(result.size() == 2);
+}
+
+TEST_CASE("thumbnail cache: a stale Absent key is superseded too (TC46)") {
+    GuidGenerator gen(46);
+    const ThumbnailKey key = keyFrom(gen);
+    ThumbnailLedger ledger;
+    ledger.touch(key, 1);  // Absent -- never marked
+
+    const std::vector<ThumbnailKey> live;
+    const std::vector<Guid> abstaining;
+    const std::vector<ThumbnailKey> result =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/2);
+    REQUIRE(result.size() == 1);
+    CHECK(result[0] == key);
+}
+
+TEST_CASE("thumbnail cache: an empty ledger and empty spans return empty, no crash (TC47)") {
+    const ThumbnailLedger ledger;
+    const std::vector<ThumbnailKey> live;
+    const std::vector<Guid> abstaining;
+    const std::vector<ThumbnailKey> result =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/0);
+    CHECK(result.empty());
+}
+
+TEST_CASE(
+    "thumbnail cache: three stale keys across two guids are returned in the ledger's own sorted "
+    "order (TC48)") {
+    GuidGenerator gen(48);
+    const Guid g1 = gen.next();
+    const Guid g2 = gen.next();
+    const ThumbnailKey a{.guid = g1, .hash = ContentHash{.hi = 1, .lo = 1}};
+    const ThumbnailKey b{.guid = g1, .hash = ContentHash{.hi = 2, .lo = 2}};
+    const ThumbnailKey c{.guid = g2, .hash = ContentHash{.hi = 1, .lo = 1}};
+    ThumbnailLedger ledger;
+    // Touched out of sorted order -- the LEDGER's own storage order (sorted by key) is what the
+    // result must follow, not insertion order.
+    ledger.touch(c, 1);
+    ledger.touch(a, 1);
+    ledger.touch(b, 1);
+    ledger.markReady(a);
+    ledger.markReady(b);
+    ledger.markReady(c);
+
+    const std::vector<ThumbnailKey> live;
+    const std::vector<Guid> abstaining;
+    const std::vector<ThumbnailKey> result =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/2);
+    REQUIRE(result.size() == 3);
+    CHECK(std::is_sorted(result.begin(), result.end()));
+}
+
+TEST_CASE(
+    "thumbnail cache: one stale, one live, one abstaining, one touched-this-frame -- the whole "
+    "composition in a single ledger (TC49)") {
+    GuidGenerator gen(49);
+    const ThumbnailKey stale = keyFrom(gen);
+    const ThumbnailKey live = keyFrom(gen);
+    const ThumbnailKey abstaining = keyFrom(gen);
+    const ThumbnailKey touchedThisFrame = keyFrom(gen);
+
+    ThumbnailLedger ledger;
+    ledger.touch(stale, 1);
+    ledger.markReady(stale);
+    ledger.touch(live, 1);
+    ledger.markReady(live);
+    ledger.touch(abstaining, 1);
+    ledger.markReady(abstaining);
+    ledger.touch(touchedThisFrame, 1);
+    ledger.markReady(touchedThisFrame);
+    ledger.touch(touchedThisFrame, 5);  // touched AGAIN at the current frame under test
+
+    const std::vector<ThumbnailKey> liveKeys{live};
+    const std::vector<Guid> abstainingGuids{abstaining.guid};
+    const std::vector<ThumbnailKey> result = ledger.supersededBy(
+        std::span<const ThumbnailKey>(liveKeys), std::span<const Guid>(abstainingGuids), /*currentFrame=*/5);
+    REQUIRE(result.size() == 1);
+    CHECK(result[0] == stale);
+}
+
+TEST_CASE(
+    "thumbnail cache: after supersededBy + forget for every returned key, the ledger stays "
+    "consistent (TC50)") {
+    GuidGenerator gen(50);
+    const ThumbnailKey stale1 = keyFrom(gen);
+    const ThumbnailKey stale2 = keyFrom(gen);
+    const ThumbnailKey survivor = keyFrom(gen);
+
+    ThumbnailLedger ledger;
+    ledger.touch(stale1, 1);
+    ledger.markReady(stale1);
+    ledger.touch(stale2, 1);
+    ledger.markReady(stale2);
+    ledger.touch(survivor, 1);
+    ledger.markReady(survivor);
+    REQUIRE(ledger.readyCount() == 3);
+
+    const std::vector<ThumbnailKey> live{survivor};
+    const std::vector<Guid> abstaining;
+    const std::vector<ThumbnailKey> superseded =
+        ledger.supersededBy(std::span<const ThumbnailKey>(live), std::span<const Guid>(abstaining), /*currentFrame=*/2);
+    REQUIRE(superseded.size() == 2);
+    for (const ThumbnailKey& key : superseded) {
+        ledger.forget(key);
+    }
+    CHECK(ledger.readyCount() == 1);
+    CHECK(ledger.stateOf(survivor) == ThumbnailState::Ready);
+    CHECK(ledger.stateOf(stale1) == ThumbnailState::Absent);
+    CHECK(ledger.stateOf(stale2) == ThumbnailState::Absent);
+}

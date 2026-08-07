@@ -104,6 +104,18 @@ public:
     // valid until the next rescan(), exactly like every AssetRecord* the other accessors return.
     [[nodiscard]] std::span<const AssetRecord> records() const noexcept;
 
+    // task 3.1.4 (D8): bumped UNCONDITIONALLY on every rescan() call, including one that changed
+    // nothing and one that aborted on a Missing root -- ONE RULE, NO EXCEPTIONS TO REMEMBER. A no-op
+    // bump costs exactly one downstream supersededBy query that finds nothing. Consumers compare it
+    // with != and never for ordering; it never resets except by constructing a new database.
+    //
+    // This is the SINGLE signal that drives the Asset Browser's listing invalidation and the
+    // superseded-thumbnail pass, which is what makes both uniform across EVERY rescan trigger rather
+    // than per-trigger. It closes a pre-existing latent gap as a side effect: requestAssetRescan()
+    // rescanned the database but never dropped the panel's own directory listings, so a test-driven
+    // rescan could leave the panel rendering rows for files that no longer existed.
+    [[nodiscard]] std::uint64_t generation() const noexcept;
+
     // ---- task 3.1.2 --------------------------------------------------------------------------------
     // Clears the in-memory index and arms the one-shot below, so the NEXT scan skips phase 3's reload
     // (AC-35). It also clears `cacheTextOnDisk`, but defensively, not load-bearingly: phase 3 clears
@@ -143,6 +155,11 @@ private:
     // scan that could not run at all, e.g. a Missing root -- exactly like assetRescanRequested's own
     // survive-until-honored posture, EditorApp's precedent).
     bool cacheInvalidated = false;
+    // A data member and a member function may not share a name -- the databasePtr/database() and
+    // recordList/records() precedent (3.1.1's D13 naming note; 3.1.3 hit the compile error itself).
+    // std::uint64_t is a scalar, so it adds no movability question and needs no new static_assert
+    // pair beside the twelve above.
+    std::uint64_t generationValue = 0;
 };
 
 // F10 (editor_app.hpp): EditorApp's move is `noexcept = default`, so every value member must be

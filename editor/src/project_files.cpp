@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -410,6 +411,19 @@ std::string canonicalDirectory(std::string_view absolutePathUtf8) {
     std::string result = utf8FromPath(resolved);
     std::replace(result.begin(), result.end(), '\\', '/');
     return result;
+}
+
+// ---- task 3.1.4: the file clock ------------------------------------------------------------------
+std::int64_t currentFileTimeTicks() noexcept {
+    return static_cast<std::int64_t>(std::filesystem::file_time_type::clock::now().time_since_epoch().count());
+}
+
+std::int64_t fileTimeTicksFromMillis(std::int64_t ms) noexcept {
+    // file_time_type::duration is FINER than a millisecond on all three standard libraries
+    // (nanoseconds on libc++ and libstdc++, 100 ns on MSVC's STL), so this widens rather than
+    // truncating for every value this tree passes.
+    using FileDuration = std::filesystem::file_time_type::duration;
+    return static_cast<std::int64_t>(std::chrono::duration_cast<FileDuration>(std::chrono::milliseconds(ms)).count());
 }
 
 }  // namespace engine::editor

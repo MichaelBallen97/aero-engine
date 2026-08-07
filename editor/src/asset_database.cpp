@@ -100,6 +100,7 @@ std::size_t AssetDatabase::size() const noexcept { return recordList.size(); }
 std::span<const AssetRecord> AssetDatabase::records() const noexcept { return recordList; }  // task 3.1.3
 std::size_t AssetDatabase::cacheSize() const noexcept { return cache.entries.size(); }
 const ImportPlanResult& AssetDatabase::importPlan() const noexcept { return plan; }
+std::uint64_t AssetDatabase::generation() const noexcept { return generationValue; }  // task 3.1.4
 
 void AssetDatabase::invalidateCache() noexcept {
     cache = AssetCacheIndex{};
@@ -151,6 +152,12 @@ std::optional<Guid> AssetDatabase::guidForPath(std::string_view relativePath) co
 
 AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::string newAssetsRootUtf8,
                                       GuidGenerator& generator, std::uint64_t hashBudgetBytes) {
+    // task 3.1.4 (D8): FIRST, not last. rescan() has THREE return paths -- the empty-roots guard, the
+    // non-Ok root listing, and the normal end -- so "bump at the end" would need three edits today and
+    // a fourth for any future early return. Bumping here makes "every rescan() call bumps the
+    // generation" structurally true instead of remembered. Nothing reads generation() during a scan:
+    // rescan() calls out to no consumer.
+    ++generationValue;
     projectRootUtf8 = std::move(newProjectRootUtf8);
     rootUtf8 = std::move(newAssetsRootUtf8);
     recordList.clear();

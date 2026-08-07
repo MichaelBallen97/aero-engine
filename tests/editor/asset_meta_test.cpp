@@ -17,6 +17,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -34,6 +35,7 @@ using engine::editor::AssetPlanResult;
 using engine::editor::AssetRecord;
 using engine::editor::isMetaFileName;
 using engine::editor::isScannableAssetName;
+using engine::editor::isWatchableAssetName;
 using engine::editor::MetaError;
 using engine::editor::metaFileNameFor;
 using engine::editor::MetaParseResult;
@@ -685,3 +687,55 @@ TEST_CASE("asset_meta: minimal.meta's raw bytes name version 1 and a 32-lowercas
 
 // AG6 -- a freshly created sidecar is byte-identical to minimal.meta MODULO its GUID -- needs the
 // real AssetDatabase and is written in Step 3's tests/editor/asset_database_test.cpp.
+
+// ---- isWatchableAssetName (task 3.1.4, D4) --------------------------------------------------------
+
+TEST_CASE("asset_meta: isWatchableAssetName accepts an ordinary asset name (AM-w1, AC-15)") {
+    CHECK(isWatchableAssetName("wood.png"));
+}
+
+TEST_CASE("asset_meta: isWatchableAssetName accepts a .meta sidecar (AM-w2, AC-15)") {
+    CHECK(isWatchableAssetName("wood.png.meta"));
+}
+
+TEST_CASE("asset_meta: isWatchableAssetName rejects a hidden dotfile (AM-w3, AC-13)") {
+    CHECK_FALSE(isWatchableAssetName(".DS_Store"));
+}
+
+TEST_CASE("asset_meta: isWatchableAssetName rejects a hidden name (AM-w4, AC-13)") {
+    CHECK_FALSE(isWatchableAssetName(".hidden"));
+}
+
+TEST_CASE("asset_meta: isWatchableAssetName rejects an .aero-tmp file (AM-w5, AC-14)") {
+    CHECK_FALSE(isWatchableAssetName("wood.png.aero-tmp"));
+}
+
+TEST_CASE("asset_meta: isWatchableAssetName rejects .meta.aero-tmp -- a suffix test, not equality (AM-w6, E19)") {
+    CHECK_FALSE(isWatchableAssetName("wood.png.meta.aero-tmp"));
+}
+
+TEST_CASE("asset_meta: isWatchableAssetName rejects the empty name (AM-w7)") { CHECK_FALSE(isWatchableAssetName("")); }
+
+TEST_CASE("asset_meta: isWatchableAssetName rejects the two OS-noise names (AM-w8)") {
+    CHECK_FALSE(isWatchableAssetName("Thumbs.db"));
+    CHECK_FALSE(isWatchableAssetName("desktop.ini"));
+}
+
+TEST_CASE("asset_meta: isWatchableAssetName rejects \".meta\" alone -- not a sidecar, and hidden (AM-w9)") {
+    CHECK_FALSE(isWatchableAssetName(".meta"));
+}
+
+TEST_CASE("asset_meta: isWatchableAssetName folds the sidecar suffix's case (AM-w10)") {
+    CHECK(isWatchableAssetName("wood.png.META"));
+}
+
+TEST_CASE("asset_meta: isWatchableAssetName is EXACTLY the composition of the two predicates (AM-w11, D4)") {
+    constexpr std::array<std::string_view, 10> NAMES = {
+        "wood.png", "wood.png.meta", ".DS_Store", ".hidden",       "wood.png.aero-tmp", "wood.png.meta.aero-tmp",
+        "",         "Thumbs.db",     ".meta",     "wood.png.META",
+    };
+    for (const std::string_view name : NAMES) {
+        CAPTURE(name);
+        CHECK(isWatchableAssetName(name) == (isScannableAssetName(name) || isMetaFileName(name)));
+    }
+}

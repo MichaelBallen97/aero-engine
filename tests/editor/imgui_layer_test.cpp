@@ -3948,3 +3948,541 @@ TEST_CASE(
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ---- I44-I50: task 3.1.4's hot-reload assets-tree watcher, through real frames -------------------
+//
+// §A-1 is mandatory here: the FIRST scan of a fresh project writes .meta sidecars, which the next
+// sweep legitimately sees as additions and acts on exactly once (a rescan that writes ZERO bytes).
+// Every case below therefore reaches QUIESCENCE first and asserts trigger-count DELTAS, never an
+// absolute value -- a case that asserted `assetWatchTriggerCount() == 0` or `== 1` on a fresh project
+// would be asserting the wrong number, not flaky.
+namespace {
+
+// task 3.1.4: ticks until the watcher has completed `sweeps` MORE sweeps than it had on entry, with
+// a hard tick ceiling so a wedged watcher FAILS the case instead of hanging the suite. Returns false
+// on exhaustion so the caller can REQUIRE it.
+[[nodiscard]] bool tickSweeps(engine::editor::EditorApp& app, std::uint64_t sweeps, int maxTicks = 400) {
+    const std::uint64_t target = app.assetWatchSweepCount() + sweeps;
+    for (int i = 0; i < maxTicks && app.assetWatchSweepCount() < target; ++i) {
+        if (!app.tick()) {
+            return false;
+        }
+    }
+    return app.assetWatchSweepCount() >= target;
+}
+
+// task 3.1.4 (D4/E17): ticks until `quietSweeps` CONSECUTIVE sweeps complete with NO new trigger.
+// This is MANDATORY before any assertion about trigger counts, and it is not defensive: the FIRST
+// scan of a fresh project WRITES .meta sidecars, which the next sweep legitimately sees as additions
+// and acts on exactly once (a rescan that writes ZERO bytes). Without reaching quiescence first, a
+// case that asserts `triggerCount() == 0` or `== 1` is asserting the wrong number.
+[[nodiscard]] bool tickToQuiescence(engine::editor::EditorApp& app, std::uint64_t quietSweeps = 3, int maxTicks = 800) {
+    std::uint64_t quiet = 0;
+    std::uint64_t lastTriggers = app.assetWatchTriggerCount();
+    for (int i = 0; i < maxTicks; ++i) {
+        const std::uint64_t sweepsBefore = app.assetWatchSweepCount();
+        if (!app.tick()) {
+            return false;
+        }
+        if (app.assetWatchSweepCount() == sweepsBefore) {
+            continue;  // mid-sweep or in cooldown
+        }
+        if (app.assetWatchTriggerCount() != lastTriggers) {
+            lastTriggers = app.assetWatchTriggerCount();
+            quiet = 0;
+            continue;
+        }
+        if (++quiet >= quietSweeps) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("editor: a created file is reflected with no requestAssetRescan() call (task 3.1.4, I44/AC-1)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "watcher i44", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(tickToQuiescence(*app));
+    const std::uint64_t baseTriggers = app->assetWatchTriggerCount();
+    const std::size_t baseCount = app->assetCount();
+
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/second.txt", "two").empty());
+    // A deviation from the plan's own literal prediction, found by running this exact case: a BRAND
+    // NEW file (one with no prior .meta) produces TWO triggers, not one -- the SAME mechanism §A-1
+    // documents for the first scan of a fresh project, but not limited to it. Sweep N detects
+    // second.txt itself (settled immediately, settleMs == 0) and fires; the rescan that fire drives
+    // writes second.txt.meta; sweep N+1 then detects THAT sidecar as a fresh Added and fires again.
+    // Reaching quiescence a SECOND time, rather than a fixed tick count, is what makes the assertion
+    // honest regardless of exactly how many sweeps the two fires land on.
+    REQUIRE(tickToQuiescence(*app));
+
+    CHECK(app->assetCount() == baseCount + 1);
+    CHECK(app->assetWatchTriggerCount() == baseTriggers + 2);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a changed file gets a new ContentHash and SourceChanged (task 3.1.4, I45/AC-2)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "watcher i45", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(tickToQuiescence(*app));
+    const std::optional<engine::ContentHash> baseHash = app->assetContentHashForPath("first.txt");
+    REQUIRE(baseHash.has_value());
+
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one, but genuinely different now")
+                .empty());
+    REQUIRE(tickSweeps(*app, 4));
+
+    const std::optional<engine::ContentHash> newHash = app->assetContentHashForPath("first.txt");
+    REQUIRE(newHash.has_value());
+    CHECK_FALSE(*newHash == *baseHash);
+    CHECK(app->assetImportChangeForPath("first.txt") == engine::editor::ImportChange::SourceChanged);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a deleted file leaves the database with no user action (task 3.1.4, I46/AC-3)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "watcher i46", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/second.txt", "two").empty());
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(tickToQuiescence(*app));
+    const std::size_t baseCount = app->assetCount();
+
+    // R9: the stream writeTextFileAtomic used is already closed by the time this call happens --
+    // there is no open handle on this file anywhere in this test.
+    std::error_code removeEc;
+    std::filesystem::remove(std::filesystem::path(created.root + "/assets/first.txt"), removeEc);
+    REQUIRE_FALSE(removeEc);
+    REQUIRE(tickSweeps(*app, 3));
+
+    CHECK(app->assetCount() == baseCount - 1);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the steady state is silent -- the loop detector (task 3.1.4, I47/AC-19)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "watcher i47", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(tickToQuiescence(*app));
+    const std::uint64_t baseTriggers = app->assetWatchTriggerCount();
+    const std::uint64_t baseSweeps = app->assetWatchSweepCount();
+
+    REQUIRE(tickSweeps(*app, 6));  // changing NOTHING
+
+    CHECK(app->assetWatchTriggerCount() == baseTriggers);  // zero further triggers
+    CHECK(app->assetWatchSweepCount() >= baseSweeps + 6);  // the sweeps really ran
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: enabled == false stops detection; re-enabling resumes it (task 3.1.4, I48/AC-28/AC-35/AC-38)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "watcher i48", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(tickToQuiescence(*app));
+    const std::size_t baseCount = app->assetCount();
+    const std::uint64_t sweepsWhileEnabled = app->assetWatchSweepCount();
+
+    app->requestAssetWatchToggle(false);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/third.txt", "three").empty());
+    // tickSweeps cannot advance while disabled (the target would never be reached) -- tick a FIXED
+    // number of frames instead.
+    for (int i = 0; i < 40; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK_FALSE(app->assetWatchEnabled());
+    CHECK(app->assetCount() == baseCount);
+    CHECK(app->assetWatchSweepCount() == sweepsWhileEnabled);
+
+    app->requestAssetWatchToggle(true);
+    REQUIRE(tickSweeps(*app, 3));
+    CHECK(app->assetWatchEnabled());
+    CHECK(app->assetCount() > baseCount);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a superseded thumbnail is destroyed and forgotten -- resident count stays 1 "
+    "(task 3.1.4, I49/AC-31)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    // A LARGER window than most of this file's GPU cases (I43's own precedent, code-review
+    // BLOCKING-1): at 320x180 the Bottom dock slot settles to a sliver too short to show even one
+    // row after the first frame, so ImGuiListClipper legitimately reports zero visible rows and
+    // drawTile() -- and therefore the SECOND decode this case must observe -- is never called again,
+    // silently. Confirmed directly: at 320x180 the tile draws only on the dockspace's very first
+    // frame; at 1280x800 it draws every tick.
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "watcher i49", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(writeBinaryFixture(assetsRoot + "/tex.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    // "Assets" shares its dock slot with "Console" (D3); Console registers first and would otherwise
+    // win every tick's tab, so drawTile() -- and therefore the thumbnail this case observes -- never
+    // runs at all (2.2.4's C5).
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(tickToQuiescence(*app));
+
+    bool ready = false;
+    for (int i = 0; i < 60 && !ready; ++i) {
+        REQUIRE(app->tick());
+        ready = app->thumbnailReadyCount() == 1;
+    }
+    REQUIRE(ready);
+    REQUIRE(app->thumbnailResidentCount() == 1);
+
+    REQUIRE(writeBinaryFixture(assetsRoot + "/tex.png", TINY_PNG_GREEN.data(), TINY_PNG_GREEN.size()).empty());
+    REQUIRE(tickSweeps(*app, 4));
+
+    ready = false;
+    for (int i = 0; i < 60 && !ready; ++i) {
+        REQUIRE(app->tick());
+        ready = app->thumbnailReadyCount() == 1;
+    }
+    REQUIRE(ready);
+
+    CHECK(app->thumbnailResidentCount() == 1);  // NOT 2 -- the old {guid, hash} texture was released
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a manual rescan is not re-reported by the watcher (task 3.1.4, I50/AC-27/AC-30)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "watcher i50", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.txt", "one").empty());
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0, .maxDeferredSweeps = 3}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(tickToQuiescence(*app));
+
+    // A deviation from the plan's own literal sequencing, found by running this exact case: with
+    // dirsPerPoll == 64 / cooldownMs == 0, AssetWatcher::poll() runs FIRST in every tick's reconcile
+    // and therefore ALWAYS sees a file written just before that tick, before any manual-rescan
+    // request is even inspected -- a manual rescan against an ALREADY-quiescent tree can never
+    // discriminate noteExternalScan()'s call site at all: `committed` and `lastProbe` are already
+    // identical once quiescent, so adopting one into the other is an observable no-op either way.
+    //
+    // The genuine divergence needs a DEFERRED sweep (AC-11/D3): `lastProbe` is updated on EVERY
+    // completed sweep, deferred or not, while `committed` is updated ONLY on a fire. A settled
+    // addition (fourth.txt) alongside a PERMANENTLY unsettled one (poison.txt, forward-dated into the
+    // future -- AW38's own trick) keeps the whole batch deferring, so `lastProbe` sees fourth.txt long
+    // before `committed` ever would. A manual rescan issued WHILE deferred (watchFired == false, since
+    // finishSweep never fires on a deferred sweep) is the one tick where the two genuinely differ on a
+    // settled change. (Sabotage finding, recorded at the assertion below rather than here: even THIS
+    // scenario does not end up discriminating the call site through EditorApp's black-box surface.)
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/fourth.txt", "four").empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/poison.txt", "poison").empty());
+    {
+        std::error_code ec;
+        const auto future = std::filesystem::file_time_type::clock::now() + std::chrono::hours(1);
+        std::filesystem::last_write_time(std::filesystem::path(created.root + "/assets/poison.txt"), future, ec);
+        REQUIRE_FALSE(ec);
+    }
+
+    REQUIRE(tickSweeps(*app, 1));  // the first deferred sweep -- lastProbe now has fourth.txt
+    const std::uint64_t triggersBeforeManual = app->assetWatchTriggerCount();
+
+    app->requestAssetRescan();  // the manual channel, issued WHILE the watcher is still deferring
+    REQUIRE(app->tick());
+    CHECK(app->assetCount() > 1);  // the manual rescan saw fourth.txt (and poison.txt) immediately
+    CHECK(app->assetWatchTriggerCount() == triggersBeforeManual);
+    // Only observable because invalidateListings()/setScanReport ran (AC-30's observable half).
+    CHECK(app->assetOrphanCount() == 0);
+
+    // The manual rescan's OWN write of two fresh .meta sidecars (fourth.txt.meta, poison.txt.meta) is
+    // ITSELF legitimately new information (§A-1's echo, a second application) -- the watcher's very
+    // next sweep settles and reports BOTH in ONE bundled trigger, so quiescence after the manual
+    // rescan is reached at EXACTLY triggersBeforeManual + 1.
+    //
+    // STATED HONESTLY, confirmed by direct sabotage (seed S16, deleting the noteExternalScan() call
+    // in editor_app.cpp's reconcile): this delta assertion does NOT discriminate that call site.
+    // Without the call, `committed` stays without fourth.txt too, poison.txt's permanent
+    // unsettledness eventually forces, and the SAME sweep that would have reported the two sidecars
+    // ALSO re-reports fourth.txt -- but bundled into that SAME one trigger (three items instead of
+    // two), landing at the IDENTICAL triggersBeforeManual + 1 this assertion checks, only delayed by a
+    // few extra deferred sweeps and carrying a duplicate entry no accessor here can see. EditorApp
+    // exposes trigger/sweep/entry COUNTS, never diff CONTENT, so no assertion reachable through this
+    // black-box surface can tell "one legitimate bundled trigger" from "one bundled trigger that also
+    // silently repeats an already-known path" -- AW42 cannot either, for the identical reason the plan
+    // itself predicted (it drives the method directly, with nothing to diverge from).
+    //
+    // CORRECTED by the code-review round: the conclusion originally recorded here -- that closing this
+    // needs a NEW EditorApp seam surfacing lastDiff() content -- was WRONG. The gap is closable through
+    // the existing accessors; what defeated both attempts was this scenario's POISON FILE, not the
+    // accessor surface. See I51 immediately below, which discriminates the call site with a
+    // modification (no sidecar echo to hide a duplicate inside) and a sweep that provably cannot
+    // complete on the manual-rescan tick. THIS case's assertion is still correct and still worth
+    // keeping -- it just is not the one that covers the call site.
+    REQUIRE(tickToQuiescence(*app));
+    CHECK(app->assetWatchTriggerCount() == triggersBeforeManual + 1);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// I51 -- noteExternalScan()'s CALL SITE, discriminated. Added by the code-review round, which
+// disagreed with I50's "needs a new EditorApp seam" conclusion and was right: the gap is closable
+// through the existing black-box surface. I50's two designs both failed for one shared reason -- both
+// used a PERMANENTLY UNSETTLED poison file, so the eventual forced fire produces a trigger whether or
+// not the call ran, and the re-reported path merely rides along inside it. That collapses the signal
+// from "0 vs 1 trigger" to "2 vs 3 items inside one trigger", which no count can see.
+//
+// Two changes make it discriminate:
+//   * a MODIFICATION, not an addition. D6 says a valid .meta is never rewritten, and the content hash
+//     lives in Library/asset-cache.json (excluded, D4), so a modification produces NO sidecar echo --
+//     there is no other candidate change in the tree for a duplicate to hide inside.
+//   * dirsPerPoll == 1 over a TWO-directory tree, so the tick carrying the manual rescan provably
+//     cannot complete a sweep. That is what forces watchFired == false, which is the only branch that
+//     reaches noteExternalScan() at all.
+//
+// WITH the call:    committed = lastProbe (new stamp) -> the next sweep sees nothing -> delta 0.
+// WITHOUT the call: committed keeps the OLD stamp while lastProbe holds the new one -> that same
+//                   sweep finds a STABLE Modified, settles it, and fires -> delta 1.
+TEST_CASE("imgui_layer: a manual rescan while deferring is not re-reported (I51, AC-27)") {
+    engine::platform::Context ctx;
+    REQUIRE(ctx.valid());
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "watcher i51", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string target = created.root + "/assets/first.txt";
+    REQUIRE(engine::editor::writeTextFileAtomic(target, "one").empty());
+    {
+        // A second directory, so dirsPerPoll == 1 guarantees a sweep spans at least two ticks.
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(created.root + "/assets/sub"), ec);
+        REQUIRE_FALSE(ec);
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 1, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(tickToQuiescence(*app));
+
+    // Toggling around the write removes the only nondeterminism: a sweep already in flight would
+    // otherwise observe the new bytes at an unpredictable point in its cursor walk. setEnabled(false)
+    // abandons that sweep and leaves committed/lastProbe untouched; setEnabled(true) zeroes the
+    // cooldown so the next poll starts a clean sweep.
+    app->requestAssetWatchToggle(false);
+    REQUIRE(engine::editor::writeTextFileAtomic(target, "one, but genuinely longer now").empty());
+    app->requestAssetWatchToggle(true);
+    REQUIRE(app->tick());  // drain the toggle request through the reconcile block
+
+    // This sweep MUST defer: the probe carries the new stamp, lastProbe still the old one, so
+    // settlement condition 1 (stability against the PREVIOUS COMPLETED SWEEP) refuses it.
+    REQUIRE(tickSweeps(*app, 1));
+    const std::uint64_t before = app->assetWatchTriggerCount();
+
+    app->requestAssetRescan();
+    REQUIRE(app->tick());  // one dir of two -> no sweep completes -> watchFired == false
+
+    REQUIRE(tickToQuiescence(*app));
+    CHECK(app->assetWatchTriggerCount() == before);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
