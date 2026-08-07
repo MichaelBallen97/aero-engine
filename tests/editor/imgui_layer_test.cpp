@@ -4336,33 +4336,67 @@ TEST_CASE("editor: a manual rescan is not re-reported by the watcher (task 3.1.4
          .projectPath = created.root,
          .restoreLastProject = false,
          .recentProjectsPath = uniqueRecentsFile(),
-         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0, .maxDeferredSweeps = 3}});
     REQUIRE(app.has_value());
     app->panels().setVisible("Console", false);
 
     REQUIRE(tickToQuiescence(*app));
-    const std::size_t baseCount = app->assetCount();
 
     // A deviation from the plan's own literal sequencing, found by running this exact case: with
     // dirsPerPoll == 64 / cooldownMs == 0, AssetWatcher::poll() runs FIRST in every tick's reconcile
     // and therefore ALWAYS sees a file written just before that tick, before any manual-rescan
-    // request is even inspected -- there is no tick on which requestAssetRescan() can "win the race"
-    // against a watcher configured this aggressively. AC-27's real claim is narrower and is what
-    // noteExternalScan() actually implements: a rescan that finds NOTHING NEW (the tree is already
-    // quiescent) must not itself manufacture a trigger. So this case lets the watcher fully process
-    // the new file FIRST (its own two-trigger echo, §A-1/I44's finding), THEN issues a REDUNDANT
-    // manual rescan against the now-quiescent tree and asserts THAT rescan adds no further trigger.
+    // request is even inspected -- a manual rescan against an ALREADY-quiescent tree can never
+    // discriminate noteExternalScan()'s call site at all: `committed` and `lastProbe` are already
+    // identical once quiescent, so adopting one into the other is an observable no-op either way.
+    //
+    // The genuine divergence needs a DEFERRED sweep (AC-11/D3): `lastProbe` is updated on EVERY
+    // completed sweep, deferred or not, while `committed` is updated ONLY on a fire. A settled
+    // addition (fourth.txt) alongside a PERMANENTLY unsettled one (poison.txt, forward-dated into the
+    // future -- AW38's own trick) keeps the whole batch deferring, so `lastProbe` sees fourth.txt long
+    // before `committed` ever would. A manual rescan issued WHILE deferred (watchFired == false, since
+    // finishSweep never fires on a deferred sweep) is the one tick where the two genuinely differ on a
+    // settled change. (Sabotage finding, recorded at the assertion below rather than here: even THIS
+    // scenario does not end up discriminating the call site through EditorApp's black-box surface.)
     REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/fourth.txt", "four").empty());
-    REQUIRE(tickToQuiescence(*app));
-    CHECK(app->assetCount() == baseCount + 1);
-    const std::uint64_t triggersAfterAdd = app->assetWatchTriggerCount();
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/poison.txt", "poison").empty());
+    {
+        std::error_code ec;
+        const auto future = std::filesystem::file_time_type::clock::now() + std::chrono::hours(1);
+        std::filesystem::last_write_time(std::filesystem::path(created.root + "/assets/poison.txt"), future, ec);
+        REQUIRE_FALSE(ec);
+    }
 
-    app->requestAssetRescan();  // redundant: nothing on disk has changed since the line above
-    REQUIRE(tickSweeps(*app, 3));
+    REQUIRE(tickSweeps(*app, 1));  // the first deferred sweep -- lastProbe now has fourth.txt
+    const std::uint64_t triggersBeforeManual = app->assetWatchTriggerCount();
 
-    CHECK(app->assetWatchTriggerCount() == triggersAfterAdd);  // noteExternalScan() absorbed it
+    app->requestAssetRescan();  // the manual channel, issued WHILE the watcher is still deferring
+    REQUIRE(app->tick());
+    CHECK(app->assetCount() > 1);  // the manual rescan saw fourth.txt (and poison.txt) immediately
+    CHECK(app->assetWatchTriggerCount() == triggersBeforeManual);
     // Only observable because invalidateListings()/setScanReport ran (AC-30's observable half).
     CHECK(app->assetOrphanCount() == 0);
+
+    // The manual rescan's OWN write of two fresh .meta sidecars (fourth.txt.meta, poison.txt.meta) is
+    // ITSELF legitimately new information (§A-1's echo, a second application) -- the watcher's very
+    // next sweep settles and reports BOTH in ONE bundled trigger, so quiescence after the manual
+    // rescan is reached at EXACTLY triggersBeforeManual + 1.
+    //
+    // STATED HONESTLY, confirmed by direct sabotage (seed S16, deleting the noteExternalScan() call
+    // in editor_app.cpp's reconcile): this delta assertion does NOT discriminate that call site.
+    // Without the call, `committed` stays without fourth.txt too, poison.txt's permanent
+    // unsettledness eventually forces, and the SAME sweep that would have reported the two sidecars
+    // ALSO re-reports fourth.txt -- but bundled into that SAME one trigger (three items instead of
+    // two), landing at the IDENTICAL triggersBeforeManual + 1 this assertion checks, only delayed by a
+    // few extra deferred sweeps and carrying a duplicate entry no accessor here can see. EditorApp
+    // exposes trigger/sweep/entry COUNTS, never diff CONTENT, so no assertion reachable through this
+    // black-box surface can tell "one legitimate bundled trigger" from "one bundled trigger that also
+    // silently repeats an already-known path" -- AW42 cannot either, for the identical reason the plan
+    // itself predicted (it drives the method directly, with nothing to diverge from). This is a
+    // genuine, confirmed coverage gap in the noteExternalScan() call site, not a flaw in this
+    // assertion: closing it needs a new EditorApp seam (e.g. surfacing lastDiff() path-level content),
+    // which is beyond what a sabotage-matrix finding licenses adding on its own.
+    REQUIRE(tickToQuiescence(*app));
+    CHECK(app->assetWatchTriggerCount() == triggersBeforeManual + 1);
 
     app->requestQuit();
     CHECK(app->tick() == false);
