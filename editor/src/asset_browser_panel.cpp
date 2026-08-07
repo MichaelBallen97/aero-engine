@@ -206,6 +206,28 @@ void AssetBrowserPanel::drawHeader() {
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Discard the import cache and re-hash every asset. Use this if the editor missed a change.");
     }
+    // task 3.1.4 (D10/AC-35): SESSION state, deliberately not persisted -- 3.1.3's D4 posture
+    // verbatim (view mode and tile size take the same one, with the same documented "resets on
+    // relaunch" limitation). EditorAppConfig is per-launch; project.json is a shared, committed,
+    // per-PROJECT file and the wrong home for a per-MACHINE performance escape hatch; and there is no
+    // editor preference store to put it in.
+    ImGui::SameLine();
+    // A LOCAL copy, never a member: INV-5 says only applyPending() writes model state. The TRUTH
+    // lives on EditorApp's AssetWatcher; this reads it through the reconciled pointer and, when that
+    // pointer is null (no watcher pushed yet), renders a DISABLED, unchecked box rather than lying.
+    bool autoUi = watchStatusPtr != nullptr && watchStatusPtr->enabled;
+    ImGui::BeginDisabled(watchStatusPtr == nullptr);  // 1:1 with EndDisabled; no continue/return between
+    if (ImGui::Checkbox("Auto-refresh", &autoUi)) {
+        record(ActionKind::SetAutoRefresh, autoUi ? "1" : "0");
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) {
+        // A DISABLED item is not hovered without ImGuiHoveredFlags_AllowWhenDisabled, so this tooltip
+        // correctly does not appear before a watcher has been reconciled.
+        ImGui::SetTooltip(
+            "Watch the assets folder and rescan automatically when files change.\n"
+            "Turn this off on very large projects or network drives.");
+    }
     ImGui::SameLine();
     // A LOCAL copy, never the member: INV-5 says only applyPending() writes showHidden.
     bool hiddenUi = showHidden;
@@ -1015,6 +1037,31 @@ void AssetBrowserPanel::drawFooter() {
         labelScratch += std::to_string(readyThumbnails) + " thumbnails";
         if (unavailableThumbnails > 0) {
             labelScratch += ", " + std::to_string(unavailableThumbnails) + " unavailable";
+        }
+    }
+
+    // task 3.1.4 (AC-36): APPENDED, never replacing -- the watcher's condition, in a fixed precedence
+    // order so the most ACTIONABLE condition wins. Omitted entirely when no watcher has been
+    // reconciled yet, which is honest: the panel does not know.
+    // ASCII ONLY. This editor loads no font of its own -- its one font is ImGui's ProggyClean (Basic
+    // + Extended Latin) -- so a non-ASCII glyph renders as a missing-glyph box. That is 3.1.3's own
+    // post-merge fix, applied here as a rule rather than rediscovered.
+    if (watchStatusPtr != nullptr) {
+        if (!labelScratch.empty()) {
+            labelScratch += "   |   ";
+        }
+        if (!watchStatusPtr->enabled) {
+            labelScratch += "Auto-refresh off";
+        } else if (watchStatusPtr->rootUnreadable) {
+            labelScratch += "Watch paused -- assets folder unreadable";
+        } else if (watchStatusPtr->truncated) {
+            labelScratch += "Watching (partial -- tree exceeds the scan limit)";
+        } else if (watchStatusPtr->deferredSweeps > 0) {
+            labelScratch += "Watching -- settling (" + std::to_string(watchStatusPtr->deferredSweeps) + ")";
+        } else if (watchStatusPtr->unreadableDirs > 0) {
+            labelScratch += "Watching (" + std::to_string(watchStatusPtr->unreadableDirs) + " folder(s) unreadable)";
+        } else {
+            labelScratch += "Watching";
         }
     }
 

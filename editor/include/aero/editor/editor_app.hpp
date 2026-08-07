@@ -13,6 +13,11 @@
                                            // requestAssetBrowserViewMode's signature -- used directly,
                                            // not left to arrive transitively. ImGui-free (A17), so it
                                            // does not breach this header's ImGui-FREE-BY-RULE contract.
+#include <aero/editor/asset_watcher.hpp>   // task 3.1.4: a VALUE member (assetWatcher) and a VALUE
+                                           // field on EditorAppConfig (assetWatch) both need the
+                                           // definition -- the asset_database.hpp precedent below.
+                                           // ImGui-free and entt-free, so this header's
+                                           // ImGui-FREE-BY-RULE contract is intact.
 #include <aero/editor/asset_database.hpp>  // task 3.1.1: a VALUE member (assetDatabase) needs the
                                            // definition -- the command_stack.hpp/entity_ops.hpp
                                            // precedent below. Transitively brings project_files.hpp,
@@ -93,6 +98,13 @@ struct EditorAppConfig {
     // test can point it somewhere else. Any test that sets persistLayout TRUE must set this too, or
     // it writes the developer's real editor layout -- 2.6.1's BLOCKING-2 in a new costume.
     std::string layoutIniPath;
+    // task 3.1.4: the assets-tree watcher's tunables. `enabled` TRUE is the shipping behaviour and
+    // therefore the default (the registerDefaultPanels/seedDefaultScene precedent). A test that does
+    // not want background directory enumeration sets `.assetWatch = {.enabled = false}`; a test that
+    // DOES drive the watcher shrinks cooldownMs/settleMs to 0 so a change settles in one or two
+    // sweeps instead of two seconds -- the ONLY way an in-process test can exercise this without
+    // sleeping.
+    AssetWatchConfig assetWatch{};
 };
 
 // Sleep applied when the window is not presentable (minimized) — inherited verbatim from 2.1.1.
@@ -234,6 +246,15 @@ public:
     // other black-box signature for it.
     [[nodiscard]] std::size_t assetOrphanCount() const noexcept;
 
+    // ---- task 3.1.4 (AC-38): the watcher. The assetCount()/thumbnailReadyCount() shape verbatim --
+    // AssetWatcher is a PRIVATE member and is reachable from no test target otherwise, so without
+    // these the whole detect -> rescan -> refresh loop has no black-box signature at all and every
+    // GPU-tier case would be unwritable. ----
+    [[nodiscard]] bool assetWatchEnabled() const noexcept;
+    [[nodiscard]] std::uint64_t assetWatchSweepCount() const noexcept;    // monotonic; the tick-until signal
+    [[nodiscard]] std::uint64_t assetWatchTriggerCount() const noexcept;  // rescans the watcher caused
+    [[nodiscard]] std::size_t assetWatchEntryCount() const noexcept;      // last completed sweep's count
+
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
     // Same effect as Edit > Undo / Ctrl+Z (Cmd+Z on macOS), applied on the NEXT tick -- the
@@ -316,6 +337,13 @@ public:
     void requestAssetBrowserKindFilter(std::string_view kind);
     void requestAssetBrowserDeleteOrphanClick(std::string_view relativeMetaPath);
 
+    // task 3.1.4 (D10): the checkbox seam. The GPU tier is ImGui-free at source and cannot click a
+    // widget (the requestAssetBrowserViewMode() precedent, 3.1.3's code-review finding 4). Applied
+    // IMMEDIATELY -- there is no one-shot to drain, because this writes the watcher EditorApp itself
+    // owns, unlike the panel-facing hooks above which must queue a `pending` action for the next
+    // onDraw().
+    void requestAssetWatchToggle(bool on) noexcept;
+
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
@@ -360,6 +388,12 @@ private:
     // nothing requested; consumed by the next tick()'s reconcile block, folded into `orphanToDelete`
     // alongside the panel's own one-shot.
     std::string requestedOrphanDelete;
+    // task 3.1.4: the assets-tree watcher. A VALUE member, held to the SAME `noexcept = default` move
+    // requirement as assetDatabase -- asset_watcher.hpp's own six static_asserts hold that line.
+    AssetWatcher assetWatcher;
+    // D8: the ONE downstream signal. Compared with != every tick; a change drives BOTH
+    // invalidateListings() and notifyDatabaseRescanned(), for EVERY rescan trigger alike.
+    std::uint64_t lastAssetGeneration = 0;
     // code-review BLOCKING-1 test seam -- "" == nothing requested; consumed by the next tick()'s
     // construction of ShellUiState (ShellUiState::focusPanelId's own comment), never re-armed.
     std::string requestedPanelFocus;
