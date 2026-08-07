@@ -44,11 +44,17 @@ defect, fixed after the merge — the grid's `..` drew as a large empty block ra
 now a full-width bar one text line tall, in ASCII (`"<  .."`), since this editor still loads no font of
 its own and an arrow glyph would render as a missing-glyph box. Windows/Linux rows pending for
 3.1.1/3.1.2/3.1.3, as for every Phase 2 task. **3.1.4 (hot-reload file watcher) is implemented on
-branch `feat/3.1.4-hot-reload-file-watcher` (eight feature commits plus two sabotage-driven follow-up
-commits, ten total), NOT YET MERGED — the mechanical gate is green locally (95/95 both presets, both
-reduced configurations rebuilt fresh at 811 doctest cases each, six guards unchanged, all 25/25
+branch `feat/3.1.4-hot-reload-file-watcher` (eight feature commits, two sabotage-driven follow-ups, and
+one code-review round), NOT YET MERGED — the mechanical gate is green locally (95/95 both presets, both
+reduced configurations rebuilt fresh at 813 doctest cases each, six guards unchanged, all 25/25
 sabotage seeds plus all 3 mandatory second-order checks per seed confirmed) but the PR, CI and merge
-are still pending, and no human validation pass exists for it on any OS.** It adds `AssetWatcher`
+are still pending, and no human validation pass exists for it on any OS. The code-review round found
+six gaps and closed all six**: `I51` closing seed S16's call-site gap the task had wrongly declared
+unclosable, `AW30b` giving AC-6 its first real proof, `MAX_WATCH_ENTRIES` rescaled (it reused
+`MAX_ASSETS`'s number while counting a different population — assets *plus* sidecars *plus* directories
+— truncating the watcher at roughly half the tree the scan still indexed), an empty-project-root guard
+on the `Library/` exclusion, a provably dead `setEnabled()` removed from `create()`, and a
+self-contradicting reduced-config count corrected.** It adds `AssetWatcher`
 (`editor/include/aero/editor/asset_watcher.hpp` + `.cpp`) — a per-tick budgeted sweep composing
 `listDirectory`/`canonicalDirectory` with zero file reads and zero logging of its own, its settlement
 rule (`isSettled`/`diffSnapshots`/`applyChanges`) fully pure and provable from vector literals with an
@@ -56,10 +62,11 @@ injected clock — plus `AssetDatabase::generation()` (the one signal driving ev
 and `ThumbnailLedger::supersededBy()` (the pure query behind releasing a superseded thumbnail's GPU
 texture, drained only from `serviceThumbnails()` for the identical BLOCKING-1 reason 3.1.3 fixed once
 already). **Zero paths under `engine/`** — the no-engine-change streak goes from one (3.1.3) to two.
-Sabotage found one genuine test-quality gap and closed it outright (`AW6b`, seed S4) and one genuine,
-confirmed coverage gap it left open and documented rather than force-closing with a fragile test (seed
-S16, `noteExternalScan()`'s call site — `EditorApp`'s count-only black-box surface cannot distinguish a
-legitimate bundled trigger from one that also silently repeats an already-known path). Full detail,
+Sabotage found two genuine test-quality gaps and **both are now closed**: `AW6b` (seed S4) during the
+task itself, and `I51` (seed S16, `noteExternalScan()`'s call site) during the code-review round, which
+overturned the task's own "no count-only accessor could ever discriminate this" conclusion — the
+obstacle was the two attempted scenarios' permanently unsettled poison file, not the accessor surface,
+since a scenario ending in a FORCED fire cannot discriminate what a trigger contained. Full detail,
 the complete 25-seed matrix and every build-time finding are in `docs/10-engineering-log.md`'s 3.1.4
 entry. **3.1.5 (drag-into-scene) remains next after 3.1.4 merges**, once 3.2.1 exists for it to
 reference.
@@ -100,13 +107,13 @@ Test inventory at HEAD (`feat/3.1.4-hot-reload-file-watcher`), **re-measured, no
 **95** ctest entries with tools ON, **6** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`,
 **19** with `-DAERO_REFLECT_TOOLS=OFF` alone — unchanged by task 3.1.4 (zero new ctest entries; every
 new case lives inside an existing TU). `aero_tests` **415** (unchanged — 3.1.4 touches zero `engine/`
-paths). `aero_editor_shell_test` **836** (**753** after 3.1.3 → **+83** at 3.1.4:
-`tests/editor/asset_watcher_test.cpp` AW1–AW46 plus AW28b/AW28c/AW6b, a new TU (49 cases);
+paths). `aero_editor_shell_test` **837** (**753** after 3.1.3 → **+84** at 3.1.4:
+`tests/editor/asset_watcher_test.cpp` AW1–AW46 plus AW28b/AW28c/AW6b/AW30b, a new TU (50 cases);
 `tests/editor/asset_meta_test.cpp` +11 (AM-w1–AM-w11); `tests/editor/project_files_test.cpp` +5
 (PF-c1–PF-c5); `tests/editor/asset_database_test.cpp` +6 (AD-g1–AD-g6); `tests/editor/thumbnail_cache_test.cpp`
-+12 (TC39–TC50) — **836 measured directly with `--list-test-cases`, never derived by addition**.
-`aero_editor_imgui_test` **72** (65 after 3.1.3 → +7 at 3.1.4: I44–I50, the watcher's real-frame
-integration cases). `aero_scene_serialize_test` **23** and `aero_editor_inspector_test` **22**, both
++12 (TC39–TC50) — **837 measured directly with `--list-test-cases`, never derived by addition**.
+`aero_editor_imgui_test` **73** (65 after 3.1.3 → +8 at 3.1.4: I44–I51, the watcher's real-frame
+integration cases). `AW30b` (AC-6) and `I51` (AC-27) are the code-review round's two additions. `aero_scene_serialize_test` **23** and `aero_editor_inspector_test` **22**, both
 unchanged since 3.1.1. `aero_editor_core` sources **47** (46 before this task → +1:
 `asset_watcher.cpp`) — no new `find_package`, no new `target_link_libraries`. `check-math-boundary.sh`'s
 scanned count: **273** after 3.1.3 **→ 276** at 3.1.4 (three new C-family files: `asset_watcher.hpp`,
@@ -118,7 +125,7 @@ being read-only by construction and outside the allowlist is what makes a future
 `std::filesystem::remove` in it a hard CI failure), Check B's scanned-file count grows by one to **48**
 (the glob picks the new TU up automatically). Both reduced configurations, freshly rebuilt in
 `build/tools-off-3.1.4`/`build/reflect-off-3.1.4`: `ctest -N` **6**/**19** unchanged, both passing
-100% (6/6 and 19/19), `aero_editor_shell_test`'s own doctest `--count` reads **812** in **both**, with
+100% (6/6 and 19/19), `aero_editor_shell_test`'s own doctest `--count` reads **813** in **both**, with
 `AW1` present in both — proving the new TU needs no reflection or scene serialization (AC-42). Counts
 diverge by OS (Windows skips `golden-rule.include_scan_e2e`), so never assume one — measure with
 `ctest -N`.

@@ -576,14 +576,20 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   not `+1`. Every GPU-tier case in this task ticks to QUIESCENCE first and asserts a trigger-count
   DELTA, never an absolute value, and — after any write of a genuinely new file — a SECOND quiescence,
   never a fixed sweep count.
-- **`EditorApp`'s black-box surface (trigger/sweep/entry COUNTS) cannot prove `noteExternalScan()`'s
-  call site is wired correctly, and that is a real, confirmed, and currently open coverage gap** —
-  not a hypothetical one. Two independently-designed GPU-tier scenarios were both confirmed, by
-  running the identical sabotage seed against both, to land on the SAME aggregate trigger count
-  whether the call fires or not: the bug and the fix differ only in which entries get bundled into
-  that one trigger (a genuine duplicate re-report vs. two legitimate new sidecars), which no count-only
-  accessor can distinguish. Closing it for real needs a new seam exposing diff CONTENT (e.g.
-  `lastDiff()`'s paths), not another count.
+- **Proving `noteExternalScan()`'s call site needs a MODIFICATION and a sweep that cannot complete —
+  never a poison file.** Two independently-designed GPU-tier scenarios (`I50`'s) both failed to
+  discriminate the call site, and the conclusion first recorded here — that no count-only accessor
+  ever could, and that closing it needed a new seam exposing `lastDiff()`'s paths — was **wrong**, as
+  the code-review round showed. The defeating property was the scenarios' own **permanently unsettled
+  poison file**: the eventual forced fire produces a trigger whether or not the call ran, so the
+  re-reported path merely rides along inside it and the signal collapses from "0 vs 1 trigger" to
+  "2 vs 3 items inside one trigger". `I51` closes it with the existing accessors: a **modification**
+  (D6 never rewrites a valid `.meta`, and the hash lives in the excluded `Library/`, so there is no
+  sidecar echo for a duplicate to hide inside) plus `dirsPerPoll == 1` over a two-directory tree, so
+  the tick carrying the manual rescan provably cannot complete a sweep and `watchFired` is therefore
+  false — the only branch that reaches `noteExternalScan()`. With the call, delta 0; without it,
+  delta 1. **The general lesson: a scenario that ends in a FORCED fire cannot discriminate anything
+  about what a trigger contained, because the trigger was going to happen regardless.**
 
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
 3.1.3 and 3.1.4's entries under Phase 3.

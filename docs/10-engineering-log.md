@@ -3643,18 +3643,32 @@ green, because the SEPARATE previous-side check inside `stable` catches it by co
 match — the one case that can discriminate S4 on its own. Confirmed red under the seed, green on real
 code, landed as its own follow-up commit (`d06a2b8`, the 3.1.3 `AV39b` precedent).
 
-**One genuine, confirmed coverage gap left open rather than force-closed, found by sabotage seed S16:**
-the plan predicted `I50` was the call site's "only cover" for `AssetWatcher::noteExternalScan()`'s
-call in `editor_app.cpp`'s reconcile block. Two independent redesigns of `I50` (the redundant-rescan
-form and the deferred-sweep-divergence form) were both empirically confirmed, by running the SAME
-seed against BOTH designs, to converge on the IDENTICAL aggregate trigger count whether the call fires
-or not — the bug and the fix differ only in which entries get bundled into that one trigger (a genuine
-duplicate re-report vs. two legitimate new `.meta` sidecars), content `EditorApp`'s black-box surface
-(trigger/sweep/entry COUNTS, never diff CONTENT) cannot distinguish. `AW42` cannot cover it either, for
-the identical reason the plan itself predicted (it drives the method directly, with nothing to
-diverge from). Documented at the assertion site rather than papered over with a fragile, timing-
-dependent test: closing it for real needs a new `EditorApp` seam (e.g. surfacing `lastDiff()`'s
-path-level content), which is beyond what a sabotage finding alone licenses adding.
+**Sabotage seed S16 exposed a coverage gap that was first declared unclosable, then CLOSED by the
+code-review round — and the wrong diagnosis is the more useful half of the story.** The plan predicted
+`I50` was the only cover for `AssetWatcher::noteExternalScan()`'s call in `editor_app.cpp`'s reconcile
+block. Two independent redesigns of `I50` (the redundant-rescan form and the deferred-sweep-divergence
+form) were both empirically confirmed, by running the SAME seed against BOTH, to converge on the
+IDENTICAL aggregate trigger count whether the call fires or not. The conclusion drawn from that — that
+`EditorApp`'s count-only surface could never discriminate the call site, and that closing it needed a
+new seam surfacing `lastDiff()`'s path-level content — **was wrong**, and the review round said so with
+a working design.
+
+The real defeating property was not the accessor surface but **both scenarios' own permanently
+unsettled poison file**. A scenario that ends in a FORCED fire cannot discriminate anything about what
+a trigger *contained*, because the trigger was going to happen regardless; the re-reported path merely
+rides along inside it, collapsing the signal from "0 vs 1 trigger" to "2 vs 3 items inside one
+trigger". `I51` closes the gap with the existing accessors and no new production surface, by removing
+both obstacles: a **modification** rather than an addition (D6 never rewrites a valid `.meta`, and the
+content hash lives in the excluded `Library/`, so there is no sidecar echo for a duplicate to hide
+inside — no other candidate change exists in the tree), plus `dirsPerPoll == 1` over a two-directory
+tree, so the tick carrying the manual rescan provably cannot complete a sweep and `watchFired` is
+therefore false, which is the only branch that reaches `noteExternalScan()` at all. With the call,
+`committed = lastProbe` and the next sweep sees nothing: delta 0. Without it, `committed` keeps the old
+stamp while `lastProbe` holds the new one, so that same sweep finds a stable `Modified`, settles it and
+fires: delta 1. `AW42` still cannot cover it, for the reason the plan predicted — it drives the method
+directly, with nothing to diverge from. **Lesson worth carrying forward: "no accessor can see this" is
+a claim about the scenario at least as often as about the API, and it should be tested by changing the
+scenario before it is recorded as a permanent limitation.**
 
 **The sabotage matrix — all 25 seeds (S1–S25), plus all 3 mandatory second-order checks per seed
 (present via `git diff`, rebuilt via the build tool's own incremental step list, reverted byte-for-byte
