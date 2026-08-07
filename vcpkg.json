@@ -10,6 +10,7 @@
         "doctest",
         "enkits",
         "entt",
+        "fastgltf",
         "glm",
         {
             "name": "imgui",

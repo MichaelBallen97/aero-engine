@@ -14,6 +14,12 @@ find_package(SDL3  CONFIG REQUIRED)    # editor speaks SDL/SDL_GPU directly (far
 find_package(Stb REQUIRED)   # task 3.1.3 (D1): header-only. The port ships FindStb.cmake + a
                              # vcpkg-cmake-wrapper (§G-6); there is NO imported target, so the consumer
                              # spelling is ${Stb_INCLUDE_DIR}. Editor-ONLY by docs/03:91.
+find_package(fastgltf CONFIG REQUIRED)  # task 3.2.1 (D1): 0.9.0, MIT. EDITOR-ONLY by docs/03's
+                                        # dependency-placement invariant. The port's own config
+                                        # prepends find_dependency(simdjson) (Apache-2.0 OR MIT -- the
+                                        # MIT arm satisfies docs/01's hard requirement outright), so
+                                        # simdjson arrives transitively with NO second find_package.
+                                        # builtin-baseline is untouched; only the dependencies array grows.
 
 add_library(aero_editor_core STATIC
     src/imgui_layer.cpp
@@ -63,6 +69,7 @@ add_library(aero_editor_core STATIC
     src/thumbnail_store.cpp     # task 3.1.3 -- the ONLY stb_image TU; RHI texture lifetime
     src/asset_actions.cpp       # task 3.1.3 -- the ONE sanctioned deletion (D12/D13)
     src/asset_watcher.cpp       # task 3.1.4 -- the budgeted assets-tree change probe (PURE + one walk)
+    src/gltf_import.cpp         # task 3.2.1 -- the ONLY fastgltf TU; NO file operation at all
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -95,7 +102,7 @@ target_link_libraries(aero_editor_core
     # ImGuizmo to this layer's .cpp TUs, so aero_editor and aero_editor_shell_test stay ImGuizmo-free
     # at source. Like imgui, that is convention + review, NOT enforcement (R12).
     PRIVATE aero::profiling imgui::imgui imguizmo::imguizmo SDL3::SDL3 EnTT::EnTT aero::scene_render
-            aero::platform_internal aero::rhi_internal
+            aero::platform_internal aero::rhi_internal fastgltf::fastgltf
 )
 
 # task 2.6.1 (D14): the ONLY consumer is editor_app.cpp, and `engineVersion` is INFORMATIONAL in v0
