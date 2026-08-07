@@ -99,6 +99,20 @@ TEST_CASE("asset_watcher: an entry with an unknown stamp is never settled, even 
     CHECK_FALSE(isSettled(unknown, nullptr, /*nowTicks=*/0, /*settleTicks=*/2000));
 }
 
+// Sabotage-found gap (S4): AW6 only exercises current.stampKnown == false against previous == nullptr,
+// and AW22's own previous entry happens to ALSO carry stampKnown == false, so removing the current-side
+// guard (D2 carve-out 3) alone leaves AW22 green -- the previous-side check inside `stable` catches it
+// there by coincidence. This case gives current.stampKnown == false a previous entry that is otherwise
+// a PERFECT, STABLE match (valid stamp, identical size/mtime), so ONLY the current-side guard can
+// refuse it -- the one case that discriminates S4 on its own.
+TEST_CASE(
+    "asset_watcher: current.stampKnown == false is never settled, even against a matching, "
+    "stable previous (AW6b, AC-10, seed S4)") {
+    const WatchEntry previous = fileEntry("a", 1, -5000);
+    const WatchEntry current = fileEntry("a", 1, -5000, /*stampKnown=*/false);
+    CHECK_FALSE(isSettled(current, &previous, /*nowTicks=*/0, /*settleTicks=*/2000));
+}
+
 TEST_CASE("asset_watcher: an addition old enough settles (AW7)") {
     const WatchEntry added = fileEntry("a", 1, /*mtime=*/-5000);
     CHECK(isSettled(added, nullptr, /*nowTicks=*/0, /*settleTicks=*/2000));
