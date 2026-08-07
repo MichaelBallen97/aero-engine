@@ -827,3 +827,35 @@ TEST_CASE(
     entries[0].isDirectory = true;
     CHECK(findEntryByRelativePath(std::span<const FileEntry>(entries), "assets", "assets/tex") == 0);
 }
+
+// ---- currentFileTimeTicks / fileTimeTicksFromMillis (task 3.1.4) ---------------------------------
+
+TEST_CASE("editor: currentFileTimeTicks is monotone non-decreasing (PF-c1)") {
+    const std::int64_t first = engine::editor::currentFileTimeTicks();
+    const std::int64_t second = engine::editor::currentFileTimeTicks();
+    CHECK(second >= first);  // NEVER >: a coarse clock can return the same tick twice
+}
+
+TEST_CASE("editor: fileTimeTicksFromMillis(0) is 0 (PF-c2)") { CHECK(engine::editor::fileTimeTicksFromMillis(0) == 0); }
+
+TEST_CASE("editor: fileTimeTicksFromMillis(1000) is positive (PF-c3)") {
+    CHECK(engine::editor::fileTimeTicksFromMillis(1000) > 0);
+}
+
+TEST_CASE("editor: fileTimeTicksFromMillis is not saturating (PF-c4)") {
+    CHECK(engine::editor::fileTimeTicksFromMillis(2000) > engine::editor::fileTimeTicksFromMillis(1000));
+}
+
+TEST_CASE("editor: currentFileTimeTicks and FileEntry::mtime share the SAME domain (PF-c5)") {
+    const TempDir tmp;
+    tmp.write("file.txt", "hello");
+    const DirectoryListing listing = engine::editor::listDirectory(tmp.utf8(), "", false);
+    const std::ptrdiff_t idx = indexOf(listing, "file.txt");
+    REQUIRE(idx >= 0);
+    if (!listing.entries[static_cast<std::size_t>(idx)].mtimeKnown) {
+        MESSAGE("skipped: mtime unavailable for this entry on this host");
+        return;
+    }
+    const std::int64_t now = engine::editor::currentFileTimeTicks();
+    CHECK(listing.entries[static_cast<std::size_t>(idx)].mtime <= now);
+}
