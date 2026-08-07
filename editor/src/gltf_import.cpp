@@ -156,6 +156,71 @@ private:
     mutable bool missingBuffer = false;  // mutable: operator() is const by fastgltf's own contract
 };
 
+// Called before EVERY fastgltf tool invocation. fastgltf ASSERTS on a type mismatch (a Debug abort in
+// our lanes), DEREFERENCES a possibly-disengaged Optional for a sparse accessor with no bufferView
+// (types.hpp's own comment: "Could have no value for sparse morph targets"), and never bounds-checks
+// the accessor -> bufferView -> buffer chain. THIS FUNCTION is what makes a hostile or merely broken
+// document cost a WARNING instead of a crash or an out-of-bounds read.
+//
+// Returns true iff every fastgltf tool may safely be called on `accessor` with an ElementType whose
+// traits type is `expected`.
+[[nodiscard]] bool validateAccessor(const fastgltf::Asset& asset, std::size_t accessorIndex,
+                                    fastgltf::AccessorType expected, const EditorBufferAdapter& adapter) {
+    if (accessorIndex >= asset.accessors.size()) {
+        return false;
+    }
+    const fastgltf::Accessor& accessor = asset.accessors[accessorIndex];
+    if (accessor.type != expected || accessor.componentType == fastgltf::ComponentType::Invalid) {
+        return false;  // would trip fastgltf's own assert
+    }
+    if (accessor.count == 0) {
+        return false;
+    }
+    // A4: an accessor with no bufferView is legal glTF (zero-filled, possibly sparse-overridden), and
+    // IterableAccessor's ctor dereferences *accessor.bufferViewIndex UNCONDITIONALLY. Refuse it
+    // outright: an all-zero POSITION is useless, and a sparse-only accessor is the morph-target shape
+    // D12 does not import. ONE RULE, NO SUB-CASES.
+    if (!accessor.bufferViewIndex.has_value()) {
+        return false;
+    }
+    const std::size_t viewIndex = *accessor.bufferViewIndex;
+    if (viewIndex >= asset.bufferViews.size()) {
+        return false;
+    }
+    const fastgltf::span<const std::byte> viewBytes = adapter(asset, viewIndex);
+    if (viewBytes.empty()) {
+        return false;  // the adapter already refused it (out of range, or an unsupplied external buffer)
+    }
+    const fastgltf::BufferView& view = asset.bufferViews[viewIndex];
+    const std::size_t elementSize = fastgltf::getElementByteSize(accessor.type, accessor.componentType);
+    const std::size_t stride = view.byteStride.has_value() ? *view.byteStride : elementSize;
+    if (stride == 0 || elementSize == 0) {
+        return false;
+    }
+    if (accessor.byteOffset > viewBytes.size()) {
+        return false;
+    }
+    // The exact span the tools will touch: byteOffset + stride*(count-1) + elementSize. Written to
+    // avoid ANY overflow: compare against the remaining length rather than summing.
+    const std::size_t available = viewBytes.size() - accessor.byteOffset;
+    const std::size_t maxElements = available >= elementSize ? (available - elementSize) / stride + 1U : 0U;
+    if (accessor.count > maxElements) {
+        return false;
+    }
+    // Sparse: the same checks for both of its views, and ONLY when count > 0 (copyFromAccessor falls
+    // through to the dense path when sparse->count == 0).
+    if (accessor.sparse.has_value() && accessor.sparse->count > 0) {
+        const fastgltf::SparseAccessor& s = *accessor.sparse;
+        if (s.indicesBufferView >= asset.bufferViews.size() || s.valuesBufferView >= asset.bufferViews.size()) {
+            return false;
+        }
+        if (adapter(asset, s.indicesBufferView).empty() || adapter(asset, s.valuesBufferView).empty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // F7b -- THE MOST IMPORTANT COMMENT IN THIS FILE.
 //
 // The engine's math conventions were CHOSEN to match glTF 2.0. aero/core/math.hpp's own header comment
@@ -184,6 +249,111 @@ private:
     return Mat4{std::array<Vec4, 4>{Vec4{m[0][0], m[0][1], m[0][2], m[0][3]}, Vec4{m[1][0], m[1][1], m[1][2], m[1][3]},
                                     Vec4{m[2][0], m[2][1], m[2][2], m[2][3]},
                                     Vec4{m[3][0], m[3][1], m[3][2], m[3][3]}}};
+}
+
+// A13: both sides always qualified. NEVER `using namespace fastgltf;`, and never a `using fastgltf::X;`
+// for AlphaMode, AnimationPath or AnimationInterpolation -- all three collide with ours by name.
+[[nodiscard]] constexpr AlphaMode toAlphaMode(fastgltf::AlphaMode m) noexcept {
+    switch (m) {
+        case fastgltf::AlphaMode::Opaque:
+            return AlphaMode::Opaque;
+        case fastgltf::AlphaMode::Mask:
+            return AlphaMode::Mask;
+        case fastgltf::AlphaMode::Blend:
+            return AlphaMode::Blend;
+    }
+    return AlphaMode::Opaque;
+}
+[[nodiscard]] constexpr TextureWrap toWrap(fastgltf::Wrap w) noexcept {
+    switch (w) {
+        case fastgltf::Wrap::Repeat:
+            return TextureWrap::Repeat;
+        case fastgltf::Wrap::ClampToEdge:
+            return TextureWrap::ClampToEdge;
+        case fastgltf::Wrap::MirroredRepeat:
+            return TextureWrap::MirroredRepeat;
+    }
+    return TextureWrap::Repeat;
+}
+// glTF's six Filter values fold into our (TextureFilter, MipFilter) pair. magFilter has no mip
+// component and only ever carries Nearest or Linear.
+[[nodiscard]] constexpr TextureFilter toMinMagFilter(fastgltf::Filter f) noexcept {
+    switch (f) {
+        case fastgltf::Filter::Nearest:
+        case fastgltf::Filter::NearestMipMapNearest:
+        case fastgltf::Filter::NearestMipMapLinear:
+            return TextureFilter::Nearest;
+        case fastgltf::Filter::Linear:
+        case fastgltf::Filter::LinearMipMapNearest:
+        case fastgltf::Filter::LinearMipMapLinear:
+            return TextureFilter::Linear;
+    }
+    return TextureFilter::Linear;
+}
+[[nodiscard]] constexpr MipFilter toMipFilter(fastgltf::Filter f) noexcept {
+    switch (f) {
+        case fastgltf::Filter::Nearest:
+        case fastgltf::Filter::Linear:
+            return MipFilter::None;
+        case fastgltf::Filter::NearestMipMapNearest:
+        case fastgltf::Filter::LinearMipMapNearest:
+            return MipFilter::Nearest;
+        case fastgltf::Filter::NearestMipMapLinear:
+        case fastgltf::Filter::LinearMipMapLinear:
+            return MipFilter::Linear;
+    }
+    return MipFilter::Linear;
+}
+[[nodiscard]] constexpr std::string_view primitiveModeName(fastgltf::PrimitiveType t) noexcept {
+    switch (t) {
+        case fastgltf::PrimitiveType::Points:
+            return "POINTS";
+        case fastgltf::PrimitiveType::Lines:
+            return "LINES";
+        case fastgltf::PrimitiveType::LineLoop:
+            return "LINE_LOOP";
+        case fastgltf::PrimitiveType::LineStrip:
+            return "LINE_STRIP";
+        case fastgltf::PrimitiveType::Triangles:
+            return "TRIANGLES";
+        case fastgltf::PrimitiveType::TriangleStrip:
+            return "TRIANGLE_STRIP";
+        case fastgltf::PrimitiveType::TriangleFan:
+            return "TRIANGLE_FAN";
+    }
+    return "UNKNOWN";
+}
+
+// Plan A10: a material slot resolves through the TEXTURE table, and BOTH hops can be absent.
+// basisuImageIndex / ddsImageIndex / webpImageIndex are NEVER consulted (D20: no KHR_* extensions --
+// and with Extensions::None they are always disengaged anyway).
+[[nodiscard]] std::optional<ImportedTextureRef> resolveTextureRef(const fastgltf::Asset& asset,
+                                                                  const fastgltf::TextureInfo& info) {
+    if (info.textureIndex >= asset.textures.size()) {
+        return std::nullopt;
+    }
+    const fastgltf::Texture& texture = asset.textures[info.textureIndex];
+    if (!texture.imageIndex.has_value() || *texture.imageIndex >= asset.images.size()) {
+        return std::nullopt;  // AC-27: nullopt, NEVER a zero index
+    }
+    ImportedTextureRef ref;
+    ref.imageIndex = static_cast<std::uint32_t>(*texture.imageIndex);
+    ref.uvSet = static_cast<std::uint32_t>(info.texCoordIndex);
+    if (texture.samplerIndex.has_value() && *texture.samplerIndex < asset.samplers.size()) {
+        const fastgltf::Sampler& s = asset.samplers[*texture.samplerIndex];
+        ref.wrapU = toWrap(s.wrapS);
+        ref.wrapV = toWrap(s.wrapT);
+        if (s.magFilter.has_value()) {
+            ref.magFilter = toMinMagFilter(*s.magFilter);
+        }
+        if (s.minFilter.has_value()) {
+            ref.minFilter = toMinMagFilter(*s.minFilter);
+            ref.mipFilter = toMipFilter(*s.minFilter);
+        }
+    }
+    // AC-28: an ABSENT sampler leaves every default in place (repeat/repeat, linear) -- the glTF
+    // specification's own defaults, and the reason ImportedTextureRef's members carry them.
+    return ref;
 }
 
 // A6. Called ONLY after loadGltf returned Error::MissingExtensions, i.e. only on an already-failed
@@ -234,8 +404,7 @@ private:
 }  // namespace
 
 ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::byte> bytes,
-                        const ImportSettings& settings, ImportDepth /*depth*/,
-                        std::span<const ExternalBuffer> external) {
+                        const ImportSettings& settings, ImportDepth depth, std::span<const ExternalBuffer> external) {
     ImportResult result;
     // Phase 1 -- LOAD.
     // FromBytes COPIES (verified in §G-16 item 1: the ctor calls allocateAndCopy into a member
@@ -481,6 +650,368 @@ ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::
     // wrong.
     for (const std::uint32_t rootIndex : result.model.roots) {
         result.model.nodes[rootIndex].translation *= settings.scale;
+    }
+
+    // Phase 5 -- MATERIALS. Skipped entirely when !settings.importMaterials -- phase 3 already ran, so
+    // image DEPENDENCIES survive regardless of this setting (AC-29's critical half).
+    if (settings.importMaterials) {
+        for (std::size_t i = 0; i < asset.materials.size(); ++i) {
+            const fastgltf::Material& material = asset.materials[i];
+            ImportedMaterial out;
+            out.name = std::string(material.name);
+            out.localId = static_cast<std::uint32_t>(i);
+            out.baseColorFactor = toVec4(material.pbrData.baseColorFactor);
+            out.metallicFactor = material.pbrData.metallicFactor;
+            out.roughnessFactor = material.pbrData.roughnessFactor;
+            out.emissiveFactor = toVec3(material.emissiveFactor);
+            out.alphaMode = toAlphaMode(material.alphaMode);
+            out.alphaCutoff = material.alphaCutoff;
+            out.doubleSided = material.doubleSided;
+            // emissiveStrength, ior, dispersion, unlit and every KHR_* sub-struct are IGNORED (D20).
+            if (material.normalTexture.has_value()) {
+                out.normalScale = material.normalTexture->scale;
+                out.normal = resolveTextureRef(asset, *material.normalTexture);
+            }
+            if (material.occlusionTexture.has_value()) {
+                out.occlusionStrength = material.occlusionTexture->strength;
+                out.occlusion = resolveTextureRef(asset, *material.occlusionTexture);
+            }
+            if (material.pbrData.baseColorTexture.has_value()) {
+                out.baseColor = resolveTextureRef(asset, *material.pbrData.baseColorTexture);
+            }
+            if (material.pbrData.metallicRoughnessTexture.has_value()) {
+                out.metallicRoughness = resolveTextureRef(asset, *material.pbrData.metallicRoughnessTexture);
+            }
+            if (material.emissiveTexture.has_value()) {
+                out.emissive = resolveTextureRef(asset, *material.emissiveTexture);
+            }
+            result.model.materials.push_back(std::move(out));
+        }
+    }
+    result.model.summary.materialCount = result.model.materials.size();
+
+    // Phase 6 -- MESHES. Three running caps, checked BEFORE the allocation each bounds (D15):
+    // primitives, vertices, indices. Each is a MODEL-wide total, not per-mesh.
+    std::size_t primitiveTotal = 0;
+    std::size_t vertexTotal = 0;
+    std::size_t indexTotal = 0;
+    bool primitiveCapHit = false;
+    bool vertexCapHit = false;
+    bool indexCapHit = false;
+
+    for (std::size_t meshIdx = 0; meshIdx < asset.meshes.size(); ++meshIdx) {
+        const fastgltf::Mesh& mesh = asset.meshes[meshIdx];
+        ImportedMesh outMesh;
+        outMesh.name = std::string(mesh.name);
+        outMesh.localId = static_cast<std::uint32_t>(meshIdx);
+
+        for (std::size_t primIdx = 0; primIdx < mesh.primitives.size(); ++primIdx) {
+            const fastgltf::Primitive& prim = mesh.primitives[primIdx];
+
+            if (prim.type != fastgltf::PrimitiveType::Triangles) {
+                addWarning(result, std::format("mesh '{}' primitive {}: {} is not imported", outMesh.name, primIdx,
+                                               primitiveModeName(prim.type)));
+                continue;  // D11: the MESH survives; this primitive does not
+            }
+            if (primitiveTotal >= MAX_PRIMITIVES_PER_MODEL) {
+                if (!primitiveCapHit) {
+                    escalate(result, ImportStatus::Truncated, "primitive cap (MAX_PRIMITIVES_PER_MODEL) reached");
+                    primitiveCapHit = true;
+                }
+                continue;
+            }
+            ++primitiveTotal;
+
+            ImportedPrimitive outPrim;
+            outPrim.materialIndex = (prim.materialIndex.has_value() && settings.importMaterials)
+                                        ? static_cast<std::uint32_t>(*prim.materialIndex)
+                                        : INVALID_SUBASSET;
+
+            if (depth == ImportDepth::Structure) {
+                // No accessor is touched; attribute NAMES are in the document, not in the buffers, so
+                // `attributes` is still recorded here -- INV-M4's shared half. summary.vertexCount /
+                // triangleCount and this primitive's own `bounds` stay at their defaults (0 / a point).
+                for (const fastgltf::Attribute& attr : prim.attributes) {
+                    const std::string_view name = attr.name;
+                    if (name == "POSITION") {
+                        outPrim.attributes |= VertexAttribute::Position;
+                    } else if (name == "NORMAL") {
+                        outPrim.attributes |= VertexAttribute::Normal;
+                    } else if (name == "TANGENT") {
+                        outPrim.attributes |= VertexAttribute::Tangent;
+                    } else if (name == "TEXCOORD_0") {
+                        outPrim.attributes |= VertexAttribute::TexCoord0;
+                    } else if (name == "TEXCOORD_1") {
+                        outPrim.attributes |= VertexAttribute::TexCoord1;
+                    } else if (name == "COLOR_0") {
+                        outPrim.attributes |= VertexAttribute::Color0;
+                    } else if (name == "JOINTS_0") {
+                        outPrim.attributes |= VertexAttribute::Joints0;
+                    } else if (name == "WEIGHTS_0") {
+                        outPrim.attributes |= VertexAttribute::Weights0;
+                    }
+                }
+                outMesh.primitives.push_back(std::move(outPrim));
+                continue;
+            }
+
+            // ImportDepth::Full below. POSITION IS MANDATORY.
+            const auto posIt = prim.findAttribute("POSITION");  // an ITERATOR (A2), not a pointer
+            if (posIt == prim.attributes.cend() || posIt->accessorIndex >= asset.accessors.size()) {
+                addWarning(result, std::format("mesh '{}' primitive {}: POSITION is missing or invalid", outMesh.name,
+                                               primIdx));
+                continue;
+            }
+            // CAP BEFORE THE ALLOCATION -- and before the FULL bounds check (D15/A5): `count` is READ
+            // FROM THE DOCUMENT'S OWN ACCESSOR METADATA, which costs nothing regardless of how large it
+            // claims to be. validateAccessor's own bounds check requires REAL backing bytes proportional
+            // to `count` to ever return true, so checking the cap FIRST is what makes "a document
+            // claiming 4 billion vertices costs NOTHING" achievable -- reversing this order would make
+            // the cap unreachable without first supplying (or being refused for lacking) 4 billion
+            // vertices' worth of real data.
+            const std::size_t claimedVertexCount = asset.accessors[posIt->accessorIndex].count;
+            if (vertexTotal + claimedVertexCount > MAX_VERTICES_PER_MODEL) {
+                if (!vertexCapHit) {
+                    escalate(result, ImportStatus::Truncated, "vertex cap (MAX_VERTICES_PER_MODEL) reached");
+                    vertexCapHit = true;
+                }
+                continue;
+            }
+            if (!validateAccessor(asset, posIt->accessorIndex, fastgltf::AccessorType::Vec3, adapter)) {
+                addWarning(result, std::format("mesh '{}' primitive {}: POSITION is missing or invalid", outMesh.name,
+                                               primIdx));
+                continue;
+            }
+            const fastgltf::Accessor& posAccessor = asset.accessors[posIt->accessorIndex];
+            const std::size_t vertexCount = posAccessor.count;
+            outPrim.positions.reserve(vertexCount);
+            for (const fastgltf::math::fvec3 v :
+                 fastgltf::iterateAccessor<fastgltf::math::fvec3>(asset, posAccessor, adapter)) {
+                outPrim.positions.push_back(toVec3(v) * settings.scale);
+            }
+            outPrim.attributes |= VertexAttribute::Position;
+            vertexTotal += vertexCount;
+
+            // NORMAL -- Vec3, NEVER scaled.
+            if (const auto it = prim.findAttribute("NORMAL"); it != prim.attributes.cend()) {
+                if (validateAccessor(asset, it->accessorIndex, fastgltf::AccessorType::Vec3, adapter) &&
+                    asset.accessors[it->accessorIndex].count == vertexCount) {
+                    const fastgltf::Accessor& acc = asset.accessors[it->accessorIndex];
+                    outPrim.normals.reserve(vertexCount);
+                    for (const fastgltf::math::fvec3 v :
+                         fastgltf::iterateAccessor<fastgltf::math::fvec3>(asset, acc, adapter)) {
+                        outPrim.normals.push_back(toVec3(v));
+                    }
+                    outPrim.attributes |= VertexAttribute::Normal;
+                } else {
+                    addWarning(result, std::format("mesh '{}' primitive {}: NORMAL is invalid or its count "
+                                                   "does not match POSITION",
+                                                   outMesh.name, primIdx));
+                }
+            }
+
+            // TANGENT -- Vec4; .w is glTF's bitangent SIGN, never a magnitude. NEVER scaled.
+            if (const auto it = prim.findAttribute("TANGENT"); it != prim.attributes.cend()) {
+                if (validateAccessor(asset, it->accessorIndex, fastgltf::AccessorType::Vec4, adapter) &&
+                    asset.accessors[it->accessorIndex].count == vertexCount) {
+                    const fastgltf::Accessor& acc = asset.accessors[it->accessorIndex];
+                    outPrim.tangents.reserve(vertexCount);
+                    for (const fastgltf::math::fvec4 v :
+                         fastgltf::iterateAccessor<fastgltf::math::fvec4>(asset, acc, adapter)) {
+                        outPrim.tangents.push_back(toVec4(v));
+                    }
+                    outPrim.attributes |= VertexAttribute::Tangent;
+                } else {
+                    addWarning(result, std::format("mesh '{}' primitive {}: TANGENT is invalid or its count "
+                                                   "does not match POSITION",
+                                                   outMesh.name, primIdx));
+                }
+            }
+
+            // TEXCOORD_0 / TEXCOORD_1 -- Vec2.
+            if (const auto it = prim.findAttribute("TEXCOORD_0"); it != prim.attributes.cend()) {
+                if (validateAccessor(asset, it->accessorIndex, fastgltf::AccessorType::Vec2, adapter) &&
+                    asset.accessors[it->accessorIndex].count == vertexCount) {
+                    const fastgltf::Accessor& acc = asset.accessors[it->accessorIndex];
+                    outPrim.uv0.reserve(vertexCount);
+                    for (const fastgltf::math::fvec2 v :
+                         fastgltf::iterateAccessor<fastgltf::math::fvec2>(asset, acc, adapter)) {
+                        outPrim.uv0.push_back(toVec2(v));
+                    }
+                    outPrim.attributes |= VertexAttribute::TexCoord0;
+                } else {
+                    addWarning(result, std::format("mesh '{}' primitive {}: TEXCOORD_0 is invalid or its "
+                                                   "count does not match POSITION",
+                                                   outMesh.name, primIdx));
+                }
+            }
+            if (const auto it = prim.findAttribute("TEXCOORD_1"); it != prim.attributes.cend()) {
+                if (validateAccessor(asset, it->accessorIndex, fastgltf::AccessorType::Vec2, adapter) &&
+                    asset.accessors[it->accessorIndex].count == vertexCount) {
+                    const fastgltf::Accessor& acc = asset.accessors[it->accessorIndex];
+                    outPrim.uv1.reserve(vertexCount);
+                    for (const fastgltf::math::fvec2 v :
+                         fastgltf::iterateAccessor<fastgltf::math::fvec2>(asset, acc, adapter)) {
+                        outPrim.uv1.push_back(toVec2(v));
+                    }
+                    outPrim.attributes |= VertexAttribute::TexCoord1;
+                } else {
+                    addWarning(result, std::format("mesh '{}' primitive {}: TEXCOORD_1 is invalid or its "
+                                                   "count does not match POSITION",
+                                                   outMesh.name, primIdx));
+                }
+            }
+
+            // COLOR_0 -- linear RGBA; a VEC3 source is read as fvec3 and widened with a = 1. The
+            // accessor's OWN type decides which of the two tools to call.
+            if (const auto it = prim.findAttribute("COLOR_0"); it != prim.attributes.cend()) {
+                const std::size_t colorIdx = it->accessorIndex;
+                const bool declaresVec3 =
+                    colorIdx < asset.accessors.size() && asset.accessors[colorIdx].type == fastgltf::AccessorType::Vec3;
+                const bool declaresVec4 =
+                    colorIdx < asset.accessors.size() && asset.accessors[colorIdx].type == fastgltf::AccessorType::Vec4;
+                if (declaresVec3 && validateAccessor(asset, colorIdx, fastgltf::AccessorType::Vec3, adapter) &&
+                    asset.accessors[colorIdx].count == vertexCount) {
+                    const fastgltf::Accessor& acc = asset.accessors[colorIdx];
+                    outPrim.colors.reserve(vertexCount);
+                    for (const fastgltf::math::fvec3 v :
+                         fastgltf::iterateAccessor<fastgltf::math::fvec3>(asset, acc, adapter)) {
+                        const Vec3 c = toVec3(v);
+                        outPrim.colors.push_back(Vec4{c.x, c.y, c.z, 1.0F});
+                    }
+                    outPrim.attributes |= VertexAttribute::Color0;
+                } else if (declaresVec4 && validateAccessor(asset, colorIdx, fastgltf::AccessorType::Vec4, adapter) &&
+                           asset.accessors[colorIdx].count == vertexCount) {
+                    const fastgltf::Accessor& acc = asset.accessors[colorIdx];
+                    outPrim.colors.reserve(vertexCount);
+                    for (const fastgltf::math::fvec4 v :
+                         fastgltf::iterateAccessor<fastgltf::math::fvec4>(asset, acc, adapter)) {
+                        outPrim.colors.push_back(toVec4(v));
+                    }
+                    outPrim.attributes |= VertexAttribute::Color0;
+                } else {
+                    addWarning(result, std::format("mesh '{}' primitive {}: COLOR_0 is invalid or its count "
+                                                   "does not match POSITION",
+                                                   outMesh.name, primIdx));
+                }
+            }
+
+            // JOINTS_0 -- read as fastgltf::math::u16vec4 (there is NO ElementTraits for std::array) and
+            // copied component-wise; UNSIGNED_BYTE and UNSIGNED_SHORT sources both widen to uint16_t via
+            // the SAME static_cast path (verified in tools.hpp's convertComponent -- AC-24's sibling).
+            if (const auto it = prim.findAttribute("JOINTS_0"); it != prim.attributes.cend()) {
+                if (validateAccessor(asset, it->accessorIndex, fastgltf::AccessorType::Vec4, adapter) &&
+                    asset.accessors[it->accessorIndex].count == vertexCount) {
+                    const fastgltf::Accessor& acc = asset.accessors[it->accessorIndex];
+                    outPrim.joints.reserve(vertexCount);
+                    for (const fastgltf::math::u16vec4 v :
+                         fastgltf::iterateAccessor<fastgltf::math::u16vec4>(asset, acc, adapter)) {
+                        outPrim.joints.push_back(std::array<std::uint16_t, 4>{v[0], v[1], v[2], v[3]});
+                    }
+                    outPrim.attributes |= VertexAttribute::Joints0;
+                } else {
+                    addWarning(result, std::format("mesh '{}' primitive {}: JOINTS_0 is invalid or its "
+                                                   "count does not match POSITION",
+                                                   outMesh.name, primIdx));
+                }
+            }
+
+            // WEIGHTS_0 -- Vec4.
+            if (const auto it = prim.findAttribute("WEIGHTS_0"); it != prim.attributes.cend()) {
+                if (validateAccessor(asset, it->accessorIndex, fastgltf::AccessorType::Vec4, adapter) &&
+                    asset.accessors[it->accessorIndex].count == vertexCount) {
+                    const fastgltf::Accessor& acc = asset.accessors[it->accessorIndex];
+                    outPrim.weights.reserve(vertexCount);
+                    for (const fastgltf::math::fvec4 v :
+                         fastgltf::iterateAccessor<fastgltf::math::fvec4>(asset, acc, adapter)) {
+                        outPrim.weights.push_back(toVec4(v));
+                    }
+                    outPrim.attributes |= VertexAttribute::Weights0;
+                } else {
+                    addWarning(result, std::format("mesh '{}' primitive {}: WEIGHTS_0 is invalid or its "
+                                                   "count does not match POSITION",
+                                                   outMesh.name, primIdx));
+                }
+            }
+
+            // INDICES: prim.indicesAccessor is ALWAYS engaged (GenerateMeshIndices, F6). Disengaged
+            // anyway -> warn, skip the primitive.
+            if (!prim.indicesAccessor.has_value() || *prim.indicesAccessor >= asset.accessors.size()) {
+                addWarning(result, std::format("mesh '{}' primitive {}: indices are missing or invalid", outMesh.name,
+                                               primIdx));
+                continue;
+            }
+            // CAP BEFORE THE ALLOCATION AND BEFORE validateAccessor, for the identical reason as the
+            // vertex cap above: the declared count costs nothing to read regardless of its size.
+            const std::size_t claimedIndexCount = asset.accessors[*prim.indicesAccessor].count;
+            if (indexTotal + claimedIndexCount > MAX_INDICES_PER_MODEL) {
+                if (!indexCapHit) {
+                    escalate(result, ImportStatus::Truncated, "index cap (MAX_INDICES_PER_MODEL) reached");
+                    indexCapHit = true;
+                }
+                continue;
+            }
+            if (!validateAccessor(asset, *prim.indicesAccessor, fastgltf::AccessorType::Scalar, adapter)) {
+                addWarning(result, std::format("mesh '{}' primitive {}: indices are missing or invalid", outMesh.name,
+                                               primIdx));
+                continue;
+            }
+            const fastgltf::Accessor& indexAccessor = asset.accessors[*prim.indicesAccessor];
+            outPrim.indices.reserve(indexAccessor.count);
+            // iterateAccessor<uint32_t> normalises UNSIGNED_BYTE/SHORT/INT in ONE path (AC-24).
+            for (const std::uint32_t idx : fastgltf::iterateAccessor<std::uint32_t>(asset, indexAccessor, adapter)) {
+                outPrim.indices.push_back(idx);
+            }
+            indexTotal += indexAccessor.count;
+
+            bool sawOutOfRangeIndex = false;
+            for (const std::uint32_t idx : outPrim.indices) {
+                if (idx >= outPrim.positions.size()) {
+                    sawOutOfRangeIndex = true;
+                    break;
+                }
+            }
+            if (sawOutOfRangeIndex) {
+                // A downstream consumer must never receive an out-of-range index -- skip the WHOLE
+                // primitive, never a partial/clamped one.
+                addWarning(result, std::format("mesh '{}' primitive {}: an index is out of range of "
+                                               "POSITION",
+                                               outMesh.name, primIdx));
+                continue;
+            }
+            if (outPrim.indices.size() % 3 != 0) {
+                addWarning(result, std::format("mesh '{}' primitive {}: index count is not a multiple of "
+                                               "3; truncated",
+                                               outMesh.name, primIdx));
+                outPrim.indices.resize((outPrim.indices.size() / 3) * 3);
+            }
+
+            // BOUNDS: fold over the ALREADY-SCALED positions. The document's own accessor.min/max are
+            // DELIBERATELY IGNORED (A21).
+            Aabb primBounds = Aabb::empty();
+            for (const Vec3& p : outPrim.positions) {
+                primBounds.expand(p);
+            }
+            outPrim.bounds = primBounds;
+            outMesh.bounds.expand(primBounds);
+
+            result.model.summary.vertexCount += outPrim.positions.size();
+            result.model.summary.triangleCount += outPrim.indices.size() / 3;
+            ++result.model.summary.primitiveCount;
+
+            outMesh.primitives.push_back(std::move(outPrim));
+        }
+        result.model.meshes.push_back(std::move(outMesh));
+    }
+    result.model.summary.meshCount = result.model.meshes.size();
+    if (depth == ImportDepth::Full) {
+        for (const ImportedMesh& m : result.model.meshes) {
+            result.model.summary.bounds.expand(m.bounds);
+        }
+    }
+
+    if (adapter.sawMissingBuffer()) {
+        escalate(result, ImportStatus::MissingBuffer, "an external buffer this document names was not supplied");
     }
 
     return result;

@@ -17,6 +17,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <optional>
 #include <span>
@@ -38,6 +39,46 @@ constexpr std::string_view MATERIALS_FIXTURE = AERO_ASSET_FIXTURES_DIR "/materia
 constexpr std::string_view DAMAGED_FIXTURE = AERO_ASSET_FIXTURES_DIR "/damaged.gltf";
 constexpr std::string_view HIERARCHY_FIXTURE = AERO_ASSET_FIXTURES_DIR "/hierarchy.gltf";
 constexpr std::string_view ASYMMETRIC_FIXTURE = AERO_ASSET_FIXTURES_DIR "/asymmetric.gltf";
+
+// AC-17's own text: the GLB counterpart is NOT a committed binary. It is assembled here from a JSON
+// string and an optional BIN chunk, so the 12-byte header ("glTF", version 2, total length), the two
+// chunk headers (JSON = 0x4E4F534A, BIN = 0x004E4942) and the 4-byte padding (' ' for JSON, '\0' for
+// BIN) are all readable in the test source rather than opaque in a blob.
+void appendU32(std::string& out, std::uint32_t value) {
+    out.push_back(static_cast<char>(value & 0xFFU));
+    out.push_back(static_cast<char>((value >> 8U) & 0xFFU));
+    out.push_back(static_cast<char>((value >> 16U) & 0xFFU));
+    out.push_back(static_cast<char>((value >> 24U) & 0xFFU));
+}
+
+[[nodiscard]] std::string buildGlb(std::string_view json, std::string_view bin) {
+    std::string paddedJson(json);
+    while (paddedJson.size() % 4U != 0U) {
+        paddedJson += ' ';  // JSON chunk padding is SPACE, per the GLB container spec
+    }
+    std::string paddedBin(bin);
+    while (paddedBin.size() % 4U != 0U) {
+        paddedBin += '\0';  // BIN chunk padding is NUL
+    }
+    const bool hasBin = !bin.empty();
+    const auto jsonChunkLength = static_cast<std::uint32_t>(paddedJson.size());
+    const auto binChunkLength = static_cast<std::uint32_t>(paddedBin.size());
+    const std::uint32_t totalLength = 12U + 8U + jsonChunkLength + (hasBin ? (8U + binChunkLength) : 0U);
+
+    std::string glb;
+    glb += "glTF";       // magic
+    appendU32(glb, 2U);  // version
+    appendU32(glb, totalLength);
+    appendU32(glb, jsonChunkLength);
+    appendU32(glb, 0x4E4F534AU);  // 'JSON'
+    glb += paddedJson;
+    if (hasBin) {
+        appendU32(glb, binChunkLength);
+        appendU32(glb, 0x004E4942U);  // 'BIN\0'
+        glb += paddedBin;
+    }
+    return glb;
+}
 
 }  // namespace
 
@@ -702,4 +743,610 @@ TEST_CASE(
     CHECK(node.scale.x == doctest::Approx(2.0F));
     CHECK(node.scale.y == doctest::Approx(3.0F));
     CHECK(node.scale.z == doctest::Approx(4.0F));
+}
+
+// ---- the glTF backend, phases 5-6: materials, meshes, accessors, caps, GLB (Step 6) -----------------
+//
+// MI33 and MI42 land HERE, not in Step 4 where the plan's own table lists them -- both need phase 4
+// and/or phase 6, which did not exist until this step and the previous one. See the note at the top of
+// the phase 1-3 section above.
+
+TEST_CASE(
+    "model_import: triangle.gltf at Structure depth -- 1 node, 1 mesh, 1 primitive, no vertex "
+    "data (MI33, INV-M4's Structure half)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(TRIANGLE_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("triangle.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 1);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.summary.vertexCount == 0);
+    CHECK(result.model.summary.triangleCount == 0);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.positions.empty());
+    CHECK(prim.normals.empty());
+    CHECK(prim.indices.empty());
+}
+
+TEST_CASE(
+    "model_import: a Full import with zero supplied externals reports MissingBuffer -- the only "
+    "way a read could have happened is if fastgltf opened the file itself (MI42, AC-39)") {
+    const std::string doc = R"({"asset":{"version":"2.0"},)"
+                            R"("meshes":[{"primitives":[{"attributes":{"POSITION":0},"mode":4}]}],)"
+                            R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],)"
+                            R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],)"
+                            R"("buffers":[{"byteLength":36,"uri":"external.bin"}]})";
+    const ImportResult result =
+        importModel("needs-external.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::MissingBuffer);
+}
+
+TEST_CASE("model_import: triangle.gltf at Full depth -- exact positions, indices and AABB (MI59, AC-16)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(TRIANGLE_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("triangle.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.positions.size() == 3);
+    CHECK(prim.positions[0].x == doctest::Approx(0.0F));
+    CHECK(prim.positions[0].y == doctest::Approx(0.0F));
+    CHECK(prim.positions[0].z == doctest::Approx(0.0F));
+    CHECK(prim.positions[1].x == doctest::Approx(1.0F));
+    CHECK(prim.positions[1].y == doctest::Approx(0.0F));
+    CHECK(prim.positions[2].x == doctest::Approx(0.0F));
+    CHECK(prim.positions[2].y == doctest::Approx(1.0F));
+    REQUIRE(prim.indices.size() == 3);
+    CHECK(prim.indices[0] == 0);
+    CHECK(prim.indices[1] == 1);
+    CHECK(prim.indices[2] == 2);
+    CHECK(prim.bounds.min.x == doctest::Approx(0.0F));
+    CHECK(prim.bounds.min.y == doctest::Approx(0.0F));
+    CHECK(prim.bounds.max.x == doctest::Approx(1.0F));
+    CHECK(prim.bounds.max.y == doctest::Approx(1.0F));
+}
+
+TEST_CASE("model_import: Structure and Full agree on every field they share (MI60, INV-M4)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(TRIANGLE_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult structureResult =
+        importModel("triangle.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Structure, {});
+    const ImportResult fullResult =
+        importModel("triangle.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(structureResult.model.nodes.size() == fullResult.model.nodes.size());
+    CHECK(structureResult.model.nodes[0].name == fullResult.model.nodes[0].name);
+    CHECK(structureResult.model.roots == fullResult.model.roots);
+    CHECK(structureResult.model.meshes.size() == fullResult.model.meshes.size());
+    CHECK(structureResult.model.materials.size() == fullResult.model.materials.size());
+    CHECK(structureResult.model.images.size() == fullResult.model.images.size());
+    CHECK(structureResult.externalUris == fullResult.externalUris);
+}
+
+TEST_CASE(
+    "model_import: the same document as a GLB imports field-for-field equal to the .gltf form "
+    "(MI61, AC-17)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(TRIANGLE_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult gltfResult =
+        importModel("triangle.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    const std::string glb = buildGlb(fixture.text, "");
+    const ImportResult glbResult =
+        importModel("triangle.glb", "", asBytes(glb), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(glbResult.status == gltfResult.status);
+    REQUIRE(glbResult.model.nodes.size() == gltfResult.model.nodes.size());
+    CHECK(glbResult.model.nodes[0].name == gltfResult.model.nodes[0].name);
+    REQUIRE(glbResult.model.meshes.size() == gltfResult.model.meshes.size());
+    REQUIRE(glbResult.model.meshes[0].primitives.size() == gltfResult.model.meshes[0].primitives.size());
+    REQUIRE(glbResult.model.meshes[0].primitives[0].positions.size() ==
+            gltfResult.model.meshes[0].primitives[0].positions.size());
+    for (std::size_t i = 0; i < glbResult.model.meshes[0].primitives[0].positions.size(); ++i) {
+        CHECK(glbResult.model.meshes[0].primitives[0].positions[i].x ==
+              doctest::Approx(gltfResult.model.meshes[0].primitives[0].positions[i].x));
+        CHECK(glbResult.model.meshes[0].primitives[0].positions[i].y ==
+              doctest::Approx(gltfResult.model.meshes[0].primitives[0].positions[i].y));
+        CHECK(glbResult.model.meshes[0].primitives[0].positions[i].z ==
+              doctest::Approx(gltfResult.model.meshes[0].primitives[0].positions[i].z));
+    }
+    REQUIRE(glbResult.model.meshes[0].primitives[0].indices.size() ==
+            gltfResult.model.meshes[0].primitives[0].indices.size());
+    CHECK(glbResult.model.meshes[0].primitives[0].indices == gltfResult.model.meshes[0].primitives[0].indices);
+}
+
+TEST_CASE("model_import: four malformed GLB containers each fail to parse cleanly (MI62-65, E4)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(TRIANGLE_FIXTURE);
+    REQUIRE(fixture.ok);
+    const std::string validGlb = buildGlb(fixture.text, "");
+
+    SUBCASE("bad magic (MI62)") {
+        std::string bad = validGlb;
+        bad[0] = 'X';
+        const ImportResult result =
+            importModel("bad.glb", "", asBytes(bad), ImportSettings{}, ImportDepth::Structure, {});
+        CHECK(result.status == ImportStatus::ParseFailed);
+        CHECK_FALSE(result.message.empty());
+    }
+    SUBCASE("bad version (MI63)") {
+        std::string bad = validGlb;
+        bad[4] = static_cast<char>(99);  // the 4-byte version field starts right after the magic
+        const ImportResult result =
+            importModel("bad.glb", "", asBytes(bad), ImportSettings{}, ImportDepth::Structure, {});
+        CHECK(result.status == ImportStatus::ParseFailed);
+        CHECK_FALSE(result.message.empty());
+    }
+    SUBCASE("an overrunning chunk length (MI64)") {
+        std::string bad = validGlb;
+        // The first chunk's length field is the 4 bytes right after the 12-byte header.
+        bad[12] = static_cast<char>(0xFF);
+        bad[13] = static_cast<char>(0xFF);
+        bad[14] = static_cast<char>(0xFF);
+        bad[15] = static_cast<char>(0x7F);
+        const ImportResult result =
+            importModel("bad.glb", "", asBytes(bad), ImportSettings{}, ImportDepth::Structure, {});
+        CHECK(result.status == ImportStatus::ParseFailed);
+        CHECK_FALSE(result.message.empty());
+    }
+    SUBCASE("trailing bytes appended after an otherwise-valid GLB (MI65)") {
+        std::string bad = validGlb;
+        bad += "trailing garbage that does not belong in this container";
+        const ImportResult result =
+            importModel("bad.glb", "", asBytes(bad), ImportSettings{}, ImportDepth::Structure, {});
+        // fastgltf's own total-length field no longer matches the buffer it was given -- however it
+        // reacts, it must not crash, and this case exists to confirm exactly that under ASan.
+        CHECK((result.status == ImportStatus::ParseFailed || result.status == ImportStatus::Ok));
+    }
+}
+
+TEST_CASE(
+    "model_import: a primitive with POSITION+NORMAL+TEXCOORD_0 fills exactly those three "
+    "vectors and reports exactly those three bits (MI66, AC-22)") {
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": )"
+        R"({"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "indices": 3, "mode": 4}]}], "accessors": )"
+        R"([{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}, {"bufferView": 1, )"
+        R"("componentType": 5126, "count": 3, "type": "VEC3"}, {"bufferView": 2, "componentType": 5126, )"
+        R"("count": 3, "type": "VEC2"}, {"bufferView": 3, "componentType": 5123, "count": 3, "type": )"
+        R"("SCALAR"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, )"
+        R"("byteOffset": 36, "byteLength": 36}, {"buffer": 0, "byteOffset": 72, "byteLength": 24}, )"
+        R"({"buffer": 0, "byteOffset": 96, "byteLength": 6}], "buffers": [{"byteLength": 102, "uri": )"
+        R"("data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAA)"
+        R"(AIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA"}]})";
+    const ImportResult result = importModel("attrs.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.positions.size() == 3);
+    CHECK(prim.normals.size() == 3);
+    CHECK(prim.uv0.size() == 3);
+    CHECK(prim.tangents.empty());
+    CHECK(prim.uv1.empty());
+    CHECK(prim.colors.empty());
+    CHECK(prim.joints.empty());
+    CHECK(prim.weights.empty());
+    using engine::editor::has;
+    using engine::editor::VertexAttribute;
+    CHECK(has(prim.attributes, VertexAttribute::Position));
+    CHECK(has(prim.attributes, VertexAttribute::Normal));
+    CHECK(has(prim.attributes, VertexAttribute::TexCoord0));
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::Tangent));
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::Color0));
+}
+
+TEST_CASE("model_import: a non-indexed primitive synthesises 0..N-1 indices (MI67, AC-23, F6)") {
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": )"
+        R"("VEC3"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}], "buffers": )"
+        R"([{"byteLength": 36, "uri": "data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}]})";
+    const ImportResult result =
+        importModel("no-indices.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const std::vector<std::uint32_t> expected = {0, 1, 2};
+    CHECK(result.model.meshes[0].primitives[0].indices == expected);
+}
+
+TEST_CASE(
+    "model_import: UNSIGNED_BYTE, UNSIGNED_SHORT and UNSIGNED_INT indices all normalise to the "
+    "same uint32_t values (MI68, AC-24)") {
+    const std::string docU8 =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("indices": 1, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": )"
+        R"(3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5121, "count": 3, "type": "SCALAR"}], )"
+        R"("bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, "byteOffset": )"
+        R"(36, "byteLength": 3}], "buffers": [{"byteLength": 39, "uri": )"
+        R"("data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAEC"}]})";
+    const std::string docU16 =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("indices": 1, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": )"
+        R"(3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}], )"
+        R"("bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, "byteOffset": )"
+        R"(36, "byteLength": 6}], "buffers": [{"byteLength": 42, "uri": )"
+        R"("data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA"}]})";
+    const std::string docU32 =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("indices": 1, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": )"
+        R"(3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR"}], )"
+        R"("bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, "byteOffset": )"
+        R"(36, "byteLength": 12}], "buffers": [{"byteLength": 48, "uri": )"
+        R"("data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAEAAAACAAAA"}]})";
+
+    const ImportResult r8 = importModel("u8.gltf", "", asBytes(docU8), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult r16 = importModel("u16.gltf", "", asBytes(docU16), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult r32 = importModel("u32.gltf", "", asBytes(docU32), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(r8.model.meshes.size() == 1);
+    REQUIRE(r16.model.meshes.size() == 1);
+    REQUIRE(r32.model.meshes.size() == 1);
+    const std::vector<std::uint32_t> expected = {0, 1, 2};
+    CHECK(r8.model.meshes[0].primitives[0].indices == expected);
+    CHECK(r16.model.meshes[0].primitives[0].indices == expected);
+    CHECK(r32.model.meshes[0].primitives[0].indices == expected);
+}
+
+TEST_CASE(
+    "model_import: TRIANGLE_STRIP/LINES/POINTS primitives are each skipped with a warning; the "
+    "mesh survives as an empty mesh with a point AABB (MI69, AC-25, D11)") {
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("mode": 5}, {"attributes": {"POSITION": 0}, "mode": 1}, {"attributes": {"POSITION": 0}, )"
+        R"("mode": 0}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": )"
+        R"("VEC3"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}], "buffers": )"
+        R"([{"byteLength": 36, "uri": "data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}]})";
+    const ImportResult result =
+        importModel("mixed-modes.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    CHECK(result.model.meshes[0].primitives.empty());
+    // D11's point AABB: the struct's own untouched default (min == max == the origin), never the
+    // invalid Aabb::empty() sentinel -- nothing ever called .expand() on it.
+    CHECK(result.model.meshes[0].bounds.min.x == doctest::Approx(0.0F));
+    CHECK(result.model.meshes[0].bounds.max.x == doctest::Approx(0.0F));
+    CHECK(result.warningTotal == 3);
+    for (const std::string& w : result.warnings) {
+        CHECK(w.find("mesh") != std::string::npos);
+        CHECK(w.find("is not imported") != std::string::npos);
+    }
+}
+
+TEST_CASE(
+    "model_import: a normalised u8vec4 COLOR_0 de-normalises to floats; a VEC3 COLOR_0 widens "
+    "with a = 1 (MI70)") {
+    const std::string docU8 =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0, )"
+        R"("COLOR_0": 1}, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, )"
+        R"("count": 3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5121, "count": 3, "type": )"
+        R"("VEC4", "normalized": true}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": )"
+        R"(36}, {"buffer": 0, "byteOffset": 36, "byteLength": 12}], "buffers": [{"byteLength": 48, )"
+        R"("uri": "data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA/wAA/wD/AP8AAP//"}]})";
+    const std::string docVec3 =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0, )"
+        R"("COLOR_0": 1}, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, )"
+        R"("count": 3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5126, "count": 3, "type": )"
+        R"("VEC3"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, )"
+        R"("byteOffset": 36, "byteLength": 36}], "buffers": [{"byteLength": 72, "uri": )"
+        R"("data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/"}]})";
+
+    const ImportResult r8 = importModel("color-u8.gltf", "", asBytes(docU8), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(r8.model.meshes.size() == 1);
+    REQUIRE(r8.model.meshes[0].primitives.size() == 1);
+    REQUIRE(r8.model.meshes[0].primitives[0].colors.size() == 3);
+    CHECK(r8.model.meshes[0].primitives[0].colors[0].x == doctest::Approx(1.0F));
+    CHECK(r8.model.meshes[0].primitives[0].colors[0].y == doctest::Approx(0.0F));
+    CHECK(r8.model.meshes[0].primitives[0].colors[0].w == doctest::Approx(1.0F));
+
+    const ImportResult rv3 =
+        importModel("color-vec3.gltf", "", asBytes(docVec3), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(rv3.model.meshes.size() == 1);
+    REQUIRE(rv3.model.meshes[0].primitives.size() == 1);
+    REQUIRE(rv3.model.meshes[0].primitives[0].colors.size() == 3);
+    CHECK(rv3.model.meshes[0].primitives[0].colors[0].x == doctest::Approx(1.0F));
+    CHECK(rv3.model.meshes[0].primitives[0].colors[0].w == doctest::Approx(1.0F));  // widened, a = 1
+}
+
+TEST_CASE(
+    "model_import: JOINTS_0 as UNSIGNED_BYTE and as UNSIGNED_SHORT produce identical "
+    "std::array<uint16_t,4> values (MI71)") {
+    const std::string docU8 =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0, )"
+        R"("JOINTS_0": 1}, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, )"
+        R"("count": 3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5121, "count": 3, "type": )"
+        R"("VEC4"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, )"
+        R"("byteOffset": 36, "byteLength": 12}], "buffers": [{"byteLength": 48, "uri": )"
+        R"("data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAECAwECAwACAwAB"}]})";
+    const std::string docU16 =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0, )"
+        R"("JOINTS_0": 1}, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, )"
+        R"("count": 3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5123, "count": 3, "type": )"
+        R"("VEC4"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, )"
+        R"("byteOffset": 36, "byteLength": 24}], "buffers": [{"byteLength": 60, "uri": )"
+        R"("data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIAAwABAAIAAwAAAAIAAwAAAAEA"}]})";
+
+    const ImportResult r8 = importModel("joints-u8.gltf", "", asBytes(docU8), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult r16 =
+        importModel("joints-u16.gltf", "", asBytes(docU16), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(r8.model.meshes.size() == 1);
+    REQUIRE(r16.model.meshes.size() == 1);
+    REQUIRE(r8.model.meshes[0].primitives[0].joints.size() == 3);
+    REQUIRE(r16.model.meshes[0].primitives[0].joints.size() == 3);
+    CHECK(r8.model.meshes[0].primitives[0].joints == r16.model.meshes[0].primitives[0].joints);
+    const std::array<std::uint16_t, 4> firstExpected = {0, 1, 2, 3};
+    CHECK(r8.model.meshes[0].primitives[0].joints[0] == firstExpected);
+}
+
+TEST_CASE(
+    "model_import: settings.scale scales positions and the AABB; normals do not (MI72, AC-30, "
+    "sabotage S14's discriminator)") {
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0, )"
+        R"("NORMAL": 1}, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, )"
+        R"("count": 3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5126, "count": 3, "type": )"
+        R"("VEC3"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, )"
+        R"("byteOffset": 36, "byteLength": 36}], "buffers": [{"byteLength": 72, "uri": )"
+        R"("data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/)"
+        R"("}]})";
+    ImportSettings settings;
+    settings.scale = 3.0F;
+    const ImportResult result = importModel("scale-normal.gltf", "", asBytes(doc), settings, ImportDepth::Full, {});
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.positions.size() == 3);
+    CHECK(prim.positions[1].x == doctest::Approx(3.0F));  // (1,0,0) * 3
+    CHECK(prim.bounds.max.x == doctest::Approx(3.0F));
+    REQUIRE(prim.normals.size() == 3);
+    CHECK(prim.normals[0].z == doctest::Approx(1.0F));  // UNSCALED -- would be 3.0 if the bug is present
+}
+
+TEST_CASE(
+    "model_import: a negative settings.scale is honoured; the AABB min/max are re-ordered "
+    "after scaling, never assumed (MI73, E13)") {
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": )"
+        R"("VEC3"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}], "buffers": )"
+        R"([{"byteLength": 36, "uri": "data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}]})";
+    ImportSettings settings;
+    settings.scale = -2.0F;
+    const ImportResult result = importModel("neg-scale.gltf", "", asBytes(doc), settings, ImportDepth::Full, {});
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.positions.size() == 3);
+    CHECK(prim.positions[1].x == doctest::Approx(-2.0F));  // (1,0,0) * -2
+    // min.x must be the SMALLER value even though it came from a negated coordinate.
+    CHECK(prim.bounds.min.x == doctest::Approx(-2.0F));
+    CHECK(prim.bounds.max.x == doctest::Approx(0.0F));
+    CHECK(prim.bounds.min.x <= prim.bounds.max.x);
+    CHECK(prim.bounds.min.y <= prim.bounds.max.y);
+}
+
+TEST_CASE(
+    "model_import: materials.gltf's factors, scales, alpha mode/cutoff and doubleSided all "
+    "round-trip (MI74, AC-26)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(MATERIALS_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("materials.gltf", "models", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.model.materials.size() == 1);
+    const auto& mat = result.model.materials[0];
+    CHECK(mat.name == "TestMaterial");
+    CHECK(mat.baseColorFactor.x == doctest::Approx(0.8F));
+    CHECK(mat.baseColorFactor.y == doctest::Approx(0.2F));
+    CHECK(mat.baseColorFactor.z == doctest::Approx(0.1F));
+    CHECK(mat.baseColorFactor.w == doctest::Approx(0.9F));
+    CHECK(mat.metallicFactor == doctest::Approx(0.3F));
+    CHECK(mat.roughnessFactor == doctest::Approx(0.6F));
+    CHECK(mat.emissiveFactor.x == doctest::Approx(0.1F));
+    CHECK(mat.emissiveFactor.y == doctest::Approx(0.2F));
+    CHECK(mat.emissiveFactor.z == doctest::Approx(0.3F));
+    CHECK(mat.normalScale == doctest::Approx(2.0F));
+    CHECK(mat.occlusionStrength == doctest::Approx(0.5F));
+    CHECK(mat.alphaMode == engine::editor::AlphaMode::Mask);
+    CHECK(mat.alphaCutoff == doctest::Approx(0.4F));
+    CHECK(mat.doubleSided);
+}
+
+TEST_CASE(
+    "model_import: materials.gltf's five texture slots resolve to the right image index and "
+    "TEXCOORD_n (MI75, AC-27, plan A10)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(MATERIALS_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("materials.gltf", "models", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.model.materials.size() == 1);
+    const auto& mat = result.model.materials[0];
+    REQUIRE(mat.baseColor.has_value());
+    CHECK(mat.baseColor->imageIndex == 0);
+    CHECK(mat.baseColor->uvSet == 0);
+    REQUIRE(mat.metallicRoughness.has_value());
+    CHECK(mat.metallicRoughness->imageIndex == 1);
+    CHECK(mat.metallicRoughness->uvSet == 1);
+    REQUIRE(mat.normal.has_value());
+    CHECK(mat.normal->imageIndex == 2);
+    REQUIRE(mat.occlusion.has_value());
+    CHECK(mat.occlusion->imageIndex == 3);
+    REQUIRE(mat.emissive.has_value());
+    CHECK(mat.emissive->imageIndex == 4);
+}
+
+TEST_CASE(
+    "model_import: materials.gltf's samplers map wrap/filter correctly; the absent sampler "
+    "(emissive) yields repeat/repeat/linear (MI76, AC-28)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(MATERIALS_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("materials.gltf", "models", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.model.materials.size() == 1);
+    const auto& mat = result.model.materials[0];
+    using engine::editor::MipFilter;
+    using engine::editor::TextureFilter;
+    using engine::editor::TextureWrap;
+    REQUIRE(mat.baseColor.has_value());  // sampler 0: repeat/repeat, nearest/nearest-mipmap-nearest
+    CHECK(mat.baseColor->wrapU == TextureWrap::Repeat);
+    CHECK(mat.baseColor->wrapV == TextureWrap::Repeat);
+    CHECK(mat.baseColor->magFilter == TextureFilter::Nearest);
+    CHECK(mat.baseColor->minFilter == TextureFilter::Nearest);
+    CHECK(mat.baseColor->mipFilter == MipFilter::Nearest);
+    REQUIRE(mat.metallicRoughness.has_value());  // sampler 1: clamp/mirrored, linear/linear-mipmap-linear
+    CHECK(mat.metallicRoughness->wrapU == TextureWrap::ClampToEdge);
+    CHECK(mat.metallicRoughness->wrapV == TextureWrap::MirroredRepeat);
+    CHECK(mat.metallicRoughness->magFilter == TextureFilter::Linear);
+    CHECK(mat.metallicRoughness->mipFilter == MipFilter::Linear);
+    REQUIRE(mat.emissive.has_value());  // texture 4 has NO sampler -- every default in place
+    CHECK(mat.emissive->wrapU == TextureWrap::Repeat);
+    CHECK(mat.emissive->wrapV == TextureWrap::Repeat);
+    CHECK(mat.emissive->magFilter == TextureFilter::Linear);
+    CHECK(mat.emissive->minFilter == TextureFilter::Linear);
+    CHECK(mat.emissive->mipFilter == MipFilter::Linear);
+}
+
+TEST_CASE(
+    "model_import: settings.importMaterials == false yields zero materials, every "
+    "materialIndex INVALID_SUBASSET, and leaves externalUris unchanged (MI77, AC-29)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(MATERIALS_FIXTURE);
+    REQUIRE(fixture.ok);
+    ImportSettings settings;
+    settings.importMaterials = false;
+    const ImportResult withMaterials =
+        importModel("materials.gltf", "models", asBytes(fixture.text), ImportSettings{}, ImportDepth::Structure, {});
+    const ImportResult withoutMaterials =
+        importModel("materials.gltf", "models", asBytes(fixture.text), settings, ImportDepth::Structure, {});
+    CHECK(withoutMaterials.model.materials.empty());
+    CHECK(withoutMaterials.model.summary.materialCount == 0);
+    CHECK(withoutMaterials.externalUris == withMaterials.externalUris);  // AC-29's critical half
+    CHECK_FALSE(withMaterials.externalUris.empty());
+}
+
+TEST_CASE(
+    "model_import: MAX_VERTICES_PER_MODEL and MAX_INDICES_PER_MODEL truncate a document whose "
+    "accessor.count claims the excess WITHOUT providing the bytes, and complete quickly (MI78, "
+    "AC-42, D15, sabotage S20's discriminator)") {
+    SUBCASE("vertex cap") {
+        const std::string doc =
+            R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": )"
+            R"(0}, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": )"
+            R"(8000001, "type": "VEC3"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": )"
+            R"(12}], "buffers": [{"byteLength": 12, "uri": )"
+            R"("data:application/octet-stream;base64,AAAAAAAAAAAAAAAA"}]})";
+        const ImportResult result =
+            importModel("huge-vertex-count.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+        CHECK(result.status == ImportStatus::Truncated);
+        CHECK_FALSE(result.message.empty());
+        REQUIRE(result.model.meshes.size() == 1);
+        CHECK(result.model.meshes[0].primitives.empty());
+    }
+    SUBCASE("index cap") {
+        const std::string doc =
+            R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": )"
+            R"(0}, "indices": 1, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, )"
+            R"("count": 3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5123, "count": )"
+            R"(24000001, "type": "SCALAR"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, )"
+            R"("byteLength": 36}, {"buffer": 0, "byteOffset": 36, "byteLength": 2}], "buffers": )"
+            R"([{"byteLength": 38, "uri": "data:application/octet-stream;base64,)"
+            R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAA="}]})";
+        const ImportResult result =
+            importModel("huge-index-count.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+        CHECK(result.status == ImportStatus::Truncated);
+        CHECK_FALSE(result.message.empty());
+        REQUIRE(result.model.meshes.size() == 1);
+        CHECK(result.model.meshes[0].primitives.empty());
+    }
+}
+
+TEST_CASE(
+    "model_import: a wrong-typed accessor, one with no bufferView, and one whose byteOffset "
+    "overruns its view are each skipped with a warning -- no assert fires and no out-of-bounds "
+    "read occurs (MI79, plan §A-4/§A-5, run under ASan)") {
+    SUBCASE("wrong type (SCALAR declared for POSITION)") {
+        const std::string doc =
+            R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": )"
+            R"(0}, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, )"
+            R"("type": "SCALAR"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}], )"
+            R"("buffers": [{"byteLength": 36, "uri": "data:application/octet-stream;base64,)"
+            R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}]})";
+        const ImportResult result =
+            importModel("wrong-type.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+        REQUIRE(result.model.meshes.size() == 1);
+        CHECK(result.model.meshes[0].primitives.empty());
+        CHECK_FALSE(result.warnings.empty());
+    }
+    SUBCASE("no bufferView at all") {
+        const std::string doc =
+            R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": )"
+            R"(0}, "mode": 4}]}], "accessors": [{"componentType": 5126, "count": 3, "type": "VEC3"}]})";
+        const ImportResult result =
+            importModel("no-bufferview.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+        REQUIRE(result.model.meshes.size() == 1);
+        CHECK(result.model.meshes[0].primitives.empty());
+        CHECK_FALSE(result.warnings.empty());
+    }
+    SUBCASE("byteOffset overruns its bufferView") {
+        const std::string doc =
+            R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": )"
+            R"(0}, "mode": 4}]}], "accessors": [{"bufferView": 0, "byteOffset": 1000, "componentType": )"
+            R"(5126, "count": 3, "type": "VEC3"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, )"
+            R"("byteLength": 36}], "buffers": [{"byteLength": 36, "uri": )"
+            R"("data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}]})";
+        const ImportResult result =
+            importModel("overrun.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+        REQUIRE(result.model.meshes.size() == 1);
+        CHECK(result.model.meshes[0].primitives.empty());
+        CHECK_FALSE(result.warnings.empty());
+    }
+}
+
+TEST_CASE(
+    "model_import: asymmetric.gltf at Full depth -- the triangle's positions and winding match "
+    "the source exactly (MI40b, AC-30b, F7b's pin, sabotage S29/S30's discriminator)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(ASYMMETRIC_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("asymmetric.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 1);
+    // The TRS third, re-asserted at Full depth (MI57 asserted it at Structure depth).
+    const auto& node = result.model.nodes[0];
+    CHECK(node.translation.x == doctest::Approx(1.0F));
+    CHECK(node.translation.y == doctest::Approx(2.0F));
+    CHECK(node.translation.z == doctest::Approx(3.0F));
+    CHECK(node.rotation.x == doctest::Approx(0.1601281464099884).epsilon(0.0001));
+    CHECK(node.rotation.w == doctest::Approx(0.8006407618522644).epsilon(0.0001));
+    CHECK(node.scale.x == doctest::Approx(2.0F));
+    CHECK(node.scale.y == doctest::Approx(3.0F));
+    CHECK(node.scale.z == doctest::Approx(4.0F));
+
+    // The asymmetric triangle: exactly the source's values, component for component, in the source's
+    // OWN winding order (0, 1, 2 -- as recorded in the fixture). A mirrored, transposed or reordered
+    // import fails on the FIRST component that differs.
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.positions.size() == 3);
+    CHECK(prim.positions[0].x == doctest::Approx(0.10000000149011612).epsilon(0.0000001));
+    CHECK(prim.positions[0].y == doctest::Approx(0.20000000298023224).epsilon(0.0000001));
+    CHECK(prim.positions[0].z == doctest::Approx(0.30000001192092896).epsilon(0.0000001));
+    CHECK(prim.positions[1].x == doctest::Approx(0.4000000059604645).epsilon(0.0000001));
+    CHECK(prim.positions[1].y == doctest::Approx(0.6000000238418579).epsilon(0.0000001));
+    CHECK(prim.positions[1].z == doctest::Approx(0.5).epsilon(0.0000001));
+    CHECK(prim.positions[2].x == doctest::Approx(0.8999999761581421).epsilon(0.0000001));
+    CHECK(prim.positions[2].y == doctest::Approx(0.699999988079071).epsilon(0.0000001));
+    CHECK(prim.positions[2].z == doctest::Approx(0.800000011920929).epsilon(0.0000001));
+    REQUIRE(prim.indices.size() == 3);
+    CHECK(prim.indices[0] == 0);
+    CHECK(prim.indices[1] == 1);
+    CHECK(prim.indices[2] == 2);
 }
