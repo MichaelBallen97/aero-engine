@@ -18,6 +18,7 @@
 // EVERY walk is an explicit stack, never a recursive function (INV-4/F23).
 //
 // READ-ONLY BY CONTRACT (D19): this panel creates, renames, moves, deletes and opens nothing.
+#include <aero/core/guid.hpp>          // task 3.1.4 -- abstainingScratch's element type, used DIRECTLY
 #include <aero/editor/asset_view.hpp>  // task 3.1.3 -- AssetViewMode, TileSize (pure enums, ImGui-free)
 #include <aero/editor/panel.hpp>
 #include <aero/editor/project_files.hpp>
@@ -46,6 +47,9 @@ namespace engine::editor {
 class AssetDatabase;
 struct AssetScanReport;  // task 3.1.3 -- the SAME forward-declaration-only precedent, applied to a
                          // pointer member's element type.
+struct WatchStatus;      // task 3.1.4 -- the SAME forward-declaration-only precedent as AssetScanReport:
+                         // the header needs only the NAME for a pointer member, so it does not pull in
+                         // <aero/editor/asset_watcher.hpp>. The .cpp includes it.
 
 class AssetBrowserPanel final : public Panel {
 public:
@@ -138,6 +142,32 @@ public:
         return requested;
     }
 
+    // task 3.1.4: 2.2.4's watcher seam, made callable. It is EXACTLY `cache.clear(); treeDirty = true;`
+    // and nothing else -- it must NOT touch currentDir, openDirs, selectedEntry, the search rows, the
+    // ledger or the store. Called from EditorApp's reconcile whenever AssetDatabase::generation()
+    // changed, which makes listing invalidation uniform across EVERY rescan trigger (D8) and closes a
+    // pre-existing gap: requestAssetRescan() rescanned the database but never dropped these listings,
+    // so a test-driven rescan could leave rows on screen for files that no longer existed.
+    void invalidateListings();
+
+    // task 3.1.4 (D9): the pendingThumbnailReimportClear shape verbatim, and for the identical
+    // BLOCKING-1 reason -- a one-shot set from OUTSIDE the draw walk and consumed by the NEXT
+    // serviceThumbnails(), AFTER its touch loop. Never destroys a texture from inside onDraw().
+    void notifyDatabaseRescanned() noexcept { pendingSupersededSweep = true; }
+
+    // task 3.1.4 (D10): reconciled every tick, never owned -- the setDatabase()/setScanReport()
+    // precedent, a THIRD instance. EditorApp owns the watcher; the panel only renders its state.
+    void setWatchStatus(const WatchStatus* status) noexcept { watchStatusPtr = status; }
+
+    // task 3.1.4 (D10): one-shot, read-and-clear -- the takeOrphanDeleteRequest() shape, a FOURTH
+    // instance. std::nullopt == the checkbox was not touched this frame. Drained by EditorApp's
+    // reconcile as its OWN statement (F9).
+    [[nodiscard]] std::optional<bool> takeWatchToggleRequest() noexcept {
+        const std::optional<bool> requested = watchToggleRequest;
+        watchToggleRequest.reset();
+        return requested;
+    }
+
     // task 3.1.3 (A12): black-box observability for the GPU tier, forwarded by EditorApp -- the
     // assetCacheEntryCount() shape verbatim.
     [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept { return ledger.readyCount(); }
@@ -174,6 +204,9 @@ private:
         // path: the orphan's project-relative .meta path -- task 3.1.3, Step 9, APPENDED. Sets
         // pendingOrphanDelete and NOTHING else; the modal that turns this into a real delete is Step 11.
         RequestDeleteOrphan,
+        // path: "1" to enable, "0" to disable -- task 3.1.4 (D10), APPENDED (never inserted --
+        // performance-enum-size, and this enum's own existing comment rule).
+        SetAutoRefresh,
     };
     struct PendingAction {
         ActionKind kind = ActionKind::None;
@@ -260,6 +293,20 @@ private:
     // which the "Issues (N)" label's changing id would otherwise silently defeat (drawIssues()'s
     // own comment has the full reasoning) -- the D5 precedent drawTreePane's `row.open` already sets.
     bool issuesOpen = false;
+
+    // ---- task 3.1.4 ---------------------------------------------------------------------------
+    // Reconciled, never owned (the databasePtr/reportPtr precedent, a third instance). NULL until
+    // EditorApp has pushed one, which the header and footer both handle honestly rather than lying.
+    const WatchStatus* watchStatusPtr = nullptr;
+    std::optional<bool> watchToggleRequest;  // one-shot, drained by takeWatchToggleRequest()
+    // D9: set from OUTSIDE the draw walk (EditorApp's reconcile) and consumed by the NEXT
+    // serviceThumbnails(), AFTER its touch loop -- pendingThumbnailReimportClear's shape verbatim,
+    // and for the identical BLOCKING-1 reason.
+    bool pendingSupersededSweep = false;
+    // MEMBERS, never locals: the visibleThumbnailKeys/breadcrumb/labelScratch idiom, so a
+    // 50 000-record project does not allocate two large vectors on every rescan.
+    std::vector<ThumbnailKey> liveKeyScratch;
+    std::vector<Guid> abstainingScratch;
 };
 
 }  // namespace engine::editor
