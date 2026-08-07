@@ -156,6 +156,36 @@ private:
     mutable bool missingBuffer = false;  // mutable: operator() is const by fastgltf's own contract
 };
 
+// F7b -- THE MOST IMPORTANT COMMENT IN THIS FILE.
+//
+// The engine's math conventions were CHOSEN to match glTF 2.0. aero/core/math.hpp's own header comment
+// says so and names importers as one of the four consumers that inherit them (ADR-005, task 0.2.2):
+// right-handed, Y-up, -Z forward; column-major, Model = T * R * S; radians; Quat is {x,y,z,w}.
+//
+// VERIFIED AT THE BIT LEVEL against fastgltf 0.9.0's own math.hpp: fastgltf::math::vec stores
+// std::array<T,N> with x()==[0]; fastgltf::math::quat stores {x,y,z,w} defaulting to {0,0,0,1};
+// fastgltf::math::mat stores std::array<vec<T,N>,M> where "every vec<> here is a COLUMN".
+//
+// THEREFORE: no handedness flip, no axis swap, no Y/Z exchange, no winding reversal, no quaternion
+// component reordering, no matrix transpose, no degree conversion. THE IMPORTER CONVERTS NOTHING.
+//
+// This is the easiest thing in the whole task to get catastrophically wrong, because "importers
+// convert coordinate systems" is true of nearly every other engine and is exactly the reflex a
+// conscientious implementer brings. A helpful-looking convertFromGltfSpace() here would mirror every
+// model, invert every winding order, and be extremely hard to diagnose from a vertex count.
+// THERE IS NO SUCH FUNCTION, and MI40b (AC-30b) plus sabotage seeds S29/S30 exist to prove that adding
+// one is caught. 3.2.2 (FBX: Z-up, centimetres) IS the task that needs a conversion, and it needs one
+// precisely because glTF is the canonical format these types were built around.
+[[nodiscard]] constexpr Vec2 toVec2(const fastgltf::math::fvec2& v) noexcept { return {v[0], v[1]}; }
+[[nodiscard]] constexpr Vec3 toVec3(const fastgltf::math::fvec3& v) noexcept { return {v[0], v[1], v[2]}; }
+[[nodiscard]] constexpr Vec4 toVec4(const fastgltf::math::fvec4& v) noexcept { return {v[0], v[1], v[2], v[3]}; }
+[[nodiscard]] constexpr Quat toQuat(const fastgltf::math::fquat& q) noexcept { return {q[0], q[1], q[2], q[3]}; }
+[[nodiscard]] constexpr Mat4 toMat4(const fastgltf::math::fmat4x4& m) noexcept {
+    return Mat4{std::array<Vec4, 4>{Vec4{m[0][0], m[0][1], m[0][2], m[0][3]}, Vec4{m[1][0], m[1][1], m[1][2], m[1][3]},
+                                    Vec4{m[2][0], m[2][1], m[2][2], m[2][3]},
+                                    Vec4{m[3][0], m[3][1], m[3][2], m[3][3]}}};
+}
+
 // A6. Called ONLY after loadGltf returned Error::MissingExtensions, i.e. only on an already-failed
 // path. Re-parses the SAME bytes with every extension enabled purely to recover the NAMES, then throws
 // the Asset away. D20 is intact BY CONSTRUCTION: nothing parsed here outlives this function, so no
@@ -204,7 +234,7 @@ private:
 }  // namespace
 
 ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::byte> bytes,
-                        const ImportSettings& /*settings*/, ImportDepth /*depth*/,
+                        const ImportSettings& settings, ImportDepth /*depth*/,
                         std::span<const ExternalBuffer> external) {
     ImportResult result;
     // Phase 1 -- LOAD.
@@ -367,6 +397,91 @@ ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::
         result.model.images.push_back(std::move(out));
     }
     result.model.summary.imageCount = asset.images.size();
+
+    // Phase 4 -- NODES. Cap first (D15): the first N survive, in source order.
+    std::size_t nodeCount = asset.nodes.size();
+    if (nodeCount > MAX_NODES_PER_MODEL) {
+        escalate(result, ImportStatus::Truncated, "node cap (MAX_NODES_PER_MODEL) reached");
+        nodeCount = MAX_NODES_PER_MODEL;
+    }
+    result.model.nodes.resize(nodeCount);
+
+    // Pass 1 -- per node: name, localId, mesh/skin indices, and the TRS. ALWAYS TRS (F5): a `matrix`
+    // source is decomposed.
+    for (std::size_t i = 0; i < nodeCount; ++i) {
+        const fastgltf::Node& node = asset.nodes[i];
+        ImportedNode& out = result.model.nodes[i];
+        out.name = std::string(node.name);
+        out.localId = static_cast<std::uint32_t>(i);
+        if (node.meshIndex.has_value()) {
+            out.meshIndex = static_cast<std::uint32_t>(*node.meshIndex);
+        }
+        if (node.skinIndex.has_value()) {
+            out.skinIndex = static_cast<std::uint32_t>(*node.skinIndex);
+        }
+        if (const auto* const trs = std::get_if<fastgltf::TRS>(&node.transform); trs != nullptr) {
+            out.translation = toVec3(trs->translation);
+            out.rotation = toQuat(trs->rotation);  // {x,y,z,w} -> {x,y,z,w}. NO REORDER (F7b).
+            out.scale = toVec3(trs->scale);
+        } else if (const auto* const m = std::get_if<fastgltf::math::fmat4x4>(&node.transform); m != nullptr) {
+            // Defensive: with DecomposeNodeMatrices set this arm is unreachable, because fastgltf
+            // converts during parse. Kept so a future option change cannot silently produce identity
+            // transforms.
+            fastgltf::math::fvec3 t;
+            fastgltf::math::fquat r;
+            fastgltf::math::fvec3 s;
+            fastgltf::math::decomposeTransformMatrix(*m, s, r, t);  // (matrix, scale, rotation, translation)
+            out.translation = toVec3(t);
+            out.rotation = toQuat(r);
+            out.scale = toVec3(s);
+        }
+    }
+    result.model.summary.nodeCount = result.model.nodes.size();
+
+    // The `matrix`-form warning (AC-19). With Options::DecomposeNodeMatrices set, fastgltf converts a
+    // `matrix` node to TRS during parse and DESTROYS the information that the source used a matrix --
+    // the fmat4x4 arm above is only reachable when the option is NOT set. F5's warning therefore cannot
+    // be emitted from the parsed asset at all. Decided (plan §D-3.5): one aggregate, source-text
+    // HEURISTIC warning per document, from a single find over the raw bytes -- for a .glb the JSON
+    // chunk is a prefix of `bytes`, so the same find works without parsing the container. A false
+    // positive costs one warning; a false negative costs none; it is not load-bearing for correctness.
+    if (std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()).find(R"("matrix")") !=
+        std::string_view::npos) {
+        addWarning(result, "the document uses a node 'matrix'; decomposed to translation/rotation/scale");
+    }
+
+    // Pass 2 -- the hierarchy (A24: ONE pass, no visited set, no recursion). A node can never gain a
+    // second parent, so `children` forms a forest by construction -- this is INHERENTLY ACYCLIC, and a
+    // `children` array that names its own ancestor produces one "already has a parent" warning and no
+    // edge, never an infinite loop. misc-no-recursion is satisfied trivially.
+    std::vector<std::uint32_t> parentOf(nodeCount, INVALID_SUBASSET);
+    for (std::size_t i = 0; i < nodeCount; ++i) {
+        for (const std::size_t c : asset.nodes[i].children) {
+            if (c >= nodeCount) {
+                addWarning(result, std::format("node {}: child index {} is out of range", i, c));
+                continue;
+            }
+            if (parentOf[c] != INVALID_SUBASSET) {
+                addWarning(result, std::format("node {}: already has a parent; the first in source order wins", c));
+                continue;
+            }
+            parentOf[c] = static_cast<std::uint32_t>(i);
+            result.model.nodes[i].children.push_back(static_cast<std::uint32_t>(c));
+        }
+    }
+    for (std::size_t i = 0; i < nodeCount; ++i) {
+        result.model.nodes[i].parent = parentOf[i];
+        if (parentOf[i] == INVALID_SUBASSET) {
+            result.model.roots.push_back(static_cast<std::uint32_t>(i));  // AC-21: SOURCE ORDER
+        }
+    }
+
+    // Scale (A22): settings.scale multiplies ONLY roots' translations. Scaling every node's translation
+    // would compound the scale down the hierarchy -- the single easiest thing in this task to get
+    // wrong.
+    for (const std::uint32_t rootIndex : result.model.roots) {
+        result.model.nodes[rootIndex].translation *= settings.scale;
+    }
 
     return result;
 }

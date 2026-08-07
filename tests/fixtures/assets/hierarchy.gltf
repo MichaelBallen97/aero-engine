@@ -1,0 +1,92 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "aero-engine test fixture (hand-authored)"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0,
+        4
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "RootA",
+      "translation": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "children": [
+        1,
+        5
+      ]
+    },
+    {
+      "name": "Child1",
+      "translation": [
+        0.0,
+        2.0,
+        0.0
+      ],
+      "children": [
+        2,
+        99
+      ]
+    },
+    {
+      "name": "Child2",
+      "translation": [
+        0.0,
+        0.0,
+        3.0
+      ],
+      "children": [
+        3
+      ]
+    },
+    {
+      "name": "Child3",
+      "translation": [
+        4.0,
+        4.0,
+        4.0
+      ]
+    },
+    {
+      "name": "RootB-Matrix",
+      "matrix": [
+        2.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0,
+        0.0,
+        5.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "children": [
+        5
+      ]
+    },
+    {
+      "name": "Contested",
+      "translation": [
+        6.0,
+        0.0,
+        6.0
+      ]
+    }
+  ]
+}

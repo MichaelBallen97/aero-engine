@@ -1,0 +1,119 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "aero-engine test fixture (hand-authored) -- F7b's pin, plan A21"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Asymmetric",
+      "translation": [
+        1.0,
+        2.0,
+        3.0
+      ],
+      "rotation": [
+        0.1601281464099884,
+        0.3202562928199768,
+        0.4803844690322876,
+        0.8006407618522644
+      ],
+      "scale": [
+        2.0,
+        3.0,
+        4.0
+      ],
+      "mesh": 0,
+      "skin": 0
+    }
+  ],
+  "meshes": [
+    {
+      "name": "AsymmetricTriangle",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0
+          },
+          "indices": 1,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "skins": [
+    {
+      "name": "AsymmetricSkin",
+      "joints": [
+        0
+      ],
+      "skeleton": 0,
+      "inverseBindMatrices": 2
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "byteOffset": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [
+        0.10000000149011612,
+        0.20000000298023224,
+        0.30000001192092896
+      ],
+      "max": [
+        0.8999999761581421,
+        0.699999988079071,
+        0.800000011920929
+      ]
+    },
+    {
+      "bufferView": 1,
+      "byteOffset": 0,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 2,
+      "byteOffset": 0,
+      "componentType": 5126,
+      "count": 1,
+      "type": "MAT4"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 36,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 36,
+      "byteLength": 6,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 44,
+      "byteLength": 64
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 108,
+      "uri": "data:application/octet-stream;base64,zczMPc3MTD6amZk+zczMPpqZGT8AAAA/ZmZmPzMzMz/NzEw/AAABAAIAAAAAAIA/AAAAQAAAQEAAAIBAAACgQAAAwEAAAOBAAAAAQQAAEEEAACBBAAAwQQAAQEEAAFBBAABgQQAAcEEAAIBB"
+    }
+  ]
+}

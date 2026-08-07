@@ -466,8 +466,9 @@ TEST_CASE(
 // using `matrix` instead of TRS, node 1's children naming an out-of-range index (99), and node 5
 // claimed by BOTH root's children lists -- node 0 (source order i=0) wins over node 4 (i=4).
 
-TEST_CASE("model_import: hierarchy.gltf's depth-4 chain has correct parent/children edges and TRS "
-          "values (MI47, AC-18)") {
+TEST_CASE(
+    "model_import: hierarchy.gltf's depth-4 chain has correct parent/children edges and TRS "
+    "values (MI47, AC-18)") {
     const scene_golden::FileBytes fixture = scene_golden::readBytes(HIERARCHY_FIXTURE);
     REQUIRE(fixture.ok);
     const ImportResult result =
@@ -506,8 +507,9 @@ TEST_CASE("model_import: hierarchy.gltf's depth-4 chain has correct parent/child
     CHECK(n3.children.empty());
 }
 
-TEST_CASE("model_import: hierarchy.gltf's roots are exactly the parentless nodes, in source order "
-          "(MI48, AC-21)") {
+TEST_CASE(
+    "model_import: hierarchy.gltf's roots are exactly the parentless nodes, in source order "
+    "(MI48, AC-21)") {
     const scene_golden::FileBytes fixture = scene_golden::readBytes(HIERARCHY_FIXTURE);
     REQUIRE(fixture.ok);
     const ImportResult result =
@@ -517,8 +519,9 @@ TEST_CASE("model_import: hierarchy.gltf's roots are exactly the parentless nodes
     CHECK(result.model.roots[1] == 4);
 }
 
-TEST_CASE("model_import: hierarchy.gltf's matrix node decomposes to TRS and the document produces "
-          "exactly one 'matrix' warning (MI49, AC-19 as amended)") {
+TEST_CASE(
+    "model_import: hierarchy.gltf's matrix node decomposes to TRS and the document produces "
+    "exactly one 'matrix' warning (MI49, AC-19 as amended)") {
     const scene_golden::FileBytes fixture = scene_golden::readBytes(HIERARCHY_FIXTURE);
     REQUIRE(fixture.ok);
     const ImportResult result =
@@ -548,8 +551,9 @@ TEST_CASE("model_import: hierarchy.gltf's matrix node decomposes to TRS and the 
     CHECK(matrixWarnings == 1);
 }
 
-TEST_CASE("model_import: an out-of-range child index is dropped with one warning; every other edge "
-          "survives (MI50)") {
+TEST_CASE(
+    "model_import: an out-of-range child index is dropped with one warning; every other edge "
+    "survives (MI50)") {
     const scene_golden::FileBytes fixture = scene_golden::readBytes(HIERARCHY_FIXTURE);
     REQUIRE(fixture.ok);
     const ImportResult result =
@@ -565,8 +569,9 @@ TEST_CASE("model_import: an out-of-range child index is dropped with one warning
     CHECK(result.model.nodes[1].children.size() == 1);  // [2, 99] -> [2]
 }
 
-TEST_CASE("model_import: a child claimed by two parents keeps the FIRST parent in source order, with "
-          "one warning (MI51, E25)") {
+TEST_CASE(
+    "model_import: a child claimed by two parents keeps the FIRST parent in source order, with "
+    "one warning (MI51, E25)") {
     const scene_golden::FileBytes fixture = scene_golden::readBytes(HIERARCHY_FIXTURE);
     REQUIRE(fixture.ok);
     const ImportResult result =
@@ -583,16 +588,17 @@ TEST_CASE("model_import: a child claimed by two parents keeps the FIRST parent i
     CHECK(sawAlreadyHasParent);
 }
 
-TEST_CASE("model_import: a synthesised cyclic children array terminates, imports every node once, and "
-          "reports one warning (MI52, AC-20)") {
+TEST_CASE(
+    "model_import: a synthesised cyclic children array terminates, imports every node once, and "
+    "reports one warning (MI52, AC-20)") {
     // node0 -(child)-> node1 -(child)-> node2 -(child, an ANCESTOR back-edge)-> node1. Node1 is already
     // claimed by node0 (source order i=0, before i=2 tries), so node2's back-edge is refused -- one
     // warning, no edge, and the tree stays a tree (A24).
     const std::string doc = R"({"asset":{"version":"2.0"},"nodes":[)"
-                             R"({"name":"Root","children":[1]},)"
-                             R"({"name":"Mid","children":[2]},)"
-                             R"({"name":"Leaf","children":[1]})"
-                             R"(]})";
+                            R"({"name":"Root","children":[1]},)"
+                            R"({"name":"Mid","children":[2]},)"
+                            R"({"name":"Leaf","children":[1]})"
+                            R"(]})";
     const ImportResult result =
         importModel("cycle.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
     REQUIRE(result.model.nodes.size() == 3);
@@ -606,8 +612,9 @@ TEST_CASE("model_import: a synthesised cyclic children array terminates, imports
     CHECK(result.warningTotal == 1);
 }
 
-TEST_CASE("model_import: settings.scale multiplies ONLY roots' translations; a depth-1 child is "
-          "unchanged (MI53, AC-30, sabotage S13's discriminator)") {
+TEST_CASE(
+    "model_import: settings.scale multiplies ONLY roots' translations; a depth-1 child is "
+    "unchanged (MI53, AC-30, sabotage S13's discriminator)") {
     const scene_golden::FileBytes fixture = scene_golden::readBytes(HIERARCHY_FIXTURE);
     REQUIRE(fixture.ok);
     ImportSettings settings;
@@ -615,14 +622,15 @@ TEST_CASE("model_import: settings.scale multiplies ONLY roots' translations; a d
     const ImportResult result =
         importModel("hierarchy.gltf", "", asBytes(fixture.text), settings, ImportDepth::Structure, {});
     REQUIRE(result.model.nodes.size() == 6);
-    CHECK(result.model.nodes[0].translation.x == doctest::Approx(2.0F));  // root: 1 * 2
+    CHECK(result.model.nodes[0].translation.x == doctest::Approx(2.0F));   // root: 1 * 2
     CHECK(result.model.nodes[4].translation.x == doctest::Approx(10.0F));  // root: 5 * 2
-    CHECK(result.model.nodes[1].translation.y == doctest::Approx(2.0F));  // CHILD: unchanged
-    CHECK(result.model.nodes[2].translation.z == doctest::Approx(3.0F));  // CHILD: unchanged
+    CHECK(result.model.nodes[1].translation.y == doctest::Approx(2.0F));   // CHILD: unchanged
+    CHECK(result.model.nodes[2].translation.z == doctest::Approx(3.0F));   // CHILD: unchanged
 }
 
-TEST_CASE("model_import: MAX_NODES_PER_MODEL truncates a document, keeping a coherent smaller model "
-          "(MI54, AC-42, D15)") {
+TEST_CASE(
+    "model_import: MAX_NODES_PER_MODEL truncates a document, keeping a coherent smaller model "
+    "(MI54, AC-42, D15)") {
     std::string doc = R"({"asset":{"version":"2.0"},"nodes":[)";
     for (std::size_t i = 0; i < engine::editor::MAX_NODES_PER_MODEL + 1; ++i) {
         if (i != 0) {
@@ -638,10 +646,11 @@ TEST_CASE("model_import: MAX_NODES_PER_MODEL truncates a document, keeping a coh
     CHECK(result.model.nodes.size() == engine::editor::MAX_NODES_PER_MODEL);
 }
 
-TEST_CASE("model_import: a node's mesh/skin indices are set when present, INVALID_SUBASSET otherwise "
-          "(MI55)") {
+TEST_CASE(
+    "model_import: a node's mesh/skin indices are set when present, INVALID_SUBASSET otherwise "
+    "(MI55)") {
     const std::string doc = R"({"asset":{"version":"2.0"},)"
-                             R"("nodes":[{"name":"WithMeshSkin","mesh":0,"skin":0},{"name":"Bare"}]})";
+                            R"("nodes":[{"name":"WithMeshSkin","mesh":0,"skin":0},{"name":"Bare"}]})";
     const ImportResult result =
         importModel("mesh-skin-refs.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
     REQUIRE(result.model.nodes.size() == 2);
@@ -662,8 +671,9 @@ TEST_CASE("model_import: a node with no name imports name==\"\" and localId==its
     CHECK(result.model.nodes[1].localId == 1);
 }
 
-TEST_CASE("model_import: asymmetric.gltf's node TRS matches the hand-computed literals exactly -- "
-          "F7b's pin, the TRS third (MI57, AC-30b)") {
+TEST_CASE(
+    "model_import: asymmetric.gltf's node TRS matches the hand-computed literals exactly -- "
+    "F7b's pin, the TRS third (MI57, AC-30b)") {
     const scene_golden::FileBytes fixture = scene_golden::readBytes(ASYMMETRIC_FIXTURE);
     REQUIRE(fixture.ok);
     const ImportResult result =
