@@ -3567,3 +3567,131 @@ box, a worse regression than the block it replaces. Worth noting while here: `as
 already ships `"—"` (U+2014, `UNKNOWN_SIZE`) and `"…"` (U+2026, the GUID and caption elision), both of
 which are outside that same default range — **whether they render correctly is unverified**, and the
 still-unowned Unicode font is the real fix for all three.
+
+#### Task 3.1.4 — Hot-reload file watcher
+
+**3.1.4 gives the Asset Browser a filesystem watcher: edit a texture in an external application,
+alt-tab back to Aero, and the tile updates with no button click.** One new `/editor` pair,
+`asset_watcher.{hpp,cpp}` — a value type sweeping the assets tree on a per-tick directory budget,
+composing `listDirectory`/`canonicalDirectory` and nothing else, with zero file reads (no `.meta`
+parsed, no byte hashed) and zero logging of its own. Every settlement rule (the two-condition
+stability+age test, the deferral/forced-fire cap, the carry-forward for an unreadable sub-directory,
+the `Library/` exclusion by canonical path) is a **pure function** provable from `std::vector` literals
+with an injected clock — `isSettled`/`diffSnapshots`/`applyChanges`, tier-0, no disk. `AssetWatcher`
+itself is the ONE impure entry point (`poll()`), tested against a real scratch `TempDir` with an
+injected clock, never a sleep. Downstream, `AssetDatabase::generation()` (bumped as the FIRST statement
+of `rescan()`, since the function has three return paths) is now the single signal driving BOTH the
+Asset Browser's listing invalidation and the superseded-thumbnail release — uniform across every
+rescan trigger (watcher, both buttons, `requestAssetRescan()`, an orphan delete, a root change) rather
+than per-trigger, closing a pre-existing latent gap where `requestAssetRescan()` rescanned the database
+but never dropped the panel's own directory listings. `ThumbnailLedger::supersededBy()` (pure, three
+conditions: not touched this frame, not live, not abstaining) is what actually frees a superseded
+texture's GPU resources, and it is drained from `serviceThumbnails()` — never from `onDraw()` — for
+the identical BLOCKING-1 reason 3.1.3 fixed once already (`SDL_ReleaseGPUTexture` frees synchronously
+on Vulkan/D3D12, only defers on Metal). **Zero paths under `engine/`** — the no-engine-change streak
+that 3.1.3 restarted at one goes to two.
+
+**D12's five deliberate exclusions, named so nobody reads them as oversights:** no native OS watcher
+(FSEvents/`ReadDirectoryChangesW`/inotify), no owned thread, no `#ifdef` — the poll composes data
+`FileEntry` has carried since 3.1.2, and a native backend is a reversible decision behind the
+`AssetWatcher` seam, not a roadmap row. Scene files are not hot-reloaded (a `.aero` changing under an
+edited World is a data-loss path with no correct silent response). `project.json` is not hot-reloaded
+(2.6.2 D6's posture: the Project Settings panel is bound to the in-memory session, no Reload, by
+design). Scripts and shaders are out of scope. Nothing outside the assets root, including `Library/`
+and the scenes root, is watched.
+
+**The native-backend deferral, recorded with its exact reversal conditions so it is never re-derived:**
+FSEvents/`ReadDirectoryChangesW`/inotify are each a real, ongoing per-platform liability (coalescing,
+ordering, a `max_user_watches` ceiling, buffer-overflow drops, different behaviour on network and
+case-insensitive volumes), and every rule this task ships is provable mechanically with a poll, which
+no OS backend's real behaviour can be. It would also be the editor's first `#ifdef` and first owned
+thread — both counts stay at zero. **What would reverse this:** a measured sweep cost above ~2 ms/tick
+on a real project after the budget (`WATCH_DIRS_PER_POLL = 8`) is tuned, or a Phase 4 script-reload loop
+where 1–2 s of poll latency is felt on every save. Neither is knowable before 3.2.1 and 4.3.3 exist. If
+it becomes true, the native backend is a **new task behind `poll()`'s own seam** — `WatchSnapshot` is
+what a backend would fill, and nothing downstream of it would need to change.
+
+**Build-time findings — one of them load-bearing enough to be a corrected acceptance criterion, not
+merely a note:**
+- **The plan's own I44/I50 trigger-count predictions were mechanically wrong, found by RUNNING the
+  cases rather than by re-deriving them on paper.** §A-1's own worked table proves the FIRST scan of a
+  fresh project produces a two-sweep "echo" (the scan writes `.meta` sidecars; the watcher's next
+  sweep sees them as additions and fires once more) — but the plan's own I44 spec then asserted `+1`
+  trigger for writing a SECOND, later file, which is the IDENTICAL mechanism the plan's own A1 section
+  had just proven, just not generalised past "the first file only": ANY brand-new file without a prior
+  sidecar produces the SAME two-trigger echo (the file itself, then its freshly-written `.meta`),
+  confirmed directly (`baseTriggers + 2`, not `+1`, measured against the real binary before the fix).
+  Fixed by ticking to a SECOND quiescence rather than a fixed sweep count and asserting `+2`,
+  documented at the call site. I50 needed the identical fix for the same underlying reason.
+- **I50's own scenario, as literally specified, cannot exercise `requestAssetRescan()` racing the
+  watcher at all**, because with `dirsPerPoll == 64` / `cooldownMs == 0` the watcher's own `poll()`
+  always runs first in the SAME tick and always sees a file written just before that tick — there is no
+  tick on which a manual rescan can "win". Redesigned around a genuinely divergent state (`lastProbe`
+  updated on every completed sweep, deferred or not; `committed` only on a fire) using a permanently
+  unsettled "poison" file (AW38's own forward-dated-mtime trick) to hold a settled addition in
+  `lastProbe` while `committed` lags behind it, then issuing the manual rescan into that gap.
+- **`AssetWatcher::carryForward` (used by exactly one call site) survives sabotage seed S13's removal
+  compiling clean**, since a private member function that loses its only caller is not diagnosed as
+  unused by this project's warning set — recorded as a fact about this build's coverage, not a defect.
+
+**One genuine test-quality gap closed outright (not merely logged), found by sabotage seed S4:**
+`AW6` only exercises `current.stampKnown == false` against `previous == nullptr`, and `AW22`'s own
+"unsettled" fixture happens to reuse `probe` as `lastProbe`, so its previous entry ALSO carries
+`stampKnown == false` — removing D2's carve-out 3 (the CURRENT-side guard S4 targets) leaves `AW22`
+green, because the SEPARATE previous-side check inside `stable` catches it by coincidence. Closed with
+`AW6b`: `current.stampKnown == false` against a previous entry that is otherwise a perfect, stable
+match — the one case that can discriminate S4 on its own. Confirmed red under the seed, green on real
+code, landed as its own follow-up commit (`d06a2b8`, the 3.1.3 `AV39b` precedent).
+
+**One genuine, confirmed coverage gap left open rather than force-closed, found by sabotage seed S16:**
+the plan predicted `I50` was the call site's "only cover" for `AssetWatcher::noteExternalScan()`'s
+call in `editor_app.cpp`'s reconcile block. Two independent redesigns of `I50` (the redundant-rescan
+form and the deferred-sweep-divergence form) were both empirically confirmed, by running the SAME
+seed against BOTH designs, to converge on the IDENTICAL aggregate trigger count whether the call fires
+or not — the bug and the fix differ only in which entries get bundled into that one trigger (a genuine
+duplicate re-report vs. two legitimate new `.meta` sidecars), content `EditorApp`'s black-box surface
+(trigger/sweep/entry COUNTS, never diff CONTENT) cannot distinguish. `AW42` cannot cover it either, for
+the identical reason the plan itself predicted (it drives the method directly, with nothing to
+diverge from). Documented at the assertion site rather than papered over with a fragile, timing-
+dependent test: closing it for real needs a new `EditorApp` seam (e.g. surfacing `lastDiff()`'s
+path-level content), which is beyond what a sabotage finding alone licenses adding.
+
+**The sabotage matrix — all 25 seeds (S1–S25), plus all 3 mandatory second-order checks per seed
+(present via `git diff`, rebuilt via the build tool's own incremental step list, reverted byte-for-byte
+clean via `git diff` and `git show HEAD:<file> | diff -q -`), run and confirmed against the real built
+binaries. Arithmetic: 15 matched their prediction exactly, 4 confirmed non-discriminators exactly as
+predicted, 0 predicted contingencies, 6 differently-shaped findings (15+4+0+6 = 25).**
+
+| # | Seed | Predicted | Actual | Verdict |
+|---|---|---|---|---|
+| S1 | `isSettled`: `return stable && oldEnough;` → `return oldEnough;` | AW11, AW12, AW22, AW32 | AW11, AW12, **AW13**, AW32 | Differently-shaped: AW13 (an uncomparable PREVIOUS, not exercised by AW22's own coincidental fixture) discriminates instead of AW22 |
+| S2 | `isSettled`: `oldEnough = age >= threshold` → `= true` | AW8, AW10 | AW8, AW10 | Matched |
+| S3 | `isSettled`: `age >= threshold` → `age > threshold` | AW27, AW28 | AW27, AW28 | Matched |
+| S4 | `isSettled`: delete the `!current.stampKnown` guard | AW6, AW22 | AW6 only | Differently-shaped: AW22 stays green (its own `lastProbe == probe` fixture masks it via the SEPARATE previous-side check) — closed with new case AW6b |
+| S5 | `diffSnapshots` committedOnly: route through `appendIfSettled` | AW17; AW31 weak | AW17; AW31 green | Matched |
+| S6 | `finishSweep`: defer condition → `if (false)` | AW38 | AW38 | Matched |
+| S7 | `finishSweep`: `committed = applyChanges(...)` → `committed = building;` | AW39 only | AW39 only | Matched |
+| S8 | `poll` file arm: `isWatchableAssetName` → `isScannableAssetName` | AW35 | AW35 | Matched |
+| S9 | `poll` file arm: `else if (isWatchableAssetName(...))` → `else` | AW34(b); I47 weak | AW34; I47 green | Matched |
+| S10 | `poll` dir arm: delete the `Library/` exclusion | AW34(c) only | AW34 **and AW41** | Differently-shaped: AW41 arm (c) also builds a Library/-inside-assets scenario and discriminates too — the plan's "ONLY discriminator" claim was too narrow |
+| S11 | `poll` dir arm: depth-limit test → `if (false)` | AW46 | AW46 | Matched |
+| S12 | `poll` dir arm: alias-skip → unconditional insert | AW45 | AW45 | Matched |
+| S13 | `poll` unreadable-sub-dir arm: delete `carryForward(dir.rel)` | AW43 | AW43 | Matched |
+| S14 | `poll` unreadable arm: `if (dir.rel.empty())` → `if (false)` | AW44 | AW44 | Matched |
+| S15 | `finishSweep`: `if (primeOnNextSweep)` → `if (false)` | AW29, AW41(b); I44 green | AW29, AW30, AW31, AW32, AW34, AW35, AW36, AW38, AW39, AW40, AW41, AW42 (**12 cases**); I44 green | Differently-shaped, MUCH broader blast radius: skipping priming poisons the FIRST sweep of every case that builds a baseline, not just the two named |
+| S16 | `editor_app.cpp` reconcile: delete `noteExternalScan()` call | I50 | **nothing, confirmed empirically twice** | Differently-shaped: a genuine, confirmed coverage gap — `EditorApp`'s count-only black-box surface cannot distinguish a legitimate bundled trigger from one that also silently repeats an already-known path; left open and documented, not force-closed |
+| S17 | `poll`: drop `&& processed < cfg.dirsPerPoll` | AW36 | AW36 | Matched |
+| S18 | `finishSweep`: `cooldownRemainingMs = cfg.cooldownMs` → `= 0` | AW37 | AW37 | Matched |
+| S19 | `editor_app.cpp`: detection takes effect next tick | none | none (95/95 green) | Confirmed non-discriminator |
+| S20 | `asset_database.cpp`: delete `++generationValue;` | AD-g2–g6, I49 | AD-g2–g6, I49 | Matched |
+| S21 | `supersededBy`: delete the abstaining-guard | TC42, TC49 | TC42, TC49 | Matched |
+| S22 | `supersededBy`: delete the touched-this-frame guard | TC43, TC44, TC49; I49 (macOS) green | TC43, **TC49 only** (TC44 green); I49 green | Differently-shaped: TC44's OWN fixture (`currentFrame == 8` against `lastTouched == 7`) was never going to be superseded either way, so it never discriminated this guard specifically |
+| S23 | `asset_browser_panel.cpp`: move the superseded sweep into `onDraw()` | none at runtime; caught by the mechanical grep/human read | none at runtime (I49 green); the call site visibly moved under `onDraw()` in the source | Matched |
+| S24 | `editor_app.cpp`: delete `invalidateListings()` call | none/weak | none (95/95 green) | Confirmed non-discriminator |
+| S25 | `asset_watcher.hpp`: `visitedCanonical` → `std::set` | nothing locally; Windows-CI-only via the aggregate `static_assert`s | nothing locally (95/95 green; libc++'s `std::set` move is `noexcept`) | Confirmed non-discriminator |
+
+**macOS human validation: pending.** No row of this task's ten-row validation page has been run yet;
+Windows and Linux rows remain pending as for every task since Phase 2. **R1's real sweep-cost number
+(human rows 4 and 9) is therefore still unmeasured** — nothing in this entry or in `CLAUDE.md` may cite
+a performance figure this task did not measure.
+still-unowned Unicode font is the real fix for all three.
