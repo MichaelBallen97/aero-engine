@@ -10,8 +10,13 @@
 // sidecar, never overwrite an invalid one, never delete an orphan, repair a duplicate
 // deterministically) is provable from a std::vector literal and a fixed seed.
 #include <aero/core/guid.hpp>
-#include <aero/editor/asset_cache.hpp>  // task 3.1.2: ImportChange, ContentHash. ONE WAY ONLY -- asset_cache.hpp
-                                        // must NEVER include this file (docs/09 §6.9 / plan A20).
+#include <aero/editor/asset_cache.hpp>      // task 3.1.2: ImportChange, ContentHash. ONE WAY ONLY -- asset_cache.hpp
+                                            // must NEVER include this file (docs/09 §6.9 / plan A20).
+#include <aero/editor/import_settings.hpp>  // task 3.2.1 -- ImportSettings + the two importer-identity
+                                            // constants ONLY. This header deliberately does NOT
+                                            // include model_import.hpp, which would drag aero::scene
+                                            // and the math umbrella onto every TU that touches an
+                                            // asset record (plan §A-11).
 
 #include <cstddef>
 #include <cstdint>
@@ -73,6 +78,23 @@ enum class MetaError : std::uint8_t {
     NilGuid,
 };
 
+// task 3.2.1 (D6). docs/09 §5.9. The OPTIONAL `importer` block: user intent, committed to git,
+// surviving a machine change. THE FORMAT VERSION STAYS 1, and that is load-bearing:
+//
+//   A v2 bump is a DATA-LOSS TRAP in this codebase. parseMeta rejects version != 1 with "unsupported
+//   asset meta format version <N>", which makes the record AssetMetaState::Invalid with a NIL GUID --
+//   and D7 then forbids overwriting an invalid sidecar, correctly and permanently. An older build (a
+//   teammate who has not pulled; the user's own previous install; a bisect) opening a v2 project marks
+//   EVERY asset invalid, with no identity, and cannot repair a single one. There is no recovery path
+//   that does not involve hand-editing files. An ADDITIVE OPTIONAL KEY at version 1 degrades instead:
+//   §5.1's unknown-root-key rule means an older build reads the GUID correctly, warns once per model
+//   asset, and loses only the settings -- which it could not have honoured anyway.
+struct MetaImporterBlock {
+    std::string name;           // "gltf"
+    std::uint32_t version = 0;  // GLTF_IMPORTER_VERSION at write time
+    ImportSettings settings;
+};
+
 struct MetaParseResult {
     std::optional<Guid> guid;  // engaged == success
     MetaError error = MetaError::None;
@@ -80,8 +102,30 @@ struct MetaParseResult {
     std::uint32_t line = 0;  // > 0 ONLY for a JSON-stage failure
     std::uint32_t column = 0;
     std::vector<std::string> unknownKeys;  // AC-14: WARNed by the CALLER, never here
+    // ---- task 3.2.1, APPENDED (3.1.2's A2 trap: APPENDED, NEVER INSERTED -- asset_meta_test.cpp holds
+    // positional aggregate initializers, and `bool -> uint32_t` is a PROMOTION that nothing
+    // diagnoses) ----
+    //
+    // ENGAGEMENT is the signal: engaged == a well-formed `importer` block was present.
+    // Disengaged == the block was ABSENT **or** MALFORMED.
+    std::optional<MetaImporterBlock> importer;
+    // "" iff the block was absent OR parsed cleanly. NON-EMPTY + DISENGAGED == malformed, and THAT
+    // pair is how a caller distinguishes "absent" from "broken" -- NEVER by inspecting `unknownKeys`.
+    std::string importerMessage;
 };
+
+// AC-12/INV-M11, and it is THE load-bearing rule of this extension: a malformed importer block NEVER
+// invalidates an identity. `error` stays MetaError::None, `guid` stays engaged, and the failure
+// surfaces ONLY through the two fields above. This asymmetry with every other field in the format is
+// DELIBERATE: `version` and `guid` are IDENTITY, and a failure there is fatal; the importer block is
+// PREFERENCE, and a failure there costs a user their settings, not their asset. NO NEW MetaError
+// ENUMERATOR IS ADDED, for exactly that reason.
+
 [[nodiscard]] MetaParseResult parseMeta(std::string_view text);
+// D7's omit-when-default rule lives HERE, in exactly ONE place.
+[[nodiscard]] std::string writeMetaText(Guid guid, const ImportSettings& settings);
+// The existing one-argument overload becomes a ONE-LINE DELEGATE to the above with ImportSettings{},
+// so AC-9's byte-identity is true BY CONSTRUCTION rather than by two writers agreeing (INV-M10).
 [[nodiscard]] std::string writeMetaText(Guid guid);  // canonical, exactly one trailing '\n'
 
 // ---- the lifecycle, as a PURE function (D5-D9) ------------------------------------------------

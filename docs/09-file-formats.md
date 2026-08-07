@@ -473,17 +473,19 @@ file. No golden fixtures; this format has no byte-stability requirement any call
 > Enforced in code by `editor/src/asset_meta.cpp` (the pure parse/write/lifecycle half) and
 > `editor/src/asset_database.cpp` (the `<filesystem>`-and-disk half, task 3.1.1);
 > `tests/editor/asset_meta_test.cpp` and `tests/editor/asset_database_test.cpp` are its
-> machine-checkable form, including a two-fixture golden battery (§5.7) mirroring §4.8's design.
+> machine-checkable form, including a three-fixture golden battery (§5.7, task 3.2.1's
+> `importer-settings.meta` the third) mirroring §4.8's design.
 
 ### 5.1 Envelope
 
-One `.meta` per source asset, named `<full source file name>.meta`, in the same directory. Two root
-keys, in this exact order on save.
+One `.meta` per source asset, named `<full source file name>.meta`, in the same directory. Up to three
+root keys, in this exact order on save.
 
 | Key | Kind | Required | Rule | Error |
 |---|---|---|---|---|
 | `version` | number, integral | yes | must equal `1` | §5.4 |
 | `guid` | string | yes | exactly 32 hex digits, any case; must not be nil | §5.4 |
+| `importer` | object | no | additive at v1, task 3.2.1 -- see §5.9 | §5.4 |
 
 `version` is validated first. Unknown root keys are WARNed (by the caller) and ignored, collected in
 document order.
@@ -525,6 +527,33 @@ Success-only warnings (document order, caller-emitted; the parser never logs):
 |---|
 | `editor: asset meta '<relative path>' -- ignoring unknown key "<k>"` |
 
+The same warning covers a `k` nested inside the `importer` block (§5.9): a key the parser did not
+recognise there is reported with its DOTTED PATH, e.g. `"importer.foo"` or `"importer.settings.foo"`,
+through this identical mechanism -- never a second warning shape.
+
+**Importer-block messages (task 3.2.1, §5.9) — non-fatal, returned directly by `parseMeta`, never
+touching `error`/`guid`/`unknownKeys` above.** First violation wins, in the order shown; a JSON kind is
+`<kind>`, and a number that fails a *form* rule (non-integer, non-finite) instead shows its own
+quoted lexeme, exactly like `<kind-or-lexeme>` above.
+
+| Message |
+|---|
+| `"importer" must be a JSON object (found <kind>)` |
+| `missing required key "importer.name"` |
+| `"importer.name" must be a string (found <kind>)` |
+| `missing required key "importer.version"` |
+| `"importer.version" must be an integer (found <kind-or-lexeme>)` |
+| `missing required key "importer.settings"` |
+| `"importer.settings" must be a JSON object (found <kind>)` |
+| `missing required key "importer.settings.scale"` |
+| `"importer.settings.scale" must be a finite number (found <kind-or-lexeme>)` |
+| `missing required key "importer.settings.importMaterials"` |
+| `"importer.settings.importMaterials" must be a boolean (found <kind>)` |
+| `missing required key "importer.settings.importAnimations"` |
+| `"importer.settings.importAnimations" must be a boolean (found <kind>)` |
+| `missing required key "importer.settings.importSkins"` |
+| `"importer.settings.importSkins" must be a boolean (found <kind>)` |
+
 ### 5.5 Worked example
 
 The exact **65 bytes** a creation writes:
@@ -545,16 +574,58 @@ The exact **65 bytes** a creation writes:
 `tests/fixtures/assets/` — content pins with **no regeneration path whatsoever** (§2.7/§4.8's design,
 third application), plus §4.8's standing warning restated: bytes are necessary and never sufficient,
 so every byte-fixpoint case is paired with a semantic case that reads the fixture without re-deriving
-it.
+it. `importer-settings.meta` (task 3.2.1) pins the §5.9 envelope with a **non-default** block, byte for
+byte, alongside `minimal.meta` (the two-key envelope) and `unknown-keys.meta` (the unrecognised-key
+case, whose own `importer` value is a bare string — MALFORMED, not a §5.9 block at all, so it stays an
+ordinary unknown key exactly as it did before task 3.2.1).
 
 ### 5.8 Scope of v1
 
 Directories carry no `.meta`. Content hashes and dependency records did NOT arrive here: task 3.1.2
 put them in §6's machine-local import cache instead, and this prediction was wrong. A hash in a
 committed file would need a third write path (repealing §5.3's never-rewrite rule), would dirty two
-files on every save, and would put unresolvable merge conflicts on derived data. Import settings are
-still expected here — they are user intent, they must be committed, and they must survive a machine
-change — and are 3.2's to define; §6's `metaHash` already invalidates an import when they change.
+files on every save, and would put unresolvable merge conflicts on derived data. **Import settings
+arrived at task 3.2.1**, as §5.9's additive, optional `importer` block — user intent, committed to git,
+surviving a machine change, exactly as this section previously predicted; §6's `metaHash` already
+invalidates an import when they change.
+
+### 5.9 The optional `importer` block (task 3.2.1)
+
+An OPTIONAL third root key, additive at format version 1 — **never** a version bump. §5.3's
+never-rewrite rule protects a *valid* `.meta`, but a version bump would still nil every *other* asset's
+identity on an older build the moment it reads any v2 sidecar (`parseMeta` rejects an unrecognised
+`version` outright, and §5.3 then forbids repairing the result) — an additive optional key degrades
+instead: an older build reads the GUID correctly, warns once, and loses only the settings, which it
+could not have honoured anyway. Present only when an asset's import settings differ from its
+importer's defaults; omitted entirely otherwise, so a freshly-created sidecar is unaffected and §5.5's
+65-byte worked example stays exact.
+
+| Key | Kind | Required (once `importer` is present) | Rule |
+|---|---|---|---|
+| `importer.name` | string | yes | the importer's registered identity, e.g. `"gltf"` |
+| `importer.version` | number, integral | yes | the importer's own format version at write time |
+| `importer.settings` | object | yes | four keys, below |
+| `importer.settings.scale` | number | yes | a user-intent multiplier; honoured even if zero or negative — NEVER clamped |
+| `importer.settings.importMaterials` | boolean | yes | |
+| `importer.settings.importAnimations` | boolean | yes | |
+| `importer.settings.importSkins` | boolean | yes | |
+
+**Engagement, not validity, is the signal.** A present-but-malformed block (a missing key, a wrong
+type, a non-finite `scale`) never invalidates the asset's identity — `version` and `guid` are
+unaffected and the parse still succeeds. It surfaces only through two fields a caller reads together:
+`importer` disengaged (no value) and `importerMessage` non-empty (§5.4's importer-block catalog). This
+is the one asymmetry in the whole format: everywhere else a malformed root key is fatal; here it costs
+a user their settings, never their asset.
+
+**A malformed `importer` key is reported exactly like any other unrecognised root key** (§5.1's
+unknown-key rule) — it is not a key this build actually understood, so it is not exempted from that
+list. Only a block that *engages* (every required field present and well-typed) is excluded from it;
+an unknown key nested inside the block, or inside `settings`, is reported as a DOTTED PATH through the
+same success-only warning §5.4 defines at the root, and does not itself stop the block from engaging.
+
+**Forward compatibility.** A `.meta` carrying this block, read by an older build with no notion of
+`importer` at all, still reads the GUID correctly and reports `importer` as a single unknown-key
+warning — §5.1's additive-evolution guarantee, applied to this key.
 
 ## 6. Asset import cache index v1
 
