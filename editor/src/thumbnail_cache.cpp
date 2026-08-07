@@ -95,6 +95,25 @@ std::vector<ThumbnailKey> ThumbnailLedger::evictions(std::size_t residentCap, st
     return result;
 }
 
+std::vector<ThumbnailKey> ThumbnailLedger::supersededBy(std::span<const ThumbnailKey> liveKeys,
+                                                        std::span<const Guid> abstainingGuids,
+                                                        std::uint64_t currentFrame) const {
+    std::vector<ThumbnailKey> result;
+    for (const Entry& e : entries) {
+        if (e.lastTouched == currentFrame) {
+            continue;  // AC-33 -- E12's rule, and 3.1.3's BLOCKING-1 made structural
+        }
+        if (std::binary_search(liveKeys.begin(), liveKeys.end(), e.key)) {
+            continue;  // still live: some record still carries exactly this {guid, hash}
+        }
+        if (std::binary_search(abstainingGuids.begin(), abstainingGuids.end(), e.key.guid)) {
+            continue;  // AC-32 -- a record with no opinion about its own keys
+        }
+        result.push_back(e.key);
+    }
+    return result;
+}
+
 void ThumbnailLedger::forget(const ThumbnailKey& key) {
     const auto it = std::lower_bound(entries.begin(), entries.end(), key,
                                      [](const Entry& e, const ThumbnailKey& k) { return e.key < k; });

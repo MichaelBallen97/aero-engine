@@ -62,6 +62,27 @@ public:
     // forever, in any folder with more visible tiles than the cap (E12).
     [[nodiscard]] std::vector<ThumbnailKey> evictions(std::size_t residentCap, std::uint64_t currentFrame) const;
 
+    // task 3.1.4 (D9): every TRACKED key -- ANY state, including Absent, Failed and Skipped -- that
+    // no longer corresponds to a live record, EXCLUDING two classes:
+    //   * a key whose guid appears in `abstainingGuids`. A record whose content hash was not computed
+    //     this scan (ImportChange::NotHashed / Unhashable, or metaWriteFailed) has NO OPINION about
+    //     its own keys; without this carve-out, a project past the hash budget would release and
+    //     re-decode the same thumbnails on every scan, forever.
+    //   * a key touched at `currentFrame`. This is evictions()'s own E12 rule, applied here for the
+    //     IDENTICAL reason and NOT as defensive padding: it makes the caller STRUCTURALLY unable to
+    //     destroy a texture whose native SDL_GPUTexture* this frame's drawTile already wrote into the
+    //     ImGui draw list. That is 3.1.3's BLOCKING-1 -- deterministic on Vulkan/D3D12 (SDL frees
+    //     synchronously) and structurally unreachable on Metal (SDL defers), i.e. invisible to the
+    //     only platform with a human pass.
+    // Returning Failed/Skipped keys too is deliberate: D9's stickiness must be released along with
+    // the texture, or a file that failed once under an old hash stays un-retryable under a new one.
+    // BOTH spans MUST be sorted -- `liveKeys` by ThumbnailKey::operator<, `abstainingGuids` by
+    // Guid::operator< -- and that is a PRECONDITION, not a checked contract. Returns keys in the
+    // ledger's own sorted order.
+    [[nodiscard]] std::vector<ThumbnailKey> supersededBy(std::span<const ThumbnailKey> liveKeys,
+                                                         std::span<const Guid> abstainingGuids,
+                                                         std::uint64_t currentFrame) const;
+
     void forget(const ThumbnailKey& key);
     void clear() noexcept;
     [[nodiscard]] std::size_t readyCount() const noexcept;
