@@ -249,6 +249,19 @@ find_package(Threads REQUIRED)
 # the two reduced configurations than it did before this step, not the same one twice. Tier-0: no GPU,
 # no window, no ImGui context, and NO TEST SLEEPS. The link line is UNCHANGED and no new ctest entry
 # is registered (ctest -N stays 95/6/19).
+#
+# task 3.2.1 joins this target with editor/model_import_test.cpp (Step 2 onward: the canonical model,
+# the pure URI policy -- classifyUri/normalizeRelativePath/isImportableModelName -- and the glTF
+# backend, cases MI1-MI93 plus MI40b) and, from Step 9, editor/model_import_session_test.cpp.
+# UNCONDITIONAL, for the identical reason asset_meta_test.cpp is: model_import.hpp depends only on
+# aero/core/{guid,math}.hpp, aero/editor/import_settings.hpp and aero/editor/scene_bounds.hpp -- the
+# last of those reaches aero::scene, which is a PUBLIC, UNGATED dependency of aero_editor_core (only
+# engine/scene_serialize is gated on AERO_REFLECT_TOOLS) -- so it must be PRESENT in both reduced
+# configurations, not skipped -- prove it with --list-test-cases. Tier-0: no GPU, no window, no ImGui
+# context, no sleeps, and no disk on the critical path -- every importer case is driven from a string
+# literal or a committed text fixture reached through AERO_ASSET_FIXTURES_DIR, which is ALREADY
+# defined on this target. The link line is UNCHANGED and no new ctest entry is registered (ctest -N
+# stays 95/6/19), and NEITHER TU NAMES fastgltf.
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -261,7 +274,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/asset_meta_test.cpp editor/asset_database_test.cpp
                editor/text_file_test.cpp editor/asset_cache_test.cpp
                editor/asset_view_test.cpp editor/thumbnail_cache_test.cpp
-               editor/asset_actions_test.cpp editor/asset_watcher_test.cpp)
+               editor/asset_actions_test.cpp editor/asset_watcher_test.cpp
+               editor/model_import_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

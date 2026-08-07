@@ -69,6 +69,7 @@ add_library(aero_editor_core STATIC
     src/thumbnail_store.cpp     # task 3.1.3 -- the ONLY stb_image TU; RHI texture lifetime
     src/asset_actions.cpp       # task 3.1.3 -- the ONE sanctioned deletion (D12/D13)
     src/asset_watcher.cpp       # task 3.1.4 -- the budgeted assets-tree change probe (PURE + one walk)
+    src/model_import.cpp        # task 3.2.1 -- the canonical model + every pure helper (NO fastgltf)
     src/gltf_import.cpp         # task 3.2.1 -- the ONLY fastgltf TU; NO file operation at all
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
