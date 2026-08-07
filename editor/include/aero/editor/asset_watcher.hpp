@@ -124,11 +124,163 @@ struct WatchDiff {
 [[nodiscard]] WatchSnapshot applyChanges(const WatchSnapshot& committed, const WatchSnapshot& probe,
                                          const WatchDiff& diff);
 
+// ---- configuration & status ----------------------------------------------------------------------
+struct AssetWatchConfig {
+    bool enabled = true;
+    std::size_t dirsPerPoll = WATCH_DIRS_PER_POLL;
+    std::int64_t cooldownMs = WATCH_COOLDOWN_MS;
+    std::int64_t settleMs = WATCH_SETTLE_MS;
+    std::uint32_t maxDeferredSweeps = MAX_DEFERRED_SWEEPS;
+    // The two ceilings are CONFIGURABLE for the same reason parseAssetCache's `maxEntries` is:
+    // production takes the defaults, so the REAL constants above are what every frame exercises and
+    // they stay pinned at their own declarations -- while a test reaches the truncation branches with
+    // a 3-entry tree in microseconds instead of building 50 001 files. A test that passes a ceiling is
+    // testing the CEILING MECHANISM, which is exactly the thing under test.
+    std::size_t maxEntries = MAX_WATCH_ENTRIES;
+    std::size_t maxDirs = MAX_WATCH_DIRS;
+};
+
+enum class WatchPhase : std::uint8_t {
+    Disabled = 0,  // enabled == false, or no assets root
+    Sweeping,      // a sweep is in flight
+    Cooldown,      // waiting out cooldownMs before the next sweep
+};
+
+struct WatchStatus {
+    WatchPhase phase = WatchPhase::Disabled;
+    bool enabled = true;
+    std::size_t dirsRemaining = 0;      // in the in-flight sweep's queue
+    std::size_t entriesSeen = 0;        // the LAST COMPLETED sweep's entry count
+    std::uint64_t sweepsCompleted = 0;  // monotonic for the object's lifetime -- AC-38's tick-until signal
+    std::uint64_t triggers = 0;         // rescans THIS watcher caused -- monotonic (AC-38)
+    std::uint32_t deferredSweeps = 0;   // D3's counter, live
+    std::size_t lastUnsettled = 0;      // the last completed sweep's unsettled count
+    std::size_t lastChanges = 0;        // the last completed sweep's settled change count
+    std::size_t unreadableDirs = 0;     // D5
+    bool rootUnreadable = false;        // D5 -- the last sweep ABORTED
+    bool truncated = false;
+    bool depthLimited = false;
+};
+
+// ---- the watcher ---------------------------------------------------------------------------------
+class AssetWatcher {
+public:
+    // TWO roots, for exactly the reason AssetDatabase::rescan takes two (3.1.2 D9): <assetsRoot>/..
+    // is wrong the moment paths.assets is nested or ".", and deriving the project root would compute
+    // the WRONG Library/ path -- defeating D4's exclusion, which is the ONE exclusion no normal
+    // project's tests can reach (AC-16).
+    //   * an EMPTY assets root disables the watcher and clears every snapshot (AC-29).
+    //   * a DIFFERENT non-empty assets root arms primeOnNextSweep: the first completed sweep becomes
+    //     the baseline SILENTLY, because EditorApp already rescans on a root change and a second
+    //     rescan would be pure noise (AC-26).
+    //   * the SAME pair is a NO-OP -- idempotent on purpose, so a future caller cannot re-prime the
+    //     watcher by accident and silently absorb a pending change.
+    void setRoot(std::string projectRootUtf8Value, std::string assetsRootUtf8Value);
+    [[nodiscard]] const std::string& root() const noexcept;         // the ASSETS root -- what
+                                                                    // EditorApp reconciles against
+    [[nodiscard]] const std::string& projectRoot() const noexcept;  // AssetDatabase's own shape
+
+    // Writes the config and mirrors cfg.enabled into the status. Does NOT reset the cooldown or abort
+    // a sweep -- EditorApp::create() calls configure() then setEnabled(), and the second call is what
+    // normalises the phase. `dirsPerPoll` and `maxDirs` are CLAMPED to at least 1: a zero there is a
+    // wedged watcher with no diagnostic, and these are a test seam where a zero is a plausible typo.
+    void configure(const AssetWatchConfig& config) noexcept;
+
+    // D10's checkbox. Disabling ABORTS an in-flight sweep (the partial `building` and `queue` are
+    // discarded, never diffed -- half a tree looks like a wholesale deletion, exactly the reading D5
+    // forbids). Enabling ZEROES the cooldown so a fresh sweep starts on the very next poll -- a user
+    // who just re-enabled the watcher is asking for an answer now, not in a second (E21). Neither
+    // direction touches `committed` or `lastProbe`: turning the watcher off and on must not resurrect
+    // changes that were already acted on. Setting it to its CURRENT value is a no-op.
+    void setEnabled(bool on) noexcept;
+    [[nodiscard]] bool enabled() const noexcept;
+
+    // D6 -- cancels the cooldown so the next poll starts a sweep immediately. EditorApp calls it on
+    // platform::EventType::WindowFocusGained: the alt-tab-back path, and the whole of it. No "force"
+    // mode is needed, because sweeps continue (slower) while unfocused, so a change made in another
+    // application is usually already SETTLED by the time focus returns.
+    void requestImmediateSweep() noexcept;
+
+    // THE ONE IMPURE ENTRY POINT. Advances the sweep by at most cfg.dirsPerPoll directory
+    // enumerations and returns TRUE exactly when a sweep completed, settled changes were found, and
+    // the caller should rescan. NEVER throws, NEVER logs, performs ZERO file reads.
+    //
+    // `nowTicks` is a DEFAULTED PARAMETER, not a test-only seam -- AssetDatabase::rescan's
+    // hashBudgetBytes and parseAssetCache's maxEntries are the two precedents. Production calls it
+    // with the default, so the REAL clock is what every frame exercises; a test passes a synthetic
+    // value and never sleeps.
+    //
+    // `deltaSeconds` is FrameClock::deltaSeconds() -- already SPIKE-CLAMPED (2.3.1), so a long frame
+    // (a big rescan) decrements the cooldown by a clamped amount and the next sweep starts at most
+    // one frame late (E29).
+    [[nodiscard]] bool poll(float deltaSeconds, std::int64_t nowTicks = currentFileTimeTicks());
+
+    [[nodiscard]] const WatchStatus& status() const noexcept;
+    [[nodiscard]] const WatchDiff& lastDiff() const noexcept;  // EditorApp's ONE log line reads this
+
+    // A rescan happened that this watcher did NOT cause (a manual Refresh, Reimport All,
+    // requestAssetRescan, an orphan delete, or a root change). Adopts the last COMPLETED sweep as the
+    // baseline so those same changes are not reported again (Q7/AC-27).
+    //
+    // Deliberately NOT primeOnNextSweep: `lastProbe` may predate a change made AFTER the manual
+    // refresh, and adopting it keeps that change detectable, where priming would silently absorb it
+    // into the baseline.
+    //
+    // This is the ONE sanctioned relaxation of INV-W5 (an unsettled stamp never enters `committed`),
+    // and it costs nothing: a torn stamp means the file was still GROWING, so its final stamp
+    // necessarily differs from the adopted one and the next two sweeps still report it. Do not "fix"
+    // this into primeOnNextSweep.
+    //
+    // NOT noexcept: `committed = lastProbe` copy-assigns a std::vector, which allocates.
+    void noteExternalScan();
+
+    // Forget everything; arm primeOnNextSweep. `sweepsCompleted` and `triggers` are MONOTONIC for the
+    // object's lifetime and deliberately survive (the ThumbnailStore::loadAttempts() posture).
+    void reset() noexcept;
+
+private:
+    struct PendingDir {
+        std::string rel;
+        std::string canonical;  // "" == unknown; drives the symlink-only canonicalDirectory rule
+    };
+
+    void beginSweep();
+    [[nodiscard]] bool finishSweep(std::int64_t nowTicks);
+    // D5's carry-forward. Copies every `committed` entry under `dirRel + '/'` into `building`. Both
+    // are sorted byte-lexicographically, so that is a CONTIGUOUS range found with two std::lower_bounds.
+    void carryForward(std::string_view dirRel);
+
+    std::string rootUtf8;         // the ASSETS root
+    std::string projectRootUtf8;  // NEVER derived from rootUtf8 -- AssetDatabase's own member comment
+    AssetWatchConfig cfg;
+    WatchSnapshot committed;  // what the last rescan saw
+    WatchSnapshot lastProbe;  // the previous COMPLETED sweep -- isSettled's condition-1 comparand
+    WatchSnapshot building;   // the sweep in flight
+    // A SORTED VECTOR, never std::set/std::unordered_set (INV-W9): MSVC's node-based containers'
+    // move constructors are not noexcept (3.1.2's R9, measured in CI as C2607), and this class is a
+    // VALUE member of EditorApp, whose move is `noexcept = default`. asset_database.hpp's
+    // `recordList`/`byGuid` and thumbnail_cache.hpp's `entries` are the three precedents.
+    std::vector<std::string> visitedCanonical;
+    std::vector<PendingDir> queue;  // BFS, cursored -- a cursor is what makes the budget RESUMABLE
+    std::size_t queueCursor = 0;
+    std::string libraryCanonical;  // resolved once per sweep (D4's Library/ exclusion)
+    std::int64_t cooldownRemainingMs = 0;
+    bool sweeping = false;
+    // TRUE from construction: the very first sweep of any root is a BASELINE, never a trigger.
+    bool primeOnNextSweep = true;
+    WatchDiff diff;
+    WatchStatus statusValue;  // a data member and a member function may not share a name --
+                              // the databasePtr/database() and depthFormatValue/depthFormat()
+                              // precedent (3.1.1 D13's naming note)
+};
+
 // F11: EditorApp's move is `noexcept = default`, so every value member must be noexcept-movable.
 // asset_database.hpp:148-168's precedent -- the AGGREGATE asserts come FIRST, so a regression NAMES
 // this type rather than failing an opaque member's assert (AC-43). 3.1.2's R9 fired for real on MSVC
 // once already; if either of the first two ever reddens, the fix is to remove the offending member
 // TYPE, NEVER to relax the assert.
+static_assert(std::is_nothrow_move_constructible_v<AssetWatcher>);
+static_assert(std::is_nothrow_move_assignable_v<AssetWatcher>);
 static_assert(std::is_nothrow_move_constructible_v<WatchSnapshot>);
 static_assert(std::is_nothrow_move_assignable_v<WatchSnapshot>);
 static_assert(std::is_nothrow_move_constructible_v<WatchDiff>);
