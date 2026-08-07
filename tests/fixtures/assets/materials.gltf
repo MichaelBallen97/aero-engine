@@ -1,0 +1,109 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "aero-engine test fixture (hand-authored)"
+  },
+  "images": [
+    {
+      "uri": "../shared/wood.png"
+    },
+    {
+      "uri": "http://evil.example/tex.png"
+    },
+    {
+      "uri": "../../outside.png"
+    },
+    {
+      "uri": "textures\\metal.png"
+    },
+    {
+      "uri": "rough%zz.png"
+    }
+  ],
+  "samplers": [
+    {
+      "wrapS": 10497,
+      "wrapT": 10497,
+      "magFilter": 9728,
+      "minFilter": 9984
+    },
+    {
+      "wrapS": 33071,
+      "wrapT": 33648,
+      "magFilter": 9729,
+      "minFilter": 9987
+    },
+    {
+      "wrapS": 33648,
+      "wrapT": 33071,
+      "magFilter": 9728,
+      "minFilter": 9986
+    }
+  ],
+  "textures": [
+    {
+      "source": 0,
+      "sampler": 0
+    },
+    {
+      "source": 1,
+      "sampler": 1
+    },
+    {
+      "source": 2,
+      "sampler": 2
+    },
+    {
+      "source": 3,
+      "sampler": 0
+    },
+    {
+      "source": 4
+    }
+  ],
+  "materials": [
+    {
+      "name": "TestMaterial",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.8,
+          0.2,
+          0.1,
+          0.9
+        ],
+        "baseColorTexture": {
+          "index": 0,
+          "texCoord": 0
+        },
+        "metallicFactor": 0.3,
+        "roughnessFactor": 0.6,
+        "metallicRoughnessTexture": {
+          "index": 1,
+          "texCoord": 1
+        }
+      },
+      "normalTexture": {
+        "index": 2,
+        "texCoord": 0,
+        "scale": 2.0
+      },
+      "occlusionTexture": {
+        "index": 3,
+        "texCoord": 0,
+        "strength": 0.5
+      },
+      "emissiveTexture": {
+        "index": 4,
+        "texCoord": 0
+      },
+      "emissiveFactor": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "alphaMode": "MASK",
+      "alphaCutoff": 0.4,
+      "doubleSided": true
+    }
+  ]
+}
