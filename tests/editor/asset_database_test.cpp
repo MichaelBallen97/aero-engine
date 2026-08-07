@@ -1784,3 +1784,61 @@ TEST_CASE("asset_database: a freshly created sidecar matches minimal.meta modulo
     INFO(scene_golden::describeMismatch(fixture.text, patched));
     CHECK(patched == fixture.text);
 }
+
+// ---- generation() (task 3.1.4, D8) ----------------------------------------------------------------
+
+TEST_CASE("asset_database: a fresh database's generation is 0 (AD-g1)") {
+    const AssetDatabase db;
+    CHECK(db.generation() == 0);
+}
+
+TEST_CASE("asset_database: one rescan of a populated tree bumps generation to 1 (AD-g2)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(1);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(db.generation() == 1);
+}
+
+TEST_CASE("asset_database: a second rescan that changes nothing STILL bumps generation (AD-g3, D8)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(3);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(db.generation() == 1);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(db.generation() == 2);  // the no-op bump -- D8's "no exceptions to remember"
+}
+
+TEST_CASE("asset_database: an empty-roots rescan still bumps generation (AD-g4, the phase-1 guard)") {
+    AssetDatabase db;
+    GuidGenerator gen(4);
+    db.rescan("", "", gen);
+    CHECK(db.generation() == 1);
+}
+
+TEST_CASE("asset_database: a rescan on a Missing assets root still bumps generation (AD-g5)") {
+    const TempDir dir;
+    AssetDatabase db;
+    GuidGenerator gen(5);
+    db.rescan(dir.utf8(), dir.join("does-not-exist"), gen);
+    CHECK(db.generation() == 1);
+}
+
+TEST_CASE(
+    "asset_database: five rescans in a row leave generation strictly increasing, never resetting "
+    "(AD-g6)") {
+    const TempDir dir;
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(6);
+    std::uint64_t previous = db.generation();
+    for (int i = 0; i < 5; ++i) {
+        db.rescan(dir.utf8(), dir.utf8(), gen);
+        CHECK(db.generation() > previous);
+        previous = db.generation();
+    }
+    CHECK(db.generation() == 5);
+}
