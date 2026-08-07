@@ -293,7 +293,17 @@ void AssetWatcher::beginSweep() {
     // cannot be discovered by testing a normal project: a project whose assets root is "." puts
     // Library/ INSIDE the watched tree, and every scan may rewrite Library/asset-cache.json -- so
     // without this the watcher rescans forever at the cooldown's full rate.
-    libraryCanonical = canonicalDirectory(projectRootUtf8 + '/' + std::string(ASSET_CACHE_DIR_NAME));
+    // An EMPTY project root means "no Library to exclude", never "exclude /Library" -- mirroring the
+    // scan, which refuses outright on `projectRootUtf8.empty()` (asset_database.cpp's phase-1 guard)
+    // before it ever computes its own libraryCanonical. Without this the concatenation yields the
+    // ABSOLUTE path "/Library", which on macOS exists and is a real directory, so canonicalDirectory
+    // resolves it and any watched directory aliasing there would be silently skipped as "our own
+    // output". Not reachable through EditorApp -- ProjectSession::assetsRoot() returns {} whenever the
+    // session is closed, so the assets root is never non-empty while the project root is empty -- but
+    // setRoot() is public on a public header, so the guard belongs here rather than in the caller.
+    libraryCanonical = projectRootUtf8.empty()
+                           ? std::string()
+                           : canonicalDirectory(projectRootUtf8 + '/' + std::string(ASSET_CACHE_DIR_NAME));
     sweeping = true;
     statusValue.rootUnreadable = false;
     statusValue.phase = WatchPhase::Sweeping;

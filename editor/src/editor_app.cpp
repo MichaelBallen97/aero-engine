@@ -255,11 +255,14 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // rather than the placeholder seed-0 generator's pinned sequence. Nothing scans in create() itself
     // (D12) -- the reconcile is tick()'s job alone.
     app.assetGuids = GuidGenerator::fromEntropy();
-    // task 3.1.4: configure() writes the tunables; setEnabled() is what normalises the phase (and is
-    // a no-op when the config already agrees, which is the common case). Nothing sweeps in create()
-    // -- the first poll() is tick()'s job alone, exactly as the first scan is (3.1.1 D12).
+    // task 3.1.4: configure() writes the tunables AND establishes the enabled state -- it mirrors
+    // cfg.enabled into the status itself. A setEnabled(config.assetWatch.enabled) beside it was here
+    // originally, described in three places as "what normalises the phase"; it was provably DEAD,
+    // because setEnabled early-returns on `cfg.enabled == on` and configure() has just made that true
+    // by construction. Removed rather than left as a statement a future reader would trust. Nothing
+    // sweeps in create() -- the first poll() is tick()'s job alone, exactly as the first scan is
+    // (3.1.1 D12), and that first poll() sets the phase regardless.
     app.assetWatcher.configure(config.assetWatch);
-    app.assetWatcher.setEnabled(config.assetWatch.enabled);
     // The default layout is built on the FIRST DRAWN FRAME, not here (E3) — so panels registered by
     // the caller between create() and the first tick() are included.
     app.applyDefaultLayout = app.layer.wantsDefaultLayout();

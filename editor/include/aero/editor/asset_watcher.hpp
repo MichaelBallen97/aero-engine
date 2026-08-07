@@ -42,9 +42,19 @@ inline constexpr std::int64_t WATCH_COOLDOWN_MS = 1000;  // D6 -- idle between c
 // D2 -- ABOVE FAT32's own 2 s mtime quantum, not merely "a bit". A stamp younger than this is never
 // trusted, which is the ONLY thing that catches two same-size writes inside one coarse quantum.
 inline constexpr std::int64_t WATCH_SETTLE_MS = 2000;
-inline constexpr std::uint32_t MAX_DEFERRED_SWEEPS = 30;      // D3 -- ~30 s, then FORCE
-inline constexpr std::size_t MAX_WATCH_ENTRIES = MAX_ASSETS;  // D4 -- the SCAN's own ceiling, reused
-inline constexpr std::size_t MAX_WATCH_DIRS = 8192;           // BFS queue ceiling; surfaced, never silent
+inline constexpr std::uint32_t MAX_DEFERRED_SWEEPS = 30;  // D3 -- ~30 s, then FORCE
+// D4 -- derived from the scan's ceiling, NOT equal to it, because the two count DIFFERENT
+// POPULATIONS. The scan tests `report.filesSeen >= MAX_ASSETS`, and `filesSeen` counts scannable
+// ASSETS only -- never a .meta sidecar, never a directory (asset_database.cpp's isScannableAssetName
+// arm is its only increment). The watcher's snapshot holds assets PLUS one sidecar per described
+// asset PLUS every directory. Reusing MAX_ASSETS verbatim would therefore truncate the watcher at
+// roughly HALF the tree the scan still indexes -- silently un-watching the tail in BFS order while
+// the footer read "Watching (partial...)". That is not the D4 rescan spin (the watcher would see
+// FEWER paths than the scan, which is the safe direction, and `committed` converges after one extra
+// rescan), but it is a real coverage cliff at scale, so the ceiling is scaled to the population it
+// actually counts: one asset + one sidecar + one directory's worth of headroom each.
+inline constexpr std::size_t MAX_WATCH_ENTRIES = MAX_ASSETS * 3;
+inline constexpr std::size_t MAX_WATCH_DIRS = 8192;  // BFS queue ceiling; surfaced, never silent
 
 // ---- the snapshot --------------------------------------------------------------------------------
 struct WatchEntry {
@@ -181,8 +191,11 @@ public:
     [[nodiscard]] const std::string& projectRoot() const noexcept;  // AssetDatabase's own shape
 
     // Writes the config and mirrors cfg.enabled into the status. Does NOT reset the cooldown or abort
-    // a sweep -- EditorApp::create() calls configure() then setEnabled(), and the second call is what
-    // normalises the phase. `dirsPerPoll` and `maxDirs` are CLAMPED to at least 1: a zero there is a
+    // a sweep. This ALREADY establishes the enabled state -- a following setEnabled(config.enabled)
+    // is a provable no-op, since setEnabled early-returns on `cfg.enabled == on`, so do not add one
+    // back "to normalise the phase" (an earlier draft of this comment claimed exactly that, and the
+    // call it described was dead: WatchPhase is read by no production code, and the first poll() sets
+    // it either way). `dirsPerPoll` and `maxDirs` are CLAMPED to at least 1: a zero there is a
     // wedged watcher with no diagnostic, and these are a test seam where a zero is a plausible typo.
     void configure(const AssetWatchConfig& config) noexcept;
 
