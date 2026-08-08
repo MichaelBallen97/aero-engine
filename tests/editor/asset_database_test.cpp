@@ -2240,3 +2240,76 @@ TEST_CASE(
     CHECK(aEntry->importer == "gltf");  // probed
     CHECK(bEntry->importer.empty());    // NEVER probed -- the budget ran out before it was even opened
 }
+
+TEST_CASE(
+    "asset_database: a model with TWO distinct textures records them SORTED and deduplicated in its "
+    "cache entry (AD-i12, INV-M8, seed S23)") {
+    // THE GAP THIS CLOSES. AD-i4 already covers dedup and the self-edge, but every phase-7.5 assertion
+    // in this file ends at `dependencies.size() == 1`, and a one-element vector is sorted no matter
+    // what -- so seed S23 (dropping the std::sort/std::unique on outcome.dependencies) reddened
+    // nothing anywhere. The dedup AD-i4 *appears* to prove happens one layer up, in gltf_import.cpp's
+    // phase 3 (recordExternalUri's own std::find), never in phase 7.5.
+    //
+    // A scan-probed model with TWO dependencies is the smallest construction that can see the SORT.
+    //
+    // Measured while proving this case, and recorded rather than implied: a variant seed dropping ONLY
+    // the `std::unique` (keeping the `std::sort`) reddens NOTHING here or in AD-i4. gltf_import.cpp's
+    // recordExternalUri already deduplicates `externalUris` with its own std::find, and two DISTINCT
+    // project-relative paths resolving to ONE GUID is not reachable from this tier (the scan dedups
+    // directories by canonical physical path, so an aliased path earns no record and guidForPath
+    // returns nullopt for it). Phase 7.5's `unique` is defence in depth with no reachable input today;
+    // the dependencies.size() == 2 assertion below asserts the OBSERVABLE -- two edges from three URIs
+    // -- without claiming to say which layer collapsed the third.
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    // "wood.png" is named TWICE, by two URIs that normalise to the same path, so `unique` has real
+    // work; "steel.png" is the second DISTINCT dependency, so `sort` has real work. Both are listed in
+    // an order chosen to be the REVERSE of their GUID order -- see the precondition REQUIRE below.
+    writeFile(dir.join("models/chair.gltf"), R"({"asset":{"version":"2.0"},"images":[)"
+                                             R"({"uri":"../textures/wood.png"},)"
+                                             R"({"uri":"../textures/steel.png"},)"
+                                             R"({"uri":"sub/../../textures/wood.png"}]})");
+    writeFile(dir.join("textures/steel.png"), "steel-pixels");
+    writeFile(dir.join("textures/wood.png"), "wood-pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(1012);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 1);
+    CHECK(report.dependenciesRecorded == 2);  // TWO edges -- three URIs, one duplicate collapsed
+
+    const Guid woodGuid = *db.guidForPath("textures/wood.png");
+    const Guid steelGuid = *db.guidForPath("textures/steel.png");
+    REQUIRE(woodGuid.valid());
+    REQUIRE(steelGuid.valid());
+    // THE PRECONDITION THAT KEEPS THIS CASE A DISCRIMINATOR. Phase 7.5 pushes dependencies in the
+    // document's own URI order (wood, then steel), so this case can only see a missing `sort` while
+    // that order is the REVERSE of the GUID order. GuidGenerator is deterministic given its seed, so
+    // this holds on all three OSes -- but if the generator, the seeding order or the fixture's names
+    // ever change, this REQUIRE fails LOUDLY rather than letting the case rot into a silent pass.
+    REQUIRE(steelGuid < woodGuid);
+
+    const AssetRecord* const chairRecord = db.findByPath("models/chair.gltf");
+    REQUIRE(chairRecord != nullptr);
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(chairRecord->guid);
+    REQUIRE(entry != nullptr);
+
+    REQUIRE(entry->dependencies.size() == 2);  // two edges from three URIs
+    // SORTED -- the assertion seed S23 cannot survive.
+    CHECK(std::is_sorted(entry->dependencies.begin(), entry->dependencies.end()));
+    CHECK(entry->dependencies[0] == steelGuid);  // ... and sorted into THIS order, not the document's
+    CHECK(entry->dependencies[1] == woodGuid);
+    for (const Guid& dep : entry->dependencies) {
+        CHECK(dep.valid());               // INV-M8: never a nil GUID
+        CHECK(dep != chairRecord->guid);  // INV-M8: never a self-edge
+    }
+}
