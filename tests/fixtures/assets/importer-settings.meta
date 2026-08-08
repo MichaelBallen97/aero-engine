@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "guid": "a3f1c07e5b8d42198e6f0c3d7a2b4b92",
+  "importer": {
+    "name": "gltf",
+    "version": 1,
+    "settings": {
+      "scale": 0.01,
+      "importMaterials": false,
+      "importAnimations": true,
+      "importSkins": false
+    }
+  }
+}

@@ -23,6 +23,9 @@
 #include "file_dialog.hpp"  // task 2.5.1: DialogChannel's definition -- the shared_ptr's deleter needs
                             // a complete type wherever it could run, including this TU's ~EditorApp
 #include "hierarchy_panel.hpp"
+#include "import_details_panel.hpp"  // task 3.2.1 -- ImportDetailsPanel's definition, the src-private
+                                     // shared_ptr/unique_ptr-completeness precedent above, applied to a
+                                     // registry-owned panel instead
 #include "inspector_panel.hpp"
 #include "project_settings_panel.hpp"
 #include "shell_ui.hpp"
@@ -192,6 +195,19 @@ void logAssetScan(std::string_view root, const AssetScanReport& report) {
             "assets: '{}' -- {} dependency link(s) dropped past the {}-per-entry cap (MAX_DEPENDENCIES_PER_ENTRY)",
             root, report.cacheDepsDropped, MAX_DEPENDENCIES_PER_ENTRY);
     }
+
+    // task 3.2.1 (phase 7.5): the model probe's own lines, appended after every 3.1.x category above.
+    if (report.modelsProbed > 0) {
+        AERO_LOG_INFO("assets: '{}' -- probed {} model(s), {} dependency edge(s) recorded", root, report.modelsProbed,
+                      report.dependenciesRecorded);
+    }
+    logCappedWarn(root, "model import failure(s)", report.importFailures, report.importFailureTotal);
+    if (report.probeBudgetExhausted) {
+        AERO_LOG_WARN(
+            "assets: '{}' -- the per-scan model probe budget was exhausted; some models keep their "
+            "previous importer record until the next scan",
+            root);
+    }
 }
 
 }  // namespace
@@ -320,6 +336,13 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         // is deliberately DISCARDED: nothing in tick() reaches this panel -- no pump, no render, no
         // reconcile -- and a non-owning pointer nobody dereferences is a trap.
         app.registry.emplace<ProjectSettingsPanel>(std::string(BUILD_ENGINE_VERSION));
+        // task 3.2.1 (D17/F9/AC-50): registered in create(), BEFORE the first tick() -- which is
+        // exactly the condition placeUnplacedPanels requires. It works off ImGui::FindWindowSettingsByID
+        // + DockBuilderDockWindow, both of which act on the window NAME, so a panel that has never been
+        // drawn is still docked beside the Inspector on the first frame of a RESTORED layout instead of
+        // free-floating. Default VISIBLE: a default-hidden panel makes this task's whole deliverable
+        // something a user must hunt for in the View menu.
+        app.importDetailsPanel = app.registry.emplace<ImportDetailsPanel>();
     }
 
     // task 2.6.1: `&& !app.project.isOpen()` is MANDATORY, not defensive. Opening a project above went
@@ -551,6 +574,58 @@ bool EditorApp::tick() {
                 assetWatcher.setEnabled(*watchToggle);
             }
         }
+        // task 3.2.1 (D17/F10): the FIFTH occupant of this block -- 2.6.1's panel root, 3.1.1's
+        // database, 3.1.3's report, 3.1.4's watcher, and now the import session. EXTEND, NEVER TWIN:
+        // 3.1.4's seed S15 reddened TWELVE tier-0 cases by skipping ONE statement in here.
+        //
+        // A RECONCILE, never a push (2.6.1 D10, a third application): EditorApp COMPARES and calls
+        // setTarget only on a mismatch. generation() is AssetDatabase's FOURTH consumer -- a rescan
+        // from ANY trigger invalidates the cached result, so the next tick re-imports exactly once
+        // (AC-47).
+        if (assetBrowserPanel != nullptr) {
+            const std::string& selected = assetBrowserPanel->selection();
+            const std::uint64_t gen = assetDatabase.generation();
+            if (importSession.target() != selected || importSession.generation() != gen) {
+                importSession.setTarget(selected, gen);
+            }
+        }
+        // F9, a FIFTH application: EVERY one-shot is drained as its OWN statement, unconditionally,
+        // BEFORE it is inspected. A `panelApply || editorApply` expression would short-circuit past
+        // the panel's drain and strand the request until the next frame. I30 is that bug's mechanical
+        // proof and this tree has shipped it once.
+        const bool panelApply = importDetailsPanel != nullptr && importDetailsPanel->takeApplyRequest();
+        const bool panelRevert = importDetailsPanel != nullptr && importDetailsPanel->takeRevertRequest();
+        std::optional<ImportSettings> panelSettings;
+        if (importDetailsPanel != nullptr) {
+            panelSettings = importDetailsPanel->takePendingSettings();
+        }
+        // DEVIATION from the plan's own literal §D-9 text (logged): `ImportSettings` (float + 3 bools,
+        // no user-provided special members) is trivially copyable, so is `std::optional<ImportSettings>`
+        // -- clang-tidy's performance-move-const-arg (--warnings-as-errors on the Linux lane) flags
+        // `std::move` here as having no effect. A plain copy, followed by the reset below, is IDENTICAL
+        // at runtime.
+        std::optional<ImportSettings> editorSettings = requestedImportSettings;
+        requestedImportSettings.reset();
+        const bool editorApply = requestedImportApply;
+        requestedImportApply = false;
+        if (panelSettings.has_value()) {
+            importSession.setPendingSettings(*panelSettings);
+        }
+        if (editorSettings.has_value()) {
+            importSession.setPendingSettings(*editorSettings);
+        }
+        if (panelRevert) {
+            importSession.revertSettings();
+        }
+        if (panelApply || editorApply) {
+            const std::string error = importSession.applySettings(project.assetsRoot());
+            if (error.empty()) {
+                AERO_LOG_INFO("assets: saved import settings for '{}'", importSession.target());
+                assetRescanRequested = true;  // AC-51/AC-52: MetaChanged next scan, ONE re-import
+            } else {
+                AERO_LOG_WARN("assets: could not save import settings for '{}' -- {}", importSession.target(), error);
+            }
+        }
     }
     if (window != nullptr) {
         std::string title = session.windowTitle(!commandStack.isClean(), project.name());
@@ -605,6 +680,18 @@ bool EditorApp::tick() {
     // SECOND occupant of the slot between drawShellUi and endFrame, the renderScene precedent.
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->serviceThumbnails();
+    }
+    // task 3.2.1 (D16/AC-48/INV-M12): OUTSIDE the ImGui draw walk, in the SAME SLOT as renderScene()
+    // and serviceThumbnails(). A Full import is SYNCHRONOUS and may visibly hitch on a large model --
+    // accepted, and what every editor in this class does on a deliberate click. It runs AT MOST ONCE
+    // per (selection, generation) pair; ten further ticks cost ten early returns.
+    //
+    // NEVER CALL THIS FROM onDraw(). Like 3.1.3's BLOCKING-1 and 3.1.4's D9, NO AUTOMATED TIER CAN SEE
+    // THE GENERAL-CASE VIOLATION -- I60 reads this file's own source text, and manual validation row 8
+    // is the only behavioural cover. GET IT RIGHT BY CONSTRUCTION.
+    importSession.service(project.assetsRoot(), assetDatabase);
+    if (importDetailsPanel != nullptr) {
+        importDetailsPanel->setSession(&importSession);
     }
     presented = layer.endFrame(config.clearColor);
     if (fileFlow.quitConfirmed) {
@@ -714,6 +801,11 @@ std::size_t EditorApp::thumbnailLoadAttempts() const noexcept {
     return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailLoadAttempts() : std::size_t{0};
 }
 std::size_t EditorApp::assetOrphanCount() const noexcept { return lastAssetReport.orphanTotal; }
+// code-review SHOULD-FIX 10: the assetOrphanCount() shape verbatim, applied to phase 7.5's own capped
+// category -- without this, a GPU-tier case has no black-box signature for report.importFailureTotal at
+// all, since AssetScanReport is retained inside EditorApp (private), reachable through
+// AssetBrowserPanel::setScanReport() only (src-private).
+std::size_t EditorApp::assetImportFailureCount() const noexcept { return lastAssetReport.importFailureTotal; }
 
 // task 3.1.4 (AC-38): the assetCount()/thumbnailReadyCount() shape verbatim. AssetWatcher is a
 // private member, so without these the whole detect -> rescan -> refresh loop has no black-box
@@ -722,6 +814,13 @@ bool EditorApp::assetWatchEnabled() const noexcept { return assetWatcher.enabled
 std::uint64_t EditorApp::assetWatchSweepCount() const noexcept { return assetWatcher.status().sweepsCompleted; }
 std::uint64_t EditorApp::assetWatchTriggerCount() const noexcept { return assetWatcher.status().triggers; }
 std::size_t EditorApp::assetWatchEntryCount() const noexcept { return assetWatcher.status().entriesSeen; }
+
+// task 3.2.1 (AC-45/AC-46/AC-47): the assetWatchEnabled()/assetWatchSweepCount() shape verbatim --
+// ModelImportSession is reachable from no test target otherwise, so without these the whole
+// select -> reconcile -> service loop has no black-box signature at all.
+std::size_t EditorApp::modelImportCount() const noexcept { return importSession.importCount(); }
+int EditorApp::modelImportState() const noexcept { return static_cast<int>(importSession.state()); }
+std::string_view EditorApp::modelImportTarget() const noexcept { return importSession.target(); }
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
@@ -803,10 +902,25 @@ void EditorApp::requestAssetBrowserDeleteOrphanClick(std::string_view relativeMe
     }
 }
 
+// DEVIATION (task 3.2.1, logged in the final report): the code-review finding 4 shape, a fifth
+// application -- no existing seam reaches AssetBrowserPanel::selectedEntry, and without one I53-I59
+// (AC-45/AC-46/AC-47/AC-50) would be unwritable or vacuous from the ImGui-free-at-source GPU tier.
+void EditorApp::requestAssetBrowserSelectEntry(std::string_view relativePath) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestSelectEntry(std::string(relativePath));
+    }
+}
+
 // task 3.1.4 (D10): applied IMMEDIATELY -- there is no one-shot to drain, because this writes the
 // watcher EditorApp itself owns (unlike the panel-facing request hooks above, which must queue a
 // `pending` action for the next onDraw()). The requestAssetBrowserReimportAll() posture, one layer up.
 void EditorApp::requestAssetWatchToggle(bool on) noexcept { assetWatcher.setEnabled(on); }
+
+// task 3.2.1: the requestAssetBrowserViewMode()/requestAssetWatchToggle() shape -- each queues a
+// one-shot for the NEXT tick()'s reconcile to drain (F9), never mutates importSession directly (D17:
+// no write may happen from inside onDraw()).
+void EditorApp::requestModelImportSettings(ImportSettings s) noexcept { requestedImportSettings = s; }
+void EditorApp::requestModelImportApply() noexcept { requestedImportApply = true; }
 
 // code-review BLOCKING-1 test seam: stores the id for tick()'s ShellUiState construction to carry --
 // see ShellUiState::focusPanelId's own comment for why this exists and drawShellUi's own new block for

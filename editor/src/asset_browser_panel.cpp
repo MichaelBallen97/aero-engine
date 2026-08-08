@@ -867,8 +867,11 @@ void AssetBrowserPanel::drawIssues() {
     // here must subtract writeConflictTotal too, or the two would silently disagree (logAssetScan's
     // own identical subtraction, editor_app.cpp).
     const std::size_t invalidOnly = report.invalid - report.writeConflictTotal;
+    // code-review SHOULD-FIX 10: `importFailureTotal` (task 3.2.1's phase 7.5) was missing from this
+    // sum entirely, so a model-only import failure never even opened the header -- total stayed 0 and
+    // this function returned before ImGui::CollapsingHeader was ever called.
     const std::size_t total = report.orphanTotal + invalidOnly + report.aliasedDirTotal + report.writeFailureTotal +
-                              report.writeConflictTotal + report.hashFailureTotal;
+                              report.writeConflictTotal + report.hashFailureTotal + report.importFailureTotal;
     if (total == 0) {
         return;
     }
@@ -921,6 +924,9 @@ void AssetBrowserPanel::drawIssues() {
         drawCategory("Sidecar write failures:", report.writeFailures, report.writeFailureTotal);
         drawCategory("Write conflicts with an orphaned .meta:", report.writeConflicts, report.writeConflictTotal);
         drawCategory("Asset hash failures:", report.hashFailures, report.hashFailureTotal);
+        // code-review SHOULD-FIX 10: the sixth category, following the identical capped-list +
+        // uncapped-total idiom as the five above -- previously never drawn at all.
+        drawCategory("Model import failures:", report.importFailures, report.importFailureTotal);
     }
 }
 
@@ -1372,6 +1378,12 @@ void AssetBrowserPanel::requestSearchQuery(std::string query) {
 void AssetBrowserPanel::requestKindFilter(std::string kind) { record(ActionKind::SetKindFilter, std::move(kind)); }
 void AssetBrowserPanel::requestDeleteOrphanClick(std::string relativeMetaPath) {
     record(ActionKind::RequestDeleteOrphan, std::move(relativeMetaPath));
+}
+// DEVIATION (task 3.2.1): the requestDeleteOrphanClick() shape verbatim -- record(ActionKind::
+// SelectEntry, ...) is exactly what a real single click on a row/tile records (asset_browser_panel.cpp's
+// own drawContentsList/drawContentsGrid/drawTile call sites).
+void AssetBrowserPanel::requestSelectEntry(std::string relativePath) {
+    record(ActionKind::SelectEntry, std::move(relativePath));
 }
 
 // ---- the frame ---------------------------------------------------------------------------------

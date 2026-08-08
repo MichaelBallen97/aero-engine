@@ -1,0 +1,197 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "aero-engine test fixture (hand-authored) -- one skin (4 joints, non-identity inverse bind matrices) and three animation clips, one per interpolation mode, with one skipped 'weights' channel riding along on the STEP clip"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0,
+        1,
+        2,
+        3
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Joint0"
+    },
+    {
+      "name": "Joint1"
+    },
+    {
+      "name": "Joint2"
+    },
+    {
+      "name": "Joint3"
+    }
+  ],
+  "skins": [
+    {
+      "name": "TestSkin",
+      "joints": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "skeleton": 0,
+      "inverseBindMatrices": 0
+    }
+  ],
+  "animations": [
+    {
+      "name": "StepAnim",
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 0,
+            "path": "translation"
+          }
+        },
+        {
+          "sampler": 0,
+          "target": {
+            "node": 0,
+            "path": "weights"
+          }
+        }
+      ],
+      "samplers": [
+        {
+          "input": 1,
+          "output": 2,
+          "interpolation": "STEP"
+        }
+      ]
+    },
+    {
+      "name": "LinearAnim",
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 1,
+            "path": "rotation"
+          }
+        }
+      ],
+      "samplers": [
+        {
+          "input": 3,
+          "output": 4,
+          "interpolation": "LINEAR"
+        }
+      ]
+    },
+    {
+      "name": "CubicAnim",
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 2,
+            "path": "scale"
+          }
+        }
+      ],
+      "samplers": [
+        {
+          "input": 5,
+          "output": 6,
+          "interpolation": "CUBICSPLINE"
+        }
+      ]
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 4,
+      "type": "MAT4"
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 3,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 3,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5126,
+      "count": 2,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 6,
+      "componentType": 5126,
+      "count": 6,
+      "type": "VEC3"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 256
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 256,
+      "byteLength": 12
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 268,
+      "byteLength": 36
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 304,
+      "byteLength": 12
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 316,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 364,
+      "byteLength": 8
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 372,
+      "byteLength": 72
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 444,
+      "uri": "data:application/octet-stream;base64,AACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAACAPwAAAEAAAEBAAACAPwAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAMEEAAEBBAABQQQAAgD8AAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAKhBAACwQQAAuEEAAIA/AACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAD4QQAAAEIAAARCAACAPwAAAAAAAAA/AACAPwAAgD8AAAAAAAAAAAAAAEAAAAAAAAAAAAAAQEAAAAAAAAAAAAAAAAAAAIA+AABAPwAAAAAAAAAAAAAAAAAAgD/NzMw9zcxMPpqZmT7NzMw+AAAAP5qZGT8zMzM/zcxMPwAAAAAAAABAAAAAAAAAAAAAAAAAAACAPwAAgD8AAIA/zczMPc3MzD3NzMw9zcxMPs3MTD7NzEw+AAAAQAAAAEAAAABAAAAAAAAAAAAAAAAA"
+    }
+  ]
+}

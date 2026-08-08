@@ -591,5 +591,115 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   delta 1. **The general lesson: a scenario that ends in a FORCED fire cannot discriminate anything
   about what a trigger contained, because the trigger was going to happen regardless.**
 
+## Model import (task 3.2.1)
+
+- **fastgltf NEVER touches the filesystem; the editor supplies every byte (D3).**
+  `GltfDataBuffer::FromBytes` over bytes `readFileBytes` already read is the ONLY construction path.
+  `Options::LoadExternalBuffers`, `Options::LoadExternalImages`, `GltfDataBuffer::FromPath`,
+  `MappedGltfFile` and `GltfFileStream` must NEVER appear anywhere in this tree -- a `.gltf` is a
+  user-supplied document from the internet, and `"uri": "file:///etc/passwd"` is syntactically legal
+  glTF that fastgltf's own `isLocalPath()` would accept. With the editor resolving, every URI passes
+  `classifyUri` first and a refusal is a WARNING, not a read.
+- **`classifyUri` receives an ALREADY-PERCENT-DECODED URI.** `fastgltf::URI` decodes on construction
+  (`src/fastgltf.cpp`: `URI::URI` calls `decodePercents`). Do not decode again -- `100%2520.png` would
+  become `100 .png`. Decode-then-classify is also the SECURE order: an encoded scheme (`%68ttp:`) is
+  already `http:` when we classify it.
+- **THE IMPORTER CONVERTS NOTHING, and this is the easiest thing in the task to get catastrophically
+  wrong.** `aero/core/math.hpp`'s own header comment says the engine's conventions were chosen to match
+  glTF 2.0 and names importers as one of the four consumers that inherit them. Verified at the bit
+  level against fastgltf 0.9.0: `math::quat` is `{x,y,z,w}` defaulting to `{0,0,0,1}`; `math::mat`
+  stores COLUMNS. **No handedness flip, no axis swap, no winding reversal, no quaternion reorder, no
+  transpose, no degree conversion.** There is no `convertFromGltfSpace()`, and `MI40b` plus sabotage
+  seeds S29/S30 exist to prove that adding one is caught. **3.2.2 (FBX: Z-up, centimetres) IS the task
+  that needs a conversion**, precisely because glTF is the canonical format these types were built
+  around.
+- **Every accessor is validated BEFORE any fastgltf tool touches it.** fastgltf `assert`s on a type
+  mismatch (a Debug abort in our lanes), dereferences a possibly-disengaged `Optional` for a sparse
+  accessor with no `bufferView` (its own header says that case is real), and never bounds-checks the
+  accessor -> bufferView -> buffer chain; `fastgltf::span` is unchecked and
+  `DefaultBufferDataAdapter` range-checks nothing. `validateAccessor` is what makes a hostile document
+  cost a warning instead of a crash or an out-of-bounds read.
+- **The custom buffer-data adapter must apply the bufferView's own `byteOffset`/`byteLength`.**
+  fastgltf's callers apply only `accessor.byteOffset` on top. An adapter that returns the whole buffer
+  reads from the wrong offset with NO error -- plausible-looking garbage geometry.
+- **`Structure` and `Full` are ONE function with a depth parameter (INV-M4).** They can never disagree
+  about the URI set, the counts, the names or the hierarchy, because they compute them with the same
+  code. The SCAN runs `Structure` only, budgeted, and only for assets already in `plan.jobIndices`; the
+  PANEL runs `Full`, on demand, for one asset, in two passes.
+- **A scan still writes ZERO bytes to a fully-described tree (D7).** The `importer` block is written by
+  exactly ONE code path -- `ModelImportSession::applySettings`, reached from the panel's Apply button,
+  driven by a person who changed a value. The scan never mints, upgrades or normalizes a block.
+  `writeMetaText(guid, ImportSettings{})` is byte-identical to `writeMetaText(guid)` BY CONSTRUCTION
+  (the one-argument overload delegates), so `minimal.meta`'s 65-byte fixpoint keeps passing unedited --
+  and THAT is the evidence this task did not disturb the committed format.
+- **`.meta` STAYS AT VERSION 1 (D6).** A v2 bump makes an older build nil EVERY GUID in the project
+  (`parseMeta` rejects the version -> `Invalid` -> nil guid; D7 then forbids repairing it), with no
+  recovery path that does not involve hand-editing files. An additive optional key degrades instead.
+- **A malformed `importer` block NEVER invalidates an identity (AC-12/INV-M11).** `error` stays
+  `MetaError::None`, `guid` stays engaged, and the failure surfaces only through `importer`
+  (disengaged) + `importerMessage` (non-empty). Version and guid are IDENTITY; the block is PREFERENCE.
+- **`ImportInput::probe` engagement is the "was this probed?" signal (D9).** A disengaged probe makes
+  `commitImports` carry the PREVIOUS entry's importer, importerVersion and dependencies forward
+  verbatim. Passing `""`/`0` instead would flip the importer, make `planImports` report
+  `ImporterChanged` next scan, flip it back, and oscillate FOREVER.
+- **The probe records THIS scan's dependencies for the NEXT scan's cascade (D8/E11).** It runs after
+  `planImports` and before `commitImports`. A brand-new model plus its brand-new texture cascade
+  correctly from the SECOND scan onward -- correct, since both are `New` on the first scan anyway.
+  **A test that edits a texture immediately after adding a model must tick TWICE.**
+- **`dependencies` never contains a nil GUID, is sorted, is deduplicated, and drops self-edges
+  (INV-M8/E9).** A nil would make the cascade's `find` return `nullptr` for a reason unrelated to the
+  graph; a self-edge would make the worklist treat the node as permanently dirty.
+- **The Full import runs from `EditorApp::tick()` only, never from `onDraw()` (INV-M12).** Like
+  3.1.3's BLOCKING-1 and 3.1.4's D9, **no automated test tier can see the general-case violation** --
+  `I60` reads `editor_app.cpp`'s own source text and manual row 8 is the only behavioural cover. Get it
+  right by construction.
+- **`"Import Details"` is FROZEN.** It is the ImGui window name AND the `imgui.ini` settings key.
+  Renaming it orphans every user's saved layout for that panel.
+- **Editing import settings is NOT undoable, and that is a decision (D19).** `CommandStack` is
+  scene-scoped by construction and is cleared on every World swap; a file edit does not belong in it.
+  Apply is a plain, explicit, single-shot atomic write, and the file itself is the record. This is the
+  same posture the Project Settings panel takes toward `project.json` (2.6.2 D6).
+- **`extensionsRequired` fails the parse INSIDE fastgltf, before we see the asset.** Both
+  `Error::MissingExtensions` and `Error::UnknownRequiredExtension` map to
+  `ImportStatus::MissingExtension`, and neither error names the extension -- **but only one of them is
+  unrecoverable.** `MissingExtensions` means fastgltf KNOWS the extension and it was merely not enabled,
+  so a **throwaway re-parse with `~fastgltf::Extensions::None`** recovers the names; the `Asset` is
+  discarded, so D20 is intact. `UnknownRequiredExtension` means fastgltf does not know it at all, and no
+  setting changes that. **`Extensions::All` does not exist in 0.9.0** -- that `All` belongs to
+  `Category`. See §A-6 and §D's `describeRequiredExtensions`.
+- **`gltf_import.cpp` sees `<filesystem>` transitively and cannot avoid it** (`Parser::loadGltf` takes
+  a `std::filesystem::path` positionally). The rule that IS true and IS checked: **it performs no file
+  operation at all.** `directory` is `{}`, which fastgltf explicitly supports when no `LoadExternal*`
+  option is set.
+- **`Options::DecomposeNodeMatrices` destroys the fact that a node used a `matrix`.** The AC-19 warning
+  is therefore a deliberate, labelled HEURISTIC: one `find` for `"\"matrix\""` over the source bytes,
+  producing ONE aggregate warning per document. A false positive costs one warning; a false negative
+  costs none; neither affects correctness.
+- **UPSTREAM DEFECT, do not trip it:** `fastgltf::URI::decodePercents` reads out of bounds on a URI
+  ending in `%` (`chars = {x[i+1], x[i+2]}` with `i == size()-1`). No fixture or test in this tree may
+  contain one. `%zz` (three characters) is in range and is the form used for the control-character
+  refusal case.
+- **The panel's service() call site has NO automated general-case cover, the identical
+  `serviceThumbnails()` shape 3.1.3 and 3.1.4 both already carry.** `ModelImportSession::service()` runs
+  from `EditorApp::tick()`'s post-draw slot, the THIRD occupant after `renderScene()` and
+  `serviceThumbnails()` -- never from `ImportDetailsPanel::onDraw()`. `I60` proves it the only way this
+  target can: reading `editor_app.cpp`'s own source text (comment-stripped) and asserting the ONE call
+  site sits textually AFTER `drawShellUi(`, the single call that invokes every panel's `onDraw()`. That
+  is a proof about THIS file's current text, not a structural guarantee against a future refactor that
+  moves the call somewhere else that still reads as `editor_app.cpp` -- manual validation row 8 (ten
+  models selected one after another, no stutter) is the only behavioural cover, exactly as it is for
+  `serviceThumbnails()` and the watcher's superseded-texture sweep.
+- **`AssetBrowserPanel::selectedEntry` needed a SECOND public seam beyond `selection()` to be drivable
+  from the ImGui-free-at-source GPU tier, not anticipated by the plan's own literal count.**
+  `requestSelectEntry` (panel) / `requestAssetBrowserSelectEntry` (`EditorApp`) are the
+  code-review-finding-4 shape (`requestViewMode`/`requestSearchQuery`/`requestKindFilter`/
+  `requestDeleteOrphanClick`), a fifth application: each records EXACTLY what a real single click on a
+  row/tile records (`ActionKind::SelectEntry`). Without it, `ModelImportSession`'s whole reconcile path
+  has no way to be driven from `imgui_layer_test.cpp` at all. **A case that calls it still needs
+  `AssetBrowserPanel::onDraw()` to actually RUN for the click-equivalent action to be drained at all** --
+  "Assets" shares `DockSlot::Bottom` with "Console" (registered first, so it wins the tab by default),
+  so every such case calls `app->panels().setVisible("Console", false)` first (2.2.4's C5 precedent,
+  restated for a sixth reason).
+
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
-3.1.3 and 3.1.4's entries under Phase 3.
+3.1.3, 3.1.4 and 3.2.1's entries under Phase 3.

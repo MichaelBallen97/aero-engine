@@ -77,6 +77,14 @@ struct AssetScanReport {
     std::size_t hashFailureTotal = 0;
     std::vector<std::string> aliasedDirs;
     std::size_t aliasedDirTotal = 0;
+
+    // ---- task 3.2.1: the model probe (phase 7.5) --------------------------------------------------
+    std::size_t modelsProbed = 0;             // ImportDepth::Structure passes actually run this scan
+    std::size_t dependenciesRecorded = 0;     // GUIDs written across every probed model
+    bool probeBudgetExhausted = false;        // MAX_PROBE_BYTES_PER_SCAN ran out; the rest carry forward
+    std::vector<std::string> importFailures;  // capped at MAX_REPORTED_PER_CATEGORY;
+                                              // "<path>: <status label> -- <message>"
+    std::size_t importFailureTotal = 0;       // UNCAPPED
 };
 
 class AssetDatabase {
@@ -90,7 +98,8 @@ public:
     // test-only seam -- production exercises the real constant, which stays pinned at its own
     // declaration. listDirectory(root, rel, includeHidden) is the same shape.
     AssetScanReport rescan(std::string projectRootUtf8, std::string assetsRootUtf8, GuidGenerator& generator,
-                           std::uint64_t hashBudgetBytes = MAX_HASH_BYTES_PER_SCAN);
+                           std::uint64_t hashBudgetBytes = MAX_HASH_BYTES_PER_SCAN,
+                           std::uint64_t probeBudgetBytes = MAX_PROBE_BYTES_PER_SCAN);
 
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] const AssetRecord* findByPath(std::string_view relativePath) const noexcept;

@@ -26,6 +26,7 @@
 #include <aero/editor/editor_camera.hpp>    // task 2.3.1
 #include <aero/editor/entity_commands.hpp>  // task 2.4.2
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>       // task 2.3.2
 #include <aero/editor/project.hpp>       // task 2.6.1
@@ -196,11 +197,14 @@ TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke
         *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
-    // The D8 registration -- FOUR absolute panel-count sites in the tree (this one plus :219, :447 and
-    // :551), all of which moved from 5 to 6 the moment task 2.6.2 registered the sixth default panel,
-    // "Project Settings". (`:1360`/`:1366`'s captured `panelCountBefore` is a fifth, count-agnostic
-    // site by construction -- the "gizmo" window is not a panel -- and is NOT one of the four.)
-    CHECK(app->panels().count() == 6);
+    // The D8 registration -- SIX absolute panel-count sites in the tree, measured directly rather than
+    // assumed (this one plus :264, :492, :597, :2597 and :2761 -- the "FOUR ... :219, :447 and :551"
+    // this comment used to claim was already stale before this task touched it, a real drift this
+    // task's own edit is what surfaced), all of which moved from 6 to 7 the moment task 3.2.1
+    // registered the seventh default panel, "Import Details". (`:1410`/`:1416`'s captured
+    // `panelCountBefore` is a seventh, count-agnostic site by construction -- the "gizmo" window is not
+    // a panel -- and is NOT one of the six.)
+    CHECK(app->panels().count() == 7);
 
     // wantsDefaultLayout() is true even with persistLayout = false (F1b), so frame 1 below exercises
     // buildDefaultLayout for real. Use REQUIRE on tick(), not CHECK: a spurious Quit/WindowClose from
@@ -261,7 +265,7 @@ TEST_CASE("editor: the Hierarchy panel draws a seeded scene and survives edits (
 
     // AC-18: the default config seeds three entities.
     CHECK(app->world().entityCount() == 3);
-    CHECK(app->panels().count() == 6);
+    CHECK(app->panels().count() == 7);
     CHECK(app->selection().empty());
 
     for (int i = 0; i < 3; ++i) {
@@ -489,7 +493,7 @@ TEST_CASE(
                                                                                       .projectPath = "",
                                                                                       .restoreLastProject = false});
     REQUIRE(app.has_value());
-    CHECK(app->panels().count() == 6);
+    CHECK(app->panels().count() == 7);
     CHECK_FALSE(app->projectIsOpen());
     CHECK(app->assetBrowserRoot().empty());
 
@@ -594,7 +598,7 @@ TEST_CASE("editor: the Console panel draws the engine log stream (task 2.2.5)") 
     REQUIRE(app.has_value());
 
     // The D8 registration -- the ONE absolute panel count in the tree (plan C3's proof).
-    CHECK(app->panels().count() == 6);
+    CHECK(app->panels().count() == 7);
 
     // The create()-time records are staged in the sink; only the pump fills the history.
     CHECK(app->logRecordCount() == 0);
@@ -2594,7 +2598,7 @@ TEST_CASE(
     REQUIRE(app.has_value());
 
     // 2. Registration and ORDER -- what makes sabotage seed S13 (registering before Inspector) redden.
-    CHECK(app->panels().count() == 6);
+    CHECK(app->panels().count() == 7);
 
     // EVERY id, in order (Phase 2 audit). Each panel's own header calls its id FROZEN because it is
     // the imgui.ini settings key -- renaming one orphans every user's saved layout for that panel --
@@ -2758,7 +2762,7 @@ TEST_CASE("editor: a registered panel that is not DOCKED in a restored layout ge
                                                .recentProjectsPath = uniqueRecentsFile(),
                                                .layoutIniPath = iniPath});
         REQUIRE(app.has_value());
-        CHECK(app->panels().count() == 6);
+        CHECK(app->panels().count() == 7);
 
         for (int i = 0; i < 3; ++i) {
             REQUIRE(app->tick());
@@ -4481,6 +4485,513 @@ TEST_CASE("imgui_layer: a manual rescan while deferring is not re-reported (I51,
 
     REQUIRE(tickToQuiescence(*app));
     CHECK(app->assetWatchTriggerCount() == before);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- I52-I60: task 3.2.1's on-demand model import panel, through real frames ----------------------
+//
+// The SAME two-part discipline every project-opening case in this file uses (BLOCKING-2): opt OUT of
+// restoring the last project AND redirect the recents-file WRITE.
+//
+// None of I53-I55/I59 needs `requestPanelFocus`/`setVisible` at all: modelImportCount()/
+// modelImportState()/modelImportTarget() read ModelImportSession directly, and the service() call
+// (editor_app.cpp's post-draw slot) runs unconditionally every tick regardless of whether "Import
+// Details" is the currently-selected tab in its shared DockSlot::Right node. Only I56-I58, which must
+// observe the PANEL ITSELF draw without an ImGui assert, need the I39 precedent: "Import Details"
+// shares DockSlot::Right with "Inspector" (registered first, so it wins the tab on a fresh layout),
+// and drawPanels() calls onDraw() only for a panel whose ImGui::Begin() returns true -- so a
+// tabbed-behind panel never draws at all without requestPanelFocus() bringing it forward.
+namespace {
+
+// A minimal, structurally empty but VALID glTF document (MS2's own fixture, reused): zero nodes, zero
+// meshes -- imports with ImportStatus::Ok, which is all I53/I54/I55/I59 need to observe SessionState::
+// Imported and a real, non-zero importCount().
+constexpr std::string_view MINIMAL_GLTF_TEXT = R"({"asset":{"version":"2.0"}})";
+
+// A depth-4 node CHAIN (Root -> Child -> Grandchild -> GreatGrandchild), no meshes -- what I57 needs to
+// exercise the Hierarchy section's explicit-stack tree walk through a real drawn frame.
+constexpr std::string_view HIERARCHY_GLTF_TEXT = R"({"asset":{"version":"2.0"},"nodes":[)"
+                                                 R"({"name":"Root","children":[1]},)"
+                                                 R"({"name":"Child","children":[2]},)"
+                                                 R"({"name":"Grandchild","children":[3]},)"
+                                                 R"({"name":"GreatGrandchild"}]})";
+
+// Not JSON at all -- the MI34 shape ("truncated / not JSON / bad GLB" -> ParseFailed), reused here only
+// to reach SessionState::Failed through a real frame; I58 does not care WHICH failure status lands.
+constexpr std::string_view DAMAGED_GLTF_TEXT = "this is not a json document at all";
+
+}  // namespace
+
+TEST_CASE("editor: the Import Details panel is registered right of the Inspector (task 3.2.1, I52, AC-50)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i52", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+    // AC-50: registered in create(), BEFORE the first tick() -- checked here, before any tick runs.
+    CHECK(app->panels().count() == 7);
+
+    const engine::editor::Panel* panel = app->panels().find("Import Details");
+    REQUIRE(panel != nullptr);
+    CHECK(std::string_view(panel->id()) == "Import Details");
+    CHECK(panel->defaultDockSlot() == engine::editor::DockSlot::Right);
+
+    // The black-box surface's own default state, before any selection has ever happened.
+    CHECK(app->modelImportCount() == 0);
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Idle));
+    CHECK(app->modelImportTarget().empty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: selecting a model imports it exactly once (task 3.2.1, I53, AC-45)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i53", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", MINIMAL_GLTF_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    // "Assets" shares DockSlot::Bottom with "Console" (registered first, so it wins the tab by
+    // default) -- without hiding Console, AssetBrowserPanel::onDraw() never runs, applyPending() never
+    // drains the SelectEntry action below, and selection() never changes (2.2.4's C5 precedent).
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the initial scan -- selection() is still "" through this whole tick
+    CHECK(app->modelImportCount() == 0);
+
+    app->requestAssetBrowserSelectEntry("a.gltf");
+    REQUIRE(app->tick());  // 2: drains SelectEntry -> AssetBrowserPanel::selection() == "a.gltf" by the
+                           // end of THIS tick's onDraw (applyPending runs last)
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 3: the reconcile's fifth statement now sees the new selection() ->
+                           // setTarget() -> the post-draw slot's service() call imports it
+    CHECK(app->presentedLastFrame());
+    CHECK(app->modelImportCount() == 1);
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->modelImportCount() == 1);  // AC-45: STRUCTURAL (service()'s own `serviced` guard), not a
+                                          // call-site convention -- ten further ticks cost ten early
+                                          // returns, exactly ModelImportSession::MS3's tier-0 proof.
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a rescan invalidates the cached result and re-imports exactly once (task 3.2.1, I54, AC-47)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i54", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", MINIMAL_GLTF_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // 2.2.4's C5 -- see I53's own comment
+    REQUIRE(app->tick());                        // 1: the initial scan
+
+    app->requestAssetBrowserSelectEntry("a.gltf");
+    REQUIRE(app->tick());  // 2: drains SelectEntry
+    REQUIRE(app->tick());  // 3: reconcile -> setTarget -> service() imports once
+    REQUIRE(app->modelImportCount() == 1);
+
+    // AssetDatabase::generation() is the FOURTH consumer here (2.6.1's panel root, 3.1.1's database,
+    // 3.1.3's report, 3.1.4's watcher, now the import session) -- ANY rescan trigger invalidates the
+    // cached result, not only a change to the model itself.
+    app->requestAssetRescan();
+    REQUIRE(app->tick());  // 4: rescan runs (bumps generation()) -> reconcile sees the mismatch ->
+                           // setTarget() resets `serviced` -> service() re-imports, ALL in this ONE tick
+    CHECK(app->modelImportCount() == 2);
+
+    REQUIRE(app->tick());  // a further tick at the SAME generation costs nothing more (AC-45's rule,
+                           // restated for AC-47's own trigger)
+    CHECK(app->modelImportCount() == 2);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a non-model selection never imports; clearing the selection returns to Idle (task 3.2.1, "
+    "I55, AC-46)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i55", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/notes.txt", "hello").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // 2.2.4's C5 -- see I53's own comment
+    REQUIRE(app->tick());                        // 1: the initial scan
+
+    app->requestAssetBrowserSelectEntry("notes.txt");
+    REQUIRE(app->tick());  // 2: drains SelectEntry
+    REQUIRE(app->tick());  // 3: reconcile -> setTarget -> service() -- NotImportable, NOTHING read
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::NotImportable));
+    CHECK(app->modelImportCount() == 0);  // AC-46: NotImportable never increments importCount()
+
+    app->requestAssetBrowserSelectEntry("");
+    REQUIRE(app->tick());  // 4: drains SelectEntry("") -- exactly what Navigate's own clear does
+    REQUIRE(app->tick());  // 5: reconcile -> setTarget("", gen) -> service() -- Idle
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Idle));
+    CHECK(app->modelImportCount() == 0);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Import Details panel draws its Idle state without crashing (task 3.2.1, I56, AC-49)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i56", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // 1
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 2: let the default dock layout settle before focusing anything (I39's precedent)
+    CHECK(app->presentedLastFrame());
+    app->requestPanelFocus("Import Details");
+    REQUIRE(app->tick());  // 3: focus applied before DockSpaceOverViewport, so it lands this frame --
+                           // "Import Details" draws its Idle state for real, tabbed in front of Inspector
+    CHECK(app->presentedLastFrame());
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Idle));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the Import Details panel draws its Imported state with a four-deep hierarchy (task 3.2.1, "
+    "I57, AC-49)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i57", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/chain.gltf", HIERARCHY_GLTF_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // 2.2.4's C5 -- see I53's own comment
+    REQUIRE(app->tick());                        // 1: the initial scan
+
+    app->requestAssetBrowserSelectEntry("chain.gltf");
+    REQUIRE(app->tick());  // 2: drains SelectEntry
+    REQUIRE(app->tick());  // 3: reconcile -> setTarget -> service() imports the four-deep chain
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->modelImportCount() == 1);
+
+    REQUIRE(app->tick());  // 4: let the default dock layout settle before focusing anything
+    CHECK(app->presentedLastFrame());
+    app->requestPanelFocus("Import Details");
+    REQUIRE(app->tick());  // 5: focus applied -> draws the Imported state for real, including the
+                           // Overview/Import Settings/Hierarchy/Meshes/Materials/Skeleton & Animation
+                           // sections (ALL default-open) over the four-deep node chain
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Import Details panel draws its Failed state without crashing (task 3.2.1, I58, AC-49)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i58", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/broken.gltf", DAMAGED_GLTF_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // 2.2.4's C5 -- see I53's own comment
+    REQUIRE(app->tick());                        // 1: the initial scan
+
+    app->requestAssetBrowserSelectEntry("broken.gltf");
+    REQUIRE(app->tick());  // 2: drains SelectEntry
+    REQUIRE(app->tick());  // 3: reconcile -> setTarget -> service() -- ParseFailed
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Failed));
+
+    REQUIRE(app->tick());  // 4: let the default dock layout settle before focusing anything
+    CHECK(app->presentedLastFrame());
+    app->requestPanelFocus("Import Details");
+    REQUIRE(app->tick());  // 5: focus applied -> draws the Failed state for real
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the reconcile's fifth statement keeps the session's target in sync with the selection "
+    "(task 3.2.1, I59, seed S19)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i59", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", MINIMAL_GLTF_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // 2.2.4's C5 -- see I53's own comment
+    CHECK(app->modelImportTarget().empty());
+    REQUIRE(app->tick());  // 1: the initial scan
+
+    app->requestAssetBrowserSelectEntry("a.gltf");
+    REQUIRE(app->tick());                     // 2: drains SelectEntry -> AssetBrowserPanel::selection() == "a.gltf"
+    CHECK(app->modelImportTarget().empty());  // the reconcile has not run against the NEW selection yet
+    REQUIRE(app->tick());                     // 3: the reconcile's fifth statement compares selection() against the
+                           // session's OWN target and calls setTarget() on the mismatch -- a seed that
+                           // removes this statement (S19) leaves modelImportTarget() stuck at ""
+    CHECK(app->modelImportTarget() == "a.gltf");
+    CHECK(app->modelImportCount() == 1);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- I60: AC-48's call-site proof, the I30/I34/I42 shape's fourth instance -------------------------
+//
+// This target is ImGui-free at source and cannot observe WHERE a call sits at runtime -- INV-M12's
+// general-case violation (moving importSession.service() into onDraw()) has NO automated tier that can
+// see it (3.1.3's BLOCKING-1 and 3.1.4's D9 are the identical shape). The mechanical proof available is
+// textual: importSession.service( appears EXACTLY ONCE in editor_app.cpp, and it sits textually AFTER
+// drawShellUi( -- the ONE call that invokes every panel's onDraw() -- so it runs OUTSIDE the draw walk
+// by construction. This is the I30/I42 statement-ordering proof (a drain happens before a combine),
+// applied to prove a call sits after a walk instead.
+TEST_CASE("editor_app: importSession.service() runs outside the draw walk (task 3.2.1, I60, AC-48, INV-M12)") {
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/editor_app.cpp";
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+    const std::string& text = *read.text;
+    REQUIRE_FALSE(text.empty());
+
+    std::vector<std::string_view> lines;
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        if (newline == std::string_view::npos) {
+            lines.push_back(remaining);
+            break;
+        }
+        lines.push_back(remaining.substr(0, newline));
+        remaining.remove_prefix(newline + 1U);
+    }
+
+    std::size_t drawShellUiLine = lines.size();
+    std::size_t serviceLine = lines.size();
+    std::size_t serviceHits = 0;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        // Comment-stripped BEFORE matching (I42's lesson): this task's own prose legitimately names
+        // both tokens inside comments more than once, and a check that cannot tell code from comment
+        // is not a mechanical proof at all.
+        const std::string_view line = lines[i];
+        const std::size_t commentStart = line.find("//");
+        const std::string_view code = commentStart == std::string_view::npos ? line : line.substr(0, commentStart);
+        if (code.find("drawShellUi(") != std::string_view::npos && drawShellUiLine == lines.size()) {
+            drawShellUiLine = i;  // the ONE call that invokes every panel's onDraw()
+        }
+        if (code.find("importSession.service(") != std::string_view::npos) {
+            ++serviceHits;
+            if (serviceLine == lines.size()) {
+                serviceLine = i;  // FIRST occurrence -- and, per the REQUIRE below, the ONLY one
+            }
+        }
+    }
+    REQUIRE(drawShellUiLine != lines.size());
+    REQUIRE(serviceLine != lines.size());
+    REQUIRE(serviceHits == 1);             // exactly ONE call site in this file (§V6's AC-48 grep, scoped here)
+    CHECK(drawShellUiLine < serviceLine);  // textually AFTER drawShellUi(: runs OUTSIDE the draw walk
+}
+
+// I61's OWN caveat, stated plainly (verified directly, matching 3.1.3's BLOCKING-1 / 3.1.4's D9
+// posture): the SHOULD-FIX 10 bug is a SILENT omission, never a crash -- excluding importFailureTotal
+// from drawIssues()'s `total` merely made the whole Issues header (and this new sixth category) never
+// draw for a project in exactly the state built below, and ImGui's own CollapsingHeader/TextUnformatted
+// calls simply not running has no effect this test tier can observe (presentedLastFrame() stays true
+// whether the header opened or not; no automated tier in this tree scrapes rendered ImGui text). Checked
+// directly: this case passes with drawIssues()'s importFailureTotal fix reverted, identically. What it
+// DOES prove, and is worth proving on its own: report.importFailureTotal reaches EditorApp's new
+// black-box accessor correctly, and the draw path this fix adds executes without crashing or
+// unbalancing an ImGui call. The rendering fix itself is verified by code inspection against the five
+// existing categories' identical idiom, not by this case.
+TEST_CASE(
+    "editor: a scan-time model import failure reaches assetImportFailureCount() and the Issues panel "
+    "draws without crashing (task 3.2.1, I61, code review SHOULD-FIX 10)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import failure issues i61", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    // The ONLY issue this project has -- no orphan, no invalid .meta, no hash/write failure -- so
+    // drawIssues()'s `total` is driven ENTIRELY by report.importFailureTotal here. BEFORE this fix,
+    // excluding it from `total` meant the header never even opened for a project in exactly this state.
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/broken.gltf", DAMAGED_GLTF_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // 1: the initial scan -- phase 7.5 probes "broken.gltf" and fails to parse it
+    CHECK(app->assetImportFailureCount() > 0);
+    CHECK(app->assetOrphanCount() == 0);  // confirms importFailureTotal is the ONLY populated category
+
+    REQUIRE(app->tick());  // 2: let the default dock layout settle before focusing anything
+    CHECK(app->presentedLastFrame());
+    app->requestPanelFocus("Assets");
+    REQUIRE(app->tick());  // 3: focus applied before DockSpaceOverViewport, so it lands this frame --
+                           // drawIssues() runs for real, past the total==0 guard this fix corrected
+    CHECK(app->presentedLastFrame());
 
     app->requestQuit();
     CHECK(app->tick() == false);

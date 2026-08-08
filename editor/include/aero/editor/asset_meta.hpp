@@ -10,8 +10,13 @@
 // sidecar, never overwrite an invalid one, never delete an orphan, repair a duplicate
 // deterministically) is provable from a std::vector literal and a fixed seed.
 #include <aero/core/guid.hpp>
-#include <aero/editor/asset_cache.hpp>  // task 3.1.2: ImportChange, ContentHash. ONE WAY ONLY -- asset_cache.hpp
-                                        // must NEVER include this file (docs/09 §6.9 / plan A20).
+#include <aero/editor/asset_cache.hpp>      // task 3.1.2: ImportChange, ContentHash. ONE WAY ONLY -- asset_cache.hpp
+                                            // must NEVER include this file (docs/09 §6.9 / plan A20).
+#include <aero/editor/import_settings.hpp>  // task 3.2.1 -- ImportSettings + the two importer-identity
+                                            // constants ONLY. This header deliberately does NOT
+                                            // include model_import.hpp, which would drag aero::scene
+                                            // and the math umbrella onto every TU that touches an
+                                            // asset record (plan §A-11).
 
 #include <cstddef>
 #include <cstdint>
@@ -73,6 +78,23 @@ enum class MetaError : std::uint8_t {
     NilGuid,
 };
 
+// task 3.2.1 (D6). docs/09 §5.9. The OPTIONAL `importer` block: user intent, committed to git,
+// surviving a machine change. THE FORMAT VERSION STAYS 1, and that is load-bearing:
+//
+//   A v2 bump is a DATA-LOSS TRAP in this codebase. parseMeta rejects version != 1 with "unsupported
+//   asset meta format version <N>", which makes the record AssetMetaState::Invalid with a NIL GUID --
+//   and D7 then forbids overwriting an invalid sidecar, correctly and permanently. An older build (a
+//   teammate who has not pulled; the user's own previous install; a bisect) opening a v2 project marks
+//   EVERY asset invalid, with no identity, and cannot repair a single one. There is no recovery path
+//   that does not involve hand-editing files. An ADDITIVE OPTIONAL KEY at version 1 degrades instead:
+//   §5.1's unknown-root-key rule means an older build reads the GUID correctly, warns once per model
+//   asset, and loses only the settings -- which it could not have honoured anyway.
+struct MetaImporterBlock {
+    std::string name;           // "gltf"
+    std::uint32_t version = 0;  // GLTF_IMPORTER_VERSION at write time
+    ImportSettings settings;
+};
+
 struct MetaParseResult {
     std::optional<Guid> guid;  // engaged == success
     MetaError error = MetaError::None;
@@ -80,8 +102,30 @@ struct MetaParseResult {
     std::uint32_t line = 0;  // > 0 ONLY for a JSON-stage failure
     std::uint32_t column = 0;
     std::vector<std::string> unknownKeys;  // AC-14: WARNed by the CALLER, never here
+    // ---- task 3.2.1, APPENDED (3.1.2's A2 trap: APPENDED, NEVER INSERTED -- asset_meta_test.cpp holds
+    // positional aggregate initializers, and `bool -> uint32_t` is a PROMOTION that nothing
+    // diagnoses) ----
+    //
+    // ENGAGEMENT is the signal: engaged == a well-formed `importer` block was present.
+    // Disengaged == the block was ABSENT **or** MALFORMED.
+    std::optional<MetaImporterBlock> importer;
+    // "" iff the block was absent OR parsed cleanly. NON-EMPTY + DISENGAGED == malformed, and THAT
+    // pair is how a caller distinguishes "absent" from "broken" -- NEVER by inspecting `unknownKeys`.
+    std::string importerMessage;
 };
+
+// AC-12/INV-M11, and it is THE load-bearing rule of this extension: a malformed importer block NEVER
+// invalidates an identity. `error` stays MetaError::None, `guid` stays engaged, and the failure
+// surfaces ONLY through the two fields above. This asymmetry with every other field in the format is
+// DELIBERATE: `version` and `guid` are IDENTITY, and a failure there is fatal; the importer block is
+// PREFERENCE, and a failure there costs a user their settings, not their asset. NO NEW MetaError
+// ENUMERATOR IS ADDED, for exactly that reason.
+
 [[nodiscard]] MetaParseResult parseMeta(std::string_view text);
+// D7's omit-when-default rule lives HERE, in exactly ONE place.
+[[nodiscard]] std::string writeMetaText(Guid guid, const ImportSettings& settings);
+// The existing one-argument overload becomes a ONE-LINE DELEGATE to the above with ImportSettings{},
+// so AC-9's byte-identity is true BY CONSTRUCTION rather than by two writers agreeing (INV-M10).
 [[nodiscard]] std::string writeMetaText(Guid guid);  // canonical, exactly one trailing '\n'
 
 // ---- the lifecycle, as a PURE function (D5-D9) ------------------------------------------------
@@ -106,6 +150,13 @@ struct AssetRecord {
     // every READER of `change` (the accessor, the footer) must check this flag first, or a failed write
     // silently reads as "up to date" for a file with no sidecar and no cache entry.
     bool metaWriteFailed = false;
+    // ---- task 3.2.1, APPENDED ----
+    // The asset's own import settings, parsed from its .meta's optional `importer` block in phase 2.
+    // DEFAULTS when the block is absent OR malformed (D7 rule 1: absent == defaults, forever, with no
+    // "unset" state, no tri-state and no migration). Phase 7.5 reads it so a probe uses the SAME
+    // settings the panel would, and it is what makes AC-52 work: changing a setting changes metaHash
+    // -> MetaChanged -> the asset lands in jobIndices -> phase 7.5 re-probes it with the NEW settings.
+    ImportSettings importSettings;
 };
 
 struct AssetPlanEntry {
@@ -113,6 +164,11 @@ struct AssetPlanEntry {
     std::optional<Guid> guid;  // nullopt == no sidecar, OR one that failed to parse
     bool metaPresent = false;
     std::optional<Guid> reattachedGuid;  // task 3.1.2 (D13). Set ONLY by asset_database.cpp's phase 5.
+    // task 3.2.1, APPENDED: the SAME field as AssetRecord::importSettings above, set by
+    // asset_database.cpp's phase 2 from the sidecar's parsed importer block (when engaged) and left at
+    // its default otherwise. planAssetMetas copies it straight across into the record it builds --
+    // reattachedGuid's shape, a second application.
+    ImportSettings importSettings;
 };
 
 struct AssetPlanResult {

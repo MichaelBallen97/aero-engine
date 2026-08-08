@@ -11,6 +11,9 @@
 // scene_golden::readBytes.
 #include <aero/core/guid.hpp>
 #include <aero/editor/asset_meta.hpp>
+#include <aero/editor/import_settings.hpp>
+#include <aero/reflect/json_reader.hpp>
+#include <aero/reflect/json_value.hpp>
 
 #include "scene_golden_support.hpp"
 
@@ -27,12 +30,17 @@
 using engine::formatGuid;
 using engine::Guid;
 using engine::GuidGenerator;
+using engine::JsonMember;
+using engine::JsonParseResult;
+using engine::JsonValue;
 using engine::parseGuid;
+using engine::parseJson;
 using engine::editor::AssetMetaState;
 using engine::editor::assetNameForMeta;
 using engine::editor::AssetPlanEntry;
 using engine::editor::AssetPlanResult;
 using engine::editor::AssetRecord;
+using engine::editor::ImportSettings;
 using engine::editor::isMetaFileName;
 using engine::editor::isScannableAssetName;
 using engine::editor::isWatchableAssetName;
@@ -47,6 +55,7 @@ namespace {
 
 constexpr std::string_view MINIMAL_FIXTURE = AERO_ASSET_FIXTURES_DIR "/minimal.meta";
 constexpr std::string_view UNKNOWN_KEYS_FIXTURE = AERO_ASSET_FIXTURES_DIR "/unknown-keys.meta";
+constexpr std::string_view IMPORTER_SETTINGS_FIXTURE = AERO_ASSET_FIXTURES_DIR "/importer-settings.meta";
 
 // The fixture's pinned GUID, as text -- shared by AG3/AG4 so there is exactly one spelling of it.
 constexpr std::string_view FIXTURE_GUID_TEXT = "a3f1c07e5b8d42198e6f0c3d7a2b4b92";
@@ -738,4 +747,179 @@ TEST_CASE("asset_meta: isWatchableAssetName is EXACTLY the composition of the tw
         CAPTURE(name);
         CHECK(isWatchableAssetName(name) == (isScannableAssetName(name) || isMetaFileName(name)));
     }
+}
+
+// ---- the optional importer block (task 3.2.1, D6) --------------------------------------------------
+
+TEST_CASE(
+    "asset_meta: writeMetaText with DEFAULT settings is byte-identical to the one-arg overload (AM-i1, AC-9, "
+    "INV-M10)") {
+    const std::optional<Guid> guid = parseGuid(FIXTURE_GUID_TEXT);
+    REQUIRE(guid.has_value());
+    CHECK(writeMetaText(*guid, ImportSettings{}) == writeMetaText(*guid));
+}
+
+TEST_CASE(
+    "asset_meta: writeMetaText with DEFAULT settings still matches minimal.meta's 65-byte fixpoint (AM-i2, AC-9)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(MINIMAL_FIXTURE);
+    REQUIRE(fixture.ok);
+    const std::optional<Guid> guid = parseGuid(FIXTURE_GUID_TEXT);
+    REQUIRE(guid.has_value());
+    const std::string written = writeMetaText(*guid, ImportSettings{});
+    CHECK(written.size() == 65);
+    INFO(scene_golden::describeMismatch(fixture.text, written));
+    CHECK(written == fixture.text);
+}
+
+TEST_CASE(
+    "asset_meta: writeMetaText with NON-DEFAULT settings matches importer-settings.meta byte for byte (AM-i3, AC-10)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(IMPORTER_SETTINGS_FIXTURE);
+    REQUIRE(fixture.ok);
+    const std::optional<Guid> guid = parseGuid(FIXTURE_GUID_TEXT);
+    REQUIRE(guid.has_value());
+    const ImportSettings settings{0.01F, false, true, false};
+    const std::string written = writeMetaText(*guid, settings);
+    INFO(scene_golden::describeMismatch(fixture.text, written));
+    CHECK(written == fixture.text);
+    REQUIRE(written.size() >= 2);
+    CHECK(written.back() == '\n');
+    CHECK(written[written.size() - 2] != '\n');  // exactly ONE trailing newline
+}
+
+TEST_CASE("asset_meta: importer-settings.meta round-trips its settings exactly (AM-i4)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(IMPORTER_SETTINGS_FIXTURE);
+    REQUIRE(fixture.ok);
+    const MetaParseResult parsed = parseMeta(fixture.text);
+    REQUIRE(parsed.guid.has_value());
+    REQUIRE(parsed.importer.has_value());
+    CHECK(parsed.importer->settings == ImportSettings{0.01F, false, true, false});
+}
+
+TEST_CASE(
+    "asset_meta: parseMeta on a VALID importer block returns guid, importer and empty unknownKeys (AM-i5, AC-11)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(IMPORTER_SETTINGS_FIXTURE);
+    REQUIRE(fixture.ok);
+    const MetaParseResult parsed = parseMeta(fixture.text);
+    REQUIRE(parsed.guid.has_value());
+    REQUIRE(parsed.importer.has_value());
+    CHECK(parsed.importer->name == "gltf");
+    CHECK(parsed.importer->version == 1);
+    CHECK(parsed.importer->settings == ImportSettings{0.01F, false, true, false});
+    CHECK(parsed.unknownKeys.empty());
+    CHECK(parsed.importerMessage.empty());
+}
+
+TEST_CASE("asset_meta: parseMeta with NO importer key leaves it disengaged, with no message (AM-i6, AC-13)") {
+    const MetaParseResult result = parseMeta(R"({"version": 1, "guid": ")" + std::string(FIXTURE_GUID_TEXT) + "\"}");
+    REQUIRE(result.guid.has_value());
+    CHECK_FALSE(result.importer.has_value());
+    CHECK(result.importerMessage.empty());
+}
+
+TEST_CASE("asset_meta: a non-object importer block never invalidates the identity (AM-i7, AC-12)") {
+    const MetaParseResult result =
+        parseMeta(R"({"version": 1, "guid": ")" + std::string(FIXTURE_GUID_TEXT) + R"(", "importer": 5})");
+    REQUIRE(result.guid.has_value());
+    CHECK(result.error == MetaError::None);
+    CHECK_FALSE(result.importer.has_value());
+    CHECK_FALSE(result.importerMessage.empty());
+}
+
+TEST_CASE("asset_meta: an importer block missing \"name\" never invalidates the identity (AM-i8, AC-12)") {
+    const MetaParseResult result =
+        parseMeta(R"({"version": 1, "guid": ")" + std::string(FIXTURE_GUID_TEXT) + R"(", "importer": {}})");
+    REQUIRE(result.guid.has_value());
+    CHECK(result.error == MetaError::None);
+    CHECK_FALSE(result.importer.has_value());
+    CHECK_FALSE(result.importerMessage.empty());
+}
+
+TEST_CASE("asset_meta: a wrong-typed \"scale\" never invalidates the identity (AM-i9, AC-12)") {
+    const std::string text = R"({"version": 1, "guid": ")" + std::string(FIXTURE_GUID_TEXT) +
+                             R"(", "importer": {"name": "gltf", "version": 1, "settings": )"
+                             R"({"scale": "big", "importMaterials": true, "importAnimations": true, )"
+                             R"("importSkins": true}}})";
+    const MetaParseResult result = parseMeta(text);
+    REQUIRE(result.guid.has_value());
+    CHECK(result.error == MetaError::None);
+    CHECK_FALSE(result.importer.has_value());
+    CHECK_FALSE(result.importerMessage.empty());
+}
+
+TEST_CASE("asset_meta: a non-finite \"scale\" never invalidates the identity (AM-i10, AC-12, E14)") {
+    const std::string text = R"({"version": 1, "guid": ")" + std::string(FIXTURE_GUID_TEXT) +
+                             R"(", "importer": {"name": "gltf", "version": 1, "settings": )"
+                             R"({"scale": 1e400, "importMaterials": true, "importAnimations": true, )"
+                             R"("importSkins": true}}})";
+    const MetaParseResult result = parseMeta(text);
+    REQUIRE(result.guid.has_value());
+    CHECK(result.error == MetaError::None);
+    CHECK_FALSE(result.importer.has_value());
+    CHECK_FALSE(result.importerMessage.empty());
+}
+
+TEST_CASE("asset_meta: an unknown key inside settings is a DOTTED PATH, and the block still engages (AM-i11, AC-14)") {
+    const std::string text = R"({"version": 1, "guid": ")" + std::string(FIXTURE_GUID_TEXT) +
+                             R"(", "importer": {"name": "gltf", "version": 1, "settings": )"
+                             R"({"scale": 1, "importMaterials": true, "importAnimations": true, )"
+                             R"("importSkins": true, "foo": 1}}})";
+    const MetaParseResult result = parseMeta(text);
+    REQUIRE(result.guid.has_value());
+    REQUIRE(result.importer.has_value());
+    REQUIRE(result.unknownKeys.size() == 1);
+    CHECK(result.unknownKeys[0] == "importer.settings.foo");
+}
+
+TEST_CASE(
+    "asset_meta: an unknown key at the root, alongside a VALID importer block, is reported alone (AM-i12, AC-14)") {
+    const std::string text = R"({"version": 1, "guid": ")" + std::string(FIXTURE_GUID_TEXT) +
+                             R"(", "importer": {"name": "gltf", "version": 1, "settings": )"
+                             R"({"scale": 1, "importMaterials": true, "importAnimations": true, )"
+                             R"("importSkins": true}}, "userData": 1})";
+    const MetaParseResult result = parseMeta(text);
+    REQUIRE(result.guid.has_value());
+    REQUIRE(result.importer.has_value());
+    REQUIRE(result.unknownKeys.size() == 1);
+    CHECK(result.unknownKeys[0] == "userData");
+}
+
+TEST_CASE("asset_meta: the EXISTING unknown-keys.meta fixture's behaviour is unchanged by this task (AM-i13)") {
+    // unknown-keys.meta's "importer" value is a bare STRING ("texture"), not an object -- MALFORMED,
+    // not valid -- so, per AC-11's own scope ("a VALID importer block"), it is reported exactly as it
+    // was before this task: as an ordinary unrecognised root key. This is the same assertion AG3
+    // already makes; it is repeated here under its own id as the direct proof that landing the
+    // importer block did not regress a fixture this task did not touch.
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(UNKNOWN_KEYS_FIXTURE);
+    REQUIRE(fixture.ok);
+    const MetaParseResult parsed = parseMeta(fixture.text);
+    REQUIRE(parsed.guid.has_value());
+    CHECK_FALSE(parsed.importer.has_value());
+    CHECK_FALSE(parsed.importerMessage.empty());
+    REQUIRE(parsed.unknownKeys.size() == 2);
+    CHECK(parsed.unknownKeys[0] == "importer");
+    CHECK(parsed.unknownKeys[1] == "userData");
+}
+
+TEST_CASE("asset_meta: importer-settings.meta is forward-compat SHAPED for an older build (AM-i14, AC-15, R6)") {
+    // AC-15's real claim -- that a binary built at dc4064a accepts this file -- cannot be proven by
+    // rebuilding an old binary inside this test (R6, stated honestly rather than guessed). What IS
+    // provable: the fixture's own JSON SHAPE is exactly what an older parseMeta (one with no notion of
+    // "importer" at all) reads the GUID from correctly and reports as ONE unknown-key warning.
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(IMPORTER_SETTINGS_FIXTURE);
+    REQUIRE(fixture.ok);
+    const JsonParseResult parsed = parseJson(fixture.text);
+    REQUIRE(parsed.value.has_value());
+    const JsonValue& root = *parsed.value;
+    REQUIRE(root.isObject());
+    const JsonValue* const version = root.find("version");
+    REQUIRE(version != nullptr);
+    CHECK(version->asU64() == 1);
+    std::vector<std::string> otherKeys;
+    for (const JsonMember& member : root.members()) {
+        if (member.key != "version" && member.key != "guid") {
+            otherKeys.push_back(member.key);
+        }
+    }
+    REQUIRE(otherKeys.size() == 1);
+    CHECK(otherKeys[0] == "importer");
 }

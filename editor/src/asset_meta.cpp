@@ -26,6 +26,14 @@ namespace {
 
 constexpr std::string_view VERSION_KEY = "version";
 constexpr std::string_view GUID_KEY = "guid";
+// task 3.2.1 (D6): the optional importer block's own key names, at both levels of nesting.
+constexpr std::string_view IMPORTER_KEY = "importer";
+constexpr std::string_view IMPORTER_NAME_KEY = "name";
+constexpr std::string_view IMPORTER_SETTINGS_KEY = "settings";
+constexpr std::string_view IMPORTER_SCALE_KEY = "scale";
+constexpr std::string_view IMPORTER_IMPORT_MATERIALS_KEY = "importMaterials";
+constexpr std::string_view IMPORTER_IMPORT_ANIMATIONS_KEY = "importAnimations";
+constexpr std::string_view IMPORTER_IMPORT_SKINS_KEY = "importSkins";
 
 // ASCII-only, locale-independent. NEVER std::tolower(char): UTF-8 continuation bytes are NEGATIVE as
 // char, which is UB and trips bugprone-signed-char-misuse (project_files.cpp:44-46's precedent).
@@ -50,6 +58,97 @@ std::string foundDetail(const JsonValue& v) {
         return std::format("\"{}\"", v.numberLexeme());
     }
     return std::string(jsonKindName(v.kind()));
+}
+
+// task 3.2.1 (D6): parses an already-confirmed-to-be-an-object "importer" block. Returns "" on
+// success, with `out` populated and every key this build does not recognise -- whether directly inside
+// the block or inside `settings` -- appended to `nestedUnknown` as a DOTTED PATH (AC-14). Returns a
+// non-empty message on the FIRST malformed field, matching this format's "first violation wins"
+// convention (§5.1): name -> version -> settings, then settings' four keys in the committed order.
+// AC-12/INV-M11: the caller never lets a failure here touch result.error or result.guid.
+std::string parseImporterBlock(const JsonValue& block, MetaImporterBlock& out,
+                               std::vector<std::string>& nestedUnknown) {
+    const JsonValue* const nameField = block.find(IMPORTER_NAME_KEY);
+    if (nameField == nullptr) {
+        return "missing required key \"importer.name\"";
+    }
+    const std::optional<std::string_view> nameValue = nameField->asString();
+    if (!nameValue.has_value()) {
+        return std::format("\"importer.name\" must be a string (found {})", jsonKindName(nameField->kind()));
+    }
+    const JsonValue* const versionField = block.find(VERSION_KEY);
+    if (versionField == nullptr) {
+        return "missing required key \"importer.version\"";
+    }
+    const std::optional<std::uint64_t> versionValue = versionField->asU64();
+    if (!versionValue.has_value()) {
+        return std::format("\"importer.version\" must be an integer (found {})", foundDetail(*versionField));
+    }
+    const JsonValue* const settingsField = block.find(IMPORTER_SETTINGS_KEY);
+    if (settingsField == nullptr) {
+        return "missing required key \"importer.settings\"";
+    }
+    if (!settingsField->isObject()) {
+        return std::format("\"importer.settings\" must be a JSON object (found {})",
+                           jsonKindName(settingsField->kind()));
+    }
+    const JsonValue* const scaleField = settingsField->find(IMPORTER_SCALE_KEY);
+    if (scaleField == nullptr) {
+        return "missing required key \"importer.settings.scale\"";
+    }
+    // asF32() returns nullopt EXACTLY when the number rounds to +/-inf -- E14's 1e400 is refused with
+    // NO hand-rolled finiteness test. A NaN cannot reach here at all: parseJson rejects the literal.
+    const std::optional<float> scaleValue = scaleField->asF32();
+    if (!scaleValue.has_value()) {
+        return std::format("\"importer.settings.scale\" must be a finite number (found {})", foundDetail(*scaleField));
+    }
+    const JsonValue* const importMaterialsField = settingsField->find(IMPORTER_IMPORT_MATERIALS_KEY);
+    if (importMaterialsField == nullptr) {
+        return "missing required key \"importer.settings.importMaterials\"";
+    }
+    const std::optional<bool> importMaterialsValue = importMaterialsField->asBool();
+    if (!importMaterialsValue.has_value()) {
+        return std::format("\"importer.settings.importMaterials\" must be a boolean (found {})",
+                           jsonKindName(importMaterialsField->kind()));
+    }
+    const JsonValue* const importAnimationsField = settingsField->find(IMPORTER_IMPORT_ANIMATIONS_KEY);
+    if (importAnimationsField == nullptr) {
+        return "missing required key \"importer.settings.importAnimations\"";
+    }
+    const std::optional<bool> importAnimationsValue = importAnimationsField->asBool();
+    if (!importAnimationsValue.has_value()) {
+        return std::format("\"importer.settings.importAnimations\" must be a boolean (found {})",
+                           jsonKindName(importAnimationsField->kind()));
+    }
+    const JsonValue* const importSkinsField = settingsField->find(IMPORTER_IMPORT_SKINS_KEY);
+    if (importSkinsField == nullptr) {
+        return "missing required key \"importer.settings.importSkins\"";
+    }
+    const std::optional<bool> importSkinsValue = importSkinsField->asBool();
+    if (!importSkinsValue.has_value()) {
+        return std::format("\"importer.settings.importSkins\" must be a boolean (found {})",
+                           jsonKindName(importSkinsField->kind()));
+    }
+
+    out.name = std::string(*nameValue);
+    out.version = static_cast<std::uint32_t>(*versionValue);
+    out.settings.scale = *scaleValue;
+    out.settings.importMaterials = *importMaterialsValue;
+    out.settings.importAnimations = *importAnimationsValue;
+    out.settings.importSkins = *importSkinsValue;
+
+    for (const JsonMember& member : block.members()) {
+        if (member.key != IMPORTER_NAME_KEY && member.key != VERSION_KEY && member.key != IMPORTER_SETTINGS_KEY) {
+            nestedUnknown.push_back("importer." + member.key);
+        }
+    }
+    for (const JsonMember& member : settingsField->members()) {
+        if (member.key != IMPORTER_SCALE_KEY && member.key != IMPORTER_IMPORT_MATERIALS_KEY &&
+            member.key != IMPORTER_IMPORT_ANIMATIONS_KEY && member.key != IMPORTER_IMPORT_SKINS_KEY) {
+            nestedUnknown.push_back("importer.settings." + member.key);
+        }
+    }
+    return "";
 }
 
 }  // namespace
@@ -170,17 +269,48 @@ MetaParseResult parseMeta(std::string_view text) {
 
     MetaParseResult result;
     result.guid = *parsedGuid;
+
+    // ---- task 3.2.1: the OPTIONAL importer block (D6 / AC-11..AC-14) --------------------------------
+    // Reached ONLY after `version` and `guid` have both been ACCEPTED, so nothing below can affect the
+    // identity. Every failure here sets `importerMessage` and leaves `importer` disengaged; NONE of
+    // them touches result.error or result.guid (AC-12/INV-M11).
+    bool importerEngaged = false;
+    if (const JsonValue* const block = root.find(IMPORTER_KEY); block != nullptr) {
+        if (!block->isObject()) {
+            result.importerMessage =
+                std::format("\"importer\" must be a JSON object (found {})", jsonKindName(block->kind()));
+        } else {
+            MetaImporterBlock parsedBlock;
+            std::vector<std::string> nestedUnknown;
+            std::string blockMessage = parseImporterBlock(*block, parsedBlock, nestedUnknown);
+            if (blockMessage.empty()) {
+                result.importer = std::move(parsedBlock);
+                importerEngaged = true;
+                for (std::string& key : nestedUnknown) {
+                    result.unknownKeys.push_back(std::move(key));
+                }
+            } else {
+                result.importerMessage = std::move(blockMessage);
+            }
+        }
+    }
+
     // Unknown keys, in DOCUMENT ORDER -- never an error. One flat loop: the document is one level
     // deep, so there is no nested walk to get right (contrast project.cpp's "paths" object).
+    // "importer" is excluded ONLY when a VALID block engaged (AC-11) -- a MALFORMED "importer" key
+    // (e.g. a bare string) is not a key this build actually understood, so it is reported exactly like
+    // any other unrecognised root key, matching this file's behaviour before this task existed.
     for (const JsonMember& member : root.members()) {
-        if (member.key != VERSION_KEY && member.key != GUID_KEY) {
+        if (member.key != VERSION_KEY && member.key != GUID_KEY && !(member.key == IMPORTER_KEY && importerEngaged)) {
             result.unknownKeys.push_back(member.key);
         }
     }
     return result;
 }
 
-std::string writeMetaText(Guid guid) {
+std::string writeMetaText(Guid guid) { return writeMetaText(guid, ImportSettings{}); }  // INV-M10
+
+std::string writeMetaText(Guid guid, const ImportSettings& settings) {
     JsonWriter writer;  // the DEFAULT config: pretty, 2-space -- docs/09's canonical form. Do NOT
                         // spell the config out; a second spelling is a second truth.
     writer.beginObject();
@@ -193,6 +323,30 @@ std::string writeMetaText(Guid guid) {
     // named-local-first regardless.
     const std::string guidText = formatGuid(guid);
     writer.value(std::string_view(guidText));
+    // D7: OMITTED ENTIRELY when the settings are the defaults, so a creation still writes EXACTLY
+    // today's 65 bytes and tests/fixtures/assets/minimal.meta stays byte-identical (AC-9). THIS ONE
+    // LINE is what keeps "a scan writes zero bytes to a fully-described tree" true (3.1.1's D6, the
+    // single most important invariant in the asset subsystem).
+    if (!(settings == ImportSettings{})) {
+        writer.key("importer");
+        writer.beginObject();
+        writer.key("name");
+        writer.value(GLTF_IMPORTER_NAME);
+        writer.key("version");
+        writer.value(static_cast<long long>(GLTF_IMPORTER_VERSION));
+        writer.key("settings");
+        writer.beginObject();
+        writer.key("scale");
+        writer.value(settings.scale);
+        writer.key("importMaterials");
+        writer.value(settings.importMaterials);
+        writer.key("importAnimations");
+        writer.value(settings.importAnimations);
+        writer.key("importSkins");
+        writer.value(settings.importSkins);
+        writer.endObject();
+        writer.endObject();
+    }
     writer.endObject();
     std::string text = writer.str();
     text += '\n';  // exactly ONE trailing newline (the writer itself has none; parseJson accepts it)
@@ -212,6 +366,8 @@ AssetPlanResult planAssetMetas(std::vector<AssetPlanEntry> entries, GuidGenerato
     for (AssetPlanEntry& entry : entries) {
         AssetRecord record;
         record.relativePath = std::move(entry.relativePath);
+        record.importSettings = entry.importSettings;  // task 3.2.1 -- carried straight across,
+                                                       // independent of which state this record settles into
         if (entry.metaPresent && !entry.guid.has_value()) {
             record.state = AssetMetaState::Invalid;  // nil GUID, no write (AC-25/27)
         } else if (!entry.metaPresent && entry.reattachedGuid.has_value()) {

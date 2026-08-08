@@ -11,88 +11,84 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 ## Current state — read this first
 
 **Phase 2 (Editor) is COMPLETE — gate met 2026-08-02.** All six epics closed in code, every task
-macOS human-validated with no open FAIL, and the gate artifact committed at
+macOS-validated with no open FAIL, and the gate artifact committed at
 `samples/phase-2-editor-scene/` (a project + 4-entity scene authored entirely through the editor, with
 the save → New Scene → Open Scene round trip confirmed). A whole-phase audit (2026-08-02) then found
 and fixed two silent data-loss paths, a never-absolute project root, and four stale documentation
-claims — full detail in `docs/10-engineering-log.md`. **Phase 3 (Asset Pipeline & 3D Content) is now
-OPEN. Epic 3.1 (AssetDatabase · assets) is in progress — tasks 3.1.1 (GUIDs + `.meta` files), 3.1.2
-(import cache & dependency tracking) and 3.1.3 (asset browser v1) are all COMPLETE in code.** 3.1.1
-merged to `main` as PR #65 (merge commit `2be73e1`, 17 commits), sabotage-proven (26/26 seeds),
-CI-green on macOS, Windows and Linux, and **macOS human-validated ✅ PASS 14/14 on 2026-08-04**. 3.1.2
-merged as PR #66 (merge commit `3470b87`, mechanical gate green — 95/95 both presets, both reduced
-configurations, six guards, 31/31 sabotage seeds plus all 3 mandatory second-order checks confirmed)
-and **closed two items 3.1.1 deliberately deferred**: the D8 orphan-re-attachment deferral and the
-carried-forward symlinked-directory duplicate-GUID defect. **macOS human-validated ✅ PASS 14/14 on
-2026-08-05.** **3.1.3 merged as PR #67 (merge commit `aa914fb`, 22 commits), CI-green on all three
-platforms** (mechanical gate green — 95/95 both presets, both reduced configurations rebuilt fresh at
-729 doctest cases each, six guards including Check B's new positive allowlist, **all 35/35 sabotage
-seeds** plus all 3 mandatory second-order checks per seed confirmed). Its **code-review round found 11
-findings, 3 BLOCKING — against a fully green gate**, the most important being a real use-after-free of
-GPU textures that was structurally invisible on macOS (SDL frees synchronously on Vulkan/D3D12, defers
-on Metal); see `docs/10-engineering-log.md` for all eleven. 3.1.3 upgrades
-2.2.4's read-only file lister into the real Asset Browser: real decoded thumbnails, type icons, a
-project-wide search, the scan's Issues list surfaced, and the one user-initiated destructive action
-this subsystem permits — deleting an orphaned `.meta` sidecar, **closing both 3.1.1's D8 and 3.1.2's
-D13 deferrals in the same task**. Drag-into-scene was deliberately excised into a new task, **3.1.5**,
-because nothing in `engine::scene` can reference an asset yet. **3.1.3 macOS human-validated ✅ PASS
-16/16 (2026-08-06)** on merge commit `aa914fb` — row 4 (no stutter with a folder of photos) is the
-load-bearing one and passed, which is the ONLY evidence anywhere that the two-per-tick blocking
-`uploadTexture` fence sync is tolerable, **and it is evidence for Metal only**: that budget came from
-the RHI's own "NOT a per-frame path" warning, never from a measurement. The pass found one cosmetic
-defect, fixed after the merge — the grid's `..` drew as a large empty block rather than a tile; it is
-now a full-width bar one text line tall, in ASCII (`"<  .."`), since this editor still loads no font of
-its own and an arrow glyph would render as a missing-glyph box. Windows/Linux rows pending for
-3.1.1/3.1.2/3.1.3, as for every Phase 2 task. **3.1.4 (hot-reload file watcher) MERGED to `main` as
-PR #69 (merge commit `ebc4da6`, 13 commits — eight feature, two sabotage-driven follow-ups, three from
-the code-review round), CI-green on macOS, Windows and Linux with the green run's `headSha` asserted
-equal to `HEAD` before merging. Mechanical gate green: 95/95 both presets, both reduced configurations
-rebuilt fresh at 813 doctest cases each, six guards unchanged, all 25/25 sabotage seeds plus all 3
-mandatory second-order checks per seed confirmed. **macOS human-validated ✅ PASS 10/10 (2026-08-07)**
-on merge commit `ebc4da6` — row 4 (two minutes idle on an unchanged project) is the load-bearing one
-and passed with the Console logging nothing and no perceptible frame-rate change, which is the only
-evidence anywhere that the watcher's steady state is genuinely silent and costless on a real project,
-and the direct confirmation that its visible set does not diverge from the scan's (a divergence of one
-file would surface as a rescan loop). Row 3's ~200-image copy produced **two** rescans, both at the
-end, exactly as D3 and the two-trigger echo predict. **No defects found.** **R1's numeric per-sweep
-cost remains UNMEASURED** — row 9 confirmed the editor stays responsive on an external volume, but no
-figure was taken, so the native-backend deferral's first reversal condition (a sweep exceeding
-~2 ms/tick) is neither met nor ruled out; the risk register asks for a measured number, not an
-estimate. Windows/Linux rows pending. The code-review round found six gaps against an already-green
-gate and closed all six**: `I51` closing seed S16's call-site gap the task had wrongly declared
-unclosable, `AW30b` giving AC-6 its first real proof, `MAX_WATCH_ENTRIES` rescaled (it reused
-`MAX_ASSETS`'s number while counting a different population — assets *plus* sidecars *plus* directories
-— truncating the watcher at roughly half the tree the scan still indexed), an empty-project-root guard
-on the `Library/` exclusion, a provably dead `setEnabled()` removed from `create()`, and a
-self-contradicting reduced-config count corrected.** It adds `AssetWatcher`
-(`editor/include/aero/editor/asset_watcher.hpp` + `.cpp`) — a per-tick budgeted sweep composing
-`listDirectory`/`canonicalDirectory` with zero file reads and zero logging of its own, its settlement
-rule (`isSettled`/`diffSnapshots`/`applyChanges`) fully pure and provable from vector literals with an
-injected clock — plus `AssetDatabase::generation()` (the one signal driving every downstream refresh)
-and `ThumbnailLedger::supersededBy()` (the pure query behind releasing a superseded thumbnail's GPU
-texture, drained only from `serviceThumbnails()` for the identical BLOCKING-1 reason 3.1.3 fixed once
-already). **Zero paths under `engine/`** — the no-engine-change streak goes from one (3.1.3) to two.
-Sabotage found two genuine test-quality gaps and **both are now closed**: `AW6b` (seed S4) during the
-task itself, and `I51` (seed S16, `noteExternalScan()`'s call site) during the code-review round, which
-overturned the task's own "no count-only accessor could ever discriminate this" conclusion — the
-obstacle was the two attempted scenarios' permanently unsettled poison file, not the accessor surface,
-since a scenario ending in a FORCED fire cannot discriminate what a trigger contained. Full detail,
-the complete 25-seed matrix and every build-time finding are in `docs/10-engineering-log.md`'s 3.1.4
-entry. **3.1.5 (drag-into-scene) is next**, once 3.2.1 exists for it to reference; **3.1.4's macOS human
-validation row is open and is the nearest actionable work** (`editor/validation/3.1.4-hot-reload-file-watcher.md`).
-**Carried-forward debt, unchanged by 3.1.3/3.1.4 and explicitly not part of any gate:** no Windows or
-Linux human pass exists for any of the thirteen Phase 2 tasks or for 3.1.1/3.1.2/3.1.3/3.1.4, and Phase 0's
-gate is still held open on Windows/Linux 60 fps sign-off. That is platform-validation debt spanning
-three phases now, and it is worth scheduling as work of its own — the 2.2.5 lesson, one scale up.
+claims — full detail in `docs/10-engineering-log.md`. **Phase 3 (Asset Pipeline & 3D Content) is
+OPEN. Epic 3.1 (AssetDatabase · assets) has four MERGED tasks and a fifth code-complete on its own
+branch.** 3.1.1 (GUIDs + `.meta` files) merged as PR #65 (`2be73e1`), sabotage-proven (26/26 seeds),
+CI-green on all three platforms, **macOS-validated ✅ PASS 14/14 (2026-08-04)**. 3.1.2 (import cache &
+dependency tracking) merged as PR #66 (`3470b87`, 31/31 sabotage seeds), closing 3.1.1's D8
+orphan-re-attachment deferral and the carried-forward symlinked-directory duplicate-GUID defect,
+**macOS-validated ✅ PASS 14/14 (2026-08-05)**. 3.1.3 (asset browser v1) merged as PR #67 (`aa914fb`,
+35/35 sabotage seeds; its code-review round found 11 findings, 3 BLOCKING, the sharpest a real
+use-after-free of GPU textures invisible on macOS because SDL frees synchronously on Vulkan/D3D12 but
+only defers on Metal), gave the Asset Browser real decoded thumbnails, a project-wide search and the
+Issues list, and closed both 3.1.1's D8 and 3.1.2's D13 deferrals with its one user-initiated
+destructive action (deleting an orphaned `.meta`). **macOS-validated ✅ PASS 16/16 (2026-08-06)** — row
+4 (no stutter with a folder of photos) is the only evidence anywhere that the two-per-tick blocking
+`uploadTexture` fence sync is tolerable, and that evidence is Metal-only. Found and fixed one cosmetic
+defect post-merge (the grid's `..` row). 3.1.4 (hot-reload file watcher) merged as PR #69 (`ebc4da6`,
+25/25 sabotage seeds; its code-review round closed six gaps against an already-green gate, the sharpest
+overturning the task's own "no count-only accessor could ever discriminate this" claim about
+`noteExternalScan()`'s call site). It adds `AssetWatcher`, a per-tick budgeted sweep with zero file
+reads and zero logging of its own, plus `AssetDatabase::generation()` (the one signal driving every
+downstream refresh) and `ThumbnailLedger::supersededBy()`. **macOS-validated ✅ PASS 10/10 (2026-08-07)**
+— row 4 (two minutes idle) found the Console silent and the frame rate unchanged, the only evidence
+anywhere the watcher's steady state is genuinely costless; **R1's numeric per-sweep cost stayed
+unmeasured**, open debt this task's own risk register asks for by number, not estimate. Full
+per-task sabotage matrices and every build-time finding for all four: `docs/10-engineering-log.md`'s
+Phase 3 entries.
+
+**3.1.5 (drag-into-scene) is queued behind both 3.1.3 and 3.2.1 (glTF import); 3.2.1 is now the more
+actionable one.** **3.2.1 is COMPLETE IN CODE on `feat/3.2.1-gltf-import-fastgltf` (eleven commits: ten
+feature, one docs), NOT YET MERGED** — the mechanical gate is green through this branch's own local
+run (95/95 both presets, both reduced configurations rebuilt fresh in `build/tools-off-3.2.1` /
+`build/reflect-off-3.2.1` at 952 doctest cases each — up from 813 pre-task — with `MI1`/`MS1` present
+in both, six guards unchanged and byte-identical, clang-format/clang-tidy clean by exit code) — but
+**Step 12's 32-seed sabotage matrix has not run, there is no PR, no CI run, and no validation pass on
+any OS.** It gives the editor its first working importer, and — for the first time since 3.1.2 added
+the field — a real **producer** for `AssetCacheEntry::dependencies`: phase 7.5 (this task's one
+`asset_database.cpp` edit) runs a budgeted `Structure`-depth probe over changed model assets inside the
+existing scan and turns every resolved external URI into a dependency GUID, so editing a texture a
+model references now marks that model `DependencyChanged` on the next scan — the roadmap's own
+headline example, working end to end. `gltf_import.{hpp,cpp}` is the **only** fastgltf TU anywhere in
+the tree (INV-M1/AC-55: the include grep names exactly one file). `model_import.{hpp,cpp}` holds the
+canonical, third-party-free `ImportedModel` and every pure helper — provable from string literals and
+committed text fixtures with zero disk on the critical path. `model_import_session.{hpp,cpp}` drives an
+on-demand two-pass import (`Structure` then `Full`) from an Asset Browser selection and holds the one
+write this whole task adds anywhere. `import_details_panel.{hpp,cpp}` is the task's only ImGui TU: six
+CollapsingHeader sections (Overview, Import Settings, Hierarchy, Meshes, Materials, Skeleton &
+Animation), all default-open — the Inspector's own per-component precedent, and the only way any
+section is reachable by this project's ImGui-free-at-source GPU tier at all. `.meta` gains an optional,
+additive `importer` block at format version 1 — never a v2 bump, which would nil every GUID in an older
+build. **Zero paths under `engine/`** — the no-engine-change streak that 3.1.3 restarted at one and
+3.1.4 carried to two now reaches **three**. Two deviations from the plan's own literal counts, both
+logged in `docs/10-engineering-log.md`'s 3.2.1 entry and in `.claude/rules/editor.md`: the
+`AssetBrowserPanel::requestSelectEntry` / `EditorApp::requestAssetBrowserSelectEntry` seam (the
+code-review-finding-4 shape, a fifth application — without it AC-45/AC-46/AC-47/AC-50's own GPU-tier
+cases could not drive a real selection at all), and one `std::move` on a trivially-copyable
+`std::optional<ImportSettings>` dropped for clang-tidy's `performance-move-const-arg`. Full build-time
+finding list, the fastgltf MUST-VERIFY answers confirmed against the installed v0.9.0 headers, and the
+three gate-grep corrections the plan's own review rounds made (AC-55/AC-56) are in
+`docs/10-engineering-log.md`'s 3.2.1 entry. **What remains on 3.2.1: the sabotage matrix, the PR, CI on
+all three platforms, and a validation pass on every OS** — none of that is this entry's to claim.
+
+**Carried-forward debt, unchanged by 3.2.1 and explicitly not part of any gate:** no Windows or
+Linux validation pass exists for any of the thirteen Phase 2 tasks or for 3.1.1/3.1.2/3.1.3/3.1.4, and
+Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. That is platform-validation debt
+spanning three phases now, and it is worth scheduling as work of its own — the 2.2.5 lesson, one scale
+up.
 
 | | State |
 |---|---|
 | **Phase 0** — Foundations & First Triangle | Complete in code. Gate **macOS-PASS**, held **OPEN** pending Windows/Linux on-hardware 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`). |
 | **Phase 1** — Reflection, ECS & Serialization | **COMPLETE** — epics 1.1–1.4 all CLOSED. Gate reached in code, macOS-validated; Windows/Linux render rows pending (`samples/phase-1-scene/VALIDATION.md`). |
-| **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics (2.1 Editor shell, 2.2 Core panels, 2.3 Manipulation, 2.4 Undo/redo, 2.5 Scene I/O, 2.6 Project system v0) CLOSED in code and macOS human-validated PASS, with Windows/Linux rows pending for every task (`editor/VALIDATION.md`). The whole-phase audit (2026-08-02) fixed two silent data-loss paths, a project root that was never made absolute, two CI false-greens, and four stale documentation claims. Full per-task and per-epic history — every defect, every sabotage matrix, every deviation — lives in `docs/10-engineering-log.md`'s Phase 2 entries; this row is deliberately a summary, not a duplicate. |
+| **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics (2.1 Editor shell, 2.2 Core panels, 2.3 Manipulation, 2.4 Undo/redo, 2.5 Scene I/O, 2.6 Project system v0) CLOSED in code and macOS-validated PASS, with Windows/Linux rows pending for every task (`editor/VALIDATION.md`). The whole-phase audit (2026-08-02) fixed two silent data-loss paths, a project root that was never made absolute, two CI false-greens, and four stale documentation claims. Full per-task and per-epic history — every defect, every sabotage matrix, every deviation — lives in `docs/10-engineering-log.md`'s Phase 2 entries; this row is deliberately a summary, not a duplicate. |
 | **Phase 2 gate** | **MET 2026-08-02.** `samples/phase-2-editor-scene/` holds a project and a 4-entity scene authored entirely through the editor, with the save → New Scene → Open Scene round trip confirmed (`samples/phase-2-editor-scene/VALIDATION.md`); provenance is recorded there rather than asserted, since a hand-written `scene.json` is byte-identical to a real one and no test tier can tell them apart. Deliberately NOT `add_subdirectory`'d — this artifact is data (a provenance proof of the editor), not a compile-proof of engine code. |
-| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets) in progress: **3.1.1 (GUIDs + `.meta` files), 3.1.2 (import cache & dependency tracking) and 3.1.3 (asset browser v1) all CLOSED in code; 3.1.4 (hot-reload file watcher) MERGED as PR #69 (merge commit `ebc4da6`), CI-green on all three platforms, mechanical gate green, sabotage-proven, and **macOS human-validated ✅ PASS 10/10 (2026-08-07)** with no defects found — Windows/Linux pending, see the paragraph above.** `engine::Guid` (`engine/core`, beside `Handle`) — a 16-byte trivially-copyable POD, seedable `splitmix64` generator, no test anywhere touches an entropy source. The `.meta` v1 format (`editor/include/aero/editor/asset_meta.hpp` + `.cpp`) and its pure lifecycle planner `planAssetMetas`, provable from a `std::vector` literal with no disk touched. `AssetDatabase::rescan` — an eight-phase, `<filesystem>`-free, non-recursive scan composed from 2.2.4's `listDirectory`, 2.5.1/2.6.1's `text_file` and 3.1.2's `asset_cache`; it never logs (INV-A3) and never throws. `engine::ContentHash` (task 3.1.2, beside `Guid`) — a 16-byte MurmurHash3 x64_128 fingerprint. The **machine-local, never-committed import cache** at `<projectRoot>/Library/asset-cache.json` (task 3.1.2): `planImports`/`commitImports`, a byte-sorted precedence-ordered pure planner, cascading transitively through a dependency graph with a monotone O(V+E) worklist; `planReattachments` closed 3.1.1's own D8 deferral; directory dedup by canonical physical path closed the carried-forward symlinked-directory duplicate-GUID defect. A scan of an unchanged project writes **zero bytes across two files**, `.meta` sidecars and the cache index both (D15/INV-C5). **3.1.3 adds the real Asset Browser**: `asset_view.{hpp,cpp}` (pure — kinds, icons, filter/search, grid geometry), `thumbnail_cache.{hpp,cpp}` (pure — key/state/LRU/budget + a deterministic INTEGER box resampler, no floating point anywhere, so output is byte-identical across all three OSes), `thumbnail_store.{hpp,cpp}` (src-private — the ONLY stb_image TU and the ONLY GPU-touching thumbnail TU; `stb` is vcpkg's new editor-only port), and `asset_actions.{hpp,cpp}` (the fifth editor `<filesystem>` TU, exactly one `std::filesystem::remove` call, a six-step re-verify-before-deleting algorithm). The Asset Browser gained a Grid/List toggle, real decoded thumbnails (128×128, budgeted at 2 decodes/tick, LRU-evicted past a 256-texture resident cap), a project-wide search with a kind filter, an Issues panel reading the scan report, and the ONE user-initiated destructive action this whole subsystem permits: deleting an orphaned `.meta` sidecar — **closing both 3.1.1's D8 and 3.1.2's D13 deferrals in the same task.** Drag-into-scene was deliberately excised into new task **3.1.5** (`engine::MeshRenderer` has no asset-referencing field yet; `git grep -ln 'Guid' -- engine/scene/` is empty). The sixth architecture guard, `check-project-no-delete.sh`, widened **three times** — three files → five at 3.1.1 (D7/D8) → six at 3.1.2 (`asset_cache.cpp`, D18) → **3.1.3 added a second check, Check B, a POSITIVE two-file allowlist** (`text_file.cpp`, `asset_actions.cpp`) closing the "a delete written into a seventh, unnamed file passes silently" hole Check A's denylist shape could never close; the script's name stays narrower than its scope on purpose. **Sabotage: 3.1.1 ran all 26 seeds, 3.1.2 ran all 31, 3.1.3 ran all 35 (S1–S35) — every task's full matrix plus all 3 mandatory second-order checks each, confirmed against the real built binaries.** 3.1.3: 23 matched their prediction, 7 confirmed non-discriminators (S3, S7, S9, S10, S11, S30, S34), 0 predicted contingencies, 5 differently-shaped findings (23+7+0+5=35) — notably S14 (`searchAssets` matching the whole path instead of the leaf) stayed green against the plan's own claimed discriminator (`AV36` tests `matchesFilter` directly, never `searchAssets`' leaf-extraction call site), a genuine gap closed by a new case (`AV39b`); S25 (`serviceThumbnails()` called from inside `onDraw`) gave two different verdicts depending on exactly where in `onDraw` it was seeded — reddening 4 GPU cases at the very start, matching the plan's own non-discriminator prediction exactly when seeded at the natural end; and S30 (`~ThumbnailStore` leaks its textures) matched its ASan non-discriminator prediction exactly, while the RHI's own destroy-accounting logged the leak ASan could not see. Full sabotage matrices, every deviation, and every build-time finding (3.1.3: an MSVC `<string_view>`/`<ostream>` completeness trap, nine Linux clang-tidy findings, a Windows-only `nul.bin` reserved-device-name failure, a duplicate-member compile error the plan's own text would have caused, a UBSan `+inf → int` abort, and two genuine sabotage-discovered test-quality gaps closed outright) are in `docs/10-engineering-log.md`'s 3.1.1/3.1.2/3.1.3 entries. **3.1.1 macOS human-validated ✅ PASS 14/14 (2026-08-04)**; **3.1.2 macOS human-validated ✅ PASS 14/14 (2026-08-05)**; **3.1.3 macOS human-validated ✅ PASS 16/16 (2026-08-06)**; **3.1.4 macOS human-validated ✅ PASS 10/10 (2026-08-07)** — every macOS row this project has ever asked for is now green, all four Epic 3.1 tasks included; Windows/Linux rows pending for all four. |
-| **Next task** | **3.1.5 (drag-into-scene)** — see `docs/tasks/phase-3.md`; it depends on 3.1.3 and 3.2.1 (glTF import), so it cannot start in earnest until 3.2.1 gives `engine::scene` something to reference. The remaining carried-forward item is **platform-validation debt, now spanning three phases and all four merged Epic 3.1 tasks**: no Windows or Linux human pass exists for any of the thirteen Phase 2 tasks or for 3.1.1/3.1.2/3.1.3/3.1.4, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. Schedule it as work of its own rather than as a ride-along row — 2.2.5's lesson at phase scale. |
+| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets): **3.1.1 (GUIDs + `.meta` files), 3.1.2 (import cache & dependency tracking), 3.1.3 (asset browser v1) and 3.1.4 (hot-reload file watcher) all MERGED to `main`** (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds respectively), **macOS-validated ✅ PASS on all four** (14/14, 14/14, 16/16, 10/10) — Windows/Linux rows pending for all four, see the paragraph above. `engine::Guid`/`engine::ContentHash` (`engine/core`), the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache with its dependency-cascade worklist, and the real Asset Browser (thumbnails, search, the Issues panel, the one sanctioned orphan-`.meta` delete) all shipped across these four. **Epic 3.2 (Importers) opens with 3.2.1 (glTF import, fastgltf): COMPLETE IN CODE on `feat/3.2.1-gltf-import-fastgltf`, mechanical gate green (95/95 both presets, both reduced configurations at 952 doctest cases each, six guards, lint clean), NOT YET sabotage-tested, NOT YET a PR, NOT YET merged, no validation pass on any OS.** It is the first PRODUCER for `AssetCacheEntry::dependencies` (3.1.2's own field, unfed until now) — editing a texture a model references now marks that model `DependencyChanged` on the next scan, the roadmap's own headline example working end to end. `gltf_import.{hpp,cpp}` is the only fastgltf TU anywhere in the tree; `model_import.{hpp,cpp}` holds the canonical, third-party-free `ImportedModel`; `model_import_session.{hpp,cpp}` drives the on-demand two-pass import; `import_details_panel.{hpp,cpp}` is a new six-section panel, all sections default-open. Zero paths under `engine/` — the no-engine-change streak reaches three. Full detail, every build-time finding and the fastgltf MUST-VERIFY answers confirmed against the installed v0.9.0 headers are in `docs/10-engineering-log.md`'s 3.2.1 entry. |
+| **Next task** | **Take 3.2.1 (glTF import) through Step 12 (the 32-seed sabotage matrix) and Step 13 (the mechanical gate, the PR, CI on all three platforms, and the merge)** — code, docs and the local mechanical gate are all done on `feat/3.2.1-gltf-import-fastgltf`. Once it merges, **3.1.5 (drag-into-scene)** becomes available — see `docs/tasks/phase-3.md`; it depends on 3.1.3 (merged) and 3.2.1. The remaining carried-forward item is **platform-validation debt, now spanning three phases and all four merged Epic 3.1 tasks**: no Windows or Linux validation pass exists for any of the thirteen Phase 2 tasks or for 3.1.1/3.1.2/3.1.3/3.1.4, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. Schedule it as work of its own rather than as a ride-along row — 2.2.5's lesson at phase scale. |
 
 Engine layers that exist today, in dependency order: `core` (gained `guid.hpp`/`guid.cpp` at task
 3.1.1, beside `handle.hpp`; gained `content_hash.hpp`/`content_hash.cpp` at task 3.1.2, beside `guid`)
@@ -104,41 +100,51 @@ cache (tasks 3.1.1/3.1.2) live entirely in `/editor`, not `/engine/assets`.
 `engine/scene` gained one primitive at task 2.4.2, `[[nodiscard]] Entity World::recreate(Entity)` —
 the only engine change Epic 2.4 needed. Tasks 2.5.1, 2.5.2, 2.6.1 and 2.6.2 all needed **no** engine
 change at all — a four-task streak task **3.1.1 ended**; **3.1.2 used the identical minimal shape a
-second time, 3.1.3 restarted the streak at one, and 3.1.4 makes it two**: it needed no `engine/`
-change at all (`git diff --name-only main...HEAD -- engine/` is empty on the feature branch). `/editor`
-gains a **tenth** new pair across 2.6.2, 3.1.1, 3.1.2, 3.1.3 and 3.1.4: `project_settings.{hpp,cpp}` /
-`project_settings_panel.{hpp,cpp}` (2.6.2), `asset_meta.{hpp,cpp}` / `asset_database.{hpp,cpp}` (3.1.1),
-`asset_cache.{hpp,cpp}` (3.1.2), `asset_view.{hpp,cpp}` / `thumbnail_cache.{hpp,cpp}` /
-`thumbnail_store.{hpp,cpp}` (src-private) / `asset_actions.{hpp,cpp}` (3.1.3), and
-`asset_watcher.{hpp,cpp}` (3.1.4) — the `.hpp`s under `editor/include/aero/editor/` (except
-`thumbnail_store.hpp`, deliberately src-private), the `.cpp`s under `editor/src/`.
+second time, 3.1.3 restarted the streak at one, 3.1.4 made it two, and 3.2.1 now makes it three**: it
+needs no `engine/` change at all (`git diff --name-only main...HEAD -- engine/` is empty on the
+feature branch). `/editor` gained **ten** new `.hpp`/`.cpp` pairs across 2.6.2, 3.1.1, 3.1.2, 3.1.3 and
+3.1.4 (`project_settings.{hpp,cpp}` / `project_settings_panel.{hpp,cpp}` (2.6.2),
+`asset_meta.{hpp,cpp}` / `asset_database.{hpp,cpp}` (3.1.1), `asset_cache.{hpp,cpp}` (3.1.2),
+`asset_view.{hpp,cpp}` / `thumbnail_cache.{hpp,cpp}` / `thumbnail_store.{hpp,cpp}` (src-private) /
+`asset_actions.{hpp,cpp}` (3.1.3), `asset_watcher.{hpp,cpp}` (3.1.4)); **3.2.1 adds four more pairs plus
+one deliberate exception**: `model_import.{hpp,cpp}`, `gltf_import.{hpp,cpp}` (src-private, the only
+fastgltf TU), `model_import_session.{hpp,cpp}` and `import_details_panel.{hpp,cpp}` (src-private, the
+only ImGui TU this task adds) are real pairs; `import_settings.hpp` is a HEADER WITH NO `.cpp`,
+deliberately alone (plan §A-11 — `ImportSettings` is shared by `asset_meta.hpp` and
+`model_import.hpp`, and giving it its own tiny, dependency-free header is what stops `asset_meta.hpp`
+from dragging in `aero::scene` and the whole math umbrella). The `.hpp`s live under
+`editor/include/aero/editor/` (except the three named src-private), the `.cpp`s under `editor/src/`.
 
-Test inventory at HEAD (`feat/3.1.4-hot-reload-file-watcher`), **re-measured, not carried forward**:
+Test inventory at HEAD (`feat/3.2.1-gltf-import-fastgltf`), **re-measured, not carried forward**:
 **95** ctest entries with tools ON, **6** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`,
-**19** with `-DAERO_REFLECT_TOOLS=OFF` alone — unchanged by task 3.1.4 (zero new ctest entries; every
-new case lives inside an existing TU). `aero_tests` **415** (unchanged — 3.1.4 touches zero `engine/`
-paths). `aero_editor_shell_test` **837** (**753** after 3.1.3 → **+84** at 3.1.4:
-`tests/editor/asset_watcher_test.cpp` AW1–AW46 plus AW28b/AW28c/AW6b/AW30b, a new TU (50 cases);
-`tests/editor/asset_meta_test.cpp` +11 (AM-w1–AM-w11); `tests/editor/project_files_test.cpp` +5
-(PF-c1–PF-c5); `tests/editor/asset_database_test.cpp` +6 (AD-g1–AD-g6); `tests/editor/thumbnail_cache_test.cpp`
-+12 (TC39–TC50) — **837 measured directly with `--list-test-cases`, never derived by addition**.
-`aero_editor_imgui_test` **73** (65 after 3.1.3 → +8 at 3.1.4: I44–I51, the watcher's real-frame
-integration cases). `AW30b` (AC-6) and `I51` (AC-27) are the code-review round's two additions. `aero_scene_serialize_test` **23** and `aero_editor_inspector_test` **22**, both
-unchanged since 3.1.1. `aero_editor_core` sources **47** (46 before this task → +1:
-`asset_watcher.cpp`) — no new `find_package`, no new `target_link_libraries`. `check-math-boundary.sh`'s
-scanned count: **273** after 3.1.3 **→ 276** at 3.1.4 (three new C-family files: `asset_watcher.hpp`,
-`asset_watcher.cpp`, `tests/editor/asset_watcher_test.cpp`) — measured after `git add` at every step
-boundary, never assumed. Guard count stays **six**, `check-project-no-delete.sh` byte-identical
-(`git diff main...HEAD -- .github/scripts/` empty) — Check A's six-file denylist unchanged, Check B's
-two-file `PERMITTED_DELETERS` allowlist unchanged (`asset_watcher.cpp` deliberately named in NEITHER:
-being read-only by construction and outside the allowlist is what makes a future
-`std::filesystem::remove` in it a hard CI failure), Check B's scanned-file count grows by one to **48**
-(the glob picks the new TU up automatically). Both reduced configurations, freshly rebuilt in
-`build/tools-off-3.1.4`/`build/reflect-off-3.1.4`: `ctest -N` **6**/**19** unchanged, both passing
-100% (6/6 and 19/19), `aero_editor_shell_test`'s own doctest `--count` reads **813** in **both**, with
-`AW1` present in both — proving the new TU needs no reflection or scene serialization (AC-42). Counts
-diverge by OS (Windows skips `golden-rule.include_scan_e2e`), so never assume one — measure with
-`ctest -N`.
+**19** with `-DAERO_REFLECT_TOOLS=OFF` alone — unchanged by task 3.2.1 (zero new ctest entries; every
+new case lives inside an existing TU). `aero_tests` **415** (unchanged — 3.2.1 touches zero `engine/`
+paths). `aero_editor_shell_test` **976** (**837** after 3.1.4 → **+139** at 3.2.1:
+`tests/editor/model_import_test.cpp`, a new TU (**91** cases, MI1–MI93 plus MI40b);
+`tests/editor/model_import_session_test.cpp`, a new TU (**16** cases, MS1–MS16);
+`tests/editor/asset_meta_test.cpp` +14 (AM-i1–AM-i14); `tests/editor/asset_cache_test.cpp` +8
+(AC-p1–AC-p8); `tests/editor/asset_database_test.cpp` +10 (AD-i1–AD-i10) — **976 measured directly with
+`--list-test-cases`, never derived by addition** (91+16+14+8+10 = 139, and 837+139 = 976, both checked).
+`aero_editor_imgui_test` **82** (73 after 3.1.4 → +9 at 3.2.1: I52–I60, the panel's registration, the
+exactly-one-import/re-import/non-model cases, three real-frame draw states, the reconcile's own
+target-sync proof, and the source-text call-site proof). `aero_scene_serialize_test` **23** and
+`aero_editor_inspector_test` **22**, both unchanged since 3.1.1. `aero_editor_core` sources **51** (47
+before this task → +4: `model_import.cpp`, `gltf_import.cpp`, `model_import_session.cpp`,
+`import_details_panel.cpp`) — one new `find_package(fastgltf CONFIG REQUIRED)`, one new PRIVATE
+`target_link_libraries` entry (`fastgltf::fastgltf`, confined to `aero_editor_core`, never reaching
+`aero_editor` or any test target's link line). `check-math-boundary.sh`'s scanned count: **276** after
+3.1.4 **→ 287** at 3.2.1 (eleven new C-family files, matching the plan's own prediction exactly) —
+measured after `git add` at every step boundary, never assumed. Guard count stays **six**,
+`check-project-no-delete.sh` byte-identical (`git diff main...HEAD -- .github/scripts/` empty) — Check
+A's six-file denylist unchanged, Check B's two-file `PERMITTED_DELETERS` allowlist unchanged (none of
+this task's five new `editor/src/*.cpp` files is in either — being outside both is what makes a future
+`std::filesystem::remove` in any of them a hard CI failure), Check B's scanned-file count grows to
+**52** (the glob picks the new files up automatically). Both reduced configurations, freshly rebuilt in
+`build/tools-off-3.2.1`/`build/reflect-off-3.2.1`: `ctest -N` **6**/**19** unchanged, both passing 100%
+(6/6 and 19/19), `aero_editor_shell_test`'s own doctest `--list-test-cases` count reads **952** in
+**both** (up from 813 pre-task), with `MI1` and `MS1` present in both — proving both new importer TUs
+need no reflection or scene serialization (AC-59). Counts diverge by OS (Windows skips
+`golden-rule.include_scan_e2e`), so never assume one — measure with `ctest -N`.
 
 > **Before touching a subsystem, read its entry in `docs/10-engineering-log.md`.** That file is the full per-task history: what shipped, what was deliberately left out, the traps found, and the dead ends that must never be retried (the lavapipe LSan leak, `LD_PRELOAD`, vcpkg's `sdl3-shadercross` on macOS, …). It is deliberately *not* auto-loaded — grep it before re-deriving anything.
 

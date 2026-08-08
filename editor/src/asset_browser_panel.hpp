@@ -76,6 +76,12 @@ public:
     void setRoot(std::string rootPath);
     [[nodiscard]] const std::string& root() const noexcept { return rootUtf8; }
 
+    // task 3.2.1 (D17/F11): the ONE line this task adds to the Asset Browser. A data member and a
+    // member function may not share a name (the databasePtr/database() and recordList/records()
+    // precedent, which 3.1.3 hit as a real compile error), so the accessor is `selection()` while the
+    // member stays `selectedEntry`. onDraw, the five draw phases and every existing test are untouched.
+    [[nodiscard]] const std::string& selection() const noexcept { return selectedEntry; }
+
     // task 3.1.1 -- the reconcile block's other half (D12). A non-owning, NEVER-owning pointer: this
     // panel does not scan disk (D7 stays true), EditorApp does, in tick(), outside the draw walk.
     // NEVER a reference (D13): EditorApp is movable and create() returns std::optional<EditorApp>, so
@@ -132,6 +138,14 @@ public:
     void requestSearchQuery(std::string query);
     void requestKindFilter(std::string kind);
     void requestDeleteOrphanClick(std::string relativeMetaPath);
+
+    // DEVIATION (task 3.2.1, logged in the final report): the code-review finding 4 shape, a FIFTH
+    // instance -- records EXACTLY what a real single click on a row/tile records (ActionKind::
+    // SelectEntry), so ModelImportSession's reconcile (EditorApp::tick(), which reads selection()
+    // every frame) is drivable from the ImGui-free-at-source GPU tier. "" selects nothing, exactly
+    // like Navigate clearing it. Without this, AC-45/AC-46/AC-47/AC-50's own GPU-tier proof (I53-I59)
+    // would be unwritable or vacuous -- no other seam reaches `selectedEntry`.
+    void requestSelectEntry(std::string relativePath);
 
     // task 3.1.3, Step 11: one-shot, read-and-clear -- the takeRescanRequest() shape, a third
     // instance (F9). Set only by the modal's Delete button confirming; drained by EditorApp::tick()'s

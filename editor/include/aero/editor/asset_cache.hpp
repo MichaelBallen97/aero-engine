@@ -103,18 +103,45 @@ enum class ImportChange : std::uint8_t {
 // than a silent "unknown" (logAssetScan's ScanStatus switch is the precedent).
 [[nodiscard]] std::string_view importChangeLabel(ImportChange change) noexcept;
 
+// task 3.2.1 (D8/D9). The scan's answer to "what did the importer say about this asset THIS scan?"
+struct ProbeOutcome {
+    std::string importer;  // "gltf"
+    std::uint32_t importerVersion = 0;
+    std::vector<Guid> dependencies;  // SORTED, DEDUPLICATED, and NEVER containing a nil (INV-M8/INV-C1)
+};
+
 struct ImportInput {
     Guid guid;
     std::string relativePath;
     std::optional<ContentHash> contentHash;  // nullopt == Unhashable or NotHashed. ENGAGEMENT, never
                                              // .valid(), is the "was it hashed?" test (plan A4).
     ContentHash metaHash;
-    std::uint64_t size = 0;  // plan A19: commitImports records what was OBSERVED
-    std::int64_t mtime = 0;  // plan A19
-    std::string importer;    // "" in this build
-    std::uint32_t importerVersion = 0;
+    std::uint64_t size = 0;            // plan A19: commitImports records what was OBSERVED
+    std::int64_t mtime = 0;            // plan A19
     bool hashSkippedByBudget = false;  // discriminates NotHashed from Unhashable
+    // ---- task 3.2.1, APPENDED (3.1.2's A2 trap) ----
+    // `std::string importer` and `std::uint32_t importerVersion` are REMOVED and folded in here.
+    // Leaving both surfaces alive is precisely how D9's oscillation gets reintroduced by a future
+    // caller that fills the old fields and forgets the new one. That is the ONE breaking change this
+    // task makes to a 3.1.2 signature; it is source-local (one caller, asset_database.cpp, plus tests).
+    //
+    // ENGAGEMENT IS THE SIGNAL (the A4 rule, a third use -- and for the same reason: "" is a legitimate
+    // importer name for a non-model asset and {} is a legitimate empty dependency list, so neither
+    // VALUE can mean "not probed"):
+    //   engaged    -- probed this scan; commitImports writes all three fields.
+    //   disengaged -- NOT probed; commitImports copies the PREVIOUS entry's three fields VERBATIM, or
+    //                 leaves them at their defaults when there is no previous entry.
+    //
+    // Without this, an asset the scan did not probe would have its importer flipped to "", planImports
+    // would report ImporterChanged next scan, that scan would probe it, it would flip back, and the
+    // pair would OSCILLATE FOREVER, re-importing on every scan.
+    std::optional<ProbeOutcome> probe;
 };
+
+// The SCAN's probe budget, declared HERE beside MAX_HASH_BYTES_PER_SCAN because it is a property of the
+// SCAN, not of the importer -- putting it in model_import.hpp would make the importer's header carry a
+// constant the importer never reads.
+inline constexpr std::uint64_t MAX_PROBE_BYTES_PER_SCAN = 256ULL * 1024 * 1024;
 
 struct ImportPlanEntry {
     Guid guid;

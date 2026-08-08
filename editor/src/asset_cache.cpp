@@ -8,7 +8,16 @@
 // Step 4 landed parseAssetCache / writeAssetCacheText / importChangeLabel / AssetCacheIndex::find.
 // Step 6 added planImports and commitImports, the pure change-detection cascade and its commit.
 // Step 7 (this revision) adds planReattachments, D13's orphan re-attachment.
+//
+// code-review SHOULD-FIX 7 (task 3.2.1): `asset_cache.hpp` itself still names NO other editor header
+// (the format's own invariant, unchanged) -- this is the .cpp ONLY, and the dependency direction stays
+// safe: model_import.hpp includes nothing that reaches back here (confirmed: its own includes are
+// aero/core/{guid,math}.hpp, aero/editor/import_settings.hpp and aero/editor/scene_bounds.hpp, none of
+// which name asset_cache.hpp or asset_meta.hpp). Needed for isImportableModelName -- a SECOND, drifting
+// copy of that predicate here would silently stop discriminating the moment 3.2.2 (ufbx) teaches the
+// real one a new extension, permanently reintroducing this same finding for every future importer.
 #include <aero/editor/asset_cache.hpp>
+#include <aero/editor/model_import.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/json_writer.hpp>
@@ -424,8 +433,26 @@ ImportPlanResult planImports(std::vector<ImportInput> inputs, const AssetCacheIn
                 entry.change = ImportChange::SourceChanged;
             } else if (previousEntry->metaHash != input.metaHash) {
                 entry.change = ImportChange::MetaChanged;
-            } else if (previousEntry->importer != input.importer ||
-                       previousEntry->importerVersion != input.importerVersion) {
+            } else if (const bool expectsModelImporter = isImportableModelName(input.relativePath);
+                       previousEntry->importer !=
+                           (expectsModelImporter ? std::string_view(GLTF_IMPORTER_NAME) : std::string_view()) ||
+                       previousEntry->importerVersion != (expectsModelImporter ? GLTF_IMPORTER_VERSION : 0U)) {
+                // code-review SHOULD-FIX 7: compares the previous entry against the STATICALLY EXPECTED
+                // (importer, importerVersion) pair for this file -- a PURE function of the relativePath
+                // ALONE, needing no probe at all.
+                //
+                // REPLACES the original probe-based comparison, which was structurally unreachable in
+                // production: planImports runs BEFORE phase 7.5 (§D-5's own ordering trap), so
+                // `input.probe` was ALWAYS disengaged here, and comparing a disengaged probe against the
+                // previous entry's OWN value is a tautology -- ImporterChanged could never fire for an
+                // otherwise-UpToDate entry, so an existing project's cache never gained an importer
+                // identity until its content or .meta changed for an unrelated reason, and a future
+                // GLTF_IMPORTER_VERSION bump would never re-trigger a single import. This fixes both in
+                // the same stroke: a cache entry written before this build has importer == "" for every
+                // model, which now mismatches "gltf"/GLTF_IMPORTER_VERSION on the very next scan; a
+                // version bump mismatches the OLD recorded version the same way. A non-model's expected
+                // pair is ("", 0) -- exactly `ImportInput`'s own un-probed defaults, so nothing about a
+                // non-model asset's plan changes.
                 entry.change = ImportChange::ImporterChanged;
             } else {
                 entry.change = ImportChange::UpToDate;
@@ -557,12 +584,17 @@ AssetCacheIndex commitImports(const AssetCacheIndex& previous, const std::vector
             entry.mtime = input.mtime;
             entry.contentHash = *input.contentHash;
             entry.metaHash = input.metaHash;
-            entry.importer = input.importer;
-            entry.importerVersion = input.importerVersion;
-            // Dependencies are CARRIED OVER from the previous entry, never emptied -- inventing an
-            // empty list would silently erase a future importer's edges the first time an older build
-            // ran (D-6). Empty when there was no previous entry for this GUID.
-            entry.dependencies = previousEntry != nullptr ? previousEntry->dependencies : std::vector<Guid>{};
+            // task 3.2.1 (D9): ENGAGEMENT DECIDES. This is the whole of the carry-forward rule, and the
+            // reason `probe` is an optional rather than three plain fields.
+            if (input.probe.has_value()) {
+                entry.importer = input.probe->importer;
+                entry.importerVersion = input.probe->importerVersion;
+                entry.dependencies = input.probe->dependencies;
+            } else if (previousEntry != nullptr) {
+                entry.importer = previousEntry->importer;
+                entry.importerVersion = previousEntry->importerVersion;
+                entry.dependencies = previousEntry->dependencies;
+            }  // else: the defaults ("" / 0 / {}), correct for a brand-new non-model asset
             entry.missing = 0;  // A19: seen this scan, however it was classified
             result.entries.push_back(std::move(entry));
         } else {
