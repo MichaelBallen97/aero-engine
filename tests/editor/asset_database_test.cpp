@@ -2072,8 +2072,8 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "asset_database: an unreadable model is skipped by the probe and reported as an import failure "
-    "(AD-i8, AC-6)") {
+    "asset_database: an unreadable model is skipped by the probe and reported via the HASH failure, "
+    "never a redundant import failure (AD-i8, AC-6, code review SHOULD-FIX 9, corrected)") {
     const TempDir dir;
     writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"}})");
     AssetDatabase db;
@@ -2105,7 +2105,14 @@ TEST_CASE(
         return;
     }
     CHECK(second.modelsProbed == 0);
-    CHECK_FALSE(second.importFailures.empty());
+    // CORRECTED (code review SHOULD-FIX 9): this used to assert the OPPOSITE -- that an unreadable
+    // model ALSO landed in report.importFailures. That was phase 7.5 redundantly attempting (and
+    // redundantly failing) to open a file phase 4's OWN hash attempt had already failed to read for the
+    // identical reason (captured above by requiring second.hashFailureTotal > 0): an Unhashable entry's
+    // probe is thrown away wholesale by commitImports' un-hashed arm (asset_cache.cpp), so phase 7.5 now
+    // skips it before ever touching the file. The failure is reported exactly ONCE, through
+    // report.hashFailures -- never duplicated into report.importFailures too.
+    CHECK(second.importFailures.empty());
 
     const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
     REQUIRE(indexText.ok);
@@ -2194,4 +2201,42 @@ TEST_CASE(
     REQUIRE(entry != nullptr);
     CHECK(entry->importer == "gltf");
     CHECK(entry->importerVersion == 1);
+}
+
+TEST_CASE(
+    "asset_database: a probe budget smaller than the SECOND model's size leaves it unprobed -- the "
+    "FIRST is still probed normally (AD-i11, code review SHOULD-FIX 8)") {
+    // What this proves, and what it structurally cannot: readFileBytes' cap decides whether the SECOND
+    // model's bytes are ever OPENED at all (SHOULD-FIX 8's actual fix, in asset_database.cpp's phase
+    // 7.5), but that decision has NO independently observable effect on AssetScanReport in ANY
+    // construction reachable from this test tier -- file_size() (which decides exhaustion, below) is
+    // measured before EITHER cap chooses whether to open the file, whether it refused before opening or
+    // read to completion and was then discarded. This case proves the OUTCOME the fix must still get
+    // right (the second model stays genuinely unprobed at a tight budget, the first is unaffected) --
+    // the I/O saved is a resource-usage property no automated tier in this tree can independently
+    // measure; manual validation row 9 is this rule's only behavioural cover, exactly as it is for
+    // 3.1.3's BLOCKING-1 and 3.1.4's D9.
+    const TempDir dir;
+    writeFile(dir.join("a.gltf"), R"({"asset":{"version":"2.0"}})");  // 28 bytes -- fits a tight budget
+    writeFile(dir.join("b.gltf"), std::string(200, ' ') + R"({"asset":{"version":"2.0"}})");  // > budget
+    AssetDatabase db;
+    GuidGenerator gen(1011);
+    // "a.gltf" < "b.gltf" byte-lexicographically, so it is probed FIRST (plan.jobIndices' own order) --
+    // the budget is large enough for it alone, too small once "b.gltf" is reached.
+    const AssetScanReport report =
+        db.rescan(dir.utf8(), dir.utf8(), gen, MAX_HASH_BYTES_PER_SCAN, /*probeBudgetBytes=*/100);
+    CHECK(report.modelsProbed == 1);
+    CHECK(report.probeBudgetExhausted);
+    CHECK(report.importFailureTotal == 0);  // exhaustion is NOT a failure -- carried forward silently
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const aEntry = parsed.index.find(*db.guidForPath("a.gltf"));
+    const AssetCacheEntry* const bEntry = parsed.index.find(*db.guidForPath("b.gltf"));
+    REQUIRE(aEntry != nullptr);
+    REQUIRE(bEntry != nullptr);
+    CHECK(aEntry->importer == "gltf");  // probed
+    CHECK(bEntry->importer.empty());    // NEVER probed -- the budget ran out before it was even opened
 }

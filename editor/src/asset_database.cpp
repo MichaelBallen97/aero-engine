@@ -713,6 +713,16 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
         std::uint64_t probeBudgetRemaining = probeBudgetBytes;
         for (const std::size_t jobIndex : plan.jobIndices) {
             const ImportPlanEntry& job = plan.entries[jobIndex];
+            // code-review SHOULD-FIX 9: an Unhashable/NotHashed entry has NO resolved hash this scan, so
+            // asset_cache.cpp's commitImports (the un-hashed arm) copies the PREVIOUS entry forward
+            // VERBATIM and discards `input.probe` unconditionally, whatever it holds. Probing one here
+            // would read and parse a file, charge the budget, and increment modelsProbed/
+            // dependenciesRecorded for absolutely nothing -- repeating every single scan, forever, on a
+            // project whose hash budget stays exhausted, with the two counters below then describing
+            // work recorded nowhere.
+            if (job.change == ImportChange::Unhashable || job.change == ImportChange::NotHashed) {
+                continue;
+            }
             // plan.entries is planImports' OWN SORTED COPY -- jobIndex is NOT an index into `inputs`
             // (plan §A-12). Both vectors are sorted byte-lexicographically by relativePath, so one
             // lower_bound finds the match; a miss is impossible today and is simply skipped.
@@ -727,10 +737,19 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
                 continue;  // AC-2: a non-model's importer stays "" and its version stays 0
             }
             const std::string absolutePath = rootUtf8 + '/' + it->relativePath;
-            const FileBytesResult fileResult = readFileBytes(absolutePath, MAX_MODEL_FILE_BYTES);
-            // The budget is charged with the OBSERVED size, which readFileBytes fills EVEN ON REFUSAL.
-            // Checked before the read matters: a file that would blow the budget is not probed at all,
-            // and D9's carry-forward handles it correctly (AC-6).
+            // code-review SHOULD-FIX 8: bound the READ ITSELF by the SMALLER of the two caps, not just
+            // MAX_MODEL_FILE_BYTES. readFileBytes already refuses BEFORE opening when file_size()
+            // exceeds the cap it is given (text_file.cpp) -- passing the remaining budget here means a
+            // file that would exhaust it is never opened, never allocated for, never read, rather than
+            // being read to completion first and only THEN discovered to exceed the budget below.
+            const FileBytesResult fileResult =
+                readFileBytes(absolutePath, std::min(MAX_MODEL_FILE_BYTES, probeBudgetRemaining));
+            // The budget is charged with the OBSERVED size, which readFileBytes fills EVEN ON REFUSAL --
+            // file_size() is measured before EITHER cap decides whether to open the file at all. A file
+            // that exceeds the remaining budget but not MAX_MODEL_FILE_BYTES is left DISENGAGED here
+            // (below); one that exceeds MAX_MODEL_FILE_BYTES regardless of budget still falls through to
+            // the refusal branch further down and is reported as a genuine import failure, exactly as
+            // before -- this comparison is unchanged, and still decides which of the two happened.
             if (fileResult.size > probeBudgetRemaining) {
                 report.probeBudgetExhausted = true;
                 continue;  // leave `probe` DISENGAGED
