@@ -786,6 +786,12 @@ ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::
         ImportedMesh outMesh;
         outMesh.name = std::string(mesh.name);
         outMesh.localId = static_cast<std::uint32_t>(meshIdx);
+        // code-review BLOCKING-3: fold into a LOCAL accumulator that starts at Aabb::empty(), never
+        // directly into outMesh.bounds -- whose default (a bare `Aabb bounds;`) is a VALID point box AT
+        // the origin, not the invalid empty sentinel. Folding straight into outMesh.bounds unioned the
+        // origin into every mesh regardless of where its geometry actually sat. The collapse back to a
+        // point box for the "nothing survived" case happens once, after the primitive loop below.
+        Aabb meshBounds = Aabb::empty();
 
         for (std::size_t primIdx = 0; primIdx < mesh.primitives.size(); ++primIdx) {
             const fastgltf::Primitive& prim = mesh.primitives[primIdx];
@@ -1075,7 +1081,13 @@ ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::
                 primBounds.expand(p);
             }
             outPrim.bounds = primBounds;
-            outMesh.bounds.expand(primBounds);
+            // code-review BLOCKING-3: fold into the mesh-local accumulator (see above) AND directly into
+            // summary.bounds from this SAME primBounds -- never from outMesh.bounds after the fact. An
+            // empty mesh elsewhere in this model (every primitive skipped, D11's point-box-at-the-origin
+            // survivor) therefore can never leak the origin into summary.bounds either: only primitives
+            // that actually produced geometry ever reach this line.
+            meshBounds.expand(primBounds);
+            result.model.summary.bounds.expand(primBounds);
 
             result.model.summary.vertexCount += outPrim.positions.size();
             result.model.summary.triangleCount += outPrim.indices.size() / 3;
@@ -1083,14 +1095,13 @@ ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::
 
             outMesh.primitives.push_back(std::move(outPrim));
         }
+        // D11/AC-25: an empty mesh (every primitive skipped) SURVIVES as a point box at the origin -- the
+        // untouched aggregate default, Aabb{} -- never the invalid Aabb::empty() sentinel meshBounds
+        // started from. A mesh that DID gain real geometry keeps its real, off-origin-capable fold.
+        outMesh.bounds = meshBounds.valid() ? meshBounds : Aabb{};
         result.model.meshes.push_back(std::move(outMesh));
     }
     result.model.summary.meshCount = result.model.meshes.size();
-    if (depth == ImportDepth::Full) {
-        for (const ImportedMesh& m : result.model.meshes) {
-            result.model.summary.bounds.expand(m.bounds);
-        }
-    }
 
     // Phase 7 -- SKINS. Skipped entirely when !settings.importSkins (AC-37).
     if (settings.importSkins) {

@@ -1018,6 +1018,74 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "model_import: an off-origin mesh's bounds do not include the world origin; neither does the "
+    "model's summary.bounds (MI95, code-review BLOCKING-3)") {
+    // positions (10,20,30), (11,20,30), (10,21,30) -- none touch the origin on ANY axis, unlike every
+    // other geometry fixture in this file (triangle.gltf's own vertices all touch it, which is exactly
+    // why this defect was invisible: ImportedMesh::bounds's bare `Aabb bounds;` defaults to a VALID
+    // point box AT the origin -- Aabb's own aggregate default, never the invalid Aabb::empty()
+    // sentinel -- so folding real geometry into it via expand() unioned the origin in regardless. That
+    // is the exact number this task's Import Details panel prints, and the exact number manual
+    // validation row 2 compares against Blender's Dimensions panel.
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": )"
+        R"("VEC3"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}], "buffers": )"
+        R"([{"byteLength": 36, "uri": "data:application/octet-stream;base64,)"
+        R"(AAAgQQAAoEEAAPBBAAAwQQAAoEEAAPBBAAAgQQAAqEEAAPBB"}]})";
+    const ImportResult result =
+        importModel("off-origin.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+
+    CHECK(result.model.meshes[0].bounds.valid());
+    CHECK(result.model.meshes[0].bounds.min.x == doctest::Approx(10.0F));
+    CHECK(result.model.meshes[0].bounds.min.y == doctest::Approx(20.0F));
+    CHECK(result.model.meshes[0].bounds.min.z == doctest::Approx(30.0F));
+    CHECK(result.model.meshes[0].bounds.max.x == doctest::Approx(11.0F));
+    CHECK(result.model.meshes[0].bounds.max.y == doctest::Approx(21.0F));
+    CHECK(result.model.meshes[0].bounds.max.z == doctest::Approx(30.0F));
+
+    CHECK(result.model.summary.bounds.valid());
+    CHECK(result.model.summary.bounds.min.x == doctest::Approx(10.0F));
+    CHECK(result.model.summary.bounds.min.y == doctest::Approx(20.0F));
+    CHECK(result.model.summary.bounds.min.z == doctest::Approx(30.0F));
+    CHECK(result.model.summary.bounds.max.x == doctest::Approx(11.0F));
+    CHECK(result.model.summary.bounds.max.y == doctest::Approx(21.0F));
+    CHECK(result.model.summary.bounds.max.z == doctest::Approx(30.0F));
+}
+
+TEST_CASE(
+    "model_import: an empty mesh elsewhere in the model never pollutes summary.bounds with the "
+    "origin (MI95b, code-review BLOCKING-3)") {
+    // Two meshes sharing the SAME off-origin POSITION accessor: mesh 0 imports it as TRIANGLES (a real
+    // primitive survives); mesh 1 imports it as TRIANGLE_STRIP (D11: every primitive skipped, the mesh
+    // survives as an empty mesh with a point AABB at the origin). summary.bounds must equal mesh 0's
+    // bounds exactly -- folding mesh 1's origin-point placeholder into it would reproduce a variant of
+    // BLOCKING-3 for any multi-mesh model containing one legitimately-empty mesh.
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("mode": 4}]}, {"primitives": [{"attributes": {"POSITION": 0}, "mode": 5}]}], "accessors": )"
+        R"([{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}], "bufferViews": )"
+        R"([{"buffer": 0, "byteOffset": 0, "byteLength": 36}], "buffers": [{"byteLength": 36, "uri": )"
+        R"("data:application/octet-stream;base64,)"
+        R"(AAAgQQAAoEEAAPBBAAAwQQAAoEEAAPBBAAAgQQAAqEEAAPBB"}]})";
+    const ImportResult result =
+        importModel("mixed-empty-mesh.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.model.meshes.size() == 2);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);  // mesh 0: the real, off-origin triangle
+    CHECK(result.model.meshes[1].primitives.empty());        // mesh 1: TRIANGLE_STRIP, skipped
+    // mesh 1's bounds is D11's point box AT the origin -- it must never leak into summary.bounds.
+    CHECK(result.model.meshes[1].bounds.min.x == doctest::Approx(0.0F));
+    CHECK(result.model.meshes[1].bounds.max.x == doctest::Approx(0.0F));
+
+    CHECK(result.model.summary.bounds.valid());
+    CHECK(result.model.summary.bounds.min.x == doctest::Approx(10.0F));
+    CHECK(result.model.summary.bounds.max.x == doctest::Approx(11.0F));
+}
+
+TEST_CASE(
     "model_import: a normalised u8vec4 COLOR_0 de-normalises to floats; a VEC3 COLOR_0 widens "
     "with a = 1 (MI70)") {
     const std::string docU8 =
