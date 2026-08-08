@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -21,6 +22,27 @@
 #include <vector>
 
 namespace engine::editor {
+
+namespace {
+
+// NIT 11 (code review): ImportedImage::guid's own doc comment promises "nil unless relativePath names
+// a known asset", but nothing assigned it -- importModel() itself MUST stay pure (bytes in, value out,
+// no database access), so the assignment happens HERE, the one place that holds both a fresh
+// ImportResult and a `const AssetDatabase&` at the same time. Applied to `resultValue.model.images`
+// after EVERY import call that can leave it non-empty (never after a FAILED import, whose `model` is
+// contractually empty already, so there is nothing to walk).
+void assignImageGuids(std::vector<ImportedImage>& images, const AssetDatabase& database) {
+    for (ImportedImage& image : images) {
+        if (image.relativePath.empty()) {
+            continue;  // unresolved or embedded (D14) -- guid stays nil, exactly as documented
+        }
+        if (const std::optional<Guid> guid = database.guidForPath(image.relativePath); guid.has_value()) {
+            image.guid = *guid;
+        }
+    }
+}
+
+}  // namespace
 
 void ModelImportSession::setTarget(std::string relativePath, std::uint64_t databaseGeneration) {
     // E18: the SAME target and the SAME generation is a no-op -- idempotent by construction, so a
@@ -151,6 +173,7 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
             "the external buffers exceed this importer's per-model limit; showing the "
             "document's structure only";
         stateValue = SessionState::Imported;
+        assignImageGuids(resultValue.model.images, database);  // NIT 11
         ++imports;
         return;
     }
@@ -162,6 +185,8 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
     stateValue = (resultValue.status == ImportStatus::Ok || resultValue.status == ImportStatus::Truncated)
                      ? SessionState::Imported
                      : SessionState::Failed;
+    assignImageGuids(resultValue.model.images, database);  // NIT 11 -- database access stops HERE;
+                                                           // importModel() itself never sees one
     ++imports;
     // `modelBytes` outlives every use above. GltfDataBuffer::FromBytes COPIES (§G-16 item 1), so there
     // is no lifetime contract on these bytes -- but keeping the named local alive across both passes

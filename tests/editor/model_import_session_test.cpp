@@ -588,3 +588,29 @@ TEST_CASE(
     REQUIRE_FALSE(ec);
     CHECK(afterMtime == beforeMtime);  // the file was never even opened for writing
 }
+
+// ---- MS21: NIT 11 -- ImportedImage::guid ------------------------------------------------------------
+
+TEST_CASE(
+    "model_import_session: a resolved image URI's guid is populated from the database; an unresolved "
+    "one stays nil (MS21, NIT 11)") {
+    const TempDir dir;
+    writeFile(dir.join("tex.png"), std::string(16, '\0'));  // any bytes -- the database never decodes it
+    writeFile(dir.join("a.gltf"), R"({"asset":{"version":"2.0"},)"
+                                  R"("images":[{"uri":"tex.png"},{"uri":"http://evil/x.png"}]})");
+    AssetDatabase db;
+    GuidGenerator gen(121);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid textureGuid = *db.guidForPath("tex.png");
+    REQUIRE(textureGuid.valid());
+
+    ModelImportSession session;
+    session.setTarget("a.gltf", db.generation());
+    session.service(dir.utf8(), db);
+    CHECK(session.state() == SessionState::Imported);
+    REQUIRE(session.result().model.images.size() == 2);
+    CHECK(session.result().model.images[0].relativePath == "tex.png");
+    CHECK(session.result().model.images[0].guid == textureGuid);
+    CHECK(session.result().model.images[1].relativePath.empty());  // refused scheme -- E7
+    CHECK_FALSE(session.result().model.images[1].guid.valid());    // stays nil
+}
