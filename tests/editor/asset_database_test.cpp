@@ -33,6 +33,7 @@ using engine::formatGuid;
 using engine::Guid;
 using engine::GuidGenerator;
 using engine::editor::ASSET_META_SUFFIX;
+using engine::editor::AssetCacheEntry;
 using engine::editor::AssetCacheParseResult;
 using engine::editor::AssetDatabase;
 using engine::editor::AssetMetaState;
@@ -41,6 +42,7 @@ using engine::editor::AssetScanReport;
 using engine::editor::CacheLoadOutcome;
 using engine::editor::fileExists;
 using engine::editor::ImportChange;
+using engine::editor::MAX_HASH_BYTES_PER_SCAN;
 using engine::editor::parseAssetCache;
 using engine::editor::ScanStatus;
 using engine::editor::writeAssetCacheText;
@@ -1841,4 +1843,355 @@ TEST_CASE(
         previous = db.generation();
     }
     CHECK(db.generation() == 5);
+}
+
+// =====================================================================================================
+// AD-i -- phase 7.5, the model probe (task 3.2.1). Real bytes, a scratch TempDir, the same idiom as
+// AD32-AD62 above -- the plumbing, end to end, on real files.
+// =====================================================================================================
+
+TEST_CASE("asset_database: a scanned model records \"gltf\"/1 as its importer (AD-i1, AC-1)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(1001);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 1);
+    const AssetRecord* const record = db.findByPath("chair.gltf");
+    REQUIRE(record != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(record->guid);
+    REQUIRE(entry != nullptr);
+    CHECK(entry->importer == "gltf");
+    CHECK(entry->importerVersion == 1);
+}
+
+TEST_CASE("asset_database: a non-model asset's importer stays empty and version stays 0 (AD-i2, AC-2)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"}})");
+    writeFile(dir.join("notes.txt"), "hello");
+    AssetDatabase db;
+    GuidGenerator gen(1002);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.modelsProbed == 1);  // only the model -- the .txt is never probed
+    const AssetRecord* const record = db.findByPath("notes.txt");
+    REQUIRE(record != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(record->guid);
+    REQUIRE(entry != nullptr);
+    CHECK(entry->importer.empty());
+    CHECK(entry->importerVersion == 0);
+}
+
+TEST_CASE("asset_database: a model's external texture URI becomes a dependency GUID (AD-i3, AC-3)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.gltf"),
+              R"({"asset":{"version":"2.0"},"images":[{"uri":"../textures/wood.png"}]})");
+    writeFile(dir.join("textures/wood.png"), "pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(1003);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.modelsProbed == 1);
+    CHECK(report.dependenciesRecorded == 1);
+    const Guid woodGuid = *db.guidForPath("textures/wood.png");
+    const AssetRecord* const chairRecord = db.findByPath("models/chair.gltf");
+    REQUIRE(chairRecord != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(chairRecord->guid);
+    REQUIRE(entry != nullptr);
+    REQUIRE(entry->dependencies.size() == 1);
+    CHECK(entry->dependencies[0] == woodGuid);
+}
+
+TEST_CASE(
+    "asset_database: duplicate-normalising and self-referencing URIs collapse to one sorted, "
+    "deduplicated, self-edge-free dependency (AD-i4, INV-M8, E8, E9)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.gltf"), R"({"asset":{"version":"2.0"},"images":[)"
+                                             R"({"uri":"../textures/wood.png"},)"
+                                             R"({"uri":"sub/../../textures/wood.png"},)"
+                                             R"({"uri":"chair.gltf"}]})");
+    writeFile(dir.join("textures/wood.png"), "pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(1004);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.modelsProbed == 1);
+    const Guid woodGuid = *db.guidForPath("textures/wood.png");
+    const AssetRecord* const chairRecord = db.findByPath("models/chair.gltf");
+    REQUIRE(chairRecord != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(chairRecord->guid);
+    REQUIRE(entry != nullptr);
+    REQUIRE(entry->dependencies.size() == 1);  // ONE edge -- never a self-edge, never a duplicate
+    CHECK(entry->dependencies[0] == woodGuid);
+}
+
+TEST_CASE(
+    "asset_database: a refused URI and a URI to an unrecognised file both contribute no dependency "
+    "(AD-i5, AC-5, E7)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.gltf"), R"({"asset":{"version":"2.0"},"images":[)"
+                                             R"({"uri":"http://evil.example/x.png"},)"
+                                             R"({"uri":"../textures/missing.png"}]})");
+    // Deliberately no textures/ directory at all -- the second URI names a file this scan never sees,
+    // so it never earns a .meta or a GUID.
+
+    AssetDatabase db;
+    GuidGenerator gen(1005);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    // A refused or unresolvable URI is a WARNING inside the ImportResult (imported.warnings), never a
+    // whole-import FAILURE -- so the import itself still succeeds and nothing lands in
+    // report.importFailures for either URI here.
+    CHECK(report.modelsProbed == 1);
+    CHECK(report.dependenciesRecorded == 0);
+    const AssetRecord* const chairRecord = db.findByPath("models/chair.gltf");
+    REQUIRE(chairRecord != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(chairRecord->guid);
+    REQUIRE(entry != nullptr);
+    CHECK(entry->dependencies.empty());  // NEVER a nil GUID -- both URIs contribute nothing
+}
+
+TEST_CASE("asset_database: editing a referenced texture marks the model DependencyChanged (AD-i6, AC-4, E11)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.gltf"),
+              R"({"asset":{"version":"2.0"},"images":[{"uri":"../textures/wood.png"}]})");
+    writeFile(dir.join("textures/wood.png"), "original-pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(1006);
+    // scan 1: both New. The edge IS recorded this same scan (phase 6 already assigned wood.png its
+    // GUID before phase 7.5 runs -- confirmed directly: the committed cache already holds
+    // chair -> wood after this one scan), but a New record's `change` reports New, not
+    // DependencyChanged -- there is no "cascade" to observe yet (E11).
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.status == ScanStatus::Ok);
+    CHECK(first.modelsProbed == 1);
+    CHECK(first.dependenciesRecorded == 1);
+    const AssetRecord* const chairAfterFirst = db.findByPath("models/chair.gltf");
+    REQUIRE(chairAfterFirst != nullptr);
+    CHECK(chairAfterFirst->change == ImportChange::New);
+
+    // Edit the texture -- a different LENGTH (R-C1, never flakes on 1s-granularity mtime).
+    writeFile(dir.join("textures/wood.png"), "edited-pixels-longer");
+
+    // scan 2 -- the FIRST tick after the edit: planImports reads scan 1's cache, which already has the
+    // edge, so wood.png's SourceChanged cascades to chair.gltf's DependencyChanged in this SAME scan.
+    // Measured directly (not assumed): this is where it actually happens, one tick sooner than E11's
+    // own "at the latest" hedge requires.
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    const AssetRecord* const woodAfterSecond = db.findByPath("textures/wood.png");
+    REQUIRE(woodAfterSecond != nullptr);
+    CHECK(woodAfterSecond->change == ImportChange::SourceChanged);
+    const AssetRecord* const chairAfterSecond = db.findByPath("models/chair.gltf");
+    REQUIRE(chairAfterSecond != nullptr);
+    CHECK(chairAfterSecond->change == ImportChange::DependencyChanged);
+    CHECK(second.dependencyChanged == 1);
+
+    // scan 3 -- the SECOND tick after the edit: nothing further changed, so the cascade has already
+    // settled and chair.gltf reports UpToDate again. This is what "ticks twice" buys in this
+    // construction: the SECOND tick confirms the DependencyChanged classification is not sticky --
+    // and phase 7.5 DID re-probe chair.gltf on scan 2 (it was in that scan's jobIndices), re-recording
+    // the identical edge, which is why scan 3 has nothing left to report.
+    const AssetScanReport third = db.rescan(dir.utf8(), dir.utf8(), gen);
+    const AssetRecord* const chairAfterThird = db.findByPath("models/chair.gltf");
+    REQUIRE(chairAfterThird != nullptr);
+    CHECK(chairAfterThird->change == ImportChange::UpToDate);
+    CHECK(third.dependencyChanged == 0);
+}
+
+TEST_CASE(
+    "asset_database: an exhausted probe budget disengages the probe and carries the previous record "
+    "forward (AD-i7, AC-6)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(1007);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);  // generous default budgets
+    REQUIRE(first.status == ScanStatus::Ok);
+    CHECK(first.modelsProbed == 1);
+
+    // A real content change -- a different LENGTH -- so the SECOND scan has something to re-probe.
+    writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"},"extensionsUsed":["X"]})");
+    const AssetScanReport second =
+        db.rescan(dir.utf8(), dir.utf8(), gen, MAX_HASH_BYTES_PER_SCAN, /*probeBudgetBytes=*/1);
+    CHECK(second.probeBudgetExhausted);
+    CHECK(second.modelsProbed == 0);
+
+    const AssetRecord* const record = db.findByPath("chair.gltf");
+    REQUIRE(record != nullptr);
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(record->guid);
+    REQUIRE(entry != nullptr);
+    CHECK(entry->importer == "gltf");  // carried forward from the FIRST scan's probe, never reset
+    CHECK(entry->importerVersion == 1);
+}
+
+TEST_CASE(
+    "asset_database: an unreadable model is skipped by the probe and reported as an import failure "
+    "(AD-i8, AC-6)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(1008);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.modelsProbed == 1);
+    const Guid guid = *db.guidForPath("chair.gltf");
+
+    // AD57's exact shape: bump the mtime forward FIRST so the (size, mtime) fast path cannot vouch for
+    // the file unread, THEN chmod it -- otherwise phase 4 (and phase 7.5) would never even try to open
+    // it, since nothing on disk looks different.
+    std::error_code ec;
+    std::filesystem::last_write_time(pathOf(dir.join("chair.gltf")),
+                                     std::filesystem::file_time_type::clock::now() + std::chrono::hours(1), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::permissions(pathOf(dir.join("chair.gltf")), std::filesystem::perms::none,
+                                 std::filesystem::perm_options::replace, ec);
+    REQUIRE_FALSE(ec);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    // Restore BEFORE any assertion can fail loudly and BEFORE ~TempDir runs (project_test.cpp's rule).
+    std::error_code restoreEc;
+    std::filesystem::permissions(pathOf(dir.join("chair.gltf")), std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::replace, restoreEc);
+
+    if (second.hashFailureTotal == 0) {
+        MESSAGE("running as a user for whom chmod 000 does not block reads (e.g. root) -- seed did not land");
+        return;
+    }
+    CHECK(second.modelsProbed == 0);
+    CHECK_FALSE(second.importFailures.empty());
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(guid);
+    REQUIRE(entry != nullptr);
+    CHECK(entry->importer == "gltf");  // the disengaged probe carries the FIRST scan's record forward
+}
+
+TEST_CASE(
+    "asset_database: a scan of an unchanged project with models writes ZERO bytes and probes ZERO "
+    "models (AD-i9, AC-8, seed S7)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"}})");
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(1009);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.status == ScanStatus::Ok);
+    REQUIRE(first.cacheWritten);
+    CHECK(first.modelsProbed == 1);
+
+    // Back-date every artifact from the first scan -- AD34's own rule: mtime is the only discriminator
+    // of a real rewrite; comparing content alone would false-pass (R-C3).
+    const auto backdated = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+    const std::vector<std::string> artifacts = {dir.join("chair.gltf.meta"), dir.join("a.png.meta"),
+                                                dir.join("Library/asset-cache.json"), dir.join("Library/.gitignore")};
+    for (const std::string& path : artifacts) {
+        std::error_code ec;
+        std::filesystem::last_write_time(pathOf(path), backdated, ec);
+        REQUIRE_FALSE(ec);
+    }
+    std::vector<Stat> before;
+    for (const std::string& path : artifacts) {
+        before.push_back(statOf(path));
+        REQUIRE(before.back().exists);
+    }
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK_FALSE(second.cacheWritten);
+    CHECK(second.modelsProbed == 0);
+
+    for (std::size_t i = 0; i < artifacts.size(); ++i) {
+        const Stat after = statOf(artifacts[i]);
+        CHECK(after.size == before[i].size);
+        CHECK(after.mtime == before[i].mtime);
+    }
+}
+
+TEST_CASE(
+    "asset_database: two consecutive scans of a model both report UpToDate, importer never flips "
+    "(AD-i10, AC-6)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(1010);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.status == ScanStatus::Ok);
+    REQUIRE(first.newAssets == 1);  // the FIRST scan: New, not UpToDate yet
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.upToDate == 1);
+    const AssetRecord* const record = db.findByPath("chair.gltf");
+    REQUIRE(record != nullptr);
+    CHECK(record->change == ImportChange::UpToDate);
+
+    // `record` is a POINTER INTO recordList and is invalidated by the NEXT rescan() (AssetDatabase's own
+    // documented contract: "the span is valid until the next rescan()"); its GUID is copied into a
+    // plain VALUE first, before the third scan, rather than dereferenced after it (a real
+    // heap-use-after-free ASan caught in an earlier version of this exact case).
+    const Guid guid = record->guid;
+
+    const AssetScanReport third = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(third.upToDate == 1);  // TWO CONSECUTIVE UpToDate scans (AC-6's own proof shape)
+    const AssetRecord* const recordAgain = db.findByPath("chair.gltf");
+    REQUIRE(recordAgain != nullptr);
+    CHECK(recordAgain->change == ImportChange::UpToDate);
+    CHECK(recordAgain->guid == guid);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(guid);
+    REQUIRE(entry != nullptr);
+    CHECK(entry->importer == "gltf");
+    CHECK(entry->importerVersion == 1);
 }

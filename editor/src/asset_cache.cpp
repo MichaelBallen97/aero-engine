@@ -424,8 +424,23 @@ ImportPlanResult planImports(std::vector<ImportInput> inputs, const AssetCacheIn
                 entry.change = ImportChange::SourceChanged;
             } else if (previousEntry->metaHash != input.metaHash) {
                 entry.change = ImportChange::MetaChanged;
-            } else if (previousEntry->importer != input.importer ||
-                       previousEntry->importerVersion != input.importerVersion) {
+            } else if (const std::string_view wantImporter = input.probe.has_value()
+                                                                 ? std::string_view(input.probe->importer)
+                                                                 : std::string_view(previousEntry->importer);
+                       previousEntry->importer != wantImporter ||
+                       previousEntry->importerVersion !=
+                           (input.probe.has_value() ? input.probe->importerVersion : previousEntry->importerVersion)) {
+                // task 3.2.1 (D9): compares the previous entry against what THIS scan would COMMIT,
+                // which is the probe when engaged. A disengaged probe must compare EQUAL to itself, or
+                // every unprobed asset would report ImporterChanged on every scan -- the exact
+                // oscillation D9 exists to prevent, moved from commitImports into planImports here.
+                //
+                // Ordering trap (stated because it is the subtlest thing in this task): planImports runs
+                // BEFORE phase 7.5, so `input.probe` is ALWAYS disengaged when planImports sees it during
+                // a real scan -- this branch is a tautology in production and only ever fires in a unit
+                // case that hands planImports an ENGAGED probe. That is correct and intended: an importer
+                // change is detected on the scan AFTER the probe recorded it, exactly like a dependency
+                // change (D8/E11).
                 entry.change = ImportChange::ImporterChanged;
             } else {
                 entry.change = ImportChange::UpToDate;
@@ -557,12 +572,17 @@ AssetCacheIndex commitImports(const AssetCacheIndex& previous, const std::vector
             entry.mtime = input.mtime;
             entry.contentHash = *input.contentHash;
             entry.metaHash = input.metaHash;
-            entry.importer = input.importer;
-            entry.importerVersion = input.importerVersion;
-            // Dependencies are CARRIED OVER from the previous entry, never emptied -- inventing an
-            // empty list would silently erase a future importer's edges the first time an older build
-            // ran (D-6). Empty when there was no previous entry for this GUID.
-            entry.dependencies = previousEntry != nullptr ? previousEntry->dependencies : std::vector<Guid>{};
+            // task 3.2.1 (D9): ENGAGEMENT DECIDES. This is the whole of the carry-forward rule, and the
+            // reason `probe` is an optional rather than three plain fields.
+            if (input.probe.has_value()) {
+                entry.importer = input.probe->importer;
+                entry.importerVersion = input.probe->importerVersion;
+                entry.dependencies = input.probe->dependencies;
+            } else if (previousEntry != nullptr) {
+                entry.importer = previousEntry->importer;
+                entry.importerVersion = previousEntry->importerVersion;
+                entry.dependencies = previousEntry->dependencies;
+            }  // else: the defaults ("" / 0 / {}), correct for a brand-new non-model asset
             entry.missing = 0;  // A19: seen this scan, however it was classified
             result.entries.push_back(std::move(entry));
         } else {

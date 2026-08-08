@@ -150,6 +150,13 @@ struct AssetRecord {
     // every READER of `change` (the accessor, the footer) must check this flag first, or a failed write
     // silently reads as "up to date" for a file with no sidecar and no cache entry.
     bool metaWriteFailed = false;
+    // ---- task 3.2.1, APPENDED ----
+    // The asset's own import settings, parsed from its .meta's optional `importer` block in phase 2.
+    // DEFAULTS when the block is absent OR malformed (D7 rule 1: absent == defaults, forever, with no
+    // "unset" state, no tri-state and no migration). Phase 7.5 reads it so a probe uses the SAME
+    // settings the panel would, and it is what makes AC-52 work: changing a setting changes metaHash
+    // -> MetaChanged -> the asset lands in jobIndices -> phase 7.5 re-probes it with the NEW settings.
+    ImportSettings importSettings;
 };
 
 struct AssetPlanEntry {
@@ -157,6 +164,11 @@ struct AssetPlanEntry {
     std::optional<Guid> guid;  // nullopt == no sidecar, OR one that failed to parse
     bool metaPresent = false;
     std::optional<Guid> reattachedGuid;  // task 3.1.2 (D13). Set ONLY by asset_database.cpp's phase 5.
+    // task 3.2.1, APPENDED: the SAME field as AssetRecord::importSettings above, set by
+    // asset_database.cpp's phase 2 from the sidecar's parsed importer block (when engaged) and left at
+    // its default otherwise. planAssetMetas copies it straight across into the record it builds --
+    // reattachedGuid's shape, a second application.
+    ImportSettings importSettings;
 };
 
 struct AssetPlanResult {

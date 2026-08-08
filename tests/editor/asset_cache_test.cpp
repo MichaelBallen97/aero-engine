@@ -52,6 +52,7 @@ using engine::editor::OrphanMeta;
 using engine::editor::parseAssetCache;
 using engine::editor::planImports;
 using engine::editor::planReattachments;
+using engine::editor::ProbeOutcome;
 using engine::editor::ReattachCandidate;
 using engine::editor::ReattachMatch;
 using engine::editor::writeAssetCacheText;
@@ -699,16 +700,20 @@ AssetCacheEntry cacheEntry(Guid guid, std::string path, ContentHash contentHash,
     return entry;
 }
 
+// task 3.2.1: `importer`/`importerVersion` are REMOVED from ImportInput and folded into an
+// engaged-or-not `probe` (D9). This factory's own two trailing parameters follow suit -- a caller that
+// wants planImports/commitImports to see an ENGAGED probe passes one explicitly; every other caller
+// leaves it at the default (disengaged), which is also what a real scan hands planImports (§D-5's
+// ordering trap: the probe is filled in phase 7.5, AFTER planImports has already run).
 ImportInput importInput(Guid guid, std::string relativePath, std::optional<ContentHash> contentHash,
-                        ContentHash metaHash = ContentHash{}, std::string importer = "",
-                        std::uint32_t importerVersion = 0, bool hashSkippedByBudget = false) {
+                        ContentHash metaHash = ContentHash{}, std::optional<ProbeOutcome> probe = std::nullopt,
+                        bool hashSkippedByBudget = false) {
     ImportInput input;
     input.guid = guid;
     input.relativePath = std::move(relativePath);
     input.contentHash = contentHash;
     input.metaHash = metaHash;
-    input.importer = std::move(importer);
-    input.importerVersion = importerVersion;
+    input.probe = std::move(probe);
     input.hashSkippedByBudget = hashSkippedByBudget;
     return input;
 }
@@ -747,8 +752,7 @@ TEST_CASE("asset_cache: planImports on empty input (IP1, AC-21)") {
 
 TEST_CASE("asset_cache: New for its own cause -- no entry for the GUID (IP2, AC-22)") {
     const AssetCacheIndex previous;  // empty: no entry can possibly match
-    const ImportPlanResult result =
-        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)}, previous);
+    const ImportPlanResult result = planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20))}, previous);
     REQUIRE(result.entries.size() == 1);
     CHECK(result.entries[0].change == ImportChange::New);
     CHECK(result.newAssets == 1);
@@ -757,8 +761,7 @@ TEST_CASE("asset_cache: New for its own cause -- no entry for the GUID (IP2, AC-
 
 TEST_CASE("asset_cache: SourceChanged for its own cause (IP3, AC-22, seed S13/S14)") {
     const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
-    const ImportPlanResult result =
-        planImports({importInput(guidOf(1), "a.png", hashOf(999), hashOf(20), "gltf", 3)}, previous);
+    const ImportPlanResult result = planImports({importInput(guidOf(1), "a.png", hashOf(999), hashOf(20))}, previous);
     REQUIRE(result.entries.size() == 1);
     CHECK(result.entries[0].change == ImportChange::SourceChanged);
     CHECK(result.changed == 1);
@@ -766,25 +769,26 @@ TEST_CASE("asset_cache: SourceChanged for its own cause (IP3, AC-22, seed S13/S1
 
 TEST_CASE("asset_cache: MetaChanged for its own cause (IP4, AC-22)") {
     const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
-    const ImportPlanResult result =
-        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(999), "gltf", 3)}, previous);
+    const ImportPlanResult result = planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(999))}, previous);
     REQUIRE(result.entries.size() == 1);
     CHECK(result.entries[0].change == ImportChange::MetaChanged);
     CHECK(result.changed == 1);
 }
 
-TEST_CASE("asset_cache: ImporterChanged for its own cause (IP5, AC-22, D16)") {
-    // A hand-built previous entry with importer "gltf"; the input names a different importer text.
+TEST_CASE("asset_cache: ImporterChanged for its own cause -- needs an ENGAGED, differing probe (IP5, AC-22, D16)") {
+    // A hand-built previous entry with importer "gltf"; the input's PROBE names a different importer
+    // text. task 3.2.1 (D9): a DISENGAGED probe can never produce ImporterChanged (AC-p8 proves that
+    // half directly) -- this case is the ENGAGED half.
     const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
     const ImportPlanResult result =
-        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), "obj", 3)}, previous);
+        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), ProbeOutcome{"obj", 3, {}})}, previous);
     REQUIRE(result.entries.size() == 1);
     CHECK(result.entries[0].change == ImportChange::ImporterChanged);
     CHECK(result.changed == 1);
 
     // The importer VERSION alone differing is the same cause.
     const ImportPlanResult versionResult =
-        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 4)}, previous);
+        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), ProbeOutcome{"gltf", 4, {}})}, previous);
     REQUIRE(versionResult.entries.size() == 1);
     CHECK(versionResult.entries[0].change == ImportChange::ImporterChanged);
 }
@@ -792,7 +796,8 @@ TEST_CASE("asset_cache: ImporterChanged for its own cause (IP5, AC-22, D16)") {
 TEST_CASE("asset_cache: Unhashable -- contentHash nullopt, not budget-skipped (IP6, AC-22)") {
     const AssetCacheIndex previous;
     const ImportPlanResult result = planImports(
-        {importInput(guidOf(1), "a.png", std::nullopt, hashOf(20), "", 0, /*hashSkippedByBudget=*/false)}, previous);
+        {importInput(guidOf(1), "a.png", std::nullopt, hashOf(20), std::nullopt, /*hashSkippedByBudget=*/false)},
+        previous);
     REQUIRE(result.entries.size() == 1);
     CHECK(result.entries[0].change == ImportChange::Unhashable);
     CHECK(result.unhashable == 1);
@@ -801,7 +806,8 @@ TEST_CASE("asset_cache: Unhashable -- contentHash nullopt, not budget-skipped (I
 TEST_CASE("asset_cache: NotHashed -- contentHash nullopt, budget-skipped (IP7, AC-22)") {
     const AssetCacheIndex previous;
     const ImportPlanResult result = planImports(
-        {importInput(guidOf(1), "a.png", std::nullopt, hashOf(20), "", 0, /*hashSkippedByBudget=*/true)}, previous);
+        {importInput(guidOf(1), "a.png", std::nullopt, hashOf(20), std::nullopt, /*hashSkippedByBudget=*/true)},
+        previous);
     REQUIRE(result.entries.size() == 1);
     CHECK(result.entries[0].change == ImportChange::NotHashed);
     CHECK(result.notHashed == 1);
@@ -809,8 +815,7 @@ TEST_CASE("asset_cache: NotHashed -- contentHash nullopt, budget-skipped (IP7, A
 
 TEST_CASE("asset_cache: UpToDate when nothing differs (IP8, AC-22, seed S13)") {
     const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
-    const ImportPlanResult result =
-        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)}, previous);
+    const ImportPlanResult result = planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20))}, previous);
     REQUIRE(result.entries.size() == 1);
     CHECK(result.entries[0].change == ImportChange::UpToDate);
     CHECK(result.upToDate == 1);
@@ -823,17 +828,17 @@ TEST_CASE(
     // No previous entry AT ALL: every other own-cause is vacuously "different from nothing", but New
     // is checked first in the chain and there is nothing to compare against for the rest.
     const AssetCacheIndex previous;
-    const ImportPlanResult result =
-        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)}, previous);
+    const ImportPlanResult result = planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20))}, previous);
     REQUIRE(result.entries.size() == 1);
     CHECK(result.entries[0].change == ImportChange::New);
 }
 
 TEST_CASE("asset_cache: PRECEDENCE -- SourceChanged wins over MetaChanged and ImporterChanged (IP10, AC-22)") {
     const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
-    // contentHash, metaHash AND importer all differ from the previous entry at once.
+    // contentHash, metaHash AND the probed importer all differ from the previous entry at once (an
+    // ENGAGED, differing probe -- otherwise "importer" could never conceptually differ at all, D9).
     const ImportPlanResult result =
-        planImports({importInput(guidOf(1), "a.png", hashOf(999), hashOf(888), "obj", 7)}, previous);
+        planImports({importInput(guidOf(1), "a.png", hashOf(999), hashOf(888), ProbeOutcome{"obj", 7, {}})}, previous);
     REQUIRE(result.entries.size() == 1);
     CHECK(result.entries[0].change == ImportChange::SourceChanged);
 }
@@ -842,16 +847,17 @@ TEST_CASE(
     "asset_cache: PRECEDENCE -- MetaChanged wins over ImporterChanged; Unhashable beats every own-cause "
     "(IP11, AC-22)") {
     const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
-    // Same contentHash (SourceChanged does not apply); metaHash AND importer both differ.
+    // Same contentHash (SourceChanged does not apply); metaHash AND the probed importer both differ.
     const ImportPlanResult metaWins =
-        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(888), "obj", 7)}, previous);
+        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(888), ProbeOutcome{"obj", 7, {}})}, previous);
     REQUIRE(metaWins.entries.size() == 1);
     CHECK(metaWins.entries[0].change == ImportChange::MetaChanged);
 
     // Identical construction, but this scan could not read the bytes at all -- Unhashable wins over
-    // every own-cause, including one that would otherwise have won (MetaChanged here).
+    // every own-cause, including one that would otherwise have won (MetaChanged here). The probe is
+    // irrelevant to this half (Unhashable is decided before it is ever consulted), so it stays disengaged.
     const ImportPlanResult unhashableWins = planImports(
-        {importInput(guidOf(1), "a.png", std::nullopt, hashOf(888), "obj", 7, /*hashSkippedByBudget=*/false)},
+        {importInput(guidOf(1), "a.png", std::nullopt, hashOf(888), std::nullopt, /*hashSkippedByBudget=*/false)},
         previous);
     REQUIRE(unhashableWins.entries.size() == 1);
     CHECK(unhashableWins.entries[0].change == ImportChange::Unhashable);
@@ -1001,7 +1007,7 @@ TEST_CASE(
         cacheEntry(dependency, "dep.png", hashOf(5)),
     });
     const std::vector<ImportInput> inputs = {
-        importInput(node, "a.mat", std::nullopt, ContentHash{}, "", 0, /*hashSkippedByBudget=*/false),
+        importInput(node, "a.mat", std::nullopt, ContentHash{}, std::nullopt, /*hashSkippedByBudget=*/false),
         importInput(dependency, "dep.png", hashOf(999)),  // SourceChanged -- a genuinely dirty dependency
     };
     const ImportPlanResult result = planImports(inputs, previous);
@@ -1072,8 +1078,8 @@ TEST_CASE(
     "seed S15)") {
     const AssetCacheIndex previous;
     const std::vector<ImportInput> inputs = {
-        importInput(guidOf(1), "a.png", hashOf(10)),                                 // hashed -> committed
-        importInput(guidOf(2), "b.png", std::nullopt, ContentHash{}, "", 0, false),  // Unhashable, no previous
+        importInput(guidOf(1), "a.png", hashOf(10)),                                        // hashed -> committed
+        importInput(guidOf(2), "b.png", std::nullopt, ContentHash{}, std::nullopt, false),  // Unhashable, no previous
     };
     const ImportPlanResult plan = planImports(inputs, previous);
     const AssetCacheIndex next = commitImports(previous, inputs, plan);
@@ -1089,7 +1095,7 @@ TEST_CASE(
         cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3, {guidOf(9)}, 1);
     const AssetCacheIndex previous = indexOf({richPrevious});
     const std::vector<ImportInput> inputs = {
-        importInput(guidOf(1), "a.png", std::nullopt, ContentHash{}, "", 0, false),  // Unhashable
+        importInput(guidOf(1), "a.png", std::nullopt, ContentHash{}, std::nullopt, false),  // Unhashable
     };
     const ImportPlanResult plan = planImports(inputs, previous);
     const AssetCacheIndex next = commitImports(previous, inputs, plan);
@@ -1110,7 +1116,7 @@ TEST_CASE(
 TEST_CASE("asset_cache: a NotHashed input is not committed as up to date (IP23, AC-30, seed S15)") {
     const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20))});
     const std::vector<ImportInput> inputs = {
-        importInput(guidOf(1), "a.png", std::nullopt, hashOf(20), "", 0, /*hashSkippedByBudget=*/true)};
+        importInput(guidOf(1), "a.png", std::nullopt, hashOf(20), std::nullopt, /*hashSkippedByBudget=*/true)};
     const ImportPlanResult plan = planImports(inputs, previous);
     REQUIRE(plan.entries.size() == 1);
     CHECK(plan.entries[0].change == ImportChange::NotHashed);
@@ -1140,8 +1146,8 @@ TEST_CASE(
     cached.mtime = 1700000000;
     const AssetCacheIndex previous = indexOf({cached});
 
-    ImportInput input =
-        importInput(guidOf(1), "a.png", std::nullopt, ContentHash{}, "", 0, /*hashSkippedByBudget=*/false);
+    ImportInput input = importInput(guidOf(1), "a.png", std::nullopt, ContentHash{}, std::nullopt,
+                                    /*hashSkippedByBudget=*/false);
     input.size = 999999;       // what THIS scan stat()ed -- deliberately UNEQUAL to the cached value
     input.mtime = 1800000000;  // ditto: a real edit that could not be read back
     const std::vector<ImportInput> inputs = {input};
@@ -1166,8 +1172,8 @@ TEST_CASE(
     cached.mtime = -86400;  // a legitimately pre-1970 mtime, so a "refresh" cannot coincide with it
     const AssetCacheIndex previous = indexOf({cached});
 
-    ImportInput input =
-        importInput(guidOf(1), "big.bin", std::nullopt, hashOf(20), "gltf", 3, /*hashSkippedByBudget=*/true);
+    ImportInput input = importInput(guidOf(1), "big.bin", std::nullopt, hashOf(20), std::nullopt,
+                                    /*hashSkippedByBudget=*/true);
     input.size = 8ULL * 1024 * 1024 * 1024;  // the budget ran out precisely BECAUSE it is enormous
     input.mtime = 1800000000;
     const std::vector<ImportInput> inputs = {input};
@@ -1244,6 +1250,131 @@ TEST_CASE(
     const AssetCacheIndex next = commitImports(previous, inputs, plan);
     REQUIRE(next.entries.size() == 1);
     CHECK(next.entries[0].path == "new/a.png");
+}
+
+// =====================================================================================================
+// AC-p -- ProbeOutcome / ImportInput::probe (task 3.2.1, D8/D9). All PURE, from std::vector literals,
+// no disk, no clock (task 3.2.1 Step 8).
+// =====================================================================================================
+
+TEST_CASE("asset_cache: commitImports writes an ENGAGED probe's fields with no previous entry (AC-p1, AC-7)") {
+    const AssetCacheIndex previous;  // no entry at all
+    const std::vector<ImportInput> inputs = {
+        importInput(guidOf(1), "chair.gltf", hashOf(10), hashOf(20), ProbeOutcome{"gltf", 1, {guidOf(9)}})};
+    const ImportPlanResult plan = planImports(inputs, previous);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].importer == "gltf");
+    CHECK(next.entries[0].importerVersion == 1);
+    CHECK(next.entries[0].dependencies == std::vector<Guid>{guidOf(9)});
+}
+
+TEST_CASE("asset_cache: an ENGAGED probe wins over a previous entry's different values (AC-p2, AC-7)") {
+    const AssetCacheIndex previous =
+        indexOf({cacheEntry(guidOf(1), "chair.gltf", hashOf(10), hashOf(20), "gltf", 1, {guidOf(5)})});
+    const std::vector<ImportInput> inputs = {
+        importInput(guidOf(1), "chair.gltf", hashOf(10), hashOf(20), ProbeOutcome{"gltf", 2, {guidOf(9)}})};
+    const ImportPlanResult plan = planImports(inputs, previous);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].importerVersion == 2);
+    CHECK(next.entries[0].dependencies == std::vector<Guid>{guidOf(9)});
+}
+
+TEST_CASE("asset_cache: a DISENGAGED probe copies the previous entry's three fields verbatim (AC-p3, AC-6, D9)") {
+    const AssetCacheIndex previous =
+        indexOf({cacheEntry(guidOf(1), "chair.gltf", hashOf(10), hashOf(20), "gltf", 1, {guidOf(5)})});
+    // A fresh hash but NO probe this scan (not a model this scan probed, or the budget ran out) --
+    // input.probe stays disengaged (the factory's own default).
+    const std::vector<ImportInput> inputs = {importInput(guidOf(1), "chair.gltf", hashOf(10), hashOf(20))};
+    const ImportPlanResult plan = planImports(inputs, previous);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].importer == "gltf");
+    CHECK(next.entries[0].importerVersion == 1);
+    CHECK(next.entries[0].dependencies == std::vector<Guid>{guidOf(5)});
+}
+
+TEST_CASE("asset_cache: a DISENGAGED probe with no previous entry commits the defaults (AC-p4, AC-6)") {
+    const AssetCacheIndex previous;
+    const std::vector<ImportInput> inputs = {importInput(guidOf(1), "a.png", hashOf(10), hashOf(20))};
+    const ImportPlanResult plan = planImports(inputs, previous);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].importer.empty());
+    CHECK(next.entries[0].importerVersion == 0);
+    CHECK(next.entries[0].dependencies.empty());
+}
+
+TEST_CASE("asset_cache: a DISENGAGED probe carries a non-empty dependency list forward (AC-p5, AC-6, seed S6)") {
+    const AssetCacheIndex previous =
+        indexOf({cacheEntry(guidOf(1), "chair.gltf", hashOf(10), hashOf(20), "gltf", 1, {guidOf(7), guidOf(8)})});
+    const std::vector<ImportInput> inputs = {importInput(guidOf(1), "chair.gltf", hashOf(10), hashOf(20))};
+    const ImportPlanResult plan = planImports(inputs, previous);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].dependencies == std::vector<Guid>{guidOf(7), guidOf(8)});
+}
+
+TEST_CASE(
+    "asset_cache: the un-hashed arm ignores an ENGAGED probe -- the previous entry is still copied "
+    "verbatim (AC-p6)") {
+    const AssetCacheIndex previous =
+        indexOf({cacheEntry(guidOf(1), "chair.gltf", hashOf(10), hashOf(20), "gltf", 1, {guidOf(7)})});
+    // contentHash DISENGAGED (Unhashable this scan) but probe ENGAGED -- an edge case §D-5 states must
+    // never leak the probe into the un-hashed arm, which is UNTOUCHED by this task and copies the
+    // previous entry wholesale regardless of what `probe` holds.
+    const std::vector<ImportInput> inputs = {importInput(guidOf(1), "chair.gltf", std::nullopt, hashOf(20),
+                                                         ProbeOutcome{"gltf", 99, {guidOf(42)}},
+                                                         /*hashSkippedByBudget=*/false)};
+    const ImportPlanResult plan = planImports(inputs, previous);
+    const AssetCacheIndex next = commitImports(previous, inputs, plan);
+    REQUIRE(next.entries.size() == 1);
+    CHECK(next.entries[0].importerVersion == 1);                          // the PREVIOUS entry's, never 99
+    CHECK(next.entries[0].dependencies == std::vector<Guid>{guidOf(7)});  // never the probe's {42}
+}
+
+TEST_CASE(
+    "asset_cache: two consecutive DISENGAGED-probe scans both report UpToDate -- no oscillation (AC-p7, "
+    "AC-6, D9)") {
+    // Deliberately NO dependencies on this entry -- a non-empty list whose GUID has no matching input
+    // THIS scan is a DANGLING dependency (planImports step 3), which would make the entry
+    // DependencyChanged for an unrelated reason and defeat the point of this case. AC-p5 already covers
+    // the dependency-list-survives half.
+    const AssetCacheIndex firstPrevious =
+        indexOf({cacheEntry(guidOf(1), "chair.gltf", hashOf(10), hashOf(20), "gltf", 1)});
+    const std::vector<ImportInput> firstInputs = {importInput(guidOf(1), "chair.gltf", hashOf(10), hashOf(20))};
+    const ImportPlanResult firstPlan = planImports(firstInputs, firstPrevious);
+    REQUIRE(firstPlan.entries.size() == 1);
+    CHECK(firstPlan.entries[0].change == ImportChange::UpToDate);
+    const AssetCacheIndex afterFirst = commitImports(firstPrevious, firstInputs, firstPlan);
+
+    const std::vector<ImportInput> secondInputs = {importInput(guidOf(1), "chair.gltf", hashOf(10), hashOf(20))};
+    const ImportPlanResult secondPlan = planImports(secondInputs, afterFirst);
+    REQUIRE(secondPlan.entries.size() == 1);
+    CHECK(secondPlan.entries[0].change == ImportChange::UpToDate);  // never ImporterChanged -- no flip-flop
+    const AssetCacheIndex afterSecond = commitImports(afterFirst, secondInputs, secondPlan);
+    REQUIRE(afterSecond.entries.size() == 1);
+    CHECK(afterSecond.entries[0].importer == "gltf");
+    CHECK(afterSecond.entries[0].importerVersion == 1);
+}
+
+TEST_CASE(
+    "asset_cache: planImports' ImporterChanged needs an ENGAGED probe -- disengaged never fires it "
+    "(AC-p8, §D-5's ordering trap)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.gltf", hashOf(10), hashOf(20), "gltf", 1)});
+
+    const std::vector<ImportInput> engaged = {
+        importInput(guidOf(1), "a.gltf", hashOf(10), hashOf(20), ProbeOutcome{"obj", 1, {}})};
+    const ImportPlanResult engagedPlan = planImports(engaged, previous);
+    REQUIRE(engagedPlan.entries.size() == 1);
+    CHECK(engagedPlan.entries[0].change == ImportChange::ImporterChanged);
+
+    const std::vector<ImportInput> disengaged = {
+        importInput(guidOf(1), "a.gltf", hashOf(10), hashOf(20))};  // probe stays nullopt
+    const ImportPlanResult disengagedPlan = planImports(disengaged, previous);
+    REQUIRE(disengagedPlan.entries.size() == 1);
+    CHECK(disengagedPlan.entries[0].change == ImportChange::UpToDate);
 }
 
 // =====================================================================================================

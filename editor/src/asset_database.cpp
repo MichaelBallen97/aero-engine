@@ -12,6 +12,10 @@
 // still uses only readTextFile/writeTextFileAtomic/ensureDirectory/fileExists (text_file.cpp).
 #include <aero/editor/asset_cache.hpp>
 #include <aero/editor/asset_database.hpp>
+#include <aero/editor/model_import.hpp>  // task 3.2.1: isImportableModelName/importModel/ImportDepth/
+                                         // ImportStatus/importStatusLabel -- phase 7.5's ONLY new
+                                         // dependency. GLTF_IMPORTER_NAME/VERSION arrive transitively
+                                         // through this header's own import_settings.hpp include.
 #include <aero/editor/text_file.hpp>
 
 #include <algorithm>
@@ -151,7 +155,8 @@ std::optional<Guid> AssetDatabase::guidForPath(std::string_view relativePath) co
 }
 
 AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::string newAssetsRootUtf8,
-                                      GuidGenerator& generator, std::uint64_t hashBudgetBytes) {
+                                      GuidGenerator& generator, std::uint64_t hashBudgetBytes,
+                                      std::uint64_t probeBudgetBytes) {
     // task 3.1.4 (D8): FIRST, not last. rescan() has THREE return paths -- the empty-roots guard, the
     // non-Ok root listing, and the normal end -- so "bump at the end" would need three edits today and
     // a fourth for any future early return. Bumping here makes "every rescan() call bumps the
@@ -345,6 +350,12 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
                 if (parsed.guid.has_value()) {
                     planEntry.guid = parsed.guid;
                     onDiskGuidByPath[assetRelPath] = *parsed.guid;
+                    // task 3.2.1: engaged == a well-formed importer block; disengaged (absent OR
+                    // malformed, D7 rule 1) leaves planEntry.importSettings at its default. Read here,
+                    // beside the GUID, because parseMeta already produced both from the SAME text.
+                    if (parsed.importer.has_value()) {
+                        planEntry.importSettings = parsed.importer->settings;
+                    }
                     for (const std::string& key : parsed.unknownKeys) {
                         std::string warning = "editor: asset meta '";
                         warning += assetRelPath;
@@ -674,6 +685,101 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
     }
 
     plan = planImports(inputs, cache);  // a COPY of `inputs` -- commitImports needs them too
+
+    // ---- phase 7.5: probe changed models (task 3.2.1, D8) ------------------------------------------
+    // Runs AFTER planImports (which decided what changed, using the PREVIOUS scan's dependency graph)
+    // and BEFORE commitImports (which records this scan's). So a brand-new model plus its brand-new
+    // texture cascade correctly from the SECOND scan onward, not the first -- which is CORRECT, since
+    // on the first scan both are New anyway and both are re-imported regardless (E11).
+    //
+    // NEVER LOGS (INV-A3, an eighth application). NEVER WRITES (D7/INV-M9): no .meta, no cache file,
+    // nothing. Runs ImportDepth::Structure ONLY -- A SCAN MUST NEVER DECODE A VERTEX. A steady-state
+    // scan visits NOTHING, because plan.jobIndices is empty (AC-8).
+    //
+    // WARNING: check-project-no-delete.sh's Check A denylist includes THIS FILE and its FORBIDDEN_RE
+    // matches the bare `::copy`. NO std::copy ANYWHERE IN THIS FILE -- use a range-for or assign().
+    //
+    // Deviation from the plan's own §D-6 text, logged: `leafOf`/`parentOf` are NOT new TU-local
+    // helpers here -- project_files.hpp (already included transitively through asset_database.hpp)
+    // already declares BOTH publicly with exactly the semantics §D-6 asked for ("parentDirOf" is
+    // `parentOf` verbatim: "" for a root-level file, no trailing slash). A second, TU-local `leafOf`
+    // with the identical signature would make an unqualified call inside `namespace engine::editor`
+    // AMBIGUOUS (an anonymous namespace's members are injected into the enclosing namespace for
+    // lookup), so this reuses the public ones instead of shadowing them. Likewise, `addCapped` is not
+    // a real symbol in this file -- the existing capped-category idiom is `appendCapped(list, entry)`
+    // plus a separate `++counter` at the call site (used by every other category below); reused
+    // verbatim rather than adding an eighth near-duplicate helper.
+    {
+        std::uint64_t probeBudgetRemaining = probeBudgetBytes;
+        for (const std::size_t jobIndex : plan.jobIndices) {
+            const ImportPlanEntry& job = plan.entries[jobIndex];
+            // plan.entries is planImports' OWN SORTED COPY -- jobIndex is NOT an index into `inputs`
+            // (plan §A-12). Both vectors are sorted byte-lexicographically by relativePath, so one
+            // lower_bound finds the match; a miss is impossible today and is simply skipped.
+            const auto it =
+                std::lower_bound(inputs.begin(), inputs.end(), job.relativePath,
+                                 [](const ImportInput& in, const std::string& p) { return in.relativePath < p; });
+            if (it == inputs.end() || it->relativePath != job.relativePath) {
+                continue;
+            }
+            const std::string_view leaf = leafOf(it->relativePath);
+            if (!isImportableModelName(leaf)) {
+                continue;  // AC-2: a non-model's importer stays "" and its version stays 0
+            }
+            const std::string absolutePath = rootUtf8 + '/' + it->relativePath;
+            const FileBytesResult fileResult = readFileBytes(absolutePath, MAX_MODEL_FILE_BYTES);
+            // The budget is charged with the OBSERVED size, which readFileBytes fills EVEN ON REFUSAL.
+            // Checked before the read matters: a file that would blow the budget is not probed at all,
+            // and D9's carry-forward handles it correctly (AC-6).
+            if (fileResult.size > probeBudgetRemaining) {
+                report.probeBudgetExhausted = true;
+                continue;  // leave `probe` DISENGAGED
+            }
+            probeBudgetRemaining -= fileResult.size;
+            if (!fileResult.bytes.has_value()) {
+                appendCapped(report.importFailures,
+                             it->relativePath + ": " +
+                                 (fileResult.refusedByCap ? "file is too large to import" : fileResult.error));
+                ++report.importFailureTotal;
+                continue;  // AC-43/E20: refused WITHOUT being opened; probe stays disengaged
+            }
+            const AssetRecord* const record = findByPath(it->relativePath);
+            const ImportSettings settings = record != nullptr ? record->importSettings : ImportSettings{};
+            const std::span<const std::byte> byteSpan(reinterpret_cast<const std::byte*>(fileResult.bytes->data()),
+                                                      fileResult.bytes->size());
+            const ImportResult imported =
+                importModel(leaf, parentOf(it->relativePath), byteSpan, settings, ImportDepth::Structure, {});
+            if (imported.status != ImportStatus::Ok && imported.status != ImportStatus::Truncated) {
+                appendCapped(report.importFailures, it->relativePath + ": " +
+                                                        std::string(importStatusLabel(imported.status)) + " -- " +
+                                                        imported.message);
+                ++report.importFailureTotal;
+                continue;  // a failed import records NO importer and NO dependencies; carry forward
+            }
+            ProbeOutcome outcome;
+            outcome.importer = std::string(GLTF_IMPORTER_NAME);
+            outcome.importerVersion = GLTF_IMPORTER_VERSION;
+            for (const std::string& uri : imported.externalUris) {
+                if (uri == it->relativePath) {
+                    continue;  // E9: a SELF-EDGE is dropped -- the cascade's worklist would treat it as
+                               // a permanently dirty node
+                }
+                const std::optional<Guid> dep = guidForPath(uri);
+                if (!dep.has_value() || !dep->valid()) {
+                    continue;  // AC-5/E7/INV-M8: NEVER a nil GUID in the list. A nil would make the
+                               // cascade's find() return nullptr for a reason unrelated to the graph.
+                               // The warning already sits in imported.warnings, which the panel shows.
+                }
+                outcome.dependencies.push_back(*dep);
+            }
+            std::sort(outcome.dependencies.begin(), outcome.dependencies.end());
+            outcome.dependencies.erase(std::unique(outcome.dependencies.begin(), outcome.dependencies.end()),
+                                       outcome.dependencies.end());  // E8: two URIs, one path, one edge
+            ++report.modelsProbed;
+            report.dependenciesRecorded += outcome.dependencies.size();
+            it->probe = std::move(outcome);
+        }
+    }
 
     // Apply the plan's per-asset reason (`inputs`/`plan.entries` are BOTH sorted byte-lexicographically
     // by relativePath -- planImports' own step 1 -- so this is a single merge pass, no repeated search).

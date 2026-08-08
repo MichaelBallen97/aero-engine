@@ -366,6 +366,8 @@ AssetPlanResult planAssetMetas(std::vector<AssetPlanEntry> entries, GuidGenerato
     for (AssetPlanEntry& entry : entries) {
         AssetRecord record;
         record.relativePath = std::move(entry.relativePath);
+        record.importSettings = entry.importSettings;  // task 3.2.1 -- carried straight across,
+                                                       // independent of which state this record settles into
         if (entry.metaPresent && !entry.guid.has_value()) {
             record.state = AssetMetaState::Invalid;  // nil GUID, no write (AC-25/27)
         } else if (!entry.metaPresent && entry.reattachedGuid.has_value()) {

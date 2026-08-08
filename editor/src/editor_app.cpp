@@ -192,6 +192,19 @@ void logAssetScan(std::string_view root, const AssetScanReport& report) {
             "assets: '{}' -- {} dependency link(s) dropped past the {}-per-entry cap (MAX_DEPENDENCIES_PER_ENTRY)",
             root, report.cacheDepsDropped, MAX_DEPENDENCIES_PER_ENTRY);
     }
+
+    // task 3.2.1 (phase 7.5): the model probe's own lines, appended after every 3.1.x category above.
+    if (report.modelsProbed > 0) {
+        AERO_LOG_INFO("assets: '{}' -- probed {} model(s), {} dependency edge(s) recorded", root, report.modelsProbed,
+                      report.dependenciesRecorded);
+    }
+    logCappedWarn(root, "model import failure(s)", report.importFailures, report.importFailureTotal);
+    if (report.probeBudgetExhausted) {
+        AERO_LOG_WARN(
+            "assets: '{}' -- the per-scan model probe budget was exhausted; some models keep their "
+            "previous importer record until the next scan",
+            root);
+    }
 }
 
 }  // namespace
