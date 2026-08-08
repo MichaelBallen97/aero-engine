@@ -436,6 +436,63 @@ TEST_CASE("model_import_session: a write failure changes nothing on disk (MS15, 
     CHECK(after.text == before.text);  // the file on disk is UNCHANGED
 }
 
+TEST_CASE(
+    "model_import_session: a failed Apply leaves the ORIGINAL sidecar byte-identical -- the atomic "
+    "write's only real discriminator (MS15b, AC-51, INV-M9, seed S22)") {
+    // THE GAP THIS CLOSES, stated plainly. Seed S22 (replacing applySettings' writeTextFileAtomic with
+    // a raw std::ofstream) left the WHOLE suite green -- 990/990, 83/83, six guards. MS11 cannot see it:
+    // it asserts the `.aero-tmp` companion is ABSENT after a SUCCESSFUL apply, which a non-atomic write
+    // satisfies trivially, having never created one. Check B of check-project-no-delete.sh cannot see it
+    // either -- an ofstream is neither a remove nor a rename.
+    //
+    // The property that actually separates the two implementations is what happens when the write
+    // FAILS: `std::ofstream(target, trunc)` zeroes the file BEFORE it can fail on anything downstream,
+    // so a crash or a full disk costs the asset its identity permanently; the atomic path writes a
+    // TEMP and renames, so the original survives untouched. That is the whole reason INV-M9 exists.
+    //
+    // The failure is constructed deterministically and portably by making the temp path UNUSABLE while
+    // leaving the target perfectly writable: a DIRECTORY named exactly `<sidecar>.aero-tmp`. Opening a
+    // directory for writing fails on all three OSes, so writeTextFileAtomic returns at its first
+    // branch, having touched nothing. Deliberately NOT the chmod trick MS15 uses -- that one depends on
+    // the running user (MS15 carries an explicit escape hatch for a user root can defeat), and an
+    // escape hatch is exactly where a seed hides.
+    const TempDir dir;
+    writeFile(dir.join("a.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(122);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("a.gltf", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+
+    const auto before = scene_golden::readBytes(dir.join("a.gltf.meta"));
+    REQUIRE(before.ok);
+    REQUIRE_FALSE(before.text.empty());  // there IS something to lose
+
+    const std::string blocker = dir.join("a.gltf.meta") + std::string(ATOMIC_TEMP_SUFFIX);
+    std::error_code ec;
+    REQUIRE(std::filesystem::create_directory(pathOf(blocker), ec));
+    REQUIRE_FALSE(ec);
+
+    ImportSettings edited = session.pendingSettings();
+    edited.scale = 5.0F;
+    session.setPendingSettings(edited);
+    REQUIRE(session.canApply());
+
+    const std::string error = session.applySettings(dir.utf8());
+
+    // Under seed S22 all four of these invert: a raw ofstream opens the target happily, truncates it,
+    // writes the new text and reports SUCCESS.
+    CHECK_FALSE(error.empty());
+    CHECK_FALSE(session.applyError().empty());
+    CHECK(session.settingsDirty());  // onDisk never advanced -- Apply stays armed
+    const auto after = scene_golden::readBytes(dir.join("a.gltf.meta"));
+    REQUIRE(after.ok);
+    CHECK(after.text == before.text);  // BYTE-IDENTICAL: the identity survived the failure
+}
+
 // ---- MS16: the whole-file cap, refused without being opened (AC-43/E20) ----------------------------
 
 TEST_CASE(
