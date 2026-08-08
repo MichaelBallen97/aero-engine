@@ -116,53 +116,68 @@ public:
     // allocation callback and require no meshopt) and each returns empty rather than asserting --
     // DefaultBufferDataAdapter's `assert(false)` would be a Debug abort on a merely-odd document.
     [[nodiscard]] fastgltf::span<const std::byte> bytesOf(const fastgltf::Buffer& buffer) const {
-        return std::visit(
-            fastgltf::visitor{
-                [](const auto&) -> fastgltf::span<const std::byte> { return {}; },
-                [](const fastgltf::sources::Array& a) -> fastgltf::span<const std::byte> {
-                    // NOTE (deviation from the plan's literal §D-3.2 text, build-time finding): the
-                    // installed 0.9.0 fastgltf::span's (Iterator, count) constructor is UNCONDITIONALLY
-                    // `explicit` (types.hpp:1766) -- braced copy-list-initialization in a return
-                    // statement does not compile against it. Direct-initialize instead.
-                    return fastgltf::span<const std::byte>(a.bytes.data(), a.bytes.size_bytes());
-                },
-                [](const fastgltf::sources::Vector& v) -> fastgltf::span<const std::byte> {
-                    return fastgltf::span<const std::byte>(v.bytes.data(), v.bytes.size());
-                },
-                [](const fastgltf::sources::ByteView& b) -> fastgltf::span<const std::byte> { return b.bytes; },
-                [this](const fastgltf::sources::URI& u) -> fastgltf::span<const std::byte> {
-                    // The caller supplied it, or nobody did. NEVER a disk read (D3/INV-M3).
-                    //
-                    // BLOCKING-1 fix: u.uri.string() is the document's RAW URI ("chair.bin"), but
-                    // ExternalBuffer::uri holds classifyUri's RESOLVED, project-relative path
-                    // ("models/chair.bin") -- exactly what phase 3 already recorded into
-                    // result.externalUris via the SAME function. Comparing the raw form against the
-                    // resolved form only ever agreed when assetRelativeDir == "" (a model sitting at the
-                    // assets root) -- every ordinary "glTF Separate" export dropped into a subdirectory
-                    // silently became MissingBuffer. classifyUri is pure and deterministic, so re-running
-                    // it here on the identical (uri, assetRelativeDir) pair reproduces phase 3's own
-                    // resolution exactly, with no dependency on result.externalUris' contents.
-                    const UriClassification classified = classifyUri(u.uri.string(), assetRelativeDir);
-                    if (classified.kind != UriClass::RelativePath) {
-                        missingBuffer = true;  // refused or embedded -- never a dependency the caller supplies
-                        return {};
-                    }
-                    const std::string_view wanted = classified.relativePath;
-                    for (const ExternalBuffer& e : externalBuffers) {
-                        if (e.uri == wanted) {
-                            if (u.fileByteOffset > e.bytes.size()) {
-                                return {};
-                            }
-                            const auto* const base = reinterpret_cast<const std::byte*>(e.bytes.data());
-                            return fastgltf::span<const std::byte>(base + u.fileByteOffset,
-                                                                   e.bytes.size() - u.fileByteOffset);
-                        }
-                    }
-                    missingBuffer = true;  // escalated ONCE by the caller, after the phase
-                    return {};
-                },
-            },
-            buffer.data);
+        return std::visit(fastgltf::visitor{
+                              [](const auto&) -> fastgltf::span<const std::byte> { return {}; },
+                              [](const fastgltf::sources::Array& a) -> fastgltf::span<const std::byte> {
+                                  // NOTE (deviation from the plan's literal §D-3.2 text, build-time finding): the
+                                  // installed 0.9.0 fastgltf::span's (Iterator, count) constructor is UNCONDITIONALLY
+                                  // `explicit` (types.hpp:1766) -- braced copy-list-initialization in a return
+                                  // statement does not compile against it. Direct-initialize instead.
+                                  //
+                                  // code-review NIT 12: an over-cap embedded buffer is DROPPED here, not merely
+                                  // escalated by phase 3's own checkEmbeddedCap -- consistently with the image path
+                                  // (D14), where an over-cap image is left unembedded rather than still readable.
+                                  // Without this, phase 3's Truncated status was cosmetic: every accessor could still
+                                  // read straight through the over-cap data.
+                                  if (a.bytes.size_bytes() > MAX_EMBEDDED_BYTES) {
+                                      return {};
+                                  }
+                                  return fastgltf::span<const std::byte>(a.bytes.data(), a.bytes.size_bytes());
+                              },
+                              [](const fastgltf::sources::Vector& v) -> fastgltf::span<const std::byte> {
+                                  return fastgltf::span<const std::byte>(v.bytes.data(), v.bytes.size());
+                              },
+                              [](const fastgltf::sources::ByteView& b) -> fastgltf::span<const std::byte> {
+                                  // NIT 12, the identical drop as sources::Array above -- the GLB BIN-chunk shape.
+                                  if (b.bytes.size() > MAX_EMBEDDED_BYTES) {
+                                      return {};
+                                  }
+                                  return b.bytes;
+                              },
+                              [this](const fastgltf::sources::URI& u) -> fastgltf::span<const std::byte> {
+                                  // The caller supplied it, or nobody did. NEVER a disk read (D3/INV-M3).
+                                  //
+                                  // BLOCKING-1 fix: u.uri.string() is the document's RAW URI ("chair.bin"), but
+                                  // ExternalBuffer::uri holds classifyUri's RESOLVED, project-relative path
+                                  // ("models/chair.bin") -- exactly what phase 3 already recorded into
+                                  // result.externalUris via the SAME function. Comparing the raw form against the
+                                  // resolved form only ever agreed when assetRelativeDir == "" (a model sitting at the
+                                  // assets root) -- every ordinary "glTF Separate" export dropped into a subdirectory
+                                  // silently became MissingBuffer. classifyUri is pure and deterministic, so re-running
+                                  // it here on the identical (uri, assetRelativeDir) pair reproduces phase 3's own
+                                  // resolution exactly, with no dependency on result.externalUris' contents.
+                                  const UriClassification classified = classifyUri(u.uri.string(), assetRelativeDir);
+                                  if (classified.kind != UriClass::RelativePath) {
+                                      missingBuffer =
+                                          true;  // refused or embedded -- never a dependency the caller supplies
+                                      return {};
+                                  }
+                                  const std::string_view wanted = classified.relativePath;
+                                  for (const ExternalBuffer& e : externalBuffers) {
+                                      if (e.uri == wanted) {
+                                          if (u.fileByteOffset > e.bytes.size()) {
+                                              return {};
+                                          }
+                                          const auto* const base = reinterpret_cast<const std::byte*>(e.bytes.data());
+                                          return fastgltf::span<const std::byte>(base + u.fileByteOffset,
+                                                                                 e.bytes.size() - u.fileByteOffset);
+                                      }
+                                  }
+                                  missingBuffer = true;  // escalated ONCE by the caller, after the phase
+                                  return {};
+                              },
+                          },
+                          buffer.data);
     }
 
     [[nodiscard]] bool sawMissingBuffer() const noexcept { return missingBuffer; }

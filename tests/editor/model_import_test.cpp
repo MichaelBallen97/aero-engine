@@ -502,6 +502,30 @@ TEST_CASE(
     CHECK_FALSE(result.model.images[0].refusal.empty());
 }
 
+TEST_CASE(
+    "model_import: an over-cap embedded BUFFER is refused, not merely escalated -- no accessor may "
+    "still read through it (MI46b, code-review NIT 12)") {
+    // Before the fix, an embedded buffer's own over-cap check (phase 3) escalated the result to
+    // Truncated but left the DATA fully readable -- nothing stopped a later accessor from reading
+    // straight through it. Unlike MI46's bufferView-declared-size trick, the buffer's OWN materialised
+    // byte count is what this checks, and fastgltf validates a GLB BIN chunk's length against the real
+    // container size at parse time -- there is no shortcut, so this is a real MAX_EMBEDDED_BYTES + 1
+    // byte payload. Raw GLB bytes, not base64, to avoid a further third of that size in text inflation.
+    std::string json = R"({"asset":{"version":"2.0"},)"
+                       R"("meshes":[{"primitives":[{"attributes":{"POSITION":0},"mode":4}]}],)"
+                       R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],)"
+                       R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],)";
+    json += std::format(R"("buffers":[{{"byteLength":{}}}]}})", engine::editor::MAX_EMBEDDED_BYTES + 1);
+    const std::string bin(static_cast<std::size_t>(engine::editor::MAX_EMBEDDED_BYTES) + 1, '\0');
+    const std::string glb = buildGlb(json, bin);
+    const ImportResult result =
+        importModel("huge-embedded-buffer.glb", "", asBytes(glb), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Truncated);
+    CHECK_FALSE(result.message.empty());
+    REQUIRE(result.model.meshes.size() == 1);
+    CHECK(result.model.meshes[0].primitives.empty());  // POSITION refused -- the buffer must not be read
+}
+
 // ---- the glTF backend, phase 4: nodes, hierarchy, decomposition, cycles (Step 5) --------------------
 //
 // hierarchy.gltf's shape (§D-11): six nodes, a depth-4 chain (0->1->2->3), TWO roots (0 and 4), node 4
