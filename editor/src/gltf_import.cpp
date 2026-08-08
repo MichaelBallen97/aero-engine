@@ -1068,10 +1068,22 @@ ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::
                 continue;
             }
             if (outPrim.indices.size() % 3 != 0) {
+                const std::size_t truncatedSize = (outPrim.indices.size() / 3) * 3;
+                if (truncatedSize == 0) {
+                    // code-review SHOULD-FIX 6 / INV-M5: a 1- or 2-index primitive has NO complete
+                    // triangle at all. model_import.hpp promises `indices` is ALWAYS non-empty on a
+                    // primitive that survives import -- pushing one anyway would break that promise for
+                    // every downstream consumer (3.3.1 relies on it). Skip the WHOLE primitive, exactly
+                    // like every other validation failure in this loop, rather than truncating to empty.
+                    addWarning(result, std::format("mesh '{}' primitive {}: index count ({}) has no "
+                                                   "complete triangle; skipped",
+                                                   outMesh.name, primIdx, outPrim.indices.size()));
+                    continue;
+                }
                 addWarning(result, std::format("mesh '{}' primitive {}: index count is not a multiple of "
                                                "3; truncated",
                                                outMesh.name, primIdx));
-                outPrim.indices.resize((outPrim.indices.size() / 3) * 3);
+                outPrim.indices.resize(truncatedSize);
             }
 
             // BOUNDS: fold over the ALREADY-SCALED positions. The document's own accessor.min/max are

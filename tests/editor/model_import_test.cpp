@@ -992,6 +992,47 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "model_import: an index count with no complete triangle is skipped, never survives with empty "
+    "indices (MI94, code-review SHOULD-FIX 6, INV-M5)") {
+    SUBCASE("2 indices truncate to 0 -- the primitive is skipped") {
+        const std::string doc =
+            R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": )"
+            R"(0}, "indices": 1, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, )"
+            R"("count": 3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5123, "count": 2, )"
+            R"("type": "SCALAR"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, )"
+            R"({"buffer": 0, "byteOffset": 36, "byteLength": 4}], "buffers": [{"byteLength": 40, "uri": )"
+            R"("data:application/octet-stream;base64,)"
+            R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAA=="}]})";
+        const ImportResult result =
+            importModel("two-indices.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+        CHECK(result.status == ImportStatus::Ok);
+        REQUIRE(result.model.meshes.size() == 1);
+        // INV-M5: positions and indices are ALWAYS non-empty on a SURVIVING primitive -- a primitive
+        // with no complete triangle at all must not survive with an empty `indices` instead.
+        CHECK(result.model.meshes[0].primitives.empty());
+        CHECK_FALSE(result.warnings.empty());
+    }
+    SUBCASE("4 indices truncate to 3 -- the primitive survives, truncated") {
+        const std::string doc =
+            R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": )"
+            R"(0}, "indices": 1, "mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, )"
+            R"("count": 3, "type": "VEC3"}, {"bufferView": 1, "componentType": 5123, "count": 4, )"
+            R"("type": "SCALAR"}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, )"
+            R"({"buffer": 0, "byteOffset": 36, "byteLength": 8}], "buffers": [{"byteLength": 44, "uri": )"
+            R"("data:application/octet-stream;base64,)"
+            R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIAAAA="}]})";
+        const ImportResult result =
+            importModel("four-indices.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+        CHECK(result.status == ImportStatus::Ok);
+        REQUIRE(result.model.meshes.size() == 1);
+        REQUIRE(result.model.meshes[0].primitives.size() == 1);
+        const std::vector<std::uint32_t> expected4 = {0, 1, 2};  // truncated to a multiple of 3
+        CHECK(result.model.meshes[0].primitives[0].indices == expected4);
+        CHECK_FALSE(result.warnings.empty());
+    }
+}
+
+TEST_CASE(
     "model_import: TRIANGLE_STRIP/LINES/POINTS primitives are each skipped with a warning; the "
     "mesh survives as an empty mesh with a point AABB (MI69, AC-25, D11)") {
     const std::string doc =
