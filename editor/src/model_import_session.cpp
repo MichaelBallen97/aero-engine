@@ -28,12 +28,34 @@ void ModelImportSession::setTarget(std::string relativePath, std::uint64_t datab
     if (relativePath == targetPath && databaseGeneration == generationValue) {
         return;
     }
+    // code-review SHOULD-FIX 4/5: computed BEFORE targetPath is overwritten below -- TRUE only when
+    // the actual PATH is changing, never merely because the generation moved.
+    const bool targetChanged = relativePath != targetPath;
     targetPath = std::move(relativePath);
     generationValue = databaseGeneration;
     serviced = false;
     resultValue = ImportResult{};
     lastApplyError.clear();
     observedSize = 0;
+    if (targetChanged) {
+        // SHOULD-FIX 5: editor_app.cpp's Apply drain (:596-621) runs BETWEEN this call (:589) and the
+        // service() call that would otherwise re-resolve targetGuid (:692, post-draw). Leaving
+        // targetGuid holding the PREVIOUS target's identity across that window means an Apply landing
+        // in the same tick as a selection change writes the previous asset's GUID into the NEW
+        // target's sidecar -- invalidate it NOW, synchronously, so canApply()/applySettings() correctly
+        // refuse until service() resolves the new target's real identity.
+        targetGuid = Guid{};
+        // SHOULD-FIX 4 (recordless half): reset the form to defaults immediately, so neither that same
+        // window nor a service() call against a target with no AssetDatabase record ever shows -- or
+        // saves -- the PREVIOUS asset's settings. service() below overwrites both fields with the new
+        // target's real on-disk values, when a record exists.
+        pending = ImportSettings{};
+        onDisk = ImportSettings{};
+    }
+    // else: the SAME target, only the generation moved (e.g. an unrelated file's rescan elsewhere in
+    // the project) -- SHOULD-FIX 4 (dirty-edit half): preserve any unapplied edit. service() below must
+    // not resync the form in this case, or a drag-in-progress on THIS asset would be silently discarded.
+    formNeedsResync = targetChanged;
 }
 
 void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDatabase& database) {
@@ -41,18 +63,24 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
         return;  // AC-45: already imported at this (target, generation). STRUCTURAL, not conventional.
     }
     serviced = true;
+    // code-review SHOULD-FIX 4: consumed ONCE, right here -- true only when setTarget() last saw the
+    // TARGET PATH change, never merely the generation. Everything below that would otherwise
+    // unconditionally overwrite pending/onDisk from disk is now gated on it, so a re-service of the
+    // SAME target (an unrelated file's rescan) preserves an in-progress, unapplied edit.
+    const bool resyncForm = formNeedsResync;
+    formNeedsResync = false;
     resultValue = ImportResult{};
     lastApplyError.clear();
     observedSize = 0;
     targetGuid = Guid{};
     if (targetPath.empty()) {
         stateValue = SessionState::Idle;
-        return;  // AC-46
+        return;  // AC-46; setTarget() already reset pending/onDisk to defaults when the path changed
     }
     const std::string_view leaf = leafOf(targetPath);
     if (!isImportableModelName(leaf)) {
         stateValue = SessionState::NotImportable;
-        return;  // AC-46/E17 -- and NOTHING was read
+        return;  // AC-46/E17 -- and NOTHING was read; ditto
     }
 
     // Identity and the on-disk settings come from the database's OWN PARSED RECORD -- never re-parsed
@@ -60,9 +88,16 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
     // simply cannot Apply.
     if (const AssetRecord* const record = database.findByPath(targetPath); record != nullptr) {
         targetGuid = record->guid;
-        onDisk = record->importSettings;
-        pending = onDisk;
+        if (resyncForm) {
+            onDisk = record->importSettings;
+            pending = onDisk;
+        }
     }
+    // else: SHOULD-FIX 4 (recordless half) -- targetGuid stays nil (set above). pending/onDisk stay at
+    // whatever setTarget() left them: ImportSettings{} for a genuinely NEW, recordless target
+    // (targetChanged was true, so setTarget() already reset both), or the SAME values as before for a
+    // re-service of the SAME target whose record just vanished (targetChanged was false) -- never a
+    // DIFFERENT, previously selected asset's settings either way.
 
     const std::string modelPath = std::string(assetsRootUtf8) + '/' + targetPath;
     const FileBytesResult modelBytes = readFileBytes(modelPath, MAX_MODEL_FILE_BYTES);
@@ -138,6 +173,13 @@ std::string ModelImportSession::applySettings(std::string_view assetsRootUtf8) {
     if (!targetGuid.valid()) {  // E16
         lastApplyError = "this asset has no valid .meta identity; settings cannot be saved";
         return lastApplyError;
+    }
+    if (!settingsDirty()) {
+        // code-review SHOULD-FIX 5: enforce the FULL canApply() condition here too, not just the GUID
+        // half -- a hook-driven Apply (EditorApp::requestModelImportApply(), which bypasses the panel's
+        // own BeginDisabled(!canApply())) must not rewrite a byte-identical sidecar: that would dirty
+        // its mtime and cost a watcher trigger plus a rescan for nothing. Not writing is not a failure.
+        return lastApplyError;  // ""
     }
     const std::string metaPath = std::string(assetsRootUtf8) + '/' + targetPath + std::string(ASSET_META_SUFFIX);
     const std::string text = writeMetaText(targetGuid, pending);  // D7's omit-when-default lives there

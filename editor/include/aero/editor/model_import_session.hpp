@@ -49,8 +49,11 @@ public:
     // E16/AC-51: FALSE when the target's identity is invalid (a nil GUID). Writing a sidecar for an
     // invalid identity would repair one BY THE BACK DOOR, which D7 forbids permanently.
     [[nodiscard]] bool canApply() const noexcept { return targetGuid.valid() && settingsDirty(); }
-    // Writes the sidecar ATOMICALLY; returns "" on success, the OS reason otherwise. THE ONLY WRITE IN
-    // THIS ENTIRE TASK (INV-M9). Never called from onDraw().
+    // Writes the sidecar ATOMICALLY; returns "" on success OR when there is nothing to apply (not
+    // dirty), the OS reason otherwise. THE ONLY WRITE IN THIS ENTIRE TASK (INV-M9). Never called from
+    // onDraw(). code-review SHOULD-FIX 5: enforces the FULL canApply() condition itself (valid GUID
+    // AND dirty), not just the GUID half -- a hook-driven Apply that bypasses the panel's own
+    // BeginDisabled(!canApply()) must not rewrite a byte-identical sidecar for nothing.
     [[nodiscard]] std::string applySettings(std::string_view assetsRootUtf8);
     [[nodiscard]] const std::string& applyError() const noexcept { return lastApplyError; }
 
@@ -58,6 +61,12 @@ private:
     std::string targetPath;             // "" == nothing selected
     std::uint64_t generationValue = 0;  // the AssetDatabase generation this result belongs to
     bool serviced = false;              // the (target, generation) pair has been consumed
+    // code-review SHOULD-FIX 4: TRUE only across the window between a setTarget() call that changed
+    // the TARGET PATH and the next service() call that resolves it -- consumed (read once, cleared)
+    // by service(), which resyncs pending/onDisk from the database ONLY when this is true. A
+    // generation-only bump (an unrelated file's rescan) leaves it false, so an in-progress, unapplied
+    // edit on the SAME target survives a re-service instead of being silently overwritten from disk.
+    bool formNeedsResync = false;
     SessionState stateValue = SessionState::Idle;
     ImportResult resultValue;
     ImportSettings pending;

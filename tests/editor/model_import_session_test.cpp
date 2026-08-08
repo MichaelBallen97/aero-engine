@@ -454,3 +454,137 @@ TEST_CASE(
     CHECK(session.state() == SessionState::Failed);
     CHECK(session.fileSizeBytes() == MAX_MODEL_FILE_BYTES + 1);
 }
+
+// ---- MS17-MS20: code-review SHOULD-FIX 4/5 -- the reconcile window between setTarget() and
+// service(), and applySettings()'s own guard ----------------------------------------------------------
+
+TEST_CASE(
+    "model_import_session: a target with no AssetDatabase record imports at DEFAULT settings, never "
+    "the previously selected asset's (MS17, code review SHOULD-FIX 4)") {
+    const TempDir dir;
+    writeFile(dir.join("a.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(117);
+    db.rescan(dir.utf8(), dir.utf8(), gen);  // "c.gltf" does not exist yet -- the scan never sees it
+
+    ModelImportSession session;
+    session.setTarget("a.gltf", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+    ImportSettings edited = session.pendingSettings();
+    edited.scale = 6.0F;
+    session.setPendingSettings(edited);
+    REQUIRE(session.settingsDirty());
+
+    // "c.gltf" exists on disk (so the import itself can succeed) but the database was never rescanned
+    // after it was written, so findByPath() returns nullptr for it -- a genuinely RECORDLESS target.
+    writeFile(dir.join("c.gltf"), R"({"asset":{"version":"2.0"}})");
+    session.setTarget("c.gltf", db.generation());
+    session.service(dir.utf8(), db);
+
+    CHECK(session.state() == SessionState::Imported);
+    // BEFORE this fix: pending/onDisk still held "a.gltf"'s edited scale (6.0) here -- an unrecorded
+    // model imported at the PREVIOUSLY selected model's scale and flags.
+    CHECK(session.pendingSettings() == ImportSettings{});
+    CHECK(session.diskSettings() == ImportSettings{});
+    CHECK_FALSE(session.canApply());  // no identity either -- E16
+}
+
+TEST_CASE(
+    "model_import_session: an unrelated generation bump does not clobber an unapplied edit on the SAME "
+    "target (MS18, code review SHOULD-FIX 4)") {
+    const TempDir dir;
+    writeFile(dir.join("a.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(118);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("a.gltf", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+
+    ImportSettings edited = session.pendingSettings();
+    edited.scale = 7.0F;
+    session.setPendingSettings(edited);
+    REQUIRE(session.settingsDirty());
+
+    // Simulate an UNRELATED file's rescan bumping generation() while the SAME target stays selected --
+    // exactly what editor_app.cpp's reconcile drives from an AssetWatcher-triggered rescan (the target
+    // path is unchanged; only the generation moves).
+    session.setTarget("a.gltf", db.generation() + 1);
+    session.service(dir.utf8(), db);
+
+    // BEFORE this fix: service() unconditionally re-read onDisk from the (unchanged) record and reset
+    // pending = onDisk, silently discarding the edit within the same tick.
+    CHECK(session.settingsDirty());
+    CHECK(session.pendingSettings().scale == 7.0F);
+}
+
+TEST_CASE(
+    "model_import_session: an Apply landing between setTarget() and service() refuses instead of "
+    "writing the PREVIOUS target's GUID into the NEW target's sidecar (MS19, code review SHOULD-FIX 5)") {
+    const TempDir dir;
+    writeFile(dir.join("a.gltf"), R"({"asset":{"version":"2.0"}})");
+    writeFile(dir.join("b.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(119);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("a.gltf", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+    REQUIRE_FALSE(session.canApply());  // fresh from disk, not dirty yet
+
+    const auto beforeB = scene_golden::readBytes(dir.join("b.gltf.meta"));
+    REQUIRE(beforeB.ok);
+
+    // editor_app.cpp's REAL ordering: the reconcile calls setTarget() for the new selection (:589)
+    // BEFORE the Apply drain runs (:596-621); service() for "b.gltf" (:692, post-draw) has not run yet.
+    session.setTarget("b.gltf", db.generation());
+    ImportSettings edited;
+    edited.scale = 9.0F;
+    session.setPendingSettings(edited);
+    // BEFORE this fix: targetGuid still validly named "a.gltf" here, so canApply() was TRUE.
+    CHECK_FALSE(session.canApply());
+
+    const std::string error = session.applySettings(dir.utf8());
+    CHECK_FALSE(error.empty());
+
+    const auto afterB = scene_golden::readBytes(dir.join("b.gltf.meta"));
+    REQUIRE(afterB.ok);
+    CHECK(afterB.text == beforeB.text);  // "b.gltf.meta" is UNCHANGED -- never received "a.gltf"'s guid
+}
+
+TEST_CASE(
+    "model_import_session: applySettings() no-ops without touching the sidecar when settings are not "
+    "dirty (MS20, code review SHOULD-FIX 5)") {
+    const TempDir dir;
+    writeFile(dir.join("a.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(120);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("a.gltf", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+    REQUIRE_FALSE(session.settingsDirty());  // fresh from disk
+
+    std::error_code ec;
+    const std::filesystem::file_time_type beforeMtime =
+        std::filesystem::last_write_time(pathOf(dir.join("a.gltf.meta")), ec);
+    REQUIRE_FALSE(ec);
+
+    // A hook-driven Apply (EditorApp::requestModelImportApply(), which bypasses the panel's own
+    // BeginDisabled(!canApply())) with nothing to save. BEFORE this fix, applySettings() checked only
+    // targetGuid.valid() and rewrote a byte-identical sidecar anyway -- dirtying its mtime for nothing.
+    const std::string error = session.applySettings(dir.utf8());
+    CHECK(error.empty());  // not a failure -- nothing needed writing
+
+    const std::filesystem::file_time_type afterMtime =
+        std::filesystem::last_write_time(pathOf(dir.join("a.gltf.meta")), ec);
+    REQUIRE_FALSE(ec);
+    CHECK(afterMtime == beforeMtime);  // the file was never even opened for writing
+}
