@@ -3893,3 +3893,247 @@ pending as for every task since Phase 2. Row 8 (ten models selected one after an
 the load-bearing one for INV-M12 — it is the only general-case cover `I60`'s source-text proof cannot
 be; row 9 (a measured, not estimated, scan cost over ~20 models) is the load-bearing one for R4, the
 identical open debt 3.1.4's own R1 left for its own sweep cost. Neither number exists anywhere yet.
+
+##### Task 3.2.1 — code-review round (12 findings, 3 BLOCKING, against a fully green gate)
+
+**A code review of `feat/3.2.1-gltf-import-fastgltf` before its PR found 12 findings — 3 BLOCKING, 7
+SHOULD-FIX, 2 NIT — against a fully green gate**: 95/95 ctest both presets, both reduced configurations
+at 952 doctest cases each, six guards unchanged, clang-format/clang-tidy clean, `MI1`/`MS1` present in
+both reduced configurations. A green mechanical gate was, once again, not evidence — this project's own
+recurring lesson (2.2.4, 2.3.3, 2.4.1, 2.4.2, 2.6.1, 3.1.1 and 3.1.3 each found a genuine defect against
+a green gate before this task; the exact count across the whole project's history is not re-derived
+here).
+**All 12 are now fixed on the branch; the sabotage matrix still has not run — see below, unchanged.**
+
+**The three BLOCKING findings, all fixed before this round's SHOULD-FIX/NIT half began:**
+
+- **BLOCKING-1 — every model in a subdirectory with an external buffer silently failed with
+  `MissingBuffer`.** `EditorBufferAdapter` compared the glTF document's *raw* URI (`"chair.bin"`)
+  against `ExternalBuffer::uri`, which holds `classifyUri`'s *resolved*, project-relative path
+  (`"models/chair.bin"`) — the two agreed only when a model sat at the assets root, which is exactly why
+  `MS8` (the only prior external-buffer success case, itself at the assets root) never caught it. An
+  ordinary Blender "glTF Separate" export dropped into `assets/models/` — the single most common shape
+  a real external-buffer glTF takes — never imported. Fixed by having the adapter capture
+  `assetRelativeDir` and re-resolve the raw URI through `classifyUri` before comparing, reproducing
+  phase 3's own resolution exactly. Regression: `MS8b` places the `.gltf` and its `.bin` under
+  `assets/models/` rather than the assets root.
+- **BLOCKING-2 — a sparse accessor could crash the process, two different ways, both reachable from a
+  hostile or merely malformed document.** `validateAccessor` gated its sparse check on
+  `sparse->count > 0`, correct for `copyFromAccessor` but wrong for the tools this file actually calls:
+  both `IterableAccessor`'s constructor and `AccessorIterator`'s constructor branch on
+  `sparse.has_value()` alone and dereference `indicesBytes[0]` regardless of count, so a sparse block
+  with `count == 0` and an out-of-range indices `bufferView` passed validation untouched and crashed
+  inside fastgltf on a null-pointer reference bind — a UBSan abort. Separately, the check only confirmed
+  the two sparse views existed and were non-empty, never that they held enough bytes for the *declared
+  count* of entries, so an over-running sparse values view read past its `bufferView` — an ASan
+  heap-buffer-overflow. Both sparse views are now validated to their full extent whenever
+  `sparse.has_value()` (sharing the identical bounds arithmetic the dense accessor check already used,
+  factored into one shared helper), and `sparse->count == 0` is refused outright since fastgltf still
+  dereferences it regardless. **`MI97` and `MI98` were confirmed CRASHING — literal `SIGABRT`, exit
+  134 — before this fix, run in isolation under the Debug ASan/UBSan build**: `MI97` reproduces the
+  null-pointer-reference-bind abort, `MI98` the heap-buffer-overflow; `MI96` proves a genuinely valid
+  sparse accessor still imports correctly. This is the sharpest finding in the round — a document this
+  importer would previously have taken down the whole editor process on, with no recoverable error, no
+  warning, nothing for AC-41's own "a hostile document costs a warning, never a crash" promise to catch.
+- **BLOCKING-3 — every mesh's and the whole model's bounds were polluted by the origin.**
+  `ImportedMesh::bounds` was a bare `Aabb bounds;`, whose aggregate default (`min == max ==` the origin)
+  is a *valid point box*, not the invalid `Aabb::empty()` sentinel `ImportSummary::bounds` correctly
+  defaults to. `gltf_import.cpp` folded every surviving primitive's bounds directly into that field, so
+  the origin was unioned into every mesh's bounds regardless of where its geometry actually sat, and
+  that polluted mesh bounds then folded into `summary.bounds` in turn — a model sitting entirely at,
+  say, `x ∈ [100, 110]` would report a bounds box stretching back to include `x = 0`. Fixed by folding
+  each mesh into a local accumulator that starts at `Aabb::empty()`, collapsing back to the untouched
+  point-box default only when no primitive survived (preserving AC-25/D11's "an empty mesh is a point
+  AABB" contract), with `summary.bounds` now folded directly from each surviving primitive's own bounds
+  rather than from the mesh's post-fold value, so an empty mesh elsewhere in the same model can never
+  leak the origin into it either. Regression: `MI95` (an off-origin mesh's bounds and the model's
+  `summary.bounds` both match the real geometry) and `MI95b` (a second, empty mesh in the same model
+  does not pollute `summary.bounds`) — both failed with `min.x == 0` instead of the real value before
+  this fix.
+
+**Two further findings, already fixed on the branch before this round's own SHOULD-FIX/NIT work began**
+(recorded here for completeness — full detail in each commit's own message):
+
+- **SHOULD-FIX 6 — a 1- or 2-index TRIANGLES primitive truncated to zero indices and still survived,**
+  violating `model_import.hpp`'s own documented INV-M5/F6 ("`positions` and `indices` are ALWAYS
+  non-empty on a primitive that survives import"). Fixed by skipping the whole primitive (with a
+  warning naming the original count) when truncation would leave zero indices, the same "skip, don't
+  push a broken primitive" shape every other validation failure in this loop already follows.
+  Regression: `MI94`.
+- **NIT 12 — an embedded buffer over `MAX_EMBEDDED_BYTES` escalated to `Truncated` but stayed fully
+  readable,** so an accessor could still read straight through it via `EditorBufferAdapter` — only the
+  equivalent image path (D14) actually dropped its over-cap data. `EditorBufferAdapter`'s
+  `sources::Array`/`sources::ByteView` arms now refuse to hand back bytes for a buffer over the cap, so
+  any accessor pointing into it fails `validateAccessor`'s bounds check and the primitive is skipped
+  with a warning, exactly like every other validation failure in this file. Regression: `MI46b`, a real
+  ~128 MiB GLB buffer (there is no cheap way to exercise a buffer's own materialised size the way
+  `MI46` exercises a bufferView's *declared* size, since fastgltf validates a GLB chunk's length against
+  the real container size at parse time).
+
+**Six of the seven SHOULD-FIX findings — 4, 5, 7, 8, 9, 10 — were closed in this round of
+implementation; SHOULD-FIX 6 landed earlier still, in the "two further findings" group just above.**
+Four of the six (4, 5, 7, 9) got a genuine regression test — fails with the fix reverted, passes
+restored, verified both ways directly rather than assumed. **Two (8, 10) did not, and that is recorded
+honestly rather than papered over**: both are silent, non-crashing omissions in code paths (a wasted
+read's absence, an early-returning draw function's absence) that leave `AssetScanReport` byte-for-byte
+identical whether the fix is present or not — confirmed directly for both, the same way, by reverting
+each and re-running its new case. See each entry below for what its own test proves instead.
+
+- **SHOULD-FIX 4 — an unapplied settings edit was silently discarded, and a recordless target imported
+  at the previously-selected model's settings.** `ModelImportSession::service()` unconditionally
+  overwrote `pending`/`onDisk` from the database record on *every* re-service, including one triggered
+  purely by an unrelated file's rescan (the watcher bumps `generation()` on any change under the assets
+  tree, and `setTarget`'s no-op guard checks the SAME target *and* the SAME generation) — so a drag
+  in-progress on the currently selected model could be clobbered mid-gesture by an unrelated edit
+  elsewhere in the project, and (separately) a target with no `AssetDatabase` record left `pending`/
+  `onDisk` holding the *previous* asset's values, since the `if (record != nullptr)` body that would
+  reset them was skipped entirely. Fixed with one new flag, `formNeedsResync` — set by `setTarget()`
+  only when the *target path itself* changes, consumed once by `service()` — so a re-service of the SAME
+  target never touches the form, and `setTarget()` resets `pending`/`onDisk` to `ImportSettings{}`
+  immediately whenever the target genuinely changes (closing the recordless-target half at the source,
+  before `service()` even runs). Regression: `MS17` (a recordless target imports at default settings,
+  never the previous asset's — reverted, it read the previous asset's edited scale of 6.0 instead of the
+  default 1.0) and `MS18` (an unrelated generation bump preserves a dirty edit on the same target —
+  reverted, `settingsDirty()` read `false` and the edited scale of 7.0 had reverted to 1.0).
+- **SHOULD-FIX 5 — an Apply landing in the same tick as a selection change wrote the PREVIOUS target's
+  GUID into the NEW target's sidecar.** `editor_app.cpp`'s reconcile calls `setTarget()` for a new
+  selection, then drains the Apply request, then — only in the post-draw slot — calls `service()`, which
+  is the only place `targetGuid` was ever refreshed. In the window between the first two, `targetGuid`
+  still named the previous target while `targetPath` already named the new one, so
+  `writeMetaText(targetGuid, pending)` built the GUID from one asset and the file path from another —
+  two assets sharing one identity, which the next scan's duplicate-GUID repair would then "fix" by
+  reassigning one of them a fresh GUID. Separately, `applySettings()` checked only `targetGuid.valid()`,
+  never `settingsDirty()`, so a hook-driven Apply (`EditorApp::requestModelImportApply()`, which bypasses
+  the panel's own `BeginDisabled(!canApply())`) rewrote a byte-identical sidecar, dirtying its mtime for
+  nothing. Fixed by invalidating `targetGuid` synchronously inside `setTarget()` the instant the target
+  path changes (not merely on the next `service()` call), and by making `applySettings()` enforce the
+  full `canApply()` condition itself. Regression: `MS19` — reverted, the write SUCCEEDED and
+  `b.gltf.meta` was rewritten holding `a.gltf`'s GUID (`2a8e80d0…`) with `b.gltf`'s edited scale (9),
+  literally reproducing the bug, byte for byte, in the assertion failure output — and `MS20` (an
+  mtime-based proof, since a not-dirty Apply's written text happens to be byte-identical to what is
+  already on disk: reverted, the sidecar's `last_write_time` measurably advanced across a no-op Apply;
+  restored, it never moved).
+- **SHOULD-FIX 7 — `ImportChange::ImporterChanged` was structurally unreachable, so the roadmap's own
+  headline example did not start working on an existing project.** `planImports` compared a probe
+  against the *previous entry's own value*, and the probe is engaged only for entries already in
+  `plan.jobIndices` — but `planImports` itself runs strictly *before* phase 7.5 populates any probe, so
+  the probe it ever sees is *always disengaged*, making the comparison a tautology in every real scan.
+  Consequences: an `UpToDate` asset could never be probed, so a project whose `Library/asset-cache.json`
+  predates this build never recorded `importer: "gltf"` for a single existing model until its own bytes
+  or `.meta` happened to change for an unrelated reason — the roadmap's own headline example (edit
+  `wood.png` → `chair.gltf` reports `DependencyChanged`) could not even begin on an existing cache,
+  because nothing had ever recorded the dependency edge in the first place; and a future
+  `GLTF_IMPORTER_VERSION` bump would never re-trigger a single import. **Fixed by making the comparison a
+  pure function of the file name alone, needing no probe at all**:
+  `isImportableModelName(relativePath) ? (GLTF_IMPORTER_NAME, GLTF_IMPORTER_VERSION) : ("", 0)`,
+  compared against the previous entry's own `(importer, importerVersion)`. `asset_cache.cpp` gained one
+  new include, `<aero/editor/model_import.hpp>` — a `.cpp`-only addition (the `.hpp` still names no
+  other editor header, its own committed invariant, unchanged) — deliberately in preference to a second,
+  TU-local copy of `isImportableModelName`'s suffix logic, which would silently stop discriminating the
+  moment 3.2.2 (ufbx) teaches the real predicate a new extension and permanently reintroduce this exact
+  finding for every future importer. **Three existing tests turned out to encode the OLD, broken premise
+  and needed correcting, not merely extending — none of the three still tests what its own title used to
+  claim:** `IP5` used to claim ImporterChanged "needs an ENGAGED, differing probe" (true of the old,
+  unreachable comparison) and now proves the opposite — it fires from the file name alone, with no probe
+  engaged at all, over two scenarios (a missing importer, a stale version); `AC-p8` used to prove a
+  disengaged probe can *never* fire it and now proves an engaged and a disengaged probe over the
+  identical previous entry *must agree*; `IP8`'s fixture carried unrelated `("gltf", 3)` filler on a
+  `.png` path that the new rule correctly flags as a mismatch, corrected to the defaults an image
+  legitimately has. Regression (reverted / restored, all three confirmed both ways): `IP5`'s two
+  scenarios (a `.gltf` cached with no importer recorded — the existing-project migration case — and one
+  cached with a stale version, neither needing a probe) and `AC-p8`'s engaged/disengaged agreement.
+  **`IP8`, corrected rather than added, now doubles as the false-positive guard this fix must never
+  break**: a non-model asset whose recorded importer already matches its `("", 0)` expectation must stay
+  `UpToDate`, or every non-model asset in an existing project would report `ImporterChanged` — a wasted
+  planning pass and a misleading log line — on every single scan, forever.
+- **SHOULD-FIX 8 — `MAX_PROBE_BYTES_PER_SCAN` bounded the parse, not the I/O.** Phase 7.5 called
+  `readFileBytes(absolutePath, MAX_MODEL_FILE_BYTES)` — always the full, static cap — and checked the
+  observed size against the *remaining* probe budget only *after* the read had already completed, so
+  every job-listed model was read into memory in full on every scan regardless of how little budget was
+  left, exactly contradicting the "checked before the read matters" comment beside it. Fixed by passing
+  `std::min(MAX_MODEL_FILE_BYTES, probeBudgetRemaining)` as the cap: `readFileBytes` already refuses
+  *before opening* whenever `file_size()` exceeds the cap it is given, so the smaller cap means a file
+  that would exhaust the remaining budget is never opened, never allocated for, never read — the
+  post-read exhaustion check is otherwise untouched and still correctly distinguishes "budget exhausted"
+  (silent, carried forward) from "genuinely exceeds `MAX_MODEL_FILE_BYTES`" (a real import failure).
+  **Honestly recorded, not glossed over: no automated assertion in this tree can discriminate this fix
+  from its absence.** Traced through exhaustively and then confirmed directly (the fix reverted, the new
+  case re-run): `readFileBytes`'s *output* — `size`, `bytes.has_value()`, `refusedByCap` — is identical
+  whether it refused before opening or opened, read to completion, and had its result discarded a moment
+  later by the caller's own budget check; the two code paths are observationally identical to
+  `AssetScanReport` in every construction tried. `AD-i11` (new) proves the OUTCOME the fix must still
+  get right — a probe budget smaller than the second of two models leaves it genuinely unprobed while
+  the first probes normally — and passes both before and after the fix, by construction; it is not, and
+  cannot be, the "fails before" proof the other findings got. The I/O actually saved is a resource-usage
+  property this test tier cannot measure — the same class of gap 3.1.3's BLOCKING-1 and 3.1.4's D9 left
+  on record rather than pretending closed. Manual validation row 9 (a measured scan cost over ~20
+  models) remains this fix's only real-world cover, and no number exists there yet (see above).
+- **SHOULD-FIX 9 — an `Unhashable`/`NotHashed` model was probed and the probe thrown away.** Those
+  entries land in `plan.jobIndices` (their `change` is not `UpToDate`), so phase 7.5 read and parsed them
+  and incremented `report.modelsProbed`/`dependenciesRecorded` regardless — but `commitImports`' un-hashed
+  arm copies the previous entry forward *verbatim* and discards `input.probe` unconditionally, whatever
+  it holds. On a project whose hash budget stays exhausted (or a file that stays genuinely unreadable),
+  this repeated every single scan, forever, and the two report counters described work recorded nowhere.
+  Fixed with one early skip: `if (job.change == Unhashable || job.change == NotHashed) continue;`,
+  checked before the file is even looked up. **This interacted directly with an existing test, `AD-i8`
+  ("an unreadable model … reported as an import failure"), which turned out to be asserting the WASTE
+  this fix removes**: an unreadable model's permission error was previously recorded TWICE — once by
+  phase 4's own hash attempt (`report.hashFailures`, which `AD-i8` already required via
+  `hashFailureTotal > 0`) and a second time by phase 7.5's now-removed redundant read attempt
+  (`report.importFailures`, which the OLD test required non-empty). Corrected in place — the test's own
+  title and body now assert the failure is reported EXACTLY ONCE, through `hashFailures`, never
+  duplicated into `importFailures`. Regression (reverted / restored): `AD-i8`'s corrected assertion —
+  the OLD code left `report.importFailures` non-empty (a redundant, wasted read-and-fail); the fixed code
+  leaves it empty, the failure already fully accounted for by phase 4.
+- **SHOULD-FIX 10 — scan-time model import failures never reached the Issues panel, contradicting the
+  plan's own stated assumption.** The plan claimed the Issues panel would surface `importFailures` "with
+  no code change" on the reasoning that it "already renders the report's capped categories" — **this was
+  wrong, and is corrected here**: `drawIssues()`'s own `total` (the sum that gates whether the whole
+  section draws at all) enumerated five categories by name and never included `importFailureTotal`, and
+  the sixth `drawCategory(...)` call for it was simply never written. A project whose *only* issue was a
+  model that failed to import showed no Issues header at all — visible only in the Console. Fixed by
+  adding `importFailureTotal` to `total` and the sixth `drawCategory("Model import failures:", ...)`
+  call, following the existing five categories' idiom exactly. A new black-box accessor,
+  `EditorApp::assetImportFailureCount()`, mirrors `assetOrphanCount()`'s own shape (task 3.1.3's own A12
+  precedent, a further application) — without it, `report.importFailureTotal` had no signature reachable
+  from outside `AssetBrowserPanel`, which is src-private. **Honestly recorded, matching SHOULD-FIX 8's
+  own posture: no automated assertion in this tree can discriminate this fix from its absence either.**
+  The bug is silent, never a crash — `drawIssues()` simply returning early one statement sooner has no
+  effect `presentedLastFrame()` can see (confirmed directly: the new GPU-tier case, `I61`, passes
+  identically with the panel fix reverted). What `I61` DOES prove, and is worth proving regardless: the
+  scan-recorded failure reaches the new accessor correctly, and the draw path this fix adds executes
+  without crashing or unbalancing an ImGui call. The rendering correctness itself rests on code
+  inspection against the five pre-existing categories' identical, byte-for-byte idiom — the same
+  "no automated general-case cover, get it right by construction" posture this project has already
+  recorded for 3.1.3's BLOCKING-1 and 3.1.4's D9, now a third and fourth time in one round (SHOULD-FIX 8
+  and 10 both).
+
+**One NIT closed in this round:**
+
+- **NIT 11 — `ImportedImage::guid` was never assigned**, despite its own doc comment promising "nil
+  unless `relativePath` names a known asset" — 3.1.5 (drag-into-scene) would be the first consumer and
+  would read a permanently-nil field as "unknown asset," always, for every image. Fixed in
+  `ModelImportSession::service()` (the one place that holds both a fresh `ImportResult` and a
+  `const AssetDatabase&` at the same time) with a small helper, `assignImageGuids`, called after both
+  exit points that can leave `resultValue.model.images` non-empty (the over-budget truncation and the
+  final Full import) — never inside `importModel()`/`gltf_import.cpp` itself, which stays pure (bytes
+  in, value out, no database access), exactly as the header's own contract requires. Regression: `MS21`
+  — a resolved image URI's guid now matches `AssetDatabase::guidForPath`; a refused-scheme URI (an empty
+  `relativePath`) stays nil.
+
+**Net test/file impact of this round's own implementation half** (the BLOCKING/SHOULD-FIX-6/NIT-12 half
+above landed before this round of work began and is not recounted here): `tests/editor/
+model_import_session_test.cpp` **17 → 22** (`MS17`-`MS21`); `tests/editor/asset_database_test.cpp`
+**86 → 87** (`AD-i11`; `AD-i8` corrected in place, no count change); `tests/editor/asset_cache_test.cpp`
+**90 → 90** unchanged (`IP5`, `IP8`, `AC-p8` corrected in place — no new `TEST_CASE`); `tests/editor/
+imgui_layer_test.cpp` **82 → 83** (`I61`). `aero_editor_shell_test` **984 → 990**; `aero_editor_imgui_test`
+**82 → 83**. Two new declarations, `EditorApp::assetImportFailureCount()` (`editor_app.hpp`/`.cpp`) and
+`ModelImportSession`'s private `formNeedsResync` field — no new file, no new CMake source, no new
+`find_package`, no link-line change. `asset_cache.cpp` gains its one new `#include`
+(`model_import.hpp`) — the ONLY `editor/` dependency-graph edge this round adds; `asset_cache.hpp` itself
+is untouched and still names no other editor header. **Zero paths under `engine/`** — the streak this
+task itself already carried to three (see above) is untouched by the whole review round.
+
+**Sabotage matrix: STILL NOT YET RUN.** Unchanged by this round — the plan's §B 32-seed matrix (plus
+three mandatory second-order checks each), the PR, CI on all three platforms and the merge remain the
+next work on this task, exactly as recorded above before this round started.
