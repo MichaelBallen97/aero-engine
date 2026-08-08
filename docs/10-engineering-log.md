@@ -3708,4 +3708,188 @@ predicted, 0 predicted contingencies, 6 differently-shaped findings (15+4+0+6 = 
 Windows and Linux rows remain pending as for every task since Phase 2. **R1's real sweep-cost number
 (human rows 4 and 9) is therefore still unmeasured** — nothing in this entry or in `CLAUDE.md` may cite
 a performance figure this task did not measure.
-still-unowned Unicode font is the real fix for all three.
+
+#### Task 3.2.1 — glTF import (fastgltf)
+
+**3.2.1 gives the editor its first working importer, and closes the dependency-cascade gap every prior
+Epic 3.1 task left open by construction.** `AssetCacheEntry::dependencies` has existed since 3.1.2, but
+nothing produced it — 3.1.2's own comment on the field read *"produced by nobody in this task"*.
+Phase 7.5 (this task's one `asset_database.cpp` edit) is the first producer: a budgeted `Structure`-depth
+probe over changed model assets, run inside `rescan`'s existing scan, that turns every resolved external
+URI into a dependency GUID. The roadmap's own headline example — *edit a texture, and the model that
+references it is marked stale on the next scan* — now works end to end for the first time. Selecting a
+`.gltf`/`.glb` in the Asset Browser also fills a new **Import Details** panel with the full decoded
+structure: node hierarchy, meshes and primitives, materials and their resolved (or refused) texture
+paths, skins and joints, animation clips, bounds, and every warning the import produced.
+
+One new src-private pair, `gltf_import.{hpp,cpp}`, is the **only** fastgltf TU in the whole tree
+(INV-M1/AC-55) — `gltf_import.hpp` itself names no fastgltf type, so the include grep's own "exactly one
+file" is the design working, not a near-miss. One new public pair, `model_import.{hpp,cpp}`, holds the
+canonical, format-agnostic, third-party-free `ImportedModel` and every pure helper (`classifyUri`,
+`normalizeRelativePath`, `isImportableModelName`, the summary fold) — provable from string literals and
+committed text fixtures with zero disk on the critical path. One new public pair,
+`model_import_session.{hpp,cpp}`, drives an on-demand two-pass import (`Structure` to learn the URI set,
+then `Full`) from a selection change, and holds the one write this whole task adds anywhere
+(`applySettings`'s atomic `.meta` rewrite). One new src-private pair, `import_details_panel.{hpp,cpp}`,
+is the task's only ImGui TU. A fifth new file, `import_settings.hpp` (plan §A-11), holds `ImportSettings`
+alone, specifically so `asset_meta.hpp` does not have to include `model_import.hpp` and drag
+`aero::scene` and the whole math umbrella onto every TU that touches an asset record. `.meta` gains an
+**optional, additive `importer` block at format version 1** — never a v2 bump (D6): a v2 bump would make
+`parseMeta` reject every sidecar in an older build, nil every GUID, and (D7) forbid repairing a single
+one. `ImportInput` trades two fields (`importer`, `importerVersion`) for one engaged-or-not
+`ProbeOutcome`, closing the "carry-forward oscillation" class of bug a second, independent surface for
+the same fact would reintroduce. **Zero paths under `engine/`** — the no-engine-change streak that
+3.1.3 restarted at one and 3.1.4 carried to two now reaches **three**
+(`git diff --name-only main...HEAD -- engine/` is empty on the feature branch).
+
+**D20's deliberate omissions, verbatim (named so nobody reads them as oversights):**
+- No rendering, no GPU upload, no `ForwardRenderer` change (D1) — 3.3.1/3.4.1's.
+- No cooked artifact, no `Library/` write, no `artifacts` key — `docs/09 §6.8` reserves it for 3.3.
+- No `.pak`, no binary model format — Phase 3+/Phase 5.
+- No texture decoding. Images are referenced, never opened; a model gets no thumbnail of its own.
+- No morph targets (D12), no non-triangle primitives (D11), no generated normals or tangents (D10).
+- No `KHR_*` extensions (D20); `extensionsRequired` fails the import (A6).
+- No async import, no thread, no `#ifdef` (D16) — `git grep -n 'JobSystem' -- editor/` stays empty.
+- No sub-asset identity, no `engine::scene` change (D13) — `git grep -ln 'Guid' -- engine/scene/` stays
+  empty.
+- No settings undo (D19); no `.meta` version bump (D6); no scan-time `.meta` write (D7).
+- No `engine/` change at all (D2) — the no-engine-change streak goes from two to three.
+
+**The fastgltf MUST-VERIFY findings — all six answered from the real v0.9.0 sources before a line of
+`gltf_import.cpp` was written, and the shipped code matches every one of them:**
+1. `GltfDataBuffer::FromBytes` **copies** (a member `std::unique_ptr<std::byte[]>`), so there is no
+   lifetime contract on the caller's bytes — `ModelImportSession::service()` keeps the read buffer alive
+   across both passes anyway, which costs nothing and survives a future borrowing `FromSpan`.
+2. `data:` URIs decode **unconditionally**, with no `LoadExternalBuffers` needed — `decodeDataUri`
+   produces a `sources::Array`, and the adapter's `bytesOf` switch handles it, `sources::ByteView` and
+   `sources::URI` alike; `sources::Vector` (documented upstream as export-only) is handled anyway,
+   because handling it costs one line and its absence would become a silent zero-length read if that
+   ever stopped being true.
+3. `iterateAccessor`/`copyFromAccessor` handle **sparse** accessors transparently, but
+   `IterableAccessor`'s constructor unconditionally dereferences `*accessor.bufferViewIndex` — a real,
+   documented-as-real disengagement for sparse morph targets. `validateAccessor` refuses any accessor
+   without one before any fastgltf tool is invoked.
+4. There is **no `BufferDataAdapter` concept** — a plain template parameter defaulting to
+   `DefaultBufferDataAdapter`, and the contract is a callable that must itself apply the bufferView's own
+   `byteOffset`/`byteLength`. The adapter shipped here does exactly that, and bounds-checks besides
+   (`DefaultBufferDataAdapter` and `fastgltf::span` both range-check nothing).
+5. `GenerateMeshIndices` covers all seven primitive modes, but its generated index accessor's `count` is
+   `positionCount` — correct for `Triangles`/`Points`/`Lines`, **wrong** for strips and fans. D11's
+   "skip non-triangle primitives" is therefore a correctness argument now, not only a scope one.
+6. `fastgltf::math` element order is confirmed at the bit level: `quat` is `{x,y,z,w}` defaulting to
+   `{0,0,0,1}`; `mat` stores **columns**. `MI40b`'s hand-computed asymmetric fixture is the proof this
+   holds in the shipped code, component for component, with no reorder, no transpose, no flip.
+
+**Every build-time finding, in the order it was found:**
+- **Step 1** landed the dependency alone (`vcpkg.json` + `find_package` + the link line + a linking
+  stub) and re-confirmed the six MUST-VERIFY answers against the *installed* headers before any logic
+  depended on them — R1/R3's whole reason for existing as their own step. No installed-header surprise
+  is recorded beyond the two below, both found later, once real call sites existed to trip them.
+- **A stale `git add` snapshot dropped a clang-format fix once** (`build: restore the clang-format fix a
+  stale git add snapshot dropped`) — a process finding, not a design one: re-run `clang-format` and
+  re-`git add` after every edit, never trust a snapshot taken before the last fix.
+- **`fastgltf::span`'s `(Iterator, count)` constructor is unconditionally `explicit`** in the installed
+  0.9.0 (`types.hpp:1766`), so the plan's own braced-return-statement form
+  (`return {a.bytes.data(), a.bytes.size_bytes()};`) does not compile. Fixed with direct-initialization
+  at the three affected sites in the buffer-data adapter (Step 4, deviation from the plan's literal
+  §D-3.2 text).
+- **The vertex/index caps are checked BEFORE `validateAccessor`, against the accessor's raw declared
+  count — the reverse of the plan's literal phase-6 prose ordering** (Step 6). `validateAccessor`'s own
+  bounds check needs real backing bytes proportional to `count` to ever return `true`, so calling it
+  first would make D15's own stated requirement — *"a document claiming 4 billion vertices must cost
+  nothing"* — unreachable without first supplying (or being refused for lacking) 4 billion vertices'
+  worth of real data. Reading the declared count first is safe (no buffer access) once the accessor
+  index itself is bounds-checked, and it is the only ordering that satisfies the requirement the plan's
+  own text demands two sentences later.
+- **`asset_database.cpp` phase 7.5 and `model_import_session.cpp`'s `service()` both reuse
+  `project_files.hpp`'s existing `leafOf`/`parentOf` rather than adding new TU-local helpers the plan's
+  §D-6/§D-7 text sketched** (Steps 8 and 9) — both files already include `project_files.hpp`
+  transitively through `asset_database.hpp`, and a second, TU-local `leafOf` with an identical signature
+  would be genuinely **ambiguous** at every unqualified call site (an anonymous namespace's members are
+  injected into the enclosing namespace for lookup). `parentDirOf` is `parentOf` verbatim — same
+  semantics, existing name. The identical deviation, found and applied consistently the second time
+  rather than re-derived.
+- **`MI33`/`MI42` (the `Structure`-depth cases needing phase 4's node counts and phase 6's accessor
+  reads) landed in Step 6, not Step 4 where the plan's own test table placed them** — both phases they
+  depend on did not exist until Steps 5 and 6. A sequencing note, not a behavioural one: recorded at the
+  test file's own section boundary so a reader does not go looking for them where the table said they'd
+  be.
+- **A `std::move` in the plan's own literal §D-9 reconcile-block text has no effect and trips clang-tidy's
+  `performance-move-const-arg` under `--warnings-as-errors`** (Step 10): `ImportSettings` (a float plus
+  three bools, no user-provided special members) is trivially copyable, and so is
+  `std::optional<ImportSettings>`. Replaced `std::optional<ImportSettings> editorSettings =
+  std::move(requestedImportSettings);` with a plain copy — identical at runtime, since the very next
+  statement resets the source either way.
+- **`AssetBrowserPanel::selection()` alone could not make AC-45/AC-46/AC-47/AC-50's own GPU-tier cases
+  (I53-I59) non-vacuous** (Step 10): the reconcile reads `AssetBrowserPanel::selection()`, but nothing
+  in the plan's literal `editor_app.hpp`/`asset_browser_panel.hpp` diffs gives the ImGui-free-at-source
+  GPU tier any way to change it — `selectedEntry` is written only from `applyPending()`, itself called
+  only from `onDraw()`, itself driven only by a real ImGui click this target cannot synthesize. Closed
+  with the code-review-finding-4 shape applied a fifth time: `AssetBrowserPanel::requestSelectEntry` /
+  `EditorApp::requestAssetBrowserSelectEntry`, each recording exactly what a real single click on a
+  row/tile records. This revises the plan's own literal counts by one line each (asset_browser_panel.hpp
+  gains a second method beyond `selection()`; `editor_app.hpp` gains a third hook beyond
+  `requestModelImportSettings`/`requestModelImportApply`) and is logged here, in `.claude/rules/
+  editor.md`, and at both new declarations' own comments.
+- **A second, related gap: `AssetBrowserPanel::onDraw()` must actually RUN for `requestSelectEntry`'s
+  click-equivalent action to be drained at all** — "Assets" shares `DockSlot::Bottom` with "Console"
+  (registered first, so it wins the tab by default), so every I53-I59 case that calls
+  `requestAssetBrowserSelectEntry` also calls `app->panels().setVisible("Console", false)` first
+  (2.2.4's C5 precedent, restated for a sixth reason). Found by running I53 and watching
+  `modelImportCount()` stay at 0 with no other explanation available.
+- **Registering a seventh default panel moved SIX pre-existing absolute `panels().count() == 6`
+  assertions to `== 7`** (Step 10) — `imgui_layer_test.cpp`'s own header comment claimed **four** such
+  sites before this task touched it, a claim already stale (six were measured) independently of
+  anything 3.2.1 did; both the count and the comment are corrected here, with the real six line numbers
+  recorded rather than trusted from memory.
+
+**The plan's own §A corrections — fourteen in total, all confirmed right against the real installed
+v0.9.0 headers and now load-bearing in the shipped code.** The four that change behaviour, not merely a
+type spelling: `percentDecode` was **dropped** from the design entirely, because `fastgltf::URI` already
+decodes on construction (§A-1) — running it a second time would have silently mis-resolved any URI
+containing a legitimate `%` byte; a sparse accessor with no `bufferView` is **UB inside fastgltf** and is
+refused by `validateAccessor` before any tool call (§A-4); the accessor chain is **unchecked** by
+`fastgltf::span`/`DefaultBufferDataAdapter`, making pre-validation a security requirement rather than a
+nicety (§A-5); and `extensionsRequired` **never reaches this code at all** — fastgltf fails the whole
+parse first, so AC-41 was split into a nameable half (`MissingExtensions`, recovered by a throwaway
+re-parse with `~fastgltf::Extensions::None` whose `Asset` is discarded) and an unnameable half
+(`UnknownRequiredExtension`, which says so plainly and pretends nothing) (§A-6). The other ten — API
+shapes (`Primitive::findAttribute` returns an iterator; `fastgltf::Optional` is not `std::optional`), a
+header-layering fix (`import_settings.hpp`, §A-11), an ordering trap (`plan.jobIndices` indexes the
+sorted copy, not the caller's vector, §A-12), a name-collision rule (`AlphaMode`/`AnimationPath`/
+`AnimationInterpolation` all exist in namespace `fastgltf` too, §A-13) and an arithmetic correction
+(the spec's own "ten files" text enumerated eight, §A-14) — all held exactly as written, with no further
+correction needed once real code existed to check them against.
+
+**The three gate-grep defects the plan's own §V6 found and fixed during its own review rounds, before
+any of this task's code shipped — recorded here because they shaped which grep this entry's own
+measurements below trust:**
+- **AC-55's original bare-word `fastgltf` grep counted comments**, and this task's own prescribed
+  comments name fastgltf correctly and repeatedly (`// fastgltf refused the document`, and — the
+  sharpest case — `tests/CMakeLists.txt`'s own `# ... and NEITHER TU NAMES fastgltf`, a comment
+  *asserting the absence* that the grep then counted as a presence). Corrected to an **include** grep
+  (`#\s*include\s*[<"]fastgltf`), which names exactly one file, `editor/src/gltf_import.cpp` — measured
+  again in this entry's own gate run, unchanged.
+- **AC-56's `FromPath` grep was VACUOUS on its first draft**: a bare `FromPath` matches 21 **pre-existing**
+  hits on `main` (`projectRootFromPath`, `utf8FromPath`, `pathFromUtf8`), so it could never be empty on
+  any branch — a check that can only ever fail trains its reader to ignore it.
+- **AC-56's SECOND draft, qualified to the real fastgltf API, was still wrong** for the identical reason
+  AC-55 was: it still counted comments, and two of the hits it would have flagged in `gltf_import.cpp`
+  are comments — one of them the very comment explaining this invariant
+  (*"D3 / AC-56: exactly TWO option bits ... LoadExternalBuffers, LoadExternalImages, ... never set"*).
+  A gate that fails because someone documented it correctly is a broken gate. The shipped grep strips
+  line comments before matching, plus a positive assertion that `GLTF_OPTIONS` is written once as
+  exactly `DecomposeNodeMatrices | GenerateMeshIndices` — stronger than any absence grep, since if that
+  one line is right no `LoadExternal*` bit can be set no matter what any comment says. Both re-run clean
+  in this task's own gate (§V6, below).
+
+**Sabotage matrix: NOT YET RUN.** The plan's §B specifies 32 seeds (S1-S30 plus S25b/S25c) plus three
+mandatory second-order checks each. That pass, the PR, CI and the merge are explicitly out of scope for
+this entry's own author and are the next work on this task.
+
+**macOS validation: pending.** No row of the twelve-row validation page
+(`editor/validation/3.2.1-gltf-import-fastgltf.md`) has been run yet; Windows and Linux rows remain
+pending as for every task since Phase 2. Row 8 (ten models selected one after another, no stutter) is
+the load-bearing one for INV-M12 — it is the only general-case cover `I60`'s source-text proof cannot
+be; row 9 (a measured, not estimated, scan cost over ~20 models) is the load-bearing one for R4, the
+identical open debt 3.1.4's own R1 left for its own sweep cost. Neither number exists anywhere yet.
