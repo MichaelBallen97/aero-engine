@@ -7,9 +7,15 @@
 // on aero/core/{guid,math}.hpp, aero/editor/import_settings.hpp and aero/editor/scene_bounds.hpp -- the
 // last of those reaches aero::scene, which is a PUBLIC, UNGATED dependency of aero_editor_core (only
 // engine/scene_serialize is gated on AERO_REFLECT_TOOLS) -- so every case in this file must be PRESENT
-// and PASSING in all three build configurations. No GPU, no window, no ImGui context, no sleeps, and
-// no disk on the critical path: every case here is driven from a string literal.
+// and PASSING in all three build configurations. No GPU, no window, no ImGui context, no sleeps: every
+// importer case is driven from a string literal or a committed text fixture.
+//
+// THREE cases here deliberately touch disk, and they are the only ones: MI42b needs a scratch working
+// directory containing a real file to prove the importer does NOT read it (a read that never succeeds
+// is a read no assertion can see), and MI42c/MI42d read editor/src/gltf_import.cpp's own source text.
+// Everything else stays literal-driven.
 #include <aero/editor/model_import.hpp>
+#include <aero/editor/text_file.hpp>  // MI42c/MI42d only: readTextFile over gltf_import.cpp's own text
 
 #include "scene_golden_support.hpp"
 
@@ -18,11 +24,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -79,6 +88,79 @@ void appendU32(std::string& out, std::uint32_t value) {
         glb += paddedBin;
     }
     return glb;
+}
+
+// MI42b only. A unique scratch directory that removes itself on destruction -- the same shape every
+// other TU in this suite keeps its own copy of (asset_database_test.cpp:53's precedent; scaffolding is
+// copied, the ASSERTION is shared).
+class TempDir {
+public:
+    TempDir() {
+        std::error_code ec;
+        const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+        static int counter = 0;  // doctest runs serially in one process; a plain counter is unique enough
+        dirPath = base / ("aero_model_import_test_" + std::to_string(++counter));
+        std::filesystem::remove_all(dirPath, ec);
+        std::filesystem::create_directories(dirPath, ec);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(dirPath, ec);
+    }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+    TempDir(TempDir&&) = delete;
+    TempDir& operator=(TempDir&&) = delete;
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept { return dirPath; }
+
+private:
+    std::filesystem::path dirPath;
+};
+
+// MI42b only. project_test.cpp's P84/P85 helper, verbatim in shape: the process working directory is
+// global state, so it is restored by a destructor that runs on a thrown REQUIRE as well as on success.
+class ScopedCwd {
+public:
+    explicit ScopedCwd(const std::filesystem::path& to) : previous(std::filesystem::current_path()) {
+        std::filesystem::current_path(to);
+    }
+    ~ScopedCwd() {
+        std::error_code ec;
+        std::filesystem::current_path(previous, ec);
+    }
+    ScopedCwd(const ScopedCwd&) = delete;
+    ScopedCwd& operator=(const ScopedCwd&) = delete;
+    ScopedCwd(ScopedCwd&&) = delete;
+    ScopedCwd& operator=(ScopedCwd&&) = delete;
+
+private:
+    std::filesystem::path previous;
+};
+
+// MI42c/MI42d. One source line with its `//` comment removed -- the I60 rule, restated here because
+// gltf_import.cpp's own prose legitimately NAMES every forbidden token it must never USE (its header
+// comment lists LoadExternalBuffers, LoadExternalImages, FromPath and <filesystem> by name, and the
+// most important of those comments is the one documenting this very invariant). A check that cannot
+// tell code from comment would fail because somebody documented it correctly.
+[[nodiscard]] std::string_view codeOf(std::string_view line) {
+    const std::size_t commentStart = line.find("//");
+    return commentStart == std::string_view::npos ? line : line.substr(0, commentStart);
+}
+
+[[nodiscard]] std::vector<std::string_view> splitLines(std::string_view text) {
+    std::vector<std::string_view> lines;
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        if (newline == std::string_view::npos) {
+            lines.push_back(remaining);
+            break;
+        }
+        lines.push_back(remaining.substr(0, newline));
+        remaining.remove_prefix(newline + 1U);
+    }
+    return lines;
 }
 
 }  // namespace
@@ -835,17 +917,158 @@ TEST_CASE(
     CHECK(prim.indices.empty());
 }
 
+// The document MI42 and MI42b share: one triangle whose only buffer is an EXTERNAL "external.bin".
+constexpr std::string_view NEEDS_EXTERNAL_DOC =
+    R"({"asset":{"version":"2.0"},)"
+    R"("meshes":[{"primitives":[{"attributes":{"POSITION":0},"mode":4}]}],)"
+    R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],)"
+    R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],)"
+    R"("buffers":[{"byteLength":36,"uri":"external.bin"}]})";
+
+// TITLE CORRECTED (this case's claim was measurably too strong, and the overclaim is what let seed S26
+// through). MI42 detects a read only if that read SUCCEEDS, and nothing here controls the working
+// directory the read would resolve against -- with an `external.bin` present in the process CWD and
+// S26 applied, MI42 goes red; with it absent, which is every real run, MI42 passes against a
+// file-reading importer just as happily as against a correct one. MI42b below is the deterministic
+// version; this case is kept because the no-externals-supplied path is still worth asserting on its
+// own, not because it proves AC-39.
 TEST_CASE(
-    "model_import: a Full import with zero supplied externals reports MissingBuffer -- the only "
-    "way a read could have happened is if fastgltf opened the file itself (MI42, AC-39)") {
-    const std::string doc = R"({"asset":{"version":"2.0"},)"
-                            R"("meshes":[{"primitives":[{"attributes":{"POSITION":0},"mode":4}]}],)"
-                            R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],)"
-                            R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],)"
-                            R"("buffers":[{"byteLength":36,"uri":"external.bin"}]})";
+    "model_import: a Full import with zero supplied externals reports MissingBuffer (MI42, AC-39, "
+    "see MI42b for the CWD-independent proof)") {
+    const std::string doc(NEEDS_EXTERNAL_DOC);
     const ImportResult result =
         importModel("needs-external.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
     CHECK(result.status == ImportStatus::MissingBuffer);
+}
+
+TEST_CASE(
+    "model_import: a Full import does not read the named buffer even when it IS on disk in the "
+    "working directory (MI42b, AC-39, INV-M3, seed S26)") {
+    // THE GAP THIS CLOSES. AC-39's real claim is "a refused or unsupplied URI never causes a file
+    // read", and an absence cannot be observed: a read that fails is indistinguishable from a read
+    // that never happened. The only way to make the read OBSERVABLE is to guarantee it would SUCCEED,
+    // which means putting a valid `external.bin` exactly where a naive implementation would look for
+    // it -- the process working directory, since importModel is handed no directory at all and
+    // fastgltf is handed `{}`.
+    //
+    // With those 36 bytes present, an importer that opens the file gets three valid VEC3 positions and
+    // reports Ok; the real importer, which is handed an EMPTY external-buffer span, still reports
+    // MissingBuffer. The CWD is created, populated and restored by this case, so the verdict does not
+    // depend on what happens to be sitting in the directory the test binary was launched from.
+    const TempDir dir;
+    {
+        std::ofstream out(dir.path() / "external.bin", std::ios::binary | std::ios::trunc);
+        REQUIRE(static_cast<bool>(out));
+        const std::string bytes(36, '\0');  // 3 * VEC3 of float zeroes -- a VALID buffer for this doc
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    const ScopedCwd cwd{dir.path()};
+    std::error_code ec;
+    REQUIRE(std::filesystem::exists(std::filesystem::path("external.bin"), ec));  // relative == the CWD copy
+    REQUIRE_FALSE(ec);
+    REQUIRE(std::filesystem::file_size(std::filesystem::path("external.bin"), ec) == 36U);
+    REQUIRE_FALSE(ec);
+
+    const std::string doc(NEEDS_EXTERNAL_DOC);
+    const ImportResult result =
+        importModel("needs-external.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+
+    CHECK(result.status == ImportStatus::MissingBuffer);
+    // ... and the geometry is genuinely absent, not merely flagged: the primitive was skipped because
+    // its POSITION accessor had no backing bytes. Under seed S26 this vector holds one primitive with
+    // three positions in it.
+    REQUIRE(result.model.meshes.size() == 1);
+    CHECK(result.model.meshes[0].primitives.empty());
+    CHECK(result.model.summary.vertexCount == 0);
+}
+
+TEST_CASE(
+    "model_import: gltf_import.cpp performs NO file operation, in its own source text (MI42c, AC-39, "
+    "INV-M3, seed S26)") {
+    // §V6's "gltf_import.cpp performs NO FILE OPERATION" grep, moved from a manual gate in the plan
+    // into the automated suite. It is deliberately NOT a seventh entry in .github/scripts/ -- AC-58
+    // requires that directory to stay byte-identical on this branch -- so it lands here instead, the
+    // PU1/I60 shape's third instance: a mechanical proof over ONE file's own text, run as a doctest
+    // case because what is checked is that file's text, not a repo-wide invariant needing git ls-files.
+    //
+    // This is the half MI42b cannot cover: MI42b proves the importer does not read through the ONE
+    // path a test can construct (a CWD-relative name), while this case refuses the whole class --
+    // every stream, every <filesystem> call, every editor byte primitive, resolved against any path.
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/gltf_import.cpp";
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+    const std::string& text = *read.text;
+    REQUIRE_FALSE(text.empty());
+    const std::vector<std::string_view> lines = splitLines(text);
+    REQUIRE(lines.size() > 100U);  // the file really was read, not silently truncated to nothing
+
+    // Every token below is a REAL file operation, and every one of them appears in this file's own
+    // COMMENTS -- hence codeOf(). `fastgltf` deliberately is NOT in this list: it is the one library
+    // this TU exists to hold.
+    constexpr std::array<std::string_view, 9> FORBIDDEN = {
+        "std::filesystem::", "<fstream>",           "ifstream",   "ofstream", "fopen", "readTextFile",
+        "readFileBytes",     "writeTextFileAtomic", "std::fopen",
+    };
+    for (const std::string_view token : FORBIDDEN) {
+        std::size_t hits = 0;
+        for (const std::string_view line : lines) {
+            if (codeOf(line).find(token) != std::string_view::npos) {
+                ++hits;
+            }
+        }
+        INFO("forbidden file-operation token in gltf_import.cpp: ", token);
+        CHECK(hits == 0);
+    }
+}
+
+TEST_CASE(
+    "model_import: gltf_import.cpp never names fastgltf's own file-loading surface, and GLTF_OPTIONS "
+    "carries exactly two bits (MI42d, AC-56)") {
+    // §V6's AC-56 grep, the other half of the same manual gate, likewise moved into the suite rather
+    // than into .github/scripts/ (AC-58). The POSITIVE assertion is the stronger of the two: if the
+    // option set really is exactly those two bits, then no LoadExternal* bit can be set no matter what
+    // any other line says.
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/gltf_import.cpp";
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+    const std::vector<std::string_view> lines = splitLines(*read.text);
+    REQUIRE(lines.size() > 100U);
+
+    constexpr std::array<std::string_view, 5> FORBIDDEN = {
+        "GltfDataBuffer::FromPath", "MappedGltfFile", "GltfFileStream", "LoadExternalBuffers", "LoadExternalImages",
+    };
+    for (const std::string_view token : FORBIDDEN) {
+        std::size_t hits = 0;
+        for (const std::string_view line : lines) {
+            if (codeOf(line).find(token) != std::string_view::npos) {
+                ++hits;
+            }
+        }
+        INFO("forbidden fastgltf loading-surface token in gltf_import.cpp: ", token);
+        CHECK(hits == 0);
+    }
+
+    // The positive half: GLTF_OPTIONS is assigned ONCE, and its two bits are the allowed two.
+    std::size_t assignments = 0;
+    std::string optionText;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::string_view code = codeOf(lines[i]);
+        if (code.find("GLTF_OPTIONS =") == std::string_view::npos) {
+            continue;
+        }
+        ++assignments;
+        optionText.clear();
+        for (std::size_t j = i; j < lines.size(); ++j) {
+            optionText += codeOf(lines[j]);
+            if (codeOf(lines[j]).find(';') != std::string_view::npos) {
+                break;
+            }
+        }
+    }
+    REQUIRE(assignments == 1);
+    CHECK(optionText.find("Options::DecomposeNodeMatrices") != std::string::npos);
+    CHECK(optionText.find("Options::GenerateMeshIndices") != std::string::npos);
+    CHECK(optionText.find("Options::Load") == std::string::npos);  // no LoadExternal*, no LoadGLBBuffers
 }
 
 TEST_CASE("model_import: triangle.gltf at Full depth -- exact positions, indices and AABB (MI59, AC-16)") {
