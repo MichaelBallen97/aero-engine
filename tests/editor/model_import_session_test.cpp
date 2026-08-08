@@ -210,6 +210,40 @@ TEST_CASE("model_import_session: a model whose external buffer exists imports Fu
 }
 
 TEST_CASE(
+    "model_import_session: a model in a SUBDIRECTORY whose external buffer sits beside it imports "
+    "Full with vectors filled (MS8b, code-review BLOCKING-1)") {
+    // BLOCKING-1: the glTF document's raw URI ("chair.bin") is NOT what ExternalBuffer::uri holds --
+    // that field is classifyUri's RESOLVED, project-relative path ("models/chair.bin"), exactly what
+    // this same session already read from structure.externalUris a few lines above (model_import_
+    // session.cpp). MS8 alone cannot catch a comparison between the two forms disagreeing, because it
+    // puts both files at the assets ROOT, where assetRelativeDir is "" and the raw and resolved forms
+    // are byte-identical by coincidence.
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(dir.join("models")), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.gltf"),
+              R"({"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0},"mode":4}]}],)"
+              R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],)"
+              R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],)"
+              R"("buffers":[{"byteLength":36,"uri":"chair.bin"}]})");
+    writeFile(dir.join("models/chair.bin"), std::string(36, '\0'));
+    AssetDatabase db;
+    GuidGenerator gen(108);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("models/chair.gltf", db.generation());
+    session.service(dir.utf8(), db);
+    CHECK(session.state() == SessionState::Imported);
+    CHECK(session.result().status == ImportStatus::Ok);
+    REQUIRE(session.result().model.meshes.size() == 1);
+    REQUIRE(session.result().model.meshes[0].primitives.size() == 1);
+    CHECK(session.result().model.meshes[0].primitives[0].positions.size() == 3);
+    CHECK(session.result().model.meshes[0].primitives[0].indices.size() == 3);  // synthesized (AC-23)
+}
+
+TEST_CASE(
     "model_import_session: a missing external buffer imports as Failed/MissingBuffer with a message "
     "(MS9)") {
     const TempDir dir;

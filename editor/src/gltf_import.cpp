@@ -90,7 +90,8 @@ void escalate(ImportResult& result, ImportStatus status, std::string_view why) {
 // (§D-3.3) has already refused such an accessor, so this is belt AND braces, never the only defence.
 class EditorBufferAdapter {
 public:
-    explicit EditorBufferAdapter(std::span<const ExternalBuffer> external) noexcept : externalBuffers(external) {}
+    explicit EditorBufferAdapter(std::span<const ExternalBuffer> external, std::string_view assetDir) noexcept
+        : externalBuffers(external), assetRelativeDir(assetDir) {}
 
     [[nodiscard]] fastgltf::span<const std::byte> operator()(const fastgltf::Asset& asset,
                                                              std::size_t bufferViewIdx) const {
@@ -131,7 +132,22 @@ public:
                 [](const fastgltf::sources::ByteView& b) -> fastgltf::span<const std::byte> { return b.bytes; },
                 [this](const fastgltf::sources::URI& u) -> fastgltf::span<const std::byte> {
                     // The caller supplied it, or nobody did. NEVER a disk read (D3/INV-M3).
-                    const std::string_view wanted = u.uri.string();  // ALREADY percent-decoded (A1)
+                    //
+                    // BLOCKING-1 fix: u.uri.string() is the document's RAW URI ("chair.bin"), but
+                    // ExternalBuffer::uri holds classifyUri's RESOLVED, project-relative path
+                    // ("models/chair.bin") -- exactly what phase 3 already recorded into
+                    // result.externalUris via the SAME function. Comparing the raw form against the
+                    // resolved form only ever agreed when assetRelativeDir == "" (a model sitting at the
+                    // assets root) -- every ordinary "glTF Separate" export dropped into a subdirectory
+                    // silently became MissingBuffer. classifyUri is pure and deterministic, so re-running
+                    // it here on the identical (uri, assetRelativeDir) pair reproduces phase 3's own
+                    // resolution exactly, with no dependency on result.externalUris' contents.
+                    const UriClassification classified = classifyUri(u.uri.string(), assetRelativeDir);
+                    if (classified.kind != UriClass::RelativePath) {
+                        missingBuffer = true;  // refused or embedded -- never a dependency the caller supplies
+                        return {};
+                    }
+                    const std::string_view wanted = classified.relativePath;
                     for (const ExternalBuffer& e : externalBuffers) {
                         if (e.uri == wanted) {
                             if (u.fileByteOffset > e.bytes.size()) {
@@ -153,6 +169,7 @@ public:
 
 private:
     std::span<const ExternalBuffer> externalBuffers;
+    std::string_view assetRelativeDir;   // the model's own directory -- classifyUri's second argument
     mutable bool missingBuffer = false;  // mutable: operator() is const by fastgltf's own contract
 };
 
@@ -475,7 +492,7 @@ ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::
         return result;  // AC-40/AC-41/E4/E6: an EMPTY model, always
     }
     const fastgltf::Asset& asset = parsed.get();
-    const EditorBufferAdapter adapter(external);
+    const EditorBufferAdapter adapter(external, assetRelativeDir);
 
     // Phase 2 -- EXTENSIONS. One capped warning per asset.extensionsUsed entry (AC-41's success half).
     // extensionsRequired never reaches here on a SUCCESSFUL parse (A6) -- a document that has one this
