@@ -304,6 +304,32 @@ private:
     }
     return MipFilter::Linear;
 }
+// AC-36 / D12: glTF's `weights` path has NO counterpart here, deliberately. nullopt == skip + warn.
+[[nodiscard]] constexpr std::optional<AnimationPath> toAnimationPath(fastgltf::AnimationPath p) noexcept {
+    switch (p) {
+        case fastgltf::AnimationPath::Translation:
+            return AnimationPath::Translation;
+        case fastgltf::AnimationPath::Rotation:
+            return AnimationPath::Rotation;
+        case fastgltf::AnimationPath::Scale:
+            return AnimationPath::Scale;
+        case fastgltf::AnimationPath::Weights:
+            return std::nullopt;
+    }
+    return std::nullopt;
+}
+[[nodiscard]] constexpr AnimationInterpolation toInterpolation(fastgltf::AnimationInterpolation i) noexcept {
+    switch (i) {
+        case fastgltf::AnimationInterpolation::Linear:
+            return AnimationInterpolation::Linear;
+        case fastgltf::AnimationInterpolation::Step:
+            return AnimationInterpolation::Step;
+        case fastgltf::AnimationInterpolation::CubicSpline:
+            return AnimationInterpolation::CubicSpline;
+    }
+    return AnimationInterpolation::Linear;
+}
+
 [[nodiscard]] constexpr std::string_view primitiveModeName(fastgltf::PrimitiveType t) noexcept {
     switch (t) {
         case fastgltf::PrimitiveType::Points:
@@ -1008,6 +1034,225 @@ ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::
         for (const ImportedMesh& m : result.model.meshes) {
             result.model.summary.bounds.expand(m.bounds);
         }
+    }
+
+    // Phase 7 -- SKINS. Skipped entirely when !settings.importSkins (AC-37).
+    if (settings.importSkins) {
+        bool jointCapHit = false;
+        for (std::size_t skinIdx = 0; skinIdx < asset.skins.size(); ++skinIdx) {
+            const fastgltf::Skin& skin = asset.skins[skinIdx];
+            ImportedSkin outSkin;
+            outSkin.name = std::string(skin.name);
+            outSkin.localId = static_cast<std::uint32_t>(skinIdx);
+            // E24: recorded AS-IS, even when the skeleton root is not among `joints` below -- it is
+            // never cross-validated against that list.
+            outSkin.skeletonRoot =
+                skin.skeleton.has_value() ? static_cast<std::uint32_t>(*skin.skeleton) : INVALID_SUBASSET;
+
+            if (skin.joints.size() > MAX_JOINTS_PER_SKIN) {
+                if (!jointCapHit) {
+                    escalate(result, ImportStatus::Truncated, "joint cap (MAX_JOINTS_PER_SKIN) reached");
+                    jointCapHit = true;
+                }
+                continue;  // a partial palette is worse than none
+            }
+
+            bool jointOutOfRange = false;
+            outSkin.joints.reserve(skin.joints.size());
+            for (const std::size_t joint : skin.joints) {  // AC-31: SOURCE ORDER
+                if (joint >= result.model.nodes.size()) {
+                    jointOutOfRange = true;
+                    break;
+                }
+                outSkin.joints.push_back(static_cast<std::uint32_t>(joint));
+            }
+            if (jointOutOfRange) {
+                addWarning(result, std::format("skin '{}': a joint index is out of range", outSkin.name));
+                continue;  // a partial palette is worse than none
+            }
+
+            if (!skin.inverseBindMatrices.has_value()) {
+                // AC-32: joints.size() IDENTITY matrices, NEVER an empty vector. Computed at BOTH
+                // depths -- there is no accessor here to defer, exactly like a node's own TRS.
+                outSkin.inverseBindMatrices.assign(outSkin.joints.size(), Mat4::identity());
+            } else if (depth == ImportDepth::Full) {
+                const std::size_t ibmIndex = *skin.inverseBindMatrices;
+                if (!validateAccessor(asset, ibmIndex, fastgltf::AccessorType::Mat4, adapter)) {
+                    addWarning(result, std::format("skin '{}': inverse bind matrices are invalid", outSkin.name));
+                    continue;
+                }
+                const fastgltf::Accessor& ibmAccessor = asset.accessors[ibmIndex];
+                if (ibmAccessor.count != outSkin.joints.size()) {
+                    // AC-33: a mismatch is a warning and the WHOLE skin is skipped -- never a silently
+                    // truncated palette.
+                    addWarning(result, std::format("skin '{}': {} inverse bind matrices for {} joints", outSkin.name,
+                                                   ibmAccessor.count, outSkin.joints.size()));
+                    continue;
+                }
+                outSkin.inverseBindMatrices.reserve(ibmAccessor.count);
+                for (const fastgltf::math::fmat4x4 m :
+                     fastgltf::iterateAccessor<fastgltf::math::fmat4x4>(asset, ibmAccessor, adapter)) {
+                    Mat4 mat = toMat4(m);
+                    // A22: settings.scale multiplies ONLY the translation column.
+                    mat.columns[3].x *= settings.scale;
+                    mat.columns[3].y *= settings.scale;
+                    mat.columns[3].z *= settings.scale;
+                    outSkin.inverseBindMatrices.push_back(mat);
+                }
+            }
+            // else: engaged, Structure depth -- leave EMPTY. INV-M7's size equality is asserted only
+            // at Full depth.
+
+            result.model.summary.jointCount += outSkin.joints.size();
+            result.model.skins.push_back(std::move(outSkin));
+        }
+    }
+    result.model.summary.skinCount = result.model.skins.size();
+
+    // Phase 8 -- ANIMATIONS. Skipped entirely when !settings.importAnimations (AC-37).
+    if (settings.importAnimations) {
+        std::size_t keyTotal = 0;
+        bool keyCapHit = false;
+        for (std::size_t animIdx = 0; animIdx < asset.animations.size(); ++animIdx) {
+            const fastgltf::Animation& animation = asset.animations[animIdx];
+            ImportedAnimation outAnim;
+            outAnim.name = std::string(animation.name);
+            outAnim.localId = static_cast<std::uint32_t>(animIdx);
+
+            for (std::size_t channelIdx = 0; channelIdx < animation.channels.size(); ++channelIdx) {
+                const fastgltf::AnimationChannel& channel = animation.channels[channelIdx];
+
+                const std::optional<AnimationPath> path = toAnimationPath(channel.path);
+                if (!path.has_value()) {
+                    // AC-36/D12: a 'weights' (morph) channel has no counterpart here; the clip's other
+                    // channels import normally.
+                    addWarning(result, std::format("animation '{}' channel {}: a 'weights' (morph) "
+                                                   "channel is not imported",
+                                                   outAnim.name, channelIdx));
+                    continue;
+                }
+                if (!channel.nodeIndex.has_value() || *channel.nodeIndex >= result.model.nodes.size()) {
+                    addWarning(result, std::format("animation '{}' channel {}: the target node is "
+                                                   "missing or out of range",
+                                                   outAnim.name, channelIdx));
+                    continue;  // E23: the clip survives
+                }
+                if (channel.samplerIndex >= animation.samplers.size()) {
+                    addWarning(result, std::format("animation '{}' channel {}: the sampler index is "
+                                                   "out of range",
+                                                   outAnim.name, channelIdx));
+                    continue;
+                }
+                const fastgltf::AnimationSampler& sampler = animation.samplers[channel.samplerIndex];
+
+                ImportedAnimationChannel outChannel;
+                outChannel.targetNode = static_cast<std::uint32_t>(*channel.nodeIndex);
+                outChannel.path = *path;
+                outChannel.interpolation = toInterpolation(sampler.interpolation);
+
+                if (depth == ImportDepth::Structure) {
+                    // No accessor is touched; `times`/`values` stay EMPTY and `duration` stays 0 -- the
+                    // panel must not claim a duration it did not read.
+                    outAnim.channels.push_back(std::move(outChannel));
+                    continue;
+                }
+
+                // ImportDepth::Full below.
+                if (sampler.inputAccessor >= asset.accessors.size() ||
+                    sampler.outputAccessor >= asset.accessors.size()) {
+                    addWarning(result, std::format("animation '{}' channel {}: a sampler accessor is "
+                                                   "missing or invalid",
+                                                   outAnim.name, channelIdx));
+                    continue;
+                }
+                // CAP BEFORE THE ALLOCATION (D15), the identical shape phase 6 uses: `count` is read
+                // from the document's own accessor metadata, which costs nothing regardless of how
+                // large it claims to be.
+                const std::size_t claimedKeyCount = asset.accessors[sampler.inputAccessor].count;
+                if (keyTotal + claimedKeyCount > MAX_ANIMATION_KEYS_PER_MODEL) {
+                    if (!keyCapHit) {
+                        escalate(result, ImportStatus::Truncated,
+                                 "animation key cap (MAX_ANIMATION_KEYS_PER_MODEL) reached");
+                        keyCapHit = true;
+                    }
+                    continue;
+                }
+                if (!validateAccessor(asset, sampler.inputAccessor, fastgltf::AccessorType::Scalar, adapter)) {
+                    addWarning(result, std::format("animation '{}' channel {}: the time accessor is invalid",
+                                                   outAnim.name, channelIdx));
+                    continue;
+                }
+                const fastgltf::AccessorType outputType = outChannel.path == AnimationPath::Rotation
+                                                              ? fastgltf::AccessorType::Vec4
+                                                              : fastgltf::AccessorType::Vec3;
+                if (!validateAccessor(asset, sampler.outputAccessor, outputType, adapter)) {
+                    addWarning(result, std::format("animation '{}' channel {}: the value accessor is invalid",
+                                                   outAnim.name, channelIdx));
+                    continue;
+                }
+
+                const fastgltf::Accessor& inputAccessor = asset.accessors[sampler.inputAccessor];
+                std::vector<float> times;
+                times.reserve(inputAccessor.count);
+                for (const float v : fastgltf::iterateAccessor<float>(asset, inputAccessor, adapter)) {
+                    times.push_back(v);
+                }
+                bool notIncreasing = false;
+                for (std::size_t k = 1; k < times.size(); ++k) {
+                    if (times[k] <= times[k - 1]) {
+                        notIncreasing = true;
+                        break;
+                    }
+                }
+                if (notIncreasing) {
+                    // AC-34: skipped, NEVER sorted -- a clip whose keys are out of order is a broken
+                    // export, and silently reordering it produces plausible-looking wrong motion.
+                    addWarning(result, std::format("animation '{}' channel {}: keyframe times are not "
+                                                   "strictly increasing",
+                                                   outAnim.name, channelIdx));
+                    continue;
+                }
+
+                const fastgltf::Accessor& outputAccessor = asset.accessors[sampler.outputAccessor];
+                const std::size_t expectedValueCount =
+                    times.size() * (outChannel.interpolation == AnimationInterpolation::CubicSpline ? 3 : 1);
+                if (outputAccessor.count != expectedValueCount) {
+                    // INV-M6: a mismatch is skipped, never partially read.
+                    addWarning(result, std::format("animation '{}' channel {}: the value count does "
+                                                   "not match the key count",
+                                                   outAnim.name, channelIdx));
+                    continue;
+                }
+
+                std::vector<Vec4> values;
+                values.reserve(outputAccessor.count);
+                if (outChannel.path == AnimationPath::Rotation) {
+                    for (const fastgltf::math::fvec4 v :
+                         fastgltf::iterateAccessor<fastgltf::math::fvec4>(asset, outputAccessor, adapter)) {
+                        values.push_back(toVec4(v));
+                    }
+                } else {
+                    // Translation/Scale: widened to Vec4 with w = 0 for glTF's three-component paths.
+                    for (const fastgltf::math::fvec3 v :
+                         fastgltf::iterateAccessor<fastgltf::math::fvec3>(asset, outputAccessor, adapter)) {
+                        values.push_back(Vec4{v[0], v[1], v[2], 0.0F});
+                    }
+                }
+
+                keyTotal += inputAccessor.count;
+                const float lastTime = times.back();
+                outChannel.times = std::move(times);
+                outChannel.values = std::move(values);
+                outAnim.duration = std::max(outAnim.duration, lastTime);
+                outAnim.channels.push_back(std::move(outChannel));
+            }
+
+            result.model.animations.push_back(std::move(outAnim));
+        }
+    }
+    result.model.summary.animationCount = result.model.animations.size();
+    for (const ImportedAnimation& anim : result.model.animations) {
+        result.model.summary.animationDuration = std::max(result.model.summary.animationDuration, anim.duration);
     }
 
     if (adapter.sawMissingBuffer()) {

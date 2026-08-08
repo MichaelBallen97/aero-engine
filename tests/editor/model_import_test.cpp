@@ -39,6 +39,7 @@ constexpr std::string_view MATERIALS_FIXTURE = AERO_ASSET_FIXTURES_DIR "/materia
 constexpr std::string_view DAMAGED_FIXTURE = AERO_ASSET_FIXTURES_DIR "/damaged.gltf";
 constexpr std::string_view HIERARCHY_FIXTURE = AERO_ASSET_FIXTURES_DIR "/hierarchy.gltf";
 constexpr std::string_view ASYMMETRIC_FIXTURE = AERO_ASSET_FIXTURES_DIR "/asymmetric.gltf";
+constexpr std::string_view SKINNED_FIXTURE = AERO_ASSET_FIXTURES_DIR "/skinned.gltf";
 
 // AC-17's own text: the GLB counterpart is NOT a committed binary. It is assembled here from a JSON
 // string and an optional BIN chunk, so the 12-byte header ("glTF", version 2, total length), the two
@@ -1309,6 +1310,367 @@ TEST_CASE(
     }
 }
 
+// ---- the glTF backend, phases 7-8: skins and animation clips (Step 7) -------------------------------
+//
+// skinned.gltf's shape (§D-11): one skin, four joints (nodes 0-3), non-identity inverse bind matrices
+// (joint i's translation column is (10i+1, 10i+2, 10i+3), rotation/scale block identity), and three
+// animation clips -- StepAnim (translation on node 0, plus a 'weights' channel that must be skipped),
+// LinearAnim (rotation on node 1), CubicAnim (scale on node 2, CUBICSPLINE).
+
+TEST_CASE(
+    "model_import: skinned.gltf's skin imports its joints in source order with exactly as many "
+    "inverse bind matrices as joints (MI80, AC-31, INV-M7)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(SKINNED_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("skinned.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.skins.size() == 1);
+    const auto& skin = result.model.skins[0];
+    CHECK(skin.name == "TestSkin");
+    const std::vector<std::uint32_t> expectedJoints = {0, 1, 2, 3};
+    CHECK(skin.joints == expectedJoints);
+    CHECK(skin.skeletonRoot == 0);
+    REQUIRE(skin.inverseBindMatrices.size() == skin.joints.size());
+    CHECK(result.model.summary.skinCount == 1);
+    CHECK(result.model.summary.jointCount == 4);
+}
+
+TEST_CASE(
+    "model_import: a skin with no inverseBindMatrices accessor yields joints.size() identity "
+    "matrices, never an empty vector, at either depth (MI81, AC-32)") {
+    const std::string doc = R"({"asset": {"version": "2.0"}, "nodes": [{}, {}], "skins": )"
+                            R"([{"name": "NoIbmSkin", "joints": [0, 1]}]})";
+    SUBCASE("Structure depth") {
+        const ImportResult result =
+            importModel("no-ibm.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+        REQUIRE(result.model.skins.size() == 1);
+        REQUIRE(result.model.skins[0].inverseBindMatrices.size() == 2);
+        CHECK(result.model.skins[0].inverseBindMatrices[0] == engine::Mat4::identity());
+        CHECK(result.model.skins[0].inverseBindMatrices[1] == engine::Mat4::identity());
+    }
+    SUBCASE("Full depth") {
+        const ImportResult result =
+            importModel("no-ibm.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+        REQUIRE(result.model.skins.size() == 1);
+        REQUIRE(result.model.skins[0].inverseBindMatrices.size() == 2);
+        CHECK(result.model.skins[0].inverseBindMatrices[0] == engine::Mat4::identity());
+        CHECK(result.model.skins[0].inverseBindMatrices[1] == engine::Mat4::identity());
+    }
+}
+
+TEST_CASE(
+    "model_import: a joint/inverse-bind-matrix count mismatch is a warning and the whole skin is "
+    "skipped, never a truncated palette (MI82, AC-33)") {
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "nodes": [{}, {}], "skins": [{"name": "Mismatched", )"
+        R"("joints": [0, 1], "inverseBindMatrices": 0}], "accessors": [{"bufferView": 0, )"
+        R"("componentType": 5126, "count": 1, "type": "MAT4"}], "bufferViews": [{"buffer": 0, )"
+        R"("byteOffset": 0, "byteLength": 64}], "buffers": [{"byteLength": 64, "uri": )"
+        R"("data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="}]})";
+    const ImportResult result = importModel("mismatch.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.model.skins.empty());
+    bool sawMismatchWarning = false;
+    for (const std::string& w : result.warnings) {
+        if (w.find("inverse bind matri") != std::string::npos) {
+            sawMismatchWarning = true;
+        }
+    }
+    CHECK(sawMismatchWarning);
+}
+
+TEST_CASE(
+    "model_import: a skin whose joints array names an out-of-range node index is skipped with a "
+    "warning (MI83)") {
+    const std::string doc = R"({"asset": {"version": "2.0"}, "nodes": [{}], "skins": )"
+                            R"([{"name": "OutOfRange", "joints": [0, 99]}]})";
+    const ImportResult result =
+        importModel("bad-joint.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.model.skins.empty());
+    bool sawOutOfRangeWarning = false;
+    for (const std::string& w : result.warnings) {
+        if (w.find("out of range") != std::string::npos) {
+            sawOutOfRangeWarning = true;
+        }
+    }
+    CHECK(sawOutOfRangeWarning);
+}
+
+TEST_CASE(
+    "model_import: MAX_JOINTS_PER_SKIN truncates the document and skips that skin, keeping a "
+    "coherent smaller model (MI84, AC-42, D15)") {
+    std::string doc = R"({"asset": {"version": "2.0"}, "nodes": [{}], "skins": [{"joints": [)";
+    for (std::size_t i = 0; i < engine::editor::MAX_JOINTS_PER_SKIN + 1; ++i) {
+        if (i != 0) {
+            doc += ',';
+        }
+        doc += '0';
+    }
+    doc += "]}]}";
+    const ImportResult result =
+        importModel("many-joints.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Truncated);
+    CHECK_FALSE(result.message.empty());
+    CHECK(result.model.skins.empty());
+}
+
+TEST_CASE(
+    "model_import: settings.scale scales ONLY the inverse bind matrices' translation column; the "
+    "rotation/scale block does not (MI85, AC-30, plan A22)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(SKINNED_FIXTURE);
+    REQUIRE(fixture.ok);
+    ImportSettings settings;
+    settings.scale = 2.0F;
+    const ImportResult result = importModel("skinned.gltf", "", asBytes(fixture.text), settings, ImportDepth::Full, {});
+    REQUIRE(result.model.skins.size() == 1);
+    REQUIRE(result.model.skins[0].inverseBindMatrices.size() == 4);
+
+    const engine::Mat4& ibm0 = result.model.skins[0].inverseBindMatrices[0];
+    // The rotation/scale block -- UNCHANGED.
+    CHECK(ibm0.columns[0].x == doctest::Approx(1.0F));
+    CHECK(ibm0.columns[1].y == doctest::Approx(1.0F));
+    CHECK(ibm0.columns[2].z == doctest::Approx(1.0F));
+    // The translation column -- scaled; w is left untouched (it is not a coordinate).
+    CHECK(ibm0.columns[3].x == doctest::Approx(2.0F));  // 1 * 2
+    CHECK(ibm0.columns[3].y == doctest::Approx(4.0F));  // 2 * 2
+    CHECK(ibm0.columns[3].z == doctest::Approx(6.0F));  // 3 * 2
+    CHECK(ibm0.columns[3].w == doctest::Approx(1.0F));
+
+    const engine::Mat4& ibm3 = result.model.skins[0].inverseBindMatrices[3];
+    CHECK(ibm3.columns[3].x == doctest::Approx(62.0F));  // 31 * 2
+    CHECK(ibm3.columns[3].y == doctest::Approx(64.0F));  // 32 * 2
+    CHECK(ibm3.columns[3].z == doctest::Approx(66.0F));  // 33 * 2
+}
+
+TEST_CASE(
+    "model_import: skinned.gltf's three clips import every surviving channel's target node, path "
+    "and interpolation correctly, with duration equal to the max sample time and times strictly "
+    "increasing (MI86, AC-34)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(SKINNED_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("skinned.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.animations.size() == 3);
+    using engine::editor::AnimationInterpolation;
+    using engine::editor::AnimationPath;
+
+    const auto& stepAnim = result.model.animations[0];
+    CHECK(stepAnim.name == "StepAnim");
+    REQUIRE(stepAnim.channels.size() == 1);  // the weights channel was skipped (MI89)
+    CHECK(stepAnim.channels[0].targetNode == 0);
+    CHECK(stepAnim.channels[0].path == AnimationPath::Translation);
+    CHECK(stepAnim.channels[0].interpolation == AnimationInterpolation::Step);
+    CHECK(stepAnim.duration == doctest::Approx(1.0F));
+    const std::vector<float> stepTimes = {0.0F, 0.5F, 1.0F};
+    CHECK(stepAnim.channels[0].times == stepTimes);
+    for (std::size_t i = 1; i < stepAnim.channels[0].times.size(); ++i) {
+        CHECK(stepAnim.channels[0].times[i] > stepAnim.channels[0].times[i - 1]);
+    }
+
+    const auto& linearAnim = result.model.animations[1];
+    CHECK(linearAnim.name == "LinearAnim");
+    REQUIRE(linearAnim.channels.size() == 1);
+    CHECK(linearAnim.channels[0].targetNode == 1);
+    CHECK(linearAnim.channels[0].path == AnimationPath::Rotation);
+    CHECK(linearAnim.channels[0].interpolation == AnimationInterpolation::Linear);
+    CHECK(linearAnim.duration == doctest::Approx(0.75F));
+
+    const auto& cubicAnim = result.model.animations[2];
+    CHECK(cubicAnim.name == "CubicAnim");
+    REQUIRE(cubicAnim.channels.size() == 1);
+    CHECK(cubicAnim.channels[0].targetNode == 2);
+    CHECK(cubicAnim.channels[0].path == AnimationPath::Scale);
+    CHECK(cubicAnim.channels[0].interpolation == AnimationInterpolation::CubicSpline);
+    CHECK(cubicAnim.duration == doctest::Approx(2.0F));
+
+    CHECK(result.model.summary.animationCount == 3);
+    CHECK(result.model.summary.animationDuration == doctest::Approx(2.0F));  // the longest clip
+}
+
+TEST_CASE(
+    "model_import: the CUBICSPLINE clip stores three values per key, in glTF's own in-tangent / "
+    "value / out-tangent order, and the channel is flagged accordingly (MI87, AC-35, INV-M6)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(SKINNED_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("skinned.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.model.animations.size() == 3);
+    REQUIRE(result.model.animations[2].channels.size() == 1);
+    const auto& channel = result.model.animations[2].channels[0];
+    CHECK(channel.interpolation == engine::editor::AnimationInterpolation::CubicSpline);
+    REQUIRE(channel.times.size() == 2);
+    REQUIRE(channel.values.size() == channel.times.size() * 3);
+    // key 0: in-tangent (0,0,0), value (1,1,1), out-tangent (0.1,0.1,0.1) -- glTF's own order.
+    CHECK(channel.values[0].x == doctest::Approx(0.0F));
+    CHECK(channel.values[1].x == doctest::Approx(1.0F));
+    CHECK(channel.values[2].x == doctest::Approx(0.1F));
+    // key 1: in-tangent (0.2,0.2,0.2), value (2,2,2), out-tangent (0,0,0).
+    CHECK(channel.values[3].x == doctest::Approx(0.2F));
+    CHECK(channel.values[4].x == doctest::Approx(2.0F));
+    CHECK(channel.values[5].x == doctest::Approx(0.0F));
+    // Widened to Vec4 with w = 0 for glTF's three-component paths.
+    CHECK(channel.values[1].w == doctest::Approx(0.0F));
+}
+
+TEST_CASE("model_import: the STEP and LINEAR clips store exactly one value per key (MI88)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(SKINNED_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("skinned.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.model.animations.size() == 3);
+    REQUIRE(result.model.animations[0].channels.size() == 1);
+    REQUIRE(result.model.animations[1].channels.size() == 1);
+    const auto& stepChannel = result.model.animations[0].channels[0];
+    CHECK(stepChannel.values.size() == stepChannel.times.size());
+    const auto& linearChannel = result.model.animations[1].channels[0];
+    CHECK(linearChannel.values.size() == linearChannel.times.size());
+    // Rotation values arrive in glTF's own {x,y,z,w} order, un-reordered.
+    REQUIRE(linearChannel.values.size() == 3);
+    CHECK(linearChannel.values[1].x == doctest::Approx(0.1F));
+    CHECK(linearChannel.values[1].y == doctest::Approx(0.2F));
+    CHECK(linearChannel.values[1].z == doctest::Approx(0.3F));
+    CHECK(linearChannel.values[1].w == doctest::Approx(0.4F));
+}
+
+TEST_CASE(
+    "model_import: a weights (morph) animation channel is skipped with exactly one warning; the "
+    "clip's other channel imports normally (MI89, AC-36, D12)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(SKINNED_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult result =
+        importModel("skinned.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.model.animations.size() == 3);
+    const auto& stepAnim = result.model.animations[0];
+    REQUIRE(stepAnim.channels.size() == 1);
+    CHECK(stepAnim.channels[0].path == engine::editor::AnimationPath::Translation);
+    std::size_t weightsWarnings = 0;
+    for (const std::string& w : result.warnings) {
+        if (w.find("weights") != std::string::npos) {
+            ++weightsWarnings;
+        }
+    }
+    CHECK(weightsWarnings == 1);
+}
+
+TEST_CASE(
+    "model_import: a channel whose keyframe times are not strictly increasing is skipped with a "
+    "warning, never sorted (MI90, AC-34)") {
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "nodes": [{}], "animations": [{"channels": [{"sampler": 0, )"
+        R"("target": {"node": 0, "path": "translation"}}], "samplers": [{"input": 0, "output": 1}]}], )"
+        R"("accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "SCALAR"}, )"
+        R"({"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"}], "bufferViews": )"
+        R"([{"buffer": 0, "byteOffset": 0, "byteLength": 12}, {"buffer": 0, "byteOffset": 12, )"
+        R"("byteLength": 36}], "buffers": [{"byteLength": 48, "uri": )"
+        R"("data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAEAAAMA+AACAPwAAAAAAAAAAAAAAQAAAAAAAAAAAAABAQAAAAAAAAAAA"}]})";
+    const ImportResult result =
+        importModel("not-increasing.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.model.animations.size() == 1);
+    CHECK(result.model.animations[0].channels.empty());  // skipped, never sorted into shape
+    bool sawWarning = false;
+    for (const std::string& w : result.warnings) {
+        if (w.find("increasing") != std::string::npos) {
+            sawWarning = true;
+        }
+    }
+    CHECK(sawWarning);
+}
+
+TEST_CASE(
+    "model_import: a channel targeting an out-of-range node is skipped with a warning; the clip "
+    "survives with its other channel intact (MI91, E23)") {
+    const std::string doc = R"({"asset": {"version": "2.0"}, "nodes": [{}], "animations": [{"channels": [)"
+                            R"({"sampler": 0, "target": {"node": 99, "path": "translation"}}, )"
+                            R"({"sampler": 0, "target": {"node": 0, "path": "scale"}}], )"
+                            R"("samplers": [{"input": 0, "output": 1}]}], "accessors": [{"bufferView": 0, )"
+                            R"("componentType": 5126, "count": 1, "type": "SCALAR"}, {"bufferView": 1, )"
+                            R"("componentType": 5126, "count": 1, "type": "VEC3"}], "bufferViews": [{"buffer": 0, )"
+                            R"("byteOffset": 0, "byteLength": 4}, {"buffer": 0, "byteOffset": 4, "byteLength": 12}], )"
+                            R"("buffers": [{"byteLength": 16, "uri": )"
+                            R"("data:application/octet-stream;base64,AAAAAAAAgD8AAIA/AACAPw=="}]})";
+    const ImportResult result =
+        importModel("bad-target.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.model.animations.size() == 1);
+    REQUIRE(result.model.animations[0].channels.size() == 1);  // the out-of-range channel was dropped
+    CHECK(result.model.animations[0].channels[0].targetNode == 0);
+    CHECK(result.model.animations[0].channels[0].path == engine::editor::AnimationPath::Scale);
+    bool sawWarning = false;
+    for (const std::string& w : result.warnings) {
+        if (w.find("out of range") != std::string::npos) {
+            sawWarning = true;
+        }
+    }
+    CHECK(sawWarning);
+}
+
+TEST_CASE(
+    "model_import: importAnimations == false and importSkins == false each yield zero of their "
+    "kind and leave everything else identical (MI92, AC-37)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(SKINNED_FIXTURE);
+    REQUIRE(fixture.ok);
+    ImportSettings disabled;
+    disabled.importAnimations = false;
+    disabled.importSkins = false;
+    const ImportResult withBoth =
+        importModel("skinned.gltf", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult withoutEither =
+        importModel("skinned.gltf", "", asBytes(fixture.text), disabled, ImportDepth::Full, {});
+
+    CHECK(withoutEither.model.skins.empty());
+    CHECK(withoutEither.model.summary.skinCount == 0);
+    CHECK(withoutEither.model.summary.jointCount == 0);
+    CHECK(withoutEither.model.animations.empty());
+    CHECK(withoutEither.model.summary.animationCount == 0);
+    CHECK(withoutEither.model.summary.animationDuration == doctest::Approx(0.0F));
+
+    CHECK_FALSE(withBoth.model.skins.empty());
+    CHECK_FALSE(withBoth.model.animations.empty());
+
+    // Everything else -- field by field.
+    REQUIRE(withoutEither.model.nodes.size() == withBoth.model.nodes.size());
+    for (std::size_t i = 0; i < withBoth.model.nodes.size(); ++i) {
+        CHECK(withoutEither.model.nodes[i].name == withBoth.model.nodes[i].name);
+        CHECK(withoutEither.model.nodes[i].translation.x == doctest::Approx(withBoth.model.nodes[i].translation.x));
+        CHECK(withoutEither.model.nodes[i].rotation.w == doctest::Approx(withBoth.model.nodes[i].rotation.w));
+        CHECK(withoutEither.model.nodes[i].scale.x == doctest::Approx(withBoth.model.nodes[i].scale.x));
+    }
+    CHECK(withoutEither.model.roots == withBoth.model.roots);
+    CHECK(withoutEither.model.meshes.size() == withBoth.model.meshes.size());
+    CHECK(withoutEither.model.materials.size() == withBoth.model.materials.size());
+    CHECK(withoutEither.model.images.size() == withBoth.model.images.size());
+    CHECK(withoutEither.externalUris == withBoth.externalUris);
+    CHECK(withoutEither.status == withBoth.status);
+}
+
+TEST_CASE(
+    "model_import: MAX_ANIMATION_KEYS_PER_MODEL truncates a document whose accessor.count claims "
+    "the excess WITHOUT providing the bytes, and completes quickly (MI93, AC-42, D15)") {
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "nodes": [{}], "animations": [{"channels": [{"sampler": 0, )"
+        R"("target": {"node": 0, "path": "translation"}}], "samplers": [{"input": 0, "output": 1}]}], )"
+        R"("accessors": [{"bufferView": 0, "componentType": 5126, "count": 2000001, "type": "SCALAR"}, )"
+        R"({"bufferView": 1, "componentType": 5126, "count": 1, "type": "VEC3"}], "bufferViews": )"
+        R"([{"buffer": 0, "byteOffset": 0, "byteLength": 4}, {"buffer": 0, "byteOffset": 4, )"
+        R"("byteLength": 12}], "buffers": [{"byteLength": 16, "uri": )"
+        R"("data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAA=="}]})";
+    const ImportResult result =
+        importModel("huge-keys.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Truncated);
+    CHECK_FALSE(result.message.empty());
+    REQUIRE(result.model.animations.size() == 1);
+    CHECK(result.model.animations[0].channels.empty());
+}
+
+// ---- the glTF backend, F7b's pin, extended a third time (Step 7) -------------------------------------
+//
+// MI58's role (plan §S, Step 5's table): "asymmetric.gltf, all three halves at Full depth" -- the TRS
+// half was written at Step 5 as MI57 (Structure depth) and re-asserted here; the mesh half was written
+// at Step 6; this step finishes it with the skin half, so MI58 is fully folded into MI40b and is never
+// a separate case of its own.
+
 TEST_CASE(
     "model_import: asymmetric.gltf at Full depth -- the triangle's positions and winding match "
     "the source exactly (MI40b, AC-30b, F7b's pin, sabotage S29/S30's discriminator)") {
@@ -1349,4 +1711,33 @@ TEST_CASE(
     CHECK(prim.indices[0] == 0);
     CHECK(prim.indices[1] == 1);
     CHECK(prim.indices[2] == 2);
+
+    // The skin half (Step 7, finishing MI58's role): the single joint and its non-identity inverse
+    // bind matrix, exactly the source's sixteen DISTINCT values, in the source's own column-major
+    // order -- a transposed or reordered read fails on the first component that differs, exactly like
+    // the triangle and TRS halves above.
+    REQUIRE(result.model.skins.size() == 1);
+    const auto& skin = result.model.skins[0];
+    CHECK(skin.name == "AsymmetricSkin");
+    REQUIRE(skin.joints.size() == 1);
+    CHECK(skin.joints[0] == 0);
+    CHECK(skin.skeletonRoot == 0);
+    REQUIRE(skin.inverseBindMatrices.size() == 1);
+    const engine::Mat4& ibm = skin.inverseBindMatrices[0];
+    CHECK(ibm.columns[0].x == doctest::Approx(1.0F));
+    CHECK(ibm.columns[0].y == doctest::Approx(2.0F));
+    CHECK(ibm.columns[0].z == doctest::Approx(3.0F));
+    CHECK(ibm.columns[0].w == doctest::Approx(4.0F));
+    CHECK(ibm.columns[1].x == doctest::Approx(5.0F));
+    CHECK(ibm.columns[1].y == doctest::Approx(6.0F));
+    CHECK(ibm.columns[1].z == doctest::Approx(7.0F));
+    CHECK(ibm.columns[1].w == doctest::Approx(8.0F));
+    CHECK(ibm.columns[2].x == doctest::Approx(9.0F));
+    CHECK(ibm.columns[2].y == doctest::Approx(10.0F));
+    CHECK(ibm.columns[2].z == doctest::Approx(11.0F));
+    CHECK(ibm.columns[2].w == doctest::Approx(12.0F));
+    CHECK(ibm.columns[3].x == doctest::Approx(13.0F));
+    CHECK(ibm.columns[3].y == doctest::Approx(14.0F));
+    CHECK(ibm.columns[3].z == doctest::Approx(15.0F));
+    CHECK(ibm.columns[3].w == doctest::Approx(16.0F));
 }
