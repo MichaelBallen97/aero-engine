@@ -71,6 +71,7 @@ add_library(aero_editor_core STATIC
     src/asset_watcher.cpp       # task 3.1.4 -- the budgeted assets-tree change probe (PURE + one walk)
     src/model_import.cpp        # task 3.2.1 -- the canonical model + every pure helper (NO fastgltf)
     src/gltf_import.cpp         # task 3.2.1 -- the ONLY fastgltf TU; NO file operation at all
+    src/model_import_session.cpp # task 3.2.1 -- the on-demand two-pass driver; the ONE write
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
