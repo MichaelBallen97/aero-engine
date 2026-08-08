@@ -483,6 +483,46 @@ TEST_CASE("model_import: MAX_EXTERNAL_URIS truncates a document and names the ca
 }
 
 TEST_CASE(
+    "model_import: more than MAX_IMPORT_WARNINGS refusals cap `warnings` while `warningTotal` keeps "
+    "the true count (MI44b, D15, seed S27)") {
+    // The sabotage matrix's own gap, closed: BEFORE this case, `git grep MAX_IMPORT_WARNINGS -- tests/`
+    // was EMPTY and the highest warningTotal any case reached was 4 (MI40), against a cap of 20 -- so
+    // seed S27 (dropping addWarning's `warnings.size() < MAX_IMPORT_WARNINGS` guard) reddened nothing
+    // anywhere in the suite. A batch of refused image URIs is the cheapest warning source there is:
+    // each costs one classifyUri refusal and contributes NO externalUris entry, so no other cap
+    // (MAX_EXTERNAL_URIS in particular) interferes with the count.
+    constexpr std::size_t REFUSAL_COUNT = engine::editor::MAX_IMPORT_WARNINGS + 5U;  // 25 -- comfortably over
+    std::string doc = R"({"asset":{"version":"2.0"},"images":[)";
+    for (std::size_t i = 0; i < REFUSAL_COUNT; ++i) {
+        if (i != 0) {
+            doc += ',';
+        }
+        doc += std::format(R"({{"uri":"http://evil.example/x{}.png"}})", i);
+    }
+    doc += "]}";
+    const ImportResult result =
+        importModel("many-refusals.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+
+    // A refusal is a WARNING, never a failure (AC-5) -- the import itself still succeeds.
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == REFUSAL_COUNT);
+    CHECK_FALSE(result.model.images.front().refusal.empty());
+    CHECK_FALSE(result.model.images.back().refusal.empty());
+
+    // THE TWO ASSERTIONS SEED S27 CANNOT SURVIVE: the list is capped, the total is not.
+    CHECK(result.warnings.size() <= engine::editor::MAX_IMPORT_WARNINGS);
+    CHECK(result.warnings.size() == engine::editor::MAX_IMPORT_WARNINGS);
+    CHECK(result.warningTotal == REFUSAL_COUNT);
+
+    // The cap keeps the EARLIEST warnings and drops the tail -- a cap that kept the last 20 instead
+    // would satisfy both size assertions above while silently discarding the first thing that went
+    // wrong, which is the one a reader needs most.
+    REQUIRE(result.warnings.size() == engine::editor::MAX_IMPORT_WARNINGS);
+    CHECK(result.warnings.front().find("image 0 ") != std::string::npos);
+    CHECK(result.warnings.back().find("image 19 ") != std::string::npos);
+}
+
+TEST_CASE(
     "model_import: MAX_EMBEDDED_BYTES truncates an over-cap embedded image, checked AFTER the "
     "allocation it bounds (MI46, AC-42, plan §A-8)") {
     // A GLB-style image sourced from a bufferView whose DECLARED byteLength exceeds the cap. The
