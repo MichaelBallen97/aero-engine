@@ -2313,3 +2313,58 @@ TEST_CASE(
         CHECK(dep != chairRecord->guid);  // INV-M8: never a self-edge
     }
 }
+
+TEST_CASE(
+    "asset_database: a model whose buffer is a real EXTERNAL .bin still probes clean -- the scan runs "
+    "Structure, never Full (AD-i13, INV-M4, seed S9)") {
+    // THE GAP THIS CLOSES. Seed S9 (phase 7.5 running ImportDepth::Full instead of Structure) reddened
+    // nothing -- the contingency the plan itself flagged. The measured root cause is the fixtures, not
+    // the assertions: EVERY buffer in every committed .gltf fixture uses a `data:` URI, which fastgltf
+    // decodes during parse, so EditorBufferAdapter's sources::URI arm never runs and a Full probe
+    // succeeds identically to a Structure one.
+    //
+    // A GENUINE external .bin makes the two depths structurally different at scan time, because phase
+    // 7.5 hands importModel an EMPTY external-buffer span ({}) by construction -- it never reads a
+    // dependency's bytes, only the model's own. So:
+    //   Structure -> no accessor is touched at all       -> Ok, importer recorded, dependency recorded
+    //   Full      -> the adapter is asked for the buffer -> MissingBuffer -> an import FAILURE, no
+    //                                                       importer, no dependencies, nothing probed
+    // The .bin is deliberately present on disk WITH valid bytes: that is what makes this a proof that
+    // the scan does not decode a vertex, rather than a proof that the file was missing.
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.gltf"),
+              R"({"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0},"mode":4}]}],)"
+              R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],)"
+              R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],)"
+              R"("buffers":[{"byteLength":36,"uri":"chair.bin"}]})");
+    writeFile(dir.join("models/chair.bin"), std::string(36, '\0'));  // 3 * VEC3 of float zeroes
+
+    AssetDatabase db;
+    GuidGenerator gen(1013);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(report.status == ScanStatus::Ok);
+
+    // ALL FIVE of these invert under seed S9.
+    CHECK(report.modelsProbed == 1);
+    CHECK(report.importFailureTotal == 0);
+    CHECK(report.importFailures.empty());
+    CHECK(report.dependenciesRecorded == 1);
+
+    const Guid binGuid = *db.guidForPath("models/chair.bin");
+    REQUIRE(binGuid.valid());
+    const AssetRecord* const chairRecord = db.findByPath("models/chair.gltf");
+    REQUIRE(chairRecord != nullptr);
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(chairRecord->guid);
+    REQUIRE(entry != nullptr);
+    CHECK(entry->importer == "gltf");
+    CHECK(entry->importerVersion == 1);
+    REQUIRE(entry->dependencies.size() == 1);
+    CHECK(entry->dependencies[0] == binGuid);
+}
