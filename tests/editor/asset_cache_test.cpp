@@ -775,22 +775,38 @@ TEST_CASE("asset_cache: MetaChanged for its own cause (IP4, AC-22)") {
     CHECK(result.changed == 1);
 }
 
-TEST_CASE("asset_cache: ImporterChanged for its own cause -- needs an ENGAGED, differing probe (IP5, AC-22, D16)") {
-    // A hand-built previous entry with importer "gltf"; the input's PROBE names a different importer
-    // text. task 3.2.1 (D9): a DISENGAGED probe can never produce ImporterChanged (AC-p8 proves that
-    // half directly) -- this case is the ENGAGED half.
-    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
-    const ImportPlanResult result =
-        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), ProbeOutcome{"obj", 3, {}})}, previous);
-    REQUIRE(result.entries.size() == 1);
-    CHECK(result.entries[0].change == ImportChange::ImporterChanged);
-    CHECK(result.changed == 1);
+TEST_CASE(
+    "asset_cache: ImporterChanged fires from the file name's STATIC expectation alone -- no probe "
+    "needed (IP5, AC-22, D16, code review SHOULD-FIX 7, corrected)") {
+    // CORRECTED (code review): this case used to claim ImporterChanged "needs an ENGAGED, differing
+    // probe" -- true of the OLD, structurally unreachable comparison (a disengaged probe compared
+    // against the previous entry's OWN value is a tautology, so ImporterChanged could never fire in
+    // production; AC-p8 now proves the corrected mechanism directly). The NEW comparison is a pure
+    // function of the file name and needs no probe at all -- both scenarios below construct their
+    // ImportInput with NO probe engaged whatsoever.
+    //
+    // Scenario 1: a .gltf cached with NO importer recorded at all -- exactly what an existing project's
+    // Library/asset-cache.json looks like before this build. This is the roadmap's own "start working on
+    // an existing cache" migration case (the plan's own headline example cannot fire until this reports
+    // ImporterChanged at least once).
+    const AssetCacheIndex missingImporter = indexOf({cacheEntry(guidOf(1), "chair.gltf", hashOf(10), hashOf(20))});
+    const ImportPlanResult migrated =
+        planImports({importInput(guidOf(1), "chair.gltf", hashOf(10), hashOf(20))}, missingImporter);
+    REQUIRE(migrated.entries.size() == 1);
+    CHECK(migrated.entries[0].change == ImportChange::ImporterChanged);
+    CHECK(migrated.changed == 1);
+    CHECK(migrated.jobIndices == std::vector<std::size_t>{0});
 
-    // The importer VERSION alone differing is the same cause.
-    const ImportPlanResult versionResult =
-        planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20), ProbeOutcome{"gltf", 4, {}})}, previous);
-    REQUIRE(versionResult.entries.size() == 1);
-    CHECK(versionResult.entries[0].change == ImportChange::ImporterChanged);
+    // Scenario 2: a .gltf cached with a STALE importerVersion -- the reversal condition a future
+    // GLTF_IMPORTER_VERSION bump needs: every model the OLD version imported must re-trigger, with no
+    // probe involved either (a real bump cannot hand planImports an engaged probe -- phase 7.5 runs
+    // strictly after it, every scan).
+    const AssetCacheIndex staleVersion =
+        indexOf({cacheEntry(guidOf(1), "chair.gltf", hashOf(10), hashOf(20), "gltf", 999)});
+    const ImportPlanResult bumped =
+        planImports({importInput(guidOf(1), "chair.gltf", hashOf(10), hashOf(20))}, staleVersion);
+    REQUIRE(bumped.entries.size() == 1);
+    CHECK(bumped.entries[0].change == ImportChange::ImporterChanged);
 }
 
 TEST_CASE("asset_cache: Unhashable -- contentHash nullopt, not budget-skipped (IP6, AC-22)") {
@@ -814,7 +830,14 @@ TEST_CASE("asset_cache: NotHashed -- contentHash nullopt, budget-skipped (IP7, A
 }
 
 TEST_CASE("asset_cache: UpToDate when nothing differs (IP8, AC-22, seed S13)") {
-    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20), "gltf", 3)});
+    // code-review SHOULD-FIX 7: the fixture's own (importer, importerVersion) filler was corrected from
+    // ("gltf", 3) to the defaults -- ("", 0) is what planImports NOW expects for a non-model path like
+    // "a.png" (isImportableModelName("a.png") is false), so a NON-default filler here would make this
+    // case report ImporterChanged instead of UpToDate for a reason unrelated to what it tests. This case
+    // doubles as SHOULD-FIX 7's own regression guard: a non-model asset whose recorded importer matches
+    // its ("", 0) expectation must stay UpToDate, or an existing project would report every single
+    // non-model asset as changed on every scan, forever.
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.png", hashOf(10), hashOf(20))});
     const ImportPlanResult result = planImports({importInput(guidOf(1), "a.png", hashOf(10), hashOf(20))}, previous);
     REQUIRE(result.entries.size() == 1);
     CHECK(result.entries[0].change == ImportChange::UpToDate);
@@ -1360,9 +1383,16 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "asset_cache: planImports' ImporterChanged needs an ENGAGED probe -- disengaged never fires it "
-    "(AC-p8, §D-5's ordering trap)") {
-    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.gltf", hashOf(10), hashOf(20), "gltf", 1)});
+    "asset_cache: planImports' ImporterChanged is driven by the file name alone -- probe engagement "
+    "makes no difference either way (AC-p8, code review SHOULD-FIX 7, corrected)") {
+    // CORRECTED (code review): this case used to claim (and prove) that ImporterChanged NEEDS an
+    // engaged probe, and that a disengaged one can never fire it -- true of the OLD comparison, and
+    // exactly why it was structurally unreachable during a real scan (planImports always sees a
+    // disengaged probe; phase 7.5 runs strictly after it, every scan, forever). The FIX inverts this:
+    // the decision no longer reads `probe` AT ALL, so an engaged and a disengaged probe over the
+    // IDENTICAL previous entry must now agree.
+    // No importer recorded at all against this previous entry.
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "a.gltf", hashOf(10), hashOf(20))});
 
     const std::vector<ImportInput> engaged = {
         importInput(guidOf(1), "a.gltf", hashOf(10), hashOf(20), ProbeOutcome{"obj", 1, {}})};
@@ -1374,7 +1404,10 @@ TEST_CASE(
         importInput(guidOf(1), "a.gltf", hashOf(10), hashOf(20))};  // probe stays nullopt
     const ImportPlanResult disengagedPlan = planImports(disengaged, previous);
     REQUIRE(disengagedPlan.entries.size() == 1);
-    CHECK(disengagedPlan.entries[0].change == ImportChange::UpToDate);
+    // BEFORE this fix: a disengaged probe could never report ImporterChanged -- this would have been
+    // UpToDate, the exact ordering trap that made the whole decision unreachable in production.
+    CHECK(disengagedPlan.entries[0].change == ImportChange::ImporterChanged);
+    CHECK(engagedPlan.entries[0].change == disengagedPlan.entries[0].change);
 }
 
 // =====================================================================================================

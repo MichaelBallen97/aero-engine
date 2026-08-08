@@ -8,7 +8,16 @@
 // Step 4 landed parseAssetCache / writeAssetCacheText / importChangeLabel / AssetCacheIndex::find.
 // Step 6 added planImports and commitImports, the pure change-detection cascade and its commit.
 // Step 7 (this revision) adds planReattachments, D13's orphan re-attachment.
+//
+// code-review SHOULD-FIX 7 (task 3.2.1): `asset_cache.hpp` itself still names NO other editor header
+// (the format's own invariant, unchanged) -- this is the .cpp ONLY, and the dependency direction stays
+// safe: model_import.hpp includes nothing that reaches back here (confirmed: its own includes are
+// aero/core/{guid,math}.hpp, aero/editor/import_settings.hpp and aero/editor/scene_bounds.hpp, none of
+// which name asset_cache.hpp or asset_meta.hpp). Needed for isImportableModelName -- a SECOND, drifting
+// copy of that predicate here would silently stop discriminating the moment 3.2.2 (ufbx) teaches the
+// real one a new extension, permanently reintroducing this same finding for every future importer.
 #include <aero/editor/asset_cache.hpp>
+#include <aero/editor/model_import.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/json_writer.hpp>
@@ -424,23 +433,26 @@ ImportPlanResult planImports(std::vector<ImportInput> inputs, const AssetCacheIn
                 entry.change = ImportChange::SourceChanged;
             } else if (previousEntry->metaHash != input.metaHash) {
                 entry.change = ImportChange::MetaChanged;
-            } else if (const std::string_view wantImporter = input.probe.has_value()
-                                                                 ? std::string_view(input.probe->importer)
-                                                                 : std::string_view(previousEntry->importer);
-                       previousEntry->importer != wantImporter ||
-                       previousEntry->importerVersion !=
-                           (input.probe.has_value() ? input.probe->importerVersion : previousEntry->importerVersion)) {
-                // task 3.2.1 (D9): compares the previous entry against what THIS scan would COMMIT,
-                // which is the probe when engaged. A disengaged probe must compare EQUAL to itself, or
-                // every unprobed asset would report ImporterChanged on every scan -- the exact
-                // oscillation D9 exists to prevent, moved from commitImports into planImports here.
+            } else if (const bool expectsModelImporter = isImportableModelName(input.relativePath);
+                       previousEntry->importer !=
+                           (expectsModelImporter ? std::string_view(GLTF_IMPORTER_NAME) : std::string_view()) ||
+                       previousEntry->importerVersion != (expectsModelImporter ? GLTF_IMPORTER_VERSION : 0U)) {
+                // code-review SHOULD-FIX 7: compares the previous entry against the STATICALLY EXPECTED
+                // (importer, importerVersion) pair for this file -- a PURE function of the relativePath
+                // ALONE, needing no probe at all.
                 //
-                // Ordering trap (stated because it is the subtlest thing in this task): planImports runs
-                // BEFORE phase 7.5, so `input.probe` is ALWAYS disengaged when planImports sees it during
-                // a real scan -- this branch is a tautology in production and only ever fires in a unit
-                // case that hands planImports an ENGAGED probe. That is correct and intended: an importer
-                // change is detected on the scan AFTER the probe recorded it, exactly like a dependency
-                // change (D8/E11).
+                // REPLACES the original probe-based comparison, which was structurally unreachable in
+                // production: planImports runs BEFORE phase 7.5 (§D-5's own ordering trap), so
+                // `input.probe` was ALWAYS disengaged here, and comparing a disengaged probe against the
+                // previous entry's OWN value is a tautology -- ImporterChanged could never fire for an
+                // otherwise-UpToDate entry, so an existing project's cache never gained an importer
+                // identity until its content or .meta changed for an unrelated reason, and a future
+                // GLTF_IMPORTER_VERSION bump would never re-trigger a single import. This fixes both in
+                // the same stroke: a cache entry written before this build has importer == "" for every
+                // model, which now mismatches "gltf"/GLTF_IMPORTER_VERSION on the very next scan; a
+                // version bump mismatches the OLD recorded version the same way. A non-model's expected
+                // pair is ("", 0) -- exactly `ImportInput`'s own un-probed defaults, so nothing about a
+                // non-model asset's plan changes.
                 entry.change = ImportChange::ImporterChanged;
             } else {
                 entry.change = ImportChange::UpToDate;
