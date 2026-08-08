@@ -1310,6 +1310,89 @@ TEST_CASE(
     }
 }
 
+// ---- sparse accessors (code-review round, BLOCKING-2) -------------------------------------------------
+//
+// git grep -rn 'sparse' tests/ was EMPTY before these three cases. validateAccessor's sparse check was
+// gated on `accessor.sparse->count > 0`, which is the right gate for copyFromAccessor but wrong for the
+// tools THIS file actually calls: both IterableAccessor's constructor (tools.hpp:588) and
+// AccessorIterator's constructor (tools.hpp:494) branch on `sparse.has_value()` alone and dereference
+// indicesBytes[0] UNCONDITIONALLY. The old check also never bounded the sparse views to their FULL
+// EXTENT, only that they existed and were non-empty -- so an over-running sparse view read past its
+// bufferView.
+
+TEST_CASE(
+    "model_import: a valid sparse accessor overrides exactly its named index; every other index "
+    "comes from the base bufferView, untouched (MI96, code-review BLOCKING-2)") {
+    // 3 base positions, all (0,0,0); sparse overrides index 0 to (1,2,3).
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": )"
+        R"("VEC3", "sparse": {"count": 1, "indices": {"bufferView": 1, "componentType": 5123}, )"
+        R"("values": {"bufferView": 2}}}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": )"
+        R"(36}, {"buffer": 0, "byteOffset": 36, "byteLength": 2}, {"buffer": 0, "byteOffset": 38, )"
+        R"("byteLength": 12}], "buffers": [{"byteLength": 50, "uri": )"
+        R"("data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAQAAAQEA="}]})";
+    const ImportResult result =
+        importModel("sparse-ok.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.positions.size() == 3);
+    CHECK(prim.positions[0].x == doctest::Approx(1.0F));  // overridden by the sparse entry
+    CHECK(prim.positions[0].y == doctest::Approx(2.0F));
+    CHECK(prim.positions[0].z == doctest::Approx(3.0F));
+    CHECK(prim.positions[1].x == doctest::Approx(0.0F));  // from the base bufferView, untouched
+    CHECK(prim.positions[2].x == doctest::Approx(0.0F));
+}
+
+TEST_CASE(
+    "model_import: a sparse accessor with count == 0 and an out-of-range sparse view is refused, "
+    "never dereferenced (MI97, code-review BLOCKING-2, run under ASan/UBSan)") {
+    // Before the fix: `accessor.sparse->count > 0` gated the ENTIRE sparse check, so count == 0 skipped
+    // validation outright -- fastgltf's own constructors dereference indicesBytes[0] regardless of
+    // count, aborting with "reference binding to null pointer" (a Debug abort, exit 134) once bufferView
+    // 99 (which does not exist) resolved to an empty span.
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": 1, "type": )"
+        R"("VEC3", "sparse": {"count": 0, "indices": {"bufferView": 99, "componentType": 5123}, )"
+        R"("values": {"bufferView": 99}}}], "bufferViews": [{"buffer": 0, "byteOffset": 0, )"
+        R"("byteLength": 12}], "buffers": [{"byteLength": 12, "uri": )"
+        R"("data:application/octet-stream;base64,AACgQAAAwEAAAOBA"}]})";
+    const ImportResult result =
+        importModel("sparse-count0.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    CHECK(result.model.meshes[0].primitives.empty());  // POSITION refused -- the whole primitive skipped
+    CHECK_FALSE(result.warnings.empty());
+}
+
+TEST_CASE(
+    "model_import: a sparse accessor whose values view is too small for its declared count is "
+    "refused, never read out of bounds (MI98, code-review BLOCKING-2, run under ASan)") {
+    // 2 base positions; sparse claims 2 overrides, but the values bufferView is declared with room for
+    // only ONE vec3 (12 bytes). Before the fix, the sparse check only confirmed the view was non-empty,
+    // never that it was large enough for `count` entries -- the second override read 12 bytes past the
+    // end of the buffer (an ASan heap-buffer-overflow at tools.hpp:533).
+    const std::string doc =
+        R"({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, )"
+        R"("mode": 4}]}], "accessors": [{"bufferView": 0, "componentType": 5126, "count": 2, "type": )"
+        R"("VEC3", "sparse": {"count": 2, "indices": {"bufferView": 1, "componentType": 5123}, )"
+        R"("values": {"bufferView": 2}}}], "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": )"
+        R"(24}, {"buffer": 0, "byteOffset": 24, "byteLength": 4}, {"buffer": 0, "byteOffset": 28, )"
+        R"("byteLength": 12}], "buffers": [{"byteLength": 40, "uri": )"
+        R"("data:application/octet-stream;base64,)"
+        R"(AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAEEEAABBBAAAQQQ=="}]})";
+    const ImportResult result =
+        importModel("sparse-overrun.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    CHECK(result.model.meshes[0].primitives.empty());  // POSITION refused -- the whole primitive skipped
+    CHECK_FALSE(result.warnings.empty());
+}
+
 // ---- the glTF backend, phases 7-8: skins and animation clips (Step 7) -------------------------------
 //
 // skinned.gltf's shape (§D-11): one skin, four joints (nodes 0-3), non-identity inverse bind matrices

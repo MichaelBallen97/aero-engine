@@ -173,6 +173,16 @@ private:
     mutable bool missingBuffer = false;  // mutable: operator() is const by fastgltf's own contract
 };
 
+// The exact span a tool will touch for `count` elements `stride` bytes apart, the LAST of which needs
+// only `elementSize`: byteOffset + stride*(count-1) + elementSize <= viewLength. Solved for the maximum
+// count that fits in `availableBytes` (the view's length minus its byteOffset), written to avoid ANY
+// overflow -- no multiplication by `count`. Shared by the dense accessor check and both sparse sub-view
+// checks below (code-review BLOCKING-2): the identical arithmetic, so it cannot drift between the three.
+[[nodiscard]] constexpr std::size_t maxElementCount(std::size_t availableBytes, std::size_t stride,
+                                                    std::size_t elementSize) noexcept {
+    return availableBytes >= elementSize ? (availableBytes - elementSize) / stride + 1U : 0U;
+}
+
 // Called before EVERY fastgltf tool invocation. fastgltf ASSERTS on a type mismatch (a Debug abort in
 // our lanes), DEREFERENCES a possibly-disengaged Optional for a sparse accessor with no bufferView
 // (types.hpp's own comment: "Could have no value for sparse morph targets"), and never bounds-checks
@@ -220,18 +230,47 @@ private:
     // The exact span the tools will touch: byteOffset + stride*(count-1) + elementSize. Written to
     // avoid ANY overflow: compare against the remaining length rather than summing.
     const std::size_t available = viewBytes.size() - accessor.byteOffset;
-    const std::size_t maxElements = available >= elementSize ? (available - elementSize) / stride + 1U : 0U;
-    if (accessor.count > maxElements) {
+    if (accessor.count > maxElementCount(available, stride, elementSize)) {
         return false;
     }
-    // Sparse: the same checks for both of its views, and ONLY when count > 0 (copyFromAccessor falls
-    // through to the dense path when sparse->count == 0).
-    if (accessor.sparse.has_value() && accessor.sparse->count > 0) {
+    // code-review BLOCKING-2: unconditional on sparse.has_value() -- matching EXACTLY what fastgltf's
+    // own IterableAccessor ctor (tools.hpp:588) and AccessorIterator ctor (tools.hpp:494) branch on.
+    // NEITHER of those gates on sparse->count > 0: both dereference indicesBytes[0] regardless, so a
+    // "sparse":{"count":0,...} accessor naming an out-of-range bufferView passed validation untouched
+    // and crashed inside AccessorIterator's constructor (a null-pointer reference bind under UBSan,
+    // exit 134). §A-5 item 9 also requires the SAME checks 5-8 for both sparse views, to their FULL
+    // EXTENT -- not merely "the view exists and is non-empty", which is all the previous form checked,
+    // and which let an over-running sparse view read past its bufferView (an ASan heap-buffer-overflow
+    // at tools.hpp:533).
+    if (accessor.sparse.has_value()) {
         const fastgltf::SparseAccessor& s = *accessor.sparse;
+        if (s.count == 0) {
+            return false;  // fastgltf still dereferences it (see above) -- refused outright, no sub-case
+        }
         if (s.indicesBufferView >= asset.bufferViews.size() || s.valuesBufferView >= asset.bufferViews.size()) {
             return false;
         }
-        if (adapter(asset, s.indicesBufferView).empty() || adapter(asset, s.valuesBufferView).empty()) {
+        const fastgltf::span<const std::byte> indicesBytes = adapter(asset, s.indicesBufferView);
+        const fastgltf::span<const std::byte> valuesBytes = adapter(asset, s.valuesBufferView);
+        if (indicesBytes.empty() || valuesBytes.empty()) {
+            return false;
+        }
+        // Per spec, a sparse indices/values bufferView MUST NOT declare byteStride -- fastgltf's own
+        // ctor never consults one for either view (tools.hpp:591/597 always use the TIGHT element
+        // size), so neither does this check.
+        const std::size_t indexElementSize =
+            fastgltf::getElementByteSize(fastgltf::AccessorType::Scalar, s.indexComponentType);
+        const std::size_t valueElementSize = fastgltf::getElementByteSize(accessor.type, accessor.componentType);
+        if (indexElementSize == 0 || valueElementSize == 0) {
+            return false;
+        }
+        if (s.indicesByteOffset > indicesBytes.size() || s.valuesByteOffset > valuesBytes.size()) {
+            return false;
+        }
+        const std::size_t indicesAvailable = indicesBytes.size() - s.indicesByteOffset;
+        const std::size_t valuesAvailable = valuesBytes.size() - s.valuesByteOffset;
+        if (s.count > maxElementCount(indicesAvailable, indexElementSize, indexElementSize) ||
+            s.count > maxElementCount(valuesAvailable, valueElementSize, valueElementSize)) {
             return false;
         }
     }
