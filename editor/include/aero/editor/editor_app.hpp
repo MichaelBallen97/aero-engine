@@ -27,6 +27,9 @@
                                            // which holds a reference and forward-declares.
 #include <aero/editor/entity_ops.hpp>      // a VALUE member (rootOrder) needs RootOrder's definition
 #include <aero/editor/imgui_layer.hpp>
+#include <aero/editor/model_import_session.hpp>  // task 3.2.1 -- a VALUE member (importSession), held
+                                                 // to the same `noexcept = default` move requirement
+                                                 // as assetDatabase and assetWatcher
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/scene_session.hpp>  // task 2.5.1: VALUE members SceneSession/FileFlow need the
                                           // definition, the command_stack.hpp precedent above.
@@ -48,21 +51,24 @@ class Window;  // task 2.5.1 (F14): a POINTER member needs only the name -- a pr
 
 namespace engine::editor {
 
-class ViewportPanel;      // task 2.2.3: src-private (editor/src/viewport_panel.hpp). Only the NAME is
-                          // needed here, so this PUBLIC header stays free of viewport_panel.hpp's
-                          // engine includes and stays ImGui/entt-free.
-class ConsolePanel;       // task 2.2.5: src-private (editor/src/console_panel.hpp). Only the NAME is
-                          // needed here, so this PUBLIC header stays free of console_panel.hpp and
-                          // therefore of <aero/editor/console_model.hpp> as well.
-class EditorCamera;       // task 2.3.1: PUBLIC (editor/include/aero/editor/editor_camera.hpp). Only the
-                          // NAME is needed here -- viewportCamera() returns a pointer -- so this header
-                          // keeps its include weight, exactly as it already does for ViewportPanel and
-                          // ConsolePanel.
-class DialogChannel;      // task 2.5.1: src-private (editor/src/file_dialog.hpp). Only the NAME is needed
-                          // here for the shared_ptr member -- the ViewportPanel/ConsolePanel precedent.
-class AssetBrowserPanel;  // task 2.2.4: src-private (editor/src/asset_browser_panel.hpp). Only the
-                          // NAME is needed here for the reconcile's non-owning pointer -- the
-                          // ViewportPanel/ConsolePanel precedent, applied a third time.
+class ViewportPanel;       // task 2.2.3: src-private (editor/src/viewport_panel.hpp). Only the NAME is
+                           // needed here, so this PUBLIC header stays free of viewport_panel.hpp's
+                           // engine includes and stays ImGui/entt-free.
+class ConsolePanel;        // task 2.2.5: src-private (editor/src/console_panel.hpp). Only the NAME is
+                           // needed here, so this PUBLIC header stays free of console_panel.hpp and
+                           // therefore of <aero/editor/console_model.hpp> as well.
+class EditorCamera;        // task 2.3.1: PUBLIC (editor/include/aero/editor/editor_camera.hpp). Only the
+                           // NAME is needed here -- viewportCamera() returns a pointer -- so this header
+                           // keeps its include weight, exactly as it already does for ViewportPanel and
+                           // ConsolePanel.
+class DialogChannel;       // task 2.5.1: src-private (editor/src/file_dialog.hpp). Only the NAME is needed
+                           // here for the shared_ptr member -- the ViewportPanel/ConsolePanel precedent.
+class AssetBrowserPanel;   // task 2.2.4: src-private (editor/src/asset_browser_panel.hpp). Only the
+                           // NAME is needed here for the reconcile's non-owning pointer -- the
+                           // ViewportPanel/ConsolePanel precedent, applied a third time.
+class ImportDetailsPanel;  // task 3.2.1: src-private (editor/src/import_details_panel.hpp). Only the
+                           // NAME is needed here -- the ViewportPanel/ConsolePanel/AssetBrowserPanel
+                           // precedent, a fourth application.
 
 struct EditorAppConfig {
     rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
@@ -344,6 +350,25 @@ public:
     // onDraw().
     void requestAssetWatchToggle(bool on) noexcept;
 
+    // DEVIATION from the plan's own literal §D-9 diff, logged for the final report: without a way to
+    // drive AssetBrowserPanel's real selection from THIS ImGui-free-at-source target, AC-45/AC-46/
+    // AC-47/AC-50's GPU-tier proof (I53-I59 below) would be either unwritable or vacuous -- no existing
+    // seam reaches `selectedEntry`, and EditorApp::tick()'s reconcile reads ONLY
+    // AssetBrowserPanel::selection() (§D-9, literal, typed as given). The code-review-finding-4 shape
+    // (requestAssetBrowserViewMode/-Search/-KindFilter/-DeleteOrphanClick), a FIFTH application: records
+    // EXACTLY what a real single click on an Assets row/tile records (ActionKind::SelectEntry) -- ""
+    // selects nothing, exactly like Navigate clearing it.
+    void requestAssetBrowserSelectEntry(std::string_view relativePath);
+
+    // ---- task 3.2.1 black-box accessors: the ImGui-free GPU tier's only window into the session ----
+    [[nodiscard]] std::size_t modelImportCount() const noexcept;
+    [[nodiscard]] int modelImportState() const noexcept;  // static_cast<int>(SessionState) -- the enum
+                                                          // itself stays out of this header's surface
+    [[nodiscard]] std::string_view modelImportTarget() const noexcept;
+    // ---- task 3.2.1 request hooks: drive the form and Apply without a widget ----------------------
+    void requestModelImportSettings(ImportSettings s) noexcept;
+    void requestModelImportApply() noexcept;
+
 private:
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
@@ -426,6 +451,15 @@ private:
     // (plan A18) rather than assumed non-null.
     std::shared_ptr<DialogChannel> dialogChannel;
     std::string lastTitle;  // D16: setTitle() only when this string CHANGES
+
+    // ---- task 3.2.1 -----------------------------------------------------------------------------
+    ModelImportSession importSession;                       // task 3.2.1 -- a VALUE member (INV-M13)
+    ImportDetailsPanel* importDetailsPanel = nullptr;       // non-owning; owned by `registry` (unique_ptr ->
+                                                            // address-stable, survives an EditorApp move).
+                                                            // Null when registerDefaultPanels == false --
+                                                            // ALWAYS null-check.
+    std::optional<ImportSettings> requestedImportSettings;  // one-shot, consumed by the next tick()
+    bool requestedImportApply = false;                      // one-shot, ditto
 };
 
 }  // namespace engine::editor

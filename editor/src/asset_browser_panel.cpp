@@ -1373,6 +1373,12 @@ void AssetBrowserPanel::requestKindFilter(std::string kind) { record(ActionKind:
 void AssetBrowserPanel::requestDeleteOrphanClick(std::string relativeMetaPath) {
     record(ActionKind::RequestDeleteOrphan, std::move(relativeMetaPath));
 }
+// DEVIATION (task 3.2.1): the requestDeleteOrphanClick() shape verbatim -- record(ActionKind::
+// SelectEntry, ...) is exactly what a real single click on a row/tile records (asset_browser_panel.cpp's
+// own drawContentsList/drawContentsGrid/drawTile call sites).
+void AssetBrowserPanel::requestSelectEntry(std::string relativePath) {
+    record(ActionKind::SelectEntry, std::move(relativePath));
+}
 
 // ---- the frame ---------------------------------------------------------------------------------
 void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context is IGNORED
