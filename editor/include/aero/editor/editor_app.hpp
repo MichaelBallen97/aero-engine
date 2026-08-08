@@ -251,6 +251,9 @@ public:
     // observe the orphan-delete round trip's effect on the Issues list from outside, and there is no
     // other black-box signature for it.
     [[nodiscard]] std::size_t assetOrphanCount() const noexcept;
+    // code-review SHOULD-FIX 10 (task 3.2.1): the assetOrphanCount() shape verbatim, applied to phase
+    // 7.5's own capped category (report.importFailures/importFailureTotal).
+    [[nodiscard]] std::size_t assetImportFailureCount() const noexcept;
 
     // ---- task 3.1.4 (AC-38): the watcher. The assetCount()/thumbnailReadyCount() shape verbatim --
     // AssetWatcher is a PRIVATE member and is reachable from no test target otherwise, so without

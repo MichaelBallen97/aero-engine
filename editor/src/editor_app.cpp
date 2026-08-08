@@ -801,6 +801,11 @@ std::size_t EditorApp::thumbnailLoadAttempts() const noexcept {
     return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailLoadAttempts() : std::size_t{0};
 }
 std::size_t EditorApp::assetOrphanCount() const noexcept { return lastAssetReport.orphanTotal; }
+// code-review SHOULD-FIX 10: the assetOrphanCount() shape verbatim, applied to phase 7.5's own capped
+// category -- without this, a GPU-tier case has no black-box signature for report.importFailureTotal at
+// all, since AssetScanReport is retained inside EditorApp (private), reachable through
+// AssetBrowserPanel::setScanReport() only (src-private).
+std::size_t EditorApp::assetImportFailureCount() const noexcept { return lastAssetReport.importFailureTotal; }
 
 // task 3.1.4 (AC-38): the assetCount()/thumbnailReadyCount() shape verbatim. AssetWatcher is a
 // private member, so without these the whole detect -> rescan -> refresh loop has no black-box

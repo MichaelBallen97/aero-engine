@@ -4939,3 +4939,61 @@ TEST_CASE("editor_app: importSession.service() runs outside the draw walk (task 
     REQUIRE(serviceHits == 1);             // exactly ONE call site in this file (§V6's AC-48 grep, scoped here)
     CHECK(drawShellUiLine < serviceLine);  // textually AFTER drawShellUi(: runs OUTSIDE the draw walk
 }
+
+// I61's OWN caveat, stated plainly (verified directly, matching 3.1.3's BLOCKING-1 / 3.1.4's D9
+// posture): the SHOULD-FIX 10 bug is a SILENT omission, never a crash -- excluding importFailureTotal
+// from drawIssues()'s `total` merely made the whole Issues header (and this new sixth category) never
+// draw for a project in exactly the state built below, and ImGui's own CollapsingHeader/TextUnformatted
+// calls simply not running has no effect this test tier can observe (presentedLastFrame() stays true
+// whether the header opened or not; no automated tier in this tree scrapes rendered ImGui text). Checked
+// directly: this case passes with drawIssues()'s importFailureTotal fix reverted, identically. What it
+// DOES prove, and is worth proving on its own: report.importFailureTotal reaches EditorApp's new
+// black-box accessor correctly, and the draw path this fix adds executes without crashing or
+// unbalancing an ImGui call. The rendering fix itself is verified by code inspection against the five
+// existing categories' identical idiom, not by this case.
+TEST_CASE(
+    "editor: a scan-time model import failure reaches assetImportFailureCount() and the Issues panel "
+    "draws without crashing (task 3.2.1, I61, code review SHOULD-FIX 10)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import failure issues i61", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    // The ONLY issue this project has -- no orphan, no invalid .meta, no hash/write failure -- so
+    // drawIssues()'s `total` is driven ENTIRELY by report.importFailureTotal here. BEFORE this fix,
+    // excluding it from `total` meant the header never even opened for a project in exactly this state.
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/broken.gltf", DAMAGED_GLTF_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // 1: the initial scan -- phase 7.5 probes "broken.gltf" and fails to parse it
+    CHECK(app->assetImportFailureCount() > 0);
+    CHECK(app->assetOrphanCount() == 0);  // confirms importFailureTotal is the ONLY populated category
+
+    REQUIRE(app->tick());  // 2: let the default dock layout settle before focusing anything
+    CHECK(app->presentedLastFrame());
+    app->requestPanelFocus("Assets");
+    REQUIRE(app->tick());  // 3: focus applied before DockSpaceOverViewport, so it lands this frame --
+                           // drawIssues() runs for real, past the total==0 guard this fix corrected
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
