@@ -31,11 +31,13 @@
 //
 // STEP BOUNDARY (recorded here rather than left implicit): Step 4 landed phases 1-2 -- the load, the
 // error mapping, SourceSpace, ufbx's own warnings, and the cheap STRUCTURAL summary counts (element
-// counts plus ufbx's own already-computed per-mesh vertex/triangle counts). THIS commit (Step 5) adds
-// phase 3 -- nodes, hierarchy, helper nodes and the space conversion, which is where D6's whole
-// conversion regime is either right or silently wrong (§D-4.5). Phases 4-8 (textures, materials,
-// meshes, skins, animation) are NOT part of this file yet -- `result.model.meshes/materials/images/
-// skins/animations` and `result.model.summary.bounds` stay at their defaults until those phases land.
+// counts plus ufbx's own already-computed per-mesh vertex/triangle counts). Step 5 added phase 3 --
+// nodes, hierarchy, helper nodes and the space conversion, which is where D6's whole conversion regime
+// is either right or silently wrong (§D-4.5). THIS commit (Step 6) adds phases 4-5 -- textures ->
+// ImportedImage (D14) and materials from `pbr` ONLY (D13), both running at BOTH depths since neither
+// touches vertex content. Phases 6-8 (meshes, skins, animation) are NOT part of this file yet --
+// `result.model.meshes/skins/animations` and `result.model.summary.bounds` stay at their defaults
+// until those phases land.
 #include "fbx_import.hpp"
 
 #include <algorithm>
@@ -314,6 +316,96 @@ inline constexpr std::string_view SCALE_HELPER_SUFFIX = "<scale helper>";
                        ufbx_version_minor(metadata.exporter_version), ufbx_version_patch(metadata.exporter_version));
 }
 
+// D14/D22: a DISPLAY-ONLY name for a non-FILE texture type, so the "not imported" warning names what it
+// skipped. No `default:` for the identical -Wswitch reason every other switch in this file has none.
+[[nodiscard]] constexpr std::string_view textureTypeName(ufbx_texture_type type) noexcept {
+    switch (type) {
+        case UFBX_TEXTURE_FILE:
+            return "file";
+        case UFBX_TEXTURE_LAYERED:
+            return "layered";
+        case UFBX_TEXTURE_PROCEDURAL:
+            return "procedural";
+        case UFBX_TEXTURE_SHADER:
+            return "shader";
+        case UFBX_TEXTURE_TYPE_FORCE_32BIT:
+            return "unknown";
+    }
+    return "unknown";
+}
+
+// D14: everything after the last '/' OR '\', so it works on a Windows absolute `filename` BEFORE the
+// fold runs (foldBackslashesToSlashes is called on the RESULT of this, not on `filename` directly).
+// PURE, TU-local -- model_import.hpp's own basenameOf-shaped helper does not exist because no OTHER
+// backend has needed one yet.
+[[nodiscard]] std::string basenameOf(std::string_view path) {
+    const std::size_t slash = path.find_last_of("/\\");
+    return slash == std::string_view::npos ? std::string(path) : std::string(path.substr(slash + 1));
+}
+
+// D13: engagement helper so every row of the material table reads the same way. `feature_disabled` ==
+// "the shader turned this off"; `has_value` == "the file declared something here" -- ufbx.h is explicit
+// that `.value_*` may hold a non-zero default even when `has_value == false`, so reading the value
+// without this gate would silently promote a default into something the file never actually said.
+[[nodiscard]] bool engaged(const ufbx_material_map& m) noexcept { return m.has_value && !m.feature_disabled; }
+
+// D14's UV-set rule: `tex->uv_set` is a NAME, but the canonical model carries an INDEX on a
+// material-level texture reference while UV sets live on MESHES. Resolve the name against `mesh`'s own
+// `uv_sets` (the FIRST mesh using this material, found by the phase-5 pre-pass); take the index if it
+// is 0 or 1 (the only two ImportedPrimitive carries). An EMPTY name is 0 with NO warning (E19); a name
+// that cannot be checked at all -- no mesh, or `uv_sets` empty (Structure depth, where geometry content
+// including UV SET NAMES is zeroed by ignore_all_content, exactly like every other per-mesh count in
+// §A-4) -- is ALSO 0 with no warning, because there is nothing to check against, structurally, not
+// because nothing was found. Only a REAL, non-empty `uv_sets` list that does not contain the name warns.
+[[nodiscard]] std::uint32_t resolveUvSet(const ufbx_texture& tex, const ufbx_mesh* mesh, ImportResult& result) {
+    const std::string uvSetName = toStd(tex.uv_set);
+    if (uvSetName.empty()) {
+        return 0;
+    }
+    if (mesh != nullptr && mesh->uv_sets.count > 0) {
+        for (std::size_t i = 0; i < mesh->uv_sets.count; ++i) {
+            if (toStd(mesh->uv_sets.data[i].name) == uvSetName) {
+                if (i <= 1) {
+                    return static_cast<std::uint32_t>(i);
+                }
+                break;  // found, but beyond the two sets ImportedPrimitive carries -- falls to the warning
+            }
+        }
+        addWarning(result, std::format("texture '{}': UV set '{}' is not one of the mesh's first two UV sets; "
+                                       "using UV set 0",
+                                       toStd(tex.name), uvSetName));
+    }
+    return 0;
+}
+
+// D13's texture-slot resolution, ONE hop (an `ufbx_material_map` already names its `ufbx_texture*`
+// directly -- unlike glTF's two-hop TextureInfo -> Texture -> image, there is no second table). Absent
+// is ALWAYS `std::nullopt`, never index 0 (the A4 engagement rule, a further application). Deliberately
+// `.find()`, never `.at()`: a texture connected to a material could in principle be a LAYERED/
+// PROCEDURAL/SHADER texture that phase 4 warned about and skipped rather than turning into an
+// ImportedImage, and `.at()` throwing on that would cross an API boundary with an exception this
+// codebase forbids (§00's no-exceptions rule) -- `.find()` degrades it to `INVALID_SUBASSET` instead,
+// which is not reachable by any fixture in this suite but is a strictly safer shape than the plan's own
+// illustrative `.at()` snippet.
+[[nodiscard]] std::optional<ImportedTextureRef> resolveTextureRef(
+    const ufbx_material_map& map, const std::unordered_map<const ufbx_texture*, std::uint32_t>& imageIndexByTexture,
+    const ufbx_mesh* firstMesh, ImportResult& result) {
+    if (!map.texture_enabled || map.texture == nullptr) {
+        return std::nullopt;
+    }
+    ImportedTextureRef ref;
+    const auto it = imageIndexByTexture.find(map.texture);
+    ref.imageIndex = (it != imageIndexByTexture.end()) ? it->second : INVALID_SUBASSET;
+    // ufbx_wrap_mode has EXACTLY TWO enumerators (REPEAT, CLAMP) -- TextureWrap::MirroredRepeat is
+    // UNREACHABLE from this backend (INV-F13/AC-38); it stays reachable through the glTF backend.
+    ref.wrapU = map.texture->wrap_u == UFBX_WRAP_CLAMP ? TextureWrap::ClampToEdge : TextureWrap::Repeat;
+    ref.wrapV = map.texture->wrap_v == UFBX_WRAP_CLAMP ? TextureWrap::ClampToEdge : TextureWrap::Repeat;
+    // minFilter / magFilter / mipFilter keep ImportedTextureRef's defaults: FBX carries no filter
+    // information ufbx exposes. A recorded limitation, not an accident.
+    ref.uvSet = resolveUvSet(*map.texture, firstMesh, result);
+    return ref;
+}
+
 }  // namespace
 
 ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::byte> bytes,
@@ -581,6 +673,171 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     for (const std::uint32_t rootId : result.model.roots) {
         result.model.nodes[nodeIndexByLocalId.at(rootId)].translation *= settings.scale;
     }
+
+    // ---- phase 4: textures -> ImportedImage (D14). Runs at BOTH depths (INV-M4): images and URIs are
+    // scene ELEMENTS -- unaffected by ignore_all_content -- and this is exactly what phase 7.5's probe
+    // and the pre-Full panel read. imageCount was an INTERIM proxy in phase 2 (every texture, including
+    // LAYERED/PROCEDURAL/SHADER); this phase NARROWS it to the FILE-type count actually turned into an
+    // ImportedImage.
+    std::unordered_map<const ufbx_texture*, std::uint32_t> imageIndexByTexture;
+    bool externalUriCapHit = false;
+    const auto recordExternalUri = [&](const std::string& path) {
+        if (std::find(result.externalUris.begin(), result.externalUris.end(), path) != result.externalUris.end()) {
+            return;  // already present -- E12's dedup, first-seen order
+        }
+        if (result.externalUris.size() >= MAX_EXTERNAL_URIS) {
+            if (!externalUriCapHit) {
+                escalate(result, ImportStatus::Truncated, "external URI cap (MAX_EXTERNAL_URIS) reached");
+                externalUriCapHit = true;
+            }
+            return;
+        }
+        result.externalUris.push_back(path);
+    };
+    for (const ufbx_texture* tex : s.textures) {
+        if (tex->type != UFBX_TEXTURE_FILE) {
+            // D14/D22: LAYERED, PROCEDURAL and SHADER textures are SKIPPED, VISIBLY -- ImportedImage
+            // has no way to express a blend stack, and inventing one here would foreclose a decision no
+            // roadmap row has taken.
+            addWarning(result, std::format("texture '{}' is a {} texture and is not imported", toStd(tex->name),
+                                           textureTypeName(tex->type)));
+            continue;
+        }
+        ImportedImage img;
+        // EMBEDDED FIRST (3.2.1's D14, unchanged): content non-empty means no path, no GUID, and NEVER
+        // a dependency. ignore_embedded is true at Structure depth (folded into ignore_all_content), so
+        // an embedded texture is `embedded` at Full and simply absent at Structure.
+        const ufbx_blob& content =
+            tex->content.size > 0 ? tex->content : (tex->video != nullptr ? tex->video->content : ufbx_empty_blob);
+        if (content.size > 0) {
+            img.embedded = true;
+            if (content.size > MAX_EMBEDDED_BYTES) {
+                escalate(result, ImportStatus::Truncated, "an embedded texture exceeds MAX_EMBEDDED_BYTES");
+            }
+            imageIndexByTexture.emplace(tex, static_cast<std::uint32_t>(result.model.images.size()));
+            result.model.images.push_back(std::move(img));
+            continue;
+        }
+        // 1. relative_filename, falling back to the BASENAME of filename.
+        // 2. absolute_filename is NEVER READ -- it is C:\Users\bob\Desktop\wood.png in every Autodesk
+        //    export and is precisely D4's threat model. Not consulted, not fallen back to, not shown.
+        std::string raw = toStd(tex->relative_filename);
+        if (raw.empty()) {
+            raw = basenameOf(toStd(tex->filename));
+        }
+        // 3. FOLD, THEN CLASSIFY -- the secure order (A19). Folding AFTER classification would let
+        // `..\..\..\etc\passwd` past the escape check.
+        img.uri = foldBackslashesToSlashes(raw);
+        const UriClassification cls = classifyUri(img.uri, assetRelativeDir);
+        if (cls.kind == UriClass::RelativePath) {
+            img.relativePath = cls.relativePath;
+            recordExternalUri(cls.relativePath);
+        } else if (cls.kind == UriClass::DataUri) {
+            img.embedded = true;  // an FBX path can't legitimately be a data: URI; treat as embedded
+                                  // rather than as a read
+        } else {
+            img.refusal = cls.reason;  // the EXACT reason, shown by the panel (AC-52)
+            addWarning(result, std::format("texture '{}': {}", toStd(tex->name), cls.reason));
+        }
+        imageIndexByTexture.emplace(tex, static_cast<std::uint32_t>(result.model.images.size()));
+        result.model.images.push_back(std::move(img));
+    }
+    result.model.summary.imageCount = result.model.images.size();
+
+    // ---- phase 5: materials from `pbr` ONLY (D13). Runs at BOTH depths -- a material has no vertex
+    // content of its own, so nothing here is gated by `ignore_all_content`. Skipped entirely when
+    // `!settings.importMaterials`, but phase 4 already ran, so images and `externalUris` survive
+    // regardless (AC-39's non-obvious half). `material->fbx` (the legacy Phong/Lambert maps) is never
+    // read anywhere in this file -- §V6 greps for it.
+    if (settings.importMaterials) {
+        // The pre-pass phase 5 needs: "the first mesh using this material", for resolveUvSet. Reads
+        // ONLY `mesh->materials` (a scene-element list), never vertex data -- valid at Structure depth
+        // too, where it simply finds every mesh's `uv_sets` empty and every uvSet falls back to 0.
+        std::unordered_map<std::uint32_t, const ufbx_mesh*> firstMeshForMaterial;
+        for (const ufbx_mesh* mesh : s.meshes) {
+            for (const ufbx_material* mat : mesh->materials) {
+                firstMeshForMaterial.try_emplace(mat->typed_id, mesh);
+            }
+        }
+        for (const ufbx_material* mat : s.materials) {
+            ImportedMaterial out;
+            out.name = toStd(mat->name);
+            out.localId = mat->typed_id;
+            const ufbx_material_pbr_maps& pbr = mat->pbr;
+            const ufbx_material_features& feat = mat->features;
+
+            if (engaged(pbr.base_color)) {
+                out.baseColorFactor = toVec4(pbr.base_color.value_vec4);
+                if (engaged(pbr.base_factor)) {
+                    out.baseColorFactor = out.baseColorFactor * f(pbr.base_factor.value_real);
+                }
+            }
+            if (feat.opacity.enabled && engaged(pbr.opacity)) {
+                out.baseColorFactor.w = f(pbr.opacity.value_real);
+            }
+            if (engaged(pbr.metalness)) {
+                out.metallicFactor = f(pbr.metalness.value_real);
+            }
+            // The ONE arithmetic transformation in the material path (INV-F13): a documented UNIT
+            // INVERSION ufbx itself flags via `roughness_as_glossiness`, never a Phong derivation.
+            if (feat.roughness_as_glossiness.enabled) {
+                if (engaged(pbr.glossiness)) {
+                    out.roughnessFactor = 1.0F - f(pbr.glossiness.value_real);
+                }
+            } else if (engaged(pbr.roughness)) {
+                out.roughnessFactor = f(pbr.roughness.value_real);
+            }
+            if (engaged(pbr.emission_color)) {
+                out.emissiveFactor = toVec3(pbr.emission_color.value_vec3);
+                if (engaged(pbr.emission_factor)) {
+                    out.emissiveFactor = out.emissiveFactor * f(pbr.emission_factor.value_real);
+                }
+            }
+            // `Mask` is NEVER produced (INV-F13/AC-38's sibling) -- FBX has no cutoff concept, and
+            // `Blend` is the conservative choice for a partially- or fully-transparent material.
+            //
+            // MEASURED CORRECTION to the plan's own D13 wording (which tested `pbr.opacity.value_real
+            // < 1.0` unconditionally, with no `engaged()` gate): `ufbxi_fetch_maps` (ufbx.c) sets
+            // `features.opacity.enabled = true` UNCONDITIONALLY for every shader whose capability mask
+            // includes OPACITY (a shader-type CAPABILITY, not "opacity was authored") -- and the whole
+            // `ufbx_material_pbr_maps` struct is memset to ZERO before any property is fetched, with NO
+            // update-to-1.0 pass for `opacity` the way there is for the paired factor/color fields
+            // (`ufbxi_update_factor`, called for base/specular/emission/... but never for opacity).
+            // Executed: a material using such a shader that never authors an opacity value reports
+            // `pbr.opacity.has_value == false` AND `pbr.opacity.value_real == 0.0`. Without this
+            // `engaged()` gate, EVERY such material -- which is most of them, since "can this shader
+            // express opacity" is a broad capability bit -- would read `0.0 < 1.0` and report `Blend`
+            // for a material that never mentioned transparency at all. `engaged()` is NOT required for
+            // the `texture_enabled` half: a texture-only opacity input (no constant factor at all) is
+            // still `Blend`, matching D13's own texture-slot rule elsewhere in this table.
+            out.alphaMode = (feat.opacity.enabled && ((engaged(pbr.opacity) && f(pbr.opacity.value_real) < 1.0F) ||
+                                                      pbr.opacity.texture_enabled))
+                                ? AlphaMode::Blend
+                                : AlphaMode::Opaque;
+            out.doubleSided = feat.double_sided.enabled;
+            // normalScale / occlusionStrength / alphaCutoff are DELIBERATELY left at their struct
+            // defaults -- FBX has no separate scale or cutoff concept. Recorded here, not silently
+            // defaulted by omission (FI47).
+
+            const auto meshIt = firstMeshForMaterial.find(mat->typed_id);
+            const ufbx_mesh* firstMesh = meshIt != firstMeshForMaterial.end() ? meshIt->second : nullptr;
+            out.baseColor = resolveTextureRef(pbr.base_color, imageIndexByTexture, firstMesh, result);
+            // FBX has separate metalness/roughness texture slots where glTF has ONE combined
+            // metallic-roughness texture; ImportedMaterial follows glTF's shape, so this picks
+            // WHICHEVER of the two is connected, preferring metalness -- a decided approximation, not a
+            // derivation.
+            out.metallicRoughness = resolveTextureRef(pbr.metalness, imageIndexByTexture, firstMesh, result);
+            if (!out.metallicRoughness.has_value()) {
+                out.metallicRoughness = resolveTextureRef(pbr.roughness, imageIndexByTexture, firstMesh, result);
+            }
+            out.normal = resolveTextureRef(pbr.normal_map, imageIndexByTexture, firstMesh, result);
+            out.occlusion = resolveTextureRef(pbr.ambient_occlusion, imageIndexByTexture, firstMesh, result);
+            out.emissive = resolveTextureRef(pbr.emission_color, imageIndexByTexture, firstMesh, result);
+
+            result.model.materials.push_back(std::move(out));
+        }
+    }
+    result.model.summary.materialCount = result.model.materials.size();
 
     return result;
 }

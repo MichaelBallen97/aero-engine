@@ -57,11 +57,13 @@
 #include <string>
 #include <string_view>
 
+using engine::editor::AlphaMode;
 using engine::editor::ImportDepth;
 using engine::editor::importModel;
 using engine::editor::ImportResult;
 using engine::editor::ImportSettings;
 using engine::editor::ImportStatus;
+using engine::editor::TextureWrap;
 
 namespace {
 
@@ -116,11 +118,28 @@ constexpr std::string_view DEFAULT_CONNECTIONS =
 // warning is exactly the trap here: UnitScaleFactor is in CENTIMETRES, so `1` would make this a Y-up
 // CENTIMETRE source (the importer then scales it by 100, silently testing the wrong thing). `100` is
 // what makes 1 world-space unit equal 1 metre, matching a source ufbx reports needing NO conversion.
+//
+// CORRECTION, found while writing FI51 (Step 6) and MEASURED against real ufbx v0.23.0, not assumed:
+// this constant originally read `FrontAxis: 1, FrontAxisSign: -1` -- copied from DEFAULT_GLOBALS_
+// PROPERTIES' Z-up block (whose `UpAxis: 2, FrontAxis: 1` is a valid, DISTINCT pair) without updating
+// FrontAxis once UpAxis became `1` too. `UpAxis=1` and `FrontAxis=1` both claim the Y axis, which
+// `ufbx_coordinate_axes_valid()` correctly reports as FALSE (EXECUTED: `axes.up=POSITIVE_Y`,
+// `axes.front=NEGATIVE_Y` -- degenerate, not three mutually perpendicular axes). Every existing case
+// built on this constant (FI16/17/18/21/23/24/25/26/27) happened to keep passing regardless, because
+// none of them asserts `warningTotal`/`warnings` and every one of them expects an IDENTITY result --
+// which is bit-identical whether ufbx genuinely detects "already Y-up, no conversion needed" or
+// merely refuses to convert because the declared axes are unusable (E6's OWN "geometry is imported as
+// authored" fallback). FI51 (a plain warningTotal count) is what first made the difference
+// observable. FrontAxis=2 (Z), FrontAxisSign=1 pairs with the unchanged UpAxis=1/CoordAxis=0 to give
+// three DISTINCT axes -- MEASURED: `ufbx_coordinate_axes_valid()` now true, and the node/geometry
+// numbers are UNCHANGED (still the identity conversion every existing case already asserts), so this
+// is a strengthening (a real conversion now runs and confirms identity) rather than a behaviour change
+// for any currently-passing case.
 constexpr std::string_view CANONICAL_GLOBALS_PROPERTIES =
     "        P: \"UpAxis\", \"int\", \"Integer\", \"\",1\n"
     "        P: \"UpAxisSign\", \"int\", \"Integer\", \"\",1\n"
-    "        P: \"FrontAxis\", \"int\", \"Integer\", \"\",1\n"
-    "        P: \"FrontAxisSign\", \"int\", \"Integer\", \"\",-1\n"
+    "        P: \"FrontAxis\", \"int\", \"Integer\", \"\",2\n"
+    "        P: \"FrontAxisSign\", \"int\", \"Integer\", \"\",1\n"
     "        P: \"CoordAxis\", \"int\", \"Integer\", \"\",0\n"
     "        P: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1\n"
     "        P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",100\n";
@@ -139,6 +158,62 @@ constexpr std::string_view CANONICAL_OBJECTS =
     "            P: \"Lcl Translation\", \"Lcl Translation\", \"\", \"A\",0,2,0\n"
     "        }\n"
     "    }\n";
+
+// ---- FI39-FI56 (Step 6): the two shader-detection routes a HAND-WRITTEN material needs -----------
+//
+// MEASURED, and NOT anticipated by the plan: a hand-written FBX material's `ufbx_material::shader_type`
+// resolves to `UFBX_SHADER_FBX_PHONG`/`_LAMBERT`/`_UNKNOWN` for any ordinary `ShadingModel` (or none at
+// all), and THAT shader's feature-capability bitmask (`ufbx.c`'s `ufbxi_shader_pbr_mappings[]`) does
+// NOT include METALNESS, OPACITY, PBR or DOUBLE_SIDED -- so a plain Phong/Lambert material can NEVER
+// report `features.metalness.enabled` / `features.opacity.enabled` / `features.double_sided.enabled`
+// as true, regardless of which legacy properties are set (EXECUTED: a Phong material with
+// `TransparencyFactor` set leaves `features.opacity.enabled == false`). Reaching those three fields
+// needs ufbx's 3ds Max PBR material detection: a property pair `3dsMax|ClassIDa`/`3dsMax|ClassIDb`
+// (read with `ufbx_find_int`, `ufbx.c:22334-22357`) matching one of a handful of recognised class-ID
+// pairs, each selecting a DIFFERENT PBR shader mapping table with its OWN property names under a
+// `shader_prop_prefix`. Two routes are used across FI39-FI56, both EXECUTED against the vendored
+// ufbx.c, not assumed:
+//   - GLTF_MATERIAL_CLASSID: decimal (943849874, 1174294043) == hex (0x38420192, 0x45fe4e1b) ->
+//     `UFBX_SHADER_GLTF_MATERIAL`, `shader_prop_prefix == "3dsMax|"`, properties `main|baseColor` /
+//     `main|roughness` / `main|metalness` / `main|Alpha` (opacity) / `main|emission` (color) /
+//     `main|emissionColor` / `main|DoubleSided` / `main|ambientOcclusion` / `main|normal`. Its
+//     capability bitmask is PBR|METALNESS|DIFFUSE|EMISSION|OPACITY|AMBIENT_OCCLUSION -- the ONE route
+//     to a real, non-default metallicFactor and to features.opacity/metalness.enabled being true at
+//     all. MEASURED: `features.opacity.enabled` is TRUE UNCONDITIONALLY for this shader (a CAPABILITY,
+//     not "opacity was authored") -- and `ufbx_material_pbr_maps` is `memset` to zero before any
+//     property is fetched, with NO "default to 1.0" pass for `opacity` the way there is for the
+//     paired factor/color fields (`ufbxi_update_factor` is never called for it). A material using
+//     this classid that never mentions Alpha at all reports `pbr.opacity.has_value == false` AND
+//     `pbr.opacity.value_real == 0.0` -- FI41 is the case this finding exists for.
+//   - SPEC_GLOSS_CLASSID: decimal (3490651648, 31173939) == hex (0xd00f1e00, 0x01dbad33) ->
+//     `UFBX_SHADER_3DS_MAX_PBR_SPEC_GLOSS`, same prefix shape, property `main|glossiness` plus a
+//     feature toggle `main|useGlossiness` (a Number "around 1.0" enables
+//     `features.roughness_as_glossiness.enabled` via ufbx's own `UFBXI_SHADER_FEATURE_IF_AROUND_1`).
+//     MEASURED: ufbx reads the raw "glossiness" value into `pbr.roughness.value_real`
+//     UNCONDITIONALLY (no transform in the mapping table itself), and SEPARATELY -- once the feature
+//     flag resolves -- MOVES it into `pbr.glossiness` and computes `pbr.roughness` as `1 - glossiness`
+//     ONLY when the feature is engaged (`ufbx.c:20200-20215`). This is the only reachable route to
+//     `features.roughness_as_glossiness.enabled == true`.
+//   - a plain Phong/Lambert material (`ShadingModel: "phong"`, no ClassID) DOES map `DiffuseFactor` /
+//     `EmissiveFactor` to `pbr.base_factor` / `pbr.emission_factor`
+//     (`ufbxi_fbx_phong_shader_pbr_mapping`) -- the factor-MODULATION half of D13's baseColorFactor /
+//     emissiveFactor rows is proven through THIS simpler fixture, never the classid one.
+// A texture connects to a PBR map slot with `C: "OP",<textureId>,<materialId>,"<full property name>"`
+// (`ufbx.c:15257/15286` -- MEASURED against ufbx's own ASCII connection reader);
+// `ufbx_material_map::texture_enabled` becomes true purely from that connection existing
+// (`ufbx.c:20079-20085`), with no separate toggle for either shader used here.
+//
+// FI43 ("feature_disabled on a map is treated as absent") is NOT implemented: `git grep -c
+// feature_disabled editor/third_party/ufbx/ufbx.c` is EMPTY -- ufbx v0.23.0 never SETS this field
+// anywhere in its own source, so there is no reachable input, from any fixture, that makes it true.
+// fbx_import.cpp's `engaged()` gate still checks it (defence in depth for a future ufbx that starts
+// setting it), but no case can prove that specific branch discriminates today, and none pretends to.
+constexpr std::string_view GLTF_MATERIAL_CLASSID =
+    "            P: \"3dsMax|ClassIDa\", \"int\", \"Integer\", \"\",943849874\n"
+    "            P: \"3dsMax|ClassIDb\", \"int\", \"Integer\", \"\",1174294043\n";
+constexpr std::string_view SPEC_GLOSS_CLASSID =
+    "            P: \"3dsMax|ClassIDa\", \"int\", \"Integer\", \"\",3490651648\n"
+    "            P: \"3dsMax|ClassIDb\", \"int\", \"Integer\", \"\",31173939\n";
 
 // Assembles a complete ASCII FBX 7.4.0 document from its three variable sections (§D-7), so a future
 // case can vary ONE of them without restating the whole file. Pass a DEFAULT_* constant above for any
@@ -784,4 +859,497 @@ TEST_CASE(
     CHECK(result.status == ImportStatus::Truncated);
     CHECK_FALSE(result.message.empty());
     CHECK(result.model.nodes.empty());
+}
+
+// ---- FI39-FI56: materials from `pbr` ONLY, and textures/URIs (Step 6, phases 4-5) ---------------
+//
+// FI43 is DELIBERATELY ABSENT -- see this file's own header comment above `GLTF_MATERIAL_CLASSID` for
+// why (`feature_disabled` is never set anywhere in ufbx v0.23.0's own source; no fixture can reach it).
+// FI46's mesh-level half (`every primitive INVALID_SUBASSET`) is written in the Step 7 block below,
+// once meshes exist to assert it against -- its materials-only half (`materials.empty()`, `images`/
+// `externalUris` unchanged) is folded into that same later case rather than split across two commits
+// for one small property, unlike FI15/16/17/23/24 (whose node-level halves were genuinely a full,
+// separately-valuable proof on their own).
+
+TEST_CASE(
+    "fbx_import: D13's factor fields round-trip through the two reachable shader paths -- base_factor/"
+    "emission_factor via a plain Phong material, metallic/roughness/doubleSided via the gltf-material "
+    "classid (FI39, AC-35)") {
+    // Half 1: DiffuseFactor/EmissiveFactor MODULATE their paired colors on a plain Phong material.
+    constexpr std::string_view PHONG_OBJECTS =
+        "    Material: 300, \"Material::phong\", \"\" {\n"
+        "        Version: 102\n"
+        "        ShadingModel: \"phong\"\n"
+        "        Properties70:  {\n"
+        "            P: \"DiffuseColor\", \"Color\", \"\", \"A\",0.4,0.6,0.8\n"
+        "            P: \"DiffuseFactor\", \"Number\", \"\", \"A\",0.5\n"
+        "            P: \"EmissiveColor\", \"Color\", \"\", \"A\",0.2,0.3,0.4\n"
+        "            P: \"EmissiveFactor\", \"Number\", \"\", \"A\",2.0\n"
+        "        }\n"
+        "    }\n";
+    const std::string phongDoc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, PHONG_OBJECTS, "");
+    const ImportResult phongResult =
+        importModel("t.fbx", "", asBytes(phongDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(phongResult.status == ImportStatus::Ok);
+    REQUIRE(phongResult.model.materials.size() == 1);
+    const auto& phongMat = phongResult.model.materials[0];
+    CHECK(phongMat.baseColorFactor.x == doctest::Approx(0.2F));
+    CHECK(phongMat.baseColorFactor.y == doctest::Approx(0.3F));
+    CHECK(phongMat.baseColorFactor.z == doctest::Approx(0.4F));
+    CHECK(phongMat.baseColorFactor.w == doctest::Approx(0.5F));
+    CHECK(phongMat.emissiveFactor.x == doctest::Approx(0.4F));
+    CHECK(phongMat.emissiveFactor.y == doctest::Approx(0.6F));
+    CHECK(phongMat.emissiveFactor.z == doctest::Approx(0.8F));
+
+    // Half 2: metallicFactor, roughnessFactor and doubleSided, via the gltf-material classid.
+    const std::string classidObjects = std::format(
+        "    Material: 300, \"Material::gltf\", \"\" {{\n"
+        "        Version: 102\n"
+        "        ShadingModel: \"unknown\"\n"
+        "        Properties70:  {{\n"
+        "{}"
+        "            P: \"3dsMax|main|baseColor\", \"ColorRGB\", \"Color\", \"\",0.3,0.5,0.7\n"
+        "            P: \"3dsMax|main|roughness\", \"Number\", \"\", \"\",0.35\n"
+        "            P: \"3dsMax|main|metalness\", \"Number\", \"\", \"\",0.65\n"
+        "            P: \"3dsMax|main|DoubleSided\", \"bool\", \"\", \"\",1\n"
+        "        }}\n"
+        "    }}\n",
+        GLTF_MATERIAL_CLASSID);
+    const std::string classidDoc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, classidObjects, "");
+    const ImportResult classidResult =
+        importModel("t.fbx", "", asBytes(classidDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(classidResult.status == ImportStatus::Ok);
+    REQUIRE(classidResult.model.materials.size() == 1);
+    const auto& classidMat = classidResult.model.materials[0];
+    CHECK(classidMat.baseColorFactor.x == doctest::Approx(0.3F));
+    CHECK(classidMat.baseColorFactor.y == doctest::Approx(0.5F));
+    CHECK(classidMat.baseColorFactor.z == doctest::Approx(0.7F));
+    CHECK(classidMat.metallicFactor == doctest::Approx(0.65F));
+    CHECK(classidMat.roughnessFactor == doctest::Approx(0.35F));
+    CHECK(classidMat.doubleSided);
+}
+
+TEST_CASE("fbx_import: a map ufbx does not populate leaves ImportedMaterial's own default untouched (FI40)") {
+    constexpr std::string_view OBJECTS =
+        "    Material: 300, \"Material::bare\", \"\" {\n"
+        "        Version: 102\n"
+        "        ShadingModel: \"phong\"\n"
+        "        Properties70:  {\n"
+        "            P: \"DiffuseColor\", \"Color\", \"\", \"A\",0.1,0.2,0.3\n"
+        "        }\n"
+        "    }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, "");
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 1);
+    const auto& mat = result.model.materials[0];
+    CHECK(mat.metallicFactor == doctest::Approx(1.0F));
+    CHECK(mat.roughnessFactor == doctest::Approx(1.0F));
+    CHECK(mat.normalScale == doctest::Approx(1.0F));
+    CHECK(mat.occlusionStrength == doctest::Approx(1.0F));
+    CHECK(mat.alphaCutoff == doctest::Approx(0.5F));
+}
+
+TEST_CASE(
+    "fbx_import: AlphaMode is Blend only for a genuinely transparent material; an explicitly-opaque "
+    "one and one that never mentions opacity at all both stay Opaque; Mask is never produced anywhere "
+    "in this suite (FI41, AC-37)") {
+    // The THIRD document (no Alpha at all) is the case §A-8-style measurement above exists for:
+    // features.opacity.enabled is unconditionally true for this shader, and pbr.opacity.value_real
+    // defaults to 0.0, not 1.0 -- the plan's own literal D13 wording (no engaged() gate) would
+    // misread this as Blend. fbx_import.cpp's alphaMode formula was corrected to add that gate; this
+    // case is its proof.
+    const auto material = [](std::string_view alphaLine) {
+        return std::format(
+            "    Material: 300, \"Material::m\", \"\" {{\n"
+            "        Version: 102\n"
+            "        ShadingModel: \"unknown\"\n"
+            "        Properties70:  {{\n"
+            "{}"
+            "            P: \"3dsMax|main|baseColor\", \"ColorRGB\", \"Color\", \"\",0.5,0.5,0.5\n"
+            "{}"
+            "        }}\n"
+            "    }}\n",
+            GLTF_MATERIAL_CLASSID, alphaLine);
+    };
+    const std::string transparentDoc =
+        makeFbx(CANONICAL_GLOBALS_PROPERTIES,
+                material("            P: \"3dsMax|main|Alpha\", \"Number\", \"\", \"\",0.5\n"), "");
+    const ImportResult transparent =
+        importModel("t.fbx", "", asBytes(transparentDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(transparent.status == ImportStatus::Ok);
+    REQUIRE(transparent.model.materials.size() == 1);
+    CHECK(transparent.model.materials[0].alphaMode == AlphaMode::Blend);
+
+    const std::string opaqueDoc =
+        makeFbx(CANONICAL_GLOBALS_PROPERTIES,
+                material("            P: \"3dsMax|main|Alpha\", \"Number\", \"\", \"\",1.0\n"), "");
+    const ImportResult opaque = importModel("t.fbx", "", asBytes(opaqueDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(opaque.status == ImportStatus::Ok);
+    REQUIRE(opaque.model.materials.size() == 1);
+    CHECK(opaque.model.materials[0].alphaMode == AlphaMode::Opaque);
+
+    const std::string unmentionedDoc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, material(""), "");
+    const ImportResult unmentioned =
+        importModel("t.fbx", "", asBytes(unmentionedDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(unmentioned.status == ImportStatus::Ok);
+    REQUIRE(unmentioned.model.materials.size() == 1);
+    CHECK(unmentioned.model.materials[0].alphaMode == AlphaMode::Opaque);
+
+    for (const ImportResult* r : {&transparent, &opaque, &unmentioned}) {
+        for (const auto& m : r->model.materials) {
+            CHECK(m.alphaMode != AlphaMode::Mask);
+        }
+    }
+}
+
+TEST_CASE(
+    "fbx_import: roughness_as_glossiness inverts the SAME raw value only when the feature is engaged "
+    "(FI42, AC-36)") {
+    const auto material = [](std::string_view useGlossinessValue) {
+        return std::format(
+            "    Material: 300, \"Material::m\", \"\" {{\n"
+            "        Version: 102\n"
+            "        ShadingModel: \"unknown\"\n"
+            "        Properties70:  {{\n"
+            "{}"
+            "            P: \"3dsMax|main|glossiness\", \"Number\", \"\", \"\",0.25\n"
+            "            P: \"3dsMax|main|useGlossiness\", \"Number\", \"\", \"\",{}\n"
+            "        }}\n"
+            "    }}\n",
+            SPEC_GLOSS_CLASSID, useGlossinessValue);
+    };
+    const std::string engagedDoc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, material("1.0"), "");
+    const ImportResult engaged = importModel("t.fbx", "", asBytes(engagedDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(engaged.status == ImportStatus::Ok);
+    REQUIRE(engaged.model.materials.size() == 1);
+    CHECK(engaged.model.materials[0].roughnessFactor == doctest::Approx(0.75F));
+
+    const std::string disengagedDoc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, material("0.0"), "");
+    const ImportResult disengaged =
+        importModel("t.fbx", "", asBytes(disengagedDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(disengaged.status == ImportStatus::Ok);
+    REQUIRE(disengaged.model.materials.size() == 1);
+    CHECK(disengaged.model.materials[0].roughnessFactor == doctest::Approx(0.25F));
+}
+
+TEST_CASE(
+    "fbx_import: UFBX_WRAP_REPEAT/CLAMP map correctly, and MirroredRepeat is never produced anywhere "
+    "in this suite (FI44, AC-38)") {
+    const std::string objects = std::format(
+        "    Material: 300, \"Material::m\", \"\" {{\n"
+        "        Version: 102\n"
+        "        ShadingModel: \"unknown\"\n"
+        "        Properties70:  {{\n"
+        "{}"
+        "        }}\n"
+        "    }}\n"
+        "    Texture: 500, \"Texture::tex1\", \"\" {{\n"
+        "        Type: \"TextureVideoClip\"\n"
+        "        Version: 202\n"
+        "        Properties70:  {{\n"
+        "            P: \"WrapModeU\", \"enum\", \"\", \"\",1\n"
+        "            P: \"WrapModeV\", \"enum\", \"\", \"\",0\n"
+        "        }}\n"
+        "        RelativeFilename: \"wood.png\"\n"
+        "    }}\n",
+        GLTF_MATERIAL_CLASSID);
+    constexpr std::string_view CONNECTIONS = "    C: \"OP\",500,300,\"3dsMax|main|baseColor\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 1);
+    REQUIRE(result.model.materials[0].baseColor.has_value());
+    CHECK(result.model.materials[0].baseColor->wrapU == TextureWrap::ClampToEdge);
+    CHECK(result.model.materials[0].baseColor->wrapV == TextureWrap::Repeat);
+    for (const auto& mat : result.model.materials) {
+        for (const auto& ref : {mat.baseColor, mat.metallicRoughness, mat.normal, mat.occlusion, mat.emissive}) {
+            if (ref.has_value()) {
+                CHECK(ref->wrapU != TextureWrap::MirroredRepeat);
+                CHECK(ref->wrapV != TextureWrap::MirroredRepeat);
+            }
+        }
+    }
+}
+
+TEST_CASE(
+    "fbx_import: all five texture slots resolve to the right imageIndex; an absent slot is nullopt, "
+    "never index 0 (FI45)") {
+    const std::string objects = std::format(
+        "    Material: 300, \"Material::m\", \"\" {{\n"
+        "        Version: 102\n"
+        "        ShadingModel: \"unknown\"\n"
+        "        Properties70:  {{\n"
+        "{}"
+        "        }}\n"
+        "    }}\n"
+        "    Texture: 500, \"Texture::base\", \"\" {{ Type: \"TextureVideoClip\" Version: 202 "
+        "RelativeFilename: \"base.png\" }}\n"
+        "    Texture: 501, \"Texture::mr\", \"\" {{ Type: \"TextureVideoClip\" Version: 202 "
+        "RelativeFilename: \"mr.png\" }}\n"
+        "    Texture: 502, \"Texture::normal\", \"\" {{ Type: \"TextureVideoClip\" Version: 202 "
+        "RelativeFilename: \"normal.png\" }}\n",
+        GLTF_MATERIAL_CLASSID);
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OP\",500,300,\"3dsMax|main|baseColor\"\n"
+        "    C: \"OP\",501,300,\"3dsMax|main|metalness\"\n"
+        "    C: \"OP\",502,300,\"3dsMax|main|normal\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 1);
+    const auto& mat = result.model.materials[0];
+    REQUIRE(mat.baseColor.has_value());
+    REQUIRE(mat.metallicRoughness.has_value());
+    REQUIRE(mat.normal.has_value());
+    CHECK_FALSE(mat.occlusion.has_value());
+    CHECK_FALSE(mat.emissive.has_value());
+    REQUIRE(result.model.images.size() == 3);
+    CHECK(mat.baseColor->imageIndex != engine::editor::INVALID_SUBASSET);
+    CHECK(mat.metallicRoughness->imageIndex != engine::editor::INVALID_SUBASSET);
+    CHECK(mat.normal->imageIndex != engine::editor::INVALID_SUBASSET);
+    CHECK(mat.baseColor->imageIndex != mat.metallicRoughness->imageIndex);
+    CHECK(mat.metallicRoughness->imageIndex != mat.normal->imageIndex);
+}
+
+TEST_CASE(
+    "fbx_import: alphaCutoff stays 0.5F and normalScale/occlusionStrength stay 1.0F even when a "
+    "normal or AO texture IS present (FI47)") {
+    const std::string objects = std::format(
+        "    Material: 300, \"Material::m\", \"\" {{\n"
+        "        Version: 102\n"
+        "        ShadingModel: \"unknown\"\n"
+        "        Properties70:  {{\n"
+        "{}"
+        "        }}\n"
+        "    }}\n"
+        "    Texture: 500, \"Texture::normal\", \"\" {{ Type: \"TextureVideoClip\" Version: 202 "
+        "RelativeFilename: \"n.png\" }}\n"
+        "    Texture: 501, \"Texture::ao\", \"\" {{ Type: \"TextureVideoClip\" Version: 202 "
+        "RelativeFilename: \"ao.png\" }}\n",
+        GLTF_MATERIAL_CLASSID);
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OP\",500,300,\"3dsMax|main|normal\"\n"
+        "    C: \"OP\",501,300,\"3dsMax|main|ambientOcclusion\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 1);
+    const auto& mat = result.model.materials[0];
+    REQUIRE(mat.normal.has_value());
+    REQUIRE(mat.occlusion.has_value());
+    CHECK(mat.alphaCutoff == doctest::Approx(0.5F));
+    CHECK(mat.normalScale == doctest::Approx(1.0F));
+    CHECK(mat.occlusionStrength == doctest::Approx(1.0F));
+}
+
+TEST_CASE(
+    "fbx_import: a relative_filename with backslashes folds to forward slashes BEFORE classification "
+    "(FI48, AC-12)") {
+    constexpr std::string_view OBJECTS =
+        "    Texture: 500, \"Texture::tex1\", \"\" {\n"
+        "        Type: \"TextureVideoClip\"\n"
+        "        Version: 202\n"
+        "        RelativeFilename: \"textures\\wood.png\"\n"
+        "    }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, "");
+    const ImportResult result =
+        importModel("model.fbx", "models", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == 1);
+    CHECK(result.model.images[0].relativePath == "models/textures/wood.png");
+    REQUIRE(result.externalUris.size() == 1);
+    CHECK(result.externalUris[0] == "models/textures/wood.png");
+}
+
+TEST_CASE(
+    "fbx_import: the fold happens BEFORE classify -- a backslash traversal is refused as an escape, "
+    "never let through by folding on a refusal (FI49)") {
+    constexpr std::string_view OBJECTS =
+        "    Texture: 500, \"Texture::tex1\", \"\" {\n"
+        "        Type: \"TextureVideoClip\"\n"
+        "        Version: 202\n"
+        "        RelativeFilename: \"..\\..\\..\\etc\\passwd\"\n"
+        "    }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, "");
+    const ImportResult result =
+        importModel("model.fbx", "models/sub", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == 1);
+    CHECK(result.model.images[0].relativePath.empty());
+    CHECK_FALSE(result.model.images[0].refusal.empty());
+    CHECK(result.externalUris.empty());
+}
+
+TEST_CASE(
+    "fbx_import: every URI refusal class surfaces on ImportedImage::refusal with the exact reason "
+    "(FI50, AC-52)") {
+    constexpr std::string_view OBJECTS =
+        "    Texture: 500, \"Texture::abs\", \"\" { Type: \"TextureVideoClip\" Version: 202 "
+        "RelativeFilename: \"/etc/passwd\" }\n"
+        "    Texture: 501, \"Texture::scheme\", \"\" { Type: \"TextureVideoClip\" Version: 202 "
+        "RelativeFilename: \"http://evil.example/x.png\" }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, "");
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == 2);
+    CHECK_FALSE(result.model.images[0].refusal.empty());
+    CHECK_FALSE(result.model.images[1].refusal.empty());
+    CHECK(result.model.images[0].refusal != result.model.images[1].refusal);
+    CHECK(result.externalUris.empty());
+}
+
+TEST_CASE(
+    "fbx_import: a refused texture reference contributes no externalUris entry and exactly one "
+    "warning (FI51, AC-13)") {
+    constexpr std::string_view OBJECTS =
+        "    Texture: 500, \"Texture::tex1\", \"\" {\n"
+        "        Type: \"TextureVideoClip\"\n"
+        "        Version: 202\n"
+        "        RelativeFilename: \"/etc/passwd\"\n"
+        "    }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, "");
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    CHECK(result.externalUris.empty());
+    CHECK(result.warningTotal == 1);
+}
+
+TEST_CASE(
+    "fbx_import: refusing ten URIs contributes nothing to externalUris or images' relativePath -- the "
+    "structural half of AC-52's no-read proof (FI52)") {
+    std::string objects;
+    for (int i = 0; i < 10; ++i) {
+        objects += std::format(
+            "    Texture: {}, \"Texture::t{}\", \"\" {{ Type: \"TextureVideoClip\" Version: 202 "
+            "RelativeFilename: \"/etc/secret{}.png\" }}\n",
+            500 + i, i, i);
+    }
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, "");
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    CHECK(result.externalUris.empty());
+    REQUIRE(result.model.images.size() == 10);
+    for (const auto& img : result.model.images) {
+        CHECK(img.relativePath.empty());
+        CHECK_FALSE(img.refusal.empty());
+    }
+    // importFbx's own signature is the rest of the proof: `external` (the only "bytes supplied by the
+    // caller" parameter) is never populated for FBX at all (D5) -- MI110/MS24/MS26 (Steps 3/11) are
+    // the pure-function and session-level halves of this same property.
+}
+
+TEST_CASE(
+    "fbx_import: RelativeFilename empty, FileName an absolute Windows path -- 'secrets' appears "
+    "nowhere in the result (FI53, AC-53)") {
+    // MEASURED: `ufbx_texture.filename` (the D14 fallback source) is derived from `absolute_filename`
+    // ONLY when it shares a common path PREFIX with `ufbx_load_opts.filename` -- which we never set
+    // (D4: no real base path exists for a `ufbx_load_memory` call), so `ufbxi_absolute_to_relative_
+    // path`'s very first check (`rel[0] != src[0]`) fails immediately and `filename` stays empty. The
+    // basename fallback therefore degrades to `classifyUri("")`'s RefusedEmpty branch rather than ever
+    // extracting "x.png" -- both outcomes are sanctioned by AC-53's own wording ("resolves... OR is
+    // refused"), and this is the one this ufbx version actually takes.
+    constexpr std::string_view OBJECTS =
+        "    Texture: 500, \"Texture::tex1\", \"\" {\n"
+        "        Type: \"TextureVideoClip\"\n"
+        "        Version: 202\n"
+        "        FileName: \"C:\\secrets\\x.png\"\n"
+        "    }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, "");
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == 1);
+    CHECK(result.model.images[0].uri.find("secrets") == std::string::npos);
+    CHECK(result.model.images[0].relativePath.find("secrets") == std::string::npos);
+    CHECK(result.model.images[0].refusal.find("secrets") == std::string::npos);
+    for (const std::string& uri : result.externalUris) {
+        CHECK(uri.find("secrets") == std::string::npos);
+    }
+}
+
+TEST_CASE("fbx_import: embedded texture content is never a dependency (FI54, D14)") {
+    constexpr std::string_view OBJECTS =
+        "    Texture: 500, \"Texture::tex1\", \"\" {\n"
+        "        Type: \"TextureVideoClip\"\n"
+        "        Version: 202\n"
+        "        Media: \"Video::vid1\"\n"
+        "        FileName: \"embedded.png\"\n"
+        "        RelativeFilename: \"embedded.png\"\n"
+        "    }\n"
+        "    Video: 600, \"Video::vid1\", \"Clip\" {\n"
+        "        Type: \"Clip\"\n"
+        "        Filename: \"embedded.png\"\n"
+        "        RelativeFilename: \"embedded.png\"\n"
+        "        Content: \"YQBiAGMAZAA=\"\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS = "    C: \"OO\",600,500\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == 1);
+    CHECK(result.model.images[0].embedded);
+    CHECK(result.model.images[0].relativePath.empty());
+    CHECK_FALSE(result.model.images[0].guid.valid());
+    CHECK(result.externalUris.empty());
+}
+
+TEST_CASE(
+    "fbx_import: two materials referencing the same texture produce ONE ImportedImage and ONE "
+    "externalUris entry (FI55, E12)") {
+    const std::string objects = std::format(
+        "    Material: 300, \"Material::m1\", \"\" {{\n"
+        "        Version: 102\n"
+        "        ShadingModel: \"unknown\"\n"
+        "        Properties70:  {{\n"
+        "{}"
+        "        }}\n"
+        "    }}\n"
+        "    Material: 301, \"Material::m2\", \"\" {{\n"
+        "        Version: 102\n"
+        "        ShadingModel: \"unknown\"\n"
+        "        Properties70:  {{\n"
+        "{}"
+        "        }}\n"
+        "    }}\n"
+        "    Texture: 500, \"Texture::tex1\", \"\" {{ Type: \"TextureVideoClip\" Version: 202 "
+        "RelativeFilename: \"wood.png\" }}\n",
+        GLTF_MATERIAL_CLASSID, GLTF_MATERIAL_CLASSID);
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OP\",500,300,\"3dsMax|main|baseColor\"\n"
+        "    C: \"OP\",500,301,\"3dsMax|main|baseColor\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 2);
+    CHECK(result.model.images.size() == 1);
+    CHECK(result.externalUris.size() == 1);
+    REQUIRE(result.model.materials[0].baseColor.has_value());
+    REQUIRE(result.model.materials[1].baseColor.has_value());
+    CHECK(result.model.materials[0].baseColor->imageIndex == result.model.materials[1].baseColor->imageIndex);
+}
+
+TEST_CASE(
+    "fbx_import: both filenames empty is a clear refusal, and a literal percent sequence is never "
+    "percent-decoded -- FBX paths are not percent-encoded (FI56, E10/E23)") {
+    // E19 (a uv_set name no mesh has falls back to UV set 0 with one warning) needs a mesh with real
+    // uv_sets to check against -- at Structure depth (the only depth reachable before Step 7) uv_sets
+    // is always empty, so it is deferred to the mesh block below rather than asserted vacuously here.
+    constexpr std::string_view EMPTY_OBJECTS =
+        "    Texture: 500, \"Texture::tex1\", \"\" { Type: \"TextureVideoClip\" Version: 202 }\n";
+    const std::string emptyDoc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, EMPTY_OBJECTS, "");
+    const ImportResult emptyResult =
+        importModel("t.fbx", "", asBytes(emptyDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(emptyResult.status == ImportStatus::Ok);
+    REQUIRE(emptyResult.model.images.size() == 1);
+    CHECK_FALSE(emptyResult.model.images[0].refusal.empty());
+    CHECK(emptyResult.externalUris.empty());
+
+    constexpr std::string_view PERCENT_OBJECTS =
+        "    Texture: 500, \"Texture::tex1\", \"\" { Type: \"TextureVideoClip\" Version: 202 "
+        "RelativeFilename: \"100%20.png\" }\n";
+    const std::string pctDoc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, PERCENT_OBJECTS, "");
+    const ImportResult pctResult = importModel("t.fbx", "", asBytes(pctDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(pctResult.status == ImportStatus::Ok);
+    REQUIRE(pctResult.model.images.size() == 1);
+    CHECK(pctResult.model.images[0].relativePath == "100%20.png");
 }
