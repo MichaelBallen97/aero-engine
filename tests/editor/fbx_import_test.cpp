@@ -874,6 +874,19 @@ TEST_CASE(
     // The winding proof itself: the INDEX ORDER (not merely the position VALUES) is identical --
     // proving no reverse_winding fired during the conversion.
     CHECK(zUpPrim.indices == yUpPrim.indices);
+    // ... AND an ABSOLUTE pin, added by the sabotage round, because the comparison above is RELATIVE:
+    // a change that treats BOTH fixtures the same way leaves it green while both are wrong. MEASURED:
+    // ufbx_triangulate_face emits `0 1 2 2 3 0` for a quad and ufbx_generate_indices rewrites it in
+    // place to the same order.
+    //
+    // STATED PLAINLY RATHER THAN LEFT IMPLIED: neither form catches seed S5 (target_axes ->
+    // left_handed_y_up). That was this case's own claimed purpose, and it is not true -- MEASURED by
+    // running the seed: ufbx's mirror does NOT reverse the emitted index order for this quad, so both
+    // the relative and the absolute assertion stay green. S5 is caught, loudly, by the ABSOLUTE
+    // position and quaternion numbers in FI15/FI16/FI17 instead. Recorded here so the next reader does
+    // not take this case for cover it does not provide.
+    CHECK(zUpPrim.indices == std::vector<std::uint32_t>{0, 1, 2, 2, 3, 0});
+    CHECK(yUpPrim.indices == std::vector<std::uint32_t>{0, 1, 2, 2, 3, 0});
 }
 
 TEST_CASE("fbx_import: a 4-deep chain imports with correct parent/children/roots, in source order (FI21, AC-25)") {
@@ -1856,6 +1869,13 @@ TEST_CASE(
     CHECK(result.model.images[0].relativePath.empty());
     CHECK_FALSE(result.model.images[0].refusal.empty());
     CHECK(result.externalUris.empty());
+    // THE ORDER, not merely the refusal (sabotage round, seed S19). Refusing SOMETHING is what the
+    // three assertions above prove, and a backend that classified the RAW string -- folding only
+    // afterwards, for display -- also refuses this URI, just as `RefusedBackslash` rather than as an
+    // escape. Pinning WHICH reason is what separates the two orderings here, where it matters: the
+    // fold ran FIRST, so `../../../etc/passwd` was resolved and found to leave the assets root.
+    CHECK(result.model.images[0].refusal.find("outside the project's assets folder") != std::string::npos);
+    CHECK(result.model.images[0].refusal.find("backslash") == std::string::npos);
 }
 
 TEST_CASE(
@@ -3084,6 +3104,102 @@ TEST_CASE(
     CHECK(result.model.nodes[0].translation.z == APPROX_POS(0.0F));
     CHECK(result.model.summary.vertexCount == 4);
     CHECK(result.model.summary.triangleCount == 2);
+}
+
+// ---- FI77-FI78: two gaps the sabotage round found, each closed with a fixture that reaches the
+// option a green suite could not otherwise see ------------------------------------------------------
+
+TEST_CASE(
+    "fbx_import: a document naming an external geometry cache imports WITHOUT ufbx ever trying to "
+    "open it -- load_external_files is FALSE, and this is the only input that can tell (FI77, D4)") {
+    // THE GAP THIS CLOSES. Seed S16 (`opts.load_external_files = true`) left the WHOLE suite green --
+    // 1109/1109, 89/89 -- and so did S16 and S17 applied TOGETHER. The plan predicted FI52/MS24 would
+    // catch it; neither can, because the flag gates nothing a texture-only fixture reaches.
+    //
+    // MEASURED against the vendored ufbx v0.23.0, not assumed: for an FBX document the flag gates
+    // exactly ONE thing -- `ufbxi_load_external_files`, which walks `scene.cache_files` (the FBX
+    // `Cache:` object, an Alembic/point-cache reference) and calls `open_file_cb` for each one. It
+    // does NOT gate textures, which is why every texture fixture in this file is blind to it. With the
+    // flag ON, the callback is called with 'caches/pointcache.xml' and the load then fails outright
+    // with UFBX_ERROR_EXTERNAL_FILE_NOT_FOUND (`ignore_missing_external_files` is false, deliberately)
+    // -- ImportStatus::ParseFailed. With the flag OFF, as shipped, the callback is never called at all
+    // and the model imports normally, cache reference and everything.
+    //
+    // So the assertion is simply that this document imports Ok with its geometry intact. That reads
+    // like a weak statement and is the strongest one available: it is FALSE the moment anyone turns
+    // the flag on, and it is the only case in the suite of which that is true.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+        "    Cache: 600, \"Cache::pointcache\", \"\" {\n"
+        "        Properties70:  {\n"
+        "            P: \"CacheFileName\", \"KString\", \"\", \"\", \"caches/pointcache.xml\"\n"
+        "            P: \"CacheFileType\", \"enum\", \"\", \"\",0\n"
+        "        }\n"
+        "    }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("cached.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+
+    REQUIRE(result.status == ImportStatus::Ok);  // FALSE with load_external_files on: ParseFailed
+    REQUIRE(result.model.nodes.size() == 1);
+    CHECK(result.model.nodes[0].name == "box");
+    CHECK(result.model.summary.vertexCount == 4);
+    CHECK(result.model.summary.triangleCount == 2);
+    // The cache reference is not an asset dependency either: nothing here contributes a URI the
+    // scan would then try to resolve to a GUID.
+    CHECK(result.externalUris.empty());
+    CHECK(result.model.images.empty());
+}
+
+TEST_CASE(
+    "fbx_import: a node with a ROTATION PIVOT keeps its own transform and gains no extra node -- "
+    "pivot_handling is RETAIN (FI78, D8, seed S12's discriminator)") {
+    // THE GAP THIS CLOSES. Seed S12 (`pivot_handling` -> ADJUST_TO_ROTATION_PIVOT) left the whole
+    // suite green: the plan predicted FI21 would catch it, but no fixture anywhere in this file
+    // declared a pivot at all, so both modes did exactly the same thing to every one of them. A seed
+    // that changes a setting no input reaches cannot redden anything, and the fix is an input, not an
+    // assertion.
+    //
+    // MEASURED against the vendored ufbx v0.23.0 with THIS document (RotationActive: 1 is required --
+    // without it the pivot is inert):
+    //   RETAIN (shipped)         -> ONE authored node, translation (6, -3, 3)
+    //   ADJUST_TO_ROTATION_PIVOT -> TWO nodes (an extra, unnamed helper at (-5, 0, 0)) and the
+    //                               authored node's translation moves to (6, 2, 3)
+    // Both modes leave the vertices alone, which is why a geometry-only assertion cannot see this and
+    // the node count plus the translation can.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" {\n"
+        "        Version: 232\n"
+        "        Properties70:  {\n"
+        "            P: \"Lcl Translation\", \"Lcl Translation\", \"\", \"A\",1,2,3\n"
+        "            P: \"Lcl Rotation\", \"Lcl Rotation\", \"\", \"A\",0,0,90\n"
+        "            P: \"RotationActive\", \"bool\", \"\", \"\",1\n"
+        "            P: \"RotationPivot\", \"Vector3D\", \"Vector\", \"\",5,0,0\n"
+        "            P: \"ScalingPivot\", \"Vector3D\", \"Vector\", \"\",5,0,0\n"
+        "        }\n"
+        "    }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("pivot.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 1);  // TWO under ADJUST_TO_ROTATION_PIVOT
+    CHECK(result.model.nodes[0].name == "box");
+    CHECK(result.model.nodes[0].translation.x == APPROX_POS(6.0F));
+    CHECK(result.model.nodes[0].translation.y == APPROX_POS(-3.0F));  // +2 under the seed
+    CHECK(result.model.nodes[0].translation.z == APPROX_POS(3.0F));
+    CHECK(result.model.nodes[0].rotation.x == APPROX_ROT(0.0F));
+    CHECK(result.model.nodes[0].rotation.y == APPROX_ROT(0.0F));
+    CHECK(result.model.nodes[0].rotation.z == APPROX_ROT(0.707106781F));
+    CHECK(result.model.nodes[0].rotation.w == APPROX_ROT(0.707106781F));
 }
 
 // ---- FI76: the one committed binary fixture (Step 12, AC-55) --------------------------------------
