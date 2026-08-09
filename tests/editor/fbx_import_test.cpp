@@ -998,6 +998,42 @@ TEST_CASE(
     CHECK(result.model.nodes.empty());
 }
 
+// FI72 (D16, AC-50) -- MAX_FBX_TEMP_BYTES / MAX_FBX_RESULT_BYTES / MAX_FBX_ALLOCATIONS -- is NOT
+// implemented as a case, and this is a deliberate, reasoned decision, not a silent drop.
+//
+// D16 sets FOUR ufbx allocator caps (model_import.hpp): MAX_FBX_NODE_DEPTH (256), MAX_FBX_TEMP_BYTES
+// (1 GiB), MAX_FBX_RESULT_BYTES (1 GiB) and MAX_FBX_ALLOCATIONS (4 000 000). fbx_import.cpp wires all
+// four into ufbx_load_opts (opts.node_depth_limit, opts.temp_allocator.{memory,allocation}_limit,
+// opts.result_allocator.{memory,allocation}_limit) in ONE block, at load time. ufbxStatusFor's own
+// 24-row switch (fbx_import.cpp, TU-local -- this TU names no ufbx type and cannot call it directly,
+// FI7's own precedent) maps UFBX_ERROR_MEMORY_LIMIT, UFBX_ERROR_ALLOCATION_LIMIT and
+// UFBX_ERROR_NODE_DEPTH_LIMIT to ImportStatus::Truncated THROUGH THE SAME case-list -- one shared
+// `return ImportStatus::Truncated;` statement, not three independent lines that could individually
+// drift. FI27 (immediately above) already drives UFBX_ERROR_NODE_DEPTH_LIMIT with a REAL over-cap
+// document (257 nested nodes) and observes Truncated, which is proof of the shared code path the other
+// two enumerators in that same case-list would also take.
+//
+// TWO DIFFERENT CLAIMS, and it matters which one this comment is making:
+//   1. "UFBX_ERROR_MEMORY_LIMIT/ALLOCATION_LIMIT map to ImportStatus::Truncated" -- PROVEN, by
+//      construction (the shared switch arm FI27 already exercises for NODE_DEPTH_LIMIT).
+//   2. "a real FBX document actually TRIPS MAX_FBX_TEMP_BYTES, MAX_FBX_RESULT_BYTES or
+//      MAX_FBX_ALLOCATIONS" -- NOT PROVEN, and left unreached rather than faked. Unlike
+//      MAX_FBX_NODE_DEPTH (a "many minimal nested objects" shortcut, FI27) or
+//      MAX_PRIMITIVES_PER_MODEL (FI38, below: "many minimal meshes"), there is no cheap shortcut here:
+//      ufbx's temp/result allocators back EVERY allocation the parser and the scene builder make for
+//      the WHOLE document, so reaching a 1 GiB running total or 4 000 000 individual allocations needs
+//      a document on the order of a real multi-hundred-thousand-element scene -- flatly incompatible
+//      with this file's own tier-0 contract (a few hundred bytes to at most a few hundred KB, no disk,
+//      instant -- SS G-12/R3). This is the IDENTICAL discipline FI38 already applies to
+//      MAX_VERTICES_PER_MODEL/MAX_INDICES_PER_MODEL, and the MAX_ANIMATION_KEYS_PER_MODEL note beside
+//      FI71 applies a third time.
+//
+// A case that drove ufbx_load_opts.temp_allocator.memory_limit down to a tiny number FROM THIS FILE, to
+// make the cap cheaply reachable, is NOT possible either: that field is set once, inside
+// fbx_import.cpp, from the MAX_FBX_* constants themselves -- there is no ImportSettings knob or other
+// caller-supplied path that reaches it, by design (D16: these are correctness limits, not user
+// preferences, the identical reasoning `.claude/rules/editor.md` states for axis/unit conversion).
+
 // ---- FI29-FI38: meshes, triangulation, index generation, caps (Step 7, phase 6) ------------------
 
 TEST_CASE("fbx_import: a quad triangulates to 2 triangles, exactly 6 indices, 4 unique vertices (FI29, AC-29)") {
