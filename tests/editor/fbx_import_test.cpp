@@ -47,6 +47,8 @@
 // through makeFbx()'s three parameters, never restated whole.
 #include <aero/editor/model_import.hpp>
 
+#include "scene_golden_support.hpp"  // task 3.2.2, Step 12: FI76's committed binary fixture
+
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -89,6 +91,10 @@ constexpr double ROT_EPS = 1e-6;  // quaternion components, matrix basis columns
 [[nodiscard]] std::span<const std::byte> asBytes(const std::string& text) noexcept {
     return std::span<const std::byte>(reinterpret_cast<const std::byte*>(text.data()), text.size());
 }
+
+// task 3.2.2, Step 12 (AC-55): the one committed binary fixture, reached through
+// AERO_ASSET_FIXTURES_DIR, already defined on this target (asset_meta_test.cpp's own precedent).
+constexpr std::string_view CUBE_BINARY_FIXTURE = AERO_ASSET_FIXTURES_DIR "/cube-binary.fbx";
 
 // ---- the §D-7 template's three variable sections, at their DEFAULT (Z-up, UnitScaleFactor:1 --
 // centimetre) content: one node ("box"), one mesh (a quad), translated (0,0,200) in the source's own
@@ -2764,4 +2770,110 @@ TEST_CASE(
     CHECK(on.model.summary.nodeCount == off.model.summary.nodeCount);
     CHECK(on.model.summary.meshCount == off.model.summary.meshCount);
     CHECK(on.model.nodes.size() == off.model.nodes.size());
+}
+
+// ---- FI76: the one committed binary fixture (Step 12, AC-55) --------------------------------------
+
+TEST_CASE(
+    "fbx_import: the committed binary fixture imports to the SAME shape as a hand-written ASCII twin -- "
+    "the ONLY proof of the binary container path (FI76, AC-55)") {
+    // cube-binary.fbx is a REAL Blender 5.2.0 LTS export (see tests/fixtures/README.md for the exact
+    // command, settings, date, size and SHA-256) -- a default 1m cube, no material, no animation.
+    // MEASURED against the real file, not guessed: Blender authors it as 8 control-point vertices
+    // referenced by a 24-entry PolygonVertexIndex across 6 quad faces (the standard FBX convention
+    // every fixture in this file already uses, just extended from one quad to a full cube), with a
+    // Lcl Scaling of (100,100,100) on the node rather than a baked geometry offset.
+    //
+    // The ASCII twin below is hand-written to the IDENTICAL topology and produces a BIT-FOR-BIT match
+    // on every field checked below -- MEASURED by running both through this exact importer and
+    // comparing, not assumed. Two fields are DELIBERATELY NOT compared, and are named here rather than
+    // silently skipped:
+    //   - ImportedPrimitive::positions.size(): Blender's own binary export carries a PER-FACE-VERTEX
+    //     LayerElementNormal (hard-shaded flat normals), which ufbx_generate_indices' memcmp-based dedup
+    //     (A12) correctly refuses to collapse across a face boundary -- so Blender's primitive reports
+    //     24 unique vertices where this undecorated ASCII twin (no normals authored) reports 8. This is
+    //     a SHADING-FIDELITY authoring choice, not a property either the binary OR the ASCII CONTAINER
+    //     FORMAT controls, and reproducing Blender's own LayerElementNormal block is out of scope for
+    //     what AC-55 actually asks this case to prove.
+    //   - SourceSpace::upAxis: Blender's exporter declares `UpAxis: 1` (Y) in GlobalSettings while STILL
+    //     requiring the identical -90-degree-about-X geometric correction a Z-up source would (MEASURED:
+    //     both fixtures produce the bit-identical converted rotation below) -- an internal convention of
+    //     Blender's own FBX exporter this task does not attempt to reverse-engineer. SourceSpace::
+    //     unitMeters (both 0.01 -- a centimetre source) IS compared, and matches.
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(CUBE_BINARY_FIXTURE);
+    REQUIRE(fixture.ok);
+    const ImportResult bin =
+        importModel("cube-binary.fbx", "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(bin.status == ImportStatus::Ok);
+    CHECK_FALSE(bin.model.sourceSpace.formatVersion.empty());
+    CHECK(bin.model.sourceSpace.formatVersion.find("binary") != std::string::npos);
+
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::Cube\", \"Mesh\" {\n"
+        "        Vertices: *24 { a: -0.5,-0.5,-0.5, 0.5,-0.5,-0.5, 0.5,0.5,-0.5, -0.5,0.5,-0.5, -0.5,-0.5,0.5, "
+        "0.5,-0.5,0.5, 0.5,0.5,0.5, -0.5,0.5,0.5 }\n"
+        "        PolygonVertexIndex: *24 { a: 0,1,2,-4, 4,5,6,-8, 0,1,5,-5, 3,2,6,-8, 0,3,7,-5, 1,2,6,-6 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::Cube\", \"Mesh\" {\n"
+        "        Version: 232\n"
+        "        Properties70:  {\n"
+        "            P: \"Lcl Scaling\", \"Lcl Scaling\", \"\", \"A\",100,100,100\n"
+        "        }\n"
+        "    }\n";
+    const std::string asciiDoc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult ascii = importModel("twin.fbx", "", asBytes(asciiDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(ascii.status == ImportStatus::Ok);
+    CHECK(ascii.model.sourceSpace.formatVersion.find("ascii") != std::string::npos);
+
+    // Node: same name, same parent-less root, same converted transform, element by element.
+    REQUIRE(bin.model.nodes.size() == 1);
+    REQUIRE(ascii.model.nodes.size() == 1);
+    const engine::editor::ImportedNode& binNode = bin.model.nodes[0];
+    const engine::editor::ImportedNode& asciiNode = ascii.model.nodes[0];
+    CHECK(binNode.name == asciiNode.name);
+    CHECK(binNode.name == "Cube");
+    CHECK(binNode.parent == engine::editor::INVALID_SUBASSET);
+    CHECK(asciiNode.parent == engine::editor::INVALID_SUBASSET);
+    CHECK(binNode.translation.x == APPROX_POS(asciiNode.translation.x));
+    CHECK(binNode.translation.y == APPROX_POS(asciiNode.translation.y));
+    CHECK(binNode.translation.z == APPROX_POS(asciiNode.translation.z));
+    CHECK(binNode.rotation.x == APPROX_ROT(asciiNode.rotation.x));
+    CHECK(binNode.rotation.y == APPROX_ROT(asciiNode.rotation.y));
+    CHECK(binNode.rotation.z == APPROX_ROT(asciiNode.rotation.z));
+    CHECK(binNode.rotation.w == APPROX_ROT(asciiNode.rotation.w));
+    CHECK(binNode.scale.x == APPROX_POS(asciiNode.scale.x));
+    CHECK(binNode.scale.y == APPROX_POS(asciiNode.scale.y));
+    CHECK(binNode.scale.z == APPROX_POS(asciiNode.scale.z));
+
+    // Mesh/summary: vertex and triangle counts, and material/skin/animation counts (a plain, unmaterialed
+    // cube, both ways).
+    CHECK(bin.model.summary.vertexCount == ascii.model.summary.vertexCount);
+    CHECK(bin.model.summary.triangleCount == ascii.model.summary.triangleCount);
+    CHECK(bin.model.summary.triangleCount == 12);
+    CHECK(bin.model.materials.size() == ascii.model.materials.size());
+    CHECK(bin.model.skins.size() == ascii.model.skins.size());
+    CHECK(bin.model.animations.size() == ascii.model.animations.size());
+    REQUIRE(bin.model.meshes.size() == 1);
+    REQUIRE(ascii.model.meshes.size() == 1);
+    REQUIRE(bin.model.meshes[0].primitives.size() == 1);
+    REQUIRE(ascii.model.meshes[0].primitives.size() == 1);
+
+    // Bounds: the same physical cube, element by element -- what a person actually compares against
+    // Blender's own Dimensions panel (validation row 2/13's real-asset cover).
+    REQUIRE(bin.model.summary.bounds.valid());
+    REQUIRE(ascii.model.summary.bounds.valid());
+    CHECK(bin.model.summary.bounds.min.x == APPROX_POS(ascii.model.summary.bounds.min.x));
+    CHECK(bin.model.summary.bounds.min.y == APPROX_POS(ascii.model.summary.bounds.min.y));
+    CHECK(bin.model.summary.bounds.min.z == APPROX_POS(ascii.model.summary.bounds.min.z));
+    CHECK(bin.model.summary.bounds.max.x == APPROX_POS(ascii.model.summary.bounds.max.x));
+    CHECK(bin.model.summary.bounds.max.y == APPROX_POS(ascii.model.summary.bounds.max.y));
+    CHECK(bin.model.summary.bounds.max.z == APPROX_POS(ascii.model.summary.bounds.max.z));
+
+    // SourceSpace::unitMeters -- a centimetre source, both ways (upAxis is DELIBERATELY not compared,
+    // see the header comment above).
+    CHECK(bin.model.sourceSpace.declared);
+    CHECK(ascii.model.sourceSpace.declared);
+    CHECK(bin.model.sourceSpace.unitMeters == doctest::Approx(ascii.model.sourceSpace.unitMeters));
+    CHECK(bin.model.sourceSpace.unitMeters == doctest::Approx(0.01F));
 }

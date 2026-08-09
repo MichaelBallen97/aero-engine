@@ -602,7 +602,7 @@ importer's defaults; omitted entirely otherwise, so a freshly-created sidecar is
 
 | Key | Kind | Required (once `importer` is present) | Rule |
 |---|---|---|---|
-| `importer.name` | string | yes | the importer's registered identity, e.g. `"gltf"` |
+| `importer.name` | string | yes | the importer's registered identity, e.g. `"gltf"` or `"fbx"` |
 | `importer.version` | number, integral | yes | the importer's own format version at write time |
 | `importer.settings` | object | yes | four keys, below |
 | `importer.settings.scale` | number | yes | a user-intent multiplier; honoured even if zero or negative — NEVER clamped |

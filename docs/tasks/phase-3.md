@@ -80,7 +80,10 @@ Subtasks:
 - Meshes + hierarchy; materials + textures
 - Skeletons (joints, bind poses); animation clips
 
-### 3.2.2 FBX import (ufbx) · P0 · M · depends: 3.2.1
+### 3.2.2 FBX import (ufbx) · P0 · L · depends: 3.2.1
+_(Sized up from M to L: ufbx is in no vcpkg registry and must be vendored as a new static target with
+its own CI exclusion; FBX also needs an axis/unit conversion regime, skin-influence reduction and
+animation baking that glTF did not.)_
 **Goal:** the industry's lingua franca, via ufbx (lighter and more correct than Assimp for FBX).
 **Deliverable:** same coverage as 3.2.1, mapped onto the canonical representation.
 Subtasks:

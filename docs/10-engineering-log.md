@@ -4198,3 +4198,336 @@ S30 exercise precisely the buffer-adapter and coordinate-conversion surfaces the
 S21's verdict depends on `MS19`, which this round added. The task then merged as **PR #70**
 (merge commit `f02ca65`), CI-green on macOS, Windows and Ubuntu with the green run's `headSha` asserted
 equal to `HEAD` before merging.
+
+#### Task 3.2.2 — FBX import (ufbx)
+
+**3.2.2 gives the editor its second importer, and the first real test of whether 3.2.1's "one more
+arm" claim held.** It mostly did: `model_import.hpp`'s dispatch gained one branch, `ImportedModel`
+gained one field (`sourceSpace`), and every consumer 3.2.1 built — the Import Details panel, the
+import cache, phase 7.5's dependency probe — needed only the changes described below to serve a
+second format. Selecting an `.fbx` in the Asset Browser fills the same Import Details panel a `.gltf`
+already filled, now with a **Source space** row showing the file's own declared unit and up axis
+against the constant it was converted to (Y-up, 1 m) — the row that makes "an `.fbx` and a `.gltf` of
+the same asset report the same bounds" mean something, rather than being a coincidence nobody could
+see the reason for. FBX's own trade: no key-for-key animation curves (Euler angles under a per-node
+rotation order have no honest mapping onto quaternion TRS), so every clip is **baked** to 30 fps
+linear keyframes through `ufbx_bake_anim`; and no arbitrary influence count, so a skin with more than
+four influences per vertex is reduced to the four largest, renormalized, with one warning naming the
+observed maximum.
+
+`editor/third_party/ufbx/` is the **first vendored third-party library in this tree** — `ufbx.h`/
+`ufbx.c` v0.23.0, byte-identical to upstream, built as a static target (`aero_ufbx`) over ONE `.c` file
+compiled with this project's own directory-scope flags. That last property is the whole reason it is
+vendored rather than found: ufbx is in **no** vcpkg registry (measured twice — the pinned baseline's
+2851 ports and GitHub's own `ports`/`versions` trees both 404 on `ufbx`), so vendoring was never a
+preference, but the ASan/UBSan instrumentation a vendored `.c` gets for free in the Debug lanes is a
+genuine and deliberate upside: ufbx parses untrusted binary files, and this is the single most valuable
+place in the whole tree for a sanitizer to be watching. **Reversal condition, stated so it can be
+checked later without re-deriving the reasoning:** if ufbx ever lands in vcpkg's curated registry, the
+vendored copy can be replaced by `find_package(ufbx CONFIG REQUIRED)` — but that trade gives up the
+Debug-lane instrumentation (a vcpkg build uses vcpkg's own triplet flags, not this project's), so it is
+a real trade, not a strict improvement, and should be weighed rather than done automatically the day it
+becomes possible.
+
+`fbx_import.{hpp,cpp}` (src-private) is the **only** ufbx TU anywhere in the tree — an anchored
+`#include <ufbx.h>` grep names exactly one file, and `fbx_import.hpp` itself names no ufbx type at all
+(its absence from that grep's own output is the design working, not a near miss). It is
+`<filesystem>`-free **at source and transitively** (confirmed by re-running its own compile with `-H`
+and finding no filesystem header in the trace) — strictly stronger than `gltf_import.cpp`, whose
+fastgltf entry point takes a `std::filesystem::path` positionally even though it never opens one. ufbx
+**never touches the filesystem**: `ufbx_load_memory` is the only load call, `load_external_files` stays
+`false`, and `open_file_cb` is set to a callback that always returns `false` — a closed door for a
+future ufbx version that opens a file for a reason `load_external_files` does not gate.
+
+The axis and unit conversion — the one thing FBX needs that glTF never did, since glTF is metres/Y-up/
+right-handed by specification and declares nothing — is **three `ufbx_load_opts` fields**
+(`target_axes = right_handed_y_up`, `target_unit_meters = 1.0`, `space_conversion =
+MODIFY_GEOMETRY`), never hand-rolled coordinate math: no axis swap, no negation, no transpose, no
+quaternion reorder written anywhere in this file. `model_import.cpp`'s dispatch gained the FBX arm
+ahead of the glTF catch-all, and `modelImporterIdentity`/`modelImporterNeedsExternalBuffers` became
+genuinely **per-format** pure functions — the shape 3.2.1's own code review asked for when it predicted
+that a TU-local copy of the suffix logic "would silently stop discriminating the moment 3.2.2 (ufbx)
+teaches the real predicate a new extension." This task is that moment, twice over (see the three
+hard-coded-identity sites, below).
+
+**Zero paths under `engine/` — the no-engine-change streak that 3.1.3 restarted at one and 3.1.4
+carried to two, and 3.2.1 carried to three, now reaches FOUR** (`git diff --name-only main...HEAD --
+engine/` is empty on the feature branch). `/editor` gains one more `.hpp`/`.cpp` pair,
+`fbx_import.{hpp,cpp}` (src-private, the only ufbx TU), bringing `aero_editor_core` to **52** sources.
+
+**D22's deliberate omissions, verbatim (named so nobody reads them as oversights):** no cook, no GPU
+upload, no draw (D1 — 3.3.1/3.4.1/3.5.1/3.1.5 each own one piece; **the viewport does not change**); no
+`Guid` field on `engine::MeshRenderer`, no fix to `LOCAL_MESH_HALF_EXTENT` (3.1.5's); no blend shapes/
+morph targets (`ufbx_blend_deformer` ignored; `AnimationPath::Weights` stays additive for later); no
+cameras or lights (`ufbx_camera`/`ufbx_light` skipped; `ImportedModel` has no place for them); no
+NURBS, subdivision surfaces, LOD groups, line curves, cache deformers, constraints, selection sets or
+audio layers; no `.obj` through ufbx (D17 — 3.2.3's); no layered/procedural/shader textures (only
+`UFBX_TEXTURE_FILE`); no texture UV transforms; no sub-asset GUIDs, no `engine::scene` reference type
+(3.1.5's); no thumbnail for `.fbx` (a model thumbnail is a render, unchanged since 3.1.3); no thread
+(`opts.thread_opts` never set; `git grep -n 'JobSystem' -- editor/` stays empty for a sixth task); no
+new `ImportStatus` enumerator, no `.meta` key, no `.meta` version bump, no fifth `ImportSettings` key.
+
+**The six MUST-VERIFY questions, answered from the real vendored v0.23.0 header/source before the
+corresponding line of code was written, and reconfirmed against the vendored (not merely downloaded)
+copy once it landed in Step 1 — all six held with no disagreement:**
+
+1. **D17 — does a forced `file_format` short-circuit content detection too, or must
+   `no_format_from_content` also be set?** Both detection branches gate on `format == UNKNOWN`
+   (`ufbx.c:11130-11190`), so the forced format alone is sufficient. Set all three fields anyway
+   (belt-and-braces against a future ufbx that reorders the gates); `FI12` (OBJ text in a `.fbx`) is
+   the empirical proof, not the header wording.
+2. **F3 — is ufbx's own C++ deleter surface usable without extra defines?** Not depended on at all —
+   those helpers sit behind `UFBX_CPP*` conditionals whose spelling varies by release, which would put
+   a compile-time knob on a file this task's own rule forbids patching. A twelve-line hand-written
+   `ScenePtr`/`BakedAnimPtr` RAII pair does the job on all three toolchains.
+3. **F6 — does `allow_nodes_out_of_root == false` guarantee every node is reachable from
+   `root_node`?** Yes, observed directly: `scene.nodes[0]` is always the root (`is_root == true`,
+   name `""`), and every authored node hangs off it. No orphan scan anywhere — `roots` is exactly
+   `root_node->children`.
+4. **F7 — does the `ufbx_generate_indices` stream element have padding a naive `memcmp` dedup would
+   see?** ufbx's own header says to clear it to zero. Removed as a hazard rather than managed: one
+   `ufbx_vertex_stream` per attribute, each a tightly packed POD array with no padding on any of the
+   three ABIs at `ufbx_real = double`, each staging vector value-initialised regardless.
+5. **F8 — is a vertex's weight slice already sorted by descending weight?** Yes (`ufbx.h:1957`), and
+   explicitly **not normalized** (`:1959`). The explicit stable sort this importer does anyway is a
+   no-op on well-formed input, kept for the tie-break and for a future ufbx that relaxes the guarantee.
+   Renormalization against the four kept weights' own sum is not optional.
+6. **E5 — what does ufbx do with a non-positive declared unit?** `round_if_near` passes a NaN or
+   negative value straight through (`ufbx.c:23912`), so the post-load finite-and-positive guard this
+   importer adds is both necessary and sufficient. Measured in the same pass: `UnitScaleFactor` in a
+   hand-written ASCII document is in **centimetres** — `UnitScaleFactor: 1` means `unit_meters ==
+   0.01`, so a fixture meant to be an already-canonical Y-up **metre** source needs `UnitScaleFactor:
+   100`, not `1`. This is recorded as the single easiest fixture mistake in the whole task, and it
+   very nearly was one: see the `CANONICAL_GLOBALS_PROPERTIES` finding below.
+
+**Two more the spike answered without being asked, both changing how a case is written:**
+`ufbx_scene_settings.original_axis_up` reads the Autodesk round-trip properties `OriginalUpAxis`/
+`OriginalUpAxisSign`, which an ordinary exporter never writes and which came back `UNKNOWN` against a
+document that plainly declares `UpAxis: 2` — the source's real declared axis lives in `settings.axes.up`
+instead, which ufbx preserves across the conversion by design; and `ignore_all_content` (the flag
+`Structure` depth sets) zeroes **every** per-mesh count (`num_vertices`, `num_triangles`,
+`material_parts`), not merely the ones a narrower `ignore_geometry` would zero — so `Structure` means
+"structure without content" for FBX exactly as it does for glTF, but the two containers disagree on
+which fields count as *content*: `summary.primitiveCount == meshCount` (one placeholder primitive per
+mesh) and `jointCount == 0` at `Structure` depth for FBX, where glTF reports both structurally. Phase
+7.5, the only consumer of `Structure`-depth results today, reads only `externalUris`, which is
+identical at both depths for both formats — so this asymmetry has no behavioural consequence yet, but
+a future consumer of `ImportSummary` at `Structure` depth needs to know it exists.
+
+**The measured D6 conversion table, the numbers every space-conversion case in this task is built on**
+— executed against real ufbx v0.23.0 with `target_axes = right_handed_y_up`, `target_unit_meters =
+1.0`, `space_conversion = MODIFY_GEOMETRY`, over a Z-up/centimetre document (`UpAxis: 2`,
+`UnitScaleFactor: 1`) whose quad is `(0,0,0) (100,0,0) (100,100,0) (0,100,0)` on a node translated
+`(0,0,200)`:
+
+| | unconverted | **converted** |
+|---|---|---|
+| mesh vertices | `(0,0,0) (100,0,0) (100,100,0) (0,100,0)` | `(0,0,0) (1,0,0) (1,1,0) (0,1,0)` |
+| node translation | `(0,0,200)` | `(0, 2, 5.68434e-16)` |
+| node rotation | `(0,0,0,1)` | `(-0.707107, 0, 0, 0.707107)` |
+| `metadata.geometry_scale` | `1` | `0.01` |
+| `metadata.mirror_axis` | `0` | `0` |
+| `metadata.space_conversion` | `0` | `2` (`MODIFY_GEOMETRY`) |
+| `settings.axes.up` | `4` (`POSITIVE_Z`) | `4` — preserved |
+| `settings.unit_meters` | `0.01` | `0.01` — preserved |
+
+Three consequences that shape every case touching a converted transform: the converted Z is
+`5.68434e-16`, not `0`, so every comparison uses `doctest::Approx` with a fixed epsilon (`1e-5F` for
+positions/translations, `1e-6F` for quaternion components) — never `==`; the axis conversion lives in
+the **node rotation**, not in the vertex positions, so `ImportedPrimitive::positions` stay in metres in
+the source's own local axis frame and the Y-up-ness arrives entirely through `ImportedNode::rotation`
+(which is why AC-22's own literal wording, naming only the translation, would have let a wrong
+`target_axes` through undetected — every conversion case here asserts the quaternion too); and
+`mirror_axis == 0` confirms right-handed-Z-up to right-handed-Y-up is a **pure rotation** — no mirror,
+no winding flip — measured rather than argued (`FI20` compares the fully-imported index buffers of a
+converting and an already-canonical fixture and finds them identical, order included).
+
+**Every build-time finding, roughly in the order it was found, across all twelve commits:**
+
+- **Step 1 (vendor + build wiring)** landed alone and was pushed to let all three CI lanes answer R2
+  (does 33 204 lines of vendored C build clean on MSVC/GCC too) before any logic depended on it —
+  **CI-green on macOS, Windows and Ubuntu for commits 1-2.** Commits 3-9 (the rest of the importer)
+  were built and tested locally on macOS only during this task's own implementation; they have not yet
+  been through CI, so R2's answer for MSVC/GCC against the FULL importer (not merely the vendor +
+  linking stub) remains open until the branch's PR runs.
+- **Step 2's own MUST-VERIFY re-confirmation** found nothing disagreeing with the pre-vendor spike —
+  the downloaded and vendored copies are identical by construction (AC-2), so this was a formality that
+  is nonetheless worth having run rather than assumed.
+- **Step 3** taught the dispatch the `.fbx` extension with `fbx_import.cpp` still a linking stub
+  (`ParseFailed` for everything) — `FI1` starts by asserting exactly that or true, then strengthens in
+  every following step as the real phases land, so the file's own history is legible from its test
+  file's progression.
+- **A hard-coded `UFBX_ENUM_FORCE_WIDTH` correction to the plan's own §A-16, found by compiling, not
+  assumed** (Step 4): the plan's text said `UFBX_ENUM_FORCE_WIDTH`/`UFBX_ENUM_TYPE` never add a real
+  enumerator, but with `UFBX_USE_EXPLICIT_ENUM` correctly never defined (the `#else` branch of
+  `ufbx.h`'s own conditional), `UFBX_ERROR_TYPE_FORCE_32BIT` and its siblings on
+  `ufbx_coordinate_axis`/`ufbx_exporter` genuinely exist as enumerators the compiler can produce. Every
+  affected `switch` handles the sentinel explicitly rather than through a `default:` that would also
+  swallow a real future enumerator.
+- **`FI7` was redesigned from the plan's own per-enumerator table** (Step 4): this TU names no ufbx
+  type, so `ufbxStatusFor`'s 24-row switch cannot be driven directly from it, and the same limit
+  applies to this task's own `FI72` (see below). `-Wswitch`'s absent `default:` is what keeps that
+  switch exhaustive against a future ufbx release; the test file proves the *reachable bucket* property
+  through a malformed-document battery instead.
+- **`CANONICAL_GLOBALS_PROPERTIES` (Step 5's own "already-canonical" fixture) declared a degenerate
+  axis basis** — `UpAxis: 1` and `FrontAxis: 1` both claim the Y axis, which
+  `ufbx_coordinate_axes_valid()` correctly rejects. Every case built on it kept passing regardless,
+  because each expected an identity result — bit-identical whether ufbx genuinely detected
+  "already Y-up, nothing to convert" or merely refused to convert because the declared axes were
+  unusable (E6's own as-authored fallback). `FI51`'s plain `warningTotal` count (Step 6) is what first
+  made the difference observable; fixed to `FrontAxis: 2`/`FrontAxisSign: 1` (three genuinely distinct
+  axes), with every existing case re-verified unchanged by the fix.
+- **`AC-53`'s literal grep matched this file's own explanatory comment** (Step 6): `git grep -n
+  'absolute_filename' -- editor/src/` finds the comment that explains why the field is never read, not
+  only a real access. Corrected to `git grep -nE '(->|\.)absolute_filename'`, which names an actual
+  field access. The same class of finding 3.2.1's own AC-55/AC-56 already made twice, applied here
+  independently a third time before this task's Step 10/11 found it a fourth and fifth time (below).
+- **`engaged(pbr.opacity)` was missing from the plan's own D13 alpha formula** (Step 6): ufbx sets
+  `features.opacity.enabled` unconditionally for several shader capabilities, and
+  `pbr.opacity.value_real` defaults to `0.0` — not `1.0` — when never authored, so the ungated formula
+  would have reported `Blend` for every ordinary opaque material using such a shader. A real
+  correctness bug the plan's own prose did not anticipate, found and fixed before it shipped.
+- **E5's non-finite-bounds escalation was gated on the wrong count** (Step 7): a mesh with real
+  vertices but zero triangulatable faces (every face degenerate to a point or a line) can legitimately
+  leave `summary.bounds` invalid for a reason that is not corruption; the guard is regated on
+  `summary.triangleCount`, which is exactly zero for that case.
+- **`CANONICAL_GLOBALS_PROPERTIES`'s tangent/bitangent exposure assumption was wrong** (Step 7): ufbx
+  requires a UV layer for `vertex_tangent`/`vertex_bitangent` to be exposed at all, even when a
+  `LayerElementTangent`/`LayerElementBinormal` block is present without one — `FI34`/`FI35` gained a UV
+  layer each so they discriminate the property they are named for instead of trivially passing because
+  neither vector ever populated.
+- **The plan's own S21 sabotage seed ("keep the first 4 influences instead of the largest 4") is
+  unimplementable as its own case, confirmed by direct probing, not assumed** (Step 8): ufbx builds a
+  vertex's weight list by aggregating each cluster's contribution in *connection order* and then
+  stably sorting by descending weight, which makes "ties resolve to ascending cluster index" an
+  emergent property of ufbx's own construction — several tie/cluster-order permutations were probed
+  against the real vendored source and every one produced ascending-cluster-index ties regardless of
+  authoring order. `FI58` still proves the property directly against a genuine tie; the negative
+  finding about S21 specifically is recorded rather than silently worked around.
+- **`FI68` (E17, an out-of-range baked-node `typed_id`) is deliberately absent** (Step 9): three
+  independently constructed fixtures (animating the scene root directly, an unconnected-but-animated
+  Model, and `MAX_FBX_NODE_DEPTH` truncation) all failed to produce a baked node missing from
+  `nodeIndexByLocalId`. The defensive guard stays in `fbx_import.cpp`; no case claims to discriminate
+  it, matching `FI61`'s own precedent for the identical E13 shape one step earlier.
+- **Two Step-8-era bugs surfaced and were fixed alongside Step 9**, sharing Step 9's own "real at
+  `Structure` depth, zero when the setting is off" shape: `Structure`-depth import was leaving
+  `model.skins` completely empty (contradicting §A-4's own table, which empties `skins[].joints`, not
+  the vector), fixed with a `Structure`-depth shell pass; and `summary.skinCount`/
+  `summary.animationCount` were left at phase 2's raw, untouched ufbx element count instead of being
+  overwritten from the real vector sizes, which was wrong whenever `importSkins`/`importAnimations` is
+  off — `FI63` now also asserts `skinCount` directly.
+- **A THIRD hard-coded-`GLTF_IMPORTER_NAME` site, beyond the two the plan's own §A-1/§A-2 named**
+  (Step 10/11, found while wiring FBX identity end to end): `asset_meta.cpp`'s `writeMetaText` wrote
+  `GLTF_IMPORTER_NAME`/`GLTF_IMPORTER_VERSION` into every sidecar's `importer` block unconditionally,
+  so `ModelImportSession::applySettings()` would have written `"name": "gltf"` into an `.fbx`'s own
+  sidecar the first time a person changed its scale. Closed with two trailing, DEFAULTED parameters
+  (`importerName`/`importerVersion`, defaulting to the glTF pair) rather than an `ImporterIdentity`
+  parameter, because `asset_meta.hpp` deliberately never includes `model_import.hpp` (plan §A-11's
+  boundary). Every existing two-argument call site in `asset_meta_test.cpp` — dozens of them — compiles
+  and behaves byte-identically, because the default reproduces the old behaviour exactly; `AM-i17`
+  proves this directly by calling the four-argument form with an *explicit* non-default identity
+  alongside *default* settings and checking the output is still `minimal.meta`'s 65-byte fixpoint,
+  since D7's omit-when-default branch never reaches the write at all in that case.
+- **BLOCKING, ASan-CONFIRMED: `import_details_panel.cpp`'s Hierarchy and Skins sections indexed
+  `ImportedModel::nodes` DIRECTLY by `ImportedNode::localId`, and for a real FBX hierarchy that is a
+  genuine heap-buffer-overflow, not a cosmetic bug** (Step 11, found by this task's own GPU-tier
+  cases). `ImportedNode::localId` is the raw ufbx `typed_id`, and `ImportedModel::roots`/
+  `ImportedNode::children`/`ImportedSkin::joints` all hold `localId`s — a fact this project's own
+  `.claude/rules/editor.md` had already recorded for 3.2.1 (R13 in the plan's own risk register: *"a
+  consumer that indexes `nodes[localId]` works for glTF and reads out of bounds for FBX... 3.1.5 and
+  3.3.1 both walk nodes and must read this before they index one"*), naming the FUTURE tasks that would
+  need to be careful — not realizing the Import Details panel, shipped one task earlier, already had
+  exactly this bug. It was invisible for glTF because glTF's own `localId` always coincides with its
+  vector position (no root exclusion), and it stayed invisible through this task's own Steps 1-9
+  because none of those tier-0 cases ever draw a frame. The FIRST FBX model with more than a single
+  unparented node — the four-deep chain `I64`'s own fixture builds — reads out of bounds the instant
+  the Hierarchy section is drawn: a real ASan `heap-buffer-overflow` abort inside
+  `std::string::__is_long()`, called from `ImportedNode::name.empty()`, reading 23 bytes past a
+  single-element allocation. Both `drawHierarchy`/`drawNodeTree` and `drawSkeletonAndAnimation`'s skin
+  loop now resolve `localId -> nodes[] position` through a `std::unordered_map<std::uint32_t,
+  std::uint32_t>` built once per call — the identical shape `fbx_import.cpp`'s own
+  `nodeIndexByLocalId` already uses on the import side, now restated on the read side. Confirmed by
+  reverting the fix and re-running `I62`-`I67`: the crash reproduces deterministically on the very
+  first FBX model with a real hierarchy, every time.
+- **Three separate numbering collisions, all found by measuring rather than trusting the plan's own
+  predicted case numbers, in three different test files.** `tests/editor/asset_database_test.cpp`'s
+  `AD-i11`-`AD-i13` were already claimed by a code-review round that landed on `main` after this task's
+  plan was written (`AD-i11` SHOULD-FIX 8, `AD-i12` the dependency-sort gap, `AD-i13` the
+  Structure-vs-Full scan gap) — this task's own eight new cases continue at `AD-i14`-`AD-i21`, with the
+  steady-state/zero-write discriminator (the plan's own predicted `AD-i17`) landing at the renumbered
+  **`AD-i20`** instead. `tests/editor/model_import_session_test.cpp`'s highest EXISTING case was
+  `MS21`, not `MS23` — `MS8b`/`MS15b` are lettered variants of earlier numbers, not new top-level ones,
+  so `/usr/bin/grep -c '^TEST_CASE('` reading 23 does not mean the last one is `MS23`. This task's six
+  new cases continue at `MS22`-`MS27`. `tests/editor/imgui_layer_test.cpp`'s highest existing case was
+  `I61` (a 3.2.1 post-merge review-round addition, `assetImportFailureCount()`/the Issues panel,
+  SHOULD-FIX 10) — this task's own six new GPU-tier cases continue at `I62`-`I67`. All three are the
+  identical class of finding this project has now hit five separate times (3.2.1's AC-56 twice, this
+  task's own AC-63 correction in the plan text itself, and now these three renumberings): **a case
+  count measured after the fact does not tell you the highest case NUMBER — always grep the actual
+  labels, never assume a predicted range is still open.**
+- **`MAX_FBX_TEMP_BYTES`/`MAX_FBX_RESULT_BYTES`/`MAX_FBX_ALLOCATIONS` (D16's three allocator caps,
+  carried forward unproven from Step 7) resolved honestly rather than shipped as a fake case or
+  silently dropped.** The plan's own `FI72` design already anticipated the difficulty (calling
+  `ufbxStatusFor` directly is impossible from this TU, the identical limit `FI7` already worked around
+  in Step 4) and proposed asserting the mapping through the pure error-table function plus "one real
+  over-cap document" — the second half is what stays undone, and is now named as such rather than
+  faked. The error-to-status **mapping** is proven by construction: `UFBX_ERROR_MEMORY_LIMIT`,
+  `UFBX_ERROR_ALLOCATION_LIMIT` and `UFBX_ERROR_NODE_DEPTH_LIMIT` share ONE case-list in
+  `ufbxStatusFor`'s switch, and `FI27` (Step 5) already exercises that shared arm for
+  `NODE_DEPTH_LIMIT` with a real 257-node over-cap document, observing `Truncated`. What a real
+  document actually **tripping** a 1 GiB running total or 4 000 000 individual allocations would prove
+  is left unreached and is documented as such, in a block comment beside `FI27` rather than a case that
+  only looks like proof — the identical discipline `FI38` already applies to
+  `MAX_VERTICES_PER_MODEL`/`MAX_INDICES_PER_MODEL` (both scale with real per-vertex data, not element
+  count, so there is no "many minimal objects" shortcut) and the `MAX_ANIMATION_KEYS_PER_MODEL` note
+  beside `FI71` applies a third time.
+- **A gate-premise correction found while writing this task's own Step 10 comment, mirroring 3.2.1's
+  AC-56 lesson a sixth time within this same paragraph's family of findings**: the plan's own §D-9
+  literal text for `asset_cache.cpp`'s comment names `GLTF_IMPORTER_VERSION` in prose, and §V6's own
+  bare-name grep (`git grep -n 'GLTF_IMPORTER_NAME\|GLTF_IMPORTER_VERSION' -- editor/src/`) expects
+  `asset_cache.cpp` to show zero hits — an internal contradiction in the plan, since the file's own
+  *pre-existing*, unedited 3.2.1-era comment block (which §D-9 explicitly says to keep) already named
+  `GLTF_IMPORTER_VERSION` twice before this task touched the file at all. The invariant the grep is
+  trying to state — "the identity is a function, not a constant, in the DECISION CODE of these three
+  files" — is sound and holds; the gate as literally written is not, for the same "counts a comment as
+  a hit" reason 3.2.1's AC-55/AC-56 already recorded twice. The corrected form strips `//` comments
+  before matching (`ci-portability.md`'s own `sed 's://.*::'` shape, already used by this plan's own
+  AC-64), and both `asset_database.cpp` and `import_details_panel.cpp` genuinely show zero hits, code
+  or comment, since neither needed to mention the constant by name at all.
+
+**R3 — measured, not left as open debt this time.** Compiling `ufbx.c` (33 204 lines) alone: **~4.1 s**
+Debug (ASan/UBSan) versus **~2.8 s** Release on this machine — about 1.45x overhead, a one-time,
+per-configuration cost of roughly a second and a half. Running the entire tier-0 FBX suite
+(`fbx_import_test.cpp`'s 68 cases, 675 assertions) under the same Debug/ASan/UBSan build: **0.53 s**
+wall time — under half of one percent of `aero_editor_shell_test`'s own full **137.8 s** run (1106
+cases). R3's fear — that ufbx under sanitizers would be slow enough to matter — does not materialize at
+this fixture size, and the tier-0 discipline of keeping every document a few hundred bytes (the one
+binary fixture ~12 KB) is exactly why: the sanitizers are watching a genuinely small amount of parsing
+work per case. This closes R3 with a number, the debt 3.1.4's own R1 left open and 3.2.1's R4 already
+declined to repeat.
+
+**The one committed binary fixture, `tests/fixtures/assets/cube-binary.fbx`** — a real Blender 5.2.0
+LTS export (`tests/fixtures/README.md` records the exact command, settings, date, size and SHA-256),
+11 836 bytes, a default 1 m cube with no material and no animation. `FI76` compares it against a
+hand-written ASCII twin field for field, with two DELIBERATE, NAMED exceptions rather than a silent
+near-match: `ImportedPrimitive::positions.size()` differs (24 for Blender's own per-face-normal
+flat-shaded export, 8 for the undecorated ASCII twin) because Blender authors a `LayerElementNormal`
+this task's fixture does not attempt to reproduce — a shading-fidelity authoring choice, not a
+container-format property; and `SourceSpace::upAxis` differs (`'Y'` for Blender, `'Z'` for the twin)
+because Blender's own FBX exporter declares `UpAxis: 1` while still requiring the identical
+−90°-about-X geometric correction a Z-up source would — measured directly (both fixtures produce the
+bit-identical converted node rotation and bounds), an internal convention of Blender's own exporter
+this task does not attempt to reverse-engineer. Every OTHER field compared — node name, parent-less
+root, translation, rotation, scale, `summary.vertexCount`, `summary.triangleCount`, bounds min/max,
+material/skin/animation counts, `sourceSpace.unitMeters` — matches bit-for-bit between the two
+independently-produced documents.
+
+**Sabotage matrix and the mechanical merge gate are NOT YET RUN.** This entry is written at the point
+where all twelve of the plan's own steps are implementation-complete and green (95/95 on both full
+presets, 6/6 and 19/19 on both freshly rebuilt reduced configurations, all six architecture guards,
+clang-format/clang-tidy clean by exit code) — the 35-seed sabotage pass, the full CI run on all three
+platforms, and the manual macOS/Windows/Linux validation rows all remain for the next phase of work on
+this branch, matching 3.2.1's own two-part precedent (its implementation entry, then a separate later
+commit recording the validation pass once the PR had actually merged). Windows and Linux validation
+rows remain pending for this task as for every task since Phase 2 — carried-forward platform-validation
+debt, unchanged by this task's own implementation work.

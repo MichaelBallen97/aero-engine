@@ -16,97 +16,67 @@ macOS-validated with no open FAIL, and the gate artifact committed at
 the save → New Scene → Open Scene round trip confirmed). A whole-phase audit (2026-08-02) then found
 and fixed two silent data-loss paths, a never-absolute project root, and four stale documentation
 claims — full detail in `docs/10-engineering-log.md`. **Phase 3 (Asset Pipeline & 3D Content) is
-OPEN. Epic 3.1 (AssetDatabase · assets) has four MERGED tasks and a fifth code-complete on its own
-branch.** 3.1.1 (GUIDs + `.meta` files) merged as PR #65 (`2be73e1`), sabotage-proven (26/26 seeds),
-CI-green on all three platforms, **macOS-validated ✅ PASS 14/14 (2026-08-04)**. 3.1.2 (import cache &
-dependency tracking) merged as PR #66 (`3470b87`, 31/31 sabotage seeds), closing 3.1.1's D8
-orphan-re-attachment deferral and the carried-forward symlinked-directory duplicate-GUID defect,
-**macOS-validated ✅ PASS 14/14 (2026-08-05)**. 3.1.3 (asset browser v1) merged as PR #67 (`aa914fb`,
-35/35 sabotage seeds; its code-review round found 11 findings, 3 BLOCKING, the sharpest a real
-use-after-free of GPU textures invisible on macOS because SDL frees synchronously on Vulkan/D3D12 but
-only defers on Metal), gave the Asset Browser real decoded thumbnails, a project-wide search and the
-Issues list, and closed both 3.1.1's D8 and 3.1.2's D13 deferrals with its one user-initiated
-destructive action (deleting an orphaned `.meta`). **macOS-validated ✅ PASS 16/16 (2026-08-06)** — row
-4 (no stutter with a folder of photos) is the only evidence anywhere that the two-per-tick blocking
-`uploadTexture` fence sync is tolerable, and that evidence is Metal-only. Found and fixed one cosmetic
-defect post-merge (the grid's `..` row). 3.1.4 (hot-reload file watcher) merged as PR #69 (`ebc4da6`,
-25/25 sabotage seeds; its code-review round closed six gaps against an already-green gate, the sharpest
-overturning the task's own "no count-only accessor could ever discriminate this" claim about
-`noteExternalScan()`'s call site). It adds `AssetWatcher`, a per-tick budgeted sweep with zero file
-reads and zero logging of its own, plus `AssetDatabase::generation()` (the one signal driving every
-downstream refresh) and `ThumbnailLedger::supersededBy()`. **macOS-validated ✅ PASS 10/10 (2026-08-07)**
-— row 4 (two minutes idle) found the Console silent and the frame rate unchanged, the only evidence
-anywhere the watcher's steady state is genuinely costless; **R1's numeric per-sweep cost stayed
-unmeasured**, open debt this task's own risk register asks for by number, not estimate. Full
-per-task sabotage matrices and every build-time finding for all four: `docs/10-engineering-log.md`'s
-Phase 3 entries.
+OPEN. Epic 3.1 (AssetDatabase · assets) is fully merged; Epic 3.2 (Importers) has one merged task and
+a second code-complete on its own branch.**
 
-**3.2.1 (glTF import, fastgltf) is MERGED to `main` as PR #70 (merge commit `f02ca65`, 28 commits:
-twelve feature, one build fix-up, eleven review/coverage fixes, four docs), CI-green on macOS, Windows
-and Ubuntu with the green run's `headSha` asserted equal to `HEAD` before merging, and macOS
-validated ✅ PASS 12/12 (2026-08-09) with no defects found.** Mechanical gate green: 95/95 both presets
-(`AERO_REQUIRE_GPU=1`), both reduced configurations rebuilt fresh at **973** doctest cases each — up
-from 813 pre-task — with `MI1`/`MS1` present in both, six guards unchanged and byte-identical,
-clang-format/clang-tidy clean by exit code.
+**Epic 3.1, condensed** (full per-task detail, every sabotage matrix and every build-time finding live
+permanently in `docs/10-engineering-log.md`'s Phase 3 entries — this paragraph is a summary, not a
+duplicate): **3.1.1** (GUIDs + `.meta` files) merged as PR #65 (`2be73e1`, 26/26 sabotage seeds),
+**macOS-validated ✅ PASS 14/14**. **3.1.2** (import cache & dependency tracking) merged as PR #66
+(`3470b87`, 31/31 seeds), closing 3.1.1's D8 orphan-re-attachment deferral and a carried-forward
+symlinked-directory duplicate-GUID defect, **macOS-validated ✅ PASS 14/14**. **3.1.3** (asset browser
+v1) merged as PR #67 (`aa914fb`, 35/35 seeds; code review found 11 findings, 3 BLOCKING, the sharpest a
+real GPU-texture use-after-free invisible on macOS because SDL frees synchronously on Vulkan/D3D12 but
+only defers on Metal), gave the Asset Browser real thumbnails, search and the Issues list,
+**macOS-validated ✅ PASS 16/16**. **3.1.4** (hot-reload file watcher) merged as PR #69 (`ebc4da6`,
+25/25 seeds; code review closed six gaps against an already-green gate), added `AssetWatcher`,
+`AssetDatabase::generation()` and `ThumbnailLedger::supersededBy()`, **macOS-validated ✅ PASS 10/10** —
+**R1's numeric per-sweep cost stayed unmeasured**, open debt its own risk register asked for by number.
 
-**Two adversarial rounds ran against a fully green gate, and each found what the other missed.** The
-**code-review round found 12 findings, 3 BLOCKING**, none of them visible to a 976-case green suite:
-external buffers resolved only when the model sat at the assets root (breaking every ordinary Blender
-"glTF Separate" export in a subdirectory — the one external-buffer success case put both files at the
-root); sparse accessors that could **abort the process** (UBSan null-bind) or read out of bounds (ASan
-heap-overflow), because `validateAccessor`'s `count > 0` gate is correct for `copyFromAccessor` but this
-code uses `iterateAccessor`, whose constructors branch on `sparse.has_value()` with no count test; and
-mesh/model bounds that silently contained the world origin, because `ImportedMesh::bounds` defaulted to
-a point box rather than `Aabb::empty()` — the exact number the panel prints and validation row 2
-compares against Blender. **All 12 are closed, each with a test that fails without the fix.** The
-**32-seed sabotage matrix** then graded 18 matched · 1 confirmed non-discriminator · 3 predicted
-contingencies · **10 differently-shaped findings**, exposing **six coverage gaps where a deliberately
-broken build stayed fully green** — most importantly that **nothing could tell an atomic `.meta` write
-from a non-atomic one** (the plan's claimed discriminator, `MS11`, asserts the temp file is *absent*
-afterwards, which a raw `ofstream` also satisfies). **Five gaps are closed with proven-discriminating
-cases; the sixth — phase 7.5's `std::unique` — is recorded as defence in depth with no reachable input
-rather than given a test that only looks like proof.** Seed **S21** would have reddened nothing before
-the review round added `MS19`, which is the clearest evidence the two rounds are not redundant.
+**3.2.1 (glTF import, fastgltf) is MERGED to `main` as PR #70 (merge commit `f02ca65`, 28 commits),
+CI-green on all three platforms with the green run's `headSha` asserted equal to `HEAD` before merging,
+and macOS-validated ✅ PASS 12/12 (2026-08-09) with no defects found.** It is the editor's first working
+importer and the first **producer** for `AssetCacheEntry::dependencies` (3.1.2's own field, unfed until
+then): phase 7.5 turns every resolved external URI into a dependency GUID during the scan, so editing a
+texture a model references marks that model `DependencyChanged` on the next scan — the roadmap's own
+headline example, working end to end. `gltf_import.{hpp,cpp}` is the only fastgltf TU in the tree;
+`model_import.{hpp,cpp}` holds the canonical, third-party-free `ImportedModel`; `model_import_session.
+{hpp,cpp}` drives the on-demand two-pass import; `import_details_panel.{hpp,cpp}` is a six-section
+panel, all sections default-open. `.meta` gained an optional, additive `importer` block at format
+version 1. **Zero paths under `engine/`** — the no-engine-change streak reached three. A **12-finding
+code review (3 BLOCKING)** and a separate **32-seed sabotage matrix** (18 matched, 1 non-discriminator,
+3 contingencies, 10 findings, six coverage gaps found and five closed) both ran against a fully green
+gate and each found what the other missed — the clearest evidence the two rounds are not redundant.
+**R4 closed with a measurement**: a steady-state scan is size-independent (0 models probed, 0 bytes
+read) and costs ~1.0–1.1 ms, ~6% of a 16.7 ms frame, whichever fixture size is used.
 
-It gives the editor its first working importer, and — for the first time since 3.1.2 added
-the field — a real **producer** for `AssetCacheEntry::dependencies`: phase 7.5 (this task's one
-`asset_database.cpp` edit) runs a budgeted `Structure`-depth probe over changed model assets inside the
-existing scan and turns every resolved external URI into a dependency GUID, so editing a texture a
-model references now marks that model `DependencyChanged` on the next scan — the roadmap's own
-headline example, working end to end. `gltf_import.{hpp,cpp}` is the **only** fastgltf TU anywhere in
-the tree (INV-M1/AC-55: the include grep names exactly one file). `model_import.{hpp,cpp}` holds the
-canonical, third-party-free `ImportedModel` and every pure helper — provable from string literals and
-committed text fixtures with zero disk on the critical path. `model_import_session.{hpp,cpp}` drives an
-on-demand two-pass import (`Structure` then `Full`) from an Asset Browser selection and holds the one
-write this whole task adds anywhere. `import_details_panel.{hpp,cpp}` is the task's only ImGui TU: six
-CollapsingHeader sections (Overview, Import Settings, Hierarchy, Meshes, Materials, Skeleton &
-Animation), all default-open — the Inspector's own per-component precedent, and the only way any
-section is reachable by this project's ImGui-free-at-source GPU tier at all. `.meta` gains an optional,
-additive `importer` block at format version 1 — never a v2 bump, which would nil every GUID in an older
-build. **Zero paths under `engine/`** — the no-engine-change streak that 3.1.3 restarted at one and
-3.1.4 carried to two now reaches **three**. Two deviations from the plan's own literal counts, both
-logged in `docs/10-engineering-log.md`'s 3.2.1 entry and in `.claude/rules/editor.md`: the
-`AssetBrowserPanel::requestSelectEntry` / `EditorApp::requestAssetBrowserSelectEntry` seam (the
-code-review-finding-4 shape, a fifth application — without it AC-45/AC-46/AC-47/AC-50's own GPU-tier
-cases could not drive a real selection at all), and one `std::move` on a trivially-copyable
-`std::optional<ImportSettings>` dropped for clang-tidy's `performance-move-const-arg`. Full build-time
-finding list, the fastgltf MUST-VERIFY answers confirmed against the installed v0.9.0 headers, and the
-three gate-grep corrections the plan's own review rounds made (AC-55/AC-56) are in
-`docs/10-engineering-log.md`'s 3.2.1 entry. **AC-56's grep took three corrections and the recurring
-lesson is worth carrying forward: a grep-based gate must exclude whatever enforces it** — as first
-written it matched 21 pre-existing hits and could never pass, then it failed against its own
-explanatory comment, then against the test that asserts the invariant.
+**3.2.2 (FBX import, ufbx) is CODE-COMPLETE on `feat/3.2.2-fbx-import-ufbx`, NOT YET MERGED.** PR #71
+is an open draft; commits 1–2 are pushed with CI green on all three platforms, commits 3–13 are local
+only and have not yet been through CI. All twelve of the plan's own steps are implemented and green
+locally (95/95 both presets, six guards, clang-format/clang-tidy clean by exit code, both reduced
+configurations rebuilt fresh and equal at 1082 cases each with `FI1` present in both). **The 35-seed
+sabotage matrix, the full three-platform CI run, and manual validation on any OS have NOT been run
+yet** — that is the immediate next work on this branch, not a later task. `editor/third_party/ufbx/` is
+the **first vendored third-party library in this tree** (v0.23.0, byte-identical to upstream, MIT/
+Unlicense, `aero_ufbx` STATIC over one ASan/UBSan-instrumented `.c`, PRIVATE to `aero_editor_core`) —
+vendored because ufbx is in no vcpkg registry, not by preference. `fbx_import.{hpp,cpp}` is the only
+ufbx TU anywhere; ufbx never touches the filesystem (`ufbx_load_memory` only). The axis/unit conversion
+is three `ufbx_load_opts` fields, never hand-rolled coordinate math. `modelImporterIdentity` became a
+genuinely **per-format** pure function, closing a gap the plan itself found only two thirds of: beyond
+the two hard-coded-`GLTF_IMPORTER_NAME` sites the spec named (`asset_database.cpp`'s phase 7.5 probe,
+`import_details_panel.cpp`'s Overview line), a **third** turned up in `asset_meta.cpp`'s `writeMetaText`
+while wiring `applySettings()` for FBX — closed with two trailing, defaulted parameters rather than a
+new boundary-crossing type. A **BLOCKING, ASan-confirmed heap-buffer-overflow** was found and fixed in
+`import_details_panel.cpp`'s Hierarchy and Skins sections, both of which indexed `ImportedModel::nodes`
+directly by `ImportedNode::localId` since task 3.2.1 shipped — harmless for glTF, where the two always
+coincide, and a real out-of-bounds read for the first FBX hierarchy with more than one node. Zero paths
+under `engine/` — the no-engine-change streak reaches **four**. Full detail — the measured D6 conversion
+table, all six MUST-VERIFY answers, every build-time finding including three separate test-numbering
+collisions with post-merge review-round additions, and the honest FI72 allocator-cap resolution — is in
+`docs/10-engineering-log.md`'s 3.2.2 entry.
 
-**R4 is CLOSED with a measurement, not an impression** — the debt 3.1.4's R1 left open is not repeated
-here. Measured on `macos-release`, 20 models, three runs each: with ~140 B models, a cold scan (20
-probed) costs **5.2–6.2 ms** and steady state (0 probed) **1.07–1.11 ms**; with ~200 KB models (4 MB
-total, approximating a real Blender export) cold costs **9.3–10.8 ms** and steady state **0.94–1.17
-ms**. **Steady-state cost is independent of model size** — zero models probed, zero bytes read
-(D15/INV-C5) — so the watcher's repeated scans never pay the probe, which is exactly what R4 asked. A
-steady-state scan is ~6% of a 16.7 ms frame. **Windows and Linux validation rows remain open.**
-
-**Carried-forward debt, unchanged by 3.2.1 and explicitly not part of any gate:** no Windows or
-Linux validation pass exists for any of the thirteen Phase 2 tasks or for 3.1.1/3.1.2/3.1.3/3.1.4, and
+**Carried-forward debt, unchanged by 3.2.1/3.2.2 and explicitly not part of any gate:** no Windows or
+Linux validation pass exists for any of the thirteen Phase 2 tasks or for 3.1.1–3.1.4 or 3.2.1, and
 Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. That is platform-validation debt
 spanning three phases now, and it is worth scheduling as work of its own — the 2.2.5 lesson, one scale
 up.
@@ -117,8 +87,8 @@ up.
 | **Phase 1** — Reflection, ECS & Serialization | **COMPLETE** — epics 1.1–1.4 all CLOSED. Gate reached in code, macOS-validated; Windows/Linux render rows pending (`samples/phase-1-scene/VALIDATION.md`). |
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics (2.1 Editor shell, 2.2 Core panels, 2.3 Manipulation, 2.4 Undo/redo, 2.5 Scene I/O, 2.6 Project system v0) CLOSED in code and macOS-validated PASS, with Windows/Linux rows pending for every task (`editor/VALIDATION.md`). The whole-phase audit (2026-08-02) fixed two silent data-loss paths, a project root that was never made absolute, two CI false-greens, and four stale documentation claims. Full per-task and per-epic history — every defect, every sabotage matrix, every deviation — lives in `docs/10-engineering-log.md`'s Phase 2 entries; this row is deliberately a summary, not a duplicate. |
 | **Phase 2 gate** | **MET 2026-08-02.** `samples/phase-2-editor-scene/` holds a project and a 4-entity scene authored entirely through the editor, with the save → New Scene → Open Scene round trip confirmed (`samples/phase-2-editor-scene/VALIDATION.md`); provenance is recorded there rather than asserted, since a hand-written `scene.json` is byte-identical to a real one and no test tier can tell them apart. Deliberately NOT `add_subdirectory`'d — this artifact is data (a provenance proof of the editor), not a compile-proof of engine code. |
-| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets): **3.1.1 (GUIDs + `.meta` files), 3.1.2 (import cache & dependency tracking), 3.1.3 (asset browser v1) and 3.1.4 (hot-reload file watcher) all MERGED to `main`** (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds respectively), **macOS-validated ✅ PASS on all four** (14/14, 14/14, 16/16, 10/10) — Windows/Linux rows pending for all four, see the paragraph above. `engine::Guid`/`engine::ContentHash` (`engine/core`), the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache with its dependency-cascade worklist, and the real Asset Browser (thumbnails, search, the Issues panel, the one sanctioned orphan-`.meta` delete) all shipped across these four. **Epic 3.2 (Importers) opens with 3.2.1 (glTF import, fastgltf): MERGED as PR #70 (merge commit `f02ca65`, 28 commits), CI-green on all three platforms, sabotage-proven (32 seeds: 18 matched / 1 non-discriminator / 3 contingencies / 10 findings, six coverage gaps found and five closed), code-review-hardened (12 findings, 3 BLOCKING, all closed), and macOS-validated ✅ PASS 12/12 (2026-08-09) with R4's scan cost measured rather than asserted.** It is the first PRODUCER for `AssetCacheEntry::dependencies` (3.1.2's own field, unfed until now) — editing a texture a model references now marks that model `DependencyChanged` on the next scan, the roadmap's own headline example working end to end. `gltf_import.{hpp,cpp}` is the only fastgltf TU anywhere in the tree; `model_import.{hpp,cpp}` holds the canonical, third-party-free `ImportedModel`; `model_import_session.{hpp,cpp}` drives the on-demand two-pass import; `import_details_panel.{hpp,cpp}` is a new six-section panel, all sections default-open. Zero paths under `engine/` — the no-engine-change streak reaches three. Full detail, every build-time finding and the fastgltf MUST-VERIFY answers confirmed against the installed v0.9.0 headers are in `docs/10-engineering-log.md`'s 3.2.1 entry. |
-| **Next task** | **3.1.5 (drag-into-scene)** — now unblocked: it depended on 3.1.3 (merged) and 3.2.1 (merged as PR #70), and `ImportedModel` gives it something to reference. 3.1.5 also owns two decisions 3.2.1 deliberately left open: **sub-asset identity** (D13 — both a stable `localId` and the source `name` are recorded for every mesh/material/skin/animation, with a fixed ordering rule, so a third encoding is still reachable and nothing is foreclosed) and **replacing `LOCAL_MESH_HALF_EXTENT`** (2.3.1's knowingly-wrong constant, which stays wrong until an entity can reference an imported mesh). See `docs/tasks/phase-3.md`. Formerly this row read — see `docs/tasks/phase-3.md`; it depends on 3.1.3 (merged) and 3.2.1. The remaining carried-forward item is **platform-validation debt, now spanning three phases and all four merged Epic 3.1 tasks**: no Windows or Linux validation pass exists for any of the thirteen Phase 2 tasks or for 3.1.1/3.1.2/3.1.3/3.1.4, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. Schedule it as work of its own rather than as a ride-along row — 2.2.5's lesson at phase scale. |
+| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets) is FULLY MERGED: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds respectively), **macOS-validated ✅ PASS on all four** (14/14, 14/14, 16/16, 10/10) — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash` (`engine/core`), the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache, and the real Asset Browser all shipped across these four. **Epic 3.2 (Importers): 3.2.1 (glTF, fastgltf) MERGED as PR #70 (`f02ca65`, 28 commits), sabotage-proven (32 seeds, 10 findings) and code-review-hardened (12 findings, 3 BLOCKING), macOS-validated ✅ PASS 12/12.** It is the first PRODUCER for `AssetCacheEntry::dependencies` (3.1.2's own field) — editing a texture a model references now marks that model `DependencyChanged` on the next scan. **3.2.2 (FBX, ufbx) is CODE-COMPLETE on `feat/3.2.2-fbx-import-ufbx`, PR #71 open as a draft, NOT YET MERGED** — sabotage matrix, three-platform CI and manual validation all remain. It is the first vendored third-party library in the tree (`editor/third_party/ufbx/`, byte-identical to upstream v0.23.0) and closes a THIRD hard-coded-importer-identity site the spec itself missed, plus a BLOCKING ASan heap-buffer-overflow in the Import Details panel's Hierarchy/Skins sections that shipped invisibly with 3.2.1 and was only reachable once an FBX hierarchy existed to trigger it. Zero paths under `engine/` for both 3.2.1 and 3.2.2 — the no-engine-change streak reaches **four**. Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
+| **Next task** | **Finish 3.2.2**: run the 35-seed sabotage matrix (Step 13), then the full mechanical gate, push, wait for three green CI lanes with `headSha == HEAD`, and merge with a merge commit (Step 14). **After 3.2.2 merges, 3.1.5 (drag-into-scene)** is next — it depends on 3.1.3 (merged) and 3.2.1 (merged), and `ImportedModel` gives it something to reference; a merged 3.2.2 additionally lets it be dragged an `.fbx` as easily as a `.gltf`. 3.1.5 owns two decisions 3.2.1 deliberately left open: **sub-asset identity** (D13 — both a stable `localId` and the source `name` are recorded for every mesh/material/skin/animation, with a fixed ordering rule) and **replacing `LOCAL_MESH_HALF_EXTENT`** (2.3.1's knowingly-wrong constant). See `docs/tasks/phase-3.md`. The remaining carried-forward item is **platform-validation debt, now spanning three phases**: no Windows or Linux validation pass exists for any of the thirteen Phase 2 tasks, for 3.1.1–3.1.4, or for 3.2.1, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. Schedule it as work of its own rather than as a ride-along row — 2.2.5's lesson at phase scale. |
 
 Engine layers that exist today, in dependency order: `core` (gained `guid.hpp`/`guid.cpp` at task
 3.1.1, beside `handle.hpp`; gained `content_hash.hpp`/`content_hash.cpp` at task 3.1.2, beside `guid`)
@@ -130,51 +100,59 @@ cache (tasks 3.1.1/3.1.2) live entirely in `/editor`, not `/engine/assets`.
 `engine/scene` gained one primitive at task 2.4.2, `[[nodiscard]] Entity World::recreate(Entity)` —
 the only engine change Epic 2.4 needed. Tasks 2.5.1, 2.5.2, 2.6.1 and 2.6.2 all needed **no** engine
 change at all — a four-task streak task **3.1.1 ended**; **3.1.2 used the identical minimal shape a
-second time, 3.1.3 restarted the streak at one, 3.1.4 made it two, and 3.2.1 now makes it three**: it
-needs no `engine/` change at all (`git diff --name-only main...HEAD -- engine/` is empty on the
-feature branch). `/editor` gained **ten** new `.hpp`/`.cpp` pairs across 2.6.2, 3.1.1, 3.1.2, 3.1.3 and
-3.1.4 (`project_settings.{hpp,cpp}` / `project_settings_panel.{hpp,cpp}` (2.6.2),
+second time, 3.1.3 restarted the streak at one, 3.1.4 made it two, 3.2.1 made it three, and 3.2.2 now
+makes it four**: it needs no `engine/` change at all (`git diff --name-only main...HEAD -- engine/` is
+empty on the feature branch). `/editor` gained **ten** new `.hpp`/`.cpp` pairs across 2.6.2, 3.1.1,
+3.1.2, 3.1.3 and 3.1.4 (`project_settings.{hpp,cpp}` / `project_settings_panel.{hpp,cpp}` (2.6.2),
 `asset_meta.{hpp,cpp}` / `asset_database.{hpp,cpp}` (3.1.1), `asset_cache.{hpp,cpp}` (3.1.2),
 `asset_view.{hpp,cpp}` / `thumbnail_cache.{hpp,cpp}` / `thumbnail_store.{hpp,cpp}` (src-private) /
-`asset_actions.{hpp,cpp}` (3.1.3), `asset_watcher.{hpp,cpp}` (3.1.4)); **3.2.1 adds four more pairs plus
-one deliberate exception**: `model_import.{hpp,cpp}`, `gltf_import.{hpp,cpp}` (src-private, the only
-fastgltf TU), `model_import_session.{hpp,cpp}` and `import_details_panel.{hpp,cpp}` (src-private, the
-only ImGui TU this task adds) are real pairs; `import_settings.hpp` is a HEADER WITH NO `.cpp`,
+`asset_actions.{hpp,cpp}` (3.1.3), `asset_watcher.{hpp,cpp}` (3.1.4)); **3.2.1 added four more pairs
+plus one deliberate exception**: `model_import.{hpp,cpp}`, `gltf_import.{hpp,cpp}` (src-private, the
+only fastgltf TU), `model_import_session.{hpp,cpp}` and `import_details_panel.{hpp,cpp}` (src-private,
+the only ImGui TU that task added) are real pairs; `import_settings.hpp` is a HEADER WITH NO `.cpp`,
 deliberately alone (plan §A-11 — `ImportSettings` is shared by `asset_meta.hpp` and
 `model_import.hpp`, and giving it its own tiny, dependency-free header is what stops `asset_meta.hpp`
-from dragging in `aero::scene` and the whole math umbrella). The `.hpp`s live under
-`editor/include/aero/editor/` (except the three named src-private), the `.cpp`s under `editor/src/`.
+from dragging in `aero::scene` and the whole math umbrella). **3.2.2 adds ONE more pair**,
+`fbx_import.{hpp,cpp}` (src-private, the only ufbx TU) — and, separately, `/editor` gains its FIRST
+`third_party/` directory, `editor/third_party/ufbx/` (`ufbx.h`, `ufbx.c`, `LICENSE`, `README.md`,
+`CMakeLists.txt`), byte-identical to upstream v0.23.0 and never to be patched locally. The `.hpp`s live
+under `editor/include/aero/editor/` (except the four named src-private), the `.cpp`s under
+`editor/src/`.
 
-Test inventory at HEAD (`feat/3.2.1-gltf-import-fastgltf`), **re-measured, not carried forward**:
-**95** ctest entries with tools ON, **6** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`,
-**19** with `-DAERO_REFLECT_TOOLS=OFF` alone — unchanged by task 3.2.1 (zero new ctest entries; every
-new case lives inside an existing TU). `aero_tests` **415** (unchanged — 3.2.1 touches zero `engine/`
-paths). `aero_editor_shell_test` **976** (**837** after 3.1.4 → **+139** at 3.2.1:
-`tests/editor/model_import_test.cpp`, a new TU (**91** cases, MI1–MI93 plus MI40b);
-`tests/editor/model_import_session_test.cpp`, a new TU (**16** cases, MS1–MS16);
-`tests/editor/asset_meta_test.cpp` +14 (AM-i1–AM-i14); `tests/editor/asset_cache_test.cpp` +8
-(AC-p1–AC-p8); `tests/editor/asset_database_test.cpp` +10 (AD-i1–AD-i10) — **976 measured directly with
-`--list-test-cases`, never derived by addition** (91+16+14+8+10 = 139, and 837+139 = 976, both checked).
-`aero_editor_imgui_test` **82** (73 after 3.1.4 → +9 at 3.2.1: I52–I60, the panel's registration, the
-exactly-one-import/re-import/non-model cases, three real-frame draw states, the reconcile's own
-target-sync proof, and the source-text call-site proof). `aero_scene_serialize_test` **23** and
-`aero_editor_inspector_test` **22**, both unchanged since 3.1.1. `aero_editor_core` sources **51** (47
-before this task → +4: `model_import.cpp`, `gltf_import.cpp`, `model_import_session.cpp`,
-`import_details_panel.cpp`) — one new `find_package(fastgltf CONFIG REQUIRED)`, one new PRIVATE
-`target_link_libraries` entry (`fastgltf::fastgltf`, confined to `aero_editor_core`, never reaching
-`aero_editor` or any test target's link line). `check-math-boundary.sh`'s scanned count: **276** after
-3.1.4 **→ 287** at 3.2.1 (eleven new C-family files, matching the plan's own prediction exactly) —
-measured after `git add` at every step boundary, never assumed. Guard count stays **six**,
-`check-project-no-delete.sh` byte-identical (`git diff main...HEAD -- .github/scripts/` empty) — Check
-A's six-file denylist unchanged, Check B's two-file `PERMITTED_DELETERS` allowlist unchanged (none of
-this task's five new `editor/src/*.cpp` files is in either — being outside both is what makes a future
-`std::filesystem::remove` in any of them a hard CI failure), Check B's scanned-file count grows to
-**52** (the glob picks the new files up automatically). Both reduced configurations, freshly rebuilt in
-`build/tools-off-3.2.1`/`build/reflect-off-3.2.1`: `ctest -N` **6**/**19** unchanged, both passing 100%
-(6/6 and 19/19), `aero_editor_shell_test`'s own doctest `--list-test-cases` count reads **952** in
-**both** (up from 813 pre-task), with `MI1` and `MS1` present in both — proving both new importer TUs
-need no reflection or scene serialization (AC-59). Counts diverge by OS (Windows skips
-`golden-rule.include_scan_e2e`), so never assume one — measure with `ctest -N`.
+Test inventory at HEAD (`feat/3.2.2-fbx-import-ufbx`), **re-measured, not carried forward**: **95**
+ctest entries with tools ON, **6** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`, **19** with
+`-DAERO_REFLECT_TOOLS=OFF` alone — unchanged by either 3.2.1 or 3.2.2 (zero new ctest entries; every
+new case lives inside an existing TU). `aero_tests` **415** (unchanged — neither task touches
+`engine/`). `aero_editor_shell_test` **1106** (997 at 3.2.1 → **+109** at 3.2.2: a new TU,
+`tests/editor/fbx_import_test.cpp` (**68** cases, FI1–FI76 with a documented gap in the FI72–FI75
+range), plus `model_import_test.cpp` (+15, MI103–MI117), `model_import_session_test.cpp` (+6,
+MS22–MS27, renumbered from the plan's own predicted MS24–MS29 — the file's highest EXISTING case was
+MS21, not MS23), `asset_meta_test.cpp` (+6, AM-i15–AM-i20), `asset_cache_test.cpp` (+6,
+AC-p9–AC-p14) and `asset_database_test.cpp` (+8, AD-i14–AD-i21, renumbered from the plan's own
+predicted AD-i11–AD-i18 — a post-3.2.1-merge review round had already claimed AD-i11–AD-i13) — **1106
+measured directly with `--list-test-cases`, never derived by addition**. `aero_editor_imgui_test`
+**89** (83 at 3.2.1 → +6 at 3.2.2: I62–I67, renumbered from the plan's own predicted I61–I66 — a
+post-3.2.1-merge review round had already claimed I61). `aero_scene_serialize_test` **23** and
+`aero_editor_inspector_test` **22**, both unchanged since 3.1.1. `aero_editor_core` sources **52** (51
+at 3.2.1 → +1: `fbx_import.cpp`) — no new `find_package` beyond ufbx's own vendored `add_subdirectory`,
+one new PRIVATE `target_link_libraries` entry (`aero::ufbx`, confined to `aero_editor_core`, never
+reaching `aero_editor` or any test target's link line — a link-graph grep, not merely an include grep,
+is what proves this). `check-math-boundary.sh`'s scanned count: **287** at 3.2.1 **→ 291** at 3.2.2
+(four new C-family files — `ufbx.h`, `fbx_import.hpp`, `fbx_import.cpp`, `fbx_import_test.cpp`; `ufbx.c`
+is not in its extension set) — measured after `git add` at every step boundary, never assumed. Guard
+count stays **six**. **`.github/scripts/` is NO LONGER byte-identical to `main`, unlike every prior
+task's gate** — `git diff main...HEAD -- .github/scripts/` shows exactly 2 changed lines, both
+comments, in `check-rhi-boundary.sh` (it claimed miniaudio was the only vendored `.c` in the tree;
+there are now two). `check-project-no-delete.sh`'s own logic is unchanged — Check A's six-file denylist
+and Check B's two-file `PERMITTED_DELETERS` allowlist are both unchanged in membership (`fbx_import.cpp`
+is in neither, which is what makes a future `std::filesystem::remove` in it a hard CI failure), Check
+B's scanned-file count grows to **53** (the glob picks the new file up automatically). Both reduced
+configurations, freshly rebuilt in `build/tools-off-3.2.2`/`build/reflect-off-3.2.2`: `ctest -N`
+**6**/**19** unchanged, both passing 100% (6/6 and 19/19), `aero_editor_shell_test`'s own doctest
+`--list-test-cases` count reads **1082** in **both** (up from 952 at 3.2.1), with `FI1` present in
+both — proving the FBX importer TU needs neither reflection nor scene serialization (AC-68). Counts
+diverge by OS (Windows skips `golden-rule.include_scan_e2e`), so never assume one — measure with
+`ctest -N`.
 
 > **Before touching a subsystem, read its entry in `docs/10-engineering-log.md`.** That file is the full per-task history: what shipped, what was deliberately left out, the traps found, and the dead ends that must never be retried (the lavapipe LSan leak, `LD_PRELOAD`, vcpkg's `sdl3-shadercross` on macOS, …). It is deliberately *not* auto-loaded — grep it before re-deriving anything.
 
