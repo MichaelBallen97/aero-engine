@@ -10,6 +10,7 @@
 #include <aero/core/guid.hpp>
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/model_import_session.hpp>
+#include <aero/editor/text_file.hpp>  // task 3.2.2, MS22: readTextFile, for the source-text proof
 
 #include "scene_golden_support.hpp"
 
@@ -18,10 +19,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -74,6 +77,53 @@ void writeFile(std::string_view absolutePath, std::string_view bytes) {
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
+// ---- task 3.2.2: a minimal ASCII FBX document, the §D-7/§G-10 template's shape, VERIFIED TO PARSE
+// (fbx_import_test.cpp's own spike). This TU drives the REAL session, through the REAL importFbx
+// backend -- a second, independent copy of the template rather than a shared header, matching this
+// file's own "each TU keeps its own" precedent (asset_database_test.cpp's identical copy, task 3.2.2).
+[[nodiscard]] std::string makeFbxDoc(std::string_view extraObjects) {
+    return std::string(
+               "; FBX 7.4.0 project file\n"
+               "FBXHeaderExtension:  {\n"
+               "    FBXHeaderVersion: 1003\n"
+               "    FBXVersion: 7400\n"
+               "    Creator: \"aero test fixture\"\n"
+               "}\n"
+               "GlobalSettings:  {\n"
+               "    Version: 1000\n"
+               "    Properties70:  {\n"
+               "        P: \"UpAxis\", \"int\", \"Integer\", \"\",1\n"
+               "        P: \"UpAxisSign\", \"int\", \"Integer\", \"\",1\n"
+               "        P: \"FrontAxis\", \"int\", \"Integer\", \"\",2\n"
+               "        P: \"FrontAxisSign\", \"int\", \"Integer\", \"\",1\n"
+               "        P: \"CoordAxis\", \"int\", \"Integer\", \"\",0\n"
+               "        P: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1\n"
+               "        P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",100\n"
+               "    }\n"
+               "}\n"
+               "Objects:  {\n"
+               "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+               "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+               "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+               "        GeometryVersion: 124\n"
+               "    }\n"
+               "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n") +
+           std::string(extraObjects) +
+           "}\n"
+           "Connections:  {\n"
+           "    C: \"OO\",100,0\n"
+           "    C: \"OO\",200,100\n"
+           "}\n";
+}
+
+// A standalone Texture OBJECT, connected to nothing -- fbx_import.cpp's phase 4 walks `scene.textures`
+// directly (every element in the document), the shape fbx_import_test.cpp's FI50/FI51/FI52 rely on.
+[[nodiscard]] std::string fbxTextureObject(std::string_view relativeFilename) {
+    return "    Texture: 500, \"Texture::tex\", \"\" { Type: \"TextureVideoClip\" Version: 202 "
+           "RelativeFilename: \"" +
+           std::string(relativeFilename) + "\" }\n";
+}
+
 }  // namespace
 
 using engine::Guid;
@@ -85,6 +135,7 @@ using engine::editor::ImportSettings;
 using engine::editor::ImportStatus;
 using engine::editor::MAX_MODEL_FILE_BYTES;
 using engine::editor::ModelImportSession;
+using engine::editor::readTextFile;
 using engine::editor::ScanStatus;
 using engine::editor::SessionState;
 using engine::editor::writeMetaText;
@@ -670,4 +721,285 @@ TEST_CASE(
     CHECK(session.result().model.images[0].guid == textureGuid);
     CHECK(session.result().model.images[1].relativePath.empty());  // refused scheme -- E7
     CHECK_FALSE(session.result().model.images[1].guid.valid());    // stays nil
+}
+
+// ---- MS22-MS27: task 3.2.2's D5 gate -- FBX skips the Structure pass entirely --------------------
+//
+// Renumbered from the plan's own predicted MS24-MS29: `/usr/bin/grep -c '^TEST_CASE('` on this file
+// reads 23 BEFORE this block, but the highest NUMBERED case is MS21 (MS8b/MS15b are lettered variants
+// of earlier numbers, not new ones) -- measured, not assumed, exactly the AD-i11/AD-i12/AD-i13
+// collision this task's own asset_database_test.cpp block already logs for the identical reason.
+
+TEST_CASE(
+    "model_import_session: service()'s ONLY unconditional readFileBytes() call is the model's own "
+    "bytes -- the external-buffer loop sits ENTIRELY inside the modelImporterNeedsExternalBuffers gate "
+    "(MS22, AC-56b, the session-level gate-shape discriminator)") {
+    // WHY THIS IS A SOURCE-TEXT PROOF, not a behavioural one (I60's own precedent, restated): FBX's
+    // `importFbx` takes `external` ONLY to keep its signature uniform with importGltf's and NEVER reads
+    // it (fbx_import.hpp's own header comment, D5) -- so whether the external-buffer loop ran or not is
+    // UNOBSERVABLE in ImportResult for an ordinary fixture. A missing texture reference is swallowed
+    // identically either way (readFileBytes fails -> `continue` -> `externals` stays empty regardless),
+    // and the only path where running the loop WOULD change the outcome (E21's overBudget branch)
+    // needs a cumulative external-buffer size near MAX_EXTERNAL_BYTES_PER_MODEL (512 MiB) to trip --
+    // flatly incompatible with a tier-0 fixture. So the mechanical proof available is textual, the
+    // identical shape I60 already uses for INV-M12: read model_import_session.cpp's own source,
+    // strip comments, and prove the SHAPE rather than guess at a side effect no fixture can produce.
+    //
+    // WHAT THIS DOES NOT COVER: seed S29 itself (modelImporterNeedsExternalBuffers returning TRUE for
+    // .fbx) is a defect in model_import.cpp, not in this file's source text -- MI110
+    // (model_import_test.cpp) is what discriminates THAT bug, at the pure-function level. This case
+    // discriminates the COMPLEMENTARY defect: the session ignoring, misplacing or inverting a CORRECT
+    // predicate's result. CONFIRMED DIRECTLY: replacing the gate's condition with a literal `true`
+    // reddens this case (REQUIRE(gateOpenLine != code.size()) fails) while leaving MS23/MS24/MS25/MS26
+    // fully green -- the missing-texture and refused-URI scenarios cannot see this class of bug at all
+    // (§D-11's own comment states why), which is the reason this case exists as a source-text proof
+    // rather than a content-based one.
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/model_import_session.cpp";
+    const engine::editor::FileReadResult read = readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+    const std::string& text = *read.text;
+    REQUIRE_FALSE(text.empty());
+
+    std::vector<std::string_view> lines;
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        if (newline == std::string_view::npos) {
+            lines.push_back(remaining);
+            break;
+        }
+        lines.push_back(remaining.substr(0, newline));
+        remaining.remove_prefix(newline + 1U);
+    }
+
+    // Comment-stripped BEFORE matching (I42's lesson, I60's own precedent): this task's own prose names
+    // `readFileBytes`/`modelImporterNeedsExternalBuffers` in comments far more than once.
+    std::vector<std::string> code;
+    code.reserve(lines.size());
+    for (const std::string_view line : lines) {
+        const std::size_t commentStart = line.find("//");
+        code.emplace_back(commentStart == std::string_view::npos ? line : line.substr(0, commentStart));
+    }
+
+    std::size_t gateOpenLine = code.size();
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("modelImporterNeedsExternalBuffers(leaf)") != std::string::npos) {
+            REQUIRE(gateOpenLine == code.size());  // exactly ONE gate line in the whole file
+            gateOpenLine = i;
+        }
+    }
+    REQUIRE(gateOpenLine != code.size());  // the gate exists at all
+
+    // Walk forward from the gate line, tracking brace depth, to find where its block CLOSES.
+    int depth = 0;
+    std::size_t gateCloseLine = code.size();
+    for (std::size_t i = gateOpenLine; i < code.size(); ++i) {
+        for (const char c : code[i]) {
+            if (c == '{') {
+                ++depth;
+            } else if (c == '}') {
+                --depth;
+                if (depth == 0) {
+                    gateCloseLine = i;
+                    break;
+                }
+            }
+        }
+        if (gateCloseLine != code.size()) {
+            break;
+        }
+    }
+    REQUIRE(gateCloseLine != code.size());  // the gate's own block is well-formed and closes
+
+    std::size_t readsOutsideGate = 0;
+    std::size_t readsInsideGate = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("readFileBytes(") == std::string::npos) {
+            continue;
+        }
+        if (i >= gateOpenLine && i <= gateCloseLine) {
+            ++readsInsideGate;
+        } else {
+            ++readsOutsideGate;
+        }
+    }
+    CHECK(readsOutsideGate == 1);  // the model's OWN bytes -- read unconditionally, for every format
+    CHECK(readsInsideGate == 1);   // the external-buffer loop's one read call -- gated, for glTF only
+
+    // Pass 2 (the unconditional Full import) sits AFTER the gate closes -- so it runs regardless of
+    // which arm the gate took, exactly the shape MS25/MS27 (below) exercise behaviourally.
+    std::size_t pass2Line = code.size();
+    for (std::size_t i = gateCloseLine; i < code.size(); ++i) {
+        if (code[i].find("ImportDepth::Full, externals") != std::string::npos) {
+            pass2Line = i;
+            break;
+        }
+    }
+    CHECK(pass2Line > gateCloseLine);
+}
+
+TEST_CASE(
+    "model_import_session: the glTF two-external-buffer path is RE-RUN, unbroken by the FBX gate -- one "
+    "geometry buffer AND one texture both resolve (MS23)") {
+    // MS8/MS8b each use exactly ONE external file -- this scenario is the genuinely NEW regression
+    // proof the D5 gate needs: the externalUris LOOP must still iterate more than once for glTF.
+    const TempDir dir;
+    writeFile(dir.join("chair.gltf"),
+              R"({"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0},"mode":4}]}],)"
+              R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],)"
+              R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],)"
+              R"("buffers":[{"byteLength":36,"uri":"chair.bin"}],)"
+              R"("images":[{"uri":"wood.png"}]})");
+    writeFile(dir.join("chair.bin"), std::string(36, '\0'));
+    writeFile(dir.join("wood.png"), "pixels");
+    AssetDatabase db;
+    GuidGenerator gen(200);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid woodGuid = *db.guidForPath("wood.png");
+    REQUIRE(woodGuid.valid());
+
+    ModelImportSession session;
+    session.setTarget("chair.gltf", db.generation());
+    session.service(dir.utf8(), db);
+    CHECK(session.state() == SessionState::Imported);
+    CHECK(session.result().status == ImportStatus::Ok);
+    REQUIRE(session.result().model.meshes.size() == 1);
+    REQUIRE(session.result().model.meshes[0].primitives.size() == 1);
+    CHECK(session.result().model.meshes[0].primitives[0].positions.size() == 3);  // the .bin resolved
+    REQUIRE(session.result().model.images.size() == 1);
+    CHECK(session.result().model.images[0].relativePath == "wood.png");  // the texture ALSO resolved
+    CHECK(session.result().model.images[0].guid == woodGuid);
+}
+
+TEST_CASE(
+    "model_import_session: an .fbx naming TEN refused texture URIs imports through the REAL session "
+    "with ten refusals and an empty externalUris -- AC-52's no-read policy holds end to end, not only "
+    "at the pure importModel() level (MS24, AC-52's session-level half)") {
+    // fbx_import_test.cpp's own FI52 already proves this at the pure importModel() level ("proven
+    // structurally: importFbx's signature takes only bytes"). This is the SAME property exercised
+    // through the actual disk-reading session path (TempDir + AssetDatabase::rescan +
+    // ModelImportSession::service()), which is a genuinely different code path even though the
+    // outcome matches.
+    const TempDir dir;
+    std::string objects;
+    for (int i = 0; i < 10; ++i) {
+        objects += std::format(
+            "    Texture: {}, \"Texture::t{}\", \"\" {{ Type: \"TextureVideoClip\" Version: 202 "
+            "RelativeFilename: \"/etc/secret{}.png\" }}\n",
+            500 + i, i, i);
+    }
+    writeFile(dir.join("chair.fbx"), makeFbxDoc(objects));
+    AssetDatabase db;
+    GuidGenerator gen(201);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("chair.fbx", db.generation());
+    session.service(dir.utf8(), db);
+    CHECK(session.state() == SessionState::Imported);
+    CHECK(session.result().status == ImportStatus::Ok);
+    CHECK(session.result().externalUris.empty());
+    REQUIRE(session.result().model.images.size() == 10);
+    for (const auto& image : session.result().model.images) {
+        CHECK(image.relativePath.empty());
+        CHECK_FALSE(image.refusal.empty());
+    }
+}
+
+TEST_CASE(
+    "model_import_session: an .fbx whose referenced texture is MISSING still imports its geometry "
+    "successfully -- status Ok, non-empty geometry, one warning (MS25, AC-57)") {
+    // THE E21 FALLBACK MUST NOT FIRE FOR FBX. Asserting status == Ok AND vertexCount > 0 is what a
+    // Truncated-with-structure-only fallback (§A-4's zeroed counts) would fail -- a weaker case
+    // asserting status == Ok alone would not discriminate a bug that silently fell back to Structure.
+    const TempDir dir;
+    writeFile(dir.join("chair.fbx"), makeFbxDoc(fbxTextureObject("missing.png")));
+    // Deliberately NO missing.png on disk.
+    AssetDatabase db;
+    GuidGenerator gen(202);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("chair.fbx", db.generation());
+    session.service(dir.utf8(), db);
+    CHECK(session.state() == SessionState::Imported);
+    CHECK(session.result().status == ImportStatus::Ok);
+    REQUIRE(session.result().model.meshes.size() == 1);
+    REQUIRE(session.result().model.meshes[0].primitives.size() == 1);
+    CHECK(session.result().model.meshes[0].primitives[0].positions.size() > 0);
+    CHECK(session.result().model.summary.vertexCount > 0);
+}
+
+TEST_CASE(
+    "model_import_session: switching .fbx -> .gltf -> .fbx replaces the WHOLE result each time -- no "
+    "field carried across formats (MS26, E21 of the spec's §8)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.fbx"), makeFbxDoc(""));
+    writeFile(dir.join("table.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(203);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("chair.fbx", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+    CHECK(session.result().model.sourceSpace.declared);  // FBX declares a space
+    REQUIRE(session.result().model.meshes.size() == 1);
+
+    session.setTarget("table.gltf", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+    CHECK_FALSE(session.result().model.sourceSpace.declared);  // glTF declares NONE -- not the FBX's
+    CHECK(session.result().model.meshes.empty());              // a minimal glTF document has no meshes
+
+    session.setTarget("chair.fbx", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+    CHECK(session.result().model.sourceSpace.declared);  // back to FBX -- never stuck at glTF's "false"
+    REQUIRE(session.result().model.meshes.size() == 1);
+    CHECK(session.importCount() == 3);
+}
+
+TEST_CASE(
+    "model_import_session: applySettings on an .fbx writes the sidecar ONCE, atomically, with "
+    "\"name\": \"fbx\" -- a byte-identical re-apply writes nothing (MS27, AC-17, INV-M9/INV-F12)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.fbx"), makeFbxDoc(""));
+    AssetDatabase db;
+    GuidGenerator gen(204);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid guid = *db.guidForPath("chair.fbx");
+
+    ModelImportSession session;
+    session.setTarget("chair.fbx", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+
+    ImportSettings edited;
+    edited.scale = 3.5F;
+    session.setPendingSettings(edited);
+    REQUIRE(session.canApply());
+    const std::string error = session.applySettings(dir.utf8());
+    CHECK(error.empty());
+
+    const auto metaText = scene_golden::readBytes(dir.join("chair.fbx.meta"));
+    REQUIRE(metaText.ok);
+    CHECK(metaText.text == writeMetaText(guid, edited, "fbx", 1));
+    CHECK(metaText.text.find(R"("name": "fbx")") != std::string::npos);
+    CHECK_FALSE(std::filesystem::exists(pathOf(dir.join("chair.fbx.meta") + std::string(ATOMIC_TEMP_SUFFIX))));
+
+    // A byte-identical re-apply (settings unchanged) writes NOTHING -- INV-M9/INV-F12: this task adds
+    // no write anywhere beyond the one applySettings() already owned.
+    std::error_code ec;
+    const std::filesystem::file_time_type beforeMtime =
+        std::filesystem::last_write_time(pathOf(dir.join("chair.fbx.meta")), ec);
+    REQUIRE_FALSE(ec);
+    session.setPendingSettings(edited);  // the SAME settings again
+    const std::string secondError = session.applySettings(dir.utf8());
+    CHECK(secondError.empty());
+    const std::filesystem::file_time_type afterMtime =
+        std::filesystem::last_write_time(pathOf(dir.join("chair.fbx.meta")), ec);
+    REQUIRE_FALSE(ec);
+    CHECK(afterMtime == beforeMtime);
 }

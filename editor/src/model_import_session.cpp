@@ -138,49 +138,61 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
     const std::span<const std::byte> span(reinterpret_cast<const std::byte*>(modelBytes.bytes->data()),
                                           modelBytes.bytes->size());
 
-    // PASS 1 -- Structure, to learn the URI set. Cheap: one simdjson parse, no accessor touched.
-    const ImportResult structure = importModel(leaf, dir, span, pending, ImportDepth::Structure, {});
-    if (structure.status != ImportStatus::Ok && structure.status != ImportStatus::Truncated) {
-        resultValue = structure;
-        stateValue = SessionState::Failed;
-        ++imports;
-        return;
-    }
-    // Load EXACTLY what pass 1 named, through the editor's own capped byte primitive. Never a path the
-    // DOCUMENT chose: every entry of externalUris has already been through classifyUri (AC-39).
+    // D5: FBX has no external geometry buffers, so the Structure pass has nothing to tell us and the
+    // texture reads it would drive are pure waste -- worse, E21 ("a partial Full is never shown")
+    // would let a MISSING TEXTURE block an import whose geometry was in the file all along (AC-57).
+    // ONE PURE PREDICATE, BOTH ARMS TESTED (MS25/MS27). glTF: unchanged, two passes, one Structure
+    // parse plus every external buffer. FBX: exactly one importModel call at Full depth, exactly one
+    // file read (the .fbx itself), and no texture-read failure path at all.
+    //
+    // Verified safe: pass 1's ONLY products in this function are `externals` and the E21 fallback
+    // result -- nothing else reads `structure`.
     std::vector<ExternalBuffer> externals;
-    externals.reserve(structure.externalUris.size());
-    std::uint64_t total = 0;
-    bool overBudget = false;
-    for (const std::string& rel : structure.externalUris) {
-        const std::string path = std::string(assetsRootUtf8) + '/' + rel;
-        FileBytesResult buf = readFileBytes(path, MAX_EXTERNAL_BYTES_PER_MODEL);
-        if (!buf.bytes.has_value()) {
-            continue;  // an unreadable buffer becomes MissingBuffer in pass 2, via the adapter
+    if (modelImporterNeedsExternalBuffers(leaf)) {
+        // PASS 1 -- Structure, to learn the URI set. Cheap: one simdjson parse, no accessor touched.
+        const ImportResult structure = importModel(leaf, dir, span, pending, ImportDepth::Structure, {});
+        if (structure.status != ImportStatus::Ok && structure.status != ImportStatus::Truncated) {
+            resultValue = structure;
+            stateValue = SessionState::Failed;
+            ++imports;
+            return;
         }
-        if (buf.bytes->size() > MAX_EXTERNAL_BYTES_PER_MODEL - total) {
-            overBudget = true;
-            break;
+        // Load EXACTLY what pass 1 named, through the editor's own capped byte primitive. Never a path
+        // the DOCUMENT chose: every entry of externalUris has already been through classifyUri (AC-39).
+        externals.reserve(structure.externalUris.size());
+        std::uint64_t total = 0;
+        bool overBudget = false;
+        for (const std::string& rel : structure.externalUris) {
+            const std::string path = std::string(assetsRootUtf8) + '/' + rel;
+            FileBytesResult buf = readFileBytes(path, MAX_EXTERNAL_BYTES_PER_MODEL);
+            if (!buf.bytes.has_value()) {
+                continue;  // an unreadable buffer becomes MissingBuffer in pass 2, via the adapter
+            }
+            if (buf.bytes->size() > MAX_EXTERNAL_BYTES_PER_MODEL - total) {
+                overBudget = true;
+                break;
+            }
+            total += buf.bytes->size();
+            externals.push_back(ExternalBuffer{rel, std::move(*buf.bytes)});
         }
-        total += buf.bytes->size();
-        externals.push_back(ExternalBuffer{rel, std::move(*buf.bytes)});
-    }
-    if (overBudget) {
-        // E21: A PARTIAL FULL IS NEVER SHOWN. Keep the Structure result and say why.
-        resultValue = structure;
-        resultValue.status = ImportStatus::Truncated;
-        resultValue.message =
-            "the external buffers exceed this importer's per-model limit; showing the "
-            "document's structure only";
-        stateValue = SessionState::Imported;
-        assignImageGuids(resultValue.model.images, database);  // NIT 11
-        ++imports;
-        return;
+        if (overBudget) {
+            // E21: A PARTIAL FULL IS NEVER SHOWN. Keep the Structure result and say why.
+            resultValue = structure;
+            resultValue.status = ImportStatus::Truncated;
+            resultValue.message =
+                "the external buffers exceed this importer's per-model limit; showing the "
+                "document's structure only";
+            stateValue = SessionState::Imported;
+            assignImageGuids(resultValue.model.images, database);  // NIT 11
+            ++imports;
+            return;
+        }
     }
 
-    // PASS 2 -- Full. D16: SYNCHRONOUS; a large model WILL visibly hitch, and that is accepted -- it is
-    // what every editor in this class does on a deliberate click, and MAX_MODEL_FILE_BYTES refuses the
-    // pathological case outright rather than freezing.
+    // PASS 2 -- Full. For FBX this is the ONLY pass and `externals` is empty. D16: SYNCHRONOUS; a large
+    // model WILL visibly hitch, and that is accepted -- it is what every editor in this class does on a
+    // deliberate click, and MAX_MODEL_FILE_BYTES refuses the pathological case outright rather than
+    // freezing.
     resultValue = importModel(leaf, dir, span, pending, ImportDepth::Full, externals);
     stateValue = (resultValue.status == ImportStatus::Ok || resultValue.status == ImportStatus::Truncated)
                      ? SessionState::Imported
@@ -207,8 +219,16 @@ std::string ModelImportSession::applySettings(std::string_view assetsRootUtf8) {
         return lastApplyError;  // ""
     }
     const std::string metaPath = std::string(assetsRootUtf8) + '/' + targetPath + std::string(ASSET_META_SUFFIX);
-    const std::string text = writeMetaText(targetGuid, pending);  // D7's omit-when-default lives there
-    lastApplyError = writeTextFileAtomic(metaPath, text);         // .aero-tmp + rename (2.5.1)
+    // task 3.2.2: the THIRD hard-coded-identity site (asset_meta.cpp's own writeMetaText used to write
+    // GLTF_IMPORTER_NAME/VERSION unconditionally) is closed HERE, the one call site that can ever write
+    // a non-default settings block. modelImporterIdentity(leafOf(targetPath)) -- the SAME per-format
+    // pure function planImports and phase 7.5 both use -- so an .fbx's sidecar records "fbx", never a
+    // borrowed "gltf" (AC-17, MS29).
+    const ImporterIdentity identity = modelImporterIdentity(leafOf(targetPath));
+    const std::string text =
+        writeMetaText(targetGuid, pending, identity.name, identity.version);  // D7's omit-when-default
+                                                                              // lives there
+    lastApplyError = writeTextFileAtomic(metaPath, text);                     // .aero-tmp + rename (2.5.1)
     if (lastApplyError.empty()) {
         onDisk = pending;  // the form matches disk again; Apply disables itself (AC-51)
     }

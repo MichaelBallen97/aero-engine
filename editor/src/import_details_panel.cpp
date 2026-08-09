@@ -19,6 +19,7 @@
 
 #include <aero/editor/model_import.hpp>
 #include <aero/editor/panel_context.hpp>
+#include <aero/editor/project_files.hpp>  // task 3.2.2 (§A-2): leafOf, for the importer-identity fix
 
 #include <cstddef>
 #include <cstdint>
@@ -26,6 +27,7 @@
 #include <imgui.h>
 #include <optional>
 #include <string>
+#include <unordered_map>  // task 3.2.2 (R13 fix): localId -> nodes[] position, see drawHierarchy
 #include <vector>
 
 namespace engine::editor {
@@ -101,7 +103,12 @@ void drawOverview(const ModelImportSession& session) {
     const ImportResult& result = session.result();
     const ImportSummary& summary = result.model.summary;
 
-    const std::string importerLine = std::format("Importer: {} / {}", GLTF_IMPORTER_NAME, GLTF_IMPORTER_VERSION);
+    // A2: the importer identity is a PURE FUNCTION OF THE FILE NAME (model_import.hpp) -- never a
+    // constant. Before this, an .fbx said "Importer: gltf / 1", which validation row 1 reads first.
+    const ImporterIdentity identity = modelImporterIdentity(leafOf(session.target()));
+    const std::string importerLine = identity.name.empty()
+                                         ? std::string("Importer: --")
+                                         : std::format("Importer: {} / {}", identity.name, identity.version);
     ImGui::TextUnformatted(importerLine.c_str());
     const std::string statusLine = std::format("Status: {}", importStatusLabel(result.status));
     ImGui::TextUnformatted(statusLine.c_str());
@@ -117,6 +124,27 @@ void drawOverview(const ModelImportSession& session) {
     ImGui::TextWrapped("%s", counts2.c_str());
     const std::string counts3 = std::format("Vertices: {}  Triangles: {}", summary.vertexCount, summary.triangleCount);
     ImGui::TextUnformatted(counts3.c_str());
+
+    // D19: ONE row, drawn only when the source format declares a space of its own. glTF declares none
+    // (metres / Y-up / right-handed BY SPECIFICATION), so this is absent for every .gltf -- which is
+    // AC-60, and is why the row means something: a .fbx and a .gltf reporting identical bounds is only
+    // meaningful if you can SEE that the FBX started somewhere else.
+    // The arrow's right-hand side is a CONSTANT -- this importer always targets Y-up, 1 m -- so the row
+    // reads as a statement about the conversion, not a pair of unrelated facts.
+    if (result.model.sourceSpace.declared) {
+        const SourceSpace& sp = result.model.sourceSpace;
+        std::string provenance;         // A21: a hand-written FBX has NO
+        if (!sp.generator.empty()) {    // exporter, so the parenthetical
+            provenance = sp.generator;  // must not render as an empty "()"
+        }
+        if (!sp.formatVersion.empty()) {
+            provenance += provenance.empty() ? sp.formatVersion : ", " + sp.formatVersion;
+        }
+        const std::string spaceLine =
+            std::format("Source space: {}-up, {:g} m/unit  ->  Y-up, 1 m/unit{}", sp.upAxis, sp.unitMeters,
+                        provenance.empty() ? std::string() : std::format("   ({})", provenance));
+        ImGui::TextWrapped("%s", spaceLine.c_str());
+    }
 
     // A21: the fold's own bounds, NEVER the document's accessor min/max -- and at Structure depth (no
     // positions decoded) `bounds` is the empty, INVALID Aabb, so this reads "--" rather than a fake box.
@@ -181,24 +209,44 @@ void drawSettingsForm(const ModelImportSession& session, bool& applyRequested, b
 // One explicit-stack frame per node ITERATIVELY VISITED (misc-no-recursion): `childCursor` is the next
 // child index still to push, and `opened` echoes what TreeNodeEx returned -- TreePop is owed iff true,
 // exactly TreeNodeEx's own contract (a leaf node still reports `open == true`, imgui.h:1360).
+//
+// task 3.2.2 BUGFIX (R13, found by this task's own I61/I63 GPU-tier cases -- an ASan heap-buffer-
+// overflow, not merely a wrong picture): `ImportedNode::localId` is the source's OWN identifier, and
+// `ImportedModel::roots` / `ImportedNode::children` hold localIds, NEVER positions in
+// `ImportedModel::nodes` (model_import.hpp's own documented contract). For glTF the two happen to
+// coincide, which is why this walked `model.nodes[id]` directly since task 3.2.1 and never crashed --
+// for FBX, `localId` is the raw ufbx `typed_id` and is offset from the vector position the instant the
+// scene root (skipped, A13) is involved, so `model.nodes[id]` reads out of bounds for any real FBX
+// hierarchy. Frames now hold a `nodeLocalId`, translated to a `nodes[]` position through the SAME
+// localId -> position map `fbx_import.cpp`'s own `nodeIndexByLocalId` already builds on the import
+// side (`.claude/rules/editor.md`'s R13 entry: "Read this before indexing nodes[localId]").
 struct HierarchyFrame {
-    std::uint32_t nodeIndex = 0;
+    std::uint32_t nodeLocalId = 0;
     std::size_t childCursor = 0;
     bool entered = false;
     bool opened = false;
 };
 
-void drawNodeTree(const ImportedModel& model, std::uint32_t rootIndex, std::vector<HierarchyFrame>& stack) {
+void drawNodeTree(const ImportedModel& model, const std::unordered_map<std::uint32_t, std::uint32_t>& indexByLocalId,
+                  std::uint32_t rootLocalId, std::vector<HierarchyFrame>& stack) {
     stack.clear();
-    stack.push_back(HierarchyFrame{.nodeIndex = rootIndex});
+    stack.push_back(HierarchyFrame{.nodeLocalId = rootLocalId});
     while (!stack.empty()) {
         // Re-fetched every iteration, NEVER held across a push_back (which can reallocate `stack`).
         HierarchyFrame& top = stack.back();
+        const auto found = indexByLocalId.find(top.nodeLocalId);
+        if (found == indexByLocalId.end()) {
+            // Defensive (E17's own posture): an out-of-range localId from a malformed source. Never
+            // entered, so nothing was pushed onto ImGui's own ID/tree stacks for it -- pop and move on.
+            stack.pop_back();
+            continue;
+        }
+        const std::uint32_t nodeIndex = found->second;
         if (!top.entered) {
             top.entered = true;
-            const ImportedNode& node = model.nodes[top.nodeIndex];
-            ImGui::PushID(static_cast<int>(top.nodeIndex));
-            std::string label = node.name.empty() ? std::format("<node {}>", top.nodeIndex) : node.name;
+            const ImportedNode& node = model.nodes[nodeIndex];
+            ImGui::PushID(static_cast<int>(nodeIndex));
+            std::string label = node.name.empty() ? std::format("<node {}>", nodeIndex) : node.name;
             if (node.meshIndex != INVALID_SUBASSET) {
                 label += " [mesh]";
             }
@@ -211,11 +259,11 @@ void drawNodeTree(const ImportedModel& model, std::uint32_t rootIndex, std::vect
             }
             top.opened = ImGui::TreeNodeEx("##row", flags, "%s", label.c_str());
         }
-        const ImportedNode& current = model.nodes[top.nodeIndex];
+        const ImportedNode& current = model.nodes[nodeIndex];
         if (top.opened && top.childCursor < current.children.size()) {
-            const std::uint32_t child = current.children[top.childCursor];
+            const std::uint32_t childLocalId = current.children[top.childCursor];
             ++top.childCursor;
-            stack.push_back(HierarchyFrame{.nodeIndex = child});
+            stack.push_back(HierarchyFrame{.nodeLocalId = childLocalId});
             continue;  // `top` is not touched again this iteration
         }
         if (top.opened) {
@@ -231,9 +279,15 @@ void drawHierarchy(const ImportedModel& model) {
         ImGui::TextDisabled("(no nodes)");
         return;
     }
+    // Built ONCE per call -- fbx_import.cpp's own nodeIndexByLocalId shape, restated on the READ side.
+    std::unordered_map<std::uint32_t, std::uint32_t> indexByLocalId;
+    indexByLocalId.reserve(model.nodes.size());
+    for (std::uint32_t i = 0; i < model.nodes.size(); ++i) {
+        indexByLocalId.emplace(model.nodes[i].localId, i);
+    }
     std::vector<HierarchyFrame> stack;  // local: this panel shows one model at a time, not a hot loop
     for (const std::uint32_t root : model.roots) {
-        drawNodeTree(model, root, stack);
+        drawNodeTree(model, indexByLocalId, root, stack);
     }
 }
 
@@ -335,10 +389,20 @@ void drawMaterials(const ImportedModel& model) {
 }
 
 // ---- section 6: Skeleton & Animation -------------------------------------------------------------------
+// task 3.2.2 BUGFIX (R13, the identical defect drawHierarchy above had): `ImportedSkin::joints` holds
+// NODE localIds too (fbx_import.cpp's own phase 7 pushes `cluster->bone_node->typed_id` verbatim), so
+// `model.nodes[jointNode]` is the SAME out-of-bounds read for any FBX skin, and `jointNode <
+// model.nodes.size()` is the wrong guard entirely (a localId can be numerically smaller than
+// nodes.size() and still name the WRONG node).
 void drawSkeletonAndAnimation(const ImportedModel& model) {
     if (model.skins.empty() && model.animations.empty()) {
         ImGui::TextDisabled("(no skins or animations)");
         return;
+    }
+    std::unordered_map<std::uint32_t, std::uint32_t> indexByLocalId;
+    indexByLocalId.reserve(model.nodes.size());
+    for (std::uint32_t i = 0; i < model.nodes.size(); ++i) {
+        indexByLocalId.emplace(model.nodes[i].localId, i);
     }
     constexpr ImGuiTreeNodeFlags SUB_FLAGS = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanFullWidth;
     for (std::size_t s = 0; s < model.skins.size(); ++s) {
@@ -347,11 +411,11 @@ void drawSkeletonAndAnimation(const ImportedModel& model) {
         const std::string skinName = skin.name.empty() ? std::format("<skin {}>", s) : skin.name;
         const std::string header = std::format("{} ({} joint(s))", skinName, skin.joints.size());
         if (ImGui::TreeNodeEx("##skin", SUB_FLAGS, "%s", header.c_str())) {
-            for (const std::uint32_t jointNode : skin.joints) {
+            for (const std::uint32_t jointLocalId : skin.joints) {
                 std::string jointName = "<?>";
-                if (jointNode < model.nodes.size()) {
-                    const ImportedNode& node = model.nodes[jointNode];
-                    jointName = node.name.empty() ? std::format("<node {}>", jointNode) : node.name;
+                if (const auto found = indexByLocalId.find(jointLocalId); found != indexByLocalId.end()) {
+                    const ImportedNode& node = model.nodes[found->second];
+                    jointName = node.name.empty() ? std::format("<node {}>", found->second) : node.name;
                 }
                 ImGui::TextWrapped("%s", jointName.c_str());
             }

@@ -52,6 +52,7 @@
 #include <array>  // the frozen panel-id roster; reached transitively on libc++, not on MSVC (813bc4d)
 #include <cstdint>
 #include <filesystem>
+#include <format>  // task 3.2.2, I65: truncatedFbxText()'s programmatic 257-node fixture
 #include <fstream>
 #include <memory>  // task 2.4.1: std::make_unique<TransformCommand>
 #include <optional>
@@ -4523,6 +4524,169 @@ constexpr std::string_view HIERARCHY_GLTF_TEXT = R"({"asset":{"version":"2.0"},"
 // to reach SessionState::Failed through a real frame; I58 does not care WHICH failure status lands.
 constexpr std::string_view DAMAGED_GLTF_TEXT = "this is not a json document at all";
 
+// ---- task 3.2.2: ASCII FBX fixtures for I62-I67, the §D-7/§G-10 template's shape (VERIFIED TO PARSE,
+// fbx_import_test.cpp's own spike) -- a FOURTH independent copy of the template (fbx_import_test.cpp,
+// asset_database_test.cpp and model_import_session_test.cpp each already keep their own), matching
+// this file's own "each TU keeps its own" precedent. Deliberately NO `Creator` line: metadata.exporter
+// stays UNKNOWN and metadata.creator stays empty, so SourceSpace::generator is EMPTY (A21) -- exactly
+// what I67 needs to prove the panel renders no empty parenthetical.
+constexpr std::string_view MINIMAL_FBX_TEXT =
+    "; FBX 7.4.0 project file\n"
+    "FBXHeaderExtension:  {\n"
+    "    FBXHeaderVersion: 1003\n"
+    "    FBXVersion: 7400\n"
+    "}\n"
+    "GlobalSettings:  {\n"
+    "    Version: 1000\n"
+    "    Properties70:  {\n"
+    "        P: \"UpAxis\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"UpAxisSign\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"FrontAxis\", \"int\", \"Integer\", \"\",2\n"
+    "        P: \"FrontAxisSign\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"CoordAxis\", \"int\", \"Integer\", \"\",0\n"
+    "        P: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",100\n"
+    "    }\n"
+    "}\n"
+    "Objects:  {\n"
+    "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+    "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+    "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+    "        GeometryVersion: 124\n"
+    "    }\n"
+    "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+    "}\n"
+    "Connections:  {\n"
+    "    C: \"OO\",100,0\n"
+    "    C: \"OO\",200,100\n"
+    "}\n";
+
+// A depth-4 authored chain (Root -> Child -> Grandchild -> GreatGrandchild), the HIERARCHY_GLTF_TEXT
+// shape above -- but the LEAF carries a GeometricTranslation, which fbx_import.cpp's phase 3 (D7/D8,
+// HELPER_NODES handling) turns into an additional "<geometry helper>" child node (FI23's own fixture
+// shape). What I64 needs: a real Hierarchy section walk over BOTH an ordinary chain AND a helper node,
+// whose name contains '<'/'>' -- characters ImGui treats literally in TextUnformatted but not in a
+// format string (§D-8's "a dynamic string is never a format argument" rule).
+constexpr std::string_view HIERARCHY_FBX_TEXT =
+    "; FBX 7.4.0 project file\n"
+    "FBXHeaderExtension:  {\n"
+    "    FBXHeaderVersion: 1003\n"
+    "    FBXVersion: 7400\n"
+    "}\n"
+    "GlobalSettings:  {\n"
+    "    Version: 1000\n"
+    "    Properties70:  {\n"
+    "        P: \"UpAxis\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"UpAxisSign\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"FrontAxis\", \"int\", \"Integer\", \"\",2\n"
+    "        P: \"FrontAxisSign\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"CoordAxis\", \"int\", \"Integer\", \"\",0\n"
+    "        P: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",100\n"
+    "    }\n"
+    "}\n"
+    "Objects:  {\n"
+    "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+    "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+    "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+    "        GeometryVersion: 124\n"
+    "    }\n"
+    "    Model: 100, \"Model::Root\", \"Null\" { Version: 232 }\n"
+    "    Model: 101, \"Model::Child\", \"Null\" { Version: 232 }\n"
+    "    Model: 102, \"Model::Grandchild\", \"Null\" { Version: 232 }\n"
+    "    Model: 103, \"Model::GreatGrandchild\", \"Mesh\" {\n"
+    "        Version: 232\n"
+    "        Properties70:  {\n"
+    "            P: \"GeometricTranslation\", \"Vector3D\", \"Vector\", \"\",1,0,0\n"
+    "        }\n"
+    "    }\n"
+    "}\n"
+    "Connections:  {\n"
+    "    C: \"OO\",100,0\n"
+    "    C: \"OO\",101,100\n"
+    "    C: \"OO\",102,101\n"
+    "    C: \"OO\",103,102\n"
+    "    C: \"OO\",200,103\n"
+    "}\n";
+
+// PNG magic bytes -- fbx_import_test.cpp's own FI6 confirms this maps to ImportStatus::ParseFailed.
+constexpr std::string_view DAMAGED_FBX_TEXT = "\x89PNG\r\n\x1a\n";
+
+// A non-finite UnitScaleFactor -- fbx_import_test.cpp's own FI10 confirms this maps to
+// ImportStatus::Malformed (a NaN geometry_scale multiplies through every position, and Aabb::expand()
+// silently ignores a non-finite point, so summary.bounds never leaves Aabb::empty() while
+// summary.vertexCount is real -- E5's own "internally inconsistent" trigger).
+constexpr std::string_view MALFORMED_FBX_TEXT =
+    "; FBX 7.4.0 project file\n"
+    "FBXHeaderExtension:  {\n"
+    "    FBXHeaderVersion: 1003\n"
+    "    FBXVersion: 7400\n"
+    "}\n"
+    "GlobalSettings:  {\n"
+    "    Version: 1000\n"
+    "    Properties70:  {\n"
+    "        P: \"UpAxis\", \"int\", \"Integer\", \"\",2\n"
+    "        P: \"UpAxisSign\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"FrontAxis\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"FrontAxisSign\", \"int\", \"Integer\", \"\",-1\n"
+    "        P: \"CoordAxis\", \"int\", \"Integer\", \"\",0\n"
+    "        P: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",nan\n"
+    "    }\n"
+    "}\n"
+    "Objects:  {\n"
+    "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+    "        Vertices: *12 { a: 0,0,0,100,0,0,100,100,0,0,100,0 }\n"
+    "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+    "        GeometryVersion: 124\n"
+    "    }\n"
+    "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+    "}\n"
+    "Connections:  {\n"
+    "    C: \"OO\",100,0\n"
+    "    C: \"OO\",200,100\n"
+    "}\n";
+
+// A chain of 257 nested Model blocks (depth 1..257), exceeding MAX_FBX_NODE_DEPTH (256) --
+// fbx_import_test.cpp's own FI27 confirms this maps to ImportStatus::Truncated. Built programmatically
+// like FI27's own fixture: 257 hand-written blocks would defeat the point, which is the CAP, not the
+// specific hierarchy shape.
+[[nodiscard]] std::string truncatedFbxText() {
+    std::string objects;
+    std::string connections;
+    constexpr int DEPTH = 257;
+    for (int i = 0; i < DEPTH; ++i) {
+        objects += std::format("    Model: {}, \"Model::n{}\", \"Null\" {{ Version: 232 }}\n", 100 + i, i);
+        const int parent = (i == 0) ? 0 : (100 + i - 1);
+        connections += std::format("    C: \"OO\",{},{}\n", 100 + i, parent);
+    }
+    return std::format(
+        "; FBX 7.4.0 project file\n"
+        "FBXHeaderExtension:  {{\n"
+        "    FBXHeaderVersion: 1003\n"
+        "    FBXVersion: 7400\n"
+        "}}\n"
+        "GlobalSettings:  {{\n"
+        "    Version: 1000\n"
+        "    Properties70:  {{\n"
+        "        P: \"UpAxis\", \"int\", \"Integer\", \"\",1\n"
+        "        P: \"UpAxisSign\", \"int\", \"Integer\", \"\",1\n"
+        "        P: \"FrontAxis\", \"int\", \"Integer\", \"\",2\n"
+        "        P: \"FrontAxisSign\", \"int\", \"Integer\", \"\",1\n"
+        "        P: \"CoordAxis\", \"int\", \"Integer\", \"\",0\n"
+        "        P: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1\n"
+        "        P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",100\n"
+        "    }}\n"
+        "}}\n"
+        "Objects:  {{\n"
+        "{}"
+        "}}\n"
+        "Connections:  {{\n"
+        "{}"
+        "}}\n",
+        objects, connections);
+}
+
 }  // namespace
 
 TEST_CASE("editor: the Import Details panel is registered right of the Inspector (task 3.2.1, I52, AC-50)") {
@@ -4991,6 +5155,341 @@ TEST_CASE(
     app->requestPanelFocus("Assets");
     REQUIRE(app->tick());  // 3: focus applied before DockSpaceOverViewport, so it lands this frame --
                            // drawIssues() runs for real, past the total==0 guard this fix corrected
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- I62-I67: task 3.2.2's FBX arm through the SAME real-editor surface I52-I60 already proved for
+// glTF -- the GPU tier, through real frames. Renumbered from I61: task 3.2.1's own post-merge
+// code-review round already claimed I61 (`assetImportFailureCount()`/the Issues panel, SHOULD-FIX 10)
+// -- measured via `git show HEAD:tests/editor/imgui_layer_test.cpp | grep -oE 'I[0-9]+' | sort -u`,
+// never assumed, the identical lesson this task's own AD-i/MS blocks already log. --------------------
+
+TEST_CASE(
+    "editor: selecting an .fbx imports it exactly once; a rescan re-imports exactly once more (task 3.2.2, I62, "
+    "AC-58)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i61", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.fbx", MINIMAL_FBX_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // 2.2.4's C5 -- see I53's own comment
+    REQUIRE(app->tick());                        // 1: the initial scan
+    CHECK(app->modelImportCount() == 0);
+
+    app->requestAssetBrowserSelectEntry("a.fbx");
+    REQUIRE(app->tick());  // 2: drains SelectEntry
+    REQUIRE(app->tick());  // 3: reconcile -> setTarget -> service() imports it -- the D5 gate's ONLY
+                           // pass for FBX
+    CHECK(app->modelImportCount() == 1);
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->modelImportCount() == 1);  // AC-45's rule, restated for a second format
+
+    app->requestAssetRescan();
+    REQUIRE(app->tick());  // rescan runs -> generation() bumps -> re-import, all in this ONE tick
+    CHECK(app->modelImportCount() == 2);
+    REQUIRE(app->tick());
+    CHECK(app->modelImportCount() == 2);  // a further tick at the SAME generation costs nothing more
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: selecting .fbx -> .gltf -> .fbx drives exactly THREE imports and never mixes results "
+    "(task 3.2.2, I63, E21)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i62", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.fbx", MINIMAL_FBX_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/b.gltf", MINIMAL_GLTF_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the initial scan
+
+    app->requestAssetBrowserSelectEntry("a.fbx");
+    REQUIRE(app->tick());  // 2: drains SelectEntry
+    REQUIRE(app->tick());  // 3: imports #1
+    CHECK(app->modelImportCount() == 1);
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+
+    app->requestAssetBrowserSelectEntry("b.gltf");
+    REQUIRE(app->tick());  // 4: drains SelectEntry
+    REQUIRE(app->tick());  // 5: imports #2
+    CHECK(app->modelImportCount() == 2);
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->modelImportTarget() == "b.gltf");
+
+    app->requestAssetBrowserSelectEntry("a.fbx");
+    REQUIRE(app->tick());  // 6: drains SelectEntry
+    REQUIRE(app->tick());  // 7: imports #3
+    CHECK(app->modelImportCount() == 3);
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->modelImportTarget() == "a.fbx");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the Import Details panel draws an Ok FBX result with a four-deep hierarchy containing a "
+    "helper node (task 3.2.2, I64, AC-59)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i63", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/chain.fbx", HIERARCHY_FBX_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the initial scan
+
+    app->requestAssetBrowserSelectEntry("chain.fbx");
+    REQUIRE(app->tick());  // 2: drains SelectEntry
+    REQUIRE(app->tick());  // 3: reconcile -> setTarget -> service() imports the chain + its helper node
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->modelImportCount() == 1);
+
+    REQUIRE(app->tick());  // 4: let the default dock layout settle before focusing anything
+    CHECK(app->presentedLastFrame());
+    app->requestPanelFocus("Import Details");
+    REQUIRE(app->tick());  // 5: focus applied -> draws the Imported state for real, including a
+                           // Hierarchy walk over a node whose name contains '<'/'>' (the helper node)
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the Import Details panel draws a Truncated FBX result -- the message row plus a coherent "
+    "smaller model (task 3.2.2, I65, AC-59)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i64", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/deep.fbx", truncatedFbxText()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the initial scan
+
+    app->requestAssetBrowserSelectEntry("deep.fbx");
+    REQUIRE(app->tick());  // 2: drains SelectEntry
+    REQUIRE(app->tick());  // 3: reconcile -> setTarget -> service() -- MAX_FBX_NODE_DEPTH exceeded
+    // Truncated is a SessionState::Imported result (D-11's own gate is unconditional on Pass 2, and a
+    // Truncated status still counts as "shown" -- ModelImportSession::service()'s own dichotomy), never
+    // Failed -- a panel that only handles Ok/Failed would assert drawing this.
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+
+    REQUIRE(app->tick());  // 4: let the default dock layout settle before focusing anything
+    CHECK(app->presentedLastFrame());
+    app->requestPanelFocus("Import Details");
+    REQUIRE(app->tick());  // 5: focus applied -> draws the Truncated result for real, including the
+                           // message row naming MAX_FBX_NODE_DEPTH
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the Import Details panel draws every failure status an .fbx CAN produce without an ImGui "
+    "assert -- ParseFailed and Malformed (task 3.2.2, I66, AC-59)") {
+    // Unsupported is DELIBERATELY NOT exercised here: fbx_import_test.cpp's own FI7 asserts it
+    // structurally (`CHECK(result.status != ImportStatus::Unsupported);`) -- the dispatch itself claims
+    // every ".fbx"-suffixed name before importFbx() ever runs, so no ufbx error can ever produce it for
+    // this extension. A deviation from the spec's own AC-59 wording (which names Unsupported as one of
+    // the three), logged rather than silently narrowed.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i65", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/broken.fbx", DAMAGED_FBX_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/bad-scale.fbx", MALFORMED_FBX_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the initial scan
+    REQUIRE(app->tick());  // 2: let the default dock layout settle before focusing anything
+    CHECK(app->presentedLastFrame());
+    app->requestPanelFocus("Import Details");
+
+    app->requestAssetBrowserSelectEntry("broken.fbx");
+    REQUIRE(app->tick());  // 3: drains SelectEntry
+    REQUIRE(app->tick());  // 4: reconcile -> setTarget -> service() -- ParseFailed -> draws Failed
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Failed));
+    CHECK(app->presentedLastFrame());
+
+    app->requestAssetBrowserSelectEntry("bad-scale.fbx");
+    REQUIRE(app->tick());  // 5: drains SelectEntry
+    REQUIRE(app->tick());  // 6: reconcile -> setTarget -> service() -- Malformed -> draws Failed
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Failed));
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the Overview Source space row is present for an .fbx and absent for a .gltf; the Importer "
+    "line names each importer; an empty generator renders no empty parenthetical (task 3.2.2, I67, "
+    "AC-60, A21)") {
+    // This target is ImGui-free at source and cannot read a drawn frame's text -- what IS provable is
+    // that BOTH selections draw a real frame without an ImGui assert, exactly as I56-I58 already
+    // established for the other sections; the row's PRESENCE/ABSENCE and the exact importer-line text
+    // are proven at the pure-function level by A21/A2's own tier-0 cases (fbx_import_test.cpp's FI19,
+    // model_import_test.cpp's MI106/MI107) and read directly here from the black-box surface this
+    // target DOES expose.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i66", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.fbx", MINIMAL_FBX_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/b.gltf", MINIMAL_GLTF_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the initial scan
+    REQUIRE(app->tick());  // 2: let the default dock layout settle before focusing anything
+    app->requestPanelFocus("Import Details");
+
+    app->requestAssetBrowserSelectEntry("a.fbx");
+    REQUIRE(app->tick());  // 3: drains SelectEntry
+    REQUIRE(app->tick());  // 4: reconcile -> setTarget -> service() imports -- draws the Source space
+                           // row, MINIMAL_FBX_TEXT's empty generator rendering no empty parenthetical
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->presentedLastFrame());
+
+    app->requestAssetBrowserSelectEntry("b.gltf");
+    REQUIRE(app->tick());  // 5: drains SelectEntry
+    REQUIRE(app->tick());  // 6: reconcile -> setTarget -> service() imports -- Source space row is
+                           // ABSENT (sourceSpace.declared == false, AC-60's glTF half)
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
     CHECK(app->presentedLastFrame());
 
     app->requestQuit();
