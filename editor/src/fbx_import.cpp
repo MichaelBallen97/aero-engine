@@ -1117,6 +1117,18 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
         // phase 2's own cheap element count, untouched here). Resolved per-mesh HERE, before the
         // per-part loop below, because the per-vertex joint/weight reduction (§D-4.8 point 7) must run
         // INSIDE that same loop, keyed on THIS deformer and its joint-slot mapping.
+        //
+        // FIX: a mesh can legitimately carry MORE THAN ONE `ufbx_skin_deformer` (`mesh->skin_deformers`
+        // is a list, not an optional) -- FBX permits attaching several Skin deformers to one geometry,
+        // e.g. a layered/blend-skinning export. `ImportedPrimitive` carries exactly ONE set of four
+        // joints/weights per vertex, so a second deformer is not representable in the canonical model
+        // at all -- KEEPING THE FIRST is the right call, unlike every OTHER skip in this file (a
+        // non-`FILE` texture, a point/line face, a null-bone cluster, a dropped baked node), this one
+        // used to be SILENT. Now it is named, once per mesh, before the drop happens.
+        if (settings.importSkins && mesh->skin_deformers.count > 1) {
+            addWarning(result, std::format("mesh '{}': {} skin deformers attached; only the first is imported",
+                                           outMesh.name, mesh->skin_deformers.count));
+        }
         const ufbx_skin_deformer* deformer =
             (settings.importSkins && mesh->skin_deformers.count > 0) ? mesh->skin_deformers.data[0] : nullptr;
         std::vector<std::uint32_t> jointSlots;
@@ -1439,14 +1451,28 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     // CORRECTION found while implementing phase 8 (Step 9), fixed here alongside it: §A-4's own table
     // says "skins[].joints -- empty" for FBX at Structure depth -- naming the SUB-FIELD, not the whole
     // `skins` vector. `ufbx_skin_deformer` is a scene element (like a material), unaffected by
-    // ignore_all_content, so its NAME/IDENTITY survives at Structure depth exactly like meshes' own
-    // "identity survives, content does not" split -- ONE shell ImportedSkin per deformer, `joints` /
-    // `inverseBindMatrices` / `skeletonRoot` left at their struct defaults (empty / empty /
-    // INVALID_SUBASSET). The phase-6-retrofitted pass above already builds every ImportedSkin with
-    // real content at Full depth; this is Structure's own, separate, scene-wide pass (skin deformers
-    // are NOT per-mesh the way meshes themselves are, so this does not belong inside that loop).
+    // `ignore_geometry`/`ignore_animation`, so its NAME/IDENTITY survives at Structure depth exactly
+    // like meshes' own "identity survives, content does not" split -- ONE shell ImportedSkin per
+    // (mesh, first-deformer) pair, `joints` / `inverseBindMatrices` / `skeletonRoot` left at their
+    // struct defaults (empty / empty / INVALID_SUBASSET). The phase-6-retrofitted pass above already
+    // builds every ImportedSkin with real content at Full depth; this is Structure's own, separate,
+    // scene-wide pass (skin deformers are NOT per-mesh the way meshes themselves are, so this does not
+    // belong inside that loop).
+    //
+    // FIX: this used to iterate `s.skin_deformers` -- EVERY deformer in the scene, regardless of which
+    // mesh it is attached to -- so a mesh carrying MORE THAN ONE deformer made Structure disagree with
+    // Full: phase 7 above keeps only the FIRST deformer per mesh (the same "one set of joints/weights
+    // per vertex" limit that comment explains), so Full drops every deformer past the first while this
+    // pass used to count all of them regardless. Iterating `s.meshes` and taking
+    // `mesh->skin_deformers.data[0]` MIRRORS phase 7's own selection exactly -- the same expression,
+    // the same ufbx-internal order, unaffected by any ignore_* flag -- so `skinCount` agrees with Full
+    // at every mesh shape, including one with several deformers attached to a single mesh.
     if (depth == ImportDepth::Structure && settings.importSkins) {
-        for (const ufbx_skin_deformer* deformer : s.skin_deformers) {
+        for (const ufbx_mesh* mesh : s.meshes) {
+            if (mesh->skin_deformers.count == 0) {
+                continue;
+            }
+            const ufbx_skin_deformer* deformer = mesh->skin_deformers.data[0];
             ImportedSkin shell;
             shell.name = toStd(deformer->name);
             shell.localId = deformer->typed_id;
@@ -1456,10 +1482,11 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     // OVERWRITES phase 2's cheap element count with the ACTUAL populated size -- materials'/meshes'
     // own established pattern (gltf_import.cpp's identical `summary.skinCount = result.model.skins.
     // size()` at the end of ITS OWN skins phase). This is what makes BOTH halves of the contract hold
-    // simultaneously: real at Structure depth (the shell pass above populates one entry per deformer,
-    // so `skins.size()` still equals the raw count there -- A13) AND zero when `settings.importSkins`
-    // is false (FI63 -- neither the shell pass above nor the Full-depth pass inside the mesh loop runs
-    // in that case, so `skins` stays empty at BOTH depths).
+    // simultaneously: real at Structure depth (the shell pass above populates one entry per MESH THAT
+    // HAS A DEFORMER -- the SAME per-mesh, first-only selection phase 7 makes at Full, so `skins.size()`
+    // agrees with Full's own count, not merely with the raw scene-wide deformer count -- A13) AND zero
+    // when `settings.importSkins` is false (FI63 -- neither the shell pass above nor the Full-depth
+    // pass inside the mesh loop runs in that case, so `skins` stays empty at BOTH depths).
     result.model.summary.skinCount = result.model.skins.size();
 
     // ---- phase 8: animations -> ImportedAnimation (D12). Runs at BOTH depths -- ufbx_anim_stack is a

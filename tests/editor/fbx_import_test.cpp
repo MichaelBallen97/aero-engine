@@ -2536,6 +2536,73 @@ TEST_CASE(
     CHECK(off.model.meshes[0].primitives[0].weights.empty());
 }
 
+TEST_CASE(
+    "fbx_import: a mesh with TWO skin deformers keeps only the first, with one warning naming the mesh "
+    "and the dropped count; Structure's own shell pass agrees with Full on WHICH one survives (FI79)") {
+    // MEASURED: `mesh->skin_deformers` is a LIST (not an optional) -- FBX permits attaching more than
+    // one Skin deformer to a single Geometry (a layered/blend-skinning export). `ImportedPrimitive`
+    // carries exactly ONE set of four joints/weights per vertex, so a second deformer is not
+    // representable in the canonical model at all -- keeping the first is right, but an earlier draft
+    // of this importer did it SILENTLY, unlike every other skip in this file.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+        "    Model: 110, \"Model::boneA\", \"LimbNode\" { Version: 232 }\n"
+        "    Model: 111, \"Model::boneB\", \"LimbNode\" { Version: 232 }\n"
+        "    Deformer: 300, \"Deformer::skinA\", \"Skin\" { Version: 101 }\n"
+        "    Deformer: 301, \"SubDeformer::clusterA\", \"Cluster\" {\n"
+        "        Version: 100\n        Indexes: *1 { a: 0 }\n        Weights: *1 { a: 1.0 }\n"
+        "        Transform: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "    }\n"
+        "    Deformer: 310, \"Deformer::skinB\", \"Skin\" { Version: 101 }\n"
+        "    Deformer: 311, \"SubDeformer::clusterB\", \"Cluster\" {\n"
+        "        Version: 100\n        Indexes: *1 { a: 1 }\n        Weights: *1 { a: 1.0 }\n"
+        "        Transform: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",110,0\n"
+        "    C: \"OO\",111,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",300,200\n"
+        "    C: \"OO\",301,300\n"
+        "    C: \"OO\",110,301\n"
+        "    C: \"OO\",310,200\n"
+        "    C: \"OO\",311,310\n"
+        "    C: \"OO\",111,311\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+
+    const ImportResult full = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(full.status == ImportStatus::Ok);
+    REQUIRE(full.model.skins.size() == 1);  // the second deformer is DROPPED, not merged or truncated
+    CHECK(full.model.summary.skinCount == 1);
+    // ONE warning, naming the mesh and the dropped count -- exactly `addWarning`'s own capped-list
+    // contract, and the FIX this case exists for: an earlier draft dropped the second deformer with NO
+    // warning at all, unlike every other skip in this file (a non-FILE texture, a point/line face, a
+    // null-bone cluster, a dropped baked node).
+    const bool warned = std::find(full.warnings.begin(), full.warnings.end(),
+                                  std::string("mesh 'box': 2 skin deformers attached; only the first is "
+                                              "imported")) != full.warnings.end();
+    CHECK(warned);
+
+    const ImportResult structure = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    REQUIRE(structure.status == ImportStatus::Ok);
+    // Structure's own shell pass used to iterate EVERY scene-wide deformer (2 here), disagreeing with
+    // Full's per-mesh, first-only selection (1) -- it now mirrors the IDENTICAL selection
+    // (`mesh->skin_deformers.data[0]`), so both the COUNT and WHICH deformer survives agree.
+    REQUIRE(structure.model.skins.size() == 1);
+    CHECK(structure.model.skins.size() == full.model.skins.size());
+    CHECK(structure.model.summary.skinCount == full.model.summary.skinCount);
+    CHECK(structure.model.skins[0].name == full.model.skins[0].name);
+    CHECK(structure.model.skins[0].localId == full.model.skins[0].localId);
+}
+
 // ---- FI64-FI71: animation baking (Step 9, phase 8) -------------------------------------------------
 //
 // Every fixture below is a Y-up/metre (CANONICAL_GLOBALS_PROPERTIES) document -- the source axes are
