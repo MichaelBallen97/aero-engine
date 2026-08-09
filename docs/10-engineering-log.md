@@ -3883,16 +3883,74 @@ measurements below trust:**
   one line is right no `LoadExternal*` bit can be set no matter what any comment says. Both re-run clean
   in this task's own gate (§V6, below).
 
-**Sabotage matrix: NOT YET RUN.** The plan's §B specifies 32 seeds (S1-S30 plus S25b/S25c) plus three
-mandatory second-order checks each. That pass, the PR, CI and the merge are explicitly out of scope for
-this entry's own author and are the next work on this task.
+**Sabotage matrix: RUN IN FULL — all 32 seeds (S1-S30 plus S25b/S25c), three second-order checks each
+(seed present in `git diff` and read · TU genuinely recompiled · revert byte-clean via
+`git show HEAD:<f> | diff -q - <f>`).** Graded **18 matched · 1 confirmed non-discriminator · 3 predicted
+contingencies · 10 differently-shaped findings = 32**. It exposed **six coverage gaps where a
+deliberately broken build stayed fully green**, five now closed with proven-discriminating cases:
+**S22** — nothing could distinguish an atomic `.meta` write from a raw `ofstream`; the plan's claimed
+discriminator `MS11` asserts the temp file is *absent* afterwards, which a non-atomic write also
+satisfies, and `MS15`'s escape hatch swallows the seed outright (closed by `MS15b`, which makes the
+*temp path* unusable while the target stays writable — no chmod, portable to all three OSes);
+**S27** — `MAX_IMPORT_WARNINGS` had no coverage at all, `git grep` in `tests/` empty (closed by `MI44b`,
+which also pins that the cap keeps the *earliest* warnings, so a keep-the-last-20 bug also fails);
+**S23** — phase 7.5's sort was unobservable because no test produced a scan-probed model with ≥2
+dependencies (closed by `AD-i12`, carrying a self-verifying `REQUIRE(steelGuid < woodGuid)` precondition
+so it fails loudly rather than rotting into a silent pass if GUID ordering ever changes);
+**S9** — nothing distinguished `Structure` from `Full` at scan level, because every committed fixture
+used a `data:` buffer so the adapter's `sources::URI` arm never ran (closed by `AD-i13`, whose fixture
+carries a real external `.bin`); **S26** — `MI42` was **CWD-dependent and latently flaky**: with a stray
+`external.bin` in the process working directory it goes red, without it green, and nothing controls the
+CWD (closed by `MI42b`, which makes the read *observable* rather than trying to observe an absence, plus
+`MI42c`/`MI42d`, which move §V6's two manual greps into the suite as source-text proofs — deliberately
+NOT a seventh CI script, since AC-58 requires `.github/scripts/` byte-identical).
+**The sixth is left open and named rather than papered over:** phase 7.5's `std::unique` has **no
+reachable input** from any tier — `recordExternalUri` already dedups upstream with its own `std::find`,
+and two project-relative paths resolving to one GUID is unreachable because the scan dedups directories
+by canonical physical path. It is defence in depth, recorded as such instead of given an assertion that
+only looks like proof.
 
-**macOS validation: pending.** No row of the twelve-row validation page
-(`editor/validation/3.2.1-gltf-import-fastgltf.md`) has been run yet; Windows and Linux rows remain
-pending as for every task since Phase 2. Row 8 (ten models selected one after another, no stutter) is
-the load-bearing one for INV-M12 — it is the only general-case cover `I60`'s source-text proof cannot
-be; row 9 (a measured, not estimated, scan cost over ~20 models) is the load-bearing one for R4, the
-identical open debt 3.1.4's own R1 left for its own sweep cost. Neither number exists anywhere yet.
+**Three results worth carrying forward.** **S21 would have reddened nothing before the code-review
+round added `MS19`** — `MS14` never dirties the form, so `canApply()` is false with or without the
+`targetGuid.valid()` conjunct; the review and the matrix each covered a hole the other left, which is
+the clearest evidence the two rounds are not redundant. **S20 came out better than predicted**: the plan
+expected a cap checked after its `reserve` to surface as a timeout or OOM, but `validateAccessor`
+refuses the 8,000,001-vertex claim backed by 12 bytes first, so `MI78` fails cleanly and instantly —
+D15 has a second line of defence the plan did not credit. **S28 is caught by the lint job, not the
+compilers**: recursion compiles clean on macOS/clang with no diagnostic, and only
+`clang-tidy --warnings-as-errors` flags `misc-no-recursion` — with an unpredicted bonus, `MI52` also
+reddens at runtime, because recursion changes traversal order on a cyclic `children` array and the
+first-in-source-order rule then yields three warnings instead of one.
+
+**One seed text in the plan was itself defective and is corrected there:** §B's S2 said
+`if (stack.empty()) return std::nullopt;` → `continue;`, which is **not a seed but an infinite loop** —
+`continue` skips the `start = slash + 1` advance, so `"../x.png"` spins until SIGALRM (exit 142). A seed
+must fail, not stall.
+
+**macOS validation: ✅ PASS 12/12 (2026-08-09)** on merge commit `f02ca65`, no defects found.
+Row 8 (ten models selected one after another, no stutter) is the load-bearing one for INV-M12 — the only
+general-case cover `I60`'s source-text proof cannot be — and it passed.
+
+**Row 9 closes R4 with a MEASUREMENT, which is the debt 3.1.4's R1 left open and this task deliberately
+does not repeat.** Measured on `macos-release`, 20 models, three runs each. With ~140 B models: cold
+scan (20 probed) **5.2-6.2 ms**, steady state (0 probed) **1.07-1.11 ms**. With ~200 KB models (4 MB
+total, approximating a real Blender export): cold **9.3-10.8 ms**, steady state **0.94-1.17 ms**.
+**The steady-state cost is independent of model size** — zero models probed, zero bytes read
+(D15/INV-C5) — so the watcher's repeated scans never pay the probe at all, which is precisely what R4
+asked about; only a scan where models actually changed pays it, at roughly 0.5 ms per 200 KB model. A
+steady-state scan is about 6% of a 16.7 ms frame.
+
+**How it was measured, so the number can be reproduced or challenged:** nothing in the editor reports
+it — `AssetScanReport` carries **no timing field**, and Tracy marks frames but has no zone in the scan
+path — so "it loads fast" was the only answer the UI could give. A throwaway harness timed
+`AssetDatabase::rescan()` cold and warm over a generated 20-model project with `steady_clock`, in
+Release (Debug is ASan and not representative), then was removed; the tree was verified byte-identical
+to `HEAD` afterwards. The models are synthetic, so the *cold* figure is a lower bound for a project of
+genuinely large exports; the *steady-state* figure is size-independent by construction and is the one
+R4 turns on. **Adding a `scanDurationMs` field to `AssetScanReport` would make this observable without a
+harness and is worth considering in a later task** — it is not claimed here.
+
+Windows and Linux rows remain pending, as for every task since Phase 2.
 
 ##### Task 3.2.1 — code-review round (12 findings, 3 BLOCKING, against a fully green gate)
 
@@ -4134,6 +4192,9 @@ imgui_layer_test.cpp` **82 → 83** (`I61`). `aero_editor_shell_test` **984 → 
 is untouched and still names no other editor header. **Zero paths under `engine/`** — the streak this
 task itself already carried to three (see above) is untouched by the whole review round.
 
-**Sabotage matrix: STILL NOT YET RUN.** Unchanged by this round — the plan's §B 32-seed matrix (plus
-three mandatory second-order checks each), the PR, CI on all three platforms and the merge remain the
-next work on this task, exactly as recorded above before this round started.
+**Sabotage matrix: subsequently RUN IN FULL against the fixed tree** — see the matrix paragraph
+above. Running it *after* this review round rather than before was the right order: seeds S26, S29 and
+S30 exercise precisely the buffer-adapter and coordinate-conversion surfaces these fixes touched, and
+S21's verdict depends on `MS19`, which this round added. The task then merged as **PR #70**
+(merge commit `f02ca65`), CI-green on macOS, Windows and Ubuntu with the green run's `headSha` asserted
+equal to `HEAD` before merging.

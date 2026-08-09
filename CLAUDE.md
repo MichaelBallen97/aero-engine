@@ -41,14 +41,34 @@ unmeasured**, open debt this task's own risk register asks for by number, not es
 per-task sabotage matrices and every build-time finding for all four: `docs/10-engineering-log.md`'s
 Phase 3 entries.
 
-**3.1.5 (drag-into-scene) is queued behind both 3.1.3 and 3.2.1 (glTF import); 3.2.1 is now the more
-actionable one.** **3.2.1 is COMPLETE IN CODE on `feat/3.2.1-gltf-import-fastgltf` (eleven commits: ten
-feature, one docs), NOT YET MERGED** — the mechanical gate is green through this branch's own local
-run (95/95 both presets, both reduced configurations rebuilt fresh in `build/tools-off-3.2.1` /
-`build/reflect-off-3.2.1` at 952 doctest cases each — up from 813 pre-task — with `MI1`/`MS1` present
-in both, six guards unchanged and byte-identical, clang-format/clang-tidy clean by exit code) — but
-**Step 12's 32-seed sabotage matrix has not run, there is no PR, no CI run, and no validation pass on
-any OS.** It gives the editor its first working importer, and — for the first time since 3.1.2 added
+**3.2.1 (glTF import, fastgltf) is MERGED to `main` as PR #70 (merge commit `f02ca65`, 28 commits:
+twelve feature, one build fix-up, eleven review/coverage fixes, four docs), CI-green on macOS, Windows
+and Ubuntu with the green run's `headSha` asserted equal to `HEAD` before merging, and macOS
+validated ✅ PASS 12/12 (2026-08-09) with no defects found.** Mechanical gate green: 95/95 both presets
+(`AERO_REQUIRE_GPU=1`), both reduced configurations rebuilt fresh at **973** doctest cases each — up
+from 813 pre-task — with `MI1`/`MS1` present in both, six guards unchanged and byte-identical,
+clang-format/clang-tidy clean by exit code.
+
+**Two adversarial rounds ran against a fully green gate, and each found what the other missed.** The
+**code-review round found 12 findings, 3 BLOCKING**, none of them visible to a 976-case green suite:
+external buffers resolved only when the model sat at the assets root (breaking every ordinary Blender
+"glTF Separate" export in a subdirectory — the one external-buffer success case put both files at the
+root); sparse accessors that could **abort the process** (UBSan null-bind) or read out of bounds (ASan
+heap-overflow), because `validateAccessor`'s `count > 0` gate is correct for `copyFromAccessor` but this
+code uses `iterateAccessor`, whose constructors branch on `sparse.has_value()` with no count test; and
+mesh/model bounds that silently contained the world origin, because `ImportedMesh::bounds` defaulted to
+a point box rather than `Aabb::empty()` — the exact number the panel prints and validation row 2
+compares against Blender. **All 12 are closed, each with a test that fails without the fix.** The
+**32-seed sabotage matrix** then graded 18 matched · 1 confirmed non-discriminator · 3 predicted
+contingencies · **10 differently-shaped findings**, exposing **six coverage gaps where a deliberately
+broken build stayed fully green** — most importantly that **nothing could tell an atomic `.meta` write
+from a non-atomic one** (the plan's claimed discriminator, `MS11`, asserts the temp file is *absent*
+afterwards, which a raw `ofstream` also satisfies). **Five gaps are closed with proven-discriminating
+cases; the sixth — phase 7.5's `std::unique` — is recorded as defence in depth with no reachable input
+rather than given a test that only looks like proof.** Seed **S21** would have reddened nothing before
+the review round added `MS19`, which is the clearest evidence the two rounds are not redundant.
+
+It gives the editor its first working importer, and — for the first time since 3.1.2 added
 the field — a real **producer** for `AssetCacheEntry::dependencies`: phase 7.5 (this task's one
 `asset_database.cpp` edit) runs a budgeted `Structure`-depth probe over changed model assets inside the
 existing scan and turns every resolved external URI into a dependency GUID, so editing a texture a
@@ -72,8 +92,18 @@ cases could not drive a real selection at all), and one `std::move` on a trivial
 `std::optional<ImportSettings>` dropped for clang-tidy's `performance-move-const-arg`. Full build-time
 finding list, the fastgltf MUST-VERIFY answers confirmed against the installed v0.9.0 headers, and the
 three gate-grep corrections the plan's own review rounds made (AC-55/AC-56) are in
-`docs/10-engineering-log.md`'s 3.2.1 entry. **What remains on 3.2.1: the sabotage matrix, the PR, CI on
-all three platforms, and a validation pass on every OS** — none of that is this entry's to claim.
+`docs/10-engineering-log.md`'s 3.2.1 entry. **AC-56's grep took three corrections and the recurring
+lesson is worth carrying forward: a grep-based gate must exclude whatever enforces it** — as first
+written it matched 21 pre-existing hits and could never pass, then it failed against its own
+explanatory comment, then against the test that asserts the invariant.
+
+**R4 is CLOSED with a measurement, not an impression** — the debt 3.1.4's R1 left open is not repeated
+here. Measured on `macos-release`, 20 models, three runs each: with ~140 B models, a cold scan (20
+probed) costs **5.2–6.2 ms** and steady state (0 probed) **1.07–1.11 ms**; with ~200 KB models (4 MB
+total, approximating a real Blender export) cold costs **9.3–10.8 ms** and steady state **0.94–1.17
+ms**. **Steady-state cost is independent of model size** — zero models probed, zero bytes read
+(D15/INV-C5) — so the watcher's repeated scans never pay the probe, which is exactly what R4 asked. A
+steady-state scan is ~6% of a 16.7 ms frame. **Windows and Linux validation rows remain open.**
 
 **Carried-forward debt, unchanged by 3.2.1 and explicitly not part of any gate:** no Windows or
 Linux validation pass exists for any of the thirteen Phase 2 tasks or for 3.1.1/3.1.2/3.1.3/3.1.4, and
@@ -87,8 +117,8 @@ up.
 | **Phase 1** — Reflection, ECS & Serialization | **COMPLETE** — epics 1.1–1.4 all CLOSED. Gate reached in code, macOS-validated; Windows/Linux render rows pending (`samples/phase-1-scene/VALIDATION.md`). |
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics (2.1 Editor shell, 2.2 Core panels, 2.3 Manipulation, 2.4 Undo/redo, 2.5 Scene I/O, 2.6 Project system v0) CLOSED in code and macOS-validated PASS, with Windows/Linux rows pending for every task (`editor/VALIDATION.md`). The whole-phase audit (2026-08-02) fixed two silent data-loss paths, a project root that was never made absolute, two CI false-greens, and four stale documentation claims. Full per-task and per-epic history — every defect, every sabotage matrix, every deviation — lives in `docs/10-engineering-log.md`'s Phase 2 entries; this row is deliberately a summary, not a duplicate. |
 | **Phase 2 gate** | **MET 2026-08-02.** `samples/phase-2-editor-scene/` holds a project and a 4-entity scene authored entirely through the editor, with the save → New Scene → Open Scene round trip confirmed (`samples/phase-2-editor-scene/VALIDATION.md`); provenance is recorded there rather than asserted, since a hand-written `scene.json` is byte-identical to a real one and no test tier can tell them apart. Deliberately NOT `add_subdirectory`'d — this artifact is data (a provenance proof of the editor), not a compile-proof of engine code. |
-| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets): **3.1.1 (GUIDs + `.meta` files), 3.1.2 (import cache & dependency tracking), 3.1.3 (asset browser v1) and 3.1.4 (hot-reload file watcher) all MERGED to `main`** (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds respectively), **macOS-validated ✅ PASS on all four** (14/14, 14/14, 16/16, 10/10) — Windows/Linux rows pending for all four, see the paragraph above. `engine::Guid`/`engine::ContentHash` (`engine/core`), the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache with its dependency-cascade worklist, and the real Asset Browser (thumbnails, search, the Issues panel, the one sanctioned orphan-`.meta` delete) all shipped across these four. **Epic 3.2 (Importers) opens with 3.2.1 (glTF import, fastgltf): COMPLETE IN CODE on `feat/3.2.1-gltf-import-fastgltf`, mechanical gate green (95/95 both presets, both reduced configurations at 952 doctest cases each, six guards, lint clean), NOT YET sabotage-tested, NOT YET a PR, NOT YET merged, no validation pass on any OS.** It is the first PRODUCER for `AssetCacheEntry::dependencies` (3.1.2's own field, unfed until now) — editing a texture a model references now marks that model `DependencyChanged` on the next scan, the roadmap's own headline example working end to end. `gltf_import.{hpp,cpp}` is the only fastgltf TU anywhere in the tree; `model_import.{hpp,cpp}` holds the canonical, third-party-free `ImportedModel`; `model_import_session.{hpp,cpp}` drives the on-demand two-pass import; `import_details_panel.{hpp,cpp}` is a new six-section panel, all sections default-open. Zero paths under `engine/` — the no-engine-change streak reaches three. Full detail, every build-time finding and the fastgltf MUST-VERIFY answers confirmed against the installed v0.9.0 headers are in `docs/10-engineering-log.md`'s 3.2.1 entry. |
-| **Next task** | **Take 3.2.1 (glTF import) through Step 12 (the 32-seed sabotage matrix) and Step 13 (the mechanical gate, the PR, CI on all three platforms, and the merge)** — code, docs and the local mechanical gate are all done on `feat/3.2.1-gltf-import-fastgltf`. Once it merges, **3.1.5 (drag-into-scene)** becomes available — see `docs/tasks/phase-3.md`; it depends on 3.1.3 (merged) and 3.2.1. The remaining carried-forward item is **platform-validation debt, now spanning three phases and all four merged Epic 3.1 tasks**: no Windows or Linux validation pass exists for any of the thirteen Phase 2 tasks or for 3.1.1/3.1.2/3.1.3/3.1.4, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. Schedule it as work of its own rather than as a ride-along row — 2.2.5's lesson at phase scale. |
+| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets): **3.1.1 (GUIDs + `.meta` files), 3.1.2 (import cache & dependency tracking), 3.1.3 (asset browser v1) and 3.1.4 (hot-reload file watcher) all MERGED to `main`** (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds respectively), **macOS-validated ✅ PASS on all four** (14/14, 14/14, 16/16, 10/10) — Windows/Linux rows pending for all four, see the paragraph above. `engine::Guid`/`engine::ContentHash` (`engine/core`), the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache with its dependency-cascade worklist, and the real Asset Browser (thumbnails, search, the Issues panel, the one sanctioned orphan-`.meta` delete) all shipped across these four. **Epic 3.2 (Importers) opens with 3.2.1 (glTF import, fastgltf): MERGED as PR #70 (merge commit `f02ca65`, 28 commits), CI-green on all three platforms, sabotage-proven (32 seeds: 18 matched / 1 non-discriminator / 3 contingencies / 10 findings, six coverage gaps found and five closed), code-review-hardened (12 findings, 3 BLOCKING, all closed), and macOS-validated ✅ PASS 12/12 (2026-08-09) with R4's scan cost measured rather than asserted.** It is the first PRODUCER for `AssetCacheEntry::dependencies` (3.1.2's own field, unfed until now) — editing a texture a model references now marks that model `DependencyChanged` on the next scan, the roadmap's own headline example working end to end. `gltf_import.{hpp,cpp}` is the only fastgltf TU anywhere in the tree; `model_import.{hpp,cpp}` holds the canonical, third-party-free `ImportedModel`; `model_import_session.{hpp,cpp}` drives the on-demand two-pass import; `import_details_panel.{hpp,cpp}` is a new six-section panel, all sections default-open. Zero paths under `engine/` — the no-engine-change streak reaches three. Full detail, every build-time finding and the fastgltf MUST-VERIFY answers confirmed against the installed v0.9.0 headers are in `docs/10-engineering-log.md`'s 3.2.1 entry. |
+| **Next task** | **3.1.5 (drag-into-scene)** — now unblocked: it depended on 3.1.3 (merged) and 3.2.1 (merged as PR #70), and `ImportedModel` gives it something to reference. 3.1.5 also owns two decisions 3.2.1 deliberately left open: **sub-asset identity** (D13 — both a stable `localId` and the source `name` are recorded for every mesh/material/skin/animation, with a fixed ordering rule, so a third encoding is still reachable and nothing is foreclosed) and **replacing `LOCAL_MESH_HALF_EXTENT`** (2.3.1's knowingly-wrong constant, which stays wrong until an entity can reference an imported mesh). See `docs/tasks/phase-3.md`. Formerly this row read — see `docs/tasks/phase-3.md`; it depends on 3.1.3 (merged) and 3.2.1. The remaining carried-forward item is **platform-validation debt, now spanning three phases and all four merged Epic 3.1 tasks**: no Windows or Linux validation pass exists for any of the thirteen Phase 2 tasks or for 3.1.1/3.1.2/3.1.3/3.1.4, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. Schedule it as work of its own rather than as a ride-along row — 2.2.5's lesson at phase scale. |
 
 Engine layers that exist today, in dependency order: `core` (gained `guid.hpp`/`guid.cpp` at task
 3.1.1, beside `handle.hpp`; gained `content_hash.hpp`/`content_hash.cpp` at task 3.1.2, beside `guid`)
