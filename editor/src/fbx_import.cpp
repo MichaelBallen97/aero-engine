@@ -384,7 +384,7 @@ inline constexpr std::string_view SCALE_HELPER_SUFFIX = "<scale helper>";
 // `uv_sets` (the FIRST mesh using this material, found by the phase-5 pre-pass); take the index if it
 // is 0 or 1 (the only two ImportedPrimitive carries). An EMPTY name is 0 with NO warning (E19); a name
 // that cannot be checked at all -- no mesh, or `uv_sets` empty (Structure depth, where geometry content
-// including UV SET NAMES is zeroed by ignore_all_content, exactly like every other per-mesh count in
+// including UV SET NAMES is zeroed by `ignore_geometry`, exactly like every other per-mesh count in
 // §A-4) -- is ALSO 0 with no warning, because there is nothing to check against, structurally, not
 // because nothing was found. Only a REAL, non-empty `uv_sets` list that does not contain the name warns.
 [[nodiscard]] std::uint32_t resolveUvSet(const ufbx_texture& tex, const ufbx_mesh* mesh, ImportResult& result) {
@@ -733,8 +733,24 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     // would feed invalid bytes to ImGui.
 
     // ---- D5: the depth, and it is OBSERVABLE rather than asserted -- ufbx sets three metadata flags.
-    opts.ignore_all_content = (depth == ImportDepth::Structure);  // == ignore_geometry + ignore_animation
-                                                                  //    + ignore_embedded
+    // NOT `opts.ignore_all_content` (FIX, corrected from an earlier draft of this importer): that flag
+    // is EXACTLY `ignore_geometry + ignore_animation + ignore_embedded` (measured in ufbx.c's own
+    // `ufbxi_load`, which folds it into the three sub-flags before anything else runs) -- so it also
+    // sets `ignore_embedded`, and phase 4's embedded-texture branch below keys on `tex->content`/
+    // `tex->video->content` being non-empty. With `ignore_embedded` true at Structure, that content is
+    // NEVER populated, so an embedded texture's `RelativeFilename` falls through to the ordinary
+    // EXTERNAL path and is recorded as a dependency -- while at Full it correctly has content and is
+    // recorded as `embedded`. `Structure` and `Full` disagreed about the URI SET for every embedded
+    // texture, breaking AC-20/INV-M4. `ignore_geometry`/`ignore_animation` alone zero every per-mesh
+    // count and animation curve exactly as `ignore_all_content` did (§A-4's table is unaffected --
+    // both are gated on `ignore_geometry` alone, verified by FI2/FI3 continuing to pass unchanged) --
+    // `ignore_embedded` is the ONE sub-flag this importer needs to stay FALSE at every depth, so an
+    // embedded texture is distinguishable from an external one identically at Structure and Full. The
+    // probe already reads the whole `.fbx` into memory (D4), so the cost is ufbx copying embedded blobs
+    // it has already parsed -- not extra I/O -- and stays bounded by MAX_EMBEDDED_BYTES either way.
+    opts.ignore_geometry = (depth == ImportDepth::Structure);
+    opts.ignore_animation = (depth == ImportDepth::Structure);
+    // opts.ignore_embedded is NEVER set -- it stays false (the `= {}` zero-init above) at both depths.
 
     // ---- LEFT AT DEFAULTS, DELIBERATELY, so a future reader can tell "considered" from "never seen":
     //   thread_opts               -- never set. git grep JobSystem -- editor/ has been empty for five
@@ -803,13 +819,14 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     // task 3.2.2 (Step 4): cheap, STRUCTURAL summary counts, read directly from ufbx's own already-
     // computed scene/mesh fields -- NOT built from model.meshes/materials/... (phases 4-8, Steps 6-9,
     // build those vectors; they stay empty until then). meshCount/materialCount/skinCount/
-    // animationCount are ELEMENT counts (scene.meshes.count etc.), unaffected by ignore_all_content,
-    // since element LISTS survive at Structure depth -- only their CONTENT is zeroed (§A-4).
-    // vertexCount/triangleCount are likewise cheap: ufbx_mesh::num_vertices/num_triangles are
-    // populated by ufbx itself during parsing, independent of OUR OWN phase-6 triangulation/index-
-    // generation pipeline, and correctly read 0 at Structure depth for the identical reason
-    // (ignore_all_content zeroes them before we ever see them). imageCount is an INTERIM proxy (every
-    // texture, not yet narrowed to UFBX_TEXTURE_FILE); phase 4 (Step 6) narrows it. summary.bounds is
+    // animationCount are ELEMENT counts (scene.meshes.count etc.), unaffected by `ignore_geometry`/
+    // `ignore_animation`, since element LISTS survive at Structure depth -- only their CONTENT is
+    // zeroed (§A-4). vertexCount/triangleCount are likewise cheap: ufbx_mesh::num_vertices/
+    // num_triangles are populated by ufbx itself during parsing, independent of OUR OWN phase-6
+    // triangulation/index-generation pipeline, and correctly read 0 at Structure depth for the
+    // identical reason (`ignore_geometry` zeroes them before we ever see them). imageCount is an
+    // INTERIM proxy (every texture, not yet narrowed to UFBX_TEXTURE_FILE); phase 4 (Step 6) narrows
+    // it. summary.bounds is
     // NOT folded here -- that is phase 6's "fold bounds" step (Step 7), which needs settings.scale and
     // the real per-primitive positions, never the raw unique position pool.
     result.model.summary.meshCount = s.meshes.count;
@@ -888,10 +905,11 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     }
 
     // ---- phase 4: textures -> ImportedImage (D14). Runs at BOTH depths (INV-M4): images and URIs are
-    // scene ELEMENTS -- unaffected by ignore_all_content -- and this is exactly what phase 7.5's probe
-    // and the pre-Full panel read. imageCount was an INTERIM proxy in phase 2 (every texture, including
-    // LAYERED/PROCEDURAL/SHADER); this phase NARROWS it to the FILE-type count actually turned into an
-    // ImportedImage.
+    // scene ELEMENTS -- unaffected by `ignore_geometry`/`ignore_animation`, AND (FIX, above) unaffected
+    // by `ignore_embedded` either, since that stays false at both depths -- and this is exactly what
+    // phase 7.5's probe and the pre-Full panel read. imageCount was an INTERIM proxy in phase 2 (every
+    // texture, including LAYERED/PROCEDURAL/SHADER); this phase NARROWS it to the FILE-type count
+    // actually turned into an ImportedImage.
     std::unordered_map<const ufbx_texture*, std::uint32_t> imageIndexByTexture;
     bool externalUriCapHit = false;
     const auto recordExternalUri = [&](const std::string& path) {
@@ -918,8 +936,12 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
         }
         ImportedImage img;
         // EMBEDDED FIRST (3.2.1's D14, unchanged): content non-empty means no path, no GUID, and NEVER
-        // a dependency. ignore_embedded is true at Structure depth (folded into ignore_all_content), so
-        // an embedded texture is `embedded` at Full and simply absent at Structure.
+        // a dependency. `ignore_embedded` is NEVER set (FIX, above) -- it stays false at BOTH depths,
+        // so an embedded texture's content is populated, and this branch is taken, IDENTICALLY at
+        // Structure and Full. An earlier draft folded `ignore_all_content` (which also sets
+        // `ignore_embedded`) into this depth check; that made an embedded texture's content empty at
+        // Structure, so it fell through to the external-path branch below and was wrongly recorded as
+        // a dependency -- exactly the AC-20/INV-M4 disagreement FI2/FI3 now assert against directly.
         const ufbx_blob& content =
             tex->content.size > 0 ? tex->content : (tex->video != nullptr ? tex->video->content : ufbx_empty_blob);
         if (content.size > 0) {
@@ -958,10 +980,10 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     result.model.summary.imageCount = result.model.images.size();
 
     // ---- phase 5: materials from `pbr` ONLY (D13). Runs at BOTH depths -- a material has no vertex
-    // content of its own, so nothing here is gated by `ignore_all_content`. Skipped entirely when
-    // `!settings.importMaterials`, but phase 4 already ran, so images and `externalUris` survive
-    // regardless (AC-39's non-obvious half). `material->fbx` (the legacy Phong/Lambert maps) is never
-    // read anywhere in this file -- §V6 greps for it.
+    // content of its own, so nothing here is gated by `ignore_geometry`/`ignore_animation`. Skipped
+    // entirely when `!settings.importMaterials`, but phase 4 already ran, so images and `externalUris`
+    // survive regardless (AC-39's non-obvious half). `material->fbx` (the legacy Phong/Lambert maps) is
+    // never read anywhere in this file -- §V6 greps for it.
     if (settings.importMaterials) {
         // The pre-pass phase 5 needs: "the first mesh using this material", for resolveUvSet. Reads
         // ONLY `mesh->materials` (a scene-element list), never vertex data -- valid at Structure depth
@@ -1053,7 +1075,7 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     result.model.summary.materialCount = result.model.materials.size();
 
     // ---- phase 6: meshes, triangulation, index generation (D9/D10). Full depth only for real
-    // content; Structure gets ONE empty placeholder primitive per mesh (§A-4 -- ignore_all_content
+    // content; Structure gets ONE empty placeholder primitive per mesh (§A-4 -- `ignore_geometry`
     // zeroes every per-mesh count and empties material_parts, so there is nothing structural left to
     // report but the mesh's own identity). Three running MODEL-WIDE caps (D15), each checked BEFORE
     // the allocation it bounds, using COUNTS ufbx already computed (no allocation to read them).
@@ -1441,12 +1463,12 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     result.model.summary.skinCount = result.model.skins.size();
 
     // ---- phase 8: animations -> ImportedAnimation (D12). Runs at BOTH depths -- ufbx_anim_stack is a
-    // scene element, unaffected by ignore_all_content -- but its CONTENT (baked keyframes) is Full-
-    // only: at Structure depth every clip is a SHELL (name/localId real, duration == 0, no channels,
-    // §A-4's own table), the identical split phase 7's skin shell above now also follows. Skipped
-    // entirely when !settings.importAnimations (AC-47b), at BOTH depths, matching materials'/skins'
-    // own posture (§A-4's "structural identity survives" rule is about ignore_all_content, not about
-    // a user's own import-setting choice).
+    // scene element, unaffected by `ignore_geometry`/`ignore_animation` -- but its CONTENT (baked
+    // keyframes) is Full-only: at Structure depth every clip is a SHELL (name/localId real, duration
+    // == 0, no channels, §A-4's own table), the identical split phase 7's skin shell above now also
+    // follows. Skipped entirely when !settings.importAnimations (AC-47b), at BOTH depths, matching
+    // materials'/skins' own posture (§A-4's "structural identity survives" rule is about
+    // `ignore_geometry`/`ignore_animation`, not about a user's own import-setting choice).
     if (settings.importAnimations) {
         std::size_t keyTotal = 0;
         bool keyCapHit = false;

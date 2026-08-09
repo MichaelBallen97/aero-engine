@@ -405,26 +405,75 @@ TEST_CASE("fbx_import: the §D-7 template through the real dispatch arm (FI1)") 
 // and the real per-primitive positions. FI3 therefore does NOT assert bounds.valid() -- only
 // vertexCount/triangleCount, which phase 2's cheap structural counts (fbx_import.cpp) already make
 // real. That is stated here rather than silently dropped.
+//
+// AC-21's CORRECTED shape (a later fix to this task, not the plan's own original wording): NOT "all
+// three ignore flags true at Structure" -- `geometry_ignored`/`animation_ignored` are true at
+// Structure and `embedded_ignored` is FALSE at every depth, so an embedded texture's content survives
+// identically at both depths (D14: it is NEVER a dependency, whether Structure or Full). FI2/FI3 each
+// carry the identical embedded-texture block FI54 uses (Media/Video/Content) so both halves of the
+// corrected AC-21 are proven together, not merely the geometry half the original version of these two
+// cases checked -- the earlier version was vacuous against the specific bug an embedded texture at
+// Structure depth used to trigger (it fell through to the external-URI path and was wrongly recorded
+// as a dependency; see fbx_import.cpp's own FIX comment beside `opts.ignore_geometry`).
 
 TEST_CASE(
-    "fbx_import: at Structure depth every per-mesh count is zero -- ignore_all_content's effect, "
-    "surfaced through the public model (FI2, AC-21 half 1)") {
-    const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    "fbx_import: at Structure depth every per-mesh count is zero and an embedded texture's content "
+    "still is NOT -- ignore_geometry/ignore_animation without ignore_embedded, surfaced through the "
+    "public model (FI2, AC-21 half 1)") {
+    const std::string objects = std::string(DEFAULT_OBJECTS) +
+                                "    Texture: 500, \"Texture::tex1\", \"\" {\n"
+                                "        Type: \"TextureVideoClip\"\n"
+                                "        Version: 202\n"
+                                "        Media: \"Video::vid1\"\n"
+                                "        FileName: \"embedded.png\"\n"
+                                "        RelativeFilename: \"embedded.png\"\n"
+                                "    }\n"
+                                "    Video: 600, \"Video::vid1\", \"Clip\" {\n"
+                                "        Type: \"Clip\"\n"
+                                "        Filename: \"embedded.png\"\n"
+                                "        RelativeFilename: \"embedded.png\"\n"
+                                "        Content: \"YQBiAGMAZAA=\"\n"
+                                "    }\n";
+    const std::string connections = std::string(DEFAULT_CONNECTIONS) + "    C: \"OO\",600,500\n";
+    const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, objects, connections);
     const ImportResult result = importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
     CHECK(result.status == ImportStatus::Ok);
     CHECK(result.model.summary.vertexCount == 0);
     CHECK(result.model.summary.triangleCount == 0);
     CHECK_FALSE(result.model.summary.bounds.valid());
+    // embedded_ignored == false: the texture's content is populated at Structure exactly as at Full,
+    // so it imports as `embedded` and is never folded into externalUris (AC-20/INV-M4).
+    REQUIRE(result.model.images.size() == 1);
+    CHECK(result.model.images[0].embedded);
+    CHECK(result.externalUris.empty());
 }
 
 TEST_CASE(
-    "fbx_import: at Full depth the per-mesh counts are real -- a depth parameter wired backwards "
-    "passes FI2 and fails this (FI3, AC-21 half 2)") {
-    const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    "fbx_import: at Full depth the per-mesh counts are real, and the SAME embedded texture is still "
+    "embedded -- a depth parameter wired backwards passes FI2 and fails this (FI3, AC-21 half 2)") {
+    const std::string objects = std::string(DEFAULT_OBJECTS) +
+                                "    Texture: 500, \"Texture::tex1\", \"\" {\n"
+                                "        Type: \"TextureVideoClip\"\n"
+                                "        Version: 202\n"
+                                "        Media: \"Video::vid1\"\n"
+                                "        FileName: \"embedded.png\"\n"
+                                "        RelativeFilename: \"embedded.png\"\n"
+                                "    }\n"
+                                "    Video: 600, \"Video::vid1\", \"Clip\" {\n"
+                                "        Type: \"Clip\"\n"
+                                "        Filename: \"embedded.png\"\n"
+                                "        RelativeFilename: \"embedded.png\"\n"
+                                "        Content: \"YQBiAGMAZAA=\"\n"
+                                "    }\n";
+    const std::string connections = std::string(DEFAULT_CONNECTIONS) + "    C: \"OO\",600,500\n";
+    const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, objects, connections);
     const ImportResult result = importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
     CHECK(result.status == ImportStatus::Ok);
     CHECK(result.model.summary.vertexCount == 4);    // the quad's four corners
     CHECK(result.model.summary.triangleCount == 2);  // ufbx's own "if triangulated" count for one quad
+    REQUIRE(result.model.images.size() == 1);
+    CHECK(result.model.images[0].embedded);
+    CHECK(result.externalUris.empty());
 }
 
 TEST_CASE(
