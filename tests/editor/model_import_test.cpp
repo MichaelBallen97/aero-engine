@@ -166,15 +166,24 @@ private:
 }  // namespace
 
 using engine::editor::classifyUri;
+using engine::editor::FBX_IMPORTER_NAME;
+using engine::editor::FBX_IMPORTER_VERSION;
+using engine::editor::foldBackslashesToSlashes;
+using engine::editor::GLTF_IMPORTER_NAME;
+using engine::editor::GLTF_IMPORTER_VERSION;
 using engine::editor::has;
 using engine::editor::ImportDepth;
+using engine::editor::ImporterIdentity;
 using engine::editor::importModel;
 using engine::editor::ImportResult;
 using engine::editor::ImportSettings;
 using engine::editor::ImportStatus;
 using engine::editor::importStatusLabel;
 using engine::editor::isImportableModelName;
+using engine::editor::modelImporterIdentity;
+using engine::editor::modelImporterNeedsExternalBuffers;
 using engine::editor::normalizeRelativePath;
+using engine::editor::SourceSpace;
 using engine::editor::UriClass;
 using engine::editor::UriClassification;
 using engine::editor::VertexAttribute;
@@ -304,7 +313,8 @@ TEST_CASE("model_import: isImportableModelName accepts .gltf/.glb case-insensiti
 }
 
 TEST_CASE("model_import: isImportableModelName rejects everything else, including a bare extension (MI20)") {
-    CHECK_FALSE(isImportableModelName("a.fbx"));
+    // ".fbx" moved OUT of this list at task 3.2.2 -- MI103 now covers its acceptance, the mirror of
+    // this case's rejection. "a.obj" stays: 3.2.3 owns OBJ, and it remains unimportable here.
     CHECK_FALSE(isImportableModelName("a.obj"));
     CHECK_FALSE(isImportableModelName("a.gltf.bak"));
     CHECK_FALSE(isImportableModelName("a"));
@@ -372,7 +382,9 @@ TEST_CASE("model_import: importModel refuses an unrecognised extension (MI27, AC
 }
 
 TEST_CASE("model_import: importModel refuses a model format this task does not implement yet (MI28, AC-44)") {
-    const ImportResult result = importModel("chair.fbx", "models", {}, ImportSettings{}, ImportDepth::Structure, {});
+    // ".fbx" was this case's example until task 3.2.2 taught the dispatch that extension; ".obj" takes
+    // its place (3.2.3 owns OBJ, so this file name is still unclaimed by any importer today).
+    const ImportResult result = importModel("chair.obj", "models", {}, ImportSettings{}, ImportDepth::Structure, {});
     CHECK(result.status == ImportStatus::Unsupported);
 }
 
@@ -387,8 +399,10 @@ TEST_CASE("model_import: importModel refuses the empty file name (MI30, AC-44)")
 }
 
 TEST_CASE("model_import: importModel never dereferences bytes for a non-model name (MI31, AC-44)") {
+    // ".fbx" was this case's non-model example until task 3.2.2; ".obj" (still 3.2.3's, unclaimed
+    // today) takes its place so this stays a genuine non-model-name case.
     const std::span<const std::byte> emptySpan;  // {nullptr, 0} -- any dereference would crash/ASan-trip
-    const ImportResult result = importModel("model.fbx", "", emptySpan, ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult result = importModel("model.obj", "", emptySpan, ImportSettings{}, ImportDepth::Full, {});
     CHECK(result.status == ImportStatus::Unsupported);
 }
 
@@ -2219,4 +2233,154 @@ TEST_CASE(
     CHECK(ibm.columns[3].y == doctest::Approx(14.0F));
     CHECK(ibm.columns[3].z == doctest::Approx(15.0F));
     CHECK(ibm.columns[3].w == doctest::Approx(16.0F));
+}
+
+// ---- task 3.2.2 (ufbx): the pure predicates and the dispatch arm, no ufbx anywhere (MI103-117) -------
+//
+// Confirmed the file's last case before this block was MI102 (`grep -c '^TEST_CASE('` -> 102).
+
+TEST_CASE("model_import: isImportableModelName accepts .fbx case-insensitively, suffix-on-full-name (MI103)") {
+    CHECK(isImportableModelName("a.fbx"));
+    CHECK(isImportableModelName("a.FBX"));
+    CHECK(isImportableModelName("a.FbX"));
+    CHECK(isImportableModelName("archive.tar.fbx"));
+}
+
+TEST_CASE("model_import: isImportableModelName rejects a bare or malformed .fbx name (MI104)") {
+    // 4 bytes, not > 4 -- needs something BEFORE the extension (the isMetaFileName shape), same rule
+    // MI20 already proves for .gltf.
+    CHECK_FALSE(isImportableModelName(".fbx"));
+    CHECK_FALSE(isImportableModelName("a.fbx.bak"));
+    CHECK_FALSE(isImportableModelName("fbx"));
+    CHECK_FALSE(isImportableModelName(""));
+}
+
+TEST_CASE(
+    "model_import: importModel's dispatch never silently refuses an extension isImportableModelName "
+    "accepts (MI105, D5)") {
+    // The ONLY thing keeping the suffix table (isImportableModelName's EXTENSIONS) and the dispatch
+    // if-chain (importModel) in sync: a future importer added to one but not the other is a RED case
+    // here, not a silent refusal. A one-byte body is enough -- "not Unsupported" is all this asserts;
+    // each backend's own tier-0 suite proves its content-level behaviour.
+    constexpr std::array<std::string_view, 3> ACCEPTED_EXTENSIONS = {".gltf", ".glb", ".fbx"};
+    const std::string oneByte = "x";
+    for (const std::string_view ext : ACCEPTED_EXTENSIONS) {
+        const std::string name = "model" + std::string(ext);
+        REQUIRE(isImportableModelName(name));
+        const ImportResult result =
+            importModel(name, "", asBytes(oneByte), ImportSettings{}, ImportDepth::Structure, {});
+        INFO("name: ", name);
+        CHECK(result.status != ImportStatus::Unsupported);
+    }
+}
+
+TEST_CASE("model_import: modelImporterIdentity(\"a.fbx\") is the FBX pair, not a shared constant (MI106)") {
+    const ImporterIdentity identity = modelImporterIdentity("a.fbx");
+    CHECK(identity.name == FBX_IMPORTER_NAME);
+    CHECK(identity.version == FBX_IMPORTER_VERSION);
+}
+
+TEST_CASE(
+    "model_import: modelImporterIdentity resolves .gltf and .glb to the glTF pair -- the FBX arm did "
+    "not capture them (MI107)") {
+    const ImporterIdentity gltf = modelImporterIdentity("a.gltf");
+    CHECK(gltf.name == GLTF_IMPORTER_NAME);
+    CHECK(gltf.version == GLTF_IMPORTER_VERSION);
+    const ImporterIdentity glb = modelImporterIdentity("a.glb");
+    CHECK(glb.name == GLTF_IMPORTER_NAME);
+    CHECK(glb.version == GLTF_IMPORTER_VERSION);
+}
+
+TEST_CASE(
+    "model_import: modelImporterIdentity is (\"\", 0) for a name no importer claims -- ImportInput's "
+    "own un-probed defaults (MI108)") {
+    CHECK(modelImporterIdentity("a.png") == ImporterIdentity{});
+    CHECK(modelImporterIdentity("a") == ImporterIdentity{});
+    CHECK(modelImporterIdentity("") == ImporterIdentity{});
+}
+
+TEST_CASE("model_import: modelImporterIdentity case-folds exactly like isImportableModelName (MI109)") {
+    const ImporterIdentity identity = modelImporterIdentity("A.FBX");
+    CHECK(identity.name == FBX_IMPORTER_NAME);
+    CHECK(identity.version == FBX_IMPORTER_VERSION);
+}
+
+TEST_CASE(
+    "model_import: modelImporterNeedsExternalBuffers is true for glTF, false for FBX and non-models "
+    "(MI110, AC-56a)") {
+    CHECK(modelImporterNeedsExternalBuffers("a.gltf"));
+    CHECK(modelImporterNeedsExternalBuffers("a.glb"));
+    CHECK_FALSE(modelImporterNeedsExternalBuffers("a.fbx"));
+    CHECK_FALSE(modelImporterNeedsExternalBuffers("a.png"));
+}
+
+TEST_CASE("model_import: foldBackslashesToSlashes folds every backslash and touches nothing else (MI111)") {
+    CHECK(foldBackslashesToSlashes("textures\\wood.png") == "textures/wood.png");
+    CHECK(foldBackslashesToSlashes("a/b") == "a/b");
+    CHECK(foldBackslashesToSlashes("").empty());
+    CHECK(foldBackslashesToSlashes("\\\\unc\\x") == "//unc/x");
+}
+
+TEST_CASE(
+    "model_import: fold-then-classify and classify-then-fold are DISTINGUISHABLE (MI112, D14 -- what "
+    "makes FI49 meaningful)") {
+    // Folding BEFORE classifying: the escape is already '../../x.png' when the check runs, so it is
+    // caught as RefusedEscape.
+    CHECK(classifyUri(foldBackslashesToSlashes("..\\..\\x.png"), "models").kind == UriClass::RefusedEscape);
+    // classifyUri alone, UNFOLDED: the backslash is caught FIRST, as RefusedBackslash -- proving the
+    // two orderings produce genuinely different, distinguishable results.
+    CHECK(classifyUri("..\\..\\x.png", "models").kind == UriClass::RefusedBackslash);
+}
+
+TEST_CASE(
+    "model_import: classifyUri is UNMODIFIED by task 3.2.2 -- MI10/MI11's backslash refusals still "
+    "fire for an unfolded URI (MI113, AC-63's sibling)") {
+    CHECK(classifyUri("C:\\x.png", "models").kind == UriClass::RefusedBackslash);
+    CHECK(classifyUri("\\\\unc\\x", "models").kind == UriClass::RefusedBackslash);
+    CHECK(classifyUri("a\\b.png", "models").kind == UriClass::RefusedBackslash);
+}
+
+TEST_CASE(
+    "model_import: importModel(\"a.fbx\", ...) with a non-FBX body fails without needing ufbx to "
+    "succeed -- separates \"the dispatch works\" from \"the backend works\" (MI114)") {
+    const std::string doc = "this is not an FBX document";
+    const ImportResult result = importModel("a.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status != ImportStatus::Ok);
+    CHECK(result.model.nodes.empty());
+    CHECK(result.model.meshes.empty());
+}
+
+TEST_CASE(
+    "model_import: importModel(\"a.png\", ...) stays Unsupported and never dereferences bytes, "
+    "unchanged across a three-arm dispatch (MI115, AC-48)") {
+    const std::span<const std::byte> emptySpan;  // {nullptr, 0} -- any dereference would crash/ASan-trip
+    const ImportResult result = importModel("a.png", "", emptySpan, ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Unsupported);
+    CHECK(result.model.nodes.empty());
+}
+
+TEST_CASE("model_import: SourceSpace{} defaults to \"declares nothing\" (MI116)") {
+    const SourceSpace space;
+    CHECK_FALSE(space.declared);
+    CHECK(space.unitMeters == doctest::Approx(1.0F));
+    CHECK(space.upAxis == 'Y');
+    CHECK(space.generator.empty());
+    CHECK(space.formatVersion.empty());
+}
+
+TEST_CASE(
+    "model_import: ImportedModel{} designated-initialized with sourceSpace set compiles, every other "
+    "field stays default -- sourceSpace was APPENDED, never inserted (MI117, 3.1.2's A2 trap)") {
+    const engine::editor::ImportedModel model{.sourceSpace = SourceSpace{.declared = true, .upAxis = 'Z'}};
+    CHECK(model.nodes.empty());
+    CHECK(model.roots.empty());
+    CHECK(model.meshes.empty());
+    CHECK(model.materials.empty());
+    CHECK(model.images.empty());
+    CHECK(model.skins.empty());
+    CHECK(model.animations.empty());
+    CHECK(model.summary.nodeCount == 0);
+    CHECK(model.summary.vertexCount == 0);
+    CHECK(model.sourceSpace.declared);
+    CHECK(model.sourceSpace.upAxis == 'Z');
 }

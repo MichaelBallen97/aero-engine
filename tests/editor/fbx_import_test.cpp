@@ -133,16 +133,38 @@ constexpr std::string_view DEFAULT_CONNECTIONS =
 
 }  // namespace
 
-// ---- FI0: the dispatch arm does not exist yet -------------------------------------------------
-// A TRUE statement at THIS commit: Step 3 has not yet added ".fbx" to isImportableModelName's suffix
-// table, so importModel returns Unsupported regardless of content -- exactly the MI28 precedent
-// (tests/editor/model_import_test.cpp) restated against the real §D-7 document instead of a one-byte
-// stand-in. Deleted and replaced by the real FI1 in Step 3, which asserts Ok / 1 node named "box" /
-// 1 root / 1 mesh over this SAME makeFbx(...) document -- proving the harness this step lands is
-// already correct, not merely present.
-TEST_CASE("fbx_import: the FBX dispatch arm does not exist yet (FI0)") {
+// ---- FI1: the §D-7 template through the real dispatch -------------------------------------------
+//
+// FI1's final shape (plan §V3) is "Ok, 1 node named box, 1 root, 1 mesh" -- but `fbx_import.cpp`'s
+// eight phases land across Steps 4-9, so that shape is not reachable in one commit. Rather than leave
+// FI0's now-false "Unsupported" statement to rot (it WOULD rot: Step 3 makes ".fbx" importable), FI1
+// is introduced HERE and its body is STRENGTHENED as each phase lands, exactly the "write the test,
+// see it fail, implement until it passes" discipline applied across a feature that spans several
+// commits rather than one. Every version staged below is a TRUE statement about the code AT THAT
+// COMMIT, never a placeholder pretending to be more:
+//
+//   Step 3 (HERE): the dispatch arm routes ".fbx" to importFbx -- but importFbx's body is still the
+//                  Step 1 linking stub, which unconditionally returns ParseFailed. Asserting THAT
+//                  (rather than Unsupported) is what proves the dispatch arm exists at all.
+//   Step 4:        phases 1-2 land (load, error mapping, SourceSpace, warnings, and the cheap
+//                  model-level counts read directly from ufbx's own already-computed scene/mesh
+//                  fields). The template is a well-formed FBX document, so the load now succeeds:
+//                  status becomes Ok, and summary.meshCount becomes real (1) -- "1 mesh" in the
+//                  plan's own §V3 wording, read as the SUMMARY count rather than
+//                  model.meshes.size(), which stays 0 until phase 6 (Step 7, out of this engagement's
+//                  scope) builds the actual ImportedMesh/ImportedPrimitive vectors.
+//   Step 5 (this engagement's last step): phase 3 lands (nodes, hierarchy). nodes.size() becomes 1,
+//                  nodes[0].name becomes "box", roots.size() becomes 1.
+//
+// model.meshes.size() == 1 (the plan's literal §V3 wording, read as the vector rather than the
+// summary count) is NOT asserted here -- it becomes true only once phase 6 (Step 7) exists, which is
+// out of this engagement's scope. That is stated plainly rather than silently left out.
+TEST_CASE("fbx_import: the §D-7 template through the real dispatch arm (FI1)") {
     const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
     const ImportResult result = importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
-    CHECK(result.status == ImportStatus::Unsupported);
+    // Step 3's true statement: fbx_import.cpp is untouched by this step, so importFbx is still the
+    // Step 1 stub, which unconditionally reports ParseFailed. This is what proves the dispatch arm
+    // (not yet the backend) is wired -- Step 4 strengthens this to Ok.
+    CHECK(result.status == ImportStatus::ParseFailed);
     CHECK(result.model.nodes.empty());
 }

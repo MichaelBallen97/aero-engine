@@ -58,6 +58,17 @@ inline constexpr std::size_t MAX_IMPORT_WARNINGS = 20;
 // list is -- D15's posture applied to a STRING rather than to an allocation.
 inline constexpr std::size_t MAX_REPORTED_REQUIRED_EXTENSIONS = 8;
 
+// ---- task 3.2.2 (D16). Unlike the glTF caps above, these are enforced INSIDE ufbx -- its allocator
+// options refuse BEFORE the allocation and report UFBX_ERROR_MEMORY_LIMIT / ALLOCATION_LIMIT /
+// NODE_DEPTH_LIMIT, which map to ImportStatus::Truncated. That is strictly better than a post-hoc
+// check. node_depth_limit matters more than it looks: ufbx's own header warns that the default of 0
+// allows arbitrarily deep hierarchies, and misc-no-recursion is --warnings-as-errors here, so this
+// tree's walk is iterative anyway -- the limit is defence for ufbx's internals, not for ours.
+inline constexpr std::uint32_t MAX_FBX_NODE_DEPTH = 256;                    // -> opts.node_depth_limit
+inline constexpr std::size_t MAX_FBX_TEMP_BYTES = 1024ULL * 1024 * 1024;    // -> temp_allocator.memory_limit
+inline constexpr std::size_t MAX_FBX_RESULT_BYTES = 1024ULL * 1024 * 1024;  // -> result_allocator.memory_limit
+inline constexpr std::size_t MAX_FBX_ALLOCATIONS = 4000000;                 // -> both allocation_limits
+
 // ---- attributes ------------------------------------------------------------------------------------
 // A BITSET, not booleans: 3.3.1 switches on the COMBINATION to choose a vertex layout, and "which
 // layout is this" is asked far more often than it is computed.
@@ -216,6 +227,24 @@ struct ImportedAnimation {
     std::vector<ImportedAnimationChannel> channels;
 };
 
+// The source document's own declared space, BEFORE conversion (task 3.2.2, D19). ALL-DEFAULT for
+// glTF, which is metres / Y-up / right-handed BY SPECIFICATION and therefore declares nothing -- the
+// glTF backend never touches this struct, and AC-24's glTF half is that fact.
+//
+// `generator` and `formatVersion` are DISPLAY STRINGS. Never parsed, never switched on, never compared.
+// They exist so a person looking at the panel can see WHICH tool wrote the file that needed converting.
+struct SourceSpace {
+    bool declared = false;      // false == the format declares no space; the panel draws nothing
+    float unitMeters = 1.0F;    // the source's own unit, in metres (FBX: settings.unit_meters -- 0.01
+                                // for a centimetre file). NOT original_unit_meters: that is an
+                                // Autodesk round-trip property most exporters never write.
+    char upAxis = 'Y';          // 'X' | 'Y' | 'Z', from settings.axes.up, which ufbx PRESERVES across
+                                // the conversion (ufbx.h: "This contains the _original_ axes even if
+                                // you supply ufbx_load_opts.target_axes"). '?' when UNKNOWN.
+    std::string generator;      // "Blender 4.2", or "" -- prose
+    std::string formatVersion;  // "FBX 7400 binary", or "" -- prose
+};
+
 // ---- the model, and the result envelope -------------------------------------------------------------
 struct ImportSummary {
     std::size_t nodeCount = 0;
@@ -243,6 +272,10 @@ struct ImportedModel {
     std::vector<ImportedSkin> skins;
     std::vector<ImportedAnimation> animations;
     ImportSummary summary;
+    SourceSpace sourceSpace;  // task 3.2.2 (D19). APPENDED, NEVER INSERTED -- 3.1.2's A2 trap: an
+                              // inserted field silently re-maps every positional aggregate
+                              // initializer, and bool -> std::size_t is a promotion nothing
+                              // diagnoses. Every test helper uses DESIGNATED initializers.
 };
 
 enum class ImportStatus : std::uint8_t {
@@ -302,6 +335,33 @@ struct ExternalBuffer {
                                        std::span<const std::byte> bytes, const ImportSettings& settings,
                                        ImportDepth depth, std::span<const ExternalBuffer> external);
 
+// The importer identity a file NAME implies, with no probe and no disk. ("", 0) when no importer
+// claims it. THIS IS WHAT planImports COMPARES against the previous cache entry AND what phase 7.5
+// RECORDS -- one pure function of the name, used by both, which is why a GLTF_IMPORTER_VERSION or
+// FBX_IMPORTER_VERSION bump re-triggers imports for exactly the affected format and nothing else.
+//
+// It exists because 3.2.1's code review chose the shape deliberately: a TU-local copy of the suffix
+// logic "would silently stop discriminating the moment 3.2.2 (ufbx) teaches the real predicate a new
+// extension." This is that moment.
+struct ImporterIdentity {
+    std::string_view name;  // "" == no importer claims this file
+    std::uint32_t version = 0;
+    bool operator==(const ImporterIdentity&) const = default;
+};
+[[nodiscard]] ImporterIdentity modelImporterIdentity(std::string_view fileName) noexcept;
+
+// TRUE iff a Full import of this file NEEDS bytes that the Structure pass named. glTF: YES (its
+// buffers may be external .bin files). FBX: NO -- all geometry is inside the file, and its external
+// URIs are TEXTURES, which this importer resolves for the DEPENDENCY GRAPH and never reads.
+//
+// ModelImportSession::service() gates its ENTIRE first pass on this, which is what stops a MISSING
+// TEXTURE from blocking an FBX import whose geometry was in the file all along (E21 would otherwise
+// keep the Structure result and call it Truncated).
+//
+// PURE: dispatches on the file NAME, exactly as isImportableModelName does. 3.2.3's OBJ will answer
+// TRUE (a .mtl is an external file); 3.2.5's Assimp formats answer per format.
+[[nodiscard]] bool modelImporterNeedsExternalBuffers(std::string_view fileName) noexcept;
+
 // ---- pure helpers (D14) -----------------------------------------------------------------------------
 enum class UriClass : std::uint8_t {
     RelativePath = 0,    // the ONLY class that leads to a read
@@ -342,7 +402,19 @@ struct UriClassification {
 // and tested independently (validateOrphanPath's shape, 3.1.3, a second application).
 [[nodiscard]] std::optional<std::string> normalizeRelativePath(std::string_view path);
 
-// True iff `fileName` ends (ASCII-case-folded) in ".gltf" or ".glb". 3.2.2-3.2.5 extend it.
+// Fold every '\' to '/'. THE FBX-FORMAT-SPECIFIC NORMALIZATION (task 3.2.2, D14): `textures\wood.png`
+// is what every Maya and 3ds Max export writes, and classifyUri refuses a backslash outright and
+// CORRECTLY -- a glTF URI has no such concept, and UriClass::RefusedBackslash stays reachable for it.
+//
+// CALLED BY THE FBX BACKEND ONLY, and ALWAYS BEFORE classifyUri. Fold-then-classify is the SECURE
+// order, for the identical reason decode-then-classify is: `..\..\..\etc\passwd` has already become
+// `../../../etc/passwd` by the time the escape check runs, so the refusal still fires. Folding AFTER
+// classification would let a backslash traversal straight through.
+//
+// PURE: no disk, no <filesystem>, no locale. Byte-for-byte identical on all three platforms.
+[[nodiscard]] std::string foldBackslashesToSlashes(std::string_view path);
+
+// True iff `fileName` ends (ASCII-case-folded) in ".gltf", ".glb" or ".fbx". 3.2.3-3.2.5 extend it.
 // DELIBERATELY NARROWER than asset_view.hpp's AssetKind::Model, which already claims
 // fbx/obj/blend/dae/ply/stl -- keeping the two separate is what stops a format being silently promoted
 // to "importable" by an edit to the kind table (3.1.3's isThumbnailDecodable precedent). A SUFFIX test

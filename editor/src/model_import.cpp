@@ -4,6 +4,7 @@
 // NOTHING HERE LOGS (INV-A3), NOTHING HERE TOUCHES DISK (INV-M3), NOTHING HERE THROWS.
 #include <aero/editor/model_import.hpp>
 
+#include "fbx_import.hpp"
 #include "gltf_import.hpp"
 
 #include <array>
@@ -23,6 +24,24 @@ namespace {
 // precedent -- this file keeps its OWN copy rather than sharing one, matching that precedent).
 constexpr unsigned char foldAscii(unsigned char c) noexcept {
     return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + ('a' - 'A')) : c;
+}
+
+// The suffix test isImportableModelName has always performed, LIFTED OUT OF ITS LOOP so the DISPATCH
+// and the IDENTITY can use the identical comparison. Behaviour unchanged: ASCII case fold, and the
+// isMetaFileName shape -- ".fbx" alone is not a model, something must precede the extension.
+// ONE comparison, THREE callers -- which is the shape 3.2.1's own code review asked for when it
+// rejected a TU-local copy in asset_cache.cpp.
+[[nodiscard]] bool endsWithFolded(std::string_view name, std::string_view ext) noexcept {
+    if (name.size() <= ext.size()) {
+        return false;  // the isMetaFileName shape: ".gltf" alone needs something BEFORE the extension
+    }
+    const std::size_t offset = name.size() - ext.size();
+    for (std::size_t i = 0; i < ext.size(); ++i) {
+        if (foldAscii(static_cast<unsigned char>(name[offset + i])) != foldAscii(static_cast<unsigned char>(ext[i]))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 }  // namespace
@@ -48,26 +67,40 @@ std::string_view importStatusLabel(ImportStatus status) noexcept {
 }
 
 bool isImportableModelName(std::string_view fileName) noexcept {
-    constexpr std::array<std::string_view, 2> EXTENSIONS = {".gltf", ".glb"};
+    constexpr std::array<std::string_view, 3> EXTENSIONS = {".gltf", ".glb", ".fbx"};
     for (const std::string_view ext : EXTENSIONS) {
-        if (fileName.size() <= ext.size()) {
-            continue;  // the isMetaFileName shape: ".gltf" alone needs something BEFORE the extension
-        }
-        const std::size_t offset = fileName.size() - ext.size();
-        bool matches = true;
-        for (std::size_t i = 0; i < ext.size(); ++i) {
-            const auto a = static_cast<unsigned char>(fileName[offset + i]);
-            const auto b = static_cast<unsigned char>(ext[i]);
-            if (foldAscii(a) != foldAscii(b)) {
-                matches = false;
-                break;
-            }
-        }
-        if (matches) {
+        if (endsWithFolded(fileName, ext)) {
             return true;
         }
     }
     return false;
+}
+
+ImporterIdentity modelImporterIdentity(std::string_view fileName) noexcept {
+    if (endsWithFolded(fileName, ".fbx")) {
+        return {FBX_IMPORTER_NAME, FBX_IMPORTER_VERSION};
+    }
+    if (isImportableModelName(fileName)) {
+        return {GLTF_IMPORTER_NAME, GLTF_IMPORTER_VERSION};
+    }
+    return {};  // ("", 0) -- exactly ImportInput's own un-probed defaults, so nothing about a
+                // non-model asset's plan changes
+}
+
+bool modelImporterNeedsExternalBuffers(std::string_view fileName) noexcept {
+    // FBX: NO -- all geometry is in the file, and its external URIs are TEXTURES. Everything else that
+    // is importable today is glTF, whose buffers may be external .bin files.
+    return isImportableModelName(fileName) && !endsWithFolded(fileName, ".fbx");
+}
+
+std::string foldBackslashesToSlashes(std::string_view path) {
+    std::string out(path);
+    for (char& c : out) {
+        if (c == '\\') {
+            c = '/';
+        }
+    }
+    return out;
 }
 
 std::optional<std::string> normalizeRelativePath(std::string_view path) {
@@ -177,15 +210,18 @@ UriClassification classifyUri(std::string_view uri, std::string_view assetRelati
 
 ImportResult importModel(std::string_view fileName, std::string_view assetRelativeDir, std::span<const std::byte> bytes,
                          const ImportSettings& settings, ImportDepth depth, std::span<const ExternalBuffer> external) {
-    if (!isImportableModelName(fileName)) {
-        ImportResult result;
-        result.status = ImportStatus::Unsupported;
-        result.message = "no importer claims this file type";
-        return result;  // AC-44: NOTHING was read; `bytes` was never even looked at
+    // The FBX arm FIRST, so the glTF arm below stays the "everything else importable" case and the
+    // two never both claim a name. MI105's dispatch-completeness case is what keeps them in sync.
+    if (endsWithFolded(fileName, ".fbx")) {
+        return importFbx(assetRelativeDir, bytes, settings, depth, external);
     }
-    // 3.2.2 (ufbx) adds `if (hasExtension(fileName, ".fbx")) { return importFbx(...); }` HERE, beside
-    // this one, with its own TU. Do not turn this into a table until there are three arms.
-    return importGltf(assetRelativeDir, bytes, settings, depth, external);
+    if (isImportableModelName(fileName)) {  // .gltf / .glb
+        return importGltf(assetRelativeDir, bytes, settings, depth, external);
+    }
+    ImportResult result;
+    result.status = ImportStatus::Unsupported;
+    result.message = "no importer claims this file type";
+    return result;  // AC-44: NOTHING was read; `bytes` was never even looked at
 }
 
 }  // namespace engine::editor

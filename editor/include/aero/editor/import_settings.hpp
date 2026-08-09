@@ -23,6 +23,12 @@ namespace engine::editor {
 // importer -- the dependency must run .meta -> settings, never .meta -> importer.
 inline constexpr std::string_view GLTF_IMPORTER_NAME = "gltf";
 inline constexpr std::uint32_t GLTF_IMPORTER_VERSION = 1;
+// task 3.2.2 (D15). HERE, beside the glTF pair and NOT in model_import.hpp, for the identical reason:
+// asset_meta.cpp must write the block without depending on the importer, and this header's own rule is
+// that it includes <cstdint>/<string_view> and nothing else, forever. Two inline constexprs add no
+// include. `.meta` STAYS AT VERSION 1 -- a v2 bump nils every GUID in the project for an older build.
+inline constexpr std::string_view FBX_IMPORTER_NAME = "fbx";
+inline constexpr std::uint32_t FBX_IMPORTER_VERSION = 1;
 
 struct ImportSettings {
     // A user-intent multiplier, NOT a unit conversion -- glTF is metres by specification (F7b).
