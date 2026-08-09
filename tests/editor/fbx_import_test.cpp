@@ -52,10 +52,12 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 using engine::editor::AlphaMode;
 using engine::editor::ImportDepth;
@@ -433,8 +435,18 @@ TEST_CASE(
     const std::string doc = makeFbx(globals, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
     const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
     // MEASURED: ufbx parses the literal "nan" as a non-finite ufbx_real and does not refuse the load
-    // over it -- the load itself stays Ok, and the guard this case exists for is OUR OWN.
-    CHECK(result.status == ImportStatus::Ok);
+    // over it -- the load itself stays Ok at phase 1, and the FIRST guard this case exists for
+    // (recording the raw value, one warning) is OUR OWN.
+    //
+    // STRENGTHENED at Step 7 (phase 6 now folds real bounds): a NaN geometry_scale (computed from this
+    // same non-finite unit) multiplies through every position, and Aabb::expand() silently IGNORES a
+    // non-finite point (std::min/std::max with a NaN operand return the unchanged current value), so
+    // summary.bounds stays stuck at the Aabb::empty() sentinel even though summary.vertexCount is real
+    // (4, from phase 2's ufbx-native count) -- E5's second half is what this case now also proves,
+    // MEASURED rather than assumed: this exact fixture flips from Ok to Malformed the moment phase 6
+    // lands. `status == Ok` was a true statement about the code at Step 4; it is no longer true, and
+    // updating it here is that same discipline applied across a task spanning several commits.
+    CHECK(result.status == ImportStatus::Malformed);
     CHECK(result.warningTotal >= 1);
     CHECK_FALSE(std::isfinite(result.model.sourceSpace.unitMeters));
 }
@@ -473,22 +485,24 @@ TEST_CASE(
 // literals below were MEASURED against real ufbx v0.23.0 (never assumed), the same discipline §A-8
 // and the plan's own FI15/FI16 commentary insist on.
 //
-// SCOPE, stated plainly rather than silently narrowed: FI15-FI17 (the space-conversion cases) assert
-// their NODE-LEVEL half only -- translation, rotation, scale on `ImportedNode`. §A-8 point 2 is why
-// this is not a reduced proof: "the axis conversion lives in the NODE ROTATION, not in the vertices
-// ... a wrong target_axes shows up there first." The MESH-LEVEL half (converted vertex positions,
-// summary.bounds) is phase 6's job (Step 7, out of this engagement's scope -- Step 4's own comment
-// records that `result.model.summary.bounds` stays at its default until then). Likewise FI23/FI24
-// assert their NODE-LEVEL half (the helper node exists, named correctly) and not the mesh-level half
-// (positions unmodified by the transform / meshIndex equality), for the identical reason.
+// SCOPE, at Step 5: FI15-FI17 asserted their NODE-LEVEL half only -- translation, rotation, scale on
+// `ImportedNode`. §A-8 point 2 is why that was not a reduced proof on its own: "the axis conversion
+// lives in the NODE ROTATION, not in the vertices ... a wrong target_axes shows up there first." The
+// MESH-LEVEL half (converted vertex positions, summary.bounds) needed phase 6, which did not exist
+// yet -- it is now COMPLETE, inline in FI15/16/17 below, landed at Step 7 together with FI20 (which
+// needed the identical real triangle data) and FI23/FI24's own mesh-level halves (positions unmodified
+// by a geometry transform / meshIndex equality across two instances).
 //
-// TWO planned cases are NOT implemented in this engagement, named here rather than silently dropped:
-//   FI20 (mirror_axis / triangle winding) needs real triangle indices -- phase 6, Step 7.
-//   FI28 (MAX_NODES_PER_MODEL, 65536) needs a fixture on the order of megabytes to genuinely reach a
-//         65536-node cap with real parsed content, which is squarely against this whole file's own
-//         "a few hundred bytes, no disk, instant" tier-0 contract (§G-12/R3). FI27 below proves the
-//         IDENTICAL "our own cap, checked before the allocation it bounds" property against
-//         MAX_FBX_NODE_DEPTH (256), which needs three orders of magnitude less text to reach for real.
+// FI28 (MAX_NODES_PER_MODEL, 65536) remains NOT implemented, RE-EXAMINED at Step 7 as instructed and
+// still refused for the SAME reason as at Step 5: it is a NODE cap, unaffected by mesh support
+// existing -- reaching it needs a fixture on the order of megabytes with 65536 real node blocks, which
+// is squarely against this whole file's own "a few hundred bytes, no disk, instant" tier-0 contract
+// (§G-12/R3). FI27 above already proves the IDENTICAL "our own cap, checked before the allocation it
+// bounds" property against MAX_FBX_NODE_DEPTH (256), three orders of magnitude cheaper to reach for
+// real. The FOUR PER-MODEL caps Step 7 genuinely unlocks (meshes now existing) are each re-examined on
+// their own merits at FI38, below: MAX_PRIMITIVES_PER_MODEL (4096) turned out to be cheaply reachable
+// with many minimal meshes and is IMPLEMENTED there; MAX_VERTICES_PER_MODEL (8 000 000) and
+// MAX_INDICES_PER_MODEL (24 000 000) are not, for reasons stated at FI38's own definition.
 
 TEST_CASE("fbx_import: sourceSpace.declared is true for every FBX, with a real formatVersion (FI13)") {
     const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
@@ -529,8 +543,37 @@ TEST_CASE(
     CHECK(node.rotation.y == APPROX_ROT(0.0));
     CHECK(node.rotation.z == APPROX_ROT(0.0));
     CHECK(node.rotation.w == APPROX_ROT(0.7071068));
-    // The mesh-level half (converted positions, summary.bounds.size() ~= (1,1,0)) is phase 6's job
-    // (Step 7) -- see this block's own header comment.
+
+    // Mesh-level half, completed at Step 7 (deferred at Step 5 -- see this file's own state at the
+    // time). §A-8: the quad's positions convert from the source's own centimetre coordinates
+    // `(0,0,0)(100,0,0)(100,100,0)(0,100,0)` to METRES, IN THE SOURCE'S OWN LOCAL AXIS FRAME --
+    // `MODIFY_GEOMETRY` scales geometry but does not permute it; the Y-up-ness arrives entirely
+    // through the node rotation asserted above. `FI29` proves the winding/index shape (2 triangles, 6
+    // indices, 4 unique vertices) for the identical quad; this case's own job is the CONVERTED VALUES.
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& positions = result.model.meshes[0].primitives[0].positions;
+    REQUIRE(positions.size() == 4);
+    CHECK(positions[0].x == APPROX_POS(0.0));
+    CHECK(positions[0].y == APPROX_POS(0.0));
+    CHECK(positions[0].z == APPROX_POS(0.0));
+    CHECK(positions[1].x == APPROX_POS(1.0));
+    CHECK(positions[1].y == APPROX_POS(0.0));
+    CHECK(positions[1].z == APPROX_POS(0.0));
+    CHECK(positions[2].x == APPROX_POS(1.0));
+    CHECK(positions[2].y == APPROX_POS(1.0));
+    CHECK(positions[2].z == APPROX_POS(0.0));
+    CHECK(positions[3].x == APPROX_POS(0.0));
+    CHECK(positions[3].y == APPROX_POS(1.0));
+    CHECK(positions[3].z == APPROX_POS(0.0));
+    // summary.bounds is folded from LOCAL primitive positions, never through node transforms
+    // (gltf_import.cpp's own precedent) -- so its SIZE is (1,1,0) in the source's own local axis
+    // order, a 1 m x 1 m quad, matching Blender's own "local dimensions" reporting.
+    REQUIRE(result.model.summary.bounds.valid());
+    const engine::Vec3 boundsSize = result.model.summary.bounds.size();
+    CHECK(boundsSize.x == APPROX_POS(1.0));
+    CHECK(boundsSize.y == APPROX_POS(1.0));
+    CHECK(boundsSize.z == APPROX_POS(0.0));
 }
 
 TEST_CASE(
@@ -548,6 +591,19 @@ TEST_CASE(
     CHECK(node.scale.x == doctest::Approx(1.0F));
     CHECK(node.scale.y == doctest::Approx(1.0F));
     CHECK(node.scale.z == doctest::Approx(1.0F));
+
+    // Mesh-level half, completed at Step 7 (deferred at Step 5). A conversion that ALWAYS fires
+    // passes FI15's mesh-level half and fails THIS one: CANONICAL_OBJECTS' quad is already in
+    // metres, `(0,0,0)(1,0,0)(1,1,0)(0,1,0)`, and a source already at the target space imports with
+    // NO scaling at all.
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& positions = result.model.meshes[0].primitives[0].positions;
+    REQUIRE(positions.size() == 4);
+    CHECK(positions[0] == engine::Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(positions[1] == engine::Vec3{1.0F, 0.0F, 0.0F});
+    CHECK(positions[2] == engine::Vec3{1.0F, 1.0F, 0.0F});
+    CHECK(positions[3] == engine::Vec3{0.0F, 1.0F, 0.0F});
 }
 
 TEST_CASE(
@@ -559,8 +615,20 @@ TEST_CASE(
     // a real quaternion with all four components non-zero, so a negated/swapped/transposed/reordered
     // read fails on the FIRST component that differs. translation/scale need no measurement: an
     // already-canonical source passes them through with NO arithmetic at all.
+    //
+    // Mesh-level half, completed at Step 7 (deferred at Step 5): the plan's own FI17 also names "an
+    // asymmetric triangle (0,0,0)(1,0,0)(0,0,2)" -- ADDED here as a real Geometry connected to the
+    // node (changed from "Null" to "Mesh"), asserting the identical no-transform-math property for
+    // GEOMETRY that the TRS assertions above already prove for the node. The inverse-bind-matrix half
+    // of the plan's own FI17 wording is Step 8's FI57 (element-by-element, seed S8's dedicated case) --
+    // not duplicated here.
     constexpr std::string_view OBJECTS =
-        "    Model: 100, \"Model::asym\", \"Null\" {\n"
+        "    Geometry: 200, \"Geometry::asym\", \"Mesh\" {\n"
+        "        Vertices: *9 { a: 0,0,0,1,0,0,0,0,2 }\n"
+        "        PolygonVertexIndex: *3 { a: 0,1,-3 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::asym\", \"Mesh\" {\n"
         "        Version: 232\n"
         "        Properties70:  {\n"
         "            P: \"Lcl Translation\", \"Lcl Translation\", \"\", \"A\",1,2,3\n"
@@ -568,7 +636,9 @@ TEST_CASE(
         "            P: \"Lcl Scaling\", \"Lcl Scaling\", \"\", \"A\",1,2,3\n"
         "        }\n"
         "    }\n";
-    constexpr std::string_view CONNECTIONS = "    C: \"OO\",100,0\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",200,100\n";
     const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
     const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
     REQUIRE(result.status == ImportStatus::Ok);
@@ -584,6 +654,14 @@ TEST_CASE(
     CHECK(node.scale.x == doctest::Approx(1.0F));
     CHECK(node.scale.y == doctest::Approx(2.0F));
     CHECK(node.scale.z == doctest::Approx(3.0F));
+
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& positions = result.model.meshes[0].primitives[0].positions;
+    REQUIRE(positions.size() == 3);
+    CHECK(positions[0] == engine::Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(positions[1] == engine::Vec3{1.0F, 0.0F, 0.0F});
+    CHECK(positions[2] == engine::Vec3{0.0F, 0.0F, 2.0F});
 }
 
 TEST_CASE(
@@ -644,6 +722,43 @@ TEST_CASE(
     REQUIRE(noResult.status == ImportStatus::Ok);
     CHECK(noResult.model.sourceSpace.generator.empty());
     CHECK_FALSE(noResult.model.sourceSpace.formatVersion.empty());
+}
+
+TEST_CASE(
+    "fbx_import: metadata.mirror_axis == 0 for the Z-up -> Y-up conversion -- the triangle winding is "
+    "UNCHANGED between FI16's canonical source and FI15's converted one (FI20, D6's winding argument, "
+    "made empirical rather than argued)") {
+    // D6/§A-8 point 3: right-handed Z-up -> right-handed Y-up is a PURE ROTATION -- no mirror, no
+    // winding flip, handedness_conversion_axis never consulted (MEASURED: mirror_axis comes back 0).
+    // Proven here by comparing the FULLY IMPORTED index buffers of the two fixtures directly: FI15's
+    // Z-up centimetre quad converts to the IDENTICAL positions AND the IDENTICAL index order as
+    // FI16's already-canonical quad. Seed S5 (left_handed_y_up) mirrors an axis and reverses winding
+    // -- this is where that would show, as a DIFFERING index order despite identical positions.
+    const std::string zUpDoc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult zUp = importModel("box.fbx", "", asBytes(zUpDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(zUp.status == ImportStatus::Ok);
+
+    const std::string yUpDoc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, CANONICAL_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult yUp = importModel("box.fbx", "", asBytes(yUpDoc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(yUp.status == ImportStatus::Ok);
+
+    REQUIRE(zUp.model.meshes.size() == 1);
+    REQUIRE(yUp.model.meshes.size() == 1);
+    REQUIRE(zUp.model.meshes[0].primitives.size() == 1);
+    REQUIRE(yUp.model.meshes[0].primitives.size() == 1);
+    const auto& zUpPrim = zUp.model.meshes[0].primitives[0];
+    const auto& yUpPrim = yUp.model.meshes[0].primitives[0];
+
+    REQUIRE(zUpPrim.positions.size() == yUpPrim.positions.size());
+    for (std::size_t i = 0; i < zUpPrim.positions.size(); ++i) {
+        CAPTURE(i);
+        CHECK(zUpPrim.positions[i].x == APPROX_POS(yUpPrim.positions[i].x));
+        CHECK(zUpPrim.positions[i].y == APPROX_POS(yUpPrim.positions[i].y));
+        CHECK(zUpPrim.positions[i].z == APPROX_POS(yUpPrim.positions[i].z));
+    }
+    // The winding proof itself: the INDEX ORDER (not merely the position VALUES) is identical --
+    // proving no reverse_winding fired during the conversion.
+    CHECK(zUpPrim.indices == yUpPrim.indices);
 }
 
 TEST_CASE("fbx_import: a 4-deep chain imports with correct parent/children/roots, in source order (FI21, AC-25)") {
@@ -727,15 +842,28 @@ TEST_CASE(
     const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
     const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
     REQUIRE(result.status == ImportStatus::Ok);
-    bool foundHelper = false;
+    const engine::editor::ImportedNode* helper = nullptr;
     for (const auto& n : result.model.nodes) {
         if (n.name.find("<geometry helper>") != std::string::npos) {
-            foundHelper = true;
+            helper = &n;
         }
     }
-    CHECK(foundHelper);
-    // The mesh-level half (positions unmodified by the transform) is phase 6's job (Step 7) -- see
-    // this block's own header comment.
+    REQUIRE(helper != nullptr);
+
+    // Mesh-level half, completed at Step 7 (deferred at Step 5): HELPER_NODES handling bakes the
+    // geometry transform into the HELPER's own local_transform, never into the vertex data (D7/D8's
+    // whole reason for existing) -- the mesh's positions stay EXACTLY as authored.
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& positions = result.model.meshes[0].primitives[0].positions;
+    REQUIRE(positions.size() == 4);
+    CHECK(positions[0] == engine::Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(positions[1] == engine::Vec3{1.0F, 0.0F, 0.0F});
+    CHECK(positions[2] == engine::Vec3{1.0F, 1.0F, 0.0F});
+    CHECK(positions[3] == engine::Vec3{0.0F, 1.0F, 0.0F});
+    // The MESH is attached to the HELPER node, not the original -- the helper is what carries the
+    // baked geometry-transform offset in its own TRS, so it is the node a renderer must walk to.
+    CHECK(helper->meshIndex == 0);
 }
 
 TEST_CASE(
@@ -772,15 +900,21 @@ TEST_CASE(
     REQUIRE(result.status == ImportStatus::Ok);
     // instanceA, instanceB and their two helpers -- four nodes, root excluded.
     CHECK(result.model.nodes.size() == 4);
-    int helperCount = 0;
+    std::vector<const engine::editor::ImportedNode*> helpers;
     for (const auto& n : result.model.nodes) {
         if (n.name.find("<geometry helper>") != std::string::npos) {
-            ++helperCount;
+            helpers.push_back(&n);
         }
     }
-    CHECK(helperCount == 2);
-    // The mesh-level half (ONE ImportedMesh, equal meshIndex on both instances) is phase 6's job
-    // (Step 7) -- see this block's own header comment.
+    CHECK(helpers.size() == 2);
+
+    // Mesh-level half, completed at Step 7 (deferred at Step 5): ONE shared ImportedMesh (ufbx does
+    // NOT bake the transform into per-node mesh copies under HELPER_NODES handling, MEASURED), and
+    // BOTH helper nodes' meshIndex point at that same, single mesh (AC-27).
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(helpers.size() == 2);
+    CHECK(helpers[0]->meshIndex == 0);
+    CHECK(helpers[1]->meshIndex == 0);
 }
 
 TEST_CASE(
@@ -859,6 +993,398 @@ TEST_CASE(
     CHECK(result.status == ImportStatus::Truncated);
     CHECK_FALSE(result.message.empty());
     CHECK(result.model.nodes.empty());
+}
+
+// ---- FI29-FI38: meshes, triangulation, index generation, caps (Step 7, phase 6) ------------------
+
+TEST_CASE("fbx_import: a quad triangulates to 2 triangles, exactly 6 indices, 4 unique vertices (FI29, AC-29)") {
+    // §G-16 item 4 / A12, MEASURED: a one-quad mesh has mesh->num_indices == 4; ufbx_triangulate_face
+    // writes `0 1 2 2 3 0` into that same 4-entry space, and ufbx_generate_indices dedups it back down
+    // to exactly 4 unique vertices. Seed S33 (a padded, uninitialised interleaved stream) would make
+    // memcmp see 6 distinct vertices instead -- this exact count is the discriminator.
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, CANONICAL_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.indices.size() == 6);
+    CHECK(prim.positions.size() == 4);
+    CHECK(result.model.summary.triangleCount == 2);
+}
+
+TEST_CASE(
+    "fbx_import: a convex hexagon triangulates to 4 triangles, 12 indices, no degenerate triangle (FI30, AC-30)") {
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::hex\", \"Mesh\" {\n"
+        "        Vertices: *18 { a: 2,0,0, 1,1,0, -1,1,0, -2,0,0, -1,-1,0, 1,-1,0 }\n"
+        "        PolygonVertexIndex: *6 { a: 0,1,2,3,4,-6 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::hex\", \"Mesh\" { Version: 232 }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.indices.size() == 12);
+    REQUIRE(prim.indices.size() % 3 == 0);
+    for (std::size_t t = 0; t < prim.indices.size() / 3; ++t) {
+        CAPTURE(t);
+        const engine::Vec3& a = prim.positions[prim.indices[t * 3 + 0]];
+        const engine::Vec3& b = prim.positions[prim.indices[t * 3 + 1]];
+        const engine::Vec3& c = prim.positions[prim.indices[t * 3 + 2]];
+        const engine::Vec3 cr = engine::cross(b - a, c - a);
+        const float area2 = engine::length(cr);
+        CHECK(area2 > 1e-4F);  // no degenerate (zero-area) triangle
+    }
+}
+
+TEST_CASE(
+    "fbx_import: a triangle, a point face and a line face in one mesh -- the triangle survives, and "
+    "EXACTLY ONE warning names both dropped-face counts (FI31, AC-31)") {
+    // MEASURED against real ufbx v0.23.0: PolygonVertexIndex `0,1,-3, -4, 3,-5` parses to three FACES
+    // (a triangle [0,1,2], a point face [3], a line face [3,4]) -- num_point_faces=1, num_line_faces=1.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::mixed\", \"Mesh\" {\n"
+        "        Vertices: *15 { a: 0,0,0, 1,0,0, 0,1,0, 2,2,0, 3,3,0 }\n"
+        "        PolygonVertexIndex: *6 { a: 0,1,-3, -4, 3,-5 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::mixed\", \"Mesh\" { Version: 232 }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].indices.size() == 3);  // the triangle survives
+    CHECK(result.model.summary.triangleCount == 1);
+    CHECK(result.warningTotal == 1);
+    REQUIRE(result.warnings.size() == 1);
+    CHECK(result.warnings[0].find("point") != std::string::npos);
+    CHECK(result.warnings[0].find("line") != std::string::npos);
+}
+
+TEST_CASE(
+    "fbx_import: two materials produce two primitives with distinct, correct materialIndex; a mesh "
+    "with none produces one primitive with INVALID_SUBASSET, never 0 (FI32, AC-32)") {
+    const std::string objects =
+        "    Material: 300, \"Material::a\", \"\" { Version: 102 ShadingModel: \"phong\" }\n"
+        "    Material: 301, \"Material::b\", \"\" { Version: 102 ShadingModel: \"phong\" }\n"
+        "    Geometry: 200, \"Geometry::two\", \"Mesh\" {\n"
+        "        Vertices: *18 { a: 0,0,0, 1,0,0, 1,1,0, 0,1,0, 2,0,0, 2,1,0 }\n"
+        "        PolygonVertexIndex: *7 { a: 0,1,2,-4, 1,4,-6 }\n"
+        "        GeometryVersion: 124\n"
+        "        LayerElementMaterial: 0 {\n"
+        "            Version: 101\n"
+        "            Name: \"\"\n"
+        "            MappingInformationType: \"ByPolygon\"\n"
+        "            ReferenceInformationType: \"IndexToDirect\"\n"
+        "            Materials: *2 { a: 0,1 }\n"
+        "        }\n"
+        "        Layer: 0 {\n"
+        "            Version: 100\n"
+        "            LayerElement:  { Type: \"LayerElementMaterial\" TypedIndex: 0 }\n"
+        "        }\n"
+        "    }\n"
+        "    Model: 100, \"Model::two\", \"Mesh\" { Version: 232 }\n"
+        "    Geometry: 201, \"Geometry::none\", \"Mesh\" {\n"
+        "        Vertices: *9 { a: 0,0,0, 1,0,0, 0,1,0 }\n"
+        "        PolygonVertexIndex: *3 { a: 0,1,-3 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 101, \"Model::none\", \"Mesh\" { Version: 232 }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",300,100\n"
+        "    C: \"OO\",301,100\n"
+        "    C: \"OO\",101,0\n"
+        "    C: \"OO\",201,101\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 2);
+    const engine::editor::ImportedMesh* twoMesh = nullptr;
+    const engine::editor::ImportedMesh* noneMesh = nullptr;
+    for (const auto& m : result.model.meshes) {
+        if (m.name == "two") {
+            twoMesh = &m;
+        } else if (m.name == "none") {
+            noneMesh = &m;
+        }
+    }
+    REQUIRE(twoMesh != nullptr);
+    REQUIRE(noneMesh != nullptr);
+    REQUIRE(twoMesh->primitives.size() == 2);
+    CHECK(twoMesh->primitives[0].materialIndex != twoMesh->primitives[1].materialIndex);
+    CHECK(twoMesh->primitives[0].materialIndex != engine::editor::INVALID_SUBASSET);
+    CHECK(twoMesh->primitives[1].materialIndex != engine::editor::INVALID_SUBASSET);
+    REQUIRE(noneMesh->primitives.size() == 1);
+    CHECK(noneMesh->primitives[0].materialIndex == engine::editor::INVALID_SUBASSET);
+}
+
+TEST_CASE(
+    "fbx_import: position + normal + UV -> exactly those three vectors non-empty, every other vector "
+    "empty, attributes exactly Position|Normal|TexCoord0 (FI33, AC-33)") {
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "        LayerElementNormal: 0 {\n"
+        "            Version: 101\n"
+        "            Name: \"\"\n"
+        "            MappingInformationType: \"ByPolygonVertex\"\n"
+        "            ReferenceInformationType: \"Direct\"\n"
+        "            Normals: *12 { a: 0,0,1, 0,0,1, 0,0,1, 0,0,1 }\n"
+        "        }\n"
+        "        LayerElementUV: 0 {\n"
+        "            Version: 101\n"
+        "            Name: \"\"\n"
+        "            MappingInformationType: \"ByPolygonVertex\"\n"
+        "            ReferenceInformationType: \"IndexToDirect\"\n"
+        "            UV: *8 { a: 0,0, 1,0, 1,1, 0,1 }\n"
+        "            UVIndex: *4 { a: 0,1,2,3 }\n"
+        "        }\n"
+        "        Layer: 0 {\n"
+        "            Version: 100\n"
+        "            LayerElement:  { Type: \"LayerElementNormal\" TypedIndex: 0 }\n"
+        "            LayerElement:  { Type: \"LayerElementUV\" TypedIndex: 0 }\n"
+        "        }\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    CHECK_FALSE(prim.positions.empty());
+    CHECK_FALSE(prim.normals.empty());
+    CHECK_FALSE(prim.uv0.empty());
+    CHECK(prim.uv1.empty());
+    CHECK(prim.colors.empty());
+    CHECK(prim.tangents.empty());
+    CHECK(prim.joints.empty());
+    CHECK(prim.weights.empty());
+    using engine::editor::has;
+    using engine::editor::VertexAttribute;
+    CHECK(prim.attributes == (VertexAttribute::Position | VertexAttribute::Normal | VertexAttribute::TexCoord0));
+}
+
+TEST_CASE(
+    "fbx_import: tangents AND bitangents -> tangents.size() == positions.size(), every .w exactly "
+    "+1.0F or -1.0F (FI34, AC-34a)") {
+    // MEASURED (correcting an earlier draft of this fixture): ufbx requires a UV LAYER for
+    // vertex_tangent/vertex_bitangent to be exposed AT ALL, even when a LayerElementTangent/
+    // LayerElementBinormal block is present in the file -- tangent space is structurally part of a UV
+    // SET (`ufbx_uv_set` bundles vertex_uv/vertex_tangent/vertex_bitangent together), and with
+    // uv_sets.count == 0 there is no slot for the tangent/binormal data to attach to. Executed: the
+    // identical fixture without a LayerElementUV block reports vertex_tangent.exists == false. A real
+    // exporter never produces tangents without UVs either (tangent generation needs a UV
+    // parameterization), so this is not a contrived requirement.
+    //
+    // MEASURED: normal=(0,0,1), tangent=(1,0,0), bitangent=(0,1,0) -> sign(dot(cross(n,t),b)) ==
+    // sign(dot((0,0,1)x(1,0,0), (0,1,0))) == sign(dot((0,1,0),(0,1,0))) == sign(1) == +1.0F.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "        LayerElementNormal: 0 {\n"
+        "            Version: 101\n            Name: \"\"\n"
+        "            MappingInformationType: \"ByPolygonVertex\"\n            ReferenceInformationType: \"Direct\"\n"
+        "            Normals: *12 { a: 0,0,1, 0,0,1, 0,0,1, 0,0,1 }\n"
+        "        }\n"
+        "        LayerElementUV: 0 {\n"
+        "            Version: 101\n            Name: \"\"\n"
+        "            MappingInformationType: \"ByPolygonVertex\"\n            ReferenceInformationType: "
+        "\"IndexToDirect\"\n"
+        "            UV: *8 { a: 0,0, 1,0, 1,1, 0,1 }\n"
+        "            UVIndex: *4 { a: 0,1,2,3 }\n"
+        "        }\n"
+        "        LayerElementTangent: 0 {\n"
+        "            Version: 101\n            Name: \"\"\n"
+        "            MappingInformationType: \"ByPolygonVertex\"\n            ReferenceInformationType: \"Direct\"\n"
+        "            Tangents: *12 { a: 1,0,0, 1,0,0, 1,0,0, 1,0,0 }\n"
+        "        }\n"
+        "        LayerElementBinormal: 0 {\n"
+        "            Version: 101\n            Name: \"\"\n"
+        "            MappingInformationType: \"ByPolygonVertex\"\n            ReferenceInformationType: \"Direct\"\n"
+        "            Binormals: *12 { a: 0,1,0, 0,1,0, 0,1,0, 0,1,0 }\n"
+        "        }\n"
+        "        Layer: 0 {\n"
+        "            Version: 100\n"
+        "            LayerElement:  { Type: \"LayerElementNormal\" TypedIndex: 0 }\n"
+        "            LayerElement:  { Type: \"LayerElementUV\" TypedIndex: 0 }\n"
+        "            LayerElement:  { Type: \"LayerElementTangent\" TypedIndex: 0 }\n"
+        "            LayerElement:  { Type: \"LayerElementBinormal\" TypedIndex: 0 }\n"
+        "        }\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.tangents.size() == prim.positions.size());
+    for (const auto& t : prim.tangents) {
+        CHECK((t.w == doctest::Approx(1.0F) || t.w == doctest::Approx(-1.0F)));
+    }
+    CHECK(prim.tangents[0].w == doctest::Approx(1.0F));
+    using engine::editor::VertexAttribute;
+    CHECK(engine::editor::has(prim.attributes, VertexAttribute::Tangent));
+}
+
+TEST_CASE("fbx_import: tangents WITHOUT bitangents -> no tangents at all, Tangent bit clear (FI35, AC-34b)") {
+    // A UV layer is INCLUDED (FI34's own finding: ufbx exposes vertex_tangent/vertex_bitangent only
+    // through a UV set's slot) SPECIFICALLY so this case discriminates "tangent present, bitangent
+    // absent" rather than trivially passing because NEITHER exists without any UV set at all --
+    // MEASURED: with UV + Tangent and no Binormal, vertex_tangent.exists == true and
+    // vertex_bitangent.exists == false.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "        LayerElementNormal: 0 {\n"
+        "            Version: 101\n            Name: \"\"\n"
+        "            MappingInformationType: \"ByPolygonVertex\"\n            ReferenceInformationType: \"Direct\"\n"
+        "            Normals: *12 { a: 0,0,1, 0,0,1, 0,0,1, 0,0,1 }\n"
+        "        }\n"
+        "        LayerElementUV: 0 {\n"
+        "            Version: 101\n            Name: \"\"\n"
+        "            MappingInformationType: \"ByPolygonVertex\"\n            ReferenceInformationType: "
+        "\"IndexToDirect\"\n"
+        "            UV: *8 { a: 0,0, 1,0, 1,1, 0,1 }\n"
+        "            UVIndex: *4 { a: 0,1,2,3 }\n"
+        "        }\n"
+        "        LayerElementTangent: 0 {\n"
+        "            Version: 101\n            Name: \"\"\n"
+        "            MappingInformationType: \"ByPolygonVertex\"\n            ReferenceInformationType: \"Direct\"\n"
+        "            Tangents: *12 { a: 1,0,0, 1,0,0, 1,0,0, 1,0,0 }\n"
+        "        }\n"
+        "        Layer: 0 {\n"
+        "            Version: 100\n"
+        "            LayerElement:  { Type: \"LayerElementNormal\" TypedIndex: 0 }\n"
+        "            LayerElement:  { Type: \"LayerElementUV\" TypedIndex: 0 }\n"
+        "            LayerElement:  { Type: \"LayerElementTangent\" TypedIndex: 0 }\n"
+        "        }\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.tangents.empty());
+    using engine::editor::has;
+    using engine::editor::VertexAttribute;
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::Tangent));
+}
+
+TEST_CASE(
+    "fbx_import: summary.bounds folds the SCALED positions; a mesh whose every part was dropped has a "
+    "POINT-BOX ImportedMesh::bounds and does NOT contribute the origin to summary.bounds (FI36, E9, "
+    "3.2.1's BLOCKING-3 lesson reproduced from the start)") {
+    // A mesh with ONLY a point face and a line face -- ZERO triangles anywhere, so EVERY material_part
+    // has num_triangles == 0 and the per-part loop never reaches the fold at all.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::degenerate\", \"Mesh\" {\n"
+        "        Vertices: *6 { a: 5,5,5, 6,6,6 }\n"
+        "        PolygonVertexIndex: *3 { a: -1, 0,-2 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::degenerate\", \"Mesh\" { Version: 232 }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    CHECK(result.model.meshes[0].primitives.empty());
+    // Aabb{}'s own default (a VALID point box at the origin) -- never Aabb::empty() left standing.
+    CHECK(result.model.meshes[0].bounds.min == engine::Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(result.model.meshes[0].bounds.max == engine::Vec3{0.0F, 0.0F, 0.0F});
+    // The vertices are AWAY from the origin (5,5,5)/(6,6,6) -- if the origin had leaked into
+    // summary.bounds this would read VALID (a point box at 0,0,0), which is exactly why `.valid()`,
+    // not a component comparison, is the discriminator: `Aabb::empty()` and "a point box at the
+    // origin" are both technically boxes, but only one of them is `.valid()`.
+    CHECK_FALSE(result.model.summary.bounds.valid());
+}
+
+TEST_CASE(
+    "fbx_import: settings.scale composes WITH the unit conversion, multiplying positions/root-"
+    "translation/bounds AFTER it -- never replacing it (FI37, AC-40)") {
+    // FI15's own Z-up centimetre fixture, x2.
+    const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    ImportSettings settings;
+    settings.scale = 2.0F;
+    const ImportResult result = importModel("box.fbx", "", asBytes(doc), settings, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 1);
+    const auto& node = result.model.nodes[0];
+    CHECK(node.translation.x == APPROX_POS(0.0));
+    CHECK(node.translation.y == APPROX_POS(4.0));  // FI15's 2.0 x2
+    CHECK(node.translation.z == APPROX_POS(0.0));
+    // Rotation is NEVER scaled.
+    CHECK(node.rotation.x == APPROX_ROT(-0.7071068));
+    CHECK(node.rotation.w == APPROX_ROT(0.7071068));
+
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& positions = result.model.meshes[0].primitives[0].positions;
+    REQUIRE(positions.size() == 4);
+    CHECK(positions[0] == engine::Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(positions[1].x == APPROX_POS(2.0));  // FI15's 1.0 x2
+    CHECK(positions[2].x == APPROX_POS(2.0));
+    CHECK(positions[2].y == APPROX_POS(2.0));
+    CHECK(positions[3].y == APPROX_POS(2.0));
+    REQUIRE(result.model.summary.bounds.valid());
+    const engine::Vec3 boundsSize = result.model.summary.bounds.size();
+    CHECK(boundsSize.x == APPROX_POS(2.0));  // FI15's (1,1,0) x2
+    CHECK(boundsSize.y == APPROX_POS(2.0));
+}
+
+TEST_CASE(
+    "fbx_import: MAX_PRIMITIVES_PER_MODEL exceeded is Truncated, naming the cap, with a coherent "
+    "smaller model (FI38, AC-50)") {
+    // MAX_VERTICES_PER_MODEL (8 000 000) and MAX_INDICES_PER_MODEL (24 000 000) are NOT implemented as
+    // cases here, and this is a deliberate, reasoned decision rather than a silent drop: reaching
+    // either needs geometry on the order of millions of real vertices/indices, which is flatly
+    // incompatible with this whole file's own tier-0 contract (a few hundred bytes to at most a few
+    // hundred KB, no disk, instant -- §G-12/R3). Unlike MAX_PRIMITIVES_PER_MODEL below, there is no
+    // way to reach either cap cheaply: a MODEL-wide vertex/index total scales with real per-vertex
+    // data, not with element COUNT, so there is no "many minimal objects" shortcut available the way
+    // there is for primitives (many tiny meshes) or MAX_FBX_NODE_DEPTH (FI27, many tiny nested nodes).
+    // MAX_PRIMITIVES_PER_MODEL (4096) IS cheaply reachable: MANY MINIMAL MESHES, each contributing
+    // exactly one primitive (no material connected -> exactly one default material_part), generated
+    // programmatically exactly like FI27's node chain.
+    std::string objects;
+    std::string connections;
+    constexpr int MESH_COUNT = 4097;  // MAX_PRIMITIVES_PER_MODEL (4096) + 1
+    for (int i = 0; i < MESH_COUNT; ++i) {
+        const int geomId = 1000 + i * 2;
+        const int modelId = 1001 + i * 2;
+        objects += std::format(
+            "    Geometry: {}, \"Geometry::g{}\", \"Mesh\" {{ Vertices: *3 {{ a: 0,0,0 }} "
+            "PolygonVertexIndex: *3 {{ a: 0,0,-1 }} GeometryVersion: 124 }}\n"
+            "    Model: {}, \"Model::m{}\", \"Mesh\" {{ Version: 232 }}\n",
+            geomId, i, modelId, i);
+        connections += std::format("    C: \"OO\",{},0\n    C: \"OO\",{},{}\n", modelId, geomId, modelId);
+    }
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, connections);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Truncated);
+    CHECK(result.message.find("MAX_PRIMITIVES_PER_MODEL") != std::string::npos);
+    REQUIRE(result.model.meshes.size() == static_cast<std::size_t>(MESH_COUNT));
+    std::size_t survivingPrimitives = 0;
+    for (const auto& m : result.model.meshes) {
+        survivingPrimitives += m.primitives.size();
+    }
+    CHECK(survivingPrimitives == 4096);  // the cap, not the requested 4097
 }
 
 // ---- FI39-FI56: materials from `pbr` ONLY, and textures/URIs (Step 6, phases 4-5) ---------------

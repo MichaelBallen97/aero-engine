@@ -406,6 +406,23 @@ inline constexpr std::string_view SCALE_HELPER_SUFFIX = "<scale helper>";
     return ref;
 }
 
+// A24: one aggregated warning per mesh, per category. A small per-mesh tally accumulated during the
+// part loop and flushed to addWarning AT MOST ONCE, after the loop -- what makes FI31's "exactly one
+// warning" assertion structural rather than a discipline, and the only shape that stays O(1) in
+// warnings for a 100 000-face mesh.
+struct MeshTally {
+    std::size_t emptyFaces = 0;
+    std::size_t pointFaces = 0;
+    std::size_t lineFaces = 0;
+};
+
+// D9's tangent-sign rule: a COMPARISON, not a synthesis. sign(dot(cross(normal, tangent), bitangent)),
+// clamped to EXACTLY +1.0F or -1.0F -- never a literal 0, even for a degenerate corner (FI34's own
+// invariant: "every .w exactly +1.0F or -1.0F").
+[[nodiscard]] constexpr float tangentSign(Vec3 normal, Vec3 tangent, Vec3 bitangent) noexcept {
+    return dot(cross(normal, tangent), bitangent) >= 0.0F ? 1.0F : -1.0F;
+}
+
 }  // namespace
 
 ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::byte> bytes,
@@ -838,6 +855,288 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
         }
     }
     result.model.summary.materialCount = result.model.materials.size();
+
+    // ---- phase 6: meshes, triangulation, index generation (D9/D10). Full depth only for real
+    // content; Structure gets ONE empty placeholder primitive per mesh (§A-4 -- ignore_all_content
+    // zeroes every per-mesh count and empties material_parts, so there is nothing structural left to
+    // report but the mesh's own identity). Three running MODEL-WIDE caps (D15), each checked BEFORE
+    // the allocation it bounds, using COUNTS ufbx already computed (no allocation to read them).
+    //
+    // NOTE ON summary.vertexCount/triangleCount: phase 2 ALREADY set these from ufbx's own
+    // mesh->num_vertices/num_triangles (real, cheap, and -- critically -- UNAFFECTED by this phase's
+    // own triangulation/dedup choices). This phase does NOT re-derive them: doing so would double-
+    // count against phase 2's number for the simple fixtures in this suite, and would produce a
+    // DIFFERENT (larger) number for any real mesh with a UV seam or a hard-edge normal, where ufbx's
+    // logical vertex count and this phase's post-triangulation unique-vertex count genuinely diverge.
+    std::size_t primitiveTotal = 0;
+    std::size_t vertexTotal = 0;
+    std::size_t indexTotal = 0;
+    bool primitiveCapHit = false;
+    bool vertexCapHit = false;
+    bool indexCapHit = false;
+    // ufbx_mesh::typed_id -> this model's ImportedMesh position, so the meshIndex pass below (which
+    // walks s.nodes, not s.meshes) resolves node->mesh in one hop.
+    std::unordered_map<std::uint32_t, std::uint32_t> meshIndexByTypedId;
+
+    for (const ufbx_mesh* mesh : s.meshes) {
+        ImportedMesh outMesh;
+        outMesh.name = toStd(mesh->name);
+        outMesh.localId = mesh->typed_id;
+
+        if (depth == ImportDepth::Structure) {
+            outMesh.primitives.emplace_back();  // materialIndex INVALID_SUBASSET, attributes None
+            outMesh.bounds = Aabb{};            // a point box: the "nothing survived" collapse
+            ++result.model.summary.primitiveCount;
+            meshIndexByTypedId.emplace(mesh->typed_id, static_cast<std::uint32_t>(result.model.meshes.size()));
+            result.model.meshes.push_back(std::move(outMesh));
+            continue;
+        }
+
+        // 3.2.1's code-review BLOCKING-3 lesson, applied here from the start: fold into a LOCAL
+        // accumulator that starts at Aabb::empty(), NEVER directly into outMesh.bounds -- whose
+        // default is a VALID point box at the origin, so folding straight into it would union the
+        // origin into every mesh regardless of where its geometry actually sits.
+        Aabb meshBounds = Aabb::empty();
+        MeshTally tally;
+        // ufbx_triangulate_face writes at most max_face_triangles * 3 indices. Sized ONCE PER MESH,
+        // never per face.
+        std::vector<std::uint32_t> faceIndices(std::max<std::size_t>(mesh->max_face_triangles, 1) * 3);
+
+        for (std::size_t partIdx = 0; partIdx < mesh->material_parts.count; ++partIdx) {
+            const ufbx_mesh_part& part = mesh->material_parts.data[partIdx];
+            tally.emptyFaces += part.num_empty_faces;
+            tally.pointFaces += part.num_point_faces;
+            tally.lineFaces += part.num_line_faces;
+            if (part.num_triangles == 0) {
+                continue;  // every face in this part was empty/point/line -- already tallied above
+            }
+
+            if (primitiveTotal >= MAX_PRIMITIVES_PER_MODEL) {
+                if (!primitiveCapHit) {
+                    escalate(result, ImportStatus::Truncated, "primitive cap (MAX_PRIMITIVES_PER_MODEL) reached");
+                    primitiveCapHit = true;
+                }
+                continue;
+            }
+            const std::size_t partCornerCount = part.num_triangles * 3;
+            if (indexTotal + partCornerCount > MAX_INDICES_PER_MODEL) {
+                if (!indexCapHit) {
+                    escalate(result, ImportStatus::Truncated, "index cap (MAX_INDICES_PER_MODEL) reached");
+                    indexCapHit = true;
+                }
+                continue;
+            }
+            if (vertexTotal + partCornerCount > MAX_VERTICES_PER_MODEL) {
+                if (!vertexCapHit) {
+                    escalate(result, ImportStatus::Truncated, "vertex cap (MAX_VERTICES_PER_MODEL) reached");
+                    vertexCapHit = true;
+                }
+                continue;
+            }
+
+            // Triangulate every real face in this part into the RAW ufbx "combined vertex/attribute"
+            // index space (0..mesh->num_indices) -- NOT logical vertex indices. This is the space
+            // ufbx_get_vertex_vec3/2/4 index into directly (MEASURED against the vendored ufbx.c: a
+            // one-quad mesh has num_indices==4, and ufbx_triangulate_face's own output re-uses values
+            // from that same 4-entry space, e.g. `0 1 2 2 3 0` for a quad's two triangles).
+            std::vector<std::uint32_t> triIndices;
+            triIndices.reserve(partCornerCount);
+            for (const std::uint32_t faceIdx : part.face_indices) {
+                const ufbx_face face = mesh->faces.data[faceIdx];
+                if (face.num_indices < 3) {
+                    continue;  // empty/point/line -- already tallied at the part level above
+                }
+                const std::uint32_t numTris = ufbx_triangulate_face(faceIndices.data(), faceIndices.size(), mesh, face);
+                for (std::uint32_t t = 0; t < numTris * 3; ++t) {
+                    triIndices.push_back(faceIndices[t]);
+                }
+            }
+            if (triIndices.empty()) {
+                continue;  // every face in this part was degenerate after triangulation
+            }
+
+            const bool hasNormal = mesh->vertex_normal.exists;
+            const bool hasUv0 = mesh->vertex_uv.exists;
+            const bool hasUv1 = mesh->uv_sets.count > 1 && mesh->uv_sets.data[1].vertex_uv.exists;
+            const bool hasColor = mesh->vertex_color.exists;
+            // F7: a tangent basis with no normal to compare against is meaningless -- gated on all
+            // three existing, a small strengthening beyond D9's literal "both tangent and bitangent"
+            // wording, harmless in practice (a real mesh with tangents always has normals too).
+            const bool hasTangent = hasNormal && mesh->vertex_tangent.exists && mesh->vertex_bitangent.exists;
+
+            // ONE STREAM PER ATTRIBUTE (A12), each a packed array of a single POD, each VALUE-
+            // INITIALISED regardless (ufbx.h:4068 asks for it, and it costs nothing here: ufbx_vec2/3/4
+            // are unions with ufbx_real == double, so there is no padding on any of the three ABIs).
+            // The tangent stream is FOUR-WIDE (xyz + the computed SIGN, §D-4.8 point 6) so uniqueness
+            // naturally accounts for a seam where the sign flips even when normal/tangent/uv do not.
+            std::vector<ufbx_vec3> stagePositions(triIndices.size(), ufbx_vec3{});
+            std::vector<ufbx_vec3> stageNormals(hasNormal ? triIndices.size() : 0, ufbx_vec3{});
+            std::vector<ufbx_vec2> stageUv0(hasUv0 ? triIndices.size() : 0, ufbx_vec2{});
+            std::vector<ufbx_vec2> stageUv1(hasUv1 ? triIndices.size() : 0, ufbx_vec2{});
+            std::vector<ufbx_vec4> stageColors(hasColor ? triIndices.size() : 0, ufbx_vec4{});
+            std::vector<ufbx_vec4> stageTangentSign(hasTangent ? triIndices.size() : 0, ufbx_vec4{});
+
+            for (std::size_t k = 0; k < triIndices.size(); ++k) {
+                const std::uint32_t ix = triIndices[k];
+                stagePositions[k] = ufbx_get_vertex_vec3(&mesh->vertex_position, ix);
+                if (hasNormal) {
+                    stageNormals[k] = ufbx_get_vertex_vec3(&mesh->vertex_normal, ix);
+                }
+                if (hasUv0) {
+                    stageUv0[k] = ufbx_get_vertex_vec2(&mesh->vertex_uv, ix);
+                }
+                if (hasUv1) {
+                    stageUv1[k] = ufbx_get_vertex_vec2(&mesh->uv_sets.data[1].vertex_uv, ix);
+                }
+                if (hasColor) {
+                    stageColors[k] = ufbx_get_vertex_vec4(&mesh->vertex_color, ix);
+                }
+                if (hasTangent) {
+                    const ufbx_vec3 t = ufbx_get_vertex_vec3(&mesh->vertex_tangent, ix);
+                    const ufbx_vec3 b = ufbx_get_vertex_vec3(&mesh->vertex_bitangent, ix);
+                    const float sign = tangentSign(toVec3(stageNormals[k]), toVec3(t), toVec3(b));
+                    stageTangentSign[k] = ufbx_vec4{t.x, t.y, t.z, sign};
+                }
+            }
+
+            std::vector<ufbx_vertex_stream> streams;
+            streams.push_back({stagePositions.data(), stagePositions.size(), sizeof(ufbx_vec3)});
+            if (hasNormal) {
+                streams.push_back({stageNormals.data(), stageNormals.size(), sizeof(ufbx_vec3)});
+            }
+            if (hasUv0) {
+                streams.push_back({stageUv0.data(), stageUv0.size(), sizeof(ufbx_vec2)});
+            }
+            if (hasUv1) {
+                streams.push_back({stageUv1.data(), stageUv1.size(), sizeof(ufbx_vec2)});
+            }
+            if (hasColor) {
+                streams.push_back({stageColors.data(), stageColors.size(), sizeof(ufbx_vec4)});
+            }
+            if (hasTangent) {
+                streams.push_back({stageTangentSign.data(), stageTangentSign.size(), sizeof(ufbx_vec4)});
+            }
+
+            ufbx_error genErr = {};
+            const std::size_t uniqueVertices = ufbx_generate_indices(streams.data(), streams.size(), triIndices.data(),
+                                                                     triIndices.size(), nullptr, &genErr);
+            if (genErr.type != UFBX_ERROR_NONE) {
+                // Defensive: NOT reachable by any fixture in this suite (a null allocator has no
+                // configured limit to hit), kept because ufbx_generate_indices' own signature can fail.
+                addWarning(result, std::format("mesh '{}' part {}: {}", outMesh.name, partIdx, ufbxMessage(genErr)));
+                continue;
+            }
+
+            ImportedPrimitive outPrim;
+            // §A-23: bounds-checked, INVALID_SUBASSET on any violation, NEVER a warning -- a mesh with
+            // no materials connected is the ordinary case, not an error.
+            outPrim.materialIndex = (settings.importMaterials && partIdx < mesh->materials.count &&
+                                     mesh->materials.data[partIdx] != nullptr)
+                                        ? mesh->materials.data[partIdx]->typed_id
+                                        : INVALID_SUBASSET;
+            outPrim.attributes = VertexAttribute::Position;
+
+            outPrim.positions.reserve(uniqueVertices);
+            for (std::size_t i = 0; i < uniqueVertices; ++i) {
+                outPrim.positions.push_back(toVec3(stagePositions[i]) * settings.scale);  // A22: POST-scale
+            }
+            if (hasNormal) {
+                outPrim.normals.reserve(uniqueVertices);
+                for (std::size_t i = 0; i < uniqueVertices; ++i) {
+                    outPrim.normals.push_back(toVec3(stageNormals[i]));  // NEVER scaled
+                }
+                outPrim.attributes |= VertexAttribute::Normal;
+            }
+            if (hasUv0) {
+                outPrim.uv0.reserve(uniqueVertices);
+                for (std::size_t i = 0; i < uniqueVertices; ++i) {
+                    outPrim.uv0.push_back(toVec2(stageUv0[i]));
+                }
+                outPrim.attributes |= VertexAttribute::TexCoord0;
+            }
+            if (hasUv1) {
+                outPrim.uv1.reserve(uniqueVertices);
+                for (std::size_t i = 0; i < uniqueVertices; ++i) {
+                    outPrim.uv1.push_back(toVec2(stageUv1[i]));
+                }
+                outPrim.attributes |= VertexAttribute::TexCoord1;
+            }
+            if (hasColor) {
+                outPrim.colors.reserve(uniqueVertices);
+                for (std::size_t i = 0; i < uniqueVertices; ++i) {
+                    outPrim.colors.push_back(toVec4(stageColors[i]));
+                }
+                outPrim.attributes |= VertexAttribute::Color0;
+            }
+            if (hasTangent) {
+                outPrim.tangents.reserve(uniqueVertices);
+                for (std::size_t i = 0; i < uniqueVertices; ++i) {
+                    outPrim.tangents.push_back(toVec4(stageTangentSign[i]));  // NEVER scaled
+                }
+                outPrim.attributes |= VertexAttribute::Tangent;
+            }
+            outPrim.indices = std::move(triIndices);  // rewritten IN PLACE by ufbx_generate_indices
+
+            Aabb primBounds = Aabb::empty();
+            for (const Vec3& p : outPrim.positions) {
+                primBounds.expand(p);
+            }
+            outPrim.bounds = primBounds;
+            // 3.2.1's BLOCKING-3 lesson, restated: fold from THIS SAME primBounds, never from
+            // outMesh.bounds after the fact.
+            meshBounds.expand(primBounds);
+            result.model.summary.bounds.expand(primBounds);
+
+            ++result.model.summary.primitiveCount;
+            ++primitiveTotal;
+            vertexTotal += uniqueVertices;
+            indexTotal += outPrim.indices.size();
+
+            outMesh.primitives.push_back(std::move(outPrim));
+        }
+
+        // Flush the tally: AT MOST one warning naming whichever counts are non-zero (A24/FI31).
+        if (tally.pointFaces > 0 || tally.lineFaces > 0 || tally.emptyFaces > 0) {
+            addWarning(result, std::format("mesh '{}': skipped {} point face(s), {} line face(s), {} empty face(s)",
+                                           outMesh.name, tally.pointFaces, tally.lineFaces, tally.emptyFaces));
+        }
+
+        // E9: a mesh whose every part was skipped SURVIVES as a point box at the origin -- the
+        // untouched aggregate default, Aabb{} -- never the invalid Aabb::empty() sentinel meshBounds
+        // started from. A mesh that DID gain real geometry keeps its real, off-origin-capable fold.
+        outMesh.bounds = meshBounds.valid() ? meshBounds : Aabb{};
+        meshIndexByTypedId.emplace(mesh->typed_id, static_cast<std::uint32_t>(result.model.meshes.size()));
+        result.model.meshes.push_back(std::move(outMesh));
+    }
+    result.model.summary.meshCount = result.model.meshes.size();
+
+    // ImportedNode::meshIndex, assigned by walking s.nodes once more: node->mesh != nullptr ->
+    // meshIndexByTypedId's position for that ufbx_mesh. Two nodes (or a node and its geometry-
+    // transform helper) referencing one ufbx_mesh both point at the same index (AC-27).
+    for (const ufbx_node* n : s.nodes) {
+        if (n->is_root || n->mesh == nullptr) {
+            continue;
+        }
+        const auto nodeIt = nodeIndexByLocalId.find(n->typed_id);
+        const auto meshIt = meshIndexByTypedId.find(n->mesh->typed_id);
+        if (nodeIt != nodeIndexByLocalId.end() && meshIt != meshIndexByTypedId.end()) {
+            result.model.nodes[nodeIt->second].meshIndex = meshIt->second;
+        }
+    }
+
+    // E5's second half: summary.triangleCount is phase 2's cheap ufbx-native count
+    // (mesh->num_triangles), deliberately NOT re-derived above. Gated on TRIANGLES, not merely
+    // vertices (FI36's own finding, corrected from an earlier draft of this check): a mesh can
+    // legitimately have real vertices but ZERO triangles (every face a point or a line, E9's own
+    // fixture) and produce no primitive at all -- that is not corruption, and escalating on it would
+    // make FI36's degenerate-mesh case, which has vertices but no triangulatable content, misreport
+    // Malformed. A real triangle count with an invalid fold, on the other hand, means the file's
+    // declared unit corrupted the geometry: Aabb::expand() silently IGNORES a non-finite point
+    // (std::min/std::max with a NaN operand return the unchanged current value), so a fully-corrupted
+    // mesh's bounds stays stuck at the Aabb::empty() sentinel rather than becoming a visibly-broken box.
+    if (result.model.summary.triangleCount > 0 && !result.model.summary.bounds.valid()) {
+        escalate(result, ImportStatus::Malformed, "the file's declared unit produced non-finite geometry");
+    }
 
     return result;
 }
