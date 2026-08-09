@@ -477,12 +477,79 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "fbx_import: Structure and Full agree on the node list and every element COUNT this task wires "
-    "(FI4, AC-20/INV-M4 as §A-4 scopes it)") {
-    const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    "fbx_import: Structure and Full agree on the node list and every element COUNT this task wires -- "
+    "a fixture with ONE OF EACH (material+texture, skin, animation), not the empty DEFAULT_OBJECTS "
+    "that made five of this case's own eight clauses 0 == 0 (FI4, AC-20/INV-M4 as §A-4 scopes it)") {
+    // FIX: the original version of this case ran against DEFAULT_OBJECTS, which has ZERO textures,
+    // materials, images, skins and animations -- so materialCount/imageCount/skinCount/animationCount/
+    // externalUris were each comparing 0 == 0 at both depths and could never redden no matter how badly
+    // the depth mechanism broke. This fixture gives every one of those five fields a REAL, non-zero
+    // value at Full, which is what the REQUIREs just below the two imports exist to prove before the
+    // Structure/Full comparison below them means anything.
+    const std::string objects = std::format(
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {{\n"
+        "        Vertices: *12 {{ a: 0,0,0,1,0,0,1,1,0,0,1,0 }}\n"
+        "        PolygonVertexIndex: *4 {{ a: 0,1,2,-4 }}\n"
+        "        GeometryVersion: 124\n"
+        "    }}\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" {{ Version: 232 }}\n"
+        "    Model: 110, \"Model::bone\", \"LimbNode\" {{ Version: 232 }}\n"
+        "    Material: 300, \"Material::m\", \"\" {{\n"
+        "        Version: 102\n"
+        "        ShadingModel: \"unknown\"\n"
+        "        Properties70:  {{\n"
+        "{}"
+        "        }}\n"
+        "    }}\n"
+        "    Texture: 500, \"Texture::tex1\", \"\" {{ Type: \"TextureVideoClip\" Version: 202 "
+        "RelativeFilename: \"wood.png\" }}\n"
+        "    Deformer: 600, \"Deformer::skin\", \"Skin\" {{ Version: 101 }}\n"
+        "    Deformer: 601, \"SubDeformer::cluster\", \"Cluster\" {{\n"
+        "        Version: 100\n        Indexes: *1 {{ a: 0 }}\n        Weights: *1 {{ a: 1.0 }}\n"
+        "        Transform: *16 {{ a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }}\n"
+        "        TransformLink: *16 {{ a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }}\n"
+        "    }}\n"
+        "    AnimationStack: 700, \"AnimStack::Take 001\", \"\" {{ Version: 100 }}\n"
+        "    AnimationLayer: 701, \"AnimLayer::BaseLayer\", \"\" {{ Version: 100 }}\n"
+        "    AnimationCurveNode: 702, \"AnimCurveNode::T\", \"\" {{\n"
+        "        Version: 100\n        Properties70:  {{ P: \"d\", \"Compound\", \"\", \"\" }}\n"
+        "    }}\n"
+        "    AnimationCurve: 703, \"AnimCurve::\", \"\" {{\n"
+        "        Default: 0\n        KeyVer: 4009\n"
+        "        KeyTime: *2 {{ a: 0,46186158000 }}\n"
+        "        KeyValueFloat: *2 {{ a: 0,10 }}\n"
+        "        KeyAttrFlags: *1 {{ a: 4 }}\n"
+        "        KeyAttrDataFloat: *4 {{ a: 0,0,0,0 }}\n"
+        "        KeyAttrRefCount: *1 {{ a: 2 }}\n"
+        "    }}\n",
+        GLTF_MATERIAL_CLASSID);
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",110,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",300,100\n"
+        "    C: \"OP\",500,300,\"3dsMax|main|baseColor\"\n"
+        "    C: \"OO\",600,200\n"
+        "    C: \"OO\",601,600\n"
+        "    C: \"OO\",110,601\n"
+        "    C: \"OO\",701,700\n"
+        "    C: \"OO\",702,701\n"
+        "    C: \"OP\",702,100,\"Lcl Translation\"\n"
+        "    C: \"OP\",703,702,\"d|X\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, CONNECTIONS);
     const ImportResult structure =
         importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
     const ImportResult full = importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+
+    // Every field the comparison below relies on is REAL at Full -- the anti-vacuity proof itself.
+    REQUIRE(full.status == ImportStatus::Ok);
+    REQUIRE(full.model.summary.meshCount == 1);
+    REQUIRE(full.model.summary.materialCount == 1);
+    REQUIRE(full.model.summary.imageCount == 1);
+    REQUIRE(full.model.summary.skinCount == 1);
+    REQUIRE(full.model.summary.animationCount == 1);
+    REQUIRE(full.externalUris.size() == 1);
+
     CHECK(structure.model.summary.meshCount == full.model.summary.meshCount);
     CHECK(structure.model.summary.materialCount == full.model.summary.materialCount);
     CHECK(structure.model.summary.imageCount == full.model.summary.imageCount);
