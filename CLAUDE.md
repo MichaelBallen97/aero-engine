@@ -50,13 +50,14 @@ gate and each found what the other missed — the clearest evidence the two roun
 **R4 closed with a measurement**: a steady-state scan is size-independent (0 models probed, 0 bytes
 read) and costs ~1.0–1.1 ms, ~6% of a 16.7 ms frame, whichever fixture size is used.
 
-**3.2.2 (FBX import, ufbx) is CODE-COMPLETE on `feat/3.2.2-fbx-import-ufbx`, NOT YET MERGED.** PR #71
-is an open draft; commits 1–2 are pushed with CI green on all three platforms, commits 3–13 are local
-only and have not yet been through CI. All twelve of the plan's own steps are implemented and green
-locally (95/95 both presets, six guards, clang-format/clang-tidy clean by exit code, both reduced
-configurations rebuilt fresh and equal at 1082 cases each with `FI1` present in both). **The 35-seed
-sabotage matrix, the full three-platform CI run, and manual validation on any OS have NOT been run
-yet** — that is the immediate next work on this branch, not a later task. `editor/third_party/ufbx/` is
+**3.2.2 (FBX import, ufbx) is MERGED to `main` as PR #71 (merge commit `c597a5b`, 20 commits: one
+build, one test-harness, ten feature, five fix/coverage, three docs), CI-green on macOS, Windows and
+Ubuntu with the green run's `headSha` asserted equal to `HEAD` before merging.** Mechanical gate
+green: 95/95 on both presets with `AERO_REQUIRE_GPU=1`, both reduced configurations rebuilt fresh at
+**1088** cases each with `FI1` present in both, six guards passing, clang-format/clang-tidy clean by
+exit code. **The macOS validation pass has NOT been run** — `editor/validation/3.2.2-fbx-import-ufbx.md`
+holds thirteen unchecked rows, and rows 2, 3, 5 and 11 are the only cover for the requirement-level
+claims with no automated proof. `editor/third_party/ufbx/` is
 the **first vendored third-party library in this tree** (v0.23.0, byte-identical to upstream, MIT/
 Unlicense, `aero_ufbx` STATIC over one ASan/UBSan-instrumented `.c`, PRIVATE to `aero_editor_core`) —
 vendored because ufbx is in no vcpkg registry, not by preference. `fbx_import.{hpp,cpp}` is the only
@@ -69,8 +70,32 @@ while wiring `applySettings()` for FBX — closed with two trailing, defaulted p
 new boundary-crossing type. A **BLOCKING, ASan-confirmed heap-buffer-overflow** was found and fixed in
 `import_details_panel.cpp`'s Hierarchy and Skins sections, both of which indexed `ImportedModel::nodes`
 directly by `ImportedNode::localId` since task 3.2.1 shipped — harmless for glTF, where the two always
-coincide, and a real out-of-bounds read for the first FBX hierarchy with more than one node. Zero paths
-under `engine/` — the no-engine-change streak reaches **four**. Full detail — the measured D6 conversion
+coincide, and a real out-of-bounds read for the first FBX hierarchy with more than one node.
+
+**Two adversarial rounds ran against a green gate and each found what the other missed.** The
+**35-seed sabotage matrix** graded 20 matched · 5 predicted non-discriminators · 5 differently-shaped
+findings · **2 real coverage gaps found and closed** — `load_external_files` and `pivot_handling` each
+reddened nothing, because for FBX the first gates only `scene.cache_files` (no texture fixture reaches
+it) and no fixture anywhere declared a pivot. The **code-review round then found 5 gaps, 2 BLOCKING**,
+none visible to a 1106-case green suite: `Structure` and `Full` disagreed about the URI set for an
+embedded texture (`ignore_all_content` folds in `ignore_embedded`, so an embedded texture's
+`RelativeFilename` was recorded as an ordinary external URI, putting a dependency edge on a file the
+model does not need — fixed by setting `ignore_geometry`/`ignore_animation` individually, so **AC-21
+now asserts `embedded_ignored == false` at Structure**); and **AC-20's only automated proof was
+vacuous**, comparing `0 == 0` on five of eight clauses against a fixture with no textures, materials,
+skins or animations — which is why both blocking defects survived to review at all.
+
+**CI caught what neither round could: undefined behaviour inside ufbx's own DEFLATE decoder**
+(`shift exponent 136 is too large`), reachable only through the compressed binary fixture and only on
+x86_64 — `ufbxi_wrap_shr64`'s fast path is guarded on `UFBXI_ARCH_X64`, so an arm64 Mac already takes
+the well-defined branch and no local run could ever have seen it. Fixed with ufbx's own **`UFBX_UBSAN`**
+macro applied from `editor/third_party/ufbx/CMakeLists.txt` under `AERO_ENABLE_SANITIZERS AND NOT
+MSVC` — a build-system knob, never a patch to the vendored source, so INV-F5 holds. **The recurring
+lesson across all three defects: they are each two things that coincide for glTF and diverge for FBX**
+(`localId` vs array index; embedded-with-a-path vs `data:` URI; arm64 vs x64 shift semantics), and none
+was reachable by reasoning from the backend that shipped first.
+
+Zero paths under `engine/` — the no-engine-change streak reaches **four**. Full detail — the measured D6 conversion
 table, all six MUST-VERIFY answers, every build-time finding including three separate test-numbering
 collisions with post-merge review-round additions, and the honest FI72 allocator-cap resolution — is in
 `docs/10-engineering-log.md`'s 3.2.2 entry.
@@ -87,8 +112,8 @@ up.
 | **Phase 1** — Reflection, ECS & Serialization | **COMPLETE** — epics 1.1–1.4 all CLOSED. Gate reached in code, macOS-validated; Windows/Linux render rows pending (`samples/phase-1-scene/VALIDATION.md`). |
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics (2.1 Editor shell, 2.2 Core panels, 2.3 Manipulation, 2.4 Undo/redo, 2.5 Scene I/O, 2.6 Project system v0) CLOSED in code and macOS-validated PASS, with Windows/Linux rows pending for every task (`editor/VALIDATION.md`). The whole-phase audit (2026-08-02) fixed two silent data-loss paths, a project root that was never made absolute, two CI false-greens, and four stale documentation claims. Full per-task and per-epic history — every defect, every sabotage matrix, every deviation — lives in `docs/10-engineering-log.md`'s Phase 2 entries; this row is deliberately a summary, not a duplicate. |
 | **Phase 2 gate** | **MET 2026-08-02.** `samples/phase-2-editor-scene/` holds a project and a 4-entity scene authored entirely through the editor, with the save → New Scene → Open Scene round trip confirmed (`samples/phase-2-editor-scene/VALIDATION.md`); provenance is recorded there rather than asserted, since a hand-written `scene.json` is byte-identical to a real one and no test tier can tell them apart. Deliberately NOT `add_subdirectory`'d — this artifact is data (a provenance proof of the editor), not a compile-proof of engine code. |
-| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets) is FULLY MERGED: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds respectively), **macOS-validated ✅ PASS on all four** (14/14, 14/14, 16/16, 10/10) — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash` (`engine/core`), the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache, and the real Asset Browser all shipped across these four. **Epic 3.2 (Importers): 3.2.1 (glTF, fastgltf) MERGED as PR #70 (`f02ca65`, 28 commits), sabotage-proven (32 seeds, 10 findings) and code-review-hardened (12 findings, 3 BLOCKING), macOS-validated ✅ PASS 12/12.** It is the first PRODUCER for `AssetCacheEntry::dependencies` (3.1.2's own field) — editing a texture a model references now marks that model `DependencyChanged` on the next scan. **3.2.2 (FBX, ufbx) is CODE-COMPLETE on `feat/3.2.2-fbx-import-ufbx`, PR #71 open as a draft, NOT YET MERGED** — sabotage matrix, three-platform CI and manual validation all remain. It is the first vendored third-party library in the tree (`editor/third_party/ufbx/`, byte-identical to upstream v0.23.0) and closes a THIRD hard-coded-importer-identity site the spec itself missed, plus a BLOCKING ASan heap-buffer-overflow in the Import Details panel's Hierarchy/Skins sections that shipped invisibly with 3.2.1 and was only reachable once an FBX hierarchy existed to trigger it. Zero paths under `engine/` for both 3.2.1 and 3.2.2 — the no-engine-change streak reaches **four**. Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
-| **Next task** | **Finish 3.2.2**: run the 35-seed sabotage matrix (Step 13), then the full mechanical gate, push, wait for three green CI lanes with `headSha == HEAD`, and merge with a merge commit (Step 14). **After 3.2.2 merges, 3.1.5 (drag-into-scene)** is next — it depends on 3.1.3 (merged) and 3.2.1 (merged), and `ImportedModel` gives it something to reference; a merged 3.2.2 additionally lets it be dragged an `.fbx` as easily as a `.gltf`. 3.1.5 owns two decisions 3.2.1 deliberately left open: **sub-asset identity** (D13 — both a stable `localId` and the source `name` are recorded for every mesh/material/skin/animation, with a fixed ordering rule) and **replacing `LOCAL_MESH_HALF_EXTENT`** (2.3.1's knowingly-wrong constant). See `docs/tasks/phase-3.md`. The remaining carried-forward item is **platform-validation debt, now spanning three phases**: no Windows or Linux validation pass exists for any of the thirteen Phase 2 tasks, for 3.1.1–3.1.4, or for 3.2.1, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. Schedule it as work of its own rather than as a ride-along row — 2.2.5's lesson at phase scale. |
+| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets) is FULLY MERGED: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds respectively), **macOS-validated ✅ PASS on all four** (14/14, 14/14, 16/16, 10/10) — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash` (`engine/core`), the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache, and the real Asset Browser all shipped across these four. **Epic 3.2 (Importers): 3.2.1 (glTF, fastgltf) MERGED as PR #70 (`f02ca65`, 28 commits), sabotage-proven (32 seeds, 10 findings) and code-review-hardened (12 findings, 3 BLOCKING), macOS-validated ✅ PASS 12/12.** It is the first PRODUCER for `AssetCacheEntry::dependencies` (3.1.2's own field) — editing a texture a model references now marks that model `DependencyChanged` on the next scan. **3.2.2 (FBX, ufbx) MERGED as PR #71 (`c597a5b`, 20 commits), CI-green on all three platforms with `headSha == HEAD` asserted, sabotage-proven (35 seeds: 20 matched / 5 predicted non-discriminators / 5 differently-shaped / 2 gaps found and closed) and code-review-hardened (5 gaps, 2 BLOCKING, all closed). macOS validation NOT yet run — thirteen rows open.** It is the first vendored third-party library in the tree (`editor/third_party/ufbx/`, byte-identical to upstream v0.23.0) and closes a THIRD hard-coded-importer-identity site the spec itself missed, plus a BLOCKING ASan heap-buffer-overflow in the Import Details panel's Hierarchy/Skins sections that shipped invisibly with 3.2.1 and was only reachable once an FBX hierarchy existed to trigger it. CI additionally caught UB inside ufbx's own DEFLATE decoder that is x86_64-only and therefore invisible to every local arm64 run — closed with ufbx's `UFBX_UBSAN` macro from the build system, never a patch to the vendored source. Zero paths under `engine/` for both 3.2.1 and 3.2.2 — the no-engine-change streak reaches **four**. Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
+| **Next task** | **3.1.5 (drag-into-scene)** — now fully unblocked: it depends on 3.1.3 and 3.2.1 (both merged), `ImportedModel` gives it something to reference, and with 3.2.2 merged it can be dragged an `.fbx` as easily as a `.gltf`. **First, though, 3.2.2's own macOS validation pass is outstanding** (`editor/validation/3.2.2-fbx-import-ufbx.md`, thirteen rows) — row 11 in particular is the behavioural cover for the embedded-texture dependency path the code-review round had to fix, and rows 2/3/5 are the only cover for the requirement-level claims with no automated proof. 3.1.5 owns two decisions 3.2.1 deliberately left open: **sub-asset identity** (D13 — both a stable `localId` and the source `name` are recorded for every mesh/material/skin/animation, with a fixed ordering rule) and **replacing `LOCAL_MESH_HALF_EXTENT`** (2.3.1's knowingly-wrong constant). See `docs/tasks/phase-3.md`. The remaining carried-forward item is **platform-validation debt, now spanning three phases**: no Windows or Linux validation pass exists for any of the thirteen Phase 2 tasks, for 3.1.1–3.1.4, or for 3.2.1, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. Schedule it as work of its own rather than as a ride-along row — 2.2.5's lesson at phase scale. |
 
 Engine layers that exist today, in dependency order: `core` (gained `guid.hpp`/`guid.cpp` at task
 3.1.1, beside `handle.hpp`; gained `content_hash.hpp`/`content_hash.cpp` at task 3.1.2, beside `guid`)
@@ -119,25 +144,32 @@ from dragging in `aero::scene` and the whole math umbrella). **3.2.2 adds ONE mo
 under `editor/include/aero/editor/` (except the four named src-private), the `.cpp`s under
 `editor/src/`.
 
-Test inventory at HEAD (`feat/3.2.2-fbx-import-ufbx`), **re-measured, not carried forward**: **95**
+Test inventory at HEAD (`c597a5b`, `main`), **re-measured after merge, not carried forward**: **95**
 ctest entries with tools ON, **6** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`, **19** with
 `-DAERO_REFLECT_TOOLS=OFF` alone — unchanged by either 3.2.1 or 3.2.2 (zero new ctest entries; every
 new case lives inside an existing TU). `aero_tests` **415** (unchanged — neither task touches
-`engine/`). `aero_editor_shell_test` **1106** (997 at 3.2.1 → **+109** at 3.2.2: a new TU,
-`tests/editor/fbx_import_test.cpp` (**68** cases, FI1–FI76 with a documented gap in the FI72–FI75
-range), plus `model_import_test.cpp` (+15, MI103–MI117), `model_import_session_test.cpp` (+6,
+`engine/`). `aero_editor_shell_test` **1112** (997 at 3.2.1 → **+115** at 3.2.2: a new TU,
+`tests/editor/fbx_import_test.cpp` (**74** cases spanning FI1–FI79, with five deliberate gaps —
+FI28, FI43, FI46, FI68, FI72 — each documented in the file as unreachable from a tier-0 fixture
+rather than shipped as a case that only looks like proof), plus `model_import_test.cpp` (+15,
+MI103–MI117), `model_import_session_test.cpp` (+6,
 MS22–MS27, renumbered from the plan's own predicted MS24–MS29 — the file's highest EXISTING case was
 MS21, not MS23), `asset_meta_test.cpp` (+6, AM-i15–AM-i20), `asset_cache_test.cpp` (+6,
 AC-p9–AC-p14) and `asset_database_test.cpp` (+8, AD-i14–AD-i21, renumbered from the plan's own
-predicted AD-i11–AD-i18 — a post-3.2.1-merge review round had already claimed AD-i11–AD-i13) — **1106
+predicted AD-i11–AD-i18 — a post-3.2.1-merge review round had already claimed AD-i11–AD-i13) — **1112
 measured directly with `--list-test-cases`, never derived by addition**. `aero_editor_imgui_test`
 **89** (83 at 3.2.1 → +6 at 3.2.2: I62–I67, renumbered from the plan's own predicted I61–I66 — a
 post-3.2.1-merge review round had already claimed I61). `aero_scene_serialize_test` **23** and
 `aero_editor_inspector_test` **22**, both unchanged since 3.1.1. `aero_editor_core` sources **52** (51
 at 3.2.1 → +1: `fbx_import.cpp`) — no new `find_package` beyond ufbx's own vendored `add_subdirectory`,
-one new PRIVATE `target_link_libraries` entry (`aero::ufbx`, confined to `aero_editor_core`, never
-reaching `aero_editor` or any test target's link line — a link-graph grep, not merely an include grep,
-is what proves this). `check-math-boundary.sh`'s scanned count: **287** at 3.2.1 **→ 291** at 3.2.2
+one new PRIVATE `target_link_libraries` entry (`aero::ufbx`, declared by `aero_editor_core` and by no
+other target). **The checkable invariant is the INCLUDE boundary, not the link line, and an earlier
+draft of this paragraph got that wrong.** Measured from `compile_commands.json`: ufbx's `SYSTEM PUBLIC`
+include directory reaches **zero** test TUs and **zero** `engine/` TUs. The static archive itself
+*does* appear on `aero_editor`'s and the test targets' link lines, and always will — a PRIVATE
+dependency of a STATIC library propagates as `$<LINK_ONLY:…>`, exactly as `fastgltf` has since 3.2.1.
+Any future criterion phrased as "nowhere on their link lines" is unsatisfiable by construction.
+`check-math-boundary.sh`'s scanned count: **287** at 3.2.1 **→ 291** at 3.2.2
 (four new C-family files — `ufbx.h`, `fbx_import.hpp`, `fbx_import.cpp`, `fbx_import_test.cpp`; `ufbx.c`
 is not in its extension set) — measured after `git add` at every step boundary, never assumed. Guard
 count stays **six**. **`.github/scripts/` is NO LONGER byte-identical to `main`, unlike every prior
@@ -149,7 +181,7 @@ is in neither, which is what makes a future `std::filesystem::remove` in it a ha
 B's scanned-file count grows to **53** (the glob picks the new file up automatically). Both reduced
 configurations, freshly rebuilt in `build/tools-off-3.2.2`/`build/reflect-off-3.2.2`: `ctest -N`
 **6**/**19** unchanged, both passing 100% (6/6 and 19/19), `aero_editor_shell_test`'s own doctest
-`--list-test-cases` count reads **1082** in **both** (up from 952 at 3.2.1), with `FI1` present in
+`--list-test-cases` count reads **1088** in **both** (up from 952 at 3.2.1), with `FI1` present in
 both — proving the FBX importer TU needs neither reflection nor scene serialization (AC-68). Counts
 diverge by OS (Windows skips `golden-rule.include_scan_e2e`), so never assume one — measure with
 `ctest -N`.
