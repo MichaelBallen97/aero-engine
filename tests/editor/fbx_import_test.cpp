@@ -46,6 +46,7 @@
 // CLOSED by that spike, not deferred). Every future FI case is this document with one section varied
 // through makeFbx()'s three parameters, never restated whole.
 #include <aero/editor/model_import.hpp>
+#include <aero/editor/text_file.hpp>  // FI73: readFileBytes, the seam MAX_MODEL_FILE_BYTES lives at
 
 #include "scene_golden_support.hpp"  // task 3.2.2, Step 12: FI76's committed binary fixture
 
@@ -56,20 +57,31 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <format>
+#include <fstream>
+#include <ios>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
+
+#if !defined(_WIN32)
+    #include <unistd.h>  // geteuid -- FI73's vacuity guard (text_file_test.cpp's TF31 precedent)
+#endif
 
 using engine::editor::AlphaMode;
 using engine::editor::AnimationInterpolation;
 using engine::editor::AnimationPath;
+using engine::editor::FileBytesResult;
 using engine::editor::ImportDepth;
 using engine::editor::importModel;
 using engine::editor::ImportResult;
 using engine::editor::ImportSettings;
 using engine::editor::ImportStatus;
+using engine::editor::MAX_MODEL_FILE_BYTES;
+using engine::editor::readFileBytes;
 using engine::editor::TextureWrap;
 
 namespace {
@@ -95,6 +107,100 @@ constexpr double ROT_EPS = 1e-6;  // quaternion components, matrix basis columns
 // task 3.2.2, Step 12 (AC-55): the one committed binary fixture, reached through
 // AERO_ASSET_FIXTURES_DIR, already defined on this target (asset_meta_test.cpp's own precedent).
 constexpr std::string_view CUBE_BINARY_FIXTURE = AERO_ASSET_FIXTURES_DIR "/cube-binary.fbx";
+
+// ---- FI73's scratch-file scaffolding. The NINTH TU-local copy of this shape
+// (text_file_test.cpp:48's own count, one higher): scaffolding is copied, the ASSERTION is shared.
+// Only FI73 touches disk in this file -- every other case is a string literal, by design.
+class TempDir {
+public:
+    TempDir() {
+        std::error_code ec;
+        const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+        static int counter = 0;  // doctest runs serially in one process; a plain counter is unique enough
+        dirPath = base / ("aero_fbx_import_test_" + std::to_string(++counter));
+        std::filesystem::remove_all(dirPath, ec);
+        std::filesystem::create_directories(dirPath, ec);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(dirPath, ec);
+    }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+    TempDir(TempDir&&) = delete;
+    TempDir& operator=(TempDir&&) = delete;
+
+    [[nodiscard]] std::string utf8() const {
+        const std::u8string bytes = dirPath.u8string();
+        return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    }
+    [[nodiscard]] std::string join(std::string_view leaf) const {
+        std::string result = utf8();
+        result += '/';
+        result += leaf;
+        return result;
+    }
+
+private:
+    std::filesystem::path dirPath;
+};
+
+// UTF-8 bytes, never a narrow std::string (project_files.cpp's pathFromUtf8 precedent).
+[[nodiscard]] std::filesystem::path pathOf(std::string_view utf8) {
+    const std::u8string bytes(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
+    return std::filesystem::path(bytes);
+}
+
+void writeEmptyFile(std::string_view absolutePath) {
+    const std::ofstream out(pathOf(absolutePath), std::ios::binary | std::ios::trunc);
+    REQUIRE(static_cast<bool>(out));
+}
+
+// FI74's own validator. RFC 3629 exactly: no overlong forms, no surrogates, nothing above U+10FFFF --
+// the same three things that make a byte sequence "technically decodable but still invalid", and the
+// three ImGui's own decoder would render as garbage rather than reject.
+[[nodiscard]] bool isValidUtf8(std::string_view text) {
+    std::size_t i = 0;
+    while (i < text.size()) {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        std::size_t extra = 0;
+        std::uint32_t code = 0;
+        if (lead < 0x80U) {
+            ++i;
+            continue;
+        }
+        if ((lead & 0xE0U) == 0xC0U) {
+            extra = 1;
+            code = lead & 0x1FU;
+        } else if ((lead & 0xF0U) == 0xE0U) {
+            extra = 2;
+            code = lead & 0x0FU;
+        } else if ((lead & 0xF8U) == 0xF0U) {
+            extra = 3;
+            code = lead & 0x07U;
+        } else {
+            return false;  // a bare continuation byte, or an invalid 5/6-byte lead
+        }
+        if (i + extra >= text.size()) {
+            return false;  // truncated sequence
+        }
+        for (std::size_t k = 1; k <= extra; ++k) {
+            const auto cont = static_cast<unsigned char>(text[i + k]);
+            if ((cont & 0xC0U) != 0x80U) {
+                return false;
+            }
+            code = (code << 6U) | (cont & 0x3FU);
+        }
+        const bool overlong =
+            (extra == 1 && code < 0x80U) || (extra == 2 && code < 0x800U) || (extra == 3 && code < 0x10000U);
+        const bool surrogate = code >= 0xD800U && code <= 0xDFFFU;
+        if (overlong || surrogate || code > 0x10FFFFU) {
+            return false;
+        }
+        i += extra + 1U;
+    }
+    return true;
+}
 
 // ---- the §D-7 template's three variable sections, at their DEFAULT (Z-up, UnitScaleFactor:1 --
 // centimetre) content: one node ("box"), one mesh (a quad), translated (0,0,200) in the source's own
@@ -2770,6 +2876,214 @@ TEST_CASE(
     CHECK(on.model.summary.nodeCount == off.model.summary.nodeCount);
     CHECK(on.model.summary.meshCount == off.model.summary.meshCount);
     CHECK(on.model.nodes.size() == off.model.nodes.size());
+}
+
+// ---- FI73-FI75: caps, containers and encodings ----------------------------------------------------
+
+TEST_CASE(
+    "fbx_import: a .fbx over MAX_MODEL_FILE_BYTES is refused by the cap BEFORE the file is ever "
+    "opened -- proven with a file the OS itself would refuse to open (FI73, AC-51)") {
+    // WHY THIS LIVES AT THE readFileBytes SEAM AND NOT INSIDE importFbx: the cap is `readFileBytes`'
+    // (text_file.cpp), not the importer's. `importFbx` is handed a std::span of bytes that ALREADY
+    // exist in memory, so by the time any FBX code runs the file has necessarily been read -- there is
+    // no point inside this backend at which "was it opened?" is still answerable. AC-51 is a statement
+    // about the boundary, and this case documents that boundary so it is not re-implemented inside the
+    // importer (`ModelImportSession::service` passes MAX_MODEL_FILE_BYTES for EVERY format, .fbx
+    // included -- model_import_session.cpp:125; MS16 is the session-level twin for .gltf).
+    //
+    // THE DISCRIMINATOR, and why the OTHER half of this case is not enough on its own: arm (a) below
+    // (an oversized file is refused with `refusedByCap`) passes IDENTICALLY for an implementation that
+    // opens the file first and checks the cap afterwards, so on its own it proves the REFUSAL and
+    // nothing about the ORDER. Arm (b) makes the two orders observable: the same oversized file is
+    // made unopenable, so a cap check that ran AFTER the open would report the OS's own error with
+    // `refusedByCap == false`, while the shipped order (is_directory -> file_size -> cap -> open)
+    // still reports the cap. CONFIRMED DIRECTLY: moving text_file.cpp's cap check below the
+    // `std::ifstream` construction reddens arm (b) and leaves arm (a) green.
+    //
+    // The file is created empty and SPARSELY extended (MS16's own precedent) -- 256 MiB of address
+    // space, no real I/O, and nothing is ever written to or read from it.
+    const TempDir dir;
+    const std::string path = dir.join("huge.fbx");
+    writeEmptyFile(path);
+    std::error_code ec;
+    std::filesystem::resize_file(pathOf(path), MAX_MODEL_FILE_BYTES + 1U, ec);
+    REQUIRE_FALSE(ec);
+
+    // (a) the refusal itself: no bytes, the discriminated cap signal, and the observed size kept so the
+    //     panel can report the number that tripped it. `bytes` being disengaged is what makes it
+    //     impossible for a span to be formed and handed to importModel at all.
+    const FileBytesResult refused = readFileBytes(path, MAX_MODEL_FILE_BYTES);
+    CHECK_FALSE(refused.bytes.has_value());
+    CHECK(refused.refusedByCap);
+    CHECK(refused.size == MAX_MODEL_FILE_BYTES + 1U);
+    CHECK_FALSE(refused.error.empty());
+
+    // (b) the "without being opened" half. POSIX-only by nature: Windows has no way to make a file
+    //     unopenable through std::filesystem::permissions (it maps to the read-only ATTRIBUTE, which
+    //     does not block reading), and root ignores the mode bits -- in both cases the case would pass
+    //     vacuously, so it says so rather than pretending (TF31's own precedent).
+#if defined(_WIN32)
+    MESSAGE("arm (b) skipped on Windows: POSIX permission semantics do not apply");
+#else
+    if (geteuid() == 0) {
+        MESSAGE("arm (b) skipped as root: the mode bits are ignored, so this arm would pass vacuously");
+    } else {
+        std::filesystem::permissions(pathOf(path), std::filesystem::perms::none, std::filesystem::perm_options::replace,
+                                     ec);
+        REQUIRE_FALSE(ec);
+
+        const FileBytesResult unopenable = readFileBytes(path, MAX_MODEL_FILE_BYTES);
+        CHECK_FALSE(unopenable.bytes.has_value());
+        CHECK(unopenable.refusedByCap);  // the CAP refused it, not the OS -- so no open was attempted
+        CHECK(unopenable.size == MAX_MODEL_FILE_BYTES + 1U);
+
+        // The control that proves the file really was unopenable, and therefore that the assertion
+        // above is not vacuous: raise the cap above the file's size and the SAME path now fails with
+        // the OS's reason instead, `refusedByCap` false.
+        const FileBytesResult opened = readFileBytes(path, MAX_MODEL_FILE_BYTES + 2U);
+        CHECK_FALSE(opened.bytes.has_value());
+        CHECK_FALSE(opened.refusedByCap);
+
+        std::filesystem::permissions(pathOf(path), std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace, ec);
+        CHECK_FALSE(ec);  // restored BEFORE ~TempDir, or the cleanup itself fails
+    }
+#endif
+}
+
+TEST_CASE(
+    "fbx_import: a node name carrying Latin-1 and Shift-JIS bytes imports SUCCESSFULLY with U+FFFD "
+    "replacements, and every string in the result is valid UTF-8 (FI74, AC-54)") {
+    // Real Maya and 3ds Max exports carry names in the authoring machine's own code page --
+    // Shift-JIS and Latin-1 are both common -- and those bytes land in ImportedNode::name ->
+    // ImportDetailsPanel -> ImGui, which requires valid UTF-8.
+    //
+    // WHY THIS DISCRIMINATES. `opts.unicode_error_handling` has six values and the code picks
+    // REPLACEMENT_CHARACTER. MEASURED against the vendored ufbx v0.23.0 with this exact document:
+    //   REPLACEMENT_CHARACTER (shipped) -> loads; name == "caf" + three U+FFFD (one per bad byte)
+    //   UNDERSCORE / QUESTION_MARK      -> loads; name == "caf___" / "caf???"     -> the == below fails
+    //   REMOVE                          -> loads; name == "caf"                   -> the == below fails
+    //   ABORT_LOADING                   -> UFBX_ERROR_INVALID_UTF8, the WHOLE import fails over one
+    //                                      bone name                              -> status fails
+    //   UNSAFE_IGNORE                   -> UFBX_ERROR_UNSAFE_OPTIONS (it additionally needs
+    //                                      allow_unsafe), and with allow_unsafe it would feed the raw
+    //                                      invalid bytes to ImGui -> the validator below fails
+    // REPLACEMENT_CHARACTER happens to be the enumerator with value 0, so DELETING the assignment is
+    // not a discriminable seed -- changing it is, and all five alternatives are caught here.
+    //
+    // The bytes: 0xE9 is Latin-1 'e-acute' (a UTF-8 lead byte with no continuation), 0x93 0xFA is
+    // Shift-JIS for the first character of "Japan" (two bare continuation bytes). Each is one
+    // encoding error, so ufbx emits one U+FFFD each -- three in total. Written as SEPARATE adjacent
+    // string literals because a hex escape is greedy: "\xe9_mesh" would parse as the single character
+    // \xe9_ (an invalid escape), not \xe9 followed by "_mesh".
+    const std::string objects = std::string("    Geometry: 200, \"Geometry::caf\xe9") +
+                                "_mesh\", \"Mesh\" {\n"
+                                "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+                                "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+                                "        GeometryVersion: 124\n"
+                                "    }\n"
+                                "    Model: 100, \"Model::caf\xe9\x93\xfa"
+                                "\", \"Mesh\" { Version: 232 }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+
+    // The import SUCCEEDS -- a non-UTF-8 bone name is not a reason to refuse a character.
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 1);
+    REQUIRE(result.model.meshes.size() == 1);
+
+    constexpr std::string_view REPLACEMENT = "\xef\xbf\xbd";  // U+FFFD, in UTF-8
+    CHECK(result.model.nodes[0].name ==
+          "caf" + std::string(REPLACEMENT) + std::string(REPLACEMENT) + std::string(REPLACEMENT));
+    CHECK(result.model.meshes[0].name == "caf" + std::string(REPLACEMENT) + "_mesh");
+
+    // ... and NOTHING that reaches the panel carries invalid UTF-8. Checked with a validator rather
+    // than by comparing against the literals above, so a future string this importer starts filling is
+    // covered by this case without being enumerated in it.
+    CHECK(isValidUtf8(result.model.nodes[0].name));
+    CHECK(isValidUtf8(result.model.meshes[0].name));
+    CHECK(isValidUtf8(result.model.sourceSpace.generator));
+    CHECK(isValidUtf8(result.model.sourceSpace.formatVersion));
+    CHECK(isValidUtf8(result.message));
+    for (const std::string& warning : result.warnings) {
+        CHECK(isValidUtf8(warning));
+    }
+    // The validator is not vacuous: it rejects the raw source bytes this fixture is built from.
+    CHECK_FALSE(isValidUtf8("caf\xe9"));
+    CHECK_FALSE(isValidUtf8("\x93\xfa"));
+}
+
+TEST_CASE(
+    "fbx_import: an FBX 6.x document imports, and sourceSpace.formatVersion reports ITS OWN version "
+    "rather than the 7.x every other fixture here uses (FI75, E2)") {
+    // ufbx supports pre-7000 FBX (its own reader branches on `version < 7000` in a dozen places), and
+    // so does this importer -- there is no version gate anywhere, which is the point: a 6.x file from
+    // an old asset library imports rather than being refused.
+    //
+    // A 6.x document is NOT a 7.x document with a different number in the header, and this fixture is
+    // therefore hand-written whole rather than routed through makeFbx(): pre-7000 FBX puts geometry
+    // INSIDE the Model node (there is no separate Geometry object), spells properties
+    // `Properties60`/`Property:` instead of `Properties70`/`P:`, and connects by TYPE::NAME pair
+    // (`Connect: "OO", "Model::box", "Model::Scene"`) rather than by 64-bit id. MEASURED against the
+    // vendored ufbx v0.23.0: this document loads with version == 6100, ascii == true, one authored
+    // node named "box", one mesh of 4 vertices / 2 triangles.
+    //
+    // WHY IT DISCRIMINATES: it is the ONLY case in this suite whose source is not FBX 7400, so it is
+    // the only one that can tell `std::format("FBX {} {}", metadata.version, ...)` from a constant
+    // matching the 7.x fixture family. CONFIRMED DIRECTLY: replacing fbx_import.cpp's formatVersion
+    // with the literal "FBX 7400 ascii" leaves FI13/FI19/FI76 green and reddens only this case; adding
+    // a `metadata.version < 7000 -> Unsupported` gate reddens it too. The panel's Source space row is
+    // a straight interpolation of this same field (import_details_panel.cpp's drawOverview), so the
+    // field is the testable half and the drawn frame is the GPU tier's.
+    const std::string doc =
+        "; FBX 6.1.0 project file\n"
+        "FBXHeaderExtension:  {\n"
+        "    FBXHeaderVersion: 1003\n"
+        "    FBXVersion: 6100\n"
+        "    Creator: \"aero test fixture\"\n"
+        "}\n"
+        "GlobalSettings:  {\n"
+        "    Version: 1000\n"
+        "    Properties60:  {\n"
+        "        Property: \"UpAxis\", \"int\", \"\",2\n"
+        "        Property: \"UpAxisSign\", \"int\", \"\",1\n"
+        "        Property: \"FrontAxis\", \"int\", \"\",1\n"
+        "        Property: \"FrontAxisSign\", \"int\", \"\",-1\n"
+        "        Property: \"CoordAxis\", \"int\", \"\",0\n"
+        "        Property: \"CoordAxisSign\", \"int\", \"\",1\n"
+        "        Property: \"UnitScaleFactor\", \"double\", \"\",1\n"
+        "    }\n"
+        "}\n"
+        "Objects:  {\n"
+        "    Model: \"Model::box\", \"Mesh\" {\n"
+        "        Version: 232\n"
+        "        Properties60:  {\n"
+        "            Property: \"Lcl Translation\", \"Lcl Translation\", \"A+\",0,0,200\n"
+        "        }\n"
+        "        Vertices: 0,0,0,100,0,0,100,100,0,0,100,0\n"
+        "        PolygonVertexIndex: 0,1,2,-4\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "}\n"
+        "Connections:  {\n"
+        "    Connect: \"OO\", \"Model::box\", \"Model::Scene\"\n"
+        "}\n";
+    const ImportResult result = importModel("old.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+
+    REQUIRE(result.status == ImportStatus::Ok);
+    CHECK(result.model.sourceSpace.declared);
+    CHECK(result.model.sourceSpace.formatVersion == "FBX 6100 ascii");
+    // ... and it is a REAL import, not merely a header read: the same Z-up centimetre conversion every
+    // 7.x fixture gets (FI15's numbers) applies to a 6.x source too.
+    CHECK(result.model.sourceSpace.upAxis == 'Z');
+    CHECK(result.model.sourceSpace.unitMeters == doctest::Approx(0.01F));
+    REQUIRE(result.model.nodes.size() == 1);
+    CHECK(result.model.nodes[0].name == "box");
+    CHECK(result.model.nodes[0].translation.x == APPROX_POS(0.0F));
+    CHECK(result.model.nodes[0].translation.y == APPROX_POS(2.0F));
+    CHECK(result.model.nodes[0].translation.z == APPROX_POS(0.0F));
+    CHECK(result.model.summary.vertexCount == 4);
+    CHECK(result.model.summary.triangleCount == 2);
 }
 
 // ---- FI76: the one committed binary fixture (Step 12, AC-55) --------------------------------------
