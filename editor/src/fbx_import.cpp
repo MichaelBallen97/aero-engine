@@ -423,6 +423,88 @@ struct MeshTally {
     return dot(cross(normal, tangent), bitangent) >= 0.0F ? 1.0F : -1.0F;
 }
 
+// D11/E13: for each cluster in deformer->clusters (BY POSITION), the SLOT it occupies in the
+// ImportedSkin::joints array this same deformer produces -- i.e. the value phase 6 writes into a
+// vertex's Joints0 entry, and the position phase 7 assigns ImportedSkin::joints[slot] at. Built
+// IDENTICALLY by both phases (both skip a null bone_node in the SAME order), which is what keeps a
+// per-vertex joint index and ImportedSkin::joints[] in agreement even in that (unreachable in
+// practice: ufbx already drops such clusters when connect_broken_elements is false, never set here)
+// defensive case.
+[[nodiscard]] std::vector<std::uint32_t> clusterJointSlots(const ufbx_skin_deformer& deformer) {
+    std::vector<std::uint32_t> slots(deformer.clusters.count, INVALID_SUBASSET);
+    std::uint32_t next = 0;
+    for (std::size_t i = 0; i < deformer.clusters.count; ++i) {
+        if (deformer.clusters.data[i]->bone_node != nullptr) {
+            slots[i] = next++;
+        }
+    }
+    return slots;
+}
+
+// The 4-influence reduction (D11), in order, and every step load-bearing:
+//   0. opts.clean_skin_weights already removed negative, zero and NaN weights.
+//   1. ufbx_skin_vertex's slice is ALREADY SORTED BY DECREASING WEIGHT (ufbx.h:1957 -- A11) -- so this
+//      is a PREFIX TAKE and the sort below is a no-op today. Kept anyway: it costs nothing on a small
+//      window, it makes the ascending-cluster-index TIE-BREAK real rather than incidental (identical
+//      on all three lanes), and it survives a ufbx that relaxes the guarantee.
+//   2. Keep the four largest. Ties -> ascending cluster index.
+//   3. RENORMALIZE -- ufbx.h:1959 is explicit the weights are NOT guaranteed normalized (A11).
+//   4. A vertex whose kept weights sum to zero gets {0,0,0,0}/{0,0,0,0} -- NEVER a silent {1,0,0,0},
+//      which would bind it to joint 0 (seed S23, FI60).
+struct ReducedInfluences {
+    std::array<std::uint16_t, 4> joints{};
+    Vec4 weights{};
+};
+
+[[nodiscard]] ReducedInfluences reduceInfluences(const ufbx_skin_deformer& deformer,
+                                                 const std::vector<std::uint32_t>& jointSlots,
+                                                 std::uint32_t vertexIndex) {
+    struct Influence {
+        std::uint16_t joint;
+        float weight;
+        std::uint32_t cluster;
+    };
+    ReducedInfluences out;
+    if (vertexIndex >= deformer.vertices.count) {
+        return out;  // defensive; not reachable through a well-formed ufbx_scene
+    }
+    const ufbx_skin_vertex& sv = deformer.vertices.data[vertexIndex];
+    std::vector<Influence> candidates;
+    candidates.reserve(sv.num_weights);
+    for (std::uint32_t w = 0; w < sv.num_weights; ++w) {
+        const ufbx_skin_weight& sw = deformer.weights.data[sv.weight_begin + w];
+        if (sw.cluster_index >= jointSlots.size() || jointSlots[sw.cluster_index] == INVALID_SUBASSET) {
+            continue;  // E13: a dropped cluster contributes no influence
+        }
+        candidates.push_back({static_cast<std::uint16_t>(jointSlots[sw.cluster_index]), static_cast<float>(sw.weight),
+                              sw.cluster_index});
+    }
+    std::stable_sort(candidates.begin(), candidates.end(), [](const Influence& a, const Influence& b) {
+        if (a.weight != b.weight) {
+            return a.weight > b.weight;
+        }
+        return a.cluster < b.cluster;  // ties -> ascending cluster index
+    });
+    if (candidates.size() > 4) {
+        candidates.resize(4);
+    }
+    float sum = 0.0F;
+    for (const Influence& c : candidates) {
+        sum += c.weight;
+    }
+    if (sum > 0.0F) {
+        std::array<float, 4> w{};
+        for (std::size_t i = 0; i < candidates.size(); ++i) {
+            out.joints[i] = candidates[i].joint;
+            w[i] = candidates[i].weight / sum;  // renormalize (A11 step 3)
+        }
+        out.weights = Vec4{w[0], w[1], w[2], w[3]};
+    }
+    // else: candidates summed to zero (or there were none) -- `out` stays value-initialised
+    // {0,0,0,0}/{0,0,0,0}, never a lopsided {1,0,0,0} (seed S23, FI60).
+    return out;
+}
+
 }  // namespace
 
 ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::byte> bytes,
@@ -875,8 +957,10 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     bool vertexCapHit = false;
     bool indexCapHit = false;
     // ufbx_mesh::typed_id -> this model's ImportedMesh position, so the meshIndex pass below (which
-    // walks s.nodes, not s.meshes) resolves node->mesh in one hop.
+    // walks s.nodes, not s.meshes) resolves node->mesh in one hop. meshSkinIndexByTypedId is the
+    // identical shape for ImportedNode::skinIndex, filled by phase 7 below (D11, Full only).
     std::unordered_map<std::uint32_t, std::uint32_t> meshIndexByTypedId;
+    std::unordered_map<std::uint32_t, std::uint32_t> meshSkinIndexByTypedId;
 
     for (const ufbx_mesh* mesh : s.meshes) {
         ImportedMesh outMesh;
@@ -890,6 +974,59 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
             meshIndexByTypedId.emplace(mesh->typed_id, static_cast<std::uint32_t>(result.model.meshes.size()));
             result.model.meshes.push_back(std::move(outMesh));
             continue;
+        }
+
+        // ---- phase 7: skins (D11, Full only -- §A-4's skins[].joints is EMPTY at Structure depth,
+        // matching the mesh content it is keyed on; skinCount alone stays real at both depths, from
+        // phase 2's own cheap element count, untouched here). Resolved per-mesh HERE, before the
+        // per-part loop below, because the per-vertex joint/weight reduction (§D-4.8 point 7) must run
+        // INSIDE that same loop, keyed on THIS deformer and its joint-slot mapping.
+        const ufbx_skin_deformer* deformer =
+            (settings.importSkins && mesh->skin_deformers.count > 0) ? mesh->skin_deformers.data[0] : nullptr;
+        std::vector<std::uint32_t> jointSlots;
+        bool skinEngaged = false;
+        if (deformer != nullptr) {
+            if (deformer->clusters.count > MAX_JOINTS_PER_SKIN) {
+                // E14: a partial palette binds vertices to wrong bones -- the skin is DROPPED, not
+                // truncated, and (unlike a normal cap) the MESH also carries no joints/weights at all:
+                // `skinEngaged` stays false, so the per-vertex reduction below never runs for it.
+                escalate(result, ImportStatus::Truncated, "joint cap (MAX_JOINTS_PER_SKIN) reached");
+            } else {
+                jointSlots = clusterJointSlots(*deformer);
+                ImportedSkin outSkin;
+                outSkin.name = toStd(deformer->name);
+                outSkin.localId = deformer->typed_id;
+                outSkin.joints.reserve(deformer->clusters.count);
+                for (std::size_t ci = 0; ci < deformer->clusters.count; ++ci) {
+                    const ufbx_skin_cluster* cluster = deformer->clusters.data[ci];
+                    if (cluster->bone_node == nullptr) {
+                        // E13: defensive -- ufbx already drops these (connect_broken_elements ==
+                        // false, never set here), so this is not reachable by any fixture in this
+                        // suite.
+                        addWarning(result, std::format("skin '{}': a cluster has no bone; skipped", outSkin.name));
+                        continue;
+                    }
+                    outSkin.joints.push_back(cluster->bone_node->typed_id);
+                    Mat4 ibm = toMat4(cluster->geometry_to_bone);
+                    // A22: settings.scale multiplies ONLY the translation column.
+                    ibm.columns[3].x *= settings.scale;
+                    ibm.columns[3].y *= settings.scale;
+                    ibm.columns[3].z *= settings.scale;
+                    outSkin.inverseBindMatrices.push_back(ibm);
+                }
+                outSkin.skeletonRoot = INVALID_SUBASSET;  // recorded, not derived (D11): FBX has no
+                                                          // single field for it, and computing a common
+                                                          // ancestor would be a derivation
+                if (deformer->max_weights_per_vertex > 4) {
+                    addWarning(result, std::format("mesh '{}': up to {} skinning influences per vertex; "
+                                                   "kept the largest 4",
+                                                   outMesh.name, deformer->max_weights_per_vertex));
+                }
+                result.model.summary.jointCount += outSkin.joints.size();
+                meshSkinIndexByTypedId.emplace(mesh->typed_id, static_cast<std::uint32_t>(result.model.skins.size()));
+                result.model.skins.push_back(std::move(outSkin));
+                skinEngaged = true;
+            }
         }
 
         // 3.2.1's code-review BLOCKING-3 lesson, applied here from the start: fold into a LOCAL
@@ -963,18 +1100,25 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
             // three existing, a small strengthening beyond D9's literal "both tangent and bitangent"
             // wording, harmless in practice (a real mesh with tangents always has normals too).
             const bool hasTangent = hasNormal && mesh->vertex_tangent.exists && mesh->vertex_bitangent.exists;
+            const bool hasSkin = skinEngaged;
 
             // ONE STREAM PER ATTRIBUTE (A12), each a packed array of a single POD, each VALUE-
             // INITIALISED regardless (ufbx.h:4068 asks for it, and it costs nothing here: ufbx_vec2/3/4
             // are unions with ufbx_real == double, so there is no padding on any of the three ABIs).
             // The tangent stream is FOUR-WIDE (xyz + the computed SIGN, §D-4.8 point 6) so uniqueness
             // naturally accounts for a seam where the sign flips even when normal/tangent/uv do not.
+            // The joints/weights streams are ALSO ufbx_vec4 -- REAL numbers holding EXACT small
+            // integers (a joint SLOT index, well within double's exact-integer range) and the already-
+            // renormalized weights respectively; this is what lets the 4-influence reduction (D11)
+            // participate in the SAME memcmp-based dedup as every other attribute.
             std::vector<ufbx_vec3> stagePositions(triIndices.size(), ufbx_vec3{});
             std::vector<ufbx_vec3> stageNormals(hasNormal ? triIndices.size() : 0, ufbx_vec3{});
             std::vector<ufbx_vec2> stageUv0(hasUv0 ? triIndices.size() : 0, ufbx_vec2{});
             std::vector<ufbx_vec2> stageUv1(hasUv1 ? triIndices.size() : 0, ufbx_vec2{});
             std::vector<ufbx_vec4> stageColors(hasColor ? triIndices.size() : 0, ufbx_vec4{});
             std::vector<ufbx_vec4> stageTangentSign(hasTangent ? triIndices.size() : 0, ufbx_vec4{});
+            std::vector<ufbx_vec4> stageJoints(hasSkin ? triIndices.size() : 0, ufbx_vec4{});
+            std::vector<ufbx_vec4> stageWeights(hasSkin ? triIndices.size() : 0, ufbx_vec4{});
 
             for (std::size_t k = 0; k < triIndices.size(); ++k) {
                 const std::uint32_t ix = triIndices[k];
@@ -997,6 +1141,16 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
                     const float sign = tangentSign(toVec3(stageNormals[k]), toVec3(t), toVec3(b));
                     stageTangentSign[k] = ufbx_vec4{t.x, t.y, t.z, sign};
                 }
+                if (hasSkin) {
+                    // §D-4.8 point 7: the logical VERTEX this corner refers to (mesh->vertex_indices,
+                    // the SAME array vertex_position.indices mirrors) is what deformer->vertices[] is
+                    // keyed on -- NOT `ix` itself, which is the per-CORNER index space.
+                    const std::uint32_t vertexIndex = mesh->vertex_indices.data[ix];
+                    const ReducedInfluences inf = reduceInfluences(*deformer, jointSlots, vertexIndex);
+                    stageJoints[k] = ufbx_vec4{static_cast<double>(inf.joints[0]), static_cast<double>(inf.joints[1]),
+                                               static_cast<double>(inf.joints[2]), static_cast<double>(inf.joints[3])};
+                    stageWeights[k] = ufbx_vec4{inf.weights.x, inf.weights.y, inf.weights.z, inf.weights.w};
+                }
             }
 
             std::vector<ufbx_vertex_stream> streams;
@@ -1015,6 +1169,10 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
             }
             if (hasTangent) {
                 streams.push_back({stageTangentSign.data(), stageTangentSign.size(), sizeof(ufbx_vec4)});
+            }
+            if (hasSkin) {
+                streams.push_back({stageJoints.data(), stageJoints.size(), sizeof(ufbx_vec4)});
+                streams.push_back({stageWeights.data(), stageWeights.size(), sizeof(ufbx_vec4)});
             }
 
             ufbx_error genErr = {};
@@ -1075,6 +1233,17 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
                 }
                 outPrim.attributes |= VertexAttribute::Tangent;
             }
+            if (hasSkin) {
+                outPrim.joints.reserve(uniqueVertices);
+                outPrim.weights.reserve(uniqueVertices);
+                for (std::size_t i = 0; i < uniqueVertices; ++i) {
+                    const ufbx_vec4& j = stageJoints[i];
+                    outPrim.joints.push_back({static_cast<std::uint16_t>(j.x), static_cast<std::uint16_t>(j.y),
+                                              static_cast<std::uint16_t>(j.z), static_cast<std::uint16_t>(j.w)});
+                    outPrim.weights.push_back(toVec4(stageWeights[i]));  // NEVER scaled
+                }
+                outPrim.attributes |= VertexAttribute::Joints0 | VertexAttribute::Weights0;
+            }
             outPrim.indices = std::move(triIndices);  // rewritten IN PLACE by ufbx_generate_indices
 
             Aabb primBounds = Aabb::empty();
@@ -1110,17 +1279,24 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     }
     result.model.summary.meshCount = result.model.meshes.size();
 
-    // ImportedNode::meshIndex, assigned by walking s.nodes once more: node->mesh != nullptr ->
-    // meshIndexByTypedId's position for that ufbx_mesh. Two nodes (or a node and its geometry-
-    // transform helper) referencing one ufbx_mesh both point at the same index (AC-27).
+    // ImportedNode::meshIndex/skinIndex, assigned by walking s.nodes once more: node->mesh != nullptr
+    // -> meshIndexByTypedId's/meshSkinIndexByTypedId's position for that ufbx_mesh (D11: "ImportedNode
+    // ::skinIndex on the node that carries the mesh"). Two nodes (or a node and its geometry-transform
+    // helper) referencing one ufbx_mesh both point at the same mesh/skin index (AC-27).
     for (const ufbx_node* n : s.nodes) {
         if (n->is_root || n->mesh == nullptr) {
             continue;
         }
         const auto nodeIt = nodeIndexByLocalId.find(n->typed_id);
-        const auto meshIt = meshIndexByTypedId.find(n->mesh->typed_id);
-        if (nodeIt != nodeIndexByLocalId.end() && meshIt != meshIndexByTypedId.end()) {
+        if (nodeIt == nodeIndexByLocalId.end()) {
+            continue;
+        }
+        if (const auto meshIt = meshIndexByTypedId.find(n->mesh->typed_id); meshIt != meshIndexByTypedId.end()) {
             result.model.nodes[nodeIt->second].meshIndex = meshIt->second;
+        }
+        if (const auto skinIt = meshSkinIndexByTypedId.find(n->mesh->typed_id);
+            skinIt != meshSkinIndexByTypedId.end()) {
+            result.model.nodes[nodeIt->second].skinIndex = skinIt->second;
         }
     }
 

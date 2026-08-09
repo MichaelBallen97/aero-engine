@@ -49,6 +49,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -1878,4 +1879,433 @@ TEST_CASE(
     REQUIRE(pctResult.status == ImportStatus::Ok);
     REQUIRE(pctResult.model.images.size() == 1);
     CHECK(pctResult.model.images[0].relativePath == "100%20.png");
+}
+
+// ---- FI57-FI63: skins and the 4-influence reduction (Step 8, phase 7) -----------------------------
+//
+// MEASURED FBX ASCII syntax, not in the plan and not previously exercised in this file: a skin is
+// `Deformer: id, "Deformer::name", "Skin" { ... }`; each bone binding is a SEPARATE
+// `Deformer: id, "SubDeformer::name", "Cluster" { Indexes: *N {a:...} Weights: *N {a:...}
+// Transform: *16 {a:...} TransformLink: *16 {a:...} }`. Connections: `C: "OO",clusterId,skinId`
+// (cluster -> skin), `C: "OO",skinId,geometryId` (skin -> geometry) and `C: "OO",boneNodeId,clusterId`
+// (bone -> cluster, MEASURED: `ufbxi_fetch_dst_element(&cluster->element, ..., UFBX_ELEMENT_NODE)`
+// fetches what the cluster itself connects TO). `ufbx_skin_cluster::geometry_to_bone` is COMPUTED by
+// ufbx from `Transform:`/`TransformLink:` (both required, `ufbx.c:14032-14049`); with no geometry
+// transform on the mesh's node it EQUALS `Transform:`'s own matrix, MEASURED. `Transform:`/
+// `TransformLink:`'s 16 values are COLUMN-MAJOR, each column padded to 4 (`ufbxi_read_transform_
+// matrix`, `ufbx.c:13957-13963`): `data[0..3]`=col0, `data[4..7]`=col1, `data[8..11]`=col2,
+// `data[12..15]`=col3 (translation) -- so `Transform: *16 {a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 10,20,30,1}`
+// is an identity-rotation matrix translated to (10,20,30).
+//
+// S21 ("keep the first 4 [in ufbx's own presented order] instead of the largest 4") is NOT
+// implemented as its own case, and this is a MEASURED, not assumed, finding: ufbx builds a vertex's
+// weight list by aggregating each cluster's contribution IN CLUSTER-CONNECTION ORDER and then stably
+// sorting by descending weight (ufbx.h:1957's own guarantee) -- which makes "ties resolve to
+// ascending cluster_index" an EMERGENT PROPERTY of ufbx's own construction, not something a fixture
+// can defeat: every tie this file could construct (probed directly, several cluster/weight
+// permutations) presented in ascending cluster_index order regardless of which order the `Deformer:`
+// blocks were AUTHORED in the FBX text, because `cluster_index` itself is assigned by CONNECTION
+// order and the weight list is built by iterating clusters in that same order. This CONFIRMS, rather
+// than merely asserts, A11's own already-recorded finding ("the explicit sort is a no-op today"): the
+// tie-break in `reduceInfluences` is defence in depth for a future ufbx that relaxes the guarantee,
+// exactly like the `MeshTally`/generate-indices padding guards elsewhere in this file, and FI58 below
+// proves the FINAL ascending-cluster-index property directly (a true, meaningful statement about this
+// code's output) without claiming to have found an input that only the explicit sort satisfies.
+
+TEST_CASE(
+    "fbx_import: two clusters -> joints holds their bone typed_ids in CLUSTER order; "
+    "inverseBindMatrices.size() == joints.size(); each matrix compared element by element (FI57, "
+    "AC-41, seed S8's discriminator)") {
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+        "    Model: 110, \"Model::boneA\", \"LimbNode\" { Version: 232 }\n"
+        "    Model: 111, \"Model::boneB\", \"LimbNode\" { Version: 232 }\n"
+        "    Deformer: 300, \"Deformer::skin\", \"Skin\" { Version: 101 }\n"
+        // cluster A: identity rotation/scale, translation (10,20,30) -- a simple baseline.
+        "    Deformer: 301, \"SubDeformer::clusterA\", \"Cluster\" {\n"
+        "        Version: 100\n        Indexes: *1 { a: 0 }\n        Weights: *1 { a: 1.0 }\n"
+        "        Transform: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 10,20,30,1 }\n"
+        "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "    }\n"
+        // cluster B: an ASYMMETRIC matrix (every off-diagonal element distinct) -- a transpose would
+        // swap m10<->m01 (0.5 vs 0), m21<->m12 (0.25 vs 0), m20<->m02 (0.1 vs 0), each a DIFFERENT
+        // value, so an element-by-element comparison catches it on the FIRST mismatched component.
+        "    Deformer: 302, \"SubDeformer::clusterB\", \"Cluster\" {\n"
+        "        Version: 100\n        Indexes: *1 { a: 1 }\n        Weights: *1 { a: 1.0 }\n"
+        "        Transform: *16 { a: 1,0.5,0,0, 0,1,0.25,0, 0.1,0,1,0, 40,50,60,1 }\n"
+        "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",110,0\n"
+        "    C: \"OO\",111,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",300,200\n"
+        "    C: \"OO\",301,300\n"
+        "    C: \"OO\",302,300\n"
+        "    C: \"OO\",110,301\n"
+        "    C: \"OO\",111,302\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.skins.size() == 1);
+    const auto& skin = result.model.skins[0];
+    REQUIRE(skin.joints.size() == 2);
+    REQUIRE(skin.inverseBindMatrices.size() == 2);
+
+    const auto findNodeByName = [&](std::string_view name) -> const engine::editor::ImportedNode* {
+        for (const auto& n : result.model.nodes) {
+            if (n.name == name) {
+                return &n;
+            }
+        }
+        return nullptr;
+    };
+    const auto* boneA = findNodeByName("boneA");
+    const auto* boneB = findNodeByName("boneB");
+    REQUIRE(boneA != nullptr);
+    REQUIRE(boneB != nullptr);
+    CHECK(skin.joints[0] == boneA->localId);  // CLUSTER order, not name/alphabetical order
+    CHECK(skin.joints[1] == boneB->localId);
+
+    const engine::Mat4& a = skin.inverseBindMatrices[0];
+    CHECK(a.columns[0] == engine::Vec4{1.0F, 0.0F, 0.0F, 0.0F});
+    CHECK(a.columns[1] == engine::Vec4{0.0F, 1.0F, 0.0F, 0.0F});
+    CHECK(a.columns[2] == engine::Vec4{0.0F, 0.0F, 1.0F, 0.0F});
+    CHECK(a.columns[3].x == doctest::Approx(10.0F));
+    CHECK(a.columns[3].y == doctest::Approx(20.0F));
+    CHECK(a.columns[3].z == doctest::Approx(30.0F));
+
+    const engine::Mat4& b = skin.inverseBindMatrices[1];
+    CHECK(b.columns[0] == engine::Vec4{1.0F, 0.5F, 0.0F, 0.0F});
+    CHECK(b.columns[1] == engine::Vec4{0.0F, 1.0F, 0.25F, 0.0F});
+    CHECK(b.columns[2].x == doctest::Approx(0.1F));
+    CHECK(b.columns[2].y == doctest::Approx(0.0F));
+    CHECK(b.columns[2].z == doctest::Approx(1.0F));
+    CHECK(b.columns[3].x == doctest::Approx(40.0F));
+    CHECK(b.columns[3].y == doctest::Approx(50.0F));
+    CHECK(b.columns[3].z == doctest::Approx(60.0F));
+
+    // ImportedNode::skinIndex on the node carrying the mesh (D11).
+    const auto* boxNode = findNodeByName("box");
+    REQUIRE(boxNode != nullptr);
+    CHECK(boxNode->skinIndex == 0);
+}
+
+TEST_CASE(
+    "fbx_import: a vertex with 6 influences -> the 4 largest by weight survive, renormalized to sum "
+    "1.0F, ties broken by ascending cluster index; EXACTLY ONE warning names the observed maximum (6) "
+    "(FI58, AC-42)") {
+    // MEASURED (§V3's own S21 discriminator, re-examined -- see this block's own header comment
+    // above): clusters 0 and 1 (bones b5/b1 in TEXT order, "c5" declared before "c1") are TIED at
+    // weight 0.30; ufbx's own presented order for vertex 0 is (cluster0,0.30) (cluster1,0.30)
+    // (cluster4,0.20) (cluster2,0.10) (cluster3,0.05) (cluster5,0.05) -- so the top 4 are clusters
+    // {0,1,4,2}, summing to 0.90.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+        "    Model: 110, \"Model::b0\", \"LimbNode\" { Version: 232 }\n"
+        "    Model: 111, \"Model::b1\", \"LimbNode\" { Version: 232 }\n"
+        "    Model: 112, \"Model::b2\", \"LimbNode\" { Version: 232 }\n"
+        "    Model: 113, \"Model::b3\", \"LimbNode\" { Version: 232 }\n"
+        "    Model: 114, \"Model::b4\", \"LimbNode\" { Version: 232 }\n"
+        "    Model: 115, \"Model::b5\", \"LimbNode\" { Version: 232 }\n"
+        "    Deformer: 400, \"Deformer::skin\", \"Skin\" { Version: 101 }\n"
+        "    Deformer: 405, \"SubDeformer::c5\", \"Cluster\" { Version: 100 Indexes: *1 {a: 0} "
+        "Weights: *1 {a: 0.30} Transform: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} "
+        "TransformLink: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} }\n"
+        "    Deformer: 401, \"SubDeformer::c1\", \"Cluster\" { Version: 100 Indexes: *1 {a: 0} "
+        "Weights: *1 {a: 0.30} Transform: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} "
+        "TransformLink: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} }\n"
+        "    Deformer: 402, \"SubDeformer::c0\", \"Cluster\" { Version: 100 Indexes: *1 {a: 0} "
+        "Weights: *1 {a: 0.10} Transform: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} "
+        "TransformLink: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} }\n"
+        "    Deformer: 403, \"SubDeformer::c2\", \"Cluster\" { Version: 100 Indexes: *1 {a: 0} "
+        "Weights: *1 {a: 0.05} Transform: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} "
+        "TransformLink: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} }\n"
+        "    Deformer: 404, \"SubDeformer::c3\", \"Cluster\" { Version: 100 Indexes: *1 {a: 0} "
+        "Weights: *1 {a: 0.20} Transform: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} "
+        "TransformLink: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} }\n"
+        "    Deformer: 406, \"SubDeformer::c4\", \"Cluster\" { Version: 100 Indexes: *1 {a: 0} "
+        "Weights: *1 {a: 0.05} Transform: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} "
+        "TransformLink: *16 {a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1} }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",110,0\n    C: \"OO\",111,0\n    C: \"OO\",112,0\n"
+        "    C: \"OO\",113,0\n    C: \"OO\",114,0\n    C: \"OO\",115,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",400,200\n"
+        "    C: \"OO\",405,400\n    C: \"OO\",401,400\n    C: \"OO\",402,400\n"
+        "    C: \"OO\",403,400\n    C: \"OO\",404,400\n    C: \"OO\",406,400\n"
+        "    C: \"OO\",110,402\n    C: \"OO\",111,401\n    C: \"OO\",112,403\n"
+        "    C: \"OO\",113,404\n    C: \"OO\",114,406\n    C: \"OO\",115,405\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    // Vertex 0's position is (0,0,0) -- the FIRST unique vertex after generate_indices, since it is
+    // referenced first in PolygonVertexIndex and nothing else collides with it.
+    REQUIRE(prim.positions.size() == 4);
+    REQUIRE(prim.positions[0] == engine::Vec3{0.0F, 0.0F, 0.0F});
+    REQUIRE(prim.joints.size() == 4);
+    REQUIRE(prim.weights.size() == 4);
+    const auto& joints0 = prim.joints[0];
+    const auto& weights0 = prim.weights[0];
+    // reduceInfluences() populates joints[i]/weights.{x,y,z,w} in DESCENDING-WEIGHT order (ties ->
+    // ascending cluster index): slot 0 (0.30), slot 1 (0.30, the tie), slot 4 (0.20), slot 2 (0.10).
+    // Slots 3 and 5 (the smallest, tied at 0.05) are dropped. Renormalized against their sum, 0.90.
+    CHECK(joints0 == std::array<std::uint16_t, 4>{0, 1, 4, 2});
+    CHECK(weights0.x == doctest::Approx(0.30F / 0.90F).epsilon(POS_EPS));
+    CHECK(weights0.y == doctest::Approx(0.30F / 0.90F).epsilon(POS_EPS));
+    CHECK(weights0.z == doctest::Approx(0.20F / 0.90F).epsilon(POS_EPS));
+    CHECK(weights0.w == doctest::Approx(0.10F / 0.90F).epsilon(POS_EPS));
+    const float sum = weights0.x + weights0.y + weights0.z + weights0.w;
+    CHECK(sum == doctest::Approx(1.0F).epsilon(POS_EPS));
+    // AC-42's own warning: exactly one, naming the observed maximum (6).
+    CHECK(result.warningTotal == 1);
+    REQUIRE(result.warnings.size() == 1);
+    CHECK(result.warnings[0].find('6') != std::string::npos);
+}
+
+TEST_CASE("fbx_import: a NaN weight in the source never reaches ImportedPrimitive::weights (FI59)") {
+    // clean_skin_weights == true (D11 point 0) removes negative/zero/NaN weights BEFORE this importer
+    // ever sees them -- a NaN weight here would propagate into a subsequent renormalization and
+    // produce a NaN sum, which this case would catch via the `> 0.0F` check below.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+        "    Model: 110, \"Model::boneA\", \"LimbNode\" { Version: 232 }\n"
+        "    Model: 111, \"Model::boneB\", \"LimbNode\" { Version: 232 }\n"
+        "    Deformer: 300, \"Deformer::skin\", \"Skin\" { Version: 101 }\n"
+        "    Deformer: 301, \"SubDeformer::clusterA\", \"Cluster\" {\n"
+        "        Version: 100\n        Indexes: *1 { a: 0 }\n        Weights: *1 { a: nan }\n"
+        "        Transform: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "    }\n"
+        "    Deformer: 302, \"SubDeformer::clusterB\", \"Cluster\" {\n"
+        "        Version: 100\n        Indexes: *1 { a: 0 }\n        Weights: *1 { a: 1.0 }\n"
+        "        Transform: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",110,0\n"
+        "    C: \"OO\",111,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",300,200\n"
+        "    C: \"OO\",301,300\n"
+        "    C: \"OO\",302,300\n"
+        "    C: \"OO\",110,301\n"
+        "    C: \"OO\",111,302\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.weights.size() == 4);
+    // Only clusterB's weight (1.0) should ever have reached this importer; the NaN one was removed by
+    // ufbx's own clean_skin_weights before the reduction ran.
+    const auto& w = prim.weights[0];
+    CHECK(std::isfinite(w.x));
+    CHECK(std::isfinite(w.y));
+    CHECK(std::isfinite(w.z));
+    CHECK(std::isfinite(w.w));
+    CHECK((w.x + w.y + w.z + w.w) == doctest::Approx(1.0F).epsilon(POS_EPS));
+}
+
+TEST_CASE(
+    "fbx_import: a vertex with no skin binding at all gets joints=={0,0,0,0} AND weights=={0,0,0,0} -- "
+    "NEVER a silent {1,0,0,0} (FI60, AC-43, seed S23's discriminator)") {
+    // A vertex whose kept weights sum to zero is, given clean_skin_weights removing every non-
+    // positive weight upstream, STRUCTURALLY equivalent to a vertex with NO weight entries at all --
+    // both take the `sum > 0.0F == false` branch in reduceInfluences. This mesh's vertex 1 (the second
+    // corner) is never referenced by any cluster's Indexes array.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+        "    Model: 110, \"Model::boneA\", \"LimbNode\" { Version: 232 }\n"
+        "    Deformer: 300, \"Deformer::skin\", \"Skin\" { Version: 101 }\n"
+        "    Deformer: 301, \"SubDeformer::clusterA\", \"Cluster\" {\n"
+        "        Version: 100\n        Indexes: *1 { a: 0 }\n        Weights: *1 { a: 1.0 }\n"
+        "        Transform: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",110,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",300,200\n"
+        "    C: \"OO\",301,300\n"
+        "    C: \"OO\",110,301\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const auto& prim = result.model.meshes[0].primitives[0];
+    // Vertex index 1 -- the unique vertex at position (1,0,0), never bound by clusterA.
+    REQUIRE(prim.positions.size() == 4);
+    std::size_t unboundSlot = prim.positions.size();
+    for (std::size_t i = 0; i < prim.positions.size(); ++i) {
+        if (prim.positions[i] == engine::Vec3{1.0F, 0.0F, 0.0F}) {
+            unboundSlot = i;
+        }
+    }
+    REQUIRE(unboundSlot < prim.positions.size());
+    CHECK(prim.joints[unboundSlot] == std::array<std::uint16_t, 4>{0, 0, 0, 0});
+    CHECK(prim.weights[unboundSlot] == engine::Vec4{0.0F, 0.0F, 0.0F, 0.0F});
+}
+
+TEST_CASE("fbx_import: a cluster with a null bone_node is never present in joints, one warning (FI61, E13)") {
+    // MEASURED: ufbx (connect_broken_elements == false, never set here) already drops a cluster whose
+    // bone connection is missing entirely BEFORE this importer sees it -- omit the bone connection for
+    // one of two clusters and confirm the skin still imports with exactly one joint (not two, not a
+    // nil entry) and the mesh's own status stays Ok.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+        "    Model: 110, \"Model::boneA\", \"LimbNode\" { Version: 232 }\n"
+        "    Deformer: 300, \"Deformer::skin\", \"Skin\" { Version: 101 }\n"
+        "    Deformer: 301, \"SubDeformer::clusterA\", \"Cluster\" {\n"
+        "        Version: 100\n        Indexes: *1 { a: 0 }\n        Weights: *1 { a: 1.0 }\n"
+        "        Transform: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "    }\n"
+        // clusterB has NO bone connection at all.
+        "    Deformer: 302, \"SubDeformer::clusterB\", \"Cluster\" {\n"
+        "        Version: 100\n        Indexes: *1 { a: 1 }\n        Weights: *1 { a: 1.0 }\n"
+        "        Transform: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",110,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",300,200\n"
+        "    C: \"OO\",301,300\n"
+        "    C: \"OO\",302,300\n"
+        "    C: \"OO\",110,301\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.skins.size() == 1);
+    CHECK(result.model.skins[0].joints.size() == 1);
+    for (const std::uint32_t j : result.model.skins[0].joints) {
+        CHECK(j != engine::editor::INVALID_SUBASSET);
+    }
+}
+
+TEST_CASE(
+    "fbx_import: more than MAX_JOINTS_PER_SKIN joints -> Truncated naming the cap, and the skin is "
+    "DROPPED (not truncated); the mesh carries no joints/weights at all (FI62, E14)") {
+    // MAX_JOINTS_PER_SKIN is 1024 -- reachable cheaply since EACH cluster here is minimal (a single
+    // Indexes/Weights entry, an identity Transform), matching FI38's "many minimal objects" shape.
+    std::string objects =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+        "    Deformer: 300, \"Deformer::skin\", \"Skin\" { Version: 101 }\n";
+    std::string connections =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",300,200\n";
+    constexpr int JOINT_COUNT = 1025;  // MAX_JOINTS_PER_SKIN (1024) + 1
+    for (int i = 0; i < JOINT_COUNT; ++i) {
+        const int boneId = 1000 + i * 2;
+        const int clusterId = 1001 + i * 2;
+        objects += std::format(
+            "    Model: {}, \"Model::b{}\", \"LimbNode\" {{ Version: 232 }}\n"
+            "    Deformer: {}, \"SubDeformer::c{}\", \"Cluster\" {{ Version: 100 Indexes: *1 {{a: 0}} "
+            "Weights: *1 {{a: 1.0}} Transform: *16 {{a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}} "
+            "TransformLink: *16 {{a: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}} }}\n",
+            boneId, i, clusterId, i);
+        connections += std::format("    C: \"OO\",{},0\n    C: \"OO\",{},300\n    C: \"OO\",{},{}\n", boneId, clusterId,
+                                   boneId, clusterId);
+    }
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, connections);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Truncated);
+    CHECK(result.message.find("MAX_JOINTS_PER_SKIN") != std::string::npos);
+    CHECK(result.model.skins.empty());  // dropped, not truncated to a partial palette
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].joints.empty());
+    CHECK(result.model.meshes[0].primitives[0].weights.empty());
+}
+
+TEST_CASE(
+    "fbx_import: settings.importSkins = false -> skins.empty(), summary.jointCount == 0, every other "
+    "field identical to the same import with skins on (FI63, AC-47a)") {
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+        "    Model: 110, \"Model::boneA\", \"LimbNode\" { Version: 232 }\n"
+        "    Deformer: 300, \"Deformer::skin\", \"Skin\" { Version: 101 }\n"
+        "    Deformer: 301, \"SubDeformer::clusterA\", \"Cluster\" {\n"
+        "        Version: 100\n        Indexes: *1 { a: 0 }\n        Weights: *1 { a: 1.0 }\n"
+        "        Transform: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",110,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",300,200\n"
+        "    C: \"OO\",301,300\n"
+        "    C: \"OO\",110,301\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    ImportSettings onSettings;
+    onSettings.importSkins = true;
+    const ImportResult on = importModel("t.fbx", "", asBytes(doc), onSettings, ImportDepth::Full, {});
+    ImportSettings offSettings;
+    offSettings.importSkins = false;
+    const ImportResult off = importModel("t.fbx", "", asBytes(doc), offSettings, ImportDepth::Full, {});
+
+    REQUIRE(on.status == ImportStatus::Ok);
+    REQUIRE(off.status == ImportStatus::Ok);
+    CHECK_FALSE(on.model.skins.empty());
+    CHECK(off.model.skins.empty());
+    CHECK(on.model.summary.jointCount > 0);
+    CHECK(off.model.summary.jointCount == 0);
+    // Every OTHER field stays identical -- the mesh pass itself is not short-circuited by importSkins.
+    CHECK(on.model.summary.vertexCount == off.model.summary.vertexCount);
+    CHECK(on.model.summary.triangleCount == off.model.summary.triangleCount);
+    CHECK(on.model.summary.meshCount == off.model.summary.meshCount);
+    CHECK(on.model.summary.nodeCount == off.model.summary.nodeCount);
+    REQUIRE(on.model.meshes.size() == off.model.meshes.size());
+    REQUIRE(on.model.meshes[0].primitives.size() == off.model.meshes[0].primitives.size());
+    CHECK(on.model.meshes[0].primitives[0].positions.size() == off.model.meshes[0].primitives[0].positions.size());
+    CHECK(off.model.meshes[0].primitives[0].joints.empty());
+    CHECK(off.model.meshes[0].primitives[0].weights.empty());
 }
