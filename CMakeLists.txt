@@ -4,9 +4,10 @@ project(AeroEngine
     VERSION 0.1.0                        # provisional pre-release version; v1.0.0 tags at Phase 8
     DESCRIPTION "Open-source, cross-platform 3D game engine with an editor and TypeScript or C++ scripting"
     HOMEPAGE_URL "https://github.com/MichaelBallen97/aero-engine"
-    LANGUAGES CXX C                      # C: ONLY for miniaudio's single-file implementation TU
-                                         # (engine/platform/src/miniaudio_impl.c, task 0.3.3). All
-                                         # first-party engine code is C++20; no other .c exists.
+    LANGUAGES CXX C                      # C: ONLY for two vendored single-file implementation TUs --
+                                         # engine/platform/src/miniaudio_impl.c (task 0.3.3) and
+                                         # editor/third_party/ufbx/ufbx.c (task 3.2.2). All first-party
+                                         # engine and editor code is C++20; no first-party .c exists.
 )
 
 # docs/04: out-of-source builds only.

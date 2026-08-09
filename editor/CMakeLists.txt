@@ -21,6 +21,12 @@ find_package(fastgltf CONFIG REQUIRED)  # task 3.2.1 (D1): 0.9.0, MIT. EDITOR-ON
                                         # simdjson arrives transitively with NO second find_package.
                                         # builtin-baseline is untouched; only the dependencies array grows.
 
+# task 3.2.2 (D3): ufbx is in NO vcpkg registry, so it is VENDORED rather than found. aero_ufbx is a
+# STATIC target over one .c compiled with THIS project's flags -- which is what makes it
+# ASan/UBSan-instrumented in the Debug lanes. EDITOR-ONLY by docs/03's dependency-placement invariant;
+# PRIVATE below, so it reaches neither aero_editor nor any test target's link line.
+add_subdirectory(third_party/ufbx)
+
 add_library(aero_editor_core STATIC
     src/imgui_layer.cpp
     src/panel_registry.cpp
@@ -73,6 +79,7 @@ add_library(aero_editor_core STATIC
     src/gltf_import.cpp         # task 3.2.1 -- the ONLY fastgltf TU; NO file operation at all
     src/model_import_session.cpp # task 3.2.1 -- the on-demand two-pass driver; the ONE write
     src/import_details_panel.cpp # task 3.2.1 -- the ImGui half of the import result
+    src/fbx_import.cpp           # task 3.2.2 -- the ONLY ufbx TU; NO file operation at all
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -105,7 +112,7 @@ target_link_libraries(aero_editor_core
     # ImGuizmo to this layer's .cpp TUs, so aero_editor and aero_editor_shell_test stay ImGuizmo-free
     # at source. Like imgui, that is convention + review, NOT enforcement (R12).
     PRIVATE aero::profiling imgui::imgui imguizmo::imguizmo SDL3::SDL3 EnTT::EnTT aero::scene_render
-            aero::platform_internal aero::rhi_internal fastgltf::fastgltf
+            aero::platform_internal aero::rhi_internal fastgltf::fastgltf aero_ufbx
 )
 
 # task 2.6.1 (D14): the ONLY consumer is editor_app.cpp, and `engineVersion` is INFORMATIONAL in v0

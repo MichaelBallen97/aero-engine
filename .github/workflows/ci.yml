@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git ls-files -z '*.cpp' '*.hpp' '*.h' '*.cc' '*.cxx' '*.hxx' '*.inl' \
+          git ls-files -z '*.cpp' '*.hpp' '*.h' '*.cc' '*.cxx' '*.hxx' '*.inl' ':!:editor/third_party/**' \
             | xargs -0 -r clang-format-18 --dry-run --Werror
 
       - name: Boundary — no spdlog/fmt types in public engine headers
