@@ -701,5 +701,139 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   so every such case calls `app->panels().setVisible("Console", false)` first (2.2.4's C5 precedent,
   restated for a sixth reason).
 
+## FBX import (task 3.2.2)
+
+- **ufbx is VENDORED at `editor/third_party/ufbx/` and is BYTE-IDENTICAL TO UPSTREAM v0.23.0. No local
+  patches, ever.** It is in no vcpkg registry (measured twice), so vendoring is not a preference. The
+  decisive property: `ufbx.c` compiles with THIS project's directory-scope options, so it is
+  ASan/UBSan-instrumented in all three Debug lanes -- the single most valuable place in this tree for a
+  sanitizer to be watching, since ufbx parses untrusted binary files. A needed fix goes upstream or
+  into a wrapper in `fbx_import.cpp`. A patch here must be re-applied by hand at every bump, correctly,
+  with its reason invisible at the call site.
+- **ufbx NEVER touches the filesystem.** `ufbx_load_memory` is the only load call. `ufbx_load_file`,
+  `ufbx_load_file_len`, `ufbx_load_stdio*` and `ufbx_load_stream` must never appear anywhere in this
+  tree. `load_external_files` stays FALSE, and `open_file_cb` is set to a callback that CANNOT SUCCEED
+  -- the default is stdio, so a future ufbx that opens a file for a reason `load_external_files` does
+  not gate finds a closed door. `obj_mtl_path`/`obj_mtl_data` are never set: ufbx's own header notes
+  those "sidestep `load_external_files` as they are explicitly requested."
+- **`MODIFY_GEOMETRY` is the only correct `space_conversion`, and the reason is the Bounds row.**
+  `ADJUST_TRANSFORMS` converts node translations but not geometry, so every mesh's positions and bounds
+  stay in the source's units while the hierarchy is in metres -- the panel prints 100x the truth and
+  nothing is internally inconsistent enough to notice. `TRANSFORM_ROOT` parks the factor on every root
+  node, where it compounds with `ImportSettings::scale`. **Do not re-litigate this.** Measured against
+  ufbx v0.23.0: a Z-up centimetre source converts with `geometry_scale 0.01`, `root_scale 1`, a -90 deg
+  X rotation on the roots, and `mirror_axis 0` -- a pure rotation, hence no winding change.
+- **`settings.axes.up` is the source's declared up axis; `original_axis_up` is NOT.** The latter reads
+  the Autodesk round-trip properties `OriginalUpAxis`/`OriginalUpAxisSign`, which most exporters never
+  write, and comes back `UNKNOWN` for an ordinary file. ufbx preserves `settings.axes` across the
+  conversion by design. `SourceSpace` reads `axes.up`, with `original_axis_up` only as a fallback.
+  **A real Blender export still declares `UpAxis: 1` (Y) while requiring the identical -90 deg-about-X
+  geometric correction a Z-up source would** (measured against `cube-binary.fbx`, `FI76`) -- an
+  internal convention of Blender's own FBX exporter, not evidence the rule above is wrong.
+- **`UnitScaleFactor` in a hand-written ASCII FBX is in CENTIMETRES.** `1` means `unit_meters == 0.01`.
+  **A Y-up METRE fixture needs `UnitScaleFactor: 100`.** Writing `1` makes it a centimetre fixture that
+  the importer then scales by 100, and the case silently tests the wrong thing while looking green.
+- **Geometry transforms, inherit modes: HELPER NODES. Pivots: RETAIN.** `ImportedMesh` is SHARED --
+  `ImportedNode::meshIndex` points into one flat list -- so baking a geometry transform into vertices
+  would force per-node mesh copies, changing the canonical model's shape for one format. A helper node
+  is an ordinary `ImportedNode` to every consumer. `geometry_transform_helper_name` and
+  `scale_helper_name` are set EXPLICITLY so the names are stable across a ufbx bump.
+- **`opts.ignore_geometry`/`opts.ignore_animation` are set individually at `Structure` depth;
+  `opts.ignore_embedded` NEVER is.** An earlier draft set `opts.ignore_all_content` instead, which is
+  EXACTLY `ignore_geometry + ignore_animation + ignore_embedded` (`ufbx.c`'s own `ufbxi_load` folds it
+  into the three sub-flags before anything else runs) -- so it also zeroed embedded-texture content at
+  `Structure`, and an embedded texture fell through to the external-URI path and was recorded as a
+  dependency: `Structure` and `Full` disagreed about the URI set for every embedded texture
+  (AC-20/INV-M4), measured on the `FI54` fixture (`Structure`: `externalUris=[embedded.png]`; `Full`:
+  `externalUris=[]`). At `Structure` depth `num_vertices`, `num_triangles`, `max_face_triangles` and
+  `material_parts` are all zero/empty (gated on `ignore_geometry` alone, unaffected by the fix). What
+  survives: nodes with full converted transforms, mesh/material/skin/animation IDENTITY, an embedded
+  texture's own CONTENT (identical at both depths now), and all of `scene.settings`/`metadata` --
+  including the three `*_ignored` flags, which make the depth OBSERVABLE rather than asserted:
+  `geometry_ignored`/`animation_ignored` are true and `embedded_ignored` is FALSE at `Structure`, never
+  "all three true". So `summary.primitiveCount == meshCount` and `jointCount == 0` at `Structure` for
+  FBX, where glTF reports both structurally. That asymmetry is a property of the containers.
+- **Fold `\` -> `/` BEFORE `classifyUri`, never after.** `..\..\..\etc\passwd` has already become
+  `../../../etc/passwd` when the escape check runs, so the refusal fires. Folding after classification
+  would let a backslash traversal straight through. `classifyUri` is NOT modified --
+  `UriClass::RefusedBackslash` stays reachable for glTF, where a backslash really is a Windows path
+  leaking into a format that has no such concept.
+- **`ufbx_texture.absolute_filename` is NEVER read.** It is `C:\Users\bob\Desktop\wood.png` in every
+  Autodesk export. `relative_filename`, falling back to the BASENAME of `filename`, and nothing else.
+- **Materials come from `material->pbr` ONLY. `material->fbx` is never read.** There is no correct
+  Phong -> metallic-roughness formula; every candidate disagrees with the DCC tool's own viewport, and
+  the disagreement is invisible until someone compares renders. `use_blender_pbr_material = true` lets
+  ufbx invert Blender's own deterministic PBR->Phong export, which is the most likely real input.
+  `AlphaMode::Mask` and `TextureWrap::MirroredRepeat` are UNREACHABLE from this backend.
+- **Animations are BAKED, never translated.** FBX animates Euler angles under a per-node rotation order
+  composed with pre/post rotation and pivots; there is no key-for-key mapping onto quaternion TRS, and
+  writing one is a re-implementation of FBX's transform chain. `ufbx_bake_anim` exists for exactly
+  this. Every field of `ufbx_bake_opts` that affects output is PINNED EXPLICITLY, even where it equals
+  ufbx's default, so a bump cannot move key counts or sample times. Every channel is `Linear`.
+- **Skin weights arrive ALREADY SORTED by descending weight, and NOT normalized.** The four-largest
+  take is a prefix; the explicit sort is kept for the tie-break and for a future ufbx. Renormalization
+  is mandatory. A zero-total-weight vertex gets all-zero joints AND weights -- never `{1,0,0,0}`, which
+  would bind it to joint 0.
+- **`mesh->skin_deformers` is a LIST, not an optional -- a mesh CAN carry more than one Skin
+  deformer.** Only the FIRST survives (`ImportedPrimitive` has exactly one set of four joints/weights,
+  so a second is not representable at all), but that drop is NAMED: one warning per mesh giving the
+  dropped count, unlike an earlier draft that dropped it silently. The Structure-depth shell pass
+  MIRRORS phase 7's own per-mesh, first-only selection (`mesh->skin_deformers.data[0]`, walking
+  `s.meshes`) rather than iterating `s.skin_deformers` (every deformer in the scene) -- iterating the
+  scene-wide list is what let Structure's `skinCount` disagree with Full's whenever one mesh carried
+  more than one deformer. Any future code resolving "the skin for this mesh" must use the identical
+  selection, in both places, or the two depths diverge again.
+- **NO FIFTH `ImportSettings` KEY, EVER, without making it OPTIONAL.** The four `importer.settings`
+  keys are REQUIRED once the block is present, so a required fifth makes every sidecar written by an
+  older build report `missing required key` and degrade to defaults. Axis and unit conversion is
+  correctness, not preference: a toggle would let a person produce a model that is wrong and then file
+  a bug about it. `.meta` STAYS AT VERSION 1.
+- **`ImportedNode::localId` is the RAW ufbx `typed_id`, not the position in `ImportedModel::nodes`.**
+  `ufbx_baked_node::typed_id` (the animation target) maps to `scene.nodes[]`, and resolving it without
+  a side table is why. `parent`, `children` and `roots` all hold `localId`s. For glTF the two happen to
+  coincide; for FBX they do not. **`ImportedSkin::joints` holds `localId`s too** (`fbx_import.cpp`
+  pushes `cluster->bone_node->typed_id` verbatim) -- the identical rule, one field over.
+- **BLOCKING, FOUND BY THIS TASK'S OWN GPU-TIER CASES: `import_details_panel.cpp`'s Hierarchy and
+  Skins sections indexed `ImportedModel::nodes` DIRECTLY by `localId`, and that is a real ASan
+  heap-buffer-overflow, not a cosmetic bug.** `drawHierarchy`/`drawNodeTree` (`model.roots`/
+  `ImportedNode::children`) and `drawSkeletonAndAnimation`'s skin loop (`ImportedSkin::joints`) all
+  shipped this way at task 3.2.1, and it was invisible for glTF because glTF's `localId` and its
+  `ImportedModel::nodes` position always coincide (no root exclusion, see 3.2.1's own rule above). The
+  FIRST FBX model with more than a single unparented node reads out of bounds the instant the Hierarchy
+  section draws it -- `I64`'s own four-deep chain is what caught it, as a real ASan abort, not a wrong
+  picture. Both draw functions now resolve `localId -> nodes[] position` through a
+  `std::unordered_map<std::uint32_t, std::uint32_t>` built once per call, the identical shape
+  `fbx_import.cpp`'s own `nodeIndexByLocalId` already uses on the import side. **Any future panel code
+  that reads `ImportedNode::children`, `ImportedModel::roots`, `ImportedSkin::joints` or
+  `ImportedAnimationChannel::targetNode` must resolve through a map like this one -- never index
+  `ImportedModel::nodes` with the raw value.**
+- **Every platform-dependent ufbx default is set EXPLICITLY.** `path_separator` above all: its default
+  is `'\'` on Windows and `'/'` everywhere else, inside a function whose output three CI lanes must
+  agree about byte for byte in tests comparing `relativePath` against literals.
+- **`ufbx_load_opts` and `ufbx_bake_opts` MUST be value-initialised** (`= {}`). Both carry
+  `_begin_zero`/`_end_zero` guards and ufbx returns `UFBX_ERROR_UNINITIALIZED_OPTIONS` otherwise.
+- **The `ufbx_error_type` switch has NO `default:`.** A ufbx bump that adds an enumerator must be a
+  `-Wswitch` failure on the Linux lane, not a silent "unknown".
+- **The MAX_FBX_TEMP_BYTES/MAX_FBX_RESULT_BYTES/MAX_FBX_ALLOCATIONS caps are wired but their OWN
+  "fires on a real document" half is UNPROVEN, and this is a documented, deliberate gap, not an
+  oversight.** Unlike `MAX_FBX_NODE_DEPTH` (a "many minimal nested objects" shortcut, `FI27`) or
+  `MAX_PRIMITIVES_PER_MODEL` (`FI38`, "many minimal meshes"), there is no cheap tier-0 shortcut for a
+  1 GiB running total or 4 000 000 individual allocations: ufbx's temp/result allocators back EVERY
+  allocation the parser makes for the WHOLE document. The error-to-status MAPPING is proven by
+  construction (the shared `ufbxStatusFor` switch arm `FI27` already exercises for the sibling
+  `NODE_DEPTH_LIMIT` enumerator); a real document tripping either byte cap is not, and the comment
+  beside `FI27` in `fbx_import_test.cpp` says so by name rather than shipping a case that only looks
+  like proof.
+- **The importer identity is a per-format FUNCTION (`modelImporterIdentity`), never a hard-coded
+  constant, and task 3.2.2 found it hard-coded in THREE places, not the two the spec named.**
+  `asset_database.cpp`'s phase 7.5 probe and `import_details_panel.cpp`'s Overview line were the two
+  the plan expected; `asset_meta.cpp`'s `writeMetaText` (which used to write `GLTF_IMPORTER_NAME`/
+  `GLTF_IMPORTER_VERSION` unconditionally into every sidecar's `importer` block) was the third, found
+  while wiring `ModelImportSession::applySettings()` for FBX. `writeMetaText` now takes the identity as
+  two trailing, DEFAULTED parameters (`importerName`/`importerVersion`, defaulting to the glTF pair) --
+  not an `ImporterIdentity`, because `asset_meta.hpp` deliberately never includes `model_import.hpp`
+  (plan §A-11's boundary, unchanged). **Any future format-dispatching site that reads or writes an
+  importer's name/version must go through `modelImporterIdentity`, never repeat the pair as a literal.**
+
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
-3.1.3, 3.1.4 and 3.2.1's entries under Phase 3.
+3.1.3, 3.1.4, 3.2.1 and 3.2.2's entries under Phase 3.

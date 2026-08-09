@@ -13,9 +13,10 @@
 // (the format's own invariant, unchanged) -- this is the .cpp ONLY, and the dependency direction stays
 // safe: model_import.hpp includes nothing that reaches back here (confirmed: its own includes are
 // aero/core/{guid,math}.hpp, aero/editor/import_settings.hpp and aero/editor/scene_bounds.hpp, none of
-// which name asset_cache.hpp or asset_meta.hpp). Needed for isImportableModelName -- a SECOND, drifting
-// copy of that predicate here would silently stop discriminating the moment 3.2.2 (ufbx) teaches the
-// real one a new extension, permanently reintroducing this same finding for every future importer.
+// which name asset_cache.hpp or asset_meta.hpp). Needed for modelImporterIdentity (task 3.2.2 widened
+// this from isImportableModelName alone) -- a SECOND, drifting copy of either predicate here would
+// silently stop discriminating the moment a future importer teaches the real one a new extension,
+// permanently reintroducing this same finding for every task after this one.
 #include <aero/editor/asset_cache.hpp>
 #include <aero/editor/model_import.hpp>
 #include <aero/reflect/json_reader.hpp>
@@ -433,10 +434,8 @@ ImportPlanResult planImports(std::vector<ImportInput> inputs, const AssetCacheIn
                 entry.change = ImportChange::SourceChanged;
             } else if (previousEntry->metaHash != input.metaHash) {
                 entry.change = ImportChange::MetaChanged;
-            } else if (const bool expectsModelImporter = isImportableModelName(input.relativePath);
-                       previousEntry->importer !=
-                           (expectsModelImporter ? std::string_view(GLTF_IMPORTER_NAME) : std::string_view()) ||
-                       previousEntry->importerVersion != (expectsModelImporter ? GLTF_IMPORTER_VERSION : 0U)) {
+            } else if (const ImporterIdentity expected = modelImporterIdentity(input.relativePath);
+                       previousEntry->importer != expected.name || previousEntry->importerVersion != expected.version) {
                 // code-review SHOULD-FIX 7: compares the previous entry against the STATICALLY EXPECTED
                 // (importer, importerVersion) pair for this file -- a PURE function of the relativePath
                 // ALONE, needing no probe at all.
@@ -453,6 +452,12 @@ ImportPlanResult planImports(std::vector<ImportInput> inputs, const AssetCacheIn
                 // version bump mismatches the OLD recorded version the same way. A non-model's expected
                 // pair is ("", 0) -- exactly `ImportInput`'s own un-probed defaults, so nothing about a
                 // non-model asset's plan changes.
+                //
+                // task 3.2.2: the expected pair is now PER FORMAT, through model_import.hpp's own
+                // modelImporterIdentity -- the shape 3.2.1's code review asked for when it noted that a
+                // TU-local copy "would silently stop discriminating the moment 3.2.2 (ufbx) teaches the
+                // real predicate a new extension." A GLTF_IMPORTER_VERSION bump now re-triggers imports
+                // for .gltf/.glb and NOT for .fbx, and vice versa (AC-15).
                 entry.change = ImportChange::ImporterChanged;
             } else {
                 entry.change = ImportChange::UpToDate;

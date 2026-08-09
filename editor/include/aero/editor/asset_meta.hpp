@@ -90,8 +90,8 @@ enum class MetaError : std::uint8_t {
 //   §5.1's unknown-root-key rule means an older build reads the GUID correctly, warns once per model
 //   asset, and loses only the settings -- which it could not have honoured anyway.
 struct MetaImporterBlock {
-    std::string name;           // "gltf"
-    std::uint32_t version = 0;  // GLTF_IMPORTER_VERSION at write time
+    std::string name;           // "gltf" or "fbx" (task 3.2.2) -- whichever importer wrote this sidecar
+    std::uint32_t version = 0;  // that importer's OWN version constant, at write time
     ImportSettings settings;
 };
 
@@ -123,9 +123,24 @@ struct MetaParseResult {
 
 [[nodiscard]] MetaParseResult parseMeta(std::string_view text);
 // D7's omit-when-default rule lives HERE, in exactly ONE place.
-[[nodiscard]] std::string writeMetaText(Guid guid, const ImportSettings& settings);
+//
+// task 3.2.2: `importerName`/`importerVersion` are NEW, TRAILING, DEFAULTED parameters -- a THIRD
+// hard-coded-identity site the plan did not name (beside asset_database.cpp's phase 7.5 probe, §A-1,
+// and import_details_panel.cpp's Overview line, §A-2): this function used to write GLTF_IMPORTER_NAME/
+// GLTF_IMPORTER_VERSION unconditionally, so ModelImportSession::applySettings() would have written
+// "name": "gltf" into an .fbx's own sidecar. The default keeps every EXISTING two-argument call site
+// (this file's own tests, chiefly) compiling and behaving byte-identically; model_import_session.cpp is
+// the ONE call site that now passes the file's REAL identity, via modelImporterIdentity(). Declared as
+// two primitives, NOT `ImporterIdentity`, because THIS header deliberately does not include
+// model_import.hpp (the comment two lines below states why, and asset_cache.hpp/asset_meta.hpp must
+// never gain that include -- plan §A-11).
+[[nodiscard]] std::string writeMetaText(Guid guid, const ImportSettings& settings,
+                                        std::string_view importerName = GLTF_IMPORTER_NAME,
+                                        std::uint32_t importerVersion = GLTF_IMPORTER_VERSION);
 // The existing one-argument overload becomes a ONE-LINE DELEGATE to the above with ImportSettings{},
-// so AC-9's byte-identity is true BY CONSTRUCTION rather than by two writers agreeing (INV-M10).
+// so AC-9's byte-identity is true BY CONSTRUCTION rather than by two writers agreeing (INV-M10). The
+// identity parameters are UNREACHABLE here: D7's omit-when-default branch never runs for
+// ImportSettings{}, so which pair the delegate forwards is never observed.
 [[nodiscard]] std::string writeMetaText(Guid guid);  // canonical, exactly one trailing '\n'
 
 // ---- the lifecycle, as a PURE function (D5-D9) ------------------------------------------------

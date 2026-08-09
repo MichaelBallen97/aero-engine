@@ -65,7 +65,7 @@ readonly IDENTIFIER_RE='(^|[^a-zA-Z0-9_])SDL_[A-Za-z0-9]*GPU'
 
 # Every tracked C-family source under SCAN_ROOTS. Same extension set as check-math-boundary.sh: .mm/.m
 # are in for the iOS/macOS runtime entry points (Phase 5) that must not be a blind spot on arrival.
-# .c is out -- the only .c in the tree is vendored miniaudio_impl.c (SDL_GPU-free), auto-excluded like
+# .c is out -- every .c in the tree is vendored (miniaudio_impl.c, and ufbx.c under editor/), auto-excluded like
 # the linters do. git ls-files never descends into the vcpkg submodule and lists tracked files only,
 # so build/ and vcpkg_installed/ are structurally excluded.
 c_family() {

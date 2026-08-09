@@ -262,6 +262,18 @@ find_package(Threads REQUIRED)
 # literal or a committed text fixture reached through AERO_ASSET_FIXTURES_DIR, which is ALREADY
 # defined on this target. The link line is UNCHANGED and no new ctest entry is registered (ctest -N
 # stays 95/6/19), and NEITHER TU NAMES fastgltf.
+#
+# task 3.2.2 joins this target with ONE new TU. UNCONDITIONAL, for the identical reason
+# model_import_test.cpp is: model_import.hpp depends only on aero/core/{guid,math}.hpp,
+# aero/editor/import_settings.hpp and aero/editor/scene_bounds.hpp; the last reaches aero::scene, a
+# PUBLIC, UNGATED dependency of aero_editor_core (only engine/scene_serialize is gated on
+# AERO_REFLECT_TOOLS). This TU must therefore be PRESENT in BOTH reduced configurations, not skipped --
+# prove it with --list-test-cases, which must show the SAME total in the two and FI1 present in both
+# (AC-68). Tier-0: no GPU, no window, no ImGui context, no sleeps, and no disk on the critical path --
+# every case is driven from an ASCII-FBX STRING LITERAL. The one binary fixture is reached through
+# AERO_ASSET_FIXTURES_DIR, ALREADY defined on this target. The link line is UNCHANGED, no new ctest
+# entry is registered (ctest -N stays 95/6/19), and THIS TU NAMES NO ufbx TYPE -- it drives importFbx
+# through the public importModel() only.
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -275,7 +287,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/text_file_test.cpp editor/asset_cache_test.cpp
                editor/asset_view_test.cpp editor/thumbnail_cache_test.cpp
                editor/asset_actions_test.cpp editor/asset_watcher_test.cpp
-               editor/model_import_test.cpp editor/model_import_session_test.cpp)
+               editor/model_import_test.cpp editor/model_import_session_test.cpp
+               editor/fbx_import_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
