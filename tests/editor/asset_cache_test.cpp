@@ -1411,6 +1411,131 @@ TEST_CASE(
 }
 
 // =====================================================================================================
+// task 3.2.2: the identity comparison becomes PER FORMAT (§D-9). All PURE, from std::vector literals,
+// exactly AC-p1-AC-p8's own idiom above -- these six prove the .gltf/.fbx split is genuinely
+// independent, not one shared constant that happens to pass a single-format case.
+// =====================================================================================================
+
+TEST_CASE("asset_cache: a previous .fbx entry at (\"fbx\", 1) with matching hashes is UpToDate (AC-p9)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "chair.fbx", hashOf(10), hashOf(20), "fbx", 1)});
+    const ImportPlanResult result =
+        planImports({importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20))}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::UpToDate);
+}
+
+TEST_CASE(
+    "asset_cache: a stale .fbx entry is ImporterChanged while a CURRENT .gltf entry in the SAME call "
+    "stays UpToDate (AC-p10, AC-15a, seed S30's discriminator)") {
+    // Seed S30 (modelImporterIdentity returning the glTF pair for a .fbx name) makes THIS entry
+    // ImporterChanged forever -- and, if the identity were instead one SHARED constant rather than a
+    // per-format function, would make it agree with the .gltf row below by accident.
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "chair.fbx", hashOf(10), hashOf(20), "fbx", 0),
+                                              cacheEntry(guidOf(2), "table.gltf", hashOf(30), hashOf(40), "gltf", 1)});
+    const std::vector<ImportInput> inputs = {importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20)),
+                                             importInput(guidOf(2), "table.gltf", hashOf(30), hashOf(40))};
+    const ImportPlanResult result = planImports(inputs, previous);
+    REQUIRE(result.entries.size() == 2);
+    REQUIRE(findEntry(result, guidOf(1)) != nullptr);
+    REQUIRE(findEntry(result, guidOf(2)) != nullptr);
+    CHECK(findEntry(result, guidOf(1))->change == ImportChange::ImporterChanged);
+    CHECK(findEntry(result, guidOf(2))->change == ImportChange::UpToDate);
+}
+
+TEST_CASE(
+    "asset_cache: AC-p10's mirror -- a stale .gltf entry is ImporterChanged while a CURRENT .fbx one "
+    "stays UpToDate (AC-p11, AC-15b)") {
+    // Proves the two versions are genuinely independent: a single shared constant would pass AC-p10 (a
+    // stale .fbx row) and fail THIS one (a stale .gltf row), or vice versa -- it cannot pass both.
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "chair.fbx", hashOf(10), hashOf(20), "fbx", 1),
+                                              cacheEntry(guidOf(2), "table.gltf", hashOf(30), hashOf(40), "gltf", 0)});
+    const std::vector<ImportInput> inputs = {importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20)),
+                                             importInput(guidOf(2), "table.gltf", hashOf(30), hashOf(40))};
+    const ImportPlanResult result = planImports(inputs, previous);
+    REQUIRE(result.entries.size() == 2);
+    REQUIRE(findEntry(result, guidOf(1)) != nullptr);
+    REQUIRE(findEntry(result, guidOf(2)) != nullptr);
+    CHECK(findEntry(result, guidOf(1))->change == ImportChange::UpToDate);
+    CHECK(findEntry(result, guidOf(2))->change == ImportChange::ImporterChanged);
+}
+
+TEST_CASE(
+    "asset_cache: a .fbx entry recorded under the OLD hard-coded glTF identity migrates to "
+    "ImporterChanged once, and to \"fbx\"/1 once a probe commits it -- then stays UpToDate forever "
+    "(AC-p12, the pre-3.2.2-cache migration path)") {
+    // What an asset-cache.json written before this task's own §A-1 fix looks like for an .fbx: every
+    // model the hard-coded phase-7.5 probe ever touched was recorded as ("gltf", 1), regardless of its
+    // real extension.
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "chair.fbx", hashOf(10), hashOf(20), "gltf", 1)});
+    const std::vector<ImportInput> firstInputs = {importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20))};
+    const ImportPlanResult firstPlan = planImports(firstInputs, previous);
+    REQUIRE(firstPlan.entries.size() == 1);
+    CHECK(firstPlan.entries[0].change == ImportChange::ImporterChanged);
+
+    // Phase 7.5 probes the flagged job and engages a probe with the CORRECT identity -- exactly what
+    // the fixed asset_database.cpp now does for a real ImporterChanged job (§A-1).
+    const std::vector<ImportInput> probedInputs = {
+        importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20), ProbeOutcome{"fbx", 1, {}})};
+    const AssetCacheIndex afterFirst = commitImports(previous, probedInputs, firstPlan);
+    REQUIRE(afterFirst.entries.size() == 1);
+    CHECK(afterFirst.entries[0].importer == "fbx");
+    CHECK(afterFirst.entries[0].importerVersion == 1);
+
+    const ImportPlanResult secondPlan =
+        planImports({importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20))}, afterFirst);
+    REQUIRE(secondPlan.entries.size() == 1);
+    CHECK(secondPlan.entries[0].change == ImportChange::UpToDate);  // no oscillation -- §A-1's own fix
+}
+
+TEST_CASE(
+    "asset_cache: a non-model asset's expected identity pair stays (\"\", 0), unaffected by this task "
+    "(AC-p13)") {
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "notes.txt", hashOf(10), hashOf(20))});
+    const ImportPlanResult result =
+        planImports({importInput(guidOf(1), "notes.txt", hashOf(10), hashOf(20))}, previous);
+    REQUIRE(result.entries.size() == 1);
+    CHECK(result.entries[0].change == ImportChange::UpToDate);
+}
+
+TEST_CASE(
+    "asset_cache: a two-format project (.fbx + .gltf) reaches UpToDate for BOTH after one migration "
+    "round and never oscillates across three further rounds (AC-p14, the defect §A-1 exists to "
+    "prevent, caught here at the pure level even if the asset_database.cpp fix were missed)") {
+    AssetCacheIndex index = indexOf({cacheEntry(guidOf(1), "chair.fbx", hashOf(10), hashOf(20)),
+                                     cacheEntry(guidOf(2), "table.gltf", hashOf(30), hashOf(40))});
+    // Round 1: neither entry has ever recorded an importer -- both are ImporterChanged.
+    {
+        const std::vector<ImportInput> inputs = {importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20)),
+                                                 importInput(guidOf(2), "table.gltf", hashOf(30), hashOf(40))};
+        const ImportPlanResult plan = planImports(inputs, index);
+        REQUIRE(plan.entries.size() == 2);
+        REQUIRE(findEntry(plan, guidOf(1)) != nullptr);
+        REQUIRE(findEntry(plan, guidOf(2)) != nullptr);
+        CHECK(findEntry(plan, guidOf(1))->change == ImportChange::ImporterChanged);
+        CHECK(findEntry(plan, guidOf(2))->change == ImportChange::ImporterChanged);
+        const std::vector<ImportInput> probed = {
+            importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20), ProbeOutcome{"fbx", 1, {}}),
+            importInput(guidOf(2), "table.gltf", hashOf(30), hashOf(40), ProbeOutcome{"gltf", 1, {}})};
+        index = commitImports(index, probed, plan);
+    }
+    // Rounds 2-4: every entry now carries the RIGHT identity for its own extension -- UpToDate, forever,
+    // with a DISENGAGED probe every time (exactly what a real scan hands planImports -- §D-5's ordering
+    // trap), so nothing here depends on phase 7.5 re-probing an already-current asset.
+    for (int round = 0; round < 3; ++round) {
+        CAPTURE(round);
+        const std::vector<ImportInput> inputs = {importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20)),
+                                                 importInput(guidOf(2), "table.gltf", hashOf(30), hashOf(40))};
+        const ImportPlanResult plan = planImports(inputs, index);
+        REQUIRE(plan.entries.size() == 2);
+        REQUIRE(findEntry(plan, guidOf(1)) != nullptr);
+        REQUIRE(findEntry(plan, guidOf(2)) != nullptr);
+        CHECK(findEntry(plan, guidOf(1))->change == ImportChange::UpToDate);
+        CHECK(findEntry(plan, guidOf(2))->change == ImportChange::UpToDate);
+        index = commitImports(index, inputs, plan);
+    }
+}
+
+// =====================================================================================================
 // IP -- planReattachments, D13's orphan re-attachment. All PURE, from std::vector literals (task 3.1.2
 // Step 7)
 // =====================================================================================================

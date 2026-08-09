@@ -124,6 +124,58 @@ struct Stat {
     return stat;
 }
 
+// ---- task 3.2.2: a minimal ASCII FBX document, the §D-7/§G-10 template's shape, VERIFIED TO PARSE
+// (fbx_import_test.cpp's own spike). This TU tests phase 7.5 through the REAL scan, not importModel()
+// directly, so it needs a document real ufbx will accept -- a second, independent copy of the template
+// rather than a shared header, matching model_import_session_test.cpp's own "each TU keeps its own"
+// precedent (that file has no makeFbx() either). CANONICAL_GLOBALS_PROPERTIES' corrected axis set
+// (UpAxis=1/FrontAxis=2 -- three DISTINCT axes; fbx_import_test.cpp's own FI51 finding) -- the specific
+// conversion this task performs is irrelevant to phase 7.5, which reads only names/URIs, never a
+// vertex.
+[[nodiscard]] std::string makeFbxDoc(std::string_view extraObjects) {
+    return std::string(
+               "; FBX 7.4.0 project file\n"
+               "FBXHeaderExtension:  {\n"
+               "    FBXHeaderVersion: 1003\n"
+               "    FBXVersion: 7400\n"
+               "    Creator: \"aero test fixture\"\n"
+               "}\n"
+               "GlobalSettings:  {\n"
+               "    Version: 1000\n"
+               "    Properties70:  {\n"
+               "        P: \"UpAxis\", \"int\", \"Integer\", \"\",1\n"
+               "        P: \"UpAxisSign\", \"int\", \"Integer\", \"\",1\n"
+               "        P: \"FrontAxis\", \"int\", \"Integer\", \"\",2\n"
+               "        P: \"FrontAxisSign\", \"int\", \"Integer\", \"\",1\n"
+               "        P: \"CoordAxis\", \"int\", \"Integer\", \"\",0\n"
+               "        P: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1\n"
+               "        P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",100\n"
+               "    }\n"
+               "}\n"
+               "Objects:  {\n"
+               "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+               "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+               "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+               "        GeometryVersion: 124\n"
+               "    }\n"
+               "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n") +
+           std::string(extraObjects) +
+           "}\n"
+           "Connections:  {\n"
+           "    C: \"OO\",100,0\n"
+           "    C: \"OO\",200,100\n"
+           "}\n";
+}
+
+// A standalone Texture OBJECT, connected to nothing -- phase 4 of fbx_import.cpp walks `scene.textures`
+// directly (every Texture element in the document, material connection or not), the identical shape
+// fbx_import_test.cpp's own FI50/FI51/FI52 already rely on.
+[[nodiscard]] std::string fbxTextureObject(std::string_view relativeFilename) {
+    return "    Texture: 500, \"Texture::tex\", \"\" { Type: \"TextureVideoClip\" Version: 202 "
+           "RelativeFilename: \"" +
+           std::string(relativeFilename) + "\" }\n";
+}
+
 }  // namespace
 
 // ---- E1-E6: the guard and the empty tree ------------------------------------------------------
@@ -2367,4 +2419,280 @@ TEST_CASE(
     CHECK(entry->importerVersion == 1);
     REQUIRE(entry->dependencies.size() == 1);
     CHECK(entry->dependencies[0] == binGuid);
+}
+
+// =====================================================================================================
+// task 3.2.2: phase 7.5 records a PER-FORMAT identity for FBX too, through the SAME real scan. Renumbered
+// from the plan's own predicted AD-i11-AD-i18 -- the code-review round that landed AFTER 3.2.1 merged
+// already claimed AD-i11/AD-i12/AD-i13 (both confirmed present above by measurement, never assumed), so
+// this task's eight cases continue the sequence at AD-i14.
+// =====================================================================================================
+
+TEST_CASE("asset_database: a scanned .fbx records \"fbx\"/1 as its importer (AD-i14, AC-8)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.fbx"), makeFbxDoc(""));
+    AssetDatabase db;
+    GuidGenerator gen(1014);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 1);
+    const AssetRecord* const record = db.findByPath("chair.fbx");
+    REQUIRE(record != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(record->guid);
+    REQUIRE(entry != nullptr);
+    CHECK(entry->importer == "fbx");
+    CHECK(entry->importerVersion == 1);
+}
+
+TEST_CASE(
+    "asset_database: a .gltf in the SAME scan as a .fbx still records \"gltf\"/1 -- the two identities "
+    "never collide (AD-i15, AC-9)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.fbx"), makeFbxDoc(""));
+    writeFile(dir.join("table.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(1015);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 2);
+    const AssetRecord* const fbxRecord = db.findByPath("chair.fbx");
+    const AssetRecord* const gltfRecord = db.findByPath("table.gltf");
+    REQUIRE(fbxRecord != nullptr);
+    REQUIRE(gltfRecord != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const fbxEntry = parsed.index.find(fbxRecord->guid);
+    const AssetCacheEntry* const gltfEntry = parsed.index.find(gltfRecord->guid);
+    REQUIRE(fbxEntry != nullptr);
+    REQUIRE(gltfEntry != nullptr);
+    CHECK(fbxEntry->importer == "fbx");
+    CHECK(fbxEntry->importerVersion == 1);
+    CHECK(gltfEntry->importer == "gltf");
+    CHECK(gltfEntry->importerVersion == 1);
+}
+
+TEST_CASE(
+    "asset_database: an .fbx's external texture URI becomes a dependency GUID -- the first FBX "
+    "producer for 3.1.2's field (AD-i16, AC-10)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.fbx"), makeFbxDoc(fbxTextureObject("../textures/wood.png")));
+    writeFile(dir.join("textures/wood.png"), "pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(1016);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 1);
+    CHECK(report.dependenciesRecorded == 1);
+    const Guid woodGuid = *db.guidForPath("textures/wood.png");
+    const AssetRecord* const chairRecord = db.findByPath("models/chair.fbx");
+    REQUIRE(chairRecord != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(chairRecord->guid);
+    REQUIRE(entry != nullptr);
+    REQUIRE(entry->dependencies.size() == 1);
+    CHECK(entry->dependencies[0] == woodGuid);
+}
+
+TEST_CASE(
+    "asset_database: the SAME reference written with backslashes yields the SAME dependency GUID -- the "
+    "fold reaches the SCAN's probe, not only the panel (AD-i17, AC-12)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    // `\` is what every Maya/3ds Max export writes (D14) -- folded to `/` BEFORE classifyUri, inside
+    // fbx_import.cpp's own phase 4, long before phase 7.5 ever sees the resolved path.
+    writeFile(dir.join("models/chair.fbx"), makeFbxDoc(fbxTextureObject("..\\textures\\wood.png")));
+    writeFile(dir.join("textures/wood.png"), "pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(1017);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.dependenciesRecorded == 1);
+    const Guid woodGuid = *db.guidForPath("textures/wood.png");
+    const AssetRecord* const chairRecord = db.findByPath("models/chair.fbx");
+    REQUIRE(chairRecord != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(chairRecord->guid);
+    REQUIRE(entry != nullptr);
+    REQUIRE(entry->dependencies.size() == 1);
+    CHECK(entry->dependencies[0] == woodGuid);  // the SAME GUID AD-i16's forward-slash form recorded
+}
+
+TEST_CASE(
+    "asset_database: editing an .fbx's referenced texture marks the MODEL DependencyChanged on the next "
+    "scan, with no change to the model's own bytes -- ticks TWICE (AD-i18, AC-11, E11)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.fbx"), makeFbxDoc(fbxTextureObject("../textures/wood.png")));
+    writeFile(dir.join("textures/wood.png"), "original-pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(1018);
+    // scan 1: both New. The edge IS recorded this same scan, but a New record's `change` reports New,
+    // not DependencyChanged -- there is no cascade to observe yet (E11, AD-i6's own precedent for FBX).
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.status == ScanStatus::Ok);
+    CHECK(first.modelsProbed == 1);
+    CHECK(first.dependenciesRecorded == 1);
+    const AssetRecord* const chairAfterFirst = db.findByPath("models/chair.fbx");
+    REQUIRE(chairAfterFirst != nullptr);
+    CHECK(chairAfterFirst->change == ImportChange::New);
+    const scene_golden::FileBytes chairBytesAfterFirst = scene_golden::readBytes(dir.join("models/chair.fbx"));
+    REQUIRE(chairBytesAfterFirst.ok);
+
+    writeFile(dir.join("textures/wood.png"), "edited-pixels-longer");  // a different LENGTH (R-C1)
+
+    // scan 2 -- the FIRST tick after the edit.
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    const AssetRecord* const woodAfterSecond = db.findByPath("textures/wood.png");
+    REQUIRE(woodAfterSecond != nullptr);
+    CHECK(woodAfterSecond->change == ImportChange::SourceChanged);
+    const AssetRecord* const chairAfterSecond = db.findByPath("models/chair.fbx");
+    REQUIRE(chairAfterSecond != nullptr);
+    CHECK(chairAfterSecond->change == ImportChange::DependencyChanged);
+    CHECK(second.dependencyChanged == 1);
+
+    // The model's OWN bytes are untouched -- only its dependency changed.
+    const scene_golden::FileBytes chairBytesAfterSecond = scene_golden::readBytes(dir.join("models/chair.fbx"));
+    REQUIRE(chairBytesAfterSecond.ok);
+    CHECK(chairBytesAfterSecond.text == chairBytesAfterFirst.text);
+}
+
+TEST_CASE(
+    "asset_database: an .fbx's unresolvable texture reference contributes NO dependency and exactly one "
+    "warning -- never a nil GUID (AD-i19, AC-13)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    // Deliberately no textures/ directory at all -- the reference names a file this scan never sees, so
+    // it never earns a .meta or a GUID.
+    writeFile(dir.join("models/chair.fbx"), makeFbxDoc(fbxTextureObject("../textures/missing.png")));
+
+    AssetDatabase db;
+    GuidGenerator gen(1019);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 1);
+    CHECK(report.dependenciesRecorded == 0);
+    const AssetRecord* const chairRecord = db.findByPath("models/chair.fbx");
+    REQUIRE(chairRecord != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(chairRecord->guid);
+    REQUIRE(entry != nullptr);
+    CHECK(entry->dependencies.empty());  // NEVER a nil GUID
+}
+
+TEST_CASE(
+    "asset_database: a second scan of an unchanged project containing .fbx models writes ZERO bytes and "
+    "probes ZERO models (AD-i20, AC-14) -- the STRONGEST single check that A-1's fix is right") {
+    // With the hard-coded glTF identity A-1 replaces still in place, THIS case reports a non-zero
+    // probe count and a non-zero write on EVERY scan, forever: a .fbx probes to ("gltf", 1), which
+    // mismatches planImports' own per-format expectation ("fbx", 1) -- ImporterChanged, commit, repeat.
+    const TempDir dir;
+    writeFile(dir.join("chair.fbx"), makeFbxDoc(""));
+    writeFile(dir.join("a.png"), "a");
+    AssetDatabase db;
+    GuidGenerator gen(1020);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.status == ScanStatus::Ok);
+    REQUIRE(first.cacheWritten);
+    CHECK(first.modelsProbed == 1);
+
+    // Back-date every artifact from the first scan -- AD-i9's own rule: mtime is the only discriminator
+    // of a real rewrite; comparing content alone would false-pass (R-C3).
+    const auto backdated = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+    const std::vector<std::string> artifacts = {dir.join("chair.fbx.meta"), dir.join("a.png.meta"),
+                                                dir.join("Library/asset-cache.json"), dir.join("Library/.gitignore")};
+    for (const std::string& path : artifacts) {
+        std::error_code ec;
+        std::filesystem::last_write_time(pathOf(path), backdated, ec);
+        REQUIRE_FALSE(ec);
+    }
+    std::vector<Stat> before;
+    for (const std::string& path : artifacts) {
+        before.push_back(statOf(path));
+        REQUIRE(before.back().exists);
+    }
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK_FALSE(second.cacheWritten);
+    CHECK(second.modelsProbed == 0);
+
+    for (std::size_t i = 0; i < artifacts.size(); ++i) {
+        const Stat after = statOf(artifacts[i]);
+        CHECK(after.size == before[i].size);
+        CHECK(after.mtime == before[i].mtime);
+    }
+
+    // A THIRD and FOURTH scan stay exactly as quiet -- not a one-off coincidence of the second.
+    const AssetScanReport third = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK_FALSE(third.cacheWritten);
+    CHECK(third.modelsProbed == 0);
+    const AssetScanReport fourth = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK_FALSE(fourth.cacheWritten);
+    CHECK(fourth.modelsProbed == 0);
+}
+
+TEST_CASE(
+    "asset_database: a .fbx and a .gltf sharing a BASENAME in the same folder are two assets, two GUIDs, "
+    "two cache entries, two importers -- nothing keys on basename (AD-i21, E22)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.fbx"), makeFbxDoc(""));
+    writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(1021);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 2);
+    const AssetRecord* const fbxRecord = db.findByPath("chair.fbx");
+    const AssetRecord* const gltfRecord = db.findByPath("chair.gltf");
+    REQUIRE(fbxRecord != nullptr);
+    REQUIRE(gltfRecord != nullptr);
+    CHECK(fbxRecord->guid != gltfRecord->guid);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const fbxEntry = parsed.index.find(fbxRecord->guid);
+    const AssetCacheEntry* const gltfEntry = parsed.index.find(gltfRecord->guid);
+    REQUIRE(fbxEntry != nullptr);
+    REQUIRE(gltfEntry != nullptr);
+    CHECK(fbxEntry->importer == "fbx");
+    CHECK(gltfEntry->importer == "gltf");
 }

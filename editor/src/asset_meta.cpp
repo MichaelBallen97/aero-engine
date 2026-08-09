@@ -310,7 +310,8 @@ MetaParseResult parseMeta(std::string_view text) {
 
 std::string writeMetaText(Guid guid) { return writeMetaText(guid, ImportSettings{}); }  // INV-M10
 
-std::string writeMetaText(Guid guid, const ImportSettings& settings) {
+std::string writeMetaText(Guid guid, const ImportSettings& settings, std::string_view importerName,
+                          std::uint32_t importerVersion) {
     JsonWriter writer;  // the DEFAULT config: pretty, 2-space -- docs/09's canonical form. Do NOT
                         // spell the config out; a second spelling is a second truth.
     writer.beginObject();
@@ -331,9 +332,9 @@ std::string writeMetaText(Guid guid, const ImportSettings& settings) {
         writer.key("importer");
         writer.beginObject();
         writer.key("name");
-        writer.value(GLTF_IMPORTER_NAME);
+        writer.value(importerName);
         writer.key("version");
-        writer.value(static_cast<long long>(GLTF_IMPORTER_VERSION));
+        writer.value(static_cast<long long>(importerVersion));
         writer.key("settings");
         writer.beginObject();
         writer.key("scale");

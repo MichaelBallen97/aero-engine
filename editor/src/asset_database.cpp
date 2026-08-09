@@ -14,8 +14,10 @@
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/model_import.hpp>  // task 3.2.1: isImportableModelName/importModel/ImportDepth/
                                          // ImportStatus/importStatusLabel -- phase 7.5's ONLY new
-                                         // dependency. GLTF_IMPORTER_NAME/VERSION arrive transitively
-                                         // through this header's own import_settings.hpp include.
+                                         // dependency. task 3.2.2 adds ONE more use of this same
+                                         // include: ImporterIdentity/modelImporterIdentity, the SAME
+                                         // per-format pure function planImports (asset_cache.cpp)
+                                         // compares against -- never a hard-coded constant (§A-1).
 #include <aero/editor/text_file.hpp>
 
 #include <algorithm>
@@ -776,8 +778,13 @@ AssetScanReport AssetDatabase::rescan(std::string newProjectRootUtf8, std::strin
                 continue;  // a failed import records NO importer and NO dependencies; carry forward
             }
             ProbeOutcome outcome;
-            outcome.importer = std::string(GLTF_IMPORTER_NAME);
-            outcome.importerVersion = GLTF_IMPORTER_VERSION;
+            // task 3.2.2: PER FORMAT, through the SAME pure function planImports compares against
+            // (model_import.hpp). Hard-coding the glTF pair here while planImports expected the FBX one
+            // would make every .fbx report ImporterChanged on every scan, forever -- probe, plan,
+            // commit, repeat -- breaking both the zero-write steady state and the cache's own meaning.
+            const ImporterIdentity identity = modelImporterIdentity(leaf);
+            outcome.importer = std::string(identity.name);
+            outcome.importerVersion = identity.version;
             for (const std::string& uri : imported.externalUris) {
                 if (uri == it->relativePath) {
                     continue;  // E9: a SELF-EDGE is dropped -- the cascade's worklist would treat it as

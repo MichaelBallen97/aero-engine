@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "guid": "b4e2d18f6c9e53209f7a1d4e8b3c5ca3",
+  "importer": {
+    "name": "fbx",
+    "version": 1,
+    "settings": {
+      "scale": 0.01,
+      "importMaterials": true,
+      "importAnimations": false,
+      "importSkins": true
+    }
+  }
+}

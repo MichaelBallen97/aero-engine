@@ -56,9 +56,15 @@ namespace {
 constexpr std::string_view MINIMAL_FIXTURE = AERO_ASSET_FIXTURES_DIR "/minimal.meta";
 constexpr std::string_view UNKNOWN_KEYS_FIXTURE = AERO_ASSET_FIXTURES_DIR "/unknown-keys.meta";
 constexpr std::string_view IMPORTER_SETTINGS_FIXTURE = AERO_ASSET_FIXTURES_DIR "/importer-settings.meta";
+// task 3.2.2 (D7/AC-17): the FBX counterpart to IMPORTER_SETTINGS_FIXTURE above -- same shape, "fbx" in
+// place of "gltf", proving the second registered name did not disturb the first.
+constexpr std::string_view IMPORTER_FBX_FIXTURE = AERO_ASSET_FIXTURES_DIR "/importer-fbx.meta";
 
 // The fixture's pinned GUID, as text -- shared by AG3/AG4 so there is exactly one spelling of it.
 constexpr std::string_view FIXTURE_GUID_TEXT = "a3f1c07e5b8d42198e6f0c3d7a2b4b92";
+// importer-fbx.meta's own pinned GUID, DISTINCT from FIXTURE_GUID_TEXT so the two fixtures are never
+// confused for one another by a case that reads both.
+constexpr std::string_view FBX_FIXTURE_GUID_TEXT = "b4e2d18f6c9e53209f7a1d4e8b3c5ca3";
 
 }  // namespace
 
@@ -922,4 +928,143 @@ TEST_CASE("asset_meta: importer-settings.meta is forward-compat SHAPED for an ol
     }
     REQUIRE(otherKeys.size() == 1);
     CHECK(otherKeys[0] == "importer");
+}
+
+// =====================================================================================================
+// task 3.2.2: writeMetaText's identity becomes CALLER-SUPPLIED (a third hard-coded-GLTF_IMPORTER_NAME
+// site the plan itself did not name, found while implementing Step 10 -- ModelImportSession::
+// applySettings() would otherwise have written "name": "gltf" into an .fbx's own sidecar). The two new
+// TRAILING, DEFAULTED parameters keep every EXISTING two-argument call in THIS file (AM-i1 through
+// AM-i14, all unedited above) byte-identical -- proof that the fix is additive, not a rewrite.
+// =====================================================================================================
+
+TEST_CASE(
+    "asset_meta: writeMetaText with the FBX identity emits \"name\": \"fbx\", the SAME four settings "
+    "keys in the SAME order as a glTF sidecar, and round-trips (AM-i15, AC-17)") {
+    const std::optional<Guid> guid = parseGuid(FBX_FIXTURE_GUID_TEXT);
+    REQUIRE(guid.has_value());
+    const ImportSettings settings{0.01F, true, false, true};
+    const std::string fbxText = writeMetaText(*guid, settings, "fbx", 1);
+    const std::string gltfText = writeMetaText(*guid, settings);  // the identity DEFAULTS to glTF
+
+    const JsonParseResult fbxParsed = parseJson(fbxText);
+    REQUIRE(fbxParsed.value.has_value());
+    const JsonValue* const fbxImporter = fbxParsed.value->find("importer");
+    REQUIRE(fbxImporter != nullptr);
+    const JsonValue* const fbxName = fbxImporter->find("name");
+    REQUIRE(fbxName != nullptr);
+    CHECK(fbxName->asString() == "fbx");
+    const JsonValue* const fbxVersion = fbxImporter->find("version");
+    REQUIRE(fbxVersion != nullptr);
+    CHECK(fbxVersion->asU64() == 1);
+
+    const JsonParseResult gltfParsed = parseJson(gltfText);
+    REQUIRE(gltfParsed.value.has_value());
+    const JsonValue* const gltfImporter = gltfParsed.value->find("importer");
+    REQUIRE(gltfImporter != nullptr);
+    const JsonValue* const gltfSettings = gltfImporter->find("settings");
+    REQUIRE(gltfSettings != nullptr);
+    const JsonValue* const fbxSettings = fbxImporter->find("settings");
+    REQUIRE(fbxSettings != nullptr);
+    // The SAME four keys, in the SAME order, whichever identity wrote the block -- the writer's SHAPE
+    // does not depend on which importer produced it, only its NAME/VERSION do.
+    std::vector<std::string> fbxKeys;
+    std::vector<std::string> gltfKeys;
+    for (const JsonMember& m : fbxSettings->members()) {
+        fbxKeys.push_back(m.key);
+    }
+    for (const JsonMember& m : gltfSettings->members()) {
+        gltfKeys.push_back(m.key);
+    }
+    CHECK(fbxKeys == gltfKeys);
+
+    // Re-parsing yields the SAME settings the caller wrote, regardless of the identity attached.
+    const MetaParseResult reparsed = parseMeta(fbxText);
+    REQUIRE(reparsed.guid.has_value());
+    CHECK(*reparsed.guid == *guid);
+    REQUIRE(reparsed.importer.has_value());
+    CHECK(reparsed.importer->name == "fbx");
+    CHECK(reparsed.importer->version == 1);
+    CHECK(reparsed.importer->settings == settings);
+}
+
+TEST_CASE("asset_meta: tests/fixtures/assets/importer-fbx.meta parses to exactly its settings (AM-i16)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(IMPORTER_FBX_FIXTURE);
+    REQUIRE(fixture.ok);
+    const MetaParseResult parsed = parseMeta(fixture.text);
+    REQUIRE(parsed.guid.has_value());
+    CHECK(formatGuid(*parsed.guid) == FBX_FIXTURE_GUID_TEXT);
+    REQUIRE(parsed.importer.has_value());
+    CHECK(parsed.importer->name == "fbx");
+    CHECK(parsed.importer->version == 1);
+    CHECK(parsed.importer->settings == ImportSettings{0.01F, true, false, true});
+    CHECK(parsed.unknownKeys.empty());
+    CHECK(parsed.importerMessage.empty());
+}
+
+TEST_CASE(
+    "asset_meta: writeMetaText(guid, ImportSettings{}) is STILL byte-identical to the one-argument "
+    "overload and to minimal.meta's 65-byte fixpoint, with the identity DEFAULTED (AM-i17, AC-16)") {
+    // D7's omit-when-default branch never reaches the "name"/"version" write at all for
+    // ImportSettings{} -- so an EXPLICIT non-default identity, passed alongside DEFAULT settings, must
+    // still produce the identical 65 bytes AM-i2 already pins. This is the evidence the new parameters
+    // are genuinely inert on the path every existing project's minimal.meta already depends on.
+    const std::optional<Guid> guid = parseGuid(FIXTURE_GUID_TEXT);
+    REQUIRE(guid.has_value());
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(MINIMAL_FIXTURE);
+    REQUIRE(fixture.ok);
+    const std::string viaOneArg = writeMetaText(*guid);
+    const std::string viaDefaultIdentity = writeMetaText(*guid, ImportSettings{});
+    const std::string viaExplicitFbxIdentity = writeMetaText(*guid, ImportSettings{}, "fbx", 99);
+    CHECK(viaOneArg.size() == 65);
+    CHECK(viaOneArg == fixture.text);
+    CHECK(viaDefaultIdentity == viaOneArg);
+    CHECK(viaExplicitFbxIdentity == viaOneArg);  // the identity is UNOBSERVABLE when settings are default
+}
+
+TEST_CASE(
+    "asset_meta: importer-settings.meta (name \"gltf\") parses UNCHANGED -- the second registered name "
+    "did not disturb the first (AM-i18, AC-18)") {
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(IMPORTER_SETTINGS_FIXTURE);
+    REQUIRE(fixture.ok);
+    const MetaParseResult parsed = parseMeta(fixture.text);
+    REQUIRE(parsed.guid.has_value());
+    REQUIRE(parsed.importer.has_value());
+    CHECK(parsed.importer->name == "gltf");
+    CHECK(parsed.importer->version == 1);
+    CHECK(parsed.importer->settings == ImportSettings{0.01F, false, true, false});
+    CHECK(parsed.unknownKeys.empty());
+    CHECK(parsed.importerMessage.empty());
+}
+
+TEST_CASE(
+    "asset_meta: an unrecognised importer.name still returns the GUID and the settings, with no error "
+    "-- the name is recorded information, never a validated enum (AM-i19, AC-19)") {
+    const std::string text = R"({"version": 1, "guid": ")" + std::string(FIXTURE_GUID_TEXT) +
+                             R"(", "importer": {"name": "wavefront-obj-3.2.3", "version": 7, )"
+                             R"("settings": {"scale": 2.0, "importMaterials": true, "importAnimations": true, )"
+                             R"("importSkins": true}}})";
+    const MetaParseResult result = parseMeta(text);
+    REQUIRE(result.guid.has_value());
+    CHECK(result.error == MetaError::None);
+    REQUIRE(result.importer.has_value());
+    CHECK(result.importer->name == "wavefront-obj-3.2.3");
+    CHECK(result.importer->version == 7);
+    CHECK(result.importer->settings.scale == 2.0F);
+    CHECK(result.importerMessage.empty());
+}
+
+TEST_CASE(
+    "asset_meta: an EMPTY importer.name is the degenerate case of AM-i19 and parses the identical way "
+    "(AM-i20)") {
+    const std::string text = R"({"version": 1, "guid": ")" + std::string(FIXTURE_GUID_TEXT) +
+                             R"(", "importer": {"name": "", "version": 1, )"
+                             R"("settings": {"scale": 1.0, "importMaterials": true, "importAnimations": true, )"
+                             R"("importSkins": true}}})";
+    const MetaParseResult result = parseMeta(text);
+    REQUIRE(result.guid.has_value());
+    CHECK(result.error == MetaError::None);
+    REQUIRE(result.importer.has_value());
+    CHECK(result.importer->name.empty());
+    CHECK(result.importerMessage.empty());
 }
