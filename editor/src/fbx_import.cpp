@@ -89,6 +89,36 @@ private:
     ufbx_scene* ptr = nullptr;
 };
 
+// The IDENTICAL shape as ScenePtr (§A-10), wrapping ufbx_baked_anim / ufbx_free_baked_anim -- so
+// ufbx_bake_anim's result is freed on EVERY path, including an early `continue` for a clip that fails
+// to bake (D12: one clip failing never fails the whole import).
+class BakedAnimPtr {
+public:
+    explicit BakedAnimPtr(ufbx_baked_anim* p) noexcept : ptr(p) {}
+    BakedAnimPtr(const BakedAnimPtr&) = delete;
+    BakedAnimPtr& operator=(const BakedAnimPtr&) = delete;
+    BakedAnimPtr(BakedAnimPtr&& other) noexcept : ptr(std::exchange(other.ptr, nullptr)) {}
+    BakedAnimPtr& operator=(BakedAnimPtr&& other) noexcept {
+        if (this != &other) {
+            reset();
+            ptr = std::exchange(other.ptr, nullptr);
+        }
+        return *this;
+    }
+    ~BakedAnimPtr() { reset(); }
+    [[nodiscard]] const ufbx_baked_anim* get() const noexcept { return ptr; }
+    [[nodiscard]] explicit operator bool() const noexcept { return ptr != nullptr; }
+
+private:
+    void reset() noexcept {
+        if (ptr != nullptr) {
+            ufbx_free_baked_anim(ptr);
+            ptr = nullptr;
+        }
+    }
+    ufbx_baked_anim* ptr = nullptr;
+};
+
 // Every ufbx string that crosses into ImportedModel (node names, mesh names, material names,
 // filenames, the error description, warning descriptions) is converted with the TWO-ARGUMENT
 // std::string ctor -- NEVER std::string(s.data). unicode_error_handling guarantees valid UTF-8, not
@@ -503,6 +533,90 @@ struct ReducedInfluences {
     // else: candidates summed to zero (or there were none) -- `out` stays value-initialised
     // {0,0,0,0}/{0,0,0,0}, never a lopsided {1,0,0,0} (seed S23, FI60).
     return out;
+}
+
+// D12/E16: appends one channel from a baked Vec3 key list (Translation/Scale). `times` is enforced
+// STRICTLY INCREASING HERE, never assumed from ufbx (INV-F8) -- a key whose time is <= the previous
+// ACCEPTED one is dropped, one warning. `keyBudget` is this call's share of the MODEL-WIDE
+// MAX_ANIMATION_KEYS_PER_MODEL cap (D15); the return value is how many keys were actually appended,
+// so the caller can track the running total without threading mutable state through this function.
+[[nodiscard]] std::size_t appendVec3Channel(ImportResult& result, ImportedAnimation& anim, AnimationPath path,
+                                            std::uint32_t targetNode, const ufbx_baked_vec3_list& keys,
+                                            std::size_t keyBudget) {
+    if (keys.count == 0) {
+        return 0;
+    }
+    ImportedAnimationChannel channel;
+    channel.targetNode = targetNode;
+    channel.path = path;
+    channel.interpolation = AnimationInterpolation::Linear;  // D12: EVERY channel Linear
+    channel.times.reserve(keys.count);
+    channel.values.reserve(keys.count);
+    bool first = true;
+    float lastTime = 0.0F;
+    std::size_t appended = 0;
+    bool droppedNonIncreasing = false;
+    for (std::size_t i = 0; i < keys.count && appended < keyBudget; ++i) {
+        const float t = f(keys.data[i].time);
+        if (!first && t <= lastTime) {
+            droppedNonIncreasing = true;  // E16
+            continue;
+        }
+        channel.times.push_back(t);
+        channel.values.push_back(toVec4(toVec3(keys.data[i].value), 0.0F));
+        lastTime = t;
+        first = false;
+        ++appended;
+    }
+    if (droppedNonIncreasing) {
+        addWarning(result,
+                   std::format("animation '{}': a duplicate or non-increasing timestamp was dropped", anim.name));
+    }
+    if (!channel.times.empty()) {
+        anim.channels.push_back(std::move(channel));
+    }
+    return appended;
+}
+
+// The IDENTICAL shape as appendVec3Channel, for a baked Quat key list (Rotation). ufbx_quat is
+// {x,y,z,w} -- THE SAME COMPONENT ORDER as engine::Quat/Vec4 (no reorder, matching toQuat() above).
+[[nodiscard]] std::size_t appendQuatChannel(ImportResult& result, ImportedAnimation& anim, AnimationPath path,
+                                            std::uint32_t targetNode, const ufbx_baked_quat_list& keys,
+                                            std::size_t keyBudget) {
+    if (keys.count == 0) {
+        return 0;
+    }
+    ImportedAnimationChannel channel;
+    channel.targetNode = targetNode;
+    channel.path = path;
+    channel.interpolation = AnimationInterpolation::Linear;
+    channel.times.reserve(keys.count);
+    channel.values.reserve(keys.count);
+    bool first = true;
+    float lastTime = 0.0F;
+    std::size_t appended = 0;
+    bool droppedNonIncreasing = false;
+    for (std::size_t i = 0; i < keys.count && appended < keyBudget; ++i) {
+        const float t = f(keys.data[i].time);
+        if (!first && t <= lastTime) {
+            droppedNonIncreasing = true;
+            continue;
+        }
+        const ufbx_quat& q = keys.data[i].value;
+        channel.times.push_back(t);
+        channel.values.push_back(Vec4{f(q.x), f(q.y), f(q.z), f(q.w)});
+        lastTime = t;
+        first = false;
+        ++appended;
+    }
+    if (droppedNonIncreasing) {
+        addWarning(result,
+                   std::format("animation '{}': a duplicate or non-increasing timestamp was dropped", anim.name));
+    }
+    if (!channel.times.empty()) {
+        anim.channels.push_back(std::move(channel));
+    }
+    return appended;
 }
 
 }  // namespace
@@ -1299,6 +1413,130 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
             result.model.nodes[nodeIt->second].skinIndex = skinIt->second;
         }
     }
+
+    // CORRECTION found while implementing phase 8 (Step 9), fixed here alongside it: §A-4's own table
+    // says "skins[].joints -- empty" for FBX at Structure depth -- naming the SUB-FIELD, not the whole
+    // `skins` vector. `ufbx_skin_deformer` is a scene element (like a material), unaffected by
+    // ignore_all_content, so its NAME/IDENTITY survives at Structure depth exactly like meshes' own
+    // "identity survives, content does not" split -- ONE shell ImportedSkin per deformer, `joints` /
+    // `inverseBindMatrices` / `skeletonRoot` left at their struct defaults (empty / empty /
+    // INVALID_SUBASSET). The phase-6-retrofitted pass above already builds every ImportedSkin with
+    // real content at Full depth; this is Structure's own, separate, scene-wide pass (skin deformers
+    // are NOT per-mesh the way meshes themselves are, so this does not belong inside that loop).
+    if (depth == ImportDepth::Structure && settings.importSkins) {
+        for (const ufbx_skin_deformer* deformer : s.skin_deformers) {
+            ImportedSkin shell;
+            shell.name = toStd(deformer->name);
+            shell.localId = deformer->typed_id;
+            result.model.skins.push_back(std::move(shell));
+        }
+    }
+    // OVERWRITES phase 2's cheap element count with the ACTUAL populated size -- materials'/meshes'
+    // own established pattern (gltf_import.cpp's identical `summary.skinCount = result.model.skins.
+    // size()` at the end of ITS OWN skins phase). This is what makes BOTH halves of the contract hold
+    // simultaneously: real at Structure depth (the shell pass above populates one entry per deformer,
+    // so `skins.size()` still equals the raw count there -- A13) AND zero when `settings.importSkins`
+    // is false (FI63 -- neither the shell pass above nor the Full-depth pass inside the mesh loop runs
+    // in that case, so `skins` stays empty at BOTH depths).
+    result.model.summary.skinCount = result.model.skins.size();
+
+    // ---- phase 8: animations -> ImportedAnimation (D12). Runs at BOTH depths -- ufbx_anim_stack is a
+    // scene element, unaffected by ignore_all_content -- but its CONTENT (baked keyframes) is Full-
+    // only: at Structure depth every clip is a SHELL (name/localId real, duration == 0, no channels,
+    // §A-4's own table), the identical split phase 7's skin shell above now also follows. Skipped
+    // entirely when !settings.importAnimations (AC-47b), at BOTH depths, matching materials'/skins'
+    // own posture (§A-4's "structural identity survives" rule is about ignore_all_content, not about
+    // a user's own import-setting choice).
+    if (settings.importAnimations) {
+        std::size_t keyTotal = 0;
+        bool keyCapHit = false;
+        for (const ufbx_anim_stack* stack : s.anim_stacks) {
+            ImportedAnimation outAnim;
+            outAnim.name = toStd(stack->name);
+            outAnim.localId = stack->typed_id;
+
+            if (depth == ImportDepth::Structure) {
+                result.model.animations.push_back(std::move(outAnim));  // duration 0, no channels
+                continue;
+            }
+
+            ufbx_bake_opts bake = {};  // VALUE-INITIALISED (_begin_zero/_end_zero, A15)
+            // D12: every field that affects OUTPUT is pinned EXPLICITLY, even where it equals ufbx's
+            // default, so a ufbx bump cannot silently move key counts or sample times.
+            bake.trim_start_time = true;        // a clip authored on frames [30,60] starts at 0 -- what makes
+                                                // ImportedAnimation::duration mean the same thing it means
+                                                // for a glTF clip
+            bake.resample_rate = 30.0;          // ufbx's default today; PINNED
+            bake.minimum_sample_rate = 19.5;    // ufbx's default: do not re-resample already-resampled
+                                                // curves
+            bake.max_keyframe_segments = 32;    // ufbx's default; PINNED
+            bake.key_reduction_enabled = true;  // linear runs collapse; keeps counts honest (R7)
+            // key_reduction_threshold (1e-6) / key_reduction_passes (4) left at ufbx's defaults -- they
+            // trade fidelity for size and there is no evidence yet for a different point on that curve.
+            ufbx_error bakeErr = {};
+            const BakedAnimPtr baked(ufbx_bake_anim(&s, stack->anim, &bake, &bakeErr));
+            if (!baked) {
+                // one clip failing never fails the whole import (D12)
+                addWarning(result, std::format("animation '{}': {}", outAnim.name, ufbxMessage(bakeErr)));
+                continue;
+            }
+
+            // E15: a stack with zero baked nodes imports as a clip with duration == 0 and no channels
+            // -- not an error, simply nothing to append below.
+            for (const ufbx_baked_node& bn : baked.get()->nodes) {
+                if (!nodeIndexByLocalId.contains(bn.typed_id)) {
+                    // E17: an unresolved typed_id drops the WHOLE baked node (all three of its
+                    // channels), never an out-of-bounds read.
+                    addWarning(result,
+                               std::format("animation '{}': target node not found; channel dropped", outAnim.name));
+                    continue;
+                }
+                // §D-4.10: targetNode is bn.typed_id itself (a localId, §A-13), NEVER the vector index
+                // -- resolves correctly for an ordinary node AND for a geometry-transform helper node
+                // that is itself animated (E18): a helper looks like it should be special; it is not,
+                // and typed_id resolves it like any other.
+                //
+                // MEASURED, a completion the plan's own §D-4.10 left implicit: ufbx_bake_anim ALWAYS
+                // returns all three key lists (translation/rotation/scale) for every baked node, even
+                // for a component nobody animated -- key_reduction_enabled collapses an unanimated
+                // component to exactly ONE key, and `constant_translation`/`constant_rotation`/
+                // `constant_scale` are what SAYS SO (executed: baking a translation-only animation
+                // still returns `rotation_keys.count == 1` and `scale_keys.count == 1`, both flagged
+                // constant). Gating on these flags is what keeps `channels` free of degenerate
+                // single-key "channels" for properties nobody actually animated.
+                if (!bn.constant_translation && keyTotal < MAX_ANIMATION_KEYS_PER_MODEL) {
+                    keyTotal += appendVec3Channel(result, outAnim, AnimationPath::Translation, bn.typed_id,
+                                                  bn.translation_keys, MAX_ANIMATION_KEYS_PER_MODEL - keyTotal);
+                }
+                if (!bn.constant_rotation && keyTotal < MAX_ANIMATION_KEYS_PER_MODEL) {
+                    keyTotal += appendQuatChannel(result, outAnim, AnimationPath::Rotation, bn.typed_id,
+                                                  bn.rotation_keys, MAX_ANIMATION_KEYS_PER_MODEL - keyTotal);
+                }
+                if (!bn.constant_scale && keyTotal < MAX_ANIMATION_KEYS_PER_MODEL) {
+                    keyTotal += appendVec3Channel(result, outAnim, AnimationPath::Scale, bn.typed_id, bn.scale_keys,
+                                                  MAX_ANIMATION_KEYS_PER_MODEL - keyTotal);
+                }
+            }
+            if (keyTotal >= MAX_ANIMATION_KEYS_PER_MODEL && !keyCapHit) {
+                escalate(result, ImportStatus::Truncated, "animation key cap (MAX_ANIMATION_KEYS_PER_MODEL) reached");
+                keyCapHit = true;
+            }
+
+            // duration = the LONGEST channel's own last (already-trimmed) time.
+            for (const ImportedAnimationChannel& channel : outAnim.channels) {
+                if (!channel.times.empty()) {
+                    outAnim.duration = std::max(outAnim.duration, channel.times.back());
+                }
+            }
+            result.model.summary.animationDuration = std::max(result.model.summary.animationDuration, outAnim.duration);
+            result.model.animations.push_back(std::move(outAnim));
+        }
+    }
+    // Same overwrite discipline as skinCount above (and materials'/meshes' own established pattern):
+    // real at Structure depth (the shell push above populates one entry per stack, so `animations.
+    // size()` still equals the raw stack count there -- A13) AND zero when `settings.importAnimations`
+    // is false (FI71 -- `animations` never gets a single push in that case, at either depth).
+    result.model.summary.animationCount = result.model.animations.size();
 
     // E5's second half: summary.triangleCount is phase 2's cheap ufbx-native count
     // (mesh->num_triangles), deliberately NOT re-derived above. Gated on TRIANGLES, not merely

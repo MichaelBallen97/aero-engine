@@ -61,6 +61,8 @@
 #include <vector>
 
 using engine::editor::AlphaMode;
+using engine::editor::AnimationInterpolation;
+using engine::editor::AnimationPath;
 using engine::editor::ImportDepth;
 using engine::editor::importModel;
 using engine::editor::ImportResult;
@@ -2298,6 +2300,13 @@ TEST_CASE(
     CHECK(off.model.skins.empty());
     CHECK(on.model.summary.jointCount > 0);
     CHECK(off.model.summary.jointCount == 0);
+    // task 3.2.2 (Step 9) correction: `summary.skinCount` used to be phase 2's raw, untouched
+    // `s.skin_deformers.count` -- real for the on/on-agreement case this test already covered, but
+    // WRONG here: it would report "1 skin" even though `off.model.skins` is empty and no skin content
+    // was ever produced. `skinCount` is now overwritten from `model.skins.size()` (materials' own
+    // established pattern), so it agrees with the vector it is summarizing at BOTH settings.
+    CHECK(on.model.summary.skinCount > 0);
+    CHECK(off.model.summary.skinCount == 0);
     // Every OTHER field stays identical -- the mesh pass itself is not short-circuited by importSkins.
     CHECK(on.model.summary.vertexCount == off.model.summary.vertexCount);
     CHECK(on.model.summary.triangleCount == off.model.summary.triangleCount);
@@ -2308,4 +2317,415 @@ TEST_CASE(
     CHECK(on.model.meshes[0].primitives[0].positions.size() == off.model.meshes[0].primitives[0].positions.size());
     CHECK(off.model.meshes[0].primitives[0].joints.empty());
     CHECK(off.model.meshes[0].primitives[0].weights.empty());
+}
+
+// ---- FI64-FI71: animation baking (Step 9, phase 8) -------------------------------------------------
+//
+// Every fixture below is a Y-up/metre (CANONICAL_GLOBALS_PROPERTIES) document -- the source axes are
+// not this section's own concern (Step 5 already proved the conversion; §D-4.10 runs entirely on
+// ALREADY-CONVERTED node transforms, since ufbx_bake_anim samples the same scene phase 3 walks). Every
+// literal tick value below is real FBX v7+ tick arithmetic (46186158000 ticks/second), and every
+// numeric result asserted is MEASURED against the real, vendored ufbx v0.23.0 (probes compiled and run
+// against editor/third_party/ufbx/{ufbx.h,ufbx.c} directly), never assumed from the header's prose.
+
+TEST_CASE(
+    "fbx_import: one clip per ufbx_anim_stack, every channel Linear, times strictly increasing, "
+    "values.size() == times.size() (FI64, AC-44)") {
+    // MEASURED (probe): a Null node's own "Lcl Translation" animated along X, 0 -> 10 over one second
+    // (ticks 0..46186158000), bakes to EXACTLY 2 translation keys -- a straight ramp is trivially
+    // reducible. The rotation/scale key lists ufbx_bake_anim ALWAYS returns (even for an unanimated
+    // component) are both flagged constant here and therefore produce no channel at all (§D-4.10's own
+    // finding, gated on `bn.constant_translation`/`_rotation`/`_scale` in the real code).
+    constexpr std::string_view OBJECTS =
+        "    Model: 100, \"Model::box\", \"Null\" { Version: 232 }\n"
+        "    AnimationStack: 500, \"AnimStack::Take 001\", \"\" { Version: 100 }\n"
+        "    AnimationLayer: 501, \"AnimLayer::BaseLayer\", \"\" { Version: 100 }\n"
+        "    AnimationCurveNode: 502, \"AnimCurveNode::T\", \"\" {\n"
+        "        Version: 100\n        Properties70:  { P: \"d\", \"Compound\", \"\", \"\" }\n"
+        "    }\n"
+        "    AnimationCurve: 503, \"AnimCurve::\", \"\" {\n"
+        "        Default: 0\n        KeyVer: 4009\n"
+        "        KeyTime: *2 { a: 0,46186158000 }\n"
+        "        KeyValueFloat: *2 { a: 0,10 }\n"
+        "        KeyAttrFlags: *1 { a: 4 }\n"
+        "        KeyAttrDataFloat: *4 { a: 0,0,0,0 }\n"
+        "        KeyAttrRefCount: *1 { a: 2 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",501,500\n"
+        "    C: \"OO\",502,501\n"
+        "    C: \"OP\",502,100,\"Lcl Translation\"\n"
+        "    C: \"OP\",503,502,\"d|X\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.animations.size() == 1);
+    const auto& anim = result.model.animations[0];
+    CHECK(anim.name == "Take 001");
+    REQUIRE(anim.channels.size() == 1);  // rotation/scale both constant -- no channel for either
+    const auto& channel = anim.channels[0];
+    CHECK(channel.path == AnimationPath::Translation);
+    CHECK(channel.interpolation == AnimationInterpolation::Linear);
+    REQUIRE(channel.times.size() == 2);
+    CHECK(channel.times[0] < channel.times[1]);  // strictly increasing (AC-44)
+    REQUIRE(channel.values.size() == channel.times.size());
+    CHECK(channel.values[0].x == APPROX_POS(0.0));
+    CHECK(channel.values[1].x == APPROX_POS(10.0));
+    CHECK(anim.duration == APPROX_POS(1.0));
+
+    // targetNode resolves to the node's own localId, never a vector index (§D-4.10).
+    REQUIRE(result.model.nodes.size() == 1);
+    CHECK(channel.targetNode == result.model.nodes[0].localId);
+}
+
+TEST_CASE(
+    "fbx_import: trim_start_time shifts a clip authored on [1s,2s] so it starts at 0; duration is the "
+    "LENGTH, not the end time (FI65, AC-45, seed S24's discriminator)") {
+    // MEASURED (probe): LocalStart/LocalStop (ticks 46186158000/92372316000 -- 1.0s/2.0s) become
+    // stack->time_begin/time_end. WITHOUT trim_start_time, baked keys would read 1.0/2.0 (a separate
+    // probe, driving the identical KeyTime pair with NO LocalStart/LocalStop at all, measured this
+    // directly). WITH it (pinned, D12), they read 0.0/1.0 -- seed S24 (dropping the option) is exactly
+    // the untrimmed pair.
+    constexpr std::string_view OBJECTS =
+        "    Model: 100, \"Model::box\", \"Null\" { Version: 232 }\n"
+        "    AnimationStack: 500, \"AnimStack::Take 001\", \"\" {\n"
+        "        Version: 100\n"
+        "        Properties70:  {\n"
+        "            P: \"LocalStart\", \"int\", \"Integer\", \"\",46186158000\n"
+        "            P: \"LocalStop\", \"int\", \"Integer\", \"\",92372316000\n"
+        "        }\n"
+        "    }\n"
+        "    AnimationLayer: 501, \"AnimLayer::BaseLayer\", \"\" { Version: 100 }\n"
+        "    AnimationCurveNode: 502, \"AnimCurveNode::T\", \"\" {\n"
+        "        Version: 100\n        Properties70:  { P: \"d\", \"Compound\", \"\", \"\" }\n"
+        "    }\n"
+        "    AnimationCurve: 503, \"AnimCurve::\", \"\" {\n"
+        "        Default: 0\n        KeyVer: 4009\n"
+        "        KeyTime: *2 { a: 46186158000,92372316000 }\n"
+        "        KeyValueFloat: *2 { a: 0,10 }\n"
+        "        KeyAttrFlags: *1 { a: 4 }\n"
+        "        KeyAttrDataFloat: *4 { a: 0,0,0,0 }\n"
+        "        KeyAttrRefCount: *1 { a: 2 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",501,500\n"
+        "    C: \"OO\",502,501\n"
+        "    C: \"OP\",502,100,\"Lcl Translation\"\n"
+        "    C: \"OP\",503,502,\"d|X\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.animations.size() == 1);
+    const auto& anim = result.model.animations[0];
+    REQUIRE(anim.channels.size() == 1);
+    const auto& channel = anim.channels[0];
+    REQUIRE(channel.times.size() == 2);
+    CHECK(channel.times[0] == APPROX_POS(0.0));  // NOT 1.0 -- trim_start_time shifted it
+    CHECK(channel.times[1] == APPROX_POS(1.0));  // NOT 2.0
+    CHECK(anim.duration == APPROX_POS(1.0));     // the LENGTH (1s), not the end time (2s)
+}
+
+TEST_CASE(
+    "fbx_import: an Euler-animated node with a non-default rotation order AND a non-zero pre-rotation "
+    "bakes to quaternion keys matching hand-computed values, within ROT_EPS (FI66, AC-46, seed S26's "
+    "discriminator)") {
+    // MEASURED against real ufbx v0.23.0 (probe, %.9f precision): RotationOrder=5 (ZYX) +
+    // PreRotation=(10,20,30) degrees + three SIMULTANEOUSLY-animated Euler curves (rx: 0->15,
+    // ry: 0->30, rz: 0->45, both over one second) do NOT trace a single SLERP arc -- key reduction
+    // cannot collapse them, and ufbx resamples the whole second at 30 Hz (31 points, index 0..30).
+    // This is the ONE case in the whole suite that exists for exactly one seed (S26: translating
+    // curves instead of baking). That substitution would get even q(0) wrong: PreRotation composes
+    // with the animated part using TWO DIFFERENT Euler conventions -- PreRotation is always applied in
+    // XYZ order, "Lcl Rotation" uses the node's own RotationOrder (ZYX here). Trusting
+    // ufbx_bake_anim's own composition (D12) is the only correct way to reach these numbers;
+    // hand-rolling the Euler math is exactly what this task forbids.
+    constexpr std::string_view OBJECTS =
+        "    Model: 100, \"Model::box\", \"Null\" {\n"
+        "        Version: 232\n"
+        "        Properties70:  {\n"
+        "            P: \"RotationOrder\", \"enum\", \"\", \"\",5\n"
+        "            P: \"PreRotation\", \"Vector3D\", \"Vector\", \"\",10,20,30\n"
+        "        }\n"
+        "    }\n"
+        "    AnimationStack: 500, \"AnimStack::Take 001\", \"\" { Version: 100 }\n"
+        "    AnimationLayer: 501, \"AnimLayer::BaseLayer\", \"\" { Version: 100 }\n"
+        "    AnimationCurveNode: 502, \"AnimCurveNode::R\", \"\" {\n"
+        "        Version: 100\n        Properties70:  { P: \"d\", \"Compound\", \"\", \"\" }\n"
+        "    }\n"
+        "    AnimationCurve: 503, \"AnimCurve::rx\", \"\" {\n"
+        "        Default: 0\n        KeyVer: 4009\n"
+        "        KeyTime: *2 { a: 0,46186158000 }\n        KeyValueFloat: *2 { a: 0,15 }\n"
+        "        KeyAttrFlags: *1 { a: 4 }\n        KeyAttrDataFloat: *4 { a: 0,0,0,0 }\n"
+        "        KeyAttrRefCount: *1 { a: 2 }\n"
+        "    }\n"
+        "    AnimationCurve: 504, \"AnimCurve::ry\", \"\" {\n"
+        "        Default: 0\n        KeyVer: 4009\n"
+        "        KeyTime: *2 { a: 0,46186158000 }\n        KeyValueFloat: *2 { a: 0,30 }\n"
+        "        KeyAttrFlags: *1 { a: 4 }\n        KeyAttrDataFloat: *4 { a: 0,0,0,0 }\n"
+        "        KeyAttrRefCount: *1 { a: 2 }\n"
+        "    }\n"
+        "    AnimationCurve: 505, \"AnimCurve::rz\", \"\" {\n"
+        "        Default: 0\n        KeyVer: 4009\n"
+        "        KeyTime: *2 { a: 0,46186158000 }\n        KeyValueFloat: *2 { a: 0,45 }\n"
+        "        KeyAttrFlags: *1 { a: 4 }\n        KeyAttrDataFloat: *4 { a: 0,0,0,0 }\n"
+        "        KeyAttrRefCount: *1 { a: 2 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",501,500\n"
+        "    C: \"OO\",502,501\n"
+        "    C: \"OP\",502,100,\"Lcl Rotation\"\n"
+        "    C: \"OP\",503,502,\"d|X\"\n"
+        "    C: \"OP\",504,502,\"d|Y\"\n"
+        "    C: \"OP\",505,502,\"d|Z\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.animations.size() == 1);
+    const auto& anim = result.model.animations[0];
+    REQUIRE(anim.channels.size() == 1);
+    const auto& channel = anim.channels[0];
+    CHECK(channel.path == AnimationPath::Rotation);
+    CHECK(channel.interpolation == AnimationInterpolation::Linear);
+    REQUIRE(channel.times.size() == 31);
+    REQUIRE(channel.values.size() == 31);
+    for (std::size_t i = 1; i < channel.times.size(); ++i) {
+        CHECK(channel.times[i] > channel.times[i - 1]);  // strictly increasing throughout
+    }
+    // First and last sampled quaternions, MEASURED against real ufbx v0.23.0 (%.9f precision).
+    CHECK(channel.values.front().x == APPROX_ROT(0.038134576));
+    CHECK(channel.values.front().y == APPROX_ROT(0.189307857));
+    CHECK(channel.values.front().z == APPROX_ROT(0.239298338));
+    CHECK(channel.values.front().w == APPROX_ROT(0.951548525));
+    CHECK(channel.values.back().x == APPROX_ROT(0.267626546));
+    CHECK(channel.values.back().y == APPROX_ROT(0.380927132));
+    CHECK(channel.values.back().z == APPROX_ROT(0.553612915));
+    CHECK(channel.values.back().w == APPROX_ROT(0.690494962));
+    // A middle sample too (index 15, t=0.5): three independent points on the curve, not just the two
+    // endpoints a naive "translate the curve" implementation might coincidentally get close to.
+    CHECK(channel.values[15].x == APPROX_ROT(0.132214996));
+    CHECK(channel.values[15].y == APPROX_ROT(0.306509573));
+    CHECK(channel.values[15].z == APPROX_ROT(0.410957669));
+    CHECK(channel.values[15].w == APPROX_ROT(0.848342425));
+}
+
+TEST_CASE(
+    "fbx_import: targetNode resolves to the animated node's own localId even when that node ALSO owns "
+    "a geometry-transform helper CHILD -- never the helper's (FI67, E18)") {
+    // MEASURED (probe): a Mesh node with a GeometricTranslation (creating a "<geometry helper>" child,
+    // FI23's own shape) that is ITSELF animated via "Lcl Translation" bakes against the ORIGINAL
+    // node's typed_id, never the helper's -- a helper looks like it should be special; it is not, and
+    // typed_id resolves it like any other node (§D-4.10).
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" {\n"
+        "        Version: 232\n"
+        "        Properties70:  {\n"
+        "            P: \"GeometricTranslation\", \"Vector3D\", \"Vector\", \"\",1,0,0\n"
+        "        }\n"
+        "    }\n"
+        "    AnimationStack: 500, \"AnimStack::Take 001\", \"\" { Version: 100 }\n"
+        "    AnimationLayer: 501, \"AnimLayer::BaseLayer\", \"\" { Version: 100 }\n"
+        "    AnimationCurveNode: 502, \"AnimCurveNode::T\", \"\" {\n"
+        "        Version: 100\n        Properties70:  { P: \"d\", \"Compound\", \"\", \"\" }\n"
+        "    }\n"
+        "    AnimationCurve: 503, \"AnimCurve::\", \"\" {\n"
+        "        Default: 0\n        KeyVer: 4009\n"
+        "        KeyTime: *2 { a: 0,46186158000 }\n        KeyValueFloat: *2 { a: 0,10 }\n"
+        "        KeyAttrFlags: *1 { a: 4 }\n        KeyAttrDataFloat: *4 { a: 0,0,0,0 }\n"
+        "        KeyAttrRefCount: *1 { a: 2 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",501,500\n"
+        "    C: \"OO\",502,501\n"
+        "    C: \"OP\",502,100,\"Lcl Translation\"\n"
+        "    C: \"OP\",503,502,\"d|X\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 2);  // the original "box" AND its geometry-transform helper
+    const engine::editor::ImportedNode* original = nullptr;
+    const engine::editor::ImportedNode* helper = nullptr;
+    for (const auto& n : result.model.nodes) {
+        if (n.name.find("<geometry helper>") != std::string::npos) {
+            helper = &n;
+        } else {
+            original = &n;
+        }
+    }
+    REQUIRE(original != nullptr);
+    REQUIRE(helper != nullptr);
+    CHECK(original->localId != helper->localId);
+
+    REQUIRE(result.model.animations.size() == 1);
+    REQUIRE(result.model.animations[0].channels.size() == 1);
+    CHECK(result.model.animations[0].channels[0].targetNode == original->localId);
+    CHECK(result.model.animations[0].channels[0].targetNode != helper->localId);
+}
+
+// ---- FI68 is DELIBERATELY ABSENT --------------------------------------------------------------------
+//
+// E17 ("an out-of-range/unresolved typed_id drops the channel with one warning, never an out-of-bounds
+// read") is a DEFENSIVE check with NO REACHABLE INPUT found anywhere in this suite -- the identical
+// class of finding as E13 (FI61's own comment above) -- confirmed by THREE independent, empirically
+// tested attempts against real, vendored ufbx v0.23.0, not by assumption:
+//   1. Animating the scene ROOT's own "Lcl Translation" directly (`C: "OP",curveNodeId,0,"Lcl
+//      Translation"`): MEASURED -- ufbx bakes ZERO nodes for this connection (baked->nodes.count ==
+//      0), not a typed_id == 0 entry. The root is simply never a bake target.
+//   2. A Model object with NO "OO" connection to the scene hierarchy at all, still animated via "OP":
+//      MEASURED -- ufbx silently reparents it under the root anyway (allow_nodes_out_of_root stays
+//      false, its default, never set by this importer), so it still appears in scene.nodes and is
+//      baked with an ordinary, resolvable typed_id.
+//   3. MAX_FBX_NODE_DEPTH (FI27) truncating the node walk: MEASURED -- ufbx refuses the WHOLE load the
+//      instant its own node_depth_limit is exceeded (no partial ufbx_scene is ever returned, FI27's
+//      own finding), so there is no scenario where SOME nodes are baked but ABSENT from
+//      nodeIndexByLocalId -- either every node the bake sees is in the map, or the load fails outright
+//      and nothing is baked at all.
+// The guard in fbx_import.cpp stays (defence in depth for a future ufbx version, or an input shape this
+// suite has not tried), but no case here claims to discriminate it -- an untested "this line runs"
+// assertion would only look like proof.
+
+TEST_CASE(
+    "fbx_import: two adjacent baked samples whose DOUBLE times are distinct but collide once narrowed "
+    "to float -- the second is dropped with exactly one warning, times stays strictly increasing "
+    "(FI69, E16)") {
+    // MEASURED (probe, %.15f precision): six keys spaced 2 FBX ticks apart (roughly 4.3e-11s), based
+    // around ~0.001s -- close enough together that ufbx's own DOUBLE-precision bake times are
+    // genuinely distinct and increasing, but float's ~7-digit precision at that magnitude (ULP ~=
+    // 1.19e-10s, LARGER than the 2-tick gap) collapses adjacent pairs to the SAME float value. This is
+    // INV-F8's own justification made concrete: ufbx's own output is correct; narrowing double ->
+    // float (matching ImportedAnimationChannel::times' own element type) is what THIS TASK must guard
+    // against, not assume ufbx avoids on its own. Values alternate (0/10) so key reduction cannot
+    // collapse the six keys down to two BEFORE narrowing, which would defeat the case.
+    constexpr std::string_view OBJECTS =
+        "    Model: 100, \"Model::box\", \"Null\" { Version: 232 }\n"
+        "    AnimationStack: 500, \"AnimStack::Take 001\", \"\" { Version: 100 }\n"
+        "    AnimationLayer: 501, \"AnimLayer::BaseLayer\", \"\" { Version: 100 }\n"
+        "    AnimationCurveNode: 502, \"AnimCurveNode::T\", \"\" {\n"
+        "        Version: 100\n        Properties70:  { P: \"d\", \"Compound\", \"\", \"\" }\n"
+        "    }\n"
+        "    AnimationCurve: 503, \"AnimCurve::\", \"\" {\n"
+        "        Default: 0\n        KeyVer: 4009\n"
+        "        KeyTime: *6 { a: 46186158,46186160,46186162,46186164,46186166,46186168 }\n"
+        "        KeyValueFloat: *6 { a: 0,10,0,10,0,10 }\n"
+        "        KeyAttrFlags: *6 { a: 4,4,4,4,4,4 }\n"
+        "        KeyAttrDataFloat: *24 { a: 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0 }\n"
+        "        KeyAttrRefCount: *6 { a: 1,1,1,1,1,1 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",501,500\n"
+        "    C: \"OO\",502,501\n"
+        "    C: \"OP\",502,100,\"Lcl Translation\"\n"
+        "    C: \"OP\",503,502,\"d|X\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.animations.size() == 1);
+    REQUIRE(result.model.animations[0].channels.size() == 1);
+    const auto& channel = result.model.animations[0].channels[0];
+    // MEASURED (probe): six double-precision baked samples collapse to exactly TWO once each is
+    // narrowed to float -- index 0 and index 3 survive (the first of each colliding pair); indices
+    // 1/2/4/5 are dropped.
+    REQUIRE(channel.times.size() == 2);
+    CHECK(channel.times[0] < channel.times[1]);  // INV-F8: still strictly increasing after the drop
+    REQUIRE(channel.values.size() == 2);
+    CHECK(channel.values[0].x == APPROX_POS(0.0));
+    CHECK(channel.values[1].x == APPROX_POS(10.0));
+    CHECK(result.warningTotal == 1);  // ONE warning for the whole channel, not one per dropped sample
+    REQUIRE(result.warnings.size() == 1);
+    CHECK(result.warnings[0].find("duplicate or non-increasing") != std::string::npos);
+}
+
+TEST_CASE(
+    "fbx_import: an AnimationStack with no baked channels imports as duration == 0, no channels -- NOT "
+    "an error (FI70, E15)") {
+    constexpr std::string_view OBJECTS =
+        "    Model: 100, \"Model::box\", \"Null\" { Version: 232 }\n"
+        "    AnimationStack: 500, \"AnimStack::Empty\", \"\" { Version: 100 }\n"
+        "    AnimationLayer: 501, \"AnimLayer::BaseLayer\", \"\" { Version: 100 }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",501,500\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.animations.size() == 1);
+    CHECK(result.model.animations[0].name == "Empty");
+    CHECK(result.model.animations[0].duration == 0.0F);
+    CHECK(result.model.animations[0].channels.empty());
+}
+
+TEST_CASE(
+    "fbx_import: settings.importAnimations = false -> animations.empty(), summary.animationCount == "
+    "0, animationDuration == 0.0F, every other field identical (FI71, AC-47b)") {
+    // MAX_ANIMATION_KEYS_PER_MODEL (2 000 000) is NOT implemented as a case here, and this is a
+    // deliberate, EMPIRICALLY INVESTIGATED decision, not a silent drop (re-examined per this task's
+    // own instructions -- the identical discipline FI38 already applies to MAX_VERTICES_PER_MODEL/
+    // MAX_INDICES_PER_MODEL). Two things were MEASURED against real, vendored ufbx v0.23.0 (probes),
+    // not assumed:
+    //   1. `max_keyframe_segments` (32, pinned) caps how many resampled points ONE keyframe SPAN can
+    //      produce, and that cap does NOT grow with the span's duration -- a genuinely non-linear
+    //      2-key rotation stretched from 1 second to 10 seconds produced FEWER baked points (20, not
+    //      300), never more. "Sparse keys + a huge duration" is not the shortcut it would be for a
+    //      naive fixed-rate resampler.
+    //   2. The only way to reach a large baked-key count is therefore to PROVIDE that many original
+    //      keyframes directly, and the multiplier tops out low enough (empirically far under 32x, per
+    //      point 1) that even the BEST case needs on the order of 60 000+ explicit `KeyTime`/
+    //      `KeyValueFloat` entries in ONE curve -- upwards of a megabyte of literal fixture text.
+    //      "Many minimal objects" (FI38's/FI62's own shortcut for MAX_PRIMITIVES_PER_MODEL/
+    //      MAX_JOINTS_PER_SKIN) does not help here either: spreading the same total key count across
+    //      many small nodes/curves ADDS fixed per-node/per-curve overhead on top of the keyframe data
+    //      itself, making the total fixture size WORSE, not better, than one giant curve. Both
+    //      readings land well beyond this file's own stated tier-0 budget ("a few hundred bytes to at
+    //      most a few hundred KB, no disk, instant" -- §G-12/R3), so -- like MAX_VERTICES_PER_MODEL/
+    //      MAX_INDICES_PER_MODEL -- there is no cheap fixture that reaches this cap, and none is
+    //      claimed here.
+    constexpr std::string_view OBJECTS =
+        "    Model: 100, \"Model::box\", \"Null\" { Version: 232 }\n"
+        "    AnimationStack: 500, \"AnimStack::Take 001\", \"\" { Version: 100 }\n"
+        "    AnimationLayer: 501, \"AnimLayer::BaseLayer\", \"\" { Version: 100 }\n"
+        "    AnimationCurveNode: 502, \"AnimCurveNode::T\", \"\" {\n"
+        "        Version: 100\n        Properties70:  { P: \"d\", \"Compound\", \"\", \"\" }\n"
+        "    }\n"
+        "    AnimationCurve: 503, \"AnimCurve::\", \"\" {\n"
+        "        Default: 0\n        KeyVer: 4009\n"
+        "        KeyTime: *2 { a: 0,46186158000 }\n        KeyValueFloat: *2 { a: 0,10 }\n"
+        "        KeyAttrFlags: *1 { a: 4 }\n        KeyAttrDataFloat: *4 { a: 0,0,0,0 }\n"
+        "        KeyAttrRefCount: *1 { a: 2 }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",501,500\n"
+        "    C: \"OO\",502,501\n"
+        "    C: \"OP\",502,100,\"Lcl Translation\"\n"
+        "    C: \"OP\",503,502,\"d|X\"\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    ImportSettings onSettings;
+    onSettings.importAnimations = true;
+    const ImportResult on = importModel("t.fbx", "", asBytes(doc), onSettings, ImportDepth::Full, {});
+    ImportSettings offSettings;
+    offSettings.importAnimations = false;
+    const ImportResult off = importModel("t.fbx", "", asBytes(doc), offSettings, ImportDepth::Full, {});
+
+    REQUIRE(on.status == ImportStatus::Ok);
+    REQUIRE(off.status == ImportStatus::Ok);
+    CHECK_FALSE(on.model.animations.empty());
+    CHECK(off.model.animations.empty());
+    CHECK(on.model.summary.animationCount > 0);
+    CHECK(off.model.summary.animationCount == 0);
+    CHECK(off.model.summary.animationDuration == 0.0F);
+    CHECK(on.model.summary.animationDuration > 0.0F);
+    // Every OTHER field stays identical -- animations are not what any other phase depends on.
+    CHECK(on.model.summary.nodeCount == off.model.summary.nodeCount);
+    CHECK(on.model.summary.meshCount == off.model.summary.meshCount);
+    CHECK(on.model.nodes.size() == off.model.nodes.size());
 }
