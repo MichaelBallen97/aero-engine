@@ -33,9 +33,15 @@
 // Comments:              `;` to end of line. `#` is NOT a comment -- that is what makes OBJ text fail
 //                        to parse (FI12, Step 4).
 // Creator:               free text. A hand-written fixture yields metadata.exporter == UNKNOWN and
-//                        exporter_version == 0, so SourceSpace::generator is EMPTY for every tier-0
-//                        fixture (§A-21, FI19).
+//                        exporter_version == 0 -- but SourceSpace::generator is NOT empty whenever
+//                        Creator is set: generatorString() falls back to metadata.creator precisely
+//                        because ufbx populates it from this field (ufbx.c's
+//                        ufbxi_read_header_extension reads Creator as a direct child of
+//                        FBXHeaderExtension). CORRECTION to an earlier draft of this comment (and to
+//                        the plan's own §A-21 prose), found by running FI19: "every tier-0 fixture has
+//                        an empty generator" is only true for a fixture whose Creator is ALSO empty.
 //
+
 // The template below is the §D-7 document, VERIFIED TO PARSE under real ufbx v0.23.0 (§G-10 -- R1 is
 // CLOSED by that spike, not deferred). Every future FI case is this document with one section varied
 // through makeFbx()'s three parameters, never restated whole.
@@ -106,6 +112,34 @@ constexpr std::string_view DEFAULT_CONNECTIONS =
     "    C: \"OO\",100,0\n"
     "    C: \"OO\",200,100\n";
 
+// AC-23's fixture: Y-up, ALREADY-canonical -- UnitScaleFactor: 100 (NOT 1), because §A-14's own
+// warning is exactly the trap here: UnitScaleFactor is in CENTIMETRES, so `1` would make this a Y-up
+// CENTIMETRE source (the importer then scales it by 100, silently testing the wrong thing). `100` is
+// what makes 1 world-space unit equal 1 metre, matching a source ufbx reports needing NO conversion.
+constexpr std::string_view CANONICAL_GLOBALS_PROPERTIES =
+    "        P: \"UpAxis\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"UpAxisSign\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"FrontAxis\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"FrontAxisSign\", \"int\", \"Integer\", \"\",-1\n"
+    "        P: \"CoordAxis\", \"int\", \"Integer\", \"\",0\n"
+    "        P: \"CoordAxisSign\", \"int\", \"Integer\", \"\",1\n"
+    "        P: \"UnitScaleFactor\", \"double\", \"Number\", \"\",100\n";
+
+// The same quad, already in METRES (not centimetres, matching CANONICAL_GLOBALS_PROPERTIES' unit),
+// on a node translated (0,2,0) -- the number AC-23 asks for.
+constexpr std::string_view CANONICAL_OBJECTS =
+    "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+    "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+    "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+    "        GeometryVersion: 124\n"
+    "    }\n"
+    "    Model: 100, \"Model::box\", \"Mesh\" {\n"
+    "        Version: 232\n"
+    "        Properties70:  {\n"
+    "            P: \"Lcl Translation\", \"Lcl Translation\", \"\", \"A\",0,2,0\n"
+    "        }\n"
+    "    }\n";
+
 // Assembles a complete ASCII FBX 7.4.0 document from its three variable sections (§D-7), so a future
 // case can vary ONE of them without restating the whole file. Pass a DEFAULT_* constant above for any
 // section a case does not need to change. PURE: no disk, builds the document entirely in memory.
@@ -155,8 +189,8 @@ constexpr std::string_view DEFAULT_CONNECTIONS =
 //                  plan's own §V3 wording, read as the SUMMARY count rather than
 //                  model.meshes.size(), which stays 0 until phase 6 (Step 7, out of this engagement's
 //                  scope) builds the actual ImportedMesh/ImportedPrimitive vectors.
-//   Step 5 (this engagement's last step): phase 3 lands (nodes, hierarchy). nodes.size() becomes 1,
-//                  nodes[0].name becomes "box", roots.size() becomes 1.
+//   Step 5 (this engagement's last step, HERE): phase 3 lands (nodes, hierarchy). nodes.size()
+//                  becomes 1, nodes[0].name becomes "box", roots.size() becomes 1.
 //
 // model.meshes.size() == 1 (the plan's literal §V3 wording, read as the vector rather than the
 // summary count) is NOT asserted here -- it becomes true only once phase 6 (Step 7) exists, which is
@@ -164,13 +198,12 @@ constexpr std::string_view DEFAULT_CONNECTIONS =
 TEST_CASE("fbx_import: the §D-7 template through the real dispatch arm (FI1)") {
     const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
     const ImportResult result = importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
-    // Step 4's true statement: phases 1-2 land here. ufbx_load_memory succeeds on this well-formed
-    // document, so status becomes Ok, and summary.meshCount (a cheap, structural count read directly
-    // from ufbx's own scene.meshes.count -- see fbx_import.cpp's own comment) becomes 1. nodes/roots
-    // stay empty until Step 5's node walk (phase 3).
     CHECK(result.status == ImportStatus::Ok);
     CHECK(result.model.summary.meshCount == 1);
-    CHECK(result.model.nodes.empty());
+    // Step 5's true statement: phase 3 (the node walk) lands here.
+    REQUIRE(result.model.nodes.size() == 1);
+    CHECK(result.model.nodes[0].name == "box");
+    CHECK(result.model.roots.size() == 1);
 }
 
 // ---- FI2-FI4: load surface and depth (Step 4, phases 1-2) ---------------------------------------
@@ -203,8 +236,8 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "fbx_import: Structure and Full agree on every element COUNT this step wires (FI4 part 1, "
-    "AC-20/INV-M4 as §A-4 scopes it -- extended in Step 5 to also cover the node list)") {
+    "fbx_import: Structure and Full agree on the node list and every element COUNT this task wires "
+    "(FI4, AC-20/INV-M4 as §A-4 scopes it)") {
     const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
     const ImportResult structure =
         importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
@@ -215,6 +248,17 @@ TEST_CASE(
     CHECK(structure.model.summary.skinCount == full.model.summary.skinCount);
     CHECK(structure.model.summary.animationCount == full.model.summary.animationCount);
     CHECK(structure.externalUris == full.externalUris);
+    // The node list: names, localId, parent, children and roots -- phase 3 (this commit) is not
+    // depth-gated at all, so any depth-conditional code above it would break one side of this.
+    REQUIRE(structure.model.nodes.size() == full.model.nodes.size());
+    for (std::size_t i = 0; i < structure.model.nodes.size(); ++i) {
+        CAPTURE(i);
+        CHECK(structure.model.nodes[i].name == full.model.nodes[i].name);
+        CHECK(structure.model.nodes[i].localId == full.model.nodes[i].localId);
+        CHECK(structure.model.nodes[i].parent == full.model.nodes[i].parent);
+        CHECK(structure.model.nodes[i].children == full.model.nodes[i].children);
+    }
+    CHECK(structure.model.roots == full.model.roots);
 }
 
 TEST_CASE("fbx_import: an empty byte span fails safely, without a null-pointer read (FI5)") {
@@ -346,4 +390,398 @@ TEST_CASE(
     CHECK(result.status != ImportStatus::Ok);
     CHECK(result.model.nodes.empty());
     CHECK(result.model.meshes.empty());
+}
+
+// ---- FI13-FI27: space conversion and hierarchy (Step 5, phase 3) --------------------------------
+//
+// This is where D6's whole conversion regime is either right or silently wrong. The hand-computed
+// literals below were MEASURED against real ufbx v0.23.0 (never assumed), the same discipline §A-8
+// and the plan's own FI15/FI16 commentary insist on.
+//
+// SCOPE, stated plainly rather than silently narrowed: FI15-FI17 (the space-conversion cases) assert
+// their NODE-LEVEL half only -- translation, rotation, scale on `ImportedNode`. §A-8 point 2 is why
+// this is not a reduced proof: "the axis conversion lives in the NODE ROTATION, not in the vertices
+// ... a wrong target_axes shows up there first." The MESH-LEVEL half (converted vertex positions,
+// summary.bounds) is phase 6's job (Step 7, out of this engagement's scope -- Step 4's own comment
+// records that `result.model.summary.bounds` stays at its default until then). Likewise FI23/FI24
+// assert their NODE-LEVEL half (the helper node exists, named correctly) and not the mesh-level half
+// (positions unmodified by the transform / meshIndex equality), for the identical reason.
+//
+// TWO planned cases are NOT implemented in this engagement, named here rather than silently dropped:
+//   FI20 (mirror_axis / triangle winding) needs real triangle indices -- phase 6, Step 7.
+//   FI28 (MAX_NODES_PER_MODEL, 65536) needs a fixture on the order of megabytes to genuinely reach a
+//         65536-node cap with real parsed content, which is squarely against this whole file's own
+//         "a few hundred bytes, no disk, instant" tier-0 contract (§G-12/R3). FI27 below proves the
+//         IDENTICAL "our own cap, checked before the allocation it bounds" property against
+//         MAX_FBX_NODE_DEPTH (256), which needs three orders of magnitude less text to reach for real.
+
+TEST_CASE("fbx_import: sourceSpace.declared is true for every FBX, with a real formatVersion (FI13)") {
+    const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.model.sourceSpace.declared);
+    CHECK(result.model.sourceSpace.formatVersion == "FBX 7400 ascii");
+}
+
+TEST_CASE(
+    "fbx_import: sourceSpace stays all-default for a .gltf driven through the same importModel (FI14, "
+    "AC-24 half 2)") {
+    const std::string doc = R"({"asset": {"version": "2.0"}})";
+    const ImportResult result = importModel("t.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    CHECK_FALSE(result.model.sourceSpace.declared);
+    CHECK(result.model.sourceSpace.unitMeters == doctest::Approx(1.0F));
+    CHECK(result.model.sourceSpace.upAxis == 'Y');
+    CHECK(result.model.sourceSpace.generator.empty());
+    CHECK(result.model.sourceSpace.formatVersion.empty());
+}
+
+TEST_CASE(
+    "fbx_import: AC-22's Z-up centimetre conversion, on the node -- a wrong target_axes shows up here "
+    "FIRST (FI15, AC-22, seeds S1-S5's discriminator)") {
+    // MEASURED against real ufbx v0.23.0 (§A-8): a node at Lcl Translation (0,0,200) in a Z-up,
+    // UnitScaleFactor:1 (centimetre) source converts to translation (0, 2, 5.68434e-16) and rotation
+    // (-0.7071068, 0, 0, 0.7071068) -- NOT (0,2,0) and identity. The residual Z is real (a genuine
+    // rotation's floating-point remainder), so this compares with an epsilon, never `==`.
+    const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 1);
+    const auto& node = result.model.nodes[0];
+    CHECK(node.translation.x == APPROX_POS(0.0));
+    CHECK(node.translation.y == APPROX_POS(2.0));
+    CHECK(node.translation.z == APPROX_POS(0.0));
+    CHECK(node.rotation.x == APPROX_ROT(-0.7071068));
+    CHECK(node.rotation.y == APPROX_ROT(0.0));
+    CHECK(node.rotation.z == APPROX_ROT(0.0));
+    CHECK(node.rotation.w == APPROX_ROT(0.7071068));
+    // The mesh-level half (converted positions, summary.bounds.size() ~= (1,1,0)) is phase 6's job
+    // (Step 7) -- see this block's own header comment.
+}
+
+TEST_CASE(
+    "fbx_import: AC-23's already-canonical source imports UNCHANGED -- a conversion that ALWAYS "
+    "fires passes FI15 and fails this (FI16, AC-23)") {
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, CANONICAL_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 1);
+    const auto& node = result.model.nodes[0];
+    CHECK(node.translation.x == doctest::Approx(0.0F));
+    CHECK(node.translation.y == doctest::Approx(2.0F));
+    CHECK(node.translation.z == doctest::Approx(0.0F));
+    CHECK(node.rotation == engine::Quat::identity());
+    CHECK(node.scale.x == doctest::Approx(1.0F));
+    CHECK(node.scale.y == doctest::Approx(1.0F));
+    CHECK(node.scale.z == doctest::Approx(1.0F));
+}
+
+TEST_CASE(
+    "fbx_import: AC-28 -- an already-canonical source with an asymmetric TRS imports to EXACTLY the "
+    "source's numbers, component for component (FI17, seeds S6/S7's discriminator, MI40b's shape a "
+    "second time)") {
+    // MEASURED against real ufbx v0.23.0: Lcl Rotation (15, 30, 45) degrees on an already-canonical
+    // (Y-up, metre) source produces rotation (0.0182830462, 0.285320133, 0.335270344, 0.897692569) --
+    // a real quaternion with all four components non-zero, so a negated/swapped/transposed/reordered
+    // read fails on the FIRST component that differs. translation/scale need no measurement: an
+    // already-canonical source passes them through with NO arithmetic at all.
+    constexpr std::string_view OBJECTS =
+        "    Model: 100, \"Model::asym\", \"Null\" {\n"
+        "        Version: 232\n"
+        "        Properties70:  {\n"
+        "            P: \"Lcl Translation\", \"Lcl Translation\", \"\", \"A\",1,2,3\n"
+        "            P: \"Lcl Rotation\", \"Lcl Rotation\", \"\", \"A\",15,30,45\n"
+        "            P: \"Lcl Scaling\", \"Lcl Scaling\", \"\", \"A\",1,2,3\n"
+        "        }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS = "    C: \"OO\",100,0\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 1);
+    const auto& node = result.model.nodes[0];
+    CHECK(node.translation.x == doctest::Approx(1.0F));
+    CHECK(node.translation.y == doctest::Approx(2.0F));
+    CHECK(node.translation.z == doctest::Approx(3.0F));
+    CHECK(node.rotation.x == APPROX_ROT(0.0182830462));
+    CHECK(node.rotation.y == APPROX_ROT(0.285320133));
+    CHECK(node.rotation.z == APPROX_ROT(0.335270344));
+    CHECK(node.rotation.w == APPROX_ROT(0.897692569));
+    CHECK(node.scale.x == doctest::Approx(1.0F));
+    CHECK(node.scale.y == doctest::Approx(2.0F));
+    CHECK(node.scale.z == doctest::Approx(3.0F));
+}
+
+TEST_CASE(
+    "fbx_import: sourceSpace.unitMeters is the fixture-trap guard itself -- proves axes.up was read, "
+    "not original_axis_up (which is UNKNOWN/'?' for both) (FI18, §A-14)") {
+    const std::string zUpCm = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult z = importModel("t.fbx", "", asBytes(zUpCm), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(z.model.sourceSpace.unitMeters == doctest::Approx(0.01F));
+    CHECK(z.model.sourceSpace.upAxis == 'Z');
+
+    const std::string yUpM = makeFbx(CANONICAL_GLOBALS_PROPERTIES, CANONICAL_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult y = importModel("t.fbx", "", asBytes(yUpM), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(y.model.sourceSpace.unitMeters == doctest::Approx(1.0F));
+    CHECK(y.model.sourceSpace.upAxis == 'Y');
+}
+
+TEST_CASE(
+    "fbx_import: sourceSpace.generator falls back to Creator when the exporter is UNKNOWN, and is "
+    "empty only when Creator is ALSO empty; formatVersion is never empty for a successful import "
+    "(FI19, §A-21)") {
+    // CORRECTION to the plan's own §A-21 (found by running this case, not assumed): "every tier-0
+    // fixture has an empty generator" is true only for a fixture whose Creator field is ALSO empty.
+    // The shared §D-7 template's `Creator: "aero test fixture"` line MEASURABLY populates
+    // metadata.creator (ufbx.c's ufbxi_read_header_extension reads Creator as a direct child of
+    // FBXHeaderExtension), and §A-21's OWN fallback rule -- "fall back to metadata.creator... which
+    // is what a Blender export actually carries" -- is exactly what generatorString then does. Both
+    // halves of that fallback are asserted here, not just the one the plan's prose happened to name.
+    const std::string withCreator = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult withResult =
+        importModel("box.fbx", "", asBytes(withCreator), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(withResult.status == ImportStatus::Ok);
+    CHECK(withResult.model.sourceSpace.generator == "aero test fixture");
+    CHECK_FALSE(withResult.model.sourceSpace.formatVersion.empty());
+
+    // The identical §D-7 template with its `Creator:` line removed entirely (never emitted with an
+    // empty value -- omitted, matching how an exporter genuinely offering nothing would write it).
+    const std::string noCreator = std::format(
+        "; FBX 7.4.0 project file\n"
+        "FBXHeaderExtension:  {{\n"
+        "    FBXHeaderVersion: 1003\n"
+        "    FBXVersion: 7400\n"
+        "}}\n"
+        "GlobalSettings:  {{\n"
+        "    Version: 1000\n"
+        "    Properties70:  {{\n"
+        "{}"
+        "    }}\n"
+        "}}\n"
+        "Objects:  {{\n"
+        "{}"
+        "}}\n"
+        "Connections:  {{\n"
+        "{}"
+        "}}\n",
+        DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult noResult =
+        importModel("box.fbx", "", asBytes(noCreator), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(noResult.status == ImportStatus::Ok);
+    CHECK(noResult.model.sourceSpace.generator.empty());
+    CHECK_FALSE(noResult.model.sourceSpace.formatVersion.empty());
+}
+
+TEST_CASE("fbx_import: a 4-deep chain imports with correct parent/children/roots, in source order (FI21, AC-25)") {
+    constexpr std::string_view OBJECTS =
+        "    Model: 100, \"Model::a\", \"Null\" { Version: 232 }\n"
+        "    Model: 101, \"Model::b\", \"Null\" { Version: 232 }\n"
+        "    Model: 102, \"Model::c\", \"Null\" { Version: 232 }\n"
+        "    Model: 103, \"Model::d\", \"Null\" { Version: 232 }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",101,100\n"
+        "    C: \"OO\",102,101\n"
+        "    C: \"OO\",103,102\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 4);
+    REQUIRE(result.model.roots.size() == 1);
+
+    const auto findByName = [&](std::string_view name) -> const engine::editor::ImportedNode* {
+        for (const auto& n : result.model.nodes) {
+            if (n.name == name) {
+                return &n;
+            }
+        }
+        return nullptr;
+    };
+    const auto* a = findByName("a");
+    const auto* b = findByName("b");
+    const auto* c = findByName("c");
+    const auto* d = findByName("d");
+    REQUIRE((a != nullptr && b != nullptr && c != nullptr && d != nullptr));
+    CHECK(result.model.roots[0] == a->localId);
+    CHECK(a->parent == engine::editor::INVALID_SUBASSET);
+    REQUIRE(a->children.size() == 1);
+    CHECK(a->children[0] == b->localId);
+    CHECK(b->parent == a->localId);
+    REQUIRE(b->children.size() == 1);
+    CHECK(b->children[0] == c->localId);
+    CHECK(c->parent == b->localId);
+    REQUIRE(c->children.size() == 1);
+    CHECK(c->children[0] == d->localId);
+    CHECK(d->parent == c->localId);
+    CHECK(d->children.empty());
+}
+
+TEST_CASE(
+    "fbx_import: the FBX root is NOT emitted as a node, and localId is the raw ufbx typed_id, not the "
+    "vector position (FI22, §A-13)") {
+    const std::string doc = makeFbx(DEFAULT_GLOBALS_PROPERTIES, DEFAULT_OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("box.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    // Exactly the authored count (one Model block) -- no node has the root's own empty name, and no
+    // extra entry exists for it.
+    REQUIRE(result.model.nodes.size() == 1);
+    CHECK_FALSE(result.model.nodes[0].name.empty());
+    // MEASURED: ufbx's root is typed_id 0, and the first authored node is typed_id 1 -- a walk that
+    // renumbers localId to the vector index would read 0 here instead.
+    CHECK(result.model.nodes[0].localId != 0);
+    CHECK(result.model.nodes[0].localId == 1);
+}
+
+TEST_CASE(
+    "fbx_import: a node with a geometry transform produces a helper node named with "
+    "GEOMETRY_HELPER_SUFFIX (FI23 node-half, AC-26, seed S10's discriminator)") {
+    // "<geometry helper>" MUST match fbx_import.cpp's own GEOMETRY_HELPER_SUFFIX -- this TU names no
+    // ufbx type, so it cannot reference that TU-local constant directly, and re-states the literal
+    // instead (opts.geometry_transform_helper_name is set to this exact string).
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::box\", \"Mesh\" {\n"
+        "        Version: 232\n"
+        "        Properties70:  {\n"
+        "            P: \"GeometricTranslation\", \"Vector3D\", \"Vector\", \"\",1,0,0\n"
+        "        }\n"
+        "    }\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, DEFAULT_CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    bool foundHelper = false;
+    for (const auto& n : result.model.nodes) {
+        if (n.name.find("<geometry helper>") != std::string::npos) {
+            foundHelper = true;
+        }
+    }
+    CHECK(foundHelper);
+    // The mesh-level half (positions unmodified by the transform) is phase 6's job (Step 7) -- see
+    // this block's own header comment.
+}
+
+TEST_CASE(
+    "fbx_import: a mesh instanced by two nodes with DIFFERENT geometry transforms produces TWO helper "
+    "nodes (FI24 node-half, AC-27, seed S9's discriminator)") {
+    // MEASURED against real ufbx v0.23.0: this shape produces meshes.count == 1 (one shared
+    // ufbx_mesh) and TWO geometry-transform helper nodes, one parented to each instance -- confirming
+    // ufbx does NOT bake the transform into per-node mesh copies under HELPER_NODES handling.
+    constexpr std::string_view OBJECTS =
+        "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+        "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+        "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+        "        GeometryVersion: 124\n"
+        "    }\n"
+        "    Model: 100, \"Model::instanceA\", \"Mesh\" {\n"
+        "        Version: 232\n"
+        "        Properties70:  {\n"
+        "            P: \"GeometricTranslation\", \"Vector3D\", \"Vector\", \"\",1,0,0\n"
+        "        }\n"
+        "    }\n"
+        "    Model: 101, \"Model::instanceB\", \"Mesh\" {\n"
+        "        Version: 232\n"
+        "        Properties70:  {\n"
+        "            P: \"GeometricTranslation\", \"Vector3D\", \"Vector\", \"\",2,0,0\n"
+        "        }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",101,0\n"
+        "    C: \"OO\",200,100\n"
+        "    C: \"OO\",200,101\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    // instanceA, instanceB and their two helpers -- four nodes, root excluded.
+    CHECK(result.model.nodes.size() == 4);
+    int helperCount = 0;
+    for (const auto& n : result.model.nodes) {
+        if (n.name.find("<geometry helper>") != std::string::npos) {
+            ++helperCount;
+        }
+    }
+    CHECK(helperCount == 2);
+    // The mesh-level half (ONE ImportedMesh, equal meshIndex on both instances) is phase 6's job
+    // (Step 7) -- see this block's own header comment.
+}
+
+TEST_CASE(
+    "fbx_import: a non-standard inherit mode produces a node named with SCALE_HELPER_SUFFIX (FI25, "
+    "seed S11's discriminator)") {
+    // InheritType 2 ("Rrs" / IGNORE_PARENT_SCALE) on a child of a NON-UNIFORMLY-scaled parent is what
+    // MEASURABLY produces a scale helper under HELPER_NODES handling -- InheritType 1 does not exist
+    // in ufbx's own mapping (ufbx.c's ufbxi_read_model: 0 -> COMPONENTWISE_SCALE, 2 ->
+    // IGNORE_PARENT_SCALE, everything else including 1 is left at NORMAL).
+    constexpr std::string_view OBJECTS =
+        "    Model: 100, \"Model::parent\", \"Null\" {\n"
+        "        Version: 232\n"
+        "        Properties70:  {\n"
+        "            P: \"Lcl Scaling\", \"Lcl Scaling\", \"\", \"A\",2,3,4\n"
+        "        }\n"
+        "    }\n"
+        "    Model: 101, \"Model::child\", \"Null\" {\n"
+        "        Version: 232\n"
+        "        Properties70:  {\n"
+        "            P: \"InheritType\", \"enum\", \"\", \"\",2\n"
+        "        }\n"
+        "    }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",101,100\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    bool foundHelper = false;
+    for (const auto& n : result.model.nodes) {
+        if (n.name.find("<scale helper>") != std::string::npos) {
+            foundHelper = true;
+        }
+    }
+    CHECK(foundHelper);
+}
+
+TEST_CASE("fbx_import: two roots import in source order (FI26)") {
+    constexpr std::string_view OBJECTS =
+        "    Model: 100, \"Model::first\", \"Null\" { Version: 232 }\n"
+        "    Model: 101, \"Model::second\", \"Null\" { Version: 232 }\n";
+    constexpr std::string_view CONNECTIONS =
+        "    C: \"OO\",100,0\n"
+        "    C: \"OO\",101,0\n";
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, OBJECTS, CONNECTIONS);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.roots.size() == 2);
+    REQUIRE(result.model.nodes.size() == 2);
+    CHECK(result.model.nodes[0].name == "first");
+    CHECK(result.model.nodes[1].name == "second");
+    CHECK(result.model.roots[0] == result.model.nodes[0].localId);
+    CHECK(result.model.roots[1] == result.model.nodes[1].localId);
+}
+
+TEST_CASE(
+    "fbx_import: MAX_FBX_NODE_DEPTH exceeded is Truncated, with the load itself refused -- proves "
+    "node_depth_limit reaches ufbx (FI27, AC-50)") {
+    // A chain of 257 nested Model blocks (depth 1..257) exceeds node_depth_limit=256; a chain of 256
+    // (depth 1..256) does not -- MEASURED, the exact boundary. Built programmatically: 257 hand-
+    // written blocks would defeat the "no case restates a whole document" rule this file otherwise
+    // follows, and the point is the CAP, not the specific hierarchy shape.
+    std::string objects;
+    std::string connections;
+    constexpr int DEPTH = 257;
+    for (int i = 0; i < DEPTH; ++i) {
+        objects += std::format("    Model: {}, \"Model::n{}\", \"Null\" {{ Version: 232 }}\n", 100 + i, i);
+        const int parent = (i == 0) ? 0 : (100 + i - 1);
+        connections += std::format("    C: \"OO\",{},{}\n", 100 + i, parent);
+    }
+    const std::string doc = makeFbx(CANONICAL_GLOBALS_PROPERTIES, objects, connections);
+    const ImportResult result = importModel("t.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    // ufbx refuses the WHOLE load when its own node_depth_limit is exceeded (no partial ufbx_scene is
+    // ever returned), so unlike a cap WE enforce mid-walk (FI28's would-be shape), there is no
+    // "coherent smaller model" to speak of here -- the model is EMPTY, not partial.
+    CHECK(result.status == ImportStatus::Truncated);
+    CHECK_FALSE(result.message.empty());
+    CHECK(result.model.nodes.empty());
 }

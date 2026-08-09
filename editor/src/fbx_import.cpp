@@ -29,12 +29,13 @@
 // EVERY WALK IS ITERATIVE (misc-no-recursion is --warnings-as-errors on the Linux lane).
 // NOTHING HERE LOGS (INV-A3). NOTHING HERE THROWS. NOTHING HERE ALLOCATES WITH new/delete.
 //
-// STEP BOUNDARY (recorded here rather than left implicit): this commit (Step 4) lands phases 1-2 --
-// the load, the error mapping, SourceSpace, ufbx's own warnings, and the cheap STRUCTURAL summary
-// counts (element counts plus ufbx's own already-computed per-mesh vertex/triangle counts). Phase 3
-// (nodes/hierarchy) lands in Step 5. Phases 4-8 (textures, materials, meshes, skins, animation) are
-// NOT part of this file yet -- `result.model.nodes/meshes/materials/images/skins/animations` and
-// `result.model.summary.bounds` stay at their defaults until those phases land.
+// STEP BOUNDARY (recorded here rather than left implicit): Step 4 landed phases 1-2 -- the load, the
+// error mapping, SourceSpace, ufbx's own warnings, and the cheap STRUCTURAL summary counts (element
+// counts plus ufbx's own already-computed per-mesh vertex/triangle counts). THIS commit (Step 5) adds
+// phase 3 -- nodes, hierarchy, helper nodes and the space conversion, which is where D6's whole
+// conversion regime is either right or silently wrong (§D-4.5). Phases 4-8 (textures, materials,
+// meshes, skins, animation) are NOT part of this file yet -- `result.model.meshes/materials/images/
+// skins/animations` and `result.model.summary.bounds` stay at their defaults until those phases land.
 #include "fbx_import.hpp"
 
 #include <algorithm>
@@ -318,13 +319,12 @@ inline constexpr std::string_view SCALE_HELPER_SUFFIX = "<scale helper>";
 ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::byte> bytes,
                        const ImportSettings& settings, ImportDepth depth, std::span<const ExternalBuffer> external) {
     // `external` is ALWAYS EMPTY for FBX (D5) and never read -- the parameter exists only so this
-    // signature matches importGltf's. `assetRelativeDir` and `settings` are not yet read by phases 1-2
-    // (Step 4); phase 3 (Step 5) starts reading `settings.scale`, phase 4 (Step 6) starts reading
-    // `assetRelativeDir` for texture URI resolution. Explicitly (void)-cast rather than left unnamed:
-    // every parameter keeps the header's own name, which is what the STEP BOUNDARY comment above (and
-    // every reader after it) reads against.
+    // signature matches importGltf's. `assetRelativeDir` is not yet read (phase 4, Step 6, starts
+    // reading it for texture URI resolution). `settings` is read starting THIS commit (phase 3's
+    // settings.scale, below). Explicitly (void)-cast rather than left unnamed: every parameter keeps
+    // the header's own name, which is what the STEP BOUNDARY comment above (and every reader after it)
+    // reads against.
     (void)assetRelativeDir;
-    (void)settings;
     (void)external;
 
     ImportResult result;
@@ -515,6 +515,71 @@ ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::b
     for (const ufbx_mesh* mesh : s.meshes) {
         result.model.summary.vertexCount += mesh->num_vertices;
         result.model.summary.triangleCount += mesh->num_triangles;
+    }
+
+    // ---- phase 3: nodes, iterative, localId == ufbx typed_id. THIS IS WHERE D6'S WHOLE CONVERSION
+    // REGIME IS EITHER RIGHT OR SILENTLY WRONG -- every count in the panel stays plausible while the
+    // model is 100x too large or lying on its side, so §D-6's hand-computed literals (FI15/FI16 in
+    // this commit's own test file) are what actually proves this, not this code's own shape.
+    //
+    // A13: scene.nodes[0] IS the root (is_root == true, name ""). allow_nodes_out_of_root stays false
+    // (its default, never set above), so every authored node is reachable from it and NO ORPHAN SCAN
+    // IS NEEDED. ImportedNode::localId is the RAW ufbx typed_id -- NOT the position in
+    // ImportedModel::nodes -- because ufbx_baked_node::typed_id (phase 8's animation target, Step 9)
+    // maps to scene.nodes[] and must resolve without a side table. nodeIndexByLocalId is what turns
+    // one into the other, here and in every later phase that resolves a node reference.
+    std::unordered_map<std::uint32_t, std::uint32_t> nodeIndexByLocalId;
+    for (const ufbx_node* n : s.nodes) {
+        if (n->is_root) {
+            continue;  // the FBX root is a CONTAINER, not an authored node: emitting it would put a
+                       // node in the panel's Hierarchy that appears in no DCC outliner
+        }
+        if (result.model.nodes.size() >= MAX_NODES_PER_MODEL) {
+            escalate(result, ImportStatus::Truncated, "node cap (MAX_NODES_PER_MODEL) reached");
+            break;
+        }
+        ImportedNode out;
+        out.name = toStd(n->name);
+        out.localId = n->typed_id;
+        out.parent = (n->parent != nullptr && !n->parent->is_root) ? n->parent->typed_id : INVALID_SUBASSET;
+
+        // THE WHOLE CONVERSION, for every space_conversion mode: ufbx has already baked target_axes,
+        // target_unit_meters and the adjust_pre_* terms into local_transform (its own header says so
+        // under adjust_pre_translation). Copy the three members. Nothing is swapped, negated,
+        // transposed or reordered (INV-F7).
+        out.translation = toVec3(n->local_transform.translation);
+        out.rotation = toQuat(n->local_transform.rotation);
+        out.scale = toVec3(n->local_transform.scale);
+        out.meshIndex = INVALID_SUBASSET;  // filled by phase 6 (Step 7)
+        out.skinIndex = INVALID_SUBASSET;  // filled by phase 7 (Step 8)
+        nodeIndexByLocalId.emplace(out.localId, static_cast<std::uint32_t>(result.model.nodes.size()));
+        result.model.nodes.push_back(std::move(out));
+    }
+    result.model.summary.nodeCount = result.model.nodes.size();
+
+    // children, in a SECOND pass, so a forward reference is impossible; and `roots` from the FBX
+    // root's own children, in ufbx's own order (AC-25). `n` itself is only ever READ here -- the
+    // WRITE lands on a DIFFERENT node (its parent, found by index) -- so it is const.
+    for (const ImportedNode& n : result.model.nodes) {
+        if (n.parent != INVALID_SUBASSET) {
+            const auto it = nodeIndexByLocalId.find(n.parent);
+            if (it != nodeIndexByLocalId.end()) {
+                result.model.nodes[it->second].children.push_back(n.localId);
+            }
+        }
+    }
+    for (const ufbx_node* child : s.root_node->children) {
+        if (nodeIndexByLocalId.contains(child->typed_id)) {
+            result.model.roots.push_back(child->typed_id);
+        }
+    }
+
+    // A22: settings.scale applies to ROOT node translations ONLY -- the same three places glTF
+    // touches (positions, root translations, inverse-bind translations). Composed with D6's unit
+    // conversion by multiplying AFTER ufbx (never passed to ufbx as a second target_unit_meters),
+    // which is what keeps SourceSpace's reported unit truthful.
+    for (const std::uint32_t rootId : result.model.roots) {
+        result.model.nodes[nodeIndexByLocalId.at(rootId)].translation *= settings.scale;
     }
 
     return result;
