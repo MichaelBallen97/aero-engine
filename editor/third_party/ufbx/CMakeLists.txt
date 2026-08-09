@@ -23,6 +23,31 @@ target_include_directories(aero_ufbx SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # ufbx.c is C11-friendly; ufbx_is_thread_safe() wants <stdatomic.h>, which C11 provides.
 set_target_properties(aero_ufbx PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 
+# UFBX_UBSAN, gated on the SAME condition cmake/sanitizers.cmake uses (AERO_ENABLE_SANITIZERS,
+# non-MSVC -- MSVC has no UBSan, spec 0.1.4 §5a/cmake/sanitizers.cmake's own MSVC branch). This is a
+# BUILD-SYSTEM knob, never a patch to ufbx.c: INV-F5 forbids touching the vendored file itself, and
+# ufbx ships this exact macro for exactly this situation (ufbx.c:908-913):
+#   #if !defined(UFBX_UBSAN) && UFBXI_ARCH_X64
+#       #define ufbxi_wrap_shr64(a, b) ((a) >> (b))          -- relies on x86 shift-masking: UB per
+#                                                                the C standard (a shift amount that
+#                                                                is not less than the operand's width)
+#   #else
+#       #define ufbxi_wrap_shr64(a, b) ((a) >> ((b) & 63))   -- explicitly masked: well-defined
+#   #endif
+# Only ufbx's fast-inflate DEFLATE path reaches this shift, so only a compressed BINARY .fbx trips it
+# -- an ASCII fixture, or a binary one small enough that ufbx never takes the fast path, never touches
+# it, which is why this stayed invisible through every local run on this machine.
+#
+# UFBXI_ARCH_X64 is FALSE on arm64 (ufbx.c:618/620), so this define is a NO-OP on macOS (arm64) and on
+# an arm64 Windows/Linux CI runner -- do not "clean up" the block below on the grounds that it looks
+# unused there; it is load-bearing on x64 Debug lanes (Windows and Ubuntu CI, and any x86_64 developer
+# machine), where UBSan genuinely walks this line and a real compressed binary fixture reaches it
+# (tests/fixtures/assets/cube-binary.fbx, FI76) -- an x86_64 Linux Debug lane is where this was FOUND:
+# "runtime error: shift exponent 136 is too large for 64-bit type 'long unsigned int'".
+if(AERO_ENABLE_SANITIZERS AND NOT MSVC)
+    target_compile_definitions(aero_ufbx PRIVATE UFBX_UBSAN)
+endif()
+
 # NOT defined, deliberately, each with its reason:
 #   UFBX_REAL_IS_FLOAT       -- double is ufbx's default and best-tested configuration, and the
 #                               axis/unit conversion is exactly where precision is worth having.
