@@ -738,12 +738,21 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   would force per-node mesh copies, changing the canonical model's shape for one format. A helper node
   is an ordinary `ImportedNode` to every consumer. `geometry_transform_helper_name` and
   `scale_helper_name` are set EXPLICITLY so the names are stable across a ufbx bump.
-- **`ignore_all_content` zeroes EVERY per-mesh count.** At `Structure` depth `num_vertices`,
-  `num_triangles`, `max_face_triangles` and `material_parts` are all zero/empty. What survives: nodes
-  with full converted transforms, mesh/material/skin/animation IDENTITY, and all of
-  `scene.settings`/`metadata` -- including the three `*_ignored` flags, which make the depth OBSERVABLE
-  rather than asserted. So `summary.primitiveCount == meshCount` and `jointCount == 0` at `Structure`
-  for FBX, where glTF reports both structurally. That asymmetry is a property of the containers.
+- **`opts.ignore_geometry`/`opts.ignore_animation` are set individually at `Structure` depth;
+  `opts.ignore_embedded` NEVER is.** An earlier draft set `opts.ignore_all_content` instead, which is
+  EXACTLY `ignore_geometry + ignore_animation + ignore_embedded` (`ufbx.c`'s own `ufbxi_load` folds it
+  into the three sub-flags before anything else runs) -- so it also zeroed embedded-texture content at
+  `Structure`, and an embedded texture fell through to the external-URI path and was recorded as a
+  dependency: `Structure` and `Full` disagreed about the URI set for every embedded texture
+  (AC-20/INV-M4), measured on the `FI54` fixture (`Structure`: `externalUris=[embedded.png]`; `Full`:
+  `externalUris=[]`). At `Structure` depth `num_vertices`, `num_triangles`, `max_face_triangles` and
+  `material_parts` are all zero/empty (gated on `ignore_geometry` alone, unaffected by the fix). What
+  survives: nodes with full converted transforms, mesh/material/skin/animation IDENTITY, an embedded
+  texture's own CONTENT (identical at both depths now), and all of `scene.settings`/`metadata` --
+  including the three `*_ignored` flags, which make the depth OBSERVABLE rather than asserted:
+  `geometry_ignored`/`animation_ignored` are true and `embedded_ignored` is FALSE at `Structure`, never
+  "all three true". So `summary.primitiveCount == meshCount` and `jointCount == 0` at `Structure` for
+  FBX, where glTF reports both structurally. That asymmetry is a property of the containers.
 - **Fold `\` -> `/` BEFORE `classifyUri`, never after.** `..\..\..\etc\passwd` has already become
   `../../../etc/passwd` when the escape check runs, so the refusal fires. Folding after classification
   would let a backslash traversal straight through. `classifyUri` is NOT modified --
@@ -765,6 +774,15 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   take is a prefix; the explicit sort is kept for the tie-break and for a future ufbx. Renormalization
   is mandatory. A zero-total-weight vertex gets all-zero joints AND weights -- never `{1,0,0,0}`, which
   would bind it to joint 0.
+- **`mesh->skin_deformers` is a LIST, not an optional -- a mesh CAN carry more than one Skin
+  deformer.** Only the FIRST survives (`ImportedPrimitive` has exactly one set of four joints/weights,
+  so a second is not representable at all), but that drop is NAMED: one warning per mesh giving the
+  dropped count, unlike an earlier draft that dropped it silently. The Structure-depth shell pass
+  MIRRORS phase 7's own per-mesh, first-only selection (`mesh->skin_deformers.data[0]`, walking
+  `s.meshes`) rather than iterating `s.skin_deformers` (every deformer in the scene) -- iterating the
+  scene-wide list is what let Structure's `skinCount` disagree with Full's whenever one mesh carried
+  more than one deformer. Any future code resolving "the skin for this mesh" must use the identical
+  selection, in both places, or the two depths diverge again.
 - **NO FIFTH `ImportSettings` KEY, EVER, without making it OPTIONAL.** The four `importer.settings`
   keys are REQUIRED once the block is present, so a required fifth makes every sidecar written by an
   older build report `missing required key` and degrade to defaults. Axis and unit conversion is

@@ -24,7 +24,11 @@ find_package(fastgltf CONFIG REQUIRED)  # task 3.2.1 (D1): 0.9.0, MIT. EDITOR-ON
 # task 3.2.2 (D3): ufbx is in NO vcpkg registry, so it is VENDORED rather than found. aero_ufbx is a
 # STATIC target over one .c compiled with THIS project's flags -- which is what makes it
 # ASan/UBSan-instrumented in the Debug lanes. EDITOR-ONLY by docs/03's dependency-placement invariant;
-# PRIVATE below, so it reaches neither aero_editor nor any test target's link line.
+# PRIVATE below (like fastgltf::fastgltf beside it, and aero::scene_serialize further down): on a
+# STATIC library that becomes $<LINK_ONLY:>, so the archive DOES reach consumers' link lines (aero_editor,
+# every test target linking aero_editor_core) -- that is correct and unavoidable, not a leak -- while
+# its SYSTEM include directory (editor/third_party/ufbx/CMakeLists.txt) reaches nobody's compile line.
+# No target other than aero_editor_core ever declares `aero_ufbx`/`aero::ufbx` by name.
 add_subdirectory(third_party/ufbx)
 
 add_library(aero_editor_core STATIC

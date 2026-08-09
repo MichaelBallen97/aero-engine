@@ -29,15 +29,18 @@
 // EVERY WALK IS ITERATIVE (misc-no-recursion is --warnings-as-errors on the Linux lane).
 // NOTHING HERE LOGS (INV-A3). NOTHING HERE THROWS. NOTHING HERE ALLOCATES WITH new/delete.
 //
-// STEP BOUNDARY (recorded here rather than left implicit): Step 4 landed phases 1-2 -- the load, the
-// error mapping, SourceSpace, ufbx's own warnings, and the cheap STRUCTURAL summary counts (element
-// counts plus ufbx's own already-computed per-mesh vertex/triangle counts). Step 5 added phase 3 --
-// nodes, hierarchy, helper nodes and the space conversion, which is where D6's whole conversion regime
-// is either right or silently wrong (§D-4.5). THIS commit (Step 6) adds phases 4-5 -- textures ->
-// ImportedImage (D14) and materials from `pbr` ONLY (D13), both running at BOTH depths since neither
-// touches vertex content. Phases 6-8 (meshes, skins, animation) are NOT part of this file yet --
-// `result.model.meshes/skins/animations` and `result.model.summary.bounds` stay at their defaults
-// until those phases land.
+// EIGHT PHASES, all present and all populating ImportedModel's real fields (the load history that
+// built them incrementally is `docs/10-engineering-log.md`'s 3.2.2 entry, not this comment):
+//   1. the load options and the single ufbx_load_memory call.
+//   2. SourceSpace, ufbx's own warnings, the E5/E6 guards, cheap STRUCTURAL summary counts.
+//   3. nodes -- hierarchy, helper nodes, D6's whole conversion regime (§D-4.5).
+//   4. textures -> ImportedImage (D14). Runs at BOTH depths -- images are scene elements.
+//   5. materials from `pbr` ONLY (D13). Runs at BOTH depths, for the identical reason.
+//   6. meshes, triangulation, index generation (D9/D10) -- Full depth only for real content.
+//   7. skins and the 4-influence reduction (D11) -- Full depth only for real content.
+//   8. animation baking (D12) -- Full depth only for real content.
+// `result.model.meshes/skins/animations` and `result.model.summary.bounds` are real once phases 6-8
+// run (Full depth); at Structure depth they hold identity-only shells (§A-4).
 #include "fbx_import.hpp"
 
 #include <algorithm>
@@ -624,12 +627,9 @@ struct ReducedInfluences {
 ImportResult importFbx(std::string_view assetRelativeDir, std::span<const std::byte> bytes,
                        const ImportSettings& settings, ImportDepth depth, std::span<const ExternalBuffer> external) {
     // `external` is ALWAYS EMPTY for FBX (D5) and never read -- the parameter exists only so this
-    // signature matches importGltf's. `assetRelativeDir` is not yet read (phase 4, Step 6, starts
-    // reading it for texture URI resolution). `settings` is read starting THIS commit (phase 3's
-    // settings.scale, below). Explicitly (void)-cast rather than left unnamed: every parameter keeps
-    // the header's own name, which is what the STEP BOUNDARY comment above (and every reader after it)
-    // reads against.
-    (void)assetRelativeDir;
+    // signature matches importGltf's. `assetRelativeDir` IS read, by phase 4's `classifyUri` call, for
+    // texture URI resolution. Both parameters keep the header's own name (never left unnamed), which
+    // is what every reader of this function's signature reads against.
     (void)external;
 
     ImportResult result;

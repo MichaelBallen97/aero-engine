@@ -4304,15 +4304,36 @@ copy once it landed in Step 1 — all six held with no disagreement:**
 `ufbx_scene_settings.original_axis_up` reads the Autodesk round-trip properties `OriginalUpAxis`/
 `OriginalUpAxisSign`, which an ordinary exporter never writes and which came back `UNKNOWN` against a
 document that plainly declares `UpAxis: 2` — the source's real declared axis lives in `settings.axes.up`
-instead, which ufbx preserves across the conversion by design; and `ignore_all_content` (the flag
-`Structure` depth sets) zeroes **every** per-mesh count (`num_vertices`, `num_triangles`,
-`material_parts`), not merely the ones a narrower `ignore_geometry` would zero — so `Structure` means
-"structure without content" for FBX exactly as it does for glTF, but the two containers disagree on
-which fields count as *content*: `summary.primitiveCount == meshCount` (one placeholder primitive per
-mesh) and `jointCount == 0` at `Structure` depth for FBX, where glTF reports both structurally. Phase
-7.5, the only consumer of `Structure`-depth results today, reads only `externalUris`, which is
-identical at both depths for both formats — so this asymmetry has no behavioural consequence yet, but
-a future consumer of `ImportSummary` at `Structure` depth needs to know it exists.
+instead, which ufbx preserves across the conversion by design; and (at the time of the original spike)
+`ignore_all_content` (the flag `Structure` depth set) zeroed **every** per-mesh count (`num_vertices`,
+`num_triangles`, `material_parts`), not merely the ones a narrower `ignore_geometry` would zero — so
+`Structure` means "structure without content" for FBX exactly as it does for glTF, but the two
+containers disagree on which fields count as *content*: `summary.primitiveCount == meshCount` (one
+placeholder primitive per mesh) and `jointCount == 0` at `Structure` depth for FBX, where glTF reports
+both structurally.
+
+**CORRECTED below (a later fix to this task, not part of the original spike): the claim that
+`externalUris` "is identical at both depths for both formats" was wrong the moment a document had an
+embedded texture, and `ignore_all_content` is exactly why.** `ignore_all_content` is `ignore_geometry +
+ignore_animation + ignore_embedded` (measured in `ufbx.c`'s own `ufbxi_load`, which folds it into the
+three sub-flags before anything else runs) — so setting it at `Structure` depth also set
+`ignore_embedded`, and an embedded texture's content (`tex->content`/`tex->video->content`) came back
+empty exactly like a genuinely missing one. The embedded-first branch then fell through to the external
+path and recorded the texture's `RelativeFilename` as an ordinary external URI: `Structure` and `Full`
+disagreed about the URI set for every embedded texture, which is precisely what phase 7.5's own
+dependency probe reads. Measured on the fixture `FI54` already used (a `Texture`/`Video`/`Content`
+block): `Structure` reported `images=1, externalUris=[embedded.png]`; `Full` reported `images=1,
+externalUris=[]`. The fix sets `opts.ignore_geometry`/`opts.ignore_animation` individually instead of
+`opts.ignore_all_content`, leaving `ignore_embedded` false at both depths — per-mesh geometry/animation
+zeroing is unaffected (both are gated on `ignore_geometry` alone; `FI2`/`FI3` continue to pass
+unchanged, which is the "measure, don't assume" proof that §A-4's table still holds under the narrowed
+options) and an embedded texture is now distinguishable from an external one identically at Structure
+and Full. AC-21 is corrected to match: not "all three ignore flags true at Structure", but
+`geometry_ignored == true`, `animation_ignored == true`, **`embedded_ignored == false`** — `FI2`/`FI3`
+now each carry `FI54`'s embedded-texture block and assert `embedded == true` / `externalUris.empty()`
+at their own depth directly, rather than only the geometry half the original two cases checked. A
+future consumer of `ImportSummary` at `Structure` depth still needs to know `primitiveCount`/`jointCount`
+are content-derived for FBX and structural for glTF — that asymmetry is unaffected and remains real.
 
 **The measured D6 conversion table, the numbers every space-conversion case in this task is built on**
 — executed against real ufbx v0.23.0 with `target_axes = right_handed_y_up`, `target_unit_meters =
@@ -4531,3 +4552,98 @@ this branch, matching 3.2.1's own two-part precedent (its implementation entry, 
 commit recording the validation pass once the PR had actually merged). Windows and Linux validation
 rows remain pending for this task as for every task since Phase 2 — carried-forward platform-validation
 debt, unchanged by this task's own implementation work.
+
+**A second pass, before the sabotage matrix ran, found and closed six issues — one CI failure and five
+findings of the shape a code-review round finds against an already-green gate.** All six are closed,
+each with its own proof, on top of the twelve-commit state above.
+
+1. **The only red CI lane, macOS/Windows green, Linux (GCC) UBSan FAILED**: `shift exponent 136 is too
+   large for 64-bit type 'long unsigned int'` from `editor/third_party/ufbx/ufbx.c:2946`, reached only
+   through `FI76`'s committed binary fixture. `ufbx.c:908-913`'s `ufbxi_wrap_shr64` relies on x86
+   shift-masking (UB per the C standard) unless `UFBX_UBSAN` is defined, and only x64 takes that branch
+   at all (`UFBXI_ARCH_X64`, `ufbx.c:618/620`) — macOS CI is arm64, so the safe, masked branch was
+   already being taken there regardless, which is why this stayed invisible through every local run and
+   every macOS CI run. Fixed as a **build-system change, never a patch to `ufbx.c`** (INV-F5 intact,
+   re-verified byte-identical to a fresh v0.23.0 download by diff and SHA-256 after the change):
+   `editor/third_party/ufbx/CMakeLists.txt` now defines `UFBX_UBSAN` on `aero_ufbx` when
+   `AERO_ENABLE_SANITIZERS` is on and the compiler is not MSVC (MSVC has no UBSan), the identical
+   condition `cmake/sanitizers.cmake` itself branches on. Confirmed on `compile_commands.json`:
+   `ufbx.c`'s entry carries both `-fsanitize=address,undefined` and `-DUFBX_UBSAN` after the change.
+2. **BLOCKING: `Structure` and `Full` disagreed about the URI set for every embedded FBX texture.**
+   `opts.ignore_all_content` is exactly `ignore_geometry + ignore_animation + ignore_embedded`, so
+   setting it at `Structure` depth also emptied an embedded texture's content, which fell through to
+   the external-path branch and was recorded as a dependency — breaking AC-20/INV-M4 and putting a
+   dependency edge on a file the model does not need. Measured on `FI54`'s own fixture: `Structure`
+   reported `externalUris=[embedded.png]`, `Full` reported `externalUris=[]`. Fixed by setting
+   `opts.ignore_geometry`/`opts.ignore_animation` individually, leaving `ignore_embedded` false at both
+   depths — the probe already reads the whole file into memory (D4), so the cost is ufbx copying blobs
+   it has already parsed, not extra I/O. AC-21 is corrected (see above) and `FI2`/`FI3` now assert the
+   embedded-texture half directly, not merely the geometry half.
+3. **AC-20's only automated proof, `FI4`, was vacuous.** It ran against `DEFAULT_OBJECTS`, which has
+   zero textures, materials, images, skins and animations, so five of its eight clauses were `0 == 0`
+   and passed regardless of how badly the depth mechanism broke — the reason finding 2 and finding 4
+   both shipped green in the first place. Re-pointed at a fixture with one of each (a material with an
+   external texture, a skin, an animation stack), with `REQUIRE`s proving every one of those five fields
+   is genuinely non-zero at Full before the Structure/Full comparison is asserted. Confirmed
+   discriminating directly: disabling the Structure-depth skin shell pass reddens both `FI4` and `FI79`
+   (below); reverting either restores green.
+4. **Only the first skin deformer per mesh was imported, silently.** `mesh->skin_deformers` is a list,
+   not an optional — FBX permits attaching more than one Skin deformer to a single Geometry (a
+   layered/blend-skinning export). `ImportedPrimitive` carries exactly one set of four joints/weights
+   per vertex, so a second deformer is not representable in the canonical model at all — keeping the
+   first is the right call, and stays the right call, but every OTHER skip in this file (a non-`FILE`
+   texture, a point/line face, a null-bone cluster, a dropped baked node) warns and this one did not:
+   vertices bound only by the dropped deformer silently got `{0,0,0,0}` joints and weights. Separately,
+   the Structure-depth shell pass iterated `s.skin_deformers` — every deformer in the SCENE — so a mesh
+   with more than one deformer made `Structure`'s `skinCount` disagree with `Full`'s per-mesh,
+   first-only count. Both closed together: one warning per mesh naming the dropped count, and the shell
+   pass now iterates `s.meshes` and takes `mesh->skin_deformers.data[0]` — the IDENTICAL expression
+   phase 7 uses at Full — so `skinCount`, and WHICH deformer survives, agree at both depths. `FI79`
+   proves the count, the identity and the warning together, and each half was confirmed to redden
+   independently by reverting it in isolation and re-running.
+5. **Two stale contract comments, corrected.** The file's own top-of-file comment still described an
+   incremental "STEP BOUNDARY" from mid-implementation, claiming phases 6-8 were "NOT part of this file
+   yet" — all eight phases have been present since the twelve-commit state above; replaced with an
+   eight-phase summary pointing at this log entry for the incremental history rather than duplicating
+   it. `assetRelativeDir`'s own comment claimed it was "not yet read", followed by a live
+   `(void)assetRelativeDir;` cast, while phase 4's `classifyUri` call reads it two hundred-odd lines
+   later — the vestigial cast and its stale explanation are removed; `(void)external;` (still correct)
+   is unchanged. In this repo the in-file comment is the design record and 3.2.3 (OBJ, also via ufbx,
+   D17) will read it first.
+6. **AC-3's link-line clause was unachievable as written, and is corrected here rather than recorded as
+   met on a clause that can never be met.** AC-3 said `aero_ufbx` would be "nowhere on" `aero_editor`'s
+   or any test target's link line. PRIVATE on a **STATIC** library becomes `$<LINK_ONLY:>` in CMake's
+   own interface, which propagates the library file (so it legitimately reaches every consumer's link
+   line) while withholding every other usage requirement (so its include directory reaches nobody
+   else's compile line) — `fastgltf::fastgltf` (3.2.1) and `aero::scene_serialize`
+   (`editor/CMakeLists.txt:144`'s own comment, task 2.5.1) have both been in the identical position
+   since before this task existed. Confirmed directly on this machine's Ninja build (this repo's
+   generator has no per-target `link.txt`, a Makefiles-only artifact the plan's own original AC-3
+   verification script assumed existed): `ninja -t commands editor/aero_editor`'s final link command
+   contains `editor/third_party/ufbx/libaero_ufbx.a` (the archive) and contains no `-I` flag naming
+   `third_party/ufbx` (the include directory). AC-3 is reworded to the checkable, TRUE claim — no
+   target other than `aero_editor_core` declares `aero_ufbx`, and its include directory reaches no
+   other compile line — and the CMakeLists.txt comments (both `editor/CMakeLists.txt` and
+   `editor/third_party/ufbx/CMakeLists.txt`) are corrected to match, citing the `scene_serialize`
+   precedent rather than repeating the unachievable claim.
+
+Every one of the six is closed with a proof that fails without the fix (measured directly for 1, 2, 4
+and 6; confirmed by reverting and re-running for 2's own `FI2`/`FI3`, 3's `FI4` and 4's `FI79`) — no
+existing assertion was weakened, skipped or deleted to make any of the six pass.
+
+**Re-measured after all six, never carried forward from the twelve-commit state above.** `ctest -N`:
+**95** tools-ON (unchanged), **6** with both `AERO_REFLECT_TOOLS`/`AERO_SHADER_TOOLS` off (unchanged),
+**19** with `AERO_REFLECT_TOOLS` off alone (unchanged) — all three rebuilt fresh, all green (95/95,
+6/6, 19/19). `aero_editor_shell_test`: **1112** (1111 before this pass → **+1**, `FI79` — `FI2`/`FI3`/
+`FI4` are all rewrites of existing cases, not new ones, so the delta is exactly the one truly new
+case). Both reduced configurations, deleted and reconfigured fresh from nothing (not merely
+rebuilt): **1088** shell cases in **each**, with `MI1`/`MS1` both present in both — importer TUs still
+need neither reflection nor scene serialization. `aero_editor_imgui_test` **89** and `aero_tests`
+**415**, both unchanged (zero `engine/` paths touched, zero ImGui code touched).
+`check-math-boundary.sh`'s scanned count stays **291** and `aero_editor_core` stays **52** sources —
+this pass edited existing files only, adding and removing none. All six architecture guards pass;
+`clang-format`/`clang-tidy` are clean by exit code on every file this pass touched, individually at
+each commit and again on the full `main...HEAD` diff at the end. `ufbx.h`/`ufbx.c` re-verified
+byte-identical to a fresh v0.23.0 download (`diff` and SHA-256) after all six fixes, not merely after
+the first. Both macOS presets pass 95/95 at the final state (`macos-debug` under ASan/UBSan, ~187 s;
+`macos-release`, ~41 s).
