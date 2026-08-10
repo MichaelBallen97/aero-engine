@@ -1535,6 +1535,23 @@ TEST_CASE(
     }
 }
 
+TEST_CASE(
+    "asset_cache: a stale .obj entry is ImporterChanged while a CURRENT .gltf entry in the SAME call "
+    "stays UpToDate -- the per-format discriminator, task 3.2.3 (AC-p15, AC-p10's shape)") {
+    // AC-p10's own shape, one format over: proves modelImporterIdentity's OBJ arm is genuinely
+    // independent of the glTF one, not a shared constant that happens to pass a single-format case.
+    const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "chair.obj", hashOf(10), hashOf(20), "obj", 0),
+                                              cacheEntry(guidOf(2), "table.gltf", hashOf(30), hashOf(40), "gltf", 1)});
+    const std::vector<ImportInput> inputs = {importInput(guidOf(1), "chair.obj", hashOf(10), hashOf(20)),
+                                             importInput(guidOf(2), "table.gltf", hashOf(30), hashOf(40))};
+    const ImportPlanResult result = planImports(inputs, previous);
+    REQUIRE(result.entries.size() == 2);
+    REQUIRE(findEntry(result, guidOf(1)) != nullptr);
+    REQUIRE(findEntry(result, guidOf(2)) != nullptr);
+    CHECK(findEntry(result, guidOf(1))->change == ImportChange::ImporterChanged);
+    CHECK(findEntry(result, guidOf(2))->change == ImportChange::UpToDate);
+}
+
 // =====================================================================================================
 // IP -- planReattachments, D13's orphan re-attachment. All PURE, from std::vector literals (task 3.1.2
 // Step 7)
