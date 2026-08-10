@@ -694,7 +694,11 @@ bool EditorApp::tick() {
     // NEVER CALL THIS FROM onDraw(). Like 3.1.3's BLOCKING-1 and 3.1.4's D9, NO AUTOMATED TIER CAN SEE
     // THE GENERAL-CASE VIOLATION -- I60 reads this file's own source text, and manual validation row 8
     // is the only behavioural cover. GET IT RIGHT BY CONSTRUCTION.
-    importSession.service(project.assetsRoot(), assetDatabase);
+    // task 3.2.4: ONE new argument, and this call does NOT move. `frameClock.deltaSeconds()` is this
+    // frame's spike-clamped delta -- the same value PanelContext already carries -- and it is the only
+    // clock the Blender state machine ever sees: its timeout and its force-kill escalation are both
+    // driven by injected time, never by a wall clock inside the service (AC-18).
+    importSession.service(project.assetsRoot(), assetDatabase, frameClock.deltaSeconds());
     if (importDetailsPanel != nullptr) {
         importDetailsPanel->setSession(&importSession);
     }

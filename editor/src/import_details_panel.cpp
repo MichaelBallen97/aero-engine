@@ -531,6 +531,16 @@ void ImportDetailsPanel::onDraw(PanelContext& /*context*/) {  // no World/Select
         case SessionState::Imported:
             drawImported(*sessionPtr, applyRequested, revertRequested, editedSettings);
             return;
+        case SessionState::NeedsConversion:
+        case SessionState::Converting:
+        case SessionState::ConversionFailed:
+            // task 3.2.4: nothing further. The Blender section drawn ABOVE this switch has already
+            // said everything there is to say for these three, and it is drawn for EVERY .blend state
+            // (AC-37) rather than from inside an arm -- every arm here returns, so a section placed in
+            // one would render in that state only, and `Re-import` on a cache hit (Imported) plus
+            // `Cancel` mid-run (Converting) plus the disabled button on a nil GUID (NeedsConversion)
+            // all need it. The arms exist because this switch is deliberately `default:`-free.
+            return;
     }
     // No `default:` (the importStatusLabel/logAssetScan precedent): every SessionState is handled
     // above, so a future enumerator is a -Wswitch warning, never a silent fall-through.

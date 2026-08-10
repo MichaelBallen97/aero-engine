@@ -42,6 +42,38 @@ void assignImageGuids(std::vector<ImportedImage>& images, const AssetDatabase& d
     }
 }
 
+// task 3.2.4 (§A-20 j): the settings fingerprint recorded in, and compared against, the provenance
+// record. A PURE function of ImportSettings ALONE -- a nil Guid and writeMetaText's DEFAULT identity
+// parameters, so neither the asset's own GUID nor its importer name leaks into the value. Reusing
+// writeMetaText's serializer is the whole point: a future ImportSettings field enters the fingerprint
+// automatically, which is the only reason the fingerprint exists at all (3.2.1 applies `scale` during
+// IMPORT, and what is cached here is the GLB, so strictly nothing today needs it -- it is here so a
+// future Blender-SIDE option cannot be added without the invalidation already in place).
+[[nodiscard]] std::string fingerprintOf(const ImportSettings& settings) {
+    const std::string text = writeMetaText(Guid{}, settings);
+    return formatContentHash(hashBytes(std::as_bytes(std::span<const char>(text))));
+}
+
+// task 3.2.4: the record's contentHash is MEANINGFUL only under 3.1.3's ThumbnailKey rule, applied
+// verbatim one subsystem over. An unhashed record has no cache key, exactly as an unhashed record has
+// no thumbnail key -- so the artifact is treated as stale and NO provenance is written after the run.
+// The model is still shown; it is simply not cached.
+[[nodiscard]] bool sourceHashUsable(const AssetRecord& record) noexcept {
+    return !record.metaWriteFailed && record.change != ImportChange::Unhashable &&
+           record.change != ImportChange::NotHashed;
+}
+
+// The importers' own addWarning discipline (gltf_import.cpp:41 / fbx_import.cpp:242), restated here
+// because this is the ONE warning the SESSION appends rather than an importer: warningTotal is
+// UNCAPPED and `warnings` stops at MAX_IMPORT_WARNINGS, so the panel's "... and N more" tail stays
+// honest.
+void addSessionWarning(ImportResult& result, std::string text) {
+    ++result.warningTotal;
+    if (result.warnings.size() < MAX_IMPORT_WARNINGS) {
+        result.warnings.push_back(std::move(text));
+    }
+}
+
 }  // namespace
 
 void ModelImportSession::setTarget(std::string relativePath, std::uint64_t databaseGeneration) {
@@ -80,9 +112,41 @@ void ModelImportSession::setTarget(std::string relativePath, std::uint64_t datab
     formNeedsResync = targetChanged;
 }
 
-void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDatabase& database) {
+void ModelImportSession::requestConversion() noexcept {
+    conversionRequested = true;
+    // RE-ARM the consume guard. The request necessarily arrives long after this (target, generation)
+    // pair was serviced, so without this the early return below would swallow it forever. Narrow on
+    // purpose: it re-arms exactly one tick's worth of work, and the arm itself skips the cache probe
+    // while a request is pending, which is what makes `Re-import` re-convert rather than re-hit.
+    serviced = false;
+}
+
+void ModelImportSession::cancelConversion() noexcept {
+    cancelRequested = true;
+    serviced = false;
+}
+
+void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDatabase& database, float deltaSeconds) {
     if (serviced) {
-        return;  // AC-45: already imported at this (target, generation). STRUCTURAL, not conventional.
+        // task 3.2.4: the ONE exception to the (target, generation) consume guard. A .blend
+        // conversion -- and the version probe that precedes it -- spans frames, so the arm must be
+        // re-entered while either is in flight or nothing would ever poll them. poll() has exactly one
+        // call site in the whole tree (AC-38), and it is inside serviceBlend(), so "the guard let us
+        // back in" and "the child gets waited on" are the same statement.
+        //
+        // NARROW ON PURPOSE, on BOTH axes: it applies only to a .blend TARGET, so a .gltf selected
+        // while some other probe is alive is not re-imported every tick; and only while something is
+        // genuinely running, so a .blend that is Imported, NeedsConversion or ConversionFailed takes
+        // the existing early return unchanged. A cache hit still costs ONE import and ten further
+        // ticks still cost ten early returns (AC-45's property, preserved).
+        const BlenderState blenderState = blenderService.state();
+        const bool blendWorkInFlight =
+            isBlendFileName(leafOf(targetPath)) &&
+            (stateValue == SessionState::Converting || blenderState == BlenderState::Probing ||
+             blenderState == BlenderState::Converting);
+        if (!blendWorkInFlight) {
+            return;  // AC-45: already imported at this (target, generation). STRUCTURAL, not conventional.
+        }
     }
     serviced = true;
     // code-review SHOULD-FIX 4: consumed ONCE, right here -- true only when setTarget() last saw the
@@ -100,6 +164,13 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
         return;  // AC-46; setTarget() already reset pending/onDisk to defaults when the path changed
     }
     const std::string_view leaf = leafOf(targetPath);
+    // task 3.2.4: the .blend arm sits BEFORE the isImportableModelName early return, and the order is
+    // load-bearing -- placed after it, the whole arm would be dead code, because .blend is deliberately
+    // NOT in that predicate's table and never will be (D15).
+    if (isBlendFileName(leaf)) {
+        serviceBlend(assetsRootUtf8, database, deltaSeconds, resyncForm);
+        return;
+    }
     if (!isImportableModelName(leaf)) {
         stateValue = SessionState::NotImportable;
         return;  // AC-46/E17 -- and NOTHING was read; ditto
@@ -203,6 +274,206 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
     // `modelBytes` outlives every use above. GltfDataBuffer::FromBytes COPIES (§G-16 item 1), so there
     // is no lifetime contract on these bytes -- but keeping the named local alive across both passes
     // costs nothing and survives a future switch to a BORROWING FromSpan.
+}
+
+void ModelImportSession::serviceBlend(std::string_view assetsRootUtf8, const AssetDatabase& database,
+                                      float deltaSeconds, bool resyncForm) {
+    // ---- 1. identity, from the database's OWN PARSED RECORD -- never re-parsed here ---------------
+    const AssetRecord* const record = database.findByPath(targetPath);
+    bool hashUsable = false;
+    if (record != nullptr) {
+        targetGuid = record->guid;
+        if (resyncForm) {
+            onDisk = record->importSettings;
+            pending = onDisk;
+        }
+        hashUsable = sourceHashUsable(*record);
+    }
+
+    // ---- 2. AC-27: a nil GUID is NeedsConversion with NO identity, and NOTHING ELSE HAPPENS -------
+    // Not NotImportable: that enumerator's panel branch renders one sentence and returns before any
+    // section, so it would draw no button to disable -- and it would tell the user "no importer claims
+    // this file type", which is false for a .blend after this task.
+    if (!targetGuid.valid()) {
+        stateValue = SessionState::NeedsConversion;
+        conversionRequested = false;  // a request against an identity-less asset is dropped, not queued
+        cancelRequested = false;
+        return;  // no read, no resolve, no spawn, no byte written
+    }
+
+    // ---- 3/4. the derived-data paths, and what a still-valid record must say ----------------------
+    const std::string guidText = formatGuid(targetGuid);  // returns BY VALUE -- named local first
+    const std::string libraryDir = std::string(database.projectRoot()) + '/' + std::string(ASSET_CACHE_DIR_NAME) + '/' +
+                                   std::string(BLENDER_EXPORT_DIR_NAME);
+    // Named locals FIRST, always (AC-25): the provenance write below is one of the task's writes built
+    // from the LIBRARY directory, and the invariant stays grep-decidable because of it.
+    const std::string provenancePath = libraryDir + '/' + guidText + ".json";
+    const std::string artifactPath = libraryDir + '/' + guidText + ".glb";
+    const std::string artifactLeaf = guidText + ".glb";
+
+    ExportProvenance expected;
+    expected.guid = targetGuid;
+    expected.sourcePath = targetPath;
+    expected.sourceHash = record != nullptr ? record->contentHash : ContentHash{};
+    // "" until something in this session has probed -- and an EMPTY expected version is not compared at
+    // all (§A-9). That is exactly what makes a pure cache hit spawn nothing: comparing a version you
+    // have not probed would require probing, and a probe is a process.
+    expected.blenderVersion = blenderService.versionString();
+    expected.scriptVersion = BLENDER_SCRIPT_VERSION;
+    expected.settingsFingerprint = fingerprintOf(pending);
+
+    // Read <guid>.glb and import it. AC-44/§A-2b, and this is the single most important paragraph in
+    // the whole arm.
+    const auto importArtifact = [&]() -> bool {
+        ++imports;  // an ATTEMPT, exactly as the model path counts one on every terminal branch
+        const FileBytesResult artifactBytes = readFileBytes(artifactPath, MAX_ARTIFACT_BYTES);
+        observedSize = artifactBytes.size;  // filled EVEN ON REFUSAL (E12/AC-35's shape)
+        if (!artifactBytes.bytes.has_value()) {
+            resultValue = ImportResult{};
+            resultValue.status = ImportStatus::ParseFailed;
+            resultValue.message = artifactBytes.refusedByCap
+                                      ? std::format("the Blender export is {} bytes, above the {}-byte limit",
+                                                    artifactBytes.size, MAX_ARTIFACT_BYTES)
+                                      : artifactBytes.error;
+            return false;
+        }
+        const std::span<const std::byte> span(reinterpret_cast<const std::byte*>(artifactBytes.bytes->data()),
+                                              artifactBytes.bytes->size());
+        // ONE call. Full depth. EMPTY external span. EMPTY assetRelativeDir.
+        //
+        // modelImporterNeedsExternalBuffers is DELIBERATELY NOT CONSULTED here, and that is not an
+        // oversight. It would answer TRUE for a ".glb", and running the two-pass driver would be:
+        //   (a) pointless -- D3 guarantees Blender's GLB embeds its images as buffer views, so there is
+        //       nothing external to fetch;
+        //   (b) WRONG -- this file lives in Library/ and has NO assets-relative directory at all, so
+        //       any relative URI would be resolved against a completely unrelated tree, naming a file
+        //       the artifact has nothing to do with; and
+        //   (c) a budget hazard -- the session would read those bytes and hand them to a Full pass that
+        //       never needed them, with MAX_EXTERNAL_BYTES_PER_MODEL and its Truncated escalation in
+        //       the path, which is exactly the failure 3.2.3 documented one format over.
+        // artifactLeaf is a real ".glb" name, so importModel's own dispatch routes it to the glTF
+        // backend exactly as any other GLB.
+        resultValue = importModel(artifactLeaf, /*assetRelativeDir=*/"", span, pending, ImportDepth::Full, {});
+        if (resultValue.status != ImportStatus::Ok && resultValue.status != ImportStatus::Truncated) {
+            return false;
+        }
+        // "A GLB is self-contained" is a property of Blender's EXPORTER, not of the glTF
+        // specification: a GLB may legally carry external URIs. Without this, such an artifact would
+        // import with unresolved images, status Ok and NO SIGNAL AT ALL. Make the assumption
+        // OBSERVABLE, and clear the list so nothing downstream mistakes those names for
+        // assets-relative paths.
+        if (!resultValue.externalUris.empty()) {
+            addSessionWarning(resultValue,
+                              std::format("the Blender export references {} external file(s); a GLB is expected to "
+                                          "be self-contained, so they were not loaded",
+                                          resultValue.externalUris.size()));
+            resultValue.externalUris.clear();
+        }
+        assignImageGuids(resultValue.model.images, database);  // 3.2.1's NIT-11, reused unchanged
+        return true;
+    };
+
+    // ---- 5. drive the service, and hand it this tick's delta --------------------------------------
+    if (cancelRequested) {
+        cancelRequested = false;
+        blenderService.cancel();
+    }
+    const BlenderState blenderBefore = blenderService.state();
+    if (stateValue == SessionState::Converting || blenderBefore == BlenderState::Probing ||
+        blenderBefore == BlenderState::Converting) {
+        // THE ONE AND ONLY BlenderService::poll() CALL SITE IN THE TREE (AC-38/INV-B15). It runs from
+        // EditorApp::tick()'s post-draw slot, through service(), and NEVER from a panel's onDraw().
+        blenderService.poll(deltaSeconds);
+    }
+
+    if (stateValue == SessionState::Converting) {
+        switch (blenderService.state()) {
+            case BlenderState::Ready:       // the request has not been drained into a spawn yet
+            case BlenderState::Converting:  // the child is alive
+                return;
+            case BlenderState::Converted:
+                if (importArtifact()) {
+                    // AC-24/INV-B11: the provenance record is written ONLY NOW -- after the artifact
+                    // has been read back AND imported successfully. A killed, timed-out, failed or
+                    // unusable run leaves any previous record untouched.
+                    if (hashUsable) {
+                        expected.blenderPath = blenderService.binaryPath();
+                        expected.blenderVersion = blenderService.versionString();
+                        expected.artifactBytes = observedSize;
+                        if (const std::string writeError =
+                                writeTextFileAtomic(provenancePath, writeExportProvenanceText(expected));
+                            !writeError.empty()) {
+                            // The MODEL is fine and is shown; only the CACHE is lost, so the next
+                            // selection re-converts. Surfaced as a warning rather than a log line --
+                            // this TU never logs.
+                            addSessionWarning(resultValue,
+                                              std::format("the conversion succeeded but its cache record could not "
+                                                          "be written to '{}' -- {}",
+                                                          provenancePath, writeError));
+                        }
+                    }
+                    // else: an unhashed record has no cache key at all (3.1.3's ThumbnailKey rule), so
+                    // the model is SHOWN and deliberately NOT cached.
+                    stateValue = SessionState::Imported;
+                } else {
+                    // AC-34: the SESSION composes the message, because only the session imports, and
+                    // hands it back so the service can reach Failed/ArtifactUnusable.
+                    blenderService.noteArtifactUnusable(
+                        std::format("{}: {}", importStatusLabel(resultValue.status), resultValue.message));
+                    stateValue = SessionState::ConversionFailed;
+                }
+                return;
+            case BlenderState::Failed:
+                stateValue = SessionState::ConversionFailed;
+                return;
+            case BlenderState::Unknown:
+            case BlenderState::ToolMissing:
+            case BlenderState::ToolUnusable:
+            case BlenderState::Probing:
+                // The tool was re-detected or replaced mid-run (setOverridePath resets to Unknown and
+                // kills the child), so the run is gone with it. Offer a conversion again rather than
+                // reporting a failure the user already caused deliberately.
+                stateValue = SessionState::NeedsConversion;
+                return;
+        }
+        return;  // unreachable -- every BlenderState is handled above (no `default:`, so a new
+                 // enumerator is a -Wswitch warning)
+    }
+
+    // ---- 6. the cache probe. THE COMMON CASE, and the one that must cost nothing (AC-22) ----------
+    // Skipped entirely while a conversion is pending (`Re-import` must re-convert, not re-hit), and
+    // skipped when the record's own content hash is not meaningful: an unhashed record has NO CACHE KEY
+    // at all, so the artifact beside it is treated as STALE rather than compared against a hash that
+    // means nothing (3.1.3's ThumbnailKey rule, applied one subsystem over).
+    if (!conversionRequested && hashUsable) {
+        if (const FileReadResult provenanceText = readTextFile(provenancePath); provenanceText.text.has_value()) {
+            const std::optional<ExportProvenance> actual = parseExportProvenance(*provenanceText.text);
+            if (actual.has_value() && provenanceMatches(*actual, expected) && importArtifact()) {
+                stateValue = SessionState::Imported;
+                return;  // ZERO processes, ZERO bytes written, no environment read, no path stat'ed
+            }
+            // A record that does not parse, does not match, or whose artifact is missing/unusable is a
+            // MISS -- 3.1.2 D7's "derived data is disposable", never a repair. E10/E11.
+            resultValue = ImportResult{};
+        }
+    }
+
+    // ---- 7/8. a miss. Convert if asked to, otherwise wait to be asked -----------------------------
+    if (conversionRequested) {
+        conversionRequested = false;
+        const BlenderState blenderState = blenderService.state();
+        const bool convertible = blenderState == BlenderState::Ready || blenderState == BlenderState::Converted ||
+                                 blenderState == BlenderState::Failed;
+        if (convertible) {
+            const std::string blendAbsolute = std::string(assetsRootUtf8) + '/' + targetPath;
+            blenderService.requestConversion(targetGuid, blendAbsolute, expected.sourceHash, libraryDir);
+            stateValue = SessionState::Converting;
+            return;  // the next tick's poll() drains the request and performs the ONE spawn
+        }
+        // AC-30: with no usable Blender the request is DROPPED and nothing is spawned. The panel's own
+        // section already says why (ToolMissing / ToolUnusable / Probing).
+    }
+    stateValue = SessionState::NeedsConversion;
 }
 
 std::string ModelImportSession::applySettings(std::string_view assetsRootUtf8) {

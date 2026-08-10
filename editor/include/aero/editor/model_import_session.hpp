@@ -5,6 +5,7 @@
 // ONLY write this whole task adds anywhere (INV-M9). NOTHING HERE LOGS.
 #include <aero/core/guid.hpp>
 #include <aero/editor/asset_database.hpp>
+#include <aero/editor/blender_service.hpp>  // task 3.2.4 -- a VALUE member, see below
 #include <aero/editor/model_import.hpp>
 
 #include <cstdint>
@@ -16,9 +17,20 @@ namespace engine::editor {
 
 enum class SessionState : std::uint8_t {
     Idle = 0,       // nothing selected
-    NotImportable,  // something selected, but no importer claims it (or it is a directory -- E17)
+    NotImportable,  // something selected, but no importer claims it (or it is a directory -- E17).
+                    // After task 3.2.4 a .blend NEVER lands here: this enumerator keeps its exact
+                    // meaning, which is what makes it honest, and telling a user "no importer claims
+                    // this file type" about a .blend became factually false the moment the Blender
+                    // path shipped.
     Imported,       // status is Ok or Truncated
     Failed,         // every other ImportStatus
+    // ---- task 3.2.4, APPENDED (never inserted) ----
+    NeedsConversion,   // a .blend with no valid cached artifact. ALSO the nil-GUID case (AC-27): the
+                       // panel draws the Blender section and DISABLES the button, which
+                       // NotImportable -- which renders one sentence and returns before any section
+                       // -- structurally cannot do.
+    Converting,        // a .blend whose Blender run is in flight
+    ConversionFailed,  // the run finished badly; blender().message() carries the reason
 };
 
 class ModelImportSession {
@@ -33,7 +45,13 @@ public:
     // 3.1.3's BLOCKING-1 rule shape, a third application). Does NOTHING when the target is already
     // imported at this generation -- so AC-45's "exactly one import" is STRUCTURAL, not a call-site
     // convention, and ten further ticks cost ten early returns.
-    void service(std::string_view assetsRootUtf8, const AssetDatabase& database);
+    //
+    // task 3.2.4: `deltaSeconds` is ONE NEW PARAMETER, TRAILING and DEFAULTED, so every existing call
+    // site compiles UNEDITED (AC-45; the writeMetaText precedent, 3.2.2). The PROJECT root is NOT a
+    // parameter: database.projectRoot() already carries it, authoritatively and never derived from
+    // the assets root (3.1.2's own AC-38). It is forwarded to BlenderService::poll(), which is called
+    // from HERE and from nowhere else in the tree (AC-38).
+    void service(std::string_view assetsRootUtf8, const AssetDatabase& database, float deltaSeconds = 0.0F);
 
     [[nodiscard]] SessionState state() const noexcept { return stateValue; }
     [[nodiscard]] const ImportResult& result() const noexcept { return resultValue; }
@@ -57,7 +75,28 @@ public:
     [[nodiscard]] std::string applySettings(std::string_view assetsRootUtf8);
     [[nodiscard]] const std::string& applyError() const noexcept { return lastApplyError; }
 
+    // ---- task 3.2.4: the .blend conversion surface ------------------------------------------------
+    // One-shots, set by EditorApp::tick() from the panel's own request channels and consumed by the
+    // NEXT service(). Each also RE-ARMS the (target, generation) consume guard, because a request
+    // arrives when the session has long since been serviced for this pair and would otherwise take
+    // the early return forever.
+    void requestConversion() noexcept;
+    void cancelConversion() noexcept;
+    [[nodiscard]] const BlenderService& blender() const noexcept { return blenderService; }
+    // The ONE mutable reach, for EditorApp::tick()'s lazy resolve() and its Locate.../Re-detect
+    // handling. The PANEL cannot call it at all: it holds a `const ModelImportSession*`, so AC-39 is a
+    // compile-time property here rather than a convention.
+    [[nodiscard]] BlenderService& blenderMutable() noexcept { return blenderService; }
+    // AC-27: canApply()'s GUID half, lifted. canApply() ALSO requires settingsDirty(), so it cannot be
+    // reused for "may this .blend be converted at all?" -- a freshly selected .blend is never dirty.
+    [[nodiscard]] bool targetHasIdentity() const noexcept { return targetGuid.valid(); }
+
 private:
+    // task 3.2.4: the .blend arm, run INSTEAD of the two-pass importer path. Split out only for
+    // readability -- service()'s existing early-return structure above it is unchanged.
+    void serviceBlend(std::string_view assetsRootUtf8, const AssetDatabase& database, float deltaSeconds,
+                      bool resyncForm);
+
     std::string targetPath;             // "" == nothing selected
     std::uint64_t generationValue = 0;  // the AssetDatabase generation this result belongs to
     bool serviced = false;              // the (target, generation) pair has been consumed
@@ -75,6 +114,12 @@ private:
     std::uint64_t observedSize = 0;
     std::size_t imports = 0;
     std::string lastApplyError;
+    // task 3.2.4: a VALUE member, exactly as this class is itself a value member of EditorApp. That is
+    // what makes the static_asserts below evaluate BlenderService's own move -- and what makes its
+    // named-deleter-over-an-incomplete-type PIMPL load-bearing rather than stylistic.
+    BlenderService blenderService;
+    bool conversionRequested = false;  // one-shot, drained by service()
+    bool cancelRequested = false;      // one-shot, drained by service()
     // INV-M13: SORTED VECTORS ONLY -- no std::unordered_map, no std::set. This is a VALUE member of
     // EditorApp, whose move is `noexcept = default`, and MSVC's node-based containers are not
     // nothrow-move-CONSTRUCTIBLE (3.1.2's R9, measured in CI as C2607). This class holds none today;
