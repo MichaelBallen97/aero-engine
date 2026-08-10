@@ -5008,24 +5008,7 @@ ASan report, not a clean `CHECK` failure (§B's own first check); S2 reddened br
 S29 reddened strictly disjoint halves of `OI47`, closing §B's own third check that these two seeds must
 not both redden the same assertions.
 
-##### Code-review round — ten gaps closed, one BLOCKING
-
-A code-review round against the fully green, sabotage-proven branch above found ten gaps, one BLOCKING.
-Closed in the order found; each closed with its own commit and, where behavioural, its own re-verified
-sabotage proof rather than a case that only looks like proof. Full detail per gap is recorded at its own
-commit; this subsection is the cross-cutting record §V4 §8 and the sabotage re-grade need a home for.
-
-**AC-13's one-time earcut `#error` check, re-run as this pass's own measurement, not carried forward
-from Step 1.** A throwaway configure (`build/earcut-probe-3.2.3`, `-DCMAKE_CXX_FLAGS=
--DTINYOBJLOADER_USE_MAPBOX_EARCUT`, deleted immediately after) building `aero_editor_core` fails exactly
-where D21's guard says it will:
-```
-/Users/michaelballen/Desktop/Repositorios/aero-engine/editor/src/obj_import.cpp:20:6: error: "task 3.2.3 D21: the mapbox earcut triangulation path reads vertex positions guarded only by assert(), which vanishes under NDEBUG -- a Debug abort on the sanitiser lanes and a heap over-read in Release, both reachable from an ordinary broken .obj. The vcpkg port neither defines this macro nor installs the mapbox/ headers. If you are turning it on deliberately, replace this guard with our own bounds-checked triangulation first."
-   20 |     #error \
-      |      ^
-```
-One error, at the `#error` this task's own D21 comment names, nothing else. This remains deliberately
-outside CI (a build that must fail cannot live inside one that must pass) and AC-13's only cover.
+##### Measured inventory — before (`b4c3870`) and after (`ef9c34f`), re-measured, never derived by addition
 
 `ctest -N`: **95** tools-ON, **6** with both `AERO_REFLECT_TOOLS`/`AERO_SHADER_TOOLS` off, **19** with
 `AERO_REFLECT_TOOLS` off alone — all three **unchanged**, all three rebuilt fresh (`build/tools-off-3.2.3`,
@@ -5065,3 +5048,155 @@ actually run and merged). `editor/validation/3.2.3-obj-import-tinyobjloader.md` 
 records for every row; Windows and Linux validation rows remain pending for this task as for every task
 since Phase 2 — carried-forward platform-validation debt, unchanged by this task's own implementation
 work, now spanning four phases.
+
+##### Task 3.2.3 — code-review round (ten gaps, one BLOCKING, all fixed on the same branch)
+
+**A code review of `feat/3.2.3-obj-import-tinyobjloader` before its PR found ten gaps — one BLOCKING,
+nine non-blocking — against the fully green, sabotage-proven gate recorded above.** Once again a green
+mechanical gate plus a completed sabotage matrix was not evidence of a clean tree — this project's own
+recurring lesson, now repeated on essentially every task with a code-review round (2.2.4, 2.3.3, 2.4.1,
+2.4.2, 2.6.1, 3.1.1, 3.1.3, 3.2.1). All ten are now fixed on the same branch, each in its own commit,
+each behavioural fix re-verified by direct sabotage (the fix reverted, the test confirmed red, the
+revert confirmed byte-clean via `git diff`/`git status`) rather than trusted on the strength of a green
+run alone.
+
+**The BLOCKING gap — `materialIndex` could point past the end of `ImportedModel::materials`.**
+`obj_import.cpp` resolved a primitive's material against `LoadObj`'s own `materials` vector (the raw
+`tinyobj::material_t` list), but `convertMaterials` then FILTERS that vector on the way to
+`model.materials` — dropping the phantom, empty-named entries the two build-time findings above already
+established `LoadMtl` produces. The two index spaces coincide for every well-formed file and diverge the
+moment the filter removes an entry `shape.mesh.material_ids` still references — a **third** instance of
+the two build-time findings' own phantom-material shape, and a new instance of the epic's own "two
+things that coincide for glTF and diverge for the new format" pattern, one the plan's own §A-13
+catalogue did not name. Two probe-confirmed reproductions: a bare `usemtl` (no operand at all — the
+library's `usemtl` handler has no `IS_SPACE` guard) resolves via the empty name a phantom flush just
+registered in `material_map`, landing on a `materialIndex` that is in range for the library's vector
+(size 1) but out of range for ours (size 0, the phantom dropped); and a SECOND `mtllib` directive
+re-enters `LoadMtl` on an already-exhausted shared stream (Finding 2's own mechanism), appending a
+further phantom the library's vector keeps and ours does not, producing an off-by-one overrun instead.
+Neither crashed today only because `import_details_panel.cpp` happens to guard its own read with
+`< model.materials.size()` — nothing else does, and 3.1.5, the next task, consumes `materialIndex`
+directly. Fixed by having `convertMaterials` return the library-index → converted-index map it builds
+while filtering (moving its call earlier in `importObjFile`, since nothing after it actually depended on
+geometry existing first), and resolving every raw material id through that map instead of using it as an
+index directly — establishing the invariant that `materialIndex` is always `INVALID_SUBASSET` or a valid
+index into `model.materials`. `OI82`/`OI83` reproduce both probe-confirmed cases directly; `OI84` asserts
+the general invariant across a mix of real, phantom-dropped and never-declared material references.
+
+**The nine non-blocking gaps:**
+
+- **`OI3` (AC-20's own template case) was missing its Full half.** Step 3's own comment said the Full
+  half "is added at Step 4" — it never was, leaving the case that AC-20 itself calls the template for
+  every other AC in this task asserting only one status. Added: `full.status == ParseFailed` on the same
+  fixture, so the CONTRAST — not merely one half — is what the case actually proves.
+- **Two library sentences this branch had claimed "PROVEN unreachable for this library version" were
+  reachable at THREE `mtllib` directives, not two.** Probe-confirmed directly against the real vendored
+  header (a standalone harness reproducing `obj_import.cpp`'s own `mtlText` concatenation shape): a
+  TWO-`mtllib` document leaves the library's raw `warn`/`err` both empty (matching this branch's own
+  original finding), but a THIRD `mtllib` line flips `MaterialStreamReader`'s `fail()` guard true, and
+  the library's raw `warn` then reads verbatim `"Material stream in error state. \nFailed to load
+  material file(s). Use default material.\n"`. `OI23` rewritten to three `mtllib` directives; seeds S24
+  and S25 re-run and RE-GRADED from confirmed-non-discriminator to confirmed-discriminator (each
+  reddens `OI23` cleanly and independently, reverted byte-clean between the two); the false "PROVEN
+  unreachable" claim corrected in `.claude/rules/editor.md` and in this entry's own §A-10 paragraph
+  above — a normative rules file carrying a false claim was the sharper risk, since a future maintainer
+  reading "PROVEN unreachable" could delete the filter as dead code.
+- **`MI105`/`MI105b`/`MI105c` had stopped growing at a Step-3 placeholder shape.** `MI105`'s
+  `ACCEPTED_EXTENSIONS` stayed at four entries with a comment claiming ".mtl joins at Step 7, growing it
+  to five" (never happened); `MI105b` — the three-way suffix/identity/dispatch sync check, the sharper of
+  the three — excluded ".mtl" from its `NAMES` table with a comment claiming `importMtlOnly` was still a
+  stub "through Step 6" (false since Step 7); `MI105c`'s ".obj" arm stayed at Step 3's own "WEAKENED for
+  now" shape, asserting only `Ok`. Grown to five and eleven entries respectively; `MI105c` now asserts
+  ".obj" imports `Ok` with exactly one mesh, per plan §A-8.
+- **D7's "no matching .mtl was supplied" warning was grouped per accepted CANDIDATE instead of per
+  `mtllib` LINE.** D16 deliberately offers one line's operand as multiple candidates (the whole trimmed
+  operand, then each token), so a legitimate file could accumulate spurious warnings for a line that was,
+  overall, fully served: `mtllib my file.mtl` with the spaced file actually supplied produced two
+  spurious warnings for its unmatched "my"/"file.mtl" token readings; `mtllib a.mtl b.mtl` with both
+  files supplied separately produced one spurious warning for its unmatched whole-operand reading. Fixed
+  with a new TU-local `scanObjMtllibLineGroups`, which re-derives each line's own candidate set by
+  calling the already-tested, public `scanObjMtlLibs` on just that line's bytes rather than
+  re-implementing the tokenizer a third time; a line now warns only when NONE of its own candidates
+  matched a supplied buffer. `OI85`/`OI86` cover both shapes, confirmed by direct sabotage (temporarily
+  restoring the old per-candidate warning alongside the new grouped one) to redden cleanly against the
+  old behaviour.
+- **AC-13's one-time earcut `#error` check was re-verified as this pass's own measurement**, not trusted
+  on the strength of the branch's earlier implementation-pass record. A throwaway configure
+  (`build/earcut-probe-3.2.3`, `-DCMAKE_CXX_FLAGS=-DTINYOBJLOADER_USE_MAPBOX_EARCUT`, deleted immediately
+  after) building `aero_editor_core` fails exactly where D21's guard says it will:
+  ```
+  editor/src/obj_import.cpp:20:6: error: "task 3.2.3 D21: the mapbox earcut triangulation path reads vertex positions guarded only by assert(), which vanishes under NDEBUG -- a Debug abort on the sanitiser lanes and a heap over-read in Release, both reachable from an ordinary broken .obj. The vcpkg port neither defines this macro nor installs the mapbox/ headers. If you are turning it on deliberately, replace this guard with our own bounds-checked triangulation first."
+     20 |     #error \
+        |      ^
+  ```
+  One error, at the `#error` this task's own D21 comment names, nothing else — deliberately outside CI
+  (a build that must fail cannot live inside one that must pass) and AC-13's only cover, unchanged.
+- **The texture-reference half of `MAX_EXTERNAL_URIS` refused to append past the cap but never
+  escalated**, unlike its sibling `mtllib`-candidate cap a few dozen lines above it in the same file. A
+  `.mtl` declaring more than 1024 distinct textures (well under `MAX_MATERIALS_PER_MODEL` = 65536, so
+  reachable) imported with status `Ok`, a complete-looking model, and dependency edges silently missing
+  past the 1024th texture — the "partial claiming whole" shape the cap regime exists to prevent. Fixed
+  with a shared `externalUriCapReported` flag threaded through every `convertTextureSlot` call in one
+  `convertMaterials` invocation, so the escalation fires exactly once no matter how many further textures
+  overflow it. `OI87` covers it, including asserting the message appears exactly once across ten
+  overflowing textures; confirmed by direct sabotage that it reddens cleanly and reverts clean.
+- **A non-finite position reached the output unfiltered.** Probe-confirmed directly: `v 1e400 0 0` parses
+  to `+inf`, `LoadObj` still returns `true`, `warn` stays empty (`nan` is not reachable — the parser
+  reads it as `0`). Before the fix, the infinite component reached `outPrim.positions` and the bounds
+  fold with status `Ok` and no warning at all. Decision: a non-finite position is malformed input of the
+  same class as an out-of-range index, so it gets the same treatment — the whole face is dropped, with
+  one capped warning, reusing the existing INV-O4 drop-whole path and its warning cap, checked as each
+  corner's vertex index is read, inside the same per-face validity loop the range checks already run in.
+  `OI88`/`OI89` cover a poisoned lone triangle and a poisoned vertex among several good ones; confirmed
+  by direct sabotage (temporarily removing the check) that both redden cleanly, including the finiteness
+  assertions on `summary.bounds`.
+- **One array access in the INV-O4 loop relied on an unchecked third-party invariant.**
+  `shape.mesh.indices[cursor + k]` had no check that `cursor + 3 <= shape.mesh.indices.size()`, unlike
+  the neighbouring `material_ids` read a few lines below it, which IS guarded. Verified safe for the
+  pinned v2.0.0rc13 by reading every push site in tinyobjloader's own `exportGroupsToShape` (`indices`
+  and `num_face_vertices` are kept in lockstep) — but this file's own rule is that every index is
+  range-checked by us before any array access, never taken on a third-party invariant a future library
+  bump could break. Guarded; not reachable by any fixture this suite can construct against the pinned
+  library version, documented as such rather than given a case that only looks like proof, matching the
+  D21 `#error` guard's own posture.
+- **`countEmptyMtllibOperandLines` doubled the Structure scan.** It walked the whole file a second time,
+  duplicating `scanObjMtlLibs`'s own per-line work purely to recover E4's empty-operand-line count, on
+  every `.obj` import including every phase 7.5 Structure probe. Folded into one pass: `scanObjMtlLibsScan`
+  (`model_import.{hpp,cpp}`) returns `ObjMtlLibScan{candidates, emptyOperandLines}` from a single linear
+  walk; `scanObjMtlLibs` becomes a thin wrapper over it for callers (this task's own `MI124`-`MI131`) that
+  only need the candidate list; `countEmptyMtllibOperandLines` is deleted outright. `MI132` proves the
+  combined scan directly. R5 RE-MEASURED with the identical procedure (see above): the scan roughly
+  HALVED, ~54–58 ms against the original ~107–113 ms at ~150 MB, confirming the duplicate scan was
+  genuinely costing about half of the total; the read is unchanged within noise; steady-state stays at a
+  few tenths of a millisecond with zero models probed and zero bytes read, so D15/INV-C5's zero-probe
+  steady state is unaffected.
+
+**Re-measured inventory after all ten fixes, never carried forward from the pre-review numbers above.**
+`ctest -N` **95 / 6 / 19**, all three unchanged (zero new `add_test`), all three re-run 100% green — both
+reduced configurations rebuilt **fully fresh** a second time (`build/tools-off-3.2.3`,
+`build/reflect-off-3.2.3` deleted and reconfigured from nothing again). `aero_editor_shell_test`:
+**1223 → 1232** (+9: `OI82`-`OI89` in `obj_import_test.cpp`, `MI132` in `model_import_test.cpp` — measured
+directly with `--list-test-cases`, never derived by addition). Both reduced configurations: **1199 → 1208**
+in **each**, equal to each other, `OI1` present in both. `aero_editor_imgui_test` **90**, `aero_tests`
+**415**, `aero_scene_serialize_test` **23**, `aero_editor_inspector_test` **22** — all four unchanged (no
+gap touched a GPU-tier case, `engine/`, scene serialization or the reflection test suite). `aero_editor_core`
+sources **53** unchanged (every gap modified an EXISTING file; none added a new one). Tracked
+`editor/src/*.cpp` (Check B) **54** unchanged. `check-math-boundary.sh` scanned **294** unchanged (no new
+C-family file). Architecture guards **6**, all six re-run individually by exit code, all passing;
+`.github/scripts/` and `.github/workflows/` both remain byte-identical to `main`
+(`git diff main...HEAD -- .github/` empty). The diff gates re-confirmed empty: `engine/`,
+`editor/src/gltf_import.{hpp,cpp}`, `editor/src/asset_database.cpp`, `.github/workflows/ci.yml`, all empty
+against `main`; `vcpkg.json`'s `builtin-baseline` line unchanged; the `/vcpkg` submodule commit still
+equals it. clang-format and clang-tidy both clean **by exit code** on every file this round touched
+(`git diff --name-only main...HEAD -- '*.cpp' '*.hpp'` for format, `'*.cpp'` alone for tidy, matching
+§V4 §7 exactly) — clang-format needed one real `-i` pass (the new code in `obj_import.cpp`,
+`model_import.cpp` and the two test files had drifted from the 120-column-chain formatting rule this
+project's own local-vs-CI-skew lesson warns about); clang-tidy's exit code was 0 on the first run, no
+fixes needed. Full branch diff, the 23 code/test/docs commits from the implementation and code-review
+rounds (`a4df408` through `55992fa`; the CLAUDE.md state-block rewrite and this entry's own commit follow
+and are not counted, matching the precedent that a docs commit never counts its own diff): **20 files
+changed, 4109 insertions(+), 39 deletions(-)**, zero touching `engine/`.
+
+**The mechanical gate, both sabotage rounds, the code review and all documentation are now done; the PR,
+CI run and macOS validation pass are NOT** — reserved for the merge step, unchanged from the pre-review
+position.
