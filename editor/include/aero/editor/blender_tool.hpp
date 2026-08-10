@@ -220,6 +220,12 @@ inline constexpr int TOOL_PREFS_FORMAT_VERSION = 1;
 inline constexpr int EXPORT_PROVENANCE_FORMAT_VERSION = 1;
 inline constexpr float BLENDER_TIMEOUT_SECONDS = 300.0F;   // D6/R4 -- generous, finite, named
 inline constexpr float PROCESS_FORCE_KILL_SECONDS = 5.0F;  // graceful, then forceful
+// The VERSION PROBE's own timeout, and it is deliberately an order of magnitude below the export's
+// (code-review NOTE 7). `blender --version` prints six lines and exits; anything that takes longer than
+// half a minute is hung -- a network-mounted binary that never responds, a quarantine dialog, an
+// installer's own stub. Without it the service sat in Probing for the LIFE OF THE EDITOR, which is not
+// merely a stuck spinner: Probing is one of the two states that re-enter the .blend arm every tick.
+inline constexpr float BLENDER_PROBE_TIMEOUT_SECONDS = 30.0F;
 // 256 KiB. A log is READ INTO MEMORY and rendered in a panel, which is why this is three orders of
 // magnitude below the artifact cap rather than equal to it.
 // The ULL is not decoration: a `256U * 1024U` product is computed in `unsigned int` and only THEN

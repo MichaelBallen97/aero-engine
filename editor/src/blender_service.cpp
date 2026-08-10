@@ -337,6 +337,16 @@ void BlenderService::startExport() {
 }
 
 void BlenderService::finishProbe(int exitCode) {
+    // A timeout has ALREADY decided the verdict, and the exit code of a killed process says nothing
+    // useful about it (finishExport's own rule, one run over -- code-review NOTE 7).
+    if (pendingFailure == BlenderFailure::TimedOut) {
+        stateValue = BlenderState::ToolUnusable;
+        failureValue = BlenderFailure::TimedOut;
+        messageText =
+            std::format("'{}' did not answer within {:.0f} seconds when asked for its version, and was stopped.",
+                        binary, BLENDER_PROBE_TIMEOUT_SECONDS);
+        return;
+    }
     if (exitCode != 0) {
         stateValue = BlenderState::ToolUnusable;
         failureValue = BlenderFailure::SpawnFailed;
@@ -463,11 +473,20 @@ void BlenderService::poll(float deltaSeconds) {
                 if (sinceKillRequest > PROCESS_FORCE_KILL_SECONDS) {
                     process->kill(true);  // graceful first, forceful only after the grace period
                 }
-            } else if (stateValue == BlenderState::Converting && elapsed > BLENDER_TIMEOUT_SECONDS) {
-                process->kill(false);
-                killRequested = true;
-                sinceKillRequest = 0.0F;
-                pendingFailure = BlenderFailure::TimedOut;
+            } else {
+                // EVERY child this service starts is bounded, not just the export (code-review NOTE 7).
+                // A running child is in exactly one of two states -- Probing or Converting -- and each
+                // gets its own limit, three orders of magnitude apart because the two runs are nothing
+                // alike: one prints six lines, the other renders a scene.
+                const float limit = stateValue == BlenderState::Converting ? BLENDER_TIMEOUT_SECONDS
+                                    : stateValue == BlenderState::Probing  ? BLENDER_PROBE_TIMEOUT_SECONDS
+                                                                           : 0.0F;
+                if (limit > 0.0F && elapsed > limit) {
+                    process->kill(false);
+                    killRequested = true;
+                    sinceKillRequest = 0.0F;
+                    pendingFailure = BlenderFailure::TimedOut;
+                }
             }
         }
         int exitCode = 0;

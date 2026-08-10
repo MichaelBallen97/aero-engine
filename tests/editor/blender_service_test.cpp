@@ -52,6 +52,7 @@ using engine::formatGuid;
 using engine::Guid;
 using engine::parseContentHash;
 using engine::parseGuid;
+using engine::editor::BLENDER_PROBE_TIMEOUT_SECONDS;
 using engine::editor::BLENDER_SCRIPT_FILE_NAME;
 using engine::editor::BLENDER_TIMEOUT_SECONDS;
 using engine::editor::BlenderEnv;
@@ -155,6 +156,14 @@ constexpr std::string_view CMAKE_COMMAND = AERO_TEST_CMAKE_COMMAND;
 // "no test sleeps" rule is about the TIMEOUT being driven by injected deltaSeconds, which it still is.
 constexpr int MAX_POLL_ITERATIONS = 5000000;
 
+// A bounded WAIT loop spends NO INJECTED TIME, and the reason is worth stating because the probe
+// timeout is what exposed it. Fake seconds are a deliberate instrument in this file (AC-18: no test
+// sleeps -- every timeout is driven by an explicit, one-shot injection, as BS29 and BS51 do). A loop
+// that merely waits for a REAL child to answer must not spend them: forking a shell script costs a few
+// thousand poll iterations, which at a plausible-looking 16 ms per iteration is minutes of FAKE time and
+// trips BLENDER_PROBE_TIMEOUT_SECONDS while the child takes milliseconds of real time.
+constexpr float WAIT_DT = 0.0F;
+
 struct PollOutcome {
     ProcessState state = ProcessState::Running;
     int exitCode = 0;
@@ -234,6 +243,12 @@ void makeFakeExportTool(std::string_view absolutePathUtf8, std::string_view glbB
     script += std::to_string(exitCode);
     script += "\n";
     writeExecutable(absolutePathUtf8, script);
+}
+
+// A fake whose `--version` NEVER ANSWERS -- the shape a network-mounted binary, a quarantine dialog or
+// an installer stub produces. It has no version branch at all, deliberately (code-review NOTE 7).
+void makeFakeHangingVersionTool(std::string_view absolutePathUtf8) {
+    writeExecutable(absolutePathUtf8, "#!/bin/sh\nsleep 30\n");
 }
 
 // Answers the probe immediately and then holds an EXPORT open, so cancel and timeout have something
@@ -1243,7 +1258,7 @@ TEST_CASE(
     REQUIRE(probed.importCount() == 1);
     probed.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(CMAKE_COMMAND), project.exportDir);
     for (int i = 0; i < MAX_POLL_ITERATIONS; ++i) {
-        probed.service(project.assetsRoot, project.db, 0.016F);
+        probed.service(project.assetsRoot, project.db, WAIT_DT);
         if (probed.blender().state() != BlenderState::Probing) {
             break;
         }
@@ -1356,7 +1371,7 @@ TEST_CASE(
 
     session.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(fake), project.exportDir);
     for (int i = 0; i < MAX_POLL_ITERATIONS && session.blender().state() == BlenderState::Probing; ++i) {
-        session.service(project.assetsRoot, project.db, 0.016F);
+        session.service(project.assetsRoot, project.db, WAIT_DT);
         std::this_thread::yield();
     }
     REQUIRE(session.blender().state() == BlenderState::Ready);
@@ -1370,7 +1385,7 @@ TEST_CASE(
     // Wait for the CHILD's own write, so the cancel below cannot race it. Bounded and yielding, never a
     // sleep and never a clock: the loop ends on an observed file content, not on elapsed time.
     for (int i = 0; i < MAX_POLL_ITERATIONS && readAll(project.provenancePath()) != std::string(CHILD_STATUS); ++i) {
-        session.service(project.assetsRoot, project.db, 0.016F);
+        session.service(project.assetsRoot, project.db, WAIT_DT);
         std::this_thread::yield();
     }
     REQUIRE(readAll(project.provenancePath()) == std::string(CHILD_STATUS));  // the fake really wrote
@@ -1420,7 +1435,7 @@ TEST_CASE(
 
     session.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(fake), project.exportDir);
     for (int i = 0; i < MAX_POLL_ITERATIONS && session.blender().state() == BlenderState::Probing; ++i) {
-        session.service(project.assetsRoot, project.db, 0.016F);
+        session.service(project.assetsRoot, project.db, WAIT_DT);
         std::this_thread::yield();
     }
     REQUIRE(session.blender().state() == BlenderState::Ready);
@@ -1430,7 +1445,7 @@ TEST_CASE(
     for (int i = 0; i < MAX_POLL_ITERATIONS && session.state() != SessionState::Imported &&
                     session.state() != SessionState::ConversionFailed;
          ++i) {
-        session.service(project.assetsRoot, project.db, 0.016F);
+        session.service(project.assetsRoot, project.db, WAIT_DT);
         std::this_thread::yield();
     }
     REQUIRE(session.state() == SessionState::Imported);
@@ -1546,7 +1561,7 @@ TEST_CASE(
     session.service(project.assetsRoot, project.db);
     session.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(fake), project.exportDir);
     for (int i = 0; i < MAX_POLL_ITERATIONS && session.blender().state() == BlenderState::Probing; ++i) {
-        session.service(project.assetsRoot, project.db, 0.016F);
+        session.service(project.assetsRoot, project.db, WAIT_DT);
         std::this_thread::yield();
     }
     REQUIRE(session.blender().state() == BlenderState::Ready);
@@ -1555,7 +1570,7 @@ TEST_CASE(
     for (int i = 0; i < MAX_POLL_ITERATIONS && session.state() != SessionState::Imported &&
                     session.state() != SessionState::ConversionFailed;
          ++i) {
-        session.service(project.assetsRoot, project.db, 0.016F);
+        session.service(project.assetsRoot, project.db, WAIT_DT);
         std::this_thread::yield();
     }
     CHECK(session.state() == SessionState::ConversionFailed);
@@ -1648,7 +1663,7 @@ TEST_CASE(
 void sessionUntilBlenderSettled(ModelImportSession& session, std::string_view assetsRoot,
                                 const engine::editor::AssetDatabase& db) {
     for (int i = 0; i < MAX_POLL_ITERATIONS; ++i) {
-        session.service(assetsRoot, db, 0.016F);
+        session.service(assetsRoot, db, WAIT_DT);
         const BlenderState state = session.blender().state();
         if (state != BlenderState::Probing && state != BlenderState::Converting) {
             return;
@@ -1682,7 +1697,7 @@ TEST_CASE(
     for (int i = 0; i < MAX_POLL_ITERATIONS && session.state() != SessionState::ConversionFailed &&
                     session.state() != SessionState::Imported;
          ++i) {
-        session.service(project.assetsRoot, project.db, 0.016F);
+        session.service(project.assetsRoot, project.db, WAIT_DT);
         std::this_thread::yield();
     }
     REQUIRE(session.blender().exportRunCount() == 1);  // the run really happened
@@ -1714,7 +1729,7 @@ TEST_CASE(
         session.service(project.assetsRoot, project.db, 0.016F);  // -> Converting (records, no spawn)
         REQUIRE(session.state() == SessionState::Converting);
         for (int i = 0; i < MAX_POLL_ITERATIONS && session.state() == SessionState::Converting; ++i) {
-            session.service(project.assetsRoot, project.db, 0.016F);
+            session.service(project.assetsRoot, project.db, WAIT_DT);
             std::this_thread::yield();
         }
     };
@@ -1861,7 +1876,7 @@ TEST_CASE(
     // The old run is still polled (the serviced-guard exception covers a live child), so it really does
     // reach Converted while the NEW target is selected. That is what makes this case non-vacuous.
     for (int i = 0; i < MAX_POLL_ITERATIONS && session.blender().state() == BlenderState::Converting; ++i) {
-        session.service(project.assetsRoot, project.db, 0.016F);
+        session.service(project.assetsRoot, project.db, WAIT_DT);
         std::this_thread::yield();
     }
     REQUIRE(session.blender().state() == BlenderState::Converted);
@@ -1916,4 +1931,43 @@ TEST_CASE(
     REQUIRE(session.state() == SessionState::NeedsConversion);  // the probed version now mismatches
     CHECK(session.artifactBlenderVersion().empty());
     CHECK(session.artifactBlenderPath().empty());
+}
+
+TEST_CASE(
+    "blender_service: a hung `--version` is killed and reported, never left Probing forever (BS51, "
+    "task 3.2.4 code-review NOTE 7)") {
+#if defined(_WIN32)
+    MESSAGE("skipped on Windows: no scripted fake can hold a process open for Blender's argv there (see BS14)");
+#else
+    // The timeout was gated on Converting alone, so a probe that never answered left the service in
+    // Probing for the LIFE OF THE EDITOR -- and Probing is one of the two states that re-enter the
+    // .blend arm every tick, so it is not merely a stuck spinner.
+    const TempDir tmp;
+    const std::string fake = tmp.join("blender");
+    makeFakeHangingVersionTool(fake);
+
+    BlenderService service;
+    service.resolve(HostOs::Linux, overrideEnv(fake), tmp.utf8());
+    REQUIRE(service.state() == BlenderState::Probing);
+    service.poll(0.0F);  // spawns the probe; the child hangs
+    REQUIRE(service.probeRunCount() == 1);
+    REQUIRE(service.state() == BlenderState::Probing);
+
+    // NO TEST SLEEPS: the clock is INJECTED, exactly as BS29 does for the export's own timeout.
+    service.poll(BLENDER_PROBE_TIMEOUT_SECONDS + 1.0F);
+    pollUntilSettled(service, PROCESS_FORCE_KILL_SECONDS + 1.0F);
+
+    // KILLED, not merely reported -- pollUntilSettled returning at all is the proof the child is gone.
+    CHECK(service.state() == BlenderState::ToolUnusable);
+    CHECK(service.failure() == BlenderFailure::TimedOut);
+    CHECK_FALSE(service.message().empty());
+    // The message is SPECIFIC: it must not read as "exited with code N", which is what a killed
+    // process's exit code would otherwise have produced (AC-36).
+    CHECK(service.message().find("did not answer") != std::string::npos);
+    CHECK(service.exportRunCount() == 0);
+    // ...and it never became Ready off an empty banner, which D14's "attempt, never refuse" would
+    // otherwise have done with the timed-out run's empty output.
+    CHECK(service.state() != BlenderState::Ready);
+    CHECK_FALSE(service.version().has_value());
+#endif
 }
