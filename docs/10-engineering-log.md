@@ -4903,6 +4903,31 @@ so a future task sizing the asset-watcher's own per-tick budget (`.claude/rules/
 section) has a real number for a Wavefront file rather than an assumption carried over from glTF's own,
 much cheaper, binary-buffer-only Structure pass.
 
+**R5, RE-MEASURED after the code-review round's gap 10 fix (`countEmptyMtllibOperandLines`'s duplicate
+full-file scan folded into `scanObjMtlLibsScan`'s own single pass).** The table above describes the code
+as it stood before that fix and is left as the historical record; this is the number that describes
+`HEAD` now. Same procedure exactly — `macos-release`, the identical ~150.0 MiB generated fixture, three
+runs, the identical throwaway-harness discipline (built, run, then reverted; `git diff` empty and
+`git status --short` empty confirmed before the next step):
+
+| | run 1 (first pass) | run 2 (second pass) |
+|---|---|---|
+| **READ** alone (`readFileBytes`) | 36.0 / 37.7 / 37.9 ms | 36.0 / 35.5 / 34.6 ms |
+| **SCAN** alone (`importModel`, `Structure` depth) | 57.8 / 56.0 / 57.7 ms | 54.4 / 54.3 / 54.5 ms |
+| **cold** `rescan()` | 168.7 ms | 164.8 ms |
+| **steady-state** `rescan()` | 0.254 ms | 0.202 ms |
+
+**The scan roughly HALVED — ~54-58 ms now, against ~107-113 ms before — confirming the duplicate scan
+this fix removed was genuinely costing roughly half of the total.** The read is essentially unchanged
+(~35-38 ms, matching the earlier ~34-46 ms within noise, exactly as expected since gap 10 touched only
+the scan). Cold `rescan()` fell from 239.3 ms to ~165-169 ms, consistent with the scan's own roughly
+50 ms reduction (`rescan()` runs the Structure probe once per model during a cold pass). Steady-state
+stays at a few tenths of a millisecond with `modelsProbed == 0`, `hashed == 0`, `hashedBytes == 0` in
+both runs — D15/INV-C5's zero-probe, zero-read steady state is unaffected, exactly as expected since the
+fix changes only how many PASSES a Structure scan makes over the bytes, not whether steady state
+attempts one at all. The scan is now roughly **3.2-3.4x** a single 16.7 ms frame rather than 6.4-6.8x —
+still not free, but meaningfully cheaper than the number this task originally shipped with.
+
 ##### D5's stated deviation from INV-M4, and why it is a deliberate exception rather than a bug
 
 **`.obj`'s Structure pass is a pure text scan that never enters tinyobjloader at all** — no stream is
