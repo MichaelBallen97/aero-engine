@@ -29,6 +29,11 @@ inline constexpr std::uint32_t GLTF_IMPORTER_VERSION = 1;
 // include. `.meta` STAYS AT VERSION 1 -- a v2 bump nils every GUID in the project for an older build.
 inline constexpr std::string_view FBX_IMPORTER_NAME = "fbx";
 inline constexpr std::uint32_t FBX_IMPORTER_VERSION = 1;
+// task 3.2.3 (D17). HERE, beside the glTF and FBX pairs and NOT in model_import.hpp, for the identical
+// reason: asset_meta.cpp must write the block without depending on the importer. ONE name serves BOTH
+// .obj and .mtl -- one importer, two claimed extensions. `.meta` STAYS AT VERSION 1.
+inline constexpr std::string_view OBJ_IMPORTER_NAME = "obj";
+inline constexpr std::uint32_t OBJ_IMPORTER_VERSION = 1;
 
 struct ImportSettings {
     // A user-intent multiplier, NOT a unit conversion -- glTF is metres by specification (F7b).

@@ -45,6 +45,13 @@ inline constexpr std::uint64_t MAX_EXTERNAL_BYTES_PER_MODEL = 512ULL * 1024 * 10
 inline constexpr std::uint64_t MAX_EMBEDDED_BYTES = 128ULL * 1024 * 1024;  // checked AFTER parse (A8)
 inline constexpr std::size_t MAX_EXTERNAL_URIS = 1024;
 inline constexpr std::size_t MAX_NODES_PER_MODEL = 65536;
+// task 3.2.3 (D18): bounds ImportedModel::materials. A .mtl is bounded only by MAX_MODEL_FILE_BYTES,
+// and a 4 MB .mtl can declare tens of thousands of materials, each carrying five
+// std::optional<ImportedTextureRef> and several strings. Checked BEFORE the reserve.
+// RECORDED RATHER THAN SILENTLY UNEVEN: the glTF backend does NOT apply this cap today
+// (asset.materials is uncapped there). That is a PRE-EXISTING gap; closing it is deliberately not this
+// task's change, because "zero diff to gltf_import.{hpp,cpp}" is worth more than a cap nobody has hit.
+inline constexpr std::size_t MAX_MATERIALS_PER_MODEL = 65536;
 inline constexpr std::size_t MAX_PRIMITIVES_PER_MODEL = 4096;
 inline constexpr std::size_t MAX_VERTICES_PER_MODEL = 8000000;
 inline constexpr std::size_t MAX_INDICES_PER_MODEL = 24000000;
@@ -358,8 +365,18 @@ struct ImporterIdentity {
 // TEXTURE from blocking an FBX import whose geometry was in the file all along (E21 would otherwise
 // keep the Structure result and call it Truncated).
 //
-// PURE: dispatches on the file NAME, exactly as isImportableModelName does. 3.2.3's OBJ will answer
-// TRUE (a .mtl is an external file); 3.2.5's Assimp formats answer per format.
+// glTF: YES (its buffers may be external .bin files). FBX: NO -- all geometry is inside the file, and
+// its external URIs are TEXTURES, which this importer resolves for the DEPENDENCY GRAPH and never
+// reads. OBJ splits BY EXTENSION WITHIN ONE IMPORTER (task 3.2.3): `.obj` YES (its .mtl is a genuine
+// external file the Full pass needs), `.mtl` NO (its whole content is local; its URIs are textures).
+//
+// The .mtl arm is not a nicety. Answering TRUE there would make ModelImportSession read every texture
+// the library names -- up to MAX_EXTERNAL_BYTES_PER_MODEL of PNG bytes -- hand them to an arm that
+// ignores every one, and, the moment they exceed the budget, take the E21 branch and report Truncated
+// ("showing the document's structure only") for a result that was COMPLETE at Structure depth.
+//
+// PURE: dispatches on the file NAME, exactly as isImportableModelName does. 3.2.5's Assimp formats will
+// answer per format.
 [[nodiscard]] bool modelImporterNeedsExternalBuffers(std::string_view fileName) noexcept;
 
 // ---- pure helpers (D14) -----------------------------------------------------------------------------
@@ -406,20 +423,53 @@ struct UriClassification {
 // is what every Maya and 3ds Max export writes, and classifyUri refuses a backslash outright and
 // CORRECTLY -- a glTF URI has no such concept, and UriClass::RefusedBackslash stays reachable for it.
 //
-// CALLED BY THE FBX BACKEND ONLY, and ALWAYS BEFORE classifyUri. Fold-then-classify is the SECURE
-// order, for the identical reason decode-then-classify is: `..\..\..\etc\passwd` has already become
+// CALLED BY THE FBX AND OBJ BACKENDS ONLY, and ALWAYS BEFORE classifyUri. Both formats carry
+// filesystem PATHS rather than URIs -- FBX's `textures\wood.png` from Maya/3ds Max, and Wavefront's
+// `mtllib`/`map_Kd` operands, which are plain paths by specification and are routinely written with
+// backslashes by Windows exporters (task 3.2.3, D15). Fold-then-classify is the SECURE order, for the
+// identical reason decode-then-classify is: `..\..\..\etc\passwd` has already become
 // `../../../etc/passwd` by the time the escape check runs, so the refusal still fires. Folding AFTER
 // classification would let a backslash traversal straight through.
 //
 // PURE: no disk, no <filesystem>, no locale. Byte-for-byte identical on all three platforms.
 [[nodiscard]] std::string foldBackslashesToSlashes(std::string_view path);
 
-// True iff `fileName` ends (ASCII-case-folded) in ".gltf", ".glb" or ".fbx". 3.2.3-3.2.5 extend it.
-// DELIBERATELY NARROWER than asset_view.hpp's AssetKind::Model, which already claims
-// fbx/obj/blend/dae/ply/stl -- keeping the two separate is what stops a format being silently promoted
-// to "importable" by an edit to the kind table (3.1.3's isThumbnailDecodable precedent). A SUFFIX test
-// on the FULL name (the isMetaFileName shape), never a last-extension split, so "archive.tar.gltf" is
-// importable and "model.gltf.bak" is not.
+// task 3.2.3 (D16). PURE, and this IS the .obj Structure pass. Returns every `mtllib` CANDIDATE in
+// first-seen order, deduplicated BY RAW TEXT, capped at `maxNames`. For each matching line: the WHOLE
+// trimmed operand first, then each whitespace-separated token.
+//
+// The whole operand LEADS because an ambiguous operand must be offered both ways and the filesystem
+// must decide: `mtllib my file.mtl` yields "my file.mtl" (the correct reading) before "my"/"file.mtl",
+// while `mtllib a.mtl b.mtl` yields a junk first candidate costing one failed read the session already
+// handles by `continue`. That is strictly better than a heuristic, and it is why a backslash-escape
+// rule is NOT needed (and would break D15).
+//
+// A line matches iff, after leading spaces/tabs only, it begins with `mtllib` followed by a space or a
+// tab -- CASE-SENSITIVE, matching the library's own strncmp, so `# mtllib x` and `MTLLIB x` never
+// match. NO percent-decoding: a Wavefront operand is a filesystem path, never a URI.
+[[nodiscard]] std::vector<std::string> scanObjMtlLibs(std::span<const std::byte> bytes, std::size_t maxNames);
+
+// task 3.2.3 (AC-54). PURE: true iff any of the first `probeBytes` bytes is 0x00. A Wavefront file is
+// TEXT; this is what stops a renamed PNG/JPEG/GLB being handed to a text parser at all. PNG, JPEG and
+// GLB magic all trip it -- their length/version fields put a NUL inside the first 16 bytes.
+[[nodiscard]] bool looksLikeBinaryContent(std::span<const std::byte> bytes, std::size_t probeBytes = 1024) noexcept;
+
+// True iff `fileName` ends (ASCII-case-folded) in ".gltf", ".glb", ".fbx", ".obj" or ".mtl".
+// 3.2.4-3.2.5 extend it further.
+//
+// STILL DELIBERATELY NARROWER than asset_view.hpp's AssetKind::Model in one direction -- .blend/.dae/
+// .ply/.stl are claimed there and unimportable here -- and, since task 3.2.3, WIDER in another: a .mtl
+// is importable and is NOT AssetKind::Model at all (it classifies as AssetKind::Unknown). Keeping the
+// two tables separate is what stops a format being silently promoted to "importable" by an edit to the
+// kind table (3.1.3's isThumbnailDecodable precedent), and the .mtl asymmetry is exactly why.
+//
+// WHY .mtl IS CLAIMED (task 3.2.3, D4): phase 7.5 probes at Structure depth with NO external bytes, so
+// a probe of chair.obj can name chair.mtl and can NEVER name wood.png. Claiming .mtl turns one two-hop
+// problem into two ordinary one-hop edges, and 3.1.2's cascade (planImports step 4, a BFS over reverse
+// edges) is transitive, so wood.png dirty => chair.mtl => chair.obj falls out with no new mechanism.
+//
+// A SUFFIX test on the FULL name (the isMetaFileName shape), never a last-extension split, so
+// "archive.tar.obj" is importable and "model.obj.bak" is not.
 [[nodiscard]] bool isImportableModelName(std::string_view fileName) noexcept;
 
 }  // namespace engine::editor

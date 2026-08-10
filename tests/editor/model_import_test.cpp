@@ -180,9 +180,13 @@ using engine::editor::ImportSettings;
 using engine::editor::ImportStatus;
 using engine::editor::importStatusLabel;
 using engine::editor::isImportableModelName;
+using engine::editor::looksLikeBinaryContent;
 using engine::editor::modelImporterIdentity;
 using engine::editor::modelImporterNeedsExternalBuffers;
 using engine::editor::normalizeRelativePath;
+using engine::editor::OBJ_IMPORTER_NAME;
+using engine::editor::OBJ_IMPORTER_VERSION;
+using engine::editor::scanObjMtlLibs;
 using engine::editor::SourceSpace;
 using engine::editor::UriClass;
 using engine::editor::UriClassification;
@@ -314,8 +318,10 @@ TEST_CASE("model_import: isImportableModelName accepts .gltf/.glb case-insensiti
 
 TEST_CASE("model_import: isImportableModelName rejects everything else, including a bare extension (MI20)") {
     // ".fbx" moved OUT of this list at task 3.2.2 -- MI103 now covers its acceptance, the mirror of
-    // this case's rejection. "a.obj" stays: 3.2.3 owns OBJ, and it remains unimportable here.
-    CHECK_FALSE(isImportableModelName("a.obj"));
+    // this case's rejection. ".obj"/".mtl" moved out at task 3.2.3 for the identical reason -- MI118+
+    // now covers their acceptance. ".blend" is 3.2.4's and remains genuinely unclaimed today, so it
+    // keeps this case a live model-format negative.
+    CHECK_FALSE(isImportableModelName("a.blend"));
     CHECK_FALSE(isImportableModelName("a.gltf.bak"));
     CHECK_FALSE(isImportableModelName("a"));
     CHECK_FALSE(isImportableModelName(""));
@@ -382,9 +388,10 @@ TEST_CASE("model_import: importModel refuses an unrecognised extension (MI27, AC
 }
 
 TEST_CASE("model_import: importModel refuses a model format this task does not implement yet (MI28, AC-44)") {
-    // ".fbx" was this case's example until task 3.2.2 taught the dispatch that extension; ".obj" takes
-    // its place (3.2.3 owns OBJ, so this file name is still unclaimed by any importer today).
-    const ImportResult result = importModel("chair.obj", "models", {}, ImportSettings{}, ImportDepth::Structure, {});
+    // ".fbx" was this case's example until task 3.2.2 taught the dispatch that extension, then ".obj"
+    // took its place until task 3.2.3 taught the dispatch THAT extension too. ".blend" is 3.2.4's, so
+    // this file name is still unclaimed by any importer today.
+    const ImportResult result = importModel("chair.blend", "models", {}, ImportSettings{}, ImportDepth::Structure, {});
     CHECK(result.status == ImportStatus::Unsupported);
 }
 
@@ -399,10 +406,12 @@ TEST_CASE("model_import: importModel refuses the empty file name (MI30, AC-44)")
 }
 
 TEST_CASE("model_import: importModel never dereferences bytes for a non-model name (MI31, AC-44)") {
-    // ".fbx" was this case's non-model example until task 3.2.2; ".obj" (still 3.2.3's, unclaimed
-    // today) takes its place so this stays a genuine non-model-name case.
+    // ".fbx" was this case's non-model example until task 3.2.2, then ".obj" until task 3.2.3; ".blend"
+    // (still unclaimed today, 3.2.4's) takes its place so this stays a genuine non-model-name case.
+    // OI28 drives the SAME {nullptr, 0} span through a CLAIMED ".obj" name -- the OBJ arm must survive
+    // a null span too, and that is now a reachable input nothing else covers.
     const std::span<const std::byte> emptySpan;  // {nullptr, 0} -- any dereference would crash/ASan-trip
-    const ImportResult result = importModel("model.obj", "", emptySpan, ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult result = importModel("model.blend", "", emptySpan, ImportSettings{}, ImportDepth::Full, {});
     CHECK(result.status == ImportStatus::Unsupported);
 }
 
@@ -2383,4 +2392,146 @@ TEST_CASE(
     CHECK(model.summary.vertexCount == 0);
     CHECK(model.sourceSpace.declared);
     CHECK(model.sourceSpace.upAxis == 'Z');
+}
+
+// ---- task 3.2.3 (tinyobjloader): the widened predicate, the OBJ identity arm, the corrected
+// modelImporterNeedsExternalBuffers split, and the two new pure Wavefront helpers -- no tinyobjloader
+// anywhere (MI118-131) ----------------------------------------------------------------------------
+//
+// Confirmed the file's last case before this block was MI117 (`grep -c '^TEST_CASE('` -> 117).
+
+TEST_CASE("model_import: isImportableModelName accepts .obj/.mtl case-insensitively, suffix-on-full-name (MI118)") {
+    CHECK(isImportableModelName("a.obj"));
+    CHECK(isImportableModelName("a.OBJ"));
+    CHECK(isImportableModelName("a.mtl"));
+    CHECK(isImportableModelName("a.MTL"));
+    CHECK(isImportableModelName("archive.tar.obj"));
+    CHECK(isImportableModelName("archive.tar.mtl"));
+}
+
+TEST_CASE("model_import: isImportableModelName rejects a bare or malformed .obj/.mtl name (MI119)") {
+    // Same rule MI20/MI104 already prove for .gltf/.fbx -- needs something BEFORE the extension.
+    CHECK_FALSE(isImportableModelName(".obj"));
+    CHECK_FALSE(isImportableModelName(".mtl"));
+    CHECK_FALSE(isImportableModelName("a.obj.bak"));
+    CHECK_FALSE(isImportableModelName("obj"));
+    CHECK_FALSE(isImportableModelName("mtl"));
+}
+
+TEST_CASE(
+    "model_import: isImportableModelName is still narrower than AssetKind::Model -- .blend/.dae/.ply/.stl "
+    "all reject (MI120, AC-2 corrected)") {
+    CHECK_FALSE(isImportableModelName("a.blend"));
+    CHECK_FALSE(isImportableModelName("a.dae"));
+    CHECK_FALSE(isImportableModelName("a.ply"));
+    CHECK_FALSE(isImportableModelName("a.stl"));
+}
+
+TEST_CASE("model_import: modelImporterIdentity's full four-row table (MI121, AC-4 corrected)") {
+    const ImporterIdentity gltf = modelImporterIdentity("a.gltf");
+    CHECK(gltf.name == GLTF_IMPORTER_NAME);
+    CHECK(gltf.version == GLTF_IMPORTER_VERSION);
+    const ImporterIdentity fbx = modelImporterIdentity("a.fbx");
+    CHECK(fbx.name == FBX_IMPORTER_NAME);
+    CHECK(fbx.version == FBX_IMPORTER_VERSION);
+    const ImporterIdentity obj = modelImporterIdentity("a.obj");
+    CHECK(obj.name == OBJ_IMPORTER_NAME);
+    CHECK(obj.version == OBJ_IMPORTER_VERSION);
+    const ImporterIdentity none = modelImporterIdentity("a.png");
+    CHECK(none == ImporterIdentity{});
+}
+
+TEST_CASE(
+    "model_import: modelImporterIdentity(\".obj\") and (\".mtl\") share the SAME pair, and it case-folds "
+    "(MI122, D17)") {
+    const ImporterIdentity obj = modelImporterIdentity("chair.obj");
+    const ImporterIdentity mtl = modelImporterIdentity("chair.mtl");
+    CHECK(obj.name == OBJ_IMPORTER_NAME);
+    CHECK(obj.version == OBJ_IMPORTER_VERSION);
+    CHECK(obj == mtl);
+    const ImporterIdentity folded = modelImporterIdentity("A.OBJ");
+    CHECK(folded.name == OBJ_IMPORTER_NAME);
+}
+
+TEST_CASE(
+    "model_import: modelImporterNeedsExternalBuffers's four-way split -- glTF/.obj true, FBX/.mtl false "
+    "(MI123, §A-5, R8)") {
+    CHECK(modelImporterNeedsExternalBuffers("a.gltf"));
+    CHECK(modelImporterNeedsExternalBuffers("a.glb"));
+    CHECK_FALSE(modelImporterNeedsExternalBuffers("a.fbx"));
+    CHECK(modelImporterNeedsExternalBuffers("a.obj"));
+    CHECK_FALSE(modelImporterNeedsExternalBuffers("a.mtl"));
+    CHECK_FALSE(modelImporterNeedsExternalBuffers("a.png"));
+}
+
+TEST_CASE("model_import: scanObjMtlLibs collects a single mtllib operand (MI124)") {
+    const std::string body = "mtllib cube.mtl\n";
+    const std::vector<std::string> candidates = scanObjMtlLibs(asBytes(body), 1024);
+    REQUIRE(candidates.size() == 1);
+    CHECK(candidates[0] == "cube.mtl");
+}
+
+TEST_CASE(
+    "model_import: scanObjMtlLibs offers the WHOLE trimmed operand first, then each whitespace-separated "
+    "token (MI125, D16)") {
+    const std::string body = "mtllib my file.mtl\n";
+    const std::vector<std::string> candidates = scanObjMtlLibs(asBytes(body), 1024);
+    REQUIRE(candidates.size() == 3);
+    CHECK(candidates[0] == "my file.mtl");
+    CHECK(candidates[1] == "my");
+    CHECK(candidates[2] == "file.mtl");
+}
+
+TEST_CASE(
+    "model_import: scanObjMtlLibs accepts leading spaces/tabs, is CASE-SENSITIVE, and never matches inside "
+    "a comment (MI126, E5, D16)") {
+    CHECK(scanObjMtlLibs(asBytes(std::string(" \tmtllib a.mtl\n")), 1024) == std::vector<std::string>{"a.mtl"});
+    CHECK(scanObjMtlLibs(asBytes(std::string("# mtllib a.mtl\n")), 1024).empty());
+    CHECK(scanObjMtlLibs(asBytes(std::string("MTLLIB a.mtl\n")), 1024).empty());
+}
+
+TEST_CASE(
+    "model_import: scanObjMtlLibs collects several mtllib lines in order, deduplicated BY RAW TEXT "
+    "(MI127, E3)") {
+    const std::string body = "mtllib a.mtl\nmtllib b.mtl\nmtllib a.mtl\n";
+    const std::vector<std::string> candidates = scanObjMtlLibs(asBytes(body), 1024);
+    REQUIRE(candidates.size() == 2);
+    CHECK(candidates[0] == "a.mtl");
+    CHECK(candidates[1] == "b.mtl");
+}
+
+TEST_CASE("model_import: scanObjMtlLibs's maxNames caps BEFORE the token expansion (MI128, INV-O10)") {
+    const std::string body = "mtllib a.mtl b.mtl\n";
+    const std::vector<std::string> candidates = scanObjMtlLibs(asBytes(body), 1);
+    REQUIRE(candidates.size() == 1);
+    CHECK(candidates[0] == "a.mtl b.mtl");  // the whole operand filled the cap; neither token got in
+}
+
+TEST_CASE("model_import: scanObjMtlLibs produces no candidate for an empty operand (MI129, E4)") {
+    CHECK(scanObjMtlLibs(asBytes(std::string("mtllib   \n")), 1024).empty());
+    CHECK(scanObjMtlLibs(asBytes(std::string("mtllib\t\n")), 1024).empty());
+}
+
+TEST_CASE(
+    "model_import: scanObjMtlLibs strips ONE trailing '\\r', still scans a line with no trailing newline, "
+    "and an empty span yields nothing (MI130, E7, E8)") {
+    CHECK(scanObjMtlLibs(asBytes(std::string("mtllib a.mtl\r\n")), 1024) == std::vector<std::string>{"a.mtl"});
+    CHECK(scanObjMtlLibs(asBytes(std::string("mtllib a.mtl")), 1024) == std::vector<std::string>{"a.mtl"});
+    CHECK(scanObjMtlLibs({}, 1024).empty());
+}
+
+TEST_CASE(
+    "model_import: looksLikeBinaryContent finds a NUL inside the probe window and never one outside it "
+    "(MI131, AC-54)") {
+    const std::string text = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    CHECK_FALSE(looksLikeBinaryContent(asBytes(text)));
+    CHECK_FALSE(looksLikeBinaryContent({}));
+
+    std::string withNul = text;
+    withNul[3] = '\0';
+    CHECK(looksLikeBinaryContent(asBytes(withNul)));
+
+    // The NUL sits past a probe window of 8 -- outside the window, so it must NOT be seen.
+    CHECK_FALSE(looksLikeBinaryContent(asBytes(withNul), 3));
+    CHECK(looksLikeBinaryContent(asBytes(withNul), 4));
 }
