@@ -94,8 +94,13 @@ public:
 private:
     // task 3.2.4: the .blend arm, run INSTEAD of the two-pass importer path. Split out only for
     // readability -- service()'s existing early-return structure above it is unchanged.
+    //
+    // `reentered` is TRUE when service()'s (target, generation) consume guard let this call through its
+    // .blend exception rather than for the first time. Such a call POLLS and does nothing else: the
+    // cache was already evaluated, and re-evaluating it per tick means re-reading and re-importing the
+    // whole artifact for the duration of another asset's run (code-review S3).
     void serviceBlend(std::string_view assetsRootUtf8, const AssetDatabase& database, float deltaSeconds,
-                      bool resyncForm);
+                      bool resyncForm, bool reentered);
 
     std::string targetPath;             // "" == nothing selected
     std::uint64_t generationValue = 0;  // the AssetDatabase generation this result belongs to

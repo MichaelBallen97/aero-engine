@@ -1229,6 +1229,7 @@ TEST_CASE(
     probed.setTarget("statue.blend", project.db.generation());
     probed.service(project.assetsRoot, project.db);
     REQUIRE(probed.state() == SessionState::Imported);
+    REQUIRE(probed.importCount() == 1);
     probed.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(CMAKE_COMMAND), project.exportDir);
     for (int i = 0; i < MAX_POLL_ITERATIONS; ++i) {
         probed.service(project.assetsRoot, project.db, 0.016F);
@@ -1238,6 +1239,13 @@ TEST_CASE(
         std::this_thread::yield();
     }
     REQUIRE(probed.blender().state() == BlenderState::Ready);
+    // code-review S3, and the loop above is the ONLY place in the suite that drives it: those ticks
+    // re-enter the .blend arm (the serviced guard's exception, taken because a PROBE is in flight) for a
+    // target that is already SETTLED. A re-entry polls and nothing else -- it must not re-read up to
+    // MAX_ARTIFACT_BYTES and re-run importModel every frame for the duration of a probe that has nothing
+    // to do with this asset. This case already drove that path and never looked at the cost.
+    CHECK(probed.importCount() == 1);
+    CHECK(probed.state() == SessionState::Imported);  // and the settled result was never wiped either
     REQUIRE_FALSE(probed.blender().versionString().empty());
     REQUIRE(probed.blender().versionString() != "5.2.0 LTS");
 

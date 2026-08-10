@@ -136,6 +136,10 @@ void ModelImportSession::cancelConversion() noexcept {
 }
 
 void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDatabase& database, float deltaSeconds) {
+    // code-review S3: TRUE only when the guard below let this call through the .blend exception rather
+    // than for the first time at this (target, generation). A re-entry exists to POLL, and to do nothing
+    // else -- see serviceBlend's own use of it, and the reset immediately below.
+    bool reentered = false;
     if (serviced) {
         // task 3.2.4: the ONE exception to the (target, generation) consume guard. A .blend
         // conversion -- and the version probe that precedes it -- spans frames, so the arm must be
@@ -156,6 +160,7 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
         if (!blendWorkInFlight) {
             return;  // AC-45: already imported at this (target, generation). STRUCTURAL, not conventional.
         }
+        reentered = true;
     }
     serviced = true;
     // code-review SHOULD-FIX 4: consumed ONCE, right here -- true only when setTarget() last saw the
@@ -164,10 +169,15 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
     // SAME target (an unrelated file's rescan) preserves an in-progress, unapplied edit.
     const bool resyncForm = formNeedsResync;
     formNeedsResync = false;
-    resultValue = ImportResult{};
-    lastApplyError.clear();
-    observedSize = 0;
-    targetGuid = Guid{};
+    // code-review S3: a RE-ENTRY must not WIPE the settled result it is about to leave alone. Clearing
+    // these unconditionally is what made the re-entry path re-import: the model vanished on every tick
+    // that another asset's probe or conversion was alive, and only the re-probe below put it back.
+    if (!reentered) {
+        resultValue = ImportResult{};
+        lastApplyError.clear();
+        observedSize = 0;
+        targetGuid = Guid{};
+    }
     if (targetPath.empty()) {
         stateValue = SessionState::Idle;
         return;  // AC-46; setTarget() already reset pending/onDisk to defaults when the path changed
@@ -177,7 +187,7 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
     // load-bearing -- placed after it, the whole arm would be dead code, because .blend is deliberately
     // NOT in that predicate's table and never will be (D15).
     if (isBlendFileName(leaf)) {
-        serviceBlend(assetsRootUtf8, database, deltaSeconds, resyncForm);
+        serviceBlend(assetsRootUtf8, database, deltaSeconds, resyncForm, reentered);
         return;
     }
     if (!isImportableModelName(leaf)) {
@@ -286,7 +296,7 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
 }
 
 void ModelImportSession::serviceBlend(std::string_view assetsRootUtf8, const AssetDatabase& database,
-                                      float deltaSeconds, bool resyncForm) {
+                                      float deltaSeconds, bool resyncForm, bool reentered) {
     // ---- 1. identity, from the database's OWN PARSED RECORD -- never re-parsed here ---------------
     const AssetRecord* const record = database.findByPath(targetPath);
     bool hashUsable = false;
@@ -453,6 +463,18 @@ void ModelImportSession::serviceBlend(std::string_view assetsRootUtf8, const Ass
         }
         return;  // unreachable -- every BlenderState is handled above (no `default:`, so a new
                  // enumerator is a -Wswitch warning)
+    }
+
+    // code-review S3: A RE-ENTRY POLLS, AND DOES NOTHING ELSE. The (target, generation) pair was
+    // resolved by the FIRST service; the guard's exception exists so a child gets waited on, not so the
+    // cache is re-evaluated. Falling through here re-read up to MAX_ARTIFACT_BYTES and re-ran importModel
+    // on EVERY TICK for the whole duration of another asset's probe or conversion -- ten ticks costing
+    // ten full imports, which is precisely the opposite of AC-45's "ten further ticks cost ten early
+    // returns" and of AC-22's zero-bytes-read claim. Nothing below this line can change a settled
+    // target's answer; only a new setTarget(), a requestConversion() or a cancelConversion() can, and
+    // all three clear `serviced`, so none of them arrives as a re-entry.
+    if (reentered) {
+        return;
     }
 
     // ---- 6. the cache probe. THE COMMON CASE, and the one that must cost nothing (AC-22) ----------
