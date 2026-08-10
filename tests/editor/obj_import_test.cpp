@@ -1367,3 +1367,44 @@ TEST_CASE(
     }
     CHECK(sawResolved);
 }
+
+// ---- code-review round, gap 5: D7's warning is grouped by mtllib LINE, never by URI ------------------
+
+TEST_CASE(
+    "obj_import: 'mtllib my file.mtl' with the SPACED file actually supplied produces ZERO 'no matching "
+    "\\.mtl' warnings, not two (OI85, D7)") {
+    // Before the fix: the whole operand "my file.mtl" is found (the correct reading), but the two TOKEN
+    // readings ("my", "file.mtl") are each treated as their OWN independent candidate and neither is
+    // found, producing two spurious warnings for a line that was fully served. After: the line is
+    // "served" the instant ANY of its own candidates matches a supplied buffer, so it warns not at all.
+    const std::string doc = "mtllib my file.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const std::vector<ExternalBuffer> externals = {
+        ExternalBuffer{"my file.mtl", "newmtl Wood\nKd 0.5 0.3 0.1\n"},
+    };
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 1);
+    CHECK(result.model.materials[0].name == "Wood");
+    for (const std::string& warning : result.warnings) {
+        CHECK(warning.find("no matching .mtl was supplied") == std::string::npos);
+    }
+}
+
+TEST_CASE(
+    "obj_import: 'mtllib a.mtl b.mtl' with BOTH single-word files supplied SEPARATELY produces ZERO "
+    "'no matching .mtl' warnings, not one (OI86, D7)") {
+    // Before the fix: the whole operand "a.mtl b.mtl" names no real file and is never found, producing
+    // one spurious warning even though BOTH of its token readings ("a.mtl", "b.mtl") were served. After:
+    // the line is served by either token, so the junk whole-operand reading's own miss warns nothing.
+    const std::string doc = "mtllib a.mtl b.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const std::vector<ExternalBuffer> externals = {
+        ExternalBuffer{"a.mtl", "newmtl A\nKd 1 0 0\n"},
+        ExternalBuffer{"b.mtl", "newmtl B\nKd 0 1 0\n"},
+    };
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 2);
+    for (const std::string& warning : result.warnings) {
+        CHECK(warning.find("no matching .mtl was supplied") == std::string::npos);
+    }
+}

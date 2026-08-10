@@ -242,6 +242,51 @@ void appendLibraryDiagnostics(ImportResult& result, std::string_view text) {
     return count;
 }
 
+// code-review round, gap 5: one mtllib LINE's own candidate group -- `wholeOperand` is the line's raw
+// trimmed operand (what a "no matching .mtl was supplied" warning names), `candidates` is that SAME
+// operand's own candidate set (the whole operand, then each whitespace-separated token, D16's own
+// shape). D7/AC-22 say ONE warning per mtllib LINE whose candidates were ALL unsupplied -- never one per
+// accepted candidate -- and D16 deliberately offers a line's operand two ways, so an ordinary
+// `mtllib my file.mtl` (the spaced file supplied) or `mtllib a.mtl b.mtl` (both files supplied
+// separately) must produce ZERO warnings: at least one reading of the LINE was served. Reuses the
+// PUBLIC scanObjMtlLibs on just this one line's own bytes rather than re-implementing the tokenizer a
+// third time in this file -- scanObjMtlLibs is already the tested, canonical shape (MI124-MI131), and a
+// single line is a trivially small input for it.
+struct MtllibLineGroup {
+    std::string wholeOperand;
+    std::vector<std::string> candidates;
+};
+
+[[nodiscard]] std::vector<MtllibLineGroup> scanObjMtllibLineGroups(std::span<const std::byte> bytes) {
+    std::vector<MtllibLineGroup> out;
+    if (bytes.empty()) {
+        return out;
+    }
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    std::size_t lineStart = 0;
+    while (lineStart <= text.size()) {
+        const std::size_t newline = text.find('\n', lineStart);
+        std::string_view line =
+            newline == std::string_view::npos ? text.substr(lineStart) : text.substr(lineStart, newline - lineStart);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+        std::string_view operand;
+        if (mtllibOperandLocal(line, operand) && !operand.empty()) {
+            const std::span<const std::byte> lineBytes(reinterpret_cast<const std::byte*>(line.data()), line.size());
+            MtllibLineGroup group;
+            group.wholeOperand = std::string(operand);
+            group.candidates = scanObjMtlLibs(lineBytes, MAX_EXTERNAL_URIS);
+            out.push_back(std::move(group));
+        }
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        lineStart = newline + 1;
+    }
+    return out;
+}
+
 // task 3.2.3, Step 5 (§D-7 step 5): the exact-triplet vertex dedup key. A STRUCT with an explicit hash
 // functor, never a bit-packed std::uint64_t -- vertex_index/normal_index/texcoord_index are each only
 // bounded by the 256 MiB file cap, not by any per-field cap, so packing risks silent collisions on a
@@ -572,15 +617,17 @@ struct SurvivingFace {
     std::string firstContributingDir;
     bool sawFirstContributingDir = false;
     bool multipleContributingDirs = false;
+    // code-review round, gap 5: `uriFound[i]` replaces the old inline "no matching .mtl" warning -- the
+    // warning itself is decided PER MTLLIB LINE, below, never per accepted candidate.
+    std::vector<bool> uriFound(result.externalUris.size(), false);
     for (std::size_t i = 0; i < result.externalUris.size(); ++i) {
-        bool found = false;
         for (const ExternalBuffer& buf : external) {
             if (buf.uri == result.externalUris[i]) {
                 if (!mtlText.empty()) {
                     mtlText += '\n';
                 }
                 mtlText += buf.bytes;
-                found = true;
+                uriFound[i] = true;
                 const std::string dir = parentOf(result.externalUris[i]);
                 if (!sawFirstContributingDir) {
                     firstContributingDir = dir;
@@ -591,8 +638,35 @@ struct SurvivingFace {
                 break;
             }
         }
-        if (!found) {
-            addWarning(result, "mtllib '" + rawOperandFor[i] + "': no matching .mtl was supplied");
+    }
+    // code-review round, gap 5: D7/AC-22 say ONE warning per mtllib LINE whose candidates were ALL
+    // unsupplied -- the ORIGINAL per-URI loop above warned once per unmatched CANDIDATE instead, so an
+    // ordinary `mtllib my file.mtl` (the spaced file supplied under its correct reading) produced TWO
+    // spurious warnings for its two unmatched TOKEN readings, and `mtllib a.mtl b.mtl` (both files
+    // supplied separately) produced ONE spurious warning for its unmatched WHOLE-OPERAND reading -- both
+    // ordinary Wavefront, both false noise. Group by source line: a line is "served" iff ANY of its own
+    // candidates (by raw text) matches an ACCEPTED, FOUND externalUris entry; a served line warns never,
+    // regardless of how many of its OTHER readings went unsupplied.
+    std::unordered_map<std::string, std::size_t> indexOfRawCandidate;
+    for (std::size_t i = 0; i < rawOperandFor.size(); ++i) {
+        indexOfRawCandidate.emplace(rawOperandFor[i], i);
+    }
+    for (const MtllibLineGroup& group : scanObjMtllibLineGroups(bytes)) {
+        bool lineHadAcceptedCandidate = false;
+        bool lineServed = false;
+        for (const std::string& candidate : group.candidates) {
+            const auto found = indexOfRawCandidate.find(candidate);
+            if (found == indexOfRawCandidate.end()) {
+                continue;  // refused by classifyUri, or deduplicated into an earlier line's entry
+            }
+            lineHadAcceptedCandidate = true;
+            if (uriFound[found->second]) {
+                lineServed = true;
+                break;
+            }
+        }
+        if (lineHadAcceptedCandidate && !lineServed) {
+            addWarning(result, "mtllib '" + group.wholeOperand + "': no matching .mtl was supplied");
         }
     }
     if (multipleContributingDirs) {
