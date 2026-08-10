@@ -8,6 +8,9 @@
 //
 // Blender is an external PROCESS, never a library: no header, no archive, no vcpkg entry, ever
 // (ADR-003 and the GPL boundary in docs/01-tech-stack.md). Nothing in this tree parses a .blend.
+#include <aero/core/content_hash.hpp>  // ExportProvenance::sourceHash
+#include <aero/core/guid.hpp>          // ExportProvenance::guid
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -128,6 +131,68 @@ enum class BlenderSupport : std::uint8_t { Supported = 0, Warned, Refused };
 // Bumped whenever the script text changes, which invalidates every cached artifact -- that is the
 // intended behaviour, and it is why the version is recorded in the provenance record.
 inline constexpr std::uint32_t BLENDER_SCRIPT_VERSION = 1;
+
+// ---- the three machine-local formats ------------------------------------------------------------
+// Parse/write pairs over engine::parseJson / JsonValue / JsonWriter -- the scene_format.cpp /
+// project.cpp / asset_meta.cpp / asset_cache.cpp precedent, applied a fifth time. All THREE are
+// DERIVED, MACHINE-LOCAL and DISPOSABLE: a wrong "version", a missing key or unparseable text is a
+// MISS, never a repair. That is 3.1.2 D7's policy and the deliberate INVERSE of `.meta`'s, because
+// losing any of these costs one re-detection or one re-conversion, not an identity.
+
+// <prefPath>/editor_tools.json (v1). The Blender binary is a property of a MACHINE, not of a project
+// (D13), so it lives beside recent_projects.json and never in project.json.
+struct ToolPrefs {
+    std::string blenderPath;
+};
+// nullopt on unparseable JSON or a wrong "version". A MISSING FILE never reaches here -- the caller
+// treats an unreadable path as empty preferences, SILENTLY (AC-8).
+[[nodiscard]] std::optional<ToolPrefs> parseToolPrefs(std::string_view text);
+// Deterministic: fixed key order, exactly one trailing '\n'. Re-parses equal (AC-9).
+[[nodiscard]] std::string writeToolPrefsText(const ToolPrefs& prefs);
+
+// <projectRoot>/Library/BlenderExports/<guid>.json (v1) -- the provenance record.
+struct ExportProvenance {
+    std::string sourcePath;           // INFORMATIONAL, never compared
+    std::string blenderPath;          // INFORMATIONAL, never compared
+    std::string blenderVersion;       // compared CONDITIONALLY -- see provenanceMatches
+    std::string settingsFingerprint;  // compared always
+    Guid guid;                        // INFORMATIONAL, never compared
+    ContentHash sourceHash;           // compared always
+    std::uint32_t scriptVersion = 0;  // compared always
+    std::uint64_t artifactBytes = 0;  // INFORMATIONAL, never compared
+};
+[[nodiscard]] std::optional<ExportProvenance> parseExportProvenance(std::string_view text);
+[[nodiscard]] std::string writeExportProvenanceText(const ExportProvenance& record);
+
+// Compares EXACTLY FOUR fields, and `blenderVersion` CONDITIONALLY:
+//   sourceHash          -- always
+//   scriptVersion       -- always
+//   settingsFingerprint -- always
+//   blenderVersion      -- ONLY when expected.blenderVersion is NON-EMPTY. On a pure cache hit
+//                          nothing has been probed, so it is empty and is not compared: that is what
+//                          makes AC-22's "zero processes" literally true, because comparing a version
+//                          you have not probed would require probing, and a probe is a process. Once
+//                          anything in the session HAS probed a version, every later evaluation
+//                          compares it, so an upgrade is caught within a session.
+// sourcePath, blenderPath, guid and artifactBytes are INFORMATIONAL and are NEVER compared -- 3.1.2
+// D11's "keyed by GUID, never by path", so moving the .blend with its sidecar does not invalidate (E24).
+[[nodiscard]] bool provenanceMatches(const ExportProvenance& actual, const ExportProvenance& expected) noexcept;
+
+// <projectRoot>/Library/BlenderExports/<guid>.json AS WRITTEN BY THE SCRIPT -- the run's status
+// report. It shares the provenance record's PATH deliberately: on success the provenance record
+// OVERWRITES it, so a half-finished run leaves a document parseExportProvenance rejects, which is
+// exactly the "no valid cache entry" answer that case needs (E10). Two paths would add a fifth file
+// per asset for no gain.
+struct ExportStatus {
+    bool ok = false;
+    std::string blender;               // bpy.app.version_string, from INSIDE the run
+    std::string error;                 // a traceback, or the exporter's own reason
+    std::vector<std::string> dropped;  // kwargs this Blender's RNA did not know (D10's mechanism)
+    std::uint64_t bytes = 0;
+};
+// nullopt for unparseable or TRUNCATED JSON (E22) -- which the caller then treats as "no status
+// file", the same answer it gives when the file is genuinely absent.
+[[nodiscard]] std::optional<ExportStatus> parseExportStatus(std::string_view text);
 
 // ---- constants ----------------------------------------------------------------------------------
 

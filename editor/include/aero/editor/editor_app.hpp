@@ -104,6 +104,12 @@ struct EditorAppConfig {
     // test can point it somewhere else. Any test that sets persistLayout TRUE must set this too, or
     // it writes the developer's real editor layout -- 2.6.1's BLOCKING-2 in a new costume.
     std::string layoutIniPath;
+    // task 3.2.4 (D13, the recentProjectsPath/layoutIniPath precedent, a THIRD instance): where the
+    // machine-local tool preferences live -- the one place the user-chosen Blender path is persisted.
+    // EMPTY => defaultToolPrefsPath(). ANY test that can reach the Blender resolve path MUST set this,
+    // or it writes the developer's real editor_tools.json -- 2.6.1's BLOCKING-2 in a third costume
+    // (AC-47), and this tree has shipped that exact bug once already.
+    std::string toolPrefsPath;
     // task 3.1.4: the assets-tree watcher's tunables. `enabled` TRUE is the shipping behaviour and
     // therefore the default (the registerDefaultPanels/seedDefaultScene precedent). A test that does
     // not want background directory enumeration sets `.assetWatch = {.enabled = false}`; a test that
@@ -449,6 +455,10 @@ private:
     ProjectFlow projectFlow;
     RecentProjects recents;
     std::string recentsPath;  // resolved ONCE in create(): config.recentProjectsPath, else D8's default
+    // task 3.2.4 (D13): resolved ONCE in create(), exactly as recentsPath above is --
+    // config.toolPrefsPath, else defaultToolPrefsPath(). Resolving it at the point of USE instead
+    // would give every call site its own chance to fall through to the real machine-wide file.
+    std::string toolPrefsPath;
     // Created once in create(); NEVER null on a LIVE app. NULL only on a moved-from app (a defaulted
     // move leaves the source's shared_ptr empty), which is why the drain in tick() is null-guarded
     // (plan A18) rather than assumed non-null.

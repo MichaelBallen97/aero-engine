@@ -3,7 +3,12 @@
 // here spawns a process (INV-B15 -- every spawn in this task lives in BlenderService::poll()).
 // <array> is included EXPLICITLY: modernize-avoid-c-arrays is live on the Linux lane and <array> is
 // not transitive on libstdc++ or MSVC (3.1.1's BLOCKING-1).
+#include <aero/core/content_hash.hpp>
+#include <aero/core/guid.hpp>
 #include <aero/editor/blender_tool.hpp>
+#include <aero/reflect/json_reader.hpp>
+#include <aero/reflect/json_value.hpp>
+#include <aero/reflect/json_writer.hpp>
 
 #include <algorithm>
 #include <array>
@@ -363,5 +368,256 @@ with open(status, "w", encoding="utf-8") as f:
 }  // namespace
 
 std::string_view blenderExportScriptText() noexcept { return EXPORT_SCRIPT_TEXT; }
+
+// ---- the three machine-local formats ------------------------------------------------------------
+
+namespace {
+
+constexpr std::string_view VERSION_KEY = "version";
+constexpr std::string_view BLENDER_PATH_KEY = "blenderPath";
+constexpr std::string_view GUID_KEY = "guid";
+constexpr std::string_view SOURCE_PATH_KEY = "sourcePath";
+constexpr std::string_view SOURCE_HASH_KEY = "sourceHash";
+constexpr std::string_view BLENDER_VERSION_KEY = "blenderVersion";
+constexpr std::string_view SCRIPT_VERSION_KEY = "scriptVersion";
+constexpr std::string_view SETTINGS_FINGERPRINT_KEY = "settingsFingerprint";
+constexpr std::string_view ARTIFACT_BYTES_KEY = "artifactBytes";
+constexpr std::string_view OK_KEY = "ok";
+constexpr std::string_view BLENDER_KEY = "blender";
+constexpr std::string_view ERROR_KEY = "error";
+constexpr std::string_view DROPPED_KEY = "dropped";
+constexpr std::string_view BYTES_KEY = "bytes";
+
+// Every one of these three documents is DISPOSABLE (3.1.2 D7): a structural failure discards the
+// WHOLE document rather than repairing a key, because the cost of being wrong is one re-detection or
+// one re-conversion. That is why every helper below returns nullopt rather than a partial value.
+[[nodiscard]] const JsonValue* objectRoot(const JsonParseResult& parsed) noexcept {
+    if (!parsed.value.has_value()) {
+        // NOT `!parsed.ok()`: bugprone-unchecked-optional-access cannot connect an opaque out-of-line
+        // ok() to `value` (project.cpp's precedent, asset_cache.cpp's second application).
+        return nullptr;
+    }
+    const JsonValue& root = *parsed.value;
+    return root.isObject() ? &root : nullptr;
+}
+
+[[nodiscard]] bool versionEquals(const JsonValue& root, int expected) noexcept {
+    const JsonValue* version = root.find(VERSION_KEY);
+    if (version == nullptr) {
+        return false;
+    }
+    const std::optional<std::uint64_t> value = version->asU64();
+    return value.has_value() && *value == static_cast<std::uint64_t>(expected);
+}
+
+// A REQUIRED string: absent or non-string is a miss for the whole document.
+[[nodiscard]] std::optional<std::string> requiredString(const JsonValue& root, std::string_view key) {
+    const JsonValue* field = root.find(key);
+    if (field == nullptr) {
+        return std::nullopt;
+    }
+    const std::optional<std::string_view> text = field->asString();
+    if (!text.has_value()) {
+        return std::nullopt;
+    }
+    return std::string(*text);
+}
+
+// An OPTIONAL string: absent is an empty value; PRESENT-BUT-NOT-A-STRING is still a miss, because a
+// document whose shape disagrees with this one is not a document this build wrote.
+[[nodiscard]] bool optionalString(const JsonValue& root, std::string_view key, std::string& out) {
+    const JsonValue* field = root.find(key);
+    if (field == nullptr) {
+        return true;  // absent -> the default, and that is not a failure
+    }
+    const std::optional<std::string_view> text = field->asString();
+    if (!text.has_value()) {
+        return false;
+    }
+    out = std::string(*text);
+    return true;
+}
+
+}  // namespace
+
+std::optional<ToolPrefs> parseToolPrefs(std::string_view text) {
+    const JsonParseResult parsed = parseJson(text);
+    const JsonValue* root = objectRoot(parsed);
+    if (root == nullptr || !versionEquals(*root, TOOL_PREFS_FORMAT_VERSION)) {
+        return std::nullopt;
+    }
+    ToolPrefs prefs;
+    // "blenderPath" is OPTIONAL: an absent key is an unset preference, which is the whole point of a
+    // file that exists to say "the user has not chosen one yet". A non-string is a miss.
+    if (!optionalString(*root, BLENDER_PATH_KEY, prefs.blenderPath)) {
+        return std::nullopt;
+    }
+    return prefs;
+}
+
+std::string writeToolPrefsText(const ToolPrefs& prefs) {
+    JsonWriter writer;  // the DEFAULT config: pretty, 2-space -- docs/09's canonical form. Do NOT
+                        // spell the config out; a second spelling is a second truth.
+    writer.beginObject();
+    writer.key(VERSION_KEY);
+    writer.value(static_cast<long long>(TOOL_PREFS_FORMAT_VERSION));
+    writer.key(BLENDER_PATH_KEY);
+    writer.value(std::string_view(prefs.blenderPath));
+    writer.endObject();
+    std::string text = writer.str();
+    text += '\n';  // exactly ONE trailing newline (the writer itself has none; parseJson accepts it)
+    return text;
+}
+
+std::optional<ExportProvenance> parseExportProvenance(std::string_view text) {
+    const JsonParseResult parsed = parseJson(text);
+    const JsonValue* root = objectRoot(parsed);
+    if (root == nullptr || !versionEquals(*root, EXPORT_PROVENANCE_FORMAT_VERSION)) {
+        return std::nullopt;
+    }
+
+    ExportProvenance record;
+    // Every key below is REQUIRED. Unlike the tool preferences, a provenance record with a missing
+    // field cannot be evaluated at all -- and a miss is exactly the right answer, because it costs one
+    // re-conversion and never a wrong model.
+    const std::optional<std::string> guidText = requiredString(*root, GUID_KEY);
+    const std::optional<std::string> sourceHashText = requiredString(*root, SOURCE_HASH_KEY);
+    const std::optional<std::string> sourcePath = requiredString(*root, SOURCE_PATH_KEY);
+    const std::optional<std::string> blenderPath = requiredString(*root, BLENDER_PATH_KEY);
+    const std::optional<std::string> blenderVersion = requiredString(*root, BLENDER_VERSION_KEY);
+    const std::optional<std::string> fingerprint = requiredString(*root, SETTINGS_FINGERPRINT_KEY);
+    if (!guidText.has_value() || !sourceHashText.has_value() || !sourcePath.has_value() || !blenderPath.has_value() ||
+        !blenderVersion.has_value() || !fingerprint.has_value()) {
+        return std::nullopt;
+    }
+    const std::optional<Guid> guid = parseGuid(*guidText);
+    const std::optional<ContentHash> sourceHash = parseContentHash(*sourceHashText);
+    if (!guid.has_value() || !sourceHash.has_value()) {
+        return std::nullopt;
+    }
+
+    const JsonValue* scriptVersion = root->find(SCRIPT_VERSION_KEY);
+    const JsonValue* artifactBytes = root->find(ARTIFACT_BYTES_KEY);
+    if (scriptVersion == nullptr || artifactBytes == nullptr) {
+        return std::nullopt;
+    }
+    const std::optional<std::uint64_t> scriptVersionValue = scriptVersion->asU64();
+    const std::optional<std::uint64_t> artifactBytesValue = artifactBytes->asU64();
+    if (!scriptVersionValue.has_value() || !artifactBytesValue.has_value()) {
+        return std::nullopt;
+    }
+    if (*scriptVersionValue > 0xFFFFFFFFULL) {
+        return std::nullopt;  // a hand-edited or corrupt value; never a silent truncation
+    }
+
+    record.guid = *guid;
+    record.sourceHash = *sourceHash;
+    record.sourcePath = *sourcePath;
+    record.blenderPath = *blenderPath;
+    record.blenderVersion = *blenderVersion;
+    record.settingsFingerprint = *fingerprint;
+    record.scriptVersion = static_cast<std::uint32_t>(*scriptVersionValue);
+    record.artifactBytes = *artifactBytesValue;
+    return record;
+}
+
+std::string writeExportProvenanceText(const ExportProvenance& record) {
+    JsonWriter writer;
+    writer.beginObject();
+    writer.key(VERSION_KEY);
+    writer.value(static_cast<long long>(EXPORT_PROVENANCE_FORMAT_VERSION));
+    // Named local FIRST, always (the 2.6.1 FileDialogHost::projectRoot lesson, asset_cache.cpp's
+    // precedent): formatGuid/formatContentHash return BY VALUE.
+    writer.key(GUID_KEY);
+    const std::string guidText = formatGuid(record.guid);
+    writer.value(std::string_view(guidText));
+    writer.key(SOURCE_PATH_KEY);
+    writer.value(std::string_view(record.sourcePath));
+    writer.key(SOURCE_HASH_KEY);
+    const std::string sourceHashText = formatContentHash(record.sourceHash);
+    writer.value(std::string_view(sourceHashText));
+    writer.key(BLENDER_PATH_KEY);
+    writer.value(std::string_view(record.blenderPath));
+    writer.key(BLENDER_VERSION_KEY);
+    writer.value(std::string_view(record.blenderVersion));
+    writer.key(SCRIPT_VERSION_KEY);
+    writer.value(static_cast<unsigned long long>(record.scriptVersion));
+    writer.key(SETTINGS_FINGERPRINT_KEY);
+    writer.value(std::string_view(record.settingsFingerprint));
+    writer.key(ARTIFACT_BYTES_KEY);
+    writer.value(static_cast<unsigned long long>(record.artifactBytes));
+    writer.endObject();
+    std::string text = writer.str();
+    text += '\n';
+    return text;
+}
+
+bool provenanceMatches(const ExportProvenance& actual, const ExportProvenance& expected) noexcept {
+    if (!(actual.sourceHash == expected.sourceHash)) {
+        return false;
+    }
+    if (actual.scriptVersion != expected.scriptVersion) {
+        return false;
+    }
+    if (actual.settingsFingerprint != expected.settingsFingerprint) {
+        return false;
+    }
+    // CONDITIONAL, and this is the whole of §A-9. An empty expected version means nothing in this
+    // session has probed one, so there is no version to compare against -- and demanding one would
+    // make a cache hit spawn a process, which is precisely what AC-22 forbids. The recorded value is
+    // still DISPLAYED ("produced by Blender 5.2.0 LTS"); it is simply not used as a gate until a probe
+    // has happened. Seed S28 makes this comparison unconditional and must redden BT58.
+    if (!expected.blenderVersion.empty() && actual.blenderVersion != expected.blenderVersion) {
+        return false;
+    }
+    // sourcePath, blenderPath, guid and artifactBytes are INFORMATIONAL and are deliberately not
+    // compared (E24, seed S9): moving a .blend together with its sidecar must not invalidate.
+    return true;
+}
+
+std::optional<ExportStatus> parseExportStatus(std::string_view text) {
+    const JsonParseResult parsed = parseJson(text);
+    const JsonValue* root = objectRoot(parsed);
+    if (root == nullptr) {
+        return std::nullopt;  // unparseable or truncated (E22) -- treated by the caller as "no status file"
+    }
+    // NO "version" key: this document is written by the SCRIPT, not by this build, and adding a
+    // version to it would be a second thing to keep in sync across the process boundary for no gain.
+    // "ok" is the only required field; everything else is best-effort reporting.
+    const JsonValue* okField = root->find(OK_KEY);
+    if (okField == nullptr) {
+        return std::nullopt;
+    }
+    const std::optional<bool> okValue = okField->asBool();
+    if (!okValue.has_value()) {
+        return std::nullopt;
+    }
+
+    ExportStatus status;
+    status.ok = *okValue;
+    if (!optionalString(*root, BLENDER_KEY, status.blender) || !optionalString(*root, ERROR_KEY, status.error)) {
+        return std::nullopt;
+    }
+    if (const JsonValue* bytesField = root->find(BYTES_KEY); bytesField != nullptr) {
+        const std::optional<std::uint64_t> bytesValue = bytesField->asU64();
+        if (!bytesValue.has_value()) {
+            return std::nullopt;
+        }
+        status.bytes = *bytesValue;
+    }
+    if (const JsonValue* droppedField = root->find(DROPPED_KEY); droppedField != nullptr) {
+        if (!droppedField->isArray()) {
+            return std::nullopt;
+        }
+        for (const JsonValue& element : droppedField->elements()) {
+            const std::optional<std::string_view> name = element.asString();
+            if (!name.has_value()) {
+                return std::nullopt;
+            }
+            status.dropped.emplace_back(*name);
+        }
+    }
+    return status;
+}
 
 }  // namespace engine::editor

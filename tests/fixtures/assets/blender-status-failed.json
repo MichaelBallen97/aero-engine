@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "blender": "5.2.0 LTS",
+  "error": "the exporter reported ['CANCELLED'] but wrote no usable file",
+  "dropped": [],
+  "bytes": 0
+}

@@ -291,6 +291,11 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // root (which makes D10's reconcile a startup no-op rather than a one-frame correction).
     app.recentsPath =
         config.recentProjectsPath.empty() ? defaultRecentProjectsPath() : std::string(config.recentProjectsPath);
+    // task 3.2.4 (D13): the SAME shape, one line down, and resolved here for the same reason -- one
+    // resolution, one member, no call site able to fall through to the real machine-wide file. Nothing
+    // CONSUMES it yet; that is deliberate, so the seam exists before anything can accidentally bypass
+    // it (§S step 3).
+    app.toolPrefsPath = config.toolPrefsPath.empty() ? defaultToolPrefsPath() : std::string(config.toolPrefsPath);
     if (config.restoreLastProject) {
         app.recents = readRecentProjects(app.recentsPath);  // D15: NOT read at all when false (AC-34/E23)
     }
