@@ -9,6 +9,7 @@
 // prove it with --list-test-cases, never by assuming.
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
+#include <aero/editor/asset_cache.hpp>  // ASSET_CACHE_DIR_NAME -- BT63's own "Library" (code review)
 #include <aero/editor/blender_tool.hpp>
 #include <aero/editor/model_import.hpp>  // BT33: isImportableModelName -- the pair that matters
 
@@ -31,10 +32,12 @@ using engine::Guid;
 using engine::parseContentHash;
 using engine::parseGuid;
 using engine::editor::BLENDER_ABSOLUTE_MIN;
+using engine::editor::BLENDER_EXPORT_DIR_NAME;
 using engine::editor::BLENDER_MIN_SUPPORTED;
 using engine::editor::BLENDER_SCRIPT_VERSION;
 using engine::editor::blenderCandidatePaths;
 using engine::editor::BlenderEnv;
+using engine::editor::blenderExportDir;
 using engine::editor::blenderExportScriptText;
 using engine::editor::BlenderSupport;
 using engine::editor::blenderSupport;
@@ -900,4 +903,19 @@ TEST_CASE("blender_tool: a TRUNCATED status document is nullopt, which the calle
         INFO("truncated at byte " << cut);
         CHECK_FALSE(parseExportStatus(truncated).has_value());
     }
+}
+
+TEST_CASE("blender_tool: blenderExportDir is empty for an EMPTY project root (BT63, code-review NOTE 6)") {
+    // The ONE rule for building <projectRoot>/Library/BlenderExports, and the reason it is a function
+    // rather than three concatenations at three call sites: with NO project open the root is empty, and
+    // plain concatenation produces "/Library/BlenderExports" -- an absolute path at the FILESYSTEM ROOT
+    // that the version probe's own directory creation would then attempt. That fails harmlessly on a
+    // POSIX machine and creates a real drive-root directory on Windows, which no CI lane and no macOS
+    // run could ever have shown.
+    CHECK(blenderExportDir("") == "");
+    CHECK(blenderExportDir("/home/me/MyGame") == "/home/me/MyGame/Library/BlenderExports");
+    CHECK(blenderExportDir("C:/Users/me/MyGame") == "C:/Users/me/MyGame/Library/BlenderExports");
+    // The two names come from the constants, never from a literal spelled a second time.
+    CHECK(blenderExportDir("/p").find(std::string(engine::editor::ASSET_CACHE_DIR_NAME)) != std::string::npos);
+    CHECK(blenderExportDir("/p").find(std::string(BLENDER_EXPORT_DIR_NAME)) != std::string::npos);
 }

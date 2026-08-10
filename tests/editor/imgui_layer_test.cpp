@@ -6261,3 +6261,70 @@ TEST_CASE(
     CHECK(app->tick() == false);
     app.reset();
 }
+
+TEST_CASE(
+    "editor: with NO project open, Locate... is remembered but resolution is DEFERRED (task 3.2.4, I79, "
+    "code-review NOTE 6)") {
+    // The path this closes is invisible on a machine that always has a project open: with none, the
+    // asset database's root is EMPTY, and the export directory used to be built by concatenation
+    // regardless -- "/Library/BlenderExports", an absolute path at the filesystem root that the version
+    // probe's own directory creation would then attempt. It fails harmlessly on this machine and creates
+    // a real drive-root directory on Windows, which no local run could ever have shown.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender no project i79", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string prefsPath = uniqueToolPrefsFile();
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path(prefsPath), ec);
+
+    // projectPath = "" is NO PROJECT (D0), and restoreLastProject = false keeps it that way.
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = "",
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = prefsPath});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    app->requestBlenderLocate(AERO_TEST_CMAKE_COMMAND);
+    REQUIRE(app->tick());  // drains it: the preferences are written, the resolve is DEFERRED
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+
+    // The CHOICE IS REMEMBERED -- the preferences file is written by setOverridePath, before any of
+    // this -- so nothing is lost by deferring.
+    REQUIRE(engine::editor::fileExists(prefsPath));
+    const engine::editor::FileReadResult prefs = engine::editor::readTextFile(prefsPath);
+    REQUIRE(prefs.text.has_value());
+    const std::optional<engine::editor::ToolPrefs> parsed = engine::editor::parseToolPrefs(*prefs.text);
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->blenderPath == std::string(AERO_TEST_CMAKE_COMMAND));
+
+    // ...and NOTHING was resolved against a root that does not exist. Unknown is exactly the condition
+    // tick()'s lazy resolve re-tests once a project is open.
+    CHECK(app->blenderState() == static_cast<int>(engine::editor::BlenderState::Unknown));
+    CHECK(app->blenderBinaryPath().empty());
+    CHECK(app->blenderProbeRunCount() == 0);
+    CHECK(app->blenderExportRunCount() == 0);
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+    std::filesystem::remove(std::filesystem::path(prefsPath), ec);
+}

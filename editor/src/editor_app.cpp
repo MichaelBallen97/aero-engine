@@ -1014,6 +1014,18 @@ void EditorApp::requestBlenderLocate(std::string_view absolutePathUtf8) { reques
 // and blender_service.cpp are all log-free by construction; every status they hold is RETURNED or
 // exposed as an accessor, and the three lines this task adds all originate here.
 void EditorApp::resolveBlender() {
+    // code-review NOTE 6: with NO project open the database's root is EMPTY, and this path used to be
+    // built by concatenation regardless -- yielding "/Library/BlenderExports", an absolute path at the
+    // filesystem root that the probe's own directory creation would later try to create. Harmless on a
+    // POSIX machine, a real drive-root directory on Windows. Deferring is the honest answer: there is
+    // nowhere to derive anything yet, the state stays Unknown, and Unknown is EXACTLY the condition
+    // tick()'s lazy resolve re-tests once a project is open. The caller has already written the
+    // tool-preferences file when this came from Locate..., so the user's choice is still remembered --
+    // it is applied by the resolve that follows the next project open.
+    const std::string exportDir = blenderExportDir(assetDatabase.projectRoot());
+    if (exportDir.empty()) {
+        return;
+    }
     bool prefsCorrupt = false;
     const HostOs host = currentHostOs();
     const BlenderEnv env = readBlenderEnv(host, toolPrefsPath, prefsCorrupt);
@@ -1023,8 +1035,6 @@ void EditorApp::resolveBlender() {
         // every resolve.
         AERO_LOG_WARN("editor: tool preferences '{}' are corrupt or unsupported; ignoring them", toolPrefsPath);
     }
-    const std::string exportDir = std::string(assetDatabase.projectRoot()) + '/' + std::string(ASSET_CACHE_DIR_NAME) +
-                                  '/' + std::string(BLENDER_EXPORT_DIR_NAME);
     importSession.blenderMutable().resolve(host, env, exportDir);
 }
 

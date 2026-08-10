@@ -5,6 +5,7 @@
 // not transitive on libstdc++ or MSVC (3.1.1's BLOCKING-1).
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
+#include <aero/editor/asset_cache.hpp>  // ASSET_CACHE_DIR_NAME -- the ONE spelling of "Library" (3.1.2)
 #include <aero/editor/blender_tool.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
@@ -277,6 +278,18 @@ BlenderSupport blenderSupport(const std::optional<BlenderVersion>& version) noex
 }
 
 bool isBlendFileName(std::string_view fileName) noexcept { return endsWithFolded(fileName, ".blend"); }
+
+std::string blenderExportDir(std::string_view projectRootUtf8) {
+    if (projectRootUtf8.empty()) {
+        return {};  // NO PROJECT: there is nowhere to derive anything yet (code-review NOTE 6)
+    }
+    std::string dir(projectRootUtf8);
+    dir += '/';
+    dir += ASSET_CACHE_DIR_NAME;
+    dir += '/';
+    dir += BLENDER_EXPORT_DIR_NAME;
+    return dir;
+}
 
 std::vector<std::string> buildVersionArgs(std::string_view binary) { return {std::string(binary), "--version"}; }
 

@@ -204,6 +204,17 @@ struct ExportStatus {
 // ---- constants ----------------------------------------------------------------------------------
 
 inline constexpr std::string_view BLENDER_EXPORT_DIR_NAME = "BlenderExports";
+
+// <projectRoot>/Library/BlenderExports -- the ONE rule for building that path, and PURE (it touches no
+// disk and creates nothing).
+//
+// AN EMPTY PROJECT ROOT YIELDS AN EMPTY STRING, and that is the whole reason this is a function
+// (code-review NOTE 6). Concatenating onto an empty root produces "/Library/BlenderExports" -- an
+// absolute path at the FILESYSTEM ROOT, which the probe's own directory creation would then attempt:
+// harmless on a POSIX machine where it simply fails, a real drive-root directory on Windows. An empty
+// result is BlenderService's own documented "resolve, but do not spawn -- there is nowhere to put the
+// answer", so the caller has a defined behaviour to fall into rather than a path it must special-case.
+[[nodiscard]] std::string blenderExportDir(std::string_view projectRootUtf8);
 inline constexpr std::string_view BLENDER_SCRIPT_FILE_NAME = "export_gltf.py";
 inline constexpr int TOOL_PREFS_FORMAT_VERSION = 1;
 inline constexpr int EXPORT_PROVENANCE_FORMAT_VERSION = 1;
