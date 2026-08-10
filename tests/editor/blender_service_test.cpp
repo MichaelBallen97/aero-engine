@@ -238,8 +238,19 @@ void makeFakeExportTool(std::string_view absolutePathUtf8, std::string_view glbB
 
 // Answers the probe immediately and then holds an EXPORT open, so cancel and timeout have something
 // to act on. The CHILD sleeps; the TEST never does.
-void makeFakeSlowExportTool(std::string_view absolutePathUtf8) {
-    writeExecutable(absolutePathUtf8, std::string(FAKE_VERSION_BRANCH) + "sleep 30\n");
+//
+// `statusJson`, when supplied, is written to the status path BEFORE the hang -- which is what the real
+// script does on any failure it catches, and what makes a cancel/timeout case able to say something
+// about the file the CHILD leaves behind rather than only about what our own code did not write.
+void makeFakeSlowExportTool(std::string_view absolutePathUtf8, std::string_view statusJson = {}) {
+    std::string script(FAKE_VERSION_BRANCH);
+    if (!statusJson.empty()) {
+        script += "printf '%s' '";
+        script += statusJson;
+        script += "' > \"${14}\"\n";
+    }
+    script += "sleep 30\n";
+    writeExecutable(absolutePathUtf8, script);
 }
 
 // task 3.2.4, the session cases: a fake export that COPIES a real, pre-staged GLB into place. The
@@ -1309,19 +1320,34 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "blender_service: a cancelled run writes NO provenance and leaves a previous record BYTE-IDENTICAL "
-    "(BS39, task 3.2.4 AC-24, seed S11)") {
+    "blender_service: a cancelled run leaves NO VALID provenance record, and nothing of ours is written "
+    "over what the child left (BS39, task 3.2.4 AC-24)") {
 #if defined(_WIN32)
     MESSAGE("skipped on Windows: no scripted fake can hold a process open for Blender's argv there (see BS14)");
 #else
+    // REWRITTEN by the code-review round, and the old shape is worth stating because it read as more
+    // than it was. Its fake wrote NOTHING AT ALL, so "the previous record survives byte-identical" was
+    // only ever a statement about OUR code -- the one thing a run that never writes cannot fail. The
+    // real script writes the status document to the SAME <guid>.json the provenance record uses (they
+    // share the path deliberately: on success the record OVERWRITES the status), so a run that starts
+    // DESTROYS a previously valid record whether or not it finishes. That is the true, and accepted,
+    // cost: a re-import that fails invalidates a good cache entry and forces a re-conversion. It is
+    // strictly better than the alternative, because Blender overwrites <guid>.glb IN PLACE, so a
+    // half-written artifact behind a record that still validates would be worse.
+    //
+    // AC-24 therefore reads "leaves no VALID record", not "leaves the previous record untouched", and
+    // this case now asserts exactly that -- plus the half that is genuinely ours: nothing we write lands
+    // on top of what the child left.
     const TempDir tmp;
     const BlendProject project = makeBlendProject(tmp, 309);
     stageCacheHit(project);
     const std::string recordBefore = readAll(project.provenancePath());
     REQUIRE_FALSE(recordBefore.empty());
+    REQUIRE(engine::editor::parseExportProvenance(recordBefore).has_value());  // a VALID record, before
 
+    constexpr std::string_view CHILD_STATUS = R"({"ok": false, "error": "AERO_CHILD_WROTE_THIS", "bytes": 0})";
     const std::string fake = tmp.join("blender");
-    makeFakeSlowExportTool(fake);
+    makeFakeSlowExportTool(fake, CHILD_STATUS);
 
     ModelImportSession session;
     session.setTarget("statue.blend", project.db.generation());
@@ -1341,6 +1367,15 @@ TEST_CASE(
     session.service(project.assetsRoot, project.db, 0.016F);  // the tick that spawns
     REQUIRE(session.blender().exportRunCount() == 1);
 
+    // Wait for the CHILD's own write, so the cancel below cannot race it. Bounded and yielding, never a
+    // sleep and never a clock: the loop ends on an observed file content, not on elapsed time.
+    for (int i = 0; i < MAX_POLL_ITERATIONS && readAll(project.provenancePath()) != std::string(CHILD_STATUS); ++i) {
+        session.service(project.assetsRoot, project.db, 0.016F);
+        std::this_thread::yield();
+    }
+    REQUIRE(readAll(project.provenancePath()) == std::string(CHILD_STATUS));  // the fake really wrote
+    REQUIRE(session.state() == SessionState::Converting);                     // and is still running
+
     session.cancelConversion();
     for (int i = 0; i < MAX_POLL_ITERATIONS && session.state() == SessionState::Converting; ++i) {
         session.service(project.assetsRoot, project.db, PROCESS_FORCE_KILL_SECONDS + 1.0F);
@@ -1348,9 +1383,20 @@ TEST_CASE(
     }
     CHECK(session.state() == SessionState::ConversionFailed);
     CHECK(session.blender().failure() == BlenderFailure::Cancelled);
-    // THE ASSERTION THIS CASE EXISTS FOR: the previous record survives BYTE-IDENTICAL. Seed S11 writes
-    // the provenance before the import succeeds and must redden here.
-    CHECK(readAll(project.provenancePath()) == recordBefore);
+    // THE ASSERTIONS THIS CASE EXISTS FOR. First: NO VALID RECORD is left, so the next selection is a
+    // miss and re-converts. Any provenance write of ours on this path -- at the spawn, at the kill, or
+    // at the cancel -- makes the document parse as a record again and reddens here. (Seed S11's own
+    // shape, writing the provenance before the IMPORT succeeds, lives on the Converted branch, which a
+    // cancelled run never reaches: its discriminator is BS43, as the 3.2.4 engineering-log entry records
+    // and as this case's title deliberately no longer claims.)
+    const std::string after = readAll(project.provenancePath());
+    CHECK_FALSE(engine::editor::parseExportProvenance(after).has_value());
+    // Second, and it is the only half that is genuinely about our code: nothing of OURS was written over
+    // what the child left, byte for byte.
+    CHECK(after == std::string(CHILD_STATUS));
+    // And the honest, recorded cost: the previously valid record is GONE, destroyed by the child rather
+    // than by us. The next selection re-converts.
+    CHECK(after != recordBefore);
 #endif
 }
 
