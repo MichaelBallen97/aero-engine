@@ -1251,3 +1251,25 @@ TEST_CASE("obj_import: the committed real-file cube fixture imports end to end t
     REQUIRE(result.model.materials[0].baseColor.has_value());
     CHECK(result.model.images[result.model.materials[0].baseColor->imageIndex].relativePath == "wood.png");
 }
+
+TEST_CASE(
+    "obj_import: two .mtl buffers are joined by a newline, not concatenated raw -- the FIRST buffer's "
+    "missing trailing newline never glues onto the second's first line (OI81, D7, S23's discriminator)") {
+    // §B's own sabotage-matrix entry for this join (S23) warns that an ordinary fixture -- every .mtl
+    // text in this file already ends in '\n' -- cannot discriminate "joined by \"\"" from "joined by
+    // \"\\n\"": the boundary is already clean either way. This fixture is authored SPECIFICALLY to
+    // defeat that: a.mtl has NO trailing newline, so a raw concatenation would glue its last line
+    // directly onto b.mtl's "newmtl bar" line, corrupting it into an unrecognized trailing token on the
+    // same "Kd" line rather than a directive -- "bar" would never be declared at all.
+    const std::string doc = "mtllib a.mtl\nmtllib b.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const std::vector<ExternalBuffer> externals = {
+        ExternalBuffer{"a.mtl", "newmtl foo\nKd 1 0 0"},  // deliberately NO trailing '\n'
+        ExternalBuffer{"b.mtl", "newmtl bar\nKd 0 1 0\n"},
+    };
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 2);
+    CHECK(result.model.materials[0].name == "foo");
+    CHECK(result.model.materials[1].name == "bar");
+    CHECK(result.model.materials[1].baseColorFactor.y == doctest::Approx(1.0F));  // bar's OWN Kd 0 1 0
+}
