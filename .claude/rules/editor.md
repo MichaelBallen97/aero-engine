@@ -835,5 +835,146 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   (plan §A-11's boundary, unchanged). **Any future format-dispatching site that reads or writes an
   importer's name/version must go through `modelImporterIdentity`, never repeat the pair as a literal.**
 
+## OBJ import (task 3.2.3)
+
+- **`.mtl` IS A CLAIMED IMPORTABLE FILE, and that is the whole reason texture dependencies work for
+  OBJ (D4).** Phase 7.5 probes at `Structure` depth with NO external bytes, so a probe of `chair.obj`
+  can name `chair.mtl` and can NEVER name `wood.png`. Claiming `.mtl` turns one two-hop problem into two
+  ordinary one-hop edges, and 3.1.2's cascade is transitive (`planImports` step 4 is a BFS over reverse
+  edges that pushes on the clean->dirty transition only), so `wood.png` dirty => `chair.mtl` =>
+  `chair.obj` falls out with no new mechanism, no second probe round and no extra read. `asset_view.cpp`
+  is NOT touched: a `.mtl` stays `AssetKind::Unknown`, so it is invisible while the Asset Browser's kind
+  filter is set to Model. That is accepted and documented, not a defect.
+- **`modelImporterNeedsExternalBuffers` SPLITS BY EXTENSION WITHIN ONE IMPORTER, and this is the first
+  place in the tree that happens.** `.obj` -> TRUE (its `.mtl` is a genuine external file the Full pass
+  needs); `.mtl` -> FALSE (its whole content is local). Answering TRUE for `.mtl` would make
+  `ModelImportSession` read every texture the library names, hand them to an arm that ignores every one,
+  and -- once they exceed `MAX_EXTERNAL_BYTES_PER_MODEL` -- take the E21 branch and report `Truncated`
+  for a result that was COMPLETE at `Structure` depth. Answering FALSE for `.obj` would import every
+  model with zero materials, status `Ok`, and no warning at all. **Confirmed by direct sabotage: the
+  `.obj`-false seed reddens `MS29` (materials silently vanish, no status change); the `.mtl`-true seed
+  is structurally UNOBSERVABLE through `ImportResult` (`importMtlOnly` discards its `external` parameter
+  unconditionally) and is caught only at the pure `modelImporterNeedsExternalBuffers` level, never at the
+  session/behavioural level -- proven by reading the source, not merely by a seed reddening nothing.**
+- **`.obj` at `Structure` depth is a PURE TEXT SCAN, and this is a STATED DEVIATION FROM INV-M4 (D5).**
+  `scanObjMtlLibs` is the whole pass: tinyobjloader is not entered, no stream is constructed, no vertex
+  is allocated. `Structure` and `Full` therefore DISAGREE about counts, names and the URI set for
+  `.obj` -- Full additionally names every accepted texture. The `.mtl` arm keeps INV-M4 perfectly (D6):
+  the depth parameter is accepted and deliberately ignored, and `AC-23`'s field-for-field equality is
+  what stops a future "optimisation" splitting the two. **Measured, not assumed: at ~150 MB the scan
+  alone costs ~107-113 ms warm, roughly 3x the read's own ~34-46 ms -- the SCAN dominates, not the read,
+  because the per-line walk does real work on every line of an overwhelmingly `v`/`f` file. Steady-state
+  stays ~0 (D15/INV-C5 unaffected); only a scan where the file actually changed pays this cost.**
+- **tinyobjloader NEVER touches the filesystem. `ParseFromFile`, `MaterialFileReader`,
+  `ObjReaderConfig::mtl_search_path` and the whole `ObjReader` class must appear NOWHERE in this tree.**
+  A `.obj` is a user-supplied document and `mtllib /etc/passwd` is syntactically legal Wavefront. The
+  only sanctioned entry points are the two `std::istream` overloads, `LoadObj` and `LoadMtl`, fed from
+  bytes the editor already read. `ObjReader` is banned for a second reason too: its only from-memory
+  entry point copies both inputs, up to ~768 MB resident at the 256 MiB file cap.
+- **`TINYOBJLOADER_USE_MAPBOX_EARCUT` is a COMPILE ERROR, not a hope (D21).** The mapbox branch is the
+  only unchecked position read in the library's triangulation, guarded by a bare `assert()` that vanishes
+  under `NDEBUG` -- a Debug abort on the sanitiser lanes and a heap over-read in Release, both from an
+  ordinary broken `.obj`. The `#error` sits BEFORE the library include. `TINYOBJLOADER_IMPLEMENTATION`
+  must never be defined either: vcpkg compiles the library, and a second copy risks an ODR conflict.
+  **Confirmed by sabotage that this guard has NO automated cover**: removing it reddens nothing in 297
+  targeted cases -- AC-13's one-time manual check is deliberately its only cover, outside CI.
+- **EVERY INDEX IS RANGE-CHECKED BY US BEFORE ANY ARRAY ACCESS, and the library's own checks do not make
+  that redundant (INV-O4).** `fixIndex` (`tiny_obj_loader.h:819`) maps a positive Wavefront index to
+  `idx - 1` with NO upper bound; an out-of-range index produces only a WARNING
+  (`:3109`, "Vertex indices out of bounds") and `LoadObj` still returns `true`. The built-in ear clipping
+  bounds-checks its reads, but one branch SUBSTITUTES ZEROS rather than skipping, so a triangle carrying
+  a bad index is still emitted. A face failing any of the three checks is dropped WHOLE, never partially,
+  with one capped warning. **Confirmed load-bearing by REAL ASan reports, not merely failed `CHECK`s**:
+  disabling any one of the three checks in turn produces a genuine `AddressSanitizer: BUS on unknown
+  address` abort against the vertex/normal/texcoord arrays respectively -- the single most important
+  proof in this task.
+- **The library has TWO GRADES of malformed index, and the asymmetry is upstream.** `f 99999 1 2`
+  (past the end) warns and returns `true` -> `Ok`, that face dropped by us. `f 0 1 2` (a zero index) and
+  `f -99 1 2` (a relative index below zero) make `LoadObj` `return false` -> `ParseFailed` for the WHOLE
+  file. Do not "correct" that into a uniform rule; delivering one needs our own parser.
+- **A missing, unreadable or refused `.mtl` is a WARNING, never `MissingBuffer` (D7).** glTF's external
+  `.bin` holds the geometry; Wavefront's `.mtl` holds only appearance, so without it there is still a
+  mesh. The Full pass proceeds with an empty material stream, every face gets
+  `materialIndex = INVALID_SUBASSET`, one warning per `mtllib` line whose candidates were all unsupplied
+  names the raw operand, and status stays `Ok`. The warning is OURS, derived from the candidate list
+  versus the supplied buffers -- never inferred from a library string.
+- **TWO library sentences are dropped, and only two -- both PROVEN unreachable for this library version,
+  not merely filtered defensively.** `"Material stream in error state."` (`:2536`,
+  `MaterialStreamReader`'s own guard) and `"Failed to load material file(s). Use default material."`
+  (`:2926`/`:3344`, `LoadObj`'s mtllib branch) both describe OUR single-stream plumbing on the SECOND and
+  later `mtllib` directive -- but `MaterialStreamReader`'s own `if (!m_inStream)` guard tests
+  `std::istream::fail()` (failbit/badbit), NEVER `eof()`, so a second `mtllib` line's `readMatFn` call
+  does not take that branch at all: it silently re-enters `LoadMtl` on an already-exhausted stream. Both
+  sentences are confirmed by direct sabotage to redden nothing across all 83 `OI` cases -- kept as
+  harmless defence in depth, never claimed as proven-reachable. The library's `"Both \`d\` and \`Tr\`
+  parameters defined"` warning (`:2237`/`:2249`) is the OPPOSITE -- a real statement about the file --
+  and is NEVER dropped; confirmed load-bearing by sabotage (`OI62` reddens when it is).
+- **`LoadObj`'s RETURN VALUE is the authority, never the `err` string -- and `LoadMtl`'s `err` parameter
+  is PROVEN dead code for this library version, not merely unobserved.** Both `LoadMtl` overloads
+  (`:2069`, `:2532`) open with `(void)err;` and never touch it again anywhere in the body, so `err_mtl`
+  (`LoadObj`'s own internal call, `:2905-2913`/`:3322-3331`) can never become non-empty for ANY input.
+  Mapping "non-empty `err` -> `ParseFailed`" was sabotage-seeded directly and reddened nothing, confirming
+  the mapping is unreachable rather than merely untested. A `true` return with a non-empty `err` (from
+  some OTHER source, should one ever exist) appends each line as a WARNING, never a failure.
+- **THE ZERO-FACTOR RULE, and it exists because the library cannot tell you (D14).** `InitMaterial`
+  (`:1386`) zeroes `diffuse`, `roughness` and `metallic`, and there is NO "was it set" flag for any of
+  them. Read verbatim, every classic `.mtl` imports as a black perfect mirror and `newmtl wood / map_Kd
+  wood.png` imports as an invisible texture. So: where a zero factor would ANNIHILATE a texture the same
+  material supplies, it is read as the neutral 1; and `roughness` additionally takes 1 when there is no
+  map at all -- UNCONDITIONALLY, the one clause with no "has a texture" gate. Nothing else is adjusted --
+  `Kd 0 0 0` with NO texture stays black, which is a legitimately black material. **Each of the four
+  clauses is confirmed independently load-bearing by sabotage**: dropping the roughness clause turns
+  every mirrorless material into one; applying the `Kd` clause unconditionally turns a legitimately
+  black, textureless material white.
+- **`d` ALWAYS beats `Tr`, in either order -- verified at the literal source (`:2229-2260`), where `Tr`'s
+  own handler comment reads "`d` wins. Ignore `Tr` value."** The library warns from BOTH handlers when
+  both appear. No `Ns` -> roughness curve, ever: there is no standard behind any of the candidate
+  formulas, and the panel prints `roughnessFactor` as a number. `map_Ka` is NOT mapped to occlusion --
+  `Ka` is an ambient COLOUR map, and mapping it would be a guess the panel prints as a fact.
+- **Fold `\` -> `/` BEFORE `classifyUri`, never after** -- `foldBackslashesToSlashes`, the function
+  3.2.2 added for FBX, reused verbatim (D15). A `mtllib`/`map_Kd` operand is a FILESYSTEM PATH, never a
+  URI, so `UriClass::RefusedBackslash` is right for glTF and wrong here. `classifyUri` is NOT modified;
+  the class simply becomes unreachable from this importer. **The stated, accepted cost: a backslash
+  cannot be both a separator and an escape, so `mtllib my\ file.mtl` is NOT supported.** An ambiguous
+  operand is instead offered BOTH ways -- the whole trimmed operand first, then each token -- and the
+  filesystem decides. This function's own doc comment now names BOTH backends and BOTH reasons, since
+  "CALLED BY THE FBX BACKEND ONLY" became false the moment this task's own `obj_import.cpp` called it.
+- **The importer CONVERTS NOTHING (D12/INV-O6):** no axis flip, no winding reversal, no unit scaling, no
+  handedness change, and no setting for one. Wavefront agrees with glTF on everything that matters. FBX
+  is the format that needs conversion, precisely because it declares Z-up and centimetres.
+- **`ImportedNode::localId == its position in `nodes` == `meshIndex` for OBJ (D11)**, because there are
+  exactly N root nodes, one per mesh, in source order, with no synthetic parent. That means 3.2.2's
+  BLOCKING `nodes[localId]` heap-overflow cannot resurrect here -- but only BY CONSTRUCTION. The panel's
+  `indexByLocalId` map still runs and still must; a case pins `nodes[i].localId == i` so a future change
+  that breaks the coincidence is caught rather than discovered.
+- **An empty mesh's `bounds` is `Aabb{}` -- a POINT BOX -- never the `Aabb::empty()` sentinel; and
+  `summary.bounds` is folded from SURVIVING PRIMITIVES, never from mesh bounds.** OBJ is the first format
+  in this tree that produces empty meshes routinely (an `l`/`p`-only shape, or one whose faces were all
+  dropped by INV-O4), so this pairing became reachable for the first time here. Both shipped backends
+  already do exactly this and their comments say why: a mesh left at the sentinel has a NaN centre, and
+  folding the model bounds from mesh bounds would leak the world origin into it for every empty mesh.
+  **Confirmed as two genuinely independent properties by sabotage: one seed reddens only the mesh-bounds
+  half, the other only `summary.bounds`, never both at once.**
+- **`.obj` is NEVER routed through ufbx, permanently.** ufbx v0.23.0 genuinely parses `.obj`
+  (`UFBX_FILE_FORMAT_OBJ`) and will even open a sibling `.mtl` FROM DISK via `obj_mtl_path`/
+  `obj_mtl_data`, which its own header notes "sidestep `load_external_files`". That is a filesystem read
+  behind a user-supplied document, which is exactly what D3 forbids. 3.2.2 already banned those two
+  fields by name; this entry is the answer to the temptation, written down.
+- **No `.obj`/`.mtl` WRITING, ever.** This importer is read-only; the only write anywhere in the model
+  import subsystem stays `ModelImportSession::applySettings`'s `.meta` sidecar (INV-M9).
+- **TWO build-time discoveries about `LoadMtl` share ONE observable signature (an empty `name`) and are
+  closed with ONE mechanism, not two special cases.** First: `LoadMtl` unconditionally flushes a
+  trailing "material" at end-of-parse (`:2459`'s own comment, "// flush last material.") with NO guard
+  on whether any `newmtl` was ever seen -- a completely empty `.mtl` stream produces `materials.size()
+  == 1`, not 0. Second: because `MaterialStreamReader`'s guard tests `fail()` not `eof()`, a SECOND
+  `mtllib` line's `readMatFn` call does not take the "stream in error" branch at all -- it silently
+  re-enters `LoadMtl` on an already-exhausted stream, which flushes ITS OWN second, empty-named phantom.
+  `declaredWithEmptyName(combinedWarnings)` -- checking for the library's OWN "empty material name in
+  `newmtl`" warning -- is the ONE signal that tells a genuine, if malformed, user-authored empty-named
+  `newmtl` apart from either phantom shape; `convertMaterials` filters on it with a separate `nextLocalId`
+  counter so a dropped phantom never consumes a local id. **Any future change to material parsing must
+  route through this same filter, never assume `LoadMtl`'s `materials` vector holds only real
+  declarations.**
+
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
-3.1.3, 3.1.4, 3.2.1 and 3.2.2's entries under Phase 3.
+3.1.3, 3.1.4, 3.2.1, 3.2.2 and 3.2.3's entries under Phase 3.

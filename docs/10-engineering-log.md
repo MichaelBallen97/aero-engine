@@ -4647,3 +4647,361 @@ each commit and again on the full `main...HEAD` diff at the end. `ufbx.h`/`ufbx.
 byte-identical to a fresh v0.23.0 download (`diff` and SHA-256) after all six fixes, not merely after
 the first. Both macOS presets pass 95/95 at the final state (`macos-debug` under ASan/UBSan, ~187 s;
 `macos-release`, ~41 s).
+
+#### Task 3.2.3 — OBJ import (tinyobjloader)
+
+**3.2.3 gives the editor its third importer, and its own headline deliverable is the two-hop
+dependency chain a Wavefront file structurally forces on the tree: `chair.obj` references
+`chair.mtl` (a real, separate file, unlike glTF's/FBX's self-contained documents), and `chair.mtl`
+references `wood.png`.** The task's own §A-4-style decision (D4) is to make `.mtl` a **claimed
+importable file in its own right** — sharing OBJ's importer identity — so the existing dependency
+graph (`planImports`' BFS over reverse edges, proven transitive since task 3.1.2) propagates the
+whole chain for free: editing `wood.png` marks `chair.mtl` **and** `chair.obj`
+`DependencyChanged` on the next scan, through machinery this task adds not one line to. `AD-i25`
+proves the full two-hop cascade end to end, ticking twice (AC-8's own trap), with **zero production
+code in `asset_database.cpp` or `asset_cache.cpp` touched** — the entire deliverable is a consequence
+of `modelImporterIdentity` and `modelImporterNeedsExternalBuffers` learning two new extensions, not a
+new mechanism.
+
+**Selecting a `.mtl` on its own works too, and is not a lesser case bolted on afterward — it is the
+SAME code path.** `importMtlOnly`'s material conversion is the identical `convertMaterials` function
+`importObjFile`'s Full pass calls, so a `.mtl` selected standalone and the same `.mtl` reached through
+its `.obj` produce byte-identical `ImportedMaterial`/`ImportedImage` fields (AC-23) — depth-independence
+falls out of the arm being depth-**agnostic** by construction (`ImportDepth` is accepted and
+`(void)`-discarded), not maintained by two code paths kept in sync.
+
+`obj_import.{hpp,cpp}` (src-private) is the **third** per-format backend TU and the **only**
+tinyobjloader translation unit in the tree (INV-O1, an anchored `#include <tiny_obj_loader.h>` grep
+names exactly one file). `model_import.cpp` gained one more dispatch arm (deliberately still an
+if-chain at three arms rather than a table — `importObj` alone needs `fileName`, since it has two file
+kinds behind one function), plus two genuinely new pure helpers (`scanObjMtlLibs`,
+`looksLikeBinaryContent`) that `obj_import.cpp` calls into for the Structure-depth mtllib scan and the
+AC-54 binary-content refusal shared by both arms.
+
+**Zero paths under `engine/` — the no-engine-change streak that reached four at 3.2.2 now reaches
+FIVE** (`git diff --name-only main...HEAD -- engine/` is empty on the feature branch, verified at every
+commit boundary in this pass, not merely at the end). `/editor` gains one more `.hpp`/`.cpp` pair,
+`obj_import.{hpp,cpp}` (src-private, the only tinyobjloader TU), bringing `aero_editor_core` to **53**
+sources.
+
+##### §A corrections — reconciling the spec against a tree that already carried two-thirds of what it assumed still needed building
+
+**The single largest fact this task's own grounding pass established: 3.2.2 (FBX) already paid most of
+the debt the spec assumed OBJ would be the one to pay.** `struct ImporterIdentity` and
+`modelImporterIdentity(std::string_view) noexcept` already existed exactly as the spec's proposed
+`importerIdentityFor` would have been (§A-1), called from **four** sites (`asset_database.cpp`'s phase
+7.5 probe, `asset_cache.cpp`'s `planImports`, `import_details_panel.cpp`'s Overview line,
+`model_import_session.cpp`'s `applySettings`), not the spec's proposed one. This task's whole
+contribution to that surface is two lines — `OBJ_IMPORTER_NAME = "obj"` / `OBJ_IMPORTER_VERSION = 1`
+beside the glTF and FBX pairs in `import_settings.hpp`, and one new `if` arm inside
+`modelImporterIdentity` itself — and all four call sites work with **zero edits**, a strictly better
+outcome than the spec's own "one `asset_database.cpp` edit" framing. The spec's claim that this was "the
+debt 3.2.1 knowingly left for whichever importer landed second" is corrected here: **3.2.2 was that
+importer, and it already paid the debt.**
+
+**D15's *mechanism* is a full reuse, not a re-implementation; D15's *reasoning* is restated because it
+is genuinely a new fact for this format.** `foldBackslashesToSlashes` (fold every `\` to `/` before
+`classifyUri`, diverging from glTF's `RefusedBackslash` policy because a Wavefront reference is a
+filesystem path, not a URI) already existed verbatim from 3.2.2's own D14, tested by `MI111`. The one
+real edit is a **factual correction**, not a style sweep: the function's doc comment said "CALLED BY
+THE FBX BACKEND ONLY", which became false the moment `obj_import.cpp` called it too — corrected to name
+both backends and both reasons, following the identical precedent 3.2.2 itself set (commit `6dde840`,
+*"docs: correct stale FBX-import rules made false by this pass's fixes"*). **Confirmed load-bearing by
+direct sabotage**: S20 (classify before folding, at both the `mtllib`-operand site in `importObjFile`
+and the texture-slot site in `convertTextureSlot`) reddened `OI5` (`externalUris` empty instead of the
+folded `textures/chair.mtl`) — `classifyUri`'s own `RefusedBackslash` branch fires on the un-folded
+text before the fold ever runs, exactly the failure D15 exists to prevent.
+
+**§A-5's `.obj`/`.mtl` split in `modelImporterNeedsExternalBuffers` is this task's own new integration
+seam, and getting either half wrong is silent, not loud.** `.obj` answers **true** (its `.mtl` is a
+real external file `ModelImportSession` must read before the Full pass); `.mtl` answers **false** (its
+whole content is local — D6). Getting `.obj` wrong (S6, seeded) makes `ModelImportSession`'s
+external-read loop skip the `.mtl` entirely: the import still reports `Ok`, geometry still imports, but
+every material silently vanishes — **the silent-wrong-result seed**, confirmed exactly as described:
+`MS29` (a real `.obj`+`.mtl`+texture triple driven through the real, disk-reading session) reddened
+with `materials.size() == 0` instead of `1`, no status change, no warning naming the cause. Getting
+`.mtl` wrong (S7, seeded) is **structurally unobservable through `ImportResult`, proven by direct
+source reading, not merely by trial**: `importMtlOnly`'s `external` parameter is unconditionally
+discarded (`std::span<const ExternalBuffer> /*external*/`), so whether the session's external-read loop
+ran or not before reaching it changes nothing about what comes out. `MI123` (the pure-function level)
+is the correct and sufficient guard for this half; `MS30` (session/behavioural level) is confirmed,
+by direct sabotage, unable to see it — exactly what §B's own hedge for S7 predicted ("this seed may not
+discriminate — write it to assert the read SET, not the count"). No literal read-counting
+instrumentation exists anywhere in this tree (`model_import_session.hpp` has no such seam), so `MS22`'s
+own established precedent — a comment-stripped SOURCE-TEXT proof of the session's read-loop SHAPE
+(exactly one `readFileBytes` outside `modelImporterNeedsExternalBuffers(leaf)`'s gate, exactly one
+inside) — is what actually proves ".obj reads exactly its `.mtl`, never a texture": `OI2` proves an
+`.obj`'s Structure-depth `externalUris` is exactly one entry (the mtllib path, never a texture path),
+and `MI123` proves the gate is taken for `.obj`; combined with `MS22`'s generic proof that the loop
+iterates exactly `externalUris`' length, the "never reads a texture" claim is a logical consequence of
+three already-proven, independently-testable facts rather than a new instrumented claim.
+
+**D14's zero-factor rule reads a zero factor as the neutral 1 only where a zero would ANNIHILATE a
+texture the same material supplies — never unconditionally, and never for a material with no
+texture at all.** `InitMaterial` (verified directly, `tiny_obj_loader.h:1386-1420`) zeroes
+`diffuse`/`ambient`/`specular`/`transmittance`/`emission` and sets `dissolve = 1.0` — 0 is
+indistinguishable from "the file never mentioned this factor". `Kd 0 0 0` with **no** `map_Kd` stays
+black (a legitimately black material); the identical `Kd 0 0 0` **with** `map_Kd` reads as `{1,1,1}`
+(the texture supplies the color; a zero factor would multiply it to black, which the file never asked
+for). Metallic follows the same conditional rule; **roughness is the one UNCONDITIONAL clause** — 0
+always reads as 1, texture or not, because no classic Wavefront material means "perfect mirror".
+Confirmed as four independently-discriminating clauses by direct sabotage: S16 (drop the roughness
+clause) reddened `OI61`'s material D (`Pr 0`, no map, expected `roughnessFactor == 1`, got `0`); S17
+(apply the Kd clause unconditionally) reddened `OI61`'s material B (`Kd 0 0 0`, **no** texture,
+legitimately black — the half most likely to be over-applied, exactly as §B predicted) turning it
+white.
+
+**§A-11's `d`/`Tr` correction is verified at the literal source line, not merely by re-reading the
+spec's prose.** The spec claimed "whichever of `d`/`Tr` appeared first wins"; the real rule, read
+directly from both handlers (`tiny_obj_loader.h:2229-2260`), is that `d` **always** wins regardless of
+order: `d`'s own handler (`:2229-2243`) unconditionally writes `material.dissolve`, and `Tr`'s handler
+(`:2245-2260`) explicitly checks `has_d` first — its own comment reads, verbatim, `// `d` wins. Ignore
+`Tr` value.` A warning fires from **both** handlers whenever the other was already seen, so `Both
+`d`and`Tr` parameters defined` (two near-identical emission sites, `:2237` and `:2249`, one per
+handler) is a REAL statement about the user's file and is never filtered — confirmed by direct
+sabotage: `OI62` builds two materials, `d`-then-`Tr` and `Tr`-then-`d`, and asserts `dissolve == 0.25`
+(the `d` value) in **both**; S26 (adding a third filter clause that also drops any line containing
+`` `d` ``) reddened `OI62`'s `sawDTrWarning` check directly.
+
+**§A-9's and §A-10's diagnostic-mapping corrections both trace back to one fact about this library
+version, verified by reading `LoadMtl`'s own body rather than assumed from its signature: `LoadMtl`'s
+`err` output parameter is dead code.** Both overloads (`tiny_obj_loader.h:2069` and `:2532`, the second
+serving the stream-reader path `MaterialStreamReader` calls into) open with `(void)err;` and never touch
+it again anywhere in the function body. This resolves §W item 4 (an explicitly unverifiable fact at
+plan-writing time — "the summarisation of the upstream source was internally inconsistent... whether
+`LoadMtl` ever writes to `err`") **definitively, not merely empirically**: `err_mtl` (`LoadObj`'s own
+local, passed into its internal `LoadMtl` call at the `mtllib` branch, `:2905-2913` and `:3322-3331`)
+can **never** become non-empty for any input under this library version, by construction, not merely "no
+fixture was found that triggers it". §A-9's own rule — `LoadObj`'s **return value** is the sole
+authority on parse success, never the `err` string's emptiness — is therefore correct on BOTH readings
+the spec's own inconsistent summary could have meant, and S27 (mapping a non-empty `err` to
+`ParseFailed` even on a `true` return) is a **proven**, not merely predicted, non-discriminator: seeded
+directly, the entire 83-case `OI` suite stayed green. §A-10's two filtered library sentences
+("Material stream in error state." at `:2536`, "Failed to load material file(s)." at `:2926`/`:3344`,
+two near-duplicate emission sites mirroring `LoadMtl`'s own two-overload duplication) were **also**
+confirmed, by direct sabotage (S24, S25, each dropping one filter clause alone), to be genuinely
+unreachable by every fixture this suite can construct — not because the filter is wrong, but because
+`MaterialStreamReader`'s own `if (!m_inStream)` guard (its "stream in error" branch, the one that would
+emit these sentences) tests `std::istream::fail()` — failbit/badbit — never `eof()`, so a second
+`mtllib` line's `readMatFn` call does not take that branch at all: it re-enters `LoadMtl` on an
+already-exhausted stream, which parses zero lines and returns quietly. **The filter stays in place as
+harmless defence in depth**, and `OI23`'s own comment records the honest, non-vacuous status of what it
+proves versus what it cannot.
+
+**`MAX_MATERIALS_PER_MODEL` (65536, declared beside `MAX_NODES_PER_MODEL`) is this task's one genuinely
+new structural cap, and it makes a pre-existing, unrelated gap newly visible by comparison: the glTF
+backend applies no material cap at all today** (`asset.materials` grows unbounded in `gltf_import.cpp`).
+That gap is pre-existing, real, and **explicitly out of scope** for this task to close — glTF's own
+diff stays at zero — but it is worth naming here so a future reader does not mistake "OBJ has a cap and
+glTF does not" for an oversight of this task's own making. `OI72` proves the cap fires as `Truncated`
+with a coherent, smaller model, matching `MAX_NODES_PER_MODEL`'s own established shape (`OI48`,
+`MAX_PRIMITIVES_PER_MODEL`).
+
+**§A-12's bounds pair (an empty mesh gets a POINT box, never the `Aabb::empty()` sentinel;
+`summary.bounds` folds from PRIMITIVE bounds, never mesh bounds) is followed exactly as the spec wrote
+it, and OBJ is the first format to make this reachable at all** — Wavefront is the first backend where
+an ordinary, well-formed file routinely produces an empty mesh (every face using an out-of-range
+index, or a shape carrying only `l`/`p` content). `OI47` proves both halves in one fixture (a real
+shape plus a fully-degenerate one) with disjoint, independently-discriminating assertion groups —
+confirmed directly by sabotage: S28 (return the raw, invalid `Aabb::empty()` instead of a point box)
+reddened only the three mesh-bounds assertions, leaving `summary.bounds` green; S29 (fold
+`summary.bounds` from mesh bounds instead of primitive bounds) reddened only `summary.bounds.min`,
+leaving the mesh-bounds assertions green — satisfying §B's own third self-check that these two seeds
+must redden strictly different halves of the same case, which they do.
+
+**§G-4's real line numbers, re-derived at Step 1 against the actual vendored v2.0.0rc13 header
+(`build/*/vcpkg_installed/arm64-osx/include/tiny_obj_loader.h`), never quoted from the spec's own
+unverifiable citations:** `real_t`'s `#if 0`/`#else` rewrite spans `:145-150` (`typedef float real_t;`
+at `:150`); the exported CMake target is confirmed literally `tinyobjloader::tinyobjloader`
+(`tinyobjloader-targets.cmake:58`); no `mapbox/` path and no `TINYOBJLOADER_USE_MAPBOX_EARCUT` reference
+exist anywhere under the vendored tree (both greps empty, closing D21's guard's own premise); no
+locale-dependent parsing call (`setlocale`/`sscanf`/`atof`/`strtod`/`std::sto*`) appears in the header
+at all (F7 closed, empty grep); `fixIndex` (no upper-bound test) is at `:819`; "Vertex indices out of
+bounds" is at `:3109`; "Face with invalid vertex index found" is at `:1526`; the mapbox `assert` is at
+`:1691`; `InitMaterial` (the zero-factor source of truth) is at `:1386`; the two `LoadMtl` overloads
+are at `:636` and `:2069`, with `(void)err;` at `:2072` and `:2532` respectively; `err_mtl`'s two
+appending sites are at `:2905-2913` and `:3322-3331`; the unconditional trailing-material flush comment
+("// flush last material.") is at `:2459`; `d`'s and `Tr`'s handlers are at `:2229-2260`.
+
+##### Two build-time findings, neither anticipated by the plan, both requiring a real code fix
+
+**Finding 1 — `LoadMtl` unconditionally flushes a trailing "material" at end-of-parse, regardless of
+whether any `newmtl` was ever seen at all**, verified directly at the source (`:2459`'s own comment,
+"// flush last material."), with no guard on the accumulated name being non-empty. A completely empty
+`.mtl` stream therefore produces `materials.size() == 1` — one unnamed, all-default phantom entry — not
+zero. This is OUR OWN policy question (E13: no `newmtl` at all imports as zero materials; AC-22: an
+unsupplied `.mtl` leaves `result.model.materials` empty), not something the library hands us for free,
+and both shapes share the identical observable signature: an empty `name`.
+
+**Finding 2 — a second `mtllib` directive re-enters `LoadMtl` on an already-exhausted stream, because
+`MaterialStreamReader`'s guard tests `fail()` (failbit/badbit) rather than `eof()`.** After the first
+`mtllib` line's `LoadMtl` call exhausts the shared `istringstream` (setting only eofbit via a
+`peek()`), the stream is still "not failed" by that test, so a second `mtllib` line's `readMatFn` call
+does not take the "stream in error" branch §A-10 describes at all — it calls `LoadMtl` again, which
+parses zero lines but **still** unconditionally flushes its own, second, empty-named phantom. Verified
+directly against a two-`mtllib`-line, two-valid-file fixture: the library's raw `warn`/`err` strings
+are **both empty**, and `materials` carries a third, empty-named entry beyond the two real ones. §A-10's
+own premise — that a second `mtllib` directive is what makes its two filtered sentences fire — does not
+hold for this library version and stream combination.
+
+**Both findings share the identical observable signature (an empty `name`), and both were closed with
+ONE mechanism rather than two special cases:** `declaredWithEmptyName(combinedWarnings)` checks for the
+library's own "empty material name in `newmtl`" warning — the one signal that distinguishes a genuine,
+if malformed, user-authored empty-named `newmtl` from either phantom-flush shape — and
+`convertMaterials` filters `if (m.name.empty() && !keepEmptyNamed) { continue; }`, with a separate
+`nextLocalId` counter so a dropped phantom never consumes a local id. Both `importMtlOnly` and
+`importObjFile` were updated to pass `warn + err` as this new `combinedWarnings` parameter.
+**`OI23`'s own comment records, honestly, that its "both filtered sentences absent" assertion is
+mechanically true but does NOT prove the filter fires** — matching FBX's own `FI27`/`FI43`/`FI46`/
+`FI68`/`FI72` precedent of naming a documented, accepted gap rather than shipping a case that only
+looks like proof.
+
+##### R5 — the Structure-probe cost on a large `.obj`, measured, not asserted
+
+**3.1.4's own R1 shipped an unmeasured cost and is still open debt; 3.2.1's R4 and 3.2.2's R3 both
+closed their equivalents with real numbers, and this task does the same rather than repeat that
+lesson a third time.** Measured on `macos-release`, a programmatically generated 157 286 434-byte
+(~150.0 MiB) `.obj` (plain `v`/`f` lines, no `mtllib`, exactly-representable integer coordinates), three
+runs each, via a throwaway harness (`AssetDatabase::rescan`/`readFileBytes`/`importModel` timed directly
+with `std::chrono::steady_clock`, then **removed** — the tree re-verified byte-identical to `HEAD`
+afterward, the identical discipline 3.2.1's own R4 measurement used):
+
+| | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| **READ** alone (`readFileBytes`) | 45.6 ms | 35.9 ms | 34.4 ms |
+| **SCAN** alone (`importModel`, `Structure` depth, bytes already in memory) | 106.7 ms | 107.6 ms | 113.5 ms |
+
+Plus one **cold** `rescan()` of a project containing the file: **239.3 ms**; one **steady-state**
+`rescan()` immediately after (no file changed): **0.347 ms**.
+
+**The steady-state result matches 3.2.1's own R4 finding exactly — a steady-state scan probes zero
+models and reads zero bytes (D15/INV-C5), so this task's own addition does not break that invariant.**
+**The split between the two halves is a genuine surprise, though, and is recorded as one rather than
+smoothed over: the SCAN, not the READ, dominates** — the opposite of §R5's own stated "expected shape"
+("the read dominates"). At steady state (warm OS cache), the linear text scan alone costs
+**~107-113 ms**, roughly **3x** the read's own **~34-46 ms** — because `scanObjMtlLibs`'s per-line walk
+(`find('\n')`, a `\r` check, `mtllibOperand`'s own character-by-character keyword match) does real,
+non-trivial work on every one of a ~150 MB file's several million lines, the overwhelming majority of
+which are ordinary `v`/`f` lines carrying no `mtllib` directive at all — the scan cannot skip a line
+without first proving it is not one. **~107-113 ms is roughly 6.4-6.8x a single 16.7 ms frame** — a
+Structure probe of a file this large, run synchronously, would cost several frames' worth of budget on
+the scan alone, not merely the read. This does not change any correctness property (the scan is still a
+pure text walk that never enters tinyobjloader — D5's own INV-M4 deviation is unaffected), but it is a
+sharper number than "the scan is linear and cheap" would have suggested, and is recorded here exactly
+so a future task sizing the asset-watcher's own per-tick budget (`.claude/rules/editor.md`'s hot-reload
+section) has a real number for a Wavefront file rather than an assumption carried over from glTF's own,
+much cheaper, binary-buffer-only Structure pass.
+
+##### D5's stated deviation from INV-M4, and why it is a deliberate exception rather than a bug
+
+**`.obj`'s Structure pass is a pure text scan that never enters tinyobjloader at all** — no stream is
+constructed, no vertex is allocated, `LoadObj` is never called. This is a **stated deviation from
+INV-M4** ("`Structure` and `Full` are one function with a depth parameter; they can never disagree
+about the URI set, the counts, the names or the hierarchy"): for `.obj`, `Structure` and `Full`
+genuinely **do** disagree — `Structure` reports only the mtllib URI set, `Full` reports the whole
+geometry and material graph. `.mtl`'s own arm keeps INV-M4 perfectly instead (depth-independent by
+construction, §A-5's own consequence), so the deviation is confined to exactly one of the two claimed
+extensions. `OI3` is the AC-20 discriminator that makes the deviation's own value legible: a body whose
+Structure-depth scan is well-formed but whose Full-depth parse fails outright (`f 0 1 2`, a zero index)
+still returns `Ok` at Structure and `ParseFailed` at Full — proving Structure genuinely never entered
+the library, not merely that it happened not to trip over this particular malformed body. Confirmed
+load-bearing by direct sabotage: S8 (removing the early return so Structure runs the whole Full
+pipeline too) collapsed `OI3`'s `Ok`/`ParseFailed` pair to `ParseFailed`/`ParseFailed`.
+
+##### The graded 32-seed sabotage matrix
+
+**Run in full against real built binaries, every seed individually applied, its presence confirmed via
+`git diff --stat`, the rebuild confirmed fresh (binary mtime newer than the seeded source), the test
+run, and the revert confirmed byte-clean before the next seed — no seed skipped, no verdict assumed.**
+
+- **24 seeds matched their prediction exactly** (S1, S4, S5, S6, S8, S9, S10, S11, S12, S13, S14, S15,
+  S16, S17, S18, S19, S20, S21, S22, S26, S28, S29, S30, S31), including three real ASan
+  `AddressSanitizer: BUS` crash reports for S9/S10/S11 (INV-O4's vertex/normal/texcoord range checks,
+  R2's own three checks) — **not merely failed `CHECK`s**, confirmed by reading the actual sanitizer
+  output, matching R2's own explicit requirement. S12 (drop a face partially instead of whole) matched
+  the plan's own predicted verdict text word for word: "index counts go non-multiple-of-3" —
+  `OI33`'s `indices.size() % 3 == 0` check caught it directly.
+- **One genuine coverage gap was found and closed with a new, proven-discriminating case, not a
+  documented shrug**: S23 (join concatenated `.mtl` texts with `""` instead of `"\n"`) reddened
+  nothing against the suite's existing fixtures (every one already ends in `\n`, exactly as §B's own
+  hedge predicted) — closed by authoring `OI81`, a fixture whose first `.mtl` buffer deliberately has
+  **no** trailing newline, which reddened cleanly under the seed (`materials.size() == 1` instead of
+  `2` — the second material's `newmtl` keyword glued onto the first buffer's last `Kd` line and was
+  never recognised as a directive) and stayed green on the real, unseeded code.
+- **Three seeds were confirmed non-discriminators exactly matching a prior finding or prediction**: S24
+  and S25 (each dropping one of §A-10's two filtered library sentences) each left the full 83-case `OI`
+  suite green, confirming Step 7's own build-time finding that neither sentence is reachable for this
+  library version; S32 (removing the D21 `#error` guard) left 297 targeted cases green, confirmed
+  structurally (nothing in this tree's CMake or vcpkg manifest ever defines
+  `TINYOBJLOADER_USE_MAPBOX_EARCUT`, so the guarded block is dead code in every configuration this
+  project builds) — AC-13's one-time manual check remains its only cover, deliberately outside CI,
+  exactly as §B's own table states.
+- **One seed (S27) was PROVEN a non-discriminator by direct source reading, a stronger answer than
+  the plan's own uncertainty could give**: seeded (`if (!ok || !err.empty())`) and run, the full `OI`
+  suite stayed green, confirming the structural proof above (`LoadMtl`'s `err` parameter is dead code)
+  rather than merely failing to find a counterexample by trial.
+- **One seed (S7) confirmed §B's own explicit hedge precisely**: `MS30` (the `.mtl`-selected-directly
+  session case) could not see the seed, exactly as predicted ("this seed may not discriminate"),
+  because `importMtlOnly` discards its `external` parameter unconditionally — `MI123` (pure level)
+  remains the correct, sufficient guard.
+- **Two seeds (S2, S3) revealed a real, minor prediction-imprecision, not a coverage gap**: S2 (drop
+  `.obj` from `isImportableModelName`'s table) left the pure `OI` suite green, because `importModel`'s
+  own dispatch if-chain checks `endsWithFolded(fileName, ".obj")` directly rather than delegating to
+  `isImportableModelName` — an architectural property inherited unchanged from 3.2.1's/3.2.2's own
+  identical dispatch shape, not something this task introduced — but `AD-i22`/`AD-i23`/`AD-i25` and
+  four of the new `MS`-series cases (7 of 8 tested) reddened broadly, since `asset_database.cpp`'s
+  phase 7.5 probe and `model_import_session.cpp`'s own gate both call `isImportableModelName` directly,
+  before `importModel` is ever reached. S3 (`modelImporterIdentity` returns the glTF pair for `.obj`)
+  reddened `AD-i22` cleanly but left `AC-p15` green, because `AC-p15` is a PURE `planImports` test
+  driven from literal, hard-coded `ImportInput` fields and never calls `modelImporterIdentity` at all —
+  the plan's own prediction naming it as a co-discriminator was imprecise; `AD-i22` alone is complete
+  and sufficient. Neither finding indicates a real hole in the underlying protection, both are recorded
+  here rather than silently reconciled.
+
+**Three second-order checks the matrix itself had to pass, and all three did**: S9 produced a real
+ASan report, not a clean `CHECK` failure (§B's own first check); S2 reddened broadly at the
+`AssetDatabase`/session integration layers even though not at the pure `importModel()` layer, closing
+§B's own "S2 must redden broadly" concern by a different, equally valid route than predicted; S28 and
+S29 reddened strictly disjoint halves of `OI47`, closing §B's own third check that these two seeds must
+not both redden the same assertions.
+
+##### Measured inventory — before (`b4c3870`) and after (`ef9c34f`), re-measured, never derived by addition
+
+`ctest -N`: **95** tools-ON, **6** with both `AERO_REFLECT_TOOLS`/`AERO_SHADER_TOOLS` off, **19** with
+`AERO_REFLECT_TOOLS` off alone — all three **unchanged**, all three rebuilt fresh (`build/tools-off-3.2.3`,
+`build/reflect-off-3.2.3` deleted and reconfigured from nothing, not merely rebuilt) and passing 100%
+(6/6, 19/19). `aero_editor_shell_test`: **1112 → 1223** (+111: **83** new cases in the wholly new
+`tests/editor/obj_import_test.cpp` — `OI1`-`OI81`, including lettered variants `OI75a`/`OI75b`/`OI79b`
+— plus **14** in `model_import_test.cpp` (`MI118`-`MI131`), **6** in `model_import_session_test.cpp`
+(`MS28`-`MS33`, matching the plan's own predicted range exactly), **4** in `asset_database_test.cpp`
+(`AD-i22`-`AD-i25`), **1** in `asset_cache_test.cpp` (`AC-p15`), **1** in `asset_meta_test.cpp`
+(`AM-i21`), and **1** in `imgui_layer_test.cpp` (`I68`) — measured directly with `--list-test-cases`,
+never derived by addition). Both reduced configurations: **1199** in **each**, `OI1` present in both —
+the OBJ importer TU needs neither reflection nor scene serialization, the identical property every
+prior importer task has held. `aero_editor_imgui_test`: **89 → 90** (`I68`). `aero_tests`: **415**,
+unchanged (AC-66 — zero `engine/` paths touched). `aero_scene_serialize_test`/
+`aero_editor_inspector_test`: **23**/**22**, both unchanged. `aero_editor_core` sources: **52 → 53**
+(`obj_import.cpp`). Tracked `editor/src/*.cpp` (Check B): **53 → 54** (picked up automatically by the
+glob; `obj_import.cpp` is in neither Check A's denylist nor Check B's `PERMITTED_DELETERS` allowlist,
+which is what makes a future delete call there a hard CI failure). `check-math-boundary.sh` scanned:
+**291 → 294** (three new C-family files: `obj_import.hpp`, `obj_import.cpp`, `obj_import_test.cpp`;
+`tests/fixtures/assets/cube.obj`/`cube.mtl` are not C-family and do not count). Architecture guards:
+**6**, all passing, and — **unlike 3.2.2, which touched a two-line comment in
+`check-rhi-boundary.sh`** — `.github/scripts/` and `.github/workflows/` are **both byte-identical to
+`main`** for this task (`git diff main...HEAD -- .github/` is empty). `vcpkg.json` gained exactly one
+line (`"tinyobjloader"`, alphabetically between `"stb"` and `"tracy"`), no feature flags, no baseline
+change. Full branch diff: **17 files changed, 3078 insertions(+), 26 deletions(-)** across ten commits
+(`a4df408` through `ef9c34f`), zero touching `engine/`.
+
+**Committed fixtures**: `tests/fixtures/assets/cube.obj`/`cube.mtl` (8 vertices, 6 quad faces, one
+material with one texture reference), exercised end to end through `readFileBytes` by `OI80`, following
+`fbx_import_test.cpp`'s own `FI76` committed-binary-fixture precedent, though this pair is plain text
+rather than binary.
+
+**Sabotage matrix run to completion (32/32); the mechanical merge gate and the macOS validation pass
+are NOT YET RUN**, matching 3.2.1's and 3.2.2's own precedent of a two-part entry (implementation +
+sabotage complete here, CI and the manual validation pass recorded separately once the branch's PR has
+actually run and merged). `editor/validation/3.2.3-obj-import-tinyobjloader.md` holds unchecked
+records for every row; Windows and Linux validation rows remain pending for this task as for every task
+since Phase 2 — carried-forward platform-validation debt, unchanged by this task's own implementation
+work, now spanning four phases.
