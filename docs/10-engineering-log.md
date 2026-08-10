@@ -5268,3 +5268,273 @@ gate (`engine/`, `editor/src/gltf_import.*`, `editor/src/asset_database.cpp`, `.
 documentation on this branch had claimed `cmake/` itself would stay untouched — the existing diff-gate
 paragraphs above name `engine/`, the two glTF files, `asset_database.cpp` and `.github/workflows/ci.yml`
 specifically, and none of them, so none needed correcting.
+
+---
+
+### Task 3.2.4 — Blender CLI detection + `.blend` import (Epic 3.2)
+
+**Branch:** `feat/3.2.4-blender-cli-blend-import`, cut from `main @ 1b1d335`. Ten green commits.
+**Zero paths under `engine/`** — the no-engine-change streak reaches **six**. Unlike 3.2.3, **zero paths
+under `cmake/` too**, and this is the first task in Epic 3.2 that **adds no third-party code at all**:
+`vcpkg.json`, the `builtin-baseline`, the `/vcpkg` submodule, `.github/scripts/` and
+`.github/workflows/ci.yml` are all byte-identical to `main`, which also makes 3.2.3's Windows `LNK2038`
+class structurally unreachable here.
+
+It is the fourth importer path and the only one that is not an importer: everything before it turned
+bytes into an `ImportedModel`; this one turns a **file the editor refuses to parse** into a file it
+already parses, by running an external program. It is the first place in this codebase that spawns a
+process, that runs work across frames, and that branches on the host OS in first-party editor code.
+
+#### The spec was 52 commits stale, and five of its statements were wrong
+
+The task's spec predated both 3.2.2 (FBX/ufbx) and 3.2.3 (OBJ/tinyobjloader). The plan's §A corrected it
+before a line of code was written, and every correction proved load-bearing:
+
+- **AC-5 / INV-B6 / F12 were FALSIFIED.** *"`git grep -nE '_WIN32|__APPLE__|__linux__' -- editor/`
+  returns nothing"* stopped being true when 3.2.2 vendored ufbx, whose `ufbx.c` carries three of
+  upstream's own per-OS lines that can never be removed. The grep is re-scoped to
+  `editor/src` + `editor/include`, where it now reads **exactly three lines in exactly one file**, all
+  inside `currentHostOs()` — and **only the `#elif defined(__linux__)` + `#error` form produces three**.
+  The bare-`#else` form produces two and silently falls back to Linux on an unknown host, so the count
+  and the better design are the same decision. `.claude/rules/editor.md` carried the same false claim
+  and is corrected in this task's docs commit.
+- **`modelImporterNeedsExternalBuffers` is a real integration seam the spec never named**, and it is
+  where this task's most likely silent-wrong-result defect lived. It has to be answered correctly for
+  two different names: `.blend` (**false**, unchanged — but only *because* `.blend` stays out of
+  `isImportableModelName`'s table, so the two facts break independently and `MI133` pins both), and the
+  `<guid>.glb` artifact (**would be true**, and is **deliberately never consulted**).
+- **AC-22 was unsatisfiable as written.** *"Zero processes spawned"* cannot hold while
+  `provenanceMatches` compares `blenderVersion`, because comparing a version requires probing and a
+  probe is a process. Resolved with three coupled decisions: `runCount()` splits into
+  `exportRunCount()`/`probeRunCount()`; resolution is lazy and triggered by NEED (a cache miss), never
+  by selection; and `blenderVersion` is compared **only when a version is known**.
+- **§6.4 step 2 contradicted AC-27.** A nil-GUID `.blend` cannot be `NotImportable`: that enumerator's
+  panel branch renders one sentence and returns before any section, so it would draw no button to
+  disable — and would tell the user *"no importer claims this file type"*, which this task makes false.
+  It lands in `NeedsConversion` with `targetHasIdentity() == false` and a disabled button.
+- **AC-25's arithmetic was off by one**: there are **two** assets-root `writeTextFileAtomic` sites
+  today, not one — 3.2.1 added the second and the spec's amendment never accounted for it.
+
+#### `service()` grew ONE trailing defaulted parameter, and 42 call sites stayed unedited
+
+The spec proposed growing a 2-parameter function to 4 by adding both an assets root and a project root.
+`AssetDatabase::projectRoot()` already exists (3.1.2) and is already guarded against being re-derived
+from the assets root, so only `deltaSeconds` was genuinely new — **trailing and defaulted**, the
+`writeMetaText` precedent 3.2.2 set for the identical reason. Measured after the fact:
+`git diff main...HEAD -- tests/editor/model_import_session_test.cpp | grep '^-' | grep '\.service('`
+is **empty** — not one pre-existing call site was touched, and the file's `.service(` count grew from
+42 to 61 purely by addition.
+
+#### Two findings that were only reachable by building it
+
+**`resolve()` needed a fifth parameter the plan did not have.** The `Probing` state spawns
+`blender --version`, whose stdout must be redirected to a **file** (a piped child can block forever
+waiting to be read — SDL's own header documents it, and this design never reads one). But no log path
+exists before an asset GUID does, and `resolve()` is the only call that precedes `Probing`. It takes
+`exportDirUtf8` — `<projectRoot>/Library/BlenderExports` — and the probe writes
+`blender-version.log` there. **That makes the directory hold FIVE files per asset set, not four**, and
+the validation page's row 13 says five.
+
+**`applySettings` on a `.blend` writes `"name": ""`, not `"name": "gltf"`** — correcting the plan's own
+prediction. The plan assumed the write would fall through to `writeMetaText`'s defaulted importer
+parameters; it does not, because 3.2.2 made `applySettings` pass `modelImporterIdentity(leaf)`
+**explicitly** (exactly so an `.fbx` stops recording a borrowed `"gltf"`), and that function returns
+`("", 0)` for a `.blend`. The empty pair is the *right* answer: it says "no importer claims this file",
+which is precisely true, and it makes the sidecar agree with the import-cache entry instead of
+contradicting it. `MS39` asserts the measured behaviour and states the correction in its own comment.
+
+#### The artifact contract — AC-44, the highest-risk requirement in the task
+
+The `.blend` arm reads `Library/BlenderExports/<guid>.glb` and calls `importModel(artifactLeaf, "",
+bytes, settings, Full, {})` **directly** — one pass, empty external span, never through the two-pass
+driver. `modelImporterNeedsExternalBuffers("<guid>.glb")` would answer **true**, and it is deliberately
+never consulted, for three independently sufficient reasons: Blender's GLB export embeds its images as
+buffer views, so there is nothing external to fetch; the artifact lives **outside the assets root**, so
+any relative URI would resolve against a completely unrelated tree; and the two-pass driver would read
+those bytes into a `Full` pass that never needed them, with `MAX_EXTERNAL_BYTES_PER_MODEL` and its
+`Truncated` escalation in the path — the exact failure 3.2.3 documented one format over.
+
+*"A GLB is self-contained"* is a property of Blender's **exporter**, not of the glTF specification, so
+the assumption is made observable rather than silent: an artifact whose `externalUris` is non-empty
+appends exactly one warning naming the count and the list is cleared.
+
+**The path and the observable needed SEPARATE proofs, and the sabotage matrix is what showed it.**
+`BS41` (a `buildGlb` fixture that genuinely declares an external image URI) proves the warning. `MS41`
+— a case the plan did not have — reads `serviceBlend`'s own source text and asserts exactly one
+`importModel` call, exactly one `readFileBytes`, **zero** `modelImporterNeedsExternalBuffers` consults,
+one `ImportDepth::Full` and one empty `assetRelativeDir`. Measured: seeding the two-pass route reddens
+`MS41` and `MS22` and leaves **`BS41` green**, because an ordinary two-pass route over the same fixture
+produces an identical `ImportResult`. Seeding the removal of the warning reddens `BS41` and leaves
+`MS41` green. Neither proof substitutes for the other, and the plan's prediction that both seeds would
+go through `BS41` was wrong in a way only a real run could show.
+
+#### `MS32` went accidentally green for the wrong reason, and was rewritten in the arm's own commit
+
+`MS32` asserted a `.blend` reaches `NotImportable`. Under the correction it fails outright — but under
+the spec's own (rejected) design it would have **passed for a completely different reason**: not because
+`.blend` is unclaimed, but because an unscanned database yields a nil GUID. That is the vacuity trap
+this project keeps finding, and it would have shipped as a silently-repurposed green case. It is
+retitled and re-aimed, with `MS34` (a real scanned `.blend` with a valid GUID) added as its mirror —
+without the pair, "the `.blend` arm exists at all" has no discriminating proof.
+
+#### The sabotage matrix, graded seed by seed
+
+**36 seeds, all applied to real source, rebuilt, and run against the real built binaries.** Every seed
+was asserted PRESENT (`git diff --stat` non-empty and its content checked) before any verdict was
+trusted, the rebuild was checked for staleness, and the revert was verified byte-clean before the next.
+
+**27 matched their prediction**, naming the discriminating case:
+
+| Seed | Discriminator |
+|---|---|
+| S1 / S2 / S3 (drop `-Y`, drop `-X`, reorder `--`/`--out`) | `BT35`, element by element — the position names itself |
+| S4 (`--python-expr` with a formatted path) | the INV-B2 gate grep, **before any test ran** |
+| S5 (`SDL_WaitProcess(p, true, …)`) | the comment-stripped INV-B4 grep — and the run **HUNG past 30 s** rather than failing, which is why the grep is the real cover |
+| S7 (`Ready` instead of `ToolUnusable` for a refused version) | `BS16` |
+| S8 (treat an unparseable version as `Refused`) | `BT28` + `BS15` + eight more — D14's "attempt, never refuse" is load-bearing across the whole suite |
+| S9 (compare `sourcePath`) | `BT57` + seven `BS` cases — the renamed-asset-still-hits property, end to end |
+| S10 (drop `scriptVersion` from the comparison) | `BT54` + `BS33` |
+| S11 (write the provenance before the import succeeds) | **`BS43`**, not the predicted `BS39` — see below |
+| S13 (a `std::filesystem::remove` in `blender_service.cpp`) | `check-project-no-delete.sh` Check B, **before any test ran** |
+| S14 (spawn on `requestConversion` while `ToolMissing`) | `BS22` |
+| S15 (drop the cache-hit short-circuit) | `BS40`'s second-selection half + six more |
+| S16 (report a timeout without killing — **both** kills removed) | `BS29`, which never settles: the child is provably still alive |
+| S18 (drop the RNA filter from the script) | `BT40` |
+| S19 (add `export_yup: False`) | `BT41` — the seed that would silently rotate every imported model |
+| S20 (move `poll()` into `onDraw()`) | `I75` — no runtime tier in this tree can see it |
+| S21 (have the panel call `requestConversion`) | a **compile error**: the panel holds a `const ModelImportSession*`, so AC-39 is a compile-time property, not a convention |
+| S22 (add `.blend` to `isImportableModelName`) | `BT33`, `MI20`, **both halves of `MI133`**, `MS39` — and a **`SIGABRT` in `MI28`**, a stronger outcome than predicted |
+| S23 (read the real `getenv` inside `blenderCandidatePaths`) | **33 cases** |
+| S25 (move the `.blend` arm after the `isImportableModelName` early return) | **22 cases** — the matrix's own second-order check #1, satisfied |
+| S26 (route the artifact through the two-pass driver) | **`MS41` + `MS22`**, not `BS41` — see above |
+| S27 (drop the external-URI warning) | `BS41`'s warning half, and `MS41` stays green |
+| S28 (compare `blenderVersion` unconditionally) | `BT58` + `BS31`/`BS35` — twelve assertions |
+| S29 (map a nil-GUID `.blend` to `NotImportable`) | `BS45` + `MS32` + `MS38` + `I71` |
+| S34 (leave `STDERR_TO_STDOUT` unset) | `BS5`'s stderr half — the seed `cmake -E cat` exists for |
+| S35 (special-case `.blend` inside `modelImporterNeedsExternalBuffers`) | **only `MI133`'s second half**, which is what proves the two halves are independent assertions |
+| S36 (declare `Converted` from the artifact's mere existence) | `BS28` |
+| S37 (widen the `serviced` exception to every state) | **`BS31`**, and — after this task's own fix — `MS36`'s first half too |
+
+**6 confirmed NON-discriminators on macOS**, each with its real cover named rather than explained away:
+
+- **S6** (skip closing the redirect `SDL_IOStream`) — the whole suite stayed green. macOS ASan does not
+  report it. Its real cover is the **Linux Debug lane's LSan** and the **Windows lane**, where an open
+  handle blocks the next run's overwrite (`BS7`'s second-`start()` half).
+- **S17** (`kill` without `SDL_DestroyProcess`) — green. Predicted an ASan leak; ASan did not report
+  one. Recorded as a macOS non-discriminator: the handle leak is only visible under a long-running
+  editor, and the Linux LSan lane is its only automated cover.
+- **S24** (`std::set` for the candidate dedup) — green, exactly as predicted. The dedup is a **local**
+  inside a free function; MSVC's node-based-container problem bites only a **member** of a
+  nothrow-movable type.
+- **S24b** (`BlenderService::searched` as a `std::set`) — compiled and stayed green on macOS/libc++,
+  whose `std::set` move constructor is `noexcept`. Its only cover is the **Windows lane**, where the
+  aggregate `static_assert(std::is_nothrow_move_constructible_v<BlenderService>)` becomes a hard
+  compile error. 3.1.4's S25 precedent, a second instance.
+- **S33** (escalate to `kill(true)` immediately) — green, as predicted: `cmake -E sleep` and the fake
+  slow tool both die on `SIGTERM`, so both paths end identically, and on Windows the first kill is
+  already forceful. An accepted gap, not a coverage hole.
+- **S30** (launch `Locate…` without the in-flight guard) — green on **both** test binaries. Closed
+  differently: see below.
+
+**4 genuine coverage gaps found and CLOSED, each re-proven by re-seeding afterwards:**
+
+1. **S12** (write under the assets root) — green, because the case the plan expected to catch it,
+   `BS31`, is a **pure cache hit**: `startExport()` never runs there, so the seeded write is
+   unreachable from it. Closed with **`BS46`**: a real conversion, with a full assets-root listing taken
+   before and after, plus a positive assertion that the derived data *did* land (so the comparison
+   cannot hold vacuously). Re-seeded faithfully afterwards — `BS46` reddens.
+2. **S32** (write `export_gltf.py` unconditionally) — green, for the identical structural reason.
+   Closed with **`BS47`**: two real conversions, asserting the script's mtime and bytes are unchanged
+   across the second. Re-seeded — `BS47` reddens. *(Its own first draft was itself vacuous: a loop
+   conditioned on "until the state leaves `ConversionFailed`" exits before its body runs, because the
+   session already sits in that state after the first run. Fixed to drive the two deterministic ticks
+   explicitly.)*
+3. **S37** vs **`MS36`** — the seed matched, but through `BS31`, and `MS36`'s first half reddened
+   nothing. Its fixture was a cache **MISS**, where no import happens on any tick either way, so a
+   widened guard costs nothing observable. Rewritten to use a cache **HIT**, which is the only shape in
+   which a re-entered arm actually costs an import. Re-seeded — `MS36` now reddens.
+4. **S30** — a real defect (`DialogChannel` holds one slot, so a second dialog's result silently
+   overwrites the first's) that is **unreachable by every runtime tier in this tree**: no test can
+   synthesize a native dialog. Closed with a source-text assertion inside `I73` that the
+   `launchLocateBlenderDialog` call is guarded by both `dialogChannel != nullptr` and
+   `fileFlow.dialog == DialogKind::None`. Re-seeded — `I73` reddens.
+
+**Two prediction imprecisions worth recording, neither a coverage hole:**
+
+- **S11's discriminator is `BS43`, not `BS39`.** A faithful "write the provenance before the import
+  succeeds" seed lives on the `Converted` branch, which a **cancelled** run never reaches — so `BS39`
+  (cancel) cannot see it, while `BS43` (a successful run with an unusable artifact) does, and did.
+- **The matrix's second-order check #2 is worded too strongly.** It asks that S22 and S35 redden
+  *different* halves of `MI133`. In fact §A-2a's own analysis says S22 **must** redden both, because
+  adding `.blend` to the table flips `modelImporterNeedsExternalBuffers` as a side effect. The property
+  that actually proves independence is that **S35 reddens only the second half**, and it does.
+
+#### Build-time findings the plan did not anticipate
+
+- **The `-Wswitch` arms had to land in Step 6, not Step 8.** Adding three `SessionState` enumerators
+  without arms is a `clang-diagnostic-switch` warning, which the Linux lane's
+  `clang-tidy --warnings-as-errors='*'` turns into an error — so a commit that deferred them would not
+  have been green. The three arms shipped with the enumerators, in their final shape.
+- **`AERO_TEST_CMAKE_COMMAND` had to go on `aero_editor_imgui_test` too**, not just
+  `aero_editor_shell_test` as the plan specified. `I72` drives a real conversion to `ConversionFailed`
+  and `I76` proves the tool-preferences write lands at the configured path; both need a program that
+  actually exists on every lane, and `cmake` is the only one this project can name portably.
+- **`MS22` had to be re-scoped to `service()`'s own body.** It counts `readFileBytes(` calls inside and
+  outside the `modelImporterNeedsExternalBuffers` gate; the `.blend` arm adds a deliberately ungated
+  read of its own, and counting the whole file would conflate the two-pass shape with the artifact
+  read. Narrowing it is a sharpening, not a relaxation — and it gained an assertion that the gate
+  appears exactly **once in the whole file**, which is itself an AC-44 property.
+- **`cmake` is a genuinely usable Blender stand-in on every lane.** Its `--version` exits 0 and parses
+  to `nullopt`, which D14 then *attempts* rather than refuses, reaching `Ready`; handed Blender's own
+  argv it exits non-zero without writing a status file, which is exactly the `SourceRejected` row. That
+  is what makes `MS36`'s second half, `BS46`, `BS47`, `I72` and `I76` cross-platform instead of
+  POSIX-only.
+
+#### The POSIX-only cases, recounted rather than carried forward
+
+**Eleven** whole `BS` cases skip loudly on Windows — `BS14, BS16, BS17, BS24, BS27, BS28, BS29, BS30,
+BS39, BS40, BS43` — plus **one** case, `BS11`, with a single POSIX-only *arm* inside it (the
+`PATH`-separator half). Earlier notes on this branch said "eight" and "ten"; both were wrong, and the
+number is measured here by parsing the file rather than remembered. The reason is structural: SDL spawns
+through `CreateProcessW` on Windows, which cannot execute a `.bat` or `.cmd`, and no `cmake -E` mode
+prints arbitrary text when handed exactly `{binary, "--version"}`. Everything that needs no scripted
+output — resolution, `ToolMissing`, the spawn-failure path, the preferences file, the request-drop
+rules, both exit-non-zero export rows, and the whole cache/staleness/artifact surface — runs on **every**
+lane.
+
+#### Measured inventory at the docs commit (re-measured, never carried forward)
+
+| Quantity | at `1b1d335` | **measured now** | command |
+|---|---|---|---|
+| `aero_editor_core` sources | 53 | **56** | `awk '/^add_library\(aero_editor_core STATIC/,/^\)/' editor/CMakeLists.txt \| grep -c '^ *src/'` |
+| tracked `editor/src/*.cpp` (Check B's scan) | 54 | **57** | `git ls-files 'editor/src/*.cpp' \| wc -l` |
+| `check-math-boundary.sh` scanned | 294 | **302** | the script's own output |
+| architecture guards | 6 | **6**, byte-identical | `ls .github/scripts/` + `git diff` |
+| Check A denylist / Check B allowlist | 6 / 2 | **6 / 2**, unchanged | the script's own output |
+| per-OS lines, `editor/src` + `editor/include` | 0 | **3 lines, 1 file** | `git grep -nE '_WIN32\|__APPLE__\|__linux__' -- editor/src editor/include` |
+| ctest entries (tools ON / both OFF / reflect OFF) | 95 / 6 / 19 | **95 / 6 / 19** — zero new `add_test` | `ctest -N \| tail -1` |
+| `aero_editor_shell_test` | 1232 | **1359** | `--list-test-cases \| tail -1` |
+| … in **both** fresh reduced configurations | — | **1335** each, `BT1` and `BS1` present in both | same, in `build/tools-off-3.2.4` / `build/reflect-off-3.2.4` |
+| `aero_editor_imgui_test` | 90 | **98** | same |
+| `aero_tests` | 415 | **415** | same |
+| `aero_scene_serialize_test` / `aero_editor_inspector_test` | 23 / 22 | **23 / 22** | same |
+| `.service(` call sites in `model_import_session_test.cpp` | 42 | **61**, none of the original 42 edited | `grep -c '\.service('` |
+
+New case ids, all re-measured against the tree at the moment of writing: `BT1`–`BT62` and `BS1`–`BS47`
+(two new TUs), `TF33`–`TF37`, `MS34`–`MS41` plus `MS32`'s rewrite, `MI133`, `SS37`–`SS40`, `I69`–`I76`.
+`MS41`, `BS46` and `BS47` are **not in the plan** — they are what the sabotage matrix forced.
+
+#### What this task did NOT verify, in those words
+
+- **Any Blender other than 5.2.0 LTS on macOS/arm64.** The version floor, the refusal below 2.80 and
+  the `Warned` band are pure functions of a string and are fully tested as such; *"a Blender 2.83
+  actually exports a usable GLB with these kwargs"* is unverified by execution and will stay so.
+- **Every Windows and Linux well-known install location.** They are written from documented installer
+  layouts and are data, not logic — three independent routes (`Locate…`, `AERO_BLENDER_PATH`, `PATH`)
+  bypass them, so the list going stale **degrades, it does not break**.
+- **SDL's Windows argument quoting.** A path with a space and non-ASCII characters was measured working
+  end to end on macOS; the Windows half is **carried, not checked**.
+- **That the redirect `SDL_IOStream` being left open would leak on macOS.** It does not — measured,
+  and recorded above as S6's verdict rather than assumed either way.
+- **The panel's rendered appearance.** `I69`–`I76` prove the draw path runs without an ImGui assert and
+  that the request channels drain; no tier in this tree reads rendered ImGui text.
