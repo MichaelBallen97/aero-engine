@@ -560,8 +560,10 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
     }
 
     switch (blender.state()) {
-        case BlenderState::Unknown:
         case BlenderState::Probing:
+            // A CHILD PROCESS is in flight and there is nothing to offer until it answers. This arm is
+            // for Probing ALONE -- see the fall-through group below for why Unknown is not the same
+            // thing (code-review B1).
             ImGui::TextDisabled("Checking the Blender version...");
             return;
         case BlenderState::ToolMissing:
@@ -601,6 +603,19 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
                 cancelRequested = true;
             }
             return;
+        // code-review B1: `Unknown` is "NOTHING HAS RESOLVED", which is NOT "a probe is running" -- and
+        // on a pure CACHE HIT it is the state for the whole session, permanently: resolution is lazy and
+        // fires only on a cache MISS (§A-9), so nothing ever leaves Unknown. Grouping it with Probing
+        // showed a settled, correctly imported .blend one false sentence ("Checking the Blender
+        // version...") and NO controls at all -- no `Re-import`, no `Re-detect`, no `Locate...`, no log
+        // node -- with no UI path to force a re-conversion from the task's own headline flow. It belongs
+        // here, where the SESSION's own state decides what to offer.
+        //
+        // What a `Re-import` from here does, stated because it is one click longer than it looks: the
+        // request reaches a service that is not yet resolved, so it is DROPPED (AC-30's rule, unchanged)
+        // and the session drops to NeedsConversion -- which is exactly the condition EditorApp::tick()'s
+        // lazy resolve watches for. The next frame resolves and probes, and the button then converts.
+        case BlenderState::Unknown:
         case BlenderState::Ready:
         case BlenderState::Converted:
         case BlenderState::Failed:

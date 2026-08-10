@@ -15,10 +15,12 @@
 // presentation is unproven on the lavapipe/WARP lanes; since every tick() below asserts the frame
 // presented, we take the proven visible path. The brief flash matches rhi_swapchain_test.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <aero/core/content_hash.hpp>     // task 3.2.4, I78: the cache hit's own settings fingerprint
 #include <aero/core/log.hpp>              // AERO_LOG_* + initLogging (cases B and C)
 #include <aero/editor/asset_cache.hpp>    // task 3.1.2: ImportChange, ASSET_CACHE_DIR_NAME/FILE_NAME/
                                           // GITIGNORE_NAME -- I31's index-path/gitignore-path assertions
 #include <aero/editor/asset_meta.hpp>     // task 3.1.3: writeMetaText, for I39/I41's orphan fixtures
+#include <aero/editor/blender_tool.hpp>   // task 3.2.4: ExportProvenance + BLENDER_EXPORT_DIR_NAME (I78)
 #include <aero/editor/command_stack.hpp>  // task 2.4.1
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
@@ -56,6 +58,7 @@
 #include <fstream>
 #include <memory>  // task 2.4.1: std::make_unique<TransformCommand>
 #include <optional>
+#include <span>  // task 3.2.4, I78: std::as_bytes over the fingerprint's own text
 #include <sstream>
 #include <string>
 #include <string_view>   // I30: AERO_EDITOR_SRC_DIR's literal-concatenation target
@@ -5584,6 +5587,31 @@ namespace {
 // that is the whole of their interaction with the editor.
 constexpr std::string_view OPAQUE_BLEND_TEXT = "not a real .blend, and nothing here ever parses one";
 
+// model_import_test.cpp's own buildGlb, COPIED rather than shared (this suite's standing rule:
+// scaffolding is copied, the ASSERTION is shared). AC-42: the GLB is assembled here, in memory, from a
+// JSON string -- NO BINARY FILE IS COMMITTED TO THE REPOSITORY.
+[[nodiscard]] std::string blenderTestGlb() {
+    std::string paddedJson(MINIMAL_GLTF_TEXT);
+    while (paddedJson.size() % 4U != 0U) {
+        paddedJson += ' ';  // JSON chunk padding is SPACE, per the GLB container spec
+    }
+    const auto jsonChunkLength = static_cast<std::uint32_t>(paddedJson.size());
+    const auto appendU32 = [](std::string& out, std::uint32_t value) {
+        out.push_back(static_cast<char>(value & 0xFFU));
+        out.push_back(static_cast<char>((value >> 8U) & 0xFFU));
+        out.push_back(static_cast<char>((value >> 16U) & 0xFFU));
+        out.push_back(static_cast<char>((value >> 24U) & 0xFFU));
+    };
+    std::string glb;
+    glb += "glTF";       // magic
+    appendU32(glb, 2U);  // version
+    appendU32(glb, 12U + 8U + jsonChunkLength);
+    appendU32(glb, jsonChunkLength);
+    appendU32(glb, 0x4E4F534AU);  // 'JSON'
+    glb += paddedJson;
+    return glb;
+}
+
 }  // namespace
 
 TEST_CASE(
@@ -6027,4 +6055,192 @@ TEST_CASE(
     CHECK(app->tick() == false);
     app.reset();
     std::filesystem::remove(std::filesystem::path(prefsPath), ec);
+}
+
+// ---- I77-I80: the code-review round's own cases ---------------------------------------------------
+namespace {
+
+// The comment-stripped code lines of a file under editor/src -- I73/I74/I75's own reader, lifted into
+// one helper now that a fourth case needs it. Comments are stripped because every gate in this task
+// reasons about CODE, and a citation in prose must never be able to satisfy or break one.
+[[nodiscard]] std::vector<std::string> editorSourceCodeLines(std::string_view absolutePathUtf8) {
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(absolutePathUtf8);
+    REQUIRE(read.text.has_value());
+    std::vector<std::string> code;
+    std::string_view remaining = *read.text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        const std::string_view line = newline == std::string_view::npos ? remaining : remaining.substr(0, newline);
+        const std::size_t commentStart = line.find("//");
+        code.emplace_back(commentStart == std::string_view::npos ? line : line.substr(0, commentStart));
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        remaining.remove_prefix(newline + 1U);
+    }
+    return code;
+}
+
+[[nodiscard]] std::size_t soleLineContaining(const std::vector<std::string>& code, std::string_view needle) {
+    std::size_t hits = 0;
+    std::size_t at = code.size();
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find(needle) != std::string::npos) {
+            ++hits;
+            at = i;
+        }
+    }
+    CAPTURE(needle);
+    REQUIRE(hits == 1);
+    return at;
+}
+
+// The first non-blank code line at or after `from` -- so an assertion about "what follows this case
+// label" is not defeated by a blank line or a re-wrap.
+[[nodiscard]] std::size_t nextCodeLine(const std::vector<std::string>& code, std::size_t from) {
+    for (std::size_t i = from; i < code.size(); ++i) {
+        if (code[i].find_first_not_of(" \t\r") != std::string::npos) {
+            return i;
+        }
+    }
+    return code.size();
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: the Blender section treats Unknown as NOT PROBED -- it falls through to the controls "
+    "(task 3.2.4, I77, code-review B1)") {
+    // WHY A SOURCE-TEXT PROOF: no tier in this tree reads rendered ImGui text, so "the panel offered a
+    // Re-import" is not observable at runtime -- I78 below can only prove the frame drew without an
+    // assert. What IS mechanically decidable is the SHAPE of the decision, and the defect was exactly a
+    // shape: `Unknown` shared `Probing`'s arm, which returns before every control. On a pure CACHE HIT
+    // nothing ever resolves (§A-9's lazy resolve), so Unknown is the state for the WHOLE session and a
+    // correctly imported .blend showed one false sentence and no buttons at all.
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/import_details_panel.cpp";
+    const std::vector<std::string> code = editorSourceCodeLines(SOURCE_PATH);
+
+    // The Unknown label FALLS THROUGH to another case, and specifically NOT to Probing's.
+    const std::size_t unknownAt = soleLineContaining(code, "case BlenderState::Unknown:");
+    const std::size_t afterUnknown = nextCodeLine(code, unknownAt + 1U);
+    REQUIRE(afterUnknown != code.size());
+    CHECK(code[afterUnknown].find("case BlenderState::") != std::string::npos);
+    CHECK(code[afterUnknown].find("case BlenderState::Probing:") == std::string::npos);
+
+    // THE ASSERTION THAT ACTUALLY DISCRIMINATES, and the weaker "it falls through to some case" above
+    // does not: collect the CONTIGUOUS case labels immediately above the probing message -- that is its
+    // arm, precisely -- and require it to be Probing ALONE. Re-grouping Unknown with Probing (the shape
+    // that shipped) puts two labels there and reddens here. Blank lines are skipped because the reader
+    // above strips comments to empty ones.
+    const std::size_t messageAt = soleLineContaining(code, "Checking the Blender version");
+    std::vector<std::string> arm;
+    for (std::size_t i = messageAt; i > 0; --i) {
+        const std::string& line = code[i - 1U];
+        if (line.find_first_not_of(" \t\r") == std::string::npos) {
+            continue;
+        }
+        if (line.find("case BlenderState::") == std::string::npos) {
+            break;
+        }
+        arm.push_back(line);
+    }
+    REQUIRE(arm.size() == 1);
+    CHECK(arm[0].find("case BlenderState::Probing:") != std::string::npos);
+}
+
+TEST_CASE(
+    "editor: a CACHE HIT on a .blend draws real frames with the service never resolved, and spawns "
+    "nothing (task 3.2.4, I78, AC-22 through the panel, code-review B1)") {
+    // The task's HEADLINE FLOW, driven through real frames for the first time: every prior GPU-tier
+    // .blend case is a cache MISS. This is the state in which the panel used to say "Checking the
+    // Blender version..." forever.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender cache hit i78", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string blendPath = created.root + "/assets/statue.blend";
+    REQUIRE(engine::editor::writeTextFileAtomic(blendPath, OPAQUE_BLEND_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = uniqueToolPrefsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // the initial scan MINTS the sidecar, which is where the GUID comes from
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Import Details");
+
+    // Stage the cache hit from OUTSIDE the app, exactly as a previous session would have left it: the
+    // GUID comes from the sidecar the scan just wrote, and the source hash from the same primitive the
+    // scan itself uses.
+    const engine::editor::FileReadResult metaText = engine::editor::readTextFile(blendPath + ".meta");
+    REQUIRE(metaText.text.has_value());
+    const engine::editor::MetaParseResult meta = engine::editor::parseMeta(*metaText.text);
+    REQUIRE(meta.guid.has_value());
+    const engine::editor::FileHashResult sourceHash = engine::editor::hashFileContents(blendPath);
+    REQUIRE(sourceHash.hash.has_value());
+
+    const std::string exportDir = created.root + '/' + std::string(engine::editor::ASSET_CACHE_DIR_NAME) + '/' +
+                                  std::string(engine::editor::BLENDER_EXPORT_DIR_NAME);
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(exportDir), ec);
+    REQUIRE_FALSE(ec);
+    engine::editor::ExportProvenance record;
+    record.guid = *meta.guid;
+    record.sourcePath = "assets/statue.blend";
+    record.blenderPath = "/nonexistent/blender";
+    record.blenderVersion = "4.2.1";
+    record.scriptVersion = engine::editor::BLENDER_SCRIPT_VERSION;
+    // The fingerprint RE-DERIVED from the two public primitives rather than by calling the production
+    // helper, so a change to what goes into it reddens this case instead of moving with it.
+    const std::string defaultSettingsMeta =
+        engine::editor::writeMetaText(engine::Guid{}, engine::editor::ImportSettings{});
+    record.settingsFingerprint =
+        engine::formatContentHash(engine::hashBytes(std::as_bytes(std::span<const char>(defaultSettingsMeta))));
+    record.sourceHash = *sourceHash.hash;
+    const std::string guidText = engine::formatGuid(*meta.guid);
+    REQUIRE(engine::editor::writeTextFileAtomic(exportDir + '/' + guidText + ".glb", blenderTestGlb()).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(exportDir + '/' + guidText + ".json",
+                                                engine::editor::writeExportProvenanceText(record))
+                .empty());
+
+    app->requestAssetBrowserSelectEntry("statue.blend");
+    REQUIRE(app->tick());  // drains SelectEntry
+    REQUIRE(app->tick());  // reconcile -> setTarget -> service() -> the CACHE HIT
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    // Nothing resolved, nothing probed, nothing spawned -- AC-22, now through a real frame.
+    CHECK(app->blenderState() == static_cast<int>(engine::editor::BlenderState::Unknown));
+    CHECK(app->blenderExportRunCount() == 0);
+    CHECK(app->blenderProbeRunCount() == 0);
+    CHECK(app->presentedLastFrame());
+
+    // Five more frames in the SAME state: the section draws every one of them, and the count of imports
+    // and spawns is unchanged. Before the fix these frames rendered one false sentence and no controls.
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->blenderExportRunCount() == 0);
+    CHECK(app->blenderProbeRunCount() == 0);
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }
