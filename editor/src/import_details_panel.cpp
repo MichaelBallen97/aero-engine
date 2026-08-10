@@ -509,7 +509,13 @@ void drawBlenderLog(const BlenderService& blender, std::string& scratch) {
     if (blender.logPath().empty()) {
         return;
     }
-    if (ImGui::TreeNode("Blender log")) {
+    // DEFAULT-OPEN, for this file's own stated reason (code-review NOTE 11): "a section that defaulted
+    // CLOSED would be unreachable by this project's entire GPU-tier testing methodology", because no
+    // tier here can synthesize a click. This node shipped closed, so everything inside it -- including
+    // the refused-by-cap branch, which is the one that formats a byte count and an absolute path --
+    // never executed in any test, on any lane, under any sanitizer. It is also the better default: a
+    // failure the user is reading about is exactly when the log matters.
+    if (ImGui::TreeNodeEx("Blender log", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (blender.logRefusedByCap()) {
             // NEVER a partial read presented as the whole log (AC-35): the byte count and the absolute
             // path, so the user can open it themselves.

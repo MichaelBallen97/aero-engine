@@ -268,6 +268,28 @@ void makeFakeSlowExportTool(std::string_view absolutePathUtf8, std::string_view 
     writeExecutable(absolutePathUtf8, script);
 }
 
+// A fake export that writes an OVERSIZED artifact and reports success -- AC-34's "over
+// MAX_ARTIFACT_BYTES after a successful run" arm, which nothing reached before (code-review NOTE 10).
+// `dd ... bs=1 count=0 seek=N` creates a SPARSE file: N bytes of apparent size, zero blocks allocated
+// and no time spent, which is exactly what makes a 256 MiB fixture affordable in a unit test. The size
+// is what readFileBytes decides from, BEFORE opening the file.
+void makeFakeOversizeExportTool(std::string_view absolutePathUtf8, std::uint64_t artifactBytes,
+                                std::string_view statusJson, int exitCode) {
+    std::string script(FAKE_VERSION_BRANCH);
+    script += "dd if=/dev/zero of=\"${12}\" bs=1 count=0 seek=";
+    script += std::to_string(artifactBytes);
+    script += " 2>/dev/null\n";
+    if (!statusJson.empty()) {
+        script += "printf '%s' '";
+        script += statusJson;
+        script += "' > \"${14}\"\n";
+    }
+    script += "exit ";
+    script += std::to_string(exitCode);
+    script += "\n";
+    writeExecutable(absolutePathUtf8, script);
+}
+
 // task 3.2.4, the session cases: a fake export that COPIES a real, pre-staged GLB into place. The
 // `printf '%s'` form above cannot be reused for a GLB -- a GLB is BINARY and carries NUL bytes, which
 // no shell single-quoted string can hold -- so the artifact is written by the TEST, in C++, with
@@ -1520,8 +1542,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "blender_service: an artifact above MAX_ARTIFACT_BYTES is refused from its SIZE ALONE, never read "
-    "(BS42, task 3.2.4 AC-35/E12)") {
+    "blender_service: a CACHED artifact above MAX_ARTIFACT_BYTES is refused from its SIZE ALONE and is "
+    "a MISS, never ArtifactUnusable (BS42, task 3.2.4 AC-35/E12)") {
+    // SHARPENED by the code-review round rather than changed: this case stages a cache HIT, so the
+    // refusal happens on the cache-probe path, where a miss is the whole answer and no run exists to
+    // declare unusable. AC-34's own "over MAX_ARTIFACT_BYTES" arm lives on the CONVERTED path and is
+    // BS53's; §T mapped AC-34 to this case and BS43, and only BS43 ever reached it.
     const TempDir tmp;
     const BlendProject project = makeBlendProject(tmp, 313);
     stageCacheHit(project);
@@ -2014,4 +2040,57 @@ TEST_CASE(
     CHECK(session.state() == SessionState::ConversionFailed);
     CHECK(session.blender().exportRunCount() == 0);
     CHECK_FALSE(engine::editor::fileExists(project.provenancePath()));
+}
+
+TEST_CASE(
+    "blender_service: an OVERSIZED artifact after a SUCCESSFUL run is ArtifactUnusable, not a silent "
+    "miss (BS53, task 3.2.4 AC-34, code-review NOTE 10)") {
+#if defined(_WIN32)
+    MESSAGE("skipped on Windows: no scripted fake can produce exit 0 plus a status file for Blender's argv (see BS14)");
+#else
+    // AC-34 names FOUR ways an artifact can be unusable after a successful run -- absent, empty, over
+    // MAX_ARTIFACT_BYTES, or unparseable -- and only the last had a case. The size arm is the one that
+    // matters most in practice, because it is the only one reachable from a Blender that did its job
+    // perfectly: a genuinely huge scene.
+    const TempDir tmp;
+    const BlendProject project = makeBlendProject(tmp, 325);
+    const std::string fake = tmp.join("blender");
+    makeFakeOversizeExportTool(fake, engine::editor::MAX_ARTIFACT_BYTES + 1U,
+                               R"({"ok": true, "blender": "5.2.0 LTS", "error": "", "bytes": 1})", 0);
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", project.db.generation());
+    session.service(project.assetsRoot, project.db);
+    session.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(fake), project.exportDir);
+    sessionUntilBlenderSettled(session, project.assetsRoot, project.db);
+    REQUIRE(session.blender().state() == BlenderState::Ready);
+
+    session.requestConversion();
+    for (int i = 0; i < MAX_POLL_ITERATIONS && session.state() != SessionState::Imported &&
+                    session.state() != SessionState::ConversionFailed;
+         ++i) {
+        session.service(project.assetsRoot, project.db, WAIT_DT);
+        std::this_thread::yield();
+    }
+    REQUIRE(session.blender().exportRunCount() == 1);  // the run really happened, and really succeeded
+
+    // The run said ok: true, so the SERVICE reached Converted -- and the SESSION is what discovers the
+    // artifact is unusable, because only the session reads it (§A-11).
+    CHECK(session.state() == SessionState::ConversionFailed);
+    CHECK(session.blender().state() == BlenderState::Failed);
+    CHECK(session.blender().failure() == BlenderFailure::ArtifactUnusable);
+    CHECK_FALSE(session.blender().message().empty());
+    CHECK(session.blender().message().find(engine::editor::importStatusLabel(session.result().status)) !=
+          std::string::npos);
+    // The message NAMES the limit, so the user is told the size rather than "it failed to parse".
+    CHECK(session.blender().message().find("limit") != std::string::npos);
+    // Refused from file_size ALONE -- 256 MiB was never read into memory. `size` is filled even on
+    // refusal, which is what makes this assertable at all.
+    CHECK(session.fileSizeBytes() == engine::editor::MAX_ARTIFACT_BYTES + 1U);
+    // AC-24: no VALID provenance record is left, so the next selection re-converts rather than serving
+    // an artifact nothing can read.
+    const std::string atPath = readAll(project.provenancePath());
+    REQUIRE_FALSE(atPath.empty());
+    CHECK_FALSE(engine::editor::parseExportProvenance(atPath).has_value());
+#endif
 }

@@ -6163,6 +6163,14 @@ TEST_CASE(
     }
     CHECK(namesTheRecord);
     CHECK_FALSE(namesTheInstalledBlender);
+
+    // code-review NOTE 11: the Blender log node is DEFAULT-OPEN, and that is what makes anything inside
+    // it reachable by a test at all -- no tier in this tree can click a TreeNode, which is this file's
+    // own stated reason for the panel's six sections defaulting open. I80 drives the refused-by-cap
+    // branch through a real frame; it can only do so while this flag is here, and it cannot itself tell
+    // that the flag went away.
+    const std::size_t logNodeAt = soleLineContaining(code, R"("Blender log")");
+    CHECK(code[logNodeAt].find("ImGuiTreeNodeFlags_DefaultOpen") != std::string::npos);
 }
 
 TEST_CASE(
@@ -6327,4 +6335,97 @@ TEST_CASE(
     CHECK(app->tick() == false);
     app.reset();
     std::filesystem::remove(std::filesystem::path(prefsPath), ec);
+}
+
+TEST_CASE(
+    "editor: a real frame renders the REFUSED-BY-CAP log branch, byte count and path instead of "
+    "contents (task 3.2.4, I80, AC-35, code-review NOTE 11)") {
+#if defined(_WIN32)
+    MESSAGE("skipped on Windows: no scripted fake can produce a chatty child for Blender's argv (see BS14)");
+#else
+    // The branch this drives had NEVER executed anywhere: the log node shipped default-CLOSED, and no
+    // tier in this tree can synthesize a click, so its std::format over a byte count and an absolute
+    // path was unreachable under every sanitizer on every lane. The node is default-open now, for the
+    // same reason the panel's six sections are.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender big log i80", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
+
+    // A fake Blender that answers --version and then writes MORE THAN MAX_TOOL_LOG_BYTES to stdout,
+    // which the redirect sends straight to <guid>.log. `dd` is the portable way to produce a known
+    // number of bytes without a loop; the content is irrelevant, only the size is.
+    const std::string fake = created.root + "/fake-blender";
+    {
+        std::ofstream out(std::filesystem::path(fake), std::ios::binary | std::ios::trunc);
+        REQUIRE(static_cast<bool>(out));
+        out << "#!/bin/sh\n"
+               "if [ \"$1\" = \"--version\" ]; then printf '%s\\n' 'Blender 5.2.0 LTS'; exit 0; fi\n"
+               "dd if=/dev/zero bs=1024 count=400 2>/dev/null\n"
+               "exit 1\n";
+    }
+    std::error_code ec;
+    std::filesystem::permissions(std::filesystem::path(fake), std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::add, ec);
+    REQUIRE_FALSE(ec);
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = uniqueToolPrefsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Import Details");
+
+    app->requestAssetBrowserSelectEntry("statue.blend");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    app->requestBlenderLocate(fake);
+    REQUIRE(app->tick());
+    for (int i = 0; i < 20000 && app->blenderState() == static_cast<int>(engine::editor::BlenderState::Probing); ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->blenderState() == static_cast<int>(engine::editor::BlenderState::Ready));
+
+    app->requestBlenderConvert();
+    for (int i = 0;
+         i < 20000 && app->modelImportState() != static_cast<int>(engine::editor::SessionState::ConversionFailed);
+         ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->modelImportState() == static_cast<int>(engine::editor::SessionState::ConversionFailed));
+    REQUIRE(app->blenderExportRunCount() == 1);
+
+    // THE ASSERTION THAT MAKES THE FRAMES BELOW NON-VACUOUS: the log really is over the cap, so the
+    // branch that draws a byte count and a path -- rather than 400 KiB of contents -- is the one that
+    // runs. Without it, "a frame drew" would say nothing about WHICH branch drew.
+    CHECK(app->blenderLogRefusedByCap());
+    REQUIRE(app->tick());  // a real frame IN that branch: no ImGui assert, no format fault, no overread
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+#endif
 }

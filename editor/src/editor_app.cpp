@@ -902,6 +902,7 @@ int EditorApp::blenderState() const noexcept { return static_cast<int>(importSes
 std::size_t EditorApp::blenderExportRunCount() const noexcept { return importSession.blender().exportRunCount(); }
 std::size_t EditorApp::blenderProbeRunCount() const noexcept { return importSession.blender().probeRunCount(); }
 std::string_view EditorApp::blenderBinaryPath() const noexcept { return importSession.blender().binaryPath(); }
+bool EditorApp::blenderLogRefusedByCap() const noexcept { return importSession.blender().logRefusedByCap(); }
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }

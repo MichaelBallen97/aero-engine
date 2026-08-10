@@ -395,6 +395,9 @@ public:
     [[nodiscard]] std::size_t blenderExportRunCount() const noexcept;
     [[nodiscard]] std::size_t blenderProbeRunCount() const noexcept;
     [[nodiscard]] std::string_view blenderBinaryPath() const noexcept;
+    // code-review NOTE 11: the ONE observable that makes a case driving the panel's refused-by-cap log
+    // branch non-vacuous -- without it, "a frame drew" proves nothing about WHICH branch drew.
+    [[nodiscard]] bool blenderLogRefusedByCap() const noexcept;
 
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
