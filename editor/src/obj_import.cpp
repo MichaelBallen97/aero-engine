@@ -781,6 +781,19 @@ struct SurvivingFace {
                 cursor += faceVertexCount;
                 continue;
             }
+            // code-review round, gap 9: `shape.mesh.indices[cursor + k]` below is the one access in this
+            // loop that relied on an unchecked third-party invariant -- verified safe for v2.0.0rc13 by
+            // reading every push site in tinyobjloader's exportGroupsToShape (indices and
+            // num_face_vertices are kept in lockstep), but this file's own rule is EVERY index is
+            // range-checked by US before any array access, and a library bump could break that invariant
+            // without warning. Not reachable by any fixture this suite can construct against the pinned
+            // library version (confirmed by that same source reading); defence for a future bump,
+            // matching the D21 #error guard's own posture -- documented rather than claimed as covered.
+            if (cursor + 3 > shape.mesh.indices.size()) {
+                addWarning(result, "mesh '" + shape.name + "' face " + std::to_string(f) +
+                                       ": index data ended unexpectedly, dropped");
+                break;
+            }
             bool faceValid = true;
             for (unsigned int k = 0; k < 3; ++k) {
                 const tinyobj::index_t& idx = shape.mesh.indices[cursor + k];
