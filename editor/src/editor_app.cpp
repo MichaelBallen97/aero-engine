@@ -291,6 +291,11 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // root (which makes D10's reconcile a startup no-op rather than a one-frame correction).
     app.recentsPath =
         config.recentProjectsPath.empty() ? defaultRecentProjectsPath() : std::string(config.recentProjectsPath);
+    // task 3.2.4 (D13): the SAME shape, one line down, and resolved here for the same reason -- one
+    // resolution, one member, no call site able to fall through to the real machine-wide file. Nothing
+    // CONSUMES it yet; that is deliberate, so the seam exists before anything can accidentally bypass
+    // it (§S step 3).
+    app.toolPrefsPath = config.toolPrefsPath.empty() ? defaultToolPrefsPath() : std::string(config.toolPrefsPath);
     if (config.restoreLastProject) {
         app.recents = readRecentProjects(app.recentsPath);  // D15: NOT read at all when false (AC-34/E23)
     }
@@ -626,6 +631,71 @@ bool EditorApp::tick() {
                 AERO_LOG_WARN("assets: could not save import settings for '{}' -- {}", importSession.target(), error);
             }
         }
+        // task 3.2.4: the SIXTH occupant of this block. F9, a SIXTH application: EVERY one-shot is
+        // drained as its OWN STATEMENT, unconditionally, BEFORE it is inspected. A `panelX || editorX`
+        // expression would short-circuit past the panel's drain and strand the request until the next
+        // frame -- I30 is that bug's mechanical proof and this tree has shipped it once.
+        const bool panelConvert = importDetailsPanel != nullptr && importDetailsPanel->takeConvertRequest();
+        const bool panelCancel = importDetailsPanel != nullptr && importDetailsPanel->takeCancelRequest();
+        const bool panelLocate = importDetailsPanel != nullptr && importDetailsPanel->takeLocateRequest();
+        const bool panelRedetect = importDetailsPanel != nullptr && importDetailsPanel->takeRedetectRequest();
+        const bool editorConvert = requestedBlenderConvert;
+        requestedBlenderConvert = false;
+        const bool editorCancel = requestedBlenderCancel;
+        requestedBlenderCancel = false;
+        const bool editorRedetect = requestedBlenderRedetect;
+        requestedBlenderRedetect = false;
+        const std::string editorLocate = std::move(requestedBlenderLocate);
+        requestedBlenderLocate.clear();
+        // The DIALOG's own answer, delivered by applyDialogResult EARLIER IN THIS SAME TICK -- so a
+        // picked path is applied in the tick it arrives, never one frame late.
+        const std::string dialogLocate = std::move(fileFlow.pickedBlenderPath);
+        fileFlow.pickedBlenderPath.clear();
+
+        if (panelConvert || editorConvert) {
+            importSession.requestConversion();
+        }
+        if (panelCancel || editorCancel) {
+            importSession.cancelConversion();
+        }
+        if (!editorLocate.empty()) {
+            applyBlenderOverride(editorLocate);
+        }
+        if (!dialogLocate.empty()) {
+            applyBlenderOverride(dialogLocate);
+        }
+        if (panelRedetect || editorRedetect) {
+            applyBlenderOverride("");  // clears the override and re-resolves from scratch
+        }
+        if (panelLocate && dialogChannel != nullptr && fileFlow.dialog == DialogKind::None) {
+            // The scene_session.cpp guard shape verbatim: DialogChannel holds ONE slot, so a second
+            // dialog launched while one is in flight would have its result silently overwrite the
+            // first's.
+            fileFlow.dialog = DialogKind::BlenderBinary;
+            launchLocateBlenderDialog(dialogChannel, nativeWindowHandle(window), importSession.blender().binaryPath());
+        }
+        // §A-9: LAZY, and on NEED rather than on selection. A pure cache hit never reaches here, so it
+        // reads no environment variable, stats no candidate path and spawns nothing (AC-22).
+        if (importSession.state() == SessionState::NeedsConversion &&
+            importSession.blender().state() == BlenderState::Unknown && importSession.targetHasIdentity()) {
+            resolveBlender();
+        }
+        // The two remaining log lines, on a TRANSITION rather than per frame -- a Converting session
+        // logging every frame would be a hundred lines a second. A cache HIT logs nothing at all: it
+        // must be as silent as a steady-state scan (INV-C5's posture, applied here).
+        const int blenderSessionState = static_cast<int>(importSession.state());
+        if (blenderSessionState != lastBlenderSessionState) {
+            if (importSession.state() == SessionState::Converting) {
+                AERO_LOG_INFO("assets: converting '{}' with Blender {}", importSession.target(),
+                              importSession.blender().versionString().empty()
+                                  ? std::string("(version unknown)")
+                                  : importSession.blender().versionString());
+            } else if (importSession.state() == SessionState::ConversionFailed) {
+                AERO_LOG_WARN("assets: the Blender conversion of '{}' failed -- {} (log: '{}')", importSession.target(),
+                              importSession.blender().message(), importSession.blender().logPath());
+            }
+            lastBlenderSessionState = blenderSessionState;
+        }
     }
     if (window != nullptr) {
         std::string title = session.windowTitle(!commandStack.isClean(), project.name());
@@ -689,7 +759,11 @@ bool EditorApp::tick() {
     // NEVER CALL THIS FROM onDraw(). Like 3.1.3's BLOCKING-1 and 3.1.4's D9, NO AUTOMATED TIER CAN SEE
     // THE GENERAL-CASE VIOLATION -- I60 reads this file's own source text, and manual validation row 8
     // is the only behavioural cover. GET IT RIGHT BY CONSTRUCTION.
-    importSession.service(project.assetsRoot(), assetDatabase);
+    // task 3.2.4: ONE new argument, and this call does NOT move. `frameClock.deltaSeconds()` is this
+    // frame's spike-clamped delta -- the same value PanelContext already carries -- and it is the only
+    // clock the Blender state machine ever sees: its timeout and its force-kill escalation are both
+    // driven by injected time, never by a wall clock inside the service (AC-18).
+    importSession.service(project.assetsRoot(), assetDatabase, frameClock.deltaSeconds());
     if (importDetailsPanel != nullptr) {
         importDetailsPanel->setSession(&importSession);
     }
@@ -822,6 +896,14 @@ std::size_t EditorApp::modelImportCount() const noexcept { return importSession.
 int EditorApp::modelImportState() const noexcept { return static_cast<int>(importSession.state()); }
 std::string_view EditorApp::modelImportTarget() const noexcept { return importSession.target(); }
 
+// task 3.2.4: the same black-box shape a second time -- an int, so BlenderState itself never reaches
+// editor_app.hpp's surface.
+int EditorApp::blenderState() const noexcept { return static_cast<int>(importSession.blender().state()); }
+std::size_t EditorApp::blenderExportRunCount() const noexcept { return importSession.blender().exportRunCount(); }
+std::size_t EditorApp::blenderProbeRunCount() const noexcept { return importSession.blender().probeRunCount(); }
+std::string_view EditorApp::blenderBinaryPath() const noexcept { return importSession.blender().binaryPath(); }
+bool EditorApp::blenderLogRefusedByCap() const noexcept { return importSession.blender().logRefusedByCap(); }
+
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
 void EditorApp::requestUndo() noexcept { undoRequested = true; }
@@ -921,6 +1003,51 @@ void EditorApp::requestAssetWatchToggle(bool on) noexcept { assetWatcher.setEnab
 // no write may happen from inside onDraw()).
 void EditorApp::requestModelImportSettings(ImportSettings s) noexcept { requestedImportSettings = s; }
 void EditorApp::requestModelImportApply() noexcept { requestedImportApply = true; }
+
+// task 3.2.4, the requestAssetBrowserSelectEntry shape a sixth time: each records EXACTLY what the
+// corresponding panel button records, and nothing more. Applied on the NEXT tick's reconcile.
+void EditorApp::requestBlenderConvert() noexcept { requestedBlenderConvert = true; }
+void EditorApp::requestBlenderCancel() noexcept { requestedBlenderCancel = true; }
+void EditorApp::requestBlenderRedetect() noexcept { requestedBlenderRedetect = true; }
+void EditorApp::requestBlenderLocate(std::string_view absolutePathUtf8) { requestedBlenderLocate = absolutePathUtf8; }
+
+// THE ONLY PLACE THIS TASK LOGS (INV-B10, a ninth application). blender_tool.cpp, blender_process.cpp
+// and blender_service.cpp are all log-free by construction; every status they hold is RETURNED or
+// exposed as an accessor, and the three lines this task adds all originate here.
+void EditorApp::resolveBlender() {
+    // code-review NOTE 6: with NO project open the database's root is EMPTY, and this path used to be
+    // built by concatenation regardless -- yielding "/Library/BlenderExports", an absolute path at the
+    // filesystem root that the probe's own directory creation would later try to create. Harmless on a
+    // POSIX machine, a real drive-root directory on Windows. Deferring is the honest answer: there is
+    // nowhere to derive anything yet, the state stays Unknown, and Unknown is EXACTLY the condition
+    // tick()'s lazy resolve re-tests once a project is open. The caller has already written the
+    // tool-preferences file when this came from Locate..., so the user's choice is still remembered --
+    // it is applied by the resolve that follows the next project open.
+    const std::string exportDir = blenderExportDir(assetDatabase.projectRoot());
+    if (exportDir.empty()) {
+        return;
+    }
+    bool prefsCorrupt = false;
+    const HostOs host = currentHostOs();
+    const BlenderEnv env = readBlenderEnv(host, toolPrefsPath, prefsCorrupt);
+    if (prefsCorrupt) {
+        // A MISSING preferences file is empty preferences SILENTLY (AC-8); only a file that EXISTS and
+        // does not parse gets this line, or every machine with no chosen Blender would be warned on
+        // every resolve.
+        AERO_LOG_WARN("editor: tool preferences '{}' are corrupt or unsupported; ignoring them", toolPrefsPath);
+    }
+    importSession.blenderMutable().resolve(host, env, exportDir);
+}
+
+void EditorApp::applyBlenderOverride(std::string_view absolutePathUtf8) {
+    // "" CLEARS the override -- that is exactly what `Re-detect` does, and it is why this is one
+    // function rather than two.
+    if (const std::string reason = importSession.blenderMutable().setOverridePath(absolutePathUtf8, toolPrefsPath);
+        !reason.empty()) {
+        AERO_LOG_WARN("editor: could not save the Blender path to '{}' -- {}", toolPrefsPath, reason);
+    }
+    resolveBlender();  // setOverridePath resets the service to Unknown; re-resolve against the new value
+}
 
 // code-review BLOCKING-1 test seam: stores the id for tick()'s ShellUiState construction to carry --
 // see ShellUiState::focusPanelId's own comment for why this exists and drawShellUi's own new block for

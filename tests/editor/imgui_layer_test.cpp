@@ -15,10 +15,12 @@
 // presentation is unproven on the lavapipe/WARP lanes; since every tick() below asserts the frame
 // presented, we take the proven visible path. The brief flash matches rhi_swapchain_test.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <aero/core/content_hash.hpp>     // task 3.2.4, I78: the cache hit's own settings fingerprint
 #include <aero/core/log.hpp>              // AERO_LOG_* + initLogging (cases B and C)
 #include <aero/editor/asset_cache.hpp>    // task 3.1.2: ImportChange, ASSET_CACHE_DIR_NAME/FILE_NAME/
                                           // GITIGNORE_NAME -- I31's index-path/gitignore-path assertions
 #include <aero/editor/asset_meta.hpp>     // task 3.1.3: writeMetaText, for I39/I41's orphan fixtures
+#include <aero/editor/blender_tool.hpp>   // task 3.2.4: ExportProvenance + BLENDER_EXPORT_DIR_NAME (I78)
 #include <aero/editor/command_stack.hpp>  // task 2.4.1
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
@@ -56,6 +58,7 @@
 #include <fstream>
 #include <memory>  // task 2.4.1: std::make_unique<TransformCommand>
 #include <optional>
+#include <span>  // task 3.2.4, I78: std::as_bytes over the fingerprint's own text
 #include <sstream>
 #include <string>
 #include <string_view>   // I30: AERO_EDITOR_SRC_DIR's literal-concatenation target
@@ -5560,4 +5563,869 @@ TEST_CASE(
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ---- I69-I76: task 3.2.4's Blender section and its editor wiring, through real frames --------------
+//
+// The SAME two-part discipline every project-opening case in this file uses (BLOCKING-2), plus a THIRD
+// part this task adds: `.toolPrefsPath`. `editor_tools.json` is MACHINE-WIDE, exactly like
+// `recent_projects.json` -- ANY case that can reach the Blender resolve path MUST redirect it, or it
+// reads (and, through Locate.../Re-detect, WRITES) the developer's real file. That is 2.6.1's
+// BLOCKING-2 in a third costume, and AC-47 is the rule stated as a criterion (seed S31).
+namespace {
+
+[[nodiscard]] std::string uniqueToolPrefsFile() {
+    static int counter = 0;
+    const std::filesystem::path file =
+        std::filesystem::temp_directory_path() / ("aero_imgui_layer_tools_" + std::to_string(++counter) + ".json");
+    const std::u8string bytes = file.u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+// NOTHING IN THIS TREE PARSES A .blend, EVER (ADR-003). These bytes are opaque to every line of code
+// this task adds: they are hashed as a byte stream by the scan and handed to Blender as a PATH, and
+// that is the whole of their interaction with the editor.
+constexpr std::string_view OPAQUE_BLEND_TEXT = "not a real .blend, and nothing here ever parses one";
+
+// model_import_test.cpp's own buildGlb, COPIED rather than shared (this suite's standing rule:
+// scaffolding is copied, the ASSERTION is shared). AC-42: the GLB is assembled here, in memory, from a
+// JSON string -- NO BINARY FILE IS COMMITTED TO THE REPOSITORY.
+[[nodiscard]] std::string blenderTestGlb() {
+    std::string paddedJson(MINIMAL_GLTF_TEXT);
+    while (paddedJson.size() % 4U != 0U) {
+        paddedJson += ' ';  // JSON chunk padding is SPACE, per the GLB container spec
+    }
+    const auto jsonChunkLength = static_cast<std::uint32_t>(paddedJson.size());
+    const auto appendU32 = [](std::string& out, std::uint32_t value) {
+        out.push_back(static_cast<char>(value & 0xFFU));
+        out.push_back(static_cast<char>((value >> 8U) & 0xFFU));
+        out.push_back(static_cast<char>((value >> 16U) & 0xFFU));
+        out.push_back(static_cast<char>((value >> 24U) & 0xFFU));
+    };
+    std::string glb;
+    glb += "glTF";       // magic
+    appendU32(glb, 2U);  // version
+    appendU32(glb, 12U + 8U + jsonChunkLength);
+    appendU32(glb, jsonChunkLength);
+    appendU32(glb, 0x4E4F534AU);  // 'JSON'
+    glb += paddedJson;
+    return glb;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: the Blender section draws for a .blend and NOT for a .gltf, through real frames "
+    "(task 3.2.4, I69, AC-37)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender section i69", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/b.gltf", MINIMAL_GLTF_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = uniqueToolPrefsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the initial scan
+    REQUIRE(app->tick());  // 2: let the default dock layout settle before focusing anything
+    app->requestPanelFocus("Import Details");
+
+    app->requestAssetBrowserSelectEntry("statue.blend");
+    REQUIRE(app->tick());  // 3: drains SelectEntry
+    REQUIRE(app->tick());  // 4: reconcile -> setTarget -> service() -> NeedsConversion, section drawn
+    // NOT NotImportable, ever again -- that enumerator's branch renders one sentence and returns before
+    // any section, so it could draw no button at all.
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::NeedsConversion));
+    CHECK(app->modelImportState() != static_cast<int>(engine::editor::SessionState::NotImportable));
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 5: a second drawn frame in the same state -- no ImGui assert either time
+
+    app->requestAssetBrowserSelectEntry("b.gltf");
+    REQUIRE(app->tick());  // 6: drains SelectEntry
+    REQUIRE(app->tick());  // 7: the six existing sections and NO Blender section
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a real frame with Blender NOT FOUND renders the searched-path list without an ImGui "
+    "assert (task 3.2.4, I70, AC-30)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender missing i70", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = uniqueToolPrefsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Import Details");
+
+    app->requestAssetBrowserSelectEntry("statue.blend");
+    REQUIRE(app->tick());  // drains SelectEntry
+    REQUIRE(app->tick());  // NeedsConversion -> the lazy resolve() fires on the NEXT reconcile
+
+    // An override naming a path that does not exist yields EXACTLY ONE candidate, which does not
+    // resolve -> ToolMissing, with the searched list retained for the panel to render.
+    app->requestBlenderLocate(created.root + "/no-such-blender");
+    REQUIRE(app->tick());  // drains it: setOverridePath -> Unknown -> resolveBlender() -> ToolMissing
+    CHECK(app->blenderState() == static_cast<int>(engine::editor::BlenderState::ToolMissing));
+    REQUIRE(app->tick());  // a real frame IN ToolMissing: the BeginChild scroll region draws
+    CHECK(app->presentedLastFrame());
+    // AC-30: nothing was spawned to learn that.
+    CHECK(app->blenderExportRunCount() == 0);
+    CHECK(app->blenderProbeRunCount() == 0);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a .blend with a nil GUID draws the section with the button DISABLED and spawns nothing "
+    "(task 3.2.4, I71, AC-27, seed S29)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender nil guid i71", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
+    // An INVALID sidecar, which D7 forbids repairing -- so the record's GUID is permanently nil.
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend.meta", "{ not json").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = uniqueToolPrefsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Import Details");
+
+    app->requestAssetBrowserSelectEntry("statue.blend");
+    REQUIRE(app->tick());  // drains SelectEntry
+    REQUIRE(app->tick());  // NeedsConversion with NO identity -- the section draws a DISABLED button
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::NeedsConversion));
+    CHECK(app->presentedLastFrame());
+    // The lazy resolve is gated on targetHasIdentity(), so it never even ran.
+    CHECK(app->blenderState() == static_cast<int>(engine::editor::BlenderState::Unknown));
+
+    // Even a hook-driven request -- which bypasses the disabled button entirely -- starts nothing.
+    app->requestBlenderConvert();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::NeedsConversion));
+    CHECK(app->blenderExportRunCount() == 0);
+    CHECK(app->blenderProbeRunCount() == 0);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a real frame in ConversionFailed renders the message and the log node (task 3.2.4, I72, "
+    "AC-36)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender failed i72", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = uniqueToolPrefsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Import Details");
+
+    app->requestAssetBrowserSelectEntry("statue.blend");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // `cmake` stands in for Blender on EVERY lane (it exists on every runner by definition): its
+    // --version exits 0 and D14 then ATTEMPTS rather than refuses, and handed Blender's own argv it
+    // exits non-zero without writing a status file -- the SourceRejected row, reached for real.
+    app->requestBlenderLocate(AERO_TEST_CMAKE_COMMAND);
+    REQUIRE(app->tick());
+    for (int i = 0; i < 20000 && app->blenderState() == static_cast<int>(engine::editor::BlenderState::Probing); ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->blenderState() == static_cast<int>(engine::editor::BlenderState::Ready));
+    CHECK(app->blenderProbeRunCount() == 1);
+
+    app->requestBlenderConvert();
+    for (int i = 0;
+         i < 20000 && app->modelImportState() != static_cast<int>(engine::editor::SessionState::ConversionFailed);
+         ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::ConversionFailed));
+    CHECK(app->blenderExportRunCount() == 1);
+    REQUIRE(app->tick());  // a real frame IN ConversionFailed: the message + the log TreeNode draw
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: each of the Blender panel's four channels is drained UNCONDITIONALLY, as its own "
+    "statement, exactly once (task 3.2.4, I73, AC-39, F9)") {
+    // WHY THIS IS A SOURCE-TEXT PROOF: this target is ImGui-free at source and cannot synthesize a
+    // widget click, so the panel's own flags can never be SET from here -- constructing a panel and
+    // observing four `false`s would be a case that only looks like proof. What IS mechanically
+    // decidable, and what F9 exists for, is the DRAIN SHAPE: a `panelConvert || editorConvert`
+    // expression short-circuits past the panel's drain and strands the request until the next frame.
+    // This tree has shipped that bug once (I30 is its mechanical proof) and guarded against it five
+    // times since; this is the sixth.
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/editor_app.cpp";
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+
+    std::vector<std::string> code;
+    std::string_view remaining = *read.text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        const std::string_view line = newline == std::string_view::npos ? remaining : remaining.substr(0, newline);
+        const std::size_t commentStart = line.find("//");
+        code.emplace_back(commentStart == std::string_view::npos ? line : line.substr(0, commentStart));
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        remaining.remove_prefix(newline + 1U);
+    }
+
+    const std::array<std::string_view, 4> channels{"takeConvertRequest()", "takeCancelRequest()", "takeLocateRequest()",
+                                                   "takeRedetectRequest()"};
+    for (const std::string_view channel : channels) {
+        std::size_t hits = 0;
+        std::size_t hitLine = code.size();
+        for (std::size_t i = 0; i < code.size(); ++i) {
+            if (code[i].find(channel) != std::string::npos) {
+                ++hits;
+                hitLine = i;
+            }
+        }
+        CAPTURE(channel);
+        CHECK(hits == 1);  // drained in EXACTLY ONE place, so there is one thing to get right
+        REQUIRE(hitLine != code.size());
+        // ITS OWN STATEMENT: no `||` on the drain's line, so the call can never be short-circuited past.
+        CHECK(code[hitLine].find("||") == std::string::npos);
+        // and it initialises a named local rather than being consumed inline inside an `if`.
+        CHECK(code[hitLine].find("const bool ") != std::string::npos);
+    }
+
+    // task 3.2.4, seed S30, CLOSED HERE and nowhere else. Launching Locate... while another dialog is
+    // in flight is a real defect -- DialogChannel holds ONE slot, so the second result silently
+    // overwrites the first's -- and it is UNREACHABLE by every runtime tier in this tree: no test can
+    // synthesize a native dialog, so removing the guard reddened NOTHING across both test binaries
+    // when it was seeded directly. This assertion is its only mechanical cover.
+    std::size_t launchLine = code.size();
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("launchLocateBlenderDialog(") != std::string::npos) {
+            launchLine = i;
+        }
+    }
+    REQUIRE(launchLine != code.size());
+    // Walk BACK to the `if` that guards it and require BOTH conditions -- a live channel and no dialog
+    // already in flight (the scene_session.cpp guard shape, reused verbatim).
+    bool guarded = false;
+    for (std::size_t i = launchLine; i > 0 && i + 6U > launchLine; --i) {
+        if (code[i - 1U].find("fileFlow.dialog == DialogKind::None") != std::string::npos &&
+            code[i - 1U].find("dialogChannel != nullptr") != std::string::npos) {
+            guarded = true;
+        }
+    }
+    CHECK(guarded);
+}
+
+TEST_CASE(
+    "editor: editor_app.cpp still calls importSession.service( EXACTLY ONCE, textually after "
+    "drawShellUi( (task 3.2.4, I74, AC-38a)") {
+    // I60's own proof, RE-ASSERTED against this task's edits: the post-draw call gained one argument
+    // and did NOT move, and tick() gained no fourth post-draw call. poll() reaches the service through
+    // the session that owns it, so there is exactly one thing to get right.
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/editor_app.cpp";
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+
+    std::string code;
+    code.reserve(read.text->size());
+    std::string_view remaining = *read.text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        const std::string_view line = newline == std::string_view::npos ? remaining : remaining.substr(0, newline);
+        const std::size_t commentStart = line.find("//");
+        code.append(commentStart == std::string_view::npos ? line : line.substr(0, commentStart));
+        code.push_back('\n');
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        remaining.remove_prefix(newline + 1U);
+    }
+
+    std::size_t serviceHits = 0;
+    std::size_t serviceAt = std::string::npos;
+    for (std::size_t at = code.find("importSession.service("); at != std::string::npos;
+         at = code.find("importSession.service(", at + 1U)) {
+        ++serviceHits;
+        serviceAt = at;
+    }
+    REQUIRE(serviceHits == 1);
+    const std::size_t drawAt = code.find("drawShellUi(");
+    REQUIRE(drawAt != std::string::npos);
+    CHECK(serviceAt > drawAt);
+}
+
+TEST_CASE(
+    "editor: import_details_panel.cpp contains NO poll( call at all (task 3.2.4, I75, AC-38b, seed "
+    "S20)") {
+    // I60's shape applied to a SECOND file. BlenderService::poll() spawns processes and waits on them;
+    // running it from a draw walk would put a syscall inside ImGui's frame and break the "record a
+    // pending action, apply it after the walk" rule every panel in this tree follows. NO RUNTIME TIER
+    // IN THIS TREE CAN SEE THAT VIOLATION -- this is the only mechanical cover it has.
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/import_details_panel.cpp";
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+
+    std::string code;
+    code.reserve(read.text->size());
+    std::string_view remaining = *read.text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        const std::string_view line = newline == std::string_view::npos ? remaining : remaining.substr(0, newline);
+        const std::size_t commentStart = line.find("//");
+        code.append(commentStart == std::string_view::npos ? line : line.substr(0, commentStart));
+        code.push_back('\n');
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        remaining.remove_prefix(newline + 1U);
+    }
+    CHECK(code.find("poll(") == std::string::npos);
+    // and no mutating member of the session or the service either (AC-39): the panel holds a
+    // `const ModelImportSession*`, so these are compile-time impossible -- asserted anyway, because the
+    // pointer's constness is one edit away from being widened.
+    CHECK(code.find("requestConversion(") == std::string::npos);
+    CHECK(code.find("cancelConversion(") == std::string::npos);
+    CHECK(code.find("setOverridePath(") == std::string::npos);
+    CHECK(code.find("noteArtifactUnusable(") == std::string::npos);
+    CHECK(code.find("blenderMutable(") == std::string::npos);
+}
+
+TEST_CASE(
+    "editor: requestBlenderLocate writes the tool preferences to the CONFIGURED path, never the real "
+    "one (task 3.2.4, I76, AC-47, seed S31)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender prefs i76", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
+
+    const std::string prefsPath = uniqueToolPrefsFile();
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path(prefsPath), ec);
+    REQUIRE_FALSE(engine::editor::fileExists(prefsPath));  // it does not exist BEFORE
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = prefsPath});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    app->requestBlenderLocate(AERO_TEST_CMAKE_COMMAND);
+    REQUIRE(app->tick());  // drains it: setOverridePath writes the prefs, then re-resolves
+
+    // The file appeared AT THE CONFIGURED PATH, and it round-trips through the public parser.
+    REQUIRE(engine::editor::fileExists(prefsPath));
+    const engine::editor::FileReadResult prefs = engine::editor::readTextFile(prefsPath);
+    REQUIRE(prefs.text.has_value());
+    const std::optional<engine::editor::ToolPrefs> parsed = engine::editor::parseToolPrefs(*prefs.text);
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->blenderPath == std::string(AERO_TEST_CMAKE_COMMAND));
+    // and the override is what resolution then found -- one candidate, alone (AC-3).
+    CHECK(app->blenderBinaryPath() == std::string(AERO_TEST_CMAKE_COMMAND));
+
+    // Re-detect CLEARS it, through the same one file.
+    app->requestBlenderRedetect();
+    REQUIRE(app->tick());
+    const engine::editor::FileReadResult cleared = engine::editor::readTextFile(prefsPath);
+    REQUIRE(cleared.text.has_value());
+    const std::optional<engine::editor::ToolPrefs> reparsed = engine::editor::parseToolPrefs(*cleared.text);
+    REQUIRE(reparsed.has_value());
+    CHECK(reparsed->blenderPath.empty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+    std::filesystem::remove(std::filesystem::path(prefsPath), ec);
+}
+
+// ---- I77-I80: the code-review round's own cases ---------------------------------------------------
+namespace {
+
+// The comment-stripped code lines of a file under editor/src -- I73/I74/I75's own reader, lifted into
+// one helper now that a fourth case needs it. Comments are stripped because every gate in this task
+// reasons about CODE, and a citation in prose must never be able to satisfy or break one.
+[[nodiscard]] std::vector<std::string> editorSourceCodeLines(std::string_view absolutePathUtf8) {
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(absolutePathUtf8);
+    REQUIRE(read.text.has_value());
+    std::vector<std::string> code;
+    std::string_view remaining = *read.text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        const std::string_view line = newline == std::string_view::npos ? remaining : remaining.substr(0, newline);
+        const std::size_t commentStart = line.find("//");
+        code.emplace_back(commentStart == std::string_view::npos ? line : line.substr(0, commentStart));
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        remaining.remove_prefix(newline + 1U);
+    }
+    return code;
+}
+
+[[nodiscard]] std::size_t soleLineContaining(const std::vector<std::string>& code, std::string_view needle) {
+    std::size_t hits = 0;
+    std::size_t at = code.size();
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find(needle) != std::string::npos) {
+            ++hits;
+            at = i;
+        }
+    }
+    CAPTURE(needle);
+    REQUIRE(hits == 1);
+    return at;
+}
+
+// The first non-blank code line at or after `from` -- so an assertion about "what follows this case
+// label" is not defeated by a blank line or a re-wrap.
+[[nodiscard]] std::size_t nextCodeLine(const std::vector<std::string>& code, std::size_t from) {
+    for (std::size_t i = from; i < code.size(); ++i) {
+        if (code[i].find_first_not_of(" \t\r") != std::string::npos) {
+            return i;
+        }
+    }
+    return code.size();
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: the Blender section treats Unknown as NOT PROBED -- it falls through to the controls "
+    "(task 3.2.4, I77, code-review B1)") {
+    // WHY A SOURCE-TEXT PROOF: no tier in this tree reads rendered ImGui text, so "the panel offered a
+    // Re-import" is not observable at runtime -- I78 below can only prove the frame drew without an
+    // assert. What IS mechanically decidable is the SHAPE of the decision, and the defect was exactly a
+    // shape: `Unknown` shared `Probing`'s arm, which returns before every control. On a pure CACHE HIT
+    // nothing ever resolves (§A-9's lazy resolve), so Unknown is the state for the WHOLE session and a
+    // correctly imported .blend showed one false sentence and no buttons at all.
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/import_details_panel.cpp";
+    const std::vector<std::string> code = editorSourceCodeLines(SOURCE_PATH);
+
+    // The Unknown label FALLS THROUGH to another case, and specifically NOT to Probing's.
+    const std::size_t unknownAt = soleLineContaining(code, "case BlenderState::Unknown:");
+    const std::size_t afterUnknown = nextCodeLine(code, unknownAt + 1U);
+    REQUIRE(afterUnknown != code.size());
+    CHECK(code[afterUnknown].find("case BlenderState::") != std::string::npos);
+    CHECK(code[afterUnknown].find("case BlenderState::Probing:") == std::string::npos);
+
+    // THE ASSERTION THAT ACTUALLY DISCRIMINATES, and the weaker "it falls through to some case" above
+    // does not: collect the CONTIGUOUS case labels immediately above the probing message -- that is its
+    // arm, precisely -- and require it to be Probing ALONE. Re-grouping Unknown with Probing (the shape
+    // that shipped) puts two labels there and reddens here. Blank lines are skipped because the reader
+    // above strips comments to empty ones.
+    const std::size_t messageAt = soleLineContaining(code, "Checking the Blender version");
+    std::vector<std::string> arm;
+    for (std::size_t i = messageAt; i > 0; --i) {
+        const std::string& line = code[i - 1U];
+        if (line.find_first_not_of(" \t\r") == std::string::npos) {
+            continue;
+        }
+        if (line.find("case BlenderState::") == std::string::npos) {
+            break;
+        }
+        arm.push_back(line);
+    }
+    REQUIRE(arm.size() == 1);
+    CHECK(arm[0].find("case BlenderState::Probing:") != std::string::npos);
+
+    // code-review S4, the panel half: the "produced by Blender ..." line names the ARTIFACT's own
+    // recorded producer, never blender().versionString() -- which is the currently INSTALLED Blender and
+    // is either empty (nothing probed) or a different binary entirely. BS50 proves the session carries
+    // the record's value; this proves the panel is the thing that reads it. Scanned as a WINDOW rather
+    // than a line, because clang-format puts a format string and its argument on separate lines.
+    const std::size_t importedAt = soleLineContaining(code, "session.state() == SessionState::Imported");
+    const std::size_t reimportAt = soleLineContaining(code, R"(ImGui::Button("Re-import"))");
+    REQUIRE(reimportAt > importedAt);
+    bool namesTheRecord = false;
+    bool namesTheInstalledBlender = false;
+    for (std::size_t i = importedAt; i < reimportAt; ++i) {
+        namesTheRecord = namesTheRecord || code[i].find("artifactBlenderVersion()") != std::string::npos;
+        namesTheInstalledBlender = namesTheInstalledBlender || code[i].find("versionString()") != std::string::npos;
+    }
+    CHECK(namesTheRecord);
+    CHECK_FALSE(namesTheInstalledBlender);
+
+    // code-review NOTE 11: the Blender log node is DEFAULT-OPEN, and that is what makes anything inside
+    // it reachable by a test at all -- no tier in this tree can click a TreeNode, which is this file's
+    // own stated reason for the panel's six sections defaulting open. I80 drives the refused-by-cap
+    // branch through a real frame; it can only do so while this flag is here, and it cannot itself tell
+    // that the flag went away.
+    const std::size_t logNodeAt = soleLineContaining(code, R"("Blender log")");
+    CHECK(code[logNodeAt].find("ImGuiTreeNodeFlags_DefaultOpen") != std::string::npos);
+}
+
+TEST_CASE(
+    "editor: a CACHE HIT on a .blend draws real frames with the service never resolved, and spawns "
+    "nothing (task 3.2.4, I78, AC-22 through the panel, code-review B1)") {
+    // The task's HEADLINE FLOW, driven through real frames for the first time: every prior GPU-tier
+    // .blend case is a cache MISS. This is the state in which the panel used to say "Checking the
+    // Blender version..." forever.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender cache hit i78", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string blendPath = created.root + "/assets/statue.blend";
+    REQUIRE(engine::editor::writeTextFileAtomic(blendPath, OPAQUE_BLEND_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = uniqueToolPrefsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // the initial scan MINTS the sidecar, which is where the GUID comes from
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Import Details");
+
+    // Stage the cache hit from OUTSIDE the app, exactly as a previous session would have left it: the
+    // GUID comes from the sidecar the scan just wrote, and the source hash from the same primitive the
+    // scan itself uses.
+    const engine::editor::FileReadResult metaText = engine::editor::readTextFile(blendPath + ".meta");
+    REQUIRE(metaText.text.has_value());
+    const engine::editor::MetaParseResult meta = engine::editor::parseMeta(*metaText.text);
+    REQUIRE(meta.guid.has_value());
+    const engine::editor::FileHashResult sourceHash = engine::editor::hashFileContents(blendPath);
+    REQUIRE(sourceHash.hash.has_value());
+
+    const std::string exportDir = created.root + '/' + std::string(engine::editor::ASSET_CACHE_DIR_NAME) + '/' +
+                                  std::string(engine::editor::BLENDER_EXPORT_DIR_NAME);
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(exportDir), ec);
+    REQUIRE_FALSE(ec);
+    engine::editor::ExportProvenance record;
+    record.guid = *meta.guid;
+    record.sourcePath = "assets/statue.blend";
+    record.blenderPath = "/nonexistent/blender";
+    record.blenderVersion = "4.2.1";
+    record.scriptVersion = engine::editor::BLENDER_SCRIPT_VERSION;
+    // The fingerprint RE-DERIVED from the two public primitives rather than by calling the production
+    // helper, so a change to what goes into it reddens this case instead of moving with it.
+    const std::string defaultSettingsMeta =
+        engine::editor::writeMetaText(engine::Guid{}, engine::editor::ImportSettings{});
+    record.settingsFingerprint =
+        engine::formatContentHash(engine::hashBytes(std::as_bytes(std::span<const char>(defaultSettingsMeta))));
+    record.sourceHash = *sourceHash.hash;
+    const std::string guidText = engine::formatGuid(*meta.guid);
+    REQUIRE(engine::editor::writeTextFileAtomic(exportDir + '/' + guidText + ".glb", blenderTestGlb()).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(exportDir + '/' + guidText + ".json",
+                                                engine::editor::writeExportProvenanceText(record))
+                .empty());
+
+    app->requestAssetBrowserSelectEntry("statue.blend");
+    REQUIRE(app->tick());  // drains SelectEntry
+    REQUIRE(app->tick());  // reconcile -> setTarget -> service() -> the CACHE HIT
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    // Nothing resolved, nothing probed, nothing spawned -- AC-22, now through a real frame.
+    CHECK(app->blenderState() == static_cast<int>(engine::editor::BlenderState::Unknown));
+    CHECK(app->blenderExportRunCount() == 0);
+    CHECK(app->blenderProbeRunCount() == 0);
+    CHECK(app->presentedLastFrame());
+
+    // Five more frames in the SAME state: the section draws every one of them, and the count of imports
+    // and spawns is unchanged. Before the fix these frames rendered one false sentence and no controls.
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->blenderExportRunCount() == 0);
+    CHECK(app->blenderProbeRunCount() == 0);
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: with NO project open, Locate... is remembered but resolution is DEFERRED (task 3.2.4, I79, "
+    "code-review NOTE 6)") {
+    // The path this closes is invisible on a machine that always has a project open: with none, the
+    // asset database's root is EMPTY, and the export directory used to be built by concatenation
+    // regardless -- "/Library/BlenderExports", an absolute path at the filesystem root that the version
+    // probe's own directory creation would then attempt. It fails harmlessly on this machine and creates
+    // a real drive-root directory on Windows, which no local run could ever have shown.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender no project i79", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string prefsPath = uniqueToolPrefsFile();
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path(prefsPath), ec);
+
+    // projectPath = "" is NO PROJECT (D0), and restoreLastProject = false keeps it that way.
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = "",
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = prefsPath});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    app->requestBlenderLocate(AERO_TEST_CMAKE_COMMAND);
+    REQUIRE(app->tick());  // drains it: the preferences are written, the resolve is DEFERRED
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+
+    // The CHOICE IS REMEMBERED -- the preferences file is written by setOverridePath, before any of
+    // this -- so nothing is lost by deferring.
+    REQUIRE(engine::editor::fileExists(prefsPath));
+    const engine::editor::FileReadResult prefs = engine::editor::readTextFile(prefsPath);
+    REQUIRE(prefs.text.has_value());
+    const std::optional<engine::editor::ToolPrefs> parsed = engine::editor::parseToolPrefs(*prefs.text);
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->blenderPath == std::string(AERO_TEST_CMAKE_COMMAND));
+
+    // ...and NOTHING was resolved against a root that does not exist. Unknown is exactly the condition
+    // tick()'s lazy resolve re-tests once a project is open.
+    CHECK(app->blenderState() == static_cast<int>(engine::editor::BlenderState::Unknown));
+    CHECK(app->blenderBinaryPath().empty());
+    CHECK(app->blenderProbeRunCount() == 0);
+    CHECK(app->blenderExportRunCount() == 0);
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+    std::filesystem::remove(std::filesystem::path(prefsPath), ec);
+}
+
+TEST_CASE(
+    "editor: a real frame renders the REFUSED-BY-CAP log branch, byte count and path instead of "
+    "contents (task 3.2.4, I80, AC-35, code-review NOTE 11)") {
+#if defined(_WIN32)
+    MESSAGE("skipped on Windows: no scripted fake can produce a chatty child for Blender's argv (see BS14)");
+#else
+    // The branch this drives had NEVER executed anywhere: the log node shipped default-CLOSED, and no
+    // tier in this tree can synthesize a click, so its std::format over a byte count and an absolute
+    // path was unreachable under every sanitizer on every lane. The node is default-open now, for the
+    // same reason the panel's six sections are.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "blender big log i80", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/statue.blend", OPAQUE_BLEND_TEXT).empty());
+
+    // A fake Blender that answers --version and then writes MORE THAN MAX_TOOL_LOG_BYTES to stdout,
+    // which the redirect sends straight to <guid>.log. `dd` is the portable way to produce a known
+    // number of bytes without a loop; the content is irrelevant, only the size is.
+    const std::string fake = created.root + "/fake-blender";
+    {
+        std::ofstream out(std::filesystem::path(fake), std::ios::binary | std::ios::trunc);
+        REQUIRE(static_cast<bool>(out));
+        out << "#!/bin/sh\n"
+               "if [ \"$1\" = \"--version\" ]; then printf '%s\\n' 'Blender 5.2.0 LTS'; exit 0; fi\n"
+               "dd if=/dev/zero bs=1024 count=400 2>/dev/null\n"
+               "exit 1\n";
+    }
+    std::error_code ec;
+    std::filesystem::permissions(std::filesystem::path(fake), std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::add, ec);
+    REQUIRE_FALSE(ec);
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .toolPrefsPath = uniqueToolPrefsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Import Details");
+
+    app->requestAssetBrowserSelectEntry("statue.blend");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    app->requestBlenderLocate(fake);
+    REQUIRE(app->tick());
+    for (int i = 0; i < 20000 && app->blenderState() == static_cast<int>(engine::editor::BlenderState::Probing); ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->blenderState() == static_cast<int>(engine::editor::BlenderState::Ready));
+
+    app->requestBlenderConvert();
+    for (int i = 0;
+         i < 20000 && app->modelImportState() != static_cast<int>(engine::editor::SessionState::ConversionFailed);
+         ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->modelImportState() == static_cast<int>(engine::editor::SessionState::ConversionFailed));
+    REQUIRE(app->blenderExportRunCount() == 1);
+
+    // THE ASSERTION THAT MAKES THE FRAMES BELOW NON-VACUOUS: the log really is over the cap, so the
+    // branch that draws a byte count and a path -- rather than 400 KiB of contents -- is the one that
+    // runs. Without it, "a frame drew" would say nothing about WHICH branch drew.
+    CHECK(app->blenderLogRefusedByCap());
+    REQUIRE(app->tick());  // a real frame IN that branch: no ImGui assert, no format fault, no overread
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+#endif
 }

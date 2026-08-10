@@ -735,7 +735,133 @@ Envelope errors discard the whole document.
 A per-**entry** failure is silent and counted (`droppedEntries`/`droppedDependencies`), never a
 message — §6.3's inversion of §5's policy.
 
-## 7. Reserved for future formats
+## 7. Blender export provenance record v1
+
+> Enforced in code by `editor/src/blender_tool.cpp` (`parseExportProvenance` /
+> `writeExportProvenanceText` / `provenanceMatches`, task 3.2.4);
+> `tests/editor/blender_tool_test.cpp` is its machine-checkable form, and
+> `tests/editor/blender_service_test.cpp` exercises it end to end through `ModelImportSession`.
+
+### 7.1 Nature
+
+Derived, machine-local, disposable. One file per converted `.blend`, at
+`<projectRoot>/Library/BlenderExports/<guid>.json`, never committed, never merged, never compared
+across machines. **Its strictness policy follows §6's, not §5's:** a wrong `version`, a missing key or
+unparseable text is a **miss** — the artifact is re-converted — and never a repair. Losing it costs one
+re-conversion, not an identity.
+
+**The path is shared with the run's own STATUS document, and that is deliberate.** Blender's export
+script writes `<guid>.json` as its status report; on a successful import the provenance record
+*overwrites* it. A half-finished run therefore leaves a document `parseExportProvenance` rejects, which
+is exactly the "no valid cache entry" answer the next selection needs. Two paths would add a fifth file
+per asset for no gain.
+
+### 7.2 Envelope
+
+Nine root keys, in this exact order on save.
+
+| Key | Kind | Required | Rule |
+|---|---|---|---|
+| `version` | number, integral | yes | must equal `1`; validated first |
+| `guid` | string | yes | exactly 32 hex digits — the `.blend`'s own asset GUID; **informational** |
+| `sourcePath` | string | yes | project-relative path of the `.blend`; **informational** |
+| `sourceHash` | string | yes | exactly 32 hex digits — the `.blend`'s content hash |
+| `blenderPath` | string | yes | the binary that produced the artifact; **informational** |
+| `blenderVersion` | string | yes | as Blender prints it (`"5.2.0 LTS"`) |
+| `scriptVersion` | number, integral | yes | `BLENDER_SCRIPT_VERSION` at the time of export |
+| `settingsFingerprint` | string | yes | exactly 32 hex digits — see §7.4 |
+| `artifactBytes` | number, integral | yes | size of the `<guid>.glb` produced; **informational** |
+
+### 7.3 Identity vs content — what is COMPARED
+
+Only **four** fields decide staleness, and one of them conditionally:
+
+| Field | Compared |
+|---|---|
+| `sourceHash` | always |
+| `scriptVersion` | always |
+| `settingsFingerprint` | always |
+| `blenderVersion` | **only when a version is known** — see below |
+| `guid`, `sourcePath`, `blenderPath`, `artifactBytes` | **never** |
+
+`sourcePath` and `blenderPath` being informational is what makes the record survive a move: the cache is
+keyed by GUID, never by path (3.1.2 D11), so relocating a `.blend` together with its sidecar does not
+invalidate its conversion.
+
+**The conditional version rule.** A pure cache hit has probed nothing, so the *expected* Blender version
+is empty and the field is not compared at all — which is what makes "selecting an unchanged `.blend`
+spawns zero processes" literally true, since comparing a version you have not probed would require
+probing, and a probe is a process. The recorded value is still *displayed*. Once anything in the session
+has probed a version, every later evaluation compares it, so an upgrade is caught within a session.
+**The accepted cost, stated rather than discovered later:** convert with one Blender, upgrade, restart
+the editor, select the `.blend` — the artifact is served from cache and the panel names the old version.
+It is not re-converted until something else triggers a probe. Zero processes on a hit is worth more than
+catching an upgrade one selection early, the artifact is a valid glTF either way, and `Re-import` is one
+click away.
+
+### 7.4 Canonicalization
+
+Written by `writeTextFileAtomic` only, from `ModelImportSession` only, and **only after the artifact has
+been read back and imported successfully**. A killed, timed-out, failed or unusable run leaves any
+previous record untouched. Key order is fixed and the document ends in exactly one `\n`, so a re-write
+of unchanged data is byte-identical.
+
+`settingsFingerprint` is `formatContentHash(hashBytes(writeMetaText(Guid{}, settings)))` — a **pure
+function of `ImportSettings` alone**, since it uses a nil GUID and the default importer identity. Reusing
+`.meta`'s own serializer is the point: a future `ImportSettings` field enters the fingerprint
+automatically. Strictly it is not required for correctness today (what is cached is the GLB, and `scale`
+is applied during *import*); it exists so that a future Blender-**side** option cannot be added without
+the invalidation already being in place.
+
+### 7.5 Machine-local, derived, disposable, never committed
+
+`Library/` already carries a `.gitignore` containing `*`, and is excluded from both the asset scan and
+the file watcher by the project root's canonical path — so this directory is invisible to both walks
+with no code change, and an artifact written there cannot start a rescan loop. A re-export overwrites
+the same paths, so the directory holds at most one artifact set per `.blend` in the project, forever,
+with **no deletion anywhere in the task**.
+
+---
+
+## 8. Editor tool preferences v1
+
+> Enforced in code by `editor/src/blender_tool.cpp` (`parseToolPrefs` / `writeToolPrefsText`, task
+> 3.2.4); `tests/editor/blender_tool_test.cpp` is its machine-checkable form.
+
+### 8.1 Nature
+
+Machine-local, derived from a user's own choice, disposable. **One file per MACHINE**, not per project,
+at `SDL_GetPrefPath("AeroEngine", "AeroEditor") + "editor_tools.json"` — beside `recent_projects.json`,
+and for the identical reason: an installed tool's path is a property of a machine, not of a project.
+Putting it in `project.json` would hand every teammate a path that does not exist on their machine.
+
+### 8.2 Envelope
+
+Two root keys, in this exact order on save.
+
+| Key | Kind | Required | Rule |
+|---|---|---|---|
+| `version` | number, integral | yes | must equal `1`; validated first |
+| `blenderPath` | string | no | absolute path to a Blender binary; `""` (or absent) means "detect automatically" |
+
+A **missing file** is empty preferences, **silently** — that is the normal state on a machine where the
+user has never used `Locate…`. A file that **exists but does not parse**, or carries a wrong `version`,
+is empty preferences **plus one warning**, emitted from `editor_app.cpp` and nowhere else. A non-string
+`blenderPath` is a parse failure, not a coerced empty value.
+
+### 8.3 Identity vs content
+
+There is no identity here at all: the file is a single preference. Losing it costs one re-detection.
+Written **only** when the user picks a path with `Locate…`, or clears it with `Re-detect` (which writes
+`""`). It is in no project, is never touched by the asset scan, and never appears in a repository.
+
+### 8.4 Canonicalization
+
+`writeTextFileAtomic`, fixed key order, exactly one trailing `\n`; re-parses equal.
+
+---
+
+## 9. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
   applies unchanged. Section appends here.

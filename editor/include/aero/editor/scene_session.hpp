@@ -48,7 +48,12 @@ enum class FileStep : std::uint8_t {
 // Moved here from file_dialog.hpp (plan A16) so a PUBLIC signature (FileFlow/FileDialogHost, task
 // 2.5.1 step 5) can name it without seeing the src-private file_dialog.hpp. ProjectFolder/
 // ProjectLocation: task 2.6.1, +2.
-enum class DialogKind : std::uint8_t { None = 0, Open, Save, ProjectFolder, ProjectLocation };
+// BlenderBinary: task 3.2.4. APPENDED, never inserted (the AssetMetaState::Reattached rule) -- several
+// tests compare DialogKind by value, and an insertion would silently renumber every enumerator after
+// it. It names an ARBITRARY EXECUTABLE, which is why its launcher passes no filters at all: SDL's
+// filter patterns are documented as alphanumerics, '-', '_', '.', or a lone '*', and a Blender binary
+// has no extension inside an .app bundle on macOS.
+enum class DialogKind : std::uint8_t { None = 0, Open, Save, ProjectFolder, ProjectLocation, BlenderBinary };
 
 // Does `action` risk discarding work? NewScene/OpenScene/Quit do; the two saves never do.
 [[nodiscard]] bool discardsWork(FileAction action) noexcept;
@@ -225,6 +230,11 @@ struct FileFlow {
     DialogKind dialog = DialogKind::None;   // OUT: a native dialog is in flight (D8/AC-5)
     bool saveBeforePending = false;         // the in-flight save is the modal's "Save" answer (D11)
     bool quitConfirmed = false;             // OUT to tick() (A10)
+    // task 3.2.4: OUT, one-shot. Set by applyDialogResult's BlenderBinary arm and by nothing else;
+    // DRAINED AND CLEARED by EditorApp::tick()'s reconcile block, which is the only thing in the tree
+    // that knows what a Blender path is. This file deliberately learns nothing beyond "a string came
+    // back" -- no Blender header, no Blender type, no Blender behaviour (AC-46).
+    std::string pickedBlenderPath;
 };
 
 // Is some MODAL surface currently the owner of input? True while a native dialog is in flight, the

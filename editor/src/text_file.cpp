@@ -188,6 +188,24 @@ FileBytesResult readFileBytes(std::string_view absolutePathUtf8, std::uint64_t m
     return result;
 }
 
+bool isExecutableFile(std::string_view absolutePathUtf8, bool requireExecBit) {
+    std::error_code ec;
+    // status(), NOT symlink_status(): a symlink is FOLLOWED on purpose (text_file.hpp's note).
+    const std::filesystem::file_status st = std::filesystem::status(pathFromUtf8(absolutePathUtf8), ec);
+    if (ec) {
+        return false;  // missing, or a parent directory we may not traverse -- never an exception
+    }
+    if (!std::filesystem::is_regular_file(st)) {
+        return false;  // a directory named "blender" is not a Blender (E3)
+    }
+    if (!requireExecBit) {
+        return true;
+    }
+    constexpr std::filesystem::perms EXEC_BITS =
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec;
+    return (st.permissions() & EXEC_BITS) != std::filesystem::perms::none;
+}
+
 std::string ensureDirectory(std::string_view absolutePathUtf8) {
     std::error_code ec;
     const std::filesystem::path p = pathFromUtf8(absolutePathUtf8);

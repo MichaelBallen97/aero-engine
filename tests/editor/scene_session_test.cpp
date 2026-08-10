@@ -924,3 +924,97 @@ TEST_CASE("scene_session: modalInputActive is true iff some modal surface owns t
         CHECK(engine::editor::modalInputActive(flow, projectFlow));
     }
 }
+
+// ---- SS37-SS40: task 3.2.4, the Locate... arm ------------------------------------------------------
+//
+// `applyDialogResult`'s SIGNATURE is byte-identical after this task, and `scene_session.{hpp,cpp}`
+// name no Blender type, include no Blender header and know nothing beyond "a string came back"
+// (AC-46). These four cases prove the arm's four outcomes, and the FOURTH is the one that matters:
+// the arm's PLACEMENT before the terminal Save fall-through is what stops a picked binary path from
+// being saved over as a scene.
+
+TEST_CASE(
+    "scene_session: a BlenderBinary result lands in pickedBlenderPath and touches NOTHING else "
+    "(SS37, task 3.2.4 AC-46)") {
+    FlowFixture f;
+    SceneSession session;  // untitled
+    f.flow.dialog = engine::editor::DialogKind::BlenderBinary;
+    f.flow.pending = FileAction::None;
+
+    engine::editor::DialogResult result;
+    result.ready = true;
+    result.path = "/opt/homebrew/bin/blender";
+
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, result, f.project);
+
+    CHECK(f.flow.pickedBlenderPath == "/opt/homebrew/bin/blender");
+    CHECK(f.flow.dialog == engine::editor::DialogKind::None);  // consumed, exactly like every other kind
+    CHECK(f.flow.pending == FileAction::None);
+    // NOT the scene, NOT the project, NOT the save flow.
+    CHECK(session.untitled());
+    CHECK_FALSE(engine::editor::fileExists(std::string(result.path) + ".scene.json"));
+    CHECK(f.project.flow.form.location.empty());
+    CHECK(f.project.flow.requestedPath.empty());
+    CHECK_FALSE(f.flow.saveBeforePending);
+}
+
+TEST_CASE("scene_session: a CANCELLED Locate... is silent and leaves pickedBlenderPath empty (SS38, task 3.2.4)") {
+    FlowFixture f;
+    SceneSession session;
+    f.flow.dialog = engine::editor::DialogKind::BlenderBinary;
+
+    engine::editor::DialogResult cancelled;
+    cancelled.ready = true;
+    cancelled.cancelled = true;
+    cancelled.path = "/should/never/be/read";
+
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, cancelled, f.project);
+
+    CHECK(f.flow.pickedBlenderPath.empty());  // the commonest interaction in this feature, and silent
+    CHECK(f.flow.dialog == engine::editor::DialogKind::None);
+    CHECK(session.untitled());
+}
+
+TEST_CASE("scene_session: a FAILED Locate... leaves pickedBlenderPath empty (SS39, task 3.2.4)") {
+    FlowFixture f;
+    SceneSession session;
+    f.flow.dialog = engine::editor::DialogKind::BlenderBinary;
+    f.flow.pending = FileAction::NewScene;  // a pending action the failure must abandon
+
+    engine::editor::DialogResult failed;
+    failed.ready = true;
+    failed.failed = true;
+    failed.path = "/should/never/be/read";
+
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, failed, f.project);
+
+    CHECK(f.flow.pickedBlenderPath.empty());
+    CHECK(f.flow.pending == FileAction::None);  // the pre-existing failed arm runs FIRST, unchanged
+    CHECK(f.flow.dialog == engine::editor::DialogKind::None);
+}
+
+TEST_CASE(
+    "scene_session: an ORPHANED Locate... result never reaches the Save fall-through (SS40, task 3.2.4 "
+    "AC-46, seed S30)") {
+    // THE IMPORTANT ONE. `DialogChannel` holds a SINGLE slot, so two dialogs cannot be in flight -- but
+    // if one ever were, whichever result answers SECOND finds `flow.dialog` already reset to None by
+    // the first. Before SHOULD-FIX 5's orphan guard, such a result fell straight through into the Save
+    // arm, which is reached BY ELIMINATION and never checks its own kind. With a Blender binary as the
+    // path, that means saving the current scene over `/usr/bin/blender.scene.json`.
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+    REQUIRE(f.flow.dialog == engine::editor::DialogKind::None);  // as if a prior result already claimed it
+
+    engine::editor::DialogResult orphan;
+    orphan.ready = true;
+    orphan.path = dir.join("blender");  // a BINARY path, not a scene path
+
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, orphan, f.project);
+
+    CHECK(f.flow.pickedBlenderPath.empty());  // an orphan owns no request, so it sets nothing
+    CHECK(session.untitled());                // and NOTHING was written or bound
+    CHECK_FALSE(engine::editor::fileExists(orphan.path + ".scene.json"));
+    CHECK(f.flow.pending == FileAction::None);
+    CHECK_FALSE(f.flow.saveBeforePending);
+}

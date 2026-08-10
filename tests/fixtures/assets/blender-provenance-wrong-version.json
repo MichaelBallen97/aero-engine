@@ -1,0 +1,11 @@
+{
+  "version": 99,
+  "guid": "0123456789abcdef0123456789abcdef",
+  "sourcePath": "props/chair.blend",
+  "sourceHash": "fedcba9876543210fedcba9876543210",
+  "blenderPath": "/Applications/Blender.app/Contents/MacOS/Blender",
+  "blenderVersion": "5.2.0 LTS",
+  "scriptVersion": 1,
+  "settingsFingerprint": "00112233445566778899aabbccddeeff",
+  "artifactBytes": 1936
+}

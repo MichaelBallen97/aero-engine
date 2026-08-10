@@ -537,9 +537,13 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   `<thread>`/`<mutex>`/`<atomic>`-free, and performs **zero file reads**: `poll()` opens directories
   and reads nothing.
 - **The watcher POLLS, and that is a decision with recorded reversal conditions, not a default.** No
-  FSEvents, no `ReadDirectoryChangesW`, no inotify, no owned thread, no `#ifdef` —
-  `git grep -n '_WIN32\|__APPLE__\|__linux__' -- editor/` and `git grep -n 'JobSystem' -- editor/`
-  are both **empty**, and this task keeps them that way. A native backend replaces `poll()` behind the
+  FSEvents, no `ReadDirectoryChangesW`, no inotify, no owned thread, no `#ifdef` — the watcher itself
+  contains no per-OS branch and no `JobSystem` reference, and this task keeps it that way.
+  **The claim this bullet used to make — that `git grep -n '_WIN32\|__APPLE__\|__linux__' -- editor/`
+  is EMPTY — has been false since task 3.2.2**, which vendored ufbx into `editor/third_party/` with
+  three of upstream's own per-OS lines, and it is false a second time since task 3.2.4, whose
+  `currentHostOs()` adds exactly three more. The live invariant is the one in the Blender CLI section
+  below: over `editor/src` + `editor/include`, exactly three lines in exactly one file. A native backend replaces `poll()` behind the
   same `AssetWatcher` seam without touching a consumer, and only once a measured sweep cost exceeds
   ~2 ms/tick or a script-reload loop makes 1–2 s of latency painful.
 - **GPU textures are destroyed ONLY from `serviceThumbnails()`, only AFTER its touch loop, and only
@@ -996,5 +1000,108 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   route through this same filter, never assume `LoadMtl`'s `materials` vector holds only real
   declarations.**
 
+
+
+## Blender CLI (task 3.2.4)
+
+- **Never parse `.blend`.** ADR-003 and the GPL boundary (`docs/01-tech-stack.md`). Blender is an
+  external PROCESS: no header, no library, no vcpkg entry, ever. A contributor reaching for a
+  `.blend`-reading library is repealing an ADR, not optimising. The only read of a `.blend`'s bytes
+  anywhere is 3.1.2's opaque `hashFileContents`, which treats every file identically as a byte stream.
+- **`isBlendFileName` is NOT `isImportableModelName`, and `.blend` must never join the latter's table.**
+  Phase 7.5 gates its probe on that predicate; adding `.blend` there makes the SCAN feed raw `.blend`
+  bytes to `importModel` and every `.blend` in the project reports an import failure on every scan.
+  Sabotage-confirmed to be worse than that in practice: the seeded six-entry table did not merely fail
+  cases, it **aborted the test binary** (`SIGABRT` in `MI28`). `MI133` pins both halves — including
+  `modelImporterNeedsExternalBuffers("x.blend") == false`, a SECOND fact that breaks independently
+  (proven by seed S35, which reddens only that half while S22 reddens both).
+- **The `<guid>.glb` artifact bypasses `modelImporterNeedsExternalBuffers` on purpose.** ONE
+  `importModel` call, `Full` depth, empty external span, empty `assetRelativeDir`. It lives in
+  `Library/`, so it has no assets-relative directory and any URI it named would resolve against an
+  unrelated tree. If it names any, ONE warning is appended and the list is cleared. **The path and the
+  observable need SEPARATE proofs**: `MS41` reads `serviceBlend`'s own source text (one `importModel`,
+  one `readFileBytes`, zero gate consults, one empty `assetRelativeDir`) and `BS41` asserts the warning
+  against a GLB fixture that genuinely declares an external URI. Measured: routing the artifact through
+  the two-pass driver reddens `MS41`/`MS22` and **not** `BS41` — an ordinary two-pass route produces an
+  identical `ImportResult` — so neither proof substitutes for the other.
+- **`SDL_WaitProcess` is only ever called with `block == false`, and no pipe is ever created.** SDL's
+  own header documents the deadlock. `SDL_ReadProcess`/`SDL_GetProcessOutput`/`SDL_GetProcessInput`
+  appear nowhere in this tree and must not start. Sabotage-confirmed: a blocking wait does not fail the
+  suite, it **hangs** it past every budget — the comment-stripped gate grep is the real cover.
+- **`BlenderService::poll()` has exactly ONE call site in the tree, inside
+  `ModelImportSession::serviceBlend()`, and `EditorApp::tick()` gains no fourth post-draw call.** The
+  service is reached through the session that owns it. `I74` re-asserts `I60`'s ordering proof against
+  this task's own edits; `I75` is the only mechanical cover for "the panel never polls", because no
+  runtime tier in this tree can see that violation.
+- **`currentHostOs()` is the only per-OS branch in first-party editor code**, and it is exactly three
+  lines, in the `#elif defined(__linux__)` + `#error` form. The bare-`#else` form produces TWO lines and
+  silently falls back to Linux on an unknown host. Do not cite the three platform macros in any comment
+  under `editor/src` or `editor/include`: the gate grep does not strip comments, unlike the platform and
+  rhi guards. Vendored sources under `editor/third_party/` are out of scope, exactly as the clang-format
+  glob already excludes them.
+- **The `.blend` arm sits BEFORE `service()`'s `isImportableModelName` early return**, and the
+  `(target, generation)` consume guard has exactly ONE exception: a `.blend` target whose session is
+  `Converting` or whose service is `Probing`/`Converting`. It is narrow on both axes on purpose — a
+  `.gltf` selected while some probe is alive must not be re-imported every tick, and a settled `.blend`
+  must still cost ten early returns over ten ticks. **A case proving that second half needs a cache
+  HIT**: on a cache MISS nothing is imported either way, so a widened guard reddens nothing (measured —
+  an earlier `MS36` was exactly that vacuous and was rewritten).
+- **A nil-GUID `.blend` is `NeedsConversion` with a DISABLED button, never `NotImportable`.** That
+  enumerator's panel branch renders one sentence and returns before any section, so it would draw no
+  button to disable — and after this task it would be telling the user something false.
+- **The provenance record and the run's status document SHARE the path `<guid>.json`, deliberately.**
+  On success the record overwrites the status; a half-finished run leaves a document
+  `parseExportProvenance` rejects, which is exactly the "no valid cache entry" answer. A test asserting
+  "no provenance was written" must assert what the document IS, not that the path is empty.
+- **`blender_tool.cpp`, `blender_process.cpp` and `blender_service.cpp` never log, and none of them is
+  in either of `check-project-no-delete.sh`'s lists** — being outside both is exactly what makes a
+  future `std::filesystem::remove` there a hard CI failure (sabotage-confirmed: the guard fires before
+  any test binary runs). All three are also `<thread>`/`<mutex>`/`<atomic>`/`<future>`/
+  `<condition_variable>`-free: the OS runs the child concurrently and one non-blocking wait per tick is
+  the whole mechanism.
+- **Any test that can reach the Blender resolve path MUST set `EditorAppConfig::toolPrefsPath`**, or it
+  reads — and through `Locate…`/`Re-detect`, WRITES — the developer's real machine-wide
+  `editor_tools.json`. This is the third instance of the `recentProjectsPath`/`layoutIniPath` lesson.
+- **A RE-ENTRY THROUGH THAT EXCEPTION POLLS, AND DOES NOTHING ELSE.** The exception exists so a child
+  gets waited on, not so the cache is re-evaluated: falling through to the probe re-read the artifact and
+  re-ran `importModel` on every frame for the whole duration of an unrelated asset's run, and wiped
+  `resultValue` on the way in. Nothing below the poll can change a settled target's answer anyway —
+  `setTarget`, `requestConversion` and `cancelConversion` all clear `serviced`, so none of them arrives
+  as a re-entry. `BS35` is the case, and it asserts `importCount()`, which reads 39 instead of 1 without
+  the guard.
+- **`SessionState` and `BlenderState` are the first values in the editor that span frames, and all three
+  of the code-review round's worst findings are the same mistake: a per-tick OUTPUT read as the next
+  tick's INPUT with nothing resetting it.** `setTarget()` must reset `stateValue` with everything else it
+  already resets — a stale `Converting` made the panel report a run against an asset that had none, and
+  made the session consume another asset's result. `serviceBlend` additionally requires
+  `blender().conversionGuid()` to match its own target before consuming `Converting`/`Converted`. **Any
+  new cross-frame field on either type inherits both obligations.**
+- **The panel names the version from the ARTIFACT'S OWN provenance record
+  (`ModelImportSession::artifactBlenderVersion()`), never `BlenderService::versionString()`.** The latter
+  is the currently installed Blender: empty on a pure cache hit, and — once anything has probed — a
+  binary that did not produce the file on screen. "Convert with 4.2, upgrade to 5.2, and the panel still
+  says 4.2" is only true if this distinction is kept.
+- **EVERY child this service starts is bounded, not just the export.** A hung `blender --version` left
+  the service in `Probing` for the life of the editor, which also re-entered the `.blend` arm every tick.
+  `BLENDER_PROBE_TIMEOUT_SECONDS` and `BLENDER_TIMEOUT_SECONDS` are three orders of magnitude apart on
+  purpose. **A bounded WAIT loop in a test must inject ZERO seconds** (`WAIT_DT`): forking a fake tool
+  costs thousands of poll iterations, so a plausible-looking 16 ms per iteration is minutes of fake time
+  and trips a real timeout while the child takes milliseconds. Every timeout is driven by an explicit
+  one-shot injection instead.
+- **`cancel()` is `noexcept`, so it RECORDS and `poll()` completes** — the same division of labour
+  `requestConversion`/`startExport` already has. A cancel arriving between the request and the spawn must
+  still produce a verdict, or the session waits forever on a run that will never start; and assigning the
+  message inside `cancel()` is an allocation clang-tidy rejects outright.
+- **The panel's Blender log node is DEFAULT-OPEN, and that is what makes its contents testable at all.**
+  No tier in this tree can click a `TreeNode`, so a closed node's branches never execute anywhere, under
+  any sanitizer — which is precisely how the refused-by-cap branch shipped undriven. The same reasoning
+  the six `CollapsingHeader` sections already carry.
+- **`<projectRoot>/Library/BlenderExports` has ONE rule, `blenderExportDir()`, and it returns EMPTY for
+  an empty project root.** Concatenating onto an empty root yields `/Library/BlenderExports` — an
+  absolute path at the filesystem root that the probe's own directory creation then attempts, harmlessly
+  on POSIX and for real on Windows. An empty result is the service's own documented "resolve, but do not
+  spawn"; `EditorApp::resolveBlender()` defers on it, leaving the state `Unknown`, which is exactly what
+  the lazy resolve re-tests once a project is open.
+
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
-3.1.3, 3.1.4, 3.2.1, 3.2.2 and 3.2.3's entries under Phase 3.
+3.1.3, 3.1.4, 3.2.1, 3.2.2, 3.2.3 and 3.2.4's entries under Phase 3.

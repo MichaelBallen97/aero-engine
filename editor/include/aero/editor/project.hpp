@@ -187,6 +187,13 @@ struct ProjectCreateOutcome {
 [[nodiscard]] bool directoryExists(std::string_view utf8);
 [[nodiscard]] bool directoryIsEmpty(std::string_view utf8);  // false when it is not a directory
 [[nodiscard]] std::string defaultRecentProjectsPath();       // D8/F16: pref -> base -> CWD
+// task 3.2.4 (D13). The SIBLING of defaultRecentProjectsPath above, and here for the same reason:
+// this TU owns the pref-path -> base-path -> CWD chain and its free/do-not-free asymmetry, and is the
+// one file permitted a single WARN on the CWD fallback. The Blender TUs must stay log-free (INV-B10),
+// so they take the resolved path rather than resolving it. The Blender binary is a property of a
+// MACHINE, not of a project, which is why it lives here beside the recents list and never in
+// project.json.
+[[nodiscard]] std::string defaultToolPrefsPath();  // D13: pref -> base -> CWD
 [[nodiscard]] RecentProjects readRecentProjects(std::string_view pathUtf8);
 void writeRecentProjects(std::string_view pathUtf8, const RecentProjects& recents);
 

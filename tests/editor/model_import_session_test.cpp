@@ -21,9 +21,11 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -124,6 +126,100 @@ void writeFile(std::string_view absolutePath, std::string_view bytes) {
            std::string(relativeFilename) + "\" }\n";
 }
 
+// ---- task 3.2.4: the .blend arm's own scaffolding ------------------------------------------------
+//
+// NO CI LANE HAS BLENDER (R2), so the cases below use the real `cmake` executable as the tool the
+// service resolves and spawns -- it exists on every runner by definition, its `--version` exits 0
+// (which D14 then attempts rather than refuses, because the banner does not parse as a Blender
+// version), and handed Blender's own argv it exits NON-zero without writing a status file, which is
+// exactly the SourceRejected row. Nothing here sleeps and nothing reads a real environment variable.
+constexpr std::string_view CMAKE_COMMAND = AERO_TEST_CMAKE_COMMAND;
+
+// An env that resolves to EXACTLY ONE candidate -- the override, alone (AC-3).
+[[nodiscard]] engine::editor::BlenderEnv overrideEnv(std::string_view binary) {
+    engine::editor::BlenderEnv env;
+    env.overridePath = std::string(binary);
+    return env;
+}
+
+// <projectRoot>/Library/BlenderExports, assembled exactly as the arm assembles it.
+[[nodiscard]] std::string exportDirOf(std::string_view projectRootUtf8) {
+    return std::string(projectRootUtf8) + '/' + std::string(engine::editor::ASSET_CACHE_DIR_NAME) + '/' +
+           std::string(engine::editor::BLENDER_EXPORT_DIR_NAME);
+}
+
+// The settings fingerprint, RE-DERIVED here from the two public primitives rather than by calling the
+// production helper -- so a change to what goes into the fingerprint reddens these cases instead of
+// silently moving with them.
+[[nodiscard]] std::string fingerprintOfSettings(const engine::editor::ImportSettings& settings) {
+    const std::string text = engine::editor::writeMetaText(engine::Guid{}, settings);
+    return engine::formatContentHash(engine::hashBytes(std::as_bytes(std::span<const char>(text))));
+}
+
+void makeDirectories(std::string_view absolutePathUtf8) {
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(absolutePathUtf8), ec);
+    REQUIRE_FALSE(ec);
+}
+
+// model_import_test.cpp's own buildGlb, reduced to the one shape these cases need: a JSON-only GLB
+// with no BIN chunk. AC-42: assembled in memory, never committed as a binary.
+[[nodiscard]] std::string minimalGlb() {
+    std::string json = R"({"asset":{"version":"2.0"})";
+    json += "}";
+    while (json.size() % 4U != 0U) {
+        json += ' ';
+    }
+    const auto put = [](std::string& out, std::uint32_t v) {
+        out.push_back(static_cast<char>(v & 0xFFU));
+        out.push_back(static_cast<char>((v >> 8U) & 0xFFU));
+        out.push_back(static_cast<char>((v >> 16U) & 0xFFU));
+        out.push_back(static_cast<char>((v >> 24U) & 0xFFU));
+    };
+    std::string glb = "glTF";
+    put(glb, 2U);
+    put(glb, static_cast<std::uint32_t>(12U + 8U + json.size()));
+    put(glb, static_cast<std::uint32_t>(json.size()));
+    put(glb, 0x4E4F534AU);
+    glb += json;
+    return glb;
+}
+
+// A provenance record matching what the arm computes: the four COMPARED fields, with the two
+// informational ones deliberately different so E24's "never compared" half rides along.
+[[nodiscard]] engine::editor::ExportProvenance matchingProvenanceFor(const engine::editor::AssetDatabase& db,
+                                                                     std::string_view relativePath) {
+    const engine::editor::AssetRecord* const record = db.findByPath(relativePath);
+    REQUIRE(record != nullptr);
+    engine::editor::ExportProvenance out;
+    out.guid = record->guid;
+    out.sourcePath = "somewhere/else.blend";
+    out.blenderPath = "/nonexistent/blender";
+    out.blenderVersion = "5.2.0 LTS";
+    out.scriptVersion = engine::editor::BLENDER_SCRIPT_VERSION;
+    out.settingsFingerprint = fingerprintOfSettings(engine::editor::ImportSettings{});
+    out.sourceHash = record->contentHash;
+    return out;
+}
+
+// Drives service() until the Blender service leaves a transient state. BOUNDED by an iteration count,
+// never by a clock, and it YIELDS rather than spins -- a pure spin competes with the very child it is
+// waiting for (blender_service_test.cpp measured that directly).
+constexpr int MAX_SERVICE_ITERATIONS = 5000000;
+
+void serviceUntilSettled(engine::editor::ModelImportSession& session, std::string_view assetsRoot,
+                         const engine::editor::AssetDatabase& db, float dt = 0.0F) {
+    for (int i = 0; i < MAX_SERVICE_ITERATIONS; ++i) {
+        session.service(assetsRoot, db, dt);
+        const engine::editor::BlenderState state = session.blender().state();
+        if (state != engine::editor::BlenderState::Probing && state != engine::editor::BlenderState::Converting) {
+            return;
+        }
+        std::this_thread::yield();
+    }
+    FAIL("the Blender service never settled within the iteration budget");
+}
+
 }  // namespace
 
 using engine::Guid;
@@ -131,6 +227,8 @@ using engine::GuidGenerator;
 using engine::editor::AssetDatabase;
 using engine::editor::AssetScanReport;
 using engine::editor::ATOMIC_TEMP_SUFFIX;
+using engine::editor::BlenderState;  // task 3.2.4
+using engine::editor::currentHostOs;
 using engine::editor::ImportSettings;
 using engine::editor::ImportStatus;
 using engine::editor::MAX_MODEL_FILE_BYTES;
@@ -781,39 +879,67 @@ TEST_CASE(
         code.emplace_back(commentStart == std::string_view::npos ? line : line.substr(0, commentStart));
     }
 
-    std::size_t gateOpenLine = code.size();
+    // task 3.2.4: SCOPED to service()'s OWN BODY, and that narrowing is a sharpening rather than a
+    // relaxation. This case is about the TWO-PASS SHAPE, which lives in service(); the .blend arm added
+    // by 3.2.4 lives in serviceBlend() and performs its own, deliberately UNGATED single read of the
+    // GLB artifact (AC-44 -- the gate would answer TRUE for a ".glb" and must never be consulted
+    // there). Counting the whole file would conflate the two and make "1" mean nothing. MS41 pins the
+    // arm's own shape separately, so neither read is unproven.
+    //
+    // The trailing '(' is load-bearing: without it this also matches serviceBlend's definition line.
+    std::size_t serviceOpenLine = code.size();
     for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("void ModelImportSession::service(") != std::string::npos) {
+            REQUIRE(serviceOpenLine == code.size());  // exactly ONE definition
+            serviceOpenLine = i;
+        }
+    }
+    REQUIRE(serviceOpenLine != code.size());
+    const auto blockEndFrom = [&code](std::size_t startLine) {
+        int braces = 0;
+        for (std::size_t i = startLine; i < code.size(); ++i) {
+            for (const char c : code[i]) {
+                if (c == '{') {
+                    ++braces;
+                } else if (c == '}') {
+                    --braces;
+                    if (braces == 0) {
+                        return i;
+                    }
+                }
+            }
+        }
+        return code.size();
+    };
+    const std::size_t serviceCloseLine = blockEndFrom(serviceOpenLine);
+    REQUIRE(serviceCloseLine != code.size());
+
+    std::size_t gateOpenLine = code.size();
+    for (std::size_t i = serviceOpenLine; i <= serviceCloseLine; ++i) {
         if (code[i].find("modelImporterNeedsExternalBuffers(leaf)") != std::string::npos) {
-            REQUIRE(gateOpenLine == code.size());  // exactly ONE gate line in the whole file
+            REQUIRE(gateOpenLine == code.size());  // exactly ONE gate line in service()'s body
             gateOpenLine = i;
         }
     }
     REQUIRE(gateOpenLine != code.size());  // the gate exists at all
-
-    // Walk forward from the gate line, tracking brace depth, to find where its block CLOSES.
-    int depth = 0;
-    std::size_t gateCloseLine = code.size();
-    for (std::size_t i = gateOpenLine; i < code.size(); ++i) {
-        for (const char c : code[i]) {
-            if (c == '{') {
-                ++depth;
-            } else if (c == '}') {
-                --depth;
-                if (depth == 0) {
-                    gateCloseLine = i;
-                    break;
-                }
-            }
-        }
-        if (gateCloseLine != code.size()) {
-            break;
+    // and NOWHERE ELSE in the file either -- in particular not inside the .blend arm, where consulting
+    // it would be the AC-44 defect (seed S26).
+    std::size_t gateSitesInFile = 0;
+    for (const std::string& line : code) {
+        if (line.find("modelImporterNeedsExternalBuffers") != std::string::npos) {
+            ++gateSitesInFile;
         }
     }
+    CHECK(gateSitesInFile == 1);
+
+    // Walk forward from the gate line, tracking brace depth, to find where its block CLOSES.
+    const std::size_t gateCloseLine = blockEndFrom(gateOpenLine);
     REQUIRE(gateCloseLine != code.size());  // the gate's own block is well-formed and closes
+    REQUIRE(gateCloseLine <= serviceCloseLine);
 
     std::size_t readsOutsideGate = 0;
     std::size_t readsInsideGate = 0;
-    for (std::size_t i = 0; i < code.size(); ++i) {
+    for (std::size_t i = serviceOpenLine; i <= serviceCloseLine; ++i) {
         if (code[i].find("readFileBytes(") == std::string::npos) {
             continue;
         }
@@ -829,13 +955,14 @@ TEST_CASE(
     // Pass 2 (the unconditional Full import) sits AFTER the gate closes -- so it runs regardless of
     // which arm the gate took, exactly the shape MS25/MS27 (below) exercise behaviourally.
     std::size_t pass2Line = code.size();
-    for (std::size_t i = gateCloseLine; i < code.size(); ++i) {
+    for (std::size_t i = gateCloseLine; i <= serviceCloseLine; ++i) {
         if (code[i].find("ImportDepth::Full, externals") != std::string::npos) {
             pass2Line = i;
             break;
         }
     }
     CHECK(pass2Line > gateCloseLine);
+    CHECK(pass2Line <= serviceCloseLine);
 }
 
 TEST_CASE(
@@ -1125,13 +1252,28 @@ TEST_CASE(
     CHECK(session.result().warnings[0].find("chair.mtl") != std::string::npos);
 }
 
-TEST_CASE("model_import_session: a .blend target is NotImportable and imports nothing (MS32, AC-63 corrected)") {
+TEST_CASE(
+    "model_import_session: a .blend with no AssetDatabase record reaches NeedsConversion with no "
+    "identity, and reads nothing (MS32, task 3.2.4 AC-27)") {
+    // REWRITTEN at task 3.2.4, in the SAME commit as the .blend arm. Before that this case asserted
+    // NotImportable -- which the arm makes false -- and, worse, under the spec's own (rejected) design
+    // it would have gone on PASSING for a COMPLETELY DIFFERENT REASON: not because .blend is unclaimed,
+    // but because an unscanned database yields a nil GUID. A case that passes for a new reason is worse
+    // than one that fails, so it is retitled and re-aimed rather than left green.
     const AssetDatabase db;  // never scanned -- a garbage root below proves nothing was read either
     ModelImportSession session;
     session.setTarget("statue.blend", 0);
     session.service("/this/path/must/never/be/opened", db);
-    CHECK(session.state() == SessionState::NotImportable);
+    CHECK(session.state() == SessionState::NeedsConversion);
+    CHECK_FALSE(session.targetHasIdentity());
     CHECK(session.importCount() == 0);
+    // AC-27: ZERO processes of any kind. The split matters -- "zero processes" as one number is
+    // unsatisfiable while the version probe is itself a process (§A-9).
+    CHECK(session.blender().exportRunCount() == 0);
+    CHECK(session.blender().probeRunCount() == 0);
+    // and the service was never even resolved: no environment read, no candidate path stat'ed.
+    CHECK(session.blender().state() == BlenderState::Unknown);
+    CHECK(session.blender().searchedPaths().empty());
 }
 
 TEST_CASE(
@@ -1175,4 +1317,369 @@ TEST_CASE(
         std::filesystem::last_write_time(pathOf(dir.join("chair.obj.meta")), ec);
     REQUIRE_FALSE(ec);
     CHECK(afterMtime == beforeMtime);
+}
+
+// ---- task 3.2.4: the .blend arm (MS34-MS40) -------------------------------------------------------
+
+TEST_CASE(
+    "model_import_session: a REAL scanned .blend with a valid GUID reaches NeedsConversion WITH an "
+    "identity, and still spawns nothing (MS34, task 3.2.4 AC-27's mirror)") {
+    // MS32's mirror, and without the pair "the .blend arm exists at all" has no discriminating proof:
+    // MS32 alone would pass for a session that simply refused every .blend.
+    const TempDir dir;
+    const std::string assets = dir.join("assets");
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(assets), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(assets + "/statue.blend", "not parsed by anything, ever");
+
+    AssetDatabase db;
+    GuidGenerator gen(240);
+    db.rescan(dir.utf8(), assets, gen);
+    REQUIRE(db.guidForPath("statue.blend").has_value());
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", db.generation());
+    session.service(assets, db);
+    CHECK(session.state() == SessionState::NeedsConversion);
+    CHECK(session.targetHasIdentity());  // <-- the half MS32 cannot have
+    CHECK(session.importCount() == 0);
+    CHECK(session.blender().exportRunCount() == 0);
+    CHECK(session.blender().probeRunCount() == 0);
+    // NOT NotImportable, and never again: that enumerator means "no importer claims this file type",
+    // which is false for a .blend after this task.
+    CHECK(session.state() != SessionState::NotImportable);
+}
+
+TEST_CASE(
+    "model_import_session: a conversion request against a MISSING Blender is dropped without spawning "
+    "(MS35, task 3.2.4 AC-30)") {
+    const TempDir dir;
+    const std::string assets = dir.join("assets");
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(assets), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(assets + "/statue.blend", "opaque bytes");
+    AssetDatabase db;
+    GuidGenerator gen(241);
+    db.rescan(dir.utf8(), assets, gen);
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", db.generation());
+    session.service(assets, db);
+    REQUIRE(session.state() == SessionState::NeedsConversion);
+
+    // An override naming a path that does not exist yields EXACTLY ONE candidate, which does not
+    // resolve -> ToolMissing, with the searched list retained for the panel.
+    session.blenderMutable().resolve(currentHostOs(), overrideEnv(dir.join("no-such-blender")),
+                                     exportDirOf(dir.utf8()));
+    REQUIRE(session.blender().state() == BlenderState::ToolMissing);
+    CHECK_FALSE(session.blender().searchedPaths().empty());
+
+    session.requestConversion();
+    session.service(assets, db);
+    CHECK(session.state() == SessionState::NeedsConversion);  // still offering, never Converting
+    CHECK(session.blender().exportRunCount() == 0);
+    CHECK(session.blender().probeRunCount() == 0);
+}
+
+TEST_CASE(
+    "model_import_session: the serviced-guard exception is NARROW -- an Imported .blend costs nothing "
+    "over ten ticks, while a Converting one is polled on every one (MS36, task 3.2.4 seed S37)") {
+    const TempDir dir;
+    const std::string assets = dir.join("assets");
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(assets), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(assets + "/statue.blend", "opaque bytes");
+    AssetDatabase db;
+    GuidGenerator gen(242);
+    db.rescan(dir.utf8(), assets, gen);
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", db.generation());
+
+    SUBCASE("half A -- a settled .blend takes the early return, exactly as a .gltf does") {
+        // A CACHE HIT, deliberately, and this is a CORRECTION forced by the sabotage matrix. An
+        // earlier draft used a cache MISS -- where nothing is imported on ANY tick -- so seed S37
+        // (widening the exception to every state) left `importCount()` at 0 either way and this half
+        // reddened nothing. The seed matched only through BS31. A hit is the only shape in which a
+        // re-entered arm actually costs an import, which is what makes the assertion mean something.
+        makeDirectories(exportDirOf(dir.utf8()));
+        writeFile(exportDirOf(dir.utf8()) + '/' + engine::formatGuid(*db.guidForPath("statue.blend")) + ".glb",
+                  minimalGlb());
+        writeFile(exportDirOf(dir.utf8()) + '/' + engine::formatGuid(*db.guidForPath("statue.blend")) + ".json",
+                  engine::editor::writeExportProvenanceText(matchingProvenanceFor(db, "statue.blend")));
+
+        session.service(assets, db);
+        REQUIRE(session.state() == SessionState::Imported);
+        REQUIRE(session.importCount() == 1);
+        for (int i = 0; i < 10; ++i) {
+            session.service(assets, db, 0.016F);
+        }
+        CHECK(session.importCount() == 1);  // ten early returns, not ten imports (AC-45's property)
+        // and nothing was resolved, probed or spawned by those ten ticks either.
+        CHECK(session.blender().state() == BlenderState::Unknown);
+        CHECK(session.blender().probeRunCount() == 0);
+        CHECK(session.blender().exportRunCount() == 0);
+    }
+
+    SUBCASE("half B -- a Converting .blend is re-entered, and the SPAWN itself proves poll() ran") {
+        session.service(assets, db);
+        REQUIRE(session.state() == SessionState::NeedsConversion);
+        session.blenderMutable().resolve(currentHostOs(), overrideEnv(CMAKE_COMMAND), exportDirOf(dir.utf8()));
+        REQUIRE(session.blender().state() == BlenderState::Probing);
+        // The probe is a CHILD PROCESS, and it is driven entirely by service() -- which is only
+        // reachable at all because the guard's exception let the arm back in after `serviced` was set.
+        serviceUntilSettled(session, assets, db);
+        REQUIRE(session.blender().state() == BlenderState::Ready);
+        CHECK(session.blender().probeRunCount() == 1);
+
+        session.requestConversion();
+        session.service(assets, db);
+        REQUIRE(session.state() == SessionState::Converting);
+        // The request is RECORDED, not spawned: poll() is the only spawn site (INV-B15).
+        CHECK(session.blender().exportRunCount() == 0);
+
+        // The NEXT tick is the one that matters: `serviced` is already true and the target has not
+        // changed, so without the exception this call would early-return and the export would never
+        // start. The counter moving is the proof that poll() ran.
+        session.service(assets, db, 0.016F);
+        CHECK(session.blender().exportRunCount() == 1);
+    }
+}
+
+TEST_CASE(
+    "model_import_session: requestConversion() and cancelConversion() are ONE-SHOTS, consumed exactly "
+    "once (MS37, task 3.2.4 AC-39's session half)") {
+    const TempDir dir;
+    const std::string assets = dir.join("assets");
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(assets), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(assets + "/statue.blend", "opaque bytes");
+    AssetDatabase db;
+    GuidGenerator gen(243);
+    db.rescan(dir.utf8(), assets, gen);
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", db.generation());
+    session.service(assets, db);
+    REQUIRE(session.state() == SessionState::NeedsConversion);
+
+    // A request made while there is no usable Blender is CONSUMED and DROPPED, never queued.
+    session.blenderMutable().resolve(currentHostOs(), overrideEnv(dir.join("no-such-blender")),
+                                     exportDirOf(dir.utf8()));
+    REQUIRE(session.blender().state() == BlenderState::ToolMissing);
+    session.requestConversion();
+    session.service(assets, db);
+    REQUIRE(session.blender().exportRunCount() == 0);
+
+    // Now make the tool usable WITHOUT making a new request. A queued request would spawn here; a
+    // consumed one cannot.
+    session.blenderMutable().resolve(currentHostOs(), overrideEnv(CMAKE_COMMAND), exportDirOf(dir.utf8()));
+    serviceUntilSettled(session, assets, db);
+    REQUIRE(session.blender().state() == BlenderState::Ready);
+    for (int i = 0; i < 5; ++i) {
+        session.service(assets, db, 0.016F);
+    }
+    CHECK(session.blender().exportRunCount() == 0);
+    CHECK(session.state() == SessionState::NeedsConversion);
+
+    // cancelConversion() outside a run is likewise consumed and harmless.
+    session.cancelConversion();
+    session.service(assets, db);
+    CHECK(session.state() == SessionState::NeedsConversion);
+    CHECK(session.blender().exportRunCount() == 0);
+}
+
+TEST_CASE(
+    "model_import_session: a .blend whose REAL record carries a nil GUID is NeedsConversion with no "
+    "identity, and reads nothing (MS38, task 3.2.4 AC-27, seed S29)") {
+    // The non-vacuous half of AC-27: a record that genuinely EXISTS and whose sidecar is invalid, so
+    // the nil GUID is a property of the asset rather than of an unscanned database. D7 forbids
+    // repairing it, so this state is permanent until the user fixes the sidecar.
+    const TempDir dir;
+    const std::string assets = dir.join("assets");
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(assets), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(assets + "/statue.blend", "opaque bytes");
+    writeFile(assets + "/statue.blend.meta", "{ this is not valid json at all");
+
+    AssetDatabase db;
+    GuidGenerator gen(244);
+    db.rescan(dir.utf8(), assets, gen);
+    const engine::editor::AssetRecord* const record = db.findByPath("statue.blend");
+    REQUIRE(record != nullptr);
+    REQUIRE_FALSE(record->guid.valid());  // an invalid sidecar is never repaired (3.1.1 D7)
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", db.generation());
+    session.service(assets, db);
+    CHECK(session.state() == SessionState::NeedsConversion);
+    CHECK_FALSE(session.targetHasIdentity());
+    CHECK(session.importCount() == 0);
+    CHECK(session.blender().exportRunCount() == 0);
+    CHECK(session.blender().probeRunCount() == 0);
+
+    // Even an explicit request cannot start anything: there is nowhere to cache a conversion.
+    session.requestConversion();
+    session.service(assets, db);
+    CHECK(session.state() == SessionState::NeedsConversion);
+    CHECK(session.blender().exportRunCount() == 0);
+}
+
+TEST_CASE(
+    "model_import_session: applySettings on a .blend writes the sidecar with the EMPTY identity, and "
+    "that is correct (MS39, task 3.2.4 D16)") {
+    // MEASURED, and it CORRECTS this task's own plan, which predicted "name": "gltf" here. The
+    // prediction assumed applySettings would fall through to writeMetaText's DEFAULTED importer
+    // parameters; it does not. Task 3.2.2 made applySettings pass modelImporterIdentity(leaf)
+    // EXPLICITLY -- exactly so an .fbx stops recording a borrowed "gltf" -- and that function returns
+    // ("", 0) for a .blend, because the identity table has no .blend arm.
+    //
+    // The empty pair is the RIGHT answer, not a shortfall: it says "no importer claims this file",
+    // which is precisely true. Nothing ever probes a .blend (D15), so its import-cache entry stays at
+    // ""/0 and cannot oscillate, and the sidecar now agrees with the cache instead of contradicting it.
+    // The block is PREFERENCE; its name field is not what selects an importer.
+    const TempDir dir;
+    const std::string assets = dir.join("assets");
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(assets), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(assets + "/statue.blend", "opaque bytes");
+    AssetDatabase db;
+    GuidGenerator gen(245);
+    db.rescan(dir.utf8(), assets, gen);
+    const Guid guid = *db.guidForPath("statue.blend");
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", db.generation());
+    session.service(assets, db);
+    REQUIRE(session.state() == SessionState::NeedsConversion);
+
+    ImportSettings edited;
+    edited.scale = 2.5F;
+    session.setPendingSettings(edited);
+    REQUIRE(session.canApply());
+    CHECK(session.applySettings(assets).empty());
+
+    const auto metaText = scene_golden::readBytes(assets + "/statue.blend.meta");
+    REQUIRE(metaText.ok);
+    CHECK(metaText.text == writeMetaText(guid, edited, "", 0));
+    CHECK(metaText.text.find(R"("name": "")") != std::string::npos);
+    CHECK(metaText.text.find(R"("name": "gltf")") == std::string::npos);
+    // The settings themselves round-trip exactly as they do for every other format.
+    CHECK(metaText.text.find(R"("scale": 2.5)") != std::string::npos);
+}
+
+TEST_CASE(
+    "model_import_session: service()'s new deltaSeconds parameter is TRAILING and DEFAULTED -- the two "
+    "call shapes are indistinguishable for a non-.blend target (MS40, task 3.2.4 AC-45)") {
+    // AC-45's mechanical half is that all 42 pre-existing `.service(` call sites in this file compile
+    // UNEDITED. This case asserts the behavioural half: supplying the argument explicitly changes
+    // nothing at all for a target that has no Blender path.
+    const TempDir dir;
+    writeFile(dir.join("a.gltf"), R"({"asset":{"version":"2.0"}})");
+    AssetDatabase db;
+    GuidGenerator gen(246);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession defaulted;
+    defaulted.setTarget("a.gltf", db.generation());
+    defaulted.service(dir.utf8(), db);
+
+    ModelImportSession explicitDt;
+    explicitDt.setTarget("a.gltf", db.generation());
+    explicitDt.service(dir.utf8(), db, 0.016F);
+
+    CHECK(defaulted.state() == explicitDt.state());
+    CHECK(defaulted.state() == SessionState::Imported);
+    CHECK(defaulted.importCount() == explicitDt.importCount());
+    CHECK(defaulted.result().status == explicitDt.result().status);
+    // and neither touched the Blender service in any way.
+    CHECK(defaulted.blender().state() == BlenderState::Unknown);
+    CHECK(explicitDt.blender().state() == BlenderState::Unknown);
+}
+
+TEST_CASE(
+    "model_import_session: the .blend arm's own shape -- ONE importModel call, ONE readFileBytes, and "
+    "modelImporterNeedsExternalBuffers NEVER consulted (MS41, task 3.2.4 AC-44/INV-B16, seed S26)") {
+    // A SOURCE-TEXT proof, for the same reason MS22 is one: routing the artifact through the two-pass
+    // driver instead of the direct Full call produces an IDENTICAL ImportResult for any ordinary GLB,
+    // because an ordinary GLB names no external URI at all. BS41's fixture is what makes the defect
+    // BEHAVIOURALLY visible; this case makes the STRUCTURE itself assertable, so seed S26 reddens on
+    // both axes rather than resting entirely on one fixture being authored exactly right.
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/model_import_session.cpp";
+    const engine::editor::FileReadResult read = readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+    const std::string& text = *read.text;
+
+    std::vector<std::string> code;
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        const std::string_view line = newline == std::string_view::npos ? remaining : remaining.substr(0, newline);
+        const std::size_t commentStart = line.find("//");
+        code.emplace_back(commentStart == std::string_view::npos ? line : line.substr(0, commentStart));
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        remaining.remove_prefix(newline + 1U);
+    }
+
+    std::size_t armOpen = code.size();
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("void ModelImportSession::serviceBlend(") != std::string::npos) {
+            REQUIRE(armOpen == code.size());  // exactly ONE definition
+            armOpen = i;
+        }
+    }
+    REQUIRE(armOpen != code.size());
+
+    int braces = 0;
+    std::size_t armClose = code.size();
+    for (std::size_t i = armOpen; i < code.size() && armClose == code.size(); ++i) {
+        for (const char c : code[i]) {
+            if (c == '{') {
+                ++braces;
+            } else if (c == '}') {
+                --braces;
+                if (braces == 0) {
+                    armClose = i;
+                    break;
+                }
+            }
+        }
+    }
+    REQUIRE(armClose != code.size());
+
+    std::size_t importCalls = 0;
+    std::size_t reads = 0;
+    std::size_t gateConsults = 0;
+    std::size_t fullDepth = 0;
+    std::size_t emptyDir = 0;
+    for (std::size_t i = armOpen; i <= armClose; ++i) {
+        if (code[i].find("importModel(") != std::string::npos) {
+            ++importCalls;
+        }
+        if (code[i].find("readFileBytes(") != std::string::npos) {
+            ++reads;
+        }
+        if (code[i].find("modelImporterNeedsExternalBuffers") != std::string::npos) {
+            ++gateConsults;
+        }
+        if (code[i].find("ImportDepth::Full") != std::string::npos) {
+            ++fullDepth;
+        }
+        if (code[i].find(R"(/*assetRelativeDir=*/"")") != std::string::npos) {
+            ++emptyDir;
+        }
+    }
+    CHECK(importCalls == 1);   // ONE call -- never a Structure pass followed by a Full one
+    CHECK(reads == 1);         // the artifact's own bytes, and nothing else
+    CHECK(gateConsults == 0);  // AC-44: DELIBERATELY not consulted, and never by accident
+    CHECK(fullDepth == 1);     // at Full depth
+    CHECK(emptyDir == 1);      // with an EMPTY assetRelativeDir -- Library/ has no assets-relative dir
 }

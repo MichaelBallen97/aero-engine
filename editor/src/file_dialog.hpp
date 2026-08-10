@@ -48,4 +48,13 @@ void launchSaveSceneDialog(const std::shared_ptr<DialogChannel>& channel, void* 
 void launchOpenProjectFolderDialog(const std::shared_ptr<DialogChannel>& channel, void* parentSdlWindow,
                                    std::string_view startDirectory);
 
+// task 3.2.4: an ARBITRARY FILE, with NO FILTERS AT ALL. A Blender binary is `blender.exe` on Windows,
+// `Blender` (NO EXTENSION) inside an .app bundle on macOS, and `blender` on Linux -- and SDL's filter
+// patterns are documented as "alphanumerics, '-', '_', '.', or a lone '*'" (the SCENE_FILTERS comment
+// in this file's .cpp cites the header line), which cannot express "a file with no extension".
+// Passing nullptr/0 is the CORRECT spelling for that, not a shortcut. Same callback, same Ticket, same
+// arbitrary-thread contract (F1/INV-3) as the three launchers above.
+void launchLocateBlenderDialog(const std::shared_ptr<DialogChannel>& channel, void* parentSdlWindow,
+                               std::string_view startDirectory);
+
 }  // namespace engine::editor

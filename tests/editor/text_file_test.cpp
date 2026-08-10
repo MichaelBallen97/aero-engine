@@ -37,6 +37,7 @@ using engine::editor::FileHashResult;
 using engine::editor::FileReadResult;
 using engine::editor::HASH_CHUNK_BYTES;
 using engine::editor::hashFileContents;
+using engine::editor::isExecutableFile;
 using engine::editor::readFileBytes;
 using engine::editor::readTextFile;
 using engine::editor::writeTextFileAtomic;
@@ -528,4 +529,81 @@ TEST_CASE(
     REQUIRE(result.bytes.has_value());
     CHECK(*result.bytes == content);
     CHECK(result.size == content.size());
+}
+
+// ---- task 3.2.4: isExecutableFile (TF33-TF37) ---------------------------------------------------
+// The ONE new file primitive this task adds, and the only impure thing the Blender candidate sweep
+// does. `requireExecBit` is a PARAMETER rather than an internal branch precisely so text_file.cpp
+// stays free of the preprocessor -- currentHostOs() is the only per-host branch in first-party editor
+// code (AC-5), and the caller decides from it.
+
+TEST_CASE("text_file: isExecutableFile is FALSE for a directory, both ways (TF33, E3)") {
+    const TempDir tmp;
+    // A directory named "blender" is not a Blender. std::filesystem::status() reports a directory as
+    // executable on POSIX (the traverse bit lives in the same field), so is_regular_file must be
+    // checked BEFORE the permission bits -- this case is what pins that order.
+    CHECK_FALSE(isExecutableFile(tmp.utf8(), true));
+    CHECK_FALSE(isExecutableFile(tmp.utf8(), false));
+}
+
+TEST_CASE("text_file: isExecutableFile is FALSE for a missing path, both ways (TF34)") {
+    const TempDir tmp;
+    const std::string missing = tmp.join("nope");
+    CHECK_FALSE(isExecutableFile(missing, true));
+    CHECK_FALSE(isExecutableFile(missing, false));
+    // A missing path is decided from status()'s error_code, never from an exception: an unreachable
+    // parent directory must return false, not terminate.
+    CHECK_FALSE(isExecutableFile(tmp.join("no/such/parent/blender"), true));
+}
+
+TEST_CASE("text_file: a regular non-executable file honours requireExecBit (TF35)") {
+    const TempDir tmp;
+    const std::string path = tmp.join("plain.txt");
+    writeBytes(path, "hello");
+    CHECK(isExecutableFile(path, false));  // a regular file is enough when no exec bit is required
+#if defined(_WIN32)
+    MESSAGE(
+        "skipped on Windows: there is no execute permission bit there, which is exactly why "
+        "requireExecBit is a caller-supplied parameter and the caller passes false on that host");
+#else
+    std::error_code ec;
+    std::filesystem::permissions(pathOf(path), std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace, ec);
+    REQUIRE_FALSE(ec);
+    CHECK_FALSE(isExecutableFile(path, true));
+#endif
+}
+
+TEST_CASE("text_file: a real executable is TRUE both ways (TF36)") {
+    const TempDir tmp;
+    const std::string path = tmp.join("tool");
+    writeBytes(path, "#!/bin/sh\nexit 0\n");
+    std::error_code ec;
+    std::filesystem::permissions(pathOf(path), std::filesystem::perms::owner_all, std::filesystem::perm_options::add,
+                                 ec);
+    CHECK_FALSE(ec);
+    CHECK(isExecutableFile(path, true));
+    CHECK(isExecutableFile(path, false));
+}
+
+TEST_CASE("text_file: a SYMLINK to an executable is TRUE -- it is followed deliberately (TF37)") {
+    const TempDir tmp;
+    const std::string target = tmp.join("realtool");
+    writeBytes(target, "#!/bin/sh\nexit 0\n");
+    std::error_code permEc;
+    std::filesystem::permissions(pathOf(target), std::filesystem::perms::owner_all, std::filesystem::perm_options::add,
+                                 permEc);
+    CHECK_FALSE(permEc);
+
+    const std::string link = tmp.join("linktool");
+    std::error_code ec;
+    std::filesystem::create_symlink(pathOf(target), pathOf(link), ec);
+    if (ec) {
+        MESSAGE("skipped: this account/filesystem cannot create a symlink (Windows needs Developer Mode)");
+    } else {
+        // status(), NOT symlink_status(). The commonest macOS install is reached through a PATH entry
+        // that is itself a symlink to a wrapper script; refusing symlinks would refuse it.
+        CHECK(isExecutableFile(link, true));
+        CHECK(isExecutableFile(link, false));
+    }
 }

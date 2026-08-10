@@ -104,6 +104,12 @@ struct EditorAppConfig {
     // test can point it somewhere else. Any test that sets persistLayout TRUE must set this too, or
     // it writes the developer's real editor layout -- 2.6.1's BLOCKING-2 in a new costume.
     std::string layoutIniPath;
+    // task 3.2.4 (D13, the recentProjectsPath/layoutIniPath precedent, a THIRD instance): where the
+    // machine-local tool preferences live -- the one place the user-chosen Blender path is persisted.
+    // EMPTY => defaultToolPrefsPath(). ANY test that can reach the Blender resolve path MUST set this,
+    // or it writes the developer's real editor_tools.json -- 2.6.1's BLOCKING-2 in a third costume
+    // (AC-47), and this tree has shipped that exact bug once already.
+    std::string toolPrefsPath;
     // task 3.1.4: the assets-tree watcher's tunables. `enabled` TRUE is the shipping behaviour and
     // therefore the default (the registerDefaultPanels/seedDefaultScene precedent). A test that does
     // not want background directory enumeration sets `.assetWatch = {.enabled = false}`; a test that
@@ -372,7 +378,33 @@ public:
     void requestModelImportSettings(ImportSettings s) noexcept;
     void requestModelImportApply() noexcept;
 
+    // ---- task 3.2.4 request hooks: drive the Blender flow without a widget (the
+    // requestAssetBrowserSelectEntry shape, a SIXTH application). Each records EXACTLY what the
+    // corresponding panel button records, and each is applied on the NEXT tick's reconcile.
+    void requestBlenderConvert() noexcept;
+    void requestBlenderCancel() noexcept;
+    void requestBlenderRedetect() noexcept;
+    // Takes the path DIRECTLY, bypassing the native dialog -- the requestOpenProject(path) test-seam
+    // shape. This is how a GPU-tier case proves setOverridePath without synthesizing a dialog, which no
+    // tier in this tree can do.
+    void requestBlenderLocate(std::string_view absolutePathUtf8);
+    // ---- task 3.2.4 black-box accessors: the ImGui-free GPU tier's window into the Blender flow ----
+    [[nodiscard]] int blenderState() const noexcept;  // static_cast<int>(BlenderState) -- the enum stays
+                                                      // out of this header's surface, exactly as
+                                                      // modelImportState() keeps SessionState out
+    [[nodiscard]] std::size_t blenderExportRunCount() const noexcept;
+    [[nodiscard]] std::size_t blenderProbeRunCount() const noexcept;
+    [[nodiscard]] std::string_view blenderBinaryPath() const noexcept;
+    // code-review NOTE 11: the ONE observable that makes a case driving the panel's refused-by-cap log
+    // branch non-vacuous -- without it, "a frame drew" proves nothing about WHICH branch drew.
+    [[nodiscard]] bool blenderLogRefusedByCap() const noexcept;
+
 private:
+    // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
+    // importSession and toolPrefsPath. THE ONLY PLACE THIS TASK LOGS (INV-B10).
+    void resolveBlender();
+    void applyBlenderOverride(std::string_view absolutePathUtf8);
+
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
     EditorApp(ImGuiLayer layer, platform::Context& ctx, EditorAppConfig config);
@@ -449,6 +481,10 @@ private:
     ProjectFlow projectFlow;
     RecentProjects recents;
     std::string recentsPath;  // resolved ONCE in create(): config.recentProjectsPath, else D8's default
+    // task 3.2.4 (D13): resolved ONCE in create(), exactly as recentsPath above is --
+    // config.toolPrefsPath, else defaultToolPrefsPath(). Resolving it at the point of USE instead
+    // would give every call site its own chance to fall through to the real machine-wide file.
+    std::string toolPrefsPath;
     // Created once in create(); NEVER null on a LIVE app. NULL only on a moved-from app (a defaulted
     // move leaves the source's shared_ptr empty), which is why the drain in tick() is null-guarded
     // (plan A18) rather than assumed non-null.
@@ -463,6 +499,15 @@ private:
                                                             // ALWAYS null-check.
     std::optional<ImportSettings> requestedImportSettings;  // one-shot, consumed by the next tick()
     bool requestedImportApply = false;                      // one-shot, ditto
+
+    // ---- task 3.2.4 one-shots, all consumed by the next tick()'s reconcile ------------------------
+    std::string requestedBlenderLocate;  // non-empty == a path to adopt as the override
+    bool requestedBlenderConvert = false;
+    bool requestedBlenderCancel = false;
+    bool requestedBlenderRedetect = false;
+    // The PREVIOUS tick's session state, so the two Blender log lines fire on a TRANSITION rather than
+    // every frame. A Converting session logging once per frame would be a hundred lines a second.
+    int lastBlenderSessionState = 0;
 };
 
 }  // namespace engine::editor

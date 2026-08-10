@@ -71,4 +71,19 @@ struct FileBytesResult {
 // reason, exactly like readTextFile.
 [[nodiscard]] FileBytesResult readFileBytes(std::string_view absolutePathUtf8, std::uint64_t maxBytes);
 
+// task 3.2.4. TRUE iff the path names an EXISTING REGULAR FILE (never a directory -- E3) and, when
+// requireExecBit is true, at least one of owner/group/other execute permission is set.
+//
+// `requireExecBit` is FALSE on Windows, where an execute permission bit does not exist -- THE CALLER
+// decides from HostOs, so THIS TU stays free of the preprocessor (AC-5/INV-B6). That is the whole
+// reason it is a parameter rather than an internal branch.
+//
+// Decided from std::filesystem::status()'s error_code, NEVER from an exception and never from
+// is_regular_file()'s throwing overload: a permission-denied parent directory must return false, not
+// terminate (2.6.1's ensureDirectory lesson, a second application). NEVER THROWS. NEVER LOGS.
+//
+// A symlink is FOLLOWED deliberately (status, not symlink_status): the commonest macOS install is
+// reached through a wrapper on PATH that is itself a symlink, and refusing symlinks would refuse it.
+[[nodiscard]] bool isExecutableFile(std::string_view absolutePathUtf8, bool requireExecBit);
+
 }  // namespace engine::editor

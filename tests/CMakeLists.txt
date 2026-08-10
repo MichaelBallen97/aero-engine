@@ -111,8 +111,13 @@ target_include_directories(aero_editor_imgui_test PRIVATE ${CMAKE_CURRENT_SOURCE
 # AC-27/FileDialogHost precedent, the same reason PU1 in project_test.cpp reads project_ui.cpp's own
 # source text). I30 reads editor_app.cpp's own source text the identical way -- the
 # AERO_PROJECT_FIXTURES_DIR/AERO_EDITOR_SRC_DIR precedent, extended to this target for the first time.
+# task 3.2.4 (F13/R9): the same CI-safe stand-in tool the shell target already gets, for I72 and I76 --
+# see the definition site further down for the value, the TO_CMAKE_PATH normalisation and why the plan's
+# "shell target only" wording is deviated from.
+file(TO_CMAKE_PATH "${CMAKE_COMMAND}" AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE)
 target_compile_definitions(aero_editor_imgui_test PRIVATE
-    AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src")
+    AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src"
+    AERO_TEST_CMAKE_COMMAND="${AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE}")
 add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 
 # ---------------------------------------------------------------------------------------------
@@ -288,7 +293,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/asset_view_test.cpp editor/thumbnail_cache_test.cpp
                editor/asset_actions_test.cpp editor/asset_watcher_test.cpp
                editor/model_import_test.cpp editor/model_import_session_test.cpp
-               editor/fbx_import_test.cpp editor/obj_import_test.cpp)
+               editor/fbx_import_test.cpp editor/obj_import_test.cpp
+               editor/blender_tool_test.cpp editor/blender_service_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -313,6 +319,25 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # #ifdef-guarded. AG1-AG5 use describeMismatch's context window and never dumpActual, so nothing
     # here writes anywhere and `ctest -j` has no collision surface at all.
     AERO_ASSET_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/assets")
+
+# task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
+# installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,
+# exit 0, non-zero exit, timeout+kill, working directory, stdout AND stderr redirection, and a
+# successful "export" that produces a real GLB the importer then consumes end to end.
+# TO_CMAKE_PATH normalizes separators so the value is a legal C++ string literal on Windows too --
+# the value may legitimately contain spaces ("C:/Program Files/CMake/bin/cmake.exe"), which is exactly
+# what AC-12 asserts SDL quotes for us and we must not quote ourselves. A backslash reaching a C++
+# string literal is a compile error at best and a wrong path at worst, and it would be WINDOWS-ONLY,
+# i.e. invisible to every local run -- the exact shape of the defect CI caught in each of the last
+# three tasks (R9).
+file(TO_CMAKE_PATH "${CMAKE_COMMAND}" AERO_TEST_CMAKE_COMMAND_VALUE)
+target_compile_definitions(aero_editor_shell_test PRIVATE
+    AERO_TEST_CMAKE_COMMAND="${AERO_TEST_CMAKE_COMMAND_VALUE}")
+# DEVIATION from the plan's own §D-1 text ("aero_editor_shell_test only"), logged: task 3.2.4's step 8
+# needs the same stand-in tool on the GPU tier. I72 drives a REAL conversion to ConversionFailed and
+# I76 proves the tool-preferences write lands at the CONFIGURED path -- both need a program that
+# actually exists on every lane, and `cmake` is the only one this project can name portably. The
+# definition is the SAME value, computed once above; nothing else about either target changes.
 # MOVED OUT of the if(AERO_REFLECT_TOOLS) block below, where task 2.5.2 put it: project_test.cpp is
 # UNGATED and includes tests/scene_golden_support.hpp, so this include root must exist in EVERY
 # configuration. The aero_editor_imgui_test precedent is at :106.

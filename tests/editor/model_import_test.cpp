@@ -321,8 +321,9 @@ TEST_CASE("model_import: isImportableModelName accepts .gltf/.glb case-insensiti
 TEST_CASE("model_import: isImportableModelName rejects everything else, including a bare extension (MI20)") {
     // ".fbx" moved OUT of this list at task 3.2.2 -- MI103 now covers its acceptance, the mirror of
     // this case's rejection. ".obj"/".mtl" moved out at task 3.2.3 for the identical reason -- MI118+
-    // now covers their acceptance. ".blend" is 3.2.4's and remains genuinely unclaimed today, so it
-    // keeps this case a live model-format negative.
+    // now covers their acceptance. ".blend" is 3.2.4's and STAYS unclaimed AFTER it, BY DESIGN
+    // (3.2.4 D15) -- 3.2.4 converts a .blend to a GLB above importModel rather than teaching this
+    // table a sixth extension. MI133 pins that, together with modelImporterNeedsExternalBuffers.
     CHECK_FALSE(isImportableModelName("a.blend"));
     CHECK_FALSE(isImportableModelName("a.gltf.bak"));
     CHECK_FALSE(isImportableModelName("a"));
@@ -2605,4 +2606,28 @@ TEST_CASE(
     const ObjMtlLibScan zeroCap = scanObjMtlLibsScan(asBytes(body), 0);
     CHECK(zeroCap.candidates.empty());
     CHECK(zeroCap.emptyOperandLines == 2);
+}
+
+TEST_CASE(
+    "model_import: .blend is claimed by NEITHER name predicate, and the two facts break independently "
+    "(MI133, task 3.2.4 D15/AC-29/AC-44, seeds S22 and S35)") {
+    // TWO assertions, load-bearing TOGETHER and breakable SEPARATELY, which is why they share a case
+    // and why the sabotage matrix attacks each half with its own seed.
+    //
+    // Half 1 (seed S22 -- add ".blend" to isImportableModelName's five-entry table): the SCAN's phase
+    // 7.5 gates its probe on this predicate, so claiming .blend would make the scan feed raw .blend
+    // bytes to importModel -- which returns Unsupported -- and every .blend in the project would report
+    // an import failure on every scan. Task 3.2.4 converts a .blend to a GLB ABOVE importModel instead.
+    CHECK_FALSE(isImportableModelName("statue.blend"));
+
+    // Half 2 (seed S35 -- special-case ".blend" to true inside modelImporterNeedsExternalBuffers while
+    // leaving the table alone): today this answers false only BECAUSE the table does not claim .blend
+    // (it is not .fbx, not .mtl, and falls through to isImportableModelName). The two facts are
+    // therefore coupled in one direction and independent in the other, and a future edit can break
+    // either without the other noticing.
+    CHECK_FALSE(modelImporterNeedsExternalBuffers("statue.blend"));
+
+    // The identity table has no .blend arm either, and that is correct: nothing probes a .blend, so its
+    // import-cache entry stays at ("", 0) rather than oscillating.
+    CHECK(modelImporterIdentity("statue.blend") == ImporterIdentity{});
 }

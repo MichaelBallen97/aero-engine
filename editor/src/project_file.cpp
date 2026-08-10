@@ -80,6 +80,10 @@ void stepToParent(std::filesystem::path& p) {
 }
 
 constexpr std::string_view RECENTS_FILE_NAME = "recent_projects.json";
+// task 3.2.4 (§A-10). TU-LOCAL, exactly like RECENTS_FILE_NAME above, and deliberately NOT in
+// blender_tool.hpp: nothing else needs the name, and putting it there would force this TU to include a
+// Blender header for one string.
+constexpr std::string_view TOOL_PREFS_FILE_NAME = "editor_tools.json";
 
 }  // namespace
 
@@ -282,6 +286,26 @@ std::string defaultRecentProjectsPath() {
     }
     AERO_LOG_WARN("editor: could not resolve a pref/base path for {}; falling back to CWD", RECENTS_FILE_NAME);
     return std::string(RECENTS_FILE_NAME);
+}
+
+// task 3.2.4 (D13): defaultRecentProjectsPath's body verbatim with the constant swapped, INCLUDING
+// the SDL_free asymmetry above -- the pref path must be freed (an ASan leak on both Debug lanes
+// otherwise) and the base path must NOT be (SDL caches it; freeing it is a crash). This is the SECOND
+// exception to INV-P6 in this TU, and the same one: a single WARN, on the CWD fallback only.
+//
+// This function performs no remove, rename or copy, so `project_file.cpp`'s membership in
+// check-project-no-delete.sh's Check A denylist is unchanged and the guard stays green.
+std::string defaultToolPrefsPath() {
+    if (char* const pref = SDL_GetPrefPath("AeroEngine", "AeroEditor"); pref != nullptr) {
+        const std::string path = std::string(pref) + std::string(TOOL_PREFS_FILE_NAME);
+        SDL_free(pref);
+        return path;
+    }
+    if (const char* const base = SDL_GetBasePath(); base != nullptr) {
+        return std::string(base) + std::string(TOOL_PREFS_FILE_NAME);
+    }
+    AERO_LOG_WARN("editor: could not resolve a pref/base path for {}; falling back to CWD", TOOL_PREFS_FILE_NAME);
+    return std::string(TOOL_PREFS_FILE_NAME);
 }
 
 RecentProjects readRecentProjects(std::string_view pathUtf8) {

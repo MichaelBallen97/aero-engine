@@ -475,7 +475,11 @@ struct ObjMtlLibScan {
 [[nodiscard]] bool looksLikeBinaryContent(std::span<const std::byte> bytes, std::size_t probeBytes = 1024) noexcept;
 
 // True iff `fileName` ends (ASCII-case-folded) in ".gltf", ".glb", ".fbx", ".obj" or ".mtl".
-// 3.2.4-3.2.5 extend it further.
+// 3.2.5 extends it further. 3.2.4 deliberately does NOT: .blend never becomes importable, because the
+// SCAN must never spawn a process (3.2.4 D15), and phase 7.5 gates its probe on exactly this
+// predicate. A .blend is converted to a GLB ABOVE importModel instead, by ModelImportSession's own
+// arm. MI133 pins that -- together with modelImporterNeedsExternalBuffers("x.blend") == false, a
+// SECOND fact that breaks independently.
 //
 // STILL DELIBERATELY NARROWER than asset_view.hpp's AssetKind::Model in one direction -- .blend/.dae/
 // .ply/.stl are claimed there and unimportable here -- and, since task 3.2.3, WIDER in another: a .mtl
