@@ -5864,6 +5864,29 @@ TEST_CASE(
         // and it initialises a named local rather than being consumed inline inside an `if`.
         CHECK(code[hitLine].find("const bool ") != std::string::npos);
     }
+
+    // task 3.2.4, seed S30, CLOSED HERE and nowhere else. Launching Locate... while another dialog is
+    // in flight is a real defect -- DialogChannel holds ONE slot, so the second result silently
+    // overwrites the first's -- and it is UNREACHABLE by every runtime tier in this tree: no test can
+    // synthesize a native dialog, so removing the guard reddened NOTHING across both test binaries
+    // when it was seeded directly. This assertion is its only mechanical cover.
+    std::size_t launchLine = code.size();
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("launchLocateBlenderDialog(") != std::string::npos) {
+            launchLine = i;
+        }
+    }
+    REQUIRE(launchLine != code.size());
+    // Walk BACK to the `if` that guards it and require BOTH conditions -- a live channel and no dialog
+    // already in flight (the scene_session.cpp guard shape, reused verbatim).
+    bool guarded = false;
+    for (std::size_t i = launchLine; i > 0 && i + 6U > launchLine; --i) {
+        if (code[i - 1U].find("fileFlow.dialog == DialogKind::None") != std::string::npos &&
+            code[i - 1U].find("dialogChannel != nullptr") != std::string::npos) {
+            guarded = true;
+        }
+    }
+    CHECK(guarded);
 }
 
 TEST_CASE(

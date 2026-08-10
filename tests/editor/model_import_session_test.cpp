@@ -156,6 +156,52 @@ constexpr std::string_view CMAKE_COMMAND = AERO_TEST_CMAKE_COMMAND;
     return engine::formatContentHash(engine::hashBytes(std::as_bytes(std::span<const char>(text))));
 }
 
+void makeDirectories(std::string_view absolutePathUtf8) {
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(absolutePathUtf8), ec);
+    REQUIRE_FALSE(ec);
+}
+
+// model_import_test.cpp's own buildGlb, reduced to the one shape these cases need: a JSON-only GLB
+// with no BIN chunk. AC-42: assembled in memory, never committed as a binary.
+[[nodiscard]] std::string minimalGlb() {
+    std::string json = R"({"asset":{"version":"2.0"})";
+    json += "}";
+    while (json.size() % 4U != 0U) {
+        json += ' ';
+    }
+    const auto put = [](std::string& out, std::uint32_t v) {
+        out.push_back(static_cast<char>(v & 0xFFU));
+        out.push_back(static_cast<char>((v >> 8U) & 0xFFU));
+        out.push_back(static_cast<char>((v >> 16U) & 0xFFU));
+        out.push_back(static_cast<char>((v >> 24U) & 0xFFU));
+    };
+    std::string glb = "glTF";
+    put(glb, 2U);
+    put(glb, static_cast<std::uint32_t>(12U + 8U + json.size()));
+    put(glb, static_cast<std::uint32_t>(json.size()));
+    put(glb, 0x4E4F534AU);
+    glb += json;
+    return glb;
+}
+
+// A provenance record matching what the arm computes: the four COMPARED fields, with the two
+// informational ones deliberately different so E24's "never compared" half rides along.
+[[nodiscard]] engine::editor::ExportProvenance matchingProvenanceFor(const engine::editor::AssetDatabase& db,
+                                                                     std::string_view relativePath) {
+    const engine::editor::AssetRecord* const record = db.findByPath(relativePath);
+    REQUIRE(record != nullptr);
+    engine::editor::ExportProvenance out;
+    out.guid = record->guid;
+    out.sourcePath = "somewhere/else.blend";
+    out.blenderPath = "/nonexistent/blender";
+    out.blenderVersion = "5.2.0 LTS";
+    out.scriptVersion = engine::editor::BLENDER_SCRIPT_VERSION;
+    out.settingsFingerprint = fingerprintOfSettings(engine::editor::ImportSettings{});
+    out.sourceHash = record->contentHash;
+    return out;
+}
+
 // Drives service() until the Blender service leaves a transient state. BOUNDED by an iteration count,
 // never by a clock, and it YIELDS rather than spins -- a pure spin competes with the very child it is
 // waiting for (blender_service_test.cpp measured that directly).
@@ -1354,13 +1400,24 @@ TEST_CASE(
     session.setTarget("statue.blend", db.generation());
 
     SUBCASE("half A -- a settled .blend takes the early return, exactly as a .gltf does") {
+        // A CACHE HIT, deliberately, and this is a CORRECTION forced by the sabotage matrix. An
+        // earlier draft used a cache MISS -- where nothing is imported on ANY tick -- so seed S37
+        // (widening the exception to every state) left `importCount()` at 0 either way and this half
+        // reddened nothing. The seed matched only through BS31. A hit is the only shape in which a
+        // re-entered arm actually costs an import, which is what makes the assertion mean something.
+        makeDirectories(exportDirOf(dir.utf8()));
+        writeFile(exportDirOf(dir.utf8()) + '/' + engine::formatGuid(*db.guidForPath("statue.blend")) + ".glb",
+                  minimalGlb());
+        writeFile(exportDirOf(dir.utf8()) + '/' + engine::formatGuid(*db.guidForPath("statue.blend")) + ".json",
+                  engine::editor::writeExportProvenanceText(matchingProvenanceFor(db, "statue.blend")));
+
         session.service(assets, db);
-        REQUIRE(session.state() == SessionState::NeedsConversion);
-        const std::size_t importsAfterFirst = session.importCount();
+        REQUIRE(session.state() == SessionState::Imported);
+        REQUIRE(session.importCount() == 1);
         for (int i = 0; i < 10; ++i) {
             session.service(assets, db, 0.016F);
         }
-        CHECK(session.importCount() == importsAfterFirst);
+        CHECK(session.importCount() == 1);  // ten early returns, not ten imports (AC-45's property)
         // and nothing was resolved, probed or spawned by those ten ticks either.
         CHECK(session.blender().state() == BlenderState::Unknown);
         CHECK(session.blender().probeRunCount() == 0);

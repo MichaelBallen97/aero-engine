@@ -1564,3 +1564,111 @@ TEST_CASE(
     CHECK(session.importCount() == 0);
     CHECK(listWithSizes(tmp.utf8()) == before);  // ZERO bytes written, anywhere under the project
 }
+
+// ---------------------------------------------------------------------------------------------
+// BS46-BS47: the two coverage gaps the sabotage matrix found (seeds S12 and S32)
+// ---------------------------------------------------------------------------------------------
+//
+// Both exist because BS31 -- the case the plan predicted would catch S12 and S32 -- is a PURE CACHE
+// HIT, and neither seed's code is on that path: startExport() never runs, so an assets-root write and
+// an unconditional script write are both unreachable from it. Both seeds ran GREEN against the whole
+// suite, which is a finding, not a pass. These two close it on the path that actually converts.
+//
+// Neither needs a scripted fake, so both run on EVERY lane: `cmake` handed Blender's own argv exits
+// non-zero without writing a status file, which is a perfectly good FAILED conversion -- and
+// startExport() (which is where both seeds live) has already done all of its writing by then.
+
+// Drive the session until the Blender service leaves a transient state. Bounded, yielding, never a
+// clock and never a sleep.
+void sessionUntilBlenderSettled(ModelImportSession& session, std::string_view assetsRoot,
+                                const engine::editor::AssetDatabase& db) {
+    for (int i = 0; i < MAX_POLL_ITERATIONS; ++i) {
+        session.service(assetsRoot, db, 0.016F);
+        const BlenderState state = session.blender().state();
+        if (state != BlenderState::Probing && state != BlenderState::Converting) {
+            return;
+        }
+        std::this_thread::yield();
+    }
+    FAIL("the Blender service never settled within the iteration budget");
+}
+
+TEST_CASE(
+    "blender_service: a REAL conversion writes NOTHING under the assets root (BS46, task 3.2.4 "
+    "INV-B8/AC-25, seed S12)") {
+    const TempDir tmp;
+    const BlendProject project = makeBlendProject(tmp, 317);
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", project.db.generation());
+    session.service(project.assetsRoot, project.db);
+    REQUIRE(session.state() == SessionState::NeedsConversion);
+    session.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(CMAKE_COMMAND), project.exportDir);
+    sessionUntilBlenderSettled(session, project.assetsRoot, project.db);
+    REQUIRE(session.blender().state() == BlenderState::Ready);
+
+    // The baseline is taken AFTER resolution and BEFORE the run, so every byte the CONVERSION writes
+    // shows up -- the script, the log, the artifact and the status file all land in Library/, and the
+    // assets tree must be untouched by all of it.
+    const std::vector<std::string> assetsBefore = listWithSizes(project.assetsRoot);
+    REQUIRE_FALSE(assetsBefore.empty());
+
+    session.requestConversion();
+    for (int i = 0; i < MAX_POLL_ITERATIONS && session.state() != SessionState::ConversionFailed &&
+                    session.state() != SessionState::Imported;
+         ++i) {
+        session.service(project.assetsRoot, project.db, 0.016F);
+        std::this_thread::yield();
+    }
+    REQUIRE(session.blender().exportRunCount() == 1);  // the run really happened
+    CHECK(listWithSizes(project.assetsRoot) == assetsBefore);
+    // and the derived data DID land -- otherwise the assertion above would hold vacuously.
+    CHECK(engine::editor::fileExists(project.exportDir + '/' + std::string(engine::editor::BLENDER_SCRIPT_FILE_NAME)));
+}
+
+TEST_CASE(
+    "blender_service: a SECOND run leaves export_gltf.py byte- and mtime-identical (BS47, task 3.2.4 "
+    "INV-B12, seed S32)") {
+    const TempDir tmp;
+    const BlendProject project = makeBlendProject(tmp, 318);
+    const std::string scriptPath = project.exportDir + '/' + std::string(engine::editor::BLENDER_SCRIPT_FILE_NAME);
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", project.db.generation());
+    session.service(project.assetsRoot, project.db);
+    session.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(CMAKE_COMMAND), project.exportDir);
+    sessionUntilBlenderSettled(session, project.assetsRoot, project.db);
+    REQUIRE(session.blender().state() == BlenderState::Ready);
+
+    // NOT "loop until the state leaves ConversionFailed": after the first run the session ALREADY sits
+    // in ConversionFailed, so such a loop would exit before its own body ran even once and the second
+    // conversion would never start -- a case that passes while proving nothing. Drive the two
+    // deterministic ticks explicitly (drain the request into Converting; spawn), then wait it out.
+    const auto convertOnce = [&session, &project]() {
+        session.requestConversion();
+        session.service(project.assetsRoot, project.db, 0.016F);  // -> Converting (records, no spawn)
+        REQUIRE(session.state() == SessionState::Converting);
+        for (int i = 0; i < MAX_POLL_ITERATIONS && session.state() == SessionState::Converting; ++i) {
+            session.service(project.assetsRoot, project.db, 0.016F);
+            std::this_thread::yield();
+        }
+    };
+
+    convertOnce();
+    REQUIRE(session.blender().exportRunCount() == 1);
+    // The FIRST run writes it, and its content is the constant byte for byte -- no interpolation site
+    // anywhere, which is what makes it assertable at all (AC-13).
+    REQUIRE(engine::editor::fileExists(scriptPath));
+    CHECK(readAll(scriptPath) == std::string(blenderExportScriptText()));
+    std::error_code ec;
+    const std::filesystem::file_time_type firstWrite = std::filesystem::last_write_time(pathOf(scriptPath), ec);
+    REQUIRE_FALSE(ec);
+
+    convertOnce();
+    REQUIRE(session.blender().exportRunCount() == 2);  // a SECOND run really happened
+    const std::filesystem::file_time_type secondWrite = std::filesystem::last_write_time(pathOf(scriptPath), ec);
+    REQUIRE_FALSE(ec);
+    // D6's "write only what differs", a third application: an unchanged script costs ZERO BYTES.
+    CHECK(secondWrite == firstWrite);
+    CHECK(readAll(scriptPath) == std::string(blenderExportScriptText()));
+}
