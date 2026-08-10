@@ -102,6 +102,14 @@ public:
     // "" == success; the OS reason otherwise.
     [[nodiscard]] std::string setOverridePath(std::string_view absolutePathUtf8, std::string_view prefsPathUtf8);
 
+    // The GUID the current -- or most recent -- conversion run belongs to. Nil until the first
+    // requestConversion(). The SESSION compares it against its OWN target before consuming Converting
+    // or Converted, because this service holds AT MOST ONE run (INV-B5) while the session's target can
+    // change under it at any frame: without the comparison, selecting a second .blend mid-run attributes
+    // the first one's result to the second, importing the wrong artifact and writing a provenance record
+    // for an export that never ran for it (code-review B2).
+    [[nodiscard]] Guid conversionGuid() const noexcept;
+
     [[nodiscard]] const std::string& binaryPath() const noexcept;
     [[nodiscard]] const std::vector<std::string>& searchedPaths() const noexcept;  // for the message
     [[nodiscard]] const std::optional<BlenderVersion>& version() const noexcept;

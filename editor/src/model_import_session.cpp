@@ -92,6 +92,15 @@ void ModelImportSession::setTarget(std::string relativePath, std::uint64_t datab
     lastApplyError.clear();
     observedSize = 0;
     if (targetChanged) {
+        // task 3.2.4 code-review B2: the STATE belongs to the target that produced it, and every other
+        // field here is already reset for exactly that reason. A .blend conversion is the first thing in
+        // this class that SPANS FRAMES, so a stale SessionState::Converting survived a selection change
+        // and was then read as an input: the panel drew "Running Blender... 42.3 s" against the newly
+        // selected asset, and the run's completion was consumed on the NEW target's behalf -- importing
+        // its artifact and writing a provenance record for an export that never ran for it. service()
+        // sets the real state immediately below; the one frame between (the panel draws BEFORE service()
+        // in a tick) now reads Idle, which is true, rather than the previous target's status.
+        stateValue = SessionState::Idle;
         // SHOULD-FIX 5: editor_app.cpp's Apply drain (:596-621) runs BETWEEN this call (:589) and the
         // service() call that would otherwise re-resolve targetGuid (:692, post-draw). Leaving
         // targetGuid holding the PREVIOUS target's identity across that window means an Apply landing
@@ -386,7 +395,13 @@ void ModelImportSession::serviceBlend(std::string_view assetsRootUtf8, const Ass
         blenderService.poll(deltaSeconds);
     }
 
-    if (stateValue == SessionState::Converting) {
+    // code-review B2, the second half: the service holds AT MOST ONE run (INV-B5), and that run belongs
+    // to whichever asset requested it -- never necessarily to the one selected now. Comparing the
+    // service's own target GUID against ours is what makes "this result is mine" a fact rather than an
+    // assumption; setTarget()'s state reset above makes the mismatch unreachable, and this makes it
+    // harmless if a future path ever reaches it again. A mismatch falls through to the ordinary cache
+    // probe below, which is exactly what the newly selected asset needs.
+    if (stateValue == SessionState::Converting && blenderService.conversionGuid() == targetGuid) {
         switch (blenderService.state()) {
             case BlenderState::Ready:       // the request has not been drained into a spawn yet
             case BlenderState::Converting:  // the child is alive

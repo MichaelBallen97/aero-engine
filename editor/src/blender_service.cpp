@@ -195,6 +195,7 @@ std::string BlenderService::setOverridePath(std::string_view absolutePathUtf8, s
     return {};
 }
 
+Guid BlenderService::conversionGuid() const noexcept { return targetGuid; }
 const std::string& BlenderService::binaryPath() const noexcept { return binary; }
 const std::vector<std::string>& BlenderService::searchedPaths() const noexcept { return searched; }
 const std::optional<BlenderVersion>& BlenderService::version() const noexcept { return parsedVersion; }

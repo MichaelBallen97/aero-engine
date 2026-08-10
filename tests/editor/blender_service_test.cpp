@@ -376,29 +376,40 @@ void makeDirectories(std::string_view absolutePathUtf8) {
     return engine::formatContentHash(engine::hashBytes(std::as_bytes(std::span<const char>(text))));
 }
 
-// A provenance record that MATCHES what the arm computes for `project` -- the four compared fields,
-// with the two informational ones deliberately set to values nothing compares (E24/BT57's property,
-// re-exercised end to end).
-[[nodiscard]] engine::editor::ExportProvenance matchingProvenance(const BlendProject& project) {
+// A provenance record that MATCHES what the arm computes for one asset of `project` -- the four
+// compared fields, with the two informational ones deliberately set to values nothing compares
+// (E24/BT57's property, re-exercised end to end).
+[[nodiscard]] engine::editor::ExportProvenance matchingProvenanceFor(const BlendProject& project,
+                                                                     std::string_view relativePath, Guid guid) {
     engine::editor::ExportProvenance record;
-    record.guid = project.guid;
+    record.guid = guid;
     record.sourcePath = "somewhere/else/statue.blend";  // INFORMATIONAL -- never compared
     record.blenderPath = "/nonexistent/blender";        // INFORMATIONAL -- never compared
     record.blenderVersion = "5.2.0 LTS";
     record.scriptVersion = engine::editor::BLENDER_SCRIPT_VERSION;
     record.settingsFingerprint = fingerprintOfDefaults();
-    const engine::editor::AssetRecord* const asset = project.db.findByPath("statue.blend");
+    const engine::editor::AssetRecord* const asset = project.db.findByPath(relativePath);
     REQUIRE(asset != nullptr);
     record.sourceHash = asset->contentHash;
     record.artifactBytes = 0;
     return record;
 }
 
-// Stage a cache HIT: the provenance record plus a real, parseable artifact.
-void stageCacheHit(const BlendProject& project, std::string_view glbJson = MINIMAL_GLB_JSON) {
+[[nodiscard]] engine::editor::ExportProvenance matchingProvenance(const BlendProject& project) {
+    return matchingProvenanceFor(project, "statue.blend", project.guid);
+}
+
+// Stage a cache HIT for one asset: the provenance record plus a real, parseable artifact.
+void stageCacheHitFor(const BlendProject& project, std::string_view relativePath, Guid guid,
+                      std::string_view glbJson = MINIMAL_GLB_JSON) {
     makeDirectories(project.exportDir);
-    writeBytes(project.artifactPath(), buildGlb(glbJson));
-    writeBytes(project.provenancePath(), engine::editor::writeExportProvenanceText(matchingProvenance(project)));
+    writeBytes(project.exportDir + '/' + formatGuid(guid) + ".glb", buildGlb(glbJson));
+    writeBytes(project.exportDir + '/' + formatGuid(guid) + ".json",
+               engine::editor::writeExportProvenanceText(matchingProvenanceFor(project, relativePath, guid)));
+}
+
+void stageCacheHit(const BlendProject& project, std::string_view glbJson = MINIMAL_GLB_JSON) {
+    stageCacheHitFor(project, "statue.blend", project.guid, glbJson);
 }
 
 // Every regular file under `root`, with its size -- the "not one byte changed" observable BS31 needs.
@@ -1671,4 +1682,145 @@ TEST_CASE(
     // D6's "write only what differs", a third application: an unchanged script costs ZERO BYTES.
     CHECK(secondWrite == firstWrite);
     CHECK(readAll(scriptPath) == std::string(blenderExportScriptText()));
+}
+
+// ---------------------------------------------------------------------------------------------
+// BS48-BS49: the code-review round -- a SELECTION CHANGE while a conversion is in flight
+// ---------------------------------------------------------------------------------------------
+//
+// No case before these two called setTarget() twice with a run alive, and the gap was real on both
+// halves of the same defect: the session's SessionState survived a target change (so the panel drew
+// "Running Blender... 42.3 s" against the newly selected asset), and the service's own result was then
+// consumed on the new target's behalf. The service holds AT MOST ONE run (INV-B5) while the session's
+// target can change on any frame -- the two are simply not the same lifetime.
+
+// A second, unrelated .blend beside statue.blend, scanned into the SAME database.
+[[nodiscard]] Guid addSecondBlend(BlendProject& project, unsigned seed, std::string_view leaf) {
+    writeBytes(project.assetsRoot + '/' + std::string(leaf), "a second, unrelated .blend");
+    engine::GuidGenerator generator(seed);
+    project.db.rescan(project.projectRoot, project.assetsRoot, generator);
+    const std::optional<Guid> guid = project.db.guidForPath(leaf);
+    REQUIRE(guid.has_value());
+    REQUIRE(*guid != project.guid);
+    return *guid;
+}
+
+TEST_CASE(
+    "blender_service: selecting a SECOND .blend while a conversion is pending never leaves the new "
+    "target Converting, and serves its own cache (BS48, task 3.2.4 code-review B2)") {
+    // Portable on every lane: the run is REQUESTED but not yet spawned, which is a real frame of the
+    // real flow (the panel's button records a one-shot; the drain reaches the service; the SPAWN is the
+    // next tick's poll). No scripted fake is needed to reach it.
+    const TempDir tmp;
+    BlendProject project = makeBlendProject(tmp, 319);
+    const Guid bustGuid = addSecondBlend(project, 320, "bust.blend");
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", project.db.generation());
+    session.service(project.assetsRoot, project.db);
+    REQUIRE(session.state() == SessionState::NeedsConversion);
+    session.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(CMAKE_COMMAND), project.exportDir);
+    sessionUntilBlenderSettled(session, project.assetsRoot, project.db);
+    REQUIRE(session.blender().state() == BlenderState::Ready);
+
+    // The SECOND asset gets a valid cache entry, staged AFTER the probe and carrying the version this
+    // session has actually probed -- BS35's own rule: once a version is known it IS compared, so a
+    // record naming a different Blender would be a MISS and this case would pass for the wrong reason.
+    engine::editor::ExportProvenance bustRecord = matchingProvenanceFor(project, "bust.blend", bustGuid);
+    bustRecord.blenderVersion = session.blender().versionString();
+    REQUIRE_FALSE(bustRecord.blenderVersion.empty());
+    makeDirectories(project.exportDir);
+    writeBytes(project.exportDir + '/' + formatGuid(bustGuid) + ".glb", buildGlb(MINIMAL_GLB_JSON));
+    writeBytes(project.exportDir + '/' + formatGuid(bustGuid) + ".json",
+               engine::editor::writeExportProvenanceText(bustRecord));
+
+    session.requestConversion();
+    session.service(project.assetsRoot, project.db, 0.016F);
+    REQUIRE(session.state() == SessionState::Converting);
+    REQUIRE(session.blender().exportRunCount() == 0);  // RECORDED, not spawned (INV-B15)
+    REQUIRE(session.blender().conversionGuid() == project.guid);
+
+    // THE ASSERTION THE PANEL DEPENDS ON, and it is checked BEFORE any service() call: the panel draws
+    // from tick()'s reconcile, which runs setTarget() and only services AFTER the draw. A surviving
+    // Converting is a running-Blender readout, with elapsed seconds, attributed to an asset no run was
+    // ever started for.
+    session.setTarget("bust.blend", project.db.generation());
+    CHECK(session.state() != SessionState::Converting);
+
+    // ...and the new target gets its OWN answer, not the old one's. Before the fix this stayed
+    // Converting forever: the arm saw its own stale state, found the service merely Ready, and returned.
+    session.service(project.assetsRoot, project.db, 0.016F);
+    CHECK(session.state() == SessionState::Imported);
+    CHECK(session.result().status == engine::editor::ImportStatus::Ok);
+
+    // The pending request is never spawned on the new target's behalf either, and statue.blend -- which
+    // was never converted -- has no provenance record of any kind.
+    for (int i = 0; i < 5; ++i) {
+        session.service(project.assetsRoot, project.db, 0.016F);
+    }
+    CHECK(session.blender().exportRunCount() == 0);
+    CHECK_FALSE(engine::editor::fileExists(project.provenancePath()));
+}
+
+TEST_CASE(
+    "blender_service: a run that SUCCEEDS after the selection moved on writes no provenance for the "
+    "new target and imports nothing of the old one's (BS49, task 3.2.4 code-review B2)") {
+#if defined(_WIN32)
+    MESSAGE("skipped on Windows: no scripted fake can produce exit 0 plus a status file for Blender's argv (see BS14)");
+#else
+    const TempDir tmp;
+    BlendProject project = makeBlendProject(tmp, 321);
+    const Guid bustGuid = addSecondBlend(project, 322, "bust.blend");
+    // The second asset carries a STALE artifact and NO record -- the exact shape that makes the defect
+    // write rather than merely mis-report: a misattributed Converted verdict finds a readable .glb at
+    // the new target's own path, imports it, and stamps a FRESH provenance record for an export that
+    // never ran for it.
+    makeDirectories(project.exportDir);
+    writeBytes(project.exportDir + '/' + formatGuid(bustGuid) + ".glb", buildGlb(MINIMAL_GLB_JSON));
+    const std::string bustProvenance = project.exportDir + '/' + formatGuid(bustGuid) + ".json";
+    REQUIRE_FALSE(engine::editor::fileExists(bustProvenance));
+
+    const std::string staged = tmp.join("staged.glb");
+    writeBytes(staged, buildGlb(MINIMAL_GLB_JSON));
+    const std::string fake = tmp.join("blender");
+    makeFakeCopyExportTool(fake, staged, R"({"ok": true, "blender": "5.2.0 LTS", "error": "", "bytes": 1})", 0);
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", project.db.generation());
+    session.service(project.assetsRoot, project.db);
+    session.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(fake), project.exportDir);
+    sessionUntilBlenderSettled(session, project.assetsRoot, project.db);
+    REQUIRE(session.blender().state() == BlenderState::Ready);
+
+    session.requestConversion();
+    session.service(project.assetsRoot, project.db, 0.016F);  // -> Converting (records)
+    REQUIRE(session.state() == SessionState::Converting);
+    session.service(project.assetsRoot, project.db, 0.016F);  // the tick that SPAWNS
+    REQUIRE(session.blender().exportRunCount() == 1);
+    REQUIRE(session.blender().state() == BlenderState::Converting);
+
+    // The selection moves on WHILE the child is alive. The service is still Converting -- only a poll
+    // can observe the exit, and setTarget() does not poll -- so this is deterministic, not a race.
+    session.setTarget("bust.blend", project.db.generation());
+    CHECK(session.state() != SessionState::Converting);
+
+    // The old run is still polled (the serviced-guard exception covers a live child), so it really does
+    // reach Converted while the NEW target is selected. That is what makes this case non-vacuous.
+    for (int i = 0; i < MAX_POLL_ITERATIONS && session.blender().state() == BlenderState::Converting; ++i) {
+        session.service(project.assetsRoot, project.db, 0.016F);
+        std::this_thread::yield();
+    }
+    REQUIRE(session.blender().state() == BlenderState::Converted);
+
+    // THE THREE ASSERTIONS THIS CASE EXISTS FOR.
+    CHECK(session.state() == SessionState::NeedsConversion);  // its OWN answer: no record on disk
+    CHECK_FALSE(engine::editor::fileExists(bustProvenance));  // no export ever ran for it
+    CHECK(session.importCount() == 0);                        // and its artifact was never read
+    // statue.blend's own path holds the run's STATUS document, never a provenance record: the import
+    // that would promote it never happened, because the selection had moved on (AC-24).
+    const std::string atStatue = readAll(project.provenancePath());
+    REQUIRE_FALSE(atStatue.empty());
+    CHECK_FALSE(engine::editor::parseExportProvenance(atStatue).has_value());
+    CHECK(engine::editor::parseExportStatus(atStatue).has_value());
+#endif
 }
