@@ -1971,3 +1971,47 @@ TEST_CASE(
     CHECK_FALSE(service.version().has_value());
 #endif
 }
+
+TEST_CASE(
+    "blender_service: cancelling a RECORDED-but-unspawned conversion never leaves the session stuck in "
+    "Converting (BS52, task 3.2.4 code-review NOTE 8)") {
+    // Portable on every lane: it needs no child at all. requestConversion() RECORDS and poll() SPAWNS,
+    // so there is a real window in which the session is Converting and the service is merely Ready with
+    // a request pending -- and a cancel arriving in that window used to withdraw the request silently,
+    // leaving nothing that could ever move the service again. The panel's own Cancel button cannot reach
+    // it (it draws only while the service is Converting); EditorApp::requestBlenderCancel() can.
+    const TempDir tmp;
+    const BlendProject project = makeBlendProject(tmp, 324);
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", project.db.generation());
+    session.service(project.assetsRoot, project.db);
+    REQUIRE(session.state() == SessionState::NeedsConversion);
+    session.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(CMAKE_COMMAND), project.exportDir);
+    sessionUntilBlenderSettled(session, project.assetsRoot, project.db);
+    REQUIRE(session.blender().state() == BlenderState::Ready);
+
+    session.requestConversion();
+    session.service(project.assetsRoot, project.db, WAIT_DT);
+    REQUIRE(session.state() == SessionState::Converting);
+    REQUIRE(session.blender().state() == BlenderState::Ready);  // RECORDED, not spawned (INV-B15)
+    REQUIRE(session.blender().exportRunCount() == 0);
+
+    session.cancelConversion();
+    session.service(project.assetsRoot, project.db, WAIT_DT);
+
+    // The session leaves Converting, with a reason -- and nothing was ever spawned, so the withdrawal
+    // itself still holds.
+    CHECK(session.state() == SessionState::ConversionFailed);
+    CHECK(session.blender().failure() == BlenderFailure::Cancelled);
+    CHECK_FALSE(session.blender().message().empty());
+    CHECK(session.blender().exportRunCount() == 0);
+
+    // Ten further ticks change nothing, and in particular the withdrawn request is never spawned late.
+    for (int i = 0; i < 10; ++i) {
+        session.service(project.assetsRoot, project.db, WAIT_DT);
+    }
+    CHECK(session.state() == SessionState::ConversionFailed);
+    CHECK(session.blender().exportRunCount() == 0);
+    CHECK_FALSE(engine::editor::fileExists(project.provenancePath()));
+}

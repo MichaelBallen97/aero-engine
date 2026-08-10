@@ -222,7 +222,22 @@ void BlenderService::requestConversion(Guid guid, std::string blendAbsolutePath,
 
 void BlenderService::cancel() noexcept {
     if (stateValue != BlenderState::Converting || process == nullptr || !process->running()) {
-        conversionRequested = false;  // a request not yet drained is withdrawn rather than honoured
+        // code-review NOTE 8: withdrawing a RECORDED-BUT-UNSPAWNED request is not enough, and the gap
+        // is real rather than theoretical. requestConversion() records; poll() spawns; between the two
+        // the SESSION is already Converting on the strength of the request. Withdrawing silently leaves
+        // the service in Ready with nothing pending, so nothing will ever move it again and the session
+        // sits in Converting for the life of the editor -- the panel showing "Running Blender... 0.0 s"
+        // for a run that will never start. It is unreachable from the panel's own Cancel button (that
+        // button draws only while the service is Converting) and reachable from EditorApp's request hook.
+        //
+        // The verdict is RECORDED here and completed by poll(), which is both this file's own division
+        // of labour (requestConversion records, startExport completes) and what keeps this function
+        // allocation-free: it is noexcept, and assigning a message is not. A cancel with NOTHING pending
+        // stays a silent no-op -- there is no conversion to have cancelled.
+        if (conversionRequested) {
+            conversionRequested = false;
+            pendingFailure = BlenderFailure::Cancelled;
+        }
         return;
     }
     // GRACEFUL at once, so the user sees an immediate response. poll() owns the escalation to a
@@ -496,6 +511,18 @@ void BlenderService::poll(float deltaSeconds) {
             return;  // still going -- nothing else happens this tick
         }
         finishRun(exitCode);
+    }
+
+    // code-review NOTE 8: a conversion cancelled BEFORE it was ever spawned -- there is no child to
+    // reap, so no exit path would otherwise carry the verdict, and the session would wait forever on a
+    // run that will never start.
+    if (process == nullptr && pendingFailure == BlenderFailure::Cancelled) {
+        pendingFailure = BlenderFailure::None;
+        stateValue = BlenderState::Failed;
+        failureValue = BlenderFailure::Cancelled;
+        messageText = "The conversion was cancelled.";
+        artifact.clear();
+        return;
     }
 
     if (stateValue == BlenderState::Probing) {
