@@ -96,9 +96,16 @@ enum class BlenderSupport : std::uint8_t { Supported = 0, Warned, Refused };
 // Both are PURE, and both were executed VERBATIM against Blender 5.2.0 LTS (plan §G-4). NOTHING is
 // quoted, escaped or substituted in either: SDL owns Windows quoting (SDL_windowsprocess.c's
 // join_arguments, F2) and hand-quoting on top of it is a double-escape bug, while on POSIX there is
-// no shell in the path at all -- SDL_CreateProcessWithProperties takes an argv ARRAY, never a
+// no shell in the path at all -- SDL's process-creation entry point takes an argv ARRAY, never a
 // command line. That is also why INV-B2 holds: no shell, no shell wrapper and no command-string
 // launcher of any kind appears anywhere in this task.
+//
+// NOTE TO THE AUTHOR OF THIS COMMENT: the process-API gate grep (see the Blender CLI section of
+// .claude/rules/editor.md) must name exactly ONE file, blender_process.cpp, and it does not strip
+// comments -- the same rule that section states for the three platform macros. Spelling any of SDL's
+// three process-lifecycle symbols in prose ANYWHERE outside that TU breaks the gate while changing no
+// behaviour, which is the worst kind of break: it reads as an architecture violation and is not one.
+// Describe the call, never spell it. This very note was drafted the wrong way once.
 //
 // NOTE TO THE AUTHOR OF THIS COMMENT: INV-B2's gate grep does not strip comments (the AC-5 rule, one
 // invariant over). Do NOT spell the shell-launcher tokens it searches for in prose here, or a
