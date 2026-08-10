@@ -4778,15 +4778,26 @@ the spec's own inconsistent summary could have meant, and S27 (mapping a non-emp
 `ParseFailed` even on a `true` return) is a **proven**, not merely predicted, non-discriminator: seeded
 directly, the entire 83-case `OI` suite stayed green. §A-10's two filtered library sentences
 ("Material stream in error state." at `:2536`, "Failed to load material file(s)." at `:2926`/`:3344`,
-two near-duplicate emission sites mirroring `LoadMtl`'s own two-overload duplication) were **also**
-confirmed, by direct sabotage (S24, S25, each dropping one filter clause alone), to be genuinely
-unreachable by every fixture this suite can construct — not because the filter is wrong, but because
-`MaterialStreamReader`'s own `if (!m_inStream)` guard (its "stream in error" branch, the one that would
-emit these sentences) tests `std::istream::fail()` — failbit/badbit — never `eof()`, so a second
-`mtllib` line's `readMatFn` call does not take that branch at all: it re-enters `LoadMtl` on an
-already-exhausted stream, which parses zero lines and returns quietly. **The filter stays in place as
-harmless defence in depth**, and `OI23`'s own comment records the honest, non-vacuous status of what it
-proves versus what it cannot.
+two near-duplicate emission sites mirroring `LoadMtl`'s own two-overload duplication) were **initially**
+confirmed, by direct sabotage against a TWO-`mtllib` fixture (S24, S25, each dropping one filter clause
+alone), to redden nothing — not because the filter is wrong, but because `MaterialStreamReader`'s own
+`if (!m_inStream)` guard (its "stream in error" branch, the one that would emit these sentences) tests
+`std::istream::fail()` — failbit/badbit — never `eof()`, so the SECOND `mtllib` line's `readMatFn` call
+does not take that branch at all: it re-enters `LoadMtl` on an already-exhausted stream, which parses
+zero lines and returns quietly.
+
+**CORRECTION, code-review round:** the conclusion drawn from that result — that both sentences are
+"genuinely unreachable by every fixture this suite can construct" — was **wrong**, confirmed by a
+standalone probe against the real vendored header, reproducing this file's own `mtlText` concatenation
+shape: a TWO-`mtllib` document leaves the library's raw `warn`/`err` both empty, exactly as observed, but
+a **THIRD** `mtllib` directive flips `fail()` true by the time it is processed, and the library's raw
+`warn` string then reads verbatim `"Material stream in error state. \nFailed to load material file(s).
+Use default material.\n"` — both sentences, exactly once each. `OI23` was rewritten to three `mtllib`
+directives (two supplying real content, one deliberately unsupplied) and re-verified by direct sabotage:
+dropping either filter clause now reddens it cleanly, independently, reverted byte-clean between the two.
+**The filter is genuinely load-bearing, not merely defence in depth** — this entry's own earlier
+paragraph and `.claude/rules/editor.md`'s OBJ section both carried the "PROVEN unreachable" claim and are
+both corrected in the same pass that found this.
 
 **`MAX_MATERIALS_PER_MODEL` (65536, declared beside `MAX_NODES_PER_MODEL`) is this task's one genuinely
 new structural cap, and it makes a pre-existing, unrelated gap newly visible by comparison: the glTF
@@ -4928,14 +4939,21 @@ run, and the revert confirmed byte-clean before the next seed — no seed skippe
   **no** trailing newline, which reddened cleanly under the seed (`materials.size() == 1` instead of
   `2` — the second material's `newmtl` keyword glued onto the first buffer's last `Kd` line and was
   never recognised as a directive) and stayed green on the real, unseeded code.
-- **Three seeds were confirmed non-discriminators exactly matching a prior finding or prediction**: S24
-  and S25 (each dropping one of §A-10's two filtered library sentences) each left the full 83-case `OI`
-  suite green, confirming Step 7's own build-time finding that neither sentence is reachable for this
-  library version; S32 (removing the D21 `#error` guard) left 297 targeted cases green, confirmed
-  structurally (nothing in this tree's CMake or vcpkg manifest ever defines
-  `TINYOBJLOADER_USE_MAPBOX_EARCUT`, so the guarded block is dead code in every configuration this
-  project builds) — AC-13's one-time manual check remains its only cover, deliberately outside CI,
-  exactly as §B's own table states.
+- **One seed was confirmed a non-discriminator exactly matching a prior prediction**: S32 (removing the
+  D21 `#error` guard) left 297 targeted cases green, confirmed structurally (nothing in this tree's CMake
+  or vcpkg manifest ever defines `TINYOBJLOADER_USE_MAPBOX_EARCUT`, so the guarded block is dead code in
+  every configuration this project builds) — AC-13's one-time manual check remains its only cover,
+  deliberately outside CI, exactly as §B's own table states.
+- **S24 and S25 (each dropping one of §A-10's two filtered library sentences) were RE-GRADED in the
+  code-review round, from "confirmed non-discriminator" to "confirmed discriminator", and the earlier
+  grading here was wrong, not merely superseded.** The original two-`mtllib` `OI23` fixture left both
+  seeds green because the FIXTURE never made the library emit either sentence at all (proven separately
+  below), not because the filter clauses were unreachable in principle. Once `OI23` was rewritten to
+  three `mtllib` directives (the fixture shape that genuinely reaches both branches — see the §A-10
+  correction above), both seeds redden it cleanly and independently: S24 (drop the "Material stream in
+  error state" clause) surfaces that sentence in `result.warnings`; S25 (drop the "Failed to load
+  material file(s)" clause) surfaces the second. Reverted byte-clean between the two, confirmed via
+  `git diff` before each rebuild.
 - **One seed (S27) was PROVEN a non-discriminator by direct source reading, a stronger answer than
   the plan's own uncertainty could give**: seeded (`if (!ok || !err.empty())`) and run, the full `OI`
   suite stayed green, confirming the structural proof above (`LoadMtl`'s `err` parameter is dead code)

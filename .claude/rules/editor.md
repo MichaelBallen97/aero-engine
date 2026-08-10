@@ -898,17 +898,23 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   `materialIndex = INVALID_SUBASSET`, one warning per `mtllib` line whose candidates were all unsupplied
   names the raw operand, and status stays `Ok`. The warning is OURS, derived from the candidate list
   versus the supplied buffers -- never inferred from a library string.
-- **TWO library sentences are dropped, and only two -- both PROVEN unreachable for this library version,
-  not merely filtered defensively.** `"Material stream in error state."` (`:2536`,
-  `MaterialStreamReader`'s own guard) and `"Failed to load material file(s). Use default material."`
-  (`:2926`/`:3344`, `LoadObj`'s mtllib branch) both describe OUR single-stream plumbing on the SECOND and
-  later `mtllib` directive -- but `MaterialStreamReader`'s own `if (!m_inStream)` guard tests
-  `std::istream::fail()` (failbit/badbit), NEVER `eof()`, so a second `mtllib` line's `readMatFn` call
-  does not take that branch at all: it silently re-enters `LoadMtl` on an already-exhausted stream. Both
-  sentences are confirmed by direct sabotage to redden nothing across all 83 `OI` cases -- kept as
-  harmless defence in depth, never claimed as proven-reachable. The library's `"Both \`d\` and \`Tr\`
-  parameters defined"` warning (`:2237`/`:2249`) is the OPPOSITE -- a real statement about the file --
-  and is NEVER dropped; confirmed load-bearing by sabotage (`OI62` reddens when it is).
+- **TWO library sentences are dropped, and only two -- reachable at THREE `mtllib` directives, not two,
+  a code-review-round correction of this section's own earlier claim.** `"Material stream in error
+  state."` (`:2536`, `MaterialStreamReader`'s own guard) and `"Failed to load material file(s). Use
+  default material."` (`:2926`/`:3344`, `LoadObj`'s mtllib branch) both describe OUR single-stream
+  plumbing -- but `MaterialStreamReader`'s own `if (!m_inStream)` guard tests `std::istream::fail()`
+  (failbit/badbit), NEVER `eof()`, so the SECOND `mtllib` directive's `readMatFn` call does not take that
+  branch: it silently re-enters `LoadMtl` on an already-exhausted stream, which parses nothing but still
+  flushes its own phantom. This section and the engineering log both used to claim, on the strength of a
+  two-`mtllib` fixture, that both sentences were "PROVEN unreachable for this library version" -- true for
+  two lines, false for three. Probe-confirmed directly against the real vendored header: it is the THIRD
+  `mtllib` directive that flips `fail()` true, and the library's raw `warn` string then reads verbatim
+  `"Material stream in error state. \nFailed to load material file(s). Use default material.\n"`. `OI23`
+  now uses three directives and is confirmed, by direct sabotage, to redden when either filter clause is
+  dropped -- both sentences are genuinely reachable and the filter is genuinely load-bearing, not merely
+  defence in depth. The library's `"Both \`d\` and \`Tr\` parameters defined"` warning (`:2237`/`:2249`)
+  is the OPPOSITE -- a real statement about the file -- and is NEVER dropped; confirmed load-bearing by
+  sabotage (`OI62` reddens when it is).
 - **`LoadObj`'s RETURN VALUE is the authority, never the `err` string -- and `LoadMtl`'s `err` parameter
   is PROVEN dead code for this library version, not merely unobserved.** Both `LoadMtl` overloads
   (`:2069`, `:2532`) open with `(void)err;` and never touch it again anywhere in the body, so `err_mtl`
