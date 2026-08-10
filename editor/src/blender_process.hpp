@@ -8,8 +8,9 @@
 // INCOMPLETE type without SDL reaching a single public editor header.
 //
 // NOTHING HERE LOGS (INV-B10). Nothing here deletes, renames or copies a file (INV-B9): this TU is in
-// NEITHER of check-project-no-delete.sh's two lists, which is exactly what makes a future
-// std::filesystem::remove written here a hard CI failure rather than a review comment.
+// NEITHER of check-project-no-delete.sh's two lists, which is exactly what makes a future deletion
+// written here a hard CI failure rather than a review comment. (Do not spell the delete/rename tokens
+// in prose: INV-B9's own gate grep does not strip comments, the AC-5 rule one invariant over.)
 #include <cstdint>
 #include <string>
 #include <string_view>
