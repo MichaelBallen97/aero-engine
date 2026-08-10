@@ -273,4 +273,95 @@ BlenderSupport blenderSupport(const std::optional<BlenderVersion>& version) noex
 
 bool isBlendFileName(std::string_view fileName) noexcept { return endsWithFolded(fileName, ".blend"); }
 
+std::vector<std::string> buildVersionArgs(std::string_view binary) { return {std::string(binary), "--version"}; }
+
+std::vector<std::string> buildExportArgs(std::string_view binary, std::string_view blendAbs, std::string_view scriptAbs,
+                                         std::string_view outAbs, std::string_view statusAbs) {
+    // Fifteen entries, and the ORDER is the contract (AC-11). Every path goes in RAW: no quoting, no
+    // escaping, no substitution. MEASURED end to end against a real Blender with a path containing a
+    // space and a non-ASCII character (§G-4, E20).
+    return {
+        std::string(binary),
+        "-b",  // headless
+        std::string(blendAbs),
+        "-X",        // --factory-startup: no user add-ons, no user preferences. The bundled glTF
+                     // exporter is factory-ENABLED, so no --addons flag is needed (VERIFIED on 5.2).
+        "-Y",        // --disable-autoexec: never run a .blend's own embedded Python
+        "-noaudio",  // a headless run has no audio device to open
+        "--python-exit-code",
+        "42",  // an UNCAUGHT script exception exits 42, which is how "the script died" is told apart
+               // from "Blender itself refused the file" (which exits 1 and never runs the script)
+        "--python",
+        std::string(scriptAbs),
+        "--",  // Blender's own "stop parsing; the rest is the script's" separator
+        "--out",
+        std::string(outAbs),
+        "--status",
+        std::string(statusAbs),
+    };
+}
+
+namespace {
+
+// The script text, VERBATIM as executed against Blender 5.2.0 LTS this session (§G-4). Do not
+// "improve" it:
+//   * every kwarg in `wanted` was verified present in that build's 111-property RNA list, and the RNA
+//     FILTER below is what lets ONE script span the whole supported version range -- passing a keyword
+//     the installed Blender does not know raises TypeError and fails the whole export, so unknown keys
+//     are DROPPED and REPORTED instead. There is no version branching in Python and no version table
+//     in C++, and this is why.
+//   * `export_yup` is deliberately ABSENT (F6). Blender's world is Z-up and glTF is Y-up; the
+//     exporter's own export_yup property (default enabled) performs that conversion INSIDE Blender, so
+//     what lands in the GLB is specification-conformant glTF. Setting it False would be the mistake and
+//     would break 3.2.1's "the importer converts NOTHING" rule. This task therefore contains no
+//     coordinate mathematics of any kind.
+//   * `--factory-startup` is on the COMMAND LINE, never a line in here.
+//   * the try/except writes the status file with a traceback rather than propagating, which is what
+//     makes the "exit 0, ok: false" row of the failure table reachable at all.
+// NO INTERPOLATION SITE OF ANY KIND (AC-13): no '%', no "{}" pair, no ".format(" call, no f-string
+// prefix. `traceback.format_exc()` and "export_format" merely CONTAIN those letters -- neither is a
+// substitution point, which is what BT39 asserts and what the plan's own shorthand ("no format")
+// overstates.
+constexpr std::string_view EXPORT_SCRIPT_TEXT =
+    R"PY(# Aero Engine -- Blender -> glTF export (task 3.2.4). Parameters arrive via sys.argv after "--".
+import bpy, sys, json, os, traceback
+
+def arg(name, argv):
+    return argv[argv.index(name) + 1]
+
+argv   = sys.argv[sys.argv.index("--") + 1:]
+out    = arg("--out", argv)
+status = arg("--status", argv)
+report = {"ok": False, "blender": bpy.app.version_string, "error": "", "dropped": [], "bytes": 0}
+try:
+    wanted = {
+        "filepath": out,
+        "export_format": "GLB",
+        "export_apply": True,          # evaluate modifiers -- what the user sees is what exports
+        "export_animations": True,
+        "export_skins": True,
+        "export_materials": "EXPORT",
+        "export_cameras": False,       # ImportedModel has no camera or light concept
+        "export_lights": False,
+        "use_selection": False,        # a background run has no selection; be explicit
+        "use_visible": False,          # hidden objects export too -- a headless run has no viewport
+    }
+    known = {p.identifier for p in bpy.ops.export_scene.gltf.get_rna_type().properties}
+    report["dropped"] = sorted(k for k in wanted if k not in known)
+    result = bpy.ops.export_scene.gltf(**{k: v for k, v in wanted.items() if k in known})
+    report["result"] = list(result)
+    report["ok"]     = os.path.exists(out) and os.path.getsize(out) > 0
+    report["bytes"]  = os.path.getsize(out) if os.path.exists(out) else 0
+    if not report["ok"]:
+        report["error"] = "the exporter reported " + str(list(result)) + " but wrote no usable file"
+except Exception:
+    report["error"] = traceback.format_exc()
+with open(status, "w", encoding="utf-8") as f:
+    json.dump(report, f)
+)PY";
+
+}  // namespace
+
+std::string_view blenderExportScriptText() noexcept { return EXPORT_SCRIPT_TEXT; }
+
 }  // namespace engine::editor

@@ -22,11 +22,15 @@
 
 using engine::editor::BLENDER_ABSOLUTE_MIN;
 using engine::editor::BLENDER_MIN_SUPPORTED;
+using engine::editor::BLENDER_SCRIPT_VERSION;
 using engine::editor::blenderCandidatePaths;
 using engine::editor::BlenderEnv;
+using engine::editor::blenderExportScriptText;
 using engine::editor::BlenderSupport;
 using engine::editor::blenderSupport;
 using engine::editor::BlenderVersion;
+using engine::editor::buildExportArgs;
+using engine::editor::buildVersionArgs;
 using engine::editor::currentHostOs;
 using engine::editor::HostOs;
 using engine::editor::isBlendFileName;
@@ -443,4 +447,142 @@ TEST_CASE("blender_tool: a .blend is a blend file AND is NOT an importable model
     CHECK_FALSE(isImportableModelName("statue.blend"));
     CHECK(isImportableModelName("statue.gltf"));
     CHECK_FALSE(isBlendFileName("statue.gltf"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// argv + script (BT34-BT43)
+// ---------------------------------------------------------------------------------------------
+
+TEST_CASE("blender_tool: buildVersionArgs is exactly {binary, --version} (BT34, AC-10)") {
+    const std::vector<std::string> args = buildVersionArgs("/opt/blender/blender");
+    REQUIRE(args.size() == 2);
+    CHECK(args[0] == "/opt/blender/blender");
+    CHECK(args[1] == "--version");
+}
+
+TEST_CASE("blender_tool: buildExportArgs produces fifteen entries in a fixed order (BT35, AC-11)") {
+    const std::vector<std::string> args =
+        buildExportArgs("/bin/blender", "/proj/assets/chair.blend", "/proj/Library/BlenderExports/export_gltf.py",
+                        "/proj/Library/BlenderExports/abc.glb", "/proj/Library/BlenderExports/abc.json");
+
+    // Element by element, in order, one at a time -- so a failure NAMES THE POSITION rather than
+    // dumping two vectors at each other. An order swap (seed S3) is invisible to a set comparison.
+    REQUIRE(args.size() == 15);
+    CHECK(args[0] == "/bin/blender");
+    CHECK(args[1] == "-b");
+    CHECK(args[2] == "/proj/assets/chair.blend");
+    CHECK(args[3] == "-X");
+    CHECK(args[4] == "-Y");
+    CHECK(args[5] == "-noaudio");
+    CHECK(args[6] == "--python-exit-code");
+    CHECK(args[7] == "42");
+    CHECK(args[8] == "--python");
+    CHECK(args[9] == "/proj/Library/BlenderExports/export_gltf.py");
+    CHECK(args[10] == "--");
+    CHECK(args[11] == "--out");
+    CHECK(args[12] == "/proj/Library/BlenderExports/abc.glb");
+    CHECK(args[13] == "--status");
+    CHECK(args[14] == "/proj/Library/BlenderExports/abc.json");
+    // The .blend comes BEFORE the script, and every script parameter comes AFTER "--": Blender parses
+    // its own flags up to that separator and hands the rest to sys.argv.
+    CHECK(args[2].find(".blend") != std::string::npos);
+    CHECK(std::find(args.begin(), args.end(), std::string("--")) - args.begin() == 10);
+}
+
+TEST_CASE("blender_tool: a hostile path survives byte-identically as ONE argv entry (BT36, AC-12)") {
+    // A space, a single quote, a double quote, a backslash and non-ASCII bytes. Hoisted into a NAMED
+    // LOCAL rather than written inline in the macro argument: a raw string literal containing \" breaks
+    // MSVC's legacy preprocessor inside a doctest macro (the ci-portability rule).
+    // The literals are split at every hex escape on purpose: "\xBC" followed by 'b' would swallow the
+    // 'b' as a third hex digit and become an out-of-range escape -- a COMPILE error, and one this case
+    // hit for real while being written. U+00FC is the two bytes C3 BC in UTF-8.
+    const std::string hostile =
+        "/tmp/dir with space/\xC3\xBC"
+        "nicode/my c\xC3\xBC"
+        "be's \"copy\"\\weird.blend";
+    const std::vector<std::string> args = buildExportArgs("/bin/blender", hostile, "/s.py", "/o.glb", "/st.json");
+
+    REQUIRE(args.size() == 15);
+    CHECK(args[2] == hostile);  // BYTE-IDENTICAL -- nothing quoted, escaped or substituted here
+    CHECK(args[2].size() == hostile.size());
+    // Exactly ONE entry carries it: a shell-style split on the space would produce two, which is the
+    // failure this case exists to make impossible. SDL owns Windows quoting; we must not pre-quote.
+    CHECK(std::count(args.begin(), args.end(), hostile) == 1);
+    CHECK(args[2].find('\'') != std::string::npos);
+    CHECK(args[2].find('"') != std::string::npos);
+    CHECK(args[2].find('\\') != std::string::npos);
+    CHECK(args[2].find(' ') != std::string::npos);
+}
+
+TEST_CASE("blender_tool: an empty binary still produces a well-formed argv vector (BT37, AC-11)") {
+    const std::vector<std::string> args = buildExportArgs("", "/b.blend", "/s.py", "/o.glb", "/st.json");
+    REQUIRE(args.size() == 15);
+    CHECK(args[0].empty());  // the caller's problem to reject, never a collapsed vector here
+    CHECK(args[1] == "-b");
+    CHECK(args[14] == "/st.json");
+}
+
+TEST_CASE("blender_tool: the argv builders are pure -- two calls are identical (BT38, AC-1)") {
+    CHECK(buildVersionArgs("/bin/blender") == buildVersionArgs("/bin/blender"));
+    CHECK(buildExportArgs("/a", "/b", "/c", "/d", "/e") == buildExportArgs("/a", "/b", "/c", "/d", "/e"));
+    CHECK(buildExportArgs("/a", "/b", "/c", "/d", "/e") != buildExportArgs("/a", "/b", "/c", "/d", "/X"));
+}
+
+TEST_CASE("blender_tool: the export script has NO interpolation site of any kind (BT39, AC-13)") {
+    const std::string script(blenderExportScriptText());
+    // The plan's shorthand for this case says "no %, no {}, no format". The first two are literally
+    // true and are asserted as such; the third is shorthand for "no SUBSTITUTION POINT", because the
+    // script legitimately contains `traceback.format_exc()` and the key `"export_format"` -- neither
+    // is a place anything can be interpolated. The checkable statements are these four.
+    CHECK(script.find('%') == std::string::npos);         // no printf-style site
+    CHECK(script.find("{}") == std::string::npos);        // no std::format-style placeholder
+    CHECK(script.find(".format(") == std::string::npos);  // no Python str.format call
+    CHECK(script.find("f\"") == std::string::npos);       // no f-string prefix
+    CHECK(script.find("f'") == std::string::npos);
+    // And the whole point of the above: every parameter arrives through sys.argv, never through the
+    // text (D8 -- a `--python-expr` built by concatenation would be a code injection).
+    CHECK(script.find("sys.argv") != std::string::npos);
+}
+
+TEST_CASE("blender_tool: the export script carries the RNA filter, GLB and its try/except (BT40, AC-14)") {
+    const std::string script(blenderExportScriptText());
+    // The RNA filter is D10's WHOLE mechanism: it is what lets one script span the supported version
+    // range without a version table anywhere. Seed S18 removes it.
+    CHECK(script.find("get_rna_type().properties") != std::string::npos);
+    CHECK(script.find("\"export_format\": \"GLB\"") != std::string::npos);
+    CHECK(script.find("try:") != std::string::npos);
+    CHECK(script.find("except Exception:") != std::string::npos);
+    CHECK(script.find("traceback.format_exc()") != std::string::npos);
+    // The status file is written on BOTH paths, which is what makes "exit 0, ok: false" reachable.
+    CHECK(script.find("json.dump(report, f)") != std::string::npos);
+}
+
+TEST_CASE("blender_tool: the export script does NOT mention export_yup (BT41, F6)") {
+    // Blender's world is Z-up, glTF is Y-up, and the exporter's own default-enabled export_yup does
+    // that conversion INSIDE Blender -- so what lands in the GLB is conformant glTF and 3.2.1's "the
+    // importer converts NOTHING" rule holds. Setting it False (seed S19) would silently rotate every
+    // imported model, with no test outside this one able to see it.
+    const std::string script(blenderExportScriptText());
+    CHECK(script.find("export_yup") == std::string::npos);
+    CHECK(script.find("yup") == std::string::npos);
+}
+
+TEST_CASE("blender_tool: --factory-startup is a command-line flag, never a script line (BT42, AC-14)") {
+    const std::string script(blenderExportScriptText());
+    CHECK(script.find("--factory-startup") == std::string::npos);
+    CHECK(script.find("factory") == std::string::npos);
+    // It is on the argv instead, spelled -X. The bundled glTF exporter is factory-ENABLED, so no
+    // --addons flag is needed either (VERIFIED against 5.2.0 LTS).
+    const std::vector<std::string> args = buildExportArgs("/bin/blender", "/b.blend", "/s.py", "/o.glb", "/st.json");
+    CHECK(std::find(args.begin(), args.end(), std::string("-X")) != args.end());
+    CHECK(std::find(args.begin(), args.end(), std::string("--addons")) == args.end());
+}
+
+TEST_CASE("blender_tool: the script text is byte-identical across calls and the version is 1 (BT43)") {
+    const std::string_view first = blenderExportScriptText();
+    const std::string_view second = blenderExportScriptText();
+    CHECK(first == second);
+    CHECK(first.data() == second.data());  // the SAME compile-time constant, not a rebuilt string
+    CHECK_FALSE(first.empty());
+    CHECK(BLENDER_SCRIPT_VERSION == 1);
 }

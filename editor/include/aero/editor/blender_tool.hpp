@@ -89,6 +89,46 @@ enum class BlenderSupport : std::uint8_t { Supported = 0, Warned, Refused };
 // the project will report an import failure on every scan. MI133 pins both halves together.
 [[nodiscard]] bool isBlendFileName(std::string_view fileName) noexcept;
 
+// ---- argv builders ------------------------------------------------------------------------------
+// Both are PURE, and both were executed VERBATIM against Blender 5.2.0 LTS (plan §G-4). NOTHING is
+// quoted, escaped or substituted in either: SDL owns Windows quoting (SDL_windowsprocess.c's
+// join_arguments, F2) and hand-quoting on top of it is a double-escape bug, while on POSIX there is
+// no shell in the path at all -- SDL_CreateProcessWithProperties takes an argv ARRAY, never a
+// command line. That is also why INV-B2 holds: no shell, no shell wrapper and no command-string
+// launcher of any kind appears anywhere in this task.
+//
+// NOTE TO THE AUTHOR OF THIS COMMENT: INV-B2's gate grep does not strip comments (the AC-5 rule, one
+// invariant over). Do NOT spell the shell-launcher tokens it searches for in prose here, or a
+// citation silently turns a hard, empty-output gate into one that has to be read and judged.
+
+[[nodiscard]] std::vector<std::string> buildVersionArgs(std::string_view binary);
+
+// EXACTLY fifteen entries, in this order:
+//   binary, "-b", blendAbs, "-X", "-Y", "-noaudio", "--python-exit-code", "42",
+//   "--python", scriptAbs, "--", "--out", outAbs, "--status", statusAbs
+// Everything after "--" is Blender's own convention for "stop parsing, hand the rest to the script",
+// and the script reads it from sys.argv -- MEASURED to arrive verbatim (§G-4).
+[[nodiscard]] std::vector<std::string> buildExportArgs(std::string_view binary, std::string_view blendAbs,
+                                                       std::string_view scriptAbs, std::string_view outAbs,
+                                                       std::string_view statusAbs);
+
+// The export script's text, as a COMPILE-TIME CONSTANT with NO INTERPOLATION SITE OF ANY KIND
+// (AC-13): byte-identical for every project, every asset and every platform, which is also what makes
+// it assertable in tier-0.
+//
+// This is D8, and it is a DELIBERATE deviation from the roadmap subtask's own wording, on security
+// grounds: the alternative -- handing Blender a Python EXPRESSION built by concatenating a
+// user-controlled path into a string literal -- is a code injection. A file name that closes the
+// quote and appends a statement is legal on macOS and Linux, and a backslash in a Windows path is a
+// Python escape before it is a separator; every mitigation is a hand-rolled parser for a language we
+// do not own. A FILE plus sys.argv after "--" has neither problem. The roadmap row is left unedited
+// so the deviation stays visible.
+[[nodiscard]] std::string_view blenderExportScriptText() noexcept;
+
+// Bumped whenever the script text changes, which invalidates every cached artifact -- that is the
+// intended behaviour, and it is why the version is recorded in the provenance record.
+inline constexpr std::uint32_t BLENDER_SCRIPT_VERSION = 1;
+
 // ---- constants ----------------------------------------------------------------------------------
 
 inline constexpr std::string_view BLENDER_EXPORT_DIR_NAME = "BlenderExports";
