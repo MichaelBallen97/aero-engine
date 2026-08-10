@@ -200,8 +200,7 @@ ObjMtlLibScan scanObjMtlLibsScan(std::span<const std::byte> bytes, std::size_t m
                 pushCandidate(operand);  // the WHOLE operand LEADS
                 std::size_t tokenStart = 0;
                 while (tokenStart < operand.size()) {
-                    while (tokenStart < operand.size() &&
-                           (operand[tokenStart] == ' ' || operand[tokenStart] == '\t')) {
+                    while (tokenStart < operand.size() && (operand[tokenStart] == ' ' || operand[tokenStart] == '\t')) {
                         ++tokenStart;
                     }
                     std::size_t tokenEnd = tokenStart;

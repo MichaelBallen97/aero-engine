@@ -409,8 +409,8 @@ struct SurvivingFace {
 // `src.size()` and defaulted to INVALID_SUBASSET, so an unmapped (dropped, or never reached because of
 // the cap) raw index reads as "no material" rather than a stale, now-out-of-range one.
 [[nodiscard]] std::vector<std::uint32_t> convertMaterials(const std::vector<tinyobj::material_t>& src,
-                                                           std::string_view textureBaseDir,
-                                                           std::string_view combinedWarnings, ImportResult& out) {
+                                                          std::string_view textureBaseDir,
+                                                          std::string_view combinedWarnings, ImportResult& out) {
     const bool keepEmptyNamed = declaredWithEmptyName(combinedWarnings);
     std::vector<std::uint32_t> rawToConverted(src.size(), INVALID_SUBASSET);
     // code-review round, gap 7: ONE flag for the whole call, so MAX_EXTERNAL_URIS escalates to
@@ -470,10 +470,10 @@ struct SurvivingFace {
         }
         if (!m.roughness_texname.empty()) {
             mat.metallicRoughness = convertTextureSlot(m.roughness_texname, m.roughness_texopt, textureBaseDir,
-                                                        externalUriCapReported, out);
+                                                       externalUriCapReported, out);
         } else {
-            mat.metallicRoughness = convertTextureSlot(m.metallic_texname, m.metallic_texopt, textureBaseDir,
-                                                        externalUriCapReported, out);
+            mat.metallicRoughness =
+                convertTextureSlot(m.metallic_texname, m.metallic_texopt, textureBaseDir, externalUriCapReported, out);
         }
 
         // normal: normal_texname (norm), ELSE bump_texname (map_Bump/bump) -- NO warning: Blender's OBJ
@@ -484,8 +484,7 @@ struct SurvivingFace {
                 convertTextureSlot(m.normal_texname, m.normal_texopt, textureBaseDir, externalUriCapReported, out);
             mat.normalScale = m.normal_texopt.bump_multiplier;
         } else if (!m.bump_texname.empty()) {
-            mat.normal =
-                convertTextureSlot(m.bump_texname, m.bump_texopt, textureBaseDir, externalUriCapReported, out);
+            mat.normal = convertTextureSlot(m.bump_texname, m.bump_texopt, textureBaseDir, externalUriCapReported, out);
             mat.normalScale = m.bump_texopt.bump_multiplier;
         }
         // else: mat.normal stays disengaged, mat.normalScale stays its default 1 -- "1 when neither map

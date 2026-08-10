@@ -389,8 +389,7 @@ TEST_CASE(
     // corrected in the same pass that rewrote this case.
     const std::string doc = "mtllib a.mtl\nmtllib b.mtl\nmtllib c.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
     const std::vector<ExternalBuffer> externals = {
-        ExternalBuffer{"a.mtl", "newmtl foo\nKd 1 0 0\n"},
-        ExternalBuffer{"b.mtl", "newmtl bar\nKd 0 1 0\n"},
+        ExternalBuffer{"a.mtl", "newmtl foo\nKd 1 0 0\n"}, ExternalBuffer{"b.mtl", "newmtl bar\nKd 0 1 0\n"},
         // "c.mtl" is deliberately NOT supplied -- the three-directive mechanism is driven by the .obj's
         // own THREE mtllib LINES alone, regardless of which resolve to supplied bytes, and leaving one
         // unsupplied additionally exercises D7's own "no matching .mtl was supplied" warning alongside.
@@ -1475,12 +1474,12 @@ TEST_CASE(
     "obj_import: every OTHER face in a larger body survives a single non-finite vertex elsewhere in the "
     "file (OI89)") {
     const std::string doc =
-        "v 0 0 0\nv 1 0 0\nv 0 1 0\n"       // triangle A -- fine
-        "v 1e400 1e400 1e400\n"             // the poisoned vertex (index 4)
-        "v 2 2 2\nv 3 2 2\nv 2 3 2\n"        // triangle B -- fine
-        "f 1 2 3\n"                          // A: survives
-        "f 4 5 6\n"                          // uses the poisoned vertex: dropped
-        "f 5 6 7\n";                         // B: survives
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\n"  // triangle A -- fine
+        "v 1e400 1e400 1e400\n"        // the poisoned vertex (index 4)
+        "v 2 2 2\nv 3 2 2\nv 2 3 2\n"  // triangle B -- fine
+        "f 1 2 3\n"                    // A: survives
+        "f 4 5 6\n"                    // uses the poisoned vertex: dropped
+        "f 5 6 7\n";                   // B: survives
     const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
     CHECK(result.status == ImportStatus::Ok);
     REQUIRE(result.model.meshes.size() == 1);
