@@ -643,9 +643,20 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
             convertRequested = true;
         }
     } else if (session.state() == SessionState::Imported) {
-        scratch = blender.versionString().empty()
-                      ? std::string("Imported from a cached Blender export.")
-                      : std::format("Imported from a Blender export produced by Blender {}.", blender.versionString());
+        // THE ARTIFACT'S OWN provenance, never blender().versionString() (code-review S4). That accessor
+        // is the CURRENTLY INSTALLED Blender this session has probed -- empty on a pure cache hit, and,
+        // once anything has probed, the version of a binary that did not produce the file on screen. The
+        // whole point of the recorded pair is that "convert with 4.2, upgrade to 5.2, and the panel still
+        // says 4.2" is TRUE, which is the accepted limitation §A-9 states in those words.
+        if (session.artifactBlenderVersion().empty()) {
+            scratch = "Imported from a cached Blender export.";
+        } else if (session.artifactBlenderPath().empty()) {
+            scratch =
+                std::format("Imported from a Blender export produced by Blender {}.", session.artifactBlenderVersion());
+        } else {
+            scratch = std::format("Imported from a Blender export produced by Blender {} at {}.",
+                                  session.artifactBlenderVersion(), session.artifactBlenderPath());
+        }
         ImGui::TextUnformatted(scratch.c_str());
         drawBlenderLog(blender, scratch);
         if (ImGui::Button("Re-import")) {

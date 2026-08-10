@@ -91,6 +91,19 @@ public:
     // reused for "may this .blend be converted at all?" -- a freshly selected .blend is never dirty.
     [[nodiscard]] bool targetHasIdentity() const noexcept { return targetGuid.valid(); }
 
+    // WHAT PRODUCED THE MODEL CURRENTLY SHOWN, taken from the provenance record on a cache hit and from
+    // the service on a fresh conversion. Both "" unless the state is Imported from a .blend.
+    //
+    // NOT the same thing as blender().versionString(), and the difference is the whole point
+    // (code-review S4): that one is the CURRENTLY INSTALLED Blender this session happens to have probed.
+    // On a cache hit nothing is probed at all, so it is empty; and once something HAS probed -- because
+    // the user opened a different .blend that missed -- it names the installed version while the artifact
+    // on screen was produced by whatever made it. §A-9's own known-and-expected entry ("convert with 4.2,
+    // upgrade to 5.2 ... the panel still says it was produced by 4.2") is only true if the panel reads
+    // THESE.
+    [[nodiscard]] const std::string& artifactBlenderVersion() const noexcept { return artifactVersion; }
+    [[nodiscard]] const std::string& artifactBlenderPath() const noexcept { return artifactBinary; }
+
 private:
     // task 3.2.4: the .blend arm, run INSTEAD of the two-pass importer path. Split out only for
     // readability -- service()'s existing early-return structure above it is unchanged.
@@ -119,6 +132,10 @@ private:
     std::uint64_t observedSize = 0;
     std::size_t imports = 0;
     std::string lastApplyError;
+    // task 3.2.4 code-review S4: the provenance record's own blenderVersion/blenderPath, parsed on a
+    // cache hit and previously thrown away one line after being compared.
+    std::string artifactVersion;
+    std::string artifactBinary;
     // task 3.2.4: a VALUE member, exactly as this class is itself a value member of EditorApp. That is
     // what makes the static_asserts below evaluate BlenderService's own move -- and what makes its
     // named-deleter-over-an-incomplete-type PIMPL load-bearing rather than stylistic.

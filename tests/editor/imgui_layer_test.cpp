@@ -6146,6 +6146,23 @@ TEST_CASE(
     }
     REQUIRE(arm.size() == 1);
     CHECK(arm[0].find("case BlenderState::Probing:") != std::string::npos);
+
+    // code-review S4, the panel half: the "produced by Blender ..." line names the ARTIFACT's own
+    // recorded producer, never blender().versionString() -- which is the currently INSTALLED Blender and
+    // is either empty (nothing probed) or a different binary entirely. BS50 proves the session carries
+    // the record's value; this proves the panel is the thing that reads it. Scanned as a WINDOW rather
+    // than a line, because clang-format puts a format string and its argument on separate lines.
+    const std::size_t importedAt = soleLineContaining(code, "session.state() == SessionState::Imported");
+    const std::size_t reimportAt = soleLineContaining(code, R"(ImGui::Button("Re-import"))");
+    REQUIRE(reimportAt > importedAt);
+    bool namesTheRecord = false;
+    bool namesTheInstalledBlender = false;
+    for (std::size_t i = importedAt; i < reimportAt; ++i) {
+        namesTheRecord = namesTheRecord || code[i].find("artifactBlenderVersion()") != std::string::npos;
+        namesTheInstalledBlender = namesTheInstalledBlender || code[i].find("versionString()") != std::string::npos;
+    }
+    CHECK(namesTheRecord);
+    CHECK_FALSE(namesTheInstalledBlender);
 }
 
 TEST_CASE(

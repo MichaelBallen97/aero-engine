@@ -177,6 +177,8 @@ void ModelImportSession::service(std::string_view assetsRootUtf8, const AssetDat
         lastApplyError.clear();
         observedSize = 0;
         targetGuid = Guid{};
+        artifactVersion.clear();  // code-review S4: a property of the result, cleared with it
+        artifactBinary.clear();
     }
     if (targetPath.empty()) {
         stateValue = SessionState::Idle;
@@ -439,6 +441,12 @@ void ModelImportSession::serviceBlend(std::string_view assetsRootUtf8, const Ass
                     }
                     // else: an unhashed record has no cache key at all (3.1.3's ThumbnailKey rule), so
                     // the model is SHOWN and deliberately NOT cached.
+                    //
+                    // code-review S4: what produced THIS artifact, recorded whether or not it was
+                    // cacheable -- the panel names it, and on a fresh conversion it is the Blender that
+                    // just ran.
+                    artifactVersion = blenderService.versionString();
+                    artifactBinary = blenderService.binaryPath();
                     stateValue = SessionState::Imported;
                 } else {
                     // AC-34: the SESSION composes the message, because only the session imports, and
@@ -486,6 +494,12 @@ void ModelImportSession::serviceBlend(std::string_view assetsRootUtf8, const Ass
         if (const FileReadResult provenanceText = readTextFile(provenancePath); provenanceText.text.has_value()) {
             const std::optional<ExportProvenance> actual = parseExportProvenance(*provenanceText.text);
             if (actual.has_value() && provenanceMatches(*actual, expected) && importArtifact()) {
+                // code-review S4: the RECORD's own two informational fields, which were parsed,
+                // compared and then dropped. They are what the panel must name -- on a hit nothing has
+                // probed, so the service knows only "", and once something HAS probed (a different
+                // .blend that missed) it knows the INSTALLED version, which did not produce this file.
+                artifactVersion = actual->blenderVersion;
+                artifactBinary = actual->blenderPath;
                 stateValue = SessionState::Imported;
                 return;  // ZERO processes, ZERO bytes written, no environment read, no path stat'ed
             }

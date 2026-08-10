@@ -1832,3 +1832,42 @@ TEST_CASE(
     CHECK(engine::editor::parseExportStatus(atStatue).has_value());
 #endif
 }
+
+TEST_CASE(
+    "blender_service: the panel's producing-version line comes from the RECORD, not from whatever this "
+    "session has probed (BS50, task 3.2.4 code-review S4)") {
+    const TempDir tmp;
+    const BlendProject project = makeBlendProject(tmp, 323);
+    // matchingProvenance() records "5.2.0 LTS" and "/nonexistent/blender" -- two values NOTHING
+    // compares, which is exactly why they make a discriminating fixture here.
+    stageCacheHit(project);
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", project.db.generation());
+    session.service(project.assetsRoot, project.db);
+    REQUIRE(session.state() == SessionState::Imported);
+
+    // The record's own two informational fields SURVIVE the hit. Before the fix they were parsed,
+    // compared and dropped one line later, and the panel named blender().versionString() instead.
+    CHECK(session.artifactBlenderVersion() == "5.2.0 LTS");
+    CHECK(session.artifactBlenderPath() == "/nonexistent/blender");
+    // ...and the accessor the panel USED to read is empty on a pure hit -- nothing probed, so the old
+    // line said "Imported from a cached Blender export." for an artifact whose producer is on record.
+    CHECK(session.blender().versionString().empty());
+
+    // Now probe a DIFFERENT Blender within the same session. This is where the old line went from
+    // uninformative to WRONG: it would name the installed binary as the artifact's producer.
+    session.blenderMutable().resolve(engine::editor::currentHostOs(), overrideEnv(CMAKE_COMMAND), project.exportDir);
+    sessionUntilBlenderSettled(session, project.assetsRoot, project.db);
+    REQUIRE(session.blender().state() == BlenderState::Ready);
+    REQUIRE_FALSE(session.blender().versionString().empty());
+    REQUIRE(session.blender().versionString() != "5.2.0 LTS");
+    CHECK(session.artifactBlenderVersion() == "5.2.0 LTS");  // still the RECORD's
+
+    // A MISS clears both -- they are a property of the result, not of the session.
+    session.setTarget("statue.blend", project.db.generation() + 1U);
+    session.service(project.assetsRoot, project.db, 0.016F);
+    REQUIRE(session.state() == SessionState::NeedsConversion);  // the probed version now mismatches
+    CHECK(session.artifactBlenderVersion().empty());
+    CHECK(session.artifactBlenderPath().empty());
+}
