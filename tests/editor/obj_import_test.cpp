@@ -1273,3 +1273,89 @@ TEST_CASE(
     CHECK(result.model.materials[1].name == "bar");
     CHECK(result.model.materials[1].baseColorFactor.y == doctest::Approx(1.0F));  // bar's OWN Kd 0 1 0
 }
+
+// ---- code-review round, gap 1 (BLOCKING): materialIndex must resolve through the CONVERTED index -----
+
+TEST_CASE(
+    "obj_import: BLOCKING -- a bare 'usemtl' resolves through a phantom-dropped library entry to "
+    "INVALID_SUBASSET, never a stale raw index (OI82)") {
+    // Probe-confirmed reproduction: "a.mtl" is named by mtllib but NEVER supplied, so LoadObj's own
+    // MaterialStreamReader runs LoadMtl on an EMPTY stream, which (tinyobjloader's own unconditional
+    // "flush last material") produces ONE unnamed phantom entry -- materials.size() == 1 in the
+    // LIBRARY's own vector. The library's usemtl handler has no IS_SPACE guard, so a bare `usemtl`
+    // (nothing after it at all) parses as `usemtl ""`, which resolves via the SAME empty name the
+    // phantom flush just registered -- material_ids becomes [0], pointing STRAIGHT at the phantom.
+    // convertMaterials drops that phantom (no genuine `newmtl` was ever seen), so
+    // model.materials.size() == 0 -- and, before this fix, materialIndex stayed the RAW library index
+    // 0, pointing past the end of a ZERO-length array.
+    const std::string doc = "mtllib a.mtl\nusemtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const ImportResult result = importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    CHECK(result.model.materials.empty());
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].materialIndex == INVALID_SUBASSET);
+}
+
+TEST_CASE(
+    "obj_import: BLOCKING -- a second mtllib directive re-enters LoadMtl on an exhausted stream, leaving "
+    "the library's vector one phantom longer than ours; a bare 'usemtl' must still resolve to "
+    "INVALID_SUBASSET, not an off-by-one raw index (OI83)") {
+    // Probe-confirmed second reproduction: "a.mtl" (real, TWO materials) is supplied; the .obj's SECOND
+    // mtllib LINE ("mtllib b.mtl") makes LoadObj call our shared MaterialStreamReader a second time,
+    // which re-enters LoadMtl on the ALREADY-EXHAUSTED stream (MaterialStreamReader's own guard tests
+    // fail(), never eof()) -- that second call parses nothing but still unconditionally flushes ITS OWN
+    // empty-named phantom, so the LIBRARY's own materials vector ends up ONE LONGER than what
+    // convertMaterials keeps: [X, Y, <phantom>], library size 3, ours size 2. A bare `usemtl` resolves
+    // via the phantom's own freshly-registered "" key straight to raw index 2 -- in range for the
+    // library's 3-entry vector, one PAST the end of ours. "b.mtl" is deliberately NOT supplied: the
+    // mechanism fires from the .obj's own TWO mtllib LINES alone, regardless of what bytes back them.
+    const std::string doc = "mtllib a.mtl\nmtllib b.mtl\nusemtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const std::vector<ExternalBuffer> externals = {
+        ExternalBuffer{"a.mtl", "newmtl X\nKd 1 0 0\nnewmtl Y\nKd 0 1 0\n"},
+    };
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 2);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].materialIndex == INVALID_SUBASSET);
+}
+
+TEST_CASE(
+    "obj_import: general invariant -- every surviving primitive's materialIndex is INVALID_SUBASSET or a "
+    "valid index into model.materials, across real, phantom-dropped and never-declared references "
+    "(OI84)") {
+    const std::string doc =
+        "mtllib a.mtl\n"
+        "usemtl Real\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+        "usemtl\nv 2 2 2\nv 3 2 2\nv 2 3 2\nf 4 5 6\n"
+        "usemtl DoesNotExist\nv 4 4 4\nv 5 4 4\nv 4 5 4\nf 7 8 9\n";
+    const std::vector<ExternalBuffer> externals = {ExternalBuffer{"a.mtl", "newmtl Real\nKd 1 0 0\n"}};
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 1);
+    CHECK(result.model.materials[0].name == "Real");
+    std::size_t checked = 0;
+    for (const auto& mesh : result.model.meshes) {
+        for (const auto& prim : mesh.primitives) {
+            ++checked;
+            const bool inRangeOrInvalid =
+                prim.materialIndex == INVALID_SUBASSET || prim.materialIndex < result.model.materials.size();
+            INFO("materialIndex: ", prim.materialIndex, " materials.size(): ", result.model.materials.size());
+            CHECK(inRangeOrInvalid);
+        }
+    }
+    CHECK(checked > 0);
+    // the FIRST face (a genuine usemtl naming a REAL, surviving material) resolves concretely to 0 --
+    // the general loop above proves the invariant, this proves the ordinary case still works at all.
+    bool sawResolved = false;
+    for (const auto& mesh : result.model.meshes) {
+        for (const auto& prim : mesh.primitives) {
+            sawResolved = sawResolved || prim.materialIndex == 0;
+        }
+    }
+    CHECK(sawResolved);
+}

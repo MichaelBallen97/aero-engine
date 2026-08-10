@@ -362,17 +362,32 @@ struct SurvivingFace {
 // imported through its .obj byte-identical in the fields both produce (AC-23). `combinedWarnings` is
 // the library's OWN raw warn+err text (BEFORE filtering), consulted ONLY to distinguish a genuine
 // empty-named `newmtl` from a phantom flush (declaredWithEmptyName's own comment).
-void convertMaterials(const std::vector<tinyobj::material_t>& src, std::string_view textureBaseDir,
-                      std::string_view combinedWarnings, ImportResult& out) {
+//
+// RETURNS the library-index -> converted-index map (code-review gap 1, BLOCKING). `src`'s own index
+// space (the library's `materials` vector, which `material_ids[face]` references) and OUR index space
+// (`out.model.materials`, the CONVERTED vector) diverge the instant an entry is dropped below -- a
+// phantom flush (this file's own Findings 1/2, top-of-file comment) or an overflow past
+// MAX_MATERIALS_PER_MODEL. The two spaces coincide for every well-formed file and diverge the moment
+// either happens -- the epic's own "two things that coincide for glTF and diverge here" pattern, one
+// instance the plan's own §A-13 catalogue missed. A raw `material_ids[face]` value must NEVER become
+// ImportedPrimitive::materialIndex directly; every caller resolves through this map instead, sized to
+// `src.size()` and defaulted to INVALID_SUBASSET, so an unmapped (dropped, or never reached because of
+// the cap) raw index reads as "no material" rather than a stale, now-out-of-range one.
+[[nodiscard]] std::vector<std::uint32_t> convertMaterials(const std::vector<tinyobj::material_t>& src,
+                                                           std::string_view textureBaseDir,
+                                                           std::string_view combinedWarnings, ImportResult& out) {
     const bool keepEmptyNamed = declaredWithEmptyName(combinedWarnings);
+    std::vector<std::uint32_t> rawToConverted(src.size(), INVALID_SUBASSET);
     std::uint32_t nextLocalId = 0;
-    for (const tinyobj::material_t& m : src) {
+    for (std::size_t rawIndex = 0; rawIndex < src.size(); ++rawIndex) {
+        const tinyobj::material_t& m = src[rawIndex];
         if (m.name.empty() && !keepEmptyNamed) {
-            continue;  // a phantom flush, never a real declaration -- silently dropped, no warning
+            continue;  // a phantom flush, never a real declaration -- silently dropped, no warning, and
+                       // NEVER mapped: rawToConverted[rawIndex] stays INVALID_SUBASSET
         }
         if (nextLocalId >= MAX_MATERIALS_PER_MODEL) {
             escalate(out, ImportStatus::Truncated, "the material count exceeds this importer's per-model limit");
-            break;
+            break;  // every remaining src[] entry stays UNMAPPED too -- INVALID_SUBASSET, never a guess
         }
         ImportedMaterial mat;
         mat.name = m.name;
@@ -445,8 +460,10 @@ void convertMaterials(const std::vector<tinyobj::material_t>& src, std::string_v
                        "material '" + m.name + "': a texture declares -s/-o, which this importer does not represent");
         }
 
+        rawToConverted[rawIndex] = mat.localId;  // mat.localId == its own position in out.model.materials
         out.model.materials.push_back(std::move(mat));
     }
+    return rawToConverted;
 }
 
 // The ".mtl" arm (D6). `depth` is accepted and deliberately UNUSED: a .mtl's whole content is local,
@@ -473,7 +490,9 @@ void convertMaterials(const std::vector<tinyobj::material_t>& src, std::string_v
     appendLibraryDiagnostics(result, warn);
     appendLibraryDiagnostics(result, err);
 
-    convertMaterials(materials, assetRelativeDir, warn + err, result);  // D6: textureBaseDir IS assetRelativeDir
+    // the .mtl arm builds no geometry, so there is nothing to resolve the raw->converted map against.
+    (void)convertMaterials(materials, assetRelativeDir, warn + err, result);  // D6: textureBaseDir IS
+                                                                              // assetRelativeDir
     result.model.summary.materialCount = result.model.materials.size();
     result.model.summary.imageCount = result.model.images.size();
     return result;
@@ -615,6 +634,19 @@ void convertMaterials(const std::vector<tinyobj::material_t>& src, std::string_v
         return result;
     }
 
+    // §D-6: material conversion, SHARED with the .mtl arm above -- what keeps a .mtl imported standalone
+    // and the same .mtl imported through its .obj byte-identical in the fields both produce. AC-22: an
+    // unsupplied .mtl leaves `materials` holding only phantom flushes (declaredWithEmptyName's own
+    // comment), all silently dropped.
+    //
+    // RUN BEFORE GEOMETRY (code-review gap 1, BLOCKING; moved from after node-building), so the bucketing
+    // loop below can resolve every `material_ids[face]` value through `materialIndexMap` rather than
+    // through the library's own, now-DIVERGED index space. Nothing below this point needed geometry to
+    // exist first -- `materials`, `textureBaseDir` and `warn`/`err` were all already available.
+    const std::vector<std::uint32_t> materialIndexMap = convertMaterials(materials, textureBaseDir, warn + err, result);
+    result.model.summary.materialCount = result.model.materials.size();
+    result.model.summary.imageCount = result.model.images.size();
+
     // ---- §D-7: geometry conversion -------------------------------------------------------------
     bool capsExceeded = false;  // INV-O10: once ANY structural cap is hit, stop -- a COHERENT smaller
                                 // model, never a partial-claiming-whole one
@@ -687,10 +719,20 @@ void convertMaterials(const std::vector<tinyobj::material_t>& src, std::string_v
             const int rawId = survivors[s].materialId;
             if (rawId >= 0) {
                 if (static_cast<std::size_t>(rawId) < materials.size()) {
-                    resolved = static_cast<std::uint32_t>(rawId);
-                } else {
-                    // >= materials.size(): a BAD reference, ONE capped warning. A negative id (no
-                    // `usemtl` at all) is the ordinary case and gets none.
+                    // code-review gap 1, BLOCKING: resolve through materialIndexMap, NEVER use the raw
+                    // library index directly. `rawId` only indexes `materials` (the LIBRARY's own
+                    // vector); convertMaterials above may have DROPPED this exact entry (a phantom
+                    // flush, or an overflow past MAX_MATERIALS_PER_MODEL), in which case the map reads
+                    // INVALID_SUBASSET here too, correctly, instead of a stale index past the end of
+                    // out.model.materials.
+                    resolved = materialIndexMap[static_cast<std::size_t>(rawId)];
+                }
+                if (resolved == INVALID_SUBASSET) {
+                    // Two ways to land here, both worth ONE capped warning: rawId was >= materials.size()
+                    // (a BAD reference into the library's own vector), or it was in range but the entry
+                    // it named was DROPPED above (the case this gap closes -- it used to leave `resolved`
+                    // at the stale raw index instead). A negative id (no `usemtl` at all) never reaches
+                    // this branch and stays silent, exactly as before.
                     addWarning(result, "mesh '" + shape.name + "': a face references material " +
                                            std::to_string(rawId) + ", which does not exist");
                 }
@@ -862,14 +904,6 @@ void convertMaterials(const std::vector<tinyobj::material_t>& src, std::string_v
         result.model.nodes.push_back(std::move(node));
     }
     result.model.summary.nodeCount = result.model.nodes.size();
-
-    // §D-6: material conversion, SHARED with the .mtl arm above -- what keeps a .mtl imported
-    // standalone and the same .mtl imported through its .obj byte-identical in the fields both produce.
-    // AC-22: an unsupplied .mtl leaves `materials` holding only phantom flushes (declaredWithEmptyName's
-    // own comment), all silently dropped.
-    convertMaterials(materials, textureBaseDir, warn + err, result);
-    result.model.summary.materialCount = result.model.materials.size();
-    result.model.summary.imageCount = result.model.images.size();
     return result;
 }
 
