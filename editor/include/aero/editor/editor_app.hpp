@@ -378,7 +378,30 @@ public:
     void requestModelImportSettings(ImportSettings s) noexcept;
     void requestModelImportApply() noexcept;
 
+    // ---- task 3.2.4 request hooks: drive the Blender flow without a widget (the
+    // requestAssetBrowserSelectEntry shape, a SIXTH application). Each records EXACTLY what the
+    // corresponding panel button records, and each is applied on the NEXT tick's reconcile.
+    void requestBlenderConvert() noexcept;
+    void requestBlenderCancel() noexcept;
+    void requestBlenderRedetect() noexcept;
+    // Takes the path DIRECTLY, bypassing the native dialog -- the requestOpenProject(path) test-seam
+    // shape. This is how a GPU-tier case proves setOverridePath without synthesizing a dialog, which no
+    // tier in this tree can do.
+    void requestBlenderLocate(std::string_view absolutePathUtf8);
+    // ---- task 3.2.4 black-box accessors: the ImGui-free GPU tier's window into the Blender flow ----
+    [[nodiscard]] int blenderState() const noexcept;  // static_cast<int>(BlenderState) -- the enum stays
+                                                      // out of this header's surface, exactly as
+                                                      // modelImportState() keeps SessionState out
+    [[nodiscard]] std::size_t blenderExportRunCount() const noexcept;
+    [[nodiscard]] std::size_t blenderProbeRunCount() const noexcept;
+    [[nodiscard]] std::string_view blenderBinaryPath() const noexcept;
+
 private:
+    // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
+    // importSession and toolPrefsPath. THE ONLY PLACE THIS TASK LOGS (INV-B10).
+    void resolveBlender();
+    void applyBlenderOverride(std::string_view absolutePathUtf8);
+
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
     EditorApp(ImGuiLayer layer, platform::Context& ctx, EditorAppConfig config);
@@ -473,6 +496,15 @@ private:
                                                             // ALWAYS null-check.
     std::optional<ImportSettings> requestedImportSettings;  // one-shot, consumed by the next tick()
     bool requestedImportApply = false;                      // one-shot, ditto
+
+    // ---- task 3.2.4 one-shots, all consumed by the next tick()'s reconcile ------------------------
+    std::string requestedBlenderLocate;  // non-empty == a path to adopt as the override
+    bool requestedBlenderConvert = false;
+    bool requestedBlenderCancel = false;
+    bool requestedBlenderRedetect = false;
+    // The PREVIOUS tick's session state, so the two Blender log lines fire on a TRANSITION rather than
+    // every frame. A Converting session logging once per frame would be a hundred lines a second.
+    int lastBlenderSessionState = 0;
 };
 
 }  // namespace engine::editor

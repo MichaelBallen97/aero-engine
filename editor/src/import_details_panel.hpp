@@ -47,10 +47,39 @@ public:
         return r;
     }
 
+    // task 3.2.4: the Blender section's four channels, the same shape a fourth time. `Import with
+    // Blender` / `Re-import` / `Retry` all record convertRequested -- they are one action with three
+    // labels, and giving them one channel is what stops the panel deciding which is which.
+    [[nodiscard]] bool takeConvertRequest() noexcept {
+        const bool r = convertRequested;
+        convertRequested = false;
+        return r;
+    }
+    [[nodiscard]] bool takeCancelRequest() noexcept {
+        const bool r = cancelRequested;
+        cancelRequested = false;
+        return r;
+    }
+    [[nodiscard]] bool takeLocateRequest() noexcept {
+        const bool r = locateRequested;
+        locateRequested = false;
+        return r;
+    }
+    [[nodiscard]] bool takeRedetectRequest() noexcept {
+        const bool r = redetectRequested;
+        redetectRequested = false;
+        return r;
+    }
+
 private:
     const ModelImportSession* sessionPtr = nullptr;  // non-owning; ALWAYS null-check
     bool applyRequested = false;
     bool revertRequested = false;
+    // task 3.2.4
+    bool convertRequested = false;
+    bool cancelRequested = false;
+    bool locateRequested = false;
+    bool redetectRequested = false;
     std::optional<ImportSettings> editedSettings;  // the form's own copy while the user drags
     std::string labelScratch;                      // per-frame scratch, NOT model state (the 2.2.1 idiom)
 };

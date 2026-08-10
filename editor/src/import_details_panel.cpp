@@ -17,6 +17,7 @@
 // punctuation.
 #include "import_details_panel.hpp"
 
+#include <aero/editor/blender_service.hpp>  // task 3.2.4: the Blender section reads it, never writes it
 #include <aero/editor/model_import.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>  // task 3.2.2 (§A-2): leafOf, for the importer-identity fix
@@ -495,6 +496,161 @@ void drawImported(const ModelImportSession& session, bool& applyRequested, bool&
     }
 }
 
+// ---- task 3.2.4: the Blender section -----------------------------------------------------------------
+//
+// Drawn BEFORE the state switch and gated on isBlendFileName(target) ALONE, so it renders identically
+// in NeedsConversion, Converting, ConversionFailed and Imported (AC-37). Every arm of that switch
+// returns, so a section placed inside one would render in that state only -- and `Re-import` on a cache
+// hit, `Cancel` mid-run and the disabled button on a nil GUID each live in a different state.
+//
+// IT CALLS NO MUTATING MEMBER OF ANYTHING (AC-39) and performs no file access: `logTail()` is already
+// loaded by poll() when a run ends, so the panel renders what it holds and needs no fifth channel.
+void drawBlenderLog(const BlenderService& blender, std::string& scratch) {
+    if (blender.logPath().empty()) {
+        return;
+    }
+    if (ImGui::TreeNode("Blender log")) {
+        if (blender.logRefusedByCap()) {
+            // NEVER a partial read presented as the whole log (AC-35): the byte count and the absolute
+            // path, so the user can open it themselves.
+            scratch = std::format("The log is {} bytes, above the {}-byte display limit. Open it directly: {}",
+                                  blender.logSizeBytes(), MAX_TOOL_LOG_BYTES, blender.logPath());
+            ImGui::TextWrapped("%s", scratch.c_str());
+        } else if (blender.logTail().empty()) {
+            scratch = std::format("The log is empty. It is at: {}", blender.logPath());
+            ImGui::TextWrapped("%s", scratch.c_str());
+        } else {
+            ImGui::TextWrapped("%s", blender.logTail().c_str());
+        }
+        ImGui::TreePop();
+    }
+}
+
+void drawSearchedPaths(const BlenderService& blender) {
+    if (blender.searchedPaths().empty()) {
+        return;
+    }
+    ImGui::TextDisabled("Searched:");
+    // A scrolling region rather than an unbounded list: a long PATH can contribute hundreds of entries.
+    if (ImGui::BeginChild("blender-searched", ImVec2(0.0F, ImGui::GetTextLineHeightWithSpacing() * 6.0F),
+                          ImGuiChildFlags_Borders)) {
+        for (const std::string& path : blender.searchedPaths()) {
+            ImGui::TextUnformatted(path.c_str());
+        }
+    }
+    ImGui::EndChild();  // 1:1 with BeginChild regardless of what it returned
+}
+
+void drawBlenderSection(const ModelImportSession& session, bool& convertRequested, bool& cancelRequested,
+                        bool& locateRequested, bool& redetectRequested, std::string& scratch) {
+    const BlenderService& blender = session.blender();
+
+    if (!session.targetHasIdentity()) {
+        // AC-27. NeedsConversion, never NotImportable -- and the button is DRAWN and DISABLED rather
+        // than absent, so the reason is visible instead of the control silently vanishing.
+        ImGui::TextWrapped(
+            "This file has no valid .meta identity, so there is nowhere to cache a conversion. "
+            "Reimport the project's assets to repair it.");
+        ImGui::BeginDisabled(true);
+        if (ImGui::Button("Import with Blender")) {
+            convertRequested = true;  // unreachable while disabled; kept so enabling it is one edit
+        }
+        ImGui::EndDisabled();
+        return;
+    }
+
+    switch (blender.state()) {
+        case BlenderState::Unknown:
+        case BlenderState::Probing:
+            ImGui::TextDisabled("Checking the Blender version...");
+            return;
+        case BlenderState::ToolMissing:
+            ImGui::TextWrapped("Blender was not found.");
+            drawSearchedPaths(blender);
+            scratch =
+                std::format("Blender {}.{} or newer is recommended; {}.{} is the minimum.", BLENDER_MIN_SUPPORTED.major,
+                            BLENDER_MIN_SUPPORTED.minor, BLENDER_ABSOLUTE_MIN.major, BLENDER_ABSOLUTE_MIN.minor);
+            ImGui::TextDisabled("%s", scratch.c_str());
+            if (ImGui::Button("Locate...")) {
+                locateRequested = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Re-detect")) {
+                redetectRequested = true;
+            }
+            return;
+        case BlenderState::ToolUnusable:
+            scratch = std::format("Blender at '{}' cannot be used.", blender.binaryPath());
+            ImGui::TextColored(WARNING_COLOR, "%s", scratch.c_str());
+            if (!blender.message().empty()) {
+                ImGui::TextWrapped("%s", blender.message().c_str());
+            }
+            drawBlenderLog(blender, scratch);
+            if (ImGui::Button("Locate...")) {
+                locateRequested = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Re-detect")) {
+                redetectRequested = true;
+            }
+            return;
+        case BlenderState::Converting:
+            scratch = std::format("Running Blender... {:.1f} s", static_cast<double>(blender.elapsedSeconds()));
+            ImGui::TextUnformatted(scratch.c_str());
+            if (ImGui::Button("Cancel")) {
+                cancelRequested = true;
+            }
+            return;
+        case BlenderState::Ready:
+        case BlenderState::Converted:
+        case BlenderState::Failed:
+            break;  // handled below, where the SESSION's own state decides what to offer
+    }
+
+    if (!blender.binaryPath().empty()) {
+        scratch = blender.versionString().empty()
+                      ? std::format("Blender: {}", blender.binaryPath())
+                      : std::format("Blender {} at {}", blender.versionString(), blender.binaryPath());
+        ImGui::TextUnformatted(scratch.c_str());
+    }
+    // D14's "attempt, never refuse" band: a version below the recommended floor still converts, and the
+    // warning says so rather than blocking.
+    if (blender.state() == BlenderState::Ready && !blender.message().empty()) {
+        ImGui::TextColored(WARNING_COLOR, "%s", blender.message().c_str());
+    }
+
+    if (session.state() == SessionState::ConversionFailed) {
+        if (!blender.message().empty()) {
+            ImGui::TextColored(WARNING_COLOR, "%s", blender.message().c_str());
+        }
+        drawBlenderLog(blender, scratch);
+        if (ImGui::Button("Retry")) {
+            convertRequested = true;
+        }
+    } else if (session.state() == SessionState::Imported) {
+        scratch = blender.versionString().empty()
+                      ? std::string("Imported from a cached Blender export.")
+                      : std::format("Imported from a Blender export produced by Blender {}.", blender.versionString());
+        ImGui::TextUnformatted(scratch.c_str());
+        drawBlenderLog(blender, scratch);
+        if (ImGui::Button("Re-import")) {
+            convertRequested = true;
+        }
+    } else {
+        if (ImGui::Button("Import with Blender")) {
+            convertRequested = true;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Re-detect")) {
+        redetectRequested = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Locate...")) {
+        locateRequested = true;
+    }
+}
+
 void drawFailed(const ModelImportSession& session) {
     const ImportResult& result = session.result();
     const std::string statusLine = std::format("Status: {}", importStatusLabel(result.status));
@@ -515,6 +671,17 @@ void ImportDetailsPanel::onDraw(PanelContext& /*context*/) {  // no World/Select
         // Indistinguishable from Idle, and correctly so -- nothing has been selected yet either way.
         ImGui::TextDisabled("Select an asset in the Assets panel.");
         return;
+    }
+    // task 3.2.4 (AC-37): FIRST, and BEFORE the switch. Every arm below returns, so a section placed
+    // inside one would render in that state only -- and `Re-import` on a cache hit (Imported), `Cancel`
+    // mid-run (Converting) and the disabled button on a nil GUID (NeedsConversion) all need it. Gated
+    // on the TARGET's name alone, so no other asset type ever shows it and the existing six sections
+    // stay exactly six for everything else.
+    if (isBlendFileName(sessionPtr->target())) {
+        if (ImGui::CollapsingHeader("Blender", ImGuiTreeNodeFlags_DefaultOpen)) {
+            drawBlenderSection(*sessionPtr, convertRequested, cancelRequested, locateRequested, redetectRequested,
+                               labelScratch);
+        }
     }
     switch (sessionPtr->state()) {
         case SessionState::Idle:
