@@ -2,10 +2,13 @@
 // THE TREE (INV-O1). This file grows across several steps; see docs/plans/3.2.3-obj-import-tinyobjloader.md
 // §S for the sequence and docs/10-engineering-log.md's 3.2.3 entry for the finished design.
 //
-// Step 6 (this commit): §D-7 steps 4, 7, 8 -- first-appearance material bucketing (D10), the l/p count
-// warning (AC-34) and the N-root node array (D11). A primitive's materialIndex may, for THIS commit
-// only, name an index into `result.model.materials`, which stays EMPTY until Step 7's §D-6 conversion.
-// The ".mtl" arm still returns Unsupported; it lands at Step 7.
+// Step 7 (this commit): §D-6 material conversion (tinyobj::material_t -> ImportedMaterial/
+// ImportedImage), SHARED verbatim by both arms -- the ".mtl" arm is now real (AC-23's depth-independence
+// falls out of the shared function). Two build-time findings, corrected here rather than left to
+// surprise a caller and recorded in full in declaredWithEmptyName's own comment: LoadMtl always
+// flushes a trailing "material" whether or not any `newmtl` was ever seen, and a second `mtllib`
+// directive's readMatFn call still re-enters LoadMtl (tinyobjloader's own stream-exhaustion check tests
+// failbit, not eofbit) rather than taking the "stream in error" branch §A-10 describes.
 #include "obj_import.hpp"
 
 // task 3.2.3 D21: the mapbox earcut triangulation path reads vertex positions guarded only by
@@ -27,12 +30,16 @@ bounds-checked triangulation first."
 // clang-format sorts <tiny_obj_loader.h> alphabetically among the plain standard headers below (SAME
 // IncludeCategories priority, no '/' in its own path) -- it is still the ONLY tinyobjloader include in
 // this file, and the ONLY one anywhere in this tree (INV-O1).
+#include <aero/editor/project_files.hpp>  // parentOf -- D16's textureBaseDir derivation, reused verbatim
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <functional>
 #include <istream>
+#include <map>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <streambuf>
@@ -263,15 +270,212 @@ struct SurvivingFace {
     int materialId = -1;
 };
 
-// The ".mtl" arm. NOT YET IMPLEMENTED -- lands at Step 7 (D6). `depth` is accepted and, once
-// implemented, will be deliberately UNUSED: a .mtl's whole content is local, so this arm is
-// depth-independent by construction (AC-23).
-[[nodiscard]] ImportResult importMtlOnly(std::string_view /*assetRelativeDir*/, std::span<const std::byte> /*bytes*/,
+// task 3.2.3, Step 7 (§D-6): one texture slot's resolution. `texname` empty -> the slot stays
+// DISENGAGED, no image, no warning. Images are FOUND-OR-APPENDED by their RESOLVED relativePath, in
+// first-seen order, so the SAME texture named by two materials becomes ONE ImportedImage (E14).
+[[nodiscard]] std::optional<ImportedTextureRef> convertTextureSlot(std::string_view texname,
+                                                                   const tinyobj::texture_option_t& texopt,
+                                                                   std::string_view textureBaseDir, ImportResult& out) {
+    if (texname.empty()) {
+        return std::nullopt;
+    }
+    const std::string folded = foldBackslashesToSlashes(texname);  // D15: a filesystem path, not a URI
+    const UriClassification classified = classifyUri(folded, textureBaseDir);
+    if (classified.kind != UriClass::RelativePath) {
+        // refused -> the slot stays DISENGAGED; an ImportedImage carries the reason so the panel can
+        // show WHY (AC-15's texture half). INV-O8: never externalUris, never a dependency.
+        ImportedImage image;
+        image.uri = std::string(texname);
+        image.refusal = classified.reason;
+        out.model.images.push_back(std::move(image));
+        addWarning(out, "texture '" + std::string(texname) + "': " + classified.reason);
+        return std::nullopt;
+    }
+    std::uint32_t imageIndex = INVALID_SUBASSET;
+    for (std::size_t i = 0; i < out.model.images.size(); ++i) {
+        if (out.model.images[i].relativePath == classified.relativePath) {
+            imageIndex = static_cast<std::uint32_t>(i);
+            break;
+        }
+    }
+    if (imageIndex == INVALID_SUBASSET) {
+        ImportedImage image;
+        image.uri = std::string(texname);
+        image.relativePath = classified.relativePath;
+        imageIndex = static_cast<std::uint32_t>(out.model.images.size());
+        out.model.images.push_back(std::move(image));
+        bool alreadyDependency = false;
+        for (const std::string& existing : out.externalUris) {
+            if (existing == classified.relativePath) {
+                alreadyDependency = true;
+                break;
+            }
+        }
+        if (!alreadyDependency && out.externalUris.size() < MAX_EXTERNAL_URIS) {
+            out.externalUris.push_back(classified.relativePath);
+        }
+    }
+    ImportedTextureRef ref;
+    ref.imageIndex = imageIndex;
+    ref.uvSet = 0;
+    // -clamp maps to BOTH axes -- texture_option_t::clamp is a SINGLE bool (VERIFIED). Absent -> Repeat.
+    // TextureWrap::MirroredRepeat is UNREACHABLE from this backend -- .mtl has only -clamp.
+    ref.wrapU = texopt.clamp ? TextureWrap::ClampToEdge : TextureWrap::Repeat;
+    ref.wrapV = ref.wrapU;
+    return ref;
+}
+
+// -s/-o have NO field in ImportedTextureRef; a non-default value on ANY of the four slots' texopts
+// produces ONE aggregate warning per material rather than silently wrong UVs.
+[[nodiscard]] bool hasNonDefaultTransform(const tinyobj::texture_option_t& texopt) noexcept {
+    return texopt.scale[0] != 1.0F || texopt.scale[1] != 1.0F || texopt.scale[2] != 1.0F ||
+           texopt.origin_offset[0] != 0.0F || texopt.origin_offset[1] != 0.0F || texopt.origin_offset[2] != 0.0F;
+}
+
+// build-time finding, corrected here rather than left to surprise a caller: tinyobjloader's LoadMtl
+// UNCONDITIONALLY flushes ONE trailing "material" at end-of-parse (VERIFIED against the real header --
+// "// flush last material." -- with NO check on whether ANY `newmtl` was ever seen), so even a
+// COMPLETELY EMPTY .mtl stream produces materials.size() == 1, an unnamed, all-default entry. A SECOND
+// build-time finding compounds it for the .obj arm specifically: MaterialStreamReader's own
+// `if (!m_inStream)` guard tests std::istream::fail(), which checks failbit/badbit -- NOT eofbit -- so
+// after the FIRST mtllib line's LoadMtl call exhausts the shared stream (setting only eofbit via
+// peek()), the stream is STILL "not failed". A SECOND mtllib line's readMatFn call therefore does NOT
+// take the "Material stream in error state" branch at all -- it calls LoadMtl AGAIN, on an
+// already-EOF stream, which parses zero lines but STILL unconditionally flushes ITS OWN empty-named
+// phantom (VERIFIED directly: a two-mtllib-line, two-VALID-file fixture produces `warn`/`err` BOTH
+// empty, and a THIRD, empty-named material in `materials`). §A-10's own premise -- that this scenario
+// is what makes the two library sentences fire -- does not hold for THIS library version and stream
+// combination; see docs/10-engineering-log.md's 3.2.3 entry for the full account. The two sentences
+// stay filtered in appendLibraryDiagnostics below as harmless defence in depth, but no fixture in this
+// suite can PROVE they fire, and none claims to.
+//
+// E13 (a .mtl with no newmtl at all imports as ZERO materials) and AC-22 (an unsupplied .mtl leaves
+// result.model.materials EMPTY) are OUR OWN policy, not something the library hands us for free, and
+// BOTH phantom-material shapes above share the SAME observable signature: an EMPTY name. `newmtl`
+// followed by literally nothing is a real, if malformed, user declaration -- and the library's OWN
+// "empty material name in `newmtl`" warning is how convertMaterials tells the two apart.
+[[nodiscard]] bool declaredWithEmptyName(std::string_view combinedWarnings) noexcept {
+    return combinedWarnings.find("empty material name in") != std::string_view::npos;
+}
+
+// §D-6, SHARED VERBATIM by both arms -- what keeps a .mtl imported standalone and the same .mtl
+// imported through its .obj byte-identical in the fields both produce (AC-23). `combinedWarnings` is
+// the library's OWN raw warn+err text (BEFORE filtering), consulted ONLY to distinguish a genuine
+// empty-named `newmtl` from a phantom flush (declaredWithEmptyName's own comment).
+void convertMaterials(const std::vector<tinyobj::material_t>& src, std::string_view textureBaseDir,
+                      std::string_view combinedWarnings, ImportResult& out) {
+    const bool keepEmptyNamed = declaredWithEmptyName(combinedWarnings);
+    std::uint32_t nextLocalId = 0;
+    for (const tinyobj::material_t& m : src) {
+        if (m.name.empty() && !keepEmptyNamed) {
+            continue;  // a phantom flush, never a real declaration -- silently dropped, no warning
+        }
+        if (nextLocalId >= MAX_MATERIALS_PER_MODEL) {
+            escalate(out, ImportStatus::Truncated, "the material count exceeds this importer's per-model limit");
+            break;
+        }
+        ImportedMaterial mat;
+        mat.name = m.name;
+        mat.localId = nextLocalId++;
+
+        // D14's zero-factor rule: where a zero factor would ANNIHILATE a texture the same material
+        // supplies, read it as the neutral 1. Kd 0 0 0 with NO texture stays black -- a legitimately
+        // black material.
+        const bool hasBaseColorTex = !m.diffuse_texname.empty();
+        Vec3 diffuse{m.diffuse[0], m.diffuse[1], m.diffuse[2]};
+        if (hasBaseColorTex && diffuse == Vec3::zero()) {
+            diffuse = Vec3::one();
+        }
+        // §A-11: `d` ALWAYS wins over `Tr`, regardless of order -- the library's own dissolve field
+        // already encodes this (VERIFIED against the upstream source); read verbatim.
+        mat.baseColorFactor = Vec4{diffuse.x, diffuse.y, diffuse.z, m.dissolve};
+
+        const bool hasMetallicTex = !m.metallic_texname.empty();
+        mat.metallicFactor = (hasMetallicTex && m.metallic == 0.0F) ? 1.0F : m.metallic;
+        // roughness's zero-factor clause is UNCONDITIONAL -- 0 means a perfect mirror, and no classic
+        // Wavefront material means that.
+        mat.roughnessFactor = (m.roughness == 0.0F) ? 1.0F : m.roughness;
+
+        mat.emissiveFactor = Vec3{m.emission[0], m.emission[1], m.emission[2]};
+
+        const bool hasAlphaTex = !m.alpha_texname.empty();
+        // Blend when dissolve < 1 OR map_d is present; else Opaque. NEVER Mask -- Wavefront has no
+        // cutoff.
+        mat.alphaMode = (m.dissolve < 1.0F || hasAlphaTex) ? AlphaMode::Blend : AlphaMode::Opaque;
+
+        // Fixed slot order (baseColor, metallicRoughness, normal, emissive) so `images` order is
+        // deterministic.
+        mat.baseColor = convertTextureSlot(m.diffuse_texname, m.diffuse_texopt, textureBaseDir, out);
+
+        // metallicRoughness: roughness_texname (map_Pr), ELSE metallic_texname (map_Pm) -- glTF packs
+        // both into ONE texture and only one can be bound. One warning when BOTH are present and DIFFER.
+        if (!m.roughness_texname.empty() && !m.metallic_texname.empty() && m.roughness_texname != m.metallic_texname) {
+            addWarning(out, "material '" + m.name +
+                                "': both a roughness and a metallic texture are declared and differ; "
+                                "only the roughness texture is used");
+        }
+        if (!m.roughness_texname.empty()) {
+            mat.metallicRoughness = convertTextureSlot(m.roughness_texname, m.roughness_texopt, textureBaseDir, out);
+        } else {
+            mat.metallicRoughness = convertTextureSlot(m.metallic_texname, m.metallic_texopt, textureBaseDir, out);
+        }
+
+        // normal: normal_texname (norm), ELSE bump_texname (map_Bump/bump) -- NO warning: Blender's OBJ
+        // exporter writes real tangent-space normal maps into map_Bump, and refusing that would lose
+        // the normal map on most files in the wild.
+        if (!m.normal_texname.empty()) {
+            mat.normal = convertTextureSlot(m.normal_texname, m.normal_texopt, textureBaseDir, out);
+            mat.normalScale = m.normal_texopt.bump_multiplier;
+        } else if (!m.bump_texname.empty()) {
+            mat.normal = convertTextureSlot(m.bump_texname, m.bump_texopt, textureBaseDir, out);
+            mat.normalScale = m.bump_texopt.bump_multiplier;
+        }
+        // else: mat.normal stays disengaged, mat.normalScale stays its default 1 -- "1 when neither map
+        // exists".
+
+        mat.emissive = convertTextureSlot(m.emissive_texname, m.emissive_texopt, textureBaseDir, out);
+
+        // mat.occlusion is ALWAYS disengaged -- map_Ka is an ambient COLOUR map, not an AO map, and
+        // treating it as one is a guess the panel would print as a fact.
+
+        if (hasNonDefaultTransform(m.diffuse_texopt) || hasNonDefaultTransform(m.roughness_texopt) ||
+            hasNonDefaultTransform(m.metallic_texopt) || hasNonDefaultTransform(m.normal_texopt) ||
+            hasNonDefaultTransform(m.bump_texopt) || hasNonDefaultTransform(m.emissive_texopt)) {
+            addWarning(out,
+                       "material '" + m.name + "': a texture declares -s/-o, which this importer does not represent");
+        }
+
+        out.model.materials.push_back(std::move(mat));
+    }
+}
+
+// The ".mtl" arm (D6). `depth` is accepted and deliberately UNUSED: a .mtl's whole content is local,
+// so this arm is depth-independent BY CONSTRUCTION, which is what makes AC-23's field-for-field
+// equality structural rather than maintained.
+[[nodiscard]] ImportResult importMtlOnly(std::string_view assetRelativeDir, std::span<const std::byte> bytes,
                                          const ImportSettings& /*settings*/, ImportDepth /*depth*/,
                                          std::span<const ExternalBuffer> /*external*/) {
     ImportResult result;
-    result.status = ImportStatus::Unsupported;
-    result.message = "the .mtl importer is not wired yet";
+    if (looksLikeBinaryContent(bytes)) {  // AC-54: a renamed PNG/JPEG/GLB never reaches LoadMtl
+        result.status = ImportStatus::Malformed;
+        result.message = "this file is not text";
+        return result;
+    }
+    SpanStreamBuf mtlBuf(bytes);
+    std::istream mtlStream(&mtlBuf);
+    std::map<std::string, int> materialMap;
+    std::vector<tinyobj::material_t> materials;
+    std::string warn;
+    std::string err;
+    tinyobj::LoadMtl(&materialMap, &materials, &mtlStream, &warn, &err);
+    // §A-9: LoadMtl returns void -- there is no true/false signal here, unlike LoadObj. Both diagnostic
+    // strings are treated identically.
+    appendLibraryDiagnostics(result, warn);
+    appendLibraryDiagnostics(result, err);
+
+    convertMaterials(materials, assetRelativeDir, warn + err, result);  // D6: textureBaseDir IS assetRelativeDir
+    result.model.summary.materialCount = result.model.materials.size();
+    result.model.summary.imageCount = result.model.images.size();
     return result;
 }
 
@@ -342,6 +546,13 @@ struct SurvivingFace {
     // matching supplied buffer is a WARNING, never MissingBuffer (Wavefront's .mtl holds only
     // appearance; without it there is still a mesh).
     std::string mtlText;
+    // D16: textureBaseDir for THIS arm is parentOf() of the FIRST mtllib path that actually
+    // CONTRIBUTED text -- and, since more than one distinct contributing directory would make that
+    // choice ambiguous, ONE warning fires when that happens. In the universal case (a .mtl beside its
+    // .obj) every contributor shares the model's own directory and the warning never fires.
+    std::string firstContributingDir;
+    bool sawFirstContributingDir = false;
+    bool multipleContributingDirs = false;
     for (std::size_t i = 0; i < result.externalUris.size(); ++i) {
         bool found = false;
         for (const ExternalBuffer& buf : external) {
@@ -351,6 +562,13 @@ struct SurvivingFace {
                 }
                 mtlText += buf.bytes;
                 found = true;
+                const std::string dir = parentOf(result.externalUris[i]);
+                if (!sawFirstContributingDir) {
+                    firstContributingDir = dir;
+                    sawFirstContributingDir = true;
+                } else if (dir != firstContributingDir) {
+                    multipleContributingDirs = true;
+                }
                 break;
             }
         }
@@ -358,6 +576,12 @@ struct SurvivingFace {
             addWarning(result, "mtllib '" + rawOperandFor[i] + "': no matching .mtl was supplied");
         }
     }
+    if (multipleContributingDirs) {
+        addWarning(result,
+                   "more than one distinct directory contributed a .mtl; texture paths are "
+                   "resolved against the first one");
+    }
+    const std::string textureBaseDir = firstContributingDir;  // "" (the model's own dir) when none contributed
 
     SpanStreamBuf objBuf(bytes);
     std::istream objStream(&objBuf);
@@ -392,11 +616,6 @@ struct SurvivingFace {
     }
 
     // ---- §D-7: geometry conversion -------------------------------------------------------------
-    // task 3.2.3, Step 5: steps 1-3, 5, 6, 9. Material bucketing (step 4), the l/p count warning
-    // (step 7) and node construction (step 8) land at Step 6 -- EVERY primitive built here carries
-    // materialIndex == INVALID_SUBASSET, and every mesh has AT MOST ONE primitive (its survivors,
-    // unsplit by material).
-    (void)materials;
     bool capsExceeded = false;  // INV-O10: once ANY structural cap is hit, stop -- a COHERENT smaller
                                 // model, never a partial-claiming-whole one
     std::size_t totalVertices = 0;
@@ -644,9 +863,13 @@ struct SurvivingFace {
     }
     result.model.summary.nodeCount = result.model.nodes.size();
 
-    // task 3.2.3, Step 6: material CONVERSION (tinyobj::material_t -> ImportedMaterial/ImportedImage,
-    // §D-6) does not exist yet -- `result.model.materials`/`images` stay empty, so a primitive's
-    // materialIndex may, for THIS commit only, name an index into an EMPTY array. Step 7 populates it.
+    // §D-6: material conversion, SHARED with the .mtl arm above -- what keeps a .mtl imported
+    // standalone and the same .mtl imported through its .obj byte-identical in the fields both produce.
+    // AC-22: an unsupplied .mtl leaves `materials` holding only phantom flushes (declaredWithEmptyName's
+    // own comment), all silently dropped.
+    convertMaterials(materials, textureBaseDir, warn + err, result);
+    result.model.summary.materialCount = result.model.materials.size();
+    result.model.summary.imageCount = result.model.images.size();
     return result;
 }
 

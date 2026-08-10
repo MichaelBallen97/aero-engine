@@ -15,6 +15,7 @@
 // only indirectly, through the PUBLIC importModel() dispatch. obj_import.hpp is src-private and stays
 // that way; nothing here #includes it.
 #include <aero/editor/model_import.hpp>
+#include <aero/editor/text_file.hpp>  // OI80 only: readFileBytes over the committed cube.obj/cube.mtl
 
 #include <doctest/doctest.h>
 
@@ -32,12 +33,22 @@ namespace {
     return std::span<const std::byte>(reinterpret_cast<const std::byte*>(text.data()), text.size());
 }
 
+// OI77 (AC-10) only. The model_import_test.cpp MI42c/MI42d shape, restated here as this TU's OWN COPY
+// (the foldAscii/addWarning precedent, one file over): a source line with its `//` comment removed, so
+// a comment naming a forbidden token cannot trip the gate it exists to prove (the AC-56 lesson).
+[[nodiscard]] std::string_view codeOf(std::string_view line) {
+    const std::size_t commentStart = line.find("//");
+    return commentStart == std::string_view::npos ? line : line.substr(0, commentStart);
+}
+
 }  // namespace
 
 using engine::Quat;
 using engine::Vec3;
 using engine::Vec4;
+using engine::editor::AlphaMode;
 using engine::editor::ExternalBuffer;
+using engine::editor::FileBytesResult;
 using engine::editor::has;
 using engine::editor::ImportDepth;
 using engine::editor::ImportedNode;
@@ -49,7 +60,11 @@ using engine::editor::ImportStatus;
 using engine::editor::INVALID_SUBASSET;
 using engine::editor::MAX_EXTERNAL_URIS;
 using engine::editor::MAX_IMPORT_WARNINGS;
+using engine::editor::MAX_MATERIALS_PER_MODEL;
+using engine::editor::MAX_MODEL_FILE_BYTES;
 using engine::editor::MAX_PRIMITIVES_PER_MODEL;
+using engine::editor::readFileBytes;
+using engine::editor::TextureWrap;
 using engine::editor::VertexAttribute;
 
 // task 3.2.3, Step 5: PROMOTED from Step 2/3/4's placeholder to AC-25's real one-triangle Full case,
@@ -353,6 +368,19 @@ TEST_CASE("obj_import: an empty file and a whitespace-only file are both Malform
 TEST_CASE(
     "obj_import: two mtllib directives -- BOTH of the library's own single-stream sentences are absent "
     "(OI23, AC-57b, §A-10)") {
+    // BUILD-TIME FINDING (Step 7), recorded here rather than left silently vacuous: this fixture does
+    // NOT actually exercise appendLibraryDiagnostics's filter. MaterialStreamReader's own
+    // `if (!m_inStream)` guard tests std::istream::fail() (failbit/badbit), not eof() -- so after the
+    // FIRST mtllib line's LoadMtl call exhausts the shared stream (setting only eofbit via peek()), the
+    // stream is STILL "not failed", and the SECOND line's readMatFn call does NOT take the "stream in
+    // error" branch at all: it calls LoadMtl again (which parses zero lines and returns quietly). VERIFIED
+    // directly against this exact fixture: the library's raw warn/err strings are BOTH empty, so neither
+    // sentence is ever produced for this input shape by THIS tinyobjloader version. §A-10's own premise
+    // -- that a second mtllib directive is what triggers them -- does not hold here; see
+    // obj_import.cpp's declaredWithEmptyName comment and docs/10-engineering-log.md's 3.2.3 entry. The
+    // filter itself stays in place as harmless defence in depth. This assertion remains mechanically
+    // true and is kept (a real failure here would still mean something broke), but it is NOT proof the
+    // filter fires -- a documented, accepted gap, matching FBX's own FI27/FI43/FI46/FI68/FI72 precedent.
     const std::string doc = "mtllib a.mtl\nmtllib b.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
     const std::vector<ExternalBuffer> externals = {
         ExternalBuffer{"a.mtl", "newmtl foo\nKd 1 0 0\n"},
@@ -847,4 +875,379 @@ TEST_CASE("obj_import: line and point primitives are counted and dropped, the me
     REQUIRE(result.warnings.size() == 1);
     CHECK(result.warnings[0].find("line indices") != std::string::npos);
     CHECK(result.warnings[0].find("point indices") != std::string::npos);
+}
+
+// ---- §D-6 material conversion, the .mtl arm (OI60-80) --------------------------------------------------
+
+TEST_CASE("obj_import: §D-6's table, row by row, on a fully-declared material (OI60, AC-46)") {
+    const std::string doc = "newmtl Full\nKd 0.5 0.6 0.7\nd 0.9\nPm 0.3\nPr 0.4\nKe 0.1 0.2 0.3\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 1);
+    const auto& mat = result.model.materials[0];
+    CHECK(mat.name == "Full");
+    CHECK(mat.localId == 0);
+    CHECK(mat.baseColorFactor == Vec4{0.5F, 0.6F, 0.7F, 0.9F});
+    CHECK(mat.metallicFactor == doctest::Approx(0.3F));
+    CHECK(mat.roughnessFactor == doctest::Approx(0.4F));
+    CHECK(mat.emissiveFactor == Vec3{0.1F, 0.2F, 0.3F});
+    CHECK(mat.normalScale == doctest::Approx(1.0F));  // no map
+    CHECK(mat.occlusionStrength == doctest::Approx(1.0F));
+    CHECK(mat.alphaMode == AlphaMode::Blend);  // dissolve 0.9 < 1
+    CHECK(mat.alphaCutoff == doctest::Approx(0.5F));
+    CHECK_FALSE(mat.doubleSided);
+    CHECK_FALSE(mat.occlusion.has_value());
+}
+
+TEST_CASE("obj_import: the zero-factor rule, all four clauses (OI61, AC-47, D14)") {
+    const std::string doc =
+        "newmtl A\nKd 0 0 0\nmap_Kd wood.png\n"  // annihilated -> {1,1,1}
+        "newmtl B\nKd 0 0 0\n"                   // no texture -> LEGITIMATELY black
+        "newmtl C\nPm 0\nmap_Pm metal.png\n"     // annihilated -> 1
+        "newmtl D\nPr 0\n";                      // UNCONDITIONAL -> 1, no texture needed
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 4);
+    CHECK(result.model.materials[0].baseColorFactor.x == doctest::Approx(1.0F));
+    CHECK(result.model.materials[0].baseColorFactor.y == doctest::Approx(1.0F));
+    CHECK(result.model.materials[0].baseColorFactor.z == doctest::Approx(1.0F));
+    CHECK(result.model.materials[1].baseColorFactor.x == doctest::Approx(0.0F));
+    CHECK(result.model.materials[1].baseColorFactor.y == doctest::Approx(0.0F));
+    CHECK(result.model.materials[1].baseColorFactor.z == doctest::Approx(0.0F));
+    CHECK(result.model.materials[2].metallicFactor == doctest::Approx(1.0F));
+    CHECK(result.model.materials[3].roughnessFactor == doctest::Approx(1.0F));
+}
+
+TEST_CASE("obj_import: 'd' ALWAYS wins over 'Tr', regardless of order (OI62, AC-48, §A-11)") {
+    const std::string doc = "newmtl A\nd 0.25\nTr 0.5\nnewmtl B\nTr 0.5\nd 0.25\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 2);
+    CHECK(result.model.materials[0].baseColorFactor.w == doctest::Approx(0.25F));
+    CHECK(result.model.materials[1].baseColorFactor.w == doctest::Approx(0.25F));
+    // the library's OWN "Both `d` and `Tr`" warning is a REAL statement about the file -- NEVER dropped.
+    bool sawDTrWarning = false;
+    for (const std::string& warning : result.warnings) {
+        sawDTrWarning = sawDTrWarning || warning.find("`d`") != std::string::npos;
+    }
+    CHECK(sawDTrWarning);
+}
+
+TEST_CASE("obj_import: 'norm' wins over 'map_Bump', and normalScale is whichever map's OWN -bm (OI63, AC-49)") {
+    const std::string doc =
+        "newmtl A\nnorm -bm 3.0 normalmap.png\nbump -bm 2.0 bumpmap.png\n"
+        "newmtl B\nbump -bm 2.0 bumpmap.png\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 2);
+    REQUIRE(result.model.materials[0].normal.has_value());
+    CHECK(result.model.materials[0].normalScale == doctest::Approx(3.0F));  // norm's OWN -bm, not bump's
+    REQUIRE(result.model.materials[1].normal.has_value());
+    CHECK(result.model.materials[1].normalScale == doctest::Approx(2.0F));  // the fallback -- bump's -bm
+    for (const std::string& warning : result.warnings) {
+        CHECK(warning.find("normal") == std::string::npos);  // NO warning, ever, for this precedence (Blender)
+    }
+}
+
+TEST_CASE(
+    "obj_import: 'map_Pr' wins over 'map_Pm', with ONE warning only when both are present and DIFFER "
+    "(OI64, AC-50)") {
+    const std::string doc =
+        "newmtl A\nmap_Pr rough.png\nmap_Pm metal.png\n"  // differ -> ONE warning, Pr wins
+        "newmtl B\nmap_Pm metal.png\n"                    // no Pr -> fallback, no warning
+        "newmtl C\nmap_Pr same.png\nmap_Pm same.png\n";   // identical -> no warning
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 3);
+    REQUIRE(result.model.materials[0].metallicRoughness.has_value());
+    REQUIRE(result.model.materials[1].metallicRoughness.has_value());
+    REQUIRE(result.model.materials[2].metallicRoughness.has_value());
+    const auto imageUriOf = [&](std::uint32_t idx) { return result.model.images[idx].relativePath; };
+    CHECK(imageUriOf(result.model.materials[0].metallicRoughness->imageIndex) == "rough.png");
+    CHECK(imageUriOf(result.model.materials[1].metallicRoughness->imageIndex) == "metal.png");
+    CHECK(imageUriOf(result.model.materials[2].metallicRoughness->imageIndex) == "same.png");
+    std::size_t differWarnings = 0;
+    for (const std::string& warning : result.warnings) {
+        differWarnings += warning.find("roughness and a metallic") != std::string::npos ? 1 : 0;
+    }
+    CHECK(differWarnings == 1);
+}
+
+TEST_CASE("obj_import: '-clamp' maps to BOTH axes; its absence stays Repeat (OI65, AC-51)") {
+    const std::string doc = "newmtl A\nmap_Kd -clamp on tex.png\nnewmtl B\nmap_Kd tex2.png\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials[0].baseColor.has_value());
+    CHECK(result.model.materials[0].baseColor->wrapU == TextureWrap::ClampToEdge);
+    CHECK(result.model.materials[0].baseColor->wrapV == TextureWrap::ClampToEdge);
+    REQUIRE(result.model.materials[1].baseColor.has_value());
+    CHECK(result.model.materials[1].baseColor->wrapU == TextureWrap::Repeat);
+    CHECK(result.model.materials[1].baseColor->wrapV == TextureWrap::Repeat);
+}
+
+TEST_CASE(
+    "obj_import: a non-default '-s'/'-o' produces ONE aggregate warning per material, never silently "
+    "wrong UVs (OI66, AC-52)") {
+    const std::string doc = "newmtl A\nmap_Kd -s 2 2 2 tex.png\nnewmtl B\nmap_Kd tex2.png\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    std::size_t transformWarnings = 0;
+    for (const std::string& warning : result.warnings) {
+        transformWarnings += warning.find("-s/-o") != std::string::npos ? 1 : 0;
+    }
+    CHECK(transformWarnings == 1);
+}
+
+TEST_CASE("obj_import: the SAME file in two slots of ONE material dedups to ONE image (OI67, AC-53)") {
+    const std::string doc = "newmtl A\nmap_Kd shared.png\nmap_Ke shared.png\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == 1);
+    REQUIRE(result.model.materials[0].baseColor.has_value());
+    REQUIRE(result.model.materials[0].emissive.has_value());
+    CHECK(result.model.materials[0].baseColor->imageIndex == result.model.materials[0].emissive->imageIndex);
+}
+
+TEST_CASE("obj_import: one texture named by TWO DIFFERENT materials is ONE ImportedImage (OI68, E14)") {
+    const std::string doc = "newmtl A\nmap_Kd shared.png\nnewmtl B\nmap_Kd shared.png\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == 1);
+    REQUIRE(result.model.materials[0].baseColor.has_value());
+    REQUIRE(result.model.materials[1].baseColor.has_value());
+    CHECK(result.model.materials[0].baseColor->imageIndex == 0);
+    CHECK(result.model.materials[1].baseColor->imageIndex == 0);
+}
+
+TEST_CASE(
+    "obj_import: a texture path with '..' is accepted from a subdirectory and refused at the assets "
+    "root, with the reason on ImportedImage::refusal (OI69, AC-15/E19)") {
+    const std::string doc = "newmtl A\nmap_Kd ../shared/wood.png\n";
+    const ImportResult fromModels =
+        importModel("t.mtl", "models", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(fromModels.status == ImportStatus::Ok);
+    REQUIRE(fromModels.model.materials[0].baseColor.has_value());
+    REQUIRE(fromModels.model.images.size() == 1);
+    CHECK(fromModels.model.images[0].relativePath == "shared/wood.png");
+    CHECK(fromModels.model.images[0].refusal.empty());
+
+    const ImportResult fromRoot = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(fromRoot.status == ImportStatus::Ok);
+    CHECK_FALSE(fromRoot.model.materials[0].baseColor.has_value());  // the slot stays DISENGAGED
+    REQUIRE(fromRoot.model.images.size() == 1);
+    CHECK(fromRoot.model.images[0].relativePath.empty());
+    CHECK_FALSE(fromRoot.model.images[0].refusal.empty());
+    CHECK(fromRoot.model.images[0].refusal.find("resolves outside") != std::string::npos);
+}
+
+TEST_CASE("obj_import: 'map_Ka' is NEVER read as occlusion (OI70, D14)") {
+    const std::string doc = "newmtl A\nmap_Ka ambient.png\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    CHECK_FALSE(result.model.materials[0].occlusion.has_value());
+}
+
+TEST_CASE("obj_import: AlphaMode::Mask is never produced; doubleSided is always false (OI71)") {
+    const std::string doc = "newmtl A\nd 0.5\nnewmtl B\nd 1.0\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    for (const auto& mat : result.model.materials) {
+        CHECK(mat.alphaMode != AlphaMode::Mask);
+        CHECK_FALSE(mat.doubleSided);
+    }
+}
+
+TEST_CASE("obj_import: MAX_MATERIALS_PER_MODEL is enforced -- Truncated, a coherent smaller model (OI72, AC-58)") {
+    std::string doc;
+    const std::size_t materialCount = MAX_MATERIALS_PER_MODEL + 10;
+    for (std::size_t i = 0; i < materialCount; ++i) {
+        doc += "newmtl m" + std::to_string(i) + "\n";
+    }
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Truncated);
+    CHECK_FALSE(result.message.empty());
+    CHECK(result.model.materials.size() == MAX_MATERIALS_PER_MODEL);
+}
+
+TEST_CASE(
+    "obj_import: AC-23 -- Structure and Full produce EQUAL materials/images/externalUris/summary/status "
+    "on a .mtl that HAS materials, images and URIs (OI73, AC-23)") {
+    // the AC-20 vacuity lesson, applied here: a .mtl with NOTHING in it would make this comparison
+    // trivially 0 == 0. This fixture has two materials, textures in three slots, and a refused one.
+    const std::string doc =
+        "newmtl A\nKd 0.2 0.3 0.4\nmap_Kd wood.png\nmap_Ke glow.png\n"
+        "newmtl B\nmap_Kd ../../outside.png\n";
+    const ImportResult structure =
+        importModel("t.mtl", "models", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    const ImportResult full = importModel("t.mtl", "models", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(structure.status == full.status);
+    REQUIRE(structure.model.materials.size() == full.model.materials.size());
+    REQUIRE(structure.model.materials.size() == 2);
+    REQUIRE(structure.model.images.size() == full.model.images.size());
+    // wood.png, glow.png, AND B's refused map_Kd -- a refusal still records its OWN ImportedImage
+    // carrying the reason (per §D-6), so THREE entries, not two.
+    REQUIRE(structure.model.images.size() == 3);
+    CHECK(structure.externalUris == full.externalUris);
+    CHECK(structure.model.summary.materialCount == full.model.summary.materialCount);
+    CHECK(structure.model.summary.imageCount == full.model.summary.imageCount);
+    CHECK(structure.warnings == full.warnings);
+    CHECK(structure.warningTotal == full.warningTotal);
+}
+
+TEST_CASE("obj_import: a .mtl import yields empty nodes/meshes/skins/animations (OI74, AC-24)") {
+    const std::string doc = "newmtl A\nKd 1 0 0\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    CHECK(result.model.nodes.empty());
+    CHECK(result.model.meshes.empty());
+    CHECK(result.model.skins.empty());
+    CHECK(result.model.animations.empty());
+    CHECK(result.model.summary.meshCount == 0);
+}
+
+TEST_CASE("obj_import: no 'newmtl' at all yields zero materials, Ok, no warning (OI75a, E13)") {
+    const std::string doc = "# just a comment, no newmtl\nKd 1 0 0\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    CHECK(result.model.materials.empty());
+    CHECK(result.warningTotal == 0);
+}
+
+TEST_CASE(
+    "obj_import: a duplicate 'newmtl' name -- the library's own last-wins MAP applies, but BOTH entries "
+    "stay in materials (OI75b, E12)") {
+    const std::string doc = "newmtl A\nKd 1 0 0\nnewmtl A\nKd 0 1 0\n";
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 2);
+    CHECK(result.model.materials[0].name == "A");
+    CHECK(result.model.materials[1].name == "A");
+    CHECK(result.model.materials[0].localId == 0);
+    CHECK(result.model.materials[1].localId == 1);
+}
+
+TEST_CASE(
+    "obj_import: textureBaseDir comes from the FIRST contributing mtllib directory; more than one "
+    "distinct directory produces ONE warning (OI76, D16)") {
+    const std::string doc = "mtllib subA/a.mtl\nmtllib subB/b.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const std::vector<ExternalBuffer> externals = {
+        ExternalBuffer{"subA/a.mtl", "newmtl A\nmap_Kd tex.png\n"},
+        ExternalBuffer{"subB/b.mtl", "newmtl B\nmap_Kd tex.png\n"},
+    };
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 2);
+    // A's texture resolves against subA/ (the FIRST contributing directory); B's does too, even though
+    // b.mtl itself lives in subB/ -- textureBaseDir is a MODEL-LEVEL choice, not a per-.mtl one.
+    REQUIRE(result.model.materials[0].baseColor.has_value());
+    CHECK(result.model.images[result.model.materials[0].baseColor->imageIndex].relativePath == "subA/tex.png");
+    std::size_t multiDirWarnings = 0;
+    for (const std::string& warning : result.warnings) {
+        multiDirWarnings += warning.find("more than one distinct directory") != std::string::npos ? 1 : 0;
+    }
+    CHECK(multiDirWarnings == 1);
+}
+
+TEST_CASE(
+    "obj_import: comments stripped, obj_import.cpp names none of the forbidden tinyobjloader entry "
+    "points, and does name the sanctioned ones (OI77, AC-10)") {
+    const std::string path = std::string(AERO_EDITOR_SRC_DIR) + "/obj_import.cpp";
+    const auto fileResult = readFileBytes(path, MAX_MODEL_FILE_BYTES);
+    REQUIRE(fileResult.bytes.has_value());
+    std::string strippedAll;
+    std::size_t lineStart = 0;
+    const std::string& text = *fileResult.bytes;
+    while (lineStart <= text.size()) {
+        const std::size_t newline = text.find('\n', lineStart);
+        const std::string_view line = newline == std::string_view::npos
+                                          ? std::string_view(text).substr(lineStart)
+                                          : std::string_view(text).substr(lineStart, newline - lineStart);
+        strippedAll += codeOf(line);
+        strippedAll += '\n';
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        lineStart = newline + 1;
+    }
+    CHECK(strippedAll.find("ParseFromFile") == std::string::npos);
+    CHECK(strippedAll.find("MaterialFileReader") == std::string::npos);
+    CHECK(strippedAll.find("mtl_search_path") == std::string::npos);
+    CHECK(strippedAll.find("ObjReader") == std::string::npos);
+    CHECK(strippedAll.find("LoadObj(") != std::string::npos);
+    CHECK(strippedAll.find("MaterialStreamReader") != std::string::npos);
+}
+
+TEST_CASE("obj_import: AC-21 -- Full with the .mtl supplied: materials populated, materialIndex resolved (OI78)") {
+    const std::string doc = "mtllib chair.mtl\nusemtl Wood\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const std::vector<ExternalBuffer> externals = {ExternalBuffer{"chair.mtl", "newmtl Wood\nKd 0.5 0.3 0.1\n"}};
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].materialIndex == 0);
+    // externalUris >= the Structure set (just "chair.mtl") -- Full adds nothing more here since Wood
+    // declares no texture, but the mtllib entry itself must still be present.
+    bool sawMtllib = false;
+    for (const std::string& uri : result.externalUris) {
+        sawMtllib = sawMtllib || uri == "chair.mtl";
+    }
+    CHECK(sawMtllib);
+}
+
+TEST_CASE(
+    "obj_import: AC-22 -- Full with the .mtl NOT supplied: Ok, zero materials, every materialIndex "
+    "INVALID_SUBASSET, exactly one warning naming the operand, geometry fully imported (OI79)") {
+    // Deliberately NO `usemtl` here: that would ALSO trigger the library's own, UNRELATED "material [
+    // 'X' ] not found in .mtl" warning (a real, correct diagnostic -- verified directly -- but not what
+    // THIS case exists to isolate). AC-22's own wording is "exactly one warning naming the operand",
+    // not "exactly one warning ever" -- kept literal here rather than widened.
+    const std::string doc = "mtllib chair.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const ImportResult result = importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    CHECK(result.model.materials.empty());
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].materialIndex == INVALID_SUBASSET);
+    REQUIRE(result.model.meshes[0].primitives[0].indices.size() == 3);  // geometry FULLY imported
+    REQUIRE(result.warnings.size() == 1);
+    CHECK(result.warnings[0].find("chair.mtl") != std::string::npos);
+}
+
+TEST_CASE(
+    "obj_import: a 'usemtl' naming a material that was never loaded ALSO surfaces the library's own "
+    "warning, alongside ours (OI79b, E11's sibling)") {
+    const std::string doc = "mtllib chair.mtl\nusemtl Wood\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const ImportResult result = importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.warnings.size() == 2);
+    bool sawOperand = false;
+    bool sawNotFound = false;
+    for (const std::string& w : result.warnings) {
+        sawOperand = sawOperand || w.find("chair.mtl") != std::string::npos;
+        sawNotFound = sawNotFound || w.find("not found") != std::string::npos;
+    }
+    CHECK(sawOperand);
+    CHECK(sawNotFound);
+}
+
+TEST_CASE("obj_import: the committed real-file cube fixture imports end to end through readFileBytes (OI80)") {
+    const std::string objPath = std::string(AERO_ASSET_FIXTURES_DIR) + "/cube.obj";
+    const std::string mtlPath = std::string(AERO_ASSET_FIXTURES_DIR) + "/cube.mtl";
+    const FileBytesResult objBytes = readFileBytes(objPath, MAX_MODEL_FILE_BYTES);
+    REQUIRE(objBytes.bytes.has_value());
+    const FileBytesResult mtlBytes = readFileBytes(mtlPath, MAX_MODEL_FILE_BYTES);
+    REQUIRE(mtlBytes.bytes.has_value());
+    const std::vector<ExternalBuffer> externals = {ExternalBuffer{"cube.mtl", *mtlBytes.bytes}};
+    const ImportResult result =
+        importModel("cube.obj", "", asBytes(*objBytes.bytes), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    CHECK(result.model.meshes[0].name == "Cube");
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].positions.size() == 8);
+    CHECK(result.model.meshes[0].primitives[0].indices.size() == 36);  // 6 quads * 2 triangles * 3
+    REQUIRE(result.model.materials.size() == 1);
+    CHECK(result.model.materials[0].name == "CubeMaterial");
+    REQUIRE(result.model.materials[0].baseColor.has_value());
+    CHECK(result.model.images[result.model.materials[0].baseColor->imageIndex].relativePath == "wood.png");
 }

@@ -1,0 +1,4 @@
+# task 3.2.3 -- cube.obj's own material library. One newmtl, Kd, map_Kd.
+newmtl CubeMaterial
+Kd 0.8 0.8 0.8
+map_Kd wood.png
