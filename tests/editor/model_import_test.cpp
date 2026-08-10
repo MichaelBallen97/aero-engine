@@ -2272,11 +2272,9 @@ TEST_CASE(
     // here, not a silent refusal. A one-byte body is enough -- "not Unsupported" is all this asserts;
     // each backend's own tier-0 suite proves its content-level behaviour.
     //
-    // task 3.2.3 (Step 3): grows to FOUR here, gaining ".obj" -- NOT ".mtl" yet. importMtlOnly is a
-    // DELIBERATE stub through Step 6 (§D-5) that returns Unsupported, which this loop cannot
-    // distinguish from "the dispatch itself refuses it" -- the identical status, by design, until the
-    // .mtl arm is real. ".mtl" joins this array at Step 7, growing it to five.
-    constexpr std::array<std::string_view, 4> ACCEPTED_EXTENSIONS = {".gltf", ".glb", ".fbx", ".obj"};
+    // Grows to FIVE here (code-review round: this array and the comment below it stopped at FOUR,
+    // stale from Step 3, and never grew to include ".mtl" once importMtlOnly became real at Step 7).
+    constexpr std::array<std::string_view, 5> ACCEPTED_EXTENSIONS = {".gltf", ".glb", ".fbx", ".obj", ".mtl"};
     const std::string oneByte = "x";
     for (const std::string_view ext : ACCEPTED_EXTENSIONS) {
         const std::string name = "model" + std::string(ext);
@@ -2291,12 +2289,12 @@ TEST_CASE(
 TEST_CASE(
     "model_import: the suffix table, the identity table and the dispatch chain agree for every claimed "
     "and unclaimed name (MI105b, task 3.2.3, §A-8)") {
-    // task 3.2.3: ".mtl" is DELIBERATELY absent from this table for the identical reason MI105 stops at
-    // four -- importMtlOnly is a stub returning Unsupported through Step 6, so the dispatch half of this
-    // check would read FALSE for a name the suffix/identity tables already read TRUE for. ".mtl" joins
-    // at Step 7.
-    constexpr std::array<std::string_view, 10> NAMES = {
-        "a.gltf", "a.glb", "a.fbx", "a.obj", "a.blend", "a.dae", "a.png", "README", "", ".obj",
+    // ".mtl" is now included (code-review round: it was DELIBERATELY absent through Step 6, while
+    // importMtlOnly was still a stub, but the comment and the table were never updated once Step 7 made
+    // the .mtl arm real -- this IS the three-way sync check, and .mtl was the one claimed extension it
+    // did not bind).
+    constexpr std::array<std::string_view, 11> NAMES = {
+        "a.gltf", "a.glb", "a.fbx", "a.obj", "a.mtl", "a.blend", "a.dae", "a.png", "README", "", ".obj",
     };
     const std::string oneByte = "x";
     for (const std::string_view name : NAMES) {
@@ -2317,10 +2315,12 @@ TEST_CASE(
     // one: MI105's "not Unsupported" loop would stay green either way, since fastgltf and ufbx both
     // fail on this body with a status other than Unsupported too.
     const std::string body = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
-    // task 3.2.3, Step 3: WEAKENED for now -- "exactly one mesh" needs geometry conversion, which lands
-    // at Step 5. Strengthened there.
+    // Strengthened per plan §A-8 (code-review round: this stayed at Step 3's own "WEAKENED for now"
+    // shape long after geometry conversion landed at Step 5) -- ".obj" now asserts "Ok with exactly one
+    // mesh", not merely "Ok".
     const ImportResult obj = importModel("t.obj", "", asBytes(body), ImportSettings{}, ImportDepth::Full, {});
     CHECK(obj.status == ImportStatus::Ok);
+    CHECK(obj.model.meshes.size() == 1);
     const ImportResult gltf = importModel("t.gltf", "", asBytes(body), ImportSettings{}, ImportDepth::Full, {});
     CHECK(gltf.status != ImportStatus::Ok);
     const ImportResult fbx = importModel("t.fbx", "", asBytes(body), ImportSettings{}, ImportDepth::Full, {});
