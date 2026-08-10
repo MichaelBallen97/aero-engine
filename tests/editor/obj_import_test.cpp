@@ -1408,3 +1408,36 @@ TEST_CASE(
         CHECK(warning.find("no matching .mtl was supplied") == std::string::npos);
     }
 }
+
+// ---- code-review round, gap 7: MAX_EXTERNAL_URIS is enforced for TEXTURE references too --------------
+
+TEST_CASE(
+    "obj_import: a .mtl declaring more than MAX_EXTERNAL_URIS distinct textures escalates to Truncated "
+    "instead of silently dropping dependency edges (OI87, AC-58, INV-O10)") {
+    // Before the fix: convertTextureSlot refused to append past the cap but never escalated, so this
+    // exact fixture imported with status Ok, a complete-looking model, and dependency edges missing for
+    // every texture past the 1024th -- the "partial claiming whole" shape the cap regime exists to
+    // prevent. Well under MAX_MATERIALS_PER_MODEL (65536), so the material cap never interferes.
+    std::string doc;
+    const std::size_t textureCount = MAX_EXTERNAL_URIS + 10;
+    for (std::size_t i = 0; i < textureCount; ++i) {
+        doc += "newmtl m" + std::to_string(i) + "\nmap_Kd tex" + std::to_string(i) + ".png\n";
+    }
+    const ImportResult result = importModel("t.mtl", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Truncated);
+    CHECK_FALSE(result.message.empty());
+    CHECK(result.message.find("external reference count") != std::string::npos);
+    REQUIRE(result.model.materials.size() == textureCount);  // materials themselves are NOT capped here
+    CHECK(result.externalUris.size() == MAX_EXTERNAL_URIS);
+    // the message must appear EXACTLY ONCE, not once per overflowing texture (ten of them here).
+    const std::size_t occurrences = [&] {
+        std::size_t count = 0;
+        std::size_t pos = 0;
+        while ((pos = result.message.find("external reference count", pos)) != std::string::npos) {
+            ++count;
+            ++pos;
+        }
+        return count;
+    }();
+    CHECK(occurrences == 1);
+}

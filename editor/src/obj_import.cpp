@@ -318,9 +318,16 @@ struct SurvivingFace {
 // task 3.2.3, Step 7 (§D-6): one texture slot's resolution. `texname` empty -> the slot stays
 // DISENGAGED, no image, no warning. Images are FOUND-OR-APPENDED by their RESOLVED relativePath, in
 // first-seen order, so the SAME texture named by two materials becomes ONE ImportedImage (E14).
+//
+// `externalUriCapReported` (code-review round, gap 7): a SINGLE flag shared across every texture slot
+// of every material in one convertMaterials call, so hitting MAX_EXTERNAL_URIS escalates to Truncated
+// EXACTLY ONCE regardless of how many further textures overflow it -- mirroring the primitive/vertex/
+// index caps' own "set a flag, stop repeating" shape (INV-O10), rather than appending the same message
+// once per overflowing texture.
 [[nodiscard]] std::optional<ImportedTextureRef> convertTextureSlot(std::string_view texname,
                                                                    const tinyobj::texture_option_t& texopt,
-                                                                   std::string_view textureBaseDir, ImportResult& out) {
+                                                                   std::string_view textureBaseDir,
+                                                                   bool& externalUriCapReported, ImportResult& out) {
     if (texname.empty()) {
         return std::nullopt;
     }
@@ -356,8 +363,19 @@ struct SurvivingFace {
                 break;
             }
         }
-        if (!alreadyDependency && out.externalUris.size() < MAX_EXTERNAL_URIS) {
-            out.externalUris.push_back(classified.relativePath);
+        if (!alreadyDependency) {
+            if (out.externalUris.size() < MAX_EXTERNAL_URIS) {
+                out.externalUris.push_back(classified.relativePath);
+            } else if (!externalUriCapReported) {
+                // code-review round, gap 7: AC-58/INV-O10 require EVERY D18 cap to escalate to
+                // Truncated with a message naming it, matching the sibling mtllib-candidate cap. Silently
+                // dropping the dependency edge here left a model that imports Ok, looks complete, and is
+                // missing a texture reference the .mtl genuinely declares -- the "partial claiming whole"
+                // shape the cap regime exists to prevent.
+                externalUriCapReported = true;
+                escalate(out, ImportStatus::Truncated,
+                         "the external reference count exceeds this importer's per-model limit");
+            }
         }
     }
     ImportedTextureRef ref;
@@ -423,6 +441,9 @@ struct SurvivingFace {
                                                            std::string_view combinedWarnings, ImportResult& out) {
     const bool keepEmptyNamed = declaredWithEmptyName(combinedWarnings);
     std::vector<std::uint32_t> rawToConverted(src.size(), INVALID_SUBASSET);
+    // code-review round, gap 7: ONE flag for the whole call, so MAX_EXTERNAL_URIS escalates to
+    // Truncated exactly once no matter how many further textures overflow it below.
+    bool externalUriCapReported = false;
     std::uint32_t nextLocalId = 0;
     for (std::size_t rawIndex = 0; rawIndex < src.size(); ++rawIndex) {
         const tinyobj::material_t& m = src[rawIndex];
@@ -465,7 +486,8 @@ struct SurvivingFace {
 
         // Fixed slot order (baseColor, metallicRoughness, normal, emissive) so `images` order is
         // deterministic.
-        mat.baseColor = convertTextureSlot(m.diffuse_texname, m.diffuse_texopt, textureBaseDir, out);
+        mat.baseColor =
+            convertTextureSlot(m.diffuse_texname, m.diffuse_texopt, textureBaseDir, externalUriCapReported, out);
 
         // metallicRoughness: roughness_texname (map_Pr), ELSE metallic_texname (map_Pm) -- glTF packs
         // both into ONE texture and only one can be bound. One warning when BOTH are present and DIFFER.
@@ -475,25 +497,30 @@ struct SurvivingFace {
                                 "only the roughness texture is used");
         }
         if (!m.roughness_texname.empty()) {
-            mat.metallicRoughness = convertTextureSlot(m.roughness_texname, m.roughness_texopt, textureBaseDir, out);
+            mat.metallicRoughness = convertTextureSlot(m.roughness_texname, m.roughness_texopt, textureBaseDir,
+                                                        externalUriCapReported, out);
         } else {
-            mat.metallicRoughness = convertTextureSlot(m.metallic_texname, m.metallic_texopt, textureBaseDir, out);
+            mat.metallicRoughness = convertTextureSlot(m.metallic_texname, m.metallic_texopt, textureBaseDir,
+                                                        externalUriCapReported, out);
         }
 
         // normal: normal_texname (norm), ELSE bump_texname (map_Bump/bump) -- NO warning: Blender's OBJ
         // exporter writes real tangent-space normal maps into map_Bump, and refusing that would lose
         // the normal map on most files in the wild.
         if (!m.normal_texname.empty()) {
-            mat.normal = convertTextureSlot(m.normal_texname, m.normal_texopt, textureBaseDir, out);
+            mat.normal =
+                convertTextureSlot(m.normal_texname, m.normal_texopt, textureBaseDir, externalUriCapReported, out);
             mat.normalScale = m.normal_texopt.bump_multiplier;
         } else if (!m.bump_texname.empty()) {
-            mat.normal = convertTextureSlot(m.bump_texname, m.bump_texopt, textureBaseDir, out);
+            mat.normal =
+                convertTextureSlot(m.bump_texname, m.bump_texopt, textureBaseDir, externalUriCapReported, out);
             mat.normalScale = m.bump_texopt.bump_multiplier;
         }
         // else: mat.normal stays disengaged, mat.normalScale stays its default 1 -- "1 when neither map
         // exists".
 
-        mat.emissive = convertTextureSlot(m.emissive_texname, m.emissive_texopt, textureBaseDir, out);
+        mat.emissive =
+            convertTextureSlot(m.emissive_texname, m.emissive_texopt, textureBaseDir, externalUriCapReported, out);
 
         // mat.occlusion is ALWAYS disengaged -- map_Ka is an ambient COLOUR map, not an AO map, and
         // treating it as one is a guess the panel would print as a fact.
