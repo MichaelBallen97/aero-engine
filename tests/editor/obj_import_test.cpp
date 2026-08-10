@@ -34,11 +34,13 @@ namespace {
 
 }  // namespace
 
+using engine::Quat;
 using engine::Vec3;
 using engine::Vec4;
 using engine::editor::ExternalBuffer;
 using engine::editor::has;
 using engine::editor::ImportDepth;
+using engine::editor::ImportedNode;
 using engine::editor::ImportedPrimitive;
 using engine::editor::importModel;
 using engine::editor::ImportResult;
@@ -706,4 +708,143 @@ TEST_CASE("obj_import: the warning list caps at MAX_IMPORT_WARNINGS while warnin
     // BAD_FACES of OUR OWN "out of range" warnings, PLUS the library's own one aggregate "Vertex
     // indices out of bounds" line (OI31's own finding) -- all UNCAPPED in the total.
     CHECK(result.warningTotal == BAD_FACES + 1);
+}
+
+// ---- §D-7 shape splitting, material buckets and nodes (OI50-59) ---------------------------------------
+
+TEST_CASE("obj_import: two 'o' blocks yield two meshes with their own names (OI50, AC-40)") {
+    const std::string doc =
+        "o Cube\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+        "o Sphere\nv 5 5 5\nv 6 5 5\nv 5 6 5\nf 4 5 6\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 2);
+    CHECK(result.model.meshes[0].name == "Cube");
+    CHECK(result.model.meshes[1].name == "Sphere");
+}
+
+TEST_CASE("obj_import: two 'g' blocks ALSO yield two meshes -- 'g' pushes a shape exactly as 'o' does (OI51, AC-41)") {
+    const std::string doc =
+        "g GroupA\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+        "g GroupB\nv 5 5 5\nv 6 5 5\nv 5 6 5\nf 4 5 6\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 2);
+    CHECK(result.model.meshes[0].name == "GroupA");
+    CHECK(result.model.meshes[1].name == "GroupB");
+}
+
+TEST_CASE("obj_import: neither 'o' nor 'g' yields ONE mesh with an EMPTY name (OI52, AC-42)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    CHECK(result.model.meshes[0].name.empty());
+}
+
+TEST_CASE("obj_import: two 'usemtl' in ONE shape split it into two primitives (OI53, AC-43)") {
+    const std::string doc =
+        "mtllib mat.mtl\n"
+        "usemtl matA\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+        "usemtl matB\nv 2 2 2\nv 3 2 2\nv 2 3 2\nf 4 5 6\n";
+    const std::vector<ExternalBuffer> externals = {
+        ExternalBuffer{"mat.mtl", "newmtl matA\nKd 1 0 0\nnewmtl matB\nKd 0 1 0\n"},
+    };
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);  // usemtl does NOT push a shape (F6)
+    REQUIRE(result.model.meshes[0].primitives.size() == 2);
+    CHECK(result.model.meshes[0].primitives[0].materialIndex == 0);  // matA -- first DECLARED, first USED
+    CHECK(result.model.meshes[0].primitives[1].materialIndex == 1);  // matB
+}
+
+TEST_CASE("obj_import: a face with no preceding 'usemtl' at all gets INVALID_SUBASSET, no warning (OI54, AC-44)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].materialIndex == INVALID_SUBASSET);
+    CHECK(result.warningTotal == 0);
+}
+
+TEST_CASE(
+    "obj_import: faces BEFORE the first usemtl bucket separately from faces after it, with NO warning "
+    "for the absent-material half (OI55, AC-45)") {
+    const std::string doc =
+        "mtllib mat.mtl\n"
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+        "usemtl matA\nv 2 2 2\nv 3 2 2\nv 2 3 2\nf 4 5 6\n";
+    const std::vector<ExternalBuffer> externals = {ExternalBuffer{"mat.mtl", "newmtl matA\nKd 1 0 0\n"}};
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes[0].primitives.size() == 2);
+    CHECK(result.model.meshes[0].primitives[0].materialIndex == INVALID_SUBASSET);  // the pre-usemtl face
+    CHECK(result.model.meshes[0].primitives[1].materialIndex == 0);                 // matA
+    CHECK(result.warningTotal == 0);
+}
+
+TEST_CASE("obj_import: two usemtl naming the SAME material bucket into ONE primitive, not two (OI56, E11)") {
+    const std::string doc =
+        "mtllib mat.mtl\n"
+        "usemtl matA\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+        "usemtl matA\nv 2 2 2\nv 3 2 2\nv 2 3 2\nf 4 5 6\n";
+    const std::vector<ExternalBuffer> externals = {ExternalBuffer{"mat.mtl", "newmtl matA\nKd 1 0 0\n"}};
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].indices.size() == 6);  // both triangles, ONE primitive
+}
+
+TEST_CASE("obj_import: bucket order is FIRST-APPEARANCE order, not material declaration/id order (OI57)") {
+    // matA is DECLARED first (id 0) but USED second; matB is declared second (id 1) but used FIRST.
+    const std::string doc =
+        "mtllib mat.mtl\n"
+        "usemtl matB\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+        "usemtl matA\nv 2 2 2\nv 3 2 2\nv 2 3 2\nf 4 5 6\n";
+    const std::vector<ExternalBuffer> externals = {
+        ExternalBuffer{"mat.mtl", "newmtl matA\nKd 1 0 0\nnewmtl matB\nKd 0 1 0\n"},
+    };
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes[0].primitives.size() == 2);
+    CHECK(result.model.meshes[0].primitives[0].materialIndex == 1);  // matB -- used FIRST, id 1
+    CHECK(result.model.meshes[0].primitives[1].materialIndex == 0);  // matA -- used SECOND, id 0
+}
+
+TEST_CASE("obj_import: one root node per mesh, identity TRS, localId == i == meshIndex (OI58, D11, §A-13 O-iv)") {
+    const std::string doc =
+        "o Cube\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+        "o Sphere\nv 5 5 5\nv 6 5 5\nv 5 6 5\nf 4 5 6\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 2);
+    REQUIRE(result.model.roots.size() == 2);
+    CHECK(result.model.roots[0] == 0);
+    CHECK(result.model.roots[1] == 1);
+    for (std::uint32_t i = 0; i < result.model.nodes.size(); ++i) {
+        const ImportedNode& node = result.model.nodes[i];
+        INFO("node index: ", i);
+        CHECK(node.localId == i);  // the §A-13 O-iv pin -- localId == position == meshIndex for OBJ
+        CHECK(node.meshIndex == i);
+        CHECK(node.parent == INVALID_SUBASSET);
+        CHECK(node.children.empty());
+        CHECK(node.translation == Vec3::zero());
+        CHECK(node.rotation == Quat::identity());
+        CHECK(node.scale == Vec3::one());
+        CHECK(node.skinIndex == INVALID_SUBASSET);
+    }
+    CHECK(result.model.nodes[0].name == "Cube");
+    CHECK(result.model.nodes[1].name == "Sphere");
+    CHECK(result.model.summary.nodeCount == 2);
+}
+
+TEST_CASE("obj_import: line and point primitives are counted and dropped, the mesh survives empty (OI59, AC-34)") {
+    const std::string doc = "o LinesOnly\nv 0 0 0\nv 1 0 0\nv 0 1 0\nl 1 2\np 3\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    CHECK(result.model.meshes[0].primitives.empty());  // D11: survives with ZERO primitives
+    REQUIRE(result.warnings.size() == 1);
+    CHECK(result.warnings[0].find("line indices") != std::string::npos);
+    CHECK(result.warnings[0].find("point indices") != std::string::npos);
 }

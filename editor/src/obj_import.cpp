@@ -2,12 +2,10 @@
 // THE TREE (INV-O1). This file grows across several steps; see docs/plans/3.2.3-obj-import-tinyobjloader.md
 // §S for the sequence and docs/10-engineering-log.md's 3.2.3 entry for the finished design.
 //
-// Step 5 (this commit): geometry conversion (§D-7 steps 1-3, 5, 6, 9) -- the face walk, INV-O4's three
-// range checks (every index validated BEFORE any array access), the exact-(v,vn,vt)-triplet dedup, the
-// all-or-nothing attribute rule (D9), settings.scale, and §A-12's corrected bounds. Material bucketing
-// (one primitive per mesh, unsplit), the l/p count warning and node construction land at Step 6 -- every
-// primitive here carries materialIndex == INVALID_SUBASSET. The ".mtl" arm still returns Unsupported; it
-// lands at Step 7.
+// Step 6 (this commit): §D-7 steps 4, 7, 8 -- first-appearance material bucketing (D10), the l/p count
+// warning (AC-34) and the N-root node array (D11). A primitive's materialIndex may, for THIS commit
+// only, name an index into `result.model.materials`, which stays EMPTY until Step 7's §D-6 conversion.
+// The ".mtl" arm still returns Unsupported; it lands at Step 7.
 #include "obj_import.hpp"
 
 // task 3.2.3 D21: the mapbox earcut triangulation path reads vertex positions guarded only by
@@ -257,6 +255,14 @@ struct TripletKeyHash {
     }
 };
 
+// task 3.2.3, Step 6 (§D-7 step 4): one already-triangulated, INV-O4-validated face, carried alongside
+// its RAW (possibly negative or out-of-range) material id so the bucketing pass below can resolve it
+// without re-reading `shape.mesh` a second time.
+struct SurvivingFace {
+    std::array<tinyobj::index_t, 3> corners{};
+    int materialId = -1;
+};
+
 // The ".mtl" arm. NOT YET IMPLEMENTED -- lands at Step 7 (D6). `depth` is accepted and, once
 // implemented, will be deliberately UNUSED: a .mtl's whole content is local, so this arm is
 // depth-independent by construction (AC-23).
@@ -411,7 +417,7 @@ struct TripletKeyHash {
         // steps 2/3: walk num_face_vertices, VALIDATING every corner BEFORE any array access
         // (INV-O4). A face failing ANY check is dropped WHOLE, never partially, with one capped
         // warning -- the single most important loop in this task.
-        std::vector<tinyobj::index_t> survivors;  // flat, 3 per surviving face, FACE order
+        std::vector<SurvivingFace> survivors;  // FACE order
         std::size_t cursor = 0;
         for (std::size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f) {
             const unsigned int faceVertexCount = shape.mesh.num_face_vertices[f];
@@ -439,9 +445,10 @@ struct TripletKeyHash {
                 }
             }
             if (faceValid) {
-                survivors.push_back(shape.mesh.indices[cursor + 0]);
-                survivors.push_back(shape.mesh.indices[cursor + 1]);
-                survivors.push_back(shape.mesh.indices[cursor + 2]);
+                const int rawMaterialId = f < shape.mesh.material_ids.size() ? shape.mesh.material_ids[f] : -1;
+                survivors.push_back(SurvivingFace{
+                    {shape.mesh.indices[cursor + 0], shape.mesh.indices[cursor + 1], shape.mesh.indices[cursor + 2]},
+                    rawMaterialId});
             } else {
                 addWarning(result, "mesh '" + shape.name + "' face " + std::to_string(f) +
                                        ": an index is out of range, dropped");
@@ -449,29 +456,77 @@ struct TripletKeyHash {
             cursor += 3;
         }
 
-        if (!survivors.empty() && totalPrimitives < MAX_PRIMITIVES_PER_MODEL) {
-            // step 5's all-or-nothing rule (D9): does EVERY surviving corner carry a normal/texcoord?
-            // Filling gaps with zeroes is not available -- a zero normal is indistinguishable from an
-            // absent one, which is the whole reason VertexAttribute is a bitset.
+        // step 4 (D10): bucket SURVIVING faces by their RESOLVED material index, in FIRST-APPEARANCE
+        // order -- never by id value, which would reorder primitives whenever a material is inserted
+        // into the .mtl. Two `usemtl` naming the SAME material share the SAME resolved index and
+        // therefore the SAME bucket (E11) -- this falls out for free from keying on the value.
+        std::vector<std::uint32_t> bucketMaterialIndex;
+        std::unordered_map<std::uint32_t, std::size_t> bucketOf;
+        std::vector<std::vector<std::size_t>> facesInBucket;
+        for (std::size_t s = 0; s < survivors.size(); ++s) {
+            std::uint32_t resolved = INVALID_SUBASSET;
+            const int rawId = survivors[s].materialId;
+            if (rawId >= 0) {
+                if (static_cast<std::size_t>(rawId) < materials.size()) {
+                    resolved = static_cast<std::uint32_t>(rawId);
+                } else {
+                    // >= materials.size(): a BAD reference, ONE capped warning. A negative id (no
+                    // `usemtl` at all) is the ordinary case and gets none.
+                    addWarning(result, "mesh '" + shape.name + "': a face references material " +
+                                           std::to_string(rawId) + ", which does not exist");
+                }
+            }
+            const auto found = bucketOf.find(resolved);
+            std::size_t bucketIdx = 0;
+            if (found == bucketOf.end()) {
+                bucketIdx = bucketMaterialIndex.size();
+                bucketOf.emplace(resolved, bucketIdx);
+                bucketMaterialIndex.push_back(resolved);
+                facesInBucket.emplace_back();
+            } else {
+                bucketIdx = found->second;
+            }
+            facesInBucket[bucketIdx].push_back(s);
+        }
+
+        for (std::size_t b = 0; b < bucketMaterialIndex.size() && !capsExceeded; ++b) {
+            const std::vector<std::size_t>& faceIndices = facesInBucket[b];
+            if (faceIndices.empty()) {
+                continue;
+            }
+            if (totalPrimitives >= MAX_PRIMITIVES_PER_MODEL) {
+                capsExceeded = true;
+                escalate(result, ImportStatus::Truncated,
+                         "the primitive count exceeds this importer's per-model limit");
+                break;
+            }
+
+            // step 5's all-or-nothing rule (D9): does EVERY surviving corner in THIS bucket carry a
+            // normal/texcoord? Filling gaps with zeroes is not available -- a zero normal is
+            // indistinguishable from an absent one, which is the whole reason VertexAttribute is a
+            // bitset.
             bool hasNormal = true;
             bool hasTexcoord = true;
-            for (const tinyobj::index_t& idx : survivors) {
-                hasNormal = hasNormal && idx.normal_index >= 0;
-                hasTexcoord = hasTexcoord && idx.texcoord_index >= 0;
+            for (const std::size_t faceIdx : faceIndices) {
+                for (const tinyobj::index_t& idx : survivors[faceIdx].corners) {
+                    hasNormal = hasNormal && idx.normal_index >= 0;
+                    hasTexcoord = hasTexcoord && idx.texcoord_index >= 0;
+                }
             }
 
             ImportedPrimitive outPrim;
-            outPrim.materialIndex = INVALID_SUBASSET;  // Step 6 buckets by material
+            outPrim.materialIndex = bucketMaterialIndex[b];
             // step 5's dedup map: packed (v,vn,vt) -> output vertex index. Iteration order of an
-            // unordered_map is NOT the emission order -- output order is FACE order (`survivors`),
+            // unordered_map is NOT the emission order -- output order is FACE order (`faceIndices`),
             // which is what makes the result deterministic regardless of hashing.
             std::unordered_map<TripletKey, std::uint32_t, TripletKeyHash> vertexCache;
 
-            for (std::size_t i = 0; i + 2 < survivors.size() && !capsExceeded; i += 3) {
+            for (std::size_t fi = 0; fi < faceIndices.size() && !capsExceeded; ++fi) {
+                const std::array<tinyobj::index_t, 3>& corners = survivors[faceIndices[fi]].corners;
                 std::array<std::uint32_t, 3> cornerIndices{};
                 std::size_t newVertexCount = 0;
                 for (unsigned int k = 0; k < 3; ++k) {
-                    const tinyobj::index_t& idx = survivors[i + k];
+                    const tinyobj::index_t& idx = corners[k];
                     const TripletKey key{idx.vertex_index, idx.normal_index, idx.texcoord_index};
                     if (vertexCache.find(key) == vertexCache.end()) {
                         ++newVertexCount;
@@ -490,7 +545,7 @@ struct TripletKeyHash {
                     break;
                 }
                 for (unsigned int k = 0; k < 3; ++k) {
-                    const tinyobj::index_t& idx = survivors[i + k];
+                    const tinyobj::index_t& idx = corners[k];
                     const TripletKey key{idx.vertex_index, idx.normal_index, idx.texcoord_index};
                     const auto found = vertexCache.find(key);
                     if (found != vertexCache.end()) {
@@ -548,9 +603,15 @@ struct TripletKeyHash {
                 ++totalPrimitives;
                 outMesh.primitives.push_back(std::move(outPrim));
             }
-        } else if (!survivors.empty()) {
-            capsExceeded = true;
-            escalate(result, ImportStatus::Truncated, "the primitive count exceeds this importer's per-model limit");
+        }
+
+        // step 7 (AC-34): lines and points are COUNTED and DROPPED, never imported -- one warning per
+        // shape naming BOTH counts. The mesh survives with whatever primitives it built above (zero,
+        // if it carried only l/p content), so the panel can show the user WHY it looks empty (D11).
+        if (!shape.lines.indices.empty() || !shape.points.indices.empty()) {
+            addWarning(result, "mesh '" + shape.name + "': " + std::to_string(shape.lines.indices.size()) +
+                                   " line indices and " + std::to_string(shape.points.indices.size()) +
+                                   " point indices were not imported");
         }
 
         // §A-12(a): an empty mesh (no surviving primitive) gets a POINT box, never the invalid
@@ -565,9 +626,27 @@ struct TripletKeyHash {
     }
     result.model.summary.meshCount = result.model.meshes.size();
 
-    // task 3.2.3, Step 5: material bucketing (Step 6) and node construction (Step 6) do not exist yet
-    // -- `result.model.materials`/`images`/`nodes`/`roots` stay empty regardless of what `materials`
-    // holds, and every survivor above went into ONE unsplit primitive per mesh.
+    // step 8 (D11): one ROOT node per mesh, in source order, identity TRS, no synthetic parent --
+    // ImportedNode's own field defaults already match this exactly, so only name/localId/meshIndex are
+    // set. localId == i == meshIndex for every OBJ node (§A-13, O-iv) -- by CONSTRUCTION, not a guard.
+    for (std::size_t i = 0; i < result.model.meshes.size(); ++i) {
+        if (result.model.nodes.size() >= MAX_NODES_PER_MODEL) {
+            escalate(result, ImportStatus::Truncated, "the node count exceeds this importer's per-model limit");
+            break;
+        }
+        ImportedNode node;
+        node.name = result.model.meshes[i].name;
+        node.localId = static_cast<std::uint32_t>(i);
+        node.meshIndex = static_cast<std::uint32_t>(i);
+        const auto nodeIndex = static_cast<std::uint32_t>(result.model.nodes.size());
+        result.model.roots.push_back(nodeIndex);
+        result.model.nodes.push_back(std::move(node));
+    }
+    result.model.summary.nodeCount = result.model.nodes.size();
+
+    // task 3.2.3, Step 6: material CONVERSION (tinyobj::material_t -> ImportedMaterial/ImportedImage,
+    // §D-6) does not exist yet -- `result.model.materials`/`images` stay empty, so a primitive's
+    // materialIndex may, for THIS commit only, name an index into an EMPTY array. Step 7 populates it.
     return result;
 }
 
