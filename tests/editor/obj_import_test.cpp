@@ -34,6 +34,7 @@ namespace {
 
 }  // namespace
 
+using engine::editor::ExternalBuffer;
 using engine::editor::ImportDepth;
 using engine::editor::importModel;
 using engine::editor::ImportResult;
@@ -273,4 +274,102 @@ TEST_CASE(
     CHECK(result.status == ImportStatus::Ok);
     REQUIRE(result.externalUris.size() == 1);
     CHECK(result.externalUris[0] == "textures/wood.mtl");
+}
+
+TEST_CASE("obj_import: a NUL byte in the first 1024 bytes is Malformed on the .obj arm (OI18, AC-54)") {
+    std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    doc[3] = '\0';
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Malformed);
+    CHECK(result.message == "this file is not text");
+}
+
+TEST_CASE("obj_import: PNG, JPEG and GLB magic all trip the binary check through the real backend (OI19, AC-54)") {
+    // Each format's length/version field puts a NUL inside the first 16 bytes (§D-4(f)'s own reasoning).
+    const std::string png("\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR", 16);
+    const std::string jpeg("\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01", 10);
+    const std::string glb("glTF\x02\x00\x00\x00", 8);
+    for (const std::string& magic : {png, jpeg, glb}) {
+        const ImportResult result =
+            importModel("t.obj", "", asBytes(magic), ImportSettings{}, ImportDepth::Structure, {});
+        INFO("magic size: ", magic.size());
+        CHECK(result.status == ImportStatus::Malformed);
+        CHECK(result.message == "this file is not text");
+    }
+}
+
+TEST_CASE(
+    "obj_import: the binary probe is a WINDOW, not a whole-file requirement -- a long NUL-free body is "
+    "never mistaken for binary (OI20)") {
+    std::string doc;
+    for (int i = 0; i < 80; ++i) {
+        doc += "# padding comment line to push this file past the 1024-byte probe window\n";
+    }
+    doc += "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    REQUIRE(doc.size() > 1024);
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status != ImportStatus::Malformed);
+}
+
+TEST_CASE("obj_import: zero 'v' lines at all is Malformed (OI21, AC-55)") {
+    const std::string doc = "# a comment, and nothing else\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Malformed);
+    CHECK_FALSE(result.message.empty());
+}
+
+TEST_CASE("obj_import: an empty file and a whitespace-only file are both Malformed (OI22, AC-56)") {
+    const ImportResult empty =
+        importModel("t.obj", "", asBytes(std::string("")), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(empty.status == ImportStatus::Malformed);
+    const std::string whitespaceOnly = "   \n\t\n   \n";
+    const ImportResult ws = importModel("t.obj", "", asBytes(whitespaceOnly), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(ws.status == ImportStatus::Malformed);
+}
+
+TEST_CASE(
+    "obj_import: two mtllib directives -- BOTH of the library's own single-stream sentences are absent "
+    "(OI23, AC-57b, §A-10)") {
+    const std::string doc = "mtllib a.mtl\nmtllib b.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const std::vector<ExternalBuffer> externals = {
+        ExternalBuffer{"a.mtl", "newmtl foo\nKd 1 0 0\n"},
+        ExternalBuffer{"b.mtl", "newmtl bar\nKd 0 1 0\n"},
+    };
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
+    CHECK(result.status != ImportStatus::ParseFailed);
+    for (const std::string& warning : result.warnings) {
+        CHECK(warning.find("Material stream in error state") == std::string::npos);
+        CHECK(warning.find("Failed to load material file") == std::string::npos);
+    }
+}
+
+TEST_CASE("obj_import: a battery of hostile-but-valid inputs never throws (OI24, AC-60)") {
+    {
+        const std::string oneMegLine(static_cast<std::size_t>(1024) * 1024, 'x');
+        const ImportResult result =
+            importModel("t.obj", "", asBytes(oneMegLine), ImportSettings{}, ImportDepth::Full, {});
+        CHECK(result.status == ImportStatus::Malformed);  // no recognisable 'v'/'f' content at all
+    }
+    {
+        const std::string facesOnly = "f 1 2 3\nf 4 5 6\n";
+        const ImportResult result =
+            importModel("t.obj", "", asBytes(facesOnly), ImportSettings{}, ImportDepth::Full, {});
+        CHECK(result.status == ImportStatus::Malformed);  // zero vertices declared
+    }
+    {
+        std::string deepEscape = "mtllib ";
+        for (int i = 0; i < 200; ++i) {
+            deepEscape += "../";
+        }
+        deepEscape += "outside.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        const ImportResult result =
+            importModel("t.obj", "", asBytes(deepEscape), ImportSettings{}, ImportDepth::Full, {});
+        CHECK(result.status != ImportStatus::Unsupported);
+    }
+}
+
+TEST_CASE("obj_import: a {nullptr, 0} span under a CLAIMED .obj name never dereferences it (OI25, D19)") {
+    const std::span<const std::byte> emptySpan;  // {nullptr, 0} -- any dereference would crash/ASan-trip
+    const ImportResult result = importModel("t.obj", "", emptySpan, ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Malformed);  // zero vertices -- SpanStreamBuf(nullptr) is EOF
 }

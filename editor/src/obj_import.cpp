@@ -2,9 +2,10 @@
 // THE TREE (INV-O1). This file grows across several steps; see docs/plans/3.2.3-obj-import-tinyobjloader.md
 // §S for the sequence and docs/10-engineering-log.md's 3.2.3 entry for the finished design.
 //
-// Step 3 (this commit): the dispatch now routes here (model_import.cpp), and the ".obj" arm's Structure
-// half is complete and final -- a PURE TEXT SCAN, a stated deviation from INV-M4 (D5): tinyobjloader is
-// not entered at all. The ".mtl" arm still returns Unsupported; it lands at Step 7.
+// Step 4 (this commit): the Full-depth ".obj" arm now enters tinyobjloader through a borrowed
+// SpanStreamBuf and maps LoadObj's own diagnostics (§A-9/§A-10). Geometry is NOT converted yet -- the
+// result carries the URI set, the status and the warnings, and `meshes` stays empty; that lands at
+// Step 5. The ".mtl" arm still returns Unsupported; it lands at Step 7.
 #include "obj_import.hpp"
 
 // task 3.2.3 D21: the mapbox earcut triangulation path reads vertex positions guarded only by
@@ -27,7 +28,11 @@ bounds-checked triangulation first."
 // IncludeCategories priority, no '/' in its own path) -- it is still the ONLY tinyobjloader include in
 // this file, and the ONLY one anywhere in this tree (INV-O1).
 #include <cstddef>
+#include <exception>
+#include <istream>
 #include <span>
+#include <sstream>
+#include <streambuf>
 #include <string>
 #include <string_view>
 #include <tiny_obj_loader.h>
@@ -98,6 +103,71 @@ void escalate(ImportResult& result, ImportStatus status, std::string_view why) {
             result.message += "; ";
         }
         result.message += why;
+    }
+}
+
+// D19 -- ~8 lines, read-only, BORROWS `bytes` for the caller's whole call (never copies). The
+// alternative (ObjReader::ParseFromString) copies the model TWICE more, up to ~768 MB resident at the
+// 256 MiB file cap. With an EMPTY span, `bytes.data()` may be nullptr; `setg(nullptr, nullptr,
+// nullptr)` is well-defined and yields an immediately-EOF stream (OI28 drives exactly that).
+class SpanStreamBuf final : public std::streambuf {
+public:
+    explicit SpanStreamBuf(std::span<const std::byte> bytes) {
+        // setg's signature requires char*, and this buffer is NEVER written through: every member this
+        // class exposes is a READ.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        char* const begin = const_cast<char*>(reinterpret_cast<const char*>(bytes.data()));
+        setg(begin, begin, begin + bytes.size());
+    }
+};
+
+// task 3.2.3 (§A-9): a reasonable, capped, human-legible excerpt of a library diagnostic string for
+// ImportResult::message -- trimmed of surrounding whitespace, first line only (the library's own
+// messages are frequently multi-line), capped so one pathological line cannot dominate the message.
+[[nodiscard]] std::string firstLineCapped(std::string_view text, std::size_t capBytes) {
+    std::size_t begin = 0;
+    while (begin < text.size() &&
+           (text[begin] == ' ' || text[begin] == '\t' || text[begin] == '\r' || text[begin] == '\n')) {
+        ++begin;
+    }
+    std::size_t end = text.size();
+    while (end > begin &&
+           (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r' || text[end - 1] == '\n')) {
+        --end;
+    }
+    const std::string_view trimmed = text.substr(begin, end - begin);
+    const std::size_t newline = trimmed.find('\n');
+    std::string_view line = newline == std::string_view::npos ? trimmed : trimmed.substr(0, newline);
+    while (!line.empty() && line.back() == '\r') {
+        line.remove_suffix(1);
+    }
+    if (line.size() > capBytes) {
+        return std::string(line.substr(0, capBytes)) + "...";
+    }
+    return std::string(line);
+}
+
+// task 3.2.3 (§A-10): the library's diagnostic strings, appended one line at a time. TWO sentences are
+// dropped, and only two -- both describe OUR OWN single-stream MaterialStreamReader plumbing on the
+// SECOND and later `mtllib` directive ("Material stream in error state." -- MaterialStreamReader's own
+// guard when our shared istringstream is already exhausted; "Failed to load material file(s). Use
+// default material." -- LoadObj's mtllib branch when every reader call for that line failed), never
+// anything about the user's file. The library's "Both `d` and `Tr`" warning is the OPPOSITE -- a REAL
+// statement about the file -- and is NEVER dropped (§A-11).
+void appendLibraryDiagnostics(ImportResult& result, std::string_view text) {
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const std::size_t newline = text.find('\n', start);
+        const std::string_view line =
+            newline == std::string_view::npos ? text.substr(start) : text.substr(start, newline - start);
+        if (!line.empty() && line.find("Material stream in error state") == std::string_view::npos &&
+            line.find("Failed to load material file") == std::string_view::npos) {
+            addWarning(result, std::string(line));
+        }
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        start = newline + 1;
     }
 }
 
@@ -196,6 +266,10 @@ void escalate(ImportResult& result, ImportStatus status, std::string_view why) {
         escalate(result, ImportStatus::Truncated,
                  "the external reference count exceeds this importer's per-model limit");
     }
+    // D7: the RAW candidate that first produced each accepted externalUris entry, SAME index, kept so
+    // the Full pass below can name it in a "no matching .mtl was supplied" warning -- never inferred
+    // from a library string, always OURS, derived from this candidate list versus the supplied set.
+    std::vector<std::string> rawOperandFor;
     for (const std::string& candidate : candidates) {
         const std::string folded = foldBackslashesToSlashes(candidate);  // D15: a Wavefront operand is
                                                                          // a filesystem path, not a URI
@@ -216,6 +290,7 @@ void escalate(ImportResult& result, ImportStatus status, std::string_view why) {
             continue;  // deduplicated -- several mtllib lines/candidates can resolve to one path (E3)
         }
         result.externalUris.push_back(classified.relativePath);
+        rawOperandFor.push_back(candidate);
     }
     // E4: an mtllib line whose operand trims to nothing produces no candidate above -- OURS to warn
     // about, since scanObjMtlLibs's own contract is silent about it (D16).
@@ -224,12 +299,71 @@ void escalate(ImportResult& result, ImportStatus status, std::string_view why) {
         addWarning(result, "a 'mtllib' directive has an empty operand and was ignored");
     }
 
-    // task 3.2.3, Step 3: at THIS commit, this pure text scan IS the whole function regardless of
-    // `depth` -- the Full-depth arm (SpanStreamBuf, the LoadObj call, geometry, materials) lands
-    // incrementally from Step 4 onward. `settings`/`external` are accepted and, for now, unused.
+    if (depth == ImportDepth::Structure) {
+        return result;  // D5: this pure text scan IS the whole Structure pass
+    }
+
+    // ---- FULL -----------------------------------------------------------------------------------
+    // D7: concatenate the SUPPLIED .mtl texts, in externalUris order, joined by "\n" -- a .mtl with no
+    // trailing newline must not glue its last line onto the next file's first. A candidate with no
+    // matching supplied buffer is a WARNING, never MissingBuffer (Wavefront's .mtl holds only
+    // appearance; without it there is still a mesh).
+    std::string mtlText;
+    for (std::size_t i = 0; i < result.externalUris.size(); ++i) {
+        bool found = false;
+        for (const ExternalBuffer& buf : external) {
+            if (buf.uri == result.externalUris[i]) {
+                if (!mtlText.empty()) {
+                    mtlText += '\n';
+                }
+                mtlText += buf.bytes;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            addWarning(result, "mtllib '" + rawOperandFor[i] + "': no matching .mtl was supplied");
+        }
+    }
+
+    SpanStreamBuf objBuf(bytes);
+    std::istream objStream(&objBuf);
+    std::istringstream mtlStream(mtlText);
+    tinyobj::MaterialStreamReader mtlReader(mtlStream);
+
+    tinyobj::attrib_t attrib;
+    std::vector<tinyobj::shape_t> shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string warn;
+    std::string err;
+    const bool ok =
+        tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, &objStream, &mtlReader, /*triangulate=*/true,
+                         /*default_vcols_fallback=*/false);
+
+    // §A-9: the RETURN VALUE is the authority, never the `err` string -- the mtllib branch appends
+    // err_mtl to *err and keeps parsing, so a non-empty err on a TRUE return is ordinary.
+    appendLibraryDiagnostics(result, warn);
+    if (!ok) {
+        result.status = ImportStatus::ParseFailed;
+        result.message = err.empty() ? "the Wavefront parser refused this file" : firstLineCapped(err, 300);
+        return result;
+    }
+    appendLibraryDiagnostics(result, err);
+
+    if (attrib.vertices.empty()) {  // AC-55: no `v` lines at all
+        result.status = ImportStatus::Malformed;
+        if (result.message.empty()) {
+            result.message = "this file declares no vertices";
+        }
+        return result;
+    }
+
+    // task 3.2.3, Step 4: at THIS commit, the library has been entered and its diagnostics mapped, but
+    // geometry conversion (positions/indices/materials/nodes) does not exist yet -- `meshes` stays
+    // empty regardless of what `shapes`/`materials` hold. Lands incrementally from Step 5 onward.
     (void)settings;
-    (void)depth;
-    (void)external;
+    (void)shapes;
+    (void)materials;
     return result;
 }
 
@@ -237,10 +371,26 @@ void escalate(ImportResult& result, ImportStatus status, std::string_view why) {
 
 ImportResult importObj(std::string_view fileName, std::string_view assetRelativeDir, std::span<const std::byte> bytes,
                        const ImportSettings& settings, ImportDepth depth, std::span<const ExternalBuffer> external) {
-    if (endsWithFoldedLocal(fileName, ".mtl")) {
-        return importMtlOnly(assetRelativeDir, bytes, settings, depth, external);
+    // D20: NO exception crosses the public API. tinyobjloader grows std::vector/std::string/std::map/
+    // std::stringstream directly from user-controlled input, so std::bad_alloc and std::length_error
+    // are reachable -- this ONE try/catch is the boundary for BOTH arms (importObj itself, not each
+    // arm separately), which is what keeps it a single block rather than two near-identical copies.
+    try {
+        if (endsWithFoldedLocal(fileName, ".mtl")) {
+            return importMtlOnly(assetRelativeDir, bytes, settings, depth, external);
+        }
+        return importObjFile(assetRelativeDir, bytes, settings, depth, external);
+    } catch (const std::exception& e) {
+        ImportResult result;
+        result.status = ImportStatus::ParseFailed;
+        result.message = e.what();
+        return result;
+    } catch (...) {
+        ImportResult result;
+        result.status = ImportStatus::ParseFailed;
+        result.message = "an unknown error occurred while parsing this file";
+        return result;
     }
-    return importObjFile(assetRelativeDir, bytes, settings, depth, external);
 }
 
 }  // namespace engine::editor
