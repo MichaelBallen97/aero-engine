@@ -599,6 +599,15 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
         flow.pending = FileAction::None;           // user still has to press Create (E19)
         return;
     }
+    // task 3.2.4, +1 arm, and its PLACEMENT is the whole point: it sits with the other `kind ==` arms
+    // and BEFORE the terminal Save fall-through, which is reached BY ELIMINATION and would otherwise
+    // save the current scene to the picked binary's path -- 2.5.1's BLOCKING-2 in a new costume, and
+    // exactly what SHOULD-FIX 5's orphan guard above exists for.
+    if (kind == DialogKind::BlenderBinary) {
+        flow.pickedBlenderPath = result.path;  // and NOTHING else -- applied by tick()'s reconcile (D13)
+        flow.pending = FileAction::None;
+        return;
+    }
     // kind == DialogKind::Save. appendExtension is true ONLY here -- a native Save panel is the one
     // place a user can type a bare name (D13); requestSaveSceneAs(path) hands a path literally.
     const bool ok = saveSceneFile(context, commands, session, result.path, /*appendExtension=*/true);

@@ -109,4 +109,15 @@ void launchOpenProjectFolderDialog(const std::shared_ptr<DialogChannel>& channel
                              dir.empty() ? nullptr : dir.c_str(), /*allow_many=*/false);
 }
 
+void launchLocateBlenderDialog(const std::shared_ptr<DialogChannel>& channel, void* parent,
+                               std::string_view startDirectory) {
+    auto* ticket = new Ticket(channel);
+    const std::string dir(startDirectory);  // SDL copies it; OUR copy must survive the async call
+    // filters == nullptr and nfilters == 0: NO FILTER ARRAY AT ALL. See the header for why a Blender
+    // binary cannot be expressed as an SDL filter pattern on all three hosts. Everything else is
+    // launchOpenSceneDialog's shape verbatim, including the always-invoked-callback leak-freedom (A22).
+    SDL_ShowOpenFileDialog(&onDialogResult, ticket, static_cast<SDL_Window*>(parent), /*filters=*/nullptr,
+                           /*nfilters=*/0, dir.empty() ? nullptr : dir.c_str(), /*allow_many=*/false);
+}
+
 }  // namespace engine::editor
