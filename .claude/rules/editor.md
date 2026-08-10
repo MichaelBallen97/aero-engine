@@ -1062,6 +1062,46 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
 - **Any test that can reach the Blender resolve path MUST set `EditorAppConfig::toolPrefsPath`**, or it
   reads — and through `Locate…`/`Re-detect`, WRITES — the developer's real machine-wide
   `editor_tools.json`. This is the third instance of the `recentProjectsPath`/`layoutIniPath` lesson.
+- **A RE-ENTRY THROUGH THAT EXCEPTION POLLS, AND DOES NOTHING ELSE.** The exception exists so a child
+  gets waited on, not so the cache is re-evaluated: falling through to the probe re-read the artifact and
+  re-ran `importModel` on every frame for the whole duration of an unrelated asset's run, and wiped
+  `resultValue` on the way in. Nothing below the poll can change a settled target's answer anyway —
+  `setTarget`, `requestConversion` and `cancelConversion` all clear `serviced`, so none of them arrives
+  as a re-entry. `BS35` is the case, and it asserts `importCount()`, which reads 39 instead of 1 without
+  the guard.
+- **`SessionState` and `BlenderState` are the first values in the editor that span frames, and all three
+  of the code-review round's worst findings are the same mistake: a per-tick OUTPUT read as the next
+  tick's INPUT with nothing resetting it.** `setTarget()` must reset `stateValue` with everything else it
+  already resets — a stale `Converting` made the panel report a run against an asset that had none, and
+  made the session consume another asset's result. `serviceBlend` additionally requires
+  `blender().conversionGuid()` to match its own target before consuming `Converting`/`Converted`. **Any
+  new cross-frame field on either type inherits both obligations.**
+- **The panel names the version from the ARTIFACT'S OWN provenance record
+  (`ModelImportSession::artifactBlenderVersion()`), never `BlenderService::versionString()`.** The latter
+  is the currently installed Blender: empty on a pure cache hit, and — once anything has probed — a
+  binary that did not produce the file on screen. "Convert with 4.2, upgrade to 5.2, and the panel still
+  says 4.2" is only true if this distinction is kept.
+- **EVERY child this service starts is bounded, not just the export.** A hung `blender --version` left
+  the service in `Probing` for the life of the editor, which also re-entered the `.blend` arm every tick.
+  `BLENDER_PROBE_TIMEOUT_SECONDS` and `BLENDER_TIMEOUT_SECONDS` are three orders of magnitude apart on
+  purpose. **A bounded WAIT loop in a test must inject ZERO seconds** (`WAIT_DT`): forking a fake tool
+  costs thousands of poll iterations, so a plausible-looking 16 ms per iteration is minutes of fake time
+  and trips a real timeout while the child takes milliseconds. Every timeout is driven by an explicit
+  one-shot injection instead.
+- **`cancel()` is `noexcept`, so it RECORDS and `poll()` completes** — the same division of labour
+  `requestConversion`/`startExport` already has. A cancel arriving between the request and the spawn must
+  still produce a verdict, or the session waits forever on a run that will never start; and assigning the
+  message inside `cancel()` is an allocation clang-tidy rejects outright.
+- **The panel's Blender log node is DEFAULT-OPEN, and that is what makes its contents testable at all.**
+  No tier in this tree can click a `TreeNode`, so a closed node's branches never execute anywhere, under
+  any sanitizer — which is precisely how the refused-by-cap branch shipped undriven. The same reasoning
+  the six `CollapsingHeader` sections already carry.
+- **`<projectRoot>/Library/BlenderExports` has ONE rule, `blenderExportDir()`, and it returns EMPTY for
+  an empty project root.** Concatenating onto an empty root yields `/Library/BlenderExports` — an
+  absolute path at the filesystem root that the probe's own directory creation then attempts, harmlessly
+  on POSIX and for real on Windows. An empty result is the service's own documented "resolve, but do not
+  spawn"; `EditorApp::resolveBlender()` defers on it, leaving the state `Unknown`, which is exactly what
+  the lazy resolve re-tests once a project is open.
 
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
 3.1.3, 3.1.4, 3.2.1, 3.2.2, 3.2.3 and 3.2.4's entries under Phase 3.

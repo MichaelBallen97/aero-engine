@@ -5273,7 +5273,11 @@ specifically, and none of them, so none needed correcting.
 
 ### Task 3.2.4 — Blender CLI detection + `.blend` import (Epic 3.2)
 
-**Branch:** `feat/3.2.4-blender-cli-blend-import`, cut from `main @ 1b1d335`. Ten green commits.
+**Branch:** `feat/3.2.4-blender-cli-blend-import`, cut from `main @ 1b1d335`. **Twenty-one green
+commits** — eleven for the implementation and ten from the code-review round recorded at the end of this
+entry. (An earlier draft of this line said "Ten", which was already wrong when it was written: a
+gate-grep fix landed after the docs commit. The number is measured with
+`git rev-list --count main..HEAD`, never remembered.)
 **Zero paths under `engine/`** — the no-engine-change streak reaches **six**. Unlike 3.2.3, **zero paths
 under `cmake/` too**, and this is the first task in Epic 3.2 that **adds no third-party code at all**:
 `vcpkg.json`, the `builtin-baseline`, the `/vcpkg` submodule, `.github/scripts/` and
@@ -5490,17 +5494,38 @@ trusted, the rebuild was checked for staleness, and the revert was verified byte
   is what makes `MS36`'s second half, `BS46`, `BS47`, `I72` and `I76` cross-platform instead of
   POSIX-only.
 
-#### The POSIX-only cases, recounted rather than carried forward
+#### The POSIX-only cases, recounted rather than carried forward — and what their absence COSTS Windows
 
-**Eleven** whole `BS` cases skip loudly on Windows — `BS14, BS16, BS17, BS24, BS27, BS28, BS29, BS30,
-BS39, BS40, BS43` — plus **one** case, `BS11`, with a single POSIX-only *arm* inside it (the
-`PATH`-separator half). Earlier notes on this branch said "eight" and "ten"; both were wrong, and the
-number is measured here by parsing the file rather than remembered. The reason is structural: SDL spawns
-through `CreateProcessW` on Windows, which cannot execute a `.bat` or `.cmd`, and no `cmake -E` mode
-prints arbitrary text when handed exactly `{binary, "--version"}`. Everything that needs no scripted
-output — resolution, `ToolMissing`, the spawn-failure path, the preferences file, the request-drop
-rules, both exit-non-zero export rows, and the whole cache/staleness/artifact surface — runs on **every**
-lane.
+**Fourteen** whole `BS` cases skip loudly on Windows — `BS14, BS16, BS17, BS24, BS27, BS28, BS29, BS30,
+BS39, BS40, BS43, BS49, BS51, BS53` — plus **one** case, `BS11`, with a single POSIX-only *arm* inside it
+(the `PATH`-separator half), and **one** GPU-tier case, `I80`. Earlier notes on this branch said "eight",
+"ten" and "eleven"; all three were wrong, and the number is measured by parsing the file rather than
+remembered. (The count grew from eleven to fourteen in the code-review round, which added `BS49`, `BS51`
+and `BS53`.) The reason is structural: SDL spawns through `CreateProcessW` on Windows, which cannot
+execute a `.bat` or `.cmd`, and no `cmake -E` mode prints arbitrary text when handed exactly
+`{binary, "--version"}`. Everything that needs no scripted output — resolution, `ToolMissing`, the
+spawn-failure path, the preferences file, the request-drop rules, both exit-non-zero export rows, and the
+whole cache/staleness/artifact surface — runs on **every** lane.
+
+**The consequence, stated as a consequence rather than as a count, because the plan's own §V2 R5 claim
+("they hold identically on all three lanes") is inaccurate as written.** Those cases are not a random
+sample. Together they are the ONLY coverage anywhere of:
+
+- the export **timeout** and the probe **timeout** (`BS29`, `BS51`);
+- **cancellation** of a live run and the force-kill escalation (`BS30`, `BS39`);
+- the **`Converted`** state and therefore the entire end-to-end conversion, artifact read, import and
+  provenance write (`BS24`, `BS40`);
+- **`ok: false`** with exit 0, and **exit 0 with no status file** (`BS27`, `BS28`);
+- **`ArtifactUnusable`**, both arms (`BS43`, `BS53`);
+- a **selection change while a run is genuinely in flight** (`BS49`);
+- the **refused-by-cap log** render path (`I80`).
+
+On Windows, none of those arms is executed by any test at all. What Windows does prove is that the same
+code COMPILES and links, that resolution/`ToolMissing`/spawn-failure/request-drop/cache/staleness behave
+identically, and that the process layer starts, polls and kills a real child (`BS1`–`BS10`, all portable).
+The uncovered half is a real gap in a lane, not a difference in behaviour anyone has observed — but it is
+exactly the half where 3.2.2's and 3.2.3's own defects turned out to be platform-specific, so it belongs
+in the Windows validation pass's own list rather than in a footnote about test counts.
 
 #### Measured inventory at the docs commit (re-measured, never carried forward)
 
@@ -5513,16 +5538,17 @@ lane.
 | Check A denylist / Check B allowlist | 6 / 2 | **6 / 2**, unchanged | the script's own output |
 | per-OS lines, `editor/src` + `editor/include` | 0 | **3 lines, 1 file** | `git grep -nE '_WIN32\|__APPLE__\|__linux__' -- editor/src editor/include` |
 | ctest entries (tools ON / both OFF / reflect OFF) | 95 / 6 / 19 | **95 / 6 / 19** — zero new `add_test` | `ctest -N \| tail -1` |
-| `aero_editor_shell_test` | 1232 | **1359** | `--list-test-cases \| tail -1` |
-| … in **both** fresh reduced configurations | — | **1335** each, `BT1` and `BS1` present in both | same, in `build/tools-off-3.2.4` / `build/reflect-off-3.2.4` |
-| `aero_editor_imgui_test` | 90 | **98** | same |
+| `aero_editor_shell_test` | 1232 | **1359** → **1366** after the code-review round | `--list-test-cases \| tail -1` |
+| … in **both** fresh reduced configurations | — | **1335** → **1342** each, `BT1` and `BS1` present in both | same, in `build/tools-off-3.2.4{,-cr}` / `build/reflect-off-3.2.4{,-cr}` |
+| `aero_editor_imgui_test` | 90 | **98** → **102** after the code-review round | same |
 | `aero_tests` | 415 | **415** | same |
 | `aero_scene_serialize_test` / `aero_editor_inspector_test` | 23 / 22 | **23 / 22** | same |
 | `.service(` call sites in `model_import_session_test.cpp` | 42 | **61**, none of the original 42 edited | `grep -c '\.service('` |
 
-New case ids, all re-measured against the tree at the moment of writing: `BT1`–`BT62` and `BS1`–`BS47`
-(two new TUs), `TF33`–`TF37`, `MS34`–`MS41` plus `MS32`'s rewrite, `MI133`, `SS37`–`SS40`, `I69`–`I76`.
-`MS41`, `BS46` and `BS47` are **not in the plan** — they are what the sabotage matrix forced.
+New case ids, all re-measured against the tree at the moment of writing: `BT1`–`BT63` and `BS1`–`BS53`
+(two new TUs), `TF33`–`TF37`, `MS34`–`MS41` plus `MS32`'s rewrite, `MI133`, `SS37`–`SS40`, `I69`–`I80`.
+`MS41`, `BS46` and `BS47` are **not in the plan** — they are what the sabotage matrix forced; `BT63`,
+`BS48`–`BS53` and `I77`–`I80` are what the code-review round forced.
 
 #### What this task did NOT verify, in those words
 
@@ -5536,5 +5562,125 @@ New case ids, all re-measured against the tree at the moment of writing: `BT1`�
   end to end on macOS; the Windows half is **carried, not checked**.
 - **That the redirect `SDL_IOStream` being left open would leak on macOS.** It does not — measured,
   and recorded above as S6's verdict rather than assumed either way.
-- **The panel's rendered appearance.** `I69`–`I76` prove the draw path runs without an ImGui assert and
+- **The panel's rendered appearance.** `I69`–`I80` prove the draw path runs without an ImGui assert and
   that the request channels drain; no tier in this tree reads rendered ImGui text.
+
+#### The code-review round — thirteen findings against a fully green gate, two blocking
+
+The 36-seed sabotage matrix and the review each found what the other missed, for the fourth task running.
+Every fix below ships with a case that reddens without it, and each was **verified by re-seeding the fix
+away and watching the named case fail**. Ten commits, each green on its own.
+
+**BLOCKING-1 — a cache-hit `.blend` showed a permanently false "Checking the Blender version…" and no
+controls at all.** `BlenderState::Unknown` shared `Probing`'s panel arm, which returns before every
+control. On a pure cache hit the service is NEVER resolved — the only lazy-resolve trigger is gated on
+`SessionState::NeedsConversion` — so Unknown is not a transient state there, it is the state for the
+whole session, permanently. The user saw one false sentence and got no `Re-import`, no `Re-detect`, no
+`Locate…` and no log node, with **no UI path to force a re-conversion from the task's own headline
+flow**. Unknown now falls through to the group whose controls the session's state decides. `I77` is the
+proof, and its first draft was too weak in an instructive way: "the Unknown label falls through to some
+`case`" is satisfied by the broken shape, because Unknown fell through to `Probing`. What discriminates
+is collecting the CONTIGUOUS case labels immediately above the probing message and requiring them to be
+`Probing` alone. `I78` is the first GPU-tier case anywhere to stage a `.blend` cache HIT and draw real
+frames from it — every prior one is a miss.
+
+**BLOCKING-2 — switching selection mid-conversion misattributed the run and discarded it.**
+`setTarget()` reset `serviced`, `resultValue`, `lastApplyError`, `observedSize`, `targetGuid`, `pending`
+and `onDisk` — but not `stateValue`, which this task turned from an output into an INPUT: `serviceBlend`
+reads `Converting` to decide whether a run's result is its own. Selecting `b.blend` while `a.blend`
+converted therefore drew "Running Blender… 42.3 s" against `b`, consumed `a`'s completion on `b`'s
+behalf — importing `b`'s artifact and stamping a fresh provenance record for an export that never ran
+for it — and spawned the pending request in `b`'s name. Closed by resetting `stateValue` with everything
+else, **and** by requiring the service's own conversion GUID to match the target before consuming
+`Converting`/`Converted`. **Measured and stated rather than implied: the reset alone closes both cases;
+the GUID comparison is unreachable behind it** (seeding it away leaves `BS48`/`BS49` green) and is
+defence in depth for a future path, not a second discriminator. `BS48` and `BS49` are the first cases
+anywhere to call `setTarget()` twice with a run alive.
+
+**SHOULD-FIX 3 — a settled `.blend` re-read and re-imported its whole GLB on every tick while any other
+asset's probe or conversion was alive.** The `(target, generation)` guard's `.blend` exception exists so
+a child gets polled; re-entry did not merely poll. It wiped `resultValue` at the top of `service()` and
+fell through to the cache probe, so `importCount()` climbed once per frame and a 256 MiB read plus a full
+`importModel` ran with it — the exact opposite of AC-45's *"ten further ticks cost ten early returns"*,
+quoted verbatim in the guard's own comment, and of AC-22's zero-bytes-read claim. A re-entry now polls
+and returns; nothing below that point can change a settled target's answer anyway, because
+`setTarget`/`requestConversion`/`cancelConversion` all clear `serviced`. `BS35` already drove this exact
+path and never looked at the cost: it now asserts `importCount()`, which reads **39** instead of 1
+without the fix.
+
+**SHOULD-FIX 4 — the panel named the wrong Blender version.** The provenance record's `blenderVersion`
+was parsed, compared and dropped one line later, so the "produced by Blender X" line read
+`blender().versionString()` — this session's own probe result, which is empty on a cache hit and, once
+anything HAS probed, names the currently INSTALLED binary rather than the one that made the file. That
+is the exact opposite of §A-9 and of the validation page's own known-and-expected entry. The record's
+`blenderVersion` and `blenderPath` are now carried as `artifactBlenderVersion()`/`artifactBlenderPath()`.
+`BS50` and `I77` each redden on their own half.
+
+**SHOULD-FIX 5 — AC-24's WORDING was wrong; the behaviour is correct and deliberately unchanged.** The
+export script writes its status document to the SAME `<guid>.json` the provenance record uses, so a run
+that starts destroys a previously valid record whether or not it finishes. **AC-24 therefore reads
+"leaves no VALID record", not "leaves any previous record untouched".** Splitting the paths was
+considered and REFUSED: Blender overwrites `<guid>.glb` **in place**, so a run that starts must
+invalidate the cache entry immediately — a half-written artifact sitting behind a record that still
+validates is strictly worse than losing a good entry. The real cost is now in the validation page's
+known-and-expected list. `BS39` was the other half of this finding: its fake wrote **nothing at all**, so
+"the previous record survives byte-identical" was only ever a statement about our own code — the one
+thing a run that writes nothing cannot fail. Its fake now writes the status document before it hangs,
+the case waits for that write on observed content rather than a clock, and it asserts what is true. Its
+title also drops a stale `seed S11` reference: that seed lives on the `Converted` branch, which a
+cancelled run never reaches, and its discriminator is `BS43` — recorded above and no longer contradicted
+in the case itself.
+
+**NOTE 6 — `resolveBlender()` built its export directory from an empty project root.** With no project
+open the concatenation produced `/Library/BlenderExports`, an absolute path at the filesystem root that
+the probe's own directory creation then attempts: harmless on POSIX, a real drive-root directory on
+Windows, and reachable in a genuinely ordinary sequence (Locate… with no project open leaves the service
+resolved at `Probing`, which the lazy resolve then never re-runs once a project IS opened). The path now
+has ONE rule, `blenderExportDir()`, pure and returning empty for an empty root, and resolution defers on
+that — the state stays `Unknown`, which is exactly what `tick()`'s lazy resolve re-tests, and the
+preferences file is already written, so the choice is not lost. `BT63` + `I79`.
+
+**NOTE 7 — the version probe had no timeout at all.** The timeout was gated on `Converting`, so a hung
+`blender --version` left the service `Probing` for the life of the editor — and `Probing` is one of the
+two states that re-enter the `.blend` arm every tick, so it compounded with SHOULD-FIX 3. Every child is
+now bounded, with limits three orders of magnitude apart because the two runs are nothing alike.
+**It also exposed a real flaw in the test scaffolding, fixed rather than worked around**: several bounded
+WAIT loops passed a plausible-looking `0.016F` per iteration while waiting for a real child. Forking a
+shell script costs thousands of poll iterations, so those loops spent *minutes* of fake time in
+milliseconds of real time and tripped the new 30-second probe limit — four cases went red for a reason
+that had nothing to do with the code under test. A wait loop now spends none (`WAIT_DT`, named and
+explained); every timeout is still driven by an explicit one-shot injection, and no test sleeps.
+
+**NOTE 8 — a cancel arriving before the spawn left the session stuck in `Converting` forever.**
+`requestConversion()` records and `poll()` spawns; in the window between, `cancel()` withdrew the request
+silently, leaving the service in `Ready` with nothing pending, so nothing could ever move it again.
+Unreachable from the panel's Cancel button (which draws only while the service is `Converting`) and
+reachable from `EditorApp::requestBlenderCancel()`. The verdict is now recorded by `cancel()` and
+completed by `poll()` — this file's own division of labour, and what keeps `cancel()` allocation-free,
+which it must be: it is `noexcept`, and clang-tidy's `bugprone-exception-escape` rejected the first
+attempt, which assigned the message there. `BS52` needs no child and runs on every lane.
+
+**NOTE 10 — AC-34's mapping named a case that could not reach it.** §T mapped AC-34 to `BS42` + `BS43`;
+`BS42` stages a cache HIT, where a refusal is a miss and no run exists to declare unusable, so only
+`BS43` ever got there. `BS53` closes the arm that matters most in practice, because it is the only one
+reachable from a Blender that did its job perfectly — a genuinely huge scene: a SPARSE 256 MiB artifact
+(`dd … bs=1 count=0 seek=N`, instant and zero blocks) plus `ok: true`, refused from `file_size` alone and
+reported as `ArtifactUnusable`. `BS42`'s title now says what it actually proves.
+
+**NOTE 11 — `logRefusedByCap()`'s render path was undriven, and could not have been driven.** The Blender
+log `TreeNode` shipped default-CLOSED, and no tier in this tree can click one — this file's own stated
+reason for its six sections defaulting open — so everything inside it, including the branch that formats
+a byte count and an absolute path, had never executed on any lane under any sanitizer. The node is
+default-open now. `I80` drives a child that writes 400 KiB to stdout and asserts the log really was
+refused before drawing frames through the branch; `I77` pins the flag, because `I80` cannot tell that it
+went away.
+
+**NOTE 12 and NOTE 9** are recorded rather than fixed: changing any import setting on a `.blend` forces a
+full re-export (the fingerprint enters `provenanceMatches` unconditionally, even though no current
+`ImportSettings` field affects the export) — now in the validation page's known-and-expected list; and
+the consequence of the POSIX-only skips is stated in that section above rather than left as a count.
+
+**One recurring shape across the two blocking findings and SHOULD-FIX 3, worth naming**: this task made
+`SessionState` and `BlenderState` span frames for the first time in the editor, and all three defects are
+the same mistake in different clothes — a value that used to be a pure OUTPUT of one tick being read as
+an INPUT of the next, without anything resetting it when its subject changed.

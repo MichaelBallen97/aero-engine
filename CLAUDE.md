@@ -51,8 +51,9 @@ code-review round found ten gaps (one BLOCKING — `materialIndex` resolved agai
 `tinyobjloader.lib` and this project's ASan-instrumented objects, fixed in `cmake/sanitizers.cmake`.
 
 **3.2.4 (Blender CLI detection + `.blend` import) is COMPLETE ON THE BRANCH
-`feat/3.2.4-blender-cli-blend-import` (cut from `main @ 1b1d335`, ten green commits) and has NOT been
-pushed, has NO PR, and has NOT been merged.** It is the fourth importer path and the only one that is
+`feat/3.2.4-blender-cli-blend-import` (cut from `main @ 1b1d335`, **21 green commits** — eleven for the
+implementation, ten from the code-review round) and has NOT been pushed, has NO PR, and has NOT been
+merged.** It is the fourth importer path and the only one that is
 not an importer: it turns a file the editor refuses to parse into one it already parses, by running an
 external program. It is the first place in this codebase that **spawns a process**, that **runs work
 across frames**, and that **branches on the host OS in first-party editor code** — `currentHostOs()` is
@@ -99,6 +100,30 @@ The plan's own prediction that seeds S26 and S27 would both go through `BS41` wa
 the OBSERVABLE need separate proofs (`MS41`, a case the plan did not have, reads `serviceBlend`'s source
 text; `BS41` asserts the warning), and each seed reddens exactly one of them.
 
+**A CODE-REVIEW ROUND then found thirteen more items, TWO BLOCKING, none of them visible to the green
+suite the matrix had just finished attacking — the fourth task running in which the two rounds each
+catch what the other cannot.** Both blocking findings, and the sharpest should-fix, are **one mistake in
+three costumes**: this task made `SessionState`/`BlenderState` span frames for the first time in the
+editor, and each defect is a per-tick OUTPUT being read as the next tick's INPUT with nothing resetting
+it. (1) A **cache-hit `.blend`** — the task's headline flow — drew a permanently false "Checking the
+Blender version…" and **no controls at all**, because `BlenderState::Unknown` shared `Probing`'s panel
+arm while a pure hit never resolves the service at all; there was no UI path to force a re-conversion.
+(2) `setTarget()` never reset `stateValue`, so selecting a second `.blend` mid-run drew a running-Blender
+readout against it, consumed the first run's completion on its behalf, and wrote it a provenance record
+for an export that never ran. (3) A settled `.blend` **re-read and re-imported its whole GLB every tick**
+while any other asset's probe or conversion was alive — `importCount()` 39 instead of 1 — breaking
+AC-45's own "ten ticks cost ten early returns" quoted verbatim in the guard's comment. Also closed: the
+panel named the **installed** Blender rather than the artifact's recorded producer; the version probe had
+**no timeout** (a hung `--version` sat in `Probing` for the life of the editor); a cancel arriving
+between the request and the spawn left the session **stuck in `Converting` forever**; `resolveBlender()`
+built `/Library/BlenderExports` from an empty project root; AC-34's oversized-artifact arm was mapped to
+a case that structurally could not reach it; and the log node's refused-by-cap branch was **undriven and
+undrivable**, because the node shipped default-CLOSED and no tier here can click one. **AC-24's WORDING
+was corrected rather than its behaviour**: the status document and the provenance record share
+`<guid>.json` deliberately, so a run that starts destroys any previous record — AC-24 reads "leaves no
+**valid** record", and the cost is now in the validation page's known-and-expected list. Every fix ships
+with a case that reddens without it, verified by re-seeding: `BT63`, `BS48`–`BS53` and `I77`–`I80`.
+
 **Carried-forward debt, unchanged by 3.2.4 and explicitly not part of any gate:** no Windows or Linux
 validation pass exists for any of the thirteen Phase 2 tasks or for 3.1.1–3.1.4, 3.2.1, 3.2.2 or 3.2.3;
 **3.2.2's macOS pass is still outstanding** (thirteen rows); 3.2.4's own validation page
@@ -112,7 +137,7 @@ spanning four phases, and it is worth scheduling as work of its own — the 2.2.
 | **Phase 1** — Reflection, ECS & Serialization | **COMPLETE** — epics 1.1–1.4 all CLOSED. Gate reached in code, macOS-validated; Windows/Linux render rows pending (`samples/phase-1-scene/VALIDATION.md`). |
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics (2.1 Editor shell, 2.2 Core panels, 2.3 Manipulation, 2.4 Undo/redo, 2.5 Scene I/O, 2.6 Project system v0) CLOSED in code and macOS-validated PASS, with Windows/Linux rows pending for every task (`editor/VALIDATION.md`). The whole-phase audit (2026-08-02) fixed two silent data-loss paths, a project root that was never made absolute, two CI false-greens, and four stale documentation claims. Full per-task and per-epic history — every defect, every sabotage matrix, every deviation — lives in `docs/10-engineering-log.md`'s Phase 2 entries; this row is deliberately a summary, not a duplicate. |
 | **Phase 2 gate** | **MET 2026-08-02.** `samples/phase-2-editor-scene/` holds a project and a 4-entity scene authored entirely through the editor, with the save → New Scene → Open Scene round trip confirmed (`samples/phase-2-editor-scene/VALIDATION.md`); provenance is recorded there rather than asserted, since a hand-written `scene.json` is byte-identical to a real one and no test tier can tell them apart. Deliberately NOT `add_subdirectory`'d — this artifact is data (a provenance proof of the editor), not a compile-proof of engine code. |
-| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets) is FULLY MERGED: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds respectively), **macOS-validated ✅ PASS on all four** (14/14, 14/14, 16/16, 10/10) — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash` (`engine/core`), the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache, and the real Asset Browser all shipped across these four. **Epic 3.2 (Importers) has three MERGED tasks and one COMPLETE ON A BRANCH.** **3.2.1 (glTF, fastgltf)** — PR #70 (`f02ca65`), sabotage-proven (32 seeds) and code-review-hardened (12 findings, 3 BLOCKING), macOS-validated ✅ PASS 12/12; the first PRODUCER for `AssetCacheEntry::dependencies`. **3.2.2 (FBX, ufbx)** — PR #71 (`c597a5b`), sabotage-proven (35 seeds) and code-review-hardened (5 gaps, 2 BLOCKING); the tree's first vendored library, a third hard-coded-importer-identity site, a BLOCKING ASan heap-buffer-overflow that shipped invisibly with 3.2.1, and x86_64-only UB in ufbx's DEFLATE decoder that only CI could see. **Its macOS validation pass is still NOT RUN — thirteen rows open.** **3.2.3 (OBJ, tinyobjloader)** — PR #72 (`c412e83`), the original 32-seed matrix run to completion plus a code-review round (ten gaps, one BLOCKING), macOS-validated ✅ PASS 13/13 (2026-08-10); `.mtl` became a claimed importable file, and CI caught a Windows-only `LNK2038` fixed in `cmake/sanitizers.cmake`. **3.2.4 (Blender CLI detection + `.blend` import) is COMPLETE on `feat/3.2.4-blender-cli-blend-import` (ten green commits) — NOT pushed, NO PR, NOT merged.** Mechanical gate green: 95/95 on both macOS presets with `AERO_REQUIRE_GPU=1`, both reduced configurations rebuilt FRESH at **1335** cases each with `BT1` and `BS1` present in both, six guards passing, `.github/scripts/` and `cmake/` byte-identical to `main`, clang-format and clang-tidy clean by exit code. `aero_editor_shell_test` **1232 → 1359**, `aero_editor_imgui_test` **90 → 98**, `aero_tests` **415** unchanged. A 36-seed sabotage matrix ran to completion: 27 matched, 6 confirmed macOS non-discriminators (S6/S17 — ASan does not report either, Linux LSan and the Windows overwrite are their cover; S24/S24b — macOS `std::set` moves are `noexcept`, so the Windows lane's aggregate `static_assert` is the only cover; S33 — POSIX kill semantics; S30 — unreachable by any runtime tier), and **4 genuine coverage gaps found and closed** (`BS46`, `BS47`, `MS36`'s rewrite, and a source-text guard assertion in `I73`), each re-proven by re-seeding. Zero paths under `engine/` for 3.2.1, 3.2.2, 3.2.3 and 3.2.4 — the no-engine-change streak reaches **six**. Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
+| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets) is FULLY MERGED: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds respectively), **macOS-validated ✅ PASS on all four** (14/14, 14/14, 16/16, 10/10) — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash` (`engine/core`), the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache, and the real Asset Browser all shipped across these four. **Epic 3.2 (Importers) has three MERGED tasks and one COMPLETE ON A BRANCH.** **3.2.1 (glTF, fastgltf)** — PR #70 (`f02ca65`), sabotage-proven (32 seeds) and code-review-hardened (12 findings, 3 BLOCKING), macOS-validated ✅ PASS 12/12; the first PRODUCER for `AssetCacheEntry::dependencies`. **3.2.2 (FBX, ufbx)** — PR #71 (`c597a5b`), sabotage-proven (35 seeds) and code-review-hardened (5 gaps, 2 BLOCKING); the tree's first vendored library, a third hard-coded-importer-identity site, a BLOCKING ASan heap-buffer-overflow that shipped invisibly with 3.2.1, and x86_64-only UB in ufbx's DEFLATE decoder that only CI could see. **Its macOS validation pass is still NOT RUN — thirteen rows open.** **3.2.3 (OBJ, tinyobjloader)** — PR #72 (`c412e83`), the original 32-seed matrix run to completion plus a code-review round (ten gaps, one BLOCKING), macOS-validated ✅ PASS 13/13 (2026-08-10); `.mtl` became a claimed importable file, and CI caught a Windows-only `LNK2038` fixed in `cmake/sanitizers.cmake`. **3.2.4 (Blender CLI detection + `.blend` import) is COMPLETE on `feat/3.2.4-blender-cli-blend-import` (21 green commits: eleven for the implementation, ten from the code-review round) — NOT pushed, NO PR, NOT merged.** Mechanical gate green: 95/95 on both macOS presets with `AERO_REQUIRE_GPU=1`, both reduced configurations rebuilt FRESH at **1342** cases each with `BT1` and `BS1` present in both, six guards passing, `.github/scripts/` and `cmake/` byte-identical to `main`, clang-format and clang-tidy clean by exit code. `aero_editor_shell_test` **1232 → 1366**, `aero_editor_imgui_test` **90 → 102**, `aero_tests` **415** unchanged. A 36-seed sabotage matrix ran to completion: 27 matched, 6 confirmed macOS non-discriminators (S6/S17 — ASan does not report either, Linux LSan and the Windows overwrite are their cover; S24/S24b — macOS `std::set` moves are `noexcept`, so the Windows lane's aggregate `static_assert` is the only cover; S33 — POSIX kill semantics; S30 — unreachable by any runtime tier), and **4 genuine coverage gaps found and closed** (`BS46`, `BS47`, `MS36`'s rewrite, and a source-text guard assertion in `I73`), each re-proven by re-seeding. **A CODE-REVIEW ROUND then found thirteen more items, TWO BLOCKING** — a cache-hit `.blend` drew a permanently false "Checking the Blender version…" with no controls at all, and a selection change mid-conversion attributed one asset's run to another (importing its artifact and writing it a provenance record for an export that never ran) — plus a settled `.blend` re-importing its whole GLB every tick, the panel naming the installed Blender rather than the artifact's recorded producer, a version probe with no timeout, a cancel-before-spawn that stuck the session in `Converting` forever, an export directory built from an empty project root, AC-34's mapping naming a case that could not reach it, and an undrivable log branch behind a default-CLOSED `TreeNode`. AC-24's WORDING was corrected (it leaves no **valid** record; the status document and the provenance record share `<guid>.json` deliberately) rather than its behaviour. All closed on the same branch, each with a case that reddens without it: `BT63`, `BS48`–`BS53`, `I77`–`I80`. Zero paths under `engine/` for 3.2.1, 3.2.2, 3.2.3 and 3.2.4 — the no-engine-change streak reaches **six**. Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
 | **Next task** | **Push `feat/3.2.4-blender-cli-blend-import`, open its PR, and merge it once CI is green with the green run's `headSha` asserted EQUAL to `HEAD`** — pushing cancels the in-flight run, so merging without that check merges an untested commit. Merge with a MERGE COMMIT, never a squash. Then run 3.2.4's own macOS validation pass (`editor/validation/3.2.4-blender-cli-blend-import.md`, fifteen rows; rows 2, 3, 6 and 12 are the only cover for the requirement-level claims with no automated proof, and row 12 is R4's measurement of a large `.blend`'s wall-clock time against the five-minute timeout). **The other Epic 3.2 item still open is 3.2.2's own macOS validation pass** (`editor/validation/3.2.2-fbx-import-ufbx.md`, thirteen rows). **3.1.5 (drag-into-scene)** is otherwise fully unblocked: it depends on 3.1.3 and 3.2.1 (both merged), `ImportedModel` gives it something to reference, and with 3.2.2/3.2.3/3.2.4 in place it can be dragged an `.fbx`, an `.obj` or a `.blend` as easily as a `.gltf`. 3.1.5 owns two decisions 3.2.1 deliberately left open: **sub-asset identity** (D13) and **replacing `LOCAL_MESH_HALF_EXTENT`** (2.3.1's knowingly-wrong constant). See `docs/tasks/phase-3.md`. The remaining carried-forward item is **platform-validation debt, now spanning four phases**: no Windows or Linux validation pass exists for any of the thirteen Phase 2 tasks, for 3.1.1–3.1.4, or for 3.2.1–3.2.4, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. Every macOS pass to date has been clean, which is exactly why the other two lanes staying unvalidated is worth scheduling as work of its own — 2.2.5's lesson at phase scale. |
 
 Engine layers that exist today, in dependency order: `core` (gained `guid.hpp`/`guid.cpp` at task
@@ -156,20 +181,21 @@ dependency of any kind — Blender is an external PROCESS, never a library. The 
 under `editor/include/aero/editor/` (except the six named src-private), the `.cpp`s under
 `editor/src/`.
 
-Test inventory **on `feat/3.2.4-blender-cli-blend-import` at its docs commit**, every number
+Test inventory **on `feat/3.2.4-blender-cli-blend-import` at its code-review docs commit**, every number
 **re-measured at that point, never carried forward from an earlier step or an earlier task**: **95**
 ctest entries with tools ON, **6** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`, **19** with
 `-DAERO_REFLECT_TOOLS=OFF` alone — **unchanged by 3.2.4** (zero new `add_test`; every new case lives
 inside an existing target). `aero_tests` **415** (unchanged — `engine/` is untouched).
-`aero_editor_shell_test` **1359** (1232 at `1b1d335` → **+127**: two new TUs,
-`tests/editor/blender_tool_test.cpp` (BT1–BT62) and `tests/editor/blender_service_test.cpp`
-(BS1–BS47), plus `model_import_session_test.cpp` (MS34–MS41 and `MS32`'s rewrite),
+`aero_editor_shell_test` **1366** (1232 at `1b1d335` → **+134**: two new TUs,
+`tests/editor/blender_tool_test.cpp` (BT1–BT63) and `tests/editor/blender_service_test.cpp`
+(BS1–BS53), plus `model_import_session_test.cpp` (MS34–MS41 and `MS32`'s rewrite),
 `model_import_test.cpp` (MI133), `text_file_test.cpp` (TF33–TF37) and `scene_session_test.cpp`
 (SS37–SS40)) — **measured directly with `--list-test-cases`, never derived by addition**.
-`aero_editor_imgui_test` **98** (90 → +8: I69–I76). `aero_scene_serialize_test` **23** and
+`aero_editor_imgui_test` **102** (90 → +12: I69–I80). `aero_scene_serialize_test` **23** and
 `aero_editor_inspector_test` **22**, both unchanged since 3.1.1. **Both reduced configurations, built
-FRESH in `build/tools-off-3.2.4` / `build/reflect-off-3.2.4`, read 1335 cases EACH with `BT1` and `BS1`
-present in both** — proving the whole Blender path needs neither reflection nor scene serialization.
+FRESH in `build/tools-off-3.2.4-cr` / `build/reflect-off-3.2.4-cr`, read 1342 cases EACH with `BT1` and
+`BS1` present in both** — proving the whole Blender path needs neither reflection nor scene
+serialization.
 `aero_editor_core` sources **56** (53 → +3: `blender_tool.cpp`, `blender_process.cpp`,
 `blender_service.cpp`) with **no** new `find_package`, **no** new `target_link_libraries` entry and
 **no** `vcpkg.json` change: `aero_editor_core` already links `SDL3::SDL3` PRIVATE, which is the entire
@@ -183,8 +209,14 @@ automatically — **neither script changes, and `.github/scripts/` is byte-ident
 '_WIN32|__APPLE__|__linux__' -- editor/src editor/include` reads **exactly three lines in one file**.
 `grep -c '\.service(' tests/editor/model_import_session_test.cpp` **42 → 61**, with **none of the
 original 42 edited** — the trailing defaulted parameter's whole point. Counts diverge by OS (Windows
-skips `golden-rule.include_scan_e2e`, and eleven whole `BS` cases plus one arm of `BS11` skip loudly
-there), so never assume one — measure with `ctest -N` and `--list-test-cases`.
+skips `golden-rule.include_scan_e2e`, and **fourteen** whole `BS` cases plus one arm of `BS11` and one
+GPU case, `I80`, skip loudly there), so never assume one — measure with `ctest -N` and
+`--list-test-cases`. **Those skips are not a random sample**: together they are the only coverage
+anywhere of the two timeouts, cancellation, the `Converted` state and therefore the whole end-to-end
+conversion, `ok: false`, exit-0-with-no-status, both `ArtifactUnusable` arms, a selection change during a
+live run, and the refused-by-cap log — so on Windows none of those arms is executed by any test at all,
+and the plan's own §V2 R5 claim that "they hold identically on all three lanes" is inaccurate as
+written. It belongs in the Windows validation pass's own list, not in a footnote about counts.
 
 > **Before touching a subsystem, read its entry in `docs/10-engineering-log.md`.** That file is the full per-task history: what shipped, what was deliberately left out, the traps found, and the dead ends that must never be retried (the lavapipe LSan leak, `LD_PRELOAD`, vcpkg's `sdl3-shadercross` on macOS, …). It is deliberately *not* auto-loaded — grep it before re-deriving anything.
 
