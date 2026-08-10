@@ -288,7 +288,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/asset_view_test.cpp editor/thumbnail_cache_test.cpp
                editor/asset_actions_test.cpp editor/asset_watcher_test.cpp
                editor/model_import_test.cpp editor/model_import_session_test.cpp
-               editor/fbx_import_test.cpp editor/obj_import_test.cpp)
+               editor/fbx_import_test.cpp editor/obj_import_test.cpp
+               editor/blender_tool_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

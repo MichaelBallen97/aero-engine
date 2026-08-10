@@ -94,6 +94,7 @@ add_library(aero_editor_core STATIC
     src/import_details_panel.cpp # task 3.2.1 -- the ImGui half of the import result
     src/fbx_import.cpp           # task 3.2.2 -- the ONLY ufbx TU; NO file operation at all
     src/obj_import.cpp           # task 3.2.3 -- the ONLY tinyobjloader TU; NO file operation at all
+    src/blender_tool.cpp         # task 3.2.4 -- PURE: no disk, no SDL, no <filesystem>, no logging
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
