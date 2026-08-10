@@ -214,35 +214,6 @@ void appendLibraryDiagnostics(ImportResult& result, std::string_view text) {
     return true;
 }
 
-// E4: how many `mtllib` lines matched the keyword+separator rule but trimmed to an EMPTY operand.
-// scanObjMtlLibs deliberately produces no candidate for one of these (D16's own pseudocode); this is
-// the caller-side counterpart that lets importObjFile emit the warning scanObjMtlLibs itself does not.
-[[nodiscard]] std::size_t countEmptyMtllibOperandLines(std::span<const std::byte> bytes) {
-    if (bytes.empty()) {
-        return 0;
-    }
-    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    std::size_t count = 0;
-    std::size_t lineStart = 0;
-    while (lineStart <= text.size()) {
-        const std::size_t newline = text.find('\n', lineStart);
-        std::string_view line =
-            newline == std::string_view::npos ? text.substr(lineStart) : text.substr(lineStart, newline - lineStart);
-        if (!line.empty() && line.back() == '\r') {
-            line.remove_suffix(1);
-        }
-        std::string_view operand;
-        if (mtllibOperandLocal(line, operand) && operand.empty()) {
-            ++count;
-        }
-        if (newline == std::string_view::npos) {
-            break;
-        }
-        lineStart = newline + 1;
-    }
-    return count;
-}
-
 // code-review round, gap 5: one mtllib LINE's own candidate group -- `wholeOperand` is the line's raw
 // trimmed operand (what a "no matching .mtl was supplied" warning names), `candidates` is that SAME
 // operand's own candidate set (the whole operand, then each whitespace-separated token, D16's own
@@ -585,7 +556,13 @@ struct SurvivingFace {
     // D5: the WHOLE Structure pass is this text scan. tinyobjloader is never entered, no stream is
     // constructed, no vertex is allocated -- a STATED DEVIATION FROM INV-M4 (Structure and Full
     // disagree about counts/names/the URI set for .obj; the .mtl arm keeps INV-M4 perfectly instead).
-    const std::vector<std::string> candidates = scanObjMtlLibs(bytes, MAX_EXTERNAL_URIS);
+    //
+    // code-review round, gap 10: ONE linear scan, via scanObjMtlLibsScan, recovers BOTH the candidate
+    // list and E4's empty-operand-line count -- a caller-side second full-file scan
+    // (countEmptyMtllibOperandLines) used to exist purely to recover the count a second time; R5 measured
+    // that duplicate scan at roughly half the ~107-113 ms Structure-probe cost on a ~150 MB file.
+    const ObjMtlLibScan scan = scanObjMtlLibsScan(bytes, MAX_EXTERNAL_URIS);
+    const std::vector<std::string>& candidates = scan.candidates;
     // INV-O10: scanObjMtlLibs's OWN cap already bounds `candidates` at MAX_EXTERNAL_URIS, so a
     // per-push check below would be UNREACHABLE (candidates.size() can never exceed the cap, and
     // dedup/refusal only ever REMOVE entries on the way to externalUris). Reaching the cap here is the
@@ -622,9 +599,9 @@ struct SurvivingFace {
         rawOperandFor.push_back(candidate);
     }
     // E4: an mtllib line whose operand trims to nothing produces no candidate above -- OURS to warn
-    // about, since scanObjMtlLibs's own contract is silent about it (D16).
-    const std::size_t emptyOperandLines = countEmptyMtllibOperandLines(bytes);
-    for (std::size_t i = 0; i < emptyOperandLines; ++i) {
+    // about, since scanObjMtlLibs's own contract is silent about it (D16). Counted in the SAME pass as
+    // `candidates` above, not a second scan (code-review round, gap 10).
+    for (std::size_t i = 0; i < scan.emptyOperandLines; ++i) {
         addWarning(result, "a 'mtllib' directive has an empty operand and was ignored");
     }
 

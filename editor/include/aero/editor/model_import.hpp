@@ -447,7 +447,27 @@ struct UriClassification {
 // A line matches iff, after leading spaces/tabs only, it begins with `mtllib` followed by a space or a
 // tab -- CASE-SENSITIVE, matching the library's own strncmp, so `# mtllib x` and `MTLLIB x` never
 // match. NO percent-decoding: a Wavefront operand is a filesystem path, never a URI.
+//
+// Implemented as a thin wrapper over scanObjMtlLibsScan below (code-review round, gap 10) -- candidates
+// only, for callers (this file's own test suite) that do not need the E4 count in the same pass.
 [[nodiscard]] std::vector<std::string> scanObjMtlLibs(std::span<const std::byte> bytes, std::size_t maxNames);
+
+// task 3.2.3 (D16), extended by the code-review round (gap 10). The RESULT of the single-pass mtllib
+// scan: `candidates` is exactly scanObjMtlLibs's own return value; `emptyOperandLines` is E4's count of
+// `mtllib` lines that matched the keyword+separator rule but trimmed to an EMPTY operand -- a count
+// scanObjMtlLibs's own contract is silent about (D16: no candidate is pushed for one of these).
+// Bundled so the CALLER (the .obj Structure pass, run on every phase 7.5 probe) never needs a SECOND
+// full-file linear scan just to recover a count the first pass already computed while walking the same
+// lines -- R5 measured the scan alone at ~107-113 ms on a ~150 MB file, roughly half of which was this
+// second, now-removed pass.
+struct ObjMtlLibScan {
+    std::vector<std::string> candidates;
+    std::size_t emptyOperandLines = 0;
+};
+
+// PURE, and this IS the .obj Structure pass, in ONE LINEAR SCAN. See scanObjMtlLibs and ObjMtlLibScan
+// above for the candidate and count semantics respectively.
+[[nodiscard]] ObjMtlLibScan scanObjMtlLibsScan(std::span<const std::byte> bytes, std::size_t maxNames);
 
 // task 3.2.3 (AC-54). PURE: true iff any of the first `probeBytes` bytes is 0x00. A Wavefront file is
 // TEXT; this is what stops a renamed PNG/JPEG/GLB being handed to a text parser at all. PNG, JPEG and

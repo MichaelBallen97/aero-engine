@@ -184,9 +184,11 @@ using engine::editor::looksLikeBinaryContent;
 using engine::editor::modelImporterIdentity;
 using engine::editor::modelImporterNeedsExternalBuffers;
 using engine::editor::normalizeRelativePath;
+using engine::editor::ObjMtlLibScan;
 using engine::editor::OBJ_IMPORTER_NAME;
 using engine::editor::OBJ_IMPORTER_VERSION;
 using engine::editor::scanObjMtlLibs;
+using engine::editor::scanObjMtlLibsScan;
 using engine::editor::SourceSpace;
 using engine::editor::UriClass;
 using engine::editor::UriClassification;
@@ -2578,4 +2580,29 @@ TEST_CASE(
     // The NUL sits past a probe window of 8 -- outside the window, so it must NOT be seen.
     CHECK_FALSE(looksLikeBinaryContent(asBytes(withNul), 3));
     CHECK(looksLikeBinaryContent(asBytes(withNul), 4));
+}
+
+TEST_CASE(
+    "model_import: scanObjMtlLibsScan recovers candidates AND the E4 empty-operand-line count in ONE "
+    "pass, and scanObjMtlLibs stays candidates-only (MI132, code-review round, gap 10)") {
+    const std::string body = "mtllib a.mtl\nmtllib   \nv 0 0 0\nmtllib\t\nmtllib b.mtl\n";
+    const ObjMtlLibScan scan = scanObjMtlLibsScan(asBytes(body), 1024);
+    REQUIRE(scan.candidates.size() == 2);
+    CHECK(scan.candidates[0] == "a.mtl");
+    CHECK(scan.candidates[1] == "b.mtl");
+    CHECK(scan.emptyOperandLines == 2);  // "mtllib   " and "mtllib\t"
+
+    // scanObjMtlLibs delegates to scanObjMtlLibsScan and returns ONLY the candidates -- identical to a
+    // direct call, for every existing MI124-MI131 caller.
+    CHECK(scanObjMtlLibs(asBytes(body), 1024) == scan.candidates);
+
+    // an empty span yields an empty scan outright, matching scanObjMtlLibs's own rule.
+    CHECK(scanObjMtlLibsScan({}, 1024).candidates.empty());
+    CHECK(scanObjMtlLibsScan({}, 1024).emptyOperandLines == 0);
+    // maxNames == 0 caps `candidates` at zero (scanObjMtlLibs's own pre-existing rule, unchanged), but
+    // emptyOperandLines is ORTHOGONAL to that cap and is still counted correctly -- there is no
+    // candidate to cap for an empty operand in the first place.
+    const ObjMtlLibScan zeroCap = scanObjMtlLibsScan(asBytes(body), 0);
+    CHECK(zeroCap.candidates.empty());
+    CHECK(zeroCap.emptyOperandLines == 2);
 }

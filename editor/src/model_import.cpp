@@ -154,23 +154,28 @@ namespace {
 
 }  // namespace
 
-std::vector<std::string> scanObjMtlLibs(std::span<const std::byte> bytes, std::size_t maxNames) {
-    std::vector<std::string> out;
-    if (bytes.empty() || maxNames == 0) {
-        return out;
+ObjMtlLibScan scanObjMtlLibsScan(std::span<const std::byte> bytes, std::size_t maxNames) {
+    ObjMtlLibScan scan;
+    if (bytes.empty()) {
+        return scan;
     }
+    // NOTE: `maxNames == 0` is NOT an early return here, unlike scanObjMtlLibs's own former standalone
+    // shape -- emptyOperandLines is orthogonal to the candidate cap (an empty operand has no candidate
+    // to cap in the first place), so the scan still runs and still counts E4 correctly; `pushCandidate`'s
+    // own `>= maxNames` check (0 >= 0) already keeps `candidates` empty on its own, matching the old
+    // behaviour for that half exactly.
     const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 
-    const auto pushCandidate = [&out, maxNames](std::string_view candidate) {
-        if (out.size() >= maxNames) {  // cap BEFORE the push (INV-O10)
+    const auto pushCandidate = [&scan, maxNames](std::string_view candidate) {
+        if (scan.candidates.size() >= maxNames) {  // cap BEFORE the push (INV-O10)
             return;
         }
-        for (const std::string& existing : out) {  // dedup BY RAW TEXT, order preserved
+        for (const std::string& existing : scan.candidates) {  // dedup BY RAW TEXT, order preserved
             if (existing == candidate) {
                 return;
             }
         }
-        out.emplace_back(candidate);
+        scan.candidates.emplace_back(candidate);
     };
 
     std::size_t lineStart = 0;
@@ -183,21 +188,31 @@ std::vector<std::string> scanObjMtlLibs(std::span<const std::byte> bytes, std::s
         }
 
         std::string_view operand;
-        if (mtllibOperand(line, operand) && !operand.empty()) {  // E4 (empty): no candidate here
-            pushCandidate(operand);                              // the WHOLE operand LEADS
-            std::size_t tokenStart = 0;
-            while (tokenStart < operand.size()) {
-                while (tokenStart < operand.size() && (operand[tokenStart] == ' ' || operand[tokenStart] == '\t')) {
-                    ++tokenStart;
+        if (mtllibOperand(line, operand)) {
+            if (operand.empty()) {
+                // code-review round, gap 10: E4, counted in THIS SAME PASS -- the caller-side
+                // countEmptyMtllibOperandLines used to re-walk the whole file a second time purely to
+                // recover this count; the two scans were previously identical in shape and always ran
+                // together, so folding it in here removes a duplicate ~150 MB linear scan from every
+                // Structure probe.
+                ++scan.emptyOperandLines;
+            } else {
+                pushCandidate(operand);  // the WHOLE operand LEADS
+                std::size_t tokenStart = 0;
+                while (tokenStart < operand.size()) {
+                    while (tokenStart < operand.size() &&
+                           (operand[tokenStart] == ' ' || operand[tokenStart] == '\t')) {
+                        ++tokenStart;
+                    }
+                    std::size_t tokenEnd = tokenStart;
+                    while (tokenEnd < operand.size() && operand[tokenEnd] != ' ' && operand[tokenEnd] != '\t') {
+                        ++tokenEnd;
+                    }
+                    if (tokenEnd > tokenStart) {
+                        pushCandidate(operand.substr(tokenStart, tokenEnd - tokenStart));
+                    }
+                    tokenStart = tokenEnd;
                 }
-                std::size_t tokenEnd = tokenStart;
-                while (tokenEnd < operand.size() && operand[tokenEnd] != ' ' && operand[tokenEnd] != '\t') {
-                    ++tokenEnd;
-                }
-                if (tokenEnd > tokenStart) {
-                    pushCandidate(operand.substr(tokenStart, tokenEnd - tokenStart));
-                }
-                tokenStart = tokenEnd;
             }
         }
 
@@ -206,7 +221,11 @@ std::vector<std::string> scanObjMtlLibs(std::span<const std::byte> bytes, std::s
         }
         lineStart = newline + 1;
     }
-    return out;
+    return scan;
+}
+
+std::vector<std::string> scanObjMtlLibs(std::span<const std::byte> bytes, std::size_t maxNames) {
+    return scanObjMtlLibsScan(bytes, maxNames).candidates;
 }
 
 bool looksLikeBinaryContent(std::span<const std::byte> bytes, std::size_t probeBytes) noexcept {
