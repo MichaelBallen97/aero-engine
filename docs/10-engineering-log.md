@@ -4983,7 +4983,24 @@ ASan report, not a clean `CHECK` failure (§B's own first check); S2 reddened br
 S29 reddened strictly disjoint halves of `OI47`, closing §B's own third check that these two seeds must
 not both redden the same assertions.
 
-##### Measured inventory — before (`b4c3870`) and after (`ef9c34f`), re-measured, never derived by addition
+##### Code-review round — ten gaps closed, one BLOCKING
+
+A code-review round against the fully green, sabotage-proven branch above found ten gaps, one BLOCKING.
+Closed in the order found; each closed with its own commit and, where behavioural, its own re-verified
+sabotage proof rather than a case that only looks like proof. Full detail per gap is recorded at its own
+commit; this subsection is the cross-cutting record §V4 §8 and the sabotage re-grade need a home for.
+
+**AC-13's one-time earcut `#error` check, re-run as this pass's own measurement, not carried forward
+from Step 1.** A throwaway configure (`build/earcut-probe-3.2.3`, `-DCMAKE_CXX_FLAGS=
+-DTINYOBJLOADER_USE_MAPBOX_EARCUT`, deleted immediately after) building `aero_editor_core` fails exactly
+where D21's guard says it will:
+```
+/Users/michaelballen/Desktop/Repositorios/aero-engine/editor/src/obj_import.cpp:20:6: error: "task 3.2.3 D21: the mapbox earcut triangulation path reads vertex positions guarded only by assert(), which vanishes under NDEBUG -- a Debug abort on the sanitiser lanes and a heap over-read in Release, both reachable from an ordinary broken .obj. The vcpkg port neither defines this macro nor installs the mapbox/ headers. If you are turning it on deliberately, replace this guard with our own bounds-checked triangulation first."
+   20 |     #error \
+      |      ^
+```
+One error, at the `#error` this task's own D21 comment names, nothing else. This remains deliberately
+outside CI (a build that must fail cannot live inside one that must pass) and AC-13's only cover.
 
 `ctest -N`: **95** tools-ON, **6** with both `AERO_REFLECT_TOOLS`/`AERO_SHADER_TOOLS` off, **19** with
 `AERO_REFLECT_TOOLS` off alone — all three **unchanged**, all three rebuilt fresh (`build/tools-off-3.2.3`,
