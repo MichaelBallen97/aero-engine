@@ -2,10 +2,12 @@
 // THE TREE (INV-O1). This file grows across several steps; see docs/plans/3.2.3-obj-import-tinyobjloader.md
 // §S for the sequence and docs/10-engineering-log.md's 3.2.3 entry for the finished design.
 //
-// Step 4 (this commit): the Full-depth ".obj" arm now enters tinyobjloader through a borrowed
-// SpanStreamBuf and maps LoadObj's own diagnostics (§A-9/§A-10). Geometry is NOT converted yet -- the
-// result carries the URI set, the status and the warnings, and `meshes` stays empty; that lands at
-// Step 5. The ".mtl" arm still returns Unsupported; it lands at Step 7.
+// Step 5 (this commit): geometry conversion (§D-7 steps 1-3, 5, 6, 9) -- the face walk, INV-O4's three
+// range checks (every index validated BEFORE any array access), the exact-(v,vn,vt)-triplet dedup, the
+// all-or-nothing attribute rule (D9), settings.scale, and §A-12's corrected bounds. Material bucketing
+// (one primitive per mesh, unsplit), the l/p count warning and node construction land at Step 6 -- every
+// primitive here carries materialIndex == INVALID_SUBASSET. The ".mtl" arm still returns Unsupported; it
+// lands at Step 7.
 #include "obj_import.hpp"
 
 // task 3.2.3 D21: the mapbox earcut triangulation path reads vertex positions guarded only by
@@ -27,8 +29,11 @@ bounds-checked triangulation first."
 // clang-format sorts <tiny_obj_loader.h> alphabetically among the plain standard headers below (SAME
 // IncludeCategories priority, no '/' in its own path) -- it is still the ONLY tinyobjloader include in
 // this file, and the ONLY one anywhere in this tree (INV-O1).
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
+#include <functional>
 #include <istream>
 #include <span>
 #include <sstream>
@@ -36,6 +41,8 @@ bounds-checked triangulation first."
 #include <string>
 #include <string_view>
 #include <tiny_obj_loader.h>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace engine::editor {
@@ -230,6 +237,26 @@ void appendLibraryDiagnostics(ImportResult& result, std::string_view text) {
     return count;
 }
 
+// task 3.2.3, Step 5 (§D-7 step 5): the exact-triplet vertex dedup key. A STRUCT with an explicit hash
+// functor, never a bit-packed std::uint64_t -- vertex_index/normal_index/texcoord_index are each only
+// bounded by the 256 MiB file cap, not by any per-field cap, so packing risks silent collisions on a
+// pathological file. `normal_index`/`texcoord_index` are `-1` ("absent"), never packed into an unsigned
+// range.
+struct TripletKey {
+    int v = -1;
+    int vn = -1;
+    int vt = -1;
+    bool operator==(const TripletKey&) const = default;
+};
+struct TripletKeyHash {
+    [[nodiscard]] std::size_t operator()(const TripletKey& k) const noexcept {
+        std::size_t h = std::hash<int>{}(k.v);
+        h ^= std::hash<int>{}(k.vn) + 0x9e3779b9U + (h << 6) + (h >> 2);
+        h ^= std::hash<int>{}(k.vt) + 0x9e3779b9U + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
 // The ".mtl" arm. NOT YET IMPLEMENTED -- lands at Step 7 (D6). `depth` is accepted and, once
 // implemented, will be deliberately UNUSED: a .mtl's whole content is local, so this arm is
 // depth-independent by construction (AC-23).
@@ -358,12 +385,189 @@ void appendLibraryDiagnostics(ImportResult& result, std::string_view text) {
         return result;
     }
 
-    // task 3.2.3, Step 4: at THIS commit, the library has been entered and its diagnostics mapped, but
-    // geometry conversion (positions/indices/materials/nodes) does not exist yet -- `meshes` stays
-    // empty regardless of what `shapes`/`materials` hold. Lands incrementally from Step 5 onward.
-    (void)settings;
-    (void)shapes;
+    // ---- §D-7: geometry conversion -------------------------------------------------------------
+    // task 3.2.3, Step 5: steps 1-3, 5, 6, 9. Material bucketing (step 4), the l/p count warning
+    // (step 7) and node construction (step 8) land at Step 6 -- EVERY primitive built here carries
+    // materialIndex == INVALID_SUBASSET, and every mesh has AT MOST ONE primitive (its survivors,
+    // unsplit by material).
     (void)materials;
+    bool capsExceeded = false;  // INV-O10: once ANY structural cap is hit, stop -- a COHERENT smaller
+                                // model, never a partial-claiming-whole one
+    std::size_t totalVertices = 0;
+    std::size_t totalIndices = 0;
+    std::size_t totalPrimitives = 0;
+    const auto vertexCount = static_cast<long>(attrib.vertices.size() / 3);
+    const auto normalCount = static_cast<long>(attrib.normals.size() / 3);
+    const auto texcoordCount = static_cast<long>(attrib.texcoords.size() / 2);
+    const bool fileHasColors = !attrib.colors.empty();  // GLOBAL: default_vcols_fallback=false makes
+                                                        // this all-or-nothing across the WHOLE file (F8)
+
+    for (std::size_t shapeIdx = 0; shapeIdx < shapes.size() && !capsExceeded; ++shapeIdx) {
+        const tinyobj::shape_t& shape = shapes[shapeIdx];
+        ImportedMesh outMesh;
+        outMesh.name = shape.name;
+        outMesh.localId = static_cast<std::uint32_t>(shapeIdx);
+
+        // steps 2/3: walk num_face_vertices, VALIDATING every corner BEFORE any array access
+        // (INV-O4). A face failing ANY check is dropped WHOLE, never partially, with one capped
+        // warning -- the single most important loop in this task.
+        std::vector<tinyobj::index_t> survivors;  // flat, 3 per surviving face, FACE order
+        std::size_t cursor = 0;
+        for (std::size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f) {
+            const unsigned int faceVertexCount = shape.mesh.num_face_vertices[f];
+            if (faceVertexCount != 3) {
+                // Unreachable in principle -- triangulate=true always emits 3 -- kept as defence.
+                addWarning(result, "mesh '" + shape.name + "' face " + std::to_string(f) +
+                                       ": not a triangle after triangulation, skipped");
+                cursor += faceVertexCount;
+                continue;
+            }
+            bool faceValid = true;
+            for (unsigned int k = 0; k < 3; ++k) {
+                const tinyobj::index_t& idx = shape.mesh.indices[cursor + k];
+                if (idx.vertex_index < 0 || idx.vertex_index >= vertexCount) {
+                    faceValid = false;
+                    break;
+                }
+                if (idx.normal_index >= 0 && idx.normal_index >= normalCount) {
+                    faceValid = false;
+                    break;
+                }
+                if (idx.texcoord_index >= 0 && idx.texcoord_index >= texcoordCount) {
+                    faceValid = false;
+                    break;
+                }
+            }
+            if (faceValid) {
+                survivors.push_back(shape.mesh.indices[cursor + 0]);
+                survivors.push_back(shape.mesh.indices[cursor + 1]);
+                survivors.push_back(shape.mesh.indices[cursor + 2]);
+            } else {
+                addWarning(result, "mesh '" + shape.name + "' face " + std::to_string(f) +
+                                       ": an index is out of range, dropped");
+            }
+            cursor += 3;
+        }
+
+        if (!survivors.empty() && totalPrimitives < MAX_PRIMITIVES_PER_MODEL) {
+            // step 5's all-or-nothing rule (D9): does EVERY surviving corner carry a normal/texcoord?
+            // Filling gaps with zeroes is not available -- a zero normal is indistinguishable from an
+            // absent one, which is the whole reason VertexAttribute is a bitset.
+            bool hasNormal = true;
+            bool hasTexcoord = true;
+            for (const tinyobj::index_t& idx : survivors) {
+                hasNormal = hasNormal && idx.normal_index >= 0;
+                hasTexcoord = hasTexcoord && idx.texcoord_index >= 0;
+            }
+
+            ImportedPrimitive outPrim;
+            outPrim.materialIndex = INVALID_SUBASSET;  // Step 6 buckets by material
+            // step 5's dedup map: packed (v,vn,vt) -> output vertex index. Iteration order of an
+            // unordered_map is NOT the emission order -- output order is FACE order (`survivors`),
+            // which is what makes the result deterministic regardless of hashing.
+            std::unordered_map<TripletKey, std::uint32_t, TripletKeyHash> vertexCache;
+
+            for (std::size_t i = 0; i + 2 < survivors.size() && !capsExceeded; i += 3) {
+                std::array<std::uint32_t, 3> cornerIndices{};
+                std::size_t newVertexCount = 0;
+                for (unsigned int k = 0; k < 3; ++k) {
+                    const tinyobj::index_t& idx = survivors[i + k];
+                    const TripletKey key{idx.vertex_index, idx.normal_index, idx.texcoord_index};
+                    if (vertexCache.find(key) == vertexCache.end()) {
+                        ++newVertexCount;
+                    }
+                }
+                if (totalVertices + newVertexCount > MAX_VERTICES_PER_MODEL) {
+                    capsExceeded = true;
+                    escalate(result, ImportStatus::Truncated,
+                             "the vertex count exceeds this importer's per-model limit");
+                    break;
+                }
+                if (totalIndices + 3 > MAX_INDICES_PER_MODEL) {
+                    capsExceeded = true;
+                    escalate(result, ImportStatus::Truncated,
+                             "the index count exceeds this importer's per-model limit");
+                    break;
+                }
+                for (unsigned int k = 0; k < 3; ++k) {
+                    const tinyobj::index_t& idx = survivors[i + k];
+                    const TripletKey key{idx.vertex_index, idx.normal_index, idx.texcoord_index};
+                    const auto found = vertexCache.find(key);
+                    if (found != vertexCache.end()) {
+                        cornerIndices[k] = found->second;
+                        continue;
+                    }
+                    const auto vi = static_cast<std::size_t>(idx.vertex_index);
+                    const Vec3 position =
+                        Vec3{attrib.vertices[vi * 3 + 0], attrib.vertices[vi * 3 + 1], attrib.vertices[vi * 3 + 2]} *
+                        settings.scale;  // A22: positions ONLY
+                    outPrim.positions.push_back(position);
+                    if (hasNormal) {
+                        const auto ni = static_cast<std::size_t>(idx.normal_index);
+                        outPrim.normals.push_back(Vec3{attrib.normals[ni * 3 + 0], attrib.normals[ni * 3 + 1],
+                                                       attrib.normals[ni * 3 + 2]});  // NEVER scaled
+                    }
+                    if (hasTexcoord) {
+                        const auto ti = static_cast<std::size_t>(idx.texcoord_index);
+                        outPrim.uv0.push_back(Vec2{attrib.texcoords[ti * 2 + 0], attrib.texcoords[ti * 2 + 1]});
+                    }
+                    if (fileHasColors) {
+                        outPrim.colors.push_back(Vec4{attrib.colors[vi * 3 + 0], attrib.colors[vi * 3 + 1],
+                                                      attrib.colors[vi * 3 + 2], 1.0F});  // widened, a = 1
+                    }
+                    const auto newIndex = static_cast<std::uint32_t>(outPrim.positions.size() - 1);
+                    vertexCache.emplace(key, newIndex);
+                    cornerIndices[k] = newIndex;
+                    ++totalVertices;
+                }
+                for (unsigned int k = 0; k < 3; ++k) {
+                    outPrim.indices.push_back(cornerIndices[k]);
+                }
+                totalIndices += 3;
+            }
+
+            if (!outPrim.indices.empty()) {
+                outPrim.attributes = VertexAttribute::Position;  // INV-M5/F6: ALWAYS non-empty on survival
+                if (hasNormal) {
+                    outPrim.attributes |= VertexAttribute::Normal;
+                }
+                if (hasTexcoord) {
+                    outPrim.attributes |= VertexAttribute::TexCoord0;
+                }
+                if (fileHasColors) {
+                    outPrim.attributes |= VertexAttribute::Color0;
+                }
+                Aabb primBounds = Aabb::empty();
+                for (const Vec3& p : outPrim.positions) {
+                    primBounds.expand(p);
+                }
+                outPrim.bounds = primBounds;
+                result.model.summary.bounds.expand(primBounds);  // FROM THE PRIMITIVE, never from the mesh
+                result.model.summary.vertexCount += outPrim.positions.size();
+                result.model.summary.triangleCount += outPrim.indices.size() / 3;
+                ++totalPrimitives;
+                outMesh.primitives.push_back(std::move(outPrim));
+            }
+        } else if (!survivors.empty()) {
+            capsExceeded = true;
+            escalate(result, ImportStatus::Truncated, "the primitive count exceeds this importer's per-model limit");
+        }
+
+        // §A-12(a): an empty mesh (no surviving primitive) gets a POINT box, never the invalid
+        // Aabb::empty() sentinel -- matching both shipped backends byte-for-byte.
+        Aabb meshBounds = Aabb::empty();
+        for (const ImportedPrimitive& p : outMesh.primitives) {
+            meshBounds.expand(p.bounds);
+        }
+        outMesh.bounds = meshBounds.valid() ? meshBounds : Aabb{};
+        result.model.summary.primitiveCount += outMesh.primitives.size();
+        result.model.meshes.push_back(std::move(outMesh));
+    }
+    result.model.summary.meshCount = result.model.meshes.size();
+
+    // task 3.2.3, Step 5: material bucketing (Step 6) and node construction (Step 6) do not exist yet
+    // -- `result.model.materials`/`images`/`nodes`/`roots` stay empty regardless of what `materials`
+    // holds, and every survivor above went into ONE unsplit primitive per mesh.
     return result;
 }
 

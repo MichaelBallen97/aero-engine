@@ -34,33 +34,54 @@ namespace {
 
 }  // namespace
 
+using engine::Vec3;
+using engine::Vec4;
 using engine::editor::ExternalBuffer;
+using engine::editor::has;
 using engine::editor::ImportDepth;
+using engine::editor::ImportedPrimitive;
 using engine::editor::importModel;
 using engine::editor::ImportResult;
 using engine::editor::ImportSettings;
 using engine::editor::ImportStatus;
+using engine::editor::INVALID_SUBASSET;
 using engine::editor::MAX_EXTERNAL_URIS;
+using engine::editor::MAX_IMPORT_WARNINGS;
+using engine::editor::MAX_PRIMITIVES_PER_MODEL;
+using engine::editor::VertexAttribute;
 
-// task 3.2.3, Step 3: a PLACEHOLDER. It becomes AC-25's real one-triangle Full case at Step 5, once
-// geometry conversion (Step 5) and material bucketing (Step 6) exist. Exists from Step 2 so AC-69's
-// "OI1 present in both reduced configurations" has something to find, and so this file is tracked
-// before the guards next run.
-//
-// A build-time finding from Step 2, recorded here rather than smoothed over: for the one commit between
-// isImportableModelName claiming ".obj" (§D-4(a)) and the dispatch growing its OBJ/MTL arm (§D-4(d)), a
-// ".obj" name fell through to the glTF arm's "everything else importable" catch-all and failed there --
-// ParseFailed, not Unsupported -- because Wavefront text is not valid JSON. That was exactly the
-// mis-route MI105c exists to catch, arising with no sabotage seed needed at all. AS OF THIS COMMIT the
-// dispatch is correct again: ".obj" reaches importObjFile's Structure arm, which is a pure text scan
-// (D5) -- a body with no `mtllib` line and well-formed vertex/face lines produces Ok with an empty URI
-// set, geometry aside (geometry does not exist until Step 5).
-TEST_CASE("obj_import: placeholder -- geometry conversion does not exist yet (OI1)") {
+// task 3.2.3, Step 5: PROMOTED from Step 2/3/4's placeholder to AC-25's real one-triangle Full case,
+// now that geometry conversion exists. Exists from Step 2 so AC-69's "OI1 present in both reduced
+// configurations" has something to find, and so this file is tracked before the guards next run.
+TEST_CASE("obj_import: a one-triangle body imports as one mesh, one primitive, three vertices (OI1, AC-25)") {
     const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
     const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
     CHECK(result.status == ImportStatus::Ok);
     CHECK(result.externalUris.empty());
-    CHECK(result.model.meshes.empty());  // Step 5 populates this
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.materialIndex == INVALID_SUBASSET);  // Step 6 buckets by material
+    REQUIRE(prim.positions.size() == 3);
+    CHECK(prim.positions[0] == Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(prim.positions[1] == Vec3{1.0F, 0.0F, 0.0F});
+    CHECK(prim.positions[2] == Vec3{0.0F, 1.0F, 0.0F});
+    REQUIRE(prim.indices.size() == 3);
+    CHECK(prim.indices[0] == 0);
+    CHECK(prim.indices[1] == 1);
+    CHECK(prim.indices[2] == 2);
+    CHECK(has(prim.attributes, VertexAttribute::Position));
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::Normal));
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::TexCoord0));
+    CHECK(prim.normals.empty());
+    CHECK(prim.uv0.empty());
+    CHECK(result.model.summary.meshCount == 1);
+    CHECK(result.model.summary.primitiveCount == 1);
+    CHECK(result.model.summary.vertexCount == 3);
+    CHECK(result.model.summary.triangleCount == 1);
+    CHECK(result.model.summary.bounds.valid());
+    CHECK(result.model.summary.bounds.min == Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(result.model.summary.bounds.max == Vec3{1.0F, 1.0F, 0.0F});
 }
 
 TEST_CASE("obj_import: Structure depth on a well-formed body with an mtllib is empty except the URI set (OI2, AC-19)") {
@@ -372,4 +393,317 @@ TEST_CASE("obj_import: a {nullptr, 0} span under a CLAIMED .obj name never deref
     const std::span<const std::byte> emptySpan;  // {nullptr, 0} -- any dereference would crash/ASan-trip
     const ImportResult result = importModel("t.obj", "", emptySpan, ImportSettings{}, ImportDepth::Full, {});
     CHECK(result.status == ImportStatus::Malformed);  // zero vertices -- SpanStreamBuf(nullptr) is EOF
+}
+
+// ---- §D-7 geometry conversion (OI26-49) --------------------------------------------------------------
+
+TEST_CASE("obj_import: a quad triangulates to 6 indices over 4 vertices (OI26, AC-26)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.positions.size() == 4);
+    CHECK(prim.indices.size() == 6);
+}
+
+TEST_CASE("obj_import: a pentagon triangulates to 9 indices over 5 vertices (OI27, AC-27)") {
+    const std::string doc = "v 0 0 0\nv 2 0 0\nv 2 2 0\nv 1 3 0\nv 0 2 0\nf 1 2 3 4 5\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.positions.size() == 5);
+    CHECK(prim.indices.size() == 9);
+}
+
+TEST_CASE("obj_import: v/vt/vn attributes are all read (OI28, AC-28)") {
+    const std::string doc =
+        "v 0 0 0\nvt 0 0\nvn 0 0 1\n"
+        "v 1 0 0\nvt 1 0\nvn 0 0 1\n"
+        "v 0 1 0\nvt 0 1\nvn 0 0 1\n"
+        "f 1/1/1 2/2/2 3/3/3\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.positions.size() == 3);
+    REQUIRE(prim.normals.size() == 3);
+    REQUIRE(prim.uv0.size() == 3);
+    CHECK(prim.normals[0] == Vec3{0.0F, 0.0F, 1.0F});
+    CHECK(has(prim.attributes, VertexAttribute::Position));
+    CHECK(has(prim.attributes, VertexAttribute::Normal));
+    CHECK(has(prim.attributes, VertexAttribute::TexCoord0));
+}
+
+TEST_CASE("obj_import: an identical (v, vn, vt) triplet across two faces dedups to ONE output vertex (OI29, AC-29)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nf 1 2 3\nf 2 4 3\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.positions.size() == 4);  // 4 DISTINCT triplets, not 6 corner-instances
+    CHECK(prim.indices.size() == 6);
+}
+
+TEST_CASE("obj_import: negative (relative) indices resolve identically to positive ones (OI30, AC-30)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf -3 -2 -1\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.positions.size() == 3);
+    REQUIRE(prim.indices.size() == 3);
+    CHECK(prim.indices[0] == 0);
+    CHECK(prim.indices[1] == 1);
+    CHECK(prim.indices[2] == 2);
+}
+
+TEST_CASE(
+    "obj_import: INV-O4 -- an out-of-range VERTEX index drops its whole triangle; a sibling survives "
+    "(OI31, AC-31, the sharpest minimal case)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nf 1 2 99999\nf 1 2 4\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.indices.size() == 3);  // ONE face survived, not two, and not a partial one
+    // build-time finding: LoadObj ITSELF emits one aggregate "Vertex indices out of bounds" warning
+    // (F4's own end-of-parse check), IN ADDITION to our own per-face "out of range, dropped" warning --
+    // two warnings for one bad index is expected, not a double-count bug.
+    CHECK(result.warningTotal == 2);
+    REQUIRE(result.warnings.size() == 2);
+    bool sawOurs = false;
+    for (const std::string& warning : result.warnings) {
+        sawOurs = sawOurs || warning.find("out of range") != std::string::npos;
+    }
+    CHECK(sawOurs);
+}
+
+TEST_CASE("obj_import: INV-O4 -- an out-of-range vertex index drops a whole QUAD face (OI32, AC-31/AC-32)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 5 5 5\nf 1 2 3 99999\nf 1 2 3 4\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.indices.size() == 6);  // the surviving quad's two triangles ONLY -- the bad quad's OWN
+                                      // fast path bounds-checks all four corners BEFORE splitting, so
+                                      // it drops ATOMICALLY, unlike the finer-grained n-gon path below
+    CHECK(result.warningTotal == 2);  // ours, plus the library's own aggregate (see OI31)
+}
+
+TEST_CASE(
+    "obj_import: INV-O4 -- an out-of-range vertex index in a 6-GON drops only the triangles that "
+    "actually reference it (OI33, AC-31/AC-32)") {
+    // Unlike the quad fast path (OI32), the general n-gon ear-clipping path bounds-checks and drops
+    // PER DERIVED TRIANGLE, not the whole original polygon -- INV-O4 validates every ALREADY-
+    // TRIANGULATED face (D-7's own vocabulary), and a hexagon's ear-clipping does not touch every
+    // vertex in every derived triangle. This is a STRONGER proof than "the whole hexagon vanishes":
+    // some of it can legitimately survive, and every survivor is still a WHOLE, valid triangle.
+    const std::string doc =
+        "v 0 0 0\nv 2 0 0\nv 2 2 0\nv 1 3 0\nv 0 2 0\nv -1 1 0\nv 9 9 9\n"
+        "f 1 2 3 4 5 99999\nf 1 2 3 4 5 6\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    // Both hexagons triangulate to 4 triangles each (6-2) if nothing were dropped -- 24 indices. At
+    // least the second (fully valid) hexagon's 4 triangles (12 indices) must survive; strictly fewer
+    // than 24 must survive (at least one triangle referencing vertex 99999 was dropped); and the
+    // result is ALWAYS whole triangles, never a partial one.
+    CHECK(prim.indices.size() >= 12);
+    CHECK(prim.indices.size() < 24);
+    CHECK(prim.indices.size() % 3 == 0);
+    CHECK(result.warningTotal >= 1);
+}
+
+TEST_CASE("obj_import: INV-O4 -- an out-of-range NORMAL index drops its whole face (OI34, AC-31/AC-32)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nf 1//99999 2//1 3//1\nf 1//1 2//1 3//1\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.indices.size() == 3);
+    CHECK(result.warningTotal == 2);  // ours, plus the library's own "normal indices out of bounds"
+}
+
+TEST_CASE("obj_import: INV-O4 -- an out-of-range TEXCOORD index drops its whole face (OI35, AC-31/AC-32)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nf 1/99999 2/1 3/1\nf 1/1 2/1 3/1\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.indices.size() == 3);
+    CHECK(result.warningTotal == 2);  // ours, plus the library's own "texture coordinate indices..."
+}
+
+TEST_CASE("obj_import: F4b row 1 -- a literal zero vertex index fails the WHOLE file (OI36, AC-33)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::ParseFailed);
+}
+
+TEST_CASE(
+    "obj_import: F4b row 2 -- a relative vertex index underflowing below zero fails the WHOLE file "
+    "(OI37, AC-33)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nf -99 1 2\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::ParseFailed);
+}
+
+TEST_CASE(
+    "obj_import: F4b row 3 -- a relative NORMAL index underflowing below zero fails the WHOLE file "
+    "(OI38, AC-33)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nf 1//-99 2//1 3//1\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::ParseFailed);
+}
+
+TEST_CASE(
+    "obj_import: F4b row 4 -- a relative TEXCOORD index underflowing below zero fails the WHOLE file "
+    "(OI39, AC-33)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nf 1/-99 2/1 3/1\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::ParseFailed);
+}
+
+TEST_CASE("obj_import: vertex colours -- every vertex declares one, and they are read (OI40, AC-35)") {
+    const std::string doc = "v 0 0 0 1 0 0\nv 1 0 0 0 1 0\nv 0 1 0 0 0 1\nf 1 2 3\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.colors.size() == 3);
+    CHECK(prim.colors[0] == Vec4{1.0F, 0.0F, 0.0F, 1.0F});  // widened, a = 1
+    CHECK(has(prim.attributes, VertexAttribute::Color0));
+}
+
+TEST_CASE("obj_import: vertex colours -- NOT every vertex declares one, so NONE are read (OI41, AC-35)") {
+    const std::string doc = "v 0 0 0 1 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.colors.empty());
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::Color0));
+}
+
+TEST_CASE(
+    "obj_import: all-or-nothing normals -- one face in the primitive lacks a normal, so NONE survive "
+    "(OI42, AC-36, D9)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nvn 0 0 1\nf 1//1 2//1 3//1\nf 1 2 4\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.normals.empty());
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::Normal));
+}
+
+TEST_CASE(
+    "obj_import: all-or-nothing UVs -- one face in the primitive lacks a texcoord, so NONE survive "
+    "(OI43, AC-36, D9)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nvt 0 0\nf 1/1 2/1 3/1\nf 1 2 4\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.uv0.empty());
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::TexCoord0));
+}
+
+TEST_CASE("obj_import: settings.scale multiplies positions and NEVER normals (OI44, AC-37)") {
+    const std::string doc = "v 1 2 3\nvn 0 0 1\nv 0 0 0\nvn 0 0 1\nv 0 1 0\nvn 0 0 1\nf 1//1 2//2 3//3\n";
+    const ImportResult result =
+        importModel("t.obj", "", asBytes(doc), ImportSettings{.scale = 2.0F}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.positions[0] == Vec3{2.0F, 4.0F, 6.0F});
+    CHECK(prim.normals[0] == Vec3{0.0F, 0.0F, 1.0F});  // unscaled
+}
+
+TEST_CASE("obj_import: the importer converts NOTHING -- no axis flip, no winding reversal (OI45, AC-38, D12/INV-O6)") {
+    const std::string doc = "v 1 2 3\nv 4 5 6\nv 7 8 9\nf 1 2 3\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    REQUIRE(prim.positions.size() == 3);
+    CHECK(prim.positions[0] == Vec3{1.0F, 2.0F, 3.0F});
+    CHECK(prim.positions[1] == Vec3{4.0F, 5.0F, 6.0F});
+    CHECK(prim.positions[2] == Vec3{7.0F, 8.0F, 9.0F});
+    REQUIRE(prim.indices.size() == 3);
+    CHECK(prim.indices[0] == 0);
+    CHECK(prim.indices[1] == 1);
+    CHECK(prim.indices[2] == 2);  // NOT reversed to {0, 2, 1}
+}
+
+TEST_CASE(
+    "obj_import: attributes bitset and array emptiness always agree -- never a bit whose array is "
+    "empty (OI46, AC-39, INV-O5)") {
+    const std::string doc = "v 0 0 0\nvn 0 0 1\nv 1 0 0\nvn 0 0 1\nv 0 1 0\nvn 0 0 1\nf 1//1 2//2 3//3\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(has(prim.attributes, VertexAttribute::Position) == !prim.positions.empty());
+    CHECK(has(prim.attributes, VertexAttribute::Normal) == !prim.normals.empty());
+    CHECK(has(prim.attributes, VertexAttribute::TexCoord0) == !prim.uv0.empty());
+    CHECK(has(prim.attributes, VertexAttribute::Color0) == !prim.colors.empty());
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::Tangent));
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::TexCoord1));
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::Joints0));
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::Weights0));
+    CHECK(prim.tangents.empty());
+    CHECK(prim.uv1.empty());
+    CHECK(prim.joints.empty());
+    CHECK(prim.weights.empty());
+}
+
+TEST_CASE(
+    "obj_import: §A-12's bounds pair -- an empty mesh gets a POINT box, and summary.bounds ignores it "
+    "(OI47, AC-39b)") {
+    const std::string doc =
+        "o RealShape\n"
+        "v 10 10 10\nv 11 10 10\nv 10 11 10\n"
+        "f 1 2 3\n"
+        "o EmptyShape\n"
+        "v 20 20 20\n"
+        "f 4 4 99999\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 2);
+    CHECK(result.model.meshes[0].bounds.min == Vec3{10.0F, 10.0F, 10.0F});
+    CHECK(result.model.meshes[0].bounds.max == Vec3{11.0F, 11.0F, 10.0F});
+    CHECK(result.model.meshes[1].primitives.empty());
+    CHECK(result.model.meshes[1].bounds.valid());  // a POINT box, never the Aabb::empty() sentinel
+    CHECK(result.model.meshes[1].bounds.min == Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(result.model.meshes[1].bounds.max == Vec3{0.0F, 0.0F, 0.0F});
+    // the origin from EmptyShape's point box must NEVER leak into summary.bounds
+    CHECK(result.model.summary.bounds.min == Vec3{10.0F, 10.0F, 10.0F});
+    CHECK(result.model.summary.bounds.max == Vec3{11.0F, 11.0F, 10.0F});
+}
+
+TEST_CASE("obj_import: MAX_PRIMITIVES_PER_MODEL is enforced -- Truncated, a coherent smaller model (OI48, AC-58)") {
+    std::string doc;
+    const std::size_t shapeCount = MAX_PRIMITIVES_PER_MODEL + 10;
+    for (std::size_t i = 0; i < shapeCount; ++i) {
+        doc += "o part" + std::to_string(i) + "\n";
+        doc += "v 0 0 0\nv 1 0 0\nv 0 1 0\n";
+        doc += "f -3 -2 -1\n";
+    }
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Truncated);
+    CHECK_FALSE(result.message.empty());
+    CHECK(result.model.summary.primitiveCount == MAX_PRIMITIVES_PER_MODEL);
+    CHECK(result.model.meshes.size() <= shapeCount);
+    // NOTE (matching the FBX MAX_FBX_* precedent, .claude/rules/editor.md): MAX_VERTICES_PER_MODEL and
+    // MAX_INDICES_PER_MODEL are wired identically, but their OWN "fires on a real document" half is
+    // UNPROVEN here -- an 8,000,000-vertex or 24,000,000-index fixture is not a fast unit test. The
+    // MAPPING (a hit -> Truncated with a coherent smaller model) is proven by construction, sharing this
+    // SAME code path as the primitive cap above.
+}
+
+TEST_CASE("obj_import: the warning list caps at MAX_IMPORT_WARNINGS while warningTotal stays UNCAPPED (OI49, AC-59)") {
+    std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\n";
+    constexpr int BAD_FACES = 25;
+    for (int i = 0; i < BAD_FACES; ++i) {
+        doc += "f 1 2 99999\n";
+    }
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);  // every face dropped, none of it a hard failure
+    CHECK(result.warnings.size() == MAX_IMPORT_WARNINGS);
+    // BAD_FACES of OUR OWN "out of range" warnings, PLUS the library's own one aggregate "Vertex
+    // indices out of bounds" line (OI31's own finding) -- all UNCAPPED in the total.
+    CHECK(result.warningTotal == BAD_FACES + 1);
 }
