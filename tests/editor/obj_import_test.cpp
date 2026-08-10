@@ -369,25 +369,30 @@ TEST_CASE("obj_import: an empty file and a whitespace-only file are both Malform
 }
 
 TEST_CASE(
-    "obj_import: two mtllib directives -- BOTH of the library's own single-stream sentences are absent "
-    "(OI23, AC-57b, §A-10)") {
-    // BUILD-TIME FINDING (Step 7), recorded here rather than left silently vacuous: this fixture does
-    // NOT actually exercise appendLibraryDiagnostics's filter. MaterialStreamReader's own
-    // `if (!m_inStream)` guard tests std::istream::fail() (failbit/badbit), not eof() -- so after the
-    // FIRST mtllib line's LoadMtl call exhausts the shared stream (setting only eofbit via peek()), the
-    // stream is STILL "not failed", and the SECOND line's readMatFn call does NOT take the "stream in
-    // error" branch at all: it calls LoadMtl again (which parses zero lines and returns quietly). VERIFIED
-    // directly against this exact fixture: the library's raw warn/err strings are BOTH empty, so neither
-    // sentence is ever produced for this input shape by THIS tinyobjloader version. §A-10's own premise
-    // -- that a second mtllib directive is what triggers them -- does not hold here; see
-    // obj_import.cpp's declaredWithEmptyName comment and docs/10-engineering-log.md's 3.2.3 entry. The
-    // filter itself stays in place as harmless defence in depth. This assertion remains mechanically
-    // true and is kept (a real failure here would still mean something broke), but it is NOT proof the
-    // filter fires -- a documented, accepted gap, matching FBX's own FI27/FI43/FI46/FI68/FI72 precedent.
-    const std::string doc = "mtllib a.mtl\nmtllib b.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    "obj_import: THREE mtllib directives -- BOTH of the library's own single-stream sentences are "
+    "genuinely produced by the library and genuinely filtered out (OI23, AC-57b, §A-10)") {
+    // CODE-REVIEW ROUND CORRECTION: the original two-mtllib fixture here was proven vacuous, not merely
+    // weak. MaterialStreamReader's own `if (!m_inStream)` guard tests std::istream::fail()
+    // (failbit/badbit), not eof() -- so after the FIRST mtllib line's LoadMtl call exhausts the shared
+    // stream (setting only eofbit via peek()), the stream is STILL "not failed" by that test, and the
+    // SECOND line's readMatFn call does NOT take the "stream in error" branch: it calls LoadMtl again,
+    // which parses zero lines but still flushes its own unnamed phantom, quietly. Probe-confirmed
+    // directly against tinyobjloader v2.0.0rc13 (a standalone harness against the real vendored header,
+    // reproducing this exact test's own mtlText shape): a TWO-mtllib document leaves the library's raw
+    // warn/err BOTH EMPTY, but a THIRD mtllib line flips `fail()` true by the time IT is processed, and
+    // the library's own raw `warn` string then reads verbatim
+    //     "Material stream in error state. \nFailed to load material file(s). Use default material.\n"
+    // -- both sentences, exactly once each. `.claude/rules/editor.md` and `docs/10-engineering-log.md`
+    // both used to claim these two sentences were "PROVEN unreachable for this library version" on the
+    // strength of the TWO-line fixture -- true for two lines, false for three, and both documents are
+    // corrected in the same pass that rewrote this case.
+    const std::string doc = "mtllib a.mtl\nmtllib b.mtl\nmtllib c.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
     const std::vector<ExternalBuffer> externals = {
         ExternalBuffer{"a.mtl", "newmtl foo\nKd 1 0 0\n"},
         ExternalBuffer{"b.mtl", "newmtl bar\nKd 0 1 0\n"},
+        // "c.mtl" is deliberately NOT supplied -- the three-directive mechanism is driven by the .obj's
+        // own THREE mtllib LINES alone, regardless of which resolve to supplied bytes, and leaving one
+        // unsupplied additionally exercises D7's own "no matching .mtl was supplied" warning alongside.
     };
     const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, externals);
     CHECK(result.status != ImportStatus::ParseFailed);
