@@ -4687,6 +4687,15 @@ constexpr std::string_view MALFORMED_FBX_TEXT =
         objects, connections);
 }
 
+// task 3.2.3: a one-triangle .obj naming its own .mtl, and that .mtl's own text -- a FIFTH independent
+// copy of "each TU keeps its own fixture" (fbx_import_test.cpp, asset_database_test.cpp,
+// model_import_session_test.cpp and this file's own FBX section each already do). What I68 needs: BOTH
+// a Materials-section-populated .obj selection AND a .mtl selected standalone, each through a real
+// drawn frame.
+constexpr std::string_view MINIMAL_OBJ_TEXT =
+    "mtllib obj_fixture.mtl\nusemtl Wood\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+constexpr std::string_view MINIMAL_MTL_TEXT = "newmtl Wood\nKd 0.5 0.3 0.1\n";
+
 }  // namespace
 
 TEST_CASE("editor: the Import Details panel is registered right of the Inspector (task 3.2.1, I52, AC-50)") {
@@ -5489,6 +5498,62 @@ TEST_CASE(
     REQUIRE(app->tick());  // 5: drains SelectEntry
     REQUIRE(app->tick());  // 6: reconcile -> setTarget -> service() imports -- Source space row is
                            // ABSENT (sourceSpace.declared == false, AC-60's glTF half)
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->presentedLastFrame());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a real frame for a claimed .obj AND for its .mtl selected standalone -- all six sections "
+    "present and default-open, no ImGui assert (task 3.2.3, I68, AC-62/AC-64)") {
+    // This target is ImGui-free at source and cannot read a drawn frame's text -- what IS provable is
+    // that BOTH selections draw a real frame without an ImGui assert, exactly as I67 already established
+    // for FBX/glTF. The Materials section's actual content is proven at the pure-function level by
+    // obj_import_test.cpp's own OI-series (OI60-OI80).
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i68", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.obj", MINIMAL_OBJ_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/obj_fixture.mtl", MINIMAL_MTL_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the initial scan
+    REQUIRE(app->tick());  // 2: let the default dock layout settle before focusing anything
+    app->requestPanelFocus("Import Details");
+
+    app->requestAssetBrowserSelectEntry("a.obj");
+    REQUIRE(app->tick());  // 3: drains SelectEntry
+    REQUIRE(app->tick());  // 4: reconcile -> setTarget -> service() imports -- geometry AND materials
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->presentedLastFrame());
+
+    app->requestAssetBrowserSelectEntry("obj_fixture.mtl");
+    REQUIRE(app->tick());  // 5: drains SelectEntry
+    REQUIRE(app->tick());  // 6: reconcile -> setTarget -> service() imports -- materials only, "(no
+                           // meshes)" / "(no nodes)" (D6's depth-independent .mtl arm)
     CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
     CHECK(app->presentedLastFrame());
 

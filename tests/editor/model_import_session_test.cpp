@@ -1003,3 +1003,176 @@ TEST_CASE(
     REQUIRE_FALSE(ec);
     CHECK(afterMtime == beforeMtime);
 }
+
+// ---- MS28-MS33: task 3.2.3, the .obj/.mtl session integration -------------------------------------
+
+TEST_CASE(
+    "model_import_session: setTarget then one service() imports an .obj exactly once, and ten further "
+    "service() calls leave importCount() at 1 (MS28, AC-61)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.obj"), "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    AssetDatabase db;
+    GuidGenerator gen(205);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("chair.obj", db.generation());
+    session.service(dir.utf8(), db);
+    CHECK(session.state() == SessionState::Imported);
+    REQUIRE(session.importCount() == 1);
+    CHECK(session.result().status == ImportStatus::Ok);
+
+    for (int i = 0; i < 10; ++i) {
+        session.service(dir.utf8(), db);
+    }
+    CHECK(session.importCount() == 1);
+}
+
+TEST_CASE(
+    "model_import_session: an .obj naming a .mtl that itself names a texture resolves BOTH through the "
+    "REAL session -- materials populated, the texture's path and guid resolved (MS29, the two-pass .obj "
+    "read)") {
+    // WHY THIS PROVES ".obj reads exactly its .mtl, never a texture" WITHOUT new instrumentation: MS22
+    // (above) proves, from model_import_session.cpp's own source text, that the external-buffer loop's
+    // ONE call site sits entirely inside the modelImporterNeedsExternalBuffers(leaf) gate and runs once
+    // per entry in Structure's externalUris -- a claim that holds for EVERY format, not only glTF/FBX.
+    // model_import_test.cpp's MI123 proves modelImporterNeedsExternalBuffers("a.obj") == true, so the
+    // gate IS taken; obj_import_test.cpp's OI2 proves an .obj's Structure-depth externalUris is EXACTLY
+    // the mtllib path -- one entry, never a texture (D5: the Structure pass is a pure text scan of
+    // mtllib operands only, it never looks inside the .mtl for map_Kd). Combined, the loop performs
+    // EXACTLY one external read (chair.mtl) and structurally cannot attempt a texture read -- there is
+    // no entry in externalUris to read one from. This case is the BEHAVIOURAL half: proving the .mtl's
+    // bytes the loop DID read actually make it into the Full pass and resolve correctly end to end,
+    // matching MS23's shape for glTF's own two-external-buffer path.
+    const TempDir dir;
+    writeFile(dir.join("chair.obj"), "mtllib chair.mtl\nusemtl Wood\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    writeFile(dir.join("chair.mtl"), "newmtl Wood\nKd 0.5 0.3 0.1\nmap_Kd wood.png\n");
+    writeFile(dir.join("wood.png"), "pixels");
+    AssetDatabase db;
+    GuidGenerator gen(206);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid woodGuid = *db.guidForPath("wood.png");
+    REQUIRE(woodGuid.valid());
+
+    ModelImportSession session;
+    session.setTarget("chair.obj", db.generation());
+    session.service(dir.utf8(), db);
+    CHECK(session.state() == SessionState::Imported);
+    CHECK(session.result().status == ImportStatus::Ok);
+    REQUIRE(session.result().model.materials.size() == 1);
+    CHECK(session.result().model.materials[0].name == "Wood");
+    REQUIRE(session.result().model.meshes.size() == 1);
+    REQUIRE(session.result().model.meshes[0].primitives.size() == 1);
+    CHECK(session.result().model.meshes[0].primitives[0].materialIndex == 0);
+    REQUIRE(session.result().model.images.size() == 1);
+    CHECK(session.result().model.images[0].relativePath == "wood.png");  // the .mtl's own texture resolved
+    CHECK(session.result().model.images[0].guid == woodGuid);
+}
+
+TEST_CASE(
+    "model_import_session: a .mtl selected DIRECTLY imports through the REAL session with no .obj in "
+    "the picture at all -- materials populated (MS30, section A-5's false arm)") {
+    // WHY THIS PROVES "exactly one read" WITHOUT new instrumentation: MI123 proves
+    // modelImporterNeedsExternalBuffers("a.mtl") == false at the pure-function level; MS22 (above)
+    // proves the session's ENTIRE external-buffer loop sits inside that gate and does not run at all
+    // when the gate is false. So selecting a .mtl directly leaves ONLY the one unconditional "read the
+    // target's own bytes" call MS22 already counts -- there is no second call site to reach, gated or
+    // not. This case is the BEHAVIOURAL half: the .mtl's OWN bytes (the only bytes ever read) must
+    // still resolve to correct materials through the real, disk-reading session path.
+    const TempDir dir;
+    writeFile(dir.join("swatch.mtl"), "newmtl Wood\nKd 0.5 0.3 0.1\n");
+    AssetDatabase db;
+    GuidGenerator gen(207);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("swatch.mtl", db.generation());
+    session.service(dir.utf8(), db);
+    CHECK(session.state() == SessionState::Imported);
+    CHECK(session.result().status == ImportStatus::Ok);
+    REQUIRE(session.result().model.materials.size() == 1);
+    CHECK(session.result().model.materials[0].name == "Wood");
+    CHECK(session.result().model.nodes.empty());  // AC-24: a .mtl carries no nodes/meshes
+    CHECK(session.result().model.meshes.empty());
+}
+
+TEST_CASE(
+    "model_import_session: an .obj whose .mtl is referenced but ABSENT on disk imports through the REAL "
+    "session with status Ok, geometry intact and the operand-naming warning (MS31, AC-22's session-level "
+    "half)") {
+    // obj_import_test.cpp's own OI79 already proves this at the pure importModel() level. This is the
+    // SAME property exercised through the actual disk-reading session path (TempDir + AssetDatabase +
+    // ModelImportSession::service()) -- MS24's own precedent, restated for AC-22 instead of AC-52.
+    // Deliberately NO usemtl (OI79's own reasoning): that would also trigger the library's OWN "material
+    // not found" warning, which is real and correct but not what this case exists to isolate.
+    const TempDir dir;
+    writeFile(dir.join("chair.obj"), "mtllib chair.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    // Deliberately NO chair.mtl on disk.
+    AssetDatabase db;
+    GuidGenerator gen(208);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("chair.obj", db.generation());
+    session.service(dir.utf8(), db);
+    CHECK(session.state() == SessionState::Imported);
+    CHECK(session.result().status == ImportStatus::Ok);
+    CHECK(session.result().model.materials.empty());
+    REQUIRE(session.result().model.meshes.size() == 1);
+    REQUIRE(session.result().model.meshes[0].primitives.size() == 1);
+    REQUIRE(session.result().model.meshes[0].primitives[0].indices.size() == 3);  // geometry FULLY imported
+    REQUIRE(session.result().warnings.size() == 1);
+    CHECK(session.result().warnings[0].find("chair.mtl") != std::string::npos);
+}
+
+TEST_CASE("model_import_session: a .blend target is NotImportable and imports nothing (MS32, AC-63 corrected)") {
+    const AssetDatabase db;  // never scanned -- a garbage root below proves nothing was read either
+    ModelImportSession session;
+    session.setTarget("statue.blend", 0);
+    session.service("/this/path/must/never/be/opened", db);
+    CHECK(session.state() == SessionState::NotImportable);
+    CHECK(session.importCount() == 0);
+}
+
+TEST_CASE(
+    "model_import_session: applySettings on an .obj writes the sidecar ONCE, atomically, with "
+    "\"name\": \"obj\" -- a byte-identical re-apply writes nothing (MS33, AC-65)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.obj"), "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    AssetDatabase db;
+    GuidGenerator gen(209);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid guid = *db.guidForPath("chair.obj");
+
+    ModelImportSession session;
+    session.setTarget("chair.obj", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+
+    ImportSettings edited;
+    edited.scale = 3.5F;
+    session.setPendingSettings(edited);
+    REQUIRE(session.canApply());
+    const std::string error = session.applySettings(dir.utf8());
+    CHECK(error.empty());
+
+    const auto metaText = scene_golden::readBytes(dir.join("chair.obj.meta"));
+    REQUIRE(metaText.ok);
+    CHECK(metaText.text == writeMetaText(guid, edited, "obj", 1));
+    CHECK(metaText.text.find(R"("name": "obj")") != std::string::npos);
+    CHECK_FALSE(std::filesystem::exists(pathOf(dir.join("chair.obj.meta") + std::string(ATOMIC_TEMP_SUFFIX))));
+
+    // A byte-identical re-apply (settings unchanged) writes NOTHING -- INV-M9: no new write path is
+    // added for OBJ beyond the one applySettings() already owned.
+    std::error_code ec;
+    const std::filesystem::file_time_type beforeMtime =
+        std::filesystem::last_write_time(pathOf(dir.join("chair.obj.meta")), ec);
+    REQUIRE_FALSE(ec);
+    session.setPendingSettings(edited);  // the SAME settings again
+    const std::string secondError = session.applySettings(dir.utf8());
+    CHECK(secondError.empty());
+    const std::filesystem::file_time_type afterMtime =
+        std::filesystem::last_write_time(pathOf(dir.join("chair.obj.meta")), ec);
+    REQUIRE_FALSE(ec);
+    CHECK(afterMtime == beforeMtime);
+}

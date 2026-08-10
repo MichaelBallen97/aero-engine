@@ -2696,3 +2696,158 @@ TEST_CASE(
     CHECK(fbxEntry->importer == "fbx");
     CHECK(gltfEntry->importer == "gltf");
 }
+
+// =====================================================================================================
+// task 3.2.3: phase 7.5 needs ZERO changes for OBJ (§A-1) -- these four cases PROVE that through a real
+// scan rather than assert it. `.obj` and `.mtl` share ONE identity (D17), and the format's two-file
+// split (D4) makes chair.obj -> chair.mtl -> wood.png a genuine TWO-HOP dependency chain, the first of
+// its kind in this tree. No production file changes for this step.
+// =====================================================================================================
+
+TEST_CASE("asset_database: a scanned .obj AND a standalone-scanned .mtl both record \"obj\"/1 (AD-i22, AC-5)") {
+    const TempDir dir;
+    writeFile(dir.join("chair.obj"), "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    writeFile(dir.join("swatch.mtl"), "newmtl A\nKd 1 0 0\n");
+    AssetDatabase db;
+    GuidGenerator gen(1022);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 2);
+    const AssetRecord* const objRecord = db.findByPath("chair.obj");
+    const AssetRecord* const mtlRecord = db.findByPath("swatch.mtl");
+    REQUIRE(objRecord != nullptr);
+    REQUIRE(mtlRecord != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const objEntry = parsed.index.find(objRecord->guid);
+    const AssetCacheEntry* const mtlEntry = parsed.index.find(mtlRecord->guid);
+    REQUIRE(objEntry != nullptr);
+    REQUIRE(mtlEntry != nullptr);
+    CHECK(objEntry->importer == "obj");
+    CHECK(objEntry->importerVersion == 1);
+    CHECK(mtlEntry->importer == "obj");  // ONE identity for BOTH claimed extensions (D17)
+    CHECK(mtlEntry->importerVersion == 1);
+}
+
+TEST_CASE(
+    "asset_database: chair.obj's mtllib reference to chair.mtl becomes a dependency GUID -- the FIRST "
+    "hop of D4's two-file split (AD-i23, AC-6)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.obj"), "mtllib chair.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    writeFile(dir.join("models/chair.mtl"), "newmtl A\nKd 1 0 0\n");
+
+    AssetDatabase db;
+    GuidGenerator gen(1023);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 2);  // chair.obj AND chair.mtl are both claimed, both probed
+    const Guid mtlGuid = *db.guidForPath("models/chair.mtl");
+    const AssetRecord* const objRecord = db.findByPath("models/chair.obj");
+    REQUIRE(objRecord != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const objEntry = parsed.index.find(objRecord->guid);
+    REQUIRE(objEntry != nullptr);
+    REQUIRE(objEntry->dependencies.size() == 1);
+    CHECK(objEntry->dependencies[0] == mtlGuid);
+}
+
+TEST_CASE(
+    "asset_database: chair.mtl's texture reference becomes a dependency GUID -- the SECOND hop of D4's "
+    "two-file split (AD-i24, AC-7)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.mtl"), "newmtl A\nmap_Kd ../textures/wood.png\n");
+    writeFile(dir.join("textures/wood.png"), "pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(1024);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.dependenciesRecorded == 1);
+    const Guid woodGuid = *db.guidForPath("textures/wood.png");
+    const AssetRecord* const mtlRecord = db.findByPath("models/chair.mtl");
+    REQUIRE(mtlRecord != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const mtlEntry = parsed.index.find(mtlRecord->guid);
+    REQUIRE(mtlEntry != nullptr);
+    REQUIRE(mtlEntry->dependencies.size() == 1);
+    CHECK(mtlEntry->dependencies[0] == woodGuid);
+}
+
+TEST_CASE(
+    "asset_database: editing wood.png marks BOTH chair.mtl AND chair.obj DependencyChanged on the SAME "
+    "next scan -- the two-hop TRANSITIVE cascade, ticking TWICE (AD-i25, AC-8, the task's headline "
+    "deliverable)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/chair.obj"), "mtllib chair.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    writeFile(dir.join("models/chair.mtl"), "newmtl A\nmap_Kd ../textures/wood.png\n");
+    writeFile(dir.join("textures/wood.png"), "original-pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(1025);
+    // scan 1: chair.obj, chair.mtl AND wood.png are all New. Phase 7.5's probe records THIS scan's
+    // edges (chair.obj -> chair.mtl, chair.mtl -> wood.png) for the NEXT scan's cascade (D8/E11) -- a
+    // New record's `change` reports New, not DependencyChanged, so there is no cascade to observe yet.
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.status == ScanStatus::Ok);
+    CHECK(first.modelsProbed == 2);          // chair.obj and chair.mtl
+    CHECK(first.dependenciesRecorded == 2);  // one edge per hop
+    const AssetRecord* const objAfterFirst = db.findByPath("models/chair.obj");
+    const AssetRecord* const mtlAfterFirst = db.findByPath("models/chair.mtl");
+    REQUIRE(objAfterFirst != nullptr);
+    REQUIRE(mtlAfterFirst != nullptr);
+    CHECK(objAfterFirst->change == ImportChange::New);
+    CHECK(mtlAfterFirst->change == ImportChange::New);
+    const scene_golden::FileBytes objBytesAfterFirst = scene_golden::readBytes(dir.join("models/chair.obj"));
+    REQUIRE(objBytesAfterFirst.ok);
+    const scene_golden::FileBytes mtlBytesAfterFirst = scene_golden::readBytes(dir.join("models/chair.mtl"));
+    REQUIRE(mtlBytesAfterFirst.ok);
+
+    writeFile(dir.join("textures/wood.png"), "edited-pixels-longer");  // a different LENGTH (R-C1)
+
+    // scan 2 -- the FIRST tick after the edit. planImports step 4's BFS over reverse edges is
+    // TRANSITIVE within ONE scan (it already holds both edges from scan 1's cache), so BOTH hops
+    // propagate together: wood.png dirty => chair.mtl => chair.obj.
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    const AssetRecord* const woodAfterSecond = db.findByPath("textures/wood.png");
+    REQUIRE(woodAfterSecond != nullptr);
+    CHECK(woodAfterSecond->change == ImportChange::SourceChanged);
+    const AssetRecord* const mtlAfterSecond = db.findByPath("models/chair.mtl");
+    const AssetRecord* const objAfterSecond = db.findByPath("models/chair.obj");
+    REQUIRE(mtlAfterSecond != nullptr);
+    REQUIRE(objAfterSecond != nullptr);
+    CHECK(mtlAfterSecond->change == ImportChange::DependencyChanged);
+    CHECK(objAfterSecond->change == ImportChange::DependencyChanged);
+    CHECK(second.dependencyChanged == 2);  // BOTH hops, same scan
+
+    // NEITHER model's own bytes changed -- only the texture at the far end of the chain did.
+    const scene_golden::FileBytes objBytesAfterSecond = scene_golden::readBytes(dir.join("models/chair.obj"));
+    REQUIRE(objBytesAfterSecond.ok);
+    CHECK(objBytesAfterSecond.text == objBytesAfterFirst.text);
+    const scene_golden::FileBytes mtlBytesAfterSecond = scene_golden::readBytes(dir.join("models/chair.mtl"));
+    REQUIRE(mtlBytesAfterSecond.ok);
+    CHECK(mtlBytesAfterSecond.text == mtlBytesAfterFirst.text);
+}

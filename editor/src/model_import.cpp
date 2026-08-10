@@ -6,7 +6,9 @@
 
 #include "fbx_import.hpp"
 #include "gltf_import.hpp"
+#include "obj_import.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <optional>
@@ -67,7 +69,7 @@ std::string_view importStatusLabel(ImportStatus status) noexcept {
 }
 
 bool isImportableModelName(std::string_view fileName) noexcept {
-    constexpr std::array<std::string_view, 3> EXTENSIONS = {".gltf", ".glb", ".fbx"};
+    constexpr std::array<std::string_view, 5> EXTENSIONS = {".gltf", ".glb", ".fbx", ".obj", ".mtl"};
     for (const std::string_view ext : EXTENSIONS) {
         if (endsWithFolded(fileName, ext)) {
             return true;
@@ -80,6 +82,12 @@ ImporterIdentity modelImporterIdentity(std::string_view fileName) noexcept {
     if (endsWithFolded(fileName, ".fbx")) {
         return {FBX_IMPORTER_NAME, FBX_IMPORTER_VERSION};
     }
+    // task 3.2.3: ONE identity for BOTH claimed extensions -- one importer, two file kinds. A .mtl's
+    // cache entry therefore records ("obj", 1), which is what makes an OBJ_IMPORTER_VERSION bump
+    // re-trigger imports for .obj AND .mtl together and for nothing else.
+    if (endsWithFolded(fileName, ".obj") || endsWithFolded(fileName, ".mtl")) {
+        return {OBJ_IMPORTER_NAME, OBJ_IMPORTER_VERSION};
+    }
     if (isImportableModelName(fileName)) {
         return {GLTF_IMPORTER_NAME, GLTF_IMPORTER_VERSION};
     }
@@ -88,9 +96,20 @@ ImporterIdentity modelImporterIdentity(std::string_view fileName) noexcept {
 }
 
 bool modelImporterNeedsExternalBuffers(std::string_view fileName) noexcept {
-    // FBX: NO -- all geometry is in the file, and its external URIs are TEXTURES. Everything else that
-    // is importable today is glTF, whose buffers may be external .bin files.
-    return isImportableModelName(fileName) && !endsWithFolded(fileName, ".fbx");
+    // FBX: NO -- all geometry is in the file, and its external URIs are TEXTURES.
+    if (endsWithFolded(fileName, ".fbx")) {
+        return false;
+    }
+    // .mtl: NO -- a material library's whole content is LOCAL (D6). Its external URIs are TEXTURES,
+    // which this importer resolves for the DEPENDENCY GRAPH and never reads. Answering TRUE here would
+    // make ModelImportSession read every texture the library names, hand them to an arm that ignores
+    // them, and -- once they exceed MAX_EXTERNAL_BYTES_PER_MODEL -- report Truncated for a result that
+    // was complete at Structure depth.
+    if (endsWithFolded(fileName, ".mtl")) {
+        return false;
+    }
+    // .gltf/.glb (buffers may be external .bin files) and .obj (its .mtl IS an external file, D4).
+    return isImportableModelName(fileName);
 }
 
 std::string foldBackslashesToSlashes(std::string_view path) {
@@ -101,6 +120,121 @@ std::string foldBackslashesToSlashes(std::string_view path) {
         }
     }
     return out;
+}
+
+namespace {
+
+// task 3.2.3: the ONE place that decides "is this line an mtllib DIRECTIVE, and what's its operand" --
+// scanObjMtlLibs's own inner loop is the only caller. Kept as a free function rather than inlined so
+// its rule (case-SENSITIVE, leading-whitespace-only, a space or tab separator) is stated once.
+[[nodiscard]] bool mtllibOperand(std::string_view line, std::string_view& operandOut) {
+    constexpr std::string_view KEYWORD = "mtllib";
+    std::size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
+        ++i;
+    }
+    if (line.size() <= i + KEYWORD.size() || line.substr(i, KEYWORD.size()) != KEYWORD) {
+        return false;
+    }
+    if (line[i + KEYWORD.size()] != ' ' && line[i + KEYWORD.size()] != '\t') {
+        return false;
+    }
+    const std::string_view operand = line.substr(i + KEYWORD.size());
+    std::size_t start = 0;
+    while (start < operand.size() && (operand[start] == ' ' || operand[start] == '\t')) {
+        ++start;
+    }
+    std::size_t end = operand.size();
+    while (end > start && (operand[end - 1] == ' ' || operand[end - 1] == '\t')) {
+        --end;
+    }
+    operandOut = operand.substr(start, end - start);
+    return true;
+}
+
+}  // namespace
+
+ObjMtlLibScan scanObjMtlLibsScan(std::span<const std::byte> bytes, std::size_t maxNames) {
+    ObjMtlLibScan scan;
+    if (bytes.empty()) {
+        return scan;
+    }
+    // NOTE: `maxNames == 0` is NOT an early return here, unlike scanObjMtlLibs's own former standalone
+    // shape -- emptyOperandLines is orthogonal to the candidate cap (an empty operand has no candidate
+    // to cap in the first place), so the scan still runs and still counts E4 correctly; `pushCandidate`'s
+    // own `>= maxNames` check (0 >= 0) already keeps `candidates` empty on its own, matching the old
+    // behaviour for that half exactly.
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+
+    const auto pushCandidate = [&scan, maxNames](std::string_view candidate) {
+        if (scan.candidates.size() >= maxNames) {  // cap BEFORE the push (INV-O10)
+            return;
+        }
+        for (const std::string& existing : scan.candidates) {  // dedup BY RAW TEXT, order preserved
+            if (existing == candidate) {
+                return;
+            }
+        }
+        scan.candidates.emplace_back(candidate);
+    };
+
+    std::size_t lineStart = 0;
+    while (lineStart <= text.size()) {
+        const std::size_t newline = text.find('\n', lineStart);
+        std::string_view line =
+            newline == std::string_view::npos ? text.substr(lineStart) : text.substr(lineStart, newline - lineStart);
+        if (!line.empty() && line.back() == '\r') {  // ONE trailing '\r' (CRLF) -- E7
+            line.remove_suffix(1);
+        }
+
+        std::string_view operand;
+        if (mtllibOperand(line, operand)) {
+            if (operand.empty()) {
+                // code-review round, gap 10: E4, counted in THIS SAME PASS -- the caller-side
+                // countEmptyMtllibOperandLines used to re-walk the whole file a second time purely to
+                // recover this count; the two scans were previously identical in shape and always ran
+                // together, so folding it in here removes a duplicate ~150 MB linear scan from every
+                // Structure probe.
+                ++scan.emptyOperandLines;
+            } else {
+                pushCandidate(operand);  // the WHOLE operand LEADS
+                std::size_t tokenStart = 0;
+                while (tokenStart < operand.size()) {
+                    while (tokenStart < operand.size() && (operand[tokenStart] == ' ' || operand[tokenStart] == '\t')) {
+                        ++tokenStart;
+                    }
+                    std::size_t tokenEnd = tokenStart;
+                    while (tokenEnd < operand.size() && operand[tokenEnd] != ' ' && operand[tokenEnd] != '\t') {
+                        ++tokenEnd;
+                    }
+                    if (tokenEnd > tokenStart) {
+                        pushCandidate(operand.substr(tokenStart, tokenEnd - tokenStart));
+                    }
+                    tokenStart = tokenEnd;
+                }
+            }
+        }
+
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        lineStart = newline + 1;
+    }
+    return scan;
+}
+
+std::vector<std::string> scanObjMtlLibs(std::span<const std::byte> bytes, std::size_t maxNames) {
+    return scanObjMtlLibsScan(bytes, maxNames).candidates;
+}
+
+bool looksLikeBinaryContent(std::span<const std::byte> bytes, std::size_t probeBytes) noexcept {
+    const std::size_t n = std::min(bytes.size(), probeBytes);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (bytes[i] == std::byte{0}) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::optional<std::string> normalizeRelativePath(std::string_view path) {
@@ -210,10 +344,20 @@ UriClassification classifyUri(std::string_view uri, std::string_view assetRelati
 
 ImportResult importModel(std::string_view fileName, std::string_view assetRelativeDir, std::span<const std::byte> bytes,
                          const ImportSettings& settings, ImportDepth depth, std::span<const ExternalBuffer> external) {
-    // The FBX arm FIRST, so the glTF arm below stays the "everything else importable" case and the
-    // two never both claim a name. MI105's dispatch-completeness case is what keeps them in sync.
+    // The FBX and OBJ arms FIRST, so the glTF arm below stays the "everything else importable" case and
+    // no two arms ever claim a name. MI105/MI105b/MI105c keep the suffix table, the identity table and
+    // this chain in sync -- a fourth importer added to one but not the others is a RED case, not a
+    // silent misroute.
+    //
+    // STILL AN IF-CHAIN AT THREE ARMS, DELIBERATELY (task 3.2.3, §A-8): a dispatch table needs a
+    // UNIFORM backend signature, and importObj must additionally take `fileName` because it has two
+    // arms. Unifying would mean editing gltf_import.hpp, whose byte-identity to `main` this task pays
+    // to keep. The table that matters already exists on the test side, in MI105's own array.
     if (endsWithFolded(fileName, ".fbx")) {
         return importFbx(assetRelativeDir, bytes, settings, depth, external);
+    }
+    if (endsWithFolded(fileName, ".obj") || endsWithFolded(fileName, ".mtl")) {
+        return importObj(fileName, assetRelativeDir, bytes, settings, depth, external);
     }
     if (isImportableModelName(fileName)) {  // .gltf / .glb
         return importGltf(assetRelativeDir, bytes, settings, depth, external);

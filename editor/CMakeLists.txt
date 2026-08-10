@@ -20,6 +20,15 @@ find_package(fastgltf CONFIG REQUIRED)  # task 3.2.1 (D1): 0.9.0, MIT. EDITOR-ON
                                         # MIT arm satisfies docs/01's hard requirement outright), so
                                         # simdjson arrives transitively with NO second find_package.
                                         # builtin-baseline is untouched; only the dependencies array grows.
+find_package(tinyobjloader CONFIG REQUIRED)  # task 3.2.3 (D1): 2.0.0rc13, MIT, static-only.
+                                             # EDITOR-ONLY by docs/03's dependency-placement invariant.
+                                             # The port has NO transitive dependency beyond two host
+                                             # tools, so nothing arrives with it. The `double` feature
+                                             # is NEVER requested: the portfile rewrites
+                                             # `#ifdef TINYOBJLOADER_USE_DOUBLE` to `#if 0` in the
+                                             # installed header when it is absent, which is what keeps
+                                             # `real_t == float` in the header and in the archive.
+                                             # builtin-baseline is untouched; only `dependencies` grows.
 
 # task 3.2.2 (D3): ufbx is in NO vcpkg registry, so it is VENDORED rather than found. aero_ufbx is a
 # STATIC target over one .c compiled with THIS project's flags -- which is what makes it
@@ -84,6 +93,7 @@ add_library(aero_editor_core STATIC
     src/model_import_session.cpp # task 3.2.1 -- the on-demand two-pass driver; the ONE write
     src/import_details_panel.cpp # task 3.2.1 -- the ImGui half of the import result
     src/fbx_import.cpp           # task 3.2.2 -- the ONLY ufbx TU; NO file operation at all
+    src/obj_import.cpp           # task 3.2.3 -- the ONLY tinyobjloader TU; NO file operation at all
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -115,8 +125,14 @@ target_link_libraries(aero_editor_core
     # imguizmo::imguizmo is PRIVATE for the SAME reason imgui::imgui is (D1/2.1.3): it confines
     # ImGuizmo to this layer's .cpp TUs, so aero_editor and aero_editor_shell_test stay ImGuizmo-free
     # at source. Like imgui, that is convention + review, NOT enforcement (R12).
+    # tinyobjloader::tinyobjloader is PRIVATE, exactly as fastgltf::fastgltf and aero_ufbx are (task
+    # 3.2.3, D1): on a STATIC library a PRIVATE dependency propagates as $<LINK_ONLY:...>, so the
+    # archive DOES reach aero_editor's and every test target's link line -- correct and unavoidable,
+    # not a leak. The checkable invariant is the INCLUDE boundary: tiny_obj_loader.h reaches exactly
+    # one TU (obj_import.cpp), never a test TU and never an engine/ TU.
     PRIVATE aero::profiling imgui::imgui imguizmo::imguizmo SDL3::SDL3 EnTT::EnTT aero::scene_render
             aero::platform_internal aero::rhi_internal fastgltf::fastgltf aero_ufbx
+            tinyobjloader::tinyobjloader
 )
 
 # task 2.6.1 (D14): the ONLY consumer is editor_app.cpp, and `engineVersion` is INFORMATIONAL in v0

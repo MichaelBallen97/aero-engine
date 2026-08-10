@@ -1068,3 +1068,30 @@ TEST_CASE(
     CHECK(result.importer->name.empty());
     CHECK(result.importerMessage.empty());
 }
+
+TEST_CASE(
+    "asset_meta: writeMetaText with the OBJ identity records \"obj\", and minimal.meta's 65-byte "
+    "fixpoint re-runs UNEDITED (AM-i21, task 3.2.3)") {
+    // AM-i17's own shape, one format over: proves .obj's identity write path is genuinely exercised and
+    // that it disturbs NOTHING on the DEFAULT-settings path every existing project's minimal.meta
+    // already depends on (D7's omit-when-default branch never reaches "name"/"version" for
+    // ImportSettings{}, regardless of which identity is passed alongside it).
+    const std::optional<Guid> guid = parseGuid(FIXTURE_GUID_TEXT);
+    REQUIRE(guid.has_value());
+    const scene_golden::FileBytes fixture = scene_golden::readBytes(MINIMAL_FIXTURE);
+    REQUIRE(fixture.ok);
+    const std::string viaOneArg = writeMetaText(*guid);
+    const std::string viaExplicitObjIdentity = writeMetaText(*guid, ImportSettings{}, "obj", 1);
+    CHECK(viaOneArg.size() == 65);
+    CHECK(viaOneArg == fixture.text);            // minimal.meta's fixpoint, RE-RUN, UNEDITED
+    CHECK(viaExplicitObjIdentity == viaOneArg);  // the identity is UNOBSERVABLE when settings are default
+
+    // With NON-default settings, "obj"/1 IS observed, and round-trips through parseMeta.
+    const std::string withScale = writeMetaText(*guid, ImportSettings{2.0F, true, true, true}, "obj", 1);
+    const MetaParseResult parsed = parseMeta(withScale);
+    REQUIRE(parsed.guid.has_value());
+    REQUIRE(parsed.importer.has_value());
+    CHECK(parsed.importer->name == "obj");
+    CHECK(parsed.importer->version == 1);
+    CHECK(parsed.importer->settings.scale == 2.0F);
+}
