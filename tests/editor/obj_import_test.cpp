@@ -120,18 +120,21 @@ TEST_CASE("obj_import: Structure depth on a well-formed body with an mtllib is e
 TEST_CASE(
     "obj_import: the AC-20 discriminator -- Structure never enters the library, so it survives what "
     "would fail Full (OI3, AC-20)") {
-    // A well-formed mtllib over a body whose ONLY face uses a ZERO vertex index (F4b): once Step 4
-    // lands, a Full parse of this body fails outright (LoadObj returns false on `f 0 1 2`). If Structure
-    // entered the library at all, it would fail identically -- it does not, so it survives.
-    //
-    // task 3.2.3, Step 3: only the Structure half is meaningful yet -- the Full half of this
-    // discriminating pair is added at Step 4, once the library is actually entered there.
+    // A well-formed mtllib over a body whose ONLY face uses a ZERO vertex index (F4b): a Full parse of
+    // this body fails outright (LoadObj returns false on `f 0 1 2`). If Structure entered the library at
+    // all, it would fail identically -- it does not, so it survives. The CONTRAST is the whole proof:
+    // asserting only one half (a code-review-round finding -- the Full half was never added after Step
+    // 3's own placeholder comment said it would be) leaves this the template AC-20 vacuity lesson exists
+    // to prevent, applied to itself.
     const std::string doc = "mtllib chair.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\n";
     const ImportResult structure =
         importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
     CHECK(structure.status == ImportStatus::Ok);
     REQUIRE(structure.externalUris.size() == 1);
     CHECK(structure.externalUris[0] == "chair.mtl");
+
+    const ImportResult full = importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(full.status == ImportStatus::ParseFailed);
 }
 
 TEST_CASE("obj_import: no mtllib directive at all -- empty URI set, no warning (OI4, E1)") {
