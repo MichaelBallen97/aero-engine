@@ -22,6 +22,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -38,21 +39,238 @@ using engine::editor::importModel;
 using engine::editor::ImportResult;
 using engine::editor::ImportSettings;
 using engine::editor::ImportStatus;
+using engine::editor::MAX_EXTERNAL_URIS;
 
-// task 3.2.3, Step 2: a PLACEHOLDER. It becomes AC-25's real one-triangle Full case at Step 5, once
-// geometry conversion exists. Exists from this step so AC-69's "OI1 present in both reduced
-// configurations" has something to find, and so this file is tracked before the guards next run.
+// task 3.2.3, Step 3: a PLACEHOLDER. It becomes AC-25's real one-triangle Full case at Step 5, once
+// geometry conversion (Step 5) and material bucketing (Step 6) exist. Exists from Step 2 so AC-69's
+// "OI1 present in both reduced configurations" has something to find, and so this file is tracked
+// before the guards next run.
 //
-// A BUILD-TIME FINDING, recorded here rather than smoothed over: isImportableModelName already claims
-// ".obj" as of THIS commit (§D-4(a)), but the dispatch (§D-4(d)) does not grow its OBJ/MTL arm until
-// Step 3. In between, a ".obj" name falls through to the glTF arm's "everything else importable"
-// catch-all (`if (isImportableModelName(fileName)) return importGltf(...)`) and fails THERE --
-// ParseFailed, not Unsupported -- because Wavefront text is not valid JSON. This is exactly the
-// mis-route MI105c exists to catch, arising here with no sabotage seed needed at all, purely from
-// widening the predicate one step before the dispatch. Step 3 corrects it; this assertion documents the
-// transient, real state of the tree between the two commits rather than a hypothetical one.
-TEST_CASE("obj_import: placeholder -- .obj is not yet routed to the OBJ backend (OI1)") {
+// A build-time finding from Step 2, recorded here rather than smoothed over: for the one commit between
+// isImportableModelName claiming ".obj" (§D-4(a)) and the dispatch growing its OBJ/MTL arm (§D-4(d)), a
+// ".obj" name fell through to the glTF arm's "everything else importable" catch-all and failed there --
+// ParseFailed, not Unsupported -- because Wavefront text is not valid JSON. That was exactly the
+// mis-route MI105c exists to catch, arising with no sabotage seed needed at all. AS OF THIS COMMIT the
+// dispatch is correct again: ".obj" reaches importObjFile's Structure arm, which is a pure text scan
+// (D5) -- a body with no `mtllib` line and well-formed vertex/face lines produces Ok with an empty URI
+// set, geometry aside (geometry does not exist until Step 5).
+TEST_CASE("obj_import: placeholder -- geometry conversion does not exist yet (OI1)") {
     const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
     const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
-    CHECK(result.status == ImportStatus::ParseFailed);  // misrouted through the glTF catch-all -- Step 3 fixes it
+    CHECK(result.status == ImportStatus::Ok);
+    CHECK(result.externalUris.empty());
+    CHECK(result.model.meshes.empty());  // Step 5 populates this
+}
+
+TEST_CASE("obj_import: Structure depth on a well-formed body with an mtllib is empty except the URI set (OI2, AC-19)") {
+    const std::string doc = "mtllib chair.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.externalUris.size() == 1);
+    CHECK(result.externalUris[0] == "chair.mtl");
+    CHECK(result.model.nodes.empty());
+    CHECK(result.model.meshes.empty());
+    CHECK(result.model.materials.empty());
+    CHECK(result.model.images.empty());
+    CHECK(result.model.skins.empty());
+    CHECK(result.model.animations.empty());
+    CHECK_FALSE(result.model.summary.bounds.valid());  // Aabb::empty() -- nothing decoded at Structure
+}
+
+TEST_CASE(
+    "obj_import: the AC-20 discriminator -- Structure never enters the library, so it survives what "
+    "would fail Full (OI3, AC-20)") {
+    // A well-formed mtllib over a body whose ONLY face uses a ZERO vertex index (F4b): once Step 4
+    // lands, a Full parse of this body fails outright (LoadObj returns false on `f 0 1 2`). If Structure
+    // entered the library at all, it would fail identically -- it does not, so it survives.
+    //
+    // task 3.2.3, Step 3: only the Structure half is meaningful yet -- the Full half of this
+    // discriminating pair is added at Step 4, once the library is actually entered there.
+    const std::string doc = "mtllib chair.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\n";
+    const ImportResult structure =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(structure.status == ImportStatus::Ok);
+    REQUIRE(structure.externalUris.size() == 1);
+    CHECK(structure.externalUris[0] == "chair.mtl");
+}
+
+TEST_CASE("obj_import: no mtllib directive at all -- empty URI set, no warning (OI4, E1)") {
+    const std::string doc = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    CHECK(result.externalUris.empty());
+    CHECK(result.warnings.empty());
+    CHECK(result.warningTotal == 0);
+}
+
+TEST_CASE("obj_import: a Windows-authored backslash mtllib path is folded and accepted (OI5, AC-14, D15)") {
+    const std::string doc = "mtllib textures\\chair.mtl\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.externalUris.size() == 1);
+    CHECK(result.externalUris[0] == "textures/chair.mtl");
+    CHECK(result.warnings.empty());
+}
+
+TEST_CASE(
+    "obj_import: an unescaped space in an mtllib operand offers the whole operand AND each token (OI6, "
+    "AC-16 first half, D16)") {
+    const std::string doc = "mtllib my file.mtl\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.externalUris.size() == 3);
+    CHECK(result.externalUris[0] == "my file.mtl");  // the WHOLE operand LEADS
+    CHECK(result.externalUris[1] == "my");
+    CHECK(result.externalUris[2] == "file.mtl");
+}
+
+TEST_CASE(
+    "obj_import: a backslash-escaped space is NOT supported -- the intended reading is never a "
+    "candidate (OI7, AC-16 second half, D16)") {
+    // `mtllib my\ file.mtl` -- a backslash cannot be both a path separator (D15's fold, for Windows
+    // exporters) and an escape (a POSIX convention). This is a STATED, ACCEPTED non-support, not a bug.
+    const std::string doc = "mtllib my\\ file.mtl\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    for (const std::string& uri : result.externalUris) {
+        CHECK(uri != "my file.mtl");  // the INTENDED reading never appears
+    }
+}
+
+TEST_CASE("obj_import: a comment and leading whitespace, and CASE-SENSITIVE matching (OI8, E5, D16)") {
+    const std::string doc = "# mtllib fake.mtl\n  mtllib real.mtl\nMTLLIB nope.mtl\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.externalUris.size() == 1);
+    CHECK(result.externalUris[0] == "real.mtl");
+}
+
+TEST_CASE("obj_import: an mtllib line with an empty operand produces no candidate and one warning (OI9, E4)") {
+    const std::string doc = "mtllib   \nv 0 0 0\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    CHECK(result.externalUris.empty());
+    CHECK(result.warningTotal == 1);
+    REQUIRE(result.warnings.size() == 1);
+    CHECK(result.warnings[0].find("empty operand") != std::string::npos);
+}
+
+TEST_CASE("obj_import: several mtllib lines are ALL collected, in order (OI10, E3)") {
+    const std::string doc = "mtllib a.mtl\nmtllib b.mtl\nmtllib c.mtl\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.externalUris.size() == 3);
+    CHECK(result.externalUris[0] == "a.mtl");
+    CHECK(result.externalUris[1] == "b.mtl");
+    CHECK(result.externalUris[2] == "c.mtl");
+}
+
+TEST_CASE("obj_import: CRLF line endings are handled -- the '\\r' never leaks into a candidate (OI11, E7)") {
+    const std::string doc = "mtllib chair.mtl\r\nv 0 0 0\r\nv 1 0 0\r\nv 0 1 0\r\nf 1 2 3\r\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.externalUris.size() == 1);
+    CHECK(result.externalUris[0] == "chair.mtl");
+}
+
+TEST_CASE("obj_import: no trailing newline -- the last line is still scanned (OI12, E8)") {
+    const std::string doc = "mtllib chair.mtl";  // deliberately NO trailing '\n'
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.externalUris.size() == 1);
+    CHECK(result.externalUris[0] == "chair.mtl");
+}
+
+TEST_CASE(
+    "obj_import: hitting the external-reference cap reports Truncated with a message naming it "
+    "(OI13, INV-O10)") {
+    std::string doc;
+    for (std::size_t i = 0; i < MAX_EXTERNAL_URIS + 6; ++i) {
+        doc += "mtllib file" + std::to_string(i) + ".mtl\n";
+    }
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Truncated);
+    CHECK_FALSE(result.message.empty());
+    CHECK(result.externalUris.size() == MAX_EXTERNAL_URIS);
+}
+
+TEST_CASE("obj_import: every reachable refusal class carries classifyUri's own exact reason (OI14, AC-17/AC-18)") {
+    const std::string doc =
+        "mtllib http://example.com/x.mtl\n"
+        "mtllib /etc/x.mtl\n"
+        "mtllib ../../outside.mtl\n"
+        "mtllib ./\n"
+        "mtllib bad\x01name.mtl\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);  // every candidate REFUSED, none of them a hard failure
+    CHECK(result.externalUris.empty());
+    REQUIRE(result.warnings.size() == 5);
+    std::size_t sawScheme = 0;
+    std::size_t sawAbsolute = 0;
+    std::size_t sawEscape = 0;
+    std::size_t sawEmpty = 0;
+    std::size_t sawControlChar = 0;
+    for (const std::string& warning : result.warnings) {
+        sawScheme += warning.find("names a scheme") != std::string::npos ? 1 : 0;
+        sawAbsolute += warning.find("is an absolute path") != std::string::npos ? 1 : 0;
+        sawEscape += warning.find("resolves outside the project's assets folder") != std::string::npos ? 1 : 0;
+        sawEmpty += warning.find("resolves to nothing") != std::string::npos ? 1 : 0;
+        sawControlChar += warning.find("contains a control character") != std::string::npos ? 1 : 0;
+    }
+    CHECK(sawScheme == 1);
+    CHECK(sawAbsolute == 1);
+    CHECK(sawEscape == 1);
+    CHECK(sawEmpty == 1);
+    CHECK(sawControlChar == 1);
+}
+
+TEST_CASE(
+    "obj_import: '..' is accepted from a subdirectory and refused at the assets root (OI15, AC-15, "
+    "the .mtl half)") {
+    const std::string doc = "mtllib ../shared/common.mtl\n";
+    const ImportResult fromModels =
+        importModel("chair.obj", "models", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(fromModels.status == ImportStatus::Ok);
+    REQUIRE(fromModels.externalUris.size() == 1);
+    CHECK(fromModels.externalUris[0] == "shared/common.mtl");
+
+    const ImportResult fromRoot =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(fromRoot.status == ImportStatus::Ok);
+    CHECK(fromRoot.externalUris.empty());
+    REQUIRE(fromRoot.warnings.size() == 1);
+    CHECK(fromRoot.warnings[0].find("resolves outside the project's assets folder") != std::string::npos);
+}
+
+TEST_CASE("obj_import: an operand that normalises to nothing is RefusedEmpty (OI16, E10)") {
+    const std::string doc = "mtllib ./\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    CHECK(result.externalUris.empty());
+    REQUIRE(result.warnings.size() == 1);
+    CHECK(result.warnings[0].find("resolves to nothing") != std::string::npos);
+}
+
+TEST_CASE(
+    "obj_import: two differently-spelled candidates resolving to the SAME path deduplicate to one entry "
+    "(OI17, E3)") {
+    const std::string doc = "mtllib textures\\wood.mtl\nmtllib textures/wood.mtl\n";
+    const ImportResult result =
+        importModel("chair.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.externalUris.size() == 1);
+    CHECK(result.externalUris[0] == "textures/wood.mtl");
 }

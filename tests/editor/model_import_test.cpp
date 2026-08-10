@@ -2271,7 +2271,12 @@ TEST_CASE(
     // if-chain (importModel) in sync: a future importer added to one but not the other is a RED case
     // here, not a silent refusal. A one-byte body is enough -- "not Unsupported" is all this asserts;
     // each backend's own tier-0 suite proves its content-level behaviour.
-    constexpr std::array<std::string_view, 3> ACCEPTED_EXTENSIONS = {".gltf", ".glb", ".fbx"};
+    //
+    // task 3.2.3 (Step 3): grows to FOUR here, gaining ".obj" -- NOT ".mtl" yet. importMtlOnly is a
+    // DELIBERATE stub through Step 6 (§D-5) that returns Unsupported, which this loop cannot
+    // distinguish from "the dispatch itself refuses it" -- the identical status, by design, until the
+    // .mtl arm is real. ".mtl" joins this array at Step 7, growing it to five.
+    constexpr std::array<std::string_view, 4> ACCEPTED_EXTENSIONS = {".gltf", ".glb", ".fbx", ".obj"};
     const std::string oneByte = "x";
     for (const std::string_view ext : ACCEPTED_EXTENSIONS) {
         const std::string name = "model" + std::string(ext);
@@ -2281,6 +2286,45 @@ TEST_CASE(
         INFO("name: ", name);
         CHECK(result.status != ImportStatus::Unsupported);
     }
+}
+
+TEST_CASE(
+    "model_import: the suffix table, the identity table and the dispatch chain agree for every claimed "
+    "and unclaimed name (MI105b, task 3.2.3, §A-8)") {
+    // task 3.2.3: ".mtl" is DELIBERATELY absent from this table for the identical reason MI105 stops at
+    // four -- importMtlOnly is a stub returning Unsupported through Step 6, so the dispatch half of this
+    // check would read FALSE for a name the suffix/identity tables already read TRUE for. ".mtl" joins
+    // at Step 7.
+    constexpr std::array<std::string_view, 10> NAMES = {
+        "a.gltf", "a.glb", "a.fbx", "a.obj", "a.blend", "a.dae", "a.png", "README", "", ".obj",
+    };
+    const std::string oneByte = "x";
+    for (const std::string_view name : NAMES) {
+        const bool importable = isImportableModelName(name);
+        INFO("name: '", name, "'");
+        CHECK(importable == !modelImporterIdentity(name).name.empty());
+        const ImportResult result =
+            importModel(name, "", asBytes(oneByte), ImportSettings{}, ImportDepth::Structure, {});
+        CHECK(importable == (result.status != ImportStatus::Unsupported));
+    }
+}
+
+TEST_CASE(
+    "model_import: the byte-identical body routes to three DIFFERENT backends by extension alone "
+    "(MI105c, task 3.2.3, §A-8 -- the routing discriminator)") {
+    // A seed that swaps the dispatch's arm order (routing .obj into importGltf, as it transiently did
+    // between Steps 2 and 3 -- see obj_import_test.cpp's OI1 history) reddens THIS case and only this
+    // one: MI105's "not Unsupported" loop would stay green either way, since fastgltf and ufbx both
+    // fail on this body with a status other than Unsupported too.
+    const std::string body = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    // task 3.2.3, Step 3: WEAKENED for now -- "exactly one mesh" needs geometry conversion, which lands
+    // at Step 5. Strengthened there.
+    const ImportResult obj = importModel("t.obj", "", asBytes(body), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(obj.status == ImportStatus::Ok);
+    const ImportResult gltf = importModel("t.gltf", "", asBytes(body), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(gltf.status != ImportStatus::Ok);
+    const ImportResult fbx = importModel("t.fbx", "", asBytes(body), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(fbx.status != ImportStatus::Ok);
 }
 
 TEST_CASE("model_import: modelImporterIdentity(\"a.fbx\") is the FBX pair, not a shared constant (MI106)") {

@@ -6,6 +6,7 @@
 
 #include "fbx_import.hpp"
 #include "gltf_import.hpp"
+#include "obj_import.hpp"
 
 #include <algorithm>
 #include <array>
@@ -325,10 +326,20 @@ UriClassification classifyUri(std::string_view uri, std::string_view assetRelati
 
 ImportResult importModel(std::string_view fileName, std::string_view assetRelativeDir, std::span<const std::byte> bytes,
                          const ImportSettings& settings, ImportDepth depth, std::span<const ExternalBuffer> external) {
-    // The FBX arm FIRST, so the glTF arm below stays the "everything else importable" case and the
-    // two never both claim a name. MI105's dispatch-completeness case is what keeps them in sync.
+    // The FBX and OBJ arms FIRST, so the glTF arm below stays the "everything else importable" case and
+    // no two arms ever claim a name. MI105/MI105b/MI105c keep the suffix table, the identity table and
+    // this chain in sync -- a fourth importer added to one but not the others is a RED case, not a
+    // silent misroute.
+    //
+    // STILL AN IF-CHAIN AT THREE ARMS, DELIBERATELY (task 3.2.3, §A-8): a dispatch table needs a
+    // UNIFORM backend signature, and importObj must additionally take `fileName` because it has two
+    // arms. Unifying would mean editing gltf_import.hpp, whose byte-identity to `main` this task pays
+    // to keep. The table that matters already exists on the test side, in MI105's own array.
     if (endsWithFolded(fileName, ".fbx")) {
         return importFbx(assetRelativeDir, bytes, settings, depth, external);
+    }
+    if (endsWithFolded(fileName, ".obj") || endsWithFolded(fileName, ".mtl")) {
+        return importObj(fileName, assetRelativeDir, bytes, settings, depth, external);
     }
     if (isImportableModelName(fileName)) {  // .gltf / .glb
         return importGltf(assetRelativeDir, bytes, settings, depth, external);
