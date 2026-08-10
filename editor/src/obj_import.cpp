@@ -33,6 +33,7 @@ bounds-checked triangulation first."
 #include <aero/editor/project_files.hpp>  // parentOf -- D16's textureBaseDir derivation, reused verbatim
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -784,6 +785,18 @@ struct SurvivingFace {
             for (unsigned int k = 0; k < 3; ++k) {
                 const tinyobj::index_t& idx = shape.mesh.indices[cursor + k];
                 if (idx.vertex_index < 0 || idx.vertex_index >= vertexCount) {
+                    faceValid = false;
+                    break;
+                }
+                // code-review round, gap 8: a non-finite position (`v 1e400 0 0` parses to +inf; LoadObj
+                // still returns true, warn stays empty -- probe-confirmed directly) is malformed input of
+                // the SAME CLASS as an out-of-range index -- dropped WHOLE, reusing this exact path and
+                // its warning cap, before any component reaches outPrim.positions or a bounds fold. This
+                // keeps bounds finite (valid() stays meaningful) and never invents a substitute value.
+                // Checked here, at the point the index is read, not later where the position is copied.
+                const auto vi = static_cast<std::size_t>(idx.vertex_index);
+                if (!std::isfinite(attrib.vertices[vi * 3 + 0]) || !std::isfinite(attrib.vertices[vi * 3 + 1]) ||
+                    !std::isfinite(attrib.vertices[vi * 3 + 2])) {
                     faceValid = false;
                     break;
                 }

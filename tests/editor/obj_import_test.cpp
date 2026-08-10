@@ -19,6 +19,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -1440,4 +1441,50 @@ TEST_CASE(
         return count;
     }();
     CHECK(occurrences == 1);
+}
+
+// ---- code-review round, gap 8: a non-finite position drops its WHOLE face -----------------------------
+
+TEST_CASE(
+    "obj_import: a non-finite position drops its WHOLE face, matching INV-O4's other index checks; a "
+    "sibling triangle survives and bounds stay finite (OI88)") {
+    // Probe-confirmed directly against tinyobjloader v2.0.0rc13: "v 1e400 0 0" parses to +inf, LoadObj
+    // returns true, warn stays empty. Before the fix, this +inf reached outPrim.positions and the bounds
+    // fold unfiltered, producing an infinite Aabb whose valid() is nonetheless true and no warning at all.
+    const std::string doc = "v 1e400 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nf 1 2 3\nf 2 3 4\n";
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    const ImportedPrimitive& prim = result.model.meshes[0].primitives[0];
+    CHECK(prim.indices.size() == 3);  // ONLY the sibling triangle (vertices 2,3,4) survived
+    for (const Vec3& p : prim.positions) {
+        CHECK(std::isfinite(p.x));
+        CHECK(std::isfinite(p.y));
+        CHECK(std::isfinite(p.z));
+    }
+    REQUIRE(result.model.summary.bounds.valid());
+    CHECK(std::isfinite(result.model.summary.bounds.min.x));
+    CHECK(std::isfinite(result.model.summary.bounds.max.x));
+    CHECK(result.warningTotal == 1);
+    REQUIRE(result.warnings.size() == 1);
+    CHECK(result.warnings[0].find("out of range") != std::string::npos);
+}
+
+TEST_CASE(
+    "obj_import: every OTHER face in a larger body survives a single non-finite vertex elsewhere in the "
+    "file (OI89)") {
+    const std::string doc =
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\n"       // triangle A -- fine
+        "v 1e400 1e400 1e400\n"             // the poisoned vertex (index 4)
+        "v 2 2 2\nv 3 2 2\nv 2 3 2\n"        // triangle B -- fine
+        "f 1 2 3\n"                          // A: survives
+        "f 4 5 6\n"                          // uses the poisoned vertex: dropped
+        "f 5 6 7\n";                         // B: survives
+    const ImportResult result = importModel("t.obj", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    CHECK(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].indices.size() == 6);  // A and B, 3 indices each
+    CHECK(result.warningTotal == 1);
 }
