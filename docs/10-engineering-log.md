@@ -5200,3 +5200,71 @@ changed, 4109 insertions(+), 39 deletions(-)**, zero touching `engine/`.
 **The mechanical gate, both sabotage rounds, the code review and all documentation are now done; the PR,
 CI run and macOS validation pass are NOT** — reserved for the merge step, unchanged from the pre-review
 position.
+
+##### Task 3.2.3 — CI-caught Windows link-time defect (PR #72)
+
+**CI caught a defect no local run could ever have seen a third time in this project's history — Windows
+(MSVC) only, and a link-time one, not a runtime one.** PR #72 (`feat/3.2.3-obj-import-tinyobjloader`,
+HEAD `04954f2`) built clean and passed every test on macOS, the lint job and the vcpkg-baseline guard;
+the Windows lane's "Configure & build — Debug" step failed at the LINK stage with zero compiler errors
+and six `LNK2038`s, all naming `tinyobjloader.lib(tiny_obj_loader.cc.obj)` against three different
+consuming binaries (`aero_editor.exe`, `aero_editor_shell_test.exe`, `aero_editor_imgui_test.exe`), each
+pair citing `annotate_string`/`annotate_vector` mismatched 0 vs 1. The mechanism: vcpkg builds
+`tinyobjloader.lib` without `/fsanitize=address`, so MSVC's STL stamps its one translation unit's object
+file with the container-annotation state OFF; `cmake/sanitizers.cmake` turns ASan on at directory scope
+for every target this project builds itself, and MSVC's STL stamps every one of THOSE objects with the
+annotation state ON; the linker's `/FAILIFMISMATCH` record treats that disagreement, anywhere in the
+same binary, as a hard error rather than a warning. `editor/third_party/ufbx/aero_ufbx.lib` links clean
+on the identical command line because `ufbx.c` is compiled in-tree with this project's own flags;
+`fastgltf.lib` links clean too — it evidently never emits these records at all.
+
+**This is the SAME mechanism `editor/src/text_input.hpp` already documents for vcpkg's prebuilt
+`imguid.lib`, one library and one task earlier** — task 2.2.1 hit it first, for `imgui_stdlib.cpp.obj`,
+and worked around it by reimplementing the ~20-line resize-callback trick locally so the prebuilt object
+is never referenced at all. That fix does not generalise here: tinyobjloader's own parser, not a thin
+wrapper this project could feasibly hand-roll, is the thing linking, so the only project-wide fix is
+disabling the annotation project-wide to match every vcpkg prebuilt — `cmake/sanitizers.cmake`'s own
+`if(MSVC)` branch, `add_compile_definitions(_DISABLE_STRING_ANNOTATION=1 _DISABLE_VECTOR_ANNOTATION=1)`
+(commit `c21daa8`), placed at directory scope because the file is included before any
+`add_subdirectory()` and every failing binary mixes editor, engine and test translation units — nothing
+narrower than "every target" can make them all agree.
+
+**The cost, stated precisely and not overstated (confirmed against Microsoft's own container-overflow
+documentation, not assumed or remembered):** the annotation these two macros disable catches an overread
+strictly BETWEEN `size()` and `capacity()` — inside a container's own allocated-but-unused region, which
+ordinary ASan redzones cannot flag because that memory genuinely belongs to the heap allocation.
+Disabling it loses only that one class of bug, on the Windows Debug lane alone. Every out-of-allocation
+heap overflow is unaffected on all three lanes — this task's own INV-O4 protection in particular, where
+a bad Wavefront index reads far past the END of the allocation, not into its reserved-but-unused tail,
+and stays a plain `AddressSanitizer: heap-buffer-overflow` regardless.
+
+**Considered and rejected: compiling tinyobjloader in-tree**, the way
+`editor/third_party/ufbx/CMakeLists.txt` compiles `ufbx.c`, which would restore full instrumentation for
+the parser too. Rejected because this project vendors only libraries with NO vcpkg port available — that
+is ufbx's own stated reason for being vendored, and tinyobjloader has a port. Recorded as a future
+option, not a rejected idea: if a Wavefront parser bug ever specifically needs container-level
+instrumentation, in-tree compilation is the move.
+
+**The third instance in this project of a platform-specific defect invisible to every local (Apple
+silicon macOS) run, caught only by CI's own platform diversity** — after 0.5.2's Linux-only lavapipe
+LSan worker-pool leak and 3.2.2's x86_64-only UB in ufbx's own DEFLATE decoder. All three share the same
+shape: something true of the maintainer's own machine (arm64, or simply "not Windows") quietly stood in
+for something true of every machine, and only a CI matrix built from genuinely different platforms
+caught the gap.
+
+**Verified locally after the fix, on `cmake/sanitizers.cmake` alone (`c21daa8`) — CI has not yet re-run
+against this commit, which is the developer's own next step, not this pass's:** both full presets
+`AERO_REQUIRE_GPU=1` 95/95 (`macos-debug`, `macos-release`); both reduced configurations rebuilt fresh
+(`build/tools-off-3.2.3`, `build/reflect-off-3.2.3`) 6/6 and 19/19 — run sequentially, never concurrently,
+since running the two `aero_editor_shell_test` binaries at once on one machine was confirmed to race on
+shared filesystem state and produce spurious failures unrelated to this fix; `ctest -N` counts
+unchanged. Six architecture guards pass by exit code (`check-project-no-delete.sh`'s own Check B count
+stays 54, unaffected — no `editor/src/*.cpp` changed); clang-format/clang-tidy clean by exit code on the
+branch's own `.cpp`/`.hpp` files, an unchanged set. The macOS-neutrality this fix's own comment asserts,
+confirmed rather than assumed: `if(MSVC)` gates every added line, so a macOS configure takes none of
+them. `git diff main...HEAD -- cmake/` is now non-empty for the first time in this branch's history —
+the first path this task has touched outside `editor/`, `tests/` and the docs — while every other diff
+gate (`engine/`, `editor/src/gltf_import.*`, `editor/src/asset_database.cpp`, `.github/`) stays empty. No
+documentation on this branch had claimed `cmake/` itself would stay untouched — the existing diff-gate
+paragraphs above name `engine/`, the two glTF files, `asset_database.cpp` and `.github/workflows/ci.yml`
+specifically, and none of them, so none needed correcting.

@@ -878,6 +878,20 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   must never be defined either: vcpkg compiles the library, and a second copy risks an ODR conflict.
   **Confirmed by sabotage that this guard has NO automated cover**: removing it reddens nothing in 297
   targeted cases -- AC-13's one-time manual check is deliberately its only cover, outside CI.
+- **A vcpkg-prebuilt static library linked into an MSVC ASan lane is a Windows-only `LNK2038` waiting to
+  happen, and `tinyobjloader.lib` was CI-caught hitting it -- the second library in this tree to do so,
+  after `imguid.lib`/`imgui_stdlib.cpp.obj` (task 2.2.1, see the ImGui section's own entry above).** MSVC's
+  STL stamps every object with an `annotate_string`/`annotate_vector` record matching its own ASan state,
+  and the linker's `/FAILIFMISMATCH` makes a 0-vs-1 disagreement a hard link error, not a warning; vcpkg
+  never builds a port with `/fsanitize=address`, so ANY of its prebuilt static libraries mismatches the
+  instant it lands beside this project's own ASan-instrumented objects on the Windows Debug lane --
+  `aero_ufbx`/`fastgltf` never hit this because the former compiles in-tree and the latter evidently emits
+  no such records. Fixed project-wide in `cmake/sanitizers.cmake`'s `if(MSVC)` branch
+  (`_DISABLE_STRING_ANNOTATION=1`/`_DISABLE_VECTOR_ANNOTATION=1`), trading away only the `[size(),
+  capacity())` slice of container-overflow detection -- every out-of-allocation heap overflow, including
+  this task's own INV-O4 checks, is unaffected on all three lanes. The next vcpkg static library added to
+  an ASan-lane target inherits this fix automatically; a library with NO vcpkg port at all (this tree's
+  actual bar for vendoring, per ufbx) can instead be compiled in-tree and keep full instrumentation.
 - **EVERY INDEX IS RANGE-CHECKED BY US BEFORE ANY ARRAY ACCESS, and the library's own checks do not make
   that redundant (INV-O4).** `fixIndex` (`tiny_obj_loader.h:819`) maps a positive Wavefront index to
   `idx - 1` with NO upper bound; an out-of-range index produces only a WARNING
