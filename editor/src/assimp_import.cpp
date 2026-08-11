@@ -17,15 +17,18 @@
 #include <assimp/Importer.hpp>
 #include <assimp/commonMetaData.h>  // AI_METADATA_SOURCE_FORMAT{,_VERSION} -- the A-5 assertion's key
 #include <assimp/config.h>
+#include <assimp/material.h>
 #include <assimp/matrix4x4.h>
 #include <assimp/postprocess.h>
 #include <assimp/quaternion.h>
 #include <assimp/scene.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -597,6 +600,231 @@ void convertNodes(const aiScene& scene, const ImportSettings& settings, ImportRe
     result.model.summary.nodeCount = result.model.nodes.size();
 }
 
+// aiTextureMapMode_Decal has no glTF equivalent -> ClampToEdge plus ONE warning, so the user is told
+// rather than silently given a different wrap.
+//
+// `default:` IS PRESENT HERE and that is a deliberate exception to this tree's no-default rule:
+// aiTextureMapMode is a THIRD-PARTY enum carrying _aiTextureMapMode_Force32Bit as a member, so a
+// -Wswitch-complete switch would have to name that sentinel, which is worse than a default.
+[[nodiscard]] TextureWrap toTextureWrap(aiTextureMapMode mode, ImportResult& result) {
+    switch (mode) {
+        case aiTextureMapMode_Wrap:
+            return TextureWrap::Repeat;
+        case aiTextureMapMode_Clamp:
+            return TextureWrap::ClampToEdge;
+        case aiTextureMapMode_Mirror:
+            return TextureWrap::MirroredRepeat;
+        case aiTextureMapMode_Decal:
+            addWarning(result,
+                       "a texture declares the 'decal' wrap mode, which has no equivalent here; "
+                       "clamped to edge instead");
+            return TextureWrap::ClampToEdge;
+        default:
+            break;
+    }
+    return TextureWrap::Repeat;
+}
+
+// AI_MATKEY_UVTRANSFORM has NO field in ImportedTextureRef. Asked once per MATERIAL, over the four slots
+// this backend maps, so a declared transform costs ONE aggregate warning rather than one per slot.
+[[nodiscard]] bool hasNonIdentityUvTransform(const aiMaterial& src) {
+    for (const aiTextureType type :
+         {aiTextureType_DIFFUSE, aiTextureType_NORMALS, aiTextureType_EMISSIVE, aiTextureType_OPACITY}) {
+        aiUVTransform transform;
+        if (src.Get(AI_MATKEY_UVTRANSFORM(type, 0), transform) != AI_SUCCESS) {
+            continue;
+        }
+        if (transform.mTranslation.x != 0.0F || transform.mTranslation.y != 0.0F || transform.mScaling.x != 1.0F ||
+            transform.mScaling.y != 1.0F || transform.mRotation != 0.0F) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// task 3.2.5 (A-19). ONE texture slot. GetTexture returns a FILESYSTEM PATH, not a URI -- Collada's
+// <init_from> is percent-decoded by the loader and PLY's TextureFile operand is raw text -- so
+// foldBackslashesToSlashes runs BEFORE classifyUri, never after: `..\..\..\etc\passwd` must already be
+// `../../../etc/passwd` when the escape check runs, or the refusal never fires.
+//
+// Images are FOUND-OR-APPENDED by their RESOLVED relativePath, in first-seen order, so the same texture
+// named by two materials becomes ONE ImportedImage. A refused path still gets an ImportedImage --
+// carrying `uri` and the EXACT refusal text -- which is what makes a broken texture reference VISIBLE in
+// the panel instead of mysterious.
+[[nodiscard]] std::optional<ImportedTextureRef> convertTextureSlot(const aiMaterial& src, aiTextureType type,
+                                                                   std::string_view assetRelativeDir,
+                                                                   bool& externalUriCapReported, ImportResult& result) {
+    if (src.GetTextureCount(type) == 0) {
+        return std::nullopt;
+    }
+    aiString path;
+    unsigned int uvIndex = 0;
+    std::array<aiTextureMapMode, 2> mapMode{aiTextureMapMode_Wrap, aiTextureMapMode_Wrap};
+    if (src.GetTexture(type, 0, &path, nullptr, &uvIndex, nullptr, nullptr, mapMode.data()) != AI_SUCCESS) {
+        return std::nullopt;
+    }
+    const std::string_view raw(path.C_Str());
+    if (raw.empty()) {
+        return std::nullopt;
+    }
+
+    ImportedTextureRef ref;
+    ref.uvSet = uvIndex;
+    ref.wrapU = toTextureWrap(mapMode[0], result);
+    ref.wrapV = toTextureWrap(mapMode[1], result);
+    // Filters have no concept in any of the three formats and keep ImportedTextureRef's own defaults.
+
+    // A leading '*' is Assimp's EMBEDDED-texture convention -- the digits after it index
+    // aiScene::mTextures. Recorded as embedded, NEVER a dependency, NEVER read (3.2.1's D14).
+    if (raw.front() == '*') {
+        for (std::size_t i = 0; i < result.model.images.size(); ++i) {
+            if (result.model.images[i].embedded && result.model.images[i].uri == raw) {
+                ref.imageIndex = static_cast<std::uint32_t>(i);
+                return ref;
+            }
+        }
+        ImportedImage image;
+        image.uri = std::string(raw);
+        image.embedded = true;
+        ref.imageIndex = static_cast<std::uint32_t>(result.model.images.size());
+        result.model.images.push_back(std::move(image));
+        return ref;
+    }
+
+    const std::string folded = foldBackslashesToSlashes(raw);  // A-19: fold BEFORE classify
+    const UriClassification classified = classifyUri(folded, assetRelativeDir);
+    if (classified.kind != UriClass::RelativePath) {
+        ImportedImage image;
+        image.uri = std::string(raw);
+        image.refusal = classified.reason;  // the EXACT reason, shown by the panel
+        result.model.images.push_back(std::move(image));
+        addWarning(result, std::format("texture '{}': {}", raw, classified.reason));
+        return std::nullopt;  // INV-A8: a refused path never reaches externalUris and never binds
+    }
+
+    for (std::size_t i = 0; i < result.model.images.size(); ++i) {
+        if (result.model.images[i].relativePath == classified.relativePath) {
+            ref.imageIndex = static_cast<std::uint32_t>(i);
+            return ref;
+        }
+    }
+    ImportedImage image;
+    image.uri = std::string(raw);
+    image.relativePath = classified.relativePath;
+    ref.imageIndex = static_cast<std::uint32_t>(result.model.images.size());
+    result.model.images.push_back(std::move(image));
+
+    bool alreadyDependency = false;
+    for (const std::string& existing : result.externalUris) {
+        if (existing == classified.relativePath) {
+            alreadyDependency = true;
+            break;
+        }
+    }
+    if (!alreadyDependency) {
+        if (result.externalUris.size() < MAX_EXTERNAL_URIS) {
+            result.externalUris.push_back(classified.relativePath);
+        } else if (!externalUriCapReported) {
+            externalUriCapReported = true;
+            escalate(result, ImportStatus::Truncated,
+                     "the external reference count exceeds this importer's per-model limit");
+        }
+    }
+    return ref;
+}
+
+// task 3.2.5 (A-11/A-19). Returns the raw-index -> converted-index map. 3.2.3's BLOCKING lesson: the two
+// spaces coincide for every well-formed file and diverge the moment MAX_MATERIALS_PER_MODEL trims the
+// tail. Sized to mNumMaterials, defaulted to INVALID_SUBASSET, so an unmapped raw index reads as "no
+// material" rather than as a stale, now-out-of-range one.
+[[nodiscard]] std::vector<std::uint32_t> convertMaterials(const aiScene& scene, std::string_view assetRelativeDir,
+                                                          ImportResult& result) {
+    std::vector<std::uint32_t> rawToConverted(scene.mNumMaterials, INVALID_SUBASSET);
+    bool materialCapReported = false;
+    bool externalUriCapReported = false;  // ONE flag for the whole call (3.2.3's gap 7)
+
+    for (unsigned int mi = 0; mi < scene.mNumMaterials; ++mi) {
+        if (result.model.materials.size() >= MAX_MATERIALS_PER_MODEL) {
+            if (!materialCapReported) {
+                materialCapReported = true;
+                escalate(result, ImportStatus::Truncated, "the material count exceeds this importer's per-model limit");
+            }
+            break;
+        }
+        const aiMaterial& src = *scene.mMaterials[mi];
+        ImportedMaterial out;
+        out.localId = mi;  // SOURCE DECLARATION ORDER -- which is why aiProcess_RemoveRedundantMaterials
+                           // is forbidden: it renumbers mMaterialIndex behind our back
+
+        aiString name;
+        if (src.Get(AI_MATKEY_NAME, name) == AI_SUCCESS) {
+            out.name = name.C_Str();  // verbatim; "" stays ""
+        }
+
+        // The four texture slots we map, in a FIXED order so `images` is deterministic. `occlusion` is
+        // ALWAYS disengaged: aiTextureType_LIGHTMAP is where the Collada loader puts <ambient>, and an
+        // ambient COLOUR map is not an occlusion map (3.2.3 refused map_Ka for the same reason).
+        // `metallicRoughness` is ALWAYS disengaged: none of the three formats packs one.
+        out.baseColor =
+            convertTextureSlot(src, aiTextureType_DIFFUSE, assetRelativeDir, externalUriCapReported, result);
+        out.normal = convertTextureSlot(src, aiTextureType_NORMALS, assetRelativeDir, externalUriCapReported, result);
+        out.emissive =
+            convertTextureSlot(src, aiTextureType_EMISSIVE, assetRelativeDir, externalUriCapReported, result);
+
+        aiColor3D diffuse(1.0F, 1.0F, 1.0F);
+        const bool haveDiffuse = src.Get(AI_MATKEY_COLOR_DIFFUSE, diffuse) == AI_SUCCESS;
+        float opacity = 1.0F;
+        const bool haveOpacity = src.Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS;
+        if (haveDiffuse) {
+            // THE ZERO-FACTOR RULE (3.2.3's D14, one format over): a black factor ANNIHILATES the texture
+            // the same material supplies, and no format here has a "was it set" flag. Where a zero would
+            // annihilate a bound baseColor texture, read it as the neutral 1. WITHOUT a texture it stays
+            // black, which is a legitimately black material.
+            const bool black = diffuse.r == 0.0F && diffuse.g == 0.0F && diffuse.b == 0.0F;
+            if (black && out.baseColor.has_value()) {
+                out.baseColorFactor = Vec4{1.0F, 1.0F, 1.0F, haveOpacity ? opacity : 1.0F};
+            } else {
+                out.baseColorFactor = Vec4{diffuse.r, diffuse.g, diffuse.b, haveOpacity ? opacity : 1.0F};
+            }
+        } else {
+            out.baseColorFactor = Vec4{1.0F, 1.0F, 1.0F, haveOpacity ? opacity : 1.0F};
+        }
+
+        // A-11: STATED DEFAULTS, never claims about the file. Written EXPLICITLY because
+        // ImportedMaterial's own field default for metallicFactor is 1.0F -- leaving it would ship every
+        // DAE/PLY/STL material as a full metal. NO SHININESS -> roughness curve, ever.
+        out.metallicFactor = 0.0F;
+        out.roughnessFactor = 1.0F;
+
+        aiColor3D emissive(0.0F, 0.0F, 0.0F);
+        if (src.Get(AI_MATKEY_COLOR_EMISSIVE, emissive) == AI_SUCCESS) {
+            out.emissiveFactor = Vec3{emissive.r, emissive.g, emissive.b};
+        }
+
+        // Blend when opacity < 1 OR an opacity texture exists; else Opaque. NEVER Mask -- none of the
+        // three formats has a cutoff, so AlphaMode::Mask is UNREACHABLE from this backend.
+        const bool hasOpacityTexture = src.GetTextureCount(aiTextureType_OPACITY) > 0;
+        out.alphaMode = (haveOpacity && opacity < 1.0F) || hasOpacityTexture ? AlphaMode::Blend : AlphaMode::Opaque;
+
+        int twoSided = 0;
+        if (src.Get(AI_MATKEY_TWOSIDED, twoSided) == AI_SUCCESS) {
+            out.doubleSided = twoSided != 0;
+        }
+
+        if (hasNonIdentityUvTransform(src)) {
+            addWarning(result, std::format("material '{}': a UV transform was declared and is not "
+                                           "representable; UVs are imported untransformed",
+                                           out.name));
+        }
+
+        rawToConverted[mi] = static_cast<std::uint32_t>(result.model.materials.size());
+        result.model.materials.push_back(std::move(out));
+    }
+    result.model.summary.materialCount = result.model.materials.size();
+    result.model.summary.imageCount = result.model.images.size();
+    return rawToConverted;
+}
+
 // 3.2.3's BLOCKING gap 1, avoided by construction rather than found by review: a RAW mMaterialIndex must
 // never survive into ImportedPrimitive. The two index spaces coincide for every well-formed file and
 // diverge the moment MAX_MATERIALS_PER_MODEL trims the tail -- or the moment importMaterials is false,
@@ -682,8 +910,12 @@ void seedPlyExternalUris(std::span<const std::byte> bytes, std::string_view asse
     // the node pass only needs the mesh count. .dae's order is the OTHER way round and that one IS a
     // dependency -- do not "harmonise" them.
     convertMeshes(*loaded.scene, settings, depth, result);
+    std::vector<std::uint32_t> materialMap;
+    if (settings.importMaterials) {
+        materialMap = convertMaterials(*loaded.scene, assetRelativeDir, result);
+    }
+    applyMaterialMap(materialMap, result.model);
     convertNodes(*loaded.scene, settings, result);
-    applyMaterialMap(std::vector<std::uint32_t>{}, result.model);
     // .ply/.stl declare no unit and no axis, so SourceSpace stays ALL-DEFAULT (declared == false) and
     // the panel draws no Source Space row for them. Inventing one is the option this task's scoping
     // rejected; the row means something precisely because it is absent when the format declares nothing.
@@ -723,8 +955,11 @@ void seedPlyExternalUris(std::span<const std::byte> bytes, std::string_view asse
     // Do not "harmonise" the two orders -- the other one is a convenience, this one is load-bearing.
     convertNodes(*loaded.scene, settings, result);
     convertMeshes(*loaded.scene, settings, depth, result);
-    applyMaterialMap(std::vector<std::uint32_t>{}, result.model);
-    (void)assetRelativeDir;  // step 6 wires it into convertMaterials; named here so the signature holds
+    std::vector<std::uint32_t> materialMap;
+    if (settings.importMaterials) {
+        materialMap = convertMaterials(*loaded.scene, assetRelativeDir, result);
+    }
+    applyMaterialMap(materialMap, result.model);
     return result;
 }
 

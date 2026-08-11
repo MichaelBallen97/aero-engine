@@ -1837,3 +1837,453 @@ TEST_CASE("AI47: a cross-document instance_geometry never opens the other file")
     }
     CHECK(before == after);
 }
+
+// ---- step 6: materials and image references ----------------------------------------------------------
+
+// The material fixture: three effects, deliberately different in the ways the cases care about.
+//   e1 -- a diffuse TEXTURE (wood.png, clamped in U), an emission colour, a transparency, double-sided
+//   e2 -- a BLACK diffuse colour and NO texture, which is a legitimately black material
+//   e3 -- nothing declared at all, so Assimp's own Effect default (0.6 grey) is what arrives
+//
+// MEASURED, and it is why AI50 is driven from a .ply rather than from here: COLLADA CANNOT EXPRESS a
+// black diffuse COLOUR together with a diffuse TEXTURE. <diffuse> holds either a <color> or a <texture>
+// and ColladaLoader writes AI_MATKEY_COLOR_DIFFUSE unconditionally from Effect::mDiffuse, whose default
+// is (0.6, 0.6, 0.6). So the zero-factor rule's paired arms have no Collada spelling at all.
+constexpr std::string_view DAE_MATERIALS =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_images>
+    <image id="i_diff"><init_from>wood.png</init_from></image>
+  </library_images>
+  <library_effects>
+    <effect id="e1"><profile_COMMON>
+      <newparam sid="s_diff"><surface type="2D"><init_from>i_diff</init_from></surface></newparam>
+      <newparam sid="sam_diff"><sampler2D><source>s_diff</source></sampler2D></newparam>
+      <technique sid="common"><lambert>
+        <emission><color>0.1 0.2 0.3 1</color></emission>
+        <diffuse><texture texture="sam_diff" texcoord="UV0">
+          <extra><technique profile="MAYA"><wrapU>0</wrapU></technique></extra>
+        </texture></diffuse>
+        <transparency><float>0.5</float></transparency>
+      </lambert>
+      <extra><technique profile="GOOGLEEARTH"><double_sided>1</double_sided></technique></extra>
+      </technique>
+    </profile_COMMON></effect>
+    <effect id="e2"><profile_COMMON>
+      <technique sid="common"><lambert>
+        <diffuse><color>0 0 0 1</color></diffuse>
+      </lambert></technique>
+    </profile_COMMON></effect>
+    <effect id="e3"><profile_COMMON>
+      <technique sid="common"><lambert/></technique>
+    </profile_COMMON></effect>
+  </library_effects>
+  <library_materials>
+    <material id="m1" name="MatOne"><instance_effect url="#e1"/></material>
+    <material id="m2" name="MatTwo"><instance_effect url="#e2"/></material>
+    <material id="m3" name="MatThree"><instance_effect url="#e3"/></material>
+  </library_materials>
+%GEOMETRY%
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="N" name="N"><instance_geometry url="#g1"><bind_material><technique_common>
+      <instance_material symbol="mat" target="#m1"/></technique_common></bind_material></instance_geometry></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
+// e2 names the SAME texture as e1, so a case can prove first-seen dedup by RESOLVED relativePath.
+constexpr std::string_view DAE_MATERIALS_TWO_TEXTURED =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_images>
+    <image id="i_a"><init_from>wood.png</init_from></image>
+    <image id="i_b"><init_from>wood.png</init_from></image>
+  </library_images>
+  <library_effects>
+    <effect id="e1"><profile_COMMON>
+      <newparam sid="sa"><surface type="2D"><init_from>i_a</init_from></surface></newparam>
+      <newparam sid="sama"><sampler2D><source>sa</source></sampler2D></newparam>
+      <technique sid="common"><lambert>
+        <diffuse><texture texture="sama" texcoord="UV0"/></diffuse>
+      </lambert></technique>
+    </profile_COMMON></effect>
+    <effect id="e2"><profile_COMMON>
+      <newparam sid="sb"><surface type="2D"><init_from>i_b</init_from></surface></newparam>
+      <newparam sid="samb"><sampler2D><source>sb</source></sampler2D></newparam>
+      <technique sid="common"><lambert>
+        <diffuse><texture texture="samb" texcoord="UV0"/></diffuse>
+      </lambert></technique>
+    </profile_COMMON></effect>
+  </library_effects>
+  <library_materials>
+    <material id="m1" name="A"><instance_effect url="#e1"/></material>
+    <material id="m2" name="B"><instance_effect url="#e2"/></material>
+  </library_materials>
+%GEOMETRY%
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="N" name="N"><instance_geometry url="#g1"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
+// AI48/AI49/AI50/AI51 -- A-11's mapping table, one CHECK per row, plus the two rules that are DEFAULTS
+// this importer supplies rather than claims about the file.
+TEST_CASE("AI48: a .dae material carries its name, colours, opacity, emissive and double-sidedness") {
+    const std::string text = dae(DAE_MATERIALS);
+    const ImportResult result = importModel("mat.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 3U);
+    CHECK(result.model.summary.materialCount == 3U);
+
+    const engine::editor::ImportedMaterial& one = result.model.materials[0];
+    CHECK(one.name == "MatOne");
+    CHECK(one.localId == 0U);
+    CHECK(result.model.materials[1].localId == 1U);
+    CHECK(result.model.materials[2].localId == 2U);
+    CHECK(approxEq(one.emissiveFactor, engine::Vec3{0.1F, 0.2F, 0.3F}));
+    CHECK(one.doubleSided);
+    // <transparency>0.5</transparency> with the default A_ONE <transparent> alpha of 1 gives
+    // AI_MATKEY_OPACITY == 0.5 (MEASURED against ColladaLoader.cpp's own arithmetic), which is what the
+    // alpha channel carries and what makes the material Blend rather than Opaque.
+    CHECK(approxEq(one.baseColorFactor.w, 0.5F));
+    CHECK(one.alphaMode == engine::editor::AlphaMode::Blend);
+    CHECK(result.model.materials[2].alphaMode == engine::editor::AlphaMode::Opaque);
+    // NEVER Mask: none of the three formats has an alpha cutoff, so that enumerator is unreachable here.
+    for (const engine::editor::ImportedMaterial& material : result.model.materials) {
+        CHECK(material.alphaMode != engine::editor::AlphaMode::Mask);
+    }
+}
+
+// AI49 (AC-37) -- THE STATED DEFAULTS. metallicFactor must be written EXPLICITLY because
+// ImportedMaterial's own field default is 1.0F; leaving it would ship every DAE/PLY/STL material as a
+// full metal. And there is no SHININESS -> roughness curve, on a material that declares shininess or one
+// that does not: this is the case that reddens if anyone ever adds one.
+TEST_CASE("AI49: metallic is 0 and roughness is 1 on every material, with no shininess curve") {
+    const std::string text = dae(DAE_MATERIALS);
+    const ImportResult result = importModel("mat.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE_FALSE(result.model.materials.empty());
+    for (const engine::editor::ImportedMaterial& material : result.model.materials) {
+        CHECK(approxEq(material.metallicFactor, 0.0F));
+        CHECK(approxEq(material.roughnessFactor, 1.0F));
+        CHECK_FALSE(material.metallicRoughness.has_value());
+        CHECK_FALSE(material.occlusion.has_value());  // LIGHTMAP is an ambient map, never occlusion
+    }
+
+    // The .stl default material takes the same defaults, and it declares SHININESS.
+    const ImportResult stl = importModel("t.stl", "", asBytes(TRIANGLE_STL), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(stl.status == ImportStatus::Ok);
+    REQUIRE(stl.model.materials.size() == 1U);
+    CHECK(approxEq(stl.model.materials[0].metallicFactor, 0.0F));
+    CHECK(approxEq(stl.model.materials[0].roughnessFactor, 1.0F));
+}
+
+// AI50 (AC-37) -- THE ZERO-FACTOR RULE, BOTH HALVES IN ONE CASE, because the pairing is what is
+// load-bearing: a black factor annihilates the texture the same material supplies, and no format here
+// has a "was it set" flag. WITH a bound base-colour texture a black factor reads as neutral white;
+// WITHOUT one it stays black, which is a legitimately black material.
+TEST_CASE("AI50: a black diffuse factor reads as white with a texture and stays black without one") {
+    // A .ply `element material` supplies COLOR_DIFFUSE independently of the `TextureFile` comment, which
+    // is what makes the pairing expressible at all -- Collada cannot say both (see DAE_MATERIALS above).
+    const std::string withTexture =
+        "ply\nformat ascii 1.0\ncomment TextureFile scan.png\nelement vertex 3\nproperty float x\n"
+        "property float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_index\n"
+        "element material 1\nproperty float diffuse_red\nproperty float diffuse_green\n"
+        "property float diffuse_blue\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n0 0 0\n";
+    const ImportResult textured =
+        importModel("black.ply", "", asBytes(withTexture), ImportSettings{}, ImportDepth::Full, {});
+    INFO("textured message: ", textured.message);
+    REQUIRE(textured.status == ImportStatus::Ok);
+    REQUIRE(textured.model.materials.size() == 1U);
+    REQUIRE(textured.model.materials[0].baseColor.has_value());
+    CHECK(approxEq(textured.model.materials[0].baseColorFactor.x, 1.0F));
+    CHECK(approxEq(textured.model.materials[0].baseColorFactor.y, 1.0F));
+    CHECK(approxEq(textured.model.materials[0].baseColorFactor.z, 1.0F));
+
+    std::string withoutTexture(withTexture);
+    const std::size_t comment = withoutTexture.find("comment TextureFile scan.png\n");
+    REQUIRE(comment != std::string::npos);
+    withoutTexture.erase(comment, std::string_view("comment TextureFile scan.png\n").size());
+    const ImportResult plain =
+        importModel("black.ply", "", asBytes(withoutTexture), ImportSettings{}, ImportDepth::Full, {});
+    INFO("plain message: ", plain.message);
+    REQUIRE(plain.status == ImportStatus::Ok);
+    REQUIRE(plain.model.materials.size() == 1U);
+    CHECK_FALSE(plain.model.materials[0].baseColor.has_value());
+    CHECK(approxEq(plain.model.materials[0].baseColorFactor.x, 0.0F));
+    CHECK(approxEq(plain.model.materials[0].baseColorFactor.y, 0.0F));
+    CHECK(approxEq(plain.model.materials[0].baseColorFactor.z, 0.0F));
+
+    // And the Collada side of the same rule: a black <color> with no texture stays black.
+    const std::string text = dae(DAE_MATERIALS);
+    const ImportResult collada = importModel("mat.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(collada.status == ImportStatus::Ok);
+    REQUIRE(collada.model.materials.size() == 3U);
+    CHECK_FALSE(collada.model.materials[1].baseColor.has_value());
+    CHECK(approxEq(collada.model.materials[1].baseColorFactor.x, 0.0F));
+    CHECK(approxEq(collada.model.materials[1].baseColorFactor.z, 0.0F));
+}
+
+// AI51 (AC-37) -- a non-identity UV transform has NO field in ImportedTextureRef, so it produces exactly
+// ONE aggregate warning per MATERIAL rather than silently wrong UVs -- and never one per slot.
+TEST_CASE("AI51: a non-identity UV transform produces exactly one warning per material") {
+    std::string text = dae(DAE_MATERIALS);
+    const std::size_t at = text.find("<technique profile=\"MAYA\"><wrapU>0</wrapU></technique>");
+    REQUIRE(at != std::string::npos);
+    text.replace(at, std::string_view("<technique profile=\"MAYA\"><wrapU>0</wrapU></technique>").size(),
+                 "<technique profile=\"MAYA\"><repeatU>2</repeatU><repeatV>3</repeatV></technique>");
+    const ImportResult result = importModel("uvx.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+
+    std::size_t uvWarnings = 0;
+    for (const std::string& warning : result.warnings) {
+        if (warning.find("UV transform") != std::string::npos) {
+            ++uvWarnings;
+        }
+    }
+    CHECK(uvWarnings == 1U);
+}
+
+// AI52 (AC-38) -- the three wrap modes Collada can express. aiTextureMapMode_Decal has NO Collada
+// spelling at all (ColladaLoader emits only Wrap/Clamp/Mirror, from mWrapU/mMirrorU), so its arm is
+// defence in depth and is pinned in the SOURCE TEXT rather than claimed to be exercised.
+TEST_CASE("AI52: sampler wrap modes map to Repeat, ClampToEdge and MirroredRepeat") {
+    const auto wrapOf = [](std::string_view mayaExtra) {
+        std::string text = dae(DAE_MATERIALS);
+        const std::size_t at = text.find("<technique profile=\"MAYA\"><wrapU>0</wrapU></technique>");
+        REQUIRE(at != std::string::npos);
+        text.replace(at, std::string_view("<technique profile=\"MAYA\"><wrapU>0</wrapU></technique>").size(),
+                     std::string(mayaExtra));
+        const ImportResult result = importModel("w.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+        REQUIRE(result.status == ImportStatus::Ok);
+        REQUIRE_FALSE(result.model.materials.empty());
+        REQUIRE(result.model.materials[0].baseColor.has_value());
+        return result.model.materials[0].baseColor->wrapU;
+    };
+    CHECK(wrapOf("") == engine::editor::TextureWrap::Repeat);  // Collada's own default is wrap
+    CHECK(wrapOf("<technique profile=\"MAYA\"><wrapU>0</wrapU></technique>") ==
+          engine::editor::TextureWrap::ClampToEdge);
+    CHECK(wrapOf("<technique profile=\"MAYA\"><wrapU>1</wrapU><mirrorU>1</mirrorU></technique>") ==
+          engine::editor::TextureWrap::MirroredRepeat);
+
+    const std::string code = strippedSource("assimp_import.cpp");
+    const std::size_t decal = code.find("case aiTextureMapMode_Decal:");
+    REQUIRE(decal != std::string::npos);
+    CHECK(code.find("TextureWrap::ClampToEdge", decal) != std::string::npos);
+    CHECK(code.find("addWarning", decal) < code.find("TextureWrap::ClampToEdge", decal));
+}
+
+// AI53/AI54 (AC-39/E15) -- each DISTINCT texture path becomes exactly one ImportedImage, deduplicated by
+// resolved relativePath, in first-seen order; two materials naming the same texture share it.
+TEST_CASE("AI53: two materials naming the same texture share one image and one dependency") {
+    const std::string text = dae(DAE_MATERIALS_TWO_TEXTURED);
+    const ImportResult result = importModel("dup.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.materials.size() == 2U);
+    REQUIRE(result.model.images.size() == 1U);
+    CHECK(result.model.summary.imageCount == 1U);
+    CHECK(result.model.images[0].relativePath == "wood.png");
+    CHECK(result.externalUris == std::vector<std::string>{"wood.png"});
+
+    REQUIRE(result.model.materials[0].baseColor.has_value());
+    REQUIRE(result.model.materials[1].baseColor.has_value());
+    CHECK(result.model.materials[0].baseColor->imageIndex == 0U);
+    CHECK(result.model.materials[1].baseColor->imageIndex == 0U);
+}
+
+// AI55 (AC-40) -- a '*'-prefixed path is Assimp's EMBEDDED-texture convention. Recorded as embedded,
+// NEVER a dependency, NEVER read. For these three formats aiScene::mTextures should always be empty
+// (Collada embeds only inside .zae, which the IO refusal forbids reaching), so this arm exists to be
+// CORRECT rather than because it is expected to fire.
+TEST_CASE("AI55: a '*'-prefixed texture path is recorded as embedded and is never a dependency") {
+    std::string text = dae(DAE_MATERIALS);
+    const std::size_t at = text.find("<init_from>wood.png</init_from>");
+    REQUIRE(at != std::string::npos);
+    text.replace(at, std::string_view("<init_from>wood.png</init_from>").size(), "<init_from>*0</init_from>");
+    const ImportResult result = importModel("emb.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == 1U);
+    CHECK(result.model.images[0].embedded);
+    CHECK(result.model.images[0].uri == "*0");
+    CHECK(result.model.images[0].relativePath.empty());
+    CHECK(result.externalUris.empty());
+}
+
+// AI56 (E16) -- a texture path resolving OUTSIDE the assets root is refused, the exact reason is carried
+// on the ImportedImage so the panel can show it, and nothing reaches externalUris.
+TEST_CASE("AI56: a texture path escaping the assets root is refused with its reason recorded") {
+    std::string text = dae(DAE_MATERIALS);
+    const std::size_t at = text.find("<init_from>wood.png</init_from>");
+    REQUIRE(at != std::string::npos);
+    text.replace(at, std::string_view("<init_from>wood.png</init_from>").size(),
+                 "<init_from>../../secret.png</init_from>");
+    const ImportResult result = importModel("esc.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == 1U);
+    CHECK_FALSE(result.model.images[0].refusal.empty());
+    CHECK(result.model.images[0].relativePath.empty());
+    CHECK(result.externalUris.empty());
+    CHECK_FALSE(result.model.materials[0].baseColor.has_value());  // a refused path never binds
+}
+
+// AI57 (E9) -- a percent-encoded <init_from> is decoded BY THE LOADER and must not be decoded again.
+// 3.2.1's A1, third application: decode twice and `100%2520.png` becomes `100 .png`.
+TEST_CASE("AI57: a percent-encoded texture path is decoded exactly once") {
+    std::string text = dae(DAE_MATERIALS);
+    const std::size_t at = text.find("<init_from>wood.png</init_from>");
+    REQUIRE(at != std::string::npos);
+    text.replace(at, std::string_view("<init_from>wood.png</init_from>").size(), "<init_from>wood%20a.png</init_from>");
+    const ImportResult result = importModel("pct.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.images.size() == 1U);
+    CHECK(result.model.images[0].relativePath == "wood a.png");
+    CHECK(result.externalUris == std::vector<std::string>{"wood a.png"});
+}
+
+// AI58 (AC-19) -- the .ply seeding step's ONLY direct cover: at Full depth the loader's own material
+// carries the SAME TextureFile operand the header scan found, and the find-or-append dedup must collapse
+// the two onto ONE entry rather than appending a second.
+TEST_CASE("AI58: a .ply's Full-depth URI set is the header scan's, with the loader's own copy deduped") {
+    const ImportResult full =
+        importModel("scan.ply", "", asBytes(TEXTURED_PLY), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", full.message);
+    REQUIRE(full.status == ImportStatus::Ok);
+    CHECK(full.externalUris == std::vector<std::string>{"scan.png"});
+    REQUIRE(full.model.images.size() == 1U);
+    CHECK(full.model.images[0].relativePath == "scan.png");
+
+    const ImportResult structure =
+        importModel("scan.ply", "", asBytes(TEXTURED_PLY), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(structure.externalUris == full.externalUris);
+}
+
+// AI59 (AC-48) -- importMaterials == false empties materials AND images, sets every materialIndex to
+// INVALID_SUBASSET, and changes nothing else. It is also the live proof that applyMaterialMap RUNS: with
+// it skipped, the raw mMaterialIndex (0) would survive here instead of the sentinel.
+TEST_CASE("AI59: importMaterials false empties materials and images and invalidates every material index") {
+    const std::string text = dae(DAE_MATERIALS);
+    ImportSettings off;
+    off.importMaterials = false;
+    const ImportResult with = importModel("mat.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult without = importModel("mat.dae", "", asBytes(text), off, ImportDepth::Full, {});
+    REQUIRE(with.status == ImportStatus::Ok);
+    REQUIRE(without.status == ImportStatus::Ok);
+
+    CHECK(without.model.materials.empty());
+    CHECK(without.model.images.empty());
+    CHECK(without.externalUris.empty());
+    CHECK(without.model.summary.materialCount == 0U);
+    CHECK(without.model.summary.imageCount == 0U);
+    for (const engine::editor::ImportedMesh& mesh : without.model.meshes) {
+        for (const ImportedPrimitive& prim : mesh.primitives) {
+            CHECK(prim.materialIndex == engine::editor::INVALID_SUBASSET);
+        }
+    }
+    // Nothing else moved: the geometry and the hierarchy are identical either way.
+    CHECK(modelsMatchIgnoringNames(with.model, without.model));
+    CHECK(with.model.nodes.size() == without.model.nodes.size());
+}
+
+// AI61 (AC-53) -- MAX_EXTERNAL_URIS overflow reports Truncated ONCE, not once per overflowing texture
+// (3.2.3's gap 7: one flag for the whole call, never one per slot).
+TEST_CASE("AI61: overflowing MAX_EXTERNAL_URIS truncates once, not once per texture") {
+    const std::size_t count = engine::editor::MAX_EXTERNAL_URIS + 8U;
+    std::string images;
+    std::string effects;
+    std::string materials;
+    for (std::size_t i = 0; i < count; ++i) {
+        images += std::format(R"(<image id="i{}"><init_from>t{}.png</init_from></image>)", i, i);
+        effects += std::format(
+            R"(<effect id="e{}"><profile_COMMON><newparam sid="s{}"><surface type="2D"><init_from>i{}</init_from></surface></newparam>)"
+            R"(<newparam sid="sam{}"><sampler2D><source>s{}</source></sampler2D></newparam>)"
+            R"(<technique sid="common"><lambert><diffuse><texture texture="sam{}" texcoord="UV0"/></diffuse></lambert></technique>)"
+            R"(</profile_COMMON></effect>)",
+            i, i, i, i, i, i);
+        materials += std::format(R"(<material id="m{}" name="M{}"><instance_effect url="#e{}"/></material>)", i, i, i);
+    }
+    const std::string text = std::format(
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_images>{}</library_images>
+  <library_effects>{}</library_effects>
+  <library_materials>{}</library_materials>
+{}  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="N" name="N"><instance_geometry url="#g1"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)",
+        images, effects, materials, DAE_TRIANGLE_GEOMETRY);
+
+    const ImportResult result = importModel("many.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Truncated);
+    CHECK(result.externalUris.size() == engine::editor::MAX_EXTERNAL_URIS);
+    // ONE message about external references, however many textures overflowed.
+    std::size_t occurrences = 0;
+    std::size_t at = result.message.find("external reference");
+    while (at != std::string::npos) {
+        ++occurrences;
+        at = result.message.find("external reference", at + 1U);
+    }
+    CHECK(occurrences == 1U);
+}
+
+// AI60/AI62 (AC-53, and 3.2.3's BLOCKING gap 1) -- MAX_MATERIALS_PER_MODEL trims the tail, which is the
+// ONLY thing that makes the raw and the converted material index spaces diverge. A primitive whose raw
+// index fell past the cap must read INVALID_SUBASSET, never a stale index into a shorter list.
+TEST_CASE("AI60: overflowing MAX_MATERIALS_PER_MODEL truncates and never leaves a stale material index") {
+    const std::size_t count = engine::editor::MAX_MATERIALS_PER_MODEL + 2U;
+    std::string effects;
+    std::string materials;
+    effects.reserve(count * 128U);
+    materials.reserve(count * 72U);
+    for (std::size_t i = 0; i < count; ++i) {
+        // ZERO-PADDED ids, deliberately: Assimp's Collada material library is a std::map keyed by id, so
+        // the converted order is the ids' BYTE order. Padding makes that order the numeric one, which is
+        // the only way a test can name the material that lands PAST the cap.
+        effects += std::format(
+            R"(<effect id="e{:05}"><profile_COMMON><technique sid="common"><lambert/></technique></profile_COMMON></effect>)",
+            i);
+        materials +=
+            std::format(R"(<material id="m{:05}" name="M{}"><instance_effect url="#e{:05}"/></material>)", i, i, i);
+    }
+    const std::string text = std::format(
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_effects>{}</library_effects>
+  <library_materials>{}</library_materials>
+{}  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="N" name="N"><instance_geometry url="#g1"><bind_material><technique_common>
+      <instance_material symbol="mat" target="#m{:05}"/></technique_common></bind_material></instance_geometry></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)",
+        effects, materials, DAE_TRIANGLE_GEOMETRY, count - 1U);
+
+    const ImportResult result = importModel("caps.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Truncated);
+    CHECK(result.message.find("material count") != std::string::npos);
+    CHECK(result.model.materials.size() == engine::editor::MAX_MATERIALS_PER_MODEL);
+    CHECK(result.model.summary.materialCount == engine::editor::MAX_MATERIALS_PER_MODEL);
+
+    // AI62's half: the bound material's RAW index fell past the cap, so the primitive must carry the
+    // sentinel. A raw copy would carry an index one past the end of a list that is now shorter.
+    REQUIRE(result.model.meshes.size() == 1U);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1U);
+    CHECK(result.model.meshes[0].primitives[0].materialIndex == engine::editor::INVALID_SUBASSET);
+}
