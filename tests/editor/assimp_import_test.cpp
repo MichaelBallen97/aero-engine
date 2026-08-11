@@ -2287,3 +2287,591 @@ TEST_CASE("AI60: overflowing MAX_MATERIALS_PER_MODEL truncates and never leaves 
     REQUIRE(result.model.meshes[0].primitives.size() == 1U);
     CHECK(result.model.meshes[0].primitives[0].materialIndex == engine::editor::INVALID_SUBASSET);
 }
+
+// ---- step 7: skins and animations --------------------------------------------------------------------
+
+// A skinned triangle with TWO joints. Bone1's inverse bind matrix is deliberately NON-SYMMETRIC with a
+// known translation of (1, 2, 3): Collada writes matrices ROW-MAJOR, so the translation is the last
+// COLUMN, i.e. elements [3], [7], [11]. Assimp copies those into aiMatrix4x4::a4/b4/c4 verbatim (it is
+// row-major too), and engine::Mat4 is COLUMN-major, so the conversion must TRANSPOSE. A transpose-free
+// copy puts the translation at data()[3],[7],[11] instead of [12],[13],[14] and AI63 goes red.
+namespace {
+
+constexpr std::string_view SKIN_LIBRARIES =
+    R"(  <library_controllers>
+    <controller id="skin1" name="SkinCtrl">
+      <skin source="#g1">
+        <bind_shape_matrix>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</bind_shape_matrix>
+        <source id="jointNames">
+          <Name_array id="jn" count="2">Bone1 Bone2</Name_array>
+          <technique_common><accessor source="#jn" count="2" stride="1">
+            <param name="JOINT" type="name"/></accessor></technique_common>
+        </source>
+        <source id="invBind">
+          <float_array id="ib" count="32">1 0 0 1 0 1 0 2 0 0 1 3 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</float_array>
+          <technique_common><accessor source="#ib" count="2" stride="16">
+            <param name="TRANSFORM" type="float4x4"/></accessor></technique_common>
+        </source>
+        <source id="skinWeights">
+          <float_array id="wa" count="3">1 0.5 0.5</float_array>
+          <technique_common><accessor source="#wa" count="3" stride="1">
+            <param name="WEIGHT" type="float"/></accessor></technique_common>
+        </source>
+        <joints>
+          <input semantic="JOINT" source="#jointNames"/>
+          <input semantic="INV_BIND_MATRIX" source="#invBind"/>
+        </joints>
+        <vertex_weights count="3">
+          <input semantic="JOINT" source="#jointNames" offset="0"/>
+          <input semantic="WEIGHT" source="#skinWeights" offset="1"/>
+          <vcount>1 2 1</vcount>
+          <v>0 0 0 1 1 2 1 0</v>
+        </vertex_weights>
+      </skin>
+    </controller>
+  </library_controllers>
+)";
+
+// %ANIMATIONS% is replaced by a <library_animations> block, or by nothing.
+constexpr std::string_view SKINNED_DAE =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+%GEOMETRY%
+%CONTROLLERS%
+%ANIMATIONS%
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="Bone1" sid="Bone1" name="Bone1" type="JOINT">
+      <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+      <node id="Bone2" sid="Bone2" name="Bone2" type="JOINT">
+        <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+      </node>
+    </node>
+    <node id="Mesh" name="Mesh">
+      <instance_controller url="#skin1"><skeleton>#Bone1</skeleton></instance_controller>
+    </node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
+// A <library_animations> block driving Bone1/transform with three matrix keys at 0, 0.5 and 1 seconds.
+// `matrixRow` is one key's 16 row-major floats; all three keys carry the same value, so a resampling
+// change upstream cannot move what the case asserts.
+[[nodiscard]] std::string animationBlock(std::string_view matrixRow) {
+    std::string keys;
+    for (int i = 0; i < 3; ++i) {
+        keys += std::string(matrixRow) + " ";
+    }
+    return std::format(
+        R"(  <library_animations><animation id="a1" name="Clip">
+      <source id="a_in">
+        <float_array id="a_in_a" count="3">0 0.5 1</float_array>
+        <technique_common><accessor source="#a_in_a" count="3" stride="1">
+          <param name="TIME" type="float"/></accessor></technique_common>
+      </source>
+      <source id="a_out">
+        <float_array id="a_out_a" count="48">{}</float_array>
+        <technique_common><accessor source="#a_out_a" count="3" stride="16">
+          <param name="TRANSFORM" type="float4x4"/></accessor></technique_common>
+      </source>
+      <source id="a_interp">
+        <Name_array id="a_interp_a" count="3">LINEAR LINEAR LINEAR</Name_array>
+        <technique_common><accessor source="#a_interp_a" count="3" stride="1">
+          <param name="INTERPOLATION" type="name"/></accessor></technique_common>
+      </source>
+      <sampler id="samp">
+        <input semantic="INPUT" source="#a_in"/>
+        <input semantic="OUTPUT" source="#a_out"/>
+        <input semantic="INTERPOLATION" source="#a_interp"/>
+      </sampler>
+      <channel source="#samp" target="Bone1/transform"/>
+    </animation></library_animations>
+)",
+        keys);
+}
+
+// The skinned document, with the geometry, the controllers and (optionally) an animation spliced in.
+[[nodiscard]] std::string skinnedDae(std::string_view controllers, std::string_view animations) {
+    std::string out(SKINNED_DAE);
+    const auto substitute = [&out](std::string_view token, std::string_view text) {
+        const std::size_t at = out.find(token);
+        REQUIRE(at != std::string::npos);
+        out.replace(at, token.size(), text);
+    };
+    substitute("%GEOMETRY%\n", DAE_TRIANGLE_GEOMETRY);
+    substitute("%CONTROLLERS%\n", controllers);
+    substitute("%ANIMATIONS%\n", animations);
+    return out;
+}
+
+}  // namespace
+
+// AI63 (AC-43) -- D14 TRAP 1, HAND-COMPUTED. A transpose-free copy is a plausible WRONG model, never a
+// failure, so this is the only thing standing between the two.
+TEST_CASE("AI63: an inverse bind matrix is transposed on conversion, translation column and all") {
+    const std::string text = skinnedDae(SKIN_LIBRARIES, "");
+    const ImportResult result = importModel("skin.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.skins.size() == 1U);
+    const engine::editor::ImportedSkin& skin = result.model.skins[0];
+    REQUIRE(skin.inverseBindMatrices.size() == skin.joints.size());
+    REQUIRE_FALSE(skin.inverseBindMatrices.empty());
+
+    const engine::Mat4& ibm = skin.inverseBindMatrices[0];
+    CHECK(approxEq(ibm.columns[3].x, 1.0F));
+    CHECK(approxEq(ibm.columns[3].y, 2.0F));
+    CHECK(approxEq(ibm.columns[3].z, 3.0F));
+    CHECK(approxEq(ibm.columns[3].w, 1.0F));
+    // And the same fact through the contiguous, GPU-upload-order view: a transpose-free copy would put
+    // the translation at [3], [7], [11] instead.
+    CHECK(approxEq(ibm.data()[12], 1.0F));
+    CHECK(approxEq(ibm.data()[13], 2.0F));
+    CHECK(approxEq(ibm.data()[14], 3.0F));
+    CHECK(approxEq(ibm.data()[3], 0.0F));
+    CHECK(approxEq(ibm.data()[7], 0.0F));
+    CHECK(approxEq(ibm.data()[11], 0.0F));
+}
+
+// AI64 (AC-44) -- D14 TRAP 2, HAND-COMPUTED, through convertAnimations' OWN conversion. A rotation of
+// exactly +90 degrees about X is Quat{sin45, 0, 0, cos45} in engine's {x,y,z,w} order; a {w,x,y,z}
+// reordering produces {cos45, sin45, 0, 0}, which is a different, perfectly renderable rotation.
+TEST_CASE("AI64: an animated 90-degree rotation about X converts as a named field copy, not a reorder") {
+    // Row-major Collada matrix for +90 about X: (x,y,z) -> (x, -z, y).
+    const std::string text = skinnedDae(SKIN_LIBRARIES, animationBlock("1 0 0 0 0 0 -1 0 0 1 0 0 0 0 0 1"));
+    const ImportResult result = importModel("anim.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.animations.size() == 1U);
+
+    const engine::editor::ImportedAnimationChannel* rotation = nullptr;
+    for (const engine::editor::ImportedAnimationChannel& channel : result.model.animations[0].channels) {
+        if (channel.path == engine::editor::AnimationPath::Rotation) {
+            rotation = &channel;
+        }
+    }
+    REQUIRE(rotation != nullptr);
+    REQUIRE_FALSE(rotation->values.empty());
+    CHECK(approxEq(rotation->values[0].x, 0.70710678F, 1e-4F));
+    CHECK(approxEq(rotation->values[0].y, 0.0F, 1e-4F));
+    CHECK(approxEq(rotation->values[0].z, 0.0F, 1e-4F));
+    CHECK(approxEq(rotation->values[0].w, 0.70710678F, 1e-4F));
+}
+
+// AI64b (AC-44) -- the SAME trap through convertNodes' toQuat, because the two call sites break
+// independently. A static +90 about X on a node transform.
+TEST_CASE("AI64b: a 90-degree node rotation about X converts as a named field copy, not a reorder") {
+    std::string text = dae(DAE_CHAIN);
+    const std::size_t at = text.find("<translate>1 2 3</translate>");
+    REQUIRE(at != std::string::npos);
+    text.replace(at, std::string_view("<translate>1 2 3</translate>").size(), "<rotate>1 0 0 90</rotate>");
+    const ImportResult result = importModel("rot.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 4U);
+    const engine::Quat& q = result.model.nodes[1].rotation;
+    CHECK(approxEq(q.x, 0.70710678F, 1e-4F));
+    CHECK(approxEq(q.y, 0.0F, 1e-4F));
+    CHECK(approxEq(q.z, 0.0F, 1e-4F));
+    CHECK(approxEq(q.w, 0.70710678F, 1e-4F));
+}
+
+// AI65 (AC-41) -- the skin's shape: joints as NODE localIds in mBones order, inverseBindMatrices exactly
+// joints.size() at Full and EMPTY at Structure, per-vertex weights summing to 1 on every weighted vertex.
+TEST_CASE("AI65: a skinned .dae yields one skin per skinned mesh with joints, matrices and weights") {
+    const std::string text = skinnedDae(SKIN_LIBRARIES, "");
+    const ImportResult full = importModel("skin.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", full.message);
+    REQUIRE(full.status == ImportStatus::Ok);
+    REQUIRE(full.model.skins.size() == 1U);
+    const engine::editor::ImportedSkin& skin = full.model.skins[0];
+    CHECK(skin.joints.size() == 2U);
+    CHECK(skin.inverseBindMatrices.size() == skin.joints.size());
+    CHECK(full.model.summary.skinCount == 1U);
+    CHECK(full.model.summary.jointCount == 2U);
+    for (const std::uint32_t joint : skin.joints) {
+        REQUIRE(joint < full.model.nodes.size());
+    }
+    // Every joint resolves to a node that really is a joint node in the document.
+    CHECK(full.model.nodes[skin.joints[0]].name == "Bone1");
+    // MEASURED, answering the one open question this step carried: aiBone::mArmature DOES come back
+    // engaged for a Collada skin -- aiProcess_PopulateArmatureData fills it -- and it resolves to the
+    // armature node, which here is the <visual_scene> root itself (localId 0) because the joints hang
+    // directly off it. That node is NOT itself a joint, and it is recorded AS-IS rather than replaced by
+    // a computed common ancestor: 3.2.1's E24, arriving for real rather than as a hypothetical.
+    CHECK(skin.skeletonRoot == 0U);
+    CHECK(skin.skeletonRoot < full.model.nodes.size());
+    CHECK(full.model.nodes[skin.joints[1]].name == "Bone2");
+
+    const ImportedPrimitive& prim = onlyPrimitive(full.model);
+    CHECK(has(prim.attributes, VertexAttribute::Joints0));
+    CHECK(has(prim.attributes, VertexAttribute::Weights0));
+    REQUIRE(prim.weights.size() == prim.positions.size());
+    REQUIRE(prim.joints.size() == prim.positions.size());
+    for (const engine::Vec4& weight : prim.weights) {
+        const float sum = weight.x + weight.y + weight.z + weight.w;
+        CHECK(approxEq(sum, 1.0F, 1e-4F));
+    }
+    // The node holding the skinned mesh points back at the skin.
+    bool bound = false;
+    for (const engine::editor::ImportedNode& node : full.model.nodes) {
+        if (node.skinIndex == 0U) {
+            bound = true;
+        }
+    }
+    CHECK(bound);
+
+    const ImportResult structure =
+        importModel("skin.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Structure, {});
+    REQUIRE(structure.status == ImportStatus::Ok);
+    REQUIRE(structure.model.skins.size() == 1U);
+    CHECK(structure.model.skins[0].joints.size() == 2U);          // IDENTITY survives
+    CHECK(structure.model.skins[0].inverseBindMatrices.empty());  // SAMPLES do not
+}
+
+// AI66 (AC-42) -- a vertex with NO influences gets all-zero joints AND all-zero weights, never
+// {1,0,0,0}, which would silently bind it to joint 0: a plausible wrong deformation, not a failure.
+TEST_CASE("AI66: a vertex with no influences gets all-zero joints and all-zero weights") {
+    std::string controllers(SKIN_LIBRARIES);
+    const std::size_t at = controllers.find("<vcount>1 2 1</vcount>\n          <v>0 0 0 1 1 2 1 0</v>");
+    REQUIRE(at != std::string::npos);
+    controllers.replace(at, std::string_view("<vcount>1 2 1</vcount>\n          <v>0 0 0 1 1 2 1 0</v>").size(),
+                        "<vcount>1 2 0</vcount>\n          <v>0 0 0 1 1 2</v>");
+    const std::string text = skinnedDae(controllers, "");
+    const ImportResult result = importModel("zero.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = onlyPrimitive(result.model);
+    REQUIRE(prim.weights.size() == 3U);
+    REQUIRE(prim.joints.size() == 3U);
+    CHECK(approxEq(prim.weights[2].x, 0.0F));
+    CHECK(approxEq(prim.weights[2].y, 0.0F));
+    CHECK(approxEq(prim.weights[2].z, 0.0F));
+    CHECK(approxEq(prim.weights[2].w, 0.0F));
+    CHECK(prim.joints[2] == std::array<std::uint16_t, 4>{0U, 0U, 0U, 0U});
+}
+
+// AI67 (E12) -- a bone naming a node the document does not contain: that JOINT is dropped with one
+// warning, the SKIN survives with the rest, and `joints` stays contiguous -- no gap, no sentinel.
+TEST_CASE("AI67: a bone resolving to no node is dropped and the skin survives with the rest") {
+    std::string controllers(SKIN_LIBRARIES);
+    const std::size_t at = controllers.find("Bone1 Bone2");
+    REQUIRE(at != std::string::npos);
+    controllers.replace(at, std::string_view("Bone1 Bone2").size(), "Bone1 Ghost");
+    const std::string text = skinnedDae(controllers, "");
+    const ImportResult result = importModel("ghost.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.skins.size() == 1U);
+    CHECK(result.model.skins[0].joints.size() == 1U);
+    CHECK(result.model.skins[0].inverseBindMatrices.size() == 1U);
+    for (const std::uint32_t joint : result.model.skins[0].joints) {
+        CHECK(joint != engine::editor::INVALID_SUBASSET);
+        CHECK(joint < result.model.nodes.size());
+    }
+    std::size_t dropWarnings = 0;
+    for (const std::string& warning : result.warnings) {
+        if (warning.find("resolved to no node") != std::string::npos) {
+            ++dropWarnings;
+        }
+    }
+    CHECK(dropWarnings == 1U);
+}
+
+// AI68 (AC-32, CORRECTED TWICE against the library) -- a `vertex_weights` block declaring MORE entries
+// than the mesh has vertices imports cleanly, with weights for the real vertices and nothing else, and
+// the run is clean under ASan and UBSan.
+//
+// The plan asked for "a weight whose mVertexId is out of range is dropped with one capped warning". That
+// input has NO Collada spelling: ColladaLoader builds its weight lists by walking the mesh's OWN
+// vertices, so a surplus <vcount>/<v> entry is simply never read, and even if one reached the scene
+// aiProcess_ValidateDataStructure refuses it outright (it checks mWeights[i].mVertexId against
+// mNumVertices and throws, exactly as it does for a face index -- see AI31). So OUR range check is
+// unreachable from both directions; it stays as defence in depth for a validation-off build and AI34
+// pins it in the source text. What this case can and does assert is the ROBUSTNESS the AC was protecting:
+// a lying weight block produces no over-read and no malformed arrays.
+TEST_CASE("AI68: a vertex_weights block longer than the mesh imports cleanly with no over-read") {
+    std::string controllers(SKIN_LIBRARIES);
+    const std::size_t at = controllers.find("<vertex_weights count=\"3\">");
+    REQUIRE(at != std::string::npos);
+    controllers.replace(at, std::string_view("<vertex_weights count=\"3\">").size(), "<vertex_weights count=\"9\">");
+    const std::size_t counts = controllers.find("<vcount>1 2 1</vcount>\n          <v>0 0 0 1 1 2 1 0</v>");
+    REQUIRE(counts != std::string::npos);
+    controllers.replace(counts, std::string_view("<vcount>1 2 1</vcount>\n          <v>0 0 0 1 1 2 1 0</v>").size(),
+                        "<vcount>1 1 1 1 1 1 1 1 1</vcount>\n          <v>0 0 0 0 0 0 0 0 0 0 0 0 1 0 1 0 1 0</v>");
+    const std::string text = skinnedDae(controllers, "");
+    const ImportResult result = importModel("badw.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = onlyPrimitive(result.model);
+    CHECK(prim.weights.size() == prim.positions.size());
+    CHECK(prim.joints.size() == prim.positions.size());
+    for (const std::array<std::uint16_t, 4>& joint : prim.joints) {
+        for (const std::uint16_t slot : joint) {
+            CHECK(slot <= result.model.skins[0].joints.size());
+        }
+    }
+}
+
+// AI69 (AC-45) -- one ImportedAnimation per aiAnimation and THREE channels per aiNodeAnim that has keys
+// on all three paths; times strictly increasing, in SECONDS; values.size() == times.size() on every
+// Linear channel (INV-M6).
+TEST_CASE("AI69: an animated .dae yields three Linear channels per node with strictly increasing times") {
+    const std::string text = skinnedDae(SKIN_LIBRARIES, animationBlock("1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"));
+    const ImportResult result = importModel("anim.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.animations.size() == 1U);
+    CHECK(result.model.summary.animationCount == 1U);
+
+    const engine::editor::ImportedAnimation& clip = result.model.animations[0];
+    CHECK(clip.localId == 0U);
+    CHECK(clip.channels.size() == 3U);
+    bool sawTranslation = false;
+    bool sawRotation = false;
+    bool sawScale = false;
+    for (const engine::editor::ImportedAnimationChannel& channel : clip.channels) {
+        CHECK(channel.interpolation == engine::editor::AnimationInterpolation::Linear);
+        CHECK(channel.values.size() == channel.times.size());  // INV-M6 for Linear
+        REQUIRE_FALSE(channel.times.empty());
+        CHECK(channel.targetNode < result.model.nodes.size());
+        for (std::size_t i = 1; i < channel.times.size(); ++i) {
+            CHECK(channel.times[i] > channel.times[i - 1U]);
+        }
+        sawTranslation = sawTranslation || channel.path == engine::editor::AnimationPath::Translation;
+        sawRotation = sawRotation || channel.path == engine::editor::AnimationPath::Rotation;
+        sawScale = sawScale || channel.path == engine::editor::AnimationPath::Scale;
+    }
+    CHECK(sawTranslation);
+    CHECK(sawRotation);
+    CHECK(sawScale);
+}
+
+// AI70 (AC-46, half) -- the zero-ticks-per-second arm has NO reachable input in this task's three
+// formats: ColladaLoader writes mTicksPerSecond = 1000 unconditionally, and .ply and .stl carry no
+// animation at all. So the arm is pinned in the source text, with the one warning per clip it owes, and
+// the reason is recorded rather than left as a silently untested branch.
+TEST_CASE("AI70: a zero ticks-per-second falls back to seconds with one warning per clip") {
+    const std::string code = strippedSource("assimp_import.cpp");
+    const std::size_t at = code.find("double ticksPerSecond = src.mTicksPerSecond;");
+    REQUIRE(at != std::string::npos);
+    const std::size_t guard = code.find("if (ticksPerSecond == 0.0) {", at);
+    REQUIRE(guard != std::string::npos);
+    const std::size_t warn = code.find("addWarning(result", guard);
+    const std::size_t fallback = code.find("ticksPerSecond = 1.0;", guard);
+    REQUIRE(warn != std::string::npos);
+    REQUIRE(fallback != std::string::npos);
+    CHECK(warn < fallback);
+}
+
+// AI71 (AC-46) -- ticks to SECONDS, hand-computed against the loader's own 1000 ticks per second: a
+// document declaring keys at 0, 0.5 and 1 seconds must read back as 0, 0.5 and 1.
+TEST_CASE("AI71: key times are converted from ticks to seconds") {
+    const std::string text = skinnedDae(SKIN_LIBRARIES, animationBlock("1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"));
+    const ImportResult result = importModel("anim.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.animations.size() == 1U);
+    REQUIRE_FALSE(result.model.animations[0].channels.empty());
+    const engine::editor::ImportedAnimationChannel& channel = result.model.animations[0].channels[0];
+    REQUIRE(channel.times.size() == 3U);
+    CHECK(approxEq(channel.times[0], 0.0F, 1e-3F));
+    CHECK(approxEq(channel.times[1], 0.5F, 1e-3F));
+    CHECK(approxEq(channel.times[2], 1.0F, 1e-3F));
+}
+
+// AI72 (AC-47) -- a channel targeting a node the model does not contain is dropped with one warning,
+// never silently retargeted and never emitted with an invalid targetNode.
+TEST_CASE("AI72: an animation channel targeting an unknown node is dropped with one warning") {
+    const std::string good = skinnedDae(SKIN_LIBRARIES, animationBlock("1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"));
+    std::string text(good);
+    const std::size_t at = text.find("target=\"Bone1/transform\"");
+    REQUIRE(at != std::string::npos);
+    text.replace(at, std::string_view("target=\"Bone1/transform\"").size(), "target=\"NoSuchNode/transform\"");
+    const ImportResult result = importModel("ghosta.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    // Whether the drop happens in the library (no aiNodeAnim at all) or in our own resolve (one warning),
+    // the OBSERVABLE is the same and is what matters: no channel claims a node that does not exist.
+    for (const engine::editor::ImportedAnimation& clip : result.model.animations) {
+        for (const engine::editor::ImportedAnimationChannel& channel : clip.channels) {
+            CHECK(channel.targetNode < result.model.nodes.size());
+        }
+    }
+}
+
+// AI73 (AC-45) -- duration is RECOMPUTED from the surviving channels, in SECONDS. Taking it from
+// aiAnimation::mDuration instead would report the Collada clip's TICKS -- 1000x too large -- which is
+// exactly the plausible-but-wrong number this case exists to catch.
+TEST_CASE("AI73: animation duration is recomputed in seconds, never taken from the library's own field") {
+    const std::string text = skinnedDae(SKIN_LIBRARIES, animationBlock("1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"));
+    const ImportResult result = importModel("anim.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.animations.size() == 1U);
+    CHECK(approxEq(result.model.animations[0].duration, 1.0F, 1e-3F));
+    CHECK(approxEq(result.model.summary.animationDuration, 1.0F, 1e-3F));
+}
+
+// AI74 (AC-48) -- importSkins == false empties skins and leaves no primitive claiming Joints0/Weights0;
+// importAnimations == false empties animations. Each toggle changes ONLY its own collection.
+TEST_CASE("AI74: importSkins and importAnimations each empty exactly their own collection") {
+    const std::string text = skinnedDae(SKIN_LIBRARIES, animationBlock("1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"));
+    const ImportResult both = importModel("anim.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(both.status == ImportStatus::Ok);
+    REQUIRE_FALSE(both.model.skins.empty());
+    REQUIRE_FALSE(both.model.animations.empty());
+
+    ImportSettings noSkins;
+    noSkins.importSkins = false;
+    const ImportResult withoutSkins = importModel("anim.dae", "", asBytes(text), noSkins, ImportDepth::Full, {});
+    REQUIRE(withoutSkins.status == ImportStatus::Ok);
+    CHECK(withoutSkins.model.skins.empty());
+    CHECK(withoutSkins.model.summary.skinCount == 0U);
+    CHECK(withoutSkins.model.summary.jointCount == 0U);
+    CHECK(withoutSkins.model.animations.size() == both.model.animations.size());
+    for (const engine::editor::ImportedMesh& mesh : withoutSkins.model.meshes) {
+        for (const ImportedPrimitive& prim : mesh.primitives) {
+            CHECK_FALSE(has(prim.attributes, VertexAttribute::Joints0));
+            CHECK_FALSE(has(prim.attributes, VertexAttribute::Weights0));
+            CHECK(prim.joints.empty());
+            CHECK(prim.weights.empty());
+        }
+    }
+
+    ImportSettings noAnims;
+    noAnims.importAnimations = false;
+    const ImportResult withoutAnims = importModel("anim.dae", "", asBytes(text), noAnims, ImportDepth::Full, {});
+    REQUIRE(withoutAnims.status == ImportStatus::Ok);
+    CHECK(withoutAnims.model.animations.empty());
+    CHECK(withoutAnims.model.summary.animationCount == 0U);
+    CHECK(approxEq(withoutAnims.model.summary.animationDuration, 0.0F));
+    CHECK(withoutAnims.model.skins.size() == both.model.skins.size());
+}
+
+// AI75 (AC-53) -- MAX_JOINTS_PER_SKIN. The WHOLE SKIN is dropped, never truncated: a partial palette
+// binds vertices to the WRONG bones, which renders and is wrong, where an unskinned mesh renders and is
+// obviously unskinned.
+TEST_CASE("AI75: a skin exceeding MAX_JOINTS_PER_SKIN is dropped whole, not truncated") {
+    // MAX + 2, chosen because it is DIVISIBLE BY THREE: one vertex per joint, every vertex referenced by
+    // a face. MEASURED the hard way -- ColladaLoader builds its submesh from the FACES, so a vertex no
+    // face references is dropped and its bone becomes weightless, and Assimp then removes weightless
+    // bones, which put the count back UNDER the cap and made the first draft of this case pass for
+    // entirely the wrong reason.
+    const std::size_t joints = engine::editor::MAX_JOINTS_PER_SKIN + 2U;
+    REQUIRE(joints % 3U == 0U);
+    std::string positions;
+    std::string faces;
+    for (std::size_t i = 0; i < joints; ++i) {
+        positions += std::format("{} 0 0 ", i);
+    }
+    for (std::size_t i = 0; i + 2U < joints; i += 3U) {
+        faces += std::format("{} {} {} ", i, i + 1U, i + 2U);
+    }
+    const std::size_t faceCount = joints / 3U;
+
+    std::string names;
+    std::string invBind;
+    std::string weights;
+    std::string vcount;
+    std::string vlist;
+    std::string nodes;
+    for (std::size_t i = 0; i < joints; ++i) {
+        names += std::format("B{} ", i);
+        invBind += "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 ";
+        weights += "1 ";
+        vcount += "1 ";
+        vlist += std::format("{} {} ", i, i);
+        nodes += std::format(R"(<node id="B{}" sid="B{}" name="B{}" type="JOINT"/>)", i, i, i);
+    }
+
+    const std::string text = std::format(
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries><geometry id="g1" name="Many"><mesh>
+    <source id="p"><float_array id="pa" count="{}">{}</float_array>
+      <technique_common><accessor source="#pa" count="{}" stride="3">
+        <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+      </accessor></technique_common></source>
+    <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>
+    <triangles count="{}"><input semantic="VERTEX" source="#v" offset="0"/><p>{}</p></triangles>
+  </mesh></geometry></library_geometries>
+  <library_controllers><controller id="skin1" name="Big"><skin source="#g1">
+    <bind_shape_matrix>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</bind_shape_matrix>
+    <source id="jointNames"><Name_array id="jn" count="{}">{}</Name_array>
+      <technique_common><accessor source="#jn" count="{}" stride="1">
+        <param name="JOINT" type="name"/></accessor></technique_common></source>
+    <source id="invBind"><float_array id="ib" count="{}">{}</float_array>
+      <technique_common><accessor source="#ib" count="{}" stride="16">
+        <param name="TRANSFORM" type="float4x4"/></accessor></technique_common></source>
+    <source id="skinWeights"><float_array id="wa" count="{}">{}</float_array>
+      <technique_common><accessor source="#wa" count="{}" stride="1">
+        <param name="WEIGHT" type="float"/></accessor></technique_common></source>
+    <joints><input semantic="JOINT" source="#jointNames"/>
+      <input semantic="INV_BIND_MATRIX" source="#invBind"/></joints>
+    <vertex_weights count="{}"><input semantic="JOINT" source="#jointNames" offset="0"/>
+      <input semantic="WEIGHT" source="#skinWeights" offset="1"/>
+      <vcount>{}</vcount><v>{}</v></vertex_weights>
+  </skin></controller></library_controllers>
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="Root" name="Root">{}</node>
+    <node id="Mesh" name="Mesh"><instance_controller url="#skin1"><skeleton>#B0</skeleton></instance_controller></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)",
+        joints * 3U, positions, joints, faceCount, faces, joints, names, joints, joints * 16U, invBind, joints, joints,
+        weights, joints, joints, vcount, vlist, nodes);
+
+    const ImportResult result = importModel("bigskin.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Truncated);
+    CHECK(result.message.find("joint count") != std::string::npos);
+    CHECK(result.model.skins.empty());  // DROPPED WHOLE, never a partial palette
+    for (const engine::editor::ImportedMesh& mesh : result.model.meshes) {
+        for (const ImportedPrimitive& prim : mesh.primitives) {
+            CHECK(prim.joints.empty());
+            CHECK(prim.weights.empty());
+        }
+    }
+}
+
+// AI77 (AC-29) -- ImportSettings::scale reaches the inverse bind matrices' TRANSLATION COLUMN and the
+// ROOT node's translation, and nothing else: not rotations, not weights, not a non-root translation.
+TEST_CASE("AI77: scale reaches inverse bind translations and root translations only") {
+    const std::string text = skinnedDae(SKIN_LIBRARIES, "");
+    ImportSettings doubled;
+    doubled.scale = 2.0F;
+    const ImportResult plain = importModel("skin.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult scaled = importModel("skin.dae", "", asBytes(text), doubled, ImportDepth::Full, {});
+    REQUIRE(plain.status == ImportStatus::Ok);
+    REQUIRE(scaled.status == ImportStatus::Ok);
+    REQUIRE(plain.model.skins.size() == 1U);
+    REQUIRE(scaled.model.skins.size() == 1U);
+
+    const engine::Mat4& before = plain.model.skins[0].inverseBindMatrices[0];
+    const engine::Mat4& after = scaled.model.skins[0].inverseBindMatrices[0];
+    CHECK(approxEq(after.columns[3].x, before.columns[3].x * 2.0F));
+    CHECK(approxEq(after.columns[3].y, before.columns[3].y * 2.0F));
+    CHECK(approxEq(after.columns[3].z, before.columns[3].z * 2.0F));
+    // The basis columns are UNTOUCHED -- a rotation is not a length.
+    for (std::size_t c = 0; c < 3U; ++c) {
+        CHECK(approxEq(after.columns[c].x, before.columns[c].x));
+        CHECK(approxEq(after.columns[c].y, before.columns[c].y));
+        CHECK(approxEq(after.columns[c].z, before.columns[c].z));
+    }
+
+    const ImportedPrimitive& beforePrim = onlyPrimitive(plain.model);
+    const ImportedPrimitive& afterPrim = onlyPrimitive(scaled.model);
+    REQUIRE(beforePrim.weights.size() == afterPrim.weights.size());
+    for (std::size_t i = 0; i < beforePrim.weights.size(); ++i) {
+        CHECK(approxEq(afterPrim.weights[i].x, beforePrim.weights[i].x));
+    }
+
+    // Non-root translations are already expressed in their parent's scaled space, so they must NOT move.
+    REQUIRE(plain.model.nodes.size() == scaled.model.nodes.size());
+    for (std::size_t i = 1; i < plain.model.nodes.size(); ++i) {
+        CHECK(approxEq(scaled.model.nodes[i].translation, plain.model.nodes[i].translation));
+        CHECK(approxEq(scaled.model.nodes[i].rotation.w, plain.model.nodes[i].rotation.w));
+    }
+}

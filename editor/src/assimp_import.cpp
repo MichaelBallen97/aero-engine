@@ -15,6 +15,7 @@
 #include <assimp/IOStream.hpp>
 #include <assimp/IOSystem.hpp>
 #include <assimp/Importer.hpp>
+#include <assimp/anim.h>
 #include <assimp/commonMetaData.h>  // AI_METADATA_SOURCE_FORMAT{,_VERSION} -- the A-5 assertion's key
 #include <assimp/config.h>
 #include <assimp/material.h>
@@ -23,6 +24,7 @@
 #include <assimp/quaternion.h>
 #include <assimp/scene.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -32,6 +34,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -838,6 +841,363 @@ void applyMaterialMap(const std::vector<std::uint32_t>& rawToConverted, Imported
     }
 }
 
+// task 3.2.5 (A-13). aiBone::mNode points INTO aiScene's own node tree (aiProcess_PopulateArmatureData
+// documents it), so a POINTER key resolves a joint exactly. A NAME key would silently mis-resolve two
+// same-named nodes -- which Collada permits and Blender exports produce.
+//
+// Built by re-walking the tree in the SAME iterative pre-order convertNodes used, so the indices agree
+// by construction rather than by a second convention that could drift.
+[[nodiscard]] std::unordered_map<const aiNode*, std::uint32_t> buildNodePointerMap(const aiScene& scene,
+                                                                                   std::size_t nodeCount) {
+    std::unordered_map<const aiNode*, std::uint32_t> out;
+    if (scene.mRootNode == nullptr) {
+        return out;
+    }
+    std::vector<const aiNode*> stack;
+    stack.push_back(scene.mRootNode);
+    std::uint32_t index = 0;
+    while (!stack.empty() && index < nodeCount) {
+        const aiNode* node = stack.back();
+        stack.pop_back();
+        out.emplace(node, index);
+        ++index;
+        // The split children convertNodes synthesises for a multi-mesh node have NO aiNode of their own,
+        // so this walk and that one diverge in COUNT the moment such a node exists. `nodeCount` bounds
+        // this walk to what actually landed; a joint that falls past it simply does not resolve, which is
+        // the E12 path and is warned about rather than guessed at.
+        for (unsigned int c = node->mNumChildren; c > 0; --c) {
+            stack.push_back(node->mChildren[c - 1]);
+        }
+    }
+    return out;
+}
+
+// aiNodeAnim carries only mNodeName, so animations resolve BY NAME. Two same-named nodes make the FIRST
+// win: a real, stated limitation of the format rather than an invented disambiguation.
+[[nodiscard]] std::unordered_map<std::string, std::uint32_t> buildNodeNameMap(const ImportedModel& model) {
+    std::unordered_map<std::string, std::uint32_t> out;
+    for (const ImportedNode& node : model.nodes) {
+        out.emplace(node.name, node.localId);
+    }
+    return out;
+}
+
+// At most FOUR influences per vertex, guaranteed by aiProcess_LimitBoneWeights + a max-weights property
+// of 4. Kept as a scratch array indexed by vertex.
+struct Influence {
+    std::uint16_t joint = 0;
+    float weight = 0.0F;
+};
+
+// task 3.2.5 (A-13). RENORMALISED, and a ZERO-TOTAL-WEIGHT vertex gets ALL-ZERO joints AND weights --
+// never {1,0,0,0}, which would silently bind it to joint 0 (3.2.2's rule, restated because it is the one
+// that produces a plausible wrong DEFORMATION rather than a failure).
+void writeSkinVertexArrays(const std::vector<std::array<Influence, 4>>& influences, ImportedPrimitive& prim) {
+    if (influences.size() != prim.positions.size()) {
+        return;  // a mesh whose primitive was capped or dropped: leave it unskinned rather than writing
+                 // arrays of a different length than `positions` (INV-A5's spirit)
+    }
+    prim.joints.reserve(influences.size());
+    prim.weights.reserve(influences.size());
+    for (const std::array<Influence, 4>& slot : influences) {
+        // DESCENDING by weight, for the tie-break and for a deterministic order across platforms.
+        std::array<Influence, 4> sorted = slot;
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const Influence& a, const Influence& b) { return a.weight > b.weight; });
+        const float total = sorted[0].weight + sorted[1].weight + sorted[2].weight + sorted[3].weight;
+        if (total <= 0.0F) {
+            prim.joints.push_back(std::array<std::uint16_t, 4>{0, 0, 0, 0});
+            prim.weights.push_back(Vec4{0.0F, 0.0F, 0.0F, 0.0F});
+            continue;
+        }
+        prim.joints.push_back(
+            std::array<std::uint16_t, 4>{sorted[0].joint, sorted[1].joint, sorted[2].joint, sorted[3].joint});
+        prim.weights.push_back(Vec4{sorted[0].weight / total, sorted[1].weight / total, sorted[2].weight / total,
+                                    sorted[3].weight / total});
+    }
+    prim.attributes |= VertexAttribute::Joints0;
+    prim.attributes |= VertexAttribute::Weights0;
+}
+
+// Every node referencing this mesh gets the skin. ImportedNode::skinIndex is how the panel and 3.1.5
+// find it; a node whose meshIndex is the split child of a multi-mesh node is covered too, because the
+// split copies meshIndex.
+void bindSkinToMesh(unsigned int meshIndex, std::uint32_t skinIndex, ImportedModel& model) {
+    for (ImportedNode& node : model.nodes) {
+        if (node.meshIndex == meshIndex) {
+            node.skinIndex = skinIndex;
+        }
+    }
+}
+
+// task 3.2.5 (A-13). ONE ImportedSkin per mesh that has bones. `joints` holds NODE localIds in mBones
+// order. aiProcess_PopulateArmatureData fills aiBone::mNode/mArmature, so a joint resolves to a real node
+// WITHOUT a name lookup -- which is why this pass is cheap enough to ship at full parity.
+void convertSkins(const aiScene& scene, const ImportSettings& settings, ImportDepth depth, ImportResult& result) {
+    const std::unordered_map<const aiNode*, std::uint32_t> localIdByNode =
+        buildNodePointerMap(scene, result.model.nodes.size());
+
+    for (unsigned int mi = 0; mi < scene.mNumMeshes; ++mi) {
+        const aiMesh& src = *scene.mMeshes[mi];
+        if (src.mNumBones == 0) {
+            continue;
+        }
+        if (src.mNumBones > MAX_JOINTS_PER_SKIN) {
+            // E14 (3.2.2's rule): a PARTIAL palette binds vertices to the WRONG bones, so the skin is
+            // DROPPED WHOLE rather than truncated, and the mesh carries no joints/weights at all.
+            escalate(result, ImportStatus::Truncated, "the joint count exceeds this importer's per-skin limit");
+            continue;
+        }
+        ImportedSkin outSkin;
+        outSkin.name = src.mName.C_Str();
+        outSkin.localId = mi;
+        outSkin.joints.reserve(src.mNumBones);
+
+        std::vector<std::array<Influence, 4>> influences;
+        const bool wantVertexData = depth == ImportDepth::Full;
+        if (wantVertexData) {
+            if (src.mNumVertices > MAX_VERTICES_PER_MODEL) {
+                escalate(result, ImportStatus::Truncated, "the vertex count exceeds this importer's per-model limit");
+                continue;
+            }
+            influences.assign(src.mNumVertices, std::array<Influence, 4>{});
+        }
+
+        std::size_t droppedBones = 0;
+        std::size_t droppedWeights = 0;
+        for (unsigned int b = 0; b < src.mNumBones; ++b) {
+            const aiBone& bone = *src.mBones[b];
+            const auto found = bone.mNode != nullptr ? localIdByNode.find(bone.mNode) : localIdByNode.end();
+            if (found == localIdByNode.end()) {
+                // E12: a bone whose mNode is null or is not in the walked tree. That JOINT is dropped with
+                // one warning; the SKIN survives with the rest, and `joints` stays contiguous.
+                ++droppedBones;
+                continue;
+            }
+            const auto jointSlot = static_cast<std::uint16_t>(outSkin.joints.size());
+            outSkin.joints.push_back(found->second);
+            if (depth == ImportDepth::Full) {
+                Mat4 ibm = toMat4(bone.mOffsetMatrix);  // A-14 trap 1: the ONLY matrix conversion
+                ibm.columns[3].x *= settings.scale;     // A22: the TRANSLATION COLUMN only
+                ibm.columns[3].y *= settings.scale;
+                ibm.columns[3].z *= settings.scale;
+                outSkin.inverseBindMatrices.push_back(ibm);
+            }
+            if (!wantVertexData) {
+                continue;
+            }
+            for (unsigned int w = 0; w < bone.mNumWeights; ++w) {
+                const aiVertexWeight& vw = bone.mWeights[w];
+                if (vw.mVertexId >= src.mNumVertices) {
+                    // INV-A4's other half, range-checked BEFORE any array access. Unreachable while
+                    // aiProcess_ValidateDataStructure is on, for the same reason the face check is
+                    // (ValidateDS refuses an out-of-range mVertexId first) -- see AI34.
+                    ++droppedWeights;
+                    continue;
+                }
+                std::array<Influence, 4>& slot = influences[vw.mVertexId];
+                // Keep the four LARGEST; the explicit compare is the tie-break and survives a future
+                // Assimp that stops honouring LimitBoneWeights.
+                unsigned int smallest = 0;
+                for (unsigned int k = 1; k < 4; ++k) {
+                    if (slot[k].weight < slot[smallest].weight) {
+                        smallest = k;
+                    }
+                }
+                if (vw.mWeight > slot[smallest].weight) {
+                    slot[smallest] = Influence{jointSlot, vw.mWeight};
+                }
+            }
+        }
+        if (droppedBones > 0) {
+            addWarning(result, std::format("skin '{}': {} bone(s) resolved to no node and were dropped", outSkin.name,
+                                           droppedBones));
+        }
+        if (droppedWeights > 0) {
+            addWarning(result, std::format("skin '{}': {} weight(s) referenced a vertex outside the mesh and "
+                                           "were dropped",
+                                           outSkin.name, droppedWeights));
+        }
+
+        // skeletonRoot: recorded AS-IS from mArmature when Assimp filled it, even when it is not itself a
+        // joint (3.2.1's E24). INVALID_SUBASSET otherwise -- NEVER derived by computing a common
+        // ancestor, which would be an invention.
+        outSkin.skeletonRoot = INVALID_SUBASSET;
+        if (src.mBones[0]->mArmature != nullptr) {
+            const auto armature = localIdByNode.find(src.mBones[0]->mArmature);
+            if (armature != localIdByNode.end()) {
+                outSkin.skeletonRoot = armature->second;
+            }
+        }
+
+        const auto skinIndex = static_cast<std::uint32_t>(result.model.skins.size());
+        result.model.summary.jointCount += outSkin.joints.size();
+        result.model.skins.push_back(std::move(outSkin));
+
+        bindSkinToMesh(mi, skinIndex, result.model);
+        if (wantVertexData && mi < result.model.meshes.size() && !result.model.meshes[mi].primitives.empty()) {
+            writeSkinVertexArrays(influences, result.model.meshes[mi].primitives[0]);
+        }
+    }
+    result.model.summary.skinCount = result.model.skins.size();
+}
+
+// D12/E16's shape, from fbx_import.cpp, with the key type changed and ONE required difference: Assimp's
+// key times are in TICKS, so the conversion divides by mTicksPerSecond. `times` is enforced STRICTLY
+// INCREASING here, never assumed from the library -- a key whose time is <= the previous ACCEPTED one is
+// dropped, with one warning per channel. `keyBudget` is this call's share of the model-wide cap.
+[[nodiscard]] std::size_t appendVec3Channel(ImportResult& result, ImportedAnimation& anim, AnimationPath path,
+                                            std::uint32_t targetNode, const aiVectorKey* keys, unsigned int keyCount,
+                                            double ticksPerSecond, std::size_t keyBudget) {
+    if (keyCount == 0 || keys == nullptr) {
+        return 0;
+    }
+    ImportedAnimationChannel channel;
+    channel.targetNode = targetNode;
+    channel.path = path;
+    channel.interpolation = AnimationInterpolation::Linear;  // EVERY channel Linear (A-13)
+    channel.times.reserve(keyCount);
+    channel.values.reserve(keyCount);
+    bool first = true;
+    float lastTime = 0.0F;
+    std::size_t appended = 0;
+    bool droppedNonIncreasing = false;
+    for (unsigned int i = 0; i < keyCount && appended < keyBudget; ++i) {
+        const auto t = static_cast<float>(keys[i].mTime / ticksPerSecond);
+        if (!first && t <= lastTime) {
+            droppedNonIncreasing = true;
+            continue;
+        }
+        const Vec3 value = toVec3(keys[i].mValue);
+        channel.times.push_back(t);
+        channel.values.push_back(Vec4{value.x, value.y, value.z, 0.0F});
+        lastTime = t;
+        first = false;
+        ++appended;
+    }
+    if (droppedNonIncreasing) {
+        addWarning(result,
+                   std::format("animation '{}': a duplicate or non-increasing timestamp was dropped", anim.name));
+    }
+    if (!channel.times.empty()) {
+        anim.channels.push_back(std::move(channel));
+    }
+    return appended;
+}
+
+// The IDENTICAL shape for a rotation key list. A-14 TRAP 2 AGAIN, and this is a SECOND place the
+// {w,x,y,z} order can be got wrong: the conversion goes through toQuat and is stored in glTF's own
+// {x,y,z,w} order. AC-44's hand-computed case drives THIS path, not convertNodes'.
+[[nodiscard]] std::size_t appendQuatChannel(ImportResult& result, ImportedAnimation& anim, AnimationPath path,
+                                            std::uint32_t targetNode, const aiQuatKey* keys, unsigned int keyCount,
+                                            double ticksPerSecond, std::size_t keyBudget) {
+    if (keyCount == 0 || keys == nullptr) {
+        return 0;
+    }
+    ImportedAnimationChannel channel;
+    channel.targetNode = targetNode;
+    channel.path = path;
+    channel.interpolation = AnimationInterpolation::Linear;
+    channel.times.reserve(keyCount);
+    channel.values.reserve(keyCount);
+    bool first = true;
+    float lastTime = 0.0F;
+    std::size_t appended = 0;
+    bool droppedNonIncreasing = false;
+    for (unsigned int i = 0; i < keyCount && appended < keyBudget; ++i) {
+        const auto t = static_cast<float>(keys[i].mTime / ticksPerSecond);
+        if (!first && t <= lastTime) {
+            droppedNonIncreasing = true;
+            continue;
+        }
+        const Quat q = toQuat(keys[i].mValue);
+        channel.times.push_back(t);
+        channel.values.push_back(Vec4{q.x, q.y, q.z, q.w});
+        lastTime = t;
+        first = false;
+        ++appended;
+    }
+    if (droppedNonIncreasing) {
+        addWarning(result,
+                   std::format("animation '{}': a duplicate or non-increasing timestamp was dropped", anim.name));
+    }
+    if (!channel.times.empty()) {
+        anim.channels.push_back(std::move(channel));
+    }
+    return appended;
+}
+
+// task 3.2.5 (A-13). NO BAKING -- and that is why full parity is affordable here and was not for FBX.
+// Each aiNodeAnim carries three INDEPENDENT key arrays, which map one-for-one onto three
+// ImportedAnimationChannels.
+void convertAnimations(const aiScene& scene, ImportDepth depth, ImportResult& result) {
+    const std::unordered_map<std::string, std::uint32_t> localIdByName = buildNodeNameMap(result.model);
+    std::size_t keyTotal = 0;
+
+    for (unsigned int ai = 0; ai < scene.mNumAnimations; ++ai) {
+        const aiAnimation& src = *scene.mAnimations[ai];
+        ImportedAnimation outAnim;
+        outAnim.name = src.mName.C_Str();
+        outAnim.localId = ai;
+
+        // mTicksPerSecond == 0 means "not specified": seconds then EQUAL ticks, and ONE warning per clip
+        // says so, because a clip that plays 24x too fast with no explanation is the worst failure mode
+        // available here. UNREACHABLE from these three formats -- ColladaLoader writes 1000 flat, and
+        // .ply/.stl have no animations at all -- so it is source-text cover (AI70), not live cover.
+        double ticksPerSecond = src.mTicksPerSecond;
+        if (ticksPerSecond == 0.0) {
+            addWarning(result, std::format("animation '{}': no ticks-per-second was declared; key times are "
+                                           "interpreted as seconds",
+                                           outAnim.name));
+            ticksPerSecond = 1.0;
+        }
+
+        for (unsigned int c = 0; c < src.mNumChannels; ++c) {
+            const aiNodeAnim& ch = *src.mChannels[c];
+            const auto target = localIdByName.find(ch.mNodeName.C_Str());
+            if (target == localIdByName.end()) {
+                // E13/AC-47: a channel targeting a node the scene does not contain is DROPPED with one
+                // warning -- never silently retargeted and never emitted with an invalid targetNode.
+                addWarning(result, std::format("animation '{}': channel targets unknown node '{}'; dropped",
+                                               outAnim.name, ch.mNodeName.C_Str()));
+                continue;
+            }
+            if (depth != ImportDepth::Full) {
+                continue;  // Structure keeps clip IDENTITY and loses samples -- glTF's shape
+            }
+            const std::size_t budget =
+                keyTotal >= MAX_ANIMATION_KEYS_PER_MODEL ? 0U : MAX_ANIMATION_KEYS_PER_MODEL - keyTotal;
+            keyTotal += appendVec3Channel(result, outAnim, AnimationPath::Translation, target->second, ch.mPositionKeys,
+                                          ch.mNumPositionKeys, ticksPerSecond, budget);
+            const std::size_t rotationBudget =
+                keyTotal >= MAX_ANIMATION_KEYS_PER_MODEL ? 0U : MAX_ANIMATION_KEYS_PER_MODEL - keyTotal;
+            keyTotal += appendQuatChannel(result, outAnim, AnimationPath::Rotation, target->second, ch.mRotationKeys,
+                                          ch.mNumRotationKeys, ticksPerSecond, rotationBudget);
+            const std::size_t scaleBudget =
+                keyTotal >= MAX_ANIMATION_KEYS_PER_MODEL ? 0U : MAX_ANIMATION_KEYS_PER_MODEL - keyTotal;
+            keyTotal += appendVec3Channel(result, outAnim, AnimationPath::Scale, target->second, ch.mScalingKeys,
+                                          ch.mNumScalingKeys, ticksPerSecond, scaleBudget);
+            if (keyTotal >= MAX_ANIMATION_KEYS_PER_MODEL) {
+                escalate(result, ImportStatus::Truncated,
+                         "the animation key count exceeds this importer's per-model limit");
+            }
+        }
+
+        // duration is RECOMPUTED from surviving channels, in SECONDS, never taken from mDuration -- which
+        // for Collada is in TICKS and would be 1000x too large. The same reason bounds are folded from
+        // positions rather than read from the document's own claim.
+        outAnim.duration = 0.0F;
+        for (const ImportedAnimationChannel& channel : outAnim.channels) {
+            if (!channel.times.empty()) {
+                outAnim.duration = std::max(outAnim.duration, channel.times.back());
+            }
+        }
+        result.model.summary.animationDuration = std::max(result.model.summary.animationDuration, outAnim.duration);
+        result.model.animations.push_back(std::move(outAnim));
+    }
+    result.model.summary.animationCount = result.model.animations.size();
+}
+
 // AC-19: the .ply Structure and Full passes must produce the IDENTICAL externalUris, entry for entry
 // and order for order. Structure produces it from the header scan; Full seeds it from the SAME scan
 // first, so the order is the header's. Lifted into one helper so the two call sites cannot drift.
@@ -960,6 +1320,12 @@ void seedPlyExternalUris(std::span<const std::byte> bytes, std::string_view asse
         materialMap = convertMaterials(*loaded.scene, assetRelativeDir, result);
     }
     applyMaterialMap(materialMap, result.model);
+    if (settings.importSkins) {
+        convertSkins(*loaded.scene, settings, depth, result);
+    }
+    if (settings.importAnimations) {
+        convertAnimations(*loaded.scene, depth, result);
+    }
     return result;
 }
 
