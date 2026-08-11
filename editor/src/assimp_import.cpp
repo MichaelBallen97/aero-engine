@@ -718,8 +718,12 @@ void seedPlyExternalUris(std::span<const std::byte> bytes, std::string_view asse
             result.model.sourceSpace.formatVersion = std::format("COLLADA {}", version.C_Str());
         }
     }
-    (void)settings;
-    (void)depth;
+    // ORDERING IS A DEPENDENCY HERE, unlike .stl/.ply's: convertNodes runs FIRST so that convertSkins and
+    // convertAnimations can resolve an aiNode* / a node name to a localId through the walk it produced.
+    // Do not "harmonise" the two orders -- the other one is a convenience, this one is load-bearing.
+    convertNodes(*loaded.scene, settings, result);
+    convertMeshes(*loaded.scene, settings, depth, result);
+    applyMaterialMap(std::vector<std::uint32_t>{}, result.model);
     (void)assetRelativeDir;  // step 6 wires it into convertMaterials; named here so the signature holds
     return result;
 }

@@ -286,6 +286,114 @@ constexpr std::string_view HOSTILE_DAE =
 </COLLADA>
 )";
 
+// ---- Collada fixtures (step 5) ----------------------------------------------------------------------
+// One triangle geometry, reused by every hierarchy fixture below so the only thing that varies between
+// them is the thing the case is about.
+constexpr std::string_view DAE_TRIANGLE_GEOMETRY =
+    R"(  <library_geometries><geometry id="g1" name="Tri"><mesh>
+    <source id="p"><float_array id="pa" count="9">0 0 0 1 0 0 0 1 0</float_array>
+      <technique_common><accessor source="#pa" count="3" stride="3">
+        <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+      </accessor></technique_common></source>
+    <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>
+    <triangles count="1"><input semantic="VERTEX" source="#v" offset="0"/><p>0 1 2</p></triangles>
+  </mesh></geometry></library_geometries>
+)";
+
+// A THREE-LEVEL chain under the visual scene. Assimp makes the <visual_scene> itself the root node, so
+// this is four nodes: S -> A -> B -> C, with the geometry on the deepest.
+constexpr std::string_view DAE_CHAIN =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+%GEOMETRY%
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="A" name="A"><translate>1 2 3</translate>
+      <node id="B" name="B"><scale>2 2 2</scale>
+        <node id="C" name="C"><instance_geometry url="#g1"/></node>
+      </node>
+    </node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
+// THREE SIBLINGS, in document order. A one-child fixture is order-blind, which is exactly why this one
+// exists: the pre-order walk pushes children in REVERSE so the first is popped first.
+constexpr std::string_view DAE_SIBLINGS =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+%GEOMETRY%
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="a" name="a"/><node id="b" name="b"/><node id="c" name="c"><instance_geometry url="#g1"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
+// ONE node instancing TWO geometries: ImportedNode::meshIndex holds exactly one index, so the extra is
+// split into a child named `<parent>.1` and the split is NAMED in a warning.
+constexpr std::string_view DAE_TWO_MESHES_ONE_NODE =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="g1" name="One"><mesh>
+      <source id="p1"><float_array id="pa1" count="9">0 0 0 1 0 0 0 1 0</float_array>
+        <technique_common><accessor source="#pa1" count="3" stride="3">
+          <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+        </accessor></technique_common></source>
+      <vertices id="v1"><input semantic="POSITION" source="#p1"/></vertices>
+      <triangles count="1"><input semantic="VERTEX" source="#v1" offset="0"/><p>0 1 2</p></triangles>
+    </mesh></geometry>
+    <geometry id="g2" name="Two"><mesh>
+      <source id="p2"><float_array id="pa2" count="9">5 5 5 6 5 5 5 6 5</float_array>
+        <technique_common><accessor source="#pa2" count="3" stride="3">
+          <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+        </accessor></technique_common></source>
+      <vertices id="v2"><input semantic="POSITION" source="#p2"/></vertices>
+      <triangles count="1"><input semantic="VERTEX" source="#v2" offset="0"/><p>0 1 2</p></triangles>
+    </mesh></geometry>
+  </library_geometries>
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="Both" name="Both"><instance_geometry url="#g1"/><instance_geometry url="#g2"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
+// A quad and a pentagon, so aiProcess_Triangulate's 3(n-2) split is asserted rather than assumed.
+constexpr std::string_view DAE_POLYGONS =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="quad" name="Quad"><mesh>
+      <source id="qp"><float_array id="qpa" count="12">0 0 0 1 0 0 1 1 0 0 1 0</float_array>
+        <technique_common><accessor source="#qpa" count="4" stride="3">
+          <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+        </accessor></technique_common></source>
+      <vertices id="qv"><input semantic="POSITION" source="#qp"/></vertices>
+      <polylist count="1"><input semantic="VERTEX" source="#qv" offset="0"/><vcount>4</vcount><p>0 1 2 3</p></polylist>
+    </mesh></geometry>
+    <geometry id="pent" name="Pent"><mesh>
+      <source id="pp"><float_array id="ppa" count="15">0 0 0 2 0 0 3 1 0 1 2 0 -1 1 0</float_array>
+        <technique_common><accessor source="#ppa" count="5" stride="3">
+          <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+        </accessor></technique_common></source>
+      <vertices id="pv"><input semantic="POSITION" source="#pp"/></vertices>
+      <polylist count="1"><input semantic="VERTEX" source="#pv" offset="0"/><vcount>5</vcount><p>0 1 2 3 4</p></polylist>
+    </mesh></geometry>
+  </library_geometries>
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="Q" name="Q"><instance_geometry url="#quad"/></node>
+    <node id="P" name="P"><instance_geometry url="#pent"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
 // THE FIXTURE TABLE. AI10 (depth equality), AI11 (degenerate inputs) and AI13 all drive it, so adding a
 // fixture here covers it in several cases automatically -- which is what keeps AC-19's "for EVERY
 // fixture" honest as the suite grows.
@@ -469,6 +577,56 @@ void appendFloatBe(std::string& out, float value) { appendU32Be(out, std::bit_ca
         }
     }
     return approxEq(a.summary.bounds.min, b.summary.bounds.min) && approxEq(a.summary.bounds.max, b.summary.bounds.max);
+}
+
+// %GEOMETRY% -> the shared triangle library. A placeholder rather than string concatenation so each
+// fixture above still reads as ONE document, which is what makes it diffable beside its assertion.
+[[nodiscard]] std::string dae(std::string_view templateText) {
+    std::string out(templateText);
+    const std::size_t at = out.find("%GEOMETRY%\n");
+    if (at != std::string::npos) {
+        out.replace(at, std::string_view("%GEOMETRY%\n").size(), DAE_TRIANGLE_GEOMETRY);
+    }
+    return out;
+}
+
+// AI42: a <node> chain `depth` levels deep, built here because a 300-level literal is not a fixture
+// anybody can read. The geometry sits on the deepest node, so a truncated walk loses it.
+[[nodiscard]] std::string buildDeepDae(unsigned int depth) {
+    std::string out = R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+)";
+    out += DAE_TRIANGLE_GEOMETRY;
+    out += R"(  <library_visual_scenes><visual_scene id="S" name="S">
+)";
+    for (unsigned int i = 0; i < depth; ++i) {
+        out += std::format(R"(<node id="n{}" name="n{}">)", i, i);
+    }
+    out += R"(<instance_geometry url="#g1"/>)";
+    for (unsigned int i = 0; i < depth; ++i) {
+        out += "</node>";
+    }
+    out += R"(
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+    return out;
+}
+
+// A Z-up / Y-up pair describing the SAME solid at two declared unit scales. A-9's behaviour, made
+// assertable: the loader bakes both the unit factor and the axis correction into the ROOT NODE's
+// transform, never into the geometry.
+[[nodiscard]] std::string buildSpacedDae(std::string_view meter, std::string_view upAxis) {
+    return std::format(
+        "<?xml version=\"1.0\"?>\n<COLLADA xmlns=\"http://www.collada.org/2005/11/COLLADASchema\" "
+        "version=\"1.4.1\">\n  <asset><unit meter=\"{}\" name=\"u\"/><up_axis>{}</up_axis></asset>\n{}"
+        "  <library_visual_scenes><visual_scene id=\"S\" name=\"S\">\n"
+        "    <node id=\"N\" name=\"N\"><instance_geometry url=\"#g1\"/></node>\n"
+        "  </visual_scene></library_visual_scenes>\n  <scene><instance_visual_scene url=\"#S\"/></scene>\n"
+        "</COLLADA>\n",
+        meter, upAxis, DAE_TRIANGLE_GEOMETRY);
 }
 
 // The one surviving primitive of a single-mesh model. REQUIREs the shape rather than indexing blindly:
@@ -1344,4 +1502,338 @@ TEST_CASE("AI35: summary.bounds is folded from primitives and never from a mesh-
     CHECK(approxEq(result.model.summary.bounds.min, engine::Vec3{10.0F, 10.0F, 10.0F}));
     CHECK(approxEq(result.model.summary.bounds.max, engine::Vec3{11.0F, 11.0F, 10.0F}));
     CHECK(approxEq(result.model.meshes[0].bounds.min, engine::Vec3{10.0F, 10.0F, 10.0F}));
+}
+
+// ---- step 5: .dae hierarchy and its Structure/Full split ---------------------------------------------
+
+// AI36 (AC-33) -- a three-level <node> chain. Assimp makes the <visual_scene> ITSELF the root node, so
+// the document's three nodes arrive as four, and `parent`/`children` must agree in both directions.
+TEST_CASE("AI36: a .dae node chain becomes a consistent four-node hierarchy with one root") {
+    const std::string text = dae(DAE_CHAIN);
+    const ImportResult result = importModel("chain.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 4U);
+    CHECK(result.model.roots == std::vector<std::uint32_t>{0U});
+    CHECK(result.model.summary.nodeCount == 4U);
+
+    CHECK(result.model.nodes[0].parent == engine::editor::INVALID_SUBASSET);
+    for (std::size_t i = 0; i < result.model.nodes.size(); ++i) {
+        for (const std::uint32_t child : result.model.nodes[i].children) {
+            REQUIRE(child < result.model.nodes.size());
+            CHECK(result.model.nodes[child].parent == i);
+        }
+    }
+    // The document's own order down the chain: S -> A -> B -> C.
+    CHECK(result.model.nodes[1].name == "A");
+    CHECK(result.model.nodes[2].name == "B");
+    CHECK(result.model.nodes[3].name == "C");
+    CHECK(approxEq(result.model.nodes[1].translation, engine::Vec3{1.0F, 2.0F, 3.0F}));
+    CHECK(approxEq(result.model.nodes[2].scale, engine::Vec3{2.0F, 2.0F, 2.0F}));
+    CHECK(result.model.nodes[3].meshIndex == 0U);
+}
+
+// AI37 (AC-34) -- nodes[i].localId == i, on EVERY fixture. The coincidence is real for glTF and OBJ too
+// and FALSE for FBX, and 3.2.2's BLOCKING ASan heap-buffer-overflow was the panel leaning on it. Pinning
+// it here means a future change that breaks it is CAUGHT rather than discovered in the panel.
+TEST_CASE("AI37: every node's localId equals its index in ImportedModel::nodes") {
+    std::vector<std::string> texts;
+    for (const Fixture& fixture : fixtureTable()) {
+        texts.emplace_back(fixture.text);
+    }
+    texts.push_back(dae(DAE_CHAIN));
+    texts.push_back(dae(DAE_SIBLINGS));
+    texts.emplace_back(DAE_TWO_MESHES_ONE_NODE);
+
+    for (std::size_t t = 0; t < texts.size(); ++t) {
+        const std::string_view name = t < fixtureTable().size() ? fixtureTable()[t].name : std::string_view("x.dae");
+        const ImportResult result = importModel(name, "", asBytes(texts[t]), ImportSettings{}, ImportDepth::Full, {});
+        INFO("index: ", t, " name: ", name);
+        for (std::size_t i = 0; i < result.model.nodes.size(); ++i) {
+            CHECK(result.model.nodes[i].localId == i);
+        }
+    }
+}
+
+// AI38 -- PRE-ORDER DOCUMENT ORDER. The walk pushes children in REVERSE so the first is popped first;
+// getting that backwards is invisible in a one-child fixture and wrong in every real file.
+TEST_CASE("AI38: sibling nodes arrive in document order") {
+    const std::string text = dae(DAE_SIBLINGS);
+    const ImportResult result = importModel("sib.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 4U);
+    CHECK(result.model.nodes[1].name == "a");
+    CHECK(result.model.nodes[2].name == "b");
+    CHECK(result.model.nodes[3].name == "c");
+}
+
+// AI39 (AC-27) -- aiProcess_Triangulate's 3(n-2) split, asserted on a quad and a pentagon. The quad also
+// proves the split REUSES vertices rather than duplicating them.
+TEST_CASE("AI39: a quad becomes six indices over four vertices and a pentagon becomes nine") {
+    const std::string text(DAE_POLYGONS);
+    const ImportResult result = importModel("poly.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 2U);
+
+    std::size_t quad = result.model.meshes.size();
+    std::size_t pentagon = result.model.meshes.size();
+    for (std::size_t m = 0; m < result.model.meshes.size(); ++m) {
+        REQUIRE(result.model.meshes[m].primitives.size() == 1U);
+        if (result.model.meshes[m].primitives[0].positions.size() == 4U) {
+            quad = m;
+        } else if (result.model.meshes[m].primitives[0].positions.size() == 5U) {
+            pentagon = m;
+        }
+    }
+    REQUIRE(quad < result.model.meshes.size());
+    REQUIRE(pentagon < result.model.meshes.size());
+    CHECK(result.model.meshes[quad].primitives[0].indices.size() == 6U);
+    CHECK(result.model.meshes[pentagon].primitives[0].indices.size() == 9U);
+    CHECK(result.model.summary.triangleCount == 5U);  // 2 + 3
+}
+
+// AI40 (AC-28, CORRECTED against the library) -- point and line primitives are REMOVED, and removing the
+// last mesh in a document is a hard refusal, not an empty mesh.
+//
+// The plan predicted "a mesh with zero primitives and one warning naming the counts, and the mesh
+// SURVIVES". MEASURED: aiProcess_SortByPType + AI_CONFIG_PP_SBP_REMOVE DELETES a mesh whose only
+// primitive type is removed and updates the node graph around it, then throws
+// DeadlyImportError("No meshes remaining") when nothing is left. So a lines-only .dae is refused, and a
+// mixed one keeps exactly the triangle mesh. Our own "no triangles survived" arm stays for the same
+// reason the range check does (it is what a validation-off build would need) and has no live cover.
+TEST_CASE("AI40: a lines-only .dae is refused and a mixed one keeps only the triangle mesh") {
+    constexpr std::string_view LINES_ONLY =
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries><geometry id="l1" name="Line"><mesh>
+    <source id="lp"><float_array id="lpa" count="6">0 0 0 1 0 0</float_array>
+      <technique_common><accessor source="#lpa" count="2" stride="3">
+        <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+      </accessor></technique_common></source>
+    <vertices id="lv"><input semantic="POSITION" source="#lp"/></vertices>
+    <lines count="1"><input semantic="VERTEX" source="#lv" offset="0"/><p>0 1</p></lines>
+  </mesh></geometry></library_geometries>
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="L" name="L"><instance_geometry url="#l1"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+    const std::string linesOnly(LINES_ONLY);
+    const ImportResult refused =
+        importModel("lines.dae", "", asBytes(linesOnly), ImportSettings{}, ImportDepth::Full, {});
+    INFO("lines-only message: ", refused.message);
+    CHECK(refused.status != ImportStatus::Ok);
+    CHECK_FALSE(refused.message.empty());
+
+    // The SAME line geometry beside a triangle one, in ONE visual scene: the line mesh is removed and
+    // the triangle mesh survives -- so the removal is a per-mesh decision, not a whole-document one.
+    constexpr std::string_view MIXED =
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="l1" name="Line"><mesh>
+      <source id="lp"><float_array id="lpa" count="6">0 0 0 1 0 0</float_array>
+        <technique_common><accessor source="#lpa" count="2" stride="3">
+          <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+        </accessor></technique_common></source>
+      <vertices id="lv"><input semantic="POSITION" source="#lp"/></vertices>
+      <lines count="1"><input semantic="VERTEX" source="#lv" offset="0"/><p>0 1</p></lines>
+    </mesh></geometry>
+    <geometry id="g1" name="Tri"><mesh>
+      <source id="p"><float_array id="pa" count="9">0 0 0 1 0 0 0 1 0</float_array>
+        <technique_common><accessor source="#pa" count="3" stride="3">
+          <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+        </accessor></technique_common></source>
+      <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>
+      <triangles count="1"><input semantic="VERTEX" source="#v" offset="0"/><p>0 1 2</p></triangles>
+    </mesh></geometry>
+  </library_geometries>
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="L" name="L"><instance_geometry url="#l1"/></node>
+    <node id="T" name="T"><instance_geometry url="#g1"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+    const std::string mixed(MIXED);
+    const ImportResult kept = importModel("mixed.dae", "", asBytes(mixed), ImportSettings{}, ImportDepth::Full, {});
+    INFO("mixed message: ", kept.message);
+    REQUIRE(kept.status == ImportStatus::Ok);
+    REQUIRE(kept.model.meshes.size() == 1U);  // the line mesh is GONE, not empty
+    REQUIRE(kept.model.meshes[0].primitives.size() == 1U);
+    CHECK(kept.model.meshes[0].primitives[0].indices.size() == 3U);
+}
+
+// AI41 (AC-49) -- ImportedNode::meshIndex holds exactly ONE index, so a node instancing two geometries is
+// split into a parent plus one child named `<parent>.1`, and the split is NAMED once, never per mesh.
+TEST_CASE("AI41: a node referencing two meshes becomes two nodes and exactly one warning") {
+    const std::string text(DAE_TWO_MESHES_ONE_NODE);
+    const ImportResult result = importModel("both.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.nodes.size() == 3U);  // the visual scene, the node, and its split child
+    CHECK(result.model.nodes[1].name == "Both");
+    CHECK(result.model.nodes[2].name == "Both.1");
+    CHECK(result.model.nodes[2].parent == 1U);
+    CHECK(result.model.nodes[1].children == std::vector<std::uint32_t>{2U});
+    CHECK(result.model.nodes[1].meshIndex == 0U);
+    CHECK(result.model.nodes[2].meshIndex == 1U);
+
+    std::size_t splitWarnings = 0;
+    for (const std::string& warning : result.warnings) {
+        if (warning.find("split into") != std::string::npos) {
+            ++splitWarnings;
+        }
+    }
+    CHECK(splitWarnings == 1U);
+}
+
+// AI42 (AC-53) -- MAX_NODE_DEPTH. Assimp has no node-depth limit of its own, and the walk is ITERATIVE,
+// so this must redden a CHECK rather than crash: a crash here means the walk was made recursive.
+TEST_CASE("AI42: a 300-deep .dae node chain truncates with a message naming the depth limit") {
+    const std::string text = buildDeepDae(300U);
+    const ImportResult result = importModel("deep.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Truncated);
+    CHECK(result.message.find("depth") != std::string::npos);
+    // A COHERENT smaller model: every child index still resolves, and no node claims a parent it is not
+    // a child of.
+    CHECK(result.model.nodes.size() <= engine::editor::MAX_NODE_DEPTH + 2U);
+    for (std::size_t i = 0; i < result.model.nodes.size(); ++i) {
+        for (const std::uint32_t child : result.model.nodes[i].children) {
+            REQUIRE(child < result.model.nodes.size());
+            CHECK(result.model.nodes[child].parent == i);
+        }
+    }
+}
+
+// AI43 (AC-18) -- .dae at Structure depth: IDENTITY survives, CONTENT does not. glTF's own split, and
+// the reason .dae parses at both depths while .stl/.ply skip the library entirely.
+TEST_CASE("AI43: .dae at Structure depth keeps nodes and mesh identity and loses every sample") {
+    const std::string text = dae(DAE_CHAIN);
+    const ImportResult result =
+        importModel("chain.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Structure, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    CHECK(result.model.nodes.size() == 4U);
+    REQUIRE(result.model.meshes.size() == 1U);
+    CHECK(result.model.meshes[0].primitives.empty());
+    CHECK(result.model.meshes[0].bounds.valid());  // a POINT box, never the Aabb::empty() sentinel
+    CHECK(result.model.summary.vertexCount == 0U);
+    CHECK(result.model.summary.triangleCount == 0U);
+    CHECK(result.model.summary.primitiveCount == 0U);
+    CHECK(result.model.summary.animationDuration == 0.0F);
+    CHECK_FALSE(result.model.summary.bounds.valid());
+}
+
+// AI44 (AC-35) -- A-9's BEHAVIOUR, asserted rather than described. Assimp's Collada loader bakes the
+// declared unit and the up-axis correction into the ROOT NODE's transform, so a Z-up centimetre document
+// and its Y-up metre twin have IDENTICAL mesh-local geometry and differ only in the hierarchy.
+//
+// The rotation is hand-computed: the loader post-multiplies the row-major matrix
+// [[1,0,0],[0,0,1],[0,-1,0]], which maps (x,y,z) -> (x, z, -y) -- a -90 degree rotation about X, whose
+// quaternion in engine::Quat's own {x,y,z,w} order is {-sin45, 0, 0, cos45}. A trap-2 reordering makes
+// this read {0, 0, 0, ...} and the case goes red.
+TEST_CASE("AI44: a Z-up centimetre .dae carries its conversion in the root transform, never in geometry") {
+    const std::string centimetre = buildSpacedDae("0.01", "Z_UP");
+    const std::string metre = buildSpacedDae("1", "Y_UP");
+    const ImportResult cm = importModel("cm.dae", "", asBytes(centimetre), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult m = importModel("m.dae", "", asBytes(metre), ImportSettings{}, ImportDepth::Full, {});
+    INFO("cm message: ", cm.message, " m message: ", m.message);
+    REQUIRE(cm.status == ImportStatus::Ok);
+    REQUIRE(m.status == ImportStatus::Ok);
+
+    REQUIRE_FALSE(cm.model.nodes.empty());
+    REQUIRE_FALSE(m.model.nodes.empty());
+    CHECK(approxEq(cm.model.nodes[0].scale, engine::Vec3{0.01F, 0.01F, 0.01F}));
+    CHECK(approxEq(cm.model.nodes[0].rotation.x, -0.70710678F, 1e-4F));
+    CHECK(approxEq(cm.model.nodes[0].rotation.y, 0.0F, 1e-4F));
+    CHECK(approxEq(cm.model.nodes[0].rotation.z, 0.0F, 1e-4F));
+    CHECK(approxEq(cm.model.nodes[0].rotation.w, 0.70710678F, 1e-4F));
+
+    CHECK(approxEq(m.model.nodes[0].scale, engine::Vec3{1.0F, 1.0F, 1.0F}));
+    CHECK(approxEq(m.model.nodes[0].rotation.x, 0.0F, 1e-4F));
+    CHECK(approxEq(m.model.nodes[0].rotation.w, 1.0F, 1e-4F));
+
+    // The GEOMETRY is identical between the two -- the conversion lives in the hierarchy.
+    CHECK(modelsMatchIgnoringNames(cm.model, m.model));
+}
+
+// AI45 (AC-36) -- the SourceSpace half of AI44, driven through importModel rather than through the pure
+// helper, so importDae's own wiring of it is covered too.
+TEST_CASE("AI45: .dae reports its declared unit and up-axis, and .ply/.stl declare nothing") {
+    const std::string centimetre = buildSpacedDae("0.01", "Z_UP");
+    const ImportResult cm = importModel("cm.dae", "", asBytes(centimetre), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(cm.status == ImportStatus::Ok);
+    CHECK(cm.model.sourceSpace.declared);
+    CHECK(approxEq(cm.model.sourceSpace.unitMeters, 0.01F));
+    CHECK(cm.model.sourceSpace.upAxis == 'Z');
+
+    const std::string metre = buildSpacedDae("1", "Y_UP");
+    const ImportResult m = importModel("m.dae", "", asBytes(metre), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(m.status == ImportStatus::Ok);
+    CHECK(m.model.sourceSpace.declared);
+    CHECK(approxEq(m.model.sourceSpace.unitMeters, 1.0F));
+    CHECK(m.model.sourceSpace.upAxis == 'Y');
+
+    for (const std::string_view name : {std::string_view("t.ply"), std::string_view("t.stl")}) {
+        const std::string_view text = name == "t.ply" ? TRIANGLE_PLY : TRIANGLE_STL;
+        const ImportResult other = importModel(name, "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+        INFO("name: ", name);
+        CHECK_FALSE(other.model.sourceSpace.declared);
+    }
+}
+
+// AI46 (E8) -- a .dae with no <library_visual_scenes> is refused, and the LIBRARY'S OWN message is what
+// the panel shows.
+TEST_CASE("AI46: a .dae with no visual scene is refused with the library's own message") {
+    constexpr std::string_view NO_SCENE =
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+</COLLADA>
+)";
+    const std::string text(NO_SCENE);
+    const ImportResult result = importModel("empty.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    CHECK(result.status != ImportStatus::Ok);
+    CHECK(result.status != ImportStatus::Unsupported);
+    CHECK_FALSE(result.message.empty());
+}
+
+// AI47 (E10) -- a CROSS-DOCUMENT <instance_geometry url="other.dae#g">. The second document is NEVER
+// opened: RefusingIoSystem refuses every path but the magic in-memory one, and the working directory is
+// listed before and after to prove nothing was created either.
+TEST_CASE("AI47: a cross-document instance_geometry never opens the other file") {
+    const TempDir temp;
+    {
+        std::ofstream sibling(temp.path() / "other.dae", std::ios::binary);
+        sibling << "<?xml version=\"1.0\"?><COLLADA/>";
+    }
+    const ScopedCwd cwd(temp.path());
+
+    std::vector<std::string> before;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(temp.path())) {
+        before.push_back(entry.path().filename().string());
+    }
+
+    std::string text = dae(DAE_CHAIN);
+    const std::size_t at = text.find("<instance_geometry url=\"#g1\"/>");
+    REQUIRE(at != std::string::npos);
+    text.replace(at, std::string_view("<instance_geometry url=\"#g1\"/>").size(),
+                 "<instance_geometry url=\"other.dae#g1\"/>");
+    const ImportResult result = importModel("cross.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    CHECK(result.externalUris.empty());
+
+    std::vector<std::string> after;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(temp.path())) {
+        after.push_back(entry.path().filename().string());
+    }
+    CHECK(before == after);
 }
