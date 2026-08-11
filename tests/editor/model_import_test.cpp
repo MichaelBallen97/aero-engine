@@ -165,6 +165,8 @@ private:
 
 }  // namespace
 
+using engine::editor::ASSIMP_IMPORTER_NAME;
+using engine::editor::ASSIMP_IMPORTER_VERSION;
 using engine::editor::classifyUri;
 using engine::editor::FBX_IMPORTER_NAME;
 using engine::editor::FBX_IMPORTER_VERSION;
@@ -187,6 +189,7 @@ using engine::editor::normalizeRelativePath;
 using engine::editor::OBJ_IMPORTER_NAME;
 using engine::editor::OBJ_IMPORTER_VERSION;
 using engine::editor::ObjMtlLibScan;
+using engine::editor::plyDeclaredCountsExceedBytes;
 using engine::editor::scanColladaAssetSpace;
 using engine::editor::scanObjMtlLibs;
 using engine::editor::scanObjMtlLibsScan;
@@ -2278,8 +2281,11 @@ TEST_CASE(
     // each backend's own tier-0 suite proves its content-level behaviour.
     //
     // Grows to FIVE here (code-review round: this array and the comment below it stopped at FOUR,
-    // stale from Step 3, and never grew to include ".mtl" once importMtlOnly became real at Step 7).
-    constexpr std::array<std::string_view, 5> ACCEPTED_EXTENSIONS = {".gltf", ".glb", ".fbx", ".obj", ".mtl"};
+    // stale from Step 3, and never grew to include ".mtl" once importMtlOnly became real at Step 7),
+    // and to EIGHT at task 3.2.5, which claims .dae, .ply and .stl through one Assimp backend. The
+    // array's SIZE TEMPLATE ARGUMENT moves with it, or this file does not compile.
+    constexpr std::array<std::string_view, 8> ACCEPTED_EXTENSIONS = {".gltf", ".glb", ".fbx", ".obj",
+                                                                     ".mtl",  ".dae", ".ply", ".stl"};
     const std::string oneByte = "x";
     for (const std::string_view ext : ACCEPTED_EXTENSIONS) {
         const std::string name = "model" + std::string(ext);
@@ -2298,8 +2304,11 @@ TEST_CASE(
     // importMtlOnly was still a stub, but the comment and the table were never updated once Step 7 made
     // the .mtl arm real -- this IS the three-way sync check, and .mtl was the one claimed extension it
     // did not bind).
-    constexpr std::array<std::string_view, 11> NAMES = {
-        "a.gltf", "a.glb", "a.fbx", "a.obj", "a.mtl", "a.blend", "a.dae", "a.png", "README", "", ".obj",
+    // ".ply" and ".stl" join at task 3.2.5, beside the ".dae" that was already here as a NEGATIVE and
+    // is now a positive. The SIZE TEMPLATE ARGUMENT moves with the array, or this file does not compile.
+    constexpr std::array<std::string_view, 13> NAMES = {
+        "a.gltf", "a.glb", "a.fbx", "a.obj",  "a.mtl", "a.blend", "a.dae",
+        "a.ply",  "a.stl", "a.png", "README", "",      ".obj",
     };
     const std::string oneByte = "x";
     for (const std::string_view name : NAMES) {
@@ -2330,6 +2339,17 @@ TEST_CASE(
     CHECK(gltf.status != ImportStatus::Ok);
     const ImportResult fbx = importModel("t.fbx", "", asBytes(body), ImportSettings{}, ImportDepth::Full, {});
     CHECK(fbx.status != ImportStatus::Ok);
+
+    // task 3.2.5: three more arms, and the one-byte body is a FAILURE for all three (each format's
+    // parser rejects it), which is what makes this a ROUTING discriminator rather than a smoke test --
+    // "not Ok" AND "not Unsupported" together can only be produced by a backend that actually ran.
+    const std::string oneByte = "x";
+    for (const std::string_view name : {"t.dae", "t.ply", "t.stl"}) {
+        const ImportResult result = importModel(name, "", asBytes(oneByte), ImportSettings{}, ImportDepth::Full, {});
+        INFO("name: ", name);
+        CHECK(result.status != ImportStatus::Ok);
+        CHECK(result.status != ImportStatus::Unsupported);
+    }
 }
 
 TEST_CASE("model_import: modelImporterIdentity(\"a.fbx\") is the FBX pair, not a shared constant (MI106)") {
@@ -2467,13 +2487,20 @@ TEST_CASE("model_import: isImportableModelName rejects a bare or malformed .obj/
     CHECK_FALSE(isImportableModelName("mtl"));
 }
 
-TEST_CASE(
-    "model_import: isImportableModelName is still narrower than AssetKind::Model -- .blend/.dae/.ply/.stl "
-    "all reject (MI120, AC-2 corrected)") {
+TEST_CASE("model_import: the two asymmetries that survive task 3.2.5 (MI120, AC-2 corrected)") {
+    // REWRITTEN, not deleted: this case's number and its job -- pinning where isImportableModelName and
+    // asset_view.hpp's AssetKind::Model deliberately disagree -- are unchanged; what changed is the
+    // answer. Task 3.2.5 claims .dae/.ply/.stl, so after it the two tables differ in exactly TWO places.
+    //
+    // 1. `.blend` is AssetKind::Model and NOT importable (3.2.4's D15 -- the scan must never spawn a
+    //    process, and phase 7.5 gates its probe on exactly this predicate).
     CHECK_FALSE(isImportableModelName("a.blend"));
-    CHECK_FALSE(isImportableModelName("a.dae"));
-    CHECK_FALSE(isImportableModelName("a.ply"));
-    CHECK_FALSE(isImportableModelName("a.stl"));
+    // 2. `.mtl` is importable and NOT AssetKind::Model at all (3.2.3's D4 -- it classifies Unknown).
+    CHECK(isImportableModelName("a.mtl"));
+    // Everything else now agrees, which is the whole content of this task's table widening.
+    CHECK(isImportableModelName("a.dae"));
+    CHECK(isImportableModelName("a.ply"));
+    CHECK(isImportableModelName("a.stl"));
 }
 
 TEST_CASE("model_import: modelImporterIdentity's full four-row table (MI121, AC-4 corrected)") {
@@ -2486,6 +2513,14 @@ TEST_CASE("model_import: modelImporterIdentity's full four-row table (MI121, AC-
     const ImporterIdentity obj = modelImporterIdentity("a.obj");
     CHECK(obj.name == OBJ_IMPORTER_NAME);
     CHECK(obj.version == OBJ_IMPORTER_VERSION);
+    // task 3.2.5: a FIFTH row, and it is ONE identity across THREE claimed extensions -- which is what
+    // makes an ASSIMP_IMPORTER_VERSION bump re-trigger .dae, .ply and .stl together and nothing else.
+    for (const std::string_view name : {"a.dae", "a.ply", "a.stl"}) {
+        const ImporterIdentity assimp = modelImporterIdentity(name);
+        INFO("name: ", name);
+        CHECK(assimp.name == ASSIMP_IMPORTER_NAME);
+        CHECK(assimp.version == ASSIMP_IMPORTER_VERSION);
+    }
     const ImporterIdentity none = modelImporterIdentity("a.png");
     CHECK(none == ImporterIdentity{});
 }
@@ -2639,29 +2674,27 @@ TEST_CASE(
 // IS the .ply Structure pass, and scanColladaAssetSpace IS where .dae's SourceSpace comes from, so
 // these batteries are the cheapest place to pin both rules before anything depends on them.
 
-TEST_CASE("model_import: scanPlyTextureFiles reproduces the loader's trailing-character rule (MI134)") {
-    // The operand is the rest of the line MINUS ITS FINAL CHARACTER -- the library's own behaviour,
-    // reproduced on purpose (A-19b). With a trailing space the visible name survives intact, which is
-    // exactly why real .ply writers emit one.
+TEST_CASE("model_import: scanPlyTextureFiles reproduces the loader's operand rule VERBATIM (MI134)") {
+    // MEASURED against assimp 6.0.4 rather than predicted: the operand is the rest of the line with
+    // the LINE TERMINATOR removed and NOTHING else, so a trailing space SURVIVES into the name. The
+    // library's own `strlen - 1` reads like an off-by-one and is not one -- the buffer it trims still
+    // carries the terminator. These two assertions are the record of that measurement.
     const std::string ply = "ply\ncomment TextureFile cube.png \nend_header\n";
     const std::vector<std::string> names = scanPlyTextureFiles(asBytes(ply), 16);
     REQUIRE(names.size() == 1U);
-    CHECK(names[0] == "cube.png");
+    CHECK(names[0] == "cube.png ");  // WITH the trailing space -- exactly what the loader hands back
 
-    // Without the trailing space the SAME rule eats the last character, and that is the behaviour the
-    // Full pass will exhibit too. Recorded rather than corrected -- AC-19 is what asserts the two
-    // depths agree, and a "fix" here would break that agreement, not restore it.
     const std::string tight = "ply\ncomment TextureFile cube.png\nend_header\n";
     const std::vector<std::string> tightNames = scanPlyTextureFiles(asBytes(tight), 16);
     REQUIRE(tightNames.size() == 1U);
-    CHECK(tightNames[0] == "cube.pn");
+    CHECK(tightNames[0] == "cube.png");
 }
 
 TEST_CASE("model_import: an `element`-prefixed line carries the semantic identically (MI135)") {
     const std::string ply = "ply\nelement TextureFile skin.png \nend_header\n";
     const std::vector<std::string> names = scanPlyTextureFiles(asBytes(ply), 16);
     REQUIRE(names.size() == 1U);
-    CHECK(names[0] == "skin.png");
+    CHECK(names[0] == "skin.png ");
 
     // A line that begins with neither keyword is not a candidate at all.
     const std::string other = "ply\nproperty TextureFile skin.png \nend_header\n";
@@ -2679,30 +2712,36 @@ TEST_CASE("model_import: two identical TextureFile lines dedup to one entry (MI1
     const std::string ply = "ply\ncomment TextureFile a.png \ncomment TextureFile a.png \nend_header\n";
     const std::vector<std::string> names = scanPlyTextureFiles(asBytes(ply), 16);
     REQUIRE(names.size() == 1U);
-    CHECK(names[0] == "a.png");
+    CHECK(names[0] == "a.png ");
 }
 
 TEST_CASE("model_import: two different TextureFile lines both survive, in first-seen order (MI138)") {
     const std::string ply = "ply\ncomment TextureFile a.png \ncomment TextureFile b.png \nend_header\n";
     const std::vector<std::string> names = scanPlyTextureFiles(asBytes(ply), 16);
+    // NOTE, and it is a deliberate divergence: the loader keeps only the LAST TextureFile line (each
+    // overwrites the previous), while this scan returns BOTH. Over-reporting a dependency the header
+    // genuinely names is the safe direction, and the Full pass seeds externalUris from this same scan,
+    // so the two depths still agree exactly -- which is the property AC-19 asserts.
     REQUIRE(names.size() == 2U);
-    CHECK(names[0] == "a.png");
-    CHECK(names[1] == "b.png");
+    CHECK(names[0] == "a.png ");
+    CHECK(names[1] == "b.png ");
 }
 
 TEST_CASE("model_import: scanPlyTextureFiles caps at maxNames and does not throw (MI139)") {
     const std::string ply = "ply\ncomment TextureFile a.png \ncomment TextureFile b.png \nend_header\n";
     const std::vector<std::string> one = scanPlyTextureFiles(asBytes(ply), 1);
     REQUIRE(one.size() == 1U);
-    CHECK(one[0] == "a.png");  // the cap keeps the FIRST, never the last
+    CHECK(one[0] == "a.png ");  // the cap keeps the FIRST, never the last
     CHECK(scanPlyTextureFiles(asBytes(ply), 0).empty());
 }
 
 TEST_CASE("model_import: CRLF line endings are handled -- one trailing '\\r' stripped (MI140)") {
+    // MEASURED: the loader answers `a.png ` for this file too, so stripping exactly one trailing
+    // '\r' and nothing else is what keeps the two depths in agreement.
     const std::string ply = "ply\r\ncomment TextureFile a.png \r\nend_header\r\n";
     const std::vector<std::string> names = scanPlyTextureFiles(asBytes(ply), 16);
     REQUIRE(names.size() == 1U);
-    CHECK(names[0] == "a.png");
+    CHECK(names[0] == "a.png ");
 }
 
 TEST_CASE("model_import: nothing after end_header is scanned (MI141)") {
@@ -2802,4 +2841,56 @@ TEST_CASE("model_import: <up_axis> alone still declares, with unitMeters at 1 (M
     CHECK(space.declared);
     CHECK(space.upAxis == 'Z');
     CHECK(space.unitMeters == doctest::Approx(1.0F));
+}
+
+// MI152 (R8) -- the pre-allocation bound, at the pure level. The behavioural half is AI13, which
+// takes ~3 s WITH this check and ground for over SEVENTEEN MINUTES at unbounded and climbing RSS
+// without it: the PLY loader works from the DECLARED count and never compares it against the file
+// size (unlike STLLoader.cpp, which refuses at `mFileSize < 84 + mNumFaces * 50` before allocating).
+// Every honest shape below must pass, because a pre-check that rejects a real file is worse than the
+// hang it prevents.
+TEST_CASE("model_import: plyDeclaredCountsExceedBytes refuses a lying header, passes honest ones (MI152)") {
+    constexpr std::string_view HEADER = "ply\nformat ascii 1.0\n";
+
+    SUBCASE("the pathological header AI13 drives: 2^32-1 vertices, empty body") {
+        const std::string lying = std::string(HEADER) +
+                                  "element vertex 4294967295\nproperty float x\nproperty float y\n"
+                                  "property float z\nend_header\n";
+        CHECK(plyDeclaredCountsExceedBytes(asBytes(lying)));
+    }
+    SUBCASE("a count that would OVERFLOW a 64-bit accumulator still refuses, never wraps small") {
+        const std::string overflow = std::string(HEADER) + "element vertex 99999999999999999999999999\nend_header\n";
+        CHECK(plyDeclaredCountsExceedBytes(asBytes(overflow)));
+    }
+    SUBCASE("counts are SUMMED across elements -- neither alone exceeds, together they do") {
+        const std::string split = std::string(HEADER) + "element vertex 20\nelement face 20\nend_header\n" +
+                                  std::string(30, 'x');  // 40 declared, 30 bytes present
+        CHECK(plyDeclaredCountsExceedBytes(asBytes(split)));
+    }
+
+    SUBCASE("an HONEST body passes -- one byte per instance is the weakest defensible bound") {
+        const std::string honest = std::string(HEADER) + "element vertex 3\nend_header\n0 0 0\n1 0 0\n0 1 0\n";
+        CHECK_FALSE(plyDeclaredCountsExceedBytes(asBytes(honest)));
+    }
+    SUBCASE("exactly enough bytes passes -- the comparison is >, never >=") {
+        const std::string exact = std::string(HEADER) + "element vertex 4\nend_header\nabcd";
+        CHECK_FALSE(plyDeclaredCountsExceedBytes(asBytes(exact)));
+    }
+    SUBCASE("a zero-element header passes, and so does one declaring no elements at all") {
+        CHECK_FALSE(plyDeclaredCountsExceedBytes(asBytes(std::string(HEADER) + "element vertex 0\nend_header\n")));
+        CHECK_FALSE(plyDeclaredCountsExceedBytes(asBytes(std::string(HEADER) + "end_header\n")));
+    }
+    SUBCASE("CRLF line endings are handled, exactly as scanPlyTextureFiles handles them") {
+        const std::string crlf = "ply\r\nformat ascii 1.0\r\nelement vertex 900\r\nend_header\r\n";
+        CHECK(plyDeclaredCountsExceedBytes(asBytes(crlf)));
+    }
+    SUBCASE("`elementary` is not `element` -- the keyword needs its trailing whitespace") {
+        const std::string decoy = std::string(HEADER) + "elementary 4294967295\nend_header\n";
+        CHECK_FALSE(plyDeclaredCountsExceedBytes(asBytes(decoy)));
+    }
+    SUBCASE("no end_header at all: no verdict, because there is no body to compare against") {
+        // A truncated-but-honest file must reach the loader and get the loader's own message.
+        CHECK_FALSE(plyDeclaredCountsExceedBytes(asBytes(std::string(HEADER) + "element vertex 4294967295\n")));
+        CHECK_FALSE(plyDeclaredCountsExceedBytes(std::span<const std::byte>{}));
+    }
 }

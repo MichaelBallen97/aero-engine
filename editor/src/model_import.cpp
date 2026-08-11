@@ -72,7 +72,8 @@ std::string_view importStatusLabel(ImportStatus status) noexcept {
 }
 
 bool isImportableModelName(std::string_view fileName) noexcept {
-    constexpr std::array<std::string_view, 5> EXTENSIONS = {".gltf", ".glb", ".fbx", ".obj", ".mtl"};
+    constexpr std::array<std::string_view, 8> EXTENSIONS = {".gltf", ".glb", ".fbx", ".obj",
+                                                            ".mtl",  ".dae", ".ply", ".stl"};
     for (const std::string_view ext : EXTENSIONS) {
         if (endsWithFolded(fileName, ext)) {
             return true;
@@ -90,6 +91,13 @@ ImporterIdentity modelImporterIdentity(std::string_view fileName) noexcept {
     // re-trigger imports for .obj AND .mtl together and for nothing else.
     if (endsWithFolded(fileName, ".obj") || endsWithFolded(fileName, ".mtl")) {
         return {OBJ_IMPORTER_NAME, OBJ_IMPORTER_VERSION};
+    }
+    // task 3.2.5: ONE identity for ALL THREE claimed extensions -- one importer, three file kinds. A
+    // .stl's cache entry therefore records ("assimp", 1), which is what makes an
+    // ASSIMP_IMPORTER_VERSION bump re-trigger imports for .dae, .ply and .stl together and for
+    // nothing else.
+    if (endsWithFolded(fileName, ".dae") || endsWithFolded(fileName, ".ply") || endsWithFolded(fileName, ".stl")) {
+        return {ASSIMP_IMPORTER_NAME, ASSIMP_IMPORTER_VERSION};
     }
     if (isImportableModelName(fileName)) {
         return {GLTF_IMPORTER_NAME, GLTF_IMPORTER_VERSION};
@@ -109,6 +117,13 @@ bool modelImporterNeedsExternalBuffers(std::string_view fileName) noexcept {
     // them, and -- once they exceed MAX_EXTERNAL_BYTES_PER_MODEL -- report Truncated for a result that
     // was complete at Structure depth.
     if (endsWithFolded(fileName, ".mtl")) {
+        return false;
+    }
+    // task 3.2.5: NO, for all three. Every external reference .dae/.ply/.stl carry is a TEXTURE, which
+    // this importer resolves for the DEPENDENCY GRAPH and never reads -- the FBX answer verbatim. That
+    // is precisely why ModelImportSession needed no edit for this task: service() skips its whole first
+    // pass and runs ONE Full import with an empty external span, a path FBX already ships and validates.
+    if (endsWithFolded(fileName, ".dae") || endsWithFolded(fileName, ".ply") || endsWithFolded(fileName, ".stl")) {
         return false;
     }
     // .gltf/.glb (buffers may be external .bin files) and .obj (its .mtl IS an external file, D4).
@@ -346,13 +361,24 @@ std::vector<std::string> scanPlyTextureFiles(std::span<const std::byte> bytes, s
                 while (k < rest.size() && (rest[k] == ' ' || rest[k] == '\t')) {
                     ++k;
                 }
-                // THE UPSTREAM OFF-BY-ONE, REPRODUCED ON PURPOSE (A-19b): the operand is the rest of
-                // the line MINUS ITS FINAL CHARACTER. Do not "fix" it -- Full goes through the
-                // library's own code, and AC-19 asserts the two agree on every fixture.
-                std::string_view operand = rest.substr(k);
-                if (!operand.empty()) {
-                    operand.remove_suffix(1);
-                }
+                // THE OPERAND IS THE REST OF THE LINE, VERBATIM -- INCLUDING ANY TRAILING SPACE.
+                //
+                // MEASURED against assimp 6.0.4, correcting the plan's own prediction. The library
+                // takes `std::string(&buffer[0], &buffer[0] + strlen(&buffer[0]) - 1)`, which LOOKS
+                // like an off-by-one that eats the last character -- but the buffer it reads still
+                // carries the line terminator, so the -1 removes exactly that and nothing else.
+                // Confirmed on four fixtures: `comment TextureFile a.png ` yields `"a.png "` WITH the
+                // space, `comment TextureFile a.png` yields `"a.png"`, and CRLF behaves as LF does.
+                //
+                // So the trailing space SURVIVES, and this scan must let it survive too. Trimming it
+                // would make Structure report `a.png` while Full's own material reports `a.png `, the
+                // two would classify to different relative paths, and the depths would DISAGREE about
+                // the URI set -- which is the one thing AC-19 forbids. Do not "fix" this.
+                //
+                // The one shape the two still differ on is a `TextureFile` line that is the file's
+                // LAST line with no terminator at all, where the library's -1 does eat a real
+                // character. A valid .ply cannot produce it: `end_header` always follows.
+                const std::string_view operand = rest.substr(k);
                 if (!operand.empty()) {
                     bool seen = false;
                     for (const std::string& existing : out) {  // dedup BY RAW TEXT, order preserved
@@ -377,6 +403,76 @@ std::vector<std::string> scanPlyTextureFiles(std::span<const std::byte> bytes, s
         lineStart = newline + 1;
     }
     return out;
+}
+
+// task 3.2.5 (R8). See the header for the contract and for the measurement that forced this to exist.
+bool plyDeclaredCountsExceedBytes(std::span<const std::byte> bytes) {
+    if (bytes.empty()) {
+        return false;  // an empty file is a PARSE failure, not a lying one -- let the loader say so
+    }
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+
+    // Saturating, because the operand is user-controlled text: `element vertex 99999999999999999999`
+    // must not wrap into a small number and pass the check it is meant to fail.
+    unsigned long long declared = 0;
+    std::size_t lineStart = 0;
+    while (lineStart <= text.size()) {
+        const std::size_t newline = text.find('\n', lineStart);
+        std::string_view line =
+            newline == std::string_view::npos ? text.substr(lineStart) : text.substr(lineStart, newline - lineStart);
+        if (!line.empty() && line.back() == '\r') {  // ONE trailing '\r' -- scanPlyTextureFiles' rule
+            line.remove_suffix(1);
+        }
+        std::size_t i = 0;
+        while (i < line.size() && line[i] == ' ') {
+            ++i;
+        }
+        const std::string_view rest = line.substr(i);
+
+        if (rest.substr(0, 10) == "end_header") {
+            // The ONLY place this function returns a verdict: everything the body must hold is known,
+            // and so is how many bytes there are to hold it.
+            const std::size_t bodyStart = newline == std::string_view::npos ? text.size() : newline + 1;
+            return declared > static_cast<unsigned long long>(text.size() - bodyStart);
+        }
+
+        // `element <name> <count>`, the keyword followed by whitespace so `elementary` cannot match.
+        if (rest.substr(0, 7) == "element" && rest.size() > 7 && (rest[7] == ' ' || rest[7] == '\t')) {
+            std::size_t j = 7;
+            for (int field = 0; field < 2; ++field) {  // skip the spaces, then the <name> token
+                while (j < rest.size() && (rest[j] == ' ' || rest[j] == '\t')) {
+                    ++j;
+                }
+                if (field == 0) {
+                    while (j < rest.size() && rest[j] != ' ' && rest[j] != '\t') {
+                        ++j;
+                    }
+                }
+            }
+            unsigned long long count = 0;
+            bool anyDigit = false;
+            while (j < rest.size() && rest[j] >= '0' && rest[j] <= '9') {
+                anyDigit = true;
+                const auto digit = static_cast<unsigned long long>(rest[j] - '0');
+                constexpr unsigned long long LIMIT = std::numeric_limits<unsigned long long>::max();
+                count = (count > (LIMIT - digit) / 10ULL) ? LIMIT : (count * 10ULL) + digit;
+                ++j;
+            }
+            if (anyDigit) {
+                declared = (declared > std::numeric_limits<unsigned long long>::max() - count)
+                               ? std::numeric_limits<unsigned long long>::max()
+                               : declared + count;
+            }
+        }
+
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        lineStart = newline + 1;
+    }
+    // No `end_header` at all, so this is not a well-formed header and there is no body to compare
+    // against. Refusing here would reject a truncated-but-honest file; the loader reports it instead.
+    return false;
 }
 
 // task 3.2.5 (A-10). See the header for the contract. DISPLAY-ONLY: nothing here is fed back into
