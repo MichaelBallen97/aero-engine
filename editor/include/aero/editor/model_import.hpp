@@ -36,10 +36,12 @@ namespace engine::editor {
 inline constexpr std::uint32_t INVALID_SUBASSET = 0xFFFFFFFFU;
 
 // ---- D15's caps. Each declared BESIDE the type it bounds, each checked BEFORE the allocation it
-// bounds -- with exactly ONE documented exception, MAX_EMBEDDED_BYTES (plan §A-8): fastgltf's
-// Parser::decodeDataUri allocates a data: URI's decoded payload DURING PARSE, before any of our code
-// runs, so that cap is necessarily checked after the fact. The real pre-allocation bound for embedded
-// data is MAX_MODEL_FILE_BYTES, which readFileBytes enforces WITHOUT OPENING THE FILE.
+// bounds -- with exactly TWO documented exceptions. The first is MAX_EMBEDDED_BYTES (plan §A-8):
+// fastgltf's Parser::decodeDataUri allocates a data: URI's decoded payload DURING PARSE, before any of
+// our code runs, so that cap is necessarily checked after the fact. The real pre-allocation bound for
+// embedded data is MAX_MODEL_FILE_BYTES, which readFileBytes enforces WITHOUT OPENING THE FILE. The
+// second is every cap the Assimp backend applies (task 3.2.5, see MAX_NODE_DEPTH below), for the
+// identical reason: ReadFileFromMemory returns a fully-built aiScene or nothing.
 inline constexpr std::uint64_t MAX_MODEL_FILE_BYTES = 256ULL * 1024 * 1024;
 inline constexpr std::uint64_t MAX_EXTERNAL_BYTES_PER_MODEL = 512ULL * 1024 * 1024;
 inline constexpr std::uint64_t MAX_EMBEDDED_BYTES = 128ULL * 1024 * 1024;  // checked AFTER parse (A8)
@@ -75,6 +77,17 @@ inline constexpr std::uint32_t MAX_FBX_NODE_DEPTH = 256;                    // -
 inline constexpr std::size_t MAX_FBX_TEMP_BYTES = 1024ULL * 1024 * 1024;    // -> temp_allocator.memory_limit
 inline constexpr std::size_t MAX_FBX_RESULT_BYTES = 1024ULL * 1024 * 1024;  // -> result_allocator.memory_limit
 inline constexpr std::size_t MAX_FBX_ALLOCATIONS = 4000000;                 // -> both allocation_limits
+
+// ---- task 3.2.5 (A-12/A-15): bounds the node walk. Assimp has NO node-depth limit of its own
+// (unlike ufbx, whose node_depth_limit MAX_FBX_NODE_DEPTH sets), and a .dae can declare an
+// arbitrarily deep <node> chain. The walk is ITERATIVE (misc-no-recursion is --warnings-as-errors),
+// so this bounds MEMORY and TIME, never the stack.
+//
+// NOTE, and this is a real difference from 3.2.2: every Assimp cap this backend applies is checked
+// AFTER the library has allocated, because ReadFileFromMemory returns a fully-built aiScene or
+// nothing. The real PRE-allocation bound is MAX_MODEL_FILE_BYTES, which readFileBytes enforces
+// WITHOUT OPENING THE FILE -- the MAX_EMBEDDED_BYTES position above, a second occupant.
+inline constexpr std::uint32_t MAX_NODE_DEPTH = 256;
 
 // ---- attributes ------------------------------------------------------------------------------------
 // A BITSET, not booleans: 3.3.1 switches on the COMBINATION to choose a vertex layout, and "which
@@ -468,6 +481,31 @@ struct ObjMtlLibScan {
 // PURE, and this IS the .obj Structure pass, in ONE LINEAR SCAN. See scanObjMtlLibs and ObjMtlLibScan
 // above for the candidate and count semantics respectively.
 [[nodiscard]] ObjMtlLibScan scanObjMtlLibsScan(std::span<const std::byte> bytes, std::size_t maxNames);
+
+// task 3.2.5 (A-7). PURE, and this IS the .ply Structure pass. Returns every `TextureFile` operand a
+// PLY header declares, in first-seen order, deduplicated BY RAW TEXT, capped at `maxNames`, stopping
+// at the `end_header` line (so it is bounded by the HEADER, not by the file: a 400 MB binary .ply
+// costs a few hundred bytes of scanning).
+//
+// The rule MIRRORS the library's own rather than a corrected one, INCLUDING its trailing-character
+// behaviour, because Structure and Full must agree about the URI set and Full goes through that code:
+// a line matches iff, after leading spaces, it begins with `element` or `comment`, then the
+// case-SENSITIVE token `TextureFile`, and the operand is the REST OF THE LINE MINUS ITS FINAL
+// CHARACTER. AC-19 asserts the agreement on every fixture; do not "fix" this into the rule you would
+// have written.
+[[nodiscard]] std::vector<std::string> scanPlyTextureFiles(std::span<const std::byte> bytes, std::size_t maxNames);
+
+// task 3.2.5 (A-10). PURE and DISPLAY-ONLY: reads at most `maxBytes` of a Collada document's leading
+// text for the <asset> block's <unit meter="..."> and <up_axis>. Bounded because both COLLADA schemas
+// require <asset> to be the FIRST child of <COLLADA>.
+//
+// It exists because Assimp's Collada loader CONSUMES both values into the root node's transformation
+// and exposes NEITHER (they fall in ReadAssetInfo's if/else-if chain before the branch that feeds the
+// metadata map). The result is NEVER fed back into geometry, NEVER compared and NEVER switched on --
+// SourceSpace's own "DISPLAY STRINGS" rule, extended to its two numeric fields for the one format
+// where the library gets there first. `declared` stays FALSE when neither element is found: a blank
+// panel row, never a wrong model.
+[[nodiscard]] SourceSpace scanColladaAssetSpace(std::span<const std::byte> bytes, std::size_t maxBytes = 65536);
 
 // task 3.2.3 (AC-54). PURE: true iff any of the first `probeBytes` bytes is 0x00. A Wavefront file is
 // TEXT; this is what stops a renamed PNG/JPEG/GLB being handed to a text parser at all. PNG, JPEG and

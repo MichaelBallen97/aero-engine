@@ -187,8 +187,10 @@ using engine::editor::normalizeRelativePath;
 using engine::editor::OBJ_IMPORTER_NAME;
 using engine::editor::OBJ_IMPORTER_VERSION;
 using engine::editor::ObjMtlLibScan;
+using engine::editor::scanColladaAssetSpace;
 using engine::editor::scanObjMtlLibs;
 using engine::editor::scanObjMtlLibsScan;
+using engine::editor::scanPlyTextureFiles;
 using engine::editor::SourceSpace;
 using engine::editor::UriClass;
 using engine::editor::UriClassification;
@@ -2630,4 +2632,174 @@ TEST_CASE(
     // The identity table has no .blend arm either, and that is correct: nothing probes a .blend, so its
     // import-cache entry stays at ("", 0) rather than oscillating.
     CHECK(modelImporterIdentity("statue.blend") == ImporterIdentity{});
+}
+
+// ---- task 3.2.5, step 2: the two PURE helpers ------------------------------------------------------
+// Both are driven entirely from string literals -- no disk, no Assimp, no locale. scanPlyTextureFiles
+// IS the .ply Structure pass, and scanColladaAssetSpace IS where .dae's SourceSpace comes from, so
+// these batteries are the cheapest place to pin both rules before anything depends on them.
+
+TEST_CASE("model_import: scanPlyTextureFiles reproduces the loader's trailing-character rule (MI134)") {
+    // The operand is the rest of the line MINUS ITS FINAL CHARACTER -- the library's own behaviour,
+    // reproduced on purpose (A-19b). With a trailing space the visible name survives intact, which is
+    // exactly why real .ply writers emit one.
+    const std::string ply = "ply\ncomment TextureFile cube.png \nend_header\n";
+    const std::vector<std::string> names = scanPlyTextureFiles(asBytes(ply), 16);
+    REQUIRE(names.size() == 1U);
+    CHECK(names[0] == "cube.png");
+
+    // Without the trailing space the SAME rule eats the last character, and that is the behaviour the
+    // Full pass will exhibit too. Recorded rather than corrected -- AC-19 is what asserts the two
+    // depths agree, and a "fix" here would break that agreement, not restore it.
+    const std::string tight = "ply\ncomment TextureFile cube.png\nend_header\n";
+    const std::vector<std::string> tightNames = scanPlyTextureFiles(asBytes(tight), 16);
+    REQUIRE(tightNames.size() == 1U);
+    CHECK(tightNames[0] == "cube.pn");
+}
+
+TEST_CASE("model_import: an `element`-prefixed line carries the semantic identically (MI135)") {
+    const std::string ply = "ply\nelement TextureFile skin.png \nend_header\n";
+    const std::vector<std::string> names = scanPlyTextureFiles(asBytes(ply), 16);
+    REQUIRE(names.size() == 1U);
+    CHECK(names[0] == "skin.png");
+
+    // A line that begins with neither keyword is not a candidate at all.
+    const std::string other = "ply\nproperty TextureFile skin.png \nend_header\n";
+    CHECK(scanPlyTextureFiles(asBytes(other), 16).empty());
+}
+
+TEST_CASE("model_import: the TextureFile semantic is CASE-SENSITIVE (MI136)") {
+    for (const std::string_view spelling : {"texturefile", "TEXTUREFILE", "Texturefile"}) {
+        const std::string ply = std::string("ply\ncomment ") + std::string(spelling) + " x.png \nend_header\n";
+        CHECK(scanPlyTextureFiles(asBytes(ply), 16).empty());
+    }
+}
+
+TEST_CASE("model_import: two identical TextureFile lines dedup to one entry (MI137)") {
+    const std::string ply = "ply\ncomment TextureFile a.png \ncomment TextureFile a.png \nend_header\n";
+    const std::vector<std::string> names = scanPlyTextureFiles(asBytes(ply), 16);
+    REQUIRE(names.size() == 1U);
+    CHECK(names[0] == "a.png");
+}
+
+TEST_CASE("model_import: two different TextureFile lines both survive, in first-seen order (MI138)") {
+    const std::string ply = "ply\ncomment TextureFile a.png \ncomment TextureFile b.png \nend_header\n";
+    const std::vector<std::string> names = scanPlyTextureFiles(asBytes(ply), 16);
+    REQUIRE(names.size() == 2U);
+    CHECK(names[0] == "a.png");
+    CHECK(names[1] == "b.png");
+}
+
+TEST_CASE("model_import: scanPlyTextureFiles caps at maxNames and does not throw (MI139)") {
+    const std::string ply = "ply\ncomment TextureFile a.png \ncomment TextureFile b.png \nend_header\n";
+    const std::vector<std::string> one = scanPlyTextureFiles(asBytes(ply), 1);
+    REQUIRE(one.size() == 1U);
+    CHECK(one[0] == "a.png");  // the cap keeps the FIRST, never the last
+    CHECK(scanPlyTextureFiles(asBytes(ply), 0).empty());
+}
+
+TEST_CASE("model_import: CRLF line endings are handled -- one trailing '\\r' stripped (MI140)") {
+    const std::string ply = "ply\r\ncomment TextureFile a.png \r\nend_header\r\n";
+    const std::vector<std::string> names = scanPlyTextureFiles(asBytes(ply), 16);
+    REQUIRE(names.size() == 1U);
+    CHECK(names[0] == "a.png");
+}
+
+TEST_CASE("model_import: nothing after end_header is scanned (MI141)") {
+    // BOUNDED BY THE HEADER, which is what makes a 400 MB binary .ply cost a few hundred bytes. A
+    // `TextureFile` line in the BODY -- or a byte sequence that happens to look like one -- is invisible.
+    const std::string ply = "ply\nend_header\ncomment TextureFile body.png \n";
+    CHECK(scanPlyTextureFiles(asBytes(ply), 16).empty());
+}
+
+TEST_CASE("model_import: an empty span returns an empty vector without reading (MI142)") {
+    CHECK(scanPlyTextureFiles({}, 16).empty());
+    const SourceSpace space = scanColladaAssetSpace({});
+    CHECK_FALSE(space.declared);
+}
+
+TEST_CASE("model_import: scanColladaAssetSpace reads a Z-up centimetre <asset> block (MI143)") {
+    const std::string dae =
+        "<?xml version=\"1.0\"?>\n<COLLADA version=\"1.4.1\">\n  <asset>\n"
+        "    <unit meter=\"0.01\" name=\"centimeter\"/>\n    <up_axis>Z_UP</up_axis>\n"
+        "  </asset>\n</COLLADA>\n";
+    const SourceSpace space = scanColladaAssetSpace(asBytes(dae));
+    CHECK(space.declared);
+    CHECK(space.unitMeters == doctest::Approx(0.01F));
+    CHECK(space.upAxis == 'Z');
+}
+
+TEST_CASE("model_import: scanColladaAssetSpace reads a Y-up metre <asset> block (MI144)") {
+    const std::string dae =
+        "<COLLADA>\n  <asset>\n    <unit meter=\"1\" name=\"meter\"/>\n"
+        "    <up_axis>Y_UP</up_axis>\n  </asset>\n</COLLADA>\n";
+    const SourceSpace space = scanColladaAssetSpace(asBytes(dae));
+    CHECK(space.declared);
+    CHECK(space.unitMeters == doctest::Approx(1.0F));
+    CHECK(space.upAxis == 'Y');
+}
+
+TEST_CASE("model_import: a .dae with no <asset> block declares nothing (MI145)") {
+    const std::string dae = "<COLLADA version=\"1.4.1\">\n  <library_geometries/>\n</COLLADA>\n";
+    const SourceSpace space = scanColladaAssetSpace(asBytes(dae));
+    CHECK_FALSE(space.declared);
+    CHECK(space.unitMeters == doctest::Approx(1.0F));  // the struct's own defaults, untouched
+    CHECK(space.upAxis == 'Y');
+    CHECK(space.generator.empty());
+    CHECK(space.formatVersion.empty());
+}
+
+TEST_CASE("model_import: .ply and .stl text declare no space at all (MI146)") {
+    // AC-36's second half. Neither format declares a unit or an axis, and inventing one is the option
+    // this task's scoping deliberately rejected -- the Source Space row means something precisely
+    // because it is ABSENT when the format declares nothing.
+    const std::string ply = "ply\nformat ascii 1.0\ncomment TextureFile a.png \nend_header\n";
+    CHECK_FALSE(scanColladaAssetSpace(asBytes(ply)).declared);
+    const std::string stl = "solid Cube\nfacet normal 0 0 1\nendfacet\nendsolid Cube\n";
+    CHECK_FALSE(scanColladaAssetSpace(asBytes(stl)).declared);
+}
+
+TEST_CASE("model_import: a <unit> with only name= leaves unitMeters at 1 and declares nothing (MI147)") {
+    const std::string dae = "<COLLADA>\n  <asset>\n    <unit name=\"centimeter\"/>\n  </asset>\n</COLLADA>\n";
+    const SourceSpace space = scanColladaAssetSpace(asBytes(dae));
+    CHECK_FALSE(space.declared);
+    CHECK(space.unitMeters == doctest::Approx(1.0F));
+}
+
+TEST_CASE("model_import: meter=\"0.01abc\" is rejected whole (MI148)") {
+    // The `parsed.ptr == last` check. A trailing-garbage value is NOT read as 0.01 with the tail
+    // ignored -- from_chars would happily stop at 'a', and accepting that would silently believe a
+    // number the document never wrote.
+    const std::string dae = "<COLLADA>\n  <asset>\n    <unit meter=\"0.01abc\"/>\n  </asset>\n</COLLADA>\n";
+    const SourceSpace space = scanColladaAssetSpace(asBytes(dae));
+    CHECK_FALSE(space.declared);
+    CHECK(space.unitMeters == doctest::Approx(1.0F));
+}
+
+TEST_CASE("model_import: a non-finite or non-positive unit is rejected (MI149)") {
+    for (const std::string_view value : {"0", "-1", "nan", "inf"}) {
+        const std::string dae = std::string("<COLLADA>\n  <asset>\n    <unit meter=\"") + std::string(value) +
+                                "\"/>\n  </asset>\n</COLLADA>\n";
+        const SourceSpace space = scanColladaAssetSpace(asBytes(dae));
+        CHECK_FALSE(space.declared);
+        CHECK(space.unitMeters == doctest::Approx(1.0F));
+    }
+}
+
+TEST_CASE("model_import: maxBytes is honoured -- an <asset> block beyond the bound is invisible (MI150)") {
+    const std::string padding(4096, ' ');
+    const std::string dae =
+        "<COLLADA>" + padding + "<asset><unit meter=\"0.01\"/><up_axis>Z_UP</up_axis></asset></COLLADA>";
+    CHECK(scanColladaAssetSpace(asBytes(dae)).declared);            // the default 64 KiB bound sees it
+    CHECK_FALSE(scanColladaAssetSpace(asBytes(dae), 32).declared);  // a 32-byte bound does not
+}
+
+TEST_CASE("model_import: <up_axis> alone still declares, with unitMeters at 1 (MI151)") {
+    // The HONEST row: the file said "Z-up, and nothing about units", so the panel reads
+    // "Z-up, 1 m/unit", which is exactly what the file said.
+    const std::string dae = "<COLLADA>\n  <asset>\n    <up_axis>Z_UP</up_axis>\n  </asset>\n</COLLADA>\n";
+    const SourceSpace space = scanColladaAssetSpace(asBytes(dae));
+    CHECK(space.declared);
+    CHECK(space.upAxis == 'Z');
+    CHECK(space.unitMeters == doctest::Approx(1.0F));
 }

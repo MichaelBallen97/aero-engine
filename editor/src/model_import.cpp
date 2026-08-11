@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -125,6 +127,85 @@ std::string foldBackslashesToSlashes(std::string_view path) {
 
 namespace {
 
+// task 3.2.5 (A-10). PURE, LOCALE-FREE decimal -> float, fully consumed or refused.
+//
+// MEASURED DEVIATION FROM THE PLAN, and the reason is a toolchain fact rather than a preference:
+// std::from_chars's FLOATING-POINT overload does not exist on every toolchain this project builds
+// with. Apple's libc++ 19.1.2 (MacOSX15.4.sdk -- the SDK this repo's own clang-tidy invocation pins,
+// and the one an Xcode 16 CI runner supplies) and Homebrew LLVM 18's own libc++ both ship
+// __charconv/from_chars_integral.h ONLY, so `std::from_chars(first, last, float&)` is a hard
+// "call to deleted function" there. engine/reflect/src/json_value.cpp already discovered this and
+// guards its use behind __cpp_lib_to_chars with a strtof_l fallback -- but that fallback needs
+// per-OS includes, and editor/src carries exactly three per-OS lines in exactly one file
+// (blender_tool.cpp) and must keep it that way. So this reads the number itself.
+//
+// std::stof/std::atof stay refused for the reason they always were: stof reads the C locale's
+// decimal point, so a German-locale editor would read "0.01" as 0, and it throws. This does neither.
+// Grammar: [+-]? DIGITS [ '.' DIGITS ] [ (e|E) [+-] DIGITS ], with FULL CONSUMPTION -- "0.01abc" is
+// refused whole, which is the property MI148 pins. Rounding is within a fraction of a ULP of
+// correctly-rounded, which is irrelevant here: the value is DISPLAY-ONLY (A-10) and is never fed
+// back into geometry, compared or switched on.
+[[nodiscard]] std::optional<float> parseDecimalFloat(std::string_view text) noexcept {
+    std::size_t i = 0;
+    bool negative = false;
+    if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+        negative = text[i] == '-';
+        ++i;
+    }
+    double mantissa = 0.0;
+    int exponent = 0;
+    std::size_t digits = 0;
+    while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+        mantissa = (mantissa * 10.0) + static_cast<double>(text[i] - '0');
+        ++digits;
+        ++i;
+    }
+    if (i < text.size() && text[i] == '.') {
+        ++i;
+        while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+            mantissa = (mantissa * 10.0) + static_cast<double>(text[i] - '0');
+            --exponent;
+            ++digits;
+            ++i;
+        }
+    }
+    if (digits == 0) {
+        return std::nullopt;  // "", ".", "nan", "inf", "+" -- none of them is a number here
+    }
+    if (i < text.size() && (text[i] == 'e' || text[i] == 'E')) {
+        ++i;
+        bool exponentNegative = false;
+        if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+            exponentNegative = text[i] == '-';
+            ++i;
+        }
+        std::size_t exponentDigits = 0;
+        int magnitude = 0;
+        while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+            if (magnitude < 10000) {  // saturate rather than overflow; 1e10000 is refused below anyway
+                magnitude = (magnitude * 10) + (text[i] - '0');
+            }
+            ++exponentDigits;
+            ++i;
+        }
+        if (exponentDigits == 0) {
+            return std::nullopt;
+        }
+        exponent += exponentNegative ? -magnitude : magnitude;
+    }
+    if (i != text.size()) {
+        return std::nullopt;  // FULL CONSUMPTION: trailing garbage refuses the whole value
+    }
+    const double scaled = mantissa * std::pow(10.0, static_cast<double>(exponent));
+    const double value = negative ? -scaled : scaled;
+    // The magnitude test is BEFORE the narrowing cast, not after: converting a double larger than
+    // FLT_MAX to float is undefined behaviour, and the Debug lanes run UBSan.
+    if (!std::isfinite(value) || std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<float>(value);
+}
+
 // task 3.2.3: the ONE place that decides "is this line an mtllib DIRECTIVE, and what's its operand" --
 // scanObjMtlLibs's own inner loop is the only caller. Kept as a free function rather than inlined so
 // its rule (case-SENSITIVE, leading-whitespace-only, a space or tab separator) is stated once.
@@ -226,6 +307,136 @@ ObjMtlLibScan scanObjMtlLibsScan(std::span<const std::byte> bytes, std::size_t m
 
 std::vector<std::string> scanObjMtlLibs(std::span<const std::byte> bytes, std::size_t maxNames) {
     return scanObjMtlLibsScan(bytes, maxNames).candidates;
+}
+
+// task 3.2.5 (A-7/A-19b). See the header for the contract and for WHY the rule is the library's own
+// rather than a corrected one.
+std::vector<std::string> scanPlyTextureFiles(std::span<const std::byte> bytes, std::size_t maxNames) {
+    std::vector<std::string> out;
+    if (bytes.empty()) {
+        return out;
+    }
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+
+    constexpr std::string_view SEMANTIC = "TextureFile";
+    std::size_t lineStart = 0;
+    while (lineStart <= text.size()) {
+        const std::size_t newline = text.find('\n', lineStart);
+        std::string_view line =
+            newline == std::string_view::npos ? text.substr(lineStart) : text.substr(lineStart, newline - lineStart);
+        if (!line.empty() && line.back() == '\r') {  // ONE trailing '\r' (CRLF) -- E7, scanObjMtlLibsScan's rule
+            line.remove_suffix(1);
+        }
+
+        // The library's own element-line test: after LEADING SPACES ONLY, the line must begin with
+        // `element` or `comment`. Anything else is not a candidate at all.
+        std::size_t i = 0;
+        while (i < line.size() && line[i] == ' ') {
+            ++i;
+        }
+        const std::string_view rest = line.substr(i);
+        if (rest.substr(0, 7) == "element" || rest.substr(0, 7) == "comment") {
+            // Skip the keyword, then the whitespace after it, then match the CASE-SENSITIVE semantic.
+            std::size_t j = 7;
+            while (j < rest.size() && (rest[j] == ' ' || rest[j] == '\t')) {
+                ++j;
+            }
+            if (rest.substr(j, SEMANTIC.size()) == SEMANTIC) {
+                std::size_t k = j + SEMANTIC.size();
+                while (k < rest.size() && (rest[k] == ' ' || rest[k] == '\t')) {
+                    ++k;
+                }
+                // THE UPSTREAM OFF-BY-ONE, REPRODUCED ON PURPOSE (A-19b): the operand is the rest of
+                // the line MINUS ITS FINAL CHARACTER. Do not "fix" it -- Full goes through the
+                // library's own code, and AC-19 asserts the two agree on every fixture.
+                std::string_view operand = rest.substr(k);
+                if (!operand.empty()) {
+                    operand.remove_suffix(1);
+                }
+                if (!operand.empty()) {
+                    bool seen = false;
+                    for (const std::string& existing : out) {  // dedup BY RAW TEXT, order preserved
+                        if (existing == operand) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen && out.size() < maxNames) {  // cap BEFORE the push
+                        out.emplace_back(operand);
+                    }
+                }
+            }
+        }
+        if (rest.substr(0, 10) == "end_header") {
+            break;  // BOUNDED BY THE HEADER: nothing past this line is scanned, at any file size
+        }
+
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        lineStart = newline + 1;
+    }
+    return out;
+}
+
+// task 3.2.5 (A-10). See the header for the contract. DISPLAY-ONLY: nothing here is fed back into
+// geometry, compared, or switched on.
+//
+// A TEXT scan rather than an XML parse, deliberately: pugixml arrives transitively with assimp, and
+// using it here was considered and rejected -- it would be a second source of truth about the same
+// document, it builds a DOM whose size is a multiple of the file's, and the moment it disagreed with
+// Assimp about anything there would be no correct side.
+SourceSpace scanColladaAssetSpace(std::span<const std::byte> bytes, std::size_t maxBytes) {
+    SourceSpace out;  // declared == false, unitMeters == 1, upAxis == 'Y' -- the "found nothing" answer
+    if (bytes.empty()) {
+        return out;
+    }
+    const std::size_t n = std::min(bytes.size(), maxBytes);
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), n);
+
+    // <unit meter="0.01" name="centimeter"/> -- the ATTRIBUTE is what matters; `name` is prose we do
+    // not read. Located by the literal `meter="` inside the first `<unit` element, so an attribute
+    // order of (name, meter) works as well as (meter, name).
+    const std::size_t unitTag = text.find("<unit");
+    if (unitTag != std::string_view::npos) {
+        const std::size_t close = text.find('>', unitTag);
+        const std::string_view element =
+            text.substr(unitTag, close == std::string_view::npos ? std::string_view::npos : close - unitTag);
+        const std::size_t attr = element.find("meter=\"");
+        if (attr != std::string_view::npos) {
+            const std::string_view valueStart = element.substr(attr + 7);
+            const std::size_t quote = valueStart.find('"');
+            if (quote != std::string_view::npos) {
+                // parseDecimalFloat is LOCALE-INDEPENDENT, never throws, and refuses trailing
+                // garbage whole -- see its own comment for why std::from_chars is not usable here
+                // and why std::stof never was. A non-finite or non-positive unit is refused: it is
+                // not a unit, and inventing one is what this task's scoping rejected.
+                const std::optional<float> meters = parseDecimalFloat(valueStart.substr(0, quote));
+                if (meters.has_value() && *meters > 0.0F) {
+                    out.unitMeters = *meters;
+                    out.declared = true;
+                }
+            }
+        }
+    }
+
+    // <up_axis>Z_UP</up_axis> -- the first character of the element's text is the axis letter.
+    const std::size_t upTag = text.find("<up_axis>");
+    if (upTag != std::string_view::npos) {
+        const std::string_view value = text.substr(upTag + 9);
+        std::size_t v = 0;
+        while (v < value.size() && (value[v] == ' ' || value[v] == '\t' || value[v] == '\r' || value[v] == '\n')) {
+            ++v;
+        }
+        if (v < value.size()) {
+            const unsigned char axis = foldAscii(static_cast<unsigned char>(value[v]));
+            if (axis == 'x' || axis == 'y' || axis == 'z') {
+                out.upAxis = static_cast<char>(axis - ('a' - 'A'));  // 'X' | 'Y' | 'Z', SourceSpace's own domain
+                out.declared = true;
+            }
+        }
+    }
+    return out;
 }
 
 bool looksLikeBinaryContent(std::span<const std::byte> bytes, std::size_t probeBytes) noexcept {
