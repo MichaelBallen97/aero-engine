@@ -2875,3 +2875,247 @@ TEST_CASE("AI77: scale reaches inverse bind translations and root translations o
         CHECK(approxEq(scaled.model.nodes[i].rotation.w, plain.model.nodes[i].rotation.w));
     }
 }
+
+// ---- step 8: caps, failure mapping and the validation refusal ----------------------------------------
+
+// AI78 (AC-52) -- THE DISTINCTION THE PANEL SHOWS THE USER. A scene that PARSED and then failed
+// aiProcess_ValidateDataStructure is Malformed with the validation message carried through; a document
+// that could not be parsed at all is ParseFailed. Assimp's own wording is "Validation failed: ..." from
+// ValidateDSProcess::ReportError (MEASURED against the pinned 6.0.4 source), which is what the substring
+// test keys on.
+TEST_CASE("AI78: a validation failure is Malformed and a parse failure is ParseFailed") {
+    // TWO IDENTICALLY-NAMED JOINTS. The document parses -- Collada permits it -- and
+    // ValidateDSProcess::Validate(aiMesh) then refuses it: "aiMesh::mBones[i], name = ... has the same
+    // name as aiMesh::mBones[a]". This is the arm the plan asked for, and finding an input that reaches
+    // it took measurement: the obvious candidate (an out-of-range <p> index) never gets there, because
+    // ColladaParser rejects it FIRST with "Invalid data index (99/3) in primitive specification", which
+    // is a PARSE failure and is asserted as such below.
+    std::string controllers(SKIN_LIBRARIES);
+    const std::size_t names = controllers.find("Bone1 Bone2");
+    REQUIRE(names != std::string::npos);
+    controllers.replace(names, std::string_view("Bone1 Bone2").size(), "Bone1 Bone1");
+    const std::string duplicate = skinnedDae(controllers, "");
+    const ImportResult invalid =
+        importModel("dup.dae", "", asBytes(duplicate), ImportSettings{}, ImportDepth::Full, {});
+    INFO("validation message: ", invalid.message);
+    CHECK(invalid.status == ImportStatus::Malformed);
+    CHECK(invalid.status != ImportStatus::ParseFailed);
+    CHECK(invalid.message.find("alidation") != std::string::npos);
+
+    const std::string garbage = "<COLLADA><this is not xml at all";
+    const ImportResult unparseable =
+        importModel("junk.dae", "", asBytes(garbage), ImportSettings{}, ImportDepth::Full, {});
+    INFO("parse message: ", unparseable.message);
+    CHECK(unparseable.status == ImportStatus::ParseFailed);
+    CHECK_FALSE(unparseable.message.empty());
+
+    // And the measured third case, recorded so the two paths are never conflated: an out-of-range
+    // primitive index in a .dae is a PARSER refusal, not a validation one, and reads ParseFailed.
+    std::string text = dae(DAE_CHAIN);
+    const std::size_t at = text.find("<p>0 1 2</p>");
+    REQUIRE(at != std::string::npos);
+    text.replace(at, std::string_view("<p>0 1 2</p>").size(), "<p>0 1 99</p>");
+    const ImportResult parserRefusal =
+        importModel("bad.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("parser message: ", parserRefusal.message);
+    CHECK(parserRefusal.status == ImportStatus::ParseFailed);
+    CHECK(parserRefusal.message.find("Invalid data index") != std::string::npos);
+}
+
+// AI79 (AC-53) -- TWO caps in ONE import produce ONE Truncated and TWO "; "-joined messages, which is
+// ImportResult::message's own documented rule. A 300-deep node chain (past MAX_NODE_DEPTH) in a document
+// that also names more textures than MAX_EXTERNAL_URIS.
+TEST_CASE("AI79: two caps in one import produce one Truncated and two joined messages") {
+    const std::size_t textures = engine::editor::MAX_EXTERNAL_URIS + 4U;
+    std::string images;
+    std::string effects;
+    std::string materials;
+    for (std::size_t i = 0; i < textures; ++i) {
+        images += std::format(R"(<image id="i{}"><init_from>t{}.png</init_from></image>)", i, i);
+        effects += std::format(
+            R"(<effect id="e{}"><profile_COMMON><newparam sid="s{}"><surface type="2D"><init_from>i{}</init_from></surface></newparam>)"
+            R"(<newparam sid="sam{}"><sampler2D><source>s{}</source></sampler2D></newparam>)"
+            R"(<technique sid="common"><lambert><diffuse><texture texture="sam{}" texcoord="UV0"/></diffuse></lambert></technique>)"
+            R"(</profile_COMMON></effect>)",
+            i, i, i, i, i, i);
+        materials += std::format(R"(<material id="m{}" name="M{}"><instance_effect url="#e{}"/></material>)", i, i, i);
+    }
+    std::string chain;
+    std::string closing;
+    for (unsigned int i = 0; i < 300U; ++i) {
+        chain += std::format(R"(<node id="n{}" name="n{}">)", i, i);
+        closing += "</node>";
+    }
+    const std::string text = std::format(
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_images>{}</library_images>
+  <library_effects>{}</library_effects>
+  <library_materials>{}</library_materials>
+{}  <library_visual_scenes><visual_scene id="S" name="S">
+{}<instance_geometry url="#g1"/>{}
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)",
+        images, effects, materials, DAE_TRIANGLE_GEOMETRY, chain, closing);
+
+    const ImportResult result = importModel("two.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Truncated);
+    CHECK(result.message.find("depth") != std::string::npos);
+    CHECK(result.message.find("external reference") != std::string::npos);
+    CHECK(result.message.find("; ") != std::string::npos);
+}
+
+// AI80 (AC-54) -- `warnings` caps at MAX_IMPORT_WARNINGS; `warningTotal` does NOT. Forty refused texture
+// paths produce forty warnings and twenty entries -- the MAX_REPORTED_PER_CATEGORY shape, a fifth use.
+TEST_CASE("AI80: warnings cap at MAX_IMPORT_WARNINGS while warningTotal stays uncapped") {
+    constexpr std::size_t REFUSALS = 40;
+    std::string images;
+    std::string effects;
+    std::string materials;
+    for (std::size_t i = 0; i < REFUSALS; ++i) {
+        images += std::format(R"(<image id="i{}"><init_from>../../escape{}.png</init_from></image>)", i, i);
+        effects += std::format(
+            R"(<effect id="e{}"><profile_COMMON><newparam sid="s{}"><surface type="2D"><init_from>i{}</init_from></surface></newparam>)"
+            R"(<newparam sid="sam{}"><sampler2D><source>s{}</source></sampler2D></newparam>)"
+            R"(<technique sid="common"><lambert><diffuse><texture texture="sam{}" texcoord="UV0"/></diffuse></lambert></technique>)"
+            R"(</profile_COMMON></effect>)",
+            i, i, i, i, i, i);
+        materials += std::format(R"(<material id="m{}" name="M{}"><instance_effect url="#e{}"/></material>)", i, i, i);
+    }
+    const std::string text = std::format(
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_images>{}</library_images>
+  <library_effects>{}</library_effects>
+  <library_materials>{}</library_materials>
+{}  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="N" name="N"><instance_geometry url="#g1"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)",
+        images, effects, materials, DAE_TRIANGLE_GEOMETRY);
+
+    const ImportResult result = importModel("warn.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message, " warningTotal: ", result.warningTotal);
+    REQUIRE(result.status == ImportStatus::Ok);
+    CHECK(result.warnings.size() == engine::editor::MAX_IMPORT_WARNINGS);
+    CHECK(result.warningTotal == REFUSALS);
+    CHECK(result.externalUris.empty());
+}
+
+// AI81 (AC-53) -- MAX_NODES_PER_MODEL. A COHERENT smaller model: no `children` entry may point past
+// nodes.size(), and every child's `parent` must still name the node that lists it.
+TEST_CASE("AI81: overflowing MAX_NODES_PER_MODEL truncates without leaving a dangling child index") {
+    const std::size_t nodes = engine::editor::MAX_NODES_PER_MODEL + 4U;
+    std::string siblings;
+    siblings.reserve(nodes * 32U);
+    for (std::size_t i = 0; i < nodes; ++i) {
+        siblings += std::format(R"(<node id="n{}" name="n{}"/>)", i, i);
+    }
+    const std::string text = std::format(
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+{}  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="G" name="G"><instance_geometry url="#g1"/></node>
+{}
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)",
+        DAE_TRIANGLE_GEOMETRY, siblings);
+
+    const ImportResult result = importModel("nodes.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Truncated);
+    CHECK(result.message.find("node count") != std::string::npos);
+    CHECK(result.model.nodes.size() == engine::editor::MAX_NODES_PER_MODEL);
+    CHECK(result.model.summary.nodeCount == engine::editor::MAX_NODES_PER_MODEL);
+    for (std::size_t i = 0; i < result.model.nodes.size(); ++i) {
+        for (const std::uint32_t child : result.model.nodes[i].children) {
+            REQUIRE(child < result.model.nodes.size());
+            CHECK(result.model.nodes[child].parent == i);
+        }
+    }
+}
+
+// AI82 (AC-53) -- MAX_PRIMITIVES_PER_MODEL, and the ONLY input in this suite that produces a SURVIVING
+// mesh with ZERO primitives. That makes it the one place the point-box fallback is observable: a mesh
+// the cap refused must carry Aabb{} (valid, a point at the origin), never the Aabb::empty() sentinel,
+// whose NaN centre would leak into anything that folded it.
+TEST_CASE("AI82: overflowing MAX_PRIMITIVES_PER_MODEL leaves the refused meshes a point box") {
+    const std::size_t meshes = engine::editor::MAX_PRIMITIVES_PER_MODEL + 4U;
+    std::string geometries;
+    std::string nodes;
+    geometries.reserve(meshes * 512U);
+    nodes.reserve(meshes * 64U);
+    for (std::size_t i = 0; i < meshes; ++i) {
+        geometries += std::format(
+            R"(<geometry id="g{}" name="G{}"><mesh><source id="p{}"><float_array id="pa{}" count="9">0 0 0 1 0 0 0 1 0</float_array>)"
+            R"(<technique_common><accessor source="#pa{}" count="3" stride="3"><param name="X" type="float"/>)"
+            R"(<param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>)"
+            R"(<vertices id="v{}"><input semantic="POSITION" source="#p{}"/></vertices>)"
+            R"(<triangles count="1"><input semantic="VERTEX" source="#v{}" offset="0"/><p>0 1 2</p></triangles>)"
+            R"(</mesh></geometry>)",
+            i, i, i, i, i, i, i, i);
+        nodes += std::format(R"(<node id="n{}" name="n{}"><instance_geometry url="#g{}"/></node>)", i, i, i);
+    }
+    const std::string text = std::format(
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries>{}</library_geometries>
+  <library_visual_scenes><visual_scene id="S" name="S">
+{}
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)",
+        geometries, nodes);
+
+    const ImportResult result = importModel("prims.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Truncated);
+    CHECK(result.message.find("primitive count") != std::string::npos);
+    CHECK(result.model.summary.primitiveCount == engine::editor::MAX_PRIMITIVES_PER_MODEL);
+
+    std::size_t empties = 0;
+    for (const engine::editor::ImportedMesh& mesh : result.model.meshes) {
+        if (!mesh.primitives.empty()) {
+            continue;
+        }
+        ++empties;
+        CHECK(mesh.bounds.valid());  // a POINT box, never Aabb::empty()'s NaN-centred sentinel
+        CHECK(approxEq(mesh.bounds.min, mesh.bounds.max));
+    }
+    CHECK(empties == 4U);
+    // And the model bounds are folded from the SURVIVING primitives, so the refused meshes' point boxes
+    // do not appear in them.
+    REQUIRE(result.model.summary.bounds.valid());
+    CHECK(approxEq(result.model.summary.bounds.max, engine::Vec3{1.0F, 1.0F, 0.0F}));
+}
+
+// AI83 -- every cap message names its cap in human-readable prose, so a future refactor cannot silently
+// reduce them all to "limit exceeded". Read from the comment-stripped source, because there is no input
+// that hits all eight caps in one import and a per-cap behavioural case would only re-assert what the
+// eight cap cases already do.
+TEST_CASE("AI83: every Truncated message names the cap it hit") {
+    const std::string code = strippedSource("assimp_import.cpp");
+    REQUIRE_FALSE(code.empty());
+    for (const std::string_view phrase :
+         {"the node depth exceeds", "the node count exceeds", "the primitive count exceeds", "the vertex count exceeds",
+          "the index count exceeds", "the material count exceeds", "the external reference count exceeds",
+          "the joint count exceeds", "the animation key count exceeds"}) {
+        INFO("cap message: ", phrase);
+        CHECK(code.find(phrase) != std::string::npos);
+    }
+    // And none of them is a bare, unhelpful sentence.
+    CHECK(code.find("\"limit exceeded\"") == std::string::npos);
+    CHECK(code.find("\"too many\"") == std::string::npos);
+}
