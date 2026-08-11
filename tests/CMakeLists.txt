@@ -279,6 +279,22 @@ find_package(Threads REQUIRED)
 # AERO_ASSET_FIXTURES_DIR, ALREADY defined on this target. The link line is UNCHANGED, no new ctest
 # entry is registered (ctest -N stays 95/6/19), and THIS TU NAMES NO ufbx TYPE -- it drives importFbx
 # through the public importModel() only.
+#
+# task 3.2.5 joins this target with ONE new TU. UNCONDITIONAL, for the identical reason
+# model_import_test.cpp / fbx_import_test.cpp / obj_import_test.cpp are: model_import.hpp depends only
+# on aero/core/{guid,math}.hpp, aero/editor/import_settings.hpp and aero/editor/scene_bounds.hpp; the
+# last reaches aero::scene, a PUBLIC, UNGATED dependency of aero_editor_core (only
+# engine/scene_serialize is gated on AERO_REFLECT_TOOLS). This TU must therefore be PRESENT in BOTH
+# reduced configurations, not skipped -- prove it with --list-test-cases, which must show the SAME
+# total in the two and AI1 present in both (AC-66). Tier-0: no GPU, no window, no ImGui context, no
+# sleeps, and no disk on the critical path -- nearly every case is a raw ASCII string literal, and the
+# binary .ply/.stl fixtures are BUILT BYTE-BY-BYTE IN THE TEST, which is what makes the
+# "byte-identical twin" assertions possible at all. The three committed fixtures are reached through
+# AERO_ASSET_FIXTURES_DIR, ALREADY defined on this target, and the source-text cases read
+# AERO_EDITOR_SRC_DIR, ALSO already defined on it (no second definition is added -- that would be a
+# drift surface). The link line is UNCHANGED, no new ctest entry is registered (ctest -N stays
+# 95/6/19), and THIS TU NAMES NO Assimp TYPE -- it drives the backend only indirectly, through the
+# PUBLIC importModel().
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -294,7 +310,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/asset_actions_test.cpp editor/asset_watcher_test.cpp
                editor/model_import_test.cpp editor/model_import_session_test.cpp
                editor/fbx_import_test.cpp editor/obj_import_test.cpp
-               editor/blender_tool_test.cpp editor/blender_service_test.cpp)
+               editor/blender_tool_test.cpp editor/blender_service_test.cpp
+               editor/assimp_import_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

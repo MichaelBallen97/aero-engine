@@ -4,6 +4,7 @@
 // NOTHING HERE LOGS (INV-A3), NOTHING HERE TOUCHES DISK (INV-M3), NOTHING HERE THROWS.
 #include <aero/editor/model_import.hpp>
 
+#include "assimp_import.hpp"
 #include "fbx_import.hpp"
 #include "gltf_import.hpp"
 #include "obj_import.hpp"
@@ -358,6 +359,13 @@ ImportResult importModel(std::string_view fileName, std::string_view assetRelati
     }
     if (endsWithFolded(fileName, ".obj") || endsWithFolded(fileName, ".mtl")) {
         return importObj(fileName, assetRelativeDir, bytes, settings, depth, external);
+    }
+    // task 3.2.5: THREE claimed extensions, ONE backend, and `fileName` is what selects the arm inside
+    // it -- the .obj/.mtl shape one step wider. Placed BEFORE the glTF arm for the same reason the FBX
+    // and OBJ arms are: the glTF arm stays the "everything else importable" case, so no two arms ever
+    // claim a name.
+    if (endsWithFolded(fileName, ".dae") || endsWithFolded(fileName, ".ply") || endsWithFolded(fileName, ".stl")) {
+        return importAssimp(fileName, assetRelativeDir, bytes, settings, depth, external);
     }
     if (isImportableModelName(fileName)) {  // .gltf / .glb
         return importGltf(assetRelativeDir, bytes, settings, depth, external);

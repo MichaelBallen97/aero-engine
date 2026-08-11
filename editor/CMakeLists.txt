@@ -29,6 +29,31 @@ find_package(tinyobjloader CONFIG REQUIRED)  # task 3.2.3 (D1): 2.0.0rc13, MIT, 
                                              # installed header when it is absent, which is what keeps
                                              # `real_t == float` in the header and in the archive.
                                              # builtin-baseline is untouched; only `dependencies` grows.
+find_package(assimp CONFIG REQUIRED)  # task 3.2.5 (a settled ADR -- docs/01:30, docs/02 ADR-002/003,
+                                      # docs/03:91 and docs/06:28 all already name Assimp for DAE/PLY/STL
+                                      # and all already mark it editor-only): 6.0.4#3, BSD-3-Clause.
+                                      # EDITOR-ONLY by docs/03's dependency-placement invariant, which
+                                      # runtime/CMakeLists.txt already states by hand and phase 5.2.2 is
+                                      # specified to assert.
+                                      #
+                                      # The port declares NO vcpkg_check_linkage, so this is a STATIC
+                                      # library on arm64-osx/x64-linux and a DLL on x64-windows -- which
+                                      # is why the second stb_image implementation it carries is a
+                                      # macOS/Linux concern (see thumbnail_store.cpp's STB_IMAGE_STATIC)
+                                      # and why the applocal DLL copy is a Windows one.
+                                      #
+                                      # Nine transitive ports arrive with it -- zlib, minizip, pugixml,
+                                      # rapidjson, poly2tri, polyclipping, utfcpp, kubazip, stb -- every
+                                      # one MIT-compatible, which docs/01 requires. The patched config
+                                      # find_dependency's `Stb MODULE` on the static triplets, which the
+                                      # find_package(Stb REQUIRED) above already satisfies.
+                                      #
+                                      # builtin-baseline is untouched; only the dependencies array grows.
+                                      # The port's ONE optional feature -- compressed-mesh support --
+                                      # is NEVER requested, so its extra dependency never arrives. Its
+                                      # name is deliberately NOT written here: AC-69's gate greps for
+                                      # that token over vcpkg.json and editor/, and a prose mention
+                                      # would turn it red for a reason that is not a violation.
 
 # task 3.2.2 (D3): ufbx is in NO vcpkg registry, so it is VENDORED rather than found. aero_ufbx is a
 # STATIC target over one .c compiled with THIS project's flags -- which is what makes it
@@ -97,6 +122,7 @@ add_library(aero_editor_core STATIC
     src/blender_tool.cpp         # task 3.2.4 -- PURE: no disk, no SDL, no <filesystem>, no logging
     src/blender_process.cpp      # task 3.2.4 -- the ONLY SDL_Process TU in the tree
     src/blender_service.cpp      # task 3.2.4 -- the state machine; SDL_getenv only, never SDL_Process
+    src/assimp_import.cpp        # task 3.2.5 -- the ONLY assimp TU; NO file operation at all
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -133,9 +159,18 @@ target_link_libraries(aero_editor_core
     # archive DOES reach aero_editor's and every test target's link line -- correct and unavoidable,
     # not a leak. The checkable invariant is the INCLUDE boundary: tiny_obj_loader.h reaches exactly
     # one TU (obj_import.cpp), never a test TU and never an engine/ TU.
+    # assimp::assimp is PRIVATE, exactly as fastgltf::fastgltf, aero_ufbx and
+    # tinyobjloader::tinyobjloader are (task 3.2.5): on a STATIC library a PRIVATE dependency propagates
+    # as $<LINK_ONLY:...>, so the archive DOES reach aero_editor's and every test target's link line --
+    # correct and unavoidable, not a leak. The checkable invariant is the INCLUDE boundary: no Assimp
+    # header reaches any TU but editor/src/assimp_import.cpp, which AC-11's grep and
+    # assimp_import_test.cpp's own AI2 source assertion both check. NEVER write the eight-character
+    # token "assimp" immediately followed by a forward slash in a comment anywhere under editor/,
+    # tests/, engine/, runtime/ or tools/ -- AC-11's grep scans those roots and a prose mention would
+    # turn it red for a reason that is not a violation.
     PRIVATE aero::profiling imgui::imgui imguizmo::imguizmo SDL3::SDL3 EnTT::EnTT aero::scene_render
             aero::platform_internal aero::rhi_internal fastgltf::fastgltf aero_ufbx
-            tinyobjloader::tinyobjloader
+            tinyobjloader::tinyobjloader assimp::assimp
 )
 
 # task 2.6.1 (D14): the ONLY consumer is editor_app.cpp, and `engineVersion` is INFORMATIONAL in v0
