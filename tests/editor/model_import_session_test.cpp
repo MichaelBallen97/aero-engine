@@ -162,6 +162,64 @@ void makeDirectories(std::string_view absolutePathUtf8) {
     REQUIRE_FALSE(ec);
 }
 
+// task 3.2.5's three fixtures, hoisted into NAMED constants: a .dae literal is XML and therefore nothing
+// but escaped quotes, and MSVC's legacy preprocessor breaks on a raw string literal containing \" passed
+// DIRECTLY as a doctest macro argument (.claude/rules/ci-portability.md).
+constexpr std::string_view ASSIMP_TRIANGLE_STL =
+    "solid Tri\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\n"
+    "endloop\nendfacet\nendsolid Tri\n";
+
+constexpr std::string_view ASSIMP_TRIANGLE_PLY =
+    "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+    "element face 1\nproperty list uchar int vertex_index\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+
+constexpr std::string_view ASSIMP_TRIANGLE_DAE =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries><geometry id="g1" name="Tri"><mesh>
+    <source id="p"><float_array id="pa" count="9">0 0 0 1 0 0 0 1 0</float_array>
+      <technique_common><accessor source="#pa" count="3" stride="3">
+        <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+      </accessor></technique_common></source>
+    <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>
+    <triangles count="1"><input semantic="VERTEX" source="#v" offset="0"/><p>0 1 2</p></triangles>
+  </mesh></geometry></library_geometries>
+  <library_visual_scenes><visual_scene id="S" name="S"><node id="N" name="N">
+    <instance_geometry url="#g1"/>
+  </node></visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
+// The same document with a <library_images> entry naming wood.png, bound through one effect and one
+// material -- so the import records exactly one external URI.
+constexpr std::string_view ASSIMP_TEXTURED_DAE =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_images><image id="i1"><init_from>wood.png</init_from></image></library_images>
+  <library_effects><effect id="e1"><profile_COMMON>
+    <newparam sid="s1"><surface type="2D"><init_from>i1</init_from></surface></newparam>
+    <newparam sid="sam1"><sampler2D><source>s1</source></sampler2D></newparam>
+    <technique sid="common"><lambert><diffuse><texture texture="sam1" texcoord="UV0"/></diffuse></lambert></technique>
+  </profile_COMMON></effect></library_effects>
+  <library_materials><material id="m1" name="M1"><instance_effect url="#e1"/></material></library_materials>
+  <library_geometries><geometry id="g1" name="Tri"><mesh>
+    <source id="p"><float_array id="pa" count="9">0 0 0 1 0 0 0 1 0</float_array>
+      <technique_common><accessor source="#pa" count="3" stride="3">
+        <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+      </accessor></technique_common></source>
+    <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>
+    <triangles count="1"><input semantic="VERTEX" source="#v" offset="0"/><p>0 1 2</p></triangles>
+  </mesh></geometry></library_geometries>
+  <library_visual_scenes><visual_scene id="S" name="S"><node id="N" name="N">
+    <instance_geometry url="#g1"/>
+  </node></visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
 // model_import_test.cpp's own buildGlb, reduced to the one shape these cases need: a JSON-only GLB
 // with no BIN chunk. AC-42: assembled in memory, never committed as a binary.
 [[nodiscard]] std::string minimalGlb() {
@@ -231,7 +289,9 @@ using engine::editor::BlenderState;  // task 3.2.4
 using engine::editor::currentHostOs;
 using engine::editor::ImportSettings;
 using engine::editor::ImportStatus;
+using engine::editor::isImportableModelName;  // task 3.2.5, MS45
 using engine::editor::MAX_MODEL_FILE_BYTES;
+using engine::editor::modelImporterNeedsExternalBuffers;
 using engine::editor::ModelImportSession;
 using engine::editor::readTextFile;
 using engine::editor::ScanStatus;
@@ -1682,4 +1742,139 @@ TEST_CASE(
     CHECK(gateConsults == 0);  // AC-44: DELIBERATELY not consulted, and never by accident
     CHECK(fullDepth == 1);     // at Full depth
     CHECK(emptyDir == 1);      // with an EMPTY assetRelativeDir -- Library/ has no assets-relative dir
+}
+
+// ---- task 3.2.5: the three Assimp formats through the SESSION (MS42-MS46) --------------------------
+//
+// NO PRODUCTION CHANGE accompanies these cases, and that is the claim they exist to prove:
+// model_import_session.{hpp,cpp} is byte-identical to main after task 3.2.5. The session already gates
+// its whole first pass on modelImporterNeedsExternalBuffers, which answers false for .dae/.ply/.stl
+// exactly as it does for .fbx, so all three take a shipped, exercised path.
+
+TEST_CASE(
+    "model_import_session: a .dae imports EXACTLY ONCE per (target, generation), and ten further ticks "
+    "add nothing (MS42, task 3.2.5 AC-57)") {
+    const TempDir dir;
+    writeFile(dir.join("tri.dae"), ASSIMP_TRIANGLE_DAE);
+    AssetDatabase db;
+    GuidGenerator gen(3250);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("tri.dae", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+    CHECK(session.importCount() == 1);
+    CHECK(session.result().status == ImportStatus::Ok);
+    CHECK_FALSE(session.result().model.meshes.empty());
+
+    for (int i = 0; i < 10; ++i) {
+        session.service(dir.utf8(), db);
+    }
+    CHECK(session.importCount() == 1);  // not 11
+    CHECK(session.state() == SessionState::Imported);
+}
+
+TEST_CASE(
+    "model_import_session: a .dae naming a texture that EXISTS on disk still reads only the model "
+    "itself (MS43, task 3.2.5 AC-57)") {
+    // modelImporterNeedsExternalBuffers is false for .dae, so the session skips its whole first pass and
+    // goes straight to ONE Full import with an EMPTY external span -- the FBX path verbatim. The texture
+    // is present precisely so its absence cannot be what makes the case pass.
+    const TempDir dir;
+    writeFile(dir.join("room.dae"), ASSIMP_TEXTURED_DAE);
+    writeFile(dir.join("wood.png"), "not a real png, and never opened");
+    AssetDatabase db;
+    GuidGenerator gen(3251);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    ModelImportSession session;
+    session.setTarget("room.dae", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+    CHECK(session.importCount() == 1);
+    // The dependency is RESOLVED -- it is a real, project-relative path the scan can turn into a GUID --
+    // and it was never READ: the importer has no file access at all.
+    REQUIRE(session.result().externalUris.size() == 1U);
+    CHECK(session.result().externalUris[0] == "wood.png");
+    CHECK(modelImporterNeedsExternalBuffers("room.dae") == false);
+}
+
+TEST_CASE(
+    "model_import_session: a .ply and an .stl each reach Imported with their mesh present (MS44, task "
+    "3.2.5 AC-58)") {
+    const TempDir dir;
+    writeFile(dir.join("scan.ply"), ASSIMP_TRIANGLE_PLY);
+    writeFile(dir.join("part.stl"), ASSIMP_TRIANGLE_STL);
+    AssetDatabase db;
+    GuidGenerator gen(3252);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+
+    for (const std::string_view leaf : {std::string_view("scan.ply"), std::string_view("part.stl")}) {
+        ModelImportSession session;
+        session.setTarget(std::string(leaf), db.generation());
+        session.service(dir.utf8(), db);
+        INFO("leaf: ", leaf, " message: ", session.result().message);
+        CHECK(session.state() == SessionState::Imported);
+        CHECK(session.importCount() == 1);
+        REQUIRE(session.result().model.meshes.size() == 1U);
+        REQUIRE(session.result().model.meshes[0].primitives.size() == 1U);
+        CHECK(session.result().model.meshes[0].primitives[0].positions.size() == 3U);
+    }
+}
+
+TEST_CASE(
+    "model_import_session: a .blend STILL reaches NeedsConversion, unchanged by task 3.2.5 (MS45, "
+    "AC-59)") {
+    // The regression guard for the one format this task must not disturb. Widening
+    // isImportableModelName in a way that captured .blend does not merely fail cases -- 3.2.4 proved it
+    // ABORTS the test binary -- so this is cheap insurance against an expensive mistake.
+    const TempDir dir;
+    const std::string assets = dir.join("assets");
+    makeDirectories(assets);
+    writeFile(assets + "/statue.blend", "not parsed by anything, ever");
+    AssetDatabase db;
+    GuidGenerator gen(3253);
+    db.rescan(dir.utf8(), assets, gen);
+    REQUIRE(db.guidForPath("statue.blend").has_value());
+
+    ModelImportSession session;
+    session.setTarget("statue.blend", db.generation());
+    session.service(assets, db);
+    CHECK(session.state() == SessionState::NeedsConversion);
+    CHECK(session.state() != SessionState::NotImportable);
+    CHECK(session.targetHasIdentity());
+    CHECK(session.importCount() == 0);
+    CHECK_FALSE(isImportableModelName("statue.blend"));
+}
+
+TEST_CASE(
+    "model_import_session: applySettings on a .dae records the assimp identity, byte-identically to the "
+    "existing format (MS46, task 3.2.5 AC-61)") {
+    const TempDir dir;
+    writeFile(dir.join("tri.dae"), ASSIMP_TRIANGLE_DAE);
+    AssetDatabase db;
+    GuidGenerator gen(3254);
+    db.rescan(dir.utf8(), dir.utf8(), gen);
+    const Guid guid = *db.guidForPath("tri.dae");
+
+    ModelImportSession session;
+    session.setTarget("tri.dae", db.generation());
+    session.service(dir.utf8(), db);
+    REQUIRE(session.state() == SessionState::Imported);
+
+    ImportSettings edited;
+    edited.scale = 3.0F;
+    session.setPendingSettings(edited);
+    REQUIRE(session.canApply());
+    CHECK(session.applySettings(dir.utf8()).empty());
+
+    const auto metaText = scene_golden::readBytes(dir.join("tri.dae.meta"));
+    REQUIRE(metaText.ok);
+    // The identity written is "assimp" / 1 -- NOT "gltf", which is writeMetaText's own default and what
+    // an unrouted call site would produce (3.2.2's third hard-coded-identity finding, one format on).
+    CHECK(metaText.text ==
+          writeMetaText(guid, edited, engine::editor::ASSIMP_IMPORTER_NAME, engine::editor::ASSIMP_IMPORTER_VERSION));
+    CHECK(metaText.text != writeMetaText(guid, edited));
+    CHECK_FALSE(std::filesystem::exists(pathOf(dir.join("tri.dae.meta") + std::string(ATOMIC_TEMP_SUFFIX))));
 }

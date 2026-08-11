@@ -6429,3 +6429,163 @@ TEST_CASE(
     app.reset();
 #endif
 }
+
+// ---- task 3.2.5's fixtures for I81/I82, hoisted into NAMED constants (MSVC's legacy preprocessor
+// breaks on a raw string literal containing an escaped quote passed straight into a doctest macro) ----
+namespace {
+
+constexpr std::string_view SKINNED_DAE_TEXT =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><contributor><authoring_tool>Aero test</authoring_tool></contributor>
+    <unit meter="0.01" name="centimeter"/><up_axis>Z_UP</up_axis></asset>
+  <library_geometries><geometry id="g1" name="Tri"><mesh>
+    <source id="p"><float_array id="pa" count="9">0 0 0 1 0 0 0 1 0</float_array>
+      <technique_common><accessor source="#pa" count="3" stride="3">
+        <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+      </accessor></technique_common></source>
+    <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>
+    <triangles count="1"><input semantic="VERTEX" source="#v" offset="0"/><p>0 1 2</p></triangles>
+  </mesh></geometry></library_geometries>
+  <library_controllers><controller id="skin1" name="SkinCtrl"><skin source="#g1">
+    <bind_shape_matrix>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</bind_shape_matrix>
+    <source id="jointNames"><Name_array id="jn" count="2">Bone1 Bone2</Name_array>
+      <technique_common><accessor source="#jn" count="2" stride="1">
+        <param name="JOINT" type="name"/></accessor></technique_common></source>
+    <source id="invBind">
+      <float_array id="ib" count="32">1 0 0 1 0 1 0 2 0 0 1 3 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</float_array>
+      <technique_common><accessor source="#ib" count="2" stride="16">
+        <param name="TRANSFORM" type="float4x4"/></accessor></technique_common></source>
+    <source id="skinWeights"><float_array id="wa" count="3">1 0.5 0.5</float_array>
+      <technique_common><accessor source="#wa" count="3" stride="1">
+        <param name="WEIGHT" type="float"/></accessor></technique_common></source>
+    <joints><input semantic="JOINT" source="#jointNames"/>
+      <input semantic="INV_BIND_MATRIX" source="#invBind"/></joints>
+    <vertex_weights count="3"><input semantic="JOINT" source="#jointNames" offset="0"/>
+      <input semantic="WEIGHT" source="#skinWeights" offset="1"/>
+      <vcount>1 2 1</vcount><v>0 0 0 1 1 2 1 0</v></vertex_weights>
+  </skin></controller></library_controllers>
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="Bone1" sid="Bone1" name="Bone1" type="JOINT">
+      <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+      <node id="Bone2" sid="Bone2" name="Bone2" type="JOINT">
+        <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+      </node>
+    </node>
+    <node id="Mesh" name="Mesh"><instance_controller url="#skin1"><skeleton>#Bone1</skeleton></instance_controller></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
+constexpr std::string_view TEXTURED_PLY_TEXT =
+    "ply\nformat ascii 1.0\ncomment TextureFile scan.png\nelement vertex 3\nproperty float x\n"
+    "property float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_index\n"
+    "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+
+constexpr std::string_view TRIANGLE_STL_TEXT =
+    "solid Part\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\n"
+    "endloop\nendfacet\nendsolid Part\n";
+
+}  // namespace
+
+TEST_CASE(
+    "editor: the Import Details panel draws a real frame for a .dae, Source Space row included (task "
+    "3.2.5, I81, AC-60)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i81", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/rig.dae", SKINNED_DAE_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // "Assets" shares DockSlot::Bottom with "Console"
+    REQUIRE(app->tick());                        // 1: the initial scan
+
+    app->requestAssetBrowserSelectEntry("rig.dae");
+    REQUIRE(app->tick());  // 2: drains SelectEntry
+    REQUIRE(app->tick());  // 3: reconcile -> setTarget -> service() imports the rig
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+    CHECK(app->modelImportCount() == 1);
+
+    REQUIRE(app->tick());  // 4: let the default dock layout settle before focusing anything
+    app->requestPanelFocus("Import Details");
+    REQUIRE(app->tick());  // 5: draws the Imported state for real -- all six sections default-open, the
+                           // Hierarchy and Skins sections resolving localId through their existing map,
+                           // and the Source Space row PRESENT because a .dae declares a unit and an axis
+    CHECK(app->presentedLastFrame());
+    REQUIRE(app->tick());  // 6: a second drawn frame, so a one-frame-only defect cannot hide
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the Import Details panel draws a real frame for a .ply and an .stl, with NO Source Space "
+    "row (task 3.2.5, I82, AC-60)") {
+    // The row means something precisely BECAUSE it is absent when the format declares nothing. Neither
+    // PLY nor STL declares a unit or an axis, and inventing one was rejected -- so this case is the
+    // negative half of I81 and breaks independently of it.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import details i82", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/scan.ply", TEXTURED_PLY_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/part.stl", TRIANGLE_STL_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the initial scan
+
+    for (const std::string_view leaf : {std::string_view("scan.ply"), std::string_view("part.stl")}) {
+        app->requestAssetBrowserSelectEntry(leaf);
+        REQUIRE(app->tick());  // drains SelectEntry
+        REQUIRE(app->tick());  // reconcile -> setTarget -> service()
+        INFO("leaf: ", leaf);
+        CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+        app->requestPanelFocus("Import Details");
+        REQUIRE(app->tick());  // draws the Imported state for real
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

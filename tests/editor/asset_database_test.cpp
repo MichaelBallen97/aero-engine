@@ -2851,3 +2851,205 @@ TEST_CASE(
     REQUIRE(mtlBytesAfterSecond.ok);
     CHECK(mtlBytesAfterSecond.text == mtlBytesAfterFirst.text);
 }
+
+// ---- task 3.2.5: the three Assimp formats through PHASE 7.5 (AD-a1 .. AD-a5) -----------------------
+//
+// asset_database.cpp is BYTE-IDENTICAL to main after task 3.2.5. Everything below is the existing scan
+// generalising, which is the whole claim: phase 7.5 already routes through modelImporterIdentity and
+// already turns a Structure pass's externalUris into dependency GUIDs.
+
+// task 3.2.5's fixtures for this TU, hoisted into named constants (MSVC's legacy preprocessor breaks on
+// a raw literal containing an escaped quote passed straight into a doctest macro).
+namespace {
+
+constexpr std::string_view DAE_WITH_TEXTURE =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_images><image id="i1"><init_from>../textures/wood.png</init_from></image></library_images>
+  <library_effects><effect id="e1"><profile_COMMON>
+    <newparam sid="s1"><surface type="2D"><init_from>i1</init_from></surface></newparam>
+    <newparam sid="sam1"><sampler2D><source>s1</source></sampler2D></newparam>
+    <technique sid="common"><lambert><diffuse><texture texture="sam1" texcoord="UV0"/></diffuse></lambert></technique>
+  </profile_COMMON></effect></library_effects>
+  <library_materials><material id="m1" name="M1"><instance_effect url="#e1"/></material></library_materials>
+  <library_geometries><geometry id="g1" name="Tri"><mesh>
+    <source id="p"><float_array id="pa" count="9">0 0 0 1 0 0 0 1 0</float_array>
+      <technique_common><accessor source="#pa" count="3" stride="3">
+        <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+      </accessor></technique_common></source>
+    <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>
+    <triangles count="1"><input semantic="VERTEX" source="#v" offset="0"/><p>0 1 2</p></triangles>
+  </mesh></geometry></library_geometries>
+  <library_visual_scenes><visual_scene id="S" name="S"><node id="N" name="N">
+    <instance_geometry url="#g1"/>
+  </node></visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
+constexpr std::string_view PLY_WITH_TEXTURE =
+    "ply\nformat ascii 1.0\ncomment TextureFile scan.png\nelement vertex 3\nproperty float x\n"
+    "property float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_index\n"
+    "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+
+constexpr std::string_view PLAIN_STL =
+    "solid Part\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\n"
+    "endloop\nendfacet\nendsolid Part\n";
+
+}  // namespace
+
+TEST_CASE(
+    "asset_database: a scanned .dae, .ply and .stl each record \"assimp\"/1, and every other claimed "
+    "extension keeps its own identity (AD-a1, task 3.2.5 AC-6)") {
+    const TempDir dir;
+    writeFile(dir.join("room.dae"), DAE_WITH_TEXTURE);
+    writeFile(dir.join("scan.ply"), PLY_WITH_TEXTURE);
+    writeFile(dir.join("part.stl"), PLAIN_STL);
+    writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"}})");
+    writeFile(dir.join("chair.mtl"), "newmtl A\n");
+    AssetDatabase db;
+    GuidGenerator gen(3260);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 5);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+
+    const auto identityOf = [&db, &parsed](std::string_view path) {
+        const AssetRecord* const record = db.findByPath(path);
+        REQUIRE(record != nullptr);
+        const AssetCacheEntry* const entry = parsed.index.find(record->guid);
+        REQUIRE(entry != nullptr);
+        return std::pair<std::string, std::uint32_t>{entry->importer, entry->importerVersion};
+    };
+    CHECK(identityOf("room.dae") == std::pair<std::string, std::uint32_t>{"assimp", 1});
+    CHECK(identityOf("scan.ply") == std::pair<std::string, std::uint32_t>{"assimp", 1});
+    CHECK(identityOf("part.stl") == std::pair<std::string, std::uint32_t>{"assimp", 1});
+    // ...and the shipped identities are UNMOVED, which is the half a one-format case cannot have.
+    CHECK(identityOf("chair.gltf") == std::pair<std::string, std::uint32_t>{"gltf", 1});
+    CHECK(identityOf("chair.mtl") == std::pair<std::string, std::uint32_t>{"obj", 1});
+}
+
+TEST_CASE(
+    "asset_database: room.dae's <library_images> entry becomes exactly one dependency GUID (AD-a2, task "
+    "3.2.5 AC-7)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/room.dae"), DAE_WITH_TEXTURE);
+    writeFile(dir.join("textures/wood.png"), "pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(3261);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.dependenciesRecorded == 1);
+    const Guid woodGuid = *db.guidForPath("textures/wood.png");
+    const AssetRecord* const record = db.findByPath("models/room.dae");
+    REQUIRE(record != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(record->guid);
+    REQUIRE(entry != nullptr);
+    REQUIRE(entry->dependencies.size() == 1);
+    CHECK(entry->dependencies[0] == woodGuid);
+}
+
+TEST_CASE(
+    "asset_database: scan.ply's `comment TextureFile` becomes exactly one dependency GUID (AD-a3, task "
+    "3.2.5 AC-8)") {
+    // The PLY header scan IS the Structure pass for .ply -- Assimp is never entered -- so this case is
+    // also the proof that the pass produces the EXACT URI set from a bounded read of the header.
+    const TempDir dir;
+    writeFile(dir.join("scan.ply"), PLY_WITH_TEXTURE);
+    writeFile(dir.join("scan.png"), "pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(3262);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.dependenciesRecorded == 1);
+    const Guid textureGuid = *db.guidForPath("scan.png");
+    const AssetRecord* const record = db.findByPath("scan.ply");
+    REQUIRE(record != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(record->guid);
+    REQUIRE(entry != nullptr);
+    REQUIRE(entry->dependencies.size() == 1);
+    CHECK(entry->dependencies[0] == textureGuid);
+}
+
+TEST_CASE("asset_database: part.stl records ZERO dependencies (AD-a4, task 3.2.5 AC-9)") {
+    // STL has no external reference of any kind, which is why its Structure pass returns an empty model
+    // without entering Assimp at all. Zero is the EXACT answer, not a budget-limited one.
+    const TempDir dir;
+    writeFile(dir.join("part.stl"), PLAIN_STL);
+    writeFile(dir.join("wood.png"), "pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(3263);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(report.modelsProbed == 1);
+    CHECK(report.dependenciesRecorded == 0);
+    const AssetRecord* const record = db.findByPath("part.stl");
+    REQUIRE(record != nullptr);
+
+    const auto indexText = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(indexText.ok);
+    const AssetCacheParseResult parsed = parseAssetCache(indexText.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    const AssetCacheEntry* const entry = parsed.index.find(record->guid);
+    REQUIRE(entry != nullptr);
+    CHECK(entry->importer == "assimp");
+    CHECK(entry->dependencies.empty());
+}
+
+TEST_CASE(
+    "asset_database: editing wood.png marks room.dae DependencyChanged on the FOLLOWING scan -- ticking "
+    "TWICE (AD-a5, task 3.2.5 AC-10)") {
+    // THE TWO-TICK RULE (3.2.1's D8/E11): the probe records THIS scan's dependencies for the NEXT scan's
+    // cascade, so a test that ticks once passes for entirely the wrong reason.
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("models"), ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::create_directories(dir.join("textures"), ec);
+    REQUIRE_FALSE(ec);
+    writeFile(dir.join("models/room.dae"), DAE_WITH_TEXTURE);
+    writeFile(dir.join("textures/wood.png"), "original-pixels");
+
+    AssetDatabase db;
+    GuidGenerator gen(3264);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.status == ScanStatus::Ok);
+    CHECK(first.dependenciesRecorded == 1);
+    const AssetRecord* const afterFirst = db.findByPath("models/room.dae");
+    REQUIRE(afterFirst != nullptr);
+    CHECK(afterFirst->change == ImportChange::New);  // New, NOT DependencyChanged -- nothing to cascade
+
+    writeFile(dir.join("textures/wood.png"), "edited-pixels-longer");  // a different LENGTH
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(second.status == ScanStatus::Ok);
+    const AssetRecord* const texture = db.findByPath("textures/wood.png");
+    REQUIRE(texture != nullptr);
+    CHECK(texture->change == ImportChange::SourceChanged);
+    const AssetRecord* const afterSecond = db.findByPath("models/room.dae");
+    REQUIRE(afterSecond != nullptr);
+    CHECK(afterSecond->change == ImportChange::DependencyChanged);
+}
