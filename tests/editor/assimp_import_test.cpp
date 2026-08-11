@@ -24,9 +24,12 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <span>
 #include <string>
@@ -38,7 +41,12 @@ namespace {
 
 // The byte-loading pattern model_import_test.cpp / fbx_import_test.cpp / obj_import_test.cpp each keep
 // their own copy of, restated here so this TU stays independent of all three.
-[[nodiscard]] std::span<const std::byte> asBytes(const std::string& text) noexcept {
+// std::string_view, not const std::string&, so the namespace-scope fixtures below can be
+// `constexpr std::string_view` -- which is this tree's own shape for a test fixture literal
+// (fbx_import_test.cpp) AND what keeps readability-identifier-naming's UPPER_CASE rule, which applies
+// to constexpr variables and not to plain const ones. Every call site binds a NAMED local; never call
+// this on a temporary.
+[[nodiscard]] std::span<const std::byte> asBytes(std::string_view text) noexcept {
     return std::span<const std::byte>(reinterpret_cast<const std::byte*>(text.data()), text.size());
 }
 
@@ -181,22 +189,22 @@ private:
 // passed DIRECTLY as a macro argument (.claude/rules/ci-portability.md). The discriminator is `\"`, and
 // XML is nothing but `\"`. This is the single most likely Windows-only build break in this task.
 
-const std::string TRIANGLE_STL =
+constexpr std::string_view TRIANGLE_STL =
     "solid Tri\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\n"
     "endloop\nendfacet\nendsolid Tri\n";
 
-const std::string TRIANGLE_PLY =
+constexpr std::string_view TRIANGLE_PLY =
     "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
     "element face 1\nproperty list uchar int vertex_index\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
 
 // A .ply that names one texture in its header. NO trailing space after the operand, deliberately: the
 // loader hands back the rest of the line verbatim, so a trailing space would land inside the name.
-const std::string TEXTURED_PLY =
+constexpr std::string_view TEXTURED_PLY =
     "ply\nformat ascii 1.0\ncomment TextureFile scan.png\nelement vertex 3\nproperty float x\n"
     "property float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_index\n"
     "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
 
-const std::string TRIANGLE_DAE =
+constexpr std::string_view TRIANGLE_DAE =
     R"(<?xml version="1.0"?>
 <COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
   <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
@@ -218,7 +226,7 @@ const std::string TRIANGLE_DAE =
 // AI5/AI6's hostile document: FOUR <library_images> entries, each bound through its own effect and
 // material so all four actually reach a texture slot. Every one of them names a path that must be
 // refused, and none of them may ever be opened.
-const std::string HOSTILE_DAE =
+constexpr std::string_view HOSTILE_DAE =
     R"(<?xml version="1.0"?>
 <COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
   <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
@@ -283,25 +291,207 @@ const std::string HOSTILE_DAE =
 // fixture" honest as the suite grows.
 struct Fixture {
     std::string_view name;
-    const std::string* text;
+    std::string_view text;
 };
 
 [[nodiscard]] std::vector<Fixture> fixtureTable() {
     return {
-        Fixture{"t.stl", &TRIANGLE_STL}, Fixture{"t.ply", &TRIANGLE_PLY},      Fixture{"scan.ply", &TEXTURED_PLY},
-        Fixture{"t.dae", &TRIANGLE_DAE}, Fixture{"hostile.dae", &HOSTILE_DAE},
+        Fixture{"t.stl", TRIANGLE_STL}, Fixture{"t.ply", TRIANGLE_PLY},      Fixture{"scan.ply", TEXTURED_PLY},
+        Fixture{"t.dae", TRIANGLE_DAE}, Fixture{"hostile.dae", HOSTILE_DAE},
     };
+}
+
+// ---- byte builders (AI18/AI19/AI20/AI22/AI23) -------------------------------------------------------
+// The BINARY .stl and .ply fixtures are BUILT here, byte by byte, from the SAME triangle list the ASCII
+// literal describes. That is what makes the "byte-identical twin" assertions mean anything: a COMMITTED
+// binary compared against a literal that describes it proves only that someone typed both consistently
+// once, never that the two encodings agree after a round trip through the loader.
+struct Tri {
+    std::array<float, 3> normal{};
+    std::array<std::array<float, 3>, 3> vertices{};
+};
+
+void appendU16Le(std::string& out, std::uint16_t value) {
+    out.push_back(static_cast<char>(value & 0xFFU));
+    out.push_back(static_cast<char>((value >> 8U) & 0xFFU));
+}
+
+void appendU32Le(std::string& out, std::uint32_t value) {
+    for (unsigned int i = 0; i < 4U; ++i) {
+        out.push_back(static_cast<char>((value >> (i * 8U)) & 0xFFU));
+    }
+}
+
+void appendU32Be(std::string& out, std::uint32_t value) {
+    for (unsigned int i = 4U; i > 0U; --i) {
+        out.push_back(static_cast<char>((value >> ((i - 1U) * 8U)) & 0xFFU));
+    }
+}
+
+void appendFloatLe(std::string& out, float value) { appendU32Le(out, std::bit_cast<std::uint32_t>(value)); }
+void appendFloatBe(std::string& out, float value) { appendU32Be(out, std::bit_cast<std::uint32_t>(value)); }
+
+// 80 bytes of header (padded/truncated), a uint32 facet count, then 50 bytes per facet: normal, three
+// vertices, and the 16-bit attribute word the per-face colour extension lives in.
+[[nodiscard]] std::string buildBinaryStl(std::string_view header, const std::vector<Tri>& tris,
+                                         const std::vector<std::uint16_t>& attributes) {
+    std::string out;
+    for (std::size_t i = 0; i < 80U; ++i) {
+        out.push_back(i < header.size() ? header[i] : '\0');
+    }
+    appendU32Le(out, static_cast<std::uint32_t>(tris.size()));
+    for (std::size_t t = 0; t < tris.size(); ++t) {
+        for (const float component : tris[t].normal) {
+            appendFloatLe(out, component);
+        }
+        for (const std::array<float, 3>& vertex : tris[t].vertices) {
+            for (const float component : vertex) {
+                appendFloatLe(out, component);
+            }
+        }
+        appendU16Le(out, t < attributes.size() ? attributes[t] : static_cast<std::uint16_t>(0));
+    }
+    return out;
+}
+
+// The cube AI22/AI23 use, in one place, so the ASCII text and the two binary encodings can never drift.
+[[nodiscard]] std::vector<std::array<float, 3>> cubeVertices() {
+    return {{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 0.0F}, {0.0F, 1.0F, 0.0F},
+            {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F, 1.0F}, {1.0F, 1.0F, 1.0F}, {0.0F, 1.0F, 1.0F}};
+}
+
+[[nodiscard]] std::vector<std::array<std::uint32_t, 3>> cubeFaces() {
+    return {{0, 1, 2}, {0, 2, 3}, {4, 6, 5}, {4, 7, 6}, {0, 4, 5}, {0, 5, 1},
+            {1, 5, 6}, {1, 6, 2}, {2, 6, 7}, {2, 7, 3}, {3, 7, 4}, {3, 4, 0}};
+}
+
+[[nodiscard]] std::string buildAsciiPly() {
+    std::string out =
+        "ply\nformat ascii 1.0\nelement vertex 8\nproperty float x\nproperty float y\nproperty float z\n"
+        "element face 12\nproperty list uchar int vertex_index\nend_header\n";
+    for (const std::array<float, 3>& vertex : cubeVertices()) {
+        out += std::format("{} {} {}\n", vertex[0], vertex[1], vertex[2]);
+    }
+    for (const std::array<std::uint32_t, 3>& face : cubeFaces()) {
+        out += std::format("3 {} {} {}\n", face[0], face[1], face[2]);
+    }
+    return out;
+}
+
+[[nodiscard]] std::string buildBinaryPly(bool bigEndian) {
+    std::string out = std::string("ply\nformat ") + (bigEndian ? "binary_big_endian" : "binary_little_endian") +
+                      " 1.0\nelement vertex 8\nproperty float x\nproperty float y\nproperty float z\n"
+                      "element face 12\nproperty list uchar int vertex_index\nend_header\n";
+    for (const std::array<float, 3>& vertex : cubeVertices()) {
+        for (const float component : vertex) {
+            if (bigEndian) {
+                appendFloatBe(out, component);
+            } else {
+                appendFloatLe(out, component);
+            }
+        }
+    }
+    for (const std::array<std::uint32_t, 3>& face : cubeFaces()) {
+        out.push_back(static_cast<char>(3));
+        for (const std::uint32_t index : face) {
+            if (bigEndian) {
+                appendU32Be(out, index);
+            } else {
+                appendU32Le(out, index);
+            }
+        }
+    }
+    return out;
+}
+
+// ---- comparison helpers -----------------------------------------------------------------------------
+[[nodiscard]] bool approxEq(float a, float b, float epsilon = 1e-5F) {
+    const float diff = a - b;
+    return (diff < 0.0F ? -diff : diff) <= epsilon;
+}
+
+[[nodiscard]] bool approxEq(engine::Vec3 a, engine::Vec3 b, float epsilon = 1e-5F) {
+    return approxEq(a.x, b.x, epsilon) && approxEq(a.y, b.y, epsilon) && approxEq(a.z, b.z, epsilon);
+}
+
+// Every geometric field of one primitive against another, NAMES EXCLUDED. Used by AI18/AI22/AI23, where
+// the two encodings agree about geometry and DELIBERATELY disagree about names -- assimp's binary STL
+// loader names the root `<STL_BINARY>` and leaves the mesh unnamed, while the ASCII loader puts the
+// `solid` name on both the mesh and its node. That asymmetry is the LOADER's, measured, not ours.
+[[nodiscard]] bool primitivesMatch(const engine::editor::ImportedPrimitive& a,
+                                   const engine::editor::ImportedPrimitive& b) {
+    if (a.attributes != b.attributes || a.indices != b.indices || a.positions.size() != b.positions.size() ||
+        a.normals.size() != b.normals.size() || a.colors.size() != b.colors.size() || a.uv0.size() != b.uv0.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.positions.size(); ++i) {
+        if (!approxEq(a.positions[i], b.positions[i])) {
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < a.normals.size(); ++i) {
+        if (!approxEq(a.normals[i], b.normals[i])) {
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < a.colors.size(); ++i) {
+        if (!approxEq(a.colors[i].x, b.colors[i].x) || !approxEq(a.colors[i].y, b.colors[i].y) ||
+            !approxEq(a.colors[i].z, b.colors[i].z) || !approxEq(a.colors[i].w, b.colors[i].w)) {
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < a.uv0.size(); ++i) {
+        if (!approxEq(a.uv0[i].x, b.uv0[i].x) || !approxEq(a.uv0[i].y, b.uv0[i].y)) {
+            return false;
+        }
+    }
+    return approxEq(a.bounds.min, b.bounds.min) && approxEq(a.bounds.max, b.bounds.max);
+}
+
+[[nodiscard]] bool modelsMatchIgnoringNames(const engine::editor::ImportedModel& a,
+                                            const engine::editor::ImportedModel& b) {
+    if (a.meshes.size() != b.meshes.size() || a.summary.vertexCount != b.summary.vertexCount ||
+        a.summary.triangleCount != b.summary.triangleCount || a.summary.primitiveCount != b.summary.primitiveCount) {
+        return false;
+    }
+    for (std::size_t m = 0; m < a.meshes.size(); ++m) {
+        if (a.meshes[m].primitives.size() != b.meshes[m].primitives.size()) {
+            return false;
+        }
+        for (std::size_t p = 0; p < a.meshes[m].primitives.size(); ++p) {
+            if (!primitivesMatch(a.meshes[m].primitives[p], b.meshes[m].primitives[p])) {
+                return false;
+            }
+        }
+        if (!approxEq(a.meshes[m].bounds.min, b.meshes[m].bounds.min) ||
+            !approxEq(a.meshes[m].bounds.max, b.meshes[m].bounds.max)) {
+            return false;
+        }
+    }
+    return approxEq(a.summary.bounds.min, b.summary.bounds.min) && approxEq(a.summary.bounds.max, b.summary.bounds.max);
+}
+
+// The one surviving primitive of a single-mesh model. REQUIREs the shape rather than indexing blindly:
+// a shape regression must fail in the case that owns it, not crash a later positional read (2.6.2's
+// shapedGroups lesson).
+[[nodiscard]] const engine::editor::ImportedPrimitive& onlyPrimitive(const engine::editor::ImportedModel& model) {
+    REQUIRE(model.meshes.size() == 1U);
+    REQUIRE(model.meshes[0].primitives.size() == 1U);
+    return model.meshes[0].primitives[0];
 }
 
 }  // namespace
 
+using engine::editor::has;
 using engine::editor::ImportDepth;
+using engine::editor::ImportedPrimitive;
 using engine::editor::importModel;
 using engine::editor::ImportResult;
 using engine::editor::ImportSettings;
 using engine::editor::ImportStatus;
 using engine::editor::isImportableModelName;
 using engine::editor::modelImporterNeedsExternalBuffers;
+using engine::editor::VertexAttribute;
 
 // AI1 (AC-3) -- the case that pulls assimp's archive (and, on Windows, loads its DLL). Nothing else in
 // the suite calls importAssimp at all, so without this case the link is declared and never exercised,
@@ -538,7 +728,7 @@ TEST_CASE("AI6: importing from an empty working directory reads nothing and crea
 
     for (const Fixture& fixture : fixtureTable()) {
         const ImportResult full =
-            importModel(fixture.name, "", asBytes(*fixture.text), ImportSettings{}, ImportDepth::Full, {});
+            importModel(fixture.name, "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
         INFO("fixture: ", fixture.name, " message: ", full.message);
         CHECK(full.status != ImportStatus::Unsupported);
     }
@@ -613,9 +803,9 @@ TEST_CASE("AI9: a truncated .stl and .ply are Ok at Structure and fail at Full")
 TEST_CASE("AI10: Structure and Full agree about externalUris on every fixture") {
     for (const Fixture& fixture : fixtureTable()) {
         const ImportResult structure =
-            importModel(fixture.name, "", asBytes(*fixture.text), ImportSettings{}, ImportDepth::Structure, {});
+            importModel(fixture.name, "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Structure, {});
         const ImportResult full =
-            importModel(fixture.name, "", asBytes(*fixture.text), ImportSettings{}, ImportDepth::Full, {});
+            importModel(fixture.name, "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
         INFO("fixture: ", fixture.name);
         CHECK(structure.externalUris == full.externalUris);
     }
@@ -660,7 +850,7 @@ TEST_CASE("AI12: a renamed PNG and a renamed GLB are refused with a message") {
 
 // AI13 (AC-55) -- importModel is noexcept-in-contract but not in signature; only a case proves it.
 TEST_CASE("AI13: pathological inputs return a status instead of throwing") {
-    const std::string longLine = "<COLLADA>" + std::string(1024U * 1024U, 'a') + "</COLLADA>";
+    const std::string longLine = "<COLLADA>" + std::string(std::size_t{1024} * 1024, 'a') + "</COLLADA>";
     const ImportResult huge = importModel("x.dae", "", asBytes(longLine), ImportSettings{}, ImportDepth::Full, {});
     CHECK(huge.status != ImportStatus::Ok);
 
@@ -718,4 +908,440 @@ TEST_CASE("AI16: isImportableModelName's suffix shape holds for .dae, .ply and .
     CHECK_FALSE(isImportableModelName(".stl"));
     CHECK_FALSE(isImportableModelName(".dae"));
     CHECK_FALSE(isImportableModelName("stl"));
+}
+
+// ---- step 4: .stl and .ply at Full depth -------------------------------------------------------------
+
+// AI17 (AC-21) -- ONE ImportedMesh per aiMesh with ONE primitive inside it: aiMesh carries exactly one
+// material index, so 3.2.3's first-appearance bucketing has no analogue here.
+TEST_CASE("AI17: a one-triangle ASCII .stl yields one mesh, one primitive and three source-order indices") {
+    const ImportResult result =
+        importModel("t.stl", "", asBytes(TRIANGLE_STL), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+
+    const ImportedPrimitive& prim = onlyPrimitive(result.model);
+    REQUIRE(prim.positions.size() == 3U);
+    CHECK(approxEq(prim.positions[0], engine::Vec3{0.0F, 0.0F, 0.0F}));
+    CHECK(approxEq(prim.positions[1], engine::Vec3{1.0F, 0.0F, 0.0F}));
+    CHECK(approxEq(prim.positions[2], engine::Vec3{0.0F, 1.0F, 0.0F}));
+    CHECK(prim.indices == std::vector<std::uint32_t>{0U, 1U, 2U});
+    CHECK(prim.attributes == (VertexAttribute::Position | VertexAttribute::Normal));
+    CHECK(approxEq(prim.bounds.min, engine::Vec3{0.0F, 0.0F, 0.0F}));
+    CHECK(approxEq(prim.bounds.max, engine::Vec3{1.0F, 1.0F, 0.0F}));
+    CHECK(approxEq(result.model.summary.bounds.min, engine::Vec3{0.0F, 0.0F, 0.0F}));
+    CHECK(approxEq(result.model.summary.bounds.max, engine::Vec3{1.0F, 1.0F, 0.0F}));
+    CHECK(result.model.summary.vertexCount == 3U);
+    CHECK(result.model.summary.triangleCount == 1U);
+    CHECK(result.model.summary.primitiveCount == 1U);
+    CHECK(result.model.meshes[0].name == "Tri");  // ASCII STL: the `solid` name IS the mesh name
+}
+
+// AI18 (AC-22) -- the byte-identical BINARY twin of the same solid, built here rather than committed.
+// EQUAL FIELD FOR FIELD EXCEPT EVERY NAME, and the name asymmetry is the LOADER's, measured against the
+// pinned source: the binary path names the root `<STL_BINARY>` and leaves the mesh unnamed, while the
+// ASCII path puts the `solid` name on BOTH the mesh and its node. The plan predicted one name site; the
+// tree has three.
+TEST_CASE("AI18: an ASCII .stl and its binary twin yield the same geometry and differ only in names") {
+    const ImportResult ascii = importModel("t.stl", "", asBytes(TRIANGLE_STL), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(ascii.status == ImportStatus::Ok);
+
+    const std::vector<Tri> tris = {
+        Tri{{0.0F, 0.0F, 1.0F}, {{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}}}}};
+    const std::string binary = buildBinaryStl("binary header, not a name", tris, {});
+    const ImportResult decoded = importModel("t.stl", "", asBytes(binary), ImportSettings{}, ImportDepth::Full, {});
+    INFO("binary message: ", decoded.message);
+    REQUIRE(decoded.status == ImportStatus::Ok);
+
+    CHECK(modelsMatchIgnoringNames(ascii.model, decoded.model));
+    CHECK(decoded.model.meshes[0].name != "Tri");
+}
+
+// AI19 (AC-23) -- the 16-bit per-face colour extension. With the high bit set the loader produces a
+// colour channel; WITHOUT it there is none, and NO white is fabricated.
+TEST_CASE("AI19: a binary .stl with per-face colours yields Color0 and one without yields none") {
+    const std::vector<Tri> tris = {
+        Tri{{0.0F, 0.0F, 1.0F}, {{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}}}}};
+    // bit 15 set == "this face carries a colour"; the low 15 bits are 5:5:5.
+    const std::string coloured = buildBinaryStl("colours", tris, {static_cast<std::uint16_t>(0x8000U | 0x001FU)});
+    const ImportResult withColour =
+        importModel("t.stl", "", asBytes(coloured), ImportSettings{}, ImportDepth::Full, {});
+    INFO("coloured message: ", withColour.message);
+    REQUIRE(withColour.status == ImportStatus::Ok);
+    const ImportedPrimitive& colouredPrim = onlyPrimitive(withColour.model);
+    CHECK(has(colouredPrim.attributes, VertexAttribute::Color0));
+    REQUIRE(colouredPrim.colors.size() == 3U);
+    CHECK(approxEq(colouredPrim.colors[0].w, 1.0F));
+
+    const std::string plain = buildBinaryStl("no colours", tris, {});
+    const ImportResult withoutColour =
+        importModel("t.stl", "", asBytes(plain), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(withoutColour.status == ImportStatus::Ok);
+    const ImportedPrimitive& plainPrim = onlyPrimitive(withoutColour.model);
+    CHECK_FALSE(has(plainPrim.attributes, VertexAttribute::Color0));
+    CHECK(plainPrim.colors.empty());
+}
+
+// AI20 (E2) -- THE CLASSIC STL MISDETECTION, pinned. A binary file whose 80-byte header begins with the
+// ASCII text `solid` is still binary: the loader decides on the EXACT file size (84 + 50*faces), never
+// on the leading token.
+TEST_CASE("AI20: a binary .stl whose header begins with the text 'solid' still imports as binary") {
+    const std::vector<Tri> tris = {
+        Tri{{0.0F, 0.0F, 1.0F}, {{{0.0F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}, {0.0F, 2.0F, 0.0F}}}}};
+    const std::string binary = buildBinaryStl("solid MisleadingHeader", tris, {});
+    const ImportResult result = importModel("t.stl", "", asBytes(binary), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = onlyPrimitive(result.model);
+    REQUIRE(prim.positions.size() == 3U);
+    CHECK(approxEq(prim.positions[1], engine::Vec3{2.0F, 0.0F, 0.0F}));
+}
+
+// AI21 (E1) -- an ASCII `.stl` whose solid carries no name: one mesh, name "".
+TEST_CASE("AI21: an ASCII .stl with no solid name yields one unnamed mesh") {
+    const std::string unnamed =
+        "solid\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\n"
+        "endloop\nendfacet\nendsolid\n";
+    const ImportResult result = importModel("t.stl", "", asBytes(unnamed), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.meshes.size() == 1U);
+    CHECK(result.model.meshes[0].name.empty());
+}
+
+// AI22 (AC-24) -- an ASCII `.ply` cube and its little-endian binary twin, both built from ONE vertex and
+// face list, must decode to the same model.
+TEST_CASE("AI22: an ASCII .ply and its little-endian binary twin yield equal models") {
+    const std::string ascii = buildAsciiPly();
+    const ImportResult asciiResult =
+        importModel("cube.ply", "", asBytes(ascii), ImportSettings{}, ImportDepth::Full, {});
+    INFO("ascii message: ", asciiResult.message);
+    REQUIRE(asciiResult.status == ImportStatus::Ok);
+
+    const std::string binary = buildBinaryPly(false);
+    const ImportResult binaryResult =
+        importModel("cube.ply", "", asBytes(binary), ImportSettings{}, ImportDepth::Full, {});
+    INFO("binary message: ", binaryResult.message);
+    REQUIRE(binaryResult.status == ImportStatus::Ok);
+
+    CHECK(modelsMatchIgnoringNames(asciiResult.model, binaryResult.model));
+    CHECK(asciiResult.model.summary.vertexCount == 8U);
+    CHECK(asciiResult.model.summary.triangleCount == 12U);
+}
+
+// AI23 (E4) -- byte-order handling PROVEN rather than assumed.
+TEST_CASE("AI23: a big-endian binary .ply decodes to the same model as its little-endian twin") {
+    const std::string little = buildBinaryPly(false);
+    const std::string big = buildBinaryPly(true);
+    CHECK(little != big);  // the two encodings really are different bytes
+
+    const ImportResult littleResult =
+        importModel("cube.ply", "", asBytes(little), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(littleResult.status == ImportStatus::Ok);
+    const ImportResult bigResult = importModel("cube.ply", "", asBytes(big), ImportSettings{}, ImportDepth::Full, {});
+    INFO("big-endian message: ", bigResult.message);
+    REQUIRE(bigResult.status == ImportStatus::Ok);
+    CHECK(modelsMatchIgnoringNames(littleResult.model, bigResult.model));
+}
+
+// AI24 (AC-25) -- `red green blue` vertex properties become Color0; without them there is no channel and
+// no fabricated white.
+TEST_CASE("AI24: .ply vertex colours become Color0, and their absence leaves no channel") {
+    const std::string coloured =
+        "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+        "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+        "element face 1\nproperty list uchar int vertex_index\nend_header\n"
+        "0 0 0 255 0 0\n1 0 0 0 255 0\n0 1 0 0 0 255\n3 0 1 2\n";
+    const ImportResult result = importModel("c.ply", "", asBytes(coloured), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = onlyPrimitive(result.model);
+    CHECK(has(prim.attributes, VertexAttribute::Color0));
+    REQUIRE(prim.colors.size() == 3U);
+    CHECK(approxEq(prim.colors[0].x, 1.0F));
+    CHECK(approxEq(prim.colors[0].y, 0.0F));
+    CHECK(approxEq(prim.colors[0].w, 1.0F));  // alpha assumed 1 when the file declares none
+
+    const ImportResult plain = importModel("t.ply", "", asBytes(TRIANGLE_PLY), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(plain.status == ImportStatus::Ok);
+    CHECK_FALSE(has(onlyPrimitive(plain.model).attributes, VertexAttribute::Color0));
+    CHECK(onlyPrimitive(plain.model).colors.empty());
+}
+
+// AI25 (AC-26) -- BOTH spellings of a PLY texture coordinate: `s`/`t` and `u`/`v`. Two arms because the
+// loader matches them in two separate branches.
+TEST_CASE("AI25: .ply texture coordinates become TexCoord0 for both the s/t and u/v spellings") {
+    const auto build = [](std::string_view first, std::string_view second) {
+        return std::format(
+            "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+            "property float {}\nproperty float {}\n"
+            "element face 1\nproperty list uchar int vertex_index\nend_header\n"
+            "0 0 0 0.25 0.5\n1 0 0 0.75 0.5\n0 1 0 0.5 0.9\n3 0 1 2\n",
+            first, second);
+    };
+    for (const auto& spelling : {std::pair<std::string_view, std::string_view>{"s", "t"},
+                                 std::pair<std::string_view, std::string_view>{"u", "v"}}) {
+        const std::string text = build(spelling.first, spelling.second);
+        const ImportResult result = importModel("uv.ply", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+        INFO("spelling: ", spelling.first, spelling.second, " message: ", result.message);
+        REQUIRE(result.status == ImportStatus::Ok);
+        const ImportedPrimitive& prim = onlyPrimitive(result.model);
+        CHECK(has(prim.attributes, VertexAttribute::TexCoord0));
+        REQUIRE(prim.uv0.size() == 3U);
+        CHECK(approxEq(prim.uv0[0].x, 0.25F));
+        CHECK(approxEq(prim.uv0[0].y, 0.5F));
+    }
+
+    const ImportResult plain = importModel("t.ply", "", asBytes(TRIANGLE_PLY), ImportSettings{}, ImportDepth::Full, {});
+    REQUIRE(plain.status == ImportStatus::Ok);
+    CHECK_FALSE(has(onlyPrimitive(plain.model).attributes, VertexAttribute::TexCoord0));
+    CHECK(onlyPrimitive(plain.model).uv0.empty());
+}
+
+// AI26 (AC-30) -- THE IMPORTER CONVERTS NOTHING. A position in the file is that position in the model,
+// and a triangle's index order is the file's order. Hand-written expected values, no derivation.
+TEST_CASE("AI26: .stl and .ply positions and winding survive verbatim") {
+    const std::string stl =
+        "solid Verbatim\nfacet normal 0 0 1\nouter loop\nvertex 1 2 3\nvertex 4 5 6\nvertex 7 8 9\n"
+        "endloop\nendfacet\nendsolid Verbatim\n";
+    const ImportResult stlResult = importModel("v.stl", "", asBytes(stl), ImportSettings{}, ImportDepth::Full, {});
+    INFO("stl message: ", stlResult.message);
+    REQUIRE(stlResult.status == ImportStatus::Ok);
+    const ImportedPrimitive& stlPrim = onlyPrimitive(stlResult.model);
+    REQUIRE(stlPrim.positions.size() == 3U);
+    CHECK(approxEq(stlPrim.positions[0], engine::Vec3{1.0F, 2.0F, 3.0F}));
+    CHECK(approxEq(stlPrim.positions[1], engine::Vec3{4.0F, 5.0F, 6.0F}));
+    CHECK(approxEq(stlPrim.positions[2], engine::Vec3{7.0F, 8.0F, 9.0F}));
+    CHECK(stlPrim.indices == std::vector<std::uint32_t>{0U, 1U, 2U});
+
+    const std::string ply =
+        "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+        "element face 1\nproperty list uchar int vertex_index\nend_header\n"
+        "1 2 3\n4 5 6\n7 8 9\n3 2 0 1\n";
+    const ImportResult plyResult = importModel("v.ply", "", asBytes(ply), ImportSettings{}, ImportDepth::Full, {});
+    INFO("ply message: ", plyResult.message);
+    REQUIRE(plyResult.status == ImportStatus::Ok);
+    const ImportedPrimitive& plyPrim = onlyPrimitive(plyResult.model);
+    REQUIRE(plyPrim.positions.size() == 3U);
+    CHECK(approxEq(plyPrim.positions[0], engine::Vec3{1.0F, 2.0F, 3.0F}));
+    CHECK(approxEq(plyPrim.positions[2], engine::Vec3{7.0F, 8.0F, 9.0F}));
+    CHECK(plyPrim.indices == std::vector<std::uint32_t>{2U, 0U, 1U});  // the FILE's order, not sorted
+}
+
+// AI27 (AC-29) -- ImportSettings::scale multiplies POSITIONS and the bounds folded from them, and NOTHING
+// else: normals, UVs and colours are untouched (import_settings.hpp's own rule, A22).
+TEST_CASE("AI27: scale doubles positions and bounds and leaves normals, UVs and colours alone") {
+    const std::string ply =
+        "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+        "property float nx\nproperty float ny\nproperty float nz\nproperty float s\nproperty float t\n"
+        "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+        "element face 1\nproperty list uchar int vertex_index\nend_header\n"
+        "0 0 0 0 0 1 0.25 0.5 255 0 0\n1 0 0 0 0 1 0.75 0.5 0 255 0\n0 1 0 0 0 1 0.5 0.9 0 0 255\n3 0 1 2\n";
+    ImportSettings scaled;
+    scaled.scale = 2.0F;
+    const ImportResult plain = importModel("s.ply", "", asBytes(ply), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult doubled = importModel("s.ply", "", asBytes(ply), scaled, ImportDepth::Full, {});
+    INFO("message: ", doubled.message);
+    REQUIRE(plain.status == ImportStatus::Ok);
+    REQUIRE(doubled.status == ImportStatus::Ok);
+
+    const ImportedPrimitive& a = onlyPrimitive(plain.model);
+    const ImportedPrimitive& b = onlyPrimitive(doubled.model);
+    REQUIRE(a.positions.size() == b.positions.size());
+    for (std::size_t i = 0; i < a.positions.size(); ++i) {
+        CHECK(approxEq(b.positions[i], a.positions[i] * 2.0F));
+    }
+    CHECK(approxEq(b.bounds.max, a.bounds.max * 2.0F));
+    CHECK(approxEq(doubled.model.summary.bounds.max, plain.model.summary.bounds.max * 2.0F));
+    REQUIRE(a.normals.size() == b.normals.size());
+    for (std::size_t i = 0; i < a.normals.size(); ++i) {
+        CHECK(approxEq(b.normals[i], a.normals[i]));
+    }
+    REQUIRE(a.uv0.size() == b.uv0.size());
+    for (std::size_t i = 0; i < a.uv0.size(); ++i) {
+        CHECK(approxEq(b.uv0[i].x, a.uv0[i].x));
+        CHECK(approxEq(b.uv0[i].y, a.uv0[i].y));
+    }
+    REQUIRE(a.colors.size() == b.colors.size());
+    for (std::size_t i = 0; i < a.colors.size(); ++i) {
+        CHECK(approxEq(b.colors[i].x, a.colors[i].x));
+    }
+}
+
+// AI28 (AC-31) -- INV-A5, over every fixture: `attributes` never claims a bit whose array is empty, and
+// `positions`/`indices` are never empty on a primitive that survives.
+TEST_CASE("AI28: attributes never claims a bit whose array is empty, on any fixture") {
+    for (const Fixture& fixture : fixtureTable()) {
+        const ImportResult result =
+            importModel(fixture.name, "", asBytes(fixture.text), ImportSettings{}, ImportDepth::Full, {});
+        INFO("fixture: ", fixture.name, " message: ", result.message);
+        for (const engine::editor::ImportedMesh& mesh : result.model.meshes) {
+            for (const ImportedPrimitive& prim : mesh.primitives) {
+                CHECK_FALSE(prim.positions.empty());
+                CHECK_FALSE(prim.indices.empty());
+                CHECK(has(prim.attributes, VertexAttribute::Position));
+                CHECK(has(prim.attributes, VertexAttribute::Normal) == !prim.normals.empty());
+                CHECK(has(prim.attributes, VertexAttribute::Tangent) == !prim.tangents.empty());
+                CHECK(has(prim.attributes, VertexAttribute::TexCoord0) == !prim.uv0.empty());
+                CHECK(has(prim.attributes, VertexAttribute::TexCoord1) == !prim.uv1.empty());
+                CHECK(has(prim.attributes, VertexAttribute::Color0) == !prim.colors.empty());
+            }
+        }
+    }
+}
+
+// AI29 (AC-31) -- the ONE useful thing aiProcess_FindInvalidData would have done, taken over so the MESH
+// SURVIVES it. An optional channel whose every element is exactly zero is dropped with a warning naming
+// it; the mesh, its primitive and every count survive, which is exactly what that flag would destroy.
+TEST_CASE("AI29: an all-zero normal channel is dropped with a warning and the mesh survives") {
+    const std::string ply =
+        "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+        "property float nx\nproperty float ny\nproperty float nz\n"
+        "element face 1\nproperty list uchar int vertex_index\nend_header\n"
+        "0 0 0 0 0 0\n1 0 0 0 0 0\n0 1 0 0 0 0\n3 0 1 2\n";
+    const ImportResult result = importModel("z.ply", "", asBytes(ply), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = onlyPrimitive(result.model);
+    CHECK_FALSE(has(prim.attributes, VertexAttribute::Normal));
+    CHECK(prim.normals.empty());
+    CHECK(prim.positions.size() == 3U);
+    CHECK(prim.indices.size() == 3U);
+    CHECK(result.model.summary.vertexCount == 3U);
+    CHECK(result.model.summary.triangleCount == 1U);
+
+    REQUIRE(result.warningTotal == 1U);
+    REQUIRE(result.warnings.size() == 1U);
+    CHECK(result.warnings[0].find("normals") != std::string::npos);
+}
+
+// AI30 (AC-31) -- and the EXCEPTION that makes AI29 safe: an all-zero POSITION array is legitimate
+// geometry at the origin. Dropping it would delete a real, if degenerate, model with no warning at all.
+TEST_CASE("AI30: an all-zero position array imports as geometry at the origin, with no warning") {
+    const std::string ply =
+        "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+        "element face 1\nproperty list uchar int vertex_index\nend_header\n"
+        "0 0 0\n0 0 0\n0 0 0\n3 0 1 2\n";
+    const ImportResult result = importModel("o.ply", "", asBytes(ply), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    const ImportedPrimitive& prim = onlyPrimitive(result.model);
+    REQUIRE(prim.positions.size() == 3U);
+    for (const engine::Vec3& position : prim.positions) {
+        CHECK(approxEq(position, engine::Vec3{}));
+    }
+    CHECK(has(prim.attributes, VertexAttribute::Position));
+    CHECK(prim.bounds.valid());  // a POINT box at the origin, never the Aabb::empty() sentinel
+    CHECK(result.warnings.empty());
+    CHECK(result.warningTotal == 0U);
+}
+
+// AI31 (AC-32, CORRECTED against the library) -- a face indexing past the vertex count is REFUSED WHOLE,
+// as Malformed, and the run is clean under ASan and UBSan.
+//
+// The plan predicted "the face is dropped with one capped warning and the status stays Ok". MEASURED, it
+// cannot be: aiProcess_ValidateDataStructure is ON (A-6b) and ValidateDSProcess runs FIRST -- before
+// ScenePreprocessor and before every other post-process step -- where
+// `if (face.mIndices[a] >= pMesh->mNumVertices) ReportError(...)` throws DeadlyImportError("Validation
+// failed: ..."). Nothing downstream can introduce an out-of-range index either, so OUR OWN range check
+// (INV-A4) is unreachable while the flag is on. It stays, as the defence in depth it was always
+// described as, and AI34 is its cover -- there is no behavioural one to have.
+TEST_CASE("AI31: a .ply face indexing past the vertex count is refused as Malformed") {
+    const std::string ply =
+        "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\n"
+        "element face 1\nproperty list uchar int vertex_index\nend_header\n"
+        "0 0 0\n1 0 0\n0 1 0\n3 0 1 99\n";
+    const ImportResult result = importModel("bad.ply", "", asBytes(ply), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    CHECK(result.status == ImportStatus::Malformed);
+    CHECK_FALSE(result.message.empty());
+    CHECK(result.message.find("alidation") != std::string::npos);
+}
+
+// AI32 (AC-56) -- a .ply header that LIES about its element counts is refused BEFORE the library sees
+// it, by the one pre-allocation bound in this task. Without that check the loader works from the
+// declared count and grinds at unbounded, climbing resident memory (MEASURED: over seventeen minutes on
+// a 120-byte file). The case completing at all is part of the assertion.
+TEST_CASE("AI32: a .ply declaring more elements than the file can hold is refused as Malformed") {
+    const std::string ply =
+        "ply\nformat ascii 1.0\nelement vertex 1000000000\nproperty float x\nproperty float y\n"
+        "property float z\nend_header\n0 0 0\n";
+    const ImportResult result = importModel("lie.ply", "", asBytes(ply), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    CHECK(result.status == ImportStatus::Malformed);
+    CHECK_FALSE(result.message.empty());
+
+    // And the same file at Structure depth is Ok with no URIs -- the library is never entered there, so
+    // the pre-check is not what makes Structure safe; not entering is.
+    const ImportResult structure =
+        importModel("lie.ply", "", asBytes(ply), ImportSettings{}, ImportDepth::Structure, {});
+    CHECK(structure.status == ImportStatus::Ok);
+    CHECK(structure.externalUris.empty());
+}
+
+// AI33 (E3) -- the .stl half of the same question, and it needs NO first-party check: STLLoader.cpp
+// compares the declared facet count against the file size in 64-bit arithmetic BEFORE its own
+// `new aiVector3D[mNumFaces * 3]`, and IsBinarySTL demands an EXACT size match, so an over-declaring
+// file is not even recognised as binary. An added .stl pre-check would be dead code duplicating a
+// guarantee the loader already makes -- this case is what proves the guarantee is real.
+TEST_CASE("AI33: an .stl declaring more triangles than the file contains fails without a first-party check") {
+    const std::vector<Tri> tris = {
+        Tri{{0.0F, 0.0F, 1.0F}, {{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}}}}};
+    std::string lying = buildBinaryStl("over-declared", tris, {});
+    // Rewrite the facet count in place: 4 million facets, in a file holding one.
+    const std::uint32_t absurd = 4000000U;
+    for (unsigned int i = 0; i < 4U; ++i) {
+        lying[80U + i] = static_cast<char>((absurd >> (i * 8U)) & 0xFFU);
+    }
+    const ImportResult result = importModel("lie.stl", "", asBytes(lying), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    CHECK(result.status != ImportStatus::Ok);
+    CHECK_FALSE(result.message.empty());
+}
+
+// AI34 -- THE GUARDS NO RUNTIME CASE CAN REACH, pinned in the source text, because their absence is not
+// a failing CHECK.
+//
+//  * plyDeclaredCountsExceedBytes: deleting the CALL makes the suite HANG, not fail (AI32's fixture
+//    grinds for minutes at climbing RSS), so no runtime case can cover it. The ORDER matters as much as
+//    the call: it must run AFTER seedPlyExternalUris, so AC-19's depth equality still holds on a refused
+//    file, and BEFORE runAssimp, or it protects nothing.
+//  * the two INV-A4 range checks: aiProcess_ValidateDataStructure refuses an out-of-range face index or
+//    weight vertex id FIRST (AI31), and nothing downstream can introduce one, so both checks are
+//    unreachable while the flag is on. The flag is reversible in one token (R5), and these checks are
+//    what stand behind it when it is -- so they are pinned rather than deleted as dead code.
+//
+// This is 3.2.4's blocking SDL_WaitProcess finding, one task on: where the failure mode is a HANG or a
+// masked branch rather than a red case, the comment-stripped source IS the cover.
+TEST_CASE("AI34: the ply pre-check and the two range checks are present, in the order that makes them work") {
+    const std::string code = strippedSource("assimp_import.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    const std::size_t precheck = code.find("plyDeclaredCountsExceedBytes(bytes)");
+    const std::size_t run = code.find("runAssimp(bytes,");
+    REQUIRE(precheck != std::string::npos);
+    REQUIRE(run != std::string::npos);
+    const std::size_t seed = code.rfind("seedPlyExternalUris(bytes", precheck);
+    REQUIRE(seed != std::string::npos);
+    CHECK(seed < precheck);
+    CHECK(precheck < run);
+
+    CHECK(code.find("face.mIndices[k] >= src.mNumVertices") != std::string::npos);
+}
+
+// AI35 -- summary.bounds is folded from surviving PRIMITIVES, never from mesh bounds. 3.2.3 confirmed by
+// sabotage that these are two genuinely independent properties. The fixture's geometry deliberately
+// EXCLUDES the origin: `outMesh.bounds` is still a default point box at (0,0,0) when the summary is
+// folded, so a seed reading it there drags the model bounds back to the origin and this case goes red.
+TEST_CASE("AI35: summary.bounds is folded from primitives and never from a mesh-level point box") {
+    const std::string stl =
+        "solid Offset\nfacet normal 0 0 1\nouter loop\nvertex 10 10 10\nvertex 11 10 10\nvertex 10 11 10\n"
+        "endloop\nendfacet\nendsolid Offset\n";
+    const ImportResult result = importModel("off.stl", "", asBytes(stl), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE(result.model.summary.bounds.valid());
+    CHECK(approxEq(result.model.summary.bounds.min, engine::Vec3{10.0F, 10.0F, 10.0F}));
+    CHECK(approxEq(result.model.summary.bounds.max, engine::Vec3{11.0F, 11.0F, 10.0F}));
+    CHECK(approxEq(result.model.meshes[0].bounds.min, engine::Vec3{10.0F, 10.0F, 10.0F}));
 }

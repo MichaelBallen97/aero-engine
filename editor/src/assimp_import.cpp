@@ -23,12 +23,14 @@
 #include <assimp/scene.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <format>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace engine::editor {
 
@@ -252,6 +254,362 @@ constexpr std::string_view STL_LOADER_FRAGMENT = "STL";      // full: "Stereolit
     return true;
 }
 
+// task 3.2.5 (A-6). EXACT ZERO, never an epsilon: an epsilon test would delete a legitimately tiny UV
+// set, and the rule this implements is about the REPRESENTATION ("a zero normal is indistinguishable
+// from an absent one"), not about smallness.
+[[nodiscard]] bool isExactlyZero(const Vec2& v) noexcept { return v.x == 0.0F && v.y == 0.0F; }
+[[nodiscard]] bool isExactlyZero(const Vec3& v) noexcept { return v.x == 0.0F && v.y == 0.0F && v.z == 0.0F; }
+[[nodiscard]] bool isExactlyZero(const Vec4& v) noexcept {
+    return v.x == 0.0F && v.y == 0.0F && v.z == 0.0F && v.w == 0.0F;
+}
+
+// task 3.2.5 (A-6). The ONE useful thing aiProcess_FindInvalidData would have done, taken over so the
+// MESH SURVIVES it -- that flag DELETES a mesh it finds invalid, and throws "No meshes remaining" when
+// it deletes them all, which collides head-on with 3.2.1's D11 (an empty mesh survives so the panel can
+// show the user why their file looks empty). `channel` is prose for the warning; the array is cleared
+// in place and its attribute bit therefore never set (INV-A5 does the rest).
+//
+// POSITIONS ARE NEVER PASSED HERE: an all-zero position array is legitimate geometry at the origin.
+template <typename T>
+void dropAllZeroChannel(std::vector<T>& channel, std::string_view name, std::string_view meshName,
+                        ImportResult& result) {
+    if (channel.empty()) {
+        return;
+    }
+    for (const T& value : channel) {
+        if (!isExactlyZero(value)) {
+            return;
+        }
+    }
+    channel.clear();
+    addWarning(result, std::format("mesh '{}': the {} channel was entirely zero and was dropped -- a zero "
+                                   "value is indistinguishable from an absent one",
+                                   meshName, name));
+}
+
+// task 3.2.5 (A-14/A-15/INV-A4/INV-A5). ONE ImportedMesh per aiMesh, ONE ImportedPrimitive inside it --
+// aiMesh already carries exactly one mMaterialIndex, so 3.2.3's first-appearance bucketing has no
+// analogue here. Runs at Full depth only: at Structure, a mesh keeps its IDENTITY (name, localId, an
+// EMPTY primitive list) and .stl/.ply never reach here at all.
+void convertMeshes(const aiScene& scene, const ImportSettings& settings, ImportDepth depth, ImportResult& result) {
+    std::size_t totalVertices = 0;
+    std::size_t totalIndices = 0;
+    std::size_t totalPrimitives = 0;
+    bool vertexCapReported = false;
+    bool indexCapReported = false;
+    bool primitiveCapReported = false;
+
+    for (unsigned int mi = 0; mi < scene.mNumMeshes; ++mi) {
+        const aiMesh& src = *scene.mMeshes[mi];
+        ImportedMesh outMesh;
+        outMesh.name = src.mName.C_Str();
+        outMesh.localId = mi;  // the source's own mesh index (3.2.1's D13)
+
+        // An empty mesh gets a POINT box (Aabb{}), NEVER the Aabb::empty() sentinel, whose NaN centre
+        // would leak into the model bounds. Both shipped backends already do exactly this.
+        const auto emitEmpty = [&result](ImportedMesh& mesh) {
+            mesh.bounds = Aabb{};
+            result.model.meshes.push_back(std::move(mesh));
+        };
+
+        if (depth == ImportDepth::Structure) {
+            emitEmpty(outMesh);  // identity survives, content does not -- glTF's own split
+            continue;
+        }
+        if (totalPrimitives >= MAX_PRIMITIVES_PER_MODEL) {
+            if (!primitiveCapReported) {
+                primitiveCapReported = true;
+                escalate(result, ImportStatus::Truncated,
+                         "the primitive count exceeds this importer's per-model limit");
+            }
+            emitEmpty(outMesh);
+            continue;
+        }
+
+        ImportedPrimitive prim;
+        prim.materialIndex = src.mMaterialIndex;  // RAW; remapped by applyMaterialMap, never used as-is
+
+        const std::size_t vertexCount = src.mNumVertices;
+        if (totalVertices + vertexCount > MAX_VERTICES_PER_MODEL) {
+            if (!vertexCapReported) {
+                vertexCapReported = true;
+                escalate(result, ImportStatus::Truncated, "the vertex count exceeds this importer's per-model limit");
+            }
+            emitEmpty(outMesh);  // a COHERENT smaller model: this mesh contributes no primitive at all
+            continue;
+        }
+
+        prim.positions.reserve(vertexCount);
+        for (unsigned int v = 0; v < src.mNumVertices; ++v) {
+            prim.positions.push_back(toVec3(src.mVertices[v]) * settings.scale);  // A22: POSITIONS only
+        }
+        if (src.HasNormals()) {
+            prim.normals.reserve(vertexCount);
+            for (unsigned int v = 0; v < src.mNumVertices; ++v) {
+                prim.normals.push_back(toVec3(src.mNormals[v]));  // NEVER scaled
+            }
+        }
+        // TANGENTS only when the loader supplied BOTH tangents and bitangents. aiProcess_CalcTangentSpace
+        // is FORBIDDEN (A-6), so in practice this stays empty for all three formats and the arm exists to
+        // be CORRECT rather than because it is expected to fire. `.w` is glTF's bitangent SIGN.
+        if (src.mTangents != nullptr && src.mBitangents != nullptr && src.HasNormals()) {
+            prim.tangents.reserve(vertexCount);
+            for (unsigned int v = 0; v < src.mNumVertices; ++v) {
+                const Vec3 n = toVec3(src.mNormals[v]);
+                const Vec3 t = toVec3(src.mTangents[v]);
+                const Vec3 b = toVec3(src.mBitangents[v]);
+                const float sign = dot(cross(n, t), b) < 0.0F ? -1.0F : 1.0F;
+                prim.tangents.push_back(Vec4{t.x, t.y, t.z, sign});
+            }
+        }
+        for (unsigned int set = 0; set < 2; ++set) {
+            if (src.mTextureCoords[set] == nullptr) {
+                continue;
+            }
+            std::vector<Vec2>& target = set == 0 ? prim.uv0 : prim.uv1;
+            target.reserve(vertexCount);
+            for (unsigned int v = 0; v < src.mNumVertices; ++v) {
+                target.push_back(Vec2{src.mTextureCoords[set][v].x, src.mTextureCoords[set][v].y});
+            }
+            if (src.mNumUVComponents[set] == 3) {
+                // A 3D texture coordinate has NO field here. ONE warning per SET, never per vertex.
+                addWarning(result, std::format("mesh '{}': UV set {} is 3-dimensional; the third component "
+                                               "was dropped",
+                                               outMesh.name, set));
+            }
+        }
+        if (src.mColors[0] != nullptr) {
+            prim.colors.reserve(vertexCount);
+            for (unsigned int v = 0; v < src.mNumVertices; ++v) {
+                const aiColor4D& c = src.mColors[0][v];
+                prim.colors.push_back(Vec4{c.r, c.g, c.b, c.a});  // already RGBA; `a` verbatim
+            }
+        }
+
+        dropAllZeroChannel(prim.normals, "normals", outMesh.name, result);
+        dropAllZeroChannel(prim.tangents, "tangents", outMesh.name, result);
+        dropAllZeroChannel(prim.uv0, "UV set 0", outMesh.name, result);
+        dropAllZeroChannel(prim.uv1, "UV set 1", outMesh.name, result);
+        dropAllZeroChannel(prim.colors, "vertex colours", outMesh.name, result);
+
+        // INV-A4: EVERY index range-checked against mNumVertices BEFORE it is written. A face failing any
+        // check is dropped WHOLE, never partially, with one capped warning.
+        //
+        // MEASURED, AND RECORDED SO IT IS NOT MISTAKEN FOR LIVE COVER: while aiProcess_ValidateDataStructure
+        // is on (A-6b) this check is UNREACHABLE -- ValidateDSProcess runs FIRST, before every other
+        // post-process step, and refuses an out-of-range index outright (AI31). Nothing downstream can
+        // introduce one either. The flag is reversible in one token (R5) and this is what stands behind it
+        // when it is, so the check stays and AI34 pins it in the source text.
+        std::size_t droppedFaces = 0;
+        std::size_t nonTriangleFaces = 0;
+        prim.indices.reserve(static_cast<std::size_t>(src.mNumFaces) * 3U);
+        for (unsigned int f = 0; f < src.mNumFaces; ++f) {
+            const aiFace& face = src.mFaces[f];
+            if (face.mNumIndices != 3) {
+                ++nonTriangleFaces;  // unreachable after aiProcess_Triangulate; defence in depth
+                continue;
+            }
+            bool inRange = true;
+            for (unsigned int k = 0; k < 3; ++k) {
+                if (face.mIndices[k] >= src.mNumVertices) {
+                    inRange = false;
+                    break;
+                }
+            }
+            if (!inRange) {
+                ++droppedFaces;
+                continue;
+            }
+            if (totalIndices + 3U > MAX_INDICES_PER_MODEL) {
+                if (!indexCapReported) {
+                    indexCapReported = true;
+                    escalate(result, ImportStatus::Truncated,
+                             "the index count exceeds this importer's per-model limit");
+                }
+                break;
+            }
+            for (unsigned int k = 0; k < 3; ++k) {
+                prim.indices.push_back(face.mIndices[k]);
+            }
+            totalIndices += 3U;
+        }
+        if (droppedFaces > 0) {
+            addWarning(result, std::format("mesh '{}': {} face(s) referenced a vertex outside the mesh and "
+                                           "were dropped",
+                                           outMesh.name, droppedFaces));
+        }
+        if (nonTriangleFaces > 0) {
+            addWarning(result, std::format("mesh '{}': {} face(s) were not triangles after triangulation and "
+                                           "were dropped",
+                                           outMesh.name, nonTriangleFaces));
+        }
+
+        // INV-A5: positions and indices are NEVER empty on a primitive that survives, and `attributes`
+        // never claims a bit whose array is empty.
+        if (!prim.indices.empty() && !prim.positions.empty()) {
+            prim.attributes = VertexAttribute::Position;
+            if (!prim.normals.empty()) {
+                prim.attributes |= VertexAttribute::Normal;
+            }
+            if (!prim.tangents.empty()) {
+                prim.attributes |= VertexAttribute::Tangent;
+            }
+            if (!prim.uv0.empty()) {
+                prim.attributes |= VertexAttribute::TexCoord0;
+            }
+            if (!prim.uv1.empty()) {
+                prim.attributes |= VertexAttribute::TexCoord1;
+            }
+            if (!prim.colors.empty()) {
+                prim.attributes |= VertexAttribute::Color0;
+            }
+            Aabb primBounds = Aabb::empty();
+            for (const Vec3& p : prim.positions) {
+                primBounds.expand(p);
+            }
+            prim.bounds = primBounds;
+            result.model.summary.bounds.expand(primBounds);  // FROM THE PRIMITIVE, never from the mesh
+            result.model.summary.vertexCount += prim.positions.size();
+            result.model.summary.triangleCount += prim.indices.size() / 3U;
+            totalVertices += prim.positions.size();
+            ++totalPrimitives;
+            outMesh.primitives.push_back(std::move(prim));
+        } else if (src.mNumFaces == 0) {
+            // The MESH SURVIVES with zero primitives so the panel can show the user WHY their file looks
+            // empty (3.2.1's D11). Unreachable while validation is on -- ValidateDS refuses a mesh with no
+            // faces before we see it -- and kept for the same reason the range check above is.
+            addWarning(result, std::format("mesh '{}': no triangles survived; point and line primitives are "
+                                           "not imported",
+                                           outMesh.name));
+        }
+
+        Aabb meshBounds = Aabb::empty();
+        for (const ImportedPrimitive& p : outMesh.primitives) {
+            meshBounds.expand(p.bounds);
+        }
+        outMesh.bounds = meshBounds.valid() ? meshBounds : Aabb{};
+        result.model.summary.primitiveCount += outMesh.primitives.size();
+        result.model.meshes.push_back(std::move(outMesh));
+    }
+    result.model.summary.meshCount = result.model.meshes.size();
+}
+
+// task 3.2.5 (A-12). ITERATIVE, depth-bounded, and localId == the node's position in
+// ImportedModel::nodes BY CONSTRUCTION. misc-no-recursion is --warnings-as-errors on the Linux lane, but
+// the deeper reason is that a .dae can declare an arbitrarily deep <node> chain and a recursive walk
+// would be a stack overflow on a hostile file, which no sanitizer reports as anything but a crash.
+//
+// The coincidence localId == index is real for glTF and OBJ too and FALSE for FBX -- and 3.2.2's
+// BLOCKING ASan heap-buffer-overflow was import_details_panel.cpp leaning on it. The panel's
+// localId->index map still runs and still must; AI37 pins nodes[i].localId == i so a future change that
+// breaks the coincidence is CAUGHT rather than discovered.
+void convertNodes(const aiScene& scene, const ImportSettings& settings, ImportResult& result) {
+    if (scene.mRootNode == nullptr) {
+        return;  // defensive: every loader that produces no root throws instead
+    }
+    struct Pending {
+        const aiNode* node = nullptr;
+        std::uint32_t parent = INVALID_SUBASSET;
+        std::uint32_t depth = 0;
+    };
+    std::vector<Pending> stack;
+    stack.push_back(Pending{scene.mRootNode, INVALID_SUBASSET, 0});
+    bool depthReported = false;
+    bool nodeCapReported = false;
+
+    while (!stack.empty()) {
+        const Pending top = stack.back();
+        stack.pop_back();
+
+        if (top.depth > MAX_NODE_DEPTH) {
+            if (!depthReported) {
+                depthReported = true;
+                escalate(result, ImportStatus::Truncated, "the node depth exceeds this importer's per-model limit");
+            }
+            continue;  // the SUBTREE is dropped; everything already emitted stays coherent
+        }
+        if (result.model.nodes.size() >= MAX_NODES_PER_MODEL) {
+            if (!nodeCapReported) {
+                nodeCapReported = true;
+                escalate(result, ImportStatus::Truncated, "the node count exceeds this importer's per-model limit");
+            }
+            continue;
+        }
+
+        const auto index = static_cast<std::uint32_t>(result.model.nodes.size());
+        ImportedNode out;
+        out.name = top.node->mName.C_Str();
+        out.localId = index;  // A-12: the walk position IS the id
+        out.parent = top.parent;
+
+        aiVector3D scaling;
+        aiQuaternion rotation;
+        aiVector3D position;
+        top.node->mTransformation.Decompose(scaling, rotation, position);
+        out.translation = toVec3(position);
+        out.rotation = toQuat(rotation);  // A-14 trap 2, one of THREE call sites
+        out.scale = toVec3(scaling);
+        if (top.parent == INVALID_SUBASSET) {
+            // import_settings.hpp's own rule: ROOT translations only. A non-root node's translation is
+            // already expressed in its parent's scaled space.
+            out.translation = out.translation * settings.scale;
+        }
+        if (top.node->mNumMeshes > 0) {
+            out.meshIndex = top.node->mMeshes[0];
+        }
+
+        if (top.parent != INVALID_SUBASSET) {
+            result.model.nodes[top.parent].children.push_back(index);  // never INVALID_SUBASSET
+        } else {
+            result.model.roots.push_back(index);
+        }
+        result.model.nodes.push_back(std::move(out));
+
+        // A node referencing SEVERAL meshes gets one child per extra mesh: ImportedNode::meshIndex holds
+        // exactly ONE index and a second is not representable. The split is NAMED (3.2.2's multiple-skin-
+        // deformer precedent) -- one warning per node, giving the count.
+        if (top.node->mNumMeshes > 1) {
+            addWarning(result,
+                       std::format("node '{}': {} meshes; split into {} extra child nodes",
+                                   result.model.nodes[index].name, top.node->mNumMeshes, top.node->mNumMeshes - 1));
+            for (unsigned int m = 1; m < top.node->mNumMeshes; ++m) {
+                if (result.model.nodes.size() >= MAX_NODES_PER_MODEL) {
+                    break;  // the shared cap message above already fired or will
+                }
+                const auto extraIndex = static_cast<std::uint32_t>(result.model.nodes.size());
+                ImportedNode extra;
+                extra.name = std::format("{}.{}", result.model.nodes[index].name, m);
+                extra.localId = extraIndex;
+                extra.parent = index;
+                extra.meshIndex = top.node->mMeshes[m];
+                result.model.nodes[index].children.push_back(extraIndex);
+                result.model.nodes.push_back(std::move(extra));
+            }
+        }
+
+        // PRE-ORDER with a stack means pushing children in REVERSE, so the first child is popped first
+        // and `nodes` reads in document order. Getting this backwards is invisible in a one-child fixture
+        // and wrong in every real file -- AI38's three-child fixture is what pins it.
+        for (unsigned int c = top.node->mNumChildren; c > 0; --c) {
+            stack.push_back(Pending{top.node->mChildren[c - 1], index, top.depth + 1});
+        }
+    }
+    result.model.summary.nodeCount = result.model.nodes.size();
+}
+
+// 3.2.3's BLOCKING gap 1, avoided by construction rather than found by review: a RAW mMaterialIndex must
+// never survive into ImportedPrimitive. The two index spaces coincide for every well-formed file and
+// diverge the moment MAX_MATERIALS_PER_MODEL trims the tail -- or the moment importMaterials is false,
+// which passes an EMPTY map here and is exactly what AC-48 requires, with no second code path.
+void applyMaterialMap(const std::vector<std::uint32_t>& rawToConverted, ImportedModel& model) {
+    for (ImportedMesh& mesh : model.meshes) {
+        for (ImportedPrimitive& prim : mesh.primitives) {
+            prim.materialIndex =
+                prim.materialIndex < rawToConverted.size() ? rawToConverted[prim.materialIndex] : INVALID_SUBASSET;
+        }
+    }
+}
+
 // AC-19: the .ply Structure and Full passes must produce the IDENTICAL externalUris, entry for entry
 // and order for order. Structure produces it from the header scan; Full seeds it from the SAME scan
 // first, so the order is the header's. Lifted into one helper so the two call sites cannot drift.
@@ -320,7 +678,12 @@ void seedPlyExternalUris(std::span<const std::byte> bytes, std::string_view asse
     if (!runAssimp(bytes, isPly ? "ply" : "stl", isPly ? PLY_LOADER_FRAGMENT : STL_LOADER_FRAGMENT, loaded, result)) {
         return result;
     }
-    (void)settings;
+    // convertMeshes -> convertNodes for these two formats, because neither has a skin or an animation and
+    // the node pass only needs the mesh count. .dae's order is the OTHER way round and that one IS a
+    // dependency -- do not "harmonise" them.
+    convertMeshes(*loaded.scene, settings, depth, result);
+    convertNodes(*loaded.scene, settings, result);
+    applyMaterialMap(std::vector<std::uint32_t>{}, result.model);
     // .ply/.stl declare no unit and no axis, so SourceSpace stays ALL-DEFAULT (declared == false) and
     // the panel draws no Source Space row for them. Inventing one is the option this task's scoping
     // rejected; the row means something precisely because it is absent when the format declares nothing.
@@ -357,6 +720,7 @@ void seedPlyExternalUris(std::span<const std::byte> bytes, std::string_view asse
     }
     (void)settings;
     (void)depth;
+    (void)assetRelativeDir;  // step 6 wires it into convertMaterials; named here so the signature holds
     return result;
 }
 
