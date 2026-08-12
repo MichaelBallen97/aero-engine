@@ -509,9 +509,31 @@ void convertMeshes(const aiScene& scene, const ImportSettings& settings, ImportD
 // BLOCKING ASan heap-buffer-overflow was import_details_panel.cpp leaning on it. The panel's
 // localId->index map still runs and still must; AI37 pins nodes[i].localId == i so a future change that
 // breaks the coincidence is CAUGHT rather than discovered.
-void convertNodes(const aiScene& scene, const ImportSettings& settings, ImportResult& result) {
+//
+// RETURNS the aiNode* -> localId map convertSkins resolves aiBone::mNode/mArmature through, BUILT HERE,
+// at the moment the id is assigned. It used to be re-derived by a SECOND walk of the same tree
+// (buildNodePointerMap), and that second walk could not see either of the two places this one does not
+// number an aiNode one-for-one:
+//   * a MULTI-MESH node consumes mNumMeshes slots -- its own, plus the synthesized `<name>.<n>` children
+//     appended immediately after -- where a plain aiNode walk consumes exactly one, so EVERY LATER NODE
+//     was off by the accumulated split count. ColladaLoader::BuildMeshesForNode pushes one mesh ref per
+//     submesh-per-material, so any node whose geometry carries two materials, or that carries two
+//     <instance_geometry> elements, is one: ordinary content, not a corner case.
+//   * a DEPTH-DROPPED subtree is not emitted at all, while an unbounded second walk descends straight
+//     into it and shifts everything popped afterwards.
+// A count bound truncates the tail; it realigns nothing. The failure was SILENT -- joints bound to the
+// wrong nodes, status Ok, no warning -- which is exactly 3.2.2's localId lesson in a new costume.
+//
+// THE SPLIT CHILDREN ARE DELIBERATELY NOT IN THE MAP, and cannot be: they have no aiNode of their own,
+// so they have no key. Nothing is lost, because every key this map is ever asked for is an aiNode* the
+// LIBRARY produced (aiBone::mNode and aiBone::mArmature both point into aiScene's own tree), and no such
+// pointer can name a node this file invented. A dropped or capped node has no entry either, which is the
+// E12 path: that joint is dropped with a warning rather than resolved to whatever happens to sit there.
+std::unordered_map<const aiNode*, std::uint32_t> convertNodes(const aiScene& scene, const ImportSettings& settings,
+                                                              ImportResult& result) {
+    std::unordered_map<const aiNode*, std::uint32_t> localIdByNode;
     if (scene.mRootNode == nullptr) {
-        return;  // defensive: every loader that produces no root throws instead
+        return localIdByNode;  // defensive: every loader that produces no root throws instead
     }
     struct Pending {
         const aiNode* node = nullptr;
@@ -543,6 +565,7 @@ void convertNodes(const aiScene& scene, const ImportSettings& settings, ImportRe
         }
 
         const auto index = static_cast<std::uint32_t>(result.model.nodes.size());
+        localIdByNode.emplace(top.node, index);  // HERE, and nowhere else -- see this function's header
         ImportedNode out;
         out.name = top.node->mName.C_Str();
         out.localId = index;  // A-12: the walk position IS the id
@@ -560,8 +583,20 @@ void convertNodes(const aiScene& scene, const ImportSettings& settings, ImportRe
             // already expressed in its parent's scaled space.
             out.translation = out.translation * settings.scale;
         }
+        // INV-A4, third application: aiNode::mMeshes is a user-controlled index into aiScene::mMeshes and
+        // is RANGE-CHECKED BY US before it is written, exactly as face.mIndices and aiVertexWeight
+        // ::mVertexId are. Unreachable while aiProcess_ValidateDataStructure is on -- ValidateDSProcess
+        // refuses an out-of-range aiNode::mMeshes[i] outright -- and kept, and pinned in the source text
+        // by AI34, for the same reason those two are: the flag is reversible in one token (R5), and
+        // 3.1.5's drag-into-scene is specified to resolve meshIndex into ImportedModel::meshes, where an
+        // unchecked value would be an out-of-bounds read rather than a wrong picture.
+        std::size_t droppedMeshRefs = 0;
         if (top.node->mNumMeshes > 0) {
-            out.meshIndex = top.node->mMeshes[0];
+            if (top.node->mMeshes[0] >= scene.mNumMeshes) {
+                ++droppedMeshRefs;  // meshIndex stays INVALID_SUBASSET: "no mesh", never a stale index
+            } else {
+                out.meshIndex = top.node->mMeshes[0];
+            }
         }
 
         if (top.parent != INVALID_SUBASSET) {
@@ -580,7 +615,23 @@ void convertNodes(const aiScene& scene, const ImportSettings& settings, ImportRe
                                    result.model.nodes[index].name, top.node->mNumMeshes, top.node->mNumMeshes - 1));
             for (unsigned int m = 1; m < top.node->mNumMeshes; ++m) {
                 if (result.model.nodes.size() >= MAX_NODES_PER_MODEL) {
-                    break;  // the shared cap message above already fired or will
+                    // AC-53: EVERY cap reports Truncated with a message naming it. This used to `break`
+                    // on the claim that "the shared cap message above already fired or will" -- false on
+                    // the LAST node processed, because the main loop's check only runs when another node
+                    // is POPPED. A childless multi-mesh node hitting the cap with an empty stack left
+                    // nodeCapReported false, escalate unrun, and the import reporting Ok with nodes
+                    // silently dropped. The latch is shared with that check, so the message still fires
+                    // exactly once per import.
+                    if (!nodeCapReported) {
+                        nodeCapReported = true;
+                        escalate(result, ImportStatus::Truncated,
+                                 "the node count exceeds this importer's per-model limit");
+                    }
+                    break;
+                }
+                if (top.node->mMeshes[m] >= scene.mNumMeshes) {
+                    ++droppedMeshRefs;  // INV-A4: no child is synthesized for a reference we cannot honour
+                    continue;
                 }
                 const auto extraIndex = static_cast<std::uint32_t>(result.model.nodes.size());
                 ImportedNode extra;
@@ -592,6 +643,11 @@ void convertNodes(const aiScene& scene, const ImportSettings& settings, ImportRe
                 result.model.nodes.push_back(std::move(extra));
             }
         }
+        if (droppedMeshRefs > 0) {
+            addWarning(result, std::format("node '{}': {} mesh reference(s) fell outside the scene's mesh list "
+                                           "and were dropped",
+                                           result.model.nodes[index].name, droppedMeshRefs));
+        }
 
         // PRE-ORDER with a stack means pushing children in REVERSE, so the first child is popped first
         // and `nodes` reads in document order. Getting this backwards is invisible in a one-child fixture
@@ -601,6 +657,7 @@ void convertNodes(const aiScene& scene, const ImportSettings& settings, ImportRe
         }
     }
     result.model.summary.nodeCount = result.model.nodes.size();
+    return localIdByNode;
 }
 
 // aiTextureMapMode_Decal has no glTF equivalent -> ClampToEdge plus ONE warning, so the user is told
@@ -697,6 +754,16 @@ void convertNodes(const aiScene& scene, const ImportSettings& settings, ImportRe
     const std::string folded = foldBackslashesToSlashes(raw);  // A-19: fold BEFORE classify
     const UriClassification classified = classifyUri(folded, assetRelativeDir);
     if (classified.kind != UriClass::RelativePath) {
+        // FOUND-OR-APPENDED here too, which this branch used not to be. A refused image carries an EMPTY
+        // relativePath, so the resolved-path dedup below can never match one -- two materials naming the
+        // same bad path appended two identical ImportedImages and spent two identical warnings out of the
+        // MAX_IMPORT_WARNINGS budget, contradicting this function's own header. The key is the RAW uri
+        // plus a non-empty refusal, mirroring the embedded branch's (embedded && uri) key one arm up.
+        for (const ImportedImage& existing : result.model.images) {
+            if (!existing.refusal.empty() && existing.uri == raw) {
+                return std::nullopt;  // already recorded, already warned about: say it once
+            }
+        }
         ImportedImage image;
         image.uri = std::string(raw);
         image.refusal = classified.reason;  // the EXACT reason, shown by the panel
@@ -841,37 +908,6 @@ void applyMaterialMap(const std::vector<std::uint32_t>& rawToConverted, Imported
     }
 }
 
-// task 3.2.5 (A-13). aiBone::mNode points INTO aiScene's own node tree (aiProcess_PopulateArmatureData
-// documents it), so a POINTER key resolves a joint exactly. A NAME key would silently mis-resolve two
-// same-named nodes -- which Collada permits and Blender exports produce.
-//
-// Built by re-walking the tree in the SAME iterative pre-order convertNodes used, so the indices agree
-// by construction rather than by a second convention that could drift.
-[[nodiscard]] std::unordered_map<const aiNode*, std::uint32_t> buildNodePointerMap(const aiScene& scene,
-                                                                                   std::size_t nodeCount) {
-    std::unordered_map<const aiNode*, std::uint32_t> out;
-    if (scene.mRootNode == nullptr) {
-        return out;
-    }
-    std::vector<const aiNode*> stack;
-    stack.push_back(scene.mRootNode);
-    std::uint32_t index = 0;
-    while (!stack.empty() && index < nodeCount) {
-        const aiNode* node = stack.back();
-        stack.pop_back();
-        out.emplace(node, index);
-        ++index;
-        // The split children convertNodes synthesises for a multi-mesh node have NO aiNode of their own,
-        // so this walk and that one diverge in COUNT the moment such a node exists. `nodeCount` bounds
-        // this walk to what actually landed; a joint that falls past it simply does not resolve, which is
-        // the E12 path and is warned about rather than guessed at.
-        for (unsigned int c = node->mNumChildren; c > 0; --c) {
-            stack.push_back(node->mChildren[c - 1]);
-        }
-    }
-    return out;
-}
-
 // aiNodeAnim carries only mNodeName, so animations resolve BY NAME. Two same-named nodes make the FIRST
 // win: a real, stated limitation of the format rather than an invented disambiguation.
 [[nodiscard]] std::unordered_map<std::string, std::uint32_t> buildNodeNameMap(const ImportedModel& model) {
@@ -933,9 +969,15 @@ void bindSkinToMesh(unsigned int meshIndex, std::uint32_t skinIndex, ImportedMod
 // task 3.2.5 (A-13). ONE ImportedSkin per mesh that has bones. `joints` holds NODE localIds in mBones
 // order. aiProcess_PopulateArmatureData fills aiBone::mNode/mArmature, so a joint resolves to a real node
 // WITHOUT a name lookup -- which is why this pass is cheap enough to ship at full parity.
-void convertSkins(const aiScene& scene, const ImportSettings& settings, ImportDepth depth, ImportResult& result) {
-    const std::unordered_map<const aiNode*, std::uint32_t> localIdByNode =
-        buildNodePointerMap(scene, result.model.nodes.size());
+//
+// `localIdByNode` is convertNodes' OWN map, taken as a parameter rather than re-derived: a POINTER key
+// resolves a joint exactly (a NAME key would silently mis-resolve two same-named nodes, which Collada
+// permits and Blender exports produce), and the numbering can only agree with `nodes` if it comes from
+// the walk that did the numbering. See convertNodes' header for what a second walk got wrong.
+void convertSkins(const aiScene& scene, const ImportSettings& settings, ImportDepth depth,
+                  const std::unordered_map<const aiNode*, std::uint32_t>& localIdByNode, ImportResult& result) {
+    bool jointCapReported = false;
+    bool skinVertexCapReported = false;
 
     for (unsigned int mi = 0; mi < scene.mNumMeshes; ++mi) {
         const aiMesh& src = *scene.mMeshes[mi];
@@ -945,7 +987,13 @@ void convertSkins(const aiScene& scene, const ImportSettings& settings, ImportDe
         if (src.mNumBones > MAX_JOINTS_PER_SKIN) {
             // E14 (3.2.2's rule): a PARTIAL palette binds vertices to the WRONG bones, so the skin is
             // DROPPED WHOLE rather than truncated, and the mesh carries no joints/weights at all.
-            escalate(result, ImportStatus::Truncated, "the joint count exceeds this importer's per-skin limit");
+            //
+            // LATCHED, like every other cap site in this file (convertMeshes' three, convertMaterials'
+            // two, convertNodes' two): N over-cap skins owe the user ONE sentence, not N copies of it.
+            if (!jointCapReported) {
+                jointCapReported = true;
+                escalate(result, ImportStatus::Truncated, "the joint count exceeds this importer's per-skin limit");
+            }
             continue;
         }
         ImportedSkin outSkin;
@@ -957,7 +1005,15 @@ void convertSkins(const aiScene& scene, const ImportSettings& settings, ImportDe
         const bool wantVertexData = depth == ImportDepth::Full;
         if (wantVertexData) {
             if (src.mNumVertices > MAX_VERTICES_PER_MODEL) {
-                escalate(result, ImportStatus::Truncated, "the vertex count exceeds this importer's per-model limit");
+                // Its OWN wording, latched separately: this is a different CAUSE from convertMeshes'
+                // identical-looking vertex cap (there, the model-wide running total; here, one skinned
+                // mesh too large to build an influence table for), and two causes sharing one sentence
+                // makes the message unable to say which one fired.
+                if (!skinVertexCapReported) {
+                    skinVertexCapReported = true;
+                    escalate(result, ImportStatus::Truncated,
+                             "a skinned mesh's vertex count exceeds this importer's per-model limit");
+                }
                 continue;
             }
             influences.assign(src.mNumVertices, std::array<Influence, 4>{});
@@ -1275,7 +1331,7 @@ void seedPlyExternalUris(std::span<const std::byte> bytes, std::string_view asse
         materialMap = convertMaterials(*loaded.scene, assetRelativeDir, result);
     }
     applyMaterialMap(materialMap, result.model);
-    convertNodes(*loaded.scene, settings, result);
+    convertNodes(*loaded.scene, settings, result);  // the returned map has no consumer here: no skins
     // .ply/.stl declare no unit and no axis, so SourceSpace stays ALL-DEFAULT (declared == false) and
     // the panel draws no Source Space row for them. Inventing one is the option this task's scoping
     // rejected; the row means something precisely because it is absent when the format declares nothing.
@@ -1312,8 +1368,11 @@ void seedPlyExternalUris(std::span<const std::byte> bytes, std::string_view asse
     }
     // ORDERING IS A DEPENDENCY HERE, unlike .stl/.ply's: convertNodes runs FIRST so that convertSkins and
     // convertAnimations can resolve an aiNode* / a node name to a localId through the walk it produced.
-    // Do not "harmonise" the two orders -- the other one is a convenience, this one is load-bearing.
-    convertNodes(*loaded.scene, settings, result);
+    // Do not "harmonise" the two orders -- the other one is a convenience, this one is load-bearing. The
+    // map convertNodes RETURNS is the whole of that dependency: it is the walk's own numbering, and the
+    // one thing a second walk of the same tree provably cannot reproduce.
+    const std::unordered_map<const aiNode*, std::uint32_t> localIdByNode =
+        convertNodes(*loaded.scene, settings, result);
     convertMeshes(*loaded.scene, settings, depth, result);
     std::vector<std::uint32_t> materialMap;
     if (settings.importMaterials) {
@@ -1321,7 +1380,7 @@ void seedPlyExternalUris(std::span<const std::byte> bytes, std::string_view asse
     }
     applyMaterialMap(materialMap, result.model);
     if (settings.importSkins) {
-        convertSkins(*loaded.scene, settings, depth, result);
+        convertSkins(*loaded.scene, settings, depth, localIdByNode, result);
     }
     if (settings.importAnimations) {
         convertAnimations(*loaded.scene, depth, result);

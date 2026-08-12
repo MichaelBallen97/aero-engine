@@ -1526,6 +1526,14 @@ TEST_CASE("AI34: the ply pre-check and the two range checks are present, in the 
     // And the defensive non-triangle check, unreachable after aiProcess_Triangulate (seed S17), which
     // is pinned here rather than left as a branch a refactor could delete without consequence.
     CHECK(code.find("face.mNumIndices != 3") != std::string::npos);
+    // GAP-CLOSING (code-review finding 4): aiNode::mMeshes had NO range check at all, in either of the
+    // two places it is read, while its two siblings above were checked and pinned. It is unreachable at
+    // runtime for the same reason they are -- ValidateDataStructure.cpp refuses an out-of-range
+    // aiNode::mMeshes[i] before we see the scene -- so source text is its cover too, and it matters
+    // because 3.1.5 resolves ImportedNode::meshIndex into ImportedModel::meshes, where an unchecked
+    // value is an out-of-bounds READ rather than a wrong picture.
+    CHECK(code.find("top.node->mMeshes[0] >= scene.mNumMeshes") != std::string::npos);
+    CHECK(code.find("top.node->mMeshes[m] >= scene.mNumMeshes") != std::string::npos);
 }
 
 // AI35 -- summary.bounds is folded from surviving PRIMITIVES, never from mesh bounds. 3.2.3 confirmed by
@@ -2192,6 +2200,37 @@ TEST_CASE("AI56: a texture path escaping the assets root is refused with its rea
     CHECK(result.model.images[0].relativePath.empty());
     CHECK(result.externalUris.empty());
     CHECK_FALSE(result.model.materials[0].baseColor.has_value());  // a refused path never binds
+
+    // GAP-CLOSING (code-review finding 5): TWO materials naming the SAME refused path. The accepted
+    // branch dedups by RESOLVED relativePath, which a refusal never has -- it is empty on every refused
+    // image -- so the refusal branch appended a second identical ImportedImage and spent a second
+    // identical warning out of the MAX_IMPORT_WARNINGS budget, contradicting convertTextureSlot's own
+    // header ("the same texture named by two materials becomes ONE ImportedImage").
+    std::string twice = dae(DAE_MATERIALS_TWO_TEXTURED);
+    for (int replaced = 0; replaced < 2; ++replaced) {
+        const std::size_t found = twice.find("<init_from>wood.png</init_from>");
+        REQUIRE(found != std::string::npos);
+        twice.replace(found, std::string_view("<init_from>wood.png</init_from>").size(),
+                      "<init_from>../../secret.png</init_from>");
+    }
+    const ImportResult shared = importModel("esc2.dae", "", asBytes(twice), ImportSettings{}, ImportDepth::Full, {});
+    INFO("shared message: ", shared.message);
+    REQUIRE(shared.status == ImportStatus::Ok);
+    REQUIRE(shared.model.materials.size() == 2U);
+    CHECK(shared.model.images.size() == 1U);  // ONE entry, not one per naming material
+    CHECK_FALSE(shared.model.images[0].refusal.empty());
+    CHECK(shared.externalUris.empty());
+    CHECK_FALSE(shared.model.materials[0].baseColor.has_value());
+    CHECK_FALSE(shared.model.materials[1].baseColor.has_value());
+
+    std::size_t refusalWarnings = 0;
+    for (const std::string& warning : shared.warnings) {
+        if (warning.find("secret.png") != std::string::npos) {
+            ++refusalWarnings;
+        }
+    }
+    CHECK(refusalWarnings == 1U);
+    CHECK(shared.warningTotal == 1U);  // warningTotal is UNCAPPED, so a second warning would show here
 }
 
 // AI57 (E9) -- a percent-encoded <init_from> is decoded BY THE LOADER and must not be decoded again.
@@ -3226,4 +3265,297 @@ TEST_CASE("AI83: every Truncated message names the cap it hit") {
     // And none of them is a bare, unhelpful sentence.
     CHECK(code.find("\"limit exceeded\"") == std::string::npos);
     CHECK(code.find("\"too many\"") == std::string::npos);
+}
+
+// ---- the code-review round ---------------------------------------------------------------------------
+// Five cases closing findings the 36-seed matrix could not see, because every one of them is a defect in
+// what the node WALK numbers rather than in what any single conversion produces.
+
+namespace {
+
+// ONE geometry, parameterised by id and name, so a fixture needing several DISTINCT geometries does not
+// have to repeat 8 lines of XML per copy. DISTINCT is load-bearing wherever one node instances two of
+// them: ColladaLoader caches meshes by (geometry, submesh, material), so two <instance_geometry> elements
+// naming ONE geometry collapse to a single mesh index -- which ValidateDataStructure then refuses outright
+// ("aiNode::mMeshes[i] is already referenced by this node"). DAE_TWO_MESHES_ONE_NODE is built from two
+// geometries for exactly this reason.
+[[nodiscard]] std::string daeGeometry(std::string_view id, std::string_view name) {
+    return std::format(
+        R"(    <geometry id="{0}" name="{1}"><mesh>
+      <source id="p{0}"><float_array id="pa{0}" count="9">0 0 0 1 0 0 0 1 0</float_array>
+        <technique_common><accessor source="#pa{0}" count="3" stride="3">
+          <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+        </accessor></technique_common></source>
+      <vertices id="v{0}"><input semantic="POSITION" source="#p{0}"/></vertices>
+      <triangles count="1"><input semantic="VERTEX" source="#v{0}" offset="0"/><p>0 1 2</p></triangles>
+    </mesh></geometry>
+)",
+        id, name);
+}
+
+// CODE-REVIEW FINDING 1's fixture, in the shape the finding named. `leadingNodes` is spliced into the
+// visual scene BEFORE the armature, so the only thing that varies between the two arms is what stands in
+// front of the joints -- a multi-mesh node in one, a depth-dropped chain in the other. Both are places
+// where convertNodes' numbering and a plain aiNode walk's numbering DIVERGE, and every joint index is
+// wrong by the divergence when the two are not the same walk.
+//
+// The armature is a real wrapper node rather than the visual scene itself (AI65's shape), because
+// ArmaturePopulate::GetArmatureRoot walks UP from a bone until it finds a node that is not one -- so
+// `skeletonRoot` lands on "Armature", which stands AFTER the leading nodes and therefore shifts with
+// them. Bound to the visual-scene root, as AI65's fixture leaves it, skeletonRoot is 0 under every
+// numbering and proves nothing.
+[[nodiscard]] std::string armatureAfterDae(std::string_view extraGeometries, std::string_view leadingNodes) {
+    return std::format(
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries>
+{0}{1}  </library_geometries>
+{2}  <library_visual_scenes><visual_scene id="S" name="S">
+{3}
+    <node id="Armature" name="Armature">
+      <node id="Bone1" sid="Bone1" name="Bone1" type="JOINT">
+        <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+        <node id="Bone2" sid="Bone2" name="Bone2" type="JOINT">
+          <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+        </node>
+      </node>
+    </node>
+    <node id="Mesh" name="Mesh">
+      <instance_controller url="#skin1"><skeleton>#Bone1</skeleton></instance_controller>
+    </node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)",
+        daeGeometry("g1", "Skinned"), extraGeometries, SKIN_LIBRARIES, leadingNodes);
+}
+
+// CODE-REVIEW FINDING 6's fixture. AI75's document, generalised to `skinCount` INDEPENDENT controllers,
+// because two nodes instancing the SAME controller share one aiMesh (the loader's (geometry, submesh,
+// material) cache) and would give one over-cap skin, not two. Every rule AI75 measured the hard way is
+// kept: MAX + 2 joints because it divides by three, one vertex per joint, and every vertex referenced by
+// a face -- a vertex no face touches is dropped, its bone becomes weightless, Assimp removes weightless
+// bones, and the count lands back UNDER the cap while the case still looks green.
+[[nodiscard]] std::string overCapSkinDae(std::size_t skinCount) {
+    const std::size_t joints = engine::editor::MAX_JOINTS_PER_SKIN + 2U;
+    REQUIRE(joints % 3U == 0U);
+    std::string positions;
+    std::string faces;
+    for (std::size_t i = 0; i < joints; ++i) {
+        positions += std::format("{} 0 0 ", i);
+    }
+    for (std::size_t i = 0; i + 2U < joints; i += 3U) {
+        faces += std::format("{} {} {} ", i, i + 1U, i + 2U);
+    }
+    const std::size_t faceCount = joints / 3U;
+
+    std::string geometries;
+    std::string controllers;
+    std::string sceneNodes;
+    for (std::size_t s = 0; s < skinCount; ++s) {
+        std::string names;
+        std::string invBind;
+        std::string weights;
+        std::string vcount;
+        std::string vlist;
+        std::string jointNodes;
+        for (std::size_t i = 0; i < joints; ++i) {
+            names += std::format("B{}_{} ", s, i);
+            invBind += "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 ";
+            weights += "1 ";
+            vcount += "1 ";
+            vlist += std::format("{} {} ", i, i);
+            jointNodes += std::format(R"(<node id="B{0}_{1}" sid="B{0}_{1}" name="B{0}_{1}" type="JOINT"/>)", s, i);
+        }
+        geometries += std::format(
+            R"(<geometry id="g{0}" name="Many{0}"><mesh>
+    <source id="p{0}"><float_array id="pa{0}" count="{1}">{2}</float_array>
+      <technique_common><accessor source="#pa{0}" count="{3}" stride="3">
+        <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+      </accessor></technique_common></source>
+    <vertices id="v{0}"><input semantic="POSITION" source="#p{0}"/></vertices>
+    <triangles count="{4}"><input semantic="VERTEX" source="#v{0}" offset="0"/><p>{5}</p></triangles>
+  </mesh></geometry>)",
+            s, joints * 3U, positions, joints, faceCount, faces);
+        controllers += std::format(
+            R"(<controller id="skin{0}" name="Big{0}"><skin source="#g{0}">
+    <bind_shape_matrix>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</bind_shape_matrix>
+    <source id="jn{0}"><Name_array id="jna{0}" count="{1}">{2}</Name_array>
+      <technique_common><accessor source="#jna{0}" count="{1}" stride="1">
+        <param name="JOINT" type="name"/></accessor></technique_common></source>
+    <source id="ib{0}"><float_array id="iba{0}" count="{3}">{4}</float_array>
+      <technique_common><accessor source="#iba{0}" count="{1}" stride="16">
+        <param name="TRANSFORM" type="float4x4"/></accessor></technique_common></source>
+    <source id="wt{0}"><float_array id="wta{0}" count="{1}">{5}</float_array>
+      <technique_common><accessor source="#wta{0}" count="{1}" stride="1">
+        <param name="WEIGHT" type="float"/></accessor></technique_common></source>
+    <joints><input semantic="JOINT" source="#jn{0}"/>
+      <input semantic="INV_BIND_MATRIX" source="#ib{0}"/></joints>
+    <vertex_weights count="{1}"><input semantic="JOINT" source="#jn{0}" offset="0"/>
+      <input semantic="WEIGHT" source="#wt{0}" offset="1"/>
+      <vcount>{6}</vcount><v>{7}</v></vertex_weights>
+  </skin></controller>)",
+            s, joints, names, joints * 16U, invBind, weights, vcount, vlist);
+        sceneNodes += std::format(R"(<node id="Root{0}" name="Root{0}">{1}</node>)"
+                                  R"(<node id="Mesh{0}" name="Mesh{0}"><instance_controller url="#skin{0}">)"
+                                  R"(<skeleton>#B{0}_0</skeleton></instance_controller></node>)",
+                                  s, jointNodes);
+    }
+
+    return std::format(
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries>{}</library_geometries>
+  <library_controllers>{}</library_controllers>
+  <library_visual_scenes><visual_scene id="S" name="S">{}</visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)",
+        geometries, controllers, sceneNodes);
+}
+
+// Occurrences of `phrase` in `text`, for the cap messages a latch must keep to ONE.
+[[nodiscard]] std::size_t countOccurrences(std::string_view text, std::string_view phrase) {
+    std::size_t total = 0;
+    for (std::size_t at = text.find(phrase); at != std::string_view::npos; at = text.find(phrase, at + 1U)) {
+        ++total;
+    }
+    return total;
+}
+
+}  // namespace
+
+// AI84 (code-review finding 1, BLOCKING) -- a MULTI-MESH node standing before the armature. convertNodes
+// emits [0]=S, [1]=Prop, [2]=Prop.1, [3]=Armature, [4]=Bone1, [5]=Bone2, [6]=Mesh; a plain aiNode walk
+// has no Prop.1 at all and emits Armature at 2, Bone1 at 3, Bone2 at 4. Resolving a joint through that
+// second walk binds it to the SPLIT CHILD and to Bone1 instead of to Bone1 and Bone2 -- a silently WRONG
+// DEFORMATION with status Ok and no warning, which is the worst failure mode this backend can have.
+//
+// ORDINARY CONTENT, not a corner case: ColladaLoader::BuildMeshesForNode pushes one mesh ref per
+// submesh-per-material, so a node whose geometry carries two materials is a multi-mesh node too. The two
+// <instance_geometry> spelling is used here because AI41 already proves that shape reaches the split.
+TEST_CASE("AI84: a multi-mesh split before the armature does not shift the skin's joint indices") {
+    const std::string prop =
+        R"(    <node id="Prop" name="Prop"><instance_geometry url="#gA"/><instance_geometry url="#gB"/></node>)";
+    const std::string text = armatureAfterDae(daeGeometry("gA", "PropA") + daeGeometry("gB", "PropB"), prop);
+    const ImportResult result = importModel("prop.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Ok);
+
+    REQUIRE(result.model.nodes.size() == 7U);
+    CHECK(result.model.nodes[1].name == "Prop");
+    CHECK(result.model.nodes[2].name == "Prop.1");  // the synthesized child the second walk cannot see
+
+    REQUIRE(result.model.skins.size() == 1U);
+    const engine::editor::ImportedSkin& skin = result.model.skins[0];
+    REQUIRE(skin.joints.size() == 2U);
+    REQUIRE(skin.joints[0] < result.model.nodes.size());
+    REQUIRE(skin.joints[1] < result.model.nodes.size());
+    CHECK(result.model.nodes[skin.joints[0]].name == "Bone1");
+    CHECK(result.model.nodes[skin.joints[1]].name == "Bone2");
+
+    REQUIRE(skin.skeletonRoot < result.model.nodes.size());
+    CHECK(result.model.nodes[skin.skeletonRoot].name == "Armature");
+}
+
+// AI85 (code-review finding 1, second arm) -- the OTHER place the two walks diverge. A 300-deep chain
+// standing before the armature is dropped past MAX_NODE_DEPTH by convertNodes and walked straight into by
+// an unbounded second walk, which then runs out of its count bound before it ever reaches the joints. The
+// count bound truncates the tail; it realigns nothing.
+TEST_CASE("AI85: a depth-dropped branch before the armature does not shift the skin's joint indices") {
+    std::string chain;
+    std::string closing;
+    for (unsigned int i = 0; i < 300U; ++i) {
+        chain += std::format(R"(<node id="d{}" name="d{}">)", i, i);
+        closing += "</node>";
+    }
+    const std::string text = armatureAfterDae("", "    " + chain + closing);
+    const ImportResult result = importModel("deepskin.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Truncated);
+    CHECK(result.message.find("depth") != std::string::npos);
+
+    REQUIRE(result.model.skins.size() == 1U);
+    const engine::editor::ImportedSkin& skin = result.model.skins[0];
+    REQUIRE(skin.joints.size() == 2U);
+    REQUIRE(skin.joints[0] < result.model.nodes.size());
+    REQUIRE(skin.joints[1] < result.model.nodes.size());
+    CHECK(result.model.nodes[skin.joints[0]].name == "Bone1");
+    CHECK(result.model.nodes[skin.joints[1]].name == "Bone2");
+
+    REQUIRE(skin.skeletonRoot < result.model.nodes.size());
+    CHECK(result.model.nodes[skin.skeletonRoot].name == "Armature");
+}
+
+// AI86 (code-review finding 2) -- AC-53 says EVERY cap reports Truncated with a message naming it. The
+// split loop's own `break` claimed the main loop's check "already fired or will", which is false on the
+// LAST node processed: that check only runs when another node is POPPED, so a CHILDLESS multi-mesh node
+// hitting the cap with an EMPTY STACK left the latch false, escalate unrun, and the import reporting Ok
+// with nodes silently dropped.
+//
+// The document is sized so the cap falls exactly inside the split loop: one visual-scene root, MAX - 2
+// childless siblings, then the multi-mesh node LAST in document order (the walk pushes children in
+// reverse, so the last document child is popped last, with nothing behind it).
+TEST_CASE("AI86: a node cap hit inside the multi-mesh split loop still reports Truncated") {
+    const std::size_t siblings = engine::editor::MAX_NODES_PER_MODEL - 2U;
+    std::string filler;
+    filler.reserve(siblings * 32U);
+    for (std::size_t i = 0; i < siblings; ++i) {
+        filler += std::format(R"(<node id="n{}" name="n{}"/>)", i, i);
+    }
+    const std::string text = std::format(
+        R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries>
+{}{}  </library_geometries>
+  <library_visual_scenes><visual_scene id="S" name="S">
+{}<node id="Split" name="Split"><instance_geometry url="#gA"/><instance_geometry url="#gB"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)",
+        daeGeometry("gA", "A"), daeGeometry("gB", "B"), filler);
+
+    const ImportResult result = importModel("splitcap.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Truncated);
+    CHECK(result.message.find("node count") != std::string::npos);
+    REQUIRE(result.model.nodes.size() == engine::editor::MAX_NODES_PER_MODEL);
+
+    // The multi-mesh node itself landed; its split child did not, and it left no dangling child index.
+    CHECK(result.model.nodes.back().name == "Split");
+    CHECK(result.model.nodes.back().children.empty());
+    for (std::size_t i = 0; i < result.model.nodes.size(); ++i) {
+        for (const std::uint32_t child : result.model.nodes[i].children) {
+            REQUIRE(child < result.model.nodes.size());
+            CHECK(result.model.nodes[child].parent == i);
+        }
+    }
+}
+
+// AI87 (code-review finding 6) -- every other cap site in this file latches its report with a bool;
+// convertSkins' two did not, so N over-cap skins appended N copies of one sentence. TWO independent
+// over-cap controllers is the cheapest input that reaches the joint arm twice.
+//
+// The vertex arm's latch cannot be reached at runtime -- it needs a single mesh above
+// MAX_VERTICES_PER_MODEL, which is eight million -- so source text is its cover, exactly as it is for
+// this file's three unreachable range checks (AI34). Its WORDING is checked there too: it used to
+// duplicate convertMeshes' vertex-cap sentence for a different cause, leaving the message unable to say
+// which of the two had fired.
+TEST_CASE("AI87: two over-cap skins report the joint cap once, and the two skin caps read differently") {
+    const std::string text = overCapSkinDae(2U);
+    const ImportResult result = importModel("twobig.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
+    INFO("message: ", result.message);
+    REQUIRE(result.status == ImportStatus::Truncated);
+    CHECK(result.model.skins.empty());  // both DROPPED WHOLE, never a partial palette
+    CHECK(countOccurrences(result.message, "the joint count exceeds") == 1U);
+
+    const std::string code = strippedSource("assimp_import.cpp");
+    REQUIRE_FALSE(code.empty());
+    CHECK(code.find("jointCapReported") != std::string::npos);
+    CHECK(code.find("skinVertexCapReported") != std::string::npos);
+    CHECK(code.find("a skinned mesh's vertex count exceeds") != std::string::npos);
 }
