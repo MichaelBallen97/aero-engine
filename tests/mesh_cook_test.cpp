@@ -1,0 +1,536 @@
+// tests/mesh_cook_test.cpp -- task 3.3.1: cookMesh, the parallel-arrays-to-container transform. A TU
+// of aero_tests, which supplies main() from test_main.cpp -- do NOT define
+// DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN here.
+//
+// Tier-0: no GPU, no window, no disk. Every case drives the PUBLIC cookMesh() and reads its output
+// back through the PUBLIC parseCookedMesh(), so nothing here depends on an internal of either.
+#include <aero/assets/cooked_mesh.hpp>
+#include <aero/assets/mesh_cook.hpp>
+
+#include <doctest/doctest.h>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <string>
+#include <vector>
+
+using engine::Guid;
+using engine::Vec2;
+using engine::Vec3;
+using engine::Vec4;
+using engine::assets::CookedIndexType;
+using engine::assets::CookedMeshStatus;
+using engine::assets::CookedVertexFormat;
+using engine::assets::CookedVertexSemantic;
+using engine::assets::cookMesh;
+using engine::assets::MeshCookInput;
+using engine::assets::MeshCookPrimitive;
+using engine::assets::MeshCookResult;
+using engine::assets::MeshCookStatus;
+
+namespace {
+
+// A caller-owned source primitive. MeshCookPrimitive holds SPANS the caller owns, so every case
+// keeps its Source objects alive for as long as it looks at the cook's output.
+struct Source {
+    std::uint32_t meshIndex = 0;
+    std::uint32_t primIndex = 0;
+    std::uint32_t material = engine::assets::COOKED_INVALID_MATERIAL;
+    std::vector<Vec3> positions;
+    std::vector<Vec3> normals;
+    std::vector<Vec4> tangents;
+    std::vector<Vec2> uv0;
+    std::vector<Vec2> uv1;
+    std::vector<Vec4> colors;
+    std::vector<std::array<std::uint16_t, 4>> joints;
+    std::vector<Vec4> weights;
+    std::vector<std::uint32_t> indices;
+};
+
+MeshCookPrimitive view(const Source& s) {
+    MeshCookPrimitive p;
+    p.sourceMeshIndex = s.meshIndex;
+    p.sourcePrimitiveIndex = s.primIndex;
+    p.materialIndex = s.material;
+    p.positions = s.positions;
+    p.normals = s.normals;
+    p.tangents = s.tangents;
+    p.uv0 = s.uv0;
+    p.uv1 = s.uv1;
+    p.colors = s.colors;
+    p.joints = s.joints;
+    p.weights = s.weights;
+    p.indices = s.indices;
+    return p;
+}
+
+std::vector<MeshCookPrimitive> views(const std::vector<Source>& sources) {
+    std::vector<MeshCookPrimitive> out;
+    out.reserve(sources.size());
+    for (const Source& s : sources) {
+        out.push_back(view(s));
+    }
+    return out;
+}
+
+// The canonical unit triangle every layout case is built from: (0,0,0) (1,0,0) (0,1,0), indices 0 1 2.
+Source triangle(std::uint32_t meshIndex, std::uint32_t primIndex) {
+    Source s;
+    s.meshIndex = meshIndex;
+    s.primIndex = primIndex;
+    s.positions = {Vec3{0.0F, 0.0F, 0.0F}, Vec3{1.0F, 0.0F, 0.0F}, Vec3{0.0F, 1.0F, 0.0F}};
+    s.indices = {0, 1, 2};
+    return s;
+}
+
+// cook + parse in one, with INV-C3 asserted on the spot: EVERY result with non-empty bytes parses Ok.
+// The parse's span points into `result.bytes`, and moving this struct moves that vector -- whose heap
+// pointer is preserved -- so returning it by value is safe.
+struct Cooked {
+    MeshCookResult result;
+    engine::assets::CookedMeshParseResult parsed;
+};
+
+Cooked cookAndParse(const MeshCookInput& input) {
+    Cooked c;
+    c.result = cookMesh(input);
+    REQUIRE_FALSE(c.result.bytes.empty());
+    c.parsed = engine::assets::parseCookedMesh(std::span<const std::byte>(c.result.bytes));
+    REQUIRE(c.parsed.status == CookedMeshStatus::Ok);
+    return c;
+}
+
+Cooked cookSources(const std::vector<Source>& sources, Guid guid = Guid{}) {
+    const std::vector<MeshCookPrimitive> prims = views(sources);
+    MeshCookInput in;
+    in.sourceGuid = guid;
+    in.primitives = prims;
+    return cookAndParse(in);
+}
+
+constexpr std::uint32_t bitOf(CookedVertexSemantic s) { return 1U << static_cast<std::uint32_t>(s); }
+
+}  // namespace
+
+TEST_CASE("mesh cook: zero primitives produce a valid 96-byte container with a point box (MC1)") {
+    const MeshCookInput in;
+    const Cooked c = cookAndParse(in);
+    CHECK(c.result.status == MeshCookStatus::Ok);
+    CHECK(c.result.message.empty());
+    CHECK(c.result.warnings.size() == 1U);
+    CHECK(c.result.warningTotal == 1U);
+    CHECK(c.result.bytes.size() == 96U);
+    CHECK(c.result.stats.sectionCount == 0U);
+    CHECK(c.result.stats.submeshCount == 0U);
+    CHECK(c.result.stats.vertexCount == 0U);
+    CHECK(c.result.stats.indexCount == 0U);
+    CHECK(c.result.stats.byteSize == 96U);
+    // A POINT box at the origin, never Aabb::empty()'s inverted sentinel, whose centre is NaN.
+    CHECK(c.parsed.mesh.bounds.min == Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(c.parsed.mesh.bounds.max == Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(c.parsed.mesh.indexDataOffset == 96U);
+    CHECK(c.parsed.mesh.sections.empty());
+    CHECK(c.parsed.mesh.submeshes.empty());
+}
+
+TEST_CASE("mesh cook: one position-only triangle is one section of stride 12 (MC2)") {
+    const std::vector<Source> sources = {triangle(0, 0)};
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.status == MeshCookStatus::Ok);
+    CHECK(c.result.warnings.empty());
+    REQUIRE(c.parsed.mesh.sections.size() == 1U);
+    REQUIRE(c.parsed.mesh.attributes.size() == 1U);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 1U);
+    CHECK(c.parsed.mesh.attributes[0].semantic == CookedVertexSemantic::Position);
+    CHECK(c.parsed.mesh.attributes[0].format == CookedVertexFormat::Float3);
+    CHECK(c.parsed.mesh.attributes[0].offset == 0U);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);
+    CHECK(c.parsed.mesh.sections[0].vertexCount == 3U);
+    CHECK(c.parsed.mesh.indexType == CookedIndexType::Uint16);
+    CHECK(c.parsed.mesh.indexCount == 3U);
+    CHECK(c.result.bytes.size() == 272U);  // the size Golden B pins
+}
+
+TEST_CASE("mesh cook: position only yields exactly one attribute (MC3)") {
+    const std::vector<Source> sources = {triangle(0, 0)};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.attributes.size() == 1U);
+    CHECK(c.parsed.mesh.attributes[0].semantic == CookedVertexSemantic::Position);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);
+}
+
+TEST_CASE("mesh cook: position + normal is Float3 at offset 12, stride 24 (MC4)") {
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].normals = {Vec3{0, 0, 1}, Vec3{0, 0, 1}, Vec3{0, 0, 1}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.attributes.size() == 2U);
+    CHECK(c.parsed.mesh.attributes[1].semantic == CookedVertexSemantic::Normal);
+    CHECK(c.parsed.mesh.attributes[1].format == CookedVertexFormat::Float3);
+    CHECK(c.parsed.mesh.attributes[1].offset == 12U);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 24U);
+}
+
+TEST_CASE("mesh cook: position + tangent is Float4 at offset 12, stride 28 (MC5)") {
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].tangents = {Vec4{1, 0, 0, 1}, Vec4{1, 0, 0, 1}, Vec4{1, 0, 0, 1}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.attributes.size() == 2U);
+    CHECK(c.parsed.mesh.attributes[1].semantic == CookedVertexSemantic::Tangent);
+    CHECK(c.parsed.mesh.attributes[1].format == CookedVertexFormat::Float4);
+    CHECK(c.parsed.mesh.attributes[1].offset == 12U);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 28U);
+}
+
+TEST_CASE("mesh cook: position + uv0 is Float2 at offset 12, stride 20 (MC6)") {
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].uv0 = {Vec2{0, 0}, Vec2{1, 0}, Vec2{0, 1}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.attributes.size() == 2U);
+    CHECK(c.parsed.mesh.attributes[1].semantic == CookedVertexSemantic::TexCoord0);
+    CHECK(c.parsed.mesh.attributes[1].format == CookedVertexFormat::Float2);
+    CHECK(c.parsed.mesh.attributes[1].offset == 12U);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 20U);
+}
+
+TEST_CASE("mesh cook: position + uv1 is Float2 at offset 12, stride 20 (MC7)") {
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].uv1 = {Vec2{0, 0}, Vec2{1, 0}, Vec2{0, 1}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.attributes.size() == 2U);
+    CHECK(c.parsed.mesh.attributes[1].semantic == CookedVertexSemantic::TexCoord1);
+    CHECK(c.parsed.mesh.attributes[1].offset == 12U);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 20U);
+}
+
+TEST_CASE("mesh cook: position + colors is Float4 at offset 12, stride 28 (MC8)") {
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].colors = {Vec4{1, 1, 1, 1}, Vec4{1, 1, 1, 1}, Vec4{1, 1, 1, 1}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.attributes.size() == 2U);
+    CHECK(c.parsed.mesh.attributes[1].semantic == CookedVertexSemantic::Color0);
+    CHECK(c.parsed.mesh.attributes[1].format == CookedVertexFormat::Float4);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 28U);
+}
+
+TEST_CASE("mesh cook: joints AND weights together are Uint4 + Float4, stride 44 (MC9)") {
+    // AC-20 in its positive direction: the pair is cooked TOGETHER. The mismatched arms are MC39/MC40.
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].joints = {{0, 1, 2, 3}, {0, 1, 2, 3}, {0, 1, 2, 3}};
+    sources[0].weights = {Vec4{1, 0, 0, 0}, Vec4{1, 0, 0, 0}, Vec4{1, 0, 0, 0}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.attributes.size() == 3U);
+    CHECK(c.parsed.mesh.attributes[1].semantic == CookedVertexSemantic::Joints0);
+    CHECK(c.parsed.mesh.attributes[1].format == CookedVertexFormat::Uint4);
+    CHECK(c.parsed.mesh.attributes[1].offset == 12U);
+    CHECK(c.parsed.mesh.attributes[2].semantic == CookedVertexSemantic::Weights0);
+    CHECK(c.parsed.mesh.attributes[2].format == CookedVertexFormat::Float4);
+    CHECK(c.parsed.mesh.attributes[2].offset == 28U);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 44U);
+}
+
+TEST_CASE("mesh cook: position + normal + uv0 lays out in ascending semantic code (MC10)") {
+    // Supplied in a shape where a naive "in the order the arrays appear" builder would still be
+    // right; MC11's eight-attribute case is where the ordering rule is actually load-bearing.
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].uv0 = {Vec2{0, 0}, Vec2{1, 0}, Vec2{0, 1}};
+    sources[0].normals = {Vec3{0, 0, 1}, Vec3{0, 0, 1}, Vec3{0, 0, 1}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.attributes.size() == 3U);
+    CHECK(c.parsed.mesh.attributes[0].semantic == CookedVertexSemantic::Position);
+    CHECK(c.parsed.mesh.attributes[1].semantic == CookedVertexSemantic::Normal);
+    CHECK(c.parsed.mesh.attributes[2].semantic == CookedVertexSemantic::TexCoord0);
+    CHECK(c.parsed.mesh.attributes[1].offset == 12U);
+    CHECK(c.parsed.mesh.attributes[2].offset == 24U);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 32U);
+}
+
+namespace {
+
+// All eight attributes on one triangle. Reused by MC11, MC17 and MC52's sweep.
+Source allAttributes(std::uint32_t meshIndex, std::uint32_t primIndex) {
+    Source s = triangle(meshIndex, primIndex);
+    s.normals = {Vec3{0, 0, 1}, Vec3{0, 1, 0}, Vec3{1, 0, 0}};
+    s.tangents = {Vec4{1, 0, 0, 1}, Vec4{0, 1, 0, -1}, Vec4{0, 0, 1, 1}};
+    s.uv0 = {Vec2{0, 0}, Vec2{1, 0}, Vec2{0, 1}};
+    s.uv1 = {Vec2{0.25F, 0.5F}, Vec2{0.75F, 0.5F}, Vec2{0.5F, 1.0F}};
+    s.colors = {Vec4{1, 0, 0, 1}, Vec4{0, 1, 0, 1}, Vec4{0, 0, 1, 1}};
+    s.joints = {{0, 1, 2, 3}, {4, 5, 6, 7}, {8, 9, 10, 65535}};
+    s.weights = {Vec4{1, 0, 0, 0}, Vec4{0.5F, 0.5F, 0, 0}, Vec4{0.25F, 0.25F, 0.25F, 0.25F}};
+    return s;
+}
+
+}  // namespace
+
+TEST_CASE("mesh cook: all eight attributes give stride 104 at 0/12/24/40/48/56/72/88 (MC11)") {
+    const std::vector<Source> sources = {allAttributes(0, 0)};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.attributes.size() == 8U);
+    const std::array<std::uint32_t, 8> expectedOffsets = {0, 12, 24, 40, 48, 56, 72, 88};
+    for (std::size_t i = 0; i < 8; ++i) {
+        CHECK(static_cast<std::uint32_t>(c.parsed.mesh.attributes[i].semantic) == static_cast<std::uint32_t>(i));
+        CHECK(c.parsed.mesh.attributes[i].offset == expectedOffsets[i]);
+    }
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 104U);
+}
+
+TEST_CASE("mesh cook: equal masks share one section and the second's indices are rebased (MC12)") {
+    std::vector<Source> sources = {triangle(0, 0), triangle(0, 1)};
+    sources[1].positions = {Vec3{5, 0, 0}, Vec3{6, 0, 0}, Vec3{5, 1, 0}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.sections.size() == 1U);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 2U);
+    CHECK(c.parsed.mesh.sections[0].vertexCount == 6U);
+    CHECK(c.parsed.mesh.submeshes[0].sourcePrimitiveIndex == 0U);
+    CHECK(c.parsed.mesh.submeshes[1].sourcePrimitiveIndex == 1U);
+    // The second submesh's indices are SECTION-RELATIVE: 0,1,2 became 3,4,5.
+    const auto idx = engine::assets::indexBytes(c.parsed.mesh);
+    REQUIRE(idx.size() == 12U);
+    CHECK(engine::assets::getU16(idx, 0) == 0U);
+    CHECK(engine::assets::getU16(idx, 2) == 1U);
+    CHECK(engine::assets::getU16(idx, 4) == 2U);
+    CHECK(engine::assets::getU16(idx, 6) == 3U);
+    CHECK(engine::assets::getU16(idx, 8) == 4U);
+    CHECK(engine::assets::getU16(idx, 10) == 5U);
+}
+
+TEST_CASE("mesh cook: different masks give two sections in ASCENDING MASK order (MC13)") {
+    // Supplied with the HIGHER mask first, so input order and output order disagree.
+    std::vector<Source> sources = {triangle(1, 0), triangle(0, 0)};
+    sources[0].normals = {Vec3{0, 0, 1}, Vec3{0, 0, 1}, Vec3{0, 0, 1}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.sections.size() == 2U);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 2U);
+    // Section 0 is the position-only mask (0x01); section 1 is position+normal (0x03).
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);
+    CHECK(c.parsed.mesh.sections[1].vertexStride == 24U);
+    CHECK(c.parsed.mesh.submeshes[0].sectionIndex == 0U);
+    CHECK(c.parsed.mesh.submeshes[0].sourceMeshIndex == 0U);
+    CHECK(c.parsed.mesh.submeshes[1].sectionIndex == 1U);
+    CHECK(c.parsed.mesh.submeshes[1].sourceMeshIndex == 1U);
+}
+
+TEST_CASE("mesh cook: three masks give three sections, ascending, each submesh naming its own (MC14)") {
+    std::vector<Source> sources = {triangle(2, 0), triangle(0, 0), triangle(1, 0)};
+    // masks: sources[0] = Position|Color0 (0x21), sources[1] = Position (0x01),
+    //        sources[2] = Position|Normal (0x03).
+    sources[0].colors = {Vec4{1, 0, 0, 1}, Vec4{1, 0, 0, 1}, Vec4{1, 0, 0, 1}};
+    sources[2].normals = {Vec3{0, 0, 1}, Vec3{0, 0, 1}, Vec3{0, 0, 1}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.sections.size() == 3U);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 3U);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);  // 0x01
+    CHECK(c.parsed.mesh.sections[1].vertexStride == 24U);  // 0x03
+    CHECK(c.parsed.mesh.sections[2].vertexStride == 28U);  // 0x21
+    CHECK(c.parsed.mesh.submeshes[0].sourceMeshIndex == 0U);
+    CHECK(c.parsed.mesh.submeshes[0].sectionIndex == 0U);
+    CHECK(c.parsed.mesh.submeshes[1].sourceMeshIndex == 1U);
+    CHECK(c.parsed.mesh.submeshes[1].sectionIndex == 1U);
+    CHECK(c.parsed.mesh.submeshes[2].sourceMeshIndex == 2U);
+    CHECK(c.parsed.mesh.submeshes[2].sectionIndex == 2U);
+}
+
+TEST_CASE("mesh cook: firstIndex accumulates and the header's indexCount is the sum (MC15)") {
+    std::vector<Source> sources = {triangle(0, 0), triangle(0, 1), triangle(0, 2)};
+    sources[1].indices = {0, 1, 2, 0, 1, 2};  // six
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 3U);
+    CHECK(c.parsed.mesh.submeshes[0].firstIndex == 0U);
+    CHECK(c.parsed.mesh.submeshes[0].indexCount == 3U);
+    CHECK(c.parsed.mesh.submeshes[1].firstIndex == 3U);
+    CHECK(c.parsed.mesh.submeshes[1].indexCount == 6U);
+    CHECK(c.parsed.mesh.submeshes[2].firstIndex == 9U);
+    CHECK(c.parsed.mesh.submeshes[2].indexCount == 3U);
+    CHECK(c.parsed.mesh.indexCount == 12U);
+    CHECK(c.result.stats.indexCount == 12U);
+}
+
+TEST_CASE("mesh cook: every submesh records its three source fields VERBATIM (MC16)") {
+    std::vector<Source> sources = {triangle(3, 7), triangle(3, 8)};
+    sources[0].material = 42;
+    sources[1].material = engine::assets::COOKED_INVALID_MATERIAL;  // the sentinel, preserved
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 2U);
+    CHECK(c.parsed.mesh.submeshes[0].materialIndex == 42U);
+    CHECK(c.parsed.mesh.submeshes[0].sourceMeshIndex == 3U);
+    CHECK(c.parsed.mesh.submeshes[0].sourcePrimitiveIndex == 7U);
+    CHECK(c.parsed.mesh.submeshes[1].materialIndex == engine::assets::COOKED_INVALID_MATERIAL);
+    CHECK(c.parsed.mesh.submeshes[1].sourcePrimitiveIndex == 8U);
+}
+
+TEST_CASE("mesh cook: interleaving reads back component by component (MC17)") {
+    const std::vector<Source> sources = {allAttributes(0, 0)};
+    const Cooked c = cookSources(sources);
+    const auto vb = engine::assets::sectionVertexBytes(c.parsed.mesh, 0);
+    REQUIRE(vb.size() == 3U * 104U);
+    const Source& s = sources[0];
+    for (std::size_t v = 0; v < 3; ++v) {
+        const std::size_t base = v * 104;
+        CHECK(engine::assets::getF32(vb, base + 0) == s.positions[v].x);
+        CHECK(engine::assets::getF32(vb, base + 4) == s.positions[v].y);
+        CHECK(engine::assets::getF32(vb, base + 8) == s.positions[v].z);
+        CHECK(engine::assets::getF32(vb, base + 12) == s.normals[v].x);
+        CHECK(engine::assets::getF32(vb, base + 24) == s.tangents[v].x);
+        CHECK(engine::assets::getF32(vb, base + 36) == s.tangents[v].w);
+        CHECK(engine::assets::getF32(vb, base + 40) == s.uv0[v].x);
+        CHECK(engine::assets::getF32(vb, base + 44) == s.uv0[v].y);
+        CHECK(engine::assets::getF32(vb, base + 48) == s.uv1[v].x);
+        CHECK(engine::assets::getF32(vb, base + 56) == s.colors[v].x);
+        CHECK(engine::assets::getF32(vb, base + 68) == s.colors[v].w);
+        CHECK(engine::assets::getU32(vb, base + 72) == s.joints[v][0]);
+        CHECK(engine::assets::getU32(vb, base + 84) == s.joints[v][3]);
+        CHECK(engine::assets::getF32(vb, base + 88) == s.weights[v].x);
+        CHECK(engine::assets::getF32(vb, base + 100) == s.weights[v].w);
+    }
+}
+
+TEST_CASE("mesh cook: joints widen u16 to u32 losslessly, including 65535 (MC18)") {
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].joints = {{0, 1, 255, 256}, {65534, 65535, 0, 1}, {4096, 8192, 16384, 32768}};
+    sources[0].weights = {Vec4{1, 0, 0, 0}, Vec4{1, 0, 0, 0}, Vec4{1, 0, 0, 0}};
+    const Cooked c = cookSources(sources);
+    const auto vb = engine::assets::sectionVertexBytes(c.parsed.mesh, 0);
+    REQUIRE(c.parsed.mesh.sections[0].vertexStride == 44U);
+    for (std::size_t v = 0; v < 3; ++v) {
+        for (std::size_t k = 0; k < 4; ++k) {
+            CHECK(engine::assets::getU32(vb, (v * 44) + 12 + (k * 4)) ==
+                  static_cast<std::uint32_t>(sources[0].joints[v][k]));
+        }
+    }
+}
+
+TEST_CASE("mesh cook: a tangent's w is copied VERBATIM, never renormalized (MC19)") {
+    // The cook validates no attribute VALUE beyond position finiteness. A .w of 0.5 is not a legal
+    // bitangent sign, and it survives untouched, because the bits are moved rather than derived.
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].tangents = {Vec4{1, 0, 0, 0.5F}, Vec4{0, 1, 0, -3.25F}, Vec4{0, 0, 1, 0.0F}};
+    const Cooked c = cookSources(sources);
+    const auto vb = engine::assets::sectionVertexBytes(c.parsed.mesh, 0);
+    REQUIRE(c.parsed.mesh.sections[0].vertexStride == 28U);
+    CHECK(engine::assets::getF32(vb, 24) == 0.5F);
+    CHECK(engine::assets::getF32(vb, 28 + 24) == -3.25F);
+    CHECK(engine::assets::getF32(vb, 56 + 24) == 0.0F);
+}
+
+TEST_CASE("mesh cook: 65536 vertices stay Uint16, 65537 become Uint32 (MC20)") {
+    // <= 65536, not < 65536: a section with exactly 65536 vertices has a maximum index of 65535,
+    // which Uint16 represents. ~800 kB per arm.
+    SUBCASE("exactly 65536") {
+        std::vector<Source> sources = {triangle(0, 0)};
+        sources[0].positions.assign(65536, Vec3{1.0F, 2.0F, 3.0F});
+        const Cooked c = cookSources(sources);
+        CHECK(c.parsed.mesh.sections[0].vertexCount == 65536U);
+        CHECK(c.parsed.mesh.indexType == CookedIndexType::Uint16);
+    }
+    SUBCASE("one more") {
+        std::vector<Source> sources = {triangle(0, 0)};
+        sources[0].positions.assign(65537, Vec3{1.0F, 2.0F, 3.0F});
+        const Cooked c = cookSources(sources);
+        CHECK(c.parsed.mesh.sections[0].vertexCount == 65537U);
+        CHECK(c.parsed.mesh.indexType == CookedIndexType::Uint32);
+    }
+}
+
+TEST_CASE("mesh cook: the index width is a FILE-level choice, not a per-section one (MC21)") {
+    std::vector<Source> sources = {triangle(0, 0), triangle(1, 0)};
+    sources[0].positions.assign(65536, Vec3{1.0F, 0.0F, 0.0F});
+    sources[1].positions.assign(65537, Vec3{0.0F, 1.0F, 0.0F});
+    sources[1].normals.assign(65537, Vec3{0.0F, 0.0F, 1.0F});  // a different mask -> a second section
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.sections.size() == 2U);
+    CHECK(c.parsed.mesh.sections[0].vertexCount == 65536U);
+    CHECK(c.parsed.mesh.sections[1].vertexCount == 65537U);
+    CHECK(c.parsed.mesh.indexType == CookedIndexType::Uint32);
+    CHECK(engine::assets::indexBytes(c.parsed.mesh).size() == 6U * 4U);
+}
+
+TEST_CASE("mesh cook: submesh boxes are folded and the model box is their union (MC22)") {
+    // The fold is std::min/std::max with the ACCUMULATOR FIRST, matching Aabb::expand bit for bit --
+    // MK9 is where that agreement is compared against the importer's own box.
+    std::vector<Source> sources = {triangle(0, 0), triangle(1, 0)};
+    sources[0].positions = {Vec3{-1.0F, 0.0F, 0.0F}, Vec3{2.0F, 0.0F, 0.0F}, Vec3{0.0F, 3.0F, 0.0F}};
+    sources[1].positions = {Vec3{0.0F, -4.0F, 1.0F}, Vec3{0.0F, 0.0F, 5.0F}, Vec3{0.0F, 0.0F, 0.0F}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 2U);
+    CHECK(c.parsed.mesh.submeshes[0].bounds.min == Vec3{-1.0F, 0.0F, 0.0F});
+    CHECK(c.parsed.mesh.submeshes[0].bounds.max == Vec3{2.0F, 3.0F, 0.0F});
+    CHECK(c.parsed.mesh.submeshes[1].bounds.min == Vec3{0.0F, -4.0F, 0.0F});
+    CHECK(c.parsed.mesh.submeshes[1].bounds.max == Vec3{0.0F, 0.0F, 5.0F});
+    CHECK(c.parsed.mesh.bounds.min == Vec3{-1.0F, -4.0F, 0.0F});
+    CHECK(c.parsed.mesh.bounds.max == Vec3{2.0F, 3.0F, 5.0F});
+}
+
+TEST_CASE("mesh cook: a vertex NO INDEX reaches still contributes to the box (MC23)") {
+    // The fold is over every position WRITTEN, which is all of them. Folding over "only vertices an
+    // index reaches" is the plausible-looking alternative that silently breaks AC-27 for any mesh
+    // with an unreferenced vertex -- and the importer folds over all of them too.
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].positions.push_back(Vec3{100.0F, -100.0F, 50.0F});  // never indexed
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 1U);
+    CHECK(c.parsed.mesh.sections[0].vertexCount == 4U);
+    CHECK(c.parsed.mesh.submeshes[0].bounds.max == Vec3{100.0F, 1.0F, 50.0F});
+    CHECK(c.parsed.mesh.submeshes[0].bounds.min == Vec3{0.0F, -100.0F, 0.0F});
+    CHECK(c.parsed.mesh.bounds.max == Vec3{100.0F, 1.0F, 50.0F});
+}
+
+TEST_CASE("mesh cook: a degenerate but in-range index triple cooks as-is (MC24)") {
+    // The cook is not a mesh validator. Three indices addressing one vertex is a degenerate triangle
+    // and a legitimate thing for an exporter to emit; refusing it would drop geometry over a shape.
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].indices = {1, 1, 1};
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.status == MeshCookStatus::Ok);
+    CHECK(c.result.warnings.empty());
+    const auto idx = engine::assets::indexBytes(c.parsed.mesh);
+    REQUIRE(idx.size() == 6U);
+    CHECK(engine::assets::getU16(idx, 0) == 1U);
+    CHECK(engine::assets::getU16(idx, 2) == 1U);
+    CHECK(engine::assets::getU16(idx, 4) == 1U);
+}
+
+TEST_CASE("mesh cook: a nil sourceGuid is legal and writes sixteen zero bytes (MC25)") {
+    const std::vector<Source> sources = {triangle(0, 0)};
+    const Cooked nil = cookSources(sources);
+    CHECK_FALSE(nil.parsed.mesh.sourceGuid.valid());
+    CHECK(nil.parsed.mesh.sourceGuid.hi == 0U);
+    CHECK(nil.parsed.mesh.sourceGuid.lo == 0U);
+
+    const Cooked named = cookSources(sources, Guid{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL});
+    CHECK(named.parsed.mesh.sourceGuid.hi == 0x0123456789ABCDEFULL);
+    CHECK(named.parsed.mesh.sourceGuid.lo == 0xFEDCBA9876543210ULL);
+    // The GUID is the ONLY difference: same size, and the sixteen bytes at offset 16 are all of it.
+    REQUIRE(nil.result.bytes.size() == named.result.bytes.size());
+    std::size_t differing = 0;
+    for (std::size_t i = 0; i < nil.result.bytes.size(); ++i) {
+        if (nil.result.bytes[i] != named.result.bytes[i]) {
+            ++differing;
+            CHECK(i >= 16U);
+            CHECK(i < 32U);
+        }
+    }
+    CHECK(differing == 16U);
+}
+
+TEST_CASE("mesh cook: a REPEATED ordering key is warned about, never dropped (MC26)") {
+    // The one non-total case in the sort key, DIAGNOSED rather than assumed away (C3). Nothing is
+    // dropped -- dropping would lose geometry over a caller's bookkeeping -- and the status stays Ok.
+    std::vector<Source> sources = {triangle(4, 9), triangle(4, 9)};
+    sources[1].positions = {Vec3{7, 0, 0}, Vec3{8, 0, 0}, Vec3{7, 1, 0}};
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.status == MeshCookStatus::Ok);
+    CHECK(c.result.message.empty());
+    REQUIRE(c.result.warnings.size() == 1U);
+    CHECK(c.result.warningTotal == 1U);
+    CHECK(c.result.warnings[0].find("ordering key") != std::string::npos);
+    CHECK(c.parsed.mesh.submeshes.size() == 2U);
+    CHECK(c.parsed.mesh.sections[0].vertexCount == 6U);
+    // The mask is part of the key, so two primitives with the same indices but DIFFERENT masks do
+    // not collide -- which is what makes this warning about bookkeeping rather than about geometry.
+    std::vector<Source> distinct = {triangle(4, 9), triangle(4, 9)};
+    distinct[1].normals = {Vec3{0, 0, 1}, Vec3{0, 0, 1}, Vec3{0, 0, 1}};
+    const Cooked d = cookSources(distinct);
+    CHECK(d.result.warnings.empty());
+    CHECK(bitOf(CookedVertexSemantic::Normal) == 2U);
+}

@@ -24,6 +24,7 @@
 # find_package to this file voids that silently while CI stays green. Do not "simplify" it.
 add_library(aero_assets STATIC
     src/cooked_mesh.cpp
+    src/mesh_cook.cpp
 )
 add_library(aero::assets ALIAS aero_assets)
 
