@@ -9,12 +9,15 @@
 #include <aero/core/profiler.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -69,11 +72,18 @@ constexpr float INF = std::numeric_limits<float>::infinity();
 }
 
 // One per accepted primitive: built in phase 1, sorted in phase 2, assigned a section in phase 4.
+//
+// vertexCount and indexCount are u64 DELIBERATELY, and this is a correction to the plan's own §D-6:
+// it gave phase 1 a defensive drop for `positions.size() > MAX_COOKED_VERTICES` so that phase 3's
+// accumulators could not wrap. That drop would make MC42/MC45 -- the vertex cap's own proofs --
+// unreachable, because a primitive dropped in phase 1 never reaches the cap loop and the status would
+// be Ok rather than Truncated. Widening the two counters closes the same overflow exactly, with no
+// behavioural arm at all: every ACCEPTED descriptor is bounded by the caps and therefore fits u32.
 struct Descriptor {
     const MeshCookPrimitive* prim = nullptr;  // never null; points into the caller's span
     std::uint32_t mask = 0;                   // the SURVIVING attribute set, bit n == semantic n
-    std::uint32_t vertexCount = 0;            // == prim->positions.size()
-    std::uint32_t indexCount = 0;
+    std::uint64_t vertexCount = 0;            // == prim->positions.size()
+    std::uint64_t indexCount = 0;
     std::uint32_t sectionIndex = 0;       // filled in phase 4
     std::uint32_t sectionVertexBase = 0;  // filled in phase 4; what indices are rebased by
     std::uint32_t firstIndex = 0;         // filled in phase 4
@@ -113,35 +123,124 @@ void putVec4(std::span<std::byte> out, std::size_t off, Vec4 v) noexcept {
     putF32(out, off + 12, v.w);
 }
 
+// The names the demote and pairing warnings use. A switch with no `default:`, like every other
+// total switch in this subsystem.
+[[nodiscard]] std::string_view semanticName(CookedVertexSemantic s) noexcept {
+    switch (s) {
+        case CookedVertexSemantic::Position:
+            return "positions";
+        case CookedVertexSemantic::Normal:
+            return "normals";
+        case CookedVertexSemantic::Tangent:
+            return "tangents";
+        case CookedVertexSemantic::TexCoord0:
+            return "uv0";
+        case CookedVertexSemantic::TexCoord1:
+            return "uv1";
+        case CookedVertexSemantic::Color0:
+            return "colors";
+        case CookedVertexSemantic::Joints0:
+            return "joints";
+        case CookedVertexSemantic::Weights0:
+            return "weights";
+    }
+    return "unknown";
+}
+
 // ---- phase 1: classify ---------------------------------------------------------------------
-// One pass, every decision LOCAL, so input order cannot matter here. An optional array is present
-// only if it is non-empty AND exactly as long as `positions` (EMPTY == ABSENT, the ImportedPrimitive
-// rule verbatim).
-[[nodiscard]] std::uint32_t classifyMask(const MeshCookPrimitive& p) noexcept {
+// One pass per primitive, every decision LOCAL, so input order cannot matter here.
+//
+// THE COOK DROPS WHOLE PRIMITIVES AND DEMOTES WHOLE ATTRIBUTES, never anything partial (A-9).
+// Returns false when the primitive is dropped whole; `d` is filled only when it returns true.
+[[nodiscard]] bool classify(const MeshCookPrimitive& p, MeshCookResult& out, Descriptor& d) {
     const std::size_t n = p.positions.size();
+    if (n == 0) {
+        addWarning(out, std::format("mesh {} primitive {} has no positions and was dropped", p.sourceMeshIndex,
+                                    p.sourcePrimitiveIndex));
+        return false;
+    }
+    if (p.indices.empty()) {
+        addWarning(out, std::format("mesh {} primitive {} has no indices and was dropped", p.sourceMeshIndex,
+                                    p.sourcePrimitiveIndex));
+        return false;
+    }
+    if (p.indices.size() % 3 != 0) {
+        addWarning(out, std::format("mesh {} primitive {} has {} indices, not a multiple of 3, and was dropped",
+                                    p.sourceMeshIndex, p.sourcePrimitiveIndex, p.indices.size()));
+        return false;
+    }
+    // The index range is compared against positions.size(), NOT against any optional array: an
+    // optional array shorter than positions is DEMOTED below, never a reason to refuse an index.
+    for (std::size_t i = 0; i < p.indices.size(); ++i) {
+        if (p.indices[i] >= n) {
+            addWarning(out, std::format("mesh {} primitive {} index {} addresses vertex {} of {}, and was dropped",
+                                        p.sourceMeshIndex, p.sourcePrimitiveIndex, i, p.indices[i], n));
+            return false;
+        }
+    }
+    // std::isfinite on each component, stopping at the first failure. Not a NaN != NaN trick: that
+    // misses the +/-inf half, which is exactly the half that makes Aabb::valid() false.
+    for (std::size_t v = 0; v < n; ++v) {
+        const Vec3& q = p.positions[v];
+        if (!std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z)) {
+            addWarning(out, std::format("mesh {} primitive {} has a non-finite position at vertex {} and was dropped",
+                                        p.sourceMeshIndex, p.sourcePrimitiveIndex, v));
+            return false;
+        }
+    }
+
+    // An optional array is present only if it is non-empty AND exactly as long as `positions`
+    // (EMPTY == ABSENT, the ImportedPrimitive rule verbatim). A length MISMATCH is demoted with one
+    // warning and the primitive still cooks -- dropping it would lose geometry over a shading array.
+    struct OptionalArray {
+        CookedVertexSemantic semantic;
+        std::size_t size;
+    };
+    const std::array<OptionalArray, 7> optionals = {
+        OptionalArray{CookedVertexSemantic::Normal, p.normals.size()},
+        OptionalArray{CookedVertexSemantic::Tangent, p.tangents.size()},
+        OptionalArray{CookedVertexSemantic::TexCoord0, p.uv0.size()},
+        OptionalArray{CookedVertexSemantic::TexCoord1, p.uv1.size()},
+        OptionalArray{CookedVertexSemantic::Color0, p.colors.size()},
+        OptionalArray{CookedVertexSemantic::Joints0, p.joints.size()},
+        OptionalArray{CookedVertexSemantic::Weights0, p.weights.size()},
+    };
     std::uint32_t mask = bitOf(CookedVertexSemantic::Position);
-    if (!p.normals.empty() && p.normals.size() == n) {
-        mask |= bitOf(CookedVertexSemantic::Normal);
+    for (const OptionalArray& oa : optionals) {
+        if (oa.size == 0) {
+            continue;  // absent, and that is not a defect
+        }
+        if (oa.size != n) {
+            addWarning(out,
+                       std::format("mesh {} primitive {}'s {} array has {} entries for {} vertices and was "
+                                   "ignored",
+                                   p.sourceMeshIndex, p.sourcePrimitiveIndex, semanticName(oa.semantic), oa.size, n));
+            continue;
+        }
+        mask |= bitOf(oa.semantic);
     }
-    if (!p.tangents.empty() && p.tangents.size() == n) {
-        mask |= bitOf(CookedVertexSemantic::Tangent);
+
+    // AC-20: joints and weights are cooked TOGETHER or not at all. Half a skin is worse than none --
+    // a consumer cannot use joint indices without their weights, and a vertex layout carrying one is
+    // a trap for the pipeline that reads it.
+    const bool haveJoints = (mask & bitOf(CookedVertexSemantic::Joints0)) != 0;
+    const bool haveWeights = (mask & bitOf(CookedVertexSemantic::Weights0)) != 0;
+    if (haveJoints != haveWeights) {
+        addWarning(out, std::format("mesh {} primitive {} has {} without {}; both were dropped", p.sourceMeshIndex,
+                                    p.sourcePrimitiveIndex,
+                                    haveJoints ? semanticName(CookedVertexSemantic::Joints0)
+                                               : semanticName(CookedVertexSemantic::Weights0),
+                                    haveJoints ? semanticName(CookedVertexSemantic::Weights0)
+                                               : semanticName(CookedVertexSemantic::Joints0)));
+        mask &= ~bitOf(CookedVertexSemantic::Joints0);
+        mask &= ~bitOf(CookedVertexSemantic::Weights0);
     }
-    if (!p.uv0.empty() && p.uv0.size() == n) {
-        mask |= bitOf(CookedVertexSemantic::TexCoord0);
-    }
-    if (!p.uv1.empty() && p.uv1.size() == n) {
-        mask |= bitOf(CookedVertexSemantic::TexCoord1);
-    }
-    if (!p.colors.empty() && p.colors.size() == n) {
-        mask |= bitOf(CookedVertexSemantic::Color0);
-    }
-    if (!p.joints.empty() && p.joints.size() == n) {
-        mask |= bitOf(CookedVertexSemantic::Joints0);
-    }
-    if (!p.weights.empty() && p.weights.size() == n) {
-        mask |= bitOf(CookedVertexSemantic::Weights0);
-    }
-    return mask;
+
+    d.prim = &p;
+    d.mask = mask;
+    d.vertexCount = n;
+    d.indexCount = p.indices.size();
+    return true;
 }
 
 // ---- phase 7: emit one vertex's attributes ---------------------------------------------------
@@ -191,14 +290,11 @@ MeshCookResult cookMeshImpl(const MeshCookInput& input) {
     std::vector<Descriptor> descriptors;
     descriptors.reserve(input.primitives.size());
     for (const MeshCookPrimitive& p : input.primitives) {
-        if (p.positions.empty() || p.indices.empty()) {
+        Descriptor d;
+        if (!classify(p, out, d)) {
+            ++out.stats.droppedPrimitiveCount;
             continue;
         }
-        Descriptor d;
-        d.prim = &p;
-        d.mask = classifyMask(p);
-        d.vertexCount = static_cast<std::uint32_t>(p.positions.size());
-        d.indexCount = static_cast<std::uint32_t>(p.indices.size());
         descriptors.push_back(d);
     }
 
@@ -267,7 +363,7 @@ MeshCookResult cookMeshImpl(const MeshCookInput& input) {
             descriptors[i].sectionIndex = sectionIndex;
             descriptors[i].sectionVertexBase = section.vertexCount;
             descriptors[i].firstIndex = static_cast<std::uint32_t>(indexTotal);
-            section.vertexCount += descriptors[i].vertexCount;
+            section.vertexCount += static_cast<std::uint32_t>(descriptors[i].vertexCount);
             indexTotal += descriptors[i].indexCount;
             ++i;
         }
@@ -344,7 +440,7 @@ MeshCookResult cookMeshImpl(const MeshCookInput& input) {
         const std::size_t base = submeshBase + (m * COOKED_MESH_SUBMESH_BYTES);
         putU32(o, base + M_SECTION_INDEX, descriptors[m].sectionIndex);
         putU32(o, base + M_FIRST_INDEX, descriptors[m].firstIndex);
-        putU32(o, base + M_INDEX_COUNT, descriptors[m].indexCount);
+        putU32(o, base + M_INDEX_COUNT, static_cast<std::uint32_t>(descriptors[m].indexCount));
         putU32(o, base + M_MATERIAL, descriptors[m].prim->materialIndex);
         putU32(o, base + M_SOURCE_MESH, descriptors[m].prim->sourceMeshIndex);
         putU32(o, base + M_SOURCE_PRIMITIVE, descriptors[m].prim->sourcePrimitiveIndex);
@@ -356,7 +452,7 @@ MeshCookResult cookMeshImpl(const MeshCookInput& input) {
         const Descriptor& d = descriptors[m];
         const CookedSection& section = sections[d.sectionIndex];
         CookedBounds box{Vec3{INF, INF, INF}, Vec3{-INF, -INF, -INF}};
-        for (std::uint32_t v = 0; v < d.vertexCount; ++v) {
+        for (std::uint64_t v = 0; v < d.vertexCount; ++v) {
             const std::size_t vertexBase = static_cast<std::size_t>(section.vertexDataOffset) +
                                            ((static_cast<std::size_t>(d.sectionVertexBase) + v) * section.vertexStride);
             writeVertex(o, vertexBase, attributes, section.firstAttribute, section.attributeCount, *d.prim, v);

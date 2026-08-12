@@ -10,8 +10,11 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <format>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -533,4 +536,231 @@ TEST_CASE("mesh cook: a REPEATED ordering key is warned about, never dropped (MC
     const Cooked d = cookSources(distinct);
     CHECK(d.result.warnings.empty());
     CHECK(bitOf(CookedVertexSemantic::Normal) == 2U);
+}
+
+// =================================================================================================
+// The drop and demote arms. FIVE conditions drop a primitive WHOLE, one demotes an attribute whole,
+// and nothing is ever partial (A-9).
+//
+// A note on warning counts. When a case's only primitive is dropped the container ends up empty, so
+// the cook emits its own "no cookable primitives" warning as well -- these cases therefore see TWO
+// warnings, the drop's and the empty container's, and they assert both rather than pretending the
+// second one is not there.
+// =================================================================================================
+
+TEST_CASE("mesh cook: an empty positions array drops the primitive whole (MC27)") {
+    std::vector<Source> sources = {triangle(2, 5)};
+    sources[0].positions.clear();
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.status == MeshCookStatus::Ok);
+    CHECK(c.result.stats.droppedPrimitiveCount == 1U);
+    CHECK(c.result.stats.submeshCount == 0U);
+    REQUIRE(c.result.warnings.size() == 2U);
+    CHECK(c.result.warnings[0] == "mesh 2 primitive 5 has no positions and was dropped");
+    CHECK(c.result.bytes.size() == 96U);
+}
+
+TEST_CASE("mesh cook: an empty indices array drops the primitive whole (MC28)") {
+    std::vector<Source> sources = {triangle(2, 5)};
+    sources[0].indices.clear();
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.stats.droppedPrimitiveCount == 1U);
+    REQUIRE(c.result.warnings.size() == 2U);
+    CHECK(c.result.warnings[0] == "mesh 2 primitive 5 has no indices and was dropped");
+}
+
+TEST_CASE("mesh cook: an index count that is not a multiple of three drops the primitive (MC29)") {
+    for (const std::size_t extra : {std::size_t{1}, std::size_t{2}}) {
+        std::vector<Source> sources = {triangle(0, 0)};
+        for (std::size_t i = 0; i < extra; ++i) {
+            sources[0].indices.push_back(0);
+        }
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.stats.droppedPrimitiveCount == 1U);
+        REQUIRE(c.result.warnings.size() == 2U);
+        CHECK(c.result.warnings[0].find(std::format("has {} indices, not a multiple of 3", 3 + extra)) !=
+              std::string::npos);
+    }
+}
+
+TEST_CASE("mesh cook: an out-of-range index drops the primitive whole (MC30)") {
+    SUBCASE("exactly positions.size(), the off-by-one an inclusive bound would accept") {
+        std::vector<Source> sources = {triangle(1, 1)};
+        sources[0].indices = {0, 1, 3};
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.stats.droppedPrimitiveCount == 1U);
+        REQUIRE(c.result.warnings.size() == 2U);
+        CHECK(c.result.warnings[0] == "mesh 1 primitive 1 index 2 addresses vertex 3 of 3, and was dropped");
+    }
+    SUBCASE("far past the end") {
+        std::vector<Source> sources = {triangle(1, 1)};
+        sources[0].indices = {0, 900000, 2};
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.stats.droppedPrimitiveCount == 1U);
+        CHECK(c.result.warnings[0].find("addresses vertex 900000 of 3") != std::string::npos);
+    }
+}
+
+TEST_CASE("mesh cook: any non-finite POSITION component drops the primitive whole (MC31)") {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    struct Arm {
+        int component;
+        float value;
+    };
+    const std::array<Arm, 5> arms = {Arm{0, nan}, Arm{1, nan}, Arm{2, nan}, Arm{0, inf}, Arm{1, -inf}};
+    for (const Arm& arm : arms) {
+        std::vector<Source> sources = {triangle(0, 4)};
+        Vec3& p = sources[0].positions[1];
+        if (arm.component == 0) {
+            p.x = arm.value;
+        } else if (arm.component == 1) {
+            p.y = arm.value;
+        } else {
+            p.z = arm.value;
+        }
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.stats.droppedPrimitiveCount == 1U);
+        REQUIRE(c.result.warnings.size() == 2U);
+        CHECK(c.result.warnings[0] == "mesh 0 primitive 4 has a non-finite position at vertex 1 and was dropped");
+    }
+}
+
+TEST_CASE("mesh cook: a dropped primitive does not stop the others (MC32)") {
+    std::vector<Source> sources = {triangle(0, 0), triangle(0, 1), triangle(0, 2)};
+    sources[1].positions[0].y = std::numeric_limits<float>::quiet_NaN();
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.status == MeshCookStatus::Ok);
+    CHECK(c.result.stats.droppedPrimitiveCount == 1U);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 2U);
+    CHECK(c.parsed.mesh.submeshes[0].sourcePrimitiveIndex == 0U);
+    CHECK(c.parsed.mesh.submeshes[1].sourcePrimitiveIndex == 2U);
+    CHECK(c.result.warnings.size() == 1U);  // no empty-container warning: two submeshes survived
+}
+
+TEST_CASE("mesh cook: a dropped primitive contributes NOTHING to the model bounds (MC33)") {
+    std::vector<Source> sources = {triangle(0, 0), triangle(0, 1)};
+    // The dropped one is far away in every direction AND carries the non-finite component, so a cook
+    // that folded before dropping would produce either a huge box or a NaN one.
+    sources[1].positions = {Vec3{-50.0F, -50.0F, -50.0F}, Vec3{50.0F, 50.0F, 50.0F},
+                            Vec3{0.0F, std::numeric_limits<float>::quiet_NaN(), 0.0F}};
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.stats.droppedPrimitiveCount == 1U);
+    CHECK(c.parsed.mesh.bounds.min == Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(c.parsed.mesh.bounds.max == Vec3{1.0F, 1.0F, 0.0F});
+}
+
+TEST_CASE("mesh cook: a mis-sized NORMALS array is demoted, not dropped (MC34)") {
+    for (const std::size_t n : {std::size_t{2}, std::size_t{4}}) {
+        std::vector<Source> sources = {triangle(0, 0)};
+        sources[0].normals.assign(n, Vec3{0, 0, 1});
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.status == MeshCookStatus::Ok);
+        CHECK(c.result.stats.droppedPrimitiveCount == 0U);
+        REQUIRE(c.result.warnings.size() == 1U);
+        CHECK(c.result.warnings[0] == std::format("mesh 0 primitive 0's normals array has {} entries for 3 vertices "
+                                                  "and was ignored",
+                                                  n));
+        REQUIRE(c.parsed.mesh.attributes.size() == 1U);
+        CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);
+    }
+}
+
+TEST_CASE("mesh cook: a mis-sized TANGENTS array is demoted, not dropped (MC35)") {
+    for (const std::size_t n : {std::size_t{2}, std::size_t{4}}) {
+        std::vector<Source> sources = {triangle(0, 0)};
+        sources[0].tangents.assign(n, Vec4{1, 0, 0, 1});
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.stats.droppedPrimitiveCount == 0U);
+        REQUIRE(c.result.warnings.size() == 1U);
+        CHECK(c.result.warnings[0].find("tangents array has") != std::string::npos);
+        CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);
+    }
+}
+
+TEST_CASE("mesh cook: a mis-sized UV0 array is demoted, not dropped (MC36)") {
+    for (const std::size_t n : {std::size_t{2}, std::size_t{4}}) {
+        std::vector<Source> sources = {triangle(0, 0)};
+        sources[0].uv0.assign(n, Vec2{0, 0});
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.stats.droppedPrimitiveCount == 0U);
+        REQUIRE(c.result.warnings.size() == 1U);
+        CHECK(c.result.warnings[0].find("uv0 array has") != std::string::npos);
+        CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);
+    }
+}
+
+TEST_CASE("mesh cook: a mis-sized COLORS array is demoted, not dropped (MC37)") {
+    for (const std::size_t n : {std::size_t{2}, std::size_t{4}}) {
+        std::vector<Source> sources = {triangle(0, 0)};
+        sources[0].colors.assign(n, Vec4{1, 1, 1, 1});
+        // A correctly-sized uv1 alongside proves the demotion is per-ATTRIBUTE, not per-primitive.
+        sources[0].uv1.assign(3, Vec2{0.5F, 0.5F});
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.stats.droppedPrimitiveCount == 0U);
+        REQUIRE(c.result.warnings.size() == 1U);
+        CHECK(c.result.warnings[0].find("colors array has") != std::string::npos);
+        REQUIRE(c.parsed.mesh.attributes.size() == 2U);
+        CHECK(c.parsed.mesh.attributes[1].semantic == CookedVertexSemantic::TexCoord1);
+        CHECK(c.parsed.mesh.sections[0].vertexStride == 20U);
+    }
+}
+
+TEST_CASE("mesh cook: a mis-sized WEIGHTS array with no joints is demoted alone (MC38)") {
+    for (const std::size_t n : {std::size_t{2}, std::size_t{4}}) {
+        std::vector<Source> sources = {triangle(0, 0)};
+        sources[0].weights.assign(n, Vec4{1, 0, 0, 0});
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.stats.droppedPrimitiveCount == 0U);
+        // ONE warning, not two: joints was absent to begin with, so the pairing rule has nothing to
+        // say -- both are absent, which is a legal state.
+        REQUIRE(c.result.warnings.size() == 1U);
+        CHECK(c.result.warnings[0].find("weights array has") != std::string::npos);
+        CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);
+    }
+}
+
+TEST_CASE("mesh cook: joints without weights drops BOTH (MC39)") {
+    std::vector<Source> sources = {triangle(6, 2)};
+    sources[0].joints = {{0, 1, 2, 3}, {0, 1, 2, 3}, {0, 1, 2, 3}};  // correctly sized
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.stats.droppedPrimitiveCount == 0U);
+    REQUIRE(c.result.warnings.size() == 1U);
+    CHECK(c.result.warnings[0] == "mesh 6 primitive 2 has joints without weights; both were dropped");
+    REQUIRE(c.parsed.mesh.attributes.size() == 1U);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);
+}
+
+TEST_CASE("mesh cook: weights present with mis-sized joints gives TWO independent warnings (MC40)") {
+    std::vector<Source> sources = {triangle(6, 3)};
+    sources[0].joints = {{0, 1, 2, 3}, {0, 1, 2, 3}};  // two entries for three vertices
+    sources[0].weights = {Vec4{1, 0, 0, 0}, Vec4{1, 0, 0, 0}, Vec4{1, 0, 0, 0}};
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.stats.droppedPrimitiveCount == 0U);
+    // The mis-size warning and the pairing warning are TWO warnings, not one: they are independent
+    // rules and either can fire without the other (MC38 is the mis-size alone, MC39 the pairing alone).
+    REQUIRE(c.result.warnings.size() == 2U);
+    CHECK(c.result.warnings[0].find("joints array has 2 entries for 3 vertices") != std::string::npos);
+    CHECK(c.result.warnings[1] == "mesh 6 primitive 3 has weights without joints; both were dropped");
+    REQUIRE(c.parsed.mesh.attributes.size() == 1U);
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);
+}
+
+TEST_CASE("mesh cook: a non-finite NORMAL is copied through verbatim (MC41)") {
+    // Non-finite values in attributes OTHER than position are copied through: they take part in no
+    // computation, their bits are moved rather than derived, and refusing them would drop geometry
+    // over a shading artifact.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].normals = {Vec3{nan, 0, 1}, Vec3{0, std::numeric_limits<float>::infinity(), 1}, Vec3{0, 0, 1}};
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.status == MeshCookStatus::Ok);
+    CHECK(c.result.warnings.empty());
+    CHECK(c.result.stats.droppedPrimitiveCount == 0U);
+    const auto vb = engine::assets::sectionVertexBytes(c.parsed.mesh, 0);
+    REQUIRE(vb.size() == 3U * 24U);
+    CHECK(engine::assets::getU32(vb, 12) == std::bit_cast<std::uint32_t>(nan));
+    CHECK(engine::assets::getF32(vb, 24 + 16) == std::numeric_limits<float>::infinity());
+    // And the bounds are untouched by them, because the fold is over POSITIONS.
+    CHECK(c.parsed.mesh.bounds.max == Vec3{1.0F, 1.0F, 0.0F});
 }
