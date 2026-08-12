@@ -535,3 +535,54 @@ TEST_CASE("mesh_cook_source: a model whose every primitive is dropped cooks to t
     const CookedMeshParseResult parsed = parseCooked(cooked);
     CHECK(parsed.status == CookedMeshStatus::Ok);
 }
+
+// ---- MK17: the mask is DERIVED from the arrays, never read from the bitset ----------------------
+TEST_CASE("mesh_cook_source: the cook derives the mask from the ARRAYS, not from `attributes` (MK17)") {
+    // THE GAP SEED S34 FOUND. MK11 cross-checks the derived mask against ImportedPrimitive::attributes
+    // on every committed fixture -- and every one of them is internally consistent, so an adapter
+    // rewritten to GATE each array on that bitset produced identical output for all of them and MK11
+    // stayed green. The property MK11 cannot state is which of the two is the AUTHORITY.
+    //
+    // Both directions are driven from one hand-built model, because a bitset can lie either way and
+    // the two lies fail differently: an under-claim would silently drop a real attribute out of the
+    // vertex layout, an over-claim would put an attribute in the layout with no data behind it.
+    ImportedModel model;
+    ImportedMesh mesh;
+
+    // Primitive 0 -- the bitset UNDER-claims: real normals, and `attributes` says Position only.
+    ImportedPrimitive understated;
+    understated.attributes = VertexAttribute::Position;
+    understated.positions = {engine::Vec3{0, 0, 0}, engine::Vec3{1, 0, 0}, engine::Vec3{0, 1, 0}};
+    understated.normals = {engine::Vec3{0, 0, 1}, engine::Vec3{0, 0, 1}, engine::Vec3{0, 0, 1}};
+    understated.indices = {0, 1, 2};
+    mesh.primitives.push_back(std::move(understated));
+
+    // Primitive 1 -- the bitset OVER-claims: it names TexCoord0, and there is no uv0 array at all.
+    ImportedPrimitive overstated;
+    overstated.attributes = VertexAttribute::Position | VertexAttribute::TexCoord0;
+    overstated.positions = {engine::Vec3{5, 0, 0}, engine::Vec3{6, 0, 0}, engine::Vec3{5, 1, 0}};
+    overstated.indices = {0, 1, 2};
+    mesh.primitives.push_back(std::move(overstated));
+    model.meshes.push_back(std::move(mesh));
+
+    const MeshCookResult cooked = cookImportedModel(model, Guid{});
+    CHECK(cooked.status == MeshCookStatus::Ok);
+    const CookedMeshParseResult parsed = parseCooked(cooked);
+    REQUIRE(parsed.status == CookedMeshStatus::Ok);
+    REQUIRE(parsed.mesh.submeshes.size() == 2);
+    // TWO sections, because the two derived masks differ -- 0x03 and 0x01 -- which is only true if the
+    // arrays decided. Had the bitset decided, both would be Position-only and share ONE section.
+    REQUIRE(parsed.mesh.sections.size() == 2);
+
+    // Ascending mask, so section 0 is the position-only one and section 1 carries the normal.
+    CHECK(parsed.mesh.sections[0].vertexStride == 12);
+    CHECK(parsed.mesh.sections[1].vertexStride == 24);
+    REQUIRE(parsed.mesh.sections[1].attributeCount == 2);
+    CHECK(parsed.mesh.attributes[parsed.mesh.sections[1].firstAttribute + 1].semantic == CookedVertexSemantic::Normal);
+    // The over-claiming primitive is the one in section 0: no uv0 array, so no TexCoord0 attribute,
+    // whatever its bitset says.
+    CHECK(parsed.mesh.submeshes[0].sourcePrimitiveIndex == 1);
+    CHECK(parsed.mesh.submeshes[0].sectionIndex == 0);
+    CHECK(parsed.mesh.submeshes[1].sourcePrimitiveIndex == 0);
+    CHECK(parsed.mesh.submeshes[1].sectionIndex == 1);
+}

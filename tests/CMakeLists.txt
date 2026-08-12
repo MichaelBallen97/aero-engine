@@ -83,6 +83,14 @@ add_executable(aero_tests
 # assertable in this target at all -- assets deliberately does not link rhi, and never will.
 target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
 
+# task 3.3.1, added by the sabotage round: cooked_mesh_test.cpp's CM50 asserts a STRUCTURAL property of
+# the parser -- that nothing is reserved before the four header counts have been checked against their
+# caps -- which no runtime case in this tree can see (a 274 GB reserve of virtual address space simply
+# succeeds on macOS, measured with the reserves deliberately moved above the checks). It is therefore a
+# comment-stripped source-text gate, the AERO_EDITOR_SRC_DIR / I73 / MS41 / AI34 shape one layer down.
+# UNGATED on purpose: both reduced configurations build this TU and must run this case too.
+target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/assets/src")
+
 # Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,
 # in build/<preset>/shaders). aero_shaders exists ONLY when AERO_SHADER_TOOLS is ON (cmake/shaders.cmake),
 # and tests/ is add_subdirectory'd AFTER shaders/ (root CMakeLists.txt), so the target is in scope here.

@@ -15,8 +15,11 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -1223,5 +1226,112 @@ TEST_CASE("cooked mesh: COOKED_SEMANTIC_COUNT bounds every semantic (CM48)") {
     // And they are 0..7 with no gaps, which is what makes "bit n set means semantic n present" true.
     for (std::size_t i = 0; i < ALL_SEMANTICS.size(); ++i) {
         CHECK(static_cast<std::uint16_t>(ALL_SEMANTICS[i]) == static_cast<std::uint16_t>(i));
+    }
+}
+
+TEST_CASE("cooked mesh: a header count of UINT32_MAX is refused BEFORE anything is reserved (CM49)") {
+    // THE GAP SEED S16 FOUND. CM23 already proves the TABLE arithmetic runs before the three
+    // reserves, but every count it and CM21 use is cap+1 -- 1025 attributes, 129 sections, 65537
+    // submeshes -- and reserving for any of those succeeds in microseconds, so moving all three
+    // reserves ABOVE the cap checks reddened nothing at all.
+    //
+    // These four counts are the ones that make the ordering observable: reserving for 4 294 967 295
+    // records is 34 GB of attributes or 274 GB of submeshes, which the allocator refuses. Because
+    // parseCookedMesh catches nothing and promises never to throw, a reserve placed before the cap
+    // check turns each arm into an uncaught bad_alloc or a sanitiser abort rather than a refusal --
+    // which is exactly the shape the ordering exists to prevent.
+    struct Arm {
+        const char* name;
+        std::size_t offset;
+    };
+    const std::array<Arm, 4> arms = {Arm{"attributeCount", H_ATTRIBUTE_COUNT}, Arm{"sectionCount", H_SECTION_COUNT},
+                                     Arm{"submeshCount", H_SUBMESH_COUNT}, Arm{"indexCount", H_INDEX_COUNT}};
+    for (const Arm& arm : arms) {
+        CAPTURE(arm.name);
+        std::vector<std::byte> b = makeContainer(Shape::Empty);
+        put32(b, arm.offset, std::numeric_limits<std::uint32_t>::max());
+        const auto r = parse(b);
+        CHECK(r.status == CookedMeshStatus::CapExceeded);
+        CHECK_FALSE(r.message.empty());
+        // Nothing was kept either: a refusal returns a default-constructed mesh, never a partly
+        // populated one whose vectors a caller could walk.
+        CHECK(r.mesh.attributes.empty());
+        CHECK(r.mesh.sections.empty());
+        CHECK(r.mesh.submeshes.empty());
+    }
+}
+
+// =================================================================================================
+// CM50 is the ONE case in this TU that touches the disk, and the TU's own header says "no disk except
+// the golden header". That sentence was true when it was written and this case is the stated
+// exception, not a drift: the property below has no runtime observable anywhere in this tree.
+// =================================================================================================
+
+namespace {
+
+// A source line with its `//` comment removed -- the MI42c / OI77 / MS41 / AI2 shape, this TU's own
+// copy. Without it the gate below would match the parser's OWN prose about the ordering it enforces
+// and pass for the wrong reason (the AC-56 lesson, one layer down from the editor tier).
+[[nodiscard]] std::string_view codeOf(std::string_view line) {
+    const std::size_t commentStart = line.find("//");
+    return commentStart == std::string_view::npos ? line : line.substr(0, commentStart);
+}
+
+[[nodiscard]] std::string strippedAssetsSource(const std::string& relativePath) {
+    const std::string path = std::string(AERO_ASSETS_SRC_DIR) + "/" + relativePath;
+    std::ifstream stream{path, std::ios::binary};
+    REQUIRE_MESSAGE(stream.good(), path);
+    const std::string text{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    REQUIRE_FALSE(text.empty());
+    std::string out;
+    out.reserve(text.size());
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        const std::string_view line = newline == std::string_view::npos ? remaining : remaining.substr(0, newline);
+        out.append(codeOf(line));
+        out.push_back('\n');
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        remaining.remove_prefix(newline + 1U);
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("cooked mesh: every header count is capped BEFORE the parser reserves anything (CM50)") {
+    // THE GAP SEED S16 FOUND, and the reason this is source text rather than a behaviour.
+    //
+    // "Nothing is allocated before the count it is allocating for has been checked against a frozen
+    // cap" is the parser's whole defence against a hostile header, and it is UNOBSERVABLE from a test
+    // on this platform: with the three reserves deliberately moved above the four cap checks, a header
+    // declaring 4 294 967 295 submeshes reserves 274 GB of ADDRESS SPACE, which macOS hands out
+    // lazily and ASan's allocator permits -- measured, not assumed. CM49's four arms stayed green
+    // throughout. A lane whose allocator commits rather than reserves would fail instead, which is
+    // exactly the portability asymmetry that makes a behavioural case the wrong instrument here.
+    //
+    // So the ORDER is asserted in the text, over comment-stripped source so the file's own
+    // explanation of the rule cannot satisfy the gate.
+    const std::string code = strippedAssetsSource("cooked_mesh.cpp");
+
+    const std::size_t firstReserve = code.find(".reserve(");
+    REQUIRE(firstReserve != std::string::npos);
+    // Exactly three, and they are the three CookedMesh vectors. A fourth would need its own proof.
+    std::size_t reserveCount = 0;
+    for (std::size_t at = code.find(".reserve("); at != std::string::npos; at = code.find(".reserve(", at + 1U)) {
+        ++reserveCount;
+    }
+    CHECK(reserveCount == 3U);
+
+    // The four header counts, each compared against its own frozen cap, all textually ABOVE the first
+    // reserve. Written as the comparison rather than the message, so rewording a diagnostic is free.
+    for (const std::string_view check : {"attributeCount > MAX_COOKED_ATTRIBUTES", "sectionCount > MAX_COOKED_SECTIONS",
+                                         "submeshCount > MAX_COOKED_SUBMESHES", "indexCount > MAX_COOKED_INDICES"}) {
+        CAPTURE(check);
+        const std::size_t at = code.find(check);
+        REQUIRE(at != std::string::npos);  // anti-vacuity: a renamed check must fail, never pass
+        CHECK(at < firstReserve);
     }
 }

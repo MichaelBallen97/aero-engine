@@ -1088,6 +1088,13 @@ TEST_CASE("mesh cook: INV-C3 holds over a sweep of every input shape in this TU 
         shapes.push_back({"uint32 indices", s});
     }
 
+    // ANTI-VACUITY, and it is not decoration: a table-driven sweep whose table is empty passes with
+    // ZERO assertions and looks exactly like a sweep that held. Emptying `shapes` was seeded directly
+    // and this case stayed green at 0 assertions until these two lines existed. Both halves are
+    // needed -- the size bound catches a table that shrank, the counter catches a loop that stopped
+    // early or never entered.
+    REQUIRE(shapes.size() >= 11U);
+    std::size_t shapesSwept = 0;
     for (const Shape& shape : shapes) {
         CAPTURE(shape.name);
         const std::vector<MeshCookPrimitive> prims = views(shape.sources);
@@ -1099,7 +1106,9 @@ TEST_CASE("mesh cook: INV-C3 holds over a sweep of every input shape in this TU 
         CHECK(parsed.status == CookedMeshStatus::Ok);
         CHECK(parsed.message.empty());
         CHECK(r.bytes.size() == r.stats.byteSize);
+        ++shapesSwept;
     }
+    CHECK(shapesSwept == shapes.size());
 }
 
 // =================================================================================================
@@ -1258,4 +1267,64 @@ TEST_CASE("mesh cook: Golden C's input is supplied in REVERSE key order (MC56)")
     REQUIRE(parsed.mesh.submeshes.size() == 2U);
     CHECK(parsed.mesh.submeshes[0].sourceMeshIndex == 0U);
     CHECK(parsed.mesh.submeshes[1].sourceMeshIndex == 1U);
+}
+
+// =================================================================================================
+// The two cases the sabotage matrix added. Both close a gap it found in a fully green suite: seeds
+// S4 and S9b each reddened NOTHING before these existed.
+// =================================================================================================
+
+TEST_CASE("mesh cook: the MASK outranks the source indices in the ordering key (MC57)") {
+    // THE GAP SEED S4 FOUND. Every other ordering case happens to supply its primitives so that
+    // ascending mask and ascending (sourceMeshIndex, sourcePrimitiveIndex) agree -- MC13's two, MC14's
+    // three, MC54's four and the mixed golden's two all line up that way -- so a comparator that
+    // dropped the mask entirely and sorted by source index alone produced byte-identical output for
+    // every one of them. This input is the one shape that tells the two apart: the mask order and the
+    // source order are exact OPPOSITES.
+    std::vector<Source> sources = {triangle(0, 0), triangle(1, 0), triangle(2, 0)};
+    sources[0].colors.assign(3, Vec4{1, 0, 0, 1});  // mesh 0 -> Position|Color0  == 0x21, stride 28
+    sources[1].normals.assign(3, Vec3{0, 0, 1});    // mesh 1 -> Position|Normal  == 0x03, stride 24
+                                                    // mesh 2 -> Position         == 0x01, stride 12
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.sections.size() == 3U);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 3U);
+
+    // Sections in ASCENDING MASK order, which here is DESCENDING source-mesh order.
+    CHECK(c.parsed.mesh.sections[0].vertexStride == 12U);
+    CHECK(c.parsed.mesh.sections[1].vertexStride == 24U);
+    CHECK(c.parsed.mesh.sections[2].vertexStride == 28U);
+    // And the submesh table follows the same key, so the LAST mesh is described FIRST.
+    CHECK(c.parsed.mesh.submeshes[0].sourceMeshIndex == 2U);
+    CHECK(c.parsed.mesh.submeshes[1].sourceMeshIndex == 1U);
+    CHECK(c.parsed.mesh.submeshes[2].sourceMeshIndex == 0U);
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK(c.parsed.mesh.submeshes[i].sectionIndex == static_cast<std::uint32_t>(i));
+    }
+}
+
+TEST_CASE("mesh cook: the fold keeps the ACCUMULATOR FIRST, which -0.0f is the only witness of (MC58)") {
+    // THE GAP SEED S9b FOUND. std::min(a, b) returns `b < a ? b : a`, so for -0.0f and +0.0f -- which
+    // compare EQUAL -- the result is whichever operand came first. Every other bounds case in this TU
+    // and every committed fixture in MK9 carries only distinct magnitudes, so swapping the fold's two
+    // arguments was invisible everywhere. That matters beyond pedantry: AC-27 compares the cooked box
+    // against ImportedPrimitive::bounds BYTE FOR BYTE, and Aabb::expand folds accumulator-first.
+    //
+    // x holds -0.0 then +0.0 then a LARGER value, so only the MINIMUM lands on a zero; y holds -0.0
+    // then +0.0 then a SMALLER value, so only the MAXIMUM does. One primitive covers both halves.
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].positions = {Vec3{-0.0F, -0.0F, 0.0F}, Vec3{0.0F, 0.0F, 0.0F}, Vec3{0.5F, -0.5F, 0.0F}};
+    const Cooked c = cookSources(sources);
+    REQUIRE(c.parsed.mesh.submeshes.size() == 1U);
+
+    // Compared by BITS: -0.0f == +0.0f is true, so a value comparison cannot see this at all.
+    constexpr std::uint32_t NEGATIVE_ZERO = 0x80000000U;
+    CHECK(std::bit_cast<std::uint32_t>(c.parsed.mesh.submeshes[0].bounds.min.x) == NEGATIVE_ZERO);
+    CHECK(std::bit_cast<std::uint32_t>(c.parsed.mesh.submeshes[0].bounds.max.y) == NEGATIVE_ZERO);
+    // The model box folds the submesh boxes with the same rule, so the sign survives one level up.
+    CHECK(std::bit_cast<std::uint32_t>(c.parsed.mesh.bounds.min.x) == NEGATIVE_ZERO);
+    CHECK(std::bit_cast<std::uint32_t>(c.parsed.mesh.bounds.max.y) == NEGATIVE_ZERO);
+    // The other two components are ordinary, and asserting them keeps the case honest about what it
+    // is claiming: nothing here is special-cased, the fold is simply run in a fixed order.
+    CHECK(c.parsed.mesh.submeshes[0].bounds.max.x == 0.5F);
+    CHECK(c.parsed.mesh.submeshes[0].bounds.min.y == -0.5F);
 }
