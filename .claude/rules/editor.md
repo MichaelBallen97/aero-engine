@@ -1103,5 +1103,156 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   spawn"; `EditorApp::resolveBlender()` defers on it, leaving the state `Unknown`, which is exactly what
   the lazy resolve re-tests once a project is open.
 
+## Assimp import (task 3.2.5)
+
+- **`ReadFileFromMemory` is NOT enough, and `SetIOHandler(nullptr)` is a TRAP.** The from-memory entry
+  point *wraps* the installed IO handler in a `MemoryIOSystem` that serves one magic filename from the
+  buffer and **delegates every other path to the wrapped handler** — which out of the box is a live,
+  unrestricted `DefaultIOSystem`. And `SetIOHandler(nullptr)` does not clear the handler, it **installs**
+  a fresh `DefaultIOSystem`. The only sanctioned sequence in this tree is
+  `SetIOHandler(new RefusingIoSystem())` **then** `ReadFileFromMemory`. `Importer::ReadFile`,
+  `DefaultIOSystem`, the whole C API, `Assimp::Exporter`, `ZipArchiveIOSystem` and `.zae` must appear
+  nowhere in this tree, permanently. **All twelve `IOSystem` virtuals are overridden** — four are pure and
+  the compiler forces them, the other eight are not, and an un-overridden one silently inherits a base
+  that keeps a directory stack and compares real paths.
+- **The loader that ran is ASSERTED, never assumed** — `AI_METADATA_SOURCE_FORMAT`, compared against a
+  distinctive fragment of the expected loader's own `aiImporterDesc::mName`. `UnregisterLoader` is
+  rejected because it leaks. **Assert `Get(AI_METADATA_SOURCE_FORMAT,`, never the bare key**: the bare
+  token is a PREFIX of `AI_METADATA_SOURCE_FORMAT_VERSION`, which this same file reads for a display
+  string, and a gate spelled the short way stays green when the whole assertion is deleted (sabotage
+  seed S4 found exactly that).
+- **The forbidden post-process flags**, with `aiProcess_FindInvalidData` called out by name: *it deletes
+  meshes, and if it deletes them all it fails the whole file*, which collides head-on with 3.2.1's D11
+  (an empty mesh survives so the panel can show the user why their file looks empty). Its one genuine
+  benefit — nulling an all-zero normal/tangent/UV channel — is taken over by this backend's own check,
+  which keeps the mesh, keeps the counts and names the channel in a warning. `PreTransformVertices`,
+  `MakeLeftHanded`, `ConvertToLeftHanded`, `FlipUVs`, `FlipWindingOrder`, `GlobalScale`, `GenNormals`,
+  `GenSmoothNormals`, `CalcTangentSpace`, `JoinIdenticalVertices`, `RemoveRedundantMaterials`,
+  `GenBoundingBoxes` and `FindDegenerates` are forbidden for the reasons `assimp_import.cpp`'s own header
+  lists.
+- **`aiMatrix4x4` is ROW-major and `aiQuaternion` is `{w,x,y,z}`.** `engine::Mat4` is column-major and
+  `engine::Quat` is `{x,y,z,w}`, so every matrix conversion **transposes** and every quaternion conversion
+  is a **named field copy** — never a `memcpy`, never a `bit_cast`, never a positional construction. There
+  are **three** call sites (`convertNodes`, `convertSkins`, `convertAnimations`) and they break
+  independently: sabotage confirmed that one reordered `toQuat` reddens cases in two of them and one
+  un-transposed `toMat4` reddens only the third. Both defects produce a plausible **wrong model**, not a
+  failure.
+- **`metallic 0` / `roughness 1` are this importer's DEFAULTS, not claims about the file**, and they must
+  be written EXPLICITLY because `ImportedMaterial`'s own default for `metallicFactor` is 1 — leaving it
+  ships every DAE/PLY/STL material as a full metal. No `SHININESS` → roughness curve, ever. No
+  `LIGHTMAP` → occlusion: `aiTextureType_LIGHTMAP` is where the Collada loader puts `<ambient>`, and an
+  ambient colour map is not an occlusion map.
+- **Collada CANNOT express a black diffuse COLOUR together with a diffuse TEXTURE.** `<diffuse>` holds a
+  `<color>` or a `<texture>`, and `ColladaLoader` writes `AI_MATKEY_COLOR_DIFFUSE` unconditionally from
+  `Effect::mDiffuse`, whose default is `(0.6, 0.6, 0.6)`. The zero-factor rule's paired arms are therefore
+  driven from a `.ply`, whose `element material` supplies the colour independently of the `TextureFile`
+  comment. Do not re-write that case against a `.dae`; it cannot be written.
+- **`.dae` bounds are in the SOURCE's own units** while the hierarchy carries the unit/axis factor,
+  because Assimp's Collada loader bakes the conversion into the root node's transform and exposes neither
+  input. **This is not to be "fixed" by re-scaling geometry behind the user's back.** It is the named
+  asymmetry with the FBX path, whose `MODIFY_GEOMETRY` choice was made for exactly the opposite reason.
+- **`thumbnail_store.cpp` defines `STB_IMAGE_STATIC` and must keep defining it.** Removing it re-opens a
+  duplicate-symbol collision with the second, unprefixed `stb_image` implementation assimp's vcpkg port
+  compiles (its `build_fixes.patch` turns upstream's `assimp_stbi_*` prefixing off) — a static-link
+  concern on macOS and Linux, structurally absent on Windows where the port builds a DLL.
+- **The library LEAKS on its own error paths, and `tests/lsan.supp` carries exactly two frame-scoped
+  entries for it.** `ColladaParser`'s CONSTRUCTOR parses the whole document from its ctor body, so a
+  rejected document throws before the object exists and its destructor never runs — every node, mesh,
+  submesh, input channel and transform already allocated is orphaned; `STLImporter::LoadASCIIFile` does
+  the same on a truncated file. This backend's failure-mode fixtures are the first things in the tree to
+  reach those paths at all, so the frames surfaced here (CI run 31559183254, 4704 B / 17 allocations)
+  and only on the Linux Debug lane, the one lane that runs LSan — invisible to every macOS run, local or
+  CI, and to Windows. **A future format added to this backend may surface further such frames. Each
+  needs its OWN entry, gated on observed CI evidence and naming its own function — never a module-wide
+  `leak:assimp`**, which would blind LSan to a first-party leak allocated anywhere inside the library
+  (the same reason that file refuses `leak:SDL`). The two entries create no first-party blind spot
+  because nothing of ours allocates inside either frame: the only code of ours reachable from there is
+  `RefusingIoSystem`'s twelve virtuals, none of which allocates. Do not weaken the triggering cases —
+  the leak is the library's, and the port is never patched locally.
+- **Never write the character sequence `assimp/` in prose** anywhere under `editor/`, `tests/`, `engine/`,
+  `runtime/` or `tools/`: the include-boundary gate greps those roots and a prose mention turns it red for
+  a reason that is not a violation. Write "the assimp port", "assimp 6.0.4", "lib/cmake/assimp".
+- **`.stl` and `.ply` do NOT enter Assimp at Structure depth**, which is a stated deviation from INV-M4 —
+  the two depths disagree about counts, names and hierarchy, exactly as `.obj` has since 3.2.3. The one
+  thing they owe each other is an identical `externalUris`, and **the `.ply` Full pass must seed it from
+  the same header scan the Structure pass uses**. With a single `TextureFile` line the loader's own
+  material happens to reproduce the scan's answer, so deleting the seeding step is invisible until a
+  header names TWO different textures — Assimp keeps only the LAST, the scan returns both.
+- **`.ply` needs a first-party pre-allocation bound and `.stl` does not**, and that asymmetry is a property
+  of the two LOADERS, not of the two formats. `STLLoader.cpp` refuses at
+  `mFileSize < 84ull + mNumFaces * 50ull` in 64-bit arithmetic **before** its own
+  `new aiVector3D[mNumFaces * 3]`; the `Ply` sources contain no comparison against the file size anywhere.
+  A `.ply` header declaring 2³²−1 vertices over an empty body sends the loader into a multi-minute grind at
+  unbounded, climbing resident memory, reachable from a 120-byte file. `plyDeclaredCountsExceedBytes` runs
+  **after** `seedPlyExternalUris` (so the depth-equality still holds on a refused file) and **before**
+  `runAssimp`. Do not add an `.stl` equivalent: it would be dead code duplicating a guarantee the loader
+  already makes.
+- **`aiProcess_ValidateDataStructure` runs FIRST**, before `ScenePreprocessor` and before every other
+  post-process step, and it **throws**. Its message begins `Validation failed:`, which is what maps a
+  refusal to `ImportStatus::Malformed` rather than `ParseFailed`. Two consequences worth knowing before
+  writing a case: an out-of-range face index or bone-weight vertex id is refused whole, so this backend's
+  own range checks are **unreachable while that flag is on** (they stay as defence in depth for a
+  validation-off build and are pinned in the source text, not by a runtime case); and an out-of-range `<p>`
+  index in a `.dae` never reaches validation at all — `ColladaParser` rejects it first with
+  `Invalid data index (n/m) in primitive specification`, which is a PARSE failure. The input that does
+  reach the validation arm is two identically-named joints.
+- **`aiProcess_SortByPType` + `AI_CONFIG_PP_SBP_REMOVE` DELETES a mesh** whose only primitive type is
+  removed, rewrites the node graph around it, and throws `No meshes remaining` when nothing is left. A
+  lines-only `.dae` is therefore refused outright and a mixed one keeps exactly the triangle mesh — there
+  is no surviving empty mesh to observe, and the "no triangles survived" arm is unreachable for the same
+  family of reasons as the range checks.
+- **A NODE-ID MAP IS BUILT BY THE WALK THAT ASSIGNS THE IDS, NEVER BY A SECOND WALK OF THE SAME TREE —
+  3.2.2's `localId` lesson in a new costume, and this task's BLOCKING finding.** `convertNodes` returns the
+  `aiNode*` -> localId map `convertSkins` resolves `aiBone::mNode`/`mArmature` through; it used to be
+  re-derived by a second, plain pre-order walk numbering `0,1,2,…`, one index per `aiNode`. The two diverge
+  in two places, **both ordinary content**: a MULTI-MESH node consumes `mNumMeshes` slots (its own plus the
+  synthesized `<name>.<n>` children), where a plain walk consumes one — and
+  `ColladaLoader::BuildMeshesForNode` pushes one mesh ref per submesh **per material**, so a node whose
+  geometry carries two materials is one — and a DEPTH-DROPPED subtree is never emitted while an unbounded
+  walk descends straight into it. **A count bound truncates the tail; it realigns nothing.** The failure is
+  silent: joints bind to the wrong nodes, `skeletonRoot` lands on a synthesized split child, status stays
+  `Ok`, no warning. **The split children are deliberately NOT in the map and cannot be** — they have no
+  `aiNode`, so no key — and nothing is lost, because every key the map is asked for is a pointer the
+  LIBRARY produced and can never name a node this file invented. Any future pass needing "the localId of
+  this `aiNode`" takes the map as a parameter; it does not rebuild one.
+- **Every cap site LATCHES its report with its own bool, and a `break` inside a nested loop is a cap site
+  too.** The multi-mesh split loop's `break` claimed "the shared cap message above already fired or will",
+  which is false on the LAST node processed: the main loop's check runs only when another node is POPPED,
+  so a childless multi-mesh node hitting the cap with an empty stack reported `Ok` with nodes dropped
+  (AC-53). `convertSkins`' two `escalate` calls had no latch at all, so N over-cap skins appended N copies
+  of one sentence. **Two cap sites with different CAUSES get different WORDING**, even when the constant is
+  the same one: `convertMeshes`' model-wide vertex total and `convertSkins`' single-mesh influence table
+  both trip `MAX_VERTICES_PER_MODEL`, and one shared sentence leaves the message unable to say which fired.
+- **`aiNode::mMeshes[i]` is range-checked like `face.mIndices[k]` and `aiVertexWeight::mVertexId`, and for
+  the same reason.** All three are unreachable while `aiProcess_ValidateDataStructure` is on and all three
+  are pinned in `AI34`'s comment-stripped source text rather than by a runtime case. The `mMeshes` one
+  matters most downstream: 3.1.5 resolves `ImportedNode::meshIndex` into `ImportedModel::meshes`, where an
+  unchecked value is an out-of-bounds READ rather than a wrong picture.
+- **A refused image is FOUND-OR-APPENDED on its RAW uri, not on `relativePath`** — a refusal has no
+  resolved path, so the accepted branch's dedup can never match one, and two materials naming the same bad
+  path would append two identical `ImportedImage`s and spend two identical warnings out of the
+  `MAX_IMPORT_WARNINGS` budget.
+- **`Assimp::SkipSpaces` is `' '` OR `'\t'`, and `scanPlyTextureFiles` must mirror it exactly.**
+  `PLY::Element::ParseElement` opens with `PLY::DOM::SkipSpaces`, which forwards to it, so a TAB-indented
+  `comment TextureFile wood.png` reaches the loader. A scan skipping only `' '` made Structure return `{}`
+  where Full returned `{wood.png}` — the depth disagreement AC-19 forbids — and phase 7.5's Structure-depth
+  probe recorded **no dependency**, so editing the texture never marked the model `DependencyChanged`.
+  `plyDeclaredCountsExceedBytes` carries the identical rule; it fails safe there (it under-counts, never
+  rejects), and the two must still never diverge.
+- **A node instancing the SAME geometry twice is not a multi-mesh node** — the loader caches by
+  `(geometry, submesh, material)`, so the two refs collapse onto one index, which `ValidateDataStructure`
+  then refuses outright (`aiNode::mMeshes[i] is already referenced by this node`). A multi-mesh fixture
+  needs two DISTINCT geometries, or one geometry with two materials.
+- **`ArmaturePopulate::GetArmatureRoot` walks UP from a bone until it finds a node that is not one**, so
+  `skeletonRoot` lands on the wrapper node. A fixture whose joints hang directly off the visual scene gets
+  `skeletonRoot == 0` under every numbering and cannot discriminate a shifted map — wrap the joints in an
+  explicit `Armature` node when that is the property under test.
+- **A `.dae` fixture in a doctest macro must be hoisted into a named local first** — MSVC's legacy
+  preprocessor breaks on a raw string literal containing `\"` passed directly as a macro argument, and XML
+  is nothing but escaped quotes.
+- **A reduced-configuration probe must be configured with `-G Ninja`.** `CMAKE_GENERATOR` enters the
+  shadercross bootstrap's option hash, so a Makefiles configure reads the cached toolchain as COLD and pays
+  a twenty-minute from-source DXC rebuild that has nothing to do with what the probe tests.
+
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
-3.1.3, 3.1.4, 3.2.1, 3.2.2, 3.2.3 and 3.2.4's entries under Phase 3.
+3.1.3, 3.1.4, 3.2.1, 3.2.2, 3.2.3, 3.2.4 and 3.2.5's entries under Phase 3.

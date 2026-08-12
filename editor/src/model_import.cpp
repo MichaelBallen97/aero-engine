@@ -4,13 +4,16 @@
 // NOTHING HERE LOGS (INV-A3), NOTHING HERE TOUCHES DISK (INV-M3), NOTHING HERE THROWS.
 #include <aero/editor/model_import.hpp>
 
+#include "assimp_import.hpp"
 #include "fbx_import.hpp"
 #include "gltf_import.hpp"
 #include "obj_import.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -69,7 +72,8 @@ std::string_view importStatusLabel(ImportStatus status) noexcept {
 }
 
 bool isImportableModelName(std::string_view fileName) noexcept {
-    constexpr std::array<std::string_view, 5> EXTENSIONS = {".gltf", ".glb", ".fbx", ".obj", ".mtl"};
+    constexpr std::array<std::string_view, 8> EXTENSIONS = {".gltf", ".glb", ".fbx", ".obj",
+                                                            ".mtl",  ".dae", ".ply", ".stl"};
     for (const std::string_view ext : EXTENSIONS) {
         if (endsWithFolded(fileName, ext)) {
             return true;
@@ -87,6 +91,13 @@ ImporterIdentity modelImporterIdentity(std::string_view fileName) noexcept {
     // re-trigger imports for .obj AND .mtl together and for nothing else.
     if (endsWithFolded(fileName, ".obj") || endsWithFolded(fileName, ".mtl")) {
         return {OBJ_IMPORTER_NAME, OBJ_IMPORTER_VERSION};
+    }
+    // task 3.2.5: ONE identity for ALL THREE claimed extensions -- one importer, three file kinds. A
+    // .stl's cache entry therefore records ("assimp", 1), which is what makes an
+    // ASSIMP_IMPORTER_VERSION bump re-trigger imports for .dae, .ply and .stl together and for
+    // nothing else.
+    if (endsWithFolded(fileName, ".dae") || endsWithFolded(fileName, ".ply") || endsWithFolded(fileName, ".stl")) {
+        return {ASSIMP_IMPORTER_NAME, ASSIMP_IMPORTER_VERSION};
     }
     if (isImportableModelName(fileName)) {
         return {GLTF_IMPORTER_NAME, GLTF_IMPORTER_VERSION};
@@ -108,6 +119,13 @@ bool modelImporterNeedsExternalBuffers(std::string_view fileName) noexcept {
     if (endsWithFolded(fileName, ".mtl")) {
         return false;
     }
+    // task 3.2.5: NO, for all three. Every external reference .dae/.ply/.stl carry is a TEXTURE, which
+    // this importer resolves for the DEPENDENCY GRAPH and never reads -- the FBX answer verbatim. That
+    // is precisely why ModelImportSession needed no edit for this task: service() skips its whole first
+    // pass and runs ONE Full import with an empty external span, a path FBX already ships and validates.
+    if (endsWithFolded(fileName, ".dae") || endsWithFolded(fileName, ".ply") || endsWithFolded(fileName, ".stl")) {
+        return false;
+    }
     // .gltf/.glb (buffers may be external .bin files) and .obj (its .mtl IS an external file, D4).
     return isImportableModelName(fileName);
 }
@@ -123,6 +141,85 @@ std::string foldBackslashesToSlashes(std::string_view path) {
 }
 
 namespace {
+
+// task 3.2.5 (A-10). PURE, LOCALE-FREE decimal -> float, fully consumed or refused.
+//
+// MEASURED DEVIATION FROM THE PLAN, and the reason is a toolchain fact rather than a preference:
+// std::from_chars's FLOATING-POINT overload does not exist on every toolchain this project builds
+// with. Apple's libc++ 19.1.2 (MacOSX15.4.sdk -- the SDK this repo's own clang-tidy invocation pins,
+// and the one an Xcode 16 CI runner supplies) and Homebrew LLVM 18's own libc++ both ship
+// __charconv/from_chars_integral.h ONLY, so `std::from_chars(first, last, float&)` is a hard
+// "call to deleted function" there. engine/reflect/src/json_value.cpp already discovered this and
+// guards its use behind __cpp_lib_to_chars with a strtof_l fallback -- but that fallback needs
+// per-OS includes, and editor/src carries exactly three per-OS lines in exactly one file
+// (blender_tool.cpp) and must keep it that way. So this reads the number itself.
+//
+// std::stof/std::atof stay refused for the reason they always were: stof reads the C locale's
+// decimal point, so a German-locale editor would read "0.01" as 0, and it throws. This does neither.
+// Grammar: [+-]? DIGITS [ '.' DIGITS ] [ (e|E) [+-] DIGITS ], with FULL CONSUMPTION -- "0.01abc" is
+// refused whole, which is the property MI148 pins. Rounding is within a fraction of a ULP of
+// correctly-rounded, which is irrelevant here: the value is DISPLAY-ONLY (A-10) and is never fed
+// back into geometry, compared or switched on.
+[[nodiscard]] std::optional<float> parseDecimalFloat(std::string_view text) noexcept {
+    std::size_t i = 0;
+    bool negative = false;
+    if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+        negative = text[i] == '-';
+        ++i;
+    }
+    double mantissa = 0.0;
+    int exponent = 0;
+    std::size_t digits = 0;
+    while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+        mantissa = (mantissa * 10.0) + static_cast<double>(text[i] - '0');
+        ++digits;
+        ++i;
+    }
+    if (i < text.size() && text[i] == '.') {
+        ++i;
+        while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+            mantissa = (mantissa * 10.0) + static_cast<double>(text[i] - '0');
+            --exponent;
+            ++digits;
+            ++i;
+        }
+    }
+    if (digits == 0) {
+        return std::nullopt;  // "", ".", "nan", "inf", "+" -- none of them is a number here
+    }
+    if (i < text.size() && (text[i] == 'e' || text[i] == 'E')) {
+        ++i;
+        bool exponentNegative = false;
+        if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+            exponentNegative = text[i] == '-';
+            ++i;
+        }
+        std::size_t exponentDigits = 0;
+        int magnitude = 0;
+        while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+            if (magnitude < 10000) {  // saturate rather than overflow; 1e10000 is refused below anyway
+                magnitude = (magnitude * 10) + (text[i] - '0');
+            }
+            ++exponentDigits;
+            ++i;
+        }
+        if (exponentDigits == 0) {
+            return std::nullopt;
+        }
+        exponent += exponentNegative ? -magnitude : magnitude;
+    }
+    if (i != text.size()) {
+        return std::nullopt;  // FULL CONSUMPTION: trailing garbage refuses the whole value
+    }
+    const double scaled = mantissa * std::pow(10.0, static_cast<double>(exponent));
+    const double value = negative ? -scaled : scaled;
+    // The magnitude test is BEFORE the narrowing cast, not after: converting a double larger than
+    // FLT_MAX to float is undefined behaviour, and the Debug lanes run UBSan.
+    if (!std::isfinite(value) || std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<float>(value);
+}
 
 // task 3.2.3: the ONE place that decides "is this line an mtllib DIRECTIVE, and what's its operand" --
 // scanObjMtlLibs's own inner loop is the only caller. Kept as a free function rather than inlined so
@@ -225,6 +322,229 @@ ObjMtlLibScan scanObjMtlLibsScan(std::span<const std::byte> bytes, std::size_t m
 
 std::vector<std::string> scanObjMtlLibs(std::span<const std::byte> bytes, std::size_t maxNames) {
     return scanObjMtlLibsScan(bytes, maxNames).candidates;
+}
+
+// task 3.2.5 (A-7/A-19b). See the header for the contract and for WHY the rule is the library's own
+// rather than a corrected one.
+std::vector<std::string> scanPlyTextureFiles(std::span<const std::byte> bytes, std::size_t maxNames) {
+    std::vector<std::string> out;
+    if (bytes.empty()) {
+        return out;
+    }
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+
+    constexpr std::string_view SEMANTIC = "TextureFile";
+    std::size_t lineStart = 0;
+    while (lineStart <= text.size()) {
+        const std::size_t newline = text.find('\n', lineStart);
+        std::string_view line =
+            newline == std::string_view::npos ? text.substr(lineStart) : text.substr(lineStart, newline - lineStart);
+        if (!line.empty() && line.back() == '\r') {  // ONE trailing '\r' (CRLF) -- E7, scanObjMtlLibsScan's rule
+            line.remove_suffix(1);
+        }
+
+        // The library's own element-line test: after LEADING WHITESPACE, the line must begin with
+        // `element` or `comment`. Anything else is not a candidate at all.
+        //
+        // WHITESPACE IS SPACE **AND TAB**, because that is what the library means by it: PLY::Element
+        // ::ParseElement opens with PLY::DOM::SkipSpaces, which forwards to Assimp::SkipSpaces, whose
+        // test is `(in == ' ' || in == '\t')` (the port's own ParsingUtils.h). Skipping only ' ' here
+        // made a TAB-indented `comment TextureFile wood.png` invisible to this scan and visible to the
+        // loader -- Structure returning {} where Full returns {wood.png}, the one disagreement AC-19
+        // forbids, and a dependency phase 7.5 would never record. The identical rule is applied in
+        // plyDeclaredCountsExceedBytes below; the two must never diverge.
+        std::size_t i = 0;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
+            ++i;
+        }
+        const std::string_view rest = line.substr(i);
+        if (rest.substr(0, 7) == "element" || rest.substr(0, 7) == "comment") {
+            // Skip the keyword, then the whitespace after it, then match the CASE-SENSITIVE semantic.
+            std::size_t j = 7;
+            while (j < rest.size() && (rest[j] == ' ' || rest[j] == '\t')) {
+                ++j;
+            }
+            if (rest.substr(j, SEMANTIC.size()) == SEMANTIC) {
+                std::size_t k = j + SEMANTIC.size();
+                while (k < rest.size() && (rest[k] == ' ' || rest[k] == '\t')) {
+                    ++k;
+                }
+                // THE OPERAND IS THE REST OF THE LINE, VERBATIM -- INCLUDING ANY TRAILING SPACE.
+                //
+                // MEASURED against assimp 6.0.4, correcting the plan's own prediction. The library
+                // takes `std::string(&buffer[0], &buffer[0] + strlen(&buffer[0]) - 1)`, which LOOKS
+                // like an off-by-one that eats the last character -- but the buffer it reads still
+                // carries the line terminator, so the -1 removes exactly that and nothing else.
+                // Confirmed on four fixtures: `comment TextureFile a.png ` yields `"a.png "` WITH the
+                // space, `comment TextureFile a.png` yields `"a.png"`, and CRLF behaves as LF does.
+                //
+                // So the trailing space SURVIVES, and this scan must let it survive too. Trimming it
+                // would make Structure report `a.png` while Full's own material reports `a.png `, the
+                // two would classify to different relative paths, and the depths would DISAGREE about
+                // the URI set -- which is the one thing AC-19 forbids. Do not "fix" this.
+                //
+                // The one shape the two still differ on is a `TextureFile` line that is the file's
+                // LAST line with no terminator at all, where the library's -1 does eat a real
+                // character. A valid .ply cannot produce it: `end_header` always follows.
+                const std::string_view operand = rest.substr(k);
+                if (!operand.empty()) {
+                    bool seen = false;
+                    for (const std::string& existing : out) {  // dedup BY RAW TEXT, order preserved
+                        if (existing == operand) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen && out.size() < maxNames) {  // cap BEFORE the push
+                        out.emplace_back(operand);
+                    }
+                }
+            }
+        }
+        if (rest.substr(0, 10) == "end_header") {
+            break;  // BOUNDED BY THE HEADER: nothing past this line is scanned, at any file size
+        }
+
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        lineStart = newline + 1;
+    }
+    return out;
+}
+
+// task 3.2.5 (R8). See the header for the contract and for the measurement that forced this to exist.
+bool plyDeclaredCountsExceedBytes(std::span<const std::byte> bytes) {
+    if (bytes.empty()) {
+        return false;  // an empty file is a PARSE failure, not a lying one -- let the loader say so
+    }
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+
+    // Saturating, because the operand is user-controlled text: `element vertex 99999999999999999999`
+    // must not wrap into a small number and pass the check it is meant to fail.
+    unsigned long long declared = 0;
+    std::size_t lineStart = 0;
+    while (lineStart <= text.size()) {
+        const std::size_t newline = text.find('\n', lineStart);
+        std::string_view line =
+            newline == std::string_view::npos ? text.substr(lineStart) : text.substr(lineStart, newline - lineStart);
+        if (!line.empty() && line.back() == '\r') {  // ONE trailing '\r' -- scanPlyTextureFiles' rule
+            line.remove_suffix(1);
+        }
+        // SPACE AND TAB, identical to scanPlyTextureFiles' rule above and to the library's own
+        // Assimp::SkipSpaces. Skipping only ' ' here failed SAFE -- a tab-indented `element` line was
+        // simply not counted, so the check under-counted and could never reject an honest file -- but
+        // the two scans read the same header and a reader who checks one must find the other agrees.
+        std::size_t i = 0;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
+            ++i;
+        }
+        const std::string_view rest = line.substr(i);
+
+        if (rest.substr(0, 10) == "end_header") {
+            // The ONLY place this function returns a verdict: everything the body must hold is known,
+            // and so is how many bytes there are to hold it.
+            const std::size_t bodyStart = newline == std::string_view::npos ? text.size() : newline + 1;
+            return declared > static_cast<unsigned long long>(text.size() - bodyStart);
+        }
+
+        // `element <name> <count>`, the keyword followed by whitespace so `elementary` cannot match.
+        if (rest.substr(0, 7) == "element" && rest.size() > 7 && (rest[7] == ' ' || rest[7] == '\t')) {
+            std::size_t j = 7;
+            for (int field = 0; field < 2; ++field) {  // skip the spaces, then the <name> token
+                while (j < rest.size() && (rest[j] == ' ' || rest[j] == '\t')) {
+                    ++j;
+                }
+                if (field == 0) {
+                    while (j < rest.size() && rest[j] != ' ' && rest[j] != '\t') {
+                        ++j;
+                    }
+                }
+            }
+            unsigned long long count = 0;
+            bool anyDigit = false;
+            while (j < rest.size() && rest[j] >= '0' && rest[j] <= '9') {
+                anyDigit = true;
+                const auto digit = static_cast<unsigned long long>(rest[j] - '0');
+                constexpr unsigned long long LIMIT = std::numeric_limits<unsigned long long>::max();
+                count = (count > (LIMIT - digit) / 10ULL) ? LIMIT : (count * 10ULL) + digit;
+                ++j;
+            }
+            if (anyDigit) {
+                declared = (declared > std::numeric_limits<unsigned long long>::max() - count)
+                               ? std::numeric_limits<unsigned long long>::max()
+                               : declared + count;
+            }
+        }
+
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        lineStart = newline + 1;
+    }
+    // No `end_header` at all, so this is not a well-formed header and there is no body to compare
+    // against. Refusing here would reject a truncated-but-honest file; the loader reports it instead.
+    return false;
+}
+
+// task 3.2.5 (A-10). See the header for the contract. DISPLAY-ONLY: nothing here is fed back into
+// geometry, compared, or switched on.
+//
+// A TEXT scan rather than an XML parse, deliberately: pugixml arrives transitively with assimp, and
+// using it here was considered and rejected -- it would be a second source of truth about the same
+// document, it builds a DOM whose size is a multiple of the file's, and the moment it disagreed with
+// Assimp about anything there would be no correct side.
+SourceSpace scanColladaAssetSpace(std::span<const std::byte> bytes, std::size_t maxBytes) {
+    SourceSpace out;  // declared == false, unitMeters == 1, upAxis == 'Y' -- the "found nothing" answer
+    if (bytes.empty()) {
+        return out;
+    }
+    const std::size_t n = std::min(bytes.size(), maxBytes);
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), n);
+
+    // <unit meter="0.01" name="centimeter"/> -- the ATTRIBUTE is what matters; `name` is prose we do
+    // not read. Located by the literal `meter="` inside the first `<unit` element, so an attribute
+    // order of (name, meter) works as well as (meter, name).
+    const std::size_t unitTag = text.find("<unit");
+    if (unitTag != std::string_view::npos) {
+        const std::size_t close = text.find('>', unitTag);
+        const std::string_view element =
+            text.substr(unitTag, close == std::string_view::npos ? std::string_view::npos : close - unitTag);
+        const std::size_t attr = element.find("meter=\"");
+        if (attr != std::string_view::npos) {
+            const std::string_view valueStart = element.substr(attr + 7);
+            const std::size_t quote = valueStart.find('"');
+            if (quote != std::string_view::npos) {
+                // parseDecimalFloat is LOCALE-INDEPENDENT, never throws, and refuses trailing
+                // garbage whole -- see its own comment for why std::from_chars is not usable here
+                // and why std::stof never was. A non-finite or non-positive unit is refused: it is
+                // not a unit, and inventing one is what this task's scoping rejected.
+                const std::optional<float> meters = parseDecimalFloat(valueStart.substr(0, quote));
+                if (meters.has_value() && *meters > 0.0F) {
+                    out.unitMeters = *meters;
+                    out.declared = true;
+                }
+            }
+        }
+    }
+
+    // <up_axis>Z_UP</up_axis> -- the first character of the element's text is the axis letter.
+    const std::size_t upTag = text.find("<up_axis>");
+    if (upTag != std::string_view::npos) {
+        const std::string_view value = text.substr(upTag + 9);
+        std::size_t v = 0;
+        while (v < value.size() && (value[v] == ' ' || value[v] == '\t' || value[v] == '\r' || value[v] == '\n')) {
+            ++v;
+        }
+        if (v < value.size()) {
+            const unsigned char axis = foldAscii(static_cast<unsigned char>(value[v]));
+            if (axis == 'x' || axis == 'y' || axis == 'z') {
+                out.upAxis = static_cast<char>(axis - ('a' - 'A'));  // 'X' | 'Y' | 'Z', SourceSpace's own domain
+                out.declared = true;
+            }
+        }
+    }
+    return out;
 }
 
 bool looksLikeBinaryContent(std::span<const std::byte> bytes, std::size_t probeBytes) noexcept {
@@ -358,6 +678,13 @@ ImportResult importModel(std::string_view fileName, std::string_view assetRelati
     }
     if (endsWithFolded(fileName, ".obj") || endsWithFolded(fileName, ".mtl")) {
         return importObj(fileName, assetRelativeDir, bytes, settings, depth, external);
+    }
+    // task 3.2.5: THREE claimed extensions, ONE backend, and `fileName` is what selects the arm inside
+    // it -- the .obj/.mtl shape one step wider. Placed BEFORE the glTF arm for the same reason the FBX
+    // and OBJ arms are: the glTF arm stays the "everything else importable" case, so no two arms ever
+    // claim a name.
+    if (endsWithFolded(fileName, ".dae") || endsWithFolded(fileName, ".ply") || endsWithFolded(fileName, ".stl")) {
+        return importAssimp(fileName, assetRelativeDir, bytes, settings, depth, external);
     }
     if (isImportableModelName(fileName)) {  // .gltf / .glb
         return importGltf(assetRelativeDir, bytes, settings, depth, external);

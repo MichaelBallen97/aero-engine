@@ -34,6 +34,12 @@ inline constexpr std::uint32_t FBX_IMPORTER_VERSION = 1;
 // .obj and .mtl -- one importer, two claimed extensions. `.meta` STAYS AT VERSION 1.
 inline constexpr std::string_view OBJ_IMPORTER_NAME = "obj";
 inline constexpr std::uint32_t OBJ_IMPORTER_VERSION = 1;
+// task 3.2.5 (A-4). HERE, beside the glTF, FBX and OBJ pairs and NOT in model_import.hpp, for the
+// identical reason: asset_meta.cpp must write the block without depending on the importer. ONE name
+// serves ALL THREE of .dae, .ply and .stl -- one importer, three claimed extensions, the .obj/.mtl
+// shape one step wider. `.meta` STAYS AT VERSION 1 and gains no key.
+inline constexpr std::string_view ASSIMP_IMPORTER_NAME = "assimp";
+inline constexpr std::uint32_t ASSIMP_IMPORTER_VERSION = 1;
 
 struct ImportSettings {
     // A user-intent multiplier, NOT a unit conversion -- glTF is metres by specification (F7b).

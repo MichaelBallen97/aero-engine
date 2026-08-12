@@ -7,8 +7,9 @@
 // NO FASTGLTF ANYWHERE IN THIS HEADER OR ITS .cpp (INV-M1/AC-55). The glTF backend lives behind the
 // src-private editor/src/gltf_import.hpp, exactly as the stb_image decoder lives behind
 // editor/src/thumbnail_store.hpp (task 3.1.3, D18). importModel() dispatches on the file NAME and
-// calls importGltf(); 3.2.2's ufbx, 3.2.3's tinyobjloader and 3.2.5's Assimp each add ONE arm here and
-// ONE TU beside gltf_import.cpp, and touch nothing else.
+// calls importGltf(); 3.2.2's ufbx, 3.2.3's tinyobjloader and 3.2.5's Assimp each ADDED ONE arm here
+// and ONE TU beside gltf_import.cpp, and touched nothing else. (3.2.4 is absent from that list by
+// design: the Blender CLI path adds no arm at all -- it converts a .blend to a GLB ABOVE importModel.)
 //
 // THE IMPORTER PERFORMS ZERO FILE READS (INV-M3). Every byte arrives as a parameter. That is what
 // makes this surface provable from string literals with no disk on the critical path -- and it is what
@@ -36,10 +37,12 @@ namespace engine::editor {
 inline constexpr std::uint32_t INVALID_SUBASSET = 0xFFFFFFFFU;
 
 // ---- D15's caps. Each declared BESIDE the type it bounds, each checked BEFORE the allocation it
-// bounds -- with exactly ONE documented exception, MAX_EMBEDDED_BYTES (plan §A-8): fastgltf's
-// Parser::decodeDataUri allocates a data: URI's decoded payload DURING PARSE, before any of our code
-// runs, so that cap is necessarily checked after the fact. The real pre-allocation bound for embedded
-// data is MAX_MODEL_FILE_BYTES, which readFileBytes enforces WITHOUT OPENING THE FILE.
+// bounds -- with exactly TWO documented exceptions. The first is MAX_EMBEDDED_BYTES (plan §A-8):
+// fastgltf's Parser::decodeDataUri allocates a data: URI's decoded payload DURING PARSE, before any of
+// our code runs, so that cap is necessarily checked after the fact. The real pre-allocation bound for
+// embedded data is MAX_MODEL_FILE_BYTES, which readFileBytes enforces WITHOUT OPENING THE FILE. The
+// second is every cap the Assimp backend applies (task 3.2.5, see MAX_NODE_DEPTH below), for the
+// identical reason: ReadFileFromMemory returns a fully-built aiScene or nothing.
 inline constexpr std::uint64_t MAX_MODEL_FILE_BYTES = 256ULL * 1024 * 1024;
 inline constexpr std::uint64_t MAX_EXTERNAL_BYTES_PER_MODEL = 512ULL * 1024 * 1024;
 inline constexpr std::uint64_t MAX_EMBEDDED_BYTES = 128ULL * 1024 * 1024;  // checked AFTER parse (A8)
@@ -75,6 +78,17 @@ inline constexpr std::uint32_t MAX_FBX_NODE_DEPTH = 256;                    // -
 inline constexpr std::size_t MAX_FBX_TEMP_BYTES = 1024ULL * 1024 * 1024;    // -> temp_allocator.memory_limit
 inline constexpr std::size_t MAX_FBX_RESULT_BYTES = 1024ULL * 1024 * 1024;  // -> result_allocator.memory_limit
 inline constexpr std::size_t MAX_FBX_ALLOCATIONS = 4000000;                 // -> both allocation_limits
+
+// ---- task 3.2.5 (A-12/A-15): bounds the node walk. Assimp has NO node-depth limit of its own
+// (unlike ufbx, whose node_depth_limit MAX_FBX_NODE_DEPTH sets), and a .dae can declare an
+// arbitrarily deep <node> chain. The walk is ITERATIVE (misc-no-recursion is --warnings-as-errors),
+// so this bounds MEMORY and TIME, never the stack.
+//
+// NOTE, and this is a real difference from 3.2.2: every Assimp cap this backend applies is checked
+// AFTER the library has allocated, because ReadFileFromMemory returns a fully-built aiScene or
+// nothing. The real PRE-allocation bound is MAX_MODEL_FILE_BYTES, which readFileBytes enforces
+// WITHOUT OPENING THE FILE -- the MAX_EMBEDDED_BYTES position above, a second occupant.
+inline constexpr std::uint32_t MAX_NODE_DEPTH = 256;
 
 // ---- attributes ------------------------------------------------------------------------------------
 // A BITSET, not booleans: 3.3.1 switches on the COMBINATION to choose a vertex layout, and "which
@@ -350,6 +364,9 @@ struct ExternalBuffer {
 // It exists because 3.2.1's code review chose the shape deliberately: a TU-local copy of the suffix
 // logic "would silently stop discriminating the moment 3.2.2 (ufbx) teaches the real predicate a new
 // extension." This is that moment.
+//
+// task 3.2.5: and an ASSIMP_IMPORTER_VERSION bump re-triggers imports for `.dae`, `.ply` and `.stl`
+// together and for nothing else -- ONE identity across all three claimed extensions.
 struct ImporterIdentity {
     std::string_view name;  // "" == no importer claims this file
     std::uint32_t version = 0;
@@ -375,8 +392,11 @@ struct ImporterIdentity {
 // ignores every one, and, the moment they exceed the budget, take the E21 branch and report Truncated
 // ("showing the document's structure only") for a result that was COMPLETE at Structure depth.
 //
-// PURE: dispatches on the file NAME, exactly as isImportableModelName does. 3.2.5's Assimp formats will
-// answer per format.
+// Assimp (`.dae`/`.ply`/`.stl`): NO, all three (task 3.2.5). Every external reference these formats
+// carry is a TEXTURE, which this importer resolves for the DEPENDENCY GRAPH and never reads -- the FBX
+// answer verbatim, which is why ModelImportSession needed no edit for them.
+//
+// PURE: dispatches on the file NAME, exactly as isImportableModelName does.
 [[nodiscard]] bool modelImporterNeedsExternalBuffers(std::string_view fileName) noexcept;
 
 // ---- pure helpers (D14) -----------------------------------------------------------------------------
@@ -423,10 +443,12 @@ struct UriClassification {
 // is what every Maya and 3ds Max export writes, and classifyUri refuses a backslash outright and
 // CORRECTLY -- a glTF URI has no such concept, and UriClass::RefusedBackslash stays reachable for it.
 //
-// CALLED BY THE FBX AND OBJ BACKENDS ONLY, and ALWAYS BEFORE classifyUri. Both formats carry
-// filesystem PATHS rather than URIs -- FBX's `textures\wood.png` from Maya/3ds Max, and Wavefront's
+// CALLED BY THE FBX, OBJ AND ASSIMP BACKENDS ONLY, and ALWAYS BEFORE classifyUri. All three formats
+// carry filesystem PATHS rather than URIs -- FBX's `textures\wood.png` from Maya/3ds Max; Wavefront's
 // `mtllib`/`map_Kd` operands, which are plain paths by specification and are routinely written with
-// backslashes by Windows exporters (task 3.2.3, D15). Fold-then-classify is the SECURE order, for the
+// backslashes by Windows exporters (task 3.2.3, D15); and Assimp's own GetTexture return, since
+// Collada's `<init_from>` is percent-decoded by the loader and PLY's `TextureFile` operand is raw text
+// (task 3.2.5, A-19). Fold-then-classify is the SECURE order, for the
 // identical reason decode-then-classify is: `..\..\..\etc\passwd` has already become
 // `../../../etc/passwd` by the time the escape check runs, so the refusal still fires. Folding AFTER
 // classification would let a backslash traversal straight through.
@@ -469,23 +491,90 @@ struct ObjMtlLibScan {
 // above for the candidate and count semantics respectively.
 [[nodiscard]] ObjMtlLibScan scanObjMtlLibsScan(std::span<const std::byte> bytes, std::size_t maxNames);
 
+// task 3.2.5 (A-7). PURE, and this IS the .ply Structure pass. Returns every `TextureFile` operand a
+// PLY header declares, in first-seen order, deduplicated BY RAW TEXT, capped at `maxNames`, stopping
+// at the `end_header` line (so it is bounded by the HEADER, not by the file: a 400 MB binary .ply
+// costs a few hundred bytes of scanning).
+//
+// The rule MIRRORS the library's own rather than a corrected one, because Structure and Full must
+// agree about the URI set and Full goes through that code: a line matches iff, after leading SPACES
+// AND TABS (Assimp::SkipSpaces tests `in == ' ' || in == '\t'`, and PLY::Element::ParseElement opens
+// with it -- skipping only ' ' here made a tab-indented header line invisible to this scan and visible
+// to the loader), it begins with `element` or `comment`, then the case-SENSITIVE token `TextureFile`,
+// and the operand is THE REST OF THE LINE, VERBATIM -- a trailing space included, because the library keeps it
+// (MEASURED, correcting a plausible reading of its `strlen - 1` as an off-by-one: the buffer it
+// trims still carries the line terminator). Trimming that space here would make the two depths
+// classify different relative paths. AC-19 asserts the agreement on every fixture; do not "fix" this
+// into the rule you would have written.
+//
+// One deliberate divergence, over-reporting rather than under-reporting: a header carrying SEVERAL
+// `TextureFile` lines makes the loader keep only the LAST (each overwrites the previous), while this
+// returns them all. Both are then dependencies, so editing either re-imports the model -- and the
+// Full pass seeds `externalUris` from this same scan, so the depths still agree exactly.
+[[nodiscard]] std::vector<std::string> scanPlyTextureFiles(std::span<const std::byte> bytes, std::size_t maxNames);
+
+// task 3.2.5 (R8). PURE, bounded by the header, and the ONE pre-allocation bound in this task -- every
+// other cap here is post-hoc, checked after the library has already built its scene.
+//
+// Returns true when the header's declared element counts CANNOT be satisfied by the bytes that follow
+// `end_header`, i.e. the header is lying about how much data the file contains.
+//
+// MEASURED, correcting this task's own plan, which assumed the library would refuse such a file
+// quickly ("asserted by the case completing at all"). It does not. A header declaring 2^32-1 vertices
+// with an EMPTY body sent the loader into a multi-minute grind whose resident memory climbed without
+// bound -- it works from the DECLARED count, not the count the bytes can support. That is R8 exactly
+// ("assimp allocates a huge scene before any cap of ours can fire"), and for .ply it is reachable from
+// a 120-BYTE file, so MAX_MODEL_FILE_BYTES -- the bound that protects every other path -- is no bound
+// here at all. Without this check a single malformed .ply takes the whole machine down, which is not a
+// failure mode an editor may have.
+//
+// THE ASYMMETRY WITH .stl IS THE WHOLE REASON THIS EXISTS FOR ONE FORMAT AND NOT THE OTHER, and it is
+// a property of the two loaders, not of the two formats. STLLoader.cpp reads its declared facet count
+// and IMMEDIATELY refuses when the file cannot hold it -- `if (mFileSize < 84ull + mNumFaces * 50ull)
+// throw DeadlyImportError("STL: file is too small to hold all facets")`, in 64-bit arithmetic, BEFORE
+// the `new aiVector3D[mNumFaces * 3]` two lines below. The Ply sources contain no comparison against
+// the file size anywhere at all. So .stl is bounded by the library and needs nothing from us, and
+// .ply is bounded by nothing and needs this. Do not "make it symmetric" by adding an .stl pre-check:
+// it would be dead code duplicating a guarantee the loader already makes.
+//
+// The test is deliberately the WEAKEST defensible one -- ONE byte per declared element instance --
+// because a pre-check that rejects a real file is far worse than one that lets a lying file reach the
+// loader. No PLY encoding can store N instances in fewer than N bytes: binary needs at least one byte
+// for the smallest property type, and ASCII needs at least one digit per instance. A real file
+// therefore always passes; only a lying one fails. Do not tighten this into a per-property size
+// calculation -- that needs the property table, and being exactly right is not what buys the safety.
+[[nodiscard]] bool plyDeclaredCountsExceedBytes(std::span<const std::byte> bytes);
+
+// task 3.2.5 (A-10). PURE and DISPLAY-ONLY: reads at most `maxBytes` of a Collada document's leading
+// text for the <asset> block's <unit meter="..."> and <up_axis>. Bounded because both COLLADA schemas
+// require <asset> to be the FIRST child of <COLLADA>.
+//
+// It exists because Assimp's Collada loader CONSUMES both values into the root node's transformation
+// and exposes NEITHER (they fall in ReadAssetInfo's if/else-if chain before the branch that feeds the
+// metadata map). The result is NEVER fed back into geometry, NEVER compared and NEVER switched on --
+// SourceSpace's own "DISPLAY STRINGS" rule, extended to its two numeric fields for the one format
+// where the library gets there first. `declared` stays FALSE when neither element is found: a blank
+// panel row, never a wrong model.
+[[nodiscard]] SourceSpace scanColladaAssetSpace(std::span<const std::byte> bytes, std::size_t maxBytes = 65536);
+
 // task 3.2.3 (AC-54). PURE: true iff any of the first `probeBytes` bytes is 0x00. A Wavefront file is
 // TEXT; this is what stops a renamed PNG/JPEG/GLB being handed to a text parser at all. PNG, JPEG and
 // GLB magic all trip it -- their length/version fields put a NUL inside the first 16 bytes.
 [[nodiscard]] bool looksLikeBinaryContent(std::span<const std::byte> bytes, std::size_t probeBytes = 1024) noexcept;
 
-// True iff `fileName` ends (ASCII-case-folded) in ".gltf", ".glb", ".fbx", ".obj" or ".mtl".
-// 3.2.5 extends it further. 3.2.4 deliberately does NOT: .blend never becomes importable, because the
-// SCAN must never spawn a process (3.2.4 D15), and phase 7.5 gates its probe on exactly this
-// predicate. A .blend is converted to a GLB ABOVE importModel instead, by ModelImportSession's own
-// arm. MI133 pins that -- together with modelImporterNeedsExternalBuffers("x.blend") == false, a
-// SECOND fact that breaks independently.
+// True iff `fileName` ends (ASCII-case-folded) in ".gltf", ".glb", ".fbx", ".obj", ".mtl", ".dae",
+// ".ply" or ".stl" -- task 3.2.5 extended it to EIGHT. 3.2.4 deliberately did NOT: .blend never
+// becomes importable, because the SCAN must never spawn a process (3.2.4 D15), and phase 7.5 gates its
+// probe on exactly this predicate. A .blend is converted to a GLB ABOVE importModel instead, by
+// ModelImportSession's own arm. MI133 pins that -- together with
+// modelImporterNeedsExternalBuffers("x.blend") == false, a SECOND fact that breaks independently.
 //
-// STILL DELIBERATELY NARROWER than asset_view.hpp's AssetKind::Model in one direction -- .blend/.dae/
-// .ply/.stl are claimed there and unimportable here -- and, since task 3.2.3, WIDER in another: a .mtl
-// is importable and is NOT AssetKind::Model at all (it classifies as AssetKind::Unknown). Keeping the
-// two tables separate is what stops a format being silently promoted to "importable" by an edit to the
-// kind table (3.1.3's isThumbnailDecodable precedent), and the .mtl asymmetry is exactly why.
+// After task 3.2.5 this table and asset_view.hpp's AssetKind::Model differ in exactly TWO places, and
+// both are deliberate: `.blend` is AssetKind::Model and NOT importable (3.2.4's D15 -- the scan must
+// never spawn a process), and `.mtl` is importable and NOT AssetKind::Model at all (3.2.3's D4 -- it
+// classifies as AssetKind::Unknown). Keeping the two tables separate is what stops a format being
+// silently promoted to "importable" by an edit to the kind table (3.1.3's isThumbnailDecodable
+// precedent), and those two asymmetries are exactly why.
 //
 // WHY .mtl IS CLAIMED (task 3.2.3, D4): phase 7.5 probes at Structure depth with NO external bytes, so
 // a probe of chair.obj can name chair.mtl and can NEVER name wood.png. Claiming .mtl turns one two-hop

@@ -24,6 +24,16 @@
 
 // ---- stb hygiene, ABOVE the include, all in this one TU ------------------------------------------
 #define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_STATIC         // task 3.2.5: STBIDEF -> static, so THIS implementation exports no
+                                 // symbol at all. assimp's vcpkg port compiles a SECOND, unprefixed
+                                 // stb_image implementation (its build_fixes.patch replaces upstream's
+                                 // `#ifndef STB_USE_HUNTER` assimp_stbi_* prefixing with `#if 0`), and
+                                 // assimp is a STATIC library on macOS and Linux. Internal linkage here
+                                 // makes the two structurally unable to collide, whichever archive
+                                 // members the linker chooses to pull -- rather than resting on the
+                                 // observation that neither colliding member SHOULD be pulled, which is
+                                 // a property of three linkers in two build types and changes with the
+                                 // next assimp bump.
 #define STBI_NO_STDIO            // removes stbi_load(const char*) from the TU ENTIRELY, so "all disk access
                                  // goes through the editor's own primitives" (INV-2) cannot be broken here by
                                  // accident, and <stdio.h> never reaches this line
