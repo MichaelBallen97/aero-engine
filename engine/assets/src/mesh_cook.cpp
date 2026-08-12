@@ -556,6 +556,15 @@ MeshCookResult cookMeshImpl(const MeshCookInput& input) {
         putVec3(o, base + M_BOUNDS_MAX, box.max);
         // The model box is the union of the EMITTED submeshes' boxes, folded exactly as
         // Aabb::expand(const Aabb&) folds -- min then max, accumulator first.
+        //
+        // THE FOLD ORDER IS EMISSION ORDER, i.e. the sorted (mask, sourceMeshIndex,
+        // sourcePrimitiveIndex) order, and THAT CANNOT CHANGE: the model box is written into the
+        // header, so folding in the caller's input order would make a shuffled input produce
+        // different header bytes -- the exact thing AC-29 forbids. The importer folds its own model
+        // box in SOURCE order instead, so the two can disagree in one way and one way only: the SIGN
+        // OF A ZERO, because std::min/std::max are order-independent for every float pair except
+        // (+0.0f, -0.0f). No box is wrong either way -- a +-0 bound is the same box -- and docs/09
+        // section 9.10 states the caveat as part of the format's determinism contract.
         expandBox(modelBox, box.min);
         expandBox(modelBox, box.max);
     }

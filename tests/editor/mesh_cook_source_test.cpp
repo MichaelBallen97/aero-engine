@@ -338,6 +338,15 @@ TEST_CASE("mesh_cook_source: cooked bounds equal the importer's own, bit for bit
         }
         // The model box is the union of the EMITTED submeshes, folded exactly as
         // ImportSummary::bounds folds over the surviving primitives.
+        //
+        // THIS HALF IS BIT-EQUAL ONLY BECAUSE NO COMMITTED FIXTURE CARRIES A SIGNED ZERO. The cook
+        // folds the submesh boxes in EMISSION order (sorted by mask, then source indices) because
+        // the model box reaches the header and AC-29 requires it to be independent of the caller's
+        // input order; gltf_import.cpp folds ImportSummary::bounds in SOURCE order. std::min and
+        // std::max agree for every float pair except (+0.0f, -0.0f), so the only value that can ever
+        // separate the two folds is the sign of a zero -- the same box either way, and a documented
+        // caveat in docs/09 section 9.10 rather than a defect. The per-submesh half above has no such
+        // caveat: both sides fold the same positions in the same order, always.
         const auto& summary = imported.model.summary.bounds;
         CHECK(sameBits(parsed.mesh.bounds.min.x, summary.min.x));
         CHECK(sameBits(parsed.mesh.bounds.min.y, summary.min.y));

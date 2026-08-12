@@ -385,6 +385,14 @@ ExitCode runMain(int argc, char** argv) {
         std::uint64_t total = 0;
         std::size_t taken = 0;
         for (const std::string& uri : structure.externalUris) {
+            // DEFENCE IN DEPTH, and unreachable today. The real cap is enforced inside every
+            // importer before an ImportResult is returned -- gltf_import.cpp, fbx_import.cpp,
+            // obj_import.cpp and assimp_import.cpp each bound externalUris at MAX_EXTERNAL_URIS --
+            // so structure.externalUris can never exceed it and `taken`, which only ever increments
+            // on a successful read, can never reach it. Kept because this loop is the CALLER's own
+            // budget and a future importer that forgot the bound would find it here rather than in
+            // an unbounded allocation. Deliberately NOT deleted: a guard removed because it cannot
+            // fire today is a guard nobody restores when the reason it could not fire changes.
             if (taken >= engine::editor::MAX_EXTERNAL_URIS) {
                 std::cerr << "aero_cooker: warning: more than " << engine::editor::MAX_EXTERNAL_URIS
                           << " external buffers were named; the rest were skipped\n";
