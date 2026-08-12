@@ -3,3 +3,4 @@
 
 add_subdirectory(reflect-gen)
 add_subdirectory(shaderc)
+add_subdirectory(cooker)     # task 3.3.1

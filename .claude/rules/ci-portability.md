@@ -29,6 +29,27 @@ preprocessor when it contains `\"` — the sequence tokenises as an escaped quot
 **The discriminator is `\"`, not raw-strings-in-macros.** Raw literals without `\"` sit
 inside macros in these tests today and have always passed on MSVC. Do not "fix" those.
 
+## `<ostream>` is not transitively included by MSVC — this one has bitten four times
+
+Streaming into `std::ostream` needs the **complete** type, not the forward declaration `<iosfwd>`
+supplies. MS STL defines `operator<<(std::ostream&, std::string_view)` **inline in `<string_view>`**,
+against a `std::basic_ostream` that only `<iosfwd>` has declared at that point; libc++ and libstdc++
+are self-sufficient here and drag the complete definition in transitively. So a `CHECK` comparing
+`std::string_view`s compiles clean on macOS and Linux and **fails the Windows lane alone** — with the
+errors pointing **inside the STL headers**, not at the `CHECK` that caused them.
+
+**doctest is why it surfaces at all**: a `CHECK` stringifies its operands, so the instantiation exists
+only inside the template doctest expands, invisible until MSVC parses it.
+
+Four occurrences so far: task 0.4.1, `tests/rhi_format_test.cpp`, `tests/scene_format_test.cpp`, and
+task 3.3.1 (`tests/cooked_mesh_test.cpp`, `CHECK`ing the magic and `cookedMeshStatusLabel`).
+
+**The fix is always the same: `#include <ostream>` in the test TU.** Not `<iostream>` (heavier, and it
+adds a static initializer to every TU that includes it), and never a `static_cast<std::string>` at the
+call site, which hides the cause and has to be repeated at every future `CHECK`. If a test compares or
+prints a `std::string_view`, include `<ostream>` when you write it rather than after a Windows lane
+tells you to.
+
 ## clang-tidy (Linux Debug lane only, `--warnings-as-errors='*'`)
 
 clang-format passing locally proves nothing about clang-tidy. Run it before pushing:

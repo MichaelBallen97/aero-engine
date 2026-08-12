@@ -10,238 +10,137 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase 2 (Editor) is COMPLETE — gate met 2026-08-02.** All six epics closed in code, every task
-macOS-validated with no open FAIL, and the gate artifact committed at
-`samples/phase-2-editor-scene/` (a project + 4-entity scene authored entirely through the editor, with
-the save → New Scene → Open Scene round trip confirmed). A whole-phase audit (2026-08-02) then found
-and fixed two silent data-loss paths, a never-absolute project root, and four stale documentation
-claims — full detail in `docs/10-engineering-log.md`. **Phase 3 (Asset Pipeline & 3D Content) is
-OPEN. Epic 3.1 (AssetDatabase · assets) is fully merged; Epic 3.2 (Importers) has FIVE merged tasks
-— 3.2.1 glTF, 3.2.2 FBX, 3.2.3 OBJ, 3.2.4 Blender CLI and 3.2.5 Assimp (DAE/PLY/STL), the last
-MERGED as PR #74 (merge commit `7e0224f`) on 2026-08-12.**
+**Phase 2 (Editor) is COMPLETE — gate met 2026-08-02**, all six epics closed, every task
+macOS-validated, gate artifact at `samples/phase-2-editor-scene/`. A whole-phase audit (2026-08-02)
+found and fixed two silent data-loss paths, a never-absolute project root, and four stale
+documentation claims.
 
-**Epic 3.1, condensed** (full per-task detail, every sabotage matrix and every build-time finding live
-permanently in `docs/10-engineering-log.md`'s Phase 3 entries — this paragraph is a summary, not a
-duplicate): **3.1.1** (GUIDs + `.meta` files) merged as PR #65 (`2be73e1`, 26/26 sabotage seeds),
-**macOS-validated ✅ PASS 14/14**. **3.1.2** (import cache & dependency tracking) merged as PR #66
-(`3470b87`, 31/31 seeds), closing 3.1.1's D8 orphan-re-attachment deferral and a carried-forward
-symlinked-directory duplicate-GUID defect, **macOS-validated ✅ PASS 14/14**. **3.1.3** (asset browser
-v1) merged as PR #67 (`aa914fb`, 35/35 seeds; code review found 11 findings, 3 BLOCKING, the sharpest a
-real GPU-texture use-after-free invisible on macOS because SDL frees synchronously on Vulkan/D3D12 but
-only defers on Metal), gave the Asset Browser real thumbnails, search and the Issues list,
-**macOS-validated ✅ PASS 16/16**. **3.1.4** (hot-reload file watcher) merged as PR #69 (`ebc4da6`,
-25/25 seeds; code review closed six gaps against an already-green gate), added `AssetWatcher`,
-`AssetDatabase::generation()` and `ThumbnailLedger::supersededBy()`, **macOS-validated ✅ PASS 10/10** —
-**R1's numeric per-sweep cost stayed unmeasured**, open debt its own risk register asked for by number.
+**Phase 3 (Asset Pipeline & 3D Content) is OPEN, and Epic 3.3 (Cooker v0) has now opened.** Epic 3.1
+(AssetDatabase · assets) is fully merged (3.1.1–3.1.4). Epic 3.2 (Importers) has **five** merged tasks
+— 3.2.1 glTF, 3.2.2 FBX, 3.2.3 OBJ, 3.2.4 Blender CLI, 3.2.5 Assimp (DAE/PLY/STL), the last merged as
+PR #74 (`7e0224f`) on 2026-08-12. **3.2 is closed in code; 3.1.5 (drag-into-scene) is the one Epic 3.1
+task still open.** **3.3.1 (Mesh cook → GPU buffers) is COMPLETE ON ITS BRANCH
+(`feat/3.3.1-mesh-cook-gpu-buffers`, 13 commits) and NOT YET MERGED** — CI-green after one Windows-only
+fix, sabotage-proven, code-review-closed, docs written; it still needs a green run whose `headSha`
+equals `HEAD`, and the merge.
 
-**Epic 3.2's three merged tasks, condensed.** **3.2.1 (glTF, fastgltf)** merged as PR #70 (`f02ca65`,
-28 commits), macOS-validated ✅ PASS 12/12: the editor's first working importer and the first PRODUCER
-for `AssetCacheEntry::dependencies`, so editing a texture a model references marks that model
-`DependencyChanged` on the next scan. **3.2.2 (FBX, ufbx)** merged as PR #71 (`c597a5b`, 20 commits),
-CI-green on all three lanes: the tree's FIRST vendored third-party library
-(`editor/third_party/ufbx/`, byte-identical to upstream v0.23.0), a THIRD hard-coded-importer-identity
-site the spec missed, a BLOCKING ASan heap-buffer-overflow in the Import Details panel that shipped
-invisibly with 3.2.1, and x86_64-only UB inside ufbx's own DEFLATE decoder that CI caught and no local
-arm64 run could. **macOS-validated ✅ PASS 13/13**, run at the time of the task and recorded 2026-08-12;
-row 9's import-time and key-count numbers were never captured, so **R7's residual stands unmeasured**.
-**3.2.3 (OBJ,
-tinyobjloader)** merged as PR #72 (`c412e83`, 27 commits), macOS-validated ✅ PASS 13/13 (2026-08-10):
-`.mtl` became a claimed importable file sharing OBJ's identity, so `chair.obj → chair.mtl → wood.png`
-propagates through the existing transitive cascade with zero edits to `asset_database.cpp`; a
-code-review round found ten gaps (one BLOCKING — `materialIndex` resolved against an index space
-`convertMaterials` filters); and CI caught a Windows-only `LNK2038` between vcpkg's unsanitized
-`tinyobjloader.lib` and this project's ASan-instrumented objects, fixed in `cmake/sanitizers.cmake`.
+**Epics 3.1 and 3.2, condensed.** Full per-task detail — every sabotage matrix, every build-time
+finding, every dead end — lives permanently in `docs/10-engineering-log.md`'s Phase 3 entries; this is
+a summary, not a duplicate. **3.1.1** GUIDs + `.meta` (PR #65 `2be73e1`, 26 seeds, ✅ 14/14).
+**3.1.2** import cache & dependency tracking (PR #66 `3470b87`, 31 seeds, ✅ 14/14), closing 3.1.1's
+orphan-re-attachment deferral and a symlinked-directory duplicate-GUID defect. **3.1.3** asset browser
+v1 (PR #67 `aa914fb`, 35 seeds, 11 review findings incl. a GPU-texture use-after-free invisible on
+macOS because SDL frees synchronously on Vulkan/D3D12 and only defers on Metal, ✅ 16/16).
+**3.1.4** hot-reload watcher (PR #69 `ebc4da6`, 25 seeds, ✅ 10/10) — R1's per-sweep cost stayed
+unmeasured. **3.2.1** glTF/fastgltf (PR #70 `f02ca65`, 32 seeds, 12 review findings, ✅ 12/12), the
+first PRODUCER for `AssetCacheEntry::dependencies`. **3.2.2** FBX/ufbx (PR #71 `c597a5b`, 35 seeds,
+✅ 13/13) — the tree's FIRST vendored library (`editor/third_party/ufbx/`, byte-identical to upstream
+v0.23.0), a third hard-coded-importer-identity site, a BLOCKING ASan heap-buffer-overflow that shipped
+invisibly with 3.2.1, and x86_64-only UB in ufbx's DEFLATE decoder no local arm64 run could see.
+**3.2.3** OBJ/tinyobjloader (PR #72 `c412e83`, 32 seeds, 10 review findings, ✅ 13/13) — `.mtl` became
+a claimed importable file, and CI caught a Windows-only `LNK2038` fixed in `cmake/sanitizers.cmake`.
+**3.2.4** Blender CLI + `.blend` (PR #73 `5ab07f3`, 36 seeds, 13 review findings, ✅ 15/15) — the
+tree's first process spawn, first across-frames work, and only per-OS branch in first-party editor
+code. **3.2.5** Assimp DAE/PLY/STL (PR #74 `7e0224f`, 36 seeds, 6 review findings, ✅ 14/14) — the
+fourth parser; Ubuntu LSan caught 4704 B in 17 allocations on assimp's own error paths, closed with
+two frame-scoped `tests/lsan.supp` entries.
 
-**3.2.4 (Blender CLI detection + `.blend` import) is MERGED to `main` as PR #73 (merge commit
-`5ab07f3`, **21 commits** — eleven for the implementation, ten from the code-review round), CI-green on
-macOS, Windows and Ubuntu with the green run's `headSha` asserted equal to `HEAD` before merging.
-**macOS-validated ✅ PASS 15/15** (rows 1–11 and 13–15 on 2026-08-11 on merge commit `5ab07f3`, no
-defects found; row 12 ticked 2026-08-12)
-(`editor/validation/3.2.4-blender-cli-blend-import.md`). **Row 12 was ticked WITHOUT its measurement,
-so R4 is NOT closed** — the five-minute timeout is still a reasoned guess no number has confronted.
-Rows 2, 3, 6 and 14 carried the weight — they
-are the only cover for the requirement-level claims with no automated proof, and row 14 (rows 1–5
-repeated on a SECOND Blender install) is R1's only cover, so R1's "one machine, one version" residual
-is now CLOSED. **Row 12 is the one row still open, and it is left open deliberately: R4 asked for a
-large `.blend`'s wall-clock time as a NUMBER against the five-minute timeout, no number was recorded,
-and a row ticked without its measurement would destroy the only record that measurement has.** R4's
-residual therefore stands unchanged — the timeout remains a reasoned guess no measurement has
-confronted. Windows and Linux rows remain pending.** It is the fourth importer path and the only one that is
-not an importer: it turns a file the editor refuses to parse into one it already parses, by running an
-external program. It is the first place in this codebase that **spawns a process**, that **runs work
-across frames**, and that **branches on the host OS in first-party editor code** — `currentHostOs()` is
-exactly three lines in exactly one file, in the `#elif defined(__linux__)` + `#error` form, because the
-bare-`#else` form produces two lines and silently falls back to Linux on an unknown host. `blender_tool.
-{hpp,cpp}` is the pure half (candidates, version parsing, argv builders, the export script constant and
-three JSON formats); `blender_process.{hpp,cpp}` is the tree's ONLY `SDL_Process` TU; `blender_service.
-{hpp,cpp}` is one polled state machine with at most one live child; the `.blend` arm lives in
-`ModelImportSession` and holds **the one and only `BlenderService::poll()` call site in the tree**.
-`docs/09-file-formats.md` gained §7 (the export provenance record) and §8 (the tool preferences), with
-"Reserved for future formats" renumbered §9. **Zero paths under `engine/` — the no-engine-change streak
-reaches SIX — and, unlike 3.2.3, zero under `cmake/` too: this is the first task in Epic 3.2 that adds
-no third-party code at all**, so `vcpkg.json`, the baseline, the submodule and `.github/` are all
-byte-identical to `main` and 3.2.3's Windows `LNK2038` class is structurally unreachable.
+**3.3.1 — Mesh cook → GPU buffers, the current branch.** Epic 3.3's first task and **the first thing
+in this project that produces a runtime-consumable artifact**: a file whose whole design premise is
+that the thing reading it does no parsing at all. Three pieces land. **`engine/assets` OPENS** as
+`aero::assets` — the first new engine subsystem since 1.4.2 — holding the versioned `.aeromesh`
+container v1 (`cooked_mesh.{hpp,cpp}`: frozen enums, eight `constexpr` little-endian byte primitives,
+and a hostile-input parser that never throws, never reads a file, never logs, and validates every
+range by subtraction) and the cook (`mesh_cook.{hpp,cpp}`: classify → sort → caps → layouts → width →
+offsets → emit). Both are PURE and link **`aero::core` + `aero::profiling` and NO vcpkg package at
+all**, which is what makes their `PRIVATE` links a genuine compile-time boundary rather than the usual
+convention-plus-grep (R12). **`/editor` gains one adapter pair**, `mesh_cook_source.{hpp,cpp}`, two
+pure functions and no UI. **`/tools/cooker` opens** as the third first-party CLI, `aero_cooker mesh`,
+linking `aero::editor_core` for the five importer paths it refuses to re-implement — legal because
+`tools/` sits outside the golden rule on **both** halves (`check-golden-rule.sh` scans `engine` and
+`runtime`; `aero_assert_golden_rule`'s `CONSUMER_DIRS` is the same pair).
 
-**The spec was 52 commits stale and five of its statements were wrong**, each corrected before code was
-written and each proved load-bearing: `AC-5`/`INV-B6` were falsified by 3.2.2's vendored ufbx (the
-per-OS grep is re-scoped to `editor/src` + `editor/include`); `modelImporterNeedsExternalBuffers` is an
-integration seam the spec never named, and the `<guid>.glb` artifact **deliberately never consults it**
-(one `importModel` call, `Full` depth, empty external span, empty `assetRelativeDir`, plus one warning
-if the artifact names any external URI); `AC-22`'s "zero processes" was unsatisfiable while the version
-probe is itself a process, resolved by splitting `exportRunCount()`/`probeRunCount()`, resolving lazily
-on a cache MISS, and comparing `blenderVersion` only when a version is known; a nil-GUID `.blend` is
-`NeedsConversion` with a **disabled** button, never `NotImportable`; and `AC-25`'s write-site arithmetic
-was off by one. Two further findings were only reachable by building it: **`resolve()` needed a fifth
-parameter** (the version probe's stdout must go to a FILE, and no log path exists before an asset GUID
-does — so `Library/BlenderExports/` holds **FIVE** files per asset set, not four), and **`applySettings`
-on a `.blend` writes `"name": ""`, not `"name": "gltf"`**, correcting the plan's own prediction — the
-empty pair is the right answer, and it makes the sidecar agree with the import-cache entry.
+**It is the tree's first BINARY format**, so every determinism guarantee `docs/09` states for canonical
+*text* had to be re-derived for bytes. The answer is structural: no struct `memcpy`, no hash container,
+no timestamp/path/hostname/build-id, explicit little-endian assembly through primitives whose
+endianness is a **`static_assert`** rather than a test, a zero-initialized output buffer, and a sort
+that runs **before** the cap pass so a shuffled input cannot produce a different file. `docs/09` gained
+a full normative **§9** (with the old "Reserved for future formats" renumbered to §10, not replaced);
+`docs/03`'s asset-flow diagram was corrected — the importers produce an in-memory `ImportedModel`, not
+a glTF on disk, and the `.blend` path's GLB is the one on-disk intermediate.
 
-**A 36-seed sabotage matrix ran to completion: 27 matched, 6 are confirmed macOS non-discriminators
-with their real cover named, and 4 GENUINE COVERAGE GAPS were found and closed**, each re-proven by
-re-seeding afterwards. The four gaps: two seeds (an assets-root write, and writing `export_gltf.py`
-unconditionally) reddened nothing because the case predicted to catch them, `BS31`, is a **pure cache
-hit** where `startExport()` never runs — closed with `BS46`/`BS47`, which drive real conversions;
-`MS36`'s first half was **vacuous** because its fixture was a cache MISS, where a widened `serviced`
-guard costs no import either way — rewritten to use a cache HIT; and launching `Locate…` without the
-in-flight guard is **unreachable by every runtime tier in this tree**, closed with a source-text
-assertion in `I73`. Three seeds are worth naming for their shape: a blocking `SDL_WaitProcess` does not
-fail the suite, it **hangs** it (the comment-stripped gate grep is the real cover); having the panel
-call a mutating member is a **compile error**, because it holds a `const ModelImportSession*`; and
-adding `.blend` to `isImportableModelName` does not merely fail cases, it **aborts the test binary**.
-The plan's own prediction that seeds S26 and S27 would both go through `BS41` was wrong — the PATH and
-the OBSERVABLE need separate proofs (`MS41`, a case the plan did not have, reads `serviceBlend`'s source
-text; `BS41` asserts the warning), and each seed reddens exactly one of them.
+**Nine spec statements were wrong and each was corrected before code was written**; three were
+load-bearing. `AC-4`'s "every offset is 16-aligned" contradicts the layout's own table — only the two
+**stored** offsets are 16-aligned, the three tables are packed, and a one-attribute file legitimately
+puts the section table at **104**. The spec's cap pass ran in **input** order, so a shuffled input
+produced a different file — and only on inputs that trip a cap, the exact combination a green suite
+never exercises. And the sort key is **not total** over a public API: a repeat is now diagnosed with a
+warning rather than being a silent determinism hole. Four more were found only by building it: `std::from_chars`'s
+floating-point overload does not exist in the pinned macOS SDK's libc++; the plan's phase-1 defensive
+drop would have made the vertex cap's own proofs unreachable (closed with `u64` counters instead); the
+section cap is unreachable by a **wider** margin than the plan assumed (the joints/weights pairing rule
+means only 2⁵ × 2 = **64** masks are producible, not 128); and `bugprone-branch-clone` forced two
+switches to merge arms that share a width without sharing a meaning.
 
-**A CODE-REVIEW ROUND then found thirteen more items, TWO BLOCKING, none of them visible to the green
-suite the matrix had just finished attacking — the fourth task running in which the two rounds each
-catch what the other cannot.** Both blocking findings, and the sharpest should-fix, are **one mistake in
-three costumes**: this task made `SessionState`/`BlenderState` span frames for the first time in the
-editor, and each defect is a per-tick OUTPUT being read as the next tick's INPUT with nothing resetting
-it. (1) A **cache-hit `.blend`** — the task's headline flow — drew a permanently false "Checking the
-Blender version…" and **no controls at all**, because `BlenderState::Unknown` shared `Probing`'s panel
-arm while a pure hit never resolves the service at all; there was no UI path to force a re-conversion.
-(2) `setTarget()` never reset `stateValue`, so selecting a second `.blend` mid-run drew a running-Blender
-readout against it, consumed the first run's completion on its behalf, and wrote it a provenance record
-for an export that never ran. (3) A settled `.blend` **re-read and re-imported its whole GLB every tick**
-while any other asset's probe or conversion was alive — `importCount()` 39 instead of 1 — breaking
-AC-45's own "ten ticks cost ten early returns" quoted verbatim in the guard's comment. Also closed: the
-panel named the **installed** Blender rather than the artifact's recorded producer; the version probe had
-**no timeout** (a hung `--version` sat in `Probing` for the life of the editor); a cancel arriving
-between the request and the spawn left the session **stuck in `Converting` forever**; `resolveBlender()`
-built `/Library/BlenderExports` from an empty project root; AC-34's oversized-artifact arm was mapped to
-a case that structurally could not reach it; and the log node's refused-by-cap branch was **undriven and
-undrivable**, because the node shipped default-CLOSED and no tier here can click one. **AC-24's WORDING
-was corrected rather than its behaviour**: the status document and the provenance record share
-`<guid>.json` deliberately, so a run that starts destroys any previous record — AC-24 reads "leaves no
-**valid** record", and the cost is now in the validation page's known-and-expected list. Every fix ships
-with a case that reddens without it, verified by re-seeding: `BT63`, `BS48`–`BS53` and `I77`–`I80`.
+**A 42-seed sabotage matrix ran to completion, and FIVE genuine coverage gaps were found and closed**,
+each re-proven by re-seeding. The sharpest: **every existing ordering case supplied its primitives so
+that ascending mask and ascending source indices AGREED**, so dropping the mask from the comparator
+produced byte-identical output for all of them — the ordering rule the whole format rests on had no
+case that could see it violated (`MC57`). Also closed: the `±0.0f` fold-order witness no fixture
+carried (`MC58`, which also catches a seed that was a non-discriminator until it existed); a
+reserve-before-cap-check that is **unobservable at runtime here** because a 274 GB address-space
+reserve simply succeeds, measured, so it is asserted in comment-stripped source text instead (`CM50`);
+an adapter reading `ImportedPrimitive`'s attribute bitset, invisible because every committed fixture is
+internally consistent (`MK17`); and a table-driven case that **passed with zero assertions** until an
+anti-vacuity guard was added to it (`MC52`).
 
-**CI caught nothing, and that is the notable part** — it is the first task in four where it did not.
-3.2.1 was clean too, but 3.2.2 (x86_64-only UB inside ufbx's DEFLATE decoder, invisible to every arm64
-run) and 3.2.3 (a Windows-only `LNK2038` with zero compiler errors) were each caught only by a lane no
-local run can reach. All five checks passed first time here. **Read that as the adversarial rounds
-having done their job, not as the Windows lane being thorough**: fourteen `BS` cases SKIP on Windows,
-which removes that lane's coverage of both timeouts, cancellation, `Converted` and therefore the whole
-end-to-end conversion, `ok: false`, exit-0-with-no-status, both `ArtifactUnusable` arms, the live-run
-selection change and the refused-by-cap log. `CreateProcessW` cannot execute a `.bat`/`.cmd` and
-`cmake -E` has no mode that prints arbitrary text, so no portable fake tool exists — the skips are
-disclosed per case and plan §V2's R5 claim ("they hold identically on all three lanes") is inaccurate
-as written.
+**CI caught what a fully green local gate could not, for the fourth time in five tasks.** The first run
+failed on **Windows alone, at compile time**: doctest stringifies `std::string_view` operands through
+an `operator<<` that MS STL defines inline in `<string_view>` against a `std::basic_ostream` only
+`<iosfwd>` has declared. libc++ and libstdc++ supply the complete type transitively, so macOS and Linux
+built clean and no local run could have seen it. **This is the 0.4.1 trap's fourth occurrence**, so it
+is now a named section in `.claude/rules/ci-portability.md`. The failure incidentally proved the thing
+R8 existed to answer: `tools/cooker/src/main.cpp` had **already compiled**, so the
+cross-`add_subdirectory` alias resolution the tool depends on works under MSVC's generator.
 
-**3.2.5 (Assimp fallback importers — DAE/PLY/STL) is MERGED as PR #74 (merge commit `7e0224f`), in
-FIFTEEN green commits (eleven for the implementation, three from the code-review round, one for the
-Linux LSan lane), CI-green on macOS, Windows and Ubuntu with the green run's `headSha` asserted equal
-to `HEAD` before merging.** It is the fifth importer path and the **fourth
-parser**, and the first whose whole integration surface was already built by its predecessors:
-`asset_database.cpp`, `model_import_session.{hpp,cpp}`, `asset_view.cpp` and `import_details_panel.cpp`
-are all **byte-identical to `main`** afterwards, which is the claim its step-9 cases test rather than
-assert. **Zero paths under `engine/` — the no-engine-change streak reaches SEVEN — and zero under
-`cmake/`, `.github/` and `runtime/` too**; `vcpkg.json` gains exactly one dependency (`assimp` 6.0.4,
-BSD-3-Clause, nine transitive ports) with the baseline and the submodule untouched. The one file it
-touches that it does not own is `editor/src/thumbnail_store.cpp`, ONE hunk: `#define STB_IMAGE_STATIC`,
-because the port's `build_fixes.patch` disables upstream's `assimp_stbi_*` prefixing and puts a SECOND
-unprefixed `stb_image` implementation on the static link line — a macOS/Linux concern that Windows,
-where the port builds a DLL, structurally cannot have. **Three findings carry the task.** Assimp's
-`ReadFileFromMemory` does NOT seal the filesystem on its own: it WRAPS the installed handler and
-delegates every non-magic path to it, and `SetIOHandler(nullptr)` INSTALLS a `DefaultIOSystem` rather
-than clearing one — so `SetIOHandler(new RefusingIoSystem())` first is the only sanctioned sequence,
-with all TWELVE `IOSystem` virtuals overridden (four pure, eight not, and an un-overridden non-pure one
-silently inherits a delegating base). Collada bakes its declared unit and up-axis into the ROOT NODE's
-transform, the exact opposite of 3.2.2's FBX choice, so `.dae` mesh-local bounds are in the source's own
-units while the hierarchy carries the factor — a named, deliberate asymmetry, not a defect. And a `.ply`
-header that LIES about its element counts is not refused by the library at all: it sent the loader into
-a **seventeen-minute grind at unbounded, climbing RSS from a 120-byte file** and exhausted this machine,
-which is why `plyDeclaredCountsExceedBytes` exists and why `.stl` needs no equivalent (`STLLoader.cpp`
-compares against the file size before allocating; the `Ply` sources never do). **A 36-seed sabotage
-matrix ran to completion: 34 seeds discriminate, 2 are confirmed non-discriminators with their cover
-named, and 5 GENUINE COVERAGE GAPS were found and closed**, each re-proven by re-seeding — the sharpest
-being that `AI3`'s required token `AI_METADATA_SOURCE_FORMAT` is a PREFIX of
-`AI_METADATA_SOURCE_FORMAT_VERSION`, so deleting the entire loader assertion left the gate green.
-**Six places where reality contradicted the plan were corrected in code rather than argued with**, all
-recorded in the log entry. **R8 is CLOSED with numbers** (a 200 MB binary `.stl` peaks at 832 MB in
-0.51 s on `macos-release`, `Truncated` at the vertex cap; a 130 MB one converts fully at 671 MB —
-ratios of 4.2× and 5.2×, half the 10× that would have forced a lower `MAX_MODEL_FILE_BYTES`).
-**R4 is CLOSED with numbers** (the green post-fix run, 31562040807: Linux 42m8s, Windows 18m46s,
-macOS 14m9s, lint 21s, vcpkg-baseline 4s — the vcpkg binary cache absorbed assimp's nine transitive
-ports, so no lane paid a full source build twice).
+**A code-review round then found two items, neither a defect**, both closed as documentation and
+comments because the code was already right and only the reason was missing. The **model** box folds
+submesh boxes in sorted order while an importer folds its own in source order, so the two can disagree
+in **the sign of a zero and nowhere else** — and the obvious "fix" is wrong: the model box is written
+into the header, so an input-order fold would break order-independence outright. `docs/09` §9.10
+carries the caveat, the fold site names AC-29 as the reason it cannot change, and `MK9` records that
+its bit-equality holds **because no committed fixture carries a signed zero**. The cooker's
+`taken >= MAX_EXTERNAL_URIS` guard cannot fire (every importer bounds `externalUris` before returning)
+and is **kept** with a comment naming the four enforcement sites — a guard deleted because it cannot
+fire today is a guard nobody restores when that changes.
 
-**CI CAUGHT WHAT A FULLY GREEN LOCAL GATE COULD NOT, for the third time in four importer tasks.** The
-first run failed on Ubuntu alone with **LeakSanitizer: 4704 bytes in 17 allocations**, after doctest
-reported 297,194 assertions and zero failures. Every record is rooted in assimp's own loaders on their
-ERROR paths: **15 of 17** under `ColladaParser`'s CONSTRUCTOR, which parses the whole document from the
-ctor body and therefore throws BEFORE the object exists, so `~ColladaParser` never runs and every
-`Collada::Node`/`Mesh`/`SubMesh` already allocated is orphaned; the other **2** under
-`STLImporter::LoadASCIIFile`, allocating the position/normal arrays for a file truncated mid-record.
-This task's failure-mode fixtures are the first things in the tree to drive those loaders into their
-error paths at all, and LSan runs on the Ubuntu Debug lane ONLY — so no local run, and neither other
-lane, can see it. Closed with TWO FRAME-SCOPED entries in `tests/lsan.supp`
-(`leak:Assimp::ColladaParser::ColladaParser`, `leak:Assimp::STLImporter::LoadASCIIFile`), which
-together cover all 17 records with none left over, gated on that run's evidence and **never**
-module-wide. The fixtures were not weakened and the port was not patched: the defect is upstream.
-The "no first-party blind spot" argument needed sharpening to be true — first-party code DOES execute
-inside a suppressed frame, since `ColladaParser`'s ctor calls `Open` on our `RefusingIoSystem` — and it
-holds for the precise reason that all twelve overrides answer "cannot" WITHOUT allocating. A future
-override that allocated would be the one thing capable of hiding under these entries.
+**R7 is CLOSED with numbers.** A generated `.gltf` + external `.bin` at **7 997 584 vertices and
+23 984 268 indices** (essentially both importer caps at once) cooks on `macos-release` in **0.89 s
+warm / 1.16 s cold** at a peak resident set of **1.067 GB**, producing a 351 859 984-byte artifact from
+a 351 860 625-byte source, byte-identical across three runs. `aero_tests` Debug under ASan/UBSan peaks
+at **554 MB in 11.05 s**. The cooked-versus-source ratio is **a property of how compactly the SOURCE
+encoded the same floats, not of the cook**: an ASCII `.obj` grid went 31.75 MB → 8.94 MB (**0.28×**)
+while a float32 `.glb` whose layout already matched came out at **1.00×**. **One cap the plan did not
+account for**, found while measuring: `MAX_EMBEDDED_BYTES` bounds embedded GLB data at **128 MiB**
+against 512 MiB for an external buffer, so the format's own ~928 MB worst case is **not reachable
+through the CLI at all** — its cook-side arm is genuinely unreachable defence in depth, as its comment
+says. Full table in the engineering log.
 
-**A CODE-REVIEW ROUND then found six more items, ONE BLOCKING, none of them visible to the green suite
-the matrix had just finished attacking — the fifth task running in which the two rounds each catch what
-the other cannot.** The matrix attacks what a conversion PRODUCES; every finding here is a defect in what
-the node WALK NUMBERS, or in a cap's report rather than its effect. **The blocking one: the
-`aiNode*` → localId map `convertSkins` resolved joints through was built by a SECOND walk of the same
-tree, numbering one index per `aiNode`, and `convertNodes` does not number them that way** — a multi-mesh
-node consumes `mNumMeshes` slots (its own plus the synthesized `<name>.<n>` children) and a depth-dropped
-subtree consumes none, so every later node was off by the accumulated divergence, and the count bound
-truncated the tail without realigning anything. `ImportedSkin::joints` and `skeletonRoot` therefore bound
-to the wrong nodes with status `Ok` and no warning: a **silently wrong deformation** on ordinary content,
-since `ColladaLoader::BuildMeshesForNode` makes any two-material node a multi-mesh node. The map is now
-built inside `convertNodes` at the moment the id is assigned, and returned. Also closed: a node cap hit
-INSIDE the split loop reported `Ok` with nodes dropped (its `break` assumed a check that only runs when
-another node is popped); `scanPlyTextureFiles` skipped only `' '` where `Assimp::SkipSpaces` skips `' '`
-and `'\t'`, so a tab-indented `TextureFile` line made Structure and Full disagree and phase 7.5 record no
-dependency at all; `aiNode::mMeshes[i]` had no range check while its two siblings did; a refused texture
-path appended a duplicate `ImportedImage` and warning per naming material; and `convertSkins`' two
-`escalate` calls had no report latch. Each ships with a case that reddens without it, re-proven by
-re-seeding: `AI84`–`AI87`, `MI153`, plus new arms in `AI10`, `AI34`, `AI56` and `MI152`.
+**The named, unowned gap: v1 stores no node hierarchy**, so a consumer that instantiates a cooked mesh
+puts every submesh at the origin. **The cook must not "solve" this by baking node transforms into
+vertices** — `ImportedMesh` is shared across nodes by construction, so baking would force per-node mesh
+copies. A cooked model/prefab container is the right answer and belongs to whoever owns instantiation;
+**3.1.5 is the first task that will hit it.** This is a decision waiting to be taken, not a scope
+boundary. `editor/validation/3.3.1-mesh-cook-gpu-buffers.md` ships **unticked**.
 
-**EVERY macOS validation row in the tree is now ticked (2026-08-12).** 3.2.5 signed off ✅ PASS 14/14
-on merge commit `7e0224f`; 3.2.2 ✅ PASS 13/13 and 3.2.4's row 12 recorded on the same date; and
-3.1.3 / 2.6.2, whose pages carried a PASS in prose but had never had their checkboxes ticked, were
-reconciled. The only rows still open anywhere are **2.5.1 row 20 and 2.6.1 row 16, both marked
-"⚠ Linux only"** — correctly untouched, since neither is a macOS row.
-
-**Carried-forward debt, and it is now a DIFFERENT shape than before.** The remaining gap is no longer
-"passes not run" but **numbers not recorded**: seven ticked rows across four tasks asked for a
-measurement and were signed off with the blanks empty — 3.2.5 rows 3, 8, 9, 11 and 13; 3.2.2 row 9;
-3.2.4 row 12. Each row's *behaviour* was exercised and passed; each row's *evidence* is absent, so
-**R4 (the `.blend` timeout), R7 (FBX import cost) and R8's in-editor half remain unmeasured**, and
-D9's centimetre-versus-metre comparison against Blender has no recorded figures. The headless R8
-numbers (832 MB / 0.51 s on `macos-release`) are still the only measured ones. Fill those blanks the
-next time the relevant files are opened rather than treating the ticks as having settled them.
-Separately: **no Windows or Linux validation pass exists for any of the thirteen Phase 2 tasks or for
-3.1.1–3.1.4 or 3.2.1–3.2.5**, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off.
-That is platform-validation debt spanning four phases, and with macOS now fully green it is the whole
-of the remaining validation risk — worth scheduling as work of its own, the 2.2.5 lesson one scale up.
+**Carried-forward debt, unchanged by this task and worth scheduling as work of its own.** Seven ticked
+validation rows across four tasks were signed off with their measurement blanks empty (3.2.5 rows 3, 8,
+9, 11, 13; 3.2.2 row 9; 3.2.4 row 12) — each row's *behaviour* passed, each row's *evidence* is absent,
+so **R7's in-editor half, R4 and R8's in-editor half stay unmeasured** and D9's centimetre-versus-metre
+comparison has no recorded figures. Separately: **no Windows or Linux validation pass exists for any of
+the thirteen Phase 2 tasks, for 3.1.1–3.1.4, or for 3.2.1–3.2.5**, and Phase 0's gate is still held
+open on Windows/Linux 60 fps sign-off. That is platform-validation debt spanning four phases, and with
+macOS fully green it is the whole of the remaining validation risk.
 
 | | State |
 |---|---|
@@ -249,99 +148,98 @@ of the remaining validation risk — worth scheduling as work of its own, the 2.
 | **Phase 1** — Reflection, ECS & Serialization | **COMPLETE** — epics 1.1–1.4 all CLOSED. Gate reached in code, macOS-validated; Windows/Linux render rows pending (`samples/phase-1-scene/VALIDATION.md`). |
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics (2.1 Editor shell, 2.2 Core panels, 2.3 Manipulation, 2.4 Undo/redo, 2.5 Scene I/O, 2.6 Project system v0) CLOSED in code and macOS-validated PASS, with Windows/Linux rows pending for every task (`editor/VALIDATION.md`). The whole-phase audit (2026-08-02) fixed two silent data-loss paths, a project root that was never made absolute, two CI false-greens, and four stale documentation claims. Full per-task and per-epic history — every defect, every sabotage matrix, every deviation — lives in `docs/10-engineering-log.md`'s Phase 2 entries; this row is deliberately a summary, not a duplicate. |
 | **Phase 2 gate** | **MET 2026-08-02.** `samples/phase-2-editor-scene/` holds a project and a 4-entity scene authored entirely through the editor, with the save → New Scene → Open Scene round trip confirmed (`samples/phase-2-editor-scene/VALIDATION.md`); provenance is recorded there rather than asserted, since a hand-written `scene.json` is byte-identical to a real one and no test tier can tell them apart. Deliberately NOT `add_subdirectory`'d — this artifact is data (a provenance proof of the editor), not a compile-proof of engine code. |
-| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** Epic 3.1 (AssetDatabase · assets) is FULLY MERGED: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds respectively), **macOS-validated ✅ PASS on all four** (14/14, 14/14, 16/16, 10/10) — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash` (`engine/core`), the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache, and the real Asset Browser all shipped across these four. **Epic 3.2 (Importers) has four MERGED tasks.** **3.2.1 (glTF, fastgltf)** — PR #70 (`f02ca65`), sabotage-proven (32 seeds) and code-review-hardened (12 findings, 3 BLOCKING), macOS-validated ✅ PASS 12/12; the first PRODUCER for `AssetCacheEntry::dependencies`. **3.2.2 (FBX, ufbx)** — PR #71 (`c597a5b`), sabotage-proven (35 seeds) and code-review-hardened (5 gaps, 2 BLOCKING); the tree's first vendored library, a third hard-coded-importer-identity site, a BLOCKING ASan heap-buffer-overflow that shipped invisibly with 3.2.1, and x86_64-only UB in ufbx's DEFLATE decoder that only CI could see. **macOS-validated ✅ PASS 13/13** (recorded 2026-08-12; row 9's numbers were never captured, so R7 stays unmeasured). **3.2.3 (OBJ, tinyobjloader)** — PR #72 (`c412e83`), the original 32-seed matrix run to completion plus a code-review round (ten gaps, one BLOCKING), macOS-validated ✅ PASS 13/13 (2026-08-10); `.mtl` became a claimed importable file, and CI caught a Windows-only `LNK2038` fixed in `cmake/sanitizers.cmake`. **3.2.4 (Blender CLI detection + `.blend` import) MERGED as PR #73 (`5ab07f3`, 21 commits: eleven for the implementation, ten from the code-review round), CI-green on all three platforms with `headSha == HEAD` asserted — macOS-validated ✅ PASS 15/15 (rows 1–11 and 13–15 on 2026-08-11, no defects found; row 12 ticked 2026-08-12 WITHOUT its measurement, so R4 is not closed), and row 14 CLOSED R1 by repeating rows 1–5 on a second Blender install. Windows/Linux rows pending.** Mechanical gate green: 95/95 on both macOS presets with `AERO_REQUIRE_GPU=1`, both reduced configurations rebuilt FRESH at **1342** cases each with `BT1` and `BS1` present in both, six guards passing, `.github/scripts/` and `cmake/` byte-identical to `main`, clang-format and clang-tidy clean by exit code. `aero_editor_shell_test` **1232 → 1366**, `aero_editor_imgui_test` **90 → 102**, `aero_tests` **415** unchanged. A 36-seed sabotage matrix ran to completion: 27 matched, 6 confirmed macOS non-discriminators (S6/S17 — ASan does not report either, Linux LSan and the Windows overwrite are their cover; S24/S24b — macOS `std::set` moves are `noexcept`, so the Windows lane's aggregate `static_assert` is the only cover; S33 — POSIX kill semantics; S30 — unreachable by any runtime tier), and **4 genuine coverage gaps found and closed** (`BS46`, `BS47`, `MS36`'s rewrite, and a source-text guard assertion in `I73`), each re-proven by re-seeding. **A CODE-REVIEW ROUND then found thirteen more items, TWO BLOCKING** — a cache-hit `.blend` drew a permanently false "Checking the Blender version…" with no controls at all, and a selection change mid-conversion attributed one asset's run to another (importing its artifact and writing it a provenance record for an export that never ran) — plus a settled `.blend` re-importing its whole GLB every tick, the panel naming the installed Blender rather than the artifact's recorded producer, a version probe with no timeout, a cancel-before-spawn that stuck the session in `Converting` forever, an export directory built from an empty project root, AC-34's mapping naming a case that could not reach it, and an undrivable log branch behind a default-CLOSED `TreeNode`. AC-24's WORDING was corrected (it leaves no **valid** record; the status document and the provenance record share `<guid>.json` deliberately) rather than its behaviour. All closed on the same branch, each with a case that reddens without it: `BT63`, `BS48`–`BS53`, `I77`–`I80`. **3.2.5 (Assimp fallback importers — DAE/PLY/STL) MERGED as PR #74 (`7e0224f`, 15 commits: eleven for the implementation, three from the code-review round, one for the Linux LSan lane), CI-green on all three platforms with `headSha == HEAD` asserted; R4 closed with its numbers (Linux 42m8s, Windows 18m46s, macOS 14m9s)** — the fifth importer path and the fourth parser, adding one src-private pair (`assimp_import.{hpp,cpp}`, the tree's ONLY Assimp TU) and one dependency, with `asset_database.cpp`, `model_import_session.{hpp,cpp}`, `asset_view.cpp` and `import_details_panel.cpp` all byte-identical to `main`. Mechanical gate green on both macOS presets with `AERO_REQUIRE_GPU=1` (95/95 each), six guards passing, both reduced configurations rebuilt FRESH at **1452** cases each with `AI1` present in both, clang-format and clang-tidy clean by exit code. `aero_editor_shell_test` **1366 → 1481**, `aero_editor_imgui_test` **102 → 104**, `aero_tests` **415** unchanged, `ctest -N` unchanged at 95/6/19. A 36-seed sabotage matrix ran to completion (34 discriminating, 2 confirmed non-discriminators, **5 genuine gaps found and closed**, each re-proven by re-seeding). **A CODE-REVIEW ROUND then found six more items, ONE BLOCKING** — the `aiNode*` → localId map `convertSkins` resolved joints through was built by a SECOND walk of the same tree, which cannot see either the split children a multi-mesh node synthesizes or a depth-dropped subtree, so joints and `skeletonRoot` bound to the wrong nodes with status `Ok` and no warning — plus a node cap hit inside the split loop reporting `Ok` with nodes dropped, a PLY header scan skipping only `' '` where the library skips `' '` and `'\t'` (so Structure and Full disagreed and phase 7.5 recorded no dependency), an unchecked `aiNode::mMeshes[i]`, a refused texture path appending a duplicate image and warning per naming material, and two unlatched cap reports in `convertSkins`. Each closed with a case that reddens without it, re-proven by re-seeding: `AI84`–`AI87`, `MI153`, plus new arms in `AI10`, `AI34`, `AI56` and `MI152`. **macOS-validated ✅ PASS 14/14** (2026-08-12, on merge commit `7e0224f`); Windows and Linux rows pending. Five of its rows were ticked with their measurement blanks empty (3, 8, 9, 11, 13), so the behaviour passed but the figures those rows existed to capture are absent. Zero paths under `engine/` for 3.2.1 through 3.2.5 — the no-engine-change streak reaches **seven**. Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
-| **Next task** | **~~Push, get CI green, review and merge 3.2.5~~ DONE — merged as PR #74 (`7e0224f`), CI-green on all three lanes with `headSha == HEAD` asserted, and R4 closed with its numbers (Linux 42m8s, Windows 18m46s, macOS 14m9s).** **~~3.2.5's macOS validation pass~~ DONE (✅ PASS 14/14, 2026-08-12), and every other macOS row in the tree is now ticked too** — 3.2.2 (13/13), 3.2.4's row 12, and 3.1.3 / 2.6.2's never-ticked checkboxes reconciled. The next items are therefore **(a) the seven ticked rows whose MEASUREMENT was never recorded** (3.2.5 rows 3, 8, 9, 11, 13; 3.2.2 row 9; 3.2.4 row 12), which leave R4, R7 and R8's in-editor half unmeasured, and **(b) 3.1.5 (drag-into-scene)**. **3.1.5 (drag-into-scene)** is otherwise fully unblocked: it depends on 3.1.3 and 3.2.1 (both merged), `ImportedModel` gives it something to reference, and with 3.2.2/3.2.3/3.2.4/3.2.5 all merged it can be dragged an `.fbx`, an `.obj`, a `.blend`, a `.dae`, a `.ply` or an `.stl` as easily as a `.gltf`. 3.1.5 owns two decisions 3.2.1 deliberately left open: **sub-asset identity** (D13) and **replacing `LOCAL_MESH_HALF_EXTENT`** (2.3.1's knowingly-wrong constant). See `docs/tasks/phase-3.md`. The remaining carried-forward item is **platform-validation debt, now spanning four phases**: no Windows or Linux validation pass exists for any of the thirteen Phase 2 tasks, for 3.1.1–3.1.4, or for 3.2.1–3.2.5, and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. Every macOS pass to date has been clean, which is exactly why the other two lanes staying unvalidated is worth scheduling as work of its own — 2.2.5's lesson at phase scale. |
+| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **Epic 3.1** is fully merged except **3.1.5 (drag-into-scene), still open**: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds), macOS-validated ✅ PASS 14/14, 14/14, 16/16, 10/10 — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash`, the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache and the real Asset Browser all shipped across them. **Epic 3.2 (Importers) is CLOSED IN CODE — five merged tasks**, one canonical in-memory `ImportedModel` and eight claimed extensions: 3.2.1 glTF/fastgltf (PR #70 `f02ca65`, ✅ 12/12), 3.2.2 FBX/ufbx (PR #71 `c597a5b`, ✅ 13/13), 3.2.3 OBJ/tinyobjloader (PR #72 `c412e83`, ✅ 13/13), 3.2.4 Blender CLI/`.blend` (PR #73 `5ab07f3`, ✅ 15/15), 3.2.5 Assimp DAE/PLY/STL (PR #74 `7e0224f`, ✅ 14/14). Windows/Linux rows pending for all five, and seven of their ticked rows are missing the measurement they asked for. **Epic 3.3 (Cooker v0) is OPEN and 3.3.1 (Mesh cook → GPU buffers) is COMPLETE ON `feat/3.3.1-mesh-cook-gpu-buffers`, 13 commits, NOT YET MERGED.** It opens `engine/assets` (the `.aeromesh` container v1 + the cook, core-only, no vcpkg package at all), adds one editor adapter pair and `tools/cooker` (`aero_cooker mesh`), and is the first task to produce a runtime-consumable artifact. Mechanical gate green: **117/117 on both macOS presets** with `AERO_REQUIRE_GPU=1`, six guards passing, both reduced configurations rebuilt FRESH with `-G Ninja` and green at **28** and **41** ctest entries with `CM1`/`MC1`/`MK1` present, clang-format and clang-tidy clean by exit code, and `vcpkg.json`/`.github/`/`cmake/`/`runtime/` byte-identical to `main`. A 42-seed sabotage matrix ran to completion with **five genuine gaps found and closed** (`MC57`, `MC58`, `CM50`, `MK17`, `MC52`'s anti-vacuity guard), each re-proven by re-seeding; a code-review round found two more items, neither a defect, both closed as documentation. CI caught a **Windows-only `<ostream>`/`string_view` compile failure** no local run could see — the 0.4.1 trap's fourth occurrence. **R7 is closed with numbers** (7 997 584 vertices, 0.89 s, 1.067 GB peak). **The no-engine-change streak ENDS here at seven, deliberately.** Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
+| **Next task** | **~~3.2.5 merge and macOS validation~~ DONE**, and every macOS validation row in the tree is ticked. The immediate item is **(a) push, get a green CI run whose `headSha` equals `HEAD`, review and MERGE 3.3.1** (`feat/3.3.1-mesh-cook-gpu-buffers`), then run its macOS validation pass — its rows 6 and 7 are written so a tick without the number is impossible to do quietly. Then: **(b) 3.1.5 (drag-into-scene)**, fully unblocked — it depends on 3.1.3 and 3.2.1 (both merged), `ImportedModel` gives it something to reference, all eight importable extensions work, and 3.3.1 gives it a cooked artifact to place. **3.1.5 owns three decisions now**: sub-asset identity (3.2.1's D13), replacing `LOCAL_MESH_HALF_EXTENT` (2.3.1's knowingly-wrong constant), and **the node-hierarchy gap 3.3.1 named but does not own** — a cooked mesh carries no hierarchy, so a naive instantiation puts every submesh at the origin. **(c) 3.3.2 (texture cook)** is also unblocked and inherits 3.3.1's container shape and CLI grammar (`aero_cooker texture …` needs no reshuffle). And **(d) the seven ticked-but-unmeasured validation rows**, plus the four-phase Windows/Linux platform-validation debt. See `docs/tasks/phase-3.md`. |
 
 Engine layers that exist today, in dependency order: `core` (gained `guid.hpp`/`guid.cpp` at task
 3.1.1, beside `handle.hpp`; gained `content_hash.hpp`/`content_hash.cpp` at task 3.1.2, beside `guid`)
-→ `platform` → `rhi` → `render` → `reflect` → `scene` → `scene_render` → `scene_serialize`, plus
-`/editor` (`aero_editor_core` + `aero_editor`) and `/tools` (`reflect-gen`, `shaderc`). `/runtime` is
-still empty — it arrives in Phase 5. `engine/assets/` is still just `.gitkeep` — deliberately unopened
-until a **runtime** consumer exists (Phase 5's pak table); the editor's `AssetDatabase` and its import
-cache (tasks 3.1.1/3.1.2) live entirely in `/editor`, not `/engine/assets`.
+→ **`assets`** → `platform` → `rhi` → `render` → `reflect` → `scene` → `scene_render` →
+`scene_serialize`, plus `/editor` (`aero_editor_core` + `aero_editor`) and `/tools` (`reflect-gen`,
+`shaderc`, **`cooker`**). `/runtime` is still empty — it arrives in Phase 5.
+**`engine/assets/` OPENED at task 3.3.1** and its `.gitkeep` is gone. The old reason for keeping it
+shut — "unopened until a **runtime** consumer exists (Phase 5's pak table)" — was satisfied by the
+task itself: the `.aeromesh` container's *reader* **is** a runtime component by definition, so the
+consumer in question is the thing being built. It holds the cooked-asset formats and nothing else
+(`cooked_mesh.{hpp,cpp}`, `mesh_cook.{hpp,cpp}`); it links `aero::core` + `aero::profiling` and **no
+vcpkg package at all**, and adding a `find_package` there would void that boundary silently while CI
+stayed green. The editor's `AssetDatabase` and its import cache (3.1.1/3.1.2) still live entirely in
+`/editor`, not here. **`tools/` no longer links zero engine targets**: `aero_cooker` links
+`aero::assets` and `aero::editor_core`, which is legal because `tools/` is enumerated by neither half
+of the golden rule.
 `engine/scene` gained one primitive at task 2.4.2, `[[nodiscard]] Entity World::recreate(Entity)` —
 the only engine change Epic 2.4 needed. Tasks 2.5.1, 2.5.2, 2.6.1 and 2.6.2 all needed **no** engine
-change at all — a four-task streak task **3.1.1 ended**; **3.1.2 used the identical minimal shape a
-second time, 3.1.3 restarted the streak at one, 3.1.4 made it two, 3.2.1 made it three, 3.2.2 made it
-four, 3.2.3 made it five, 3.2.4 made it six, and 3.2.5 now makes it SEVEN**. 3.2.3 touched `cmake/sanitizers.cmake` — the
-first non-`editor`/`tests`/docs path in this epic, forced by its Windows-only `LNK2038`; that is a
-build-system path, not an `engine/` one, so the streak held. **3.2.4 touches neither**: its diff against
-`main` is confined to `editor/`, `tests/`, `docs/` and `.claude/rules/`, with `engine/`, `cmake/`,
-`.github/` and `vcpkg.json` all byte-identical. **3.2.5 touches neither `engine/` nor `cmake/` nor
-`.github/` either**, but it DOES touch `vcpkg.json` — one dependency, `assimp`, alphabetically first,
-with `builtin-baseline` and the `/vcpkg` submodule both unmoved.
-`/editor` gained **ten**
-new `.hpp`/`.cpp` pairs across 2.6.2, 3.1.1,
-3.1.2, 3.1.3 and 3.1.4 (`project_settings.{hpp,cpp}` / `project_settings_panel.{hpp,cpp}` (2.6.2),
+change at all — a four-task streak task **3.1.1 ended**; 3.1.2 used the identical minimal shape a
+second time, and 3.1.3 through 3.2.5 restarted and ran a **seven-task no-engine-change streak**.
+**That streak ENDS at seven, at task 3.3.1, deliberately**: `git diff --name-only main...HEAD --
+engine/` is not empty for the first time since 3.1.1. The whole engine diff is one new subdirectory
+plus one `add_subdirectory(assets)` line — every other subsystem is byte-identical, as are
+`vcpkg.json`, `.github/`, `cmake/` and `runtime/`. (3.2.3 touched `cmake/sanitizers.cmake`, forced by
+its Windows-only `LNK2038`; that is a build-system path, not an `engine/` one, so the streak held.
+3.2.5 touched `vcpkg.json` for one dependency, `assimp`, with the baseline and submodule unmoved.
+3.3.1 adds **no dependency of any kind**.)
+`/editor` gained **ten** new `.hpp`/`.cpp` pairs across 2.6.2, 3.1.1, 3.1.2, 3.1.3 and 3.1.4
+(`project_settings.{hpp,cpp}` / `project_settings_panel.{hpp,cpp}` (2.6.2),
 `asset_meta.{hpp,cpp}` / `asset_database.{hpp,cpp}` (3.1.1), `asset_cache.{hpp,cpp}` (3.1.2),
 `asset_view.{hpp,cpp}` / `thumbnail_cache.{hpp,cpp}` / `thumbnail_store.{hpp,cpp}` (src-private) /
 `asset_actions.{hpp,cpp}` (3.1.3), `asset_watcher.{hpp,cpp}` (3.1.4)); **3.2.1 added four more pairs
 plus one deliberate exception**: `model_import.{hpp,cpp}`, `gltf_import.{hpp,cpp}` (src-private, the
 only fastgltf TU), `model_import_session.{hpp,cpp}` and `import_details_panel.{hpp,cpp}` (src-private,
 the only ImGui TU that task added) are real pairs; `import_settings.hpp` is a HEADER WITH NO `.cpp`,
-deliberately alone (plan §A-11 — `ImportSettings` is shared by `asset_meta.hpp` and
-`model_import.hpp`, and giving it its own tiny, dependency-free header is what stops `asset_meta.hpp`
-from dragging in `aero::scene` and the whole math umbrella). **3.2.2 adds ONE more pair**,
-`fbx_import.{hpp,cpp}` (src-private, the only ufbx TU) — and, separately, `/editor` gains its FIRST
-`third_party/` directory, `editor/third_party/ufbx/` (`ufbx.h`, `ufbx.c`, `LICENSE`, `README.md`,
-`CMakeLists.txt`), byte-identical to upstream v0.23.0 and never to be patched locally. **3.2.3 adds ONE
-more pair**, `obj_import.{hpp,cpp}` (src-private, the only tinyobjloader TU) — no
-new `third_party/` directory, since tinyobjloader is a normal vcpkg port. **3.2.5 adds ONE more pair**,
-`assimp_import.{hpp,cpp}` (src-private, the tree's ONLY Assimp TU, and the fourth file to sit beside
-`gltf_import.cpp` behind `model_import.cpp`'s dispatch) plus two pure helpers and one cap constant on the
-PUBLIC surface (`scanPlyTextureFiles`, `plyDeclaredCountsExceedBytes`, `scanColladaAssetSpace`,
-`MAX_NODE_DEPTH`) — no `third_party/` directory, because assimp is a normal vcpkg port. **3.2.4 adds THREE more
-pairs**: `blender_tool.{hpp,cpp}` (PUBLIC and PURE — no disk, no SDL, no `<filesystem>`, no logging),
-`blender_service.{hpp,cpp}` (PUBLIC, the polled state machine, naming no SDL type at all) and
-`blender_process.{hpp,cpp}` (src-private, the tree's ONLY `SDL_Process` TU, holding the handle as a
-`void*` so its own header names no SDL type either). It adds no `third_party/` directory and no
-dependency of any kind — Blender is an external PROCESS, never a library. The `.hpp`s live
-under `editor/include/aero/editor/` (except the six named src-private), the `.cpp`s under
-`editor/src/`.
+deliberately alone (`ImportSettings` is shared by `asset_meta.hpp` and `model_import.hpp`, and giving
+it its own tiny, dependency-free header is what stops `asset_meta.hpp` from dragging in `aero::scene`
+and the whole math umbrella). **3.2.2 adds ONE more pair**, `fbx_import.{hpp,cpp}` (src-private, the
+only ufbx TU) — and, separately, `/editor` gains its FIRST `third_party/` directory,
+`editor/third_party/ufbx/`, byte-identical to upstream v0.23.0 and never to be patched locally.
+**3.2.3 adds ONE more pair**, `obj_import.{hpp,cpp}` (src-private, the only tinyobjloader TU).
+**3.2.4 adds THREE more pairs**: `blender_tool.{hpp,cpp}` (PUBLIC and PURE — no disk, no SDL, no
+`<filesystem>`, no logging), `blender_service.{hpp,cpp}` (PUBLIC, the polled state machine, naming no
+SDL type at all) and `blender_process.{hpp,cpp}` (src-private, the tree's ONLY `SDL_Process` TU,
+holding the handle as a `void*` so its own header names no SDL type either); it adds no dependency at
+all, because Blender is an external PROCESS, never a library. **3.2.5 adds ONE more pair**,
+`assimp_import.{hpp,cpp}` (src-private, the tree's ONLY Assimp TU, the fourth file behind
+`model_import.cpp`'s dispatch) plus two pure helpers and one cap constant on the PUBLIC surface
+(`scanPlyTextureFiles`, `plyDeclaredCountsExceedBytes`, `scanColladaAssetSpace`, `MAX_NODE_DEPTH`).
+**3.3.1 adds ONE more pair**, `mesh_cook_source.{hpp,cpp}` (PUBLIC and PURE — two functions, no UI,
+no state, no `Library/` write, no panel), and `aero::assets` on `aero_editor_core`'s **PUBLIC** link
+group. The `.hpp`s live under `editor/include/aero/editor/` (except the six named src-private), the
+`.cpp`s under `editor/src/`.
 
-Test inventory at the tip of `feat/3.2.5-assimp-fallback-importers`, every number
-**re-measured there, never carried forward from an earlier step or an earlier task**: **95**
-ctest entries with tools ON, **6** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`, **19** with
-`-DAERO_REFLECT_TOOLS=OFF` alone — **unchanged by 3.2.4 and by 3.2.5** (zero new `add_test`; every new
-case lives inside an existing target). `aero_tests` **415** (unchanged — `engine/` is untouched).
-`aero_editor_shell_test` **1481** (1366 at `5ab07f3` → **+115**: one new TU,
-`tests/editor/assimp_import_test.cpp` (AI1–AI87, minus the four the library made unreachable), plus
-`model_import_test.cpp` (MI134–MI153), `model_import_session_test.cpp` (MS42–MS46) and
-`asset_database_test.cpp` (AD-a1…AD-a5)) — **measured directly from doctest's own `filters:` line, never
-derived by addition and never by a `grep -c` of case names**. The last **+5** (`AI84`–`AI87`, `MI153`)
-came from the code-review round. `aero_editor_imgui_test` **104** (102 → +2: I81, I82).
-`aero_scene_serialize_test` **23**
-and `aero_editor_inspector_test` **22**, both unchanged since 3.1.1. **Both reduced configurations,
-built FRESH in `build/tools-off-3.2.5` / `build/reflect-off-3.2.5`, read 1452 cases EACH with `AI1`
-present in both** — proving the whole Assimp path needs neither reflection nor scene serialization. Those
-two configurations were **not rebuilt for the code-review round**, a stated gap rather than an omission:
-it adds no include, no symbol from a gated layer, and no case outside the two TUs both already compile.
+Test inventory at the tip of `feat/3.3.1-mesh-cook-gpu-buffers`, every number
+**re-measured there, never derived by addition and never carried forward from an earlier step or an
+earlier task** — read the totals from doctest's own `filters:` line, never from a `grep -c` of case
+names. **`ctest -N` moves in ALL THREE configurations for the first time in this epic**, because
+`aero_cooker` takes **no gate flag** and its 22 cases are therefore registered everywhere: **95 → 117**
+with tools ON, **6 → 28** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`, **19 → 41** with
+`-DAERO_REFLECT_TOOLS=OFF` alone. A future gate flag on the cooker would silently shrink the reduced
+configurations' coverage with no test able to report it. `aero_tests` **415 → 523** (two new TUs,
+`cooked_mesh_test.cpp` (`CM*`) and `mesh_cook_test.cpp` (`MC*`), plus `aero::assets` on its link line).
+`aero_editor_shell_test` **1481 → 1498** (one new TU, `tests/editor/mesh_cook_source_test.cpp`,
+`MK1`–`MK17`). `aero_editor_imgui_test` **104**, `aero_scene_serialize_test` **23** and
+`aero_editor_inspector_test` **22**, all unchanged — this task ships **no UI at all**. Both reduced
+configurations were built FRESH in `build/tools-off-3.3.1` / `build/reflect-off-3.3.1` and are green.
 **A reduced-configuration probe must be configured with `-G Ninja`**: `CMAKE_GENERATOR` enters the
 shadercross bootstrap's option hash, so the generator-less form reads the cached toolchain as COLD and
 pays a from-source DXC rebuild that peaked at 7.6 GB here before a memory guard killed it.
-`aero_editor_core` sources **57** (56 → +1: `assimp_import.cpp`) with **one** new `find_package`, **one**
-new `target_link_libraries` entry (`assimp::assimp`, PRIVATE) and **one** new `vcpkg.json` dependency —
-the first dependency added since 3.2.3, with `builtin-baseline` and the `/vcpkg` submodule both
-unmoved. `check-math-boundary.sh`'s scanned count **302 → 305** (three new tracked
-C-family files) and `check-project-no-delete.sh`'s Check B scan **57 → 58**, both picked up
-automatically — **neither script changes, and `.github/scripts/` is byte-identical to `main`**, as in
-3.2.4 and unlike 3.2.3. Guard count stays **six**, and `assimp_import.cpp` is in **neither** of Check
-A's denylist nor Check B's `PERMITTED_DELETERS`, which is exactly what makes a future
-`std::filesystem::remove` there a hard CI failure. Check A's six-file denylist and Check B's two-file
-`PERMITTED_DELETERS` are both unchanged in membership, and all three new `editor/src/*.cpp` are in
-**neither**, which is exactly what makes a future `std::filesystem::remove` in them a hard CI failure
-(sabotage-confirmed: the guard fires before any test binary runs). `git grep -nE
-'_WIN32|__APPLE__|__linux__' -- editor/src editor/include` reads **exactly three lines in one file**.
-`grep -c '\.service(' tests/editor/model_import_session_test.cpp` **42 → 61**, with **none of the
-original 42 edited** — the trailing defaulted parameter's whole point. Counts diverge by OS (Windows
-skips `golden-rule.include_scan_e2e`, and **fourteen** whole `BS` cases plus one arm of `BS11` and one
-GPU case, `I80`, skip loudly there), so never assume one — measure with `ctest -N` and
-`--list-test-cases`. **Those skips are not a random sample**: together they are the only coverage
-anywhere of the two timeouts, cancellation, the `Converted` state and therefore the whole end-to-end
-conversion, `ok: false`, exit-0-with-no-status, both `ArtifactUnusable` arms, a selection change during a
-live run, and the refused-by-cap log — so on Windows none of those arms is executed by any test at all,
-and the plan's own §V2 R5 claim that "they hold identically on all three lanes" is inaccurate as
-written. It belongs in the Windows validation pass's own list, not in a footnote about counts.
+`aero_editor_core` sources **57 → 58** (`mesh_cook_source.cpp`) and `editor/src/*.cpp` **58 → 59**,
+with **no** new `find_package` and **no** new `vcpkg.json` dependency.
+`check-math-boundary.sh`'s scanned count **305 → 316** and `check-project-no-delete.sh`'s Check B scan
+**58 → 59**, both picked up automatically — **neither script changes, and `.github/scripts/` is
+byte-identical to `main`.** Guard count stays **six**; Check A's six-file denylist and Check B's
+two-file `PERMITTED_DELETERS` are unchanged in membership, and `mesh_cook_source.cpp` is in **neither**,
+which is exactly what makes a future `std::filesystem::remove` there a hard CI failure.
+`git grep -nE '_WIN32|__APPLE__|__linux__' -- engine/assets tools/cooker` reads **zero lines**, and the
+same grep over `editor/src` + `editor/include` still reads **exactly three lines in one file**
+(3.2.4's `currentHostOs()`). Every purity grep over `engine/assets` (`<filesystem>`, `<fstream>`,
+`<iostream>`, `AERO_LOG`, `std::cout`/`std::cerr`, `std::map`/`std::set`/`unordered_*`,
+`reinterpret_cast`, `memcpy`, `rhi/`) returns **only prose in `//` comments stating the prohibition** —
+never a use. Counts diverge by OS (Windows skips `golden-rule.include_scan_e2e`, and **fourteen** whole
+`BS` cases plus one arm of `BS11` and one GPU case, `I80`, skip loudly there), so never assume one —
+measure with `ctest -N` and `--list-test-cases`. **Those 3.2.4 skips are not a random sample**:
+together they are the only coverage anywhere of the two Blender timeouts, cancellation, the `Converted`
+state and therefore the whole end-to-end conversion, `ok: false`, exit-0-with-no-status, both
+`ArtifactUnusable` arms, a selection change during a live run, and the refused-by-cap log — so on
+Windows none of those arms is executed by any test at all. That belongs in the Windows validation
+pass's own list, not in a footnote about counts.
 
 > **Before touching a subsystem, read its entry in `docs/10-engineering-log.md`.** That file is the full per-task history: what shipped, what was deliberately left out, the traps found, and the dead ends that must never be retried (the lavapipe LSan leak, `LD_PRELOAD`, vcpkg's `sdl3-shadercross` on macOS, …). It is deliberately *not* auto-loaded — grep it before re-deriving anything.
 
@@ -378,7 +276,7 @@ SDKROOT=$(xcrun --sdk macosx15.4 --show-sdk-path) \
 
 CI (GitHub Actions; macOS + Windows + Ubuntu) configures, builds and tests all six presets on every push to `main` and every PR, plus a `lint` job running clang-format, clang-tidy, the vcpkg-baseline guard, and the **six** architecture guards in `.github/scripts/`: `check-math-boundary.sh`, `check-platform-boundary.sh`, `check-rhi-boundary.sh`, `check-scene-boundary.sh`, `check-golden-rule.sh`, `check-project-no-delete.sh`. The count is measured, not remembered — `ls .github/scripts/`.
 
-Path-scoped working rules live in `.claude/rules/` and load only when the matching files are opened — boundary guards, reflect-gen, CI portability, and editor conventions.
+Path-scoped working rules live in `.claude/rules/` and load only when the matching files are opened — boundary guards, reflect-gen, CI portability, editor conventions, and cooked assets.
 
 ## The three project rules (non-negotiable)
 
@@ -438,4 +336,4 @@ Some decisions are deliberately deferred (`docs/08-risks.md`): forward+ vs defer
 | `docs/09-file-formats.md` | Scene schema v1 (entity/components/version), canonical form, versioning & evolution policy |
 | `docs/10-engineering-log.md` | **Per-task build history** — what each task shipped and deliberately did not, traps found, dead ends never to retry, and per-task build/dependency impact. Not normative; not auto-loaded. Read the relevant entry before touching a subsystem. |
 | `docs/future-roadmap.md` | v2 / v3–v4 deferred features |
-| `.claude/rules/*.md` | Path-scoped working rules, loaded only when matching files are opened (boundary guards, reflect-gen, CI portability, editor) |
+| `.claude/rules/*.md` | Path-scoped working rules, loaded only when matching files are opened (boundary guards, reflect-gen, CI portability, editor, cooked assets) |

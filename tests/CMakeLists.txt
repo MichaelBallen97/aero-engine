@@ -25,6 +25,8 @@ add_executable(aero_tests
     vfs_test.cpp
     guid_test.cpp          # task 3.1.1 — engine::Guid: text codec, ordering, hash, seeded generator
     content_hash_test.cpp  # task 3.1.2 — engine::ContentHash: MurmurHash3 x64_128, text codec, ordering, incremental hasher
+    cooked_mesh_test.cpp   # task 3.3.1 — the .aeromesh container v1: layout, parse, hostile input
+    mesh_cook_test.cpp     # task 3.3.1 — cookMesh: grouping, layouts, interleave, bounds, caps
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -76,7 +78,18 @@ add_executable(aero_tests
 # cannot weaken any guard. The compile-time guard for rhi/SDL_GPU is aero_rhi_boundary_probe, which
 # links aero::rhi ALONE and is UNTOUCHED by this line -- and engine/rhi/CMakeLists.txt:43's "NEVER
 # link it into a boundary probe" is about exactly those probe targets, not this runner (§O-1).
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
+# task 3.3.1: aero::assets joins this line for cooked_mesh_test.cpp and mesh_cook_test.cpp. aero::rhi
+# is ALREADY here, which is what makes CM47's CookedVertexFormat <-> rhi::VertexFormat correspondence
+# assertable in this target at all -- assets deliberately does not link rhi, and never will.
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
+
+# task 3.3.1, added by the sabotage round: cooked_mesh_test.cpp's CM50 asserts a STRUCTURAL property of
+# the parser -- that nothing is reserved before the four header counts have been checked against their
+# caps -- which no runtime case in this tree can see (a 274 GB reserve of virtual address space simply
+# succeeds on macOS, measured with the reserves deliberately moved above the checks). It is therefore a
+# comment-stripped source-text gate, the AERO_EDITOR_SRC_DIR / I73 / MS41 / AI34 shape one layer down.
+# UNGATED on purpose: both reduced configurations build this TU and must run this case too.
+target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/assets/src")
 
 # Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,
 # in build/<preset>/shaders). aero_shaders exists ONLY when AERO_SHADER_TOOLS is ON (cmake/shaders.cmake),
@@ -295,6 +308,16 @@ find_package(Threads REQUIRED)
 # drift surface). The link line is UNCHANGED, no new ctest entry is registered (ctest -N stays
 # 95/6/19), and THIS TU NAMES NO Assimp TYPE -- it drives the backend only indirectly, through the
 # PUBLIC importModel().
+# task 3.3.1 joins this target with ONE new TU, editor/mesh_cook_source_test.cpp. UNCONDITIONAL, for
+# the identical reason model_import_test.cpp is: mesh_cook_source.hpp depends only on
+# aero/editor/model_import.hpp and aero/assets/mesh_cook.hpp, and aero::assets is a PUBLIC, UNGATED
+# dependency of aero_editor_core (only engine/scene_serialize is gated on AERO_REFLECT_TOOLS). This TU
+# must therefore be PRESENT in BOTH reduced configurations, not skipped -- prove it with
+# --list-test-cases, which must show the SAME total in the two and MK1 present in both. Tier-0: no GPU,
+# no window, no ImGui context, no sleeps. Its fixtures reach it through AERO_ASSET_FIXTURES_DIR, ALREADY
+# defined on this target, and it reads tests/cooked_mesh_golden.hpp through the ${CMAKE_CURRENT_SOURCE_DIR}
+# include root ALREADY set below -- ONE GOLDEN, TWO BINARIES. NO LINK-LINE CHANGE: aero::assets arrives
+# transitively and PUBLICly through aero::editor_core, and no new ctest entry is registered here.
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -311,7 +334,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/model_import_test.cpp editor/model_import_session_test.cpp
                editor/fbx_import_test.cpp editor/obj_import_test.cpp
                editor/blender_tool_test.cpp editor/blender_service_test.cpp
-               editor/assimp_import_test.cpp)
+               editor/assimp_import_test.cpp
+               editor/mesh_cook_source_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -671,6 +695,43 @@ if(AERO_REFLECT_TOOLS)
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")
     add_test(NAME aero_editor_inspector_test COMMAND aero_editor_inspector_test)
 endif()
+
+# ---------------------------------------------------------------------------------------------
+# The cooker end-to-end CTest suite (task 3.3.1) -- the third harness of this shape, cloned from the
+# shaderc and reflect-gen blocks above. Each case runs the REAL aero_cooker binary through
+# tests/cooker/run_case.cmake, which is what actually asserts exit codes: most cases here are
+# NEGATIVE, and a raw `add_test(COMMAND aero_cooker ...)` would treat any non-zero exit as a ctest
+# failure regardless of whether that was the expected behaviour (see run_case.cmake's own header).
+#
+# No doctest TU for the tool, and no tool code links into aero_tests -- a CLI's honest test is its
+# process boundary: argv in, exit code + files out. The PURE halves it is built from (cookMesh,
+# parseCookedMesh, meshCookPrimitives) are covered by aero_tests and aero_editor_shell_test instead.
+#
+# UNGATED, unlike both blocks above: aero_cooker needs neither libclang nor a shader toolchain, and
+# aero_editor_core builds in both reduced configurations. ctest -N therefore MOVES IN ALL THREE
+# configurations -- deliberate, and the first time in Epic 3.2/3.3 that number has moved. A reduced
+# configuration whose count did not move means this block was gated by accident.
+set(_aero_cooker_cases
+    help version no_subcommand unknown_subcommand unknown_flag
+    missing_input_flag missing_output_flag missing_flag_value repeated_flag
+    bad_guid bad_scale
+    missing_file blend_refused
+    gltf_happy gltf_external_bin obj_missing_mtl
+    guid_written scale_applied no_materials
+    determinism nothing_written_on_failure output_dir_missing
+)
+foreach(_aero_case IN LISTS _aero_cooker_cases)
+    add_test(
+        NAME cooker.${_aero_case}
+        COMMAND "${CMAKE_COMMAND}"
+                -DTOOL=$<TARGET_FILE:aero_cooker>
+                -DCASE=${_aero_case}
+                -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cooker/${_aero_case}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cooker/run_case.cmake
+    )
+endforeach()
+unset(_aero_cooker_cases)
 
 # ---------------------------------------------------------------------------------------------
 # task 2.1.2 -- hermetic proofs that the golden-rule guards actually go RED. Ungated (D15): the
