@@ -497,9 +497,11 @@ struct ObjMtlLibScan {
 // costs a few hundred bytes of scanning).
 //
 // The rule MIRRORS the library's own rather than a corrected one, because Structure and Full must
-// agree about the URI set and Full goes through that code: a line matches iff, after leading spaces,
-// it begins with `element` or `comment`, then the case-SENSITIVE token `TextureFile`, and the operand
-// is THE REST OF THE LINE, VERBATIM -- a trailing space included, because the library keeps it
+// agree about the URI set and Full goes through that code: a line matches iff, after leading SPACES
+// AND TABS (Assimp::SkipSpaces tests `in == ' ' || in == '\t'`, and PLY::Element::ParseElement opens
+// with it -- skipping only ' ' here made a tab-indented header line invisible to this scan and visible
+// to the loader), it begins with `element` or `comment`, then the case-SENSITIVE token `TextureFile`,
+// and the operand is THE REST OF THE LINE, VERBATIM -- a trailing space included, because the library keeps it
 // (MEASURED, correcting a plausible reading of its `strlen - 1` as an off-by-one: the buffer it
 // trims still carries the line terminator). Trimming that space here would make the two depths
 // classify different relative paths. AC-19 asserts the agreement on every fixture; do not "fix" this

@@ -343,10 +343,18 @@ std::vector<std::string> scanPlyTextureFiles(std::span<const std::byte> bytes, s
             line.remove_suffix(1);
         }
 
-        // The library's own element-line test: after LEADING SPACES ONLY, the line must begin with
+        // The library's own element-line test: after LEADING WHITESPACE, the line must begin with
         // `element` or `comment`. Anything else is not a candidate at all.
+        //
+        // WHITESPACE IS SPACE **AND TAB**, because that is what the library means by it: PLY::Element
+        // ::ParseElement opens with PLY::DOM::SkipSpaces, which forwards to Assimp::SkipSpaces, whose
+        // test is `(in == ' ' || in == '\t')` (the port's own ParsingUtils.h). Skipping only ' ' here
+        // made a TAB-indented `comment TextureFile wood.png` invisible to this scan and visible to the
+        // loader -- Structure returning {} where Full returns {wood.png}, the one disagreement AC-19
+        // forbids, and a dependency phase 7.5 would never record. The identical rule is applied in
+        // plyDeclaredCountsExceedBytes below; the two must never diverge.
         std::size_t i = 0;
-        while (i < line.size() && line[i] == ' ') {
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
             ++i;
         }
         const std::string_view rest = line.substr(i);
@@ -423,8 +431,12 @@ bool plyDeclaredCountsExceedBytes(std::span<const std::byte> bytes) {
         if (!line.empty() && line.back() == '\r') {  // ONE trailing '\r' -- scanPlyTextureFiles' rule
             line.remove_suffix(1);
         }
+        // SPACE AND TAB, identical to scanPlyTextureFiles' rule above and to the library's own
+        // Assimp::SkipSpaces. Skipping only ' ' here failed SAFE -- a tab-indented `element` line was
+        // simply not counted, so the check under-counted and could never reject an honest file -- but
+        // the two scans read the same header and a reader who checks one must find the other agrees.
         std::size_t i = 0;
-        while (i < line.size() && line[i] == ' ') {
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
             ++i;
         }
         const std::string_view rest = line.substr(i);

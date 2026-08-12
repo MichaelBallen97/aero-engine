@@ -2744,6 +2744,33 @@ TEST_CASE("model_import: CRLF line endings are handled -- one trailing '\\r' str
     CHECK(names[0] == "a.png ");
 }
 
+// MI153 (code-review finding 3) -- LEADING WHITESPACE IS SPACE AND TAB, because that is what the library
+// means by it. PLY::Element::ParseElement opens with PLY::DOM::SkipSpaces, which forwards to
+// Assimp::SkipSpaces, whose test is `(in == ' ' || in == '\t')` (the port's own ParsingUtils.h). This
+// scan skipped only ' ', so a TAB-indented header line was invisible to it and visible to the loader:
+// Structure returned {} where Full returned {wood.png} -- the depth disagreement AC-19 forbids -- and
+// phase 7.5's Structure-depth probe recorded NO dependency, so editing wood.png would never mark the
+// model DependencyChanged. The end-to-end half is the `tab.ply` fixture in assimp_import_test.cpp's
+// table, which AI10 drives.
+TEST_CASE("model_import: a TAB-indented header line is a candidate, exactly as the library reads it (MI153)") {
+    const std::string tabbed = "ply\n\tcomment TextureFile wood.png\nend_header\n";
+    const std::vector<std::string> names = scanPlyTextureFiles(asBytes(tabbed), 16);
+    REQUIRE(names.size() == 1U);
+    CHECK(names[0] == "wood.png");
+
+    // The `element` spelling and a MIXED run of spaces and tabs behave identically -- SkipSpaces skips
+    // both, in any order, for as long as they last.
+    const std::string mixed = "ply\n \t \telement TextureFile skin.png\nend_header\n";
+    const std::vector<std::string> mixedNames = scanPlyTextureFiles(asBytes(mixed), 16);
+    REQUIRE(mixedNames.size() == 1U);
+    CHECK(mixedNames[0] == "skin.png");
+
+    // And an indented `end_header` still bounds the scan, for the same reason: the library reaches its
+    // own TokenMatch on that line only after the leading whitespace has been skipped.
+    const std::string indentedEnd = "ply\n\tend_header\ncomment TextureFile body.png\n";
+    CHECK(scanPlyTextureFiles(asBytes(indentedEnd), 16).empty());
+}
+
 TEST_CASE("model_import: nothing after end_header is scanned (MI141)") {
     // BOUNDED BY THE HEADER, which is what makes a 400 MB binary .ply cost a few hundred bytes. A
     // `TextureFile` line in the BODY -- or a byte sequence that happens to look like one -- is invisible.
@@ -2883,6 +2910,14 @@ TEST_CASE("model_import: plyDeclaredCountsExceedBytes refuses a lying header, pa
     SUBCASE("CRLF line endings are handled, exactly as scanPlyTextureFiles handles them") {
         const std::string crlf = "ply\r\nformat ascii 1.0\r\nelement vertex 900\r\nend_header\r\n";
         CHECK(plyDeclaredCountsExceedBytes(asBytes(crlf)));
+    }
+    SUBCASE("a TAB-indented element line is counted -- the same whitespace rule as MI153's") {
+        // Code-review finding 3's second site. Here skipping only ' ' failed SAFE -- an indented element
+        // line was simply not counted, so the check UNDER-counted and could never reject an honest file
+        // -- but the two scans read the same header and a reader who checks one must find the other
+        // agrees. Assimp::SkipSpaces is the rule for both.
+        const std::string tabbed = "ply\r\nformat ascii 1.0\r\n\telement vertex 900\r\nend_header\r\n";
+        CHECK(plyDeclaredCountsExceedBytes(asBytes(tabbed)));
     }
     SUBCASE("`elementary` is not `element` -- the keyword needs its trailing whitespace") {
         const std::string decoy = std::string(HEADER) + "elementary 4294967295\nend_header\n";

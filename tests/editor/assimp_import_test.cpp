@@ -405,6 +405,25 @@ constexpr std::string_view TWO_TEXTURE_PLY =
     "element vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\n"
     "property list uchar int vertex_index\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
 
+// GAP-CLOSING (code-review finding 3). A TAB-indented header line. PLY::Element::ParseElement opens
+// with PLY::DOM::SkipSpaces -> Assimp::SkipSpaces, whose test is `in == ' ' || in == '\t'`, so the
+// LOADER sees this TextureFile line; scanPlyTextureFiles skipped only ' ' and did not. Structure
+// returned {} while Full returned {tabbed.png} -- the depth disagreement AC-19 forbids, and a
+// dependency phase 7.5's Structure-depth probe would never record, so editing tabbed.png would never
+// mark the model DependencyChanged. It lives IN THE TABLE so AI10 asserts the agreement on it.
+constexpr std::string_view TAB_INDENTED_PLY =
+    "ply\nformat ascii 1.0\n\tcomment TextureFile tabbed.png\nelement vertex 3\nproperty float x\n"
+    "property float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_index\n"
+    "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+
+// The table had no CRLF .ply either. IOStreamBuffer::getNextLine treats '\r' as a line end and appends
+// its own '\n', so CRLF and LF are indistinguishable to the loader; this fixture is what asserts the
+// scan's one-trailing-'\r' rule agrees END TO END rather than only at the pure level (MI140).
+constexpr std::string_view CRLF_TEXTURED_PLY =
+    "ply\r\nformat ascii 1.0\r\ncomment TextureFile crlf.png\r\nelement vertex 3\r\nproperty float x\r\n"
+    "property float y\r\nproperty float z\r\nelement face 1\r\nproperty list uchar int vertex_index\r\n"
+    "end_header\r\n0 0 0\r\n1 0 0\r\n0 1 0\r\n3 0 1 2\r\n";
+
 // THE FIXTURE TABLE. AI10 (depth equality), AI11 (degenerate inputs) and AI13 all drive it, so adding a
 // fixture here covers it in several cases automatically -- which is what keeps AC-19's "for EVERY
 // fixture" honest as the suite grows.
@@ -415,8 +434,10 @@ struct Fixture {
 
 [[nodiscard]] std::vector<Fixture> fixtureTable() {
     return {
-        Fixture{"t.stl", TRIANGLE_STL}, Fixture{"t.ply", TRIANGLE_PLY},      Fixture{"scan.ply", TEXTURED_PLY},
-        Fixture{"t.dae", TRIANGLE_DAE}, Fixture{"hostile.dae", HOSTILE_DAE}, Fixture{"two.ply", TWO_TEXTURE_PLY},
+        Fixture{"t.stl", TRIANGLE_STL},       Fixture{"t.ply", TRIANGLE_PLY},
+        Fixture{"scan.ply", TEXTURED_PLY},    Fixture{"t.dae", TRIANGLE_DAE},
+        Fixture{"hostile.dae", HOSTILE_DAE},  Fixture{"two.ply", TWO_TEXTURE_PLY},
+        Fixture{"tab.ply", TAB_INDENTED_PLY}, Fixture{"crlf.ply", CRLF_TEXTURED_PLY},
     };
 }
 
