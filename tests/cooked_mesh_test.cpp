@@ -18,6 +18,13 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+// <ostream> is load-bearing on MSVC (the 0.4.1 trap, a fourth occurrence): doctest stringifies the
+// std::string_view operands of the magic and status-label CHECKs below through the stdlib's
+// operator<<(std::ostream&, std::string_view), which MS STL defines inline in <string_view> against
+// an INCOMPLETE std::basic_ostream -- only <ostream> completes it. libc++ and libstdc++ are
+// self-sufficient, so omitting it builds clean on macOS and Linux and fails only on the Windows
+// lane, with errors pointing inside the STL headers rather than at the CHECK.
+#include <ostream>
 #include <span>
 #include <string>
 #include <string_view>
