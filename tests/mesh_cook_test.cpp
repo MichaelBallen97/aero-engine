@@ -764,3 +764,337 @@ TEST_CASE("mesh cook: a non-finite NORMAL is copied through verbatim (MC41)") {
     // And the bounds are untouched by them, because the fold is over POSITIONS.
     CHECK(c.parsed.mesh.bounds.max == Vec3{1.0F, 1.0F, 0.0F});
 }
+
+// =================================================================================================
+// The caps. FOUR of these cases are the largest allocations any test in this tree makes, and the
+// cost is DISCLOSED here rather than discovered: MC42 ~96 MB, MC43 ~96 MB, MC44 ~10 MB, MC45 ~192 MB.
+// The vertex and index caps cannot be reached without real memory, because phase 1 READS every
+// position (finiteness) and every index (range) before the cap pass runs. A settable cook cap was
+// rejected: the caps are part of the format's contract and the PARSER enforces them too, so a test
+// cap would prove something the shipped configuration does not do.
+// =================================================================================================
+
+TEST_CASE("mesh cook: the vertex cap truncates and names itself (MC42)") {
+    // ~96 MB for the positions vector in each subcase, and another ~96 MB of cooked output in the
+    // at-the-cap arm. doctest re-runs the body per SUBCASE, so the two peaks do not coincide.
+    SUBCASE("exactly at the cap is Ok -- the `>` versus `>=` discriminator") {
+        std::vector<Source> sources = {triangle(0, 0)};
+        sources[0].positions.assign(engine::assets::MAX_COOKED_VERTICES, Vec3{0.5F, 0.5F, 0.5F});
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.status == MeshCookStatus::Ok);
+        CHECK(c.result.message.empty());
+        CHECK(c.parsed.mesh.sections[0].vertexCount == engine::assets::MAX_COOKED_VERTICES);
+    }
+    SUBCASE("one past the cap is Truncated") {
+        std::vector<Source> sources = {triangle(0, 0)};
+        sources[0].positions.assign(engine::assets::MAX_COOKED_VERTICES + 1, Vec3{0.5F, 0.5F, 0.5F});
+        const Cooked c = cookSources(sources);
+        CHECK(c.result.status == MeshCookStatus::Truncated);
+        CHECK(c.result.message.find("MAX_COOKED_VERTICES") != std::string::npos);
+        CHECK(c.result.message.find(std::format("{}", engine::assets::MAX_COOKED_VERTICES)) != std::string::npos);
+        // Acceptance stopped at the FIRST violating candidate, so nothing was emitted: a valid empty
+        // container, never a partial one.
+        CHECK(c.result.bytes.size() == 96U);
+        CHECK(c.parsed.mesh.submeshes.empty());
+    }
+}
+
+TEST_CASE("mesh cook: the index cap truncates and names itself (MC43)") {
+    // ~96 MB for the index vector. Every index is in {0,1,2}, so phase 1's range scan passes and the
+    // CAP is what refuses -- not the drop arm.
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].indices.assign(engine::assets::MAX_COOKED_INDICES + 3, 1);
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.status == MeshCookStatus::Truncated);
+    CHECK(c.result.message.find("MAX_COOKED_INDICES") != std::string::npos);
+    CHECK(c.result.message.find(std::format("{}", engine::assets::MAX_COOKED_INDICES)) != std::string::npos);
+    CHECK(c.result.bytes.size() == 96U);
+}
+
+namespace {
+
+// 65537 primitives aliasing ONE three-vertex, three-index buffer. Cheap (~10 MB) precisely because
+// MeshCookPrimitive holds spans the caller owns: the geometry is stored once.
+struct SubmeshCapFixture {
+    std::vector<Vec3> positions = {Vec3{0, 0, 0}, Vec3{1, 0, 0}, Vec3{0, 1, 0}};
+    std::vector<std::uint32_t> indices = {0, 1, 2};
+    std::vector<MeshCookPrimitive> prims;
+
+    void build(bool reversed) {
+        prims.clear();
+        prims.reserve(engine::assets::MAX_COOKED_SUBMESHES + 1);
+        for (std::uint32_t i = 0; i <= engine::assets::MAX_COOKED_SUBMESHES; ++i) {
+            MeshCookPrimitive p;
+            p.sourceMeshIndex = 0;
+            p.sourcePrimitiveIndex = reversed ? engine::assets::MAX_COOKED_SUBMESHES - i : i;
+            p.positions = positions;
+            p.indices = indices;
+            prims.push_back(p);
+        }
+    }
+};
+
+}  // namespace
+
+TEST_CASE("mesh cook: the submesh cap emits exactly MAX_COOKED_SUBMESHES and names itself (MC44)") {
+    SubmeshCapFixture fixture;
+    fixture.build(false);
+    MeshCookInput in;
+    in.primitives = fixture.prims;
+    const Cooked c = cookAndParse(in);
+    CHECK(c.result.status == MeshCookStatus::Truncated);
+    CHECK(c.result.message.find("MAX_COOKED_SUBMESHES") != std::string::npos);
+    CHECK(c.result.message.find(std::format("{}", engine::assets::MAX_COOKED_SUBMESHES)) != std::string::npos);
+    CHECK(c.parsed.mesh.submeshes.size() == engine::assets::MAX_COOKED_SUBMESHES);
+    CHECK(c.result.stats.submeshCount == engine::assets::MAX_COOKED_SUBMESHES);
+    // The prefix is COHERENT: the surviving submeshes are 0..65535, not an arbitrary subset.
+    CHECK(c.parsed.mesh.submeshes.front().sourcePrimitiveIndex == 0U);
+    CHECK(c.parsed.mesh.submeshes.back().sourcePrimitiveIndex == engine::assets::MAX_COOKED_SUBMESHES - 1);
+}
+
+TEST_CASE("mesh cook: two caps violated by one candidate give ONE status and TWO messages (MC45)") {
+    // ~192 MB: the vertex array and the index array both go over their caps in the same primitive.
+    // Every cap is evaluated against each candidate and each violated one latches its OWN bool, so
+    // this produces two "; "-joined messages rather than N copies of one or only the first.
+    std::vector<Source> sources = {triangle(0, 0)};
+    sources[0].positions.assign(engine::assets::MAX_COOKED_VERTICES + 1, Vec3{0.5F, 0.5F, 0.5F});
+    sources[0].indices.assign(engine::assets::MAX_COOKED_INDICES + 3, 1);
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.status == MeshCookStatus::Truncated);
+    CHECK(c.result.message.find("MAX_COOKED_VERTICES") != std::string::npos);
+    CHECK(c.result.message.find("MAX_COOKED_INDICES") != std::string::npos);
+    CHECK(c.result.message.find("; ") != std::string::npos);
+    // FIXED order -- vertices, then indices -- so the same input always produces the same string.
+    CHECK(c.result.message.find("MAX_COOKED_VERTICES") < c.result.message.find("MAX_COOKED_INDICES"));
+    CHECK(c.result.message.find("MAX_COOKED_SUBMESHES") == std::string::npos);
+}
+
+TEST_CASE("mesh cook: a cap-truncated file is still internally coherent (MC46)") {
+    SubmeshCapFixture fixture;
+    fixture.build(false);
+    MeshCookInput in;
+    in.primitives = fixture.prims;
+    const Cooked c = cookAndParse(in);  // the REQUIRE inside is INV-C3 for this arm
+    CHECK(c.result.status == MeshCookStatus::Truncated);
+    CHECK(c.parsed.mesh.submeshes.size() == c.result.stats.submeshCount);
+    CHECK(c.parsed.mesh.sections.size() == c.result.stats.sectionCount);
+    CHECK(c.parsed.mesh.indexCount == c.result.stats.indexCount);
+    CHECK(c.result.bytes.size() == c.result.stats.byteSize);
+    // Every submesh's range lies inside the header's indexCount, and the last one ends exactly on it.
+    std::uint64_t running = 0;
+    for (const auto& m : c.parsed.mesh.submeshes) {
+        CHECK(m.firstIndex == running);
+        running += m.indexCount;
+    }
+    CHECK(running == c.parsed.mesh.indexCount);
+}
+
+TEST_CASE("mesh cook: acceptance walks the SORTED order, not the input order (MC47)") {
+    // THE ONLY CASE THAT CAN SEE C2. With the cap pass before the sort, the surviving prefix is a
+    // function of the caller's input order, so these two inputs -- the same SET in opposite orders --
+    // would keep different primitives and produce different bytes. AC-28 (cook twice) stays green
+    // either way; only a shuffled OVER-CAP input tells them apart.
+    SubmeshCapFixture ascending;
+    ascending.build(false);
+    MeshCookInput inA;
+    inA.primitives = ascending.prims;
+    const MeshCookResult a = cookMesh(inA);
+
+    SubmeshCapFixture descending;
+    descending.build(true);
+    MeshCookInput inB;
+    inB.primitives = descending.prims;
+    const MeshCookResult b = cookMesh(inB);
+
+    CHECK(a.status == MeshCookStatus::Truncated);
+    CHECK(b.status == MeshCookStatus::Truncated);
+    CHECK(a.message == b.message);
+    REQUIRE(a.bytes.size() == b.bytes.size());
+    std::size_t firstDifference = a.bytes.size();
+    for (std::size_t i = 0; i < a.bytes.size(); ++i) {
+        if (a.bytes[i] != b.bytes[i]) {
+            firstDifference = i;
+            break;
+        }
+    }
+    CHECK(firstDifference == a.bytes.size());
+}
+
+TEST_CASE("mesh cook: warnings are capped and the total is not (MC48)") {
+    std::vector<Source> sources;
+    sources.reserve(25);
+    for (std::uint32_t i = 0; i < 25; ++i) {
+        Source s = triangle(0, i);
+        s.normals.assign(2, Vec3{0, 0, 1});  // a demote, so every primitive still cooks
+        sources.push_back(s);
+    }
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.status == MeshCookStatus::Ok);
+    CHECK(c.result.warnings.size() == engine::assets::MAX_COOK_WARNINGS);
+    CHECK(c.result.warnings.size() == 20U);
+    CHECK(c.result.warningTotal == 25U);
+    CHECK(c.parsed.mesh.submeshes.size() == 25U);
+}
+
+TEST_CASE("mesh cook: every REACHABLE mask gets its own section, and the cap cannot be reached (MC49)") {
+    // 2^7 = 128 masks is the arithmetic bound over seven optional semantics -- but AC-20's pairing
+    // rule makes half of them unreachable, because a mask carrying exactly one of joints/weights is
+    // cleared to NEITHER. Only 2^5 x 2 = 64 masks can ever be produced, against a cap of 128.
+    //
+    // So MAX_COOKED_SECTIONS is DOUBLY unreachable from the cook, and the plan's own "128 distinct
+    // masks yield exactly 128 sections" cannot be constructed. The cook's Truncated arm for this cap
+    // is dead code with no case, and the parser -- where a header claiming 129 sections is refused
+    // (CM21) -- is where the constant is actually proven.
+    std::vector<Source> sources;
+    sources.reserve(64);
+    std::uint32_t meshIndex = 0;
+    for (std::uint32_t free = 0; free < 32; ++free) {
+        for (std::uint32_t skinned = 0; skinned < 2; ++skinned) {
+            Source s = triangle(meshIndex++, 0);
+            if ((free & 1U) != 0) {
+                s.normals.assign(3, Vec3{0, 0, 1});
+            }
+            if ((free & 2U) != 0) {
+                s.tangents.assign(3, Vec4{1, 0, 0, 1});
+            }
+            if ((free & 4U) != 0) {
+                s.uv0.assign(3, Vec2{0, 0});
+            }
+            if ((free & 8U) != 0) {
+                s.uv1.assign(3, Vec2{0, 0});
+            }
+            if ((free & 16U) != 0) {
+                s.colors.assign(3, Vec4{1, 1, 1, 1});
+            }
+            if (skinned != 0) {
+                s.joints.assign(3, std::array<std::uint16_t, 4>{0, 0, 0, 0});
+                s.weights.assign(3, Vec4{1, 0, 0, 0});
+            }
+            sources.push_back(s);
+        }
+    }
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.status == MeshCookStatus::Ok);
+    CHECK(c.result.warnings.empty());
+    CHECK(c.parsed.mesh.sections.size() == 64U);
+    CHECK(c.parsed.mesh.sections.size() < engine::assets::MAX_COOKED_SECTIONS);
+    CHECK(c.parsed.mesh.attributes.size() < engine::assets::MAX_COOKED_ATTRIBUTES);
+    CHECK(c.parsed.mesh.submeshes.size() == 64U);
+    // Ascending mask order shows up as a strictly non-decreasing stride across the 64 sections only
+    // loosely, so the real ordering proof is that every submesh names a DISTINCT section.
+    for (std::size_t i = 0; i < c.parsed.mesh.submeshes.size(); ++i) {
+        CHECK(c.parsed.mesh.submeshes[i].sectionIndex == static_cast<std::uint32_t>(i));
+    }
+}
+
+TEST_CASE("mesh cook: stats agree with the parsed container on every count (MC50)") {
+    std::vector<Source> sources = {allAttributes(0, 0), triangle(1, 0), triangle(1, 1)};
+    sources[2].indices = {0, 1, 2, 2, 1, 0};
+    const Cooked c = cookSources(sources);
+    CHECK(c.result.stats.sectionCount == c.parsed.mesh.sections.size());
+    CHECK(c.result.stats.submeshCount == c.parsed.mesh.submeshes.size());
+    CHECK(c.result.stats.indexCount == c.parsed.mesh.indexCount);
+    CHECK(c.result.stats.byteSize == c.result.bytes.size());
+    std::uint64_t vertices = 0;
+    for (const auto& s : c.parsed.mesh.sections) {
+        vertices += s.vertexCount;
+    }
+    CHECK(c.result.stats.vertexCount == vertices);
+    CHECK(c.result.stats.droppedPrimitiveCount == 0U);
+}
+
+TEST_CASE("mesh cook: a battery of degenerate inputs never throws (MC51)") {
+    // Empty spans, one-vertex primitives, and spans ALIASING each other -- the cook reads them and
+    // copies nothing it does not write, so aliasing is legal by construction rather than by luck.
+    std::vector<Vec3> shared = {Vec3{1, 2, 3}};
+    std::vector<Vec4> shared4 = {Vec4{1, 2, 3, 4}};
+    std::vector<std::uint32_t> ones = {0, 0, 0};
+
+    MeshCookPrimitive aliased;
+    aliased.sourceMeshIndex = 0;
+    aliased.sourcePrimitiveIndex = 0;
+    aliased.positions = shared;
+    aliased.normals = shared;  // THE SAME BUFFER as positions
+    aliased.tangents = shared4;
+    aliased.weights = shared4;  // and again
+    aliased.indices = ones;
+
+    MeshCookPrimitive empty;
+    empty.sourceMeshIndex = 1;
+    empty.sourcePrimitiveIndex = 0;
+
+    MeshCookPrimitive noIndices;
+    noIndices.sourceMeshIndex = 2;
+    noIndices.sourcePrimitiveIndex = 0;
+    noIndices.positions = shared;
+
+    const std::array<MeshCookPrimitive, 3> prims = {aliased, empty, noIndices};
+    MeshCookInput in;
+    in.primitives = prims;
+    const MeshCookResult r = cookMesh(in);
+    CHECK(r.status == MeshCookStatus::Ok);
+    CHECK(r.stats.droppedPrimitiveCount == 2U);
+    CHECK(r.stats.submeshCount == 1U);
+    const auto parsed = engine::assets::parseCookedMesh(std::span<const std::byte>(r.bytes));
+    CHECK(parsed.status == CookedMeshStatus::Ok);
+    // joints was absent, so weights was dropped with it -- position, normal and tangent survive.
+    CHECK(parsed.mesh.sections[0].vertexStride == 12U + 12U + 16U);
+}
+
+TEST_CASE("mesh cook: INV-C3 holds over a sweep of every input shape in this TU (MC52)") {
+    // Table-driven, so a shape added later is covered without a new case. EVERY result with non-empty
+    // bytes parses Ok -- including the drop arms, the demote arms, the cap arms and the empty cook.
+    struct Shape {
+        const char* name;
+        std::vector<Source> sources;
+    };
+    std::vector<Shape> shapes;
+    shapes.push_back({"empty", {}});
+    shapes.push_back({"one triangle", {triangle(0, 0)}});
+    shapes.push_back({"all attributes", {allAttributes(0, 0)}});
+    shapes.push_back({"two masks", {triangle(0, 0), allAttributes(1, 0)}});
+    {
+        std::vector<Source> s = {triangle(0, 0)};
+        s[0].positions.clear();
+        shapes.push_back({"dropped: no positions", s});
+    }
+    {
+        std::vector<Source> s = {triangle(0, 0)};
+        s[0].indices = {0, 1};
+        shapes.push_back({"dropped: index count", s});
+    }
+    {
+        std::vector<Source> s = {triangle(0, 0)};
+        s[0].positions[2].z = std::numeric_limits<float>::quiet_NaN();
+        shapes.push_back({"dropped: non-finite", s});
+    }
+    {
+        std::vector<Source> s = {triangle(0, 0)};
+        s[0].normals.assign(1, Vec3{0, 0, 1});
+        shapes.push_back({"demoted: normals", s});
+    }
+    {
+        std::vector<Source> s = {triangle(0, 0)};
+        s[0].joints.assign(3, std::array<std::uint16_t, 4>{1, 2, 3, 4});
+        shapes.push_back({"demoted: joints without weights", s});
+    }
+    shapes.push_back({"duplicate key", {triangle(7, 7), triangle(7, 7)}});
+    {
+        std::vector<Source> s = {triangle(0, 0)};
+        s[0].positions.assign(65537, Vec3{1, 1, 1});
+        shapes.push_back({"uint32 indices", s});
+    }
+
+    for (const Shape& shape : shapes) {
+        CAPTURE(shape.name);
+        const std::vector<MeshCookPrimitive> prims = views(shape.sources);
+        MeshCookInput in;
+        in.primitives = prims;
+        const MeshCookResult r = cookMesh(in);
+        REQUIRE_FALSE(r.bytes.empty());
+        const auto parsed = engine::assets::parseCookedMesh(std::span<const std::byte>(r.bytes));
+        CHECK(parsed.status == CookedMeshStatus::Ok);
+        CHECK(parsed.message.empty());
+        CHECK(r.bytes.size() == r.stats.byteSize);
+    }
+}

@@ -333,6 +333,67 @@ MeshCookResult cookMeshImpl(const MeshCookInput& input) {
                                     d.prim->sourceMeshIndex, d.prim->sourcePrimitiveIndex, collisions));
     }
 
+    // ---- phase 3: cap-bounded acceptance, over the SORTED order (C2) ------------------------
+    // The accepted set is a function of the SORTED order, and the sorted order is a function of the
+    // SET, so which primitives survive a cap does not depend on the order the caller handed them in.
+    // Running this before the sort -- as the spec had it -- makes a shuffled input produce a
+    // different file, and only on inputs that trip a cap, which is exactly the combination a green
+    // suite would not otherwise exercise.
+    //
+    // EVERY violated cap latches its OWN bool; acceptance stops at the first candidate that violates
+    // ANY of them, leaving a coherent prefix rather than a hole. Two caps therefore produce two
+    // messages only when the SAME candidate violates both (A-6).
+    std::uint64_t vertexBudget = 0;
+    std::uint64_t indexBudget = 0;
+    std::uint64_t submeshBudget = 0;
+    bool capVertices = false;
+    bool capIndices = false;
+    bool capSubmeshes = false;
+    std::size_t accepted = 0;
+    for (const Descriptor& d : descriptors) {
+        // u64 accumulators, so the + cannot wrap before the comparison.
+        const bool overVertices = vertexBudget + d.vertexCount > MAX_COOKED_VERTICES;
+        const bool overIndices = indexBudget + d.indexCount > MAX_COOKED_INDICES;
+        const bool overSubmeshes = submeshBudget + 1 > MAX_COOKED_SUBMESHES;
+        if (overVertices || overIndices || overSubmeshes) {
+            capVertices = capVertices || overVertices;
+            capIndices = capIndices || overIndices;
+            capSubmeshes = capSubmeshes || overSubmeshes;
+            break;
+        }
+        vertexBudget += d.vertexCount;
+        indexBudget += d.indexCount;
+        ++submeshBudget;
+        ++accepted;
+    }
+    descriptors.resize(accepted);
+
+    // Assembled in a FIXED order (vertices, indices, submeshes) and joined with "; ", so the same
+    // input always produces the same string. Each message names its own constant and its own
+    // quantity; two cap sites sharing a constant would get different wording, and there are none in
+    // v1, but the rule is stated so 3.3.2 inherits it.
+    if (capVertices) {
+        out.message = std::format("the model exceeds MAX_COOKED_VERTICES ({}); the cooked file holds {} vertices",
+                                  MAX_COOKED_VERTICES, vertexBudget);
+    }
+    if (capIndices) {
+        if (!out.message.empty()) {
+            out.message += "; ";
+        }
+        out.message += std::format("the model exceeds MAX_COOKED_INDICES ({}); the cooked file holds {} indices",
+                                   MAX_COOKED_INDICES, indexBudget);
+    }
+    if (capSubmeshes) {
+        if (!out.message.empty()) {
+            out.message += "; ";
+        }
+        out.message += std::format("the model exceeds MAX_COOKED_SUBMESHES ({}); the cooked file holds {} submeshes",
+                                   MAX_COOKED_SUBMESHES, submeshBudget);
+    }
+    if (capVertices || capIndices || capSubmeshes) {
+        out.status = MeshCookStatus::Truncated;
+    }
+
     // ---- phase 4: sections and layouts ------------------------------------------------------
     // Equal masks are ADJACENT after the sort, so one linear pass builds every section.
     std::vector<CookedVertexAttribute> attributes;
@@ -370,6 +431,22 @@ MeshCookResult cookMeshImpl(const MeshCookInput& input) {
         sections.push_back(section);
     }
 
+    // THE TWO UNREACHABLE CAPS, kept as defence in depth and SAID SO rather than faked with
+    // synthetic input. Position is mandatory, so an attribute mask has at most 2^7 = 128 values --
+    // and AC-20's joints/weights pairing rule makes half of those unreachable too, because a mask
+    // carrying exactly one of the pair is cleared to neither. Only 2^5 x 2 = 64 masks can ever be
+    // produced, so the cook can reach at most 64 sections against a cap of 128 and at most 288
+    // attributes against a cap of 1024. NO CASE DRIVES EITHER ARM, and none can be written: the
+    // parser, where a header claiming 129 sections is refused, is where these constants are actually
+    // proven.
+    if (sections.size() > MAX_COOKED_SECTIONS || attributes.size() > MAX_COOKED_ATTRIBUTES) {
+        out.status = MeshCookStatus::Truncated;
+        out.message = std::format("the cooked layout needs {} sections and {} attributes, over the caps of {} and {}",
+                                  sections.size(), attributes.size(), MAX_COOKED_SECTIONS, MAX_COOKED_ATTRIBUTES);
+        out.bytes.clear();
+        return out;
+    }
+
     // ---- phase 5: the file-level index width ------------------------------------------------
     // `<= 65536`, not `< 65536`: a section with exactly 65536 vertices has a maximum index of 65535,
     // which Uint16 represents. Indices are SECTION-RELATIVE, so the bound that matters is the
@@ -396,6 +473,18 @@ MeshCookResult cookMeshImpl(const MeshCookInput& input) {
     const std::uint64_t indexDataOffset = cursor;
     cursor += indexTotal * cookedIndexTypeBytes(indexType);
     const std::uint64_t totalBytes = alignUp(cursor, COOKED_MESH_ALIGNMENT);
+
+    // A THIRD UNREACHABLE ARM, for the same reason and stated the same way: with the caps of phase 3
+    // enforced, the largest legal file is 8000000*104 + 24000000*4 ~= 928 MB, comfortably under the
+    // 2 GB parser early-out. Refusing here rather than allocating is what keeps a future cap change
+    // from producing a file the parser would reject.
+    if (totalBytes > MAX_COOKED_MESH_BYTES) {
+        out.status = MeshCookStatus::Truncated;
+        out.message =
+            std::format("the cooked file would be {} bytes, over the {}-byte cap", totalBytes, MAX_COOKED_MESH_BYTES);
+        out.bytes.clear();
+        return out;
+    }
 
     // ---- phase 7: emit ----------------------------------------------------------------------
     // ZERO-INITIALIZED: this is what makes every pad byte and every gap zero without a second pass.
