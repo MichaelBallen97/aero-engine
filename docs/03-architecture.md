@@ -60,6 +60,9 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
   /physics     Jolt wrapper
   /audio       graph (public) → miniaudio backend (private)
   /assets      AssetDatabase, import cache, loaders
+               (opened at 3.3.1: the cooked-asset formats -- the `.aeromesh` container and its
+               parser, plus the mesh cook. core-only: it links `aero::core` and `aero::profiling`
+               and no vcpkg package at all)
                (the `Guid` and `ContentHash` value types live in /engine/core beside Handle --
                zero-dependency primitives that scene, render, script, runtime and /tools all
                need; tasks 3.1.1 D1 and 3.1.2 D1)
@@ -74,6 +77,7 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
   /reflect-gen   libclang → meta registrations + bindings + .d.ts
   /shaderc       HLSL → DXIL/MSL/SPIR-V (SDL_shadercross wrapper)
   /cooker        assets → per-platform binary
+                 (opened at 3.3.1: `aero_cooker mesh`, source model → `.aeromesh`)
   /packager      .pak + runtime → final build
 
 /samples       validation games for each phase
@@ -94,6 +98,15 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 | Tracy | ⚠️ dev builds | ⚠️ dev builds | ⚠️ | |
 
 **If a dependency from the "❌ / ✅ editor" row ends up linked into the runtime, it is an architecture bug, not a pending optimization.**
+
+`tools/cooker` (task 3.3.1) links `aero::editor_core` for the importers, which transitively puts
+ImGui, SDL3 and the four importer libraries on its link line as `$<LINK_ONLY:>` archives. It
+initializes none of them, opens no window and creates no GPU device. **The row above records
+authorized *use*, not the transitive link graph**; the fix if that ever becomes a problem is splitting
+the importer translation units into an ImGui-free target, a self-contained refactor that changes no
+consumer. `tools/` sits outside the golden rule on both halves — `check-golden-rule.sh` scans
+`engine` and `runtime`, and `aero_assert_golden_rule`'s `CONSUMER_DIRS` is the same pair — so this is
+legal by construction rather than an exception carved for one task.
 
 ---
 
@@ -172,17 +185,19 @@ Source assets live inside a **project** — a folder whose root is marked by `pr
 Source (.blend / .fbx / .obj / .png / .wav / .ts)
    ← lives in the user's project, NEVER distributed
         │
-        │  IMPORTER  (editor)      ← Assimp / ufbx / Blender CLI live HERE
+        │  IMPORTER  (editor)      ← fastgltf / ufbx / tinyobjloader / Assimp / Blender CLI
         ▼
-glTF + .meta (GUID, import settings)
+canonical ImportedModel (IN MEMORY) + .meta (GUID, import settings)
    ← the .meta goes to git; it is what keeps the GUID stable across machines
    ← created by the editor's AssetDatabase (task 3.1.1); format in docs/09 §5
+   ← the importers produce canonical SEMANTICS, not a canonical FILE: nothing writes a glTF
+     to disk. The one on-disk intermediate is the .blend path's GLB under Library/ (task 3.2.4)
         │
         │  COOKER  (per platform)
         ▼
 Cooked binary
    · textures → ASTC/ETC2 (mobile), BCn (desktop)
-   · meshes   → GPU-ready buffers
+   · meshes   → GPU-ready buffers   ← `.aeromesh` v1, docs/09 §9 (task 3.3.1)
    · scripts  → quickjs-ng bytecode
    · shaders  → DXIL / MSL / SPIR-V
         │
@@ -190,6 +205,12 @@ Cooked binary
         ▼
 game.pak  +  precompiled runtime  =  final build
 ```
+
+Epic 3.2 deliberately did not build the write-a-glTF-and-read-it-back shape this diagram used to
+draw. Round-tripping every FBX through a written glTF would add a serialization step, a second parse,
+and a lossy hop for anything the writer did not model — so the importers hand the cooker an
+`ImportedModel` in memory instead, and the canonical-format commitment (ADR-003) is honoured in
+semantics rather than in bytes on disk.
 
 **There are ultimately two asset databases, and they are worth naming as such so this is not
 re-derived in three months.** The editor's (task 3.1.1, source-tree-backed, `.meta`-driven, scans a

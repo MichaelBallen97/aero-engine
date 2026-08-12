@@ -6012,3 +6012,375 @@ shadercross bootstrap's option hash, so the plan's generator-less command reads 
 COLD and pays a from-source DXC rebuild that peaked at 7.6 GB on this machine before a memory guard killed
 it. The probe is about doctest case counts, which are generator-independent; matching the presets' Ninja is
 the correct fix and costs nothing.
+
+---
+
+### Task 3.3.1 — Mesh cook → GPU buffers (Epic 3.3)
+
+**Branch:** `feat/3.3.1-mesh-cook-gpu-buffers`, cut from `main @ 3fc2658`. **Thirteen green commits**,
+measured with `git rev-list --count main..HEAD`, never remembered — eleven for the implementation and the
+sabotage round, one for a Windows-only compile failure the first CI run produced, and one closing the
+code-review round's two findings.
+
+Epic 3.3 opens here. A model the editor could already *import* becomes a file a runtime can *upload
+without parsing*: parallel arrays of `Vec3`/`Vec2`/`Vec4` become one interleaved, GPU-strided vertex blob
+per distinct attribute set, plus one index buffer at the narrowest width that fits, plus an axis-aligned
+box per submesh and one for the model.
+
+#### What shipped
+
+**`engine/assets` OPENS** as `aero::assets`, the first new engine subsystem since 1.4.2 —
+`CMakeLists.txt`, `include/aero/assets/cooked_mesh.hpp` + `src/cooked_mesh.cpp` (the `.aeromesh`
+container v1: frozen enums and record sizes, the eight `constexpr` little-endian byte primitives, and the
+hostile-input parser), `include/aero/assets/mesh_cook.hpp` + `src/mesh_cook.cpp` (the producer).
+`engine/assets/.gitkeep` is deleted; the directory it existed to keep tracked stopped being empty.
+
+**`/editor` gains one pair**, `mesh_cook_source.{hpp,cpp}` — two pure functions, no UI, no state, no
+`Library/` write, no panel. `meshCookPrimitives(model)` flattens every mesh's primitives into spans
+pointing *into* the model; `cookImportedModel(model, guid)` is that plus `cookMesh`.
+
+**`/tools/cooker` opens** as the third first-party CLI (`CMakeLists.txt`, `src/main.cpp`, `README.md`),
+linking `aero::editor_core` for the five importer paths it refuses to re-implement.
+
+**`git diff --name-only main...HEAD -- engine/` is NOT empty for the first time since task 3.1.1, and the
+no-engine-change streak that reached seven at 3.2.5 ENDS here — deliberately.** The whole engine diff is
+one new subdirectory plus one `add_subdirectory(assets)` line; every other subsystem (`core`, `platform`,
+`rhi`, `render`, `reflect`, `scene`, `scene_render`, `scene_serialize`) is byte-identical.
+
+**No new dependency of any kind.** `vcpkg.json`, `builtin-baseline`, the `/vcpkg` submodule, `.github/`,
+`cmake/` and `runtime/` are all byte-identical to `main` (`git diff main...HEAD` over those paths reads
+zero lines). `aero_assets` links `PUBLIC aero::core PRIVATE aero::profiling` and **no vcpkg package at
+all** — which is rarer in this tree than it looks and is what makes its `PRIVATE` links a genuine
+compile-time boundary rather than the usual convention-plus-grep (R12). `engine/assets/CMakeLists.txt`
+says so in its own comment; adding a `find_package` there would void it silently while CI stayed green.
+
+**No editor integration**, and that is asserted rather than hoped: `asset_database.cpp`,
+`model_import_session.{hpp,cpp}`, `asset_view.cpp`, `import_details_panel.cpp`, `editor_app.cpp`,
+`model_import.hpp` and all four importer TUs are byte-identical to `main` afterwards. No panel change, no
+menu item, no cook-on-import, no `Library/Cooked/`.
+
+#### The nine spec corrections — three of them load-bearing
+
+The spec was written against the same commit as the plan and was **not** stale, which is not a licence to
+trust it. Every derived statement was recomputed rather than read, and nine were wrong.
+
+**C1 — `AC-4`'s "every declared byte offset is a multiple of 16" contradicts the spec's own layout table,
+and the minimal file is the case that proves it.** With the attribute table at 96 and the tables packed,
+a single position-only primitive puts the section table at **104** and the submesh table at **136**,
+neither 16-aligned. Following AC-4 literally means inserting padding between the tables, silently changing
+the layout, and producing a file that fails its own byte golden. The correction is a **scoping**
+correction: AC-4 governs the two offsets the format actually *stores* (`CookedSection::vertexDataOffset`
+and the header's `indexDataOffset`) plus the zero-padding rule; the three tables are packed at implicit
+8-byte-aligned starts the reader derives. Nothing is lost, because no record is ever `memcpy`'d or cast.
+`COOKED_GOLDEN_TRIANGLE` pins 104 and 136 in bytes.
+
+**C2 — the spec's step order breaks AC-29: the cap pass ran in INPUT order, so a shuffled input produced a
+different file.** If acceptance walks the caller's span, which primitives survive a cap depends on the
+order they were handed in. AC-28 (cook twice) still passes; AC-29 (shuffle) fails — **and only on inputs
+that actually trip a cap**, which is exactly the combination a green suite would not otherwise exercise.
+The correction: **the sort moves BEFORE the cap pass**. The accepted set is then a function of the sorted
+order, and the sorted order is a function of the *set*.
+
+**C3 — the sort key is not total, and `stable_sort` alone does not make AC-29 true.** The key is unique
+for everything `meshCookPrimitives` produces, but `cookMesh` is a public API over a caller-supplied span
+and a caller *can* repeat a key. The correction states the contract exactly in the header (*the output is
+a pure function of the multiset keyed by `(mask, sourceMeshIndex, sourcePrimitiveIndex)`; where that key
+repeats, the tied entries keep the input's relative order*) and adds one linear pass over adjacent pairs
+that **diagnoses** a repeat with one warning. Nothing is dropped — dropping would lose geometry over a
+caller's bookkeeping. That converts the single non-total case from a silent determinism hole into a
+diagnosed condition.
+
+**C4 — the byte primitives cannot live in `cooked_mesh.cpp`**, because `mesh_cook.cpp` needs them too, and
+putting them in the public header buys a proof the spec's design could not have: the endianness becomes a
+**`static_assert`**, so a big-endian `putU32` is a *build failure* rather than a red test. The signature
+is `put*(std::span<std::byte>, offset, value)` rather than the spec's bare pointer, which keeps raw
+pointer arithmetic out of the emitter entirely and is total.
+
+**C5 — AC-31's "the same byte size" cannot be computed: `aero::rhi` exposes no vertex-format size
+function.** Measured — `git grep VertexFormat -- engine/rhi/` returns the enum and one struct field, and
+the only place a `VertexFormat` is interpreted is a PRIVATE backend TU. The case therefore asserts what is
+real (`cookedVertexFormatBytes` is total and returns 8/12/16/16; the four enumerators map to four
+*pairwise distinct* `rhi::VertexFormat` enumerators) and says in its own comment that the byte size
+claimed for each `rhi::VertexFormat` is a **literal in the table**, a statement about documented meaning
+rather than a computed check. Adding `rhi::vertexFormatSize` was rejected: an `engine/rhi` change in the
+one task whose whole argument is that it has no business touching the GPU layer.
+
+**C6 — `INV-C3` ("`cookMesh(input).bytes` always parses") cannot survive an allocation failure**, and the
+contract must say which way it breaks. The body runs inside one `try`/`catch(...)`; on an escape the
+status is `Truncated` and `bytes` is **cleared**. The restated invariant: *every result whose `bytes` is
+non-empty parses `Ok`; `bytes` is empty only after an allocation failure.* Emitting a 96-byte empty
+container from the catch block was rejected — machinery on a path no test in this tree can reach, and an
+untestable fallback is worse than a documented one.
+
+**C7 — `sourceMeshIndex` is ambiguous in the spec, and the two readings differ for FBX.** It is the
+**position in `ImportedModel::meshes`**, not `ImportedMesh::localId`, which for FBX is a raw ufbx
+`typed_id` rather than a dense index. Recording `localId` would hand task 3.1.5 a number it cannot index
+with, on exactly one format, silently.
+
+**C8 — AC-5 makes reserved space a BREAKING extension point, not an additive one**, and the spec never
+draws that conclusion. Because a non-zero reserved field is a *refusal*, the day a v2 writer occupies one,
+every v1 reader refuses the whole file — which is the *intended* behaviour, and which means **occupying
+reserved space requires a `formatVersion` bump**. The spec's own R2 fix note said `cookerVersion`; it is
+corrected. `cookerVersion` means "the same input now cooks to different bytes" and nothing else.
+
+**C9 — the spec's parser was missing three refusals that cost nothing and close real holes**: a section
+with `attributeCount == 0`, a **zero `vertexStride`**, and a stride that is not a multiple of 4. The zero
+stride is the sharpest of the three — with it, `vertexDataBytes == vertexCount × 0 == 0` satisfies the
+consistency check for *any* `vertexCount`, so a header could claim four billion vertices backed by no
+bytes at all, and every consumer then divides by that stride.
+
+#### What only building it could find
+
+**`std::from_chars`'s floating-point overload does not exist in the pinned macOS SDK's libc++.** The plan
+specified it for `--scale`. `model_import.cpp` had already measured this; the cooker reads the value
+through an `istringstream` imbued with `std::locale::classic()` instead, which is locale-independent and
+fully consumes its input.
+
+**The plan's phase-1 defensive drop would have made the vertex cap's own proofs unreachable.** §D-6 gave
+phase 1 a drop for `positions.size() > MAX_COOKED_VERTICES` so the acceptance accumulators could not
+wrap. A primitive dropped in phase 1 never reaches the cap loop, so the status would read `Ok` rather than
+`Truncated` and `MC42`/`MC45` could not exist. The same overflow is closed exactly by keeping the
+descriptor's two counters in **`u64`** until acceptance, where the caps already bound them — no
+behavioural arm at all.
+
+**The section and attribute caps are unreachable by a wider margin than the plan assumed.** 2⁷ = 128 masks
+is the arithmetic bound the plan used, but **AC-20's joints/weights pairing rule clears a mask carrying
+exactly one of the pair**, so only 2⁵ × 2 = **64** masks can ever be produced against a section cap of
+128. Their arms say so rather than being faked with synthetic input, and `MC49` asserts the 64.
+
+**clang-tidy's `bugprone-branch-clone` rejects consecutive identical switch arms**, which forced
+`cookedVertexFormatBytes` and `cookedFormatForSemantic` to merge arms that share a *width* or a *format*
+without sharing a *meaning*. Both carry a comment saying the normative form is the row-per-semantic table
+above them; the merge is a lint accommodation, not a claim that `Uint4` and `Float4` are the same thing.
+`performance-enum-size` needed three `NOLINTNEXTLINE`s with a comment naming the on-disk width — never a
+narrower type, which would change the format.
+
+#### The three byte goldens
+
+Each was produced by a real cook and then verified **field by field** against the format's own tables
+before being frozen — every offset, count, stride, layout and bound decoded by hand, every gap and tail
+byte confirmed zero.
+
+- **`COOKED_GOLDEN_EMPTY`, 96 bytes** — zero primitives. Simultaneously the valid empty file and the
+  smallest buffer that is not `TooSmall`, and the one file where every field's absence is visible.
+- **`COOKED_GOLDEN_TRIANGLE`, 272 bytes** — one position-only primitive, which is **exactly
+  `tests/fixtures/assets/triangle.gltf` imported at `Full` depth**. That coincidence is what lets one
+  golden pin the cook *and* the editor adapter (`MK7`). It is also C1 in bytes: section table at 104,
+  submesh table at 136, stored offsets at 208 and 256.
+- **`COOKED_GOLDEN_MIXED`, 480 bytes** — two primitives supplied in **reverse** key order, so the array is
+  simultaneously the golden and the order-independence proof. It pins ascending-mask section order,
+  ascending-semantic attribute layout, a non-nil GUID in both header halves, and — because section 1's
+  vertex region ends exactly on 464 with no pad while section 0's needed one — that inter-region padding
+  is **computed**, not unconditional.
+
+An in-source annotated array rather than a committed binary artifact, deliberately: reviewable in the
+diff, no fixture path, works in both reduced configurations, and one array serves two test binaries with
+no drift.
+
+#### The sabotage matrix — 42 seeds, five genuine gaps
+
+Every seed's presence was confirmed with `git diff` before its verdict was trusted. Thirty-seven
+discriminated. **Five reddened nothing against a fully green suite**, and each is closed with a case that
+reddens without the fix, re-proven by re-seeding afterwards:
+
+- **`S4` (sort by first-seen order rather than by mask) → `MC57`.** Every existing ordering case supplied
+  its primitives so that ascending mask and ascending `(sourceMeshIndex, sourcePrimitiveIndex)` *agreed*,
+  so dropping the mask from the comparator produced byte-identical output for all of them. The sharpest
+  gap in the set: the ordering rule the whole format rests on had no case that could see it violated.
+- **`S9b` (swap the fold's argument order) → `MC58`.** `std::min(a, b)` returns `b < a ? b : a`, so
+  `-0.0f` and `+0.0f` — which compare *equal* — are the only witnesses, and no fixture carried both.
+  `MC58` also catches `S9` (`fmin`/`fmax`), which was a non-discriminator until it existed.
+- **`S16` (reserve before the cap check) → `CM50`.** Unobservable at runtime here, and *measured* rather
+  than assumed: a 274 GB `reserve` of address space simply succeeds on this machine. The order is
+  asserted in **comment-stripped source text** instead — the `I73`/`MS41`/`AI34` shape, a fourth use.
+- **`S34` (the adapter reads `ImportedPrimitive`'s attribute bitset instead of the arrays) → `MK17`.**
+  Every committed fixture is internally consistent, so gating each array on that bitset changed nothing
+  `MK11` could see. `MK17` hand-builds a model whose bitset lies in **both** directions.
+- **`S40` (empty `MC52`'s table) → `MC52` itself**, which passed with **zero assertions** until a size
+  bound and a swept counter were added to it. A table-driven case with no anti-vacuity guard is a case
+  that agrees with an empty table.
+
+`CM49` went in beside `CM50`: `UINT32_MAX` header counts are refused as `CapExceeded` with an empty mesh,
+which nothing else asserted — `CM21`'s arms are all cap+1, and cap+1 and `UINT32_MAX` take different
+arithmetic paths.
+
+#### CI caught what a fully green local gate could not — for the fourth time in five tasks
+
+The first CI run failed on **Windows alone**, at compile time, on `tests/cooked_mesh_test.cpp`. doctest
+stringifies the `std::string_view` operands of the magic and status-label `CHECK`s through
+`operator<<(std::ostream&, std::string_view)`, which MS STL defines **inline in `<string_view>`** against
+a `std::basic_ostream` that only `<iosfwd>` has declared at that point. libc++ and libstdc++ both supply
+the complete type transitively, so macOS and Linux built clean and **no local run could have seen it**.
+The errors point *inside the STL headers* rather than at the `CHECK` that caused them.
+
+Fixed in `2f06636` with one `#include <ostream>` and a comment. **This is the 0.4.1 trap's fourth
+occurrence** — `rhi_format_test.cpp` and `scene_format_test.cpp` each carry the same include and the same
+explanation — so it is now a named section in `.claude/rules/ci-portability.md` rather than three
+identical comments nobody greps.
+
+One thing the failure incidentally proved: **exactly one object failed**, and
+`tools/cooker/src/main.cpp` had already compiled. The cross-`add_subdirectory` alias resolution this task
+depends on (the tool's `target_link_libraries` names `aero::assets` and `aero::editor_core`, both defined
+in *later* `add_subdirectory` calls, which CMake resolves at generate time) is confirmed working under
+MSVC's generator — the exact thing R8 and the push-alone-at-step-8 discipline existed to answer.
+
+#### The code-review round — two findings, neither a defect
+
+Both were closed as documentation and comments in `4846d2b`, because in both cases the *code* was already
+right and what was missing was the reason.
+
+**Finding 1 — the model-bounds fold order.** The per-submesh boxes are bit-exact against
+`ImportedPrimitive::bounds`. The **model** box folds submesh boxes in **sorted** order while
+`gltf_import.cpp` folds `ImportSummary::bounds` in **source** order. `std::min`/`std::max` are
+order-independent for every float pair except `(+0.0f, -0.0f)`, so the two can disagree in the sign of a
+zero — the same box either way. **The obvious "fix" is wrong and was rejected:** folding in input order
+would make a signed-zero model produce different *header* bytes for different input orders, breaking
+AC-29's order-independence guarantee outright, because the model box is written into the header. The
+sorted fold is **mandatory**, not merely preferable. Closed with a caveat in `docs/09` §9.10, a comment at
+the fold site naming AC-29 as the reason it cannot change, and a comment at `MK9` recording that its
+bit-equality holds **because no committed fixture carries a signed zero** — which is a statement about
+today's fixtures, not about the format.
+
+**Finding 2 — an unreachable guard in the cooker.** `taken >= MAX_EXTERNAL_URIS` can never fire: every
+importer already bounds `ImportResult::externalUris` at that cap before returning it (`gltf_import.cpp`,
+`fbx_import.cpp`, `obj_import.cpp`, `assimp_import.cpp`), and `taken` only increments on a *successful*
+read. **Not deleted** — a guard removed because it cannot fire today is a guard nobody restores when the
+reason it could not fire changes. One comment names the four enforcement sites and calls it defence in
+depth.
+
+#### The measured numbers
+
+**R7 — the cook's peak resident memory and wall-clock.** No committed fixture is remotely large enough
+(the biggest is an 11.8 kB `.fbx`), so the measurement was taken against a generated grid mesh:
+`.gltf` + external `.bin`, `POSITION`/`NORMAL`/`TEXCOORD_0`, **7 997 584 vertices and 23 984 268
+indices** — essentially both importer caps at once (`MAX_VERTICES_PER_MODEL` 8 000 000,
+`MAX_INDICES_PER_MODEL` 24 000 000). Cooked with `macos-release`, `/usr/bin/time -l`:
+
+| | Value |
+|---|---|
+| Source | 351 860 625 B (`.gltf` 865 B + `.bin` 351 859 760 B) |
+| Cooked artifact | 351 859 984 B, one section, one submesh, `indexType` `Uint32`, stride 32 |
+| Ratio | 1.00× |
+| Wall-clock | **0.89 s** warm, 1.16 s on the first (cold-cache) run, over four runs |
+| Peak resident set | **1.067 GB** warm; 884 MB on the cold run |
+
+Three consecutive runs produced **byte-identical** artifacts.
+
+The 1.067 GB is against a plan-predicted worst case of ~928 MB for the *output buffer alone*, and it is
+the honest number for the CLI as a whole: the source bytes, the `ImportedModel` and the output vector are
+all resident simultaneously, because nothing is streamed. **A CI runner has 7 GB, so this is comfortable
+— but it is a number a future task should know before adding a fifth cap case or a streaming claim.**
+
+**A cap the plan did not account for, found while taking this measurement.** A first attempt used an
+*embedded* `.glb` of 223.9 MB and produced a **96-byte empty container**: `MAX_EMBEDDED_BYTES` bounds
+embedded data at **128 MiB**, while an external buffer is bounded at `MAX_EXTERNAL_BYTES_PER_MODEL` =
+512 MiB. So the largest model reachable through the cooker's own import path depends on *how the source
+packs its data*, and the format's own ~928 MB worst case — 8 000 000 vertices at the full 104-byte
+stride — is **not reachable through the CLI at all**, because the source buffer it would need exceeds
+512 MiB. The cook's own arm for that is genuinely unreachable defence in depth, as its comment says. A
+second, in-cap embedded `.glb` (109 693 696 B, 1 960 000 vertices) cooked in **0.30 s** at **450 MB**
+peak — a useful mid-point.
+
+**The cooked size of a real model against its source.** Every committed geometry fixture, cooked with
+`macos-release`:
+
+| Fixture | Source (B) | Cooked (B) | Ratio |
+|---|---|---|---|
+| `triangle.gltf` | 1266 | 272 | 0.21× |
+| `asymmetric.gltf` | 2125 | 272 | 0.13× |
+| `cube.obj` | 381 | 384 | 1.01× |
+| `cube.dae` | 2793 | 720 | 0.26× |
+| `cube.ply` | 327 | 384 | 1.17× |
+| `cube.stl` | 1063 | 1152 | 1.08× |
+| `cube-binary.fbx` | 11 836 | 1072 | 0.09× |
+
+These are all fixtures small enough that the 96-byte header plus 120–216 bytes of tables dominates, so
+they say more about the floor than about the trend. `materials.gltf`, `hierarchy.gltf` and `skinned.gltf`
+cook to the valid 96-byte empty container because they carry **no geometry at all** — they are materials,
+hierarchy and animation fixtures, and that is correct behaviour, not a defect.
+
+**A second model of a different shape, which is where the real trend is.** A generated ASCII `.obj` grid
+(160 000 vertices, 318 402 triangles): **31 752 724 B → 8 941 056 B, 0.28×, in 0.28 s at 153 MB peak.**
+Together with the 1.00× of a float32 `.glb` whose layout already matched the cook's, the rule the two
+points suggest is: **the ratio is a property of how compactly the SOURCE encoded the same floats, not of
+the cook.** A text source shrinks sharply; a binary float32 source with the same attribute set stays flat;
+a quantized or compressed source would grow. The validation page's known-and-expected list says this in
+those terms so nobody files a growth as a bug.
+
+**The tier-0 suite's own peak**, because the cap cases are the largest allocations any test in this tree
+makes: `aero_tests` Debug (ASan/UBSan) reads **553 730 048 B (554 MB) peak resident in 11.05 s**, for
+523 cases and 427 060 assertions. Under a GB, and worth knowing before a fifth cap case is added.
+
+#### The mechanical gate
+
+Every number **re-measured** at the tip, never derived by addition and never carried forward.
+`ctest --preset macos-debug` and `--preset macos-release` both **117/117 with `AERO_REQUIRE_GPU=1`**.
+`ctest -N` **95 → 117** with tools ON, **6 → 28** with both tool flags OFF, **19 → 41** with
+`AERO_REFLECT_TOOLS=OFF` alone — **`ctest -N` moves in all three configurations for the first time in
+this epic**, because `aero_cooker` takes no gate flag and its 22 cases are therefore registered
+everywhere. Both reduced configurations were built **fresh** with `-G Ninja` and are green.
+
+`aero_tests` **415 → 523**, `aero_editor_shell_test` **1481 → 1498**, `aero_editor_imgui_test` **104**,
+`aero_scene_serialize_test` **23** and `aero_editor_inspector_test` **22**, all three unchanged.
+`editor/src/*.cpp` **58 → 59**, `aero_editor_core` sources **57 → 58**. `check-math-boundary.sh` **305 →
+316** tracked files scanned and `check-project-no-delete.sh` Check B **58 → 59**, both picked up
+automatically — **neither script changes, and `.github/scripts/` is byte-identical to `main`**. Guard
+count stays **six**, and `mesh_cook_source.cpp` is in neither Check A's denylist nor Check B's
+`PERMITTED_DELETERS`, which is exactly what makes a future `std::filesystem::remove` there a hard CI
+failure.
+
+`git grep -nE '_WIN32|__APPLE__|__linux__' -- engine/assets tools/cooker` reads **zero lines**. Every
+purity grep over `engine/assets` (`<filesystem>`, `<fstream>`, `<iostream>`, `AERO_LOG`, `std::cout`,
+`std::cerr`, `std::map`, `std::set`, `unordered_*`, `reinterpret_cast`, `memcpy`, `rhi/`) returns only
+**prose in `//` comments stating the prohibition** — never a use. clang-format and clang-tidy both clean
+**by exit code**.
+
+#### What was deliberately left out
+
+Restated so a future task does not read the absence as an oversight: no upload, no pipeline, no draw and
+no `rhi::BufferHandle`; no reference from `engine::MeshRenderer` and no replacement for
+`LOCAL_MESH_HALF_EXTENT` (both 3.1.5's); no sub-asset identity; no materials (3.4.1), images (3.3.2),
+skeletons or inverse bind matrices (3.5.1) or animation (3.5.2); no welding, dedup, vertex-cache
+optimization or quantization; no conversion of any kind; no `--platform` flag; and no determinism CI job
+(3.3.3's, and it generalizes across mesh and texture cooks).
+
+**The one item that is a pending decision rather than a scope boundary: the node-hierarchy gap, and it has
+no owner.** v1 stores geometry only, so a consumer that instantiates a cooked mesh puts every submesh at
+the origin. **The cook must not "solve" this by baking node transforms into vertices** — `ImportedMesh` is
+shared across nodes by construction (3.2.2's helper-node decision), so baking would force per-node mesh
+copies and change the canonical model's shape for one format. A cooked model/prefab container carrying the
+node tree is the right answer and belongs to whoever owns instantiation; task 3.1.5 is the first task that
+will hit it. It is named in `docs/09` §9.0, in `.claude/rules/cooked-assets.md`, and in the validation
+page's known-and-expected list, so it cannot be rediscovered as a surprise.
+
+Two stated residuals in the parser, both wrong-*picture* risks and never memory-safety ones because every
+read goes through a bounds-checked accessor: **individual index VALUES are not validated** against their
+section's `vertexCount` (O(24 million) on every load; the Phase 5 answer is an opt-in
+`parseCookedMeshStrict`, chosen by the caller), and **region overlap is not checked** (an interval sort
+over up to 129 ranges that buys nothing an attacker can use).
+
+#### Dead ends and rejected alternatives
+
+- **A `MeshCookLimits` parameter** letting tests shrink the caps — rejected. The caps are part of the
+  format's contract and are enforced by the *parser* too, so a settable cook cap would let a test prove
+  something the shipped configuration does not do. The cost is disclosed instead: the four reachable cap
+  cases allocate real memory, and the suite's peak is measured above.
+- **`rhi::vertexFormatSize`** — rejected (C5). An `engine/rhi` change in the one task whose whole argument
+  is that it has no business touching the GPU layer. It is the natural job of whoever writes the first
+  pipeline, at which point `CM`'s correspondence case tightens to a computed comparison in one line.
+- **A src-private `engine/assets/src/byte_io.hpp`** for the primitives — rejected (C4). It would work, but
+  it is invisible to the tests, so the primitives could only ever be exercised indirectly and the
+  endianness could not be a `static_assert` the tests also see.
+- **A committed binary golden artifact** instead of the in-source arrays — rejected. Two sources of truth
+  for the same bytes, plus a fixture path that the reduced configurations would have to reach.
+- **Emitting a 96-byte empty container from `cookMesh`'s allocation-failure catch block** — rejected
+  (C6). Machinery on a path no test in this tree can reach; the contract states the exemption instead.
+- **`aero::rhi` as a dependency of `aero::assets`** — rejected twice over, and the second reason is fatal:
+  it would drag the GPU layer onto the link line of a pure byte-in/byte-out library *and* of a build-time
+  CLI that never opens a device, and `rhi::VertexFormat`'s numeric values are not a contract. `engine/core`
+  was rejected too: core is dependency-free *primitives*, and a versioned container with a validating
+  parser is not one.
+- **`engine/assets` being claimed by a future runtime asset database instead** — considered and settled
+  rather than left ambiguous. The directory is claimed for the cooked-format vocabulary, which is exactly
+  what a runtime asset database will read. If the two ever need separating it is a rename inside one
+  subsystem, not a cross-layer move.

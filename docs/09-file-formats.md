@@ -861,7 +861,366 @@ Written **only** when the user picks a path with `Locate…`, or clears it with 
 
 ---
 
-## 9. Reserved for future formats
+## 9. Cooked mesh container v1 (`.aeromesh`)
+
+> Enforced in code by `engine/assets` (`cooked_mesh.{hpp,cpp}` = the format and its parser,
+> `mesh_cook.{hpp,cpp}` = the producer, task 3.3.1); the doctest batteries in
+> `tests/cooked_mesh_test.cpp` and `tests/mesh_cook_test.cpp` are its machine-checkable form, and
+> `tests/cooked_mesh_golden.hpp` holds three byte-level goldens. Produced by `aero_cooker mesh`.
+
+### 9.0 Scope, and what does and does not carry over from section 1
+
+**This is the first BINARY format in this document.** Section 1's canonical-**text** rules — UTF-8, no
+BOM, LF newlines, 2-space indent, key order, member omission, and the two round-trip guarantees — **do
+not apply to it**. There is no text to canonicalize and no key to order; the equivalent guarantees are
+restated for bytes in 9.10.
+
+Section 1's **versioning** policy and `docs/04:51` **do** apply, unchanged: the format carries a
+version field from day one, and it may break without migration until v1.0. Section 1's strictness
+table also does not carry over, and the inversion is deliberate: a JSON envelope WARNs on an unknown
+key so old readers keep loading newer files, while this format **refuses** a non-zero reserved field
+outright (9.11 says why).
+
+**What v1 stores:** geometry only — interleaved vertex blobs at GPU stride, one index buffer, an
+axis-aligned box per submesh and one for the model, plus each submesh's source coordinates and
+material index. **What it does not store:** node hierarchy, materials, images, skeletons, inverse bind
+matrices and animation. A consumer that instantiates a cooked mesh with no hierarchy therefore puts
+every submesh at the origin. **That gap is named, not owned** — a cooked model/prefab container
+carrying the node tree is the right answer and belongs to whoever owns instantiation; task 3.1.5 is
+the first task that will hit it.
+
+The container is **platform-independent**: there is no platform field and no `--platform` flag. That
+changes for textures at task 3.3.2, where BCn/ASTC/ETC2 diverge.
+
+### 9.1 Conventions
+
+- **Little-endian, DECLARED rather than "native".** All three target hosts are little-endian; the
+  writer and the reader do explicit byte assembly through eight `constexpr` primitives
+  (`putU16`/`putU32`/`putU64`/`putF32` and their `get*` inverses) whose endianness is a
+  `static_assert`, not a test. A big-endian mistake is a **build failure**.
+- **Floats are IEEE-754 binary32**, moved bit for bit via `std::bit_cast` and a little-endian store.
+  The cook performs no floating-point *arithmetic* on vertex data at all: bounds folding is
+  comparison-and-select.
+- **Offsets and byte lengths are `u64`; counts are `u32`.**
+- **Alignment.** Every **stored** offset — each `CookedSection::vertexDataOffset` and the header's
+  `indexDataOffset` — is a multiple of **16**, as is `totalBytes`, and every gap between regions is
+  zero-filled. **The three tables are packed with no padding, at implicit 8-byte-aligned starts the
+  reader derives**, so with an odd `attributeCount` the section table legitimately begins at 104 and
+  the submesh table at 136. Nothing is lost by that: no record is ever `memcpy`'d or cast, every field
+  goes through the `get*` primitives, so table alignment has no correctness meaning. The two **bulk**
+  regions are the ones a consumer hands to an upload call, and those are the two that are 16-aligned.
+- **`sizeof` is never taken of an on-disk record.** The four `COOKED_MESH_*_BYTES` constants (96 / 8 /
+  32 / 64) are the only sizes: a struct's size is a compiler's opinion and a format's is not.
+
+### 9.2 The header — 96 bytes at offset 0
+
+| Offset | Size | Type | Field | Meaning |
+|---|---|---|---|---|
+| 0 | 8 | `char[8]` | `magic` | `AEROMESH`, ASCII, **no NUL terminator** |
+| 8 | 4 | `u32` | `formatVersion` | must equal `1`; a different value is refused |
+| 12 | 4 | `u32` | `cookerVersion` | the producing cooker's version. **Informational** — never gates a parse |
+| 16 | 8 | `u64` | `sourceGuid.hi` | the source asset's GUID, high half first |
+| 24 | 8 | `u64` | `sourceGuid.lo` | the low half. The nil GUID (both zero) is legal |
+| 32 | 4 | `u32` | `reservedFlags` | **must be 0** — a non-zero value is a refusal (9.11) |
+| 36 | 4 | `u32` | `sectionCount` | ≤ `MAX_COOKED_SECTIONS` |
+| 40 | 4 | `u32` | `submeshCount` | ≤ `MAX_COOKED_SUBMESHES` |
+| 44 | 4 | `u32` | `indexCount` | total indices in the file's single index buffer; ≤ `MAX_COOKED_INDICES` |
+| 48 | 4 | `u32` | `indexType` | `0` = `Uint16`, `1` = `Uint32`. Any other value is refused |
+| 52 | 4 | `u32` | `attributeCount` | ≤ `MAX_COOKED_ATTRIBUTES` |
+| 56 | 8 | `u64` | `totalBytes` | **must equal the buffer's own size** |
+| 64 | 12 | `f32[3]` | `boundsMin` | model-space minimum, x/y/z |
+| 76 | 12 | `f32[3]` | `boundsMax` | model-space maximum, x/y/z |
+| 88 | 8 | `u64` | `indexDataOffset` | absolute, a multiple of 16 |
+
+`indexDataOffset` is **stored rather than derived** for two reasons: "the end of the last section's
+padded region" has no answer when `sectionCount == 0`, and every other region in this file states its
+own position, so deriving one would be the odd case out.
+
+A file with **zero sections and zero submeshes** is legal: the header alone, 96 bytes, `indexType`
+`Uint16` (vacuously), `indexDataOffset` 96, `totalBytes` 96, and a **point box at the origin** rather
+than an inverted sentinel whose centre would be NaN. That is what a model whose every primitive was
+dropped produces — an asset that exists must have an artifact.
+
+### 9.3 The attribute table — 8 bytes per record, at offset 96
+
+`attributeCount` records, packed. A section names a contiguous slice of this one table.
+
+| Offset | Size | Type | Field | Meaning |
+|---|---|---|---|---|
+| 0 | 2 | `u16` | `semantic` | a `CookedVertexSemantic` code (9.6). `>= 8` is refused |
+| 2 | 2 | `u16` | `format` | a `CookedVertexFormat` code (9.6). `> 3` is refused |
+| 4 | 4 | `u32` | `offset` | bytes from the start of a vertex; must lie wholly inside the stride |
+
+### 9.4 The section table — 32 bytes per record
+
+`sectionCount` records, packed, immediately after the attribute table (so at `96 + 8 ×
+attributeCount`). One section per distinct attribute set.
+
+| Offset | Size | Type | Field | Meaning |
+|---|---|---|---|---|
+| 0 | 4 | `u32` | `firstAttribute` | index into the attribute table |
+| 4 | 4 | `u32` | `attributeCount` | **must be ≥ 1**; `[firstAttribute, +attributeCount)` must lie inside the table |
+| 8 | 4 | `u32` | `vertexStride` | **must be non-zero and a multiple of 4** |
+| 12 | 4 | `u32` | `vertexCount` | ≤ `MAX_COOKED_VERTICES` |
+| 16 | 8 | `u64` | `vertexDataOffset` | absolute, a multiple of 16 |
+| 24 | 8 | `u64` | `vertexDataBytes` | **must equal `vertexCount × vertexStride`** |
+
+Within one section, **no semantic may appear twice**, and every attribute must fit inside the stride.
+
+### 9.5 The submesh table — 64 bytes per record
+
+`submeshCount` records, packed, immediately after the section table. One submesh per cooked source
+primitive.
+
+| Offset | Size | Type | Field | Meaning |
+|---|---|---|---|---|
+| 0 | 4 | `u32` | `sectionIndex` | `< sectionCount` |
+| 4 | 4 | `u32` | `firstIndex` | in index **units**, into the file's single index buffer |
+| 8 | 4 | `u32` | `indexCount` | `[firstIndex, +indexCount)` must lie inside the header's `indexCount` |
+| 12 | 4 | `u32` | `materialIndex` | preserved verbatim from the source; `0xFFFFFFFF` means none |
+| 16 | 4 | `u32` | `sourceMeshIndex` | the **position** in `ImportedModel::meshes` — see below |
+| 20 | 4 | `u32` | `sourcePrimitiveIndex` | the position in that mesh's `primitives` |
+| 24 | 8 | `u64` | `reserved0` | **must be 0** |
+| 32 | 12 | `f32[3]` | `boundsMin` | this submesh's own box, model space |
+| 44 | 12 | `f32[3]` | `boundsMax` | |
+| 56 | 8 | `u64` | `reserved1` | **must be 0** |
+
+**`sourceMeshIndex` is the POSITION in `ImportedModel::meshes`, not `ImportedMesh::localId`.** The two
+coincide for glTF and OBJ and **differ for FBX**, where `localId` is a raw ufbx `typed_id` rather than
+a dense index. The position is what a consumer can actually resolve — it is the same value
+`ImportedNode::meshIndex` holds.
+
+**Indices are SECTION-RELATIVE.** A submesh's indices address vertices within its own section, not
+within the file, which is what lets one index buffer serve every section and what makes the width
+decision (9.7) depend on the largest *section* rather than on the file total.
+
+### 9.6 The frozen enums
+
+**These values are part of the format and never change.** They are deliberately independent of
+`rhi::VertexFormat`, whose fifteen enumerators have implicit values: reordering that enum is a legal,
+invisible change today, and writing its values into a file would make every previously-cooked artifact
+silently decode wrong afterwards.
+
+`CookedVertexSemantic` (`u16`) — the codes mirror `editor::VertexAttribute`'s **bit positions**
+exactly, so "bit *n* set" means "semantic *n* present":
+
+| Code | Semantic | Format | Bytes | Source in `ImportedPrimitive` |
+|---|---|---|---|---|
+| 0 | `Position` | `Float3` | 12 | `positions` — **mandatory**; a primitive without it is dropped |
+| 1 | `Normal` | `Float3` | 12 | `normals` |
+| 2 | `Tangent` | `Float4` | 16 | `tangents`; `.w` is the bitangent sign, preserved, never normalized |
+| 3 | `TexCoord0` | `Float2` | 8 | `uv0` |
+| 4 | `TexCoord1` | `Float2` | 8 | `uv1` |
+| 5 | `Color0` | `Float4` | 16 | `colors`, linear RGBA |
+| 6 | `Joints0` | `Uint4` | 16 | `joints`, widened `u16 → u32` losslessly |
+| 7 | `Weights0` | `Float4` | 16 | `weights` |
+
+`CookedVertexFormat` (`u16`): `0 = Float2` (8 bytes), `1 = Float3` (12), `2 = Float4` (16),
+`3 = Uint4` (16).
+
+`CookedIndexType` (`u32`): `0 = Uint16` (2 bytes), `1 = Uint32` (4).
+
+The semantic → format mapping above is **total and frozen**: minimum stride 12 (position only),
+maximum stride 104 (all eight). `Joints0` is `Uint4` rather than a `u16 × 4` because `rhi::VertexFormat`
+has no unsigned-16×4 enumerator and `UByte4Norm` is *normalized* and therefore wrong for an index — so
+a skinned vertex pays 8 bytes it does not need. The fix is `CookedVertexFormat::UShort4` beside a new
+`rhi::VertexFormat::UShort4`, and per 9.11 that is a **`formatVersion` bump**.
+
+### 9.7 Layout, ordering and regions
+
+**Ordering rules, all three normative:**
+
+1. **Submeshes are emitted in ascending `(attributeMask, sourceMeshIndex, sourcePrimitiveIndex)`
+   order**, never in the caller's input order. The mask is the *surviving* attribute set (9.8).
+2. **Sections are emitted in ascending mask order**, which falls out of rule 1: equal masks are
+   adjacent after the sort, so one linear pass builds every section.
+3. **Within a section, attributes are laid out in ascending semantic code**, with offsets accumulated
+   in exactly that order and **no padding between attributes** — every v1 format's size is a multiple
+   of 4, so the stride is one too.
+
+**The index width is a file-level decision:** `Uint16` if every section has `vertexCount <= 65536`,
+otherwise `Uint32`. The bound is `<=`, not `<`: a section with exactly 65536 vertices has a maximum
+index of 65535, which `Uint16` represents.
+
+**Regions, in file order:** header, attribute table, section table, submesh table, then **one vertex
+region per section in section order** — each starting at the next multiple of 16, each exactly
+`vertexCount × vertexStride` bytes — then the **index region**, again at the next multiple of 16,
+`indexCount × indexTypeBytes` bytes. `totalBytes` is that cursor rounded up to the next multiple of
+16. **Every gap is zero-filled.** Inter-region padding is *computed*, not unconditional: a region that
+already ends on a multiple of 16 is followed by no padding at all.
+
+### 9.8 What the cook drops and what it demotes
+
+The producer drops **whole primitives** and demotes **whole attributes**, never anything partial. Five
+arms, each producing one capped warning that names its source coordinates:
+
+| Condition | Action |
+|---|---|
+| `positions` empty, `indices` empty, `indices.size() % 3 != 0`, or any index ≥ `positions.size()` | the primitive is dropped whole |
+| any position component non-finite | the primitive is dropped whole |
+| an optional array is non-empty but its length ≠ `positions.size()` | that attribute is treated as absent; the primitive still cooks |
+| exactly one of `joints`/`weights` survives the rule above | **both** are treated as absent — half a skin is worse than none |
+| two primitives share the ordering key `(mask, sourceMeshIndex, sourcePrimitiveIndex)` | one warning; **nothing is dropped** (9.10) |
+
+Non-finite values in attributes *other than* positions are copied through verbatim: they participate
+in no computation, their bits are moved rather than derived, and refusing them would drop geometry
+over a shading artifact.
+
+**Bounds** are folded with `std::min`/`std::max`, **accumulator first**, over every position
+**written** — not over the subset an index reaches — so a submesh's box equals its source
+`ImportedPrimitive::bounds` bit for bit. The model box is the union of the **emitted** submeshes'
+boxes, so a dropped or cap-refused primitive contributes nothing to it.
+
+### 9.9 The caps
+
+Seven constants, enforced by **both** the writer and the parser.
+
+| Constant | Value | Why |
+|---|---|---|
+| `MAX_COOKED_SECTIONS` | 128 | exactly the number of representable layouts: `Position` is mandatory, so a mask has at most 2⁷ values. Exists **for the parser** — well-formed input can *reach* it and can never *exceed* it, so the cook's own arm for it is unreachable defence in depth |
+| `MAX_COOKED_ATTRIBUTES` | 1024 | 128 sections × 8 semantics; unreachable from the cook for the same reason |
+| `MAX_COOKED_SUBMESHES` | 65536 | one per cooked source primitive |
+| `MAX_COOKED_VERTICES` | 8 000 000 | mirrors the importer's `MAX_VERTICES_PER_MODEL` |
+| `MAX_COOKED_INDICES` | 24 000 000 | mirrors the importer's `MAX_INDICES_PER_MODEL` |
+| `MAX_COOKED_MESH_BYTES` | 2 GiB | a cheap parser early-out. It can never refuse a legitimately cooked artifact: the two caps above bound the largest legal file at `8000000 × 104 + 24000000 × 4` ≈ 928 MB |
+| `MAX_COOK_WARNINGS` | 20 | mirrors `MAX_IMPORT_WARNINGS`; the *list* is capped, the *total* is not |
+
+Exceeding a vertex, index or submesh cap produces a **truncated but complete and parseable** file: the
+producer walks the sorted order, stops accepting at the first primitive that would violate any cap,
+and reports one message per violated cap joined with `"; "`. It never emits a hole.
+
+### 9.10 Determinism
+
+The same input cooks to the same bytes across two runs, three toolchains and any ordering of the
+input's own primitives. That is **structural**, not aspirational — six sources of divergence are closed
+by construction:
+
+1. **No struct `memcpy`, ever**, and no `reinterpret_cast` of a record pointer and no packed-struct
+   pragma, so compiler padding, member reordering and alignment choices cannot reach the file.
+2. **No hash container anywhere in `engine/assets`** — no `std::map`, `std::unordered_map`, `std::set`
+   or `std::unordered_set` — so there is no iteration order for the output to depend on. Grouping is a
+   sorted vector.
+3. **All padding is explicitly zero**, because the output buffer is allocated zero-initialized.
+4. **No timestamp, no path, no hostname, no user name, no build id.** The only provenance fields are
+   `cookerVersion` (a compile-time constant) and the caller-supplied `sourceGuid`.
+5. **Floats are re-emitted bit for bit.**
+6. **Order-independence**, per 9.7's rule 1.
+
+**Its one stated limit.** The ordering key `(mask, sourceMeshIndex, sourcePrimitiveIndex)` is unique
+for everything the editor's own adapter produces — one entry per `(meshIndex, primitiveIndex)` — but
+`cookMesh` is a public API over a caller-supplied span, and a caller *can* hand it two primitives with
+an identical key. The sort is stable, so tied entries keep the input's relative order: **byte-identity
+across a reordering holds exactly when the keys are distinct.** A repeated key produces one warning
+naming the first collision and the total count; nothing is dropped, because dropping would lose
+geometry over a caller's bookkeeping.
+
+**One caveat on the model box, and it is a caveat about agreement, not about determinism.** The model
+box is the union of the **emitted** submesh boxes folded in **emission** order — the sorted order of
+9.7's rule 1 — and that cannot change: the model box is written into the header, so folding in the
+caller's input order would make a shuffled input produce different header bytes, which is exactly what
+order-independence forbids. An importer folds its own model box in **source** order instead.
+`std::min` and `std::max` are order-independent for every pair of floats **except** `(+0.0f, -0.0f)`,
+so the two folds can disagree in **the sign of a zero and nowhere else**. No box is wrong either way —
+a ±0 bound is the same box — and no committed fixture in this repository carries a signed zero, which
+is why the cooked and imported model boxes are currently bit-equal as well as geometrically equal.
+
+Determinism *across platforms* is asserted by three committed byte goldens plus the cook's own
+round-trip cases on all three CI lanes. Task 3.3.3 turns that into a dedicated job across both cook
+kinds.
+
+### 9.11 Versioning and evolution
+
+Two version fields, and they mean different things:
+
+- **`formatVersion`** — bumped when an older **reader** can no longer read the file. The parser
+  refuses any value it does not equal.
+- **`cookerVersion`** — bumped when **the same input now cooks to different bytes**. It is a
+  cache-invalidation signal and nothing else; it never gates a parse.
+
+**Reserved space is a BREAKING extension point, not an additive one.** A non-zero `reservedFlags`,
+`reserved0` or `reserved1` is a **parse refusal**, deliberately, as the inverse of section 1's
+unknown-key WARN rule — and the consequence follows directly: **occupying a reserved field requires a
+`formatVersion` bump**, not merely a `cookerVersion` one, because every v1 reader will refuse the
+whole file. That refusal is the *intended* behaviour: it is exactly what stops a v1 reader silently
+misreading a v2 file.
+
+**Adding a semantic or format code is a `formatVersion` bump too**, for the same reason: the parser
+refuses unknown codes with `BadLayout`.
+
+**Appending a whole new region past `totalBytes` is not possible**, because `totalBytes` must equal the
+buffer's own size.
+
+The contrast with section 1 is deliberate, not an inconsistency. A JSON envelope can tolerate an
+unknown key because the key has a *name* a reader can warn about and skip. A binary reserved field has
+no name, no length prefix and no way to be skipped — and tolerating it forfeits the ability to ever
+use it, because a v1 reader that ignored `reserved0` would keep happily misreading every v2 file.
+
+### 9.12 The writer/reader asymmetry
+
+The **writer** always zeroes every pad byte. The **reader** does not check that it did: a file whose
+trailing padding is non-zero parses `Ok`. That is deliberate, so a future writer that pads differently
+is not locked out of a format whose meaningful content it reproduced exactly.
+
+Two further things the parser deliberately **does not** check, stated so their absence is not read as
+an oversight:
+
+1. **Individual index VALUES against their section's `vertexCount`.** That is O(`indexCount`) work on
+   up to 24 million entries on every load, and the consumer that uploads to the GPU is where an
+   out-of-range index is a driver concern. First-party cooked files are always in range — the cook
+   validates every index it writes. The Phase 5 answer is an opt-in `parseCookedMeshStrict`, chosen by
+   the caller, never forced on every load.
+2. **Whether the vertex regions and the index region overlap each other or the tables.** Every read
+   goes through `sectionVertexBytes`/`indexBytes`, both bounds-checked against the buffer, so an
+   overlap is a wrong *picture*, never a memory error; refusing it needs an interval sort over up to
+   129 ranges and buys nothing an attacker can use.
+
+Everything the parser *does* check is a **subtraction** against a known-good size
+(`length <= size && offset <= size - length`), never an addition that can wrap, and **nothing is
+allocated before the count it is allocating for has been checked against a frozen cap**.
+
+### 9.13 Error catalog
+
+`parseCookedMesh` never throws, never reads a file and never logs. It returns one of ten statuses with
+a human-readable message; the message is empty **iff** the status is `Ok`.
+
+| Status | Cause |
+|---|---|
+| `Ok` | the buffer is a valid v1 container |
+| `TooSmall` | fewer than 96 bytes — shorter than the header |
+| `BadMagic` | the first eight bytes are not `AEROMESH` |
+| `UnsupportedVersion` | `formatVersion` is not 1 |
+| `ReservedNotZero` | `reservedFlags`, or a submesh's `reserved0`/`reserved1`, is non-zero |
+| `SizeMismatch` | `totalBytes` does not equal the buffer's own size |
+| `CapExceeded` | the buffer is over `MAX_COOKED_MESH_BYTES`, or a declared count is over its cap |
+| `BadTable` | the three tables do not fit in the buffer; a section names attributes outside the table; or `indexType` is neither 0 nor 1 |
+| `BadRange` | an offset/length pair leaves the buffer; a stored offset is not 16-aligned; `vertexDataBytes ≠ vertexCount × vertexStride`; a submesh names a section or an index range that does not exist |
+| `BadLayout` | an unknown semantic or format code; a section with zero attributes, a zero stride, or a stride that is not a multiple of 4; an attribute outside its stride; or a semantic declared twice in one section |
+
+### 9.14 Golden fixtures
+
+Three byte-level goldens live in `tests/cooked_mesh_golden.hpp` as annotated in-source arrays, shared
+by `aero_tests` and `aero_editor_shell_test` so there is one copy and no drift:
+
+- **`COOKED_GOLDEN_EMPTY`, 96 bytes** — zero primitives. Simultaneously the valid empty file and the
+  smallest buffer that is not `TooSmall`.
+- **`COOKED_GOLDEN_TRIANGLE`, 272 bytes** — one position-only primitive. This is exactly
+  `tests/fixtures/assets/triangle.gltf` imported at `Full` depth, so one golden pins the editor's
+  adapter as well as the cook. Its section table starts at **104** and its submesh table at **136**,
+  neither 16-aligned, which is 9.1's packed-table rule in bytes.
+- **`COOKED_GOLDEN_MIXED`, 480 bytes** — two primitives supplied in **reverse** key order, so the
+  array is simultaneously the golden and the order-independence proof. It pins ascending-mask section
+  order, ascending-semantic attribute order, a non-nil GUID in both header halves, and the fact that
+  inter-region padding is computed rather than unconditional.
+
+**They are frozen.** A change to any layout rule, offset, ordering rule or padding rule fails them by
+construction. If a golden has to change, the format changed — and that is a `formatVersion` decision,
+not a test edit.
+
+---
+
+## 10. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
-  applies unchanged. Section appends here.
+  applies unchanged. Section appends here. Still unowned: the `.pak` container itself, cooked scenes,
+  and cooked textures (task 3.3.2). The cooked **mesh** container moved out of this list and is
+  section 9.
