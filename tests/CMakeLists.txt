@@ -689,6 +689,39 @@ if(AERO_REFLECT_TOOLS)
 endif()
 
 # ---------------------------------------------------------------------------------------------
+# The cooker end-to-end CTest suite (task 3.3.1) -- the third harness of this shape, cloned from the
+# shaderc and reflect-gen blocks above. Each case runs the REAL aero_cooker binary through
+# tests/cooker/run_case.cmake, which is what actually asserts exit codes: most cases here are
+# NEGATIVE, and a raw `add_test(COMMAND aero_cooker ...)` would treat any non-zero exit as a ctest
+# failure regardless of whether that was the expected behaviour (see run_case.cmake's own header).
+#
+# No doctest TU for the tool, and no tool code links into aero_tests -- a CLI's honest test is its
+# process boundary: argv in, exit code + files out. The PURE halves it is built from (cookMesh,
+# parseCookedMesh, meshCookPrimitives) are covered by aero_tests and aero_editor_shell_test instead.
+#
+# UNGATED, unlike both blocks above: aero_cooker needs neither libclang nor a shader toolchain, and
+# aero_editor_core builds in both reduced configurations. ctest -N therefore MOVES IN ALL THREE
+# configurations -- deliberate, and the first time in Epic 3.2/3.3 that number has moved. A reduced
+# configuration whose count did not move means this block was gated by accident.
+set(_aero_cooker_cases
+    help version no_subcommand unknown_subcommand unknown_flag
+    missing_input_flag missing_output_flag missing_flag_value repeated_flag
+    bad_guid bad_scale
+)
+foreach(_aero_case IN LISTS _aero_cooker_cases)
+    add_test(
+        NAME cooker.${_aero_case}
+        COMMAND "${CMAKE_COMMAND}"
+                -DTOOL=$<TARGET_FILE:aero_cooker>
+                -DCASE=${_aero_case}
+                -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cooker/${_aero_case}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cooker/run_case.cmake
+    )
+endforeach()
+unset(_aero_cooker_cases)
+
+# ---------------------------------------------------------------------------------------------
 # task 2.1.2 -- hermetic proofs that the golden-rule guards actually go RED. Ungated (D15): the
 # guards depend on neither codegen nor shaders (the aero_editor_imgui_test precedent above). Neither
 # case writes inside the repo tree; both use distinct scratch roots, so ctest -j is safe.
