@@ -7,8 +7,11 @@
 #include <aero/assets/cooked_mesh.hpp>
 #include <aero/assets/mesh_cook.hpp>
 
+#include "cooked_mesh_golden.hpp"
+
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -1097,4 +1100,162 @@ TEST_CASE("mesh cook: INV-C3 holds over a sweep of every input shape in this TU 
         CHECK(parsed.message.empty());
         CHECK(r.bytes.size() == r.stats.byteSize);
     }
+}
+
+// =================================================================================================
+// The determinism battery and the goldens' PRODUCER side. CM41-CM48 read the same three arrays back
+// through the parser; these four prove the cook writes exactly them.
+// =================================================================================================
+
+namespace {
+
+// Reports the FIRST differing offset with both values, never a bare CHECK(a == b) on 480 bytes,
+// whose failure output is unreadable.
+std::size_t firstDifference(std::span<const std::byte> a, std::span<const std::byte> b) {
+    const std::size_t n = std::min(a.size(), b.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        if (a[i] != b[i]) {
+            return i;
+        }
+    }
+    return (a.size() == b.size()) ? a.size() : n;
+}
+
+void checkAgainstGolden(std::span<const std::byte> actual, std::span<const std::uint8_t> golden) {
+    std::vector<std::byte> expected;
+    expected.reserve(golden.size());
+    for (const std::uint8_t v : golden) {
+        expected.push_back(static_cast<std::byte>(v));
+    }
+    REQUIRE(actual.size() == expected.size());
+    const std::size_t diff = firstDifference(actual, expected);
+    if (diff != expected.size()) {
+        MESSAGE("first differing offset: " << diff << " actual=" << static_cast<unsigned>(actual[diff])
+                                           << " golden=" << static_cast<unsigned>(expected[diff]));
+    }
+    CHECK(diff == expected.size());
+}
+
+// Golden C's two primitives, in the plan's own order: P_A first, P_B second -- REVERSE key order,
+// so any array built from this is simultaneously the golden's input and AC-29's proof.
+std::vector<Source> mixedSources() {
+    Source pa = triangle(1, 0);
+    pa.material = 7;
+    pa.positions = {Vec3{2, 0, 0}, Vec3{2, 1, 0}, Vec3{2, 0, 1}};
+    pa.normals = {Vec3{1, 0, 0}, Vec3{1, 0, 0}, Vec3{1, 0, 0}};
+    pa.uv0 = {Vec2{0, 0}, Vec2{1, 0}, Vec2{0, 1}};
+    return {pa, triangle(0, 0)};
+}
+
+constexpr Guid MIXED_GUID{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+
+}  // namespace
+
+TEST_CASE("mesh cook: cooking the same input twice is byte-identical (MC53)") {
+    const std::vector<Source> sources = mixedSources();
+    const std::vector<MeshCookPrimitive> prims = views(sources);
+    MeshCookInput in;
+    in.sourceGuid = MIXED_GUID;
+    in.primitives = prims;
+    const MeshCookResult a = cookMesh(in);
+    const MeshCookResult b = cookMesh(in);
+    REQUIRE(a.bytes.size() == b.bytes.size());
+    CHECK(firstDifference(a.bytes, b.bytes) == a.bytes.size());
+    CHECK(a.status == b.status);
+    CHECK(a.message == b.message);
+    CHECK(a.warnings == b.warnings);
+}
+
+TEST_CASE("mesh cook: every permutation of the same SET cooks to the same bytes (MC54)") {
+    // Four primitives with pairwise-distinct (mask, meshIndex, primIndex) keys, so the contract's
+    // precondition holds and byte-identity is unconditional for this input.
+    std::vector<Source> base = {triangle(0, 0), triangle(0, 1), triangle(1, 0), triangle(2, 0)};
+    base[1].normals.assign(3, Vec3{0, 0, 1});
+    base[2].uv0.assign(3, Vec2{0.5F, 0.5F});
+    base[3].colors.assign(3, Vec4{1, 0, 0, 1});
+    base[3].normals.assign(3, Vec3{0, 1, 0});
+
+    const std::array<std::array<std::size_t, 4>, 5> permutations = {
+        std::array<std::size_t, 4>{0, 1, 2, 3}, std::array<std::size_t, 4>{3, 2, 1, 0},
+        std::array<std::size_t, 4>{1, 3, 0, 2}, std::array<std::size_t, 4>{2, 0, 3, 1},
+        std::array<std::size_t, 4>{0, 3, 1, 2}};
+
+    std::vector<std::byte> reference;
+    for (const auto& order : permutations) {
+        std::vector<Source> shuffled;
+        shuffled.reserve(4);
+        for (const std::size_t i : order) {
+            shuffled.push_back(base[i]);
+        }
+        const std::vector<MeshCookPrimitive> prims = views(shuffled);
+        MeshCookInput in;
+        in.sourceGuid = MIXED_GUID;
+        in.primitives = prims;
+        const MeshCookResult r = cookMesh(in);
+        CHECK(r.warnings.empty());  // distinct keys, so no collision warning
+        if (reference.empty()) {
+            reference = r.bytes;
+            REQUIRE_FALSE(reference.empty());
+        } else {
+            REQUIRE(r.bytes.size() == reference.size());
+            CHECK(firstDifference(r.bytes, reference) == reference.size());
+        }
+    }
+}
+
+TEST_CASE("mesh cook: the three goldens are what cookMesh actually writes (MC55)") {
+    SUBCASE("Golden A -- the empty container") {
+        const MeshCookInput in;
+        const MeshCookResult r = cookMesh(in);
+        checkAgainstGolden(r.bytes, aero_test::COOKED_GOLDEN_EMPTY);
+    }
+    SUBCASE("Golden B -- the minimal position-only triangle") {
+        const std::vector<Source> sources = {triangle(0, 0)};
+        const std::vector<MeshCookPrimitive> prims = views(sources);
+        MeshCookInput in;
+        in.primitives = prims;
+        const MeshCookResult r = cookMesh(in);
+        checkAgainstGolden(r.bytes, aero_test::COOKED_GOLDEN_TRIANGLE);
+    }
+    SUBCASE("Golden C -- the two-section mixed file") {
+        const std::vector<Source> sources = mixedSources();
+        const std::vector<MeshCookPrimitive> prims = views(sources);
+        MeshCookInput in;
+        in.sourceGuid = MIXED_GUID;
+        in.primitives = prims;
+        const MeshCookResult r = cookMesh(in);
+        checkAgainstGolden(r.bytes, aero_test::COOKED_GOLDEN_MIXED);
+    }
+}
+
+TEST_CASE("mesh cook: Golden C's input is supplied in REVERSE key order (MC56)") {
+    // So this one case is simultaneously the golden and the order-independence proof: the array
+    // frozen in cooked_mesh_golden.hpp was produced from an input whose first primitive sorts LAST.
+    const std::vector<Source> reversed = mixedSources();
+    CHECK(reversed[0].meshIndex == 1U);  // the higher key, supplied first
+    CHECK(reversed[1].meshIndex == 0U);
+    const std::vector<Source> forward = {reversed[1], reversed[0]};
+
+    const std::vector<MeshCookPrimitive> primsA = views(reversed);
+    MeshCookInput inA;
+    inA.sourceGuid = MIXED_GUID;
+    inA.primitives = primsA;
+    const MeshCookResult a = cookMesh(inA);
+
+    const std::vector<MeshCookPrimitive> primsB = views(forward);
+    MeshCookInput inB;
+    inB.sourceGuid = MIXED_GUID;
+    inB.primitives = primsB;
+    const MeshCookResult b = cookMesh(inB);
+
+    REQUIRE(a.bytes.size() == b.bytes.size());
+    CHECK(firstDifference(a.bytes, b.bytes) == a.bytes.size());
+    checkAgainstGolden(a.bytes, aero_test::COOKED_GOLDEN_MIXED);
+    checkAgainstGolden(b.bytes, aero_test::COOKED_GOLDEN_MIXED);
+    // And the submesh table is in KEY order, not input order: mesh 0 first.
+    const auto parsed = engine::assets::parseCookedMesh(std::span<const std::byte>(a.bytes));
+    REQUIRE(parsed.status == CookedMeshStatus::Ok);
+    REQUIRE(parsed.mesh.submeshes.size() == 2U);
+    CHECK(parsed.mesh.submeshes[0].sourceMeshIndex == 0U);
+    CHECK(parsed.mesh.submeshes[1].sourceMeshIndex == 1U);
 }

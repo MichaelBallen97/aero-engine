@@ -5,6 +5,9 @@
 // byte, from docs/09 section 9's own rules -- deliberately, so a cook bug can never mask a parser
 // bug and every refusal arm mutates exactly one field of something already valid.
 #include <aero/assets/cooked_mesh.hpp>
+#include <aero/rhi/types.hpp>
+
+#include "cooked_mesh_golden.hpp"
 
 #include <doctest/doctest.h>
 
@@ -949,4 +952,276 @@ TEST_CASE("cooked mesh: 4096 pseudo-random buffers always return a status and ne
     // Random bytes essentially never form a valid container; the assertion is that the sweep RAN,
     // not that it produced a particular mix.
     CHECK(okCount <= 4096U);
+}
+
+// =================================================================================================
+// The three frozen byte goldens, read back through the parser. The derived-fact checks and the byte
+// comparison are BOTH kept: the derived checks say WHICH rule broke, the byte comparison says that
+// SOMETHING did.
+// =================================================================================================
+
+namespace {
+
+std::vector<std::byte> asBytes(std::span<const std::uint8_t> golden) {
+    std::vector<std::byte> out;
+    out.reserve(golden.size());
+    for (const std::uint8_t v : golden) {
+        out.push_back(static_cast<std::byte>(v));
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("cooked mesh: COOKED_GOLDEN_EMPTY parses Ok and decodes to its documented fields (CM41)") {
+    const std::vector<std::byte> b = asBytes(aero_test::COOKED_GOLDEN_EMPTY);
+    REQUIRE(b.size() == 96U);
+    const auto r = parse(b);
+    REQUIRE(r.status == CookedMeshStatus::Ok);
+    CHECK(r.mesh.formatVersion == 1U);
+    CHECK(r.mesh.cookerVersion == 1U);
+    CHECK(r.mesh.sourceGuid.hi == 0U);
+    CHECK(r.mesh.sourceGuid.lo == 0U);
+    CHECK(r.mesh.indexType == CookedIndexType::Uint16);
+    CHECK(r.mesh.indexCount == 0U);
+    CHECK(r.mesh.attributes.empty());
+    CHECK(r.mesh.sections.empty());
+    CHECK(r.mesh.submeshes.empty());
+    CHECK(r.mesh.indexDataOffset == 96U);
+    // A POINT box at the origin, not the inverted sentinel: this is the byte-level statement of it.
+    CHECK(r.mesh.bounds.min == engine::Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(r.mesh.bounds.max == engine::Vec3{0.0F, 0.0F, 0.0F});
+}
+
+TEST_CASE("cooked mesh: COOKED_GOLDEN_TRIANGLE parses Ok and decodes to its documented fields (CM42)") {
+    const std::vector<std::byte> b = asBytes(aero_test::COOKED_GOLDEN_TRIANGLE);
+    REQUIRE(b.size() == 272U);
+    const auto r = parse(b);
+    REQUIRE(r.status == CookedMeshStatus::Ok);
+    CHECK(r.mesh.sourceGuid.hi == 0U);
+    CHECK(r.mesh.indexCount == 3U);
+    CHECK(r.mesh.indexType == CookedIndexType::Uint16);
+    CHECK(r.mesh.indexDataOffset == 256U);
+    CHECK(r.mesh.bounds.min == engine::Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(r.mesh.bounds.max == engine::Vec3{1.0F, 1.0F, 0.0F});
+    REQUIRE(r.mesh.attributes.size() == 1U);
+    CHECK(r.mesh.attributes[0].semantic == CookedVertexSemantic::Position);
+    CHECK(r.mesh.attributes[0].format == CookedVertexFormat::Float3);
+    CHECK(r.mesh.attributes[0].offset == 0U);
+    REQUIRE(r.mesh.sections.size() == 1U);
+    CHECK(r.mesh.sections[0].vertexStride == 12U);
+    CHECK(r.mesh.sections[0].vertexCount == 3U);
+    CHECK(r.mesh.sections[0].vertexDataOffset == 208U);
+    CHECK(r.mesh.sections[0].vertexDataBytes == 36U);
+    REQUIRE(r.mesh.submeshes.size() == 1U);
+    CHECK(r.mesh.submeshes[0].materialIndex == engine::assets::COOKED_INVALID_MATERIAL);
+    CHECK(r.mesh.submeshes[0].bounds.max == engine::Vec3{1.0F, 1.0F, 0.0F});
+    // C1 IN BYTES: attributeCount is ODD, so the section table starts at 104 and the submesh table
+    // at 136, and NEITHER is 16-aligned. Padding either to 16 would change this golden's size.
+    CHECK(96U + (8U * r.mesh.attributes.size()) == 104U);
+    CHECK(104U + (32U * r.mesh.sections.size()) == 136U);
+    const auto idx = engine::assets::indexBytes(r.mesh);
+    REQUIRE(idx.size() == 6U);
+    CHECK(engine::assets::getU16(idx, 0) == 0U);
+    CHECK(engine::assets::getU16(idx, 2) == 1U);
+    CHECK(engine::assets::getU16(idx, 4) == 2U);
+}
+
+TEST_CASE("cooked mesh: COOKED_GOLDEN_MIXED parses Ok and pins the ordering rules (CM43)") {
+    const std::vector<std::byte> b = asBytes(aero_test::COOKED_GOLDEN_MIXED);
+    REQUIRE(b.size() == 480U);
+    const auto r = parse(b);
+    REQUIRE(r.status == CookedMeshStatus::Ok);
+    CHECK(r.mesh.sourceGuid.hi == 0x0123456789ABCDEFULL);
+    CHECK(r.mesh.sourceGuid.lo == 0xFEDCBA9876543210ULL);
+    CHECK(r.mesh.indexCount == 6U);
+    CHECK(r.mesh.indexDataOffset == 464U);
+    CHECK(r.mesh.bounds.max == engine::Vec3{2.0F, 1.0F, 1.0F});
+    REQUIRE(r.mesh.attributes.size() == 4U);
+    REQUIRE(r.mesh.sections.size() == 2U);
+    REQUIRE(r.mesh.submeshes.size() == 2U);
+    // ASCENDING MASK, not input order: the position-only primitive was supplied SECOND and is
+    // section 0; the three-attribute one was supplied FIRST and is section 1.
+    CHECK(r.mesh.sections[0].vertexStride == 12U);
+    CHECK(r.mesh.sections[0].vertexDataOffset == 320U);
+    CHECK(r.mesh.sections[0].vertexDataBytes == 36U);
+    CHECK(r.mesh.sections[1].firstAttribute == 1U);
+    CHECK(r.mesh.sections[1].attributeCount == 3U);
+    CHECK(r.mesh.sections[1].vertexStride == 32U);
+    CHECK(r.mesh.sections[1].vertexDataOffset == 368U);
+    CHECK(r.mesh.sections[1].vertexDataBytes == 96U);
+    CHECK(r.mesh.submeshes[0].sourceMeshIndex == 0U);
+    CHECK(r.mesh.submeshes[0].materialIndex == engine::assets::COOKED_INVALID_MATERIAL);
+    CHECK(r.mesh.submeshes[1].sourceMeshIndex == 1U);
+    CHECK(r.mesh.submeshes[1].firstIndex == 3U);
+    CHECK(r.mesh.submeshes[1].materialIndex == 7U);
+    CHECK(r.mesh.submeshes[1].bounds.min == engine::Vec3{2.0F, 0.0F, 0.0F});
+    CHECK(r.mesh.submeshes[1].bounds.max == engine::Vec3{2.0F, 1.0F, 1.0F});
+    // Section 1's region ends EXACTLY on the index region's start, so padding is COMPUTED rather
+    // than unconditional: 368 + 96 == 464.
+    CHECK(r.mesh.sections[1].vertexDataOffset + r.mesh.sections[1].vertexDataBytes == r.mesh.indexDataOffset);
+}
+
+TEST_CASE("cooked mesh: every STORED offset is 16-aligned and every gap is zero (CM44)") {
+    // AC-4 as this plan restates it (C1): the rule governs the two offsets the format actually
+    // STORES -- CookedSection::vertexDataOffset and the header's indexDataOffset -- plus the
+    // zero-padding rule. The three tables are packed at implicit 8-byte-aligned starts the reader
+    // derives, which is why Golden B's section table legitimately begins at 104.
+    struct Golden {
+        const char* name;
+        std::vector<std::byte> bytes;
+    };
+    std::vector<Golden> goldens;
+    goldens.push_back({"empty", asBytes(aero_test::COOKED_GOLDEN_EMPTY)});
+    goldens.push_back({"triangle", asBytes(aero_test::COOKED_GOLDEN_TRIANGLE)});
+    goldens.push_back({"mixed", asBytes(aero_test::COOKED_GOLDEN_MIXED)});
+
+    for (const Golden& g : goldens) {
+        CAPTURE(g.name);
+        const auto r = parse(g.bytes);
+        REQUIRE(r.status == CookedMeshStatus::Ok);
+        CHECK(r.mesh.indexDataOffset % 16U == 0U);
+        std::uint64_t cursor =
+            96U + (8U * r.mesh.attributes.size()) + (32U * r.mesh.sections.size()) + (64U * r.mesh.submeshes.size());
+        for (const auto& s : r.mesh.sections) {
+            CHECK(s.vertexDataOffset % 16U == 0U);
+            CHECK(s.vertexDataOffset >= cursor);
+            for (std::uint64_t i = cursor; i < s.vertexDataOffset; ++i) {
+                CHECK(g.bytes[static_cast<std::size_t>(i)] == std::byte{0});
+            }
+            cursor = s.vertexDataOffset + s.vertexDataBytes;
+        }
+        CHECK(r.mesh.indexDataOffset >= cursor);
+        for (std::uint64_t i = cursor; i < r.mesh.indexDataOffset; ++i) {
+            CHECK(g.bytes[static_cast<std::size_t>(i)] == std::byte{0});
+        }
+        const std::uint64_t indexEnd =
+            r.mesh.indexDataOffset + (std::uint64_t{r.mesh.indexCount} * cookedIndexTypeBytes(r.mesh.indexType));
+        for (std::uint64_t i = indexEnd; i < g.bytes.size(); ++i) {
+            CHECK(g.bytes[static_cast<std::size_t>(i)] == std::byte{0});
+        }
+    }
+}
+
+TEST_CASE("cooked mesh: the mixed golden's second section is ascending semantic order (CM45)") {
+    const std::vector<std::byte> b = asBytes(aero_test::COOKED_GOLDEN_MIXED);
+    const auto r = parse(b);
+    REQUIRE(r.status == CookedMeshStatus::Ok);
+    REQUIRE(r.mesh.attributes.size() == 4U);
+    CHECK(r.mesh.attributes[1].semantic == CookedVertexSemantic::Position);
+    CHECK(r.mesh.attributes[1].format == CookedVertexFormat::Float3);
+    CHECK(r.mesh.attributes[1].offset == 0U);
+    CHECK(r.mesh.attributes[2].semantic == CookedVertexSemantic::Normal);
+    CHECK(r.mesh.attributes[2].format == CookedVertexFormat::Float3);
+    CHECK(r.mesh.attributes[2].offset == 12U);
+    CHECK(r.mesh.attributes[3].semantic == CookedVertexSemantic::TexCoord0);
+    CHECK(r.mesh.attributes[3].format == CookedVertexFormat::Float2);
+    CHECK(r.mesh.attributes[3].offset == 24U);
+    CHECK(r.mesh.sections[1].vertexStride == 32U);
+    // Strictly ascending semantic code AND strictly ascending offset, and the offsets accumulate
+    // exactly the widths of the attributes before them -- no padding between attributes.
+    std::uint32_t expected = 0;
+    for (std::uint32_t a = 0; a < 3; ++a) {
+        const auto& attr = r.mesh.attributes[1 + a];
+        CHECK(attr.offset == expected);
+        expected += cookedVertexFormatBytes(attr.format);
+    }
+    CHECK(expected == r.mesh.sections[1].vertexStride);
+}
+
+TEST_CASE("cooked mesh: the mixed golden's interleaving reads back at base + i*stride + offset (CM46)") {
+    const std::vector<std::byte> b = asBytes(aero_test::COOKED_GOLDEN_MIXED);
+    const auto r = parse(b);
+    REQUIRE(r.status == CookedMeshStatus::Ok);
+
+    const auto s0 = engine::assets::sectionVertexBytes(r.mesh, 0);
+    REQUIRE(s0.size() == 36U);
+    const std::array<std::array<float, 3>, 3> expected0 = {std::array<float, 3>{0.0F, 0.0F, 0.0F},
+                                                           std::array<float, 3>{1.0F, 0.0F, 0.0F},
+                                                           std::array<float, 3>{0.0F, 1.0F, 0.0F}};
+    for (std::size_t v = 0; v < 3; ++v) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            CHECK(engine::assets::getF32(s0, (v * 12) + (k * 4)) == expected0[v][k]);
+        }
+    }
+
+    const auto s1 = engine::assets::sectionVertexBytes(r.mesh, 1);
+    REQUIRE(s1.size() == 96U);
+    const std::array<std::array<float, 3>, 3> positions = {std::array<float, 3>{2.0F, 0.0F, 0.0F},
+                                                           std::array<float, 3>{2.0F, 1.0F, 0.0F},
+                                                           std::array<float, 3>{2.0F, 0.0F, 1.0F}};
+    const std::array<std::array<float, 2>, 3> uvs = {std::array<float, 2>{0.0F, 0.0F}, std::array<float, 2>{1.0F, 0.0F},
+                                                     std::array<float, 2>{0.0F, 1.0F}};
+    for (std::size_t v = 0; v < 3; ++v) {
+        const std::size_t base = v * 32;
+        for (std::size_t k = 0; k < 3; ++k) {
+            CHECK(engine::assets::getF32(s1, base + 0 + (k * 4)) == positions[v][k]);
+        }
+        CHECK(engine::assets::getF32(s1, base + 12) == 1.0F);  // normal.x
+        CHECK(engine::assets::getF32(s1, base + 16) == 0.0F);
+        CHECK(engine::assets::getF32(s1, base + 20) == 0.0F);
+        CHECK(engine::assets::getF32(s1, base + 24) == uvs[v][0]);
+        CHECK(engine::assets::getF32(s1, base + 28) == uvs[v][1]);
+    }
+}
+
+TEST_CASE("cooked mesh: CookedVertexFormat maps to four distinct rhi::VertexFormat values (CM47)") {
+    // aero_tests already links aero::rhi, which is what makes this assertable HERE. aero::assets
+    // deliberately does not and never will: rhi::VertexFormat's fifteen enumerators have IMPLICIT
+    // values, so a reorder is legal and invisible, and writing those numbers into a file would make
+    // every previously-cooked artifact decode to the wrong formats afterwards.
+    //
+    // A switch with NO `default:`, so a new CookedVertexFormat enumerator is a -Wswitch BUILD FAILURE
+    // on the Linux lane rather than a silently uncovered row.
+    auto toRhi = [](CookedVertexFormat f) {
+        switch (f) {
+            case CookedVertexFormat::Float2:
+                return engine::rhi::VertexFormat::Float2;
+            case CookedVertexFormat::Float3:
+                return engine::rhi::VertexFormat::Float3;
+            case CookedVertexFormat::Float4:
+                return engine::rhi::VertexFormat::Float4;
+            case CookedVertexFormat::Uint4:
+                return engine::rhi::VertexFormat::Uint4;
+        }
+        return engine::rhi::VertexFormat::Float;
+    };
+    const std::array<CookedVertexFormat, 4> all = {CookedVertexFormat::Float2, CookedVertexFormat::Float3,
+                                                   CookedVertexFormat::Float4, CookedVertexFormat::Uint4};
+    // PAIRWISE DISTINCT -- a real, computed fact about rhi, not a claim about it.
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        for (std::size_t j = i + 1; j < all.size(); ++j) {
+            CHECK(toRhi(all[i]) != toRhi(all[j]));
+        }
+    }
+    // The byte size claimed for each rhi::VertexFormat is a LITERAL here, and that is deliberate:
+    // aero::rhi publishes NO vertex-format size function (measured -- the only place a VertexFormat
+    // is interpreted is the private SDL_GPU backend's toSdl). This half is a statement about the
+    // enumerator's documented meaning, not a computed check. When the first pipeline lands
+    // (3.4.1 / Phase 5) and rhi gains a size function, this tightens to a computed comparison.
+    CHECK(cookedVertexFormatBytes(CookedVertexFormat::Float2) == 8U);   // rhi::VertexFormat::Float2 is 2 x f32
+    CHECK(cookedVertexFormatBytes(CookedVertexFormat::Float3) == 12U);  // Float3 is 3 x f32
+    CHECK(cookedVertexFormatBytes(CookedVertexFormat::Float4) == 16U);  // Float4 is 4 x f32
+    CHECK(cookedVertexFormatBytes(CookedVertexFormat::Uint4) == 16U);   // Uint4 is 4 x u32
+    // The index types line up one for one too.
+    CHECK(cookedIndexTypeBytes(CookedIndexType::Uint16) == 2U);
+    CHECK(cookedIndexTypeBytes(CookedIndexType::Uint32) == 4U);
+    CHECK(static_cast<std::uint8_t>(engine::rhi::IndexType::Uint16) == 0U);
+    CHECK(static_cast<std::uint8_t>(engine::rhi::IndexType::Uint32) == 1U);
+}
+
+TEST_CASE("cooked mesh: COOKED_SEMANTIC_COUNT bounds every semantic (CM48)") {
+    // The pin that stops a ninth semantic being added without the parser's bound moving with it: the
+    // parser refuses `semantic >= COOKED_SEMANTIC_COUNT`, so a new enumerator whose value is not
+    // below the count would be refused in every file the cook writes.
+    static_assert(engine::assets::COOKED_SEMANTIC_COUNT == 8);
+    CHECK(engine::assets::COOKED_SEMANTIC_COUNT == 8U);
+    CHECK(ALL_SEMANTICS.size() == engine::assets::COOKED_SEMANTIC_COUNT);
+    for (const CookedVertexSemantic s : ALL_SEMANTICS) {
+        CHECK(static_cast<std::uint16_t>(s) < engine::assets::COOKED_SEMANTIC_COUNT);
+    }
+    // And they are 0..7 with no gaps, which is what makes "bit n set means semantic n present" true.
+    for (std::size_t i = 0; i < ALL_SEMANTICS.size(); ++i) {
+        CHECK(static_cast<std::uint16_t>(ALL_SEMANTICS[i]) == static_cast<std::uint16_t>(i));
+    }
 }
