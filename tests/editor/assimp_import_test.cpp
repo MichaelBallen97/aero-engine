@@ -394,6 +394,17 @@ constexpr std::string_view DAE_POLYGONS =
 </COLLADA>
 )";
 
+// GAP-CLOSING FIXTURE (sabotage seed S19). A .ply header naming TWO DIFFERENT textures is the only
+// input that distinguishes the Full pass's own seeding step from the loader's material: Assimp keeps
+// only the LAST TextureFile line (each overwrites the previous), while scanPlyTextureFiles returns them
+// all -- so without the seed the two depths report DIFFERENT URI sets. With a single TextureFile the
+// loader's own copy happens to reproduce the scan's answer exactly, which is why deleting the seeding
+// step reddened nothing at all until this fixture existed.
+constexpr std::string_view TWO_TEXTURE_PLY =
+    "ply\nformat ascii 1.0\ncomment TextureFile first.png\ncomment TextureFile second.png\n"
+    "element vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\n"
+    "property list uchar int vertex_index\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+
 // THE FIXTURE TABLE. AI10 (depth equality), AI11 (degenerate inputs) and AI13 all drive it, so adding a
 // fixture here covers it in several cases automatically -- which is what keeps AC-19's "for EVERY
 // fixture" honest as the suite grows.
@@ -405,7 +416,7 @@ struct Fixture {
 [[nodiscard]] std::vector<Fixture> fixtureTable() {
     return {
         Fixture{"t.stl", TRIANGLE_STL}, Fixture{"t.ply", TRIANGLE_PLY},      Fixture{"scan.ply", TEXTURED_PLY},
-        Fixture{"t.dae", TRIANGLE_DAE}, Fixture{"hostile.dae", HOSTILE_DAE},
+        Fixture{"t.dae", TRIANGLE_DAE}, Fixture{"hostile.dae", HOSTILE_DAE}, Fixture{"two.ply", TWO_TEXTURE_PLY},
     };
 }
 
@@ -794,10 +805,13 @@ TEST_CASE("AI3: assimp_import.cpp names no forbidden Assimp entry point, and doe
         CHECK(code.find(forbidden) == std::string::npos);
     }
 
+    // `Get(AI_METADATA_SOURCE_FORMAT` and NOT the bare key, which is GAP-CLOSING (sabotage seed S4):
+    // the bare token is a PREFIX of AI_METADATA_SOURCE_FORMAT_VERSION, an unrelated key this file reads
+    // for a display string, so deleting the whole loader assertion left the naive check green.
     for (const std::string_view required :
-         {"ReadFileFromMemory(", "SetIOHandler(new", "AI_METADATA_SOURCE_FORMAT", "ImportStatus::Malformed",
-          "aiProcess_ValidateDataStructure", "aiProcess_Triangulate", "AI_CONFIG_PP_SBP_REMOVE",
-          "AI_CONFIG_PP_LBW_MAX_WEIGHTS"}) {
+         {"ReadFileFromMemory(", "SetIOHandler(new", "Get(AI_METADATA_SOURCE_FORMAT,", "expectedLoaderFragment",
+          "ImportStatus::Malformed", "aiProcess_ValidateDataStructure", "aiProcess_Triangulate",
+          "AI_CONFIG_PP_SBP_REMOVE", "AI_CONFIG_PP_LBW_MAX_WEIGHTS"}) {
         INFO("required token: ", required);
         CHECK(code.find(required) != std::string::npos);
     }
@@ -1485,6 +1499,12 @@ TEST_CASE("AI34: the ply pre-check and the two range checks are present, in the 
     CHECK(precheck < run);
 
     CHECK(code.find("face.mIndices[k] >= src.mNumVertices") != std::string::npos);
+    // GAP-CLOSING (sabotage seed S16): the WEIGHT range check had no cover of any kind -- no runtime
+    // case can reach it and nothing pinned it in the source, so deleting it was invisible.
+    CHECK(code.find("vw.mVertexId >= src.mNumVertices") != std::string::npos);
+    // And the defensive non-triangle check, unreachable after aiProcess_Triangulate (seed S17), which
+    // is pinned here rather than left as a branch a refactor could delete without consequence.
+    CHECK(code.find("face.mNumIndices != 3") != std::string::npos);
 }
 
 // AI35 -- summary.bounds is folded from surviving PRIMITIVES, never from mesh bounds. 3.2.3 confirmed by
@@ -1806,14 +1826,25 @@ TEST_CASE("AI46: a .dae with no visual scene is refused with the library's own m
     CHECK_FALSE(result.message.empty());
 }
 
-// AI47 (E10) -- a CROSS-DOCUMENT <instance_geometry url="other.dae#g">. The second document is NEVER
-// opened: RefusingIoSystem refuses every path but the magic in-memory one, and the working directory is
-// listed before and after to prove nothing was created either.
+// AI47 (E10) -- a CROSS-DOCUMENT <instance_geometry url="other.dae#g">. MEASURED: ColladaParser refuses
+// it outright ("Unknown reference format", ColladaParser.cpp's `if (url[0] != '#') throw`), and the ONLY
+// pIOHandler->Open call anywhere in the Collada sources is for the primary file. So no construct in any
+// of this task's three formats can make the library request a second path at all.
+//
+// That is the reason sabotage seed S1 (deleting the SetIOHandler call) reddens only the source-text
+// gate: RefusingIoSystem guards a door these three loaders never knock on, and it earns its place as
+// defence for the primary open, for .zae, and for whatever a future Assimp bump changes. The sibling
+// below carries a REAL geometry precisely so that "never read" is asserted behaviourally rather than
+// assumed -- and the directory is listed before and after so "never written" is too.
 TEST_CASE("AI47: a cross-document instance_geometry never opens the other file") {
     const TempDir temp;
     {
+        // GAP-CLOSING (sabotage seed S1): the sibling carries a REAL geometry with a distinctive
+        // coordinate. An empty <COLLADA/> proved nothing -- with the refusing handler removed, reading
+        // it would still have produced no observable difference, so the seed reddened only AI3. This
+        // vertex is what makes "the second document was never read" a BEHAVIOURAL assertion.
         std::ofstream sibling(temp.path() / "other.dae", std::ios::binary);
-        sibling << "<?xml version=\"1.0\"?><COLLADA/>";
+        sibling << dae(DAE_CHAIN);
     }
     const ScopedCwd cwd(temp.path());
 
@@ -1830,6 +1861,13 @@ TEST_CASE("AI47: a cross-document instance_geometry never opens the other file")
     const ImportResult result = importModel("cross.dae", "", asBytes(text), ImportSettings{}, ImportDepth::Full, {});
     INFO("message: ", result.message);
     CHECK(result.externalUris.empty());
+    // The sibling's geometry must appear NOWHERE: not a mesh, not a node named after one of its nodes.
+    for (const engine::editor::ImportedMesh& mesh : result.model.meshes) {
+        CHECK(mesh.primitives.empty());
+    }
+    for (const engine::editor::ImportedNode& node : result.model.nodes) {
+        CHECK(node.meshIndex == engine::editor::INVALID_SUBASSET);
+    }
 
     std::vector<std::string> after;
     for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(temp.path())) {
@@ -2358,7 +2396,7 @@ constexpr std::string_view SKINNED_DAE =
 // A <library_animations> block driving Bone1/transform with three matrix keys at 0, 0.5 and 1 seconds.
 // `matrixRow` is one key's 16 row-major floats; all three keys carry the same value, so a resampling
 // change upstream cannot move what the case asserts.
-[[nodiscard]] std::string animationBlock(std::string_view matrixRow) {
+[[nodiscard]] std::string animationBlock(std::string_view matrixRow, std::string_view times = "0 0.5 1") {
     std::string keys;
     for (int i = 0; i < 3; ++i) {
         keys += std::string(matrixRow) + " ";
@@ -2366,7 +2404,7 @@ constexpr std::string_view SKINNED_DAE =
     return std::format(
         R"(  <library_animations><animation id="a1" name="Clip">
       <source id="a_in">
-        <float_array id="a_in_a" count="3">0 0.5 1</float_array>
+        <float_array id="a_in_a" count="3">{}</float_array>
         <technique_common><accessor source="#a_in_a" count="3" stride="1">
           <param name="TIME" type="float"/></accessor></technique_common>
       </source>
@@ -2388,7 +2426,7 @@ constexpr std::string_view SKINNED_DAE =
       <channel source="#samp" target="Bone1/transform"/>
     </animation></library_animations>
 )",
-        keys);
+        times, keys);
 }
 
 // The skinned document, with the geometry, the controllers and (optionally) an animation spliced in.
@@ -2663,6 +2701,19 @@ TEST_CASE("AI70: a zero ticks-per-second falls back to seconds with one warning 
     REQUIRE(warn != std::string::npos);
     REQUIRE(fallback != std::string::npos);
     CHECK(warn < fallback);
+
+    // GAP-CLOSING, and for the same reason (sabotage seed S27): the STRICTLY-INCREASING enforcement has
+    // no reachable input either. ColladaLoader::CreateAnimation RESAMPLES onto a stepped timeline from
+    // startTime to endTime, so a duplicate in the document's own <float_array> of input times cannot
+    // survive into aiNodeAnim -- measured by seeding the enforcement away with a fixture declaring
+    // "0 0.5 0.5" and watching nothing redden. It stays because INV-M6 and model_import.hpp's own
+    // contract require it of every channel this tree produces, whatever a future loader emits.
+    const std::size_t vec3Guard = code.find("appendVec3Channel");
+    REQUIRE(vec3Guard != std::string::npos);
+    CHECK(code.find("if (!first && t <= lastTime) {", vec3Guard) != std::string::npos);
+    const std::size_t quatGuard = code.find("appendQuatChannel");
+    REQUIRE(quatGuard != std::string::npos);
+    CHECK(code.find("if (!first && t <= lastTime) {", quatGuard) != std::string::npos);
 }
 
 // AI71 (AC-46) -- ticks to SECONDS, hand-computed against the loader's own 1000 ticks per second: a
@@ -2680,9 +2731,18 @@ TEST_CASE("AI71: key times are converted from ticks to seconds") {
     CHECK(approxEq(channel.times[2], 1.0F, 1e-3F));
 }
 
-// AI72 (AC-47) -- a channel targeting a node the model does not contain is dropped with one warning,
-// never silently retargeted and never emitted with an invalid targetNode.
-TEST_CASE("AI72: an animation channel targeting an unknown node is dropped with one warning") {
+// AI72 (AC-47) -- a channel targeting a node the model does not contain is dropped, never silently
+// retargeted and never emitted with an invalid targetNode; and a DUPLICATE key time is dropped keeping
+// the first, with one warning per channel.
+//
+// The duplicate half is an HONEST NEGATIVE RESULT, recorded rather than dressed up: a document
+// declaring "0 0.5 0.5" still yields strictly increasing key times, because ColladaLoader::CreateAnimation
+// RESAMPLES onto a stepped timeline rather than copying the document's own input source. So the
+// enforcement in appendVec3Channel/appendQuatChannel has no reachable input from any of these three
+// formats, seed S27 reddens nothing behaviourally, and AI70 carries its source-text pin instead. The
+// arm stays because it asserts the OUTPUT contract (INV-M6's neighbour) on a fixture that tries hardest
+// to break it.
+TEST_CASE("AI72: an unknown channel target is dropped, and so is a duplicate key time") {
     const std::string good = skinnedDae(SKIN_LIBRARIES, animationBlock("1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"));
     std::string text(good);
     const std::size_t at = text.find("target=\"Bone1/transform\"");
@@ -2696,6 +2756,19 @@ TEST_CASE("AI72: an animation channel targeting an unknown node is dropped with 
     for (const engine::editor::ImportedAnimation& clip : result.model.animations) {
         for (const engine::editor::ImportedAnimationChannel& channel : clip.channels) {
             CHECK(channel.targetNode < result.model.nodes.size());
+        }
+    }
+
+    // A REPEATED timestamp: three keys declared at 0, 0.5 and 0.5 seconds.
+    const std::string repeated =
+        skinnedDae(SKIN_LIBRARIES, animationBlock("1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1", "0 0.5 0.5"));
+    const ImportResult dup = importModel("dupt.dae", "", asBytes(repeated), ImportSettings{}, ImportDepth::Full, {});
+    INFO("duplicate message: ", dup.message, " warnings: ", dup.warningTotal);
+    REQUIRE(dup.status == ImportStatus::Ok);
+    REQUIRE(dup.model.animations.size() == 1U);
+    for (const engine::editor::ImportedAnimationChannel& channel : dup.model.animations[0].channels) {
+        for (std::size_t i = 1; i < channel.times.size(); ++i) {
+            CHECK(channel.times[i] > channel.times[i - 1U]);  // STRICTLY increasing, always
         }
     }
 }
@@ -2874,6 +2947,20 @@ TEST_CASE("AI77: scale reaches inverse bind translations and root translations o
         CHECK(approxEq(scaled.model.nodes[i].translation, plain.model.nodes[i].translation));
         CHECK(approxEq(scaled.model.nodes[i].rotation.w, plain.model.nodes[i].rotation.w));
     }
+
+    // GAP-CLOSING (sabotage seed S24). Every node in the skinned fixture has a ZERO translation, so
+    // scaling all of them instead of only the root is invisible there -- the seed reddened nothing at
+    // all until this arm existed. DAE_CHAIN's node 1 carries <translate>1 2 3</translate>, and it must
+    // read (1, 2, 3) whatever the scale is.
+    const std::string chain = dae(DAE_CHAIN);
+    const ImportResult chainPlain =
+        importModel("chain.dae", "", asBytes(chain), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult chainScaled = importModel("chain.dae", "", asBytes(chain), doubled, ImportDepth::Full, {});
+    REQUIRE(chainPlain.status == ImportStatus::Ok);
+    REQUIRE(chainScaled.status == ImportStatus::Ok);
+    REQUIRE(chainScaled.model.nodes.size() == 4U);
+    CHECK(approxEq(chainPlain.model.nodes[1].translation, engine::Vec3{1.0F, 2.0F, 3.0F}));
+    CHECK(approxEq(chainScaled.model.nodes[1].translation, engine::Vec3{1.0F, 2.0F, 3.0F}));
 }
 
 // ---- step 8: caps, failure mapping and the validation refusal ----------------------------------------
