@@ -707,6 +707,10 @@ set(_aero_cooker_cases
     help version no_subcommand unknown_subcommand unknown_flag
     missing_input_flag missing_output_flag missing_flag_value repeated_flag
     bad_guid bad_scale
+    missing_file blend_refused
+    gltf_happy gltf_external_bin obj_missing_mtl
+    guid_written scale_applied no_materials
+    determinism nothing_written_on_failure output_dir_missing
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(

@@ -1,0 +1,9 @@
+# aero-engine test fixture (hand-authored) -- task 3.3.1: a Wavefront file whose mtllib names a
+# file that is not there. A missing .mtl is a WARNING, never a failure (task 3.2.3's D7), so the
+# cooker must still produce an artifact and exit 0.
+mtllib missing.mtl
+o NoMtlTriangle
+v 0.0 0.0 0.0
+v 1.0 0.0 0.0
+v 0.0 1.0 0.0
+f 1 2 3

@@ -1,0 +1,66 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "aero-engine test fixture (hand-authored) -- task 3.3.1: the ONLY two-file glTF in the tree, so the cooker's external-buffer pass has something to exercise. Its buffer lives in the sibling external.bin; copying this file WITHOUT that sibling is the negative twin the same ctest case runs."
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "ExternalTriangle",
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "name": "ExternalTriangleMesh",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0
+          },
+          "indices": 1,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 36
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 36,
+      "byteLength": 6
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 42,
+      "uri": "external.bin"
+    }
+  ]
+}
