@@ -3,6 +3,7 @@
 # GOLDEN RULE: nothing in this tree may ever depend on editor/.
 
 add_subdirectory(core)
+add_subdirectory(assets)     # task 3.3.1 — cooked-asset formats; depends on core and NOTHING else
 add_subdirectory(platform)
 add_subdirectory(rhi)        # task 0.4.1
 add_subdirectory(render)     # task 0.5.1

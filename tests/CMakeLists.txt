@@ -25,6 +25,7 @@ add_executable(aero_tests
     vfs_test.cpp
     guid_test.cpp          # task 3.1.1 — engine::Guid: text codec, ordering, hash, seeded generator
     content_hash_test.cpp  # task 3.1.2 — engine::ContentHash: MurmurHash3 x64_128, text codec, ordering, incremental hasher
+    cooked_mesh_test.cpp   # task 3.3.1 — the .aeromesh container v1: layout, parse, hostile input
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -76,7 +77,10 @@ add_executable(aero_tests
 # cannot weaken any guard. The compile-time guard for rhi/SDL_GPU is aero_rhi_boundary_probe, which
 # links aero::rhi ALONE and is UNTOUCHED by this line -- and engine/rhi/CMakeLists.txt:43's "NEVER
 # link it into a boundary probe" is about exactly those probe targets, not this runner (§O-1).
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
+# task 3.3.1: aero::assets joins this line for cooked_mesh_test.cpp and mesh_cook_test.cpp. aero::rhi
+# is ALREADY here, which is what makes CM47's CookedVertexFormat <-> rhi::VertexFormat correspondence
+# assertable in this target at all -- assets deliberately does not link rhi, and never will.
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
 
 # Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,
 # in build/<preset>/shaders). aero_shaders exists ONLY when AERO_SHADER_TOOLS is ON (cmake/shaders.cmake),
