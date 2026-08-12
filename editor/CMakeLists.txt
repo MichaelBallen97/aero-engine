@@ -123,6 +123,7 @@ add_library(aero_editor_core STATIC
     src/blender_process.cpp      # task 3.2.4 -- the ONLY SDL_Process TU in the tree
     src/blender_service.cpp      # task 3.2.4 -- the state machine; SDL_getenv only, never SDL_Process
     src/assimp_import.cpp        # task 3.2.5 -- the ONLY assimp TU; NO file operation at all
+    src/mesh_cook_source.cpp     # task 3.3.1 -- the ONLY ImportedModel -> assets:: adapter; PURE
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -140,7 +141,13 @@ target_link_libraries(aero_editor_core
     # link no vcpkg package either -- the same property tests/scene_boundary_probe.cpp rests on. It is
     # also NOT gated on AERO_REFLECT_TOOLS (only engine/scene_serialize is), so the tools-OFF build and
     # the ungated tier-0 shell test both survive (2.1.3 AC-9 preserved).
-    PUBLIC  aero::rhi aero::platform aero::scene aero::core
+    # aero::assets is PUBLIC because mesh_cook_source.hpp names assets::MeshCookPrimitive and
+    # assets::MeshCookResult in its own signatures (task 3.3.1). It propagates NO vcpkg include path:
+    # aero_assets links NO vcpkg package at all and its only PUBLIC dependency is aero::core, which
+    # links spdlog/glm/enkiTS PRIVATE -- the same property tests/math_boundary_probe.cpp rests on. It
+    # is NOT gated on AERO_REFLECT_TOOLS, so both reduced configurations and the ungated tier-0 shell
+    # test survive unchanged.
+    PUBLIC  aero::rhi aero::platform aero::scene aero::core aero::assets
     # EnTT is PRIVATE for the SAME reason imgui is (D1/2.1.3): the editor's PUBLIC headers stay
     # entt-free BY FILE PLACEMENT -- every entt entry point lives in editor/src/. That is convention +
     # review, NOT enforcement: this target's consumers link doctest/vcpkg roots, so a leaked

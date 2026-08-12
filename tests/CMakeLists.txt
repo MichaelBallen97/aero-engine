@@ -300,6 +300,16 @@ find_package(Threads REQUIRED)
 # drift surface). The link line is UNCHANGED, no new ctest entry is registered (ctest -N stays
 # 95/6/19), and THIS TU NAMES NO Assimp TYPE -- it drives the backend only indirectly, through the
 # PUBLIC importModel().
+# task 3.3.1 joins this target with ONE new TU, editor/mesh_cook_source_test.cpp. UNCONDITIONAL, for
+# the identical reason model_import_test.cpp is: mesh_cook_source.hpp depends only on
+# aero/editor/model_import.hpp and aero/assets/mesh_cook.hpp, and aero::assets is a PUBLIC, UNGATED
+# dependency of aero_editor_core (only engine/scene_serialize is gated on AERO_REFLECT_TOOLS). This TU
+# must therefore be PRESENT in BOTH reduced configurations, not skipped -- prove it with
+# --list-test-cases, which must show the SAME total in the two and MK1 present in both. Tier-0: no GPU,
+# no window, no ImGui context, no sleeps. Its fixtures reach it through AERO_ASSET_FIXTURES_DIR, ALREADY
+# defined on this target, and it reads tests/cooked_mesh_golden.hpp through the ${CMAKE_CURRENT_SOURCE_DIR}
+# include root ALREADY set below -- ONE GOLDEN, TWO BINARIES. NO LINK-LINE CHANGE: aero::assets arrives
+# transitively and PUBLICly through aero::editor_core, and no new ctest entry is registered here.
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -316,7 +326,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/model_import_test.cpp editor/model_import_session_test.cpp
                editor/fbx_import_test.cpp editor/obj_import_test.cpp
                editor/blender_tool_test.cpp editor/blender_service_test.cpp
-               editor/assimp_import_test.cpp)
+               editor/assimp_import_test.cpp
+               editor/mesh_cook_source_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
