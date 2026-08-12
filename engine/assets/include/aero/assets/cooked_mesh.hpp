@@ -291,6 +291,33 @@ struct CookedSubmesh {
     CookedBounds bounds;
 };
 
+// LIFETIME: `bytes` IS the buffer handed to parseCookedMesh, retained as a span. Every table's
+// offsets are absolute into it, so they mean exactly what the file says and need no rebasing. The
+// three tables are OWNED copies (bounded by the caps, so always small); the bulk data is NEVER
+// copied -- that is the whole promise of this format. A CookedMesh outliving its buffer is a dangling
+// read, and the only defence is this comment plus the two accessors below, which are the sanctioned
+// way to reach bulk data. Nothing else should index `bytes` by hand.
+struct CookedMesh {
+    std::uint32_t formatVersion = 0;
+    std::uint32_t cookerVersion = 0;
+    Guid sourceGuid;
+    CookedIndexType indexType = CookedIndexType::Uint16;
+    CookedBounds bounds;
+    std::uint32_t indexCount = 0;
+    std::uint64_t indexDataOffset = 0;
+    std::vector<CookedVertexAttribute> attributes;
+    std::vector<CookedSection> sections;
+    std::vector<CookedSubmesh> submeshes;
+    std::span<const std::byte> bytes;
+};
+
+// Both TOTAL on a mesh parseCookedMesh returned Ok for: every offset and length they use was
+// validated during the parse, so neither can be handed an out-of-range range. An out-of-range
+// sectionIndex returns an EMPTY span rather than reading -- a caller bug must not become a read.
+[[nodiscard]] std::span<const std::byte> sectionVertexBytes(const CookedMesh& mesh,
+                                                            std::uint32_t sectionIndex) noexcept;
+[[nodiscard]] std::span<const std::byte> indexBytes(const CookedMesh& mesh) noexcept;
+
 enum class CookedMeshStatus : std::uint8_t {
     Ok = 0,
     TooSmall,            // shorter than the header
@@ -305,5 +332,30 @@ enum class CookedMeshStatus : std::uint8_t {
 };
 // A switch with NO `default:` (the importStatusLabel precedent).
 [[nodiscard]] std::string_view cookedMeshStatusLabel(CookedMeshStatus status) noexcept;
+
+struct CookedMeshParseResult {
+    CookedMeshStatus status = CookedMeshStatus::Ok;
+    std::string message;  // "" IFF status == Ok
+    CookedMesh mesh;      // meaningful only when status == Ok
+};
+
+// NEVER THROWS. NEVER READS A FILE. NEVER LOGS.
+//
+// Written to the importer's hostile-input standard from day one (D13), because at Phase 5 this reads
+// bytes out of a .pak that may have been shipped, patched, truncated by a failed download, or
+// crafted. Every range check is a SUBTRACTION against the known-good size (`len > size || off > size
+// - len`), never an addition that can wrap; nothing is allocated before the count it is allocating
+// for has been checked against a frozen cap.
+//
+// TWO THINGS IT DELIBERATELY DOES NOT CHECK, both stated rather than discovered:
+//   1. individual index VALUES against their section's vertexCount -- that is O(indexCount) work on up
+//      to 24 million entries on every load, and the consumer that uploads to the GPU is where an
+//      out-of-range index is a driver concern. First-party cooked files are always in range (the cook
+//      validates them). The Phase 5 answer is an opt-in parseCookedMeshStrict, chosen by the caller.
+//   2. whether the vertex regions and the index region OVERLAP each other or the tables. Every read
+//      through the two accessors is bounds-checked against the buffer, so an overlap is a wrong
+//      picture, never a memory error; refusing it needs an interval sort over up to 129 ranges and
+//      buys nothing an attacker can use.
+[[nodiscard]] CookedMeshParseResult parseCookedMesh(std::span<const std::byte> bytes);
 
 }  // namespace engine::assets

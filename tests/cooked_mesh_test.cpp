@@ -47,6 +47,236 @@ constexpr std::array<CookedVertexSemantic, 8> ALL_SEMANTICS = {
     CookedVertexSemantic::TexCoord0, CookedVertexSemantic::TexCoord1, CookedVertexSemantic::Color0,
     CookedVertexSemantic::Joints0,   CookedVertexSemantic::Weights0};
 
+// ---- the field offsets, restated INDEPENDENTLY of cooked_mesh.cpp's anonymous namespace ---------
+// Deliberately a second copy, transcribed from docs/09 section 9's tables rather than from the
+// parser: a test that shared the parser's own constants could not catch a header field moving.
+constexpr std::size_t H_FORMAT_VERSION = 8;
+constexpr std::size_t H_COOKER_VERSION = 12;
+constexpr std::size_t H_GUID_HI = 16;
+constexpr std::size_t H_GUID_LO = 24;
+constexpr std::size_t H_FLAGS = 32;
+constexpr std::size_t H_SECTION_COUNT = 36;
+constexpr std::size_t H_SUBMESH_COUNT = 40;
+constexpr std::size_t H_INDEX_COUNT = 44;
+constexpr std::size_t H_INDEX_TYPE = 48;
+constexpr std::size_t H_ATTRIBUTE_COUNT = 52;
+constexpr std::size_t H_TOTAL_BYTES = 56;
+constexpr std::size_t H_BOUNDS_MIN = 64;
+constexpr std::size_t H_BOUNDS_MAX = 76;
+constexpr std::size_t H_INDEX_DATA_OFFSET = 88;
+
+constexpr std::size_t S_FIRST_ATTRIBUTE = 0;
+constexpr std::size_t S_ATTRIBUTE_COUNT = 4;
+constexpr std::size_t S_VERTEX_STRIDE = 8;
+constexpr std::size_t S_VERTEX_COUNT = 12;
+constexpr std::size_t S_VERTEX_DATA_OFFSET = 16;
+constexpr std::size_t S_VERTEX_DATA_BYTES = 24;
+
+constexpr std::size_t M_SECTION_INDEX = 0;
+constexpr std::size_t M_FIRST_INDEX = 4;
+constexpr std::size_t M_INDEX_COUNT = 8;
+constexpr std::size_t M_MATERIAL = 12;
+constexpr std::size_t M_SOURCE_MESH = 16;
+constexpr std::size_t M_SOURCE_PRIMITIVE = 20;
+constexpr std::size_t M_RESERVED0 = 24;
+constexpr std::size_t M_BOUNDS_MIN = 32;
+constexpr std::size_t M_BOUNDS_MAX = 44;
+constexpr std::size_t M_RESERVED1 = 56;
+
+constexpr std::size_t A_SEMANTIC = 0;
+constexpr std::size_t A_FORMAT = 2;
+constexpr std::size_t A_OFFSET = 4;
+
+// ---- the three hand-built buffers ---------------------------------------------------------------
+// EMPTY      -- 96 bytes, zero counts. The smallest thing that is not TooSmall.
+// MINIMAL    -- 272 bytes: one position-only triangle. attributeCount is ODD, so the section table
+//               starts at 104 and the submesh table at 136, NEITHER 16-aligned. That is C1's proof
+//               and it is baked into the shape on purpose.
+// TWO_SECTION -- 480 bytes: a position-only triangle and a position+normal+uv0 triangle, with a
+//               non-nil GUID so both header u64 halves are byte-visible.
+enum class Shape : std::uint8_t { Empty, Minimal, TwoSection };
+
+void put16(std::vector<std::byte>& b, std::size_t off, std::uint16_t v) {
+    engine::assets::putU16(std::span<std::byte>(b), off, v);
+}
+void put32(std::vector<std::byte>& b, std::size_t off, std::uint32_t v) {
+    engine::assets::putU32(std::span<std::byte>(b), off, v);
+}
+void put64(std::vector<std::byte>& b, std::size_t off, std::uint64_t v) {
+    engine::assets::putU64(std::span<std::byte>(b), off, v);
+}
+void putVec3(std::vector<std::byte>& b, std::size_t off, float x, float y, float z) {
+    engine::assets::putF32(std::span<std::byte>(b), off + 0, x);
+    engine::assets::putF32(std::span<std::byte>(b), off + 4, y);
+    engine::assets::putF32(std::span<std::byte>(b), off + 8, z);
+}
+void putVec2(std::vector<std::byte>& b, std::size_t off, float x, float y) {
+    engine::assets::putF32(std::span<std::byte>(b), off + 0, x);
+    engine::assets::putF32(std::span<std::byte>(b), off + 4, y);
+}
+void putMagic(std::vector<std::byte>& b) {
+    for (std::size_t i = 0; i < engine::assets::COOKED_MESH_MAGIC.size(); ++i) {
+        b[i] = static_cast<std::byte>(engine::assets::COOKED_MESH_MAGIC[i]);
+    }
+}
+
+std::vector<std::byte> makeContainer(Shape shape) {
+    if (shape == Shape::Empty) {
+        std::vector<std::byte> b(96);
+        putMagic(b);
+        put32(b, H_FORMAT_VERSION, 1);
+        put32(b, H_COOKER_VERSION, 1);
+        put64(b, H_TOTAL_BYTES, 96);
+        put64(b, H_INDEX_DATA_OFFSET, 96);
+        return b;
+    }
+    if (shape == Shape::Minimal) {
+        std::vector<std::byte> b(272);
+        putMagic(b);
+        put32(b, H_FORMAT_VERSION, 1);
+        put32(b, H_COOKER_VERSION, 1);
+        put32(b, H_SECTION_COUNT, 1);
+        put32(b, H_SUBMESH_COUNT, 1);
+        put32(b, H_INDEX_COUNT, 3);
+        put32(b, H_INDEX_TYPE, 0);
+        put32(b, H_ATTRIBUTE_COUNT, 1);
+        put64(b, H_TOTAL_BYTES, 272);
+        putVec3(b, H_BOUNDS_MIN, 0.0F, 0.0F, 0.0F);
+        putVec3(b, H_BOUNDS_MAX, 1.0F, 1.0F, 0.0F);
+        put64(b, H_INDEX_DATA_OFFSET, 256);
+        // attribute 0 @96: Position, Float3, offset 0
+        put16(b, 96 + A_SEMANTIC, 0);
+        put16(b, 96 + A_FORMAT, 1);
+        put32(b, 96 + A_OFFSET, 0);
+        // section 0 @104
+        put32(b, 104 + S_FIRST_ATTRIBUTE, 0);
+        put32(b, 104 + S_ATTRIBUTE_COUNT, 1);
+        put32(b, 104 + S_VERTEX_STRIDE, 12);
+        put32(b, 104 + S_VERTEX_COUNT, 3);
+        put64(b, 104 + S_VERTEX_DATA_OFFSET, 208);
+        put64(b, 104 + S_VERTEX_DATA_BYTES, 36);
+        // submesh 0 @136
+        put32(b, 136 + M_SECTION_INDEX, 0);
+        put32(b, 136 + M_FIRST_INDEX, 0);
+        put32(b, 136 + M_INDEX_COUNT, 3);
+        put32(b, 136 + M_MATERIAL, engine::assets::COOKED_INVALID_MATERIAL);
+        put32(b, 136 + M_SOURCE_MESH, 0);
+        put32(b, 136 + M_SOURCE_PRIMITIVE, 0);
+        putVec3(b, 136 + M_BOUNDS_MIN, 0.0F, 0.0F, 0.0F);
+        putVec3(b, 136 + M_BOUNDS_MAX, 1.0F, 1.0F, 0.0F);
+        // vertices @208, indices @256
+        putVec3(b, 208 + 0, 0.0F, 0.0F, 0.0F);
+        putVec3(b, 208 + 12, 1.0F, 0.0F, 0.0F);
+        putVec3(b, 208 + 24, 0.0F, 1.0F, 0.0F);
+        put16(b, 256 + 0, 0);
+        put16(b, 256 + 2, 1);
+        put16(b, 256 + 4, 2);
+        return b;
+    }
+    std::vector<std::byte> b(480);
+    putMagic(b);
+    put32(b, H_FORMAT_VERSION, 1);
+    put32(b, H_COOKER_VERSION, 1);
+    put64(b, H_GUID_HI, 0x0123456789ABCDEFULL);
+    put64(b, H_GUID_LO, 0xFEDCBA9876543210ULL);
+    put32(b, H_SECTION_COUNT, 2);
+    put32(b, H_SUBMESH_COUNT, 2);
+    put32(b, H_INDEX_COUNT, 6);
+    put32(b, H_INDEX_TYPE, 0);
+    put32(b, H_ATTRIBUTE_COUNT, 4);
+    put64(b, H_TOTAL_BYTES, 480);
+    putVec3(b, H_BOUNDS_MIN, 0.0F, 0.0F, 0.0F);
+    putVec3(b, H_BOUNDS_MAX, 2.0F, 1.0F, 1.0F);
+    put64(b, H_INDEX_DATA_OFFSET, 464);
+    // attributes @96: section 0's one, then section 1's three in ascending semantic order.
+    put16(b, 96 + A_SEMANTIC, 0);
+    put16(b, 96 + A_FORMAT, 1);
+    put32(b, 96 + A_OFFSET, 0);
+    put16(b, 104 + A_SEMANTIC, 0);
+    put16(b, 104 + A_FORMAT, 1);
+    put32(b, 104 + A_OFFSET, 0);
+    put16(b, 112 + A_SEMANTIC, 1);
+    put16(b, 112 + A_FORMAT, 1);
+    put32(b, 112 + A_OFFSET, 12);
+    put16(b, 120 + A_SEMANTIC, 3);
+    put16(b, 120 + A_FORMAT, 0);
+    put32(b, 120 + A_OFFSET, 24);
+    // section 0 @128, section 1 @160
+    put32(b, 128 + S_FIRST_ATTRIBUTE, 0);
+    put32(b, 128 + S_ATTRIBUTE_COUNT, 1);
+    put32(b, 128 + S_VERTEX_STRIDE, 12);
+    put32(b, 128 + S_VERTEX_COUNT, 3);
+    put64(b, 128 + S_VERTEX_DATA_OFFSET, 320);
+    put64(b, 128 + S_VERTEX_DATA_BYTES, 36);
+    put32(b, 160 + S_FIRST_ATTRIBUTE, 1);
+    put32(b, 160 + S_ATTRIBUTE_COUNT, 3);
+    put32(b, 160 + S_VERTEX_STRIDE, 32);
+    put32(b, 160 + S_VERTEX_COUNT, 3);
+    put64(b, 160 + S_VERTEX_DATA_OFFSET, 368);
+    put64(b, 160 + S_VERTEX_DATA_BYTES, 96);
+    // submesh 0 @192, submesh 1 @256
+    put32(b, 192 + M_SECTION_INDEX, 0);
+    put32(b, 192 + M_FIRST_INDEX, 0);
+    put32(b, 192 + M_INDEX_COUNT, 3);
+    put32(b, 192 + M_MATERIAL, engine::assets::COOKED_INVALID_MATERIAL);
+    putVec3(b, 192 + M_BOUNDS_MIN, 0.0F, 0.0F, 0.0F);
+    putVec3(b, 192 + M_BOUNDS_MAX, 1.0F, 1.0F, 0.0F);
+    put32(b, 256 + M_SECTION_INDEX, 1);
+    put32(b, 256 + M_FIRST_INDEX, 3);
+    put32(b, 256 + M_INDEX_COUNT, 3);
+    put32(b, 256 + M_MATERIAL, 7);
+    put32(b, 256 + M_SOURCE_MESH, 1);
+    put32(b, 256 + M_SOURCE_PRIMITIVE, 0);
+    putVec3(b, 256 + M_BOUNDS_MIN, 2.0F, 0.0F, 0.0F);
+    putVec3(b, 256 + M_BOUNDS_MAX, 2.0F, 1.0F, 1.0F);
+    // section 0's vertices @320 (stride 12), section 1's @368 (stride 32)
+    putVec3(b, 320 + 0, 0.0F, 0.0F, 0.0F);
+    putVec3(b, 320 + 12, 1.0F, 0.0F, 0.0F);
+    putVec3(b, 320 + 24, 0.0F, 1.0F, 0.0F);
+    const std::array<std::array<float, 3>, 3> positions = {std::array<float, 3>{2.0F, 0.0F, 0.0F},
+                                                           std::array<float, 3>{2.0F, 1.0F, 0.0F},
+                                                           std::array<float, 3>{2.0F, 0.0F, 1.0F}};
+    const std::array<std::array<float, 2>, 3> uvs = {std::array<float, 2>{0.0F, 0.0F}, std::array<float, 2>{1.0F, 0.0F},
+                                                     std::array<float, 2>{0.0F, 1.0F}};
+    for (std::size_t v = 0; v < 3; ++v) {
+        const std::size_t base = 368 + (v * 32);
+        putVec3(b, base + 0, positions[v][0], positions[v][1], positions[v][2]);
+        putVec3(b, base + 12, 1.0F, 0.0F, 0.0F);
+        putVec2(b, base + 24, uvs[v][0], uvs[v][1]);
+    }
+    for (std::size_t i = 0; i < 6; ++i) {
+        put16(b, 464 + (i * 2), static_cast<std::uint16_t>(i % 3));
+    }
+    return b;
+}
+
+// Where the one section/submesh of MINIMAL and the two of TWO_SECTION live, so a mutation case
+// spells an intent rather than an arithmetic expression.
+constexpr std::size_t MIN_SECTION0 = 104;
+constexpr std::size_t MIN_SUBMESH0 = 136;
+constexpr std::size_t TWO_SECTION1 = 160;
+
+engine::assets::CookedMeshParseResult parse(const std::vector<std::byte>& b) {
+    return engine::assets::parseCookedMesh(std::span<const std::byte>(b));
+}
+
+// splitmix64, the guid.cpp shape: a fixed-seed, allocation-free, platform-identical stream so CM40's
+// 4096 buffers are the SAME 4096 buffers on every lane and in every run.
+class Splitmix {
+public:
+    explicit constexpr Splitmix(std::uint64_t seed) noexcept : state(seed) {}
+    [[nodiscard]] constexpr std::uint64_t next() noexcept {
+        state += 0x9E3779B97F4A7C15ULL;
+        std::uint64_t z = state;
+        z = (z ^ (z >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27U)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31U);
+    }
+
+private:
+    std::uint64_t state;
+};
+
 }  // namespace
 
 TEST_CASE("cooked mesh: the four record sizes and the alignment are frozen (CM1)") {
@@ -238,4 +468,485 @@ TEST_CASE("cooked mesh: putF32/getF32 preserve a quiet and a signalling NaN bit 
         CHECK(engine::assets::getU32(r, 0) == bits);
         CHECK(std::bit_cast<std::uint32_t>(engine::assets::getF32(r, 0)) == bits);
     }
+}
+
+// =================================================================================================
+// The parser. Every refusal arm below mutates exactly ONE field of a buffer that parses Ok, so what
+// the case proves is that field's check and nothing else.
+// =================================================================================================
+
+TEST_CASE("cooked mesh: a hand-built empty container parses Ok with every field zero (CM9)") {
+    const std::vector<std::byte> b = makeContainer(Shape::Empty);
+    const auto r = parse(b);
+    REQUIRE(r.status == CookedMeshStatus::Ok);
+    CHECK(r.message.empty());
+    CHECK(r.mesh.formatVersion == 1U);
+    CHECK(r.mesh.cookerVersion == 1U);
+    CHECK_FALSE(r.mesh.sourceGuid.valid());
+    CHECK(r.mesh.indexType == CookedIndexType::Uint16);
+    CHECK(r.mesh.indexCount == 0U);
+    CHECK(r.mesh.attributes.empty());
+    CHECK(r.mesh.sections.empty());
+    CHECK(r.mesh.submeshes.empty());
+    CHECK(r.mesh.indexDataOffset == 96U);
+    CHECK(r.mesh.bounds.min == engine::Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(r.mesh.bounds.max == engine::Vec3{0.0F, 0.0F, 0.0F});
+    CHECK(engine::assets::indexBytes(r.mesh).empty());
+}
+
+TEST_CASE("cooked mesh: a hand-built minimal container reads back field for field (CM10)") {
+    const std::vector<std::byte> b = makeContainer(Shape::Minimal);
+    const auto r = parse(b);
+    REQUIRE(r.status == CookedMeshStatus::Ok);
+    CHECK(r.mesh.formatVersion == 1U);
+    CHECK(r.mesh.cookerVersion == 1U);
+    CHECK(r.mesh.indexType == CookedIndexType::Uint16);
+    CHECK(r.mesh.indexCount == 3U);
+    CHECK(r.mesh.indexDataOffset == 256U);
+    CHECK(r.mesh.bounds.max == engine::Vec3{1.0F, 1.0F, 0.0F});
+
+    REQUIRE(r.mesh.attributes.size() == 1U);
+    CHECK(r.mesh.attributes[0].semantic == CookedVertexSemantic::Position);
+    CHECK(r.mesh.attributes[0].format == CookedVertexFormat::Float3);
+    CHECK(r.mesh.attributes[0].offset == 0U);
+
+    REQUIRE(r.mesh.sections.size() == 1U);
+    CHECK(r.mesh.sections[0].firstAttribute == 0U);
+    CHECK(r.mesh.sections[0].attributeCount == 1U);
+    CHECK(r.mesh.sections[0].vertexStride == 12U);
+    CHECK(r.mesh.sections[0].vertexCount == 3U);
+    CHECK(r.mesh.sections[0].vertexDataOffset == 208U);
+    CHECK(r.mesh.sections[0].vertexDataBytes == 36U);
+
+    REQUIRE(r.mesh.submeshes.size() == 1U);
+    CHECK(r.mesh.submeshes[0].sectionIndex == 0U);
+    CHECK(r.mesh.submeshes[0].firstIndex == 0U);
+    CHECK(r.mesh.submeshes[0].indexCount == 3U);
+    CHECK(r.mesh.submeshes[0].materialIndex == engine::assets::COOKED_INVALID_MATERIAL);
+    CHECK(r.mesh.submeshes[0].sourceMeshIndex == 0U);
+    CHECK(r.mesh.submeshes[0].sourcePrimitiveIndex == 0U);
+    CHECK(r.mesh.submeshes[0].bounds.max == engine::Vec3{1.0F, 1.0F, 0.0F});
+
+    // AC-4, restated to the two STORED offsets (C1): both are multiples of 16, while the section
+    // table legitimately begins at 104 and the submesh table at 136 because attributeCount is odd.
+    CHECK(r.mesh.sections[0].vertexDataOffset % 16U == 0U);
+    CHECK(r.mesh.indexDataOffset % 16U == 0U);
+}
+
+TEST_CASE("cooked mesh: a two-section container reads back both regions (CM11)") {
+    const std::vector<std::byte> b = makeContainer(Shape::TwoSection);
+    const auto r = parse(b);
+    REQUIRE(r.status == CookedMeshStatus::Ok);
+    CHECK(r.mesh.sourceGuid.hi == 0x0123456789ABCDEFULL);
+    CHECK(r.mesh.sourceGuid.lo == 0xFEDCBA9876543210ULL);
+    REQUIRE(r.mesh.sections.size() == 2U);
+    REQUIRE(r.mesh.submeshes.size() == 2U);
+    REQUIRE(r.mesh.attributes.size() == 4U);
+
+    const auto s0 = engine::assets::sectionVertexBytes(r.mesh, 0);
+    const auto s1 = engine::assets::sectionVertexBytes(r.mesh, 1);
+    REQUIRE(s0.size() == 36U);
+    REQUIRE(s1.size() == 96U);
+    // Section 0's first vertex is (0,0,0); section 1's first is (2,0,0) with normal (1,0,0).
+    CHECK(engine::assets::getF32(s0, 0) == 0.0F);
+    CHECK(engine::assets::getF32(s0, 12) == 1.0F);
+    CHECK(engine::assets::getF32(s1, 0) == 2.0F);
+    CHECK(engine::assets::getF32(s1, 12) == 1.0F);
+    CHECK(engine::assets::getF32(s1, 24) == 0.0F);
+    // Section 1's layout: Position(0) Normal(12) TexCoord0(24), stride 32.
+    CHECK(r.mesh.sections[1].vertexStride == 32U);
+    CHECK(r.mesh.attributes[1].offset == 0U);
+    CHECK(r.mesh.attributes[2].offset == 12U);
+    CHECK(r.mesh.attributes[3].offset == 24U);
+    CHECK(r.mesh.submeshes[1].firstIndex == 3U);
+    CHECK(r.mesh.submeshes[1].materialIndex == 7U);
+    CHECK(r.mesh.submeshes[1].sourceMeshIndex == 1U);
+}
+
+TEST_CASE("cooked mesh: the accessors return exact ranges and COPY NOTHING (CM12)") {
+    const std::vector<std::byte> b = makeContainer(Shape::TwoSection);
+    const auto r = parse(b);
+    REQUIRE(r.status == CookedMeshStatus::Ok);
+
+    const auto idx = engine::assets::indexBytes(r.mesh);
+    CHECK(idx.size() == 6U * 2U);  // indexCount x cookedIndexTypeBytes(Uint16)
+    CHECK(engine::assets::getU16(idx, 0) == 0U);
+    CHECK(engine::assets::getU16(idx, 6) == 0U);
+    CHECK(engine::assets::getU16(idx, 10) == 2U);
+
+    // Compared by data(), not by value: a copy would pass a value comparison and fail this.
+    CHECK(idx.data() == b.data() + 464);
+    CHECK(engine::assets::sectionVertexBytes(r.mesh, 0).data() == b.data() + 320);
+    CHECK(engine::assets::sectionVertexBytes(r.mesh, 1).data() == b.data() + 368);
+    CHECK(r.mesh.bytes.data() == b.data());
+    CHECK(r.mesh.bytes.size() == b.size());
+}
+
+TEST_CASE("cooked mesh: an out-of-range sectionIndex returns an EMPTY span, never a read (CM13)") {
+    const std::vector<std::byte> b = makeContainer(Shape::Minimal);
+    const auto r = parse(b);
+    REQUIRE(r.status == CookedMeshStatus::Ok);
+    CHECK(engine::assets::sectionVertexBytes(r.mesh, 1).empty());
+    CHECK(engine::assets::sectionVertexBytes(r.mesh, 0xFFFFFFFFU).empty());
+    // And on a HAND-CONSTRUCTED mesh the parser never saw, which is what makes the accessors' own
+    // fits() re-check load-bearing rather than decorative.
+    engine::assets::CookedMesh forged;
+    forged.sections.push_back(engine::assets::CookedSection{0, 1, 12, 3, 1024, 36});
+    forged.bytes = std::span<const std::byte>(b);
+    CHECK(engine::assets::sectionVertexBytes(forged, 0).empty());
+    forged.indexCount = 1000000;
+    forged.indexDataOffset = 256;
+    CHECK(engine::assets::indexBytes(forged).empty());
+}
+
+TEST_CASE("cooked mesh: the 96-byte boundary, from both sides (CM14)") {
+    for (const std::size_t n : {std::size_t{0}, std::size_t{1}, std::size_t{95}}) {
+        const std::vector<std::byte> b(n);
+        const auto r = engine::assets::parseCookedMesh(std::span<const std::byte>(b));
+        CHECK(r.status == CookedMeshStatus::TooSmall);
+        CHECK_FALSE(r.message.empty());
+    }
+    const std::vector<std::byte> ok = makeContainer(Shape::Empty);
+    REQUIRE(ok.size() == 96U);
+    CHECK(parse(ok).status == CookedMeshStatus::Ok);
+}
+
+TEST_CASE("cooked mesh: a buffer over the byte cap is refused before anything is interpreted (CM15)") {
+    // A span over a FAKE size rather than a real 2 GB allocation: the parser reaches its size check
+    // before it touches a byte, so nothing is ever read through this span. The 96 real bytes behind
+    // it are a valid container, which is the point -- the refusal is the size, not the content.
+    const std::vector<std::byte> real = makeContainer(Shape::Empty);
+    const std::span<const std::byte> oversized(real.data(),
+                                               static_cast<std::size_t>(engine::assets::MAX_COOKED_MESH_BYTES) + 1U);
+    const auto r = engine::assets::parseCookedMesh(oversized);
+    CHECK(r.status == CookedMeshStatus::CapExceeded);
+    CHECK_FALSE(r.message.empty());
+}
+
+TEST_CASE("cooked mesh: a flipped magic byte in any of the eight positions is BadMagic (CM16)") {
+    for (std::size_t i = 0; i < 8; ++i) {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        b[i] = b[i] ^ std::byte{0x01};
+        CHECK(parse(b).status == CookedMeshStatus::BadMagic);
+    }
+}
+
+TEST_CASE("cooked mesh: any formatVersion but 1 is UnsupportedVersion (CM17)") {
+    for (const std::uint32_t v : {std::uint32_t{0}, std::uint32_t{2}, std::numeric_limits<std::uint32_t>::max()}) {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put32(b, H_FORMAT_VERSION, v);
+        CHECK(parse(b).status == CookedMeshStatus::UnsupportedVersion);
+    }
+}
+
+TEST_CASE("cooked mesh: a non-zero header flags field is a REFUSAL (CM18)") {
+    std::vector<std::byte> b = makeContainer(Shape::Minimal);
+    put32(b, H_FLAGS, 1);
+    CHECK(parse(b).status == CookedMeshStatus::ReservedNotZero);
+    put32(b, H_FLAGS, 0x80000000U);
+    CHECK(parse(b).status == CookedMeshStatus::ReservedNotZero);
+}
+
+TEST_CASE("cooked mesh: either non-zero submesh reserved field is a REFUSAL (CM19)") {
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put64(b, MIN_SUBMESH0 + M_RESERVED0, 1);
+        CHECK(parse(b).status == CookedMeshStatus::ReservedNotZero);
+    }
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put64(b, MIN_SUBMESH0 + M_RESERVED1, 0x8000000000000000ULL);
+        CHECK(parse(b).status == CookedMeshStatus::ReservedNotZero);
+    }
+}
+
+TEST_CASE("cooked mesh: totalBytes must equal the buffer's own size, both directions (CM20)") {
+    for (const std::uint64_t n : {std::uint64_t{271}, std::uint64_t{273}}) {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put64(b, H_TOTAL_BYTES, n);
+        CHECK(parse(b).status == CookedMeshStatus::SizeMismatch);
+    }
+}
+
+TEST_CASE("cooked mesh: each of the four header counts one above its cap is CapExceeded (CM21)") {
+    struct Arm {
+        std::size_t offset;
+        std::uint32_t value;
+    };
+    const std::array<Arm, 4> arms = {Arm{H_ATTRIBUTE_COUNT, engine::assets::MAX_COOKED_ATTRIBUTES + 1},
+                                     Arm{H_SECTION_COUNT, engine::assets::MAX_COOKED_SECTIONS + 1},
+                                     Arm{H_SUBMESH_COUNT, engine::assets::MAX_COOKED_SUBMESHES + 1},
+                                     Arm{H_INDEX_COUNT, engine::assets::MAX_COOKED_INDICES + 1}};
+    for (const Arm& arm : arms) {
+        std::vector<std::byte> b = makeContainer(Shape::Empty);
+        put32(b, arm.offset, arm.value);
+        CHECK(parse(b).status == CookedMeshStatus::CapExceeded);
+    }
+}
+
+TEST_CASE("cooked mesh: an index type code outside {0,1} is BadTable (CM22)") {
+    for (const std::uint32_t code : {std::uint32_t{2}, std::numeric_limits<std::uint32_t>::max()}) {
+        std::vector<std::byte> b = makeContainer(Shape::Empty);
+        put32(b, H_INDEX_TYPE, code);
+        CHECK(parse(b).status == CookedMeshStatus::BadTable);
+    }
+}
+
+TEST_CASE("cooked mesh: a table that does not fit is refused BEFORE anything is reserved (CM23)") {
+    // submeshCount is at the cap, NOT over it, so the cap check in step 6 passes and step 7's table
+    // arithmetic is what refuses -- against a 96-byte buffer. The proof that nothing was allocated
+    // for 65536 submeshes is structural (step 7 precedes every reserve) and observable: this case
+    // runs in microseconds under ASan rather than reserving 4 MB.
+    std::vector<std::byte> b = makeContainer(Shape::Empty);
+    put32(b, H_SUBMESH_COUNT, engine::assets::MAX_COOKED_SUBMESHES);
+    CHECK(parse(b).status == CookedMeshStatus::BadTable);
+    // The same, one table down: an attribute count at its cap against the same 96 bytes.
+    std::vector<std::byte> c = makeContainer(Shape::Empty);
+    put32(c, H_ATTRIBUTE_COUNT, engine::assets::MAX_COOKED_ATTRIBUTES);
+    CHECK(parse(c).status == CookedMeshStatus::BadTable);
+}
+
+TEST_CASE("cooked mesh: a section's attribute slice must lie inside the attribute table (CM24)") {
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put32(b, MIN_SECTION0 + S_ATTRIBUTE_COUNT, 2);  // the table holds one
+        CHECK(parse(b).status == CookedMeshStatus::BadTable);
+    }
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put32(b, MIN_SECTION0 + S_FIRST_ATTRIBUTE, 1);  // [1, 2) of a table of 1
+        CHECK(parse(b).status == CookedMeshStatus::BadTable);
+    }
+}
+
+TEST_CASE("cooked mesh: vertexDataBytes must equal vertexCount x stride, both directions (CM25)") {
+    for (const std::uint64_t n : {std::uint64_t{35}, std::uint64_t{37}}) {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put64(b, MIN_SECTION0 + S_VERTEX_DATA_BYTES, n);
+        CHECK(parse(b).status == CookedMeshStatus::BadRange);
+    }
+}
+
+TEST_CASE("cooked mesh: a vertex region that is not 16-aligned is BadRange (CM26)") {
+    std::vector<std::byte> b = makeContainer(Shape::Minimal);
+    put64(b, MIN_SECTION0 + S_VERTEX_DATA_OFFSET, 8);
+    CHECK(parse(b).status == CookedMeshStatus::BadRange);
+}
+
+TEST_CASE("cooked mesh: a vertex region that does not fit is BadRange (CM27)") {
+    std::vector<std::byte> b = makeContainer(Shape::Minimal);
+    put64(b, MIN_SECTION0 + S_VERTEX_DATA_OFFSET, 256);  // 256 + 36 > 272
+    CHECK(parse(b).status == CookedMeshStatus::BadRange);
+}
+
+TEST_CASE("cooked mesh: an attribute outside its section's stride is BadLayout (CM28)") {
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put32(b, 96 + A_OFFSET, 4);  // 4 + 12 > 12
+        CHECK(parse(b).status == CookedMeshStatus::BadLayout);
+    }
+    {
+        // A width WIDER than the whole stride -- the `width > stride` half of the same check.
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put16(b, 96 + A_FORMAT, static_cast<std::uint16_t>(CookedVertexFormat::Float4));
+        CHECK(parse(b).status == CookedMeshStatus::BadLayout);
+    }
+}
+
+TEST_CASE("cooked mesh: a duplicated semantic within one section is BadLayout (CM29)") {
+    std::vector<std::byte> b = makeContainer(Shape::TwoSection);
+    put16(b, 112 + A_SEMANTIC, 0);  // section 1's Normal becomes a second Position
+    CHECK(parse(b).status == CookedMeshStatus::BadLayout);
+}
+
+TEST_CASE("cooked mesh: an unknown semantic or format code is BadLayout (CM30)") {
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put16(b, 96 + A_SEMANTIC, engine::assets::COOKED_SEMANTIC_COUNT);
+        CHECK(parse(b).status == CookedMeshStatus::BadLayout);
+    }
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put16(b, 96 + A_FORMAT, 4);
+        CHECK(parse(b).status == CookedMeshStatus::BadLayout);
+    }
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put16(b, 96 + A_SEMANTIC, std::numeric_limits<std::uint16_t>::max());
+        CHECK(parse(b).status == CookedMeshStatus::BadLayout);
+    }
+}
+
+TEST_CASE("cooked mesh: the crafted-offset battery is refused, never wrapped (CM31)") {
+    // Every one of these would be ACCEPTED by a range check written as `offset + length > size`,
+    // because the addition wraps. Written as subtraction, each is refused and nothing is read --
+    // which ASan/UBSan are the second half of the proof for.
+    constexpr std::uint64_t U64_MAX = std::numeric_limits<std::uint64_t>::max();
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put64(b, MIN_SECTION0 + S_VERTEX_DATA_OFFSET, U64_MAX);
+        CHECK(parse(b).status == CookedMeshStatus::BadRange);
+    }
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put64(b, MIN_SECTION0 + S_VERTEX_DATA_OFFSET, U64_MAX - 15);  // 16-ALIGNED, so the fit is the check
+        CHECK(parse(b).status == CookedMeshStatus::BadRange);
+    }
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put64(b, MIN_SECTION0 + S_VERTEX_DATA_BYTES, U64_MAX);
+        CHECK(parse(b).status == CookedMeshStatus::BadRange);
+    }
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put64(b, H_INDEX_DATA_OFFSET, U64_MAX - 15);
+        CHECK(parse(b).status == CookedMeshStatus::BadRange);
+    }
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put32(b, MIN_SUBMESH0 + M_FIRST_INDEX, std::numeric_limits<std::uint32_t>::max());
+        put32(b, MIN_SUBMESH0 + M_INDEX_COUNT, 1);
+        CHECK(parse(b).status == CookedMeshStatus::BadRange);
+    }
+}
+
+TEST_CASE("cooked mesh: a submesh naming a section that does not exist is BadRange (CM32)") {
+    std::vector<std::byte> b = makeContainer(Shape::Minimal);
+    put32(b, MIN_SUBMESH0 + M_SECTION_INDEX, 1);  // sectionCount is 1, so index 1 is one past
+    CHECK(parse(b).status == CookedMeshStatus::BadRange);
+}
+
+TEST_CASE("cooked mesh: a submesh index range one past the header's indexCount is BadRange (CM33)") {
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put32(b, MIN_SUBMESH0 + M_FIRST_INDEX, 1);  // [1, 4) of 3
+        CHECK(parse(b).status == CookedMeshStatus::BadRange);
+    }
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put32(b, MIN_SUBMESH0 + M_INDEX_COUNT, 4);
+        CHECK(parse(b).status == CookedMeshStatus::BadRange);
+    }
+}
+
+TEST_CASE("cooked mesh: the index region is alignment- and range-checked (CM34)") {
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put64(b, H_INDEX_DATA_OFFSET, 8);
+        CHECK(parse(b).status == CookedMeshStatus::BadRange);
+    }
+    {
+        std::vector<std::byte> b = makeContainer(Shape::Minimal);
+        put64(b, H_INDEX_DATA_OFFSET, 272);  // 272 + 6 > 272
+        CHECK(parse(b).status == CookedMeshStatus::BadRange);
+    }
+}
+
+TEST_CASE("cooked mesh: a section declaring zero attributes is BadLayout (CM35)") {
+    std::vector<std::byte> b = makeContainer(Shape::Minimal);
+    put32(b, MIN_SECTION0 + S_ATTRIBUTE_COUNT, 0);
+    CHECK(parse(b).status == CookedMeshStatus::BadLayout);
+}
+
+TEST_CASE("cooked mesh: a zero vertex stride is BadLayout (CM36)") {
+    // THE HOLE THIS CLOSES: with stride 0, vertexDataBytes == vertexCount * 0 == 0 satisfies the
+    // consistency check for ANY vertexCount, so without this refusal a header could claim four
+    // billion vertices backed by zero bytes and be accepted -- and every consumer then divides by it.
+    std::vector<std::byte> b = makeContainer(Shape::Minimal);
+    put32(b, MIN_SECTION0 + S_VERTEX_STRIDE, 0);
+    put64(b, MIN_SECTION0 + S_VERTEX_DATA_BYTES, 0);
+    put32(b, MIN_SECTION0 + S_VERTEX_COUNT, std::numeric_limits<std::uint32_t>::max());
+    CHECK(parse(b).status == CookedMeshStatus::BadLayout);
+}
+
+TEST_CASE("cooked mesh: a vertex stride that is not a multiple of four is BadLayout (CM37)") {
+    std::vector<std::byte> b = makeContainer(Shape::Minimal);
+    put32(b, MIN_SECTION0 + S_VERTEX_STRIDE, 13);
+    put64(b, MIN_SECTION0 + S_VERTEX_DATA_BYTES, 39);
+    CHECK(parse(b).status == CookedMeshStatus::BadLayout);
+}
+
+TEST_CASE("cooked mesh: a non-zero PADDING byte still parses Ok (CM38)") {
+    // The writer always zeroes padding; the reader deliberately does not care. That asymmetry is
+    // what stops a future writer that pads differently from being locked out (E12).
+    std::vector<std::byte> b = makeContainer(Shape::Minimal);
+    b[271] = std::byte{0xFF};  // the last tail-pad byte, past the index region's end at 262
+    CHECK(parse(b).status == CookedMeshStatus::Ok);
+    b[250] = std::byte{0x7F};  // the gap between the vertex region's end (244) and the index at 256
+    CHECK(parse(b).status == CookedMeshStatus::Ok);
+}
+
+TEST_CASE("cooked mesh: message is empty if and only if the status is Ok (CM39)") {
+    struct Arm {
+        Shape shape;
+        std::size_t offset;
+        std::uint64_t value;
+        int width;  // 2, 4 or 8
+        CookedMeshStatus expected;
+    };
+    const std::array<Arm, 12> arms = {
+        Arm{Shape::Minimal, H_FORMAT_VERSION, 2, 4, CookedMeshStatus::UnsupportedVersion},
+        Arm{Shape::Minimal, H_FLAGS, 1, 4, CookedMeshStatus::ReservedNotZero},
+        Arm{Shape::Minimal, H_TOTAL_BYTES, 999, 8, CookedMeshStatus::SizeMismatch},
+        Arm{Shape::Empty, H_SECTION_COUNT, engine::assets::MAX_COOKED_SECTIONS + 1, 4, CookedMeshStatus::CapExceeded},
+        Arm{Shape::Empty, H_INDEX_TYPE, 9, 4, CookedMeshStatus::BadTable},
+        Arm{Shape::Empty, H_SUBMESH_COUNT, engine::assets::MAX_COOKED_SUBMESHES, 4, CookedMeshStatus::BadTable},
+        Arm{Shape::Minimal, MIN_SECTION0 + S_ATTRIBUTE_COUNT, 0, 4, CookedMeshStatus::BadLayout},
+        Arm{Shape::Minimal, MIN_SECTION0 + S_VERTEX_STRIDE, 0, 4, CookedMeshStatus::BadLayout},
+        Arm{Shape::Minimal, MIN_SECTION0 + S_VERTEX_DATA_OFFSET, 8, 8, CookedMeshStatus::BadRange},
+        Arm{Shape::Minimal, MIN_SUBMESH0 + M_SECTION_INDEX, 5, 4, CookedMeshStatus::BadRange},
+        Arm{Shape::Minimal, MIN_SUBMESH0 + M_RESERVED0, 1, 8, CookedMeshStatus::ReservedNotZero},
+        Arm{Shape::Minimal, 96 + A_SEMANTIC, 8, 2, CookedMeshStatus::BadLayout},
+    };
+    for (const Arm& arm : arms) {
+        std::vector<std::byte> b = makeContainer(arm.shape);
+        if (arm.width == 2) {
+            put16(b, arm.offset, static_cast<std::uint16_t>(arm.value));
+        } else if (arm.width == 4) {
+            put32(b, arm.offset, static_cast<std::uint32_t>(arm.value));
+        } else {
+            put64(b, arm.offset, arm.value);
+        }
+        const auto r = parse(b);
+        CHECK(r.status == arm.expected);
+        CHECK_FALSE(r.message.empty());
+    }
+    // The other half of the "if and only if": each of the three valid shapes is Ok with no message.
+    for (const Shape shape : {Shape::Empty, Shape::Minimal, Shape::TwoSection}) {
+        const std::vector<std::byte> b = makeContainer(shape);
+        const auto r = parse(b);
+        CHECK(r.status == CookedMeshStatus::Ok);
+        CHECK(r.message.empty());
+    }
+}
+
+TEST_CASE("cooked mesh: 4096 pseudo-random buffers always return a status and never throw (CM40)") {
+    // The fuzz-shaped totality check. A fixed seed, so this is the same 4096 buffers on every lane
+    // and in every run: a failure here is reproducible, not a lottery ticket.
+    Splitmix rng(0x3311ULL);
+    std::size_t okCount = 0;
+    for (int iteration = 0; iteration < 4096; ++iteration) {
+        const auto length = static_cast<std::size_t>(rng.next() % 400U);
+        std::vector<std::byte> b(length);
+        for (std::size_t i = 0; i < length; ++i) {
+            b[i] = static_cast<std::byte>(rng.next() & 0xFFU);
+        }
+        // Half the buffers get a valid magic and version, so the walk reaches past step 3 instead of
+        // bouncing off BadMagic 4095 times out of 4096.
+        if (length >= 96 && (iteration % 2) == 0) {
+            putMagic(b);
+            put32(b, H_FORMAT_VERSION, 1);
+        }
+        const auto r = parse(b);
+        if (r.status == CookedMeshStatus::Ok) {
+            ++okCount;
+            CHECK(r.message.empty());
+        } else {
+            CHECK_FALSE(r.message.empty());
+        }
+        CHECK_FALSE(cookedMeshStatusLabel(r.status).empty());
+    }
+    // Random bytes essentially never form a valid container; the assertion is that the sweep RAN,
+    // not that it produced a particular mix.
+    CHECK(okCount <= 4096U);
 }
