@@ -5689,8 +5689,9 @@ an INPUT of the next, without anything resetting it when its subject changed.
 
 ### Task 3.2.5 — Assimp fallback importers (DAE/PLY/STL) (Epic 3.2)
 
-**Branch:** `feat/3.2.5-assimp-fallback-importers`, cut from `main @ b9917f9`. **Eleven green commits**,
-measured with `git rev-list --count main..HEAD`, never remembered. **Zero paths under `engine/`** — the
+**Branch:** `feat/3.2.5-assimp-fallback-importers`, cut from `main @ b9917f9`. **Fourteen green commits**,
+measured with `git rev-list --count main..HEAD`, never remembered — eleven for the implementation and
+three from the code-review round. **Zero paths under `engine/`** — the
 no-engine-change streak reaches **seven** — and, like 3.2.4, zero under `cmake/`, `.github/` and
 `runtime/` too. The only file this task touches that it does not own is `editor/src/thumbnail_store.cpp`,
 one hunk, four words plus a comment.
@@ -5879,6 +5880,58 @@ re-seeding:**
 input times `0 0.5 0.5` still yields strictly increasing keys, because the loader resamples. The
 enforcement gets a source pin in `AI70` and the negative result is recorded in the case's own comment.
 
+#### The code-review round — six findings, one BLOCKING, none visible to the green matrix
+
+The fifth task running in which the two adversarial rounds each catch what the other cannot. The matrix
+attacks what a conversion *produces*; every finding here is a defect in what the node WALK *numbers*, or
+in a cap's report rather than a cap's effect — and the suite the matrix had just finished attacking was
+green on all six.
+
+**BLOCKING — `buildNodePointerMap` diverged from `convertNodes`, so skin joints bound to the WRONG
+nodes.** The map `convertSkins` resolved `aiBone::mNode`/`mArmature` through was built by a SECOND walk of
+the same `aiScene`, numbering nodes `0,1,2,…`, one index per `aiNode`. `convertNodes` does not number them
+that way, in two places, and neither is a corner case:
+
+- a **multi-mesh node** consumes `mNumMeshes` slots — its own plus the synthesized `<name>.<n>` children
+  appended immediately after — where the second walk consumed exactly one. Every later node was off by the
+  accumulated split count. `ColladaLoader::BuildMeshesForNode` pushes one mesh ref **per submesh per
+  material** and sets `mNumMeshes = newMeshRefs.size()`, so any node whose geometry carries two materials,
+  or that carries two `<instance_geometry>` elements, is one: **ordinary content**.
+- a **depth-dropped subtree** is never emitted, while the unbounded second walk descended straight into it
+  and shifted everything popped afterwards.
+
+The `nodeCount` bound only truncated the tail — **it realigned nothing**, and the comment beside it noticed
+the count divergence while drawing the wrong conclusion from it. `ImportedSkin::joints` and `skeletonRoot`
+therefore pointed at the wrong nodes with status `Ok` and no warning: a **silently wrong deformation**, and
+3.2.2's `localId` lesson in a new costume. Measured on the seed, not predicted: joints bound to
+`Armature`/`Bone1` instead of `Bone1`/`Bone2`, and `skeletonRoot` landed on the synthesized split child
+`Prop.1`.
+
+The map is now built **inside `convertNodes`, at the moment the id is assigned**, and returned. **The
+split children are deliberately absent from it and cannot be in it**: they have no `aiNode`, so they have
+no key — and nothing is lost, because every key it is ever asked for is a pointer the LIBRARY produced,
+which can never name a node this file invented. A dropped or capped node has no entry either, which is the
+E12 path, warned about rather than guessed at.
+
+**Five more, each with a case that reddens without it, each re-proven by re-seeding:**
+
+| # | Finding | Closed by |
+|---|---|---|
+| 1 | **BLOCKING** — the two walks diverge (above) | `AI84` (a multi-mesh split before the armature) and `AI85` (a depth-dropped branch before it) |
+| 2 | A node cap hit **inside the multi-mesh split loop** dropped nodes and reported `Ok`. Its `break` claimed "the shared cap message above already fired or will" — false on the LAST node processed, because the main loop's check only runs when another node is **popped**. A childless multi-mesh node hitting the cap with an empty stack left `nodeCapReported` false and `escalate` unrun, violating AC-53 | `AI86`, sized so the cap falls exactly inside the split loop: one root, `MAX − 2` childless siblings, then the multi-mesh node **last** in document order |
+| 3 | `scanPlyTextureFiles` skipped only `' '` where `Assimp::SkipSpaces` skips `' '` **and** `'\t'`, so a `\tcomment TextureFile wood.png` line was invisible to Structure and visible to Full — the depth disagreement AC-19 forbids, and phase 7.5 recorded **no dependency at all** | `MI153` at the pure level, `MI152`'s new subcase for the identical rule in `plyDeclaredCountsExceedBytes`, and the `tab.ply` / `crlf.ply` fixtures, which `AI10` covers automatically |
+| 4 | `aiNode::mMeshes[i]` written to `meshIndex` with **no range check**, while `face.mIndices[k]` and `aiVertexWeight::mVertexId` are both checked and pinned as defence for a validation-off build. 3.1.5 resolves `meshIndex` into `ImportedModel::meshes`, where an unchecked value is an out-of-bounds **read** | two new tokens in `AI34`'s source-text list. Unreachable at runtime for the same reason its two siblings are: `ValidateDataStructure.cpp:870` refuses an out-of-range `aiNode::mMeshes[i]` before we see the scene |
+| 5 | A refused texture path appended a **duplicate** `ImportedImage` and a duplicate warning per naming material, because the dedup keys on the resolved `relativePath` and a refusal has none — contradicting `convertTextureSlot`'s own header | a two-material arm in `AI56`; the branch is now found-or-appended on the raw uri, mirroring the embedded branch's own key |
+| 6 | `convertSkins`' two `escalate` calls had **no report latch**, unlike every other cap site in the file, so N over-cap skins appended N copies of one sentence. The vertex arm also duplicated `convertMeshes`' wording for a different cause | `AI87` — two independent over-cap controllers, because two nodes instancing the SAME controller share one `aiMesh` through the loader's `(geometry, submesh, material)` cache. The vertex arm's latch is unreachable (it needs a single mesh above eight million vertices) and gets source text, like this file's three range checks |
+
+**Two things worth not re-deriving.** `ArmaturePopulate::GetArmatureRoot` walks **up** from a bone until it
+finds a node that is not one, so `skeletonRoot` lands on the wrapper node — which is why `AI84`/`AI85` wrap
+their joints in an `Armature` node rather than reusing `AI65`'s shape, where the armature *is* the visual
+scene root and reads as `0` under every numbering, proving nothing. And a fixture whose node instances the
+same geometry twice does **not** produce a multi-mesh node: the loader's cache collapses the two refs onto
+one mesh index, which `ValidateDataStructure` then refuses outright (`aiNode::mMeshes[i] is already
+referenced by this node`). Two DISTINCT geometries, as `DAE_TWO_MESHES_ONE_NODE` has always used.
+
 #### Build, dependency and inventory impact — every number measured at HEAD
 
 `aero_editor_core` sources **56 → 57**; tracked `editor/src/*.cpp` **57 → 58**; `check-math-boundary.sh`
@@ -5887,10 +5940,14 @@ enforcement gets a source pin in `AI70` and the negative result is recorded in t
 failure. Guard count stays **six** and `.github/scripts/` is byte-identical to `main`.
 
 `ctest -N` **unchanged at 95 / 6 / 19** — zero new `add_test`, every new case inside an existing target.
-`aero_editor_shell_test` **1366 → 1476**; `aero_editor_imgui_test` **102 → 104**; `aero_tests` **415**,
-`aero_scene_serialize_test` **23** and `aero_editor_inspector_test` **22** all unchanged. Both reduced
-configurations, built **fresh**, read **1452** cases each with `AI1` present in both — which is what proves
-the whole Assimp path needs neither reflection nor scene serialization.
+`aero_editor_shell_test` **1366 → 1476**, and **1476 → 1481** across the code-review round (`AI84`, `AI85`,
+`AI86`, `AI87`, `MI153`), measured from doctest's own `filters:` line rather than by counting names;
+`aero_editor_imgui_test` **102 → 104**; `aero_tests` **415**, `aero_scene_serialize_test` **23** and
+`aero_editor_inspector_test` **22** all unchanged. Both reduced configurations, built **fresh**, read
+**1452** cases each with `AI1` present in both — which is what proves the whole Assimp path needs neither
+reflection nor scene serialization. **The reduced configurations were not rebuilt for the code-review
+round**, and that is a stated gap rather than an omission: it adds no include, no symbol from a gated
+layer, and no case outside the two TUs both configurations already compile.
 
 `vcpkg.json` gains **one** dependency, alphabetically first, and nothing else: `builtin-baseline` and the
 `/vcpkg` submodule both still read `f87344cac03158cbf1467264565f1fd36b382a24`. Nine transitive ports

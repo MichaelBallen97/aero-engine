@@ -1187,6 +1187,52 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   lines-only `.dae` is therefore refused outright and a mixed one keeps exactly the triangle mesh — there
   is no surviving empty mesh to observe, and the "no triangles survived" arm is unreachable for the same
   family of reasons as the range checks.
+- **A NODE-ID MAP IS BUILT BY THE WALK THAT ASSIGNS THE IDS, NEVER BY A SECOND WALK OF THE SAME TREE —
+  3.2.2's `localId` lesson in a new costume, and this task's BLOCKING finding.** `convertNodes` returns the
+  `aiNode*` -> localId map `convertSkins` resolves `aiBone::mNode`/`mArmature` through; it used to be
+  re-derived by a second, plain pre-order walk numbering `0,1,2,…`, one index per `aiNode`. The two diverge
+  in two places, **both ordinary content**: a MULTI-MESH node consumes `mNumMeshes` slots (its own plus the
+  synthesized `<name>.<n>` children), where a plain walk consumes one — and
+  `ColladaLoader::BuildMeshesForNode` pushes one mesh ref per submesh **per material**, so a node whose
+  geometry carries two materials is one — and a DEPTH-DROPPED subtree is never emitted while an unbounded
+  walk descends straight into it. **A count bound truncates the tail; it realigns nothing.** The failure is
+  silent: joints bind to the wrong nodes, `skeletonRoot` lands on a synthesized split child, status stays
+  `Ok`, no warning. **The split children are deliberately NOT in the map and cannot be** — they have no
+  `aiNode`, so no key — and nothing is lost, because every key the map is asked for is a pointer the
+  LIBRARY produced and can never name a node this file invented. Any future pass needing "the localId of
+  this `aiNode`" takes the map as a parameter; it does not rebuild one.
+- **Every cap site LATCHES its report with its own bool, and a `break` inside a nested loop is a cap site
+  too.** The multi-mesh split loop's `break` claimed "the shared cap message above already fired or will",
+  which is false on the LAST node processed: the main loop's check runs only when another node is POPPED,
+  so a childless multi-mesh node hitting the cap with an empty stack reported `Ok` with nodes dropped
+  (AC-53). `convertSkins`' two `escalate` calls had no latch at all, so N over-cap skins appended N copies
+  of one sentence. **Two cap sites with different CAUSES get different WORDING**, even when the constant is
+  the same one: `convertMeshes`' model-wide vertex total and `convertSkins`' single-mesh influence table
+  both trip `MAX_VERTICES_PER_MODEL`, and one shared sentence leaves the message unable to say which fired.
+- **`aiNode::mMeshes[i]` is range-checked like `face.mIndices[k]` and `aiVertexWeight::mVertexId`, and for
+  the same reason.** All three are unreachable while `aiProcess_ValidateDataStructure` is on and all three
+  are pinned in `AI34`'s comment-stripped source text rather than by a runtime case. The `mMeshes` one
+  matters most downstream: 3.1.5 resolves `ImportedNode::meshIndex` into `ImportedModel::meshes`, where an
+  unchecked value is an out-of-bounds READ rather than a wrong picture.
+- **A refused image is FOUND-OR-APPENDED on its RAW uri, not on `relativePath`** — a refusal has no
+  resolved path, so the accepted branch's dedup can never match one, and two materials naming the same bad
+  path would append two identical `ImportedImage`s and spend two identical warnings out of the
+  `MAX_IMPORT_WARNINGS` budget.
+- **`Assimp::SkipSpaces` is `' '` OR `'\t'`, and `scanPlyTextureFiles` must mirror it exactly.**
+  `PLY::Element::ParseElement` opens with `PLY::DOM::SkipSpaces`, which forwards to it, so a TAB-indented
+  `comment TextureFile wood.png` reaches the loader. A scan skipping only `' '` made Structure return `{}`
+  where Full returned `{wood.png}` — the depth disagreement AC-19 forbids — and phase 7.5's Structure-depth
+  probe recorded **no dependency**, so editing the texture never marked the model `DependencyChanged`.
+  `plyDeclaredCountsExceedBytes` carries the identical rule; it fails safe there (it under-counts, never
+  rejects), and the two must still never diverge.
+- **A node instancing the SAME geometry twice is not a multi-mesh node** — the loader caches by
+  `(geometry, submesh, material)`, so the two refs collapse onto one index, which `ValidateDataStructure`
+  then refuses outright (`aiNode::mMeshes[i] is already referenced by this node`). A multi-mesh fixture
+  needs two DISTINCT geometries, or one geometry with two materials.
+- **`ArmaturePopulate::GetArmatureRoot` walks UP from a bone until it finds a node that is not one**, so
+  `skeletonRoot` lands on the wrapper node. A fixture whose joints hang directly off the visual scene gets
+  `skeletonRoot == 0` under every numbering and cannot discriminate a shifted map — wrap the joints in an
+  explicit `Armature` node when that is the property under test.
 - **A `.dae` fixture in a doctest macro must be hoisted into a named local first** — MSVC's legacy
   preprocessor breaks on a raw string literal containing `\"` passed directly as a macro argument, and XML
   is nothing but escaped quotes.
