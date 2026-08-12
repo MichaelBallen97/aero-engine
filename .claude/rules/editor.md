@@ -1155,6 +1155,20 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   duplicate-symbol collision with the second, unprefixed `stb_image` implementation assimp's vcpkg port
   compiles (its `build_fixes.patch` turns upstream's `assimp_stbi_*` prefixing off) — a static-link
   concern on macOS and Linux, structurally absent on Windows where the port builds a DLL.
+- **The library LEAKS on its own error paths, and `tests/lsan.supp` carries exactly two frame-scoped
+  entries for it.** `ColladaParser`'s CONSTRUCTOR parses the whole document from its ctor body, so a
+  rejected document throws before the object exists and its destructor never runs — every node, mesh,
+  submesh, input channel and transform already allocated is orphaned; `STLImporter::LoadASCIIFile` does
+  the same on a truncated file. This backend's failure-mode fixtures are the first things in the tree to
+  reach those paths at all, so the frames surfaced here (CI run 31559183254, 4704 B / 17 allocations)
+  and only on the Linux Debug lane, the one lane that runs LSan — invisible to every macOS run, local or
+  CI, and to Windows. **A future format added to this backend may surface further such frames. Each
+  needs its OWN entry, gated on observed CI evidence and naming its own function — never a module-wide
+  `leak:assimp`**, which would blind LSan to a first-party leak allocated anywhere inside the library
+  (the same reason that file refuses `leak:SDL`). The two entries create no first-party blind spot
+  because nothing of ours allocates inside either frame: the only code of ours reachable from there is
+  `RefusingIoSystem`'s twelve virtuals, none of which allocates. Do not weaken the triggering cases —
+  the leak is the library's, and the port is never patched locally.
 - **Never write the character sequence `assimp/` in prose** anywhere under `editor/`, `tests/`, `engine/`,
   `runtime/` or `tools/`: the include-boundary gate greps those roots and a prose mention turns it red for
   a reason that is not a violation. Write "the assimp port", "assimp 6.0.4", "lib/cmake/assimp".

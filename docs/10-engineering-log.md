@@ -5689,9 +5689,10 @@ an INPUT of the next, without anything resetting it when its subject changed.
 
 ### Task 3.2.5 — Assimp fallback importers (DAE/PLY/STL) (Epic 3.2)
 
-**Branch:** `feat/3.2.5-assimp-fallback-importers`, cut from `main @ b9917f9`. **Fourteen green commits**,
-measured with `git rev-list --count main..HEAD`, never remembered — eleven for the implementation and
-three from the code-review round. **Zero paths under `engine/`** — the
+**Branch:** `feat/3.2.5-assimp-fallback-importers`, cut from `main @ b9917f9`. **Fifteen green commits**,
+measured with `git rev-list --count main..HEAD`, never remembered — eleven for the implementation, three
+from the code-review round and one for the Linux LSan finding the first CI run produced. **Zero paths
+under `engine/`** — the
 no-engine-change streak reaches **seven** — and, like 3.2.4, zero under `cmake/`, `.github/` and
 `runtime/` too. The only file this task touches that it does not own is `editor/src/thumbnail_store.cpp`,
 one hunk, four words plus a comment.
@@ -5932,12 +5933,56 @@ same geometry twice does **not** produce a multi-mesh node: the loader's cache c
 one mesh index, which `ValidateDataStructure` then refuses outright (`aiNode::mMeshes[i] is already
 referenced by this node`). Two DISTINCT geometries, as `DAE_TWO_MESHES_ONE_NODE` has always used.
 
+#### CI caught what a fully green local gate could not — the assimp port leaks on its own error paths
+
+The local gate was green on everything it can reach: both macOS presets, 95/95 with `AERO_REQUIRE_GPU=1`,
+both reduced configurations, six guards, clang-format and clang-tidy clean. The first CI run
+(**31559183254**) then failed the **Linux (GCC)** lane alone — macOS and Windows passed the same commit —
+with `aero_editor_shell_test` reporting **297,194 assertions / 0 failed** and LeakSanitizer flagging
+**4704 B in 17 allocations** afterwards.
+
+All 17 records are rooted in two library functions that allocate through raw owning pointers and then
+throw `DeadlyImportError`, freeing nothing on the way out. Verified against the run's own log, record by
+record, with none left over:
+
+- **`ColladaParser`'s CONSTRUCTOR — 15 of the 17.** It parses the whole document from the ctor body
+  (`ColladaParser.cpp:464` → `ReadContents` → `ReadStructure`), so a document it rejects throws **before
+  the object exists**: `~ColladaParser` never runs and every `Collada::Node` / `Collada::Mesh` /
+  `SubMesh` / `InputChannel` / `Transform` already allocated is orphaned. Observed allocation sites
+  `ColladaParser.cpp:1370` (`ReadGeometryLibrary`), `:2097` (`ReadSceneLibrary`) and `:2118`
+  (`ReadSceneNode`), plus their container-growth frames.
+- **`STLImporter::LoadASCIIFile` — the other 2**, `STLLoader.cpp:240` and `:244`, on a file truncated
+  mid-record.
+
+**This task's failure-mode fixtures are the first things in the tree to drive those loaders into their
+error paths at all** — `assimp_import_test.cpp:977` (`AI9`, the truncated `.stl`/`.ply`) and `:1890` (the
+cross-document `<instance_geometry url="other.dae#g1"/>`) — which is why the frames appear here and not
+at any earlier task. The defect is upstream and the port is consumed unmodified, so the answer is
+`tests/lsan.supp` and **exactly two frame-scoped entries**, `leak:Assimp::ColladaParser::ColladaParser`
+and `leak:Assimp::STLImporter::LoadASCIIFile`, each with its evidence cited beside it in the file's own
+established form. Never module-wide: `leak:assimp` would blind LSan to a first-party leak allocated
+anywhere inside the library, which is the same reason that file refuses `leak:SDL`. These two cannot
+create that blind spot, because **nothing first-party allocates inside either frame** — the only code of
+ours the library can call from there is `RefusingIoSystem`'s twelve `IOSystem` virtuals, every one of
+which answers "cannot" without allocating (`Open` returns `nullptr`, `CurrentDirectory` returns a
+function-local static empty string); the converters run after the library has returned, in frames that
+stay unsuppressed. The two triggering cases are untouched: they are the coverage, not the bug.
+
+**The lane fact is the notable part.** LSan runs on the Linux Debug lane and nowhere else, so no macOS
+run — local or CI — could have seen this, and neither could Windows. That makes 3.2.5 the third task in
+four caught by a lane no local run can reach: 3.2.2's x86_64-only UB inside ufbx's DEFLATE decoder,
+3.2.3's Windows-only `LNK2038`, 3.2.4 caught by nothing at all, and now this. A green local gate on one
+platform keeps being necessary and never sufficient.
+
 #### Build, dependency and inventory impact — every number measured at HEAD
 
 `aero_editor_core` sources **56 → 57**; tracked `editor/src/*.cpp` **57 → 58**; `check-math-boundary.sh`
 **302 → 305** files scanned; `check-project-no-delete.sh` Check B **57 → 58**, with `assimp_import.cpp` in
 **neither** of its lists — which is exactly what makes a future `std::filesystem::remove` there a hard CI
-failure. Guard count stays **six** and `.github/scripts/` is byte-identical to `main`.
+failure. Guard count stays **six** and `.github/scripts/` is byte-identical to `main`. `tests/lsan.supp`
+grows by **two** frame-scoped entries (six → eight) for the reason the section above records, and
+`.github/` stays byte-identical with it: the file is already wired into the Linux Debug ctest step's
+`LSAN_OPTIONS`, so a new suppression needs no workflow change of any kind.
 
 `ctest -N` **unchanged at 95 / 6 / 19** — zero new `add_test`, every new case inside an existing target.
 `aero_editor_shell_test` **1366 → 1476**, and **1476 → 1481** across the code-review round (`AI84`, `AI85`,
