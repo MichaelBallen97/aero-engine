@@ -20,9 +20,12 @@
 // of parentheses, which is what tests/rhi_format_test.cpp does for engine::rhi::toString. The status
 // enum is unaffected: its label function is deliberately named cookedTextureStatusLabel, not
 // toString.
+#include <aero/assets/bc_block.hpp>
 #include <aero/assets/cooked_texture.hpp>
 #include <aero/assets/texture_cook.hpp>
 #include <aero/core/guid.hpp>
+
+#include "cooked_texture_golden.hpp"  // the four frozen byte goldens, shared with the editor suite
 
 #include <doctest/doctest.h>
 
@@ -1062,4 +1065,289 @@ TEST_CASE("a cooked Bc4Unorm texture parses Ok through this container's reader (
 }
 TEST_CASE("a cooked Bc5Unorm texture parses Ok through this container's reader (CT52)") {
     checkRoundTrip(CookedTextureFormat::Bc5Unorm, 5, 3);
+}
+
+// =================================================================================================
+// The FOUR FROZEN BYTE GOLDENS (CT53-CT58). Each array in tests/cooked_texture_golden.hpp carries the
+// exact RGBA8 texels it was cooked from, so every case below RE-COOKS that input and compares the
+// whole file byte for byte -- a golden that is only a captured blob proves nothing about the
+// transform that produced it.
+//
+// They are FROZEN. A change to any layout, ordering, padding, filter or encoder rule fails them by
+// construction; if one has to change, the cook changed, and that is a COOKED_TEXTURE_COOKER_VERSION
+// decision rather than a test edit.
+// =================================================================================================
+
+namespace {
+
+// A golden and its input are both std::uint8_t arrays (reviewable as decimal texels and hex bytes in
+// the header); cookTexture and parseCookedTexture both take std::byte. One conversion, here, rather
+// than at a dozen call sites.
+[[nodiscard]] std::vector<std::byte> goldenPixels(std::span<const std::uint8_t> texels) {
+    std::vector<std::byte> out;
+    out.reserve(texels.size());
+    for (const std::uint8_t v : texels) {
+        out.push_back(static_cast<std::byte>(v));
+    }
+    return out;
+}
+
+// Cooks a golden's own input and asserts the result is that golden, byte for byte. The mismatch is
+// reported by INDEX, because a 400-byte CHECK that merely says "not equal" is unreadable.
+struct GoldenCook {
+    engine::assets::TextureCookResult result;
+    CookedTextureParse parse;
+};
+
+template <std::size_t PIXELS, std::size_t BYTES>
+[[nodiscard]] GoldenCook checkGolden(const std::array<std::uint8_t, PIXELS>& input,
+                                     const std::array<std::uint8_t, BYTES>& golden, CookedTextureFormat format,
+                                     std::uint32_t width, std::uint32_t height, engine::Guid guid) {
+    const std::vector<std::byte> pixels = goldenPixels(input);
+    REQUIRE(pixels.size() == static_cast<std::size_t>(width) * height * 4);
+
+    engine::assets::TextureCookInput in;
+    in.sourceGuid = guid;
+    in.width = width;
+    in.height = height;
+    in.rgba8 = pixels;
+    in.format = format;
+    in.generateMips = true;
+
+    GoldenCook cooked{engine::assets::cookTexture(in), CookedTextureParse{}};
+    REQUIRE(cooked.result.status == engine::assets::TextureCookStatus::Ok);
+    REQUIRE(cooked.result.bytes.size() == BYTES);
+
+    std::size_t firstMismatch = BYTES;
+    for (std::size_t i = 0; i < BYTES; ++i) {
+        if (cooked.result.bytes[i] != static_cast<std::byte>(golden[i])) {
+            firstMismatch = i;
+            break;
+        }
+    }
+    CHECK(firstMismatch == BYTES);  // the index of the first differing byte, or BYTES for "identical"
+
+    // A golden that does not parse would be a golden of a broken file.
+    cooked.parse = parseCookedTexture(cooked.result.bytes);
+    expectOk(cooked.parse);
+    CHECK(toString(cooked.parse.view.format()) == toString(format));
+    CHECK(cooked.parse.view.width() == width);
+    CHECK(cooked.parse.view.height() == height);
+    CHECK(cooked.parse.view.sourceGuid() == guid);
+    return cooked;
+}
+
+// The non-nil GUID Golden C carries, and the one tests/cooked_mesh_golden.hpp's Golden C uses: one
+// value pins the provenance field of BOTH containers.
+constexpr engine::Guid GOLDEN_C_GUID{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+
+}  // namespace
+
+TEST_CASE("Golden A -- 4x4 BC1 sRGB with a full chain and a nil GUID -- is 344 frozen bytes (CT53)") {
+    const GoldenCook cooked =
+        checkGolden(aero_test::COOKED_TEXTURE_GOLDEN_BC1_4X4_INPUT, aero_test::COOKED_TEXTURE_GOLDEN_BC1_4X4,
+                    CookedTextureFormat::Bc1RgbSrgb, 4, 4, engine::Guid{});
+    CHECK(cooked.parse.view.levelCount() == 3);
+    // The transferFunction byte of the BC1 sRGB descriptor, at descriptor offset 14 and therefore at
+    // file offset 152 + 14. CT12 pins the TABLE; this pins that the WRITER emitted that table.
+    CHECK(aero_test::COOKED_TEXTURE_GOLDEN_BC1_4X4[152 + 14] == 0x02);
+    // The nil GUID's value is 32 '0' characters, not a shorter record: the layout must not depend on
+    // whether a GUID was supplied.
+    std::size_t zeros = 0;
+    for (std::size_t i = 215; i < 247; ++i) {
+        if (aero_test::COOKED_TEXTURE_GOLDEN_BC1_4X4[i] == 0x30) {
+            ++zeros;
+        }
+    }
+    CHECK(zeros == 32);
+    CHECK(aero_test::COOKED_TEXTURE_GOLDEN_BC1_4X4[247] == 0x00);
+}
+
+TEST_CASE("Golden B -- 1x1 RGBA8, the smallest legal file, with ZERO padding -- is 320 bytes (CT54)") {
+    const GoldenCook cooked =
+        checkGolden(aero_test::COOKED_TEXTURE_GOLDEN_RGBA8_1X1_INPUT, aero_test::COOKED_TEXTURE_GOLDEN_RGBA8_1X1,
+                    CookedTextureFormat::Rgba8Unorm, 1, 1, engine::Guid{});
+    CHECK(cooked.parse.view.levelCount() == 1);
+
+    // THE POINT OF THIS GOLDEN: 316 is already a multiple of 4, so there is NO padding at all. A cook
+    // that padded unconditionally reddens this one and no other.
+    const std::span<const std::byte> level0 = cooked.parse.view.levelBytes(0);
+    REQUIRE(level0.size() == 4);
+    CHECK(cooked.parse.view.levelRecord(0).byteOffset == 316);
+    // AC-29: an Rgba8* cook's level 0 is the input verbatim.
+    for (std::size_t i = 0; i < 4; ++i) {
+        CHECK(std::to_integer<std::uint32_t>(level0[i]) == aero_test::COOKED_TEXTURE_GOLDEN_RGBA8_1X1_INPUT[i]);
+    }
+
+    // levelCount is 1 either way at 1x1, so BOTH spellings of generateMips must produce IDENTICAL
+    // bytes -- not merely an identical level count.
+    const std::vector<std::byte> pixels = goldenPixels(aero_test::COOKED_TEXTURE_GOLDEN_RGBA8_1X1_INPUT);
+    engine::assets::TextureCookInput in;
+    in.width = 1;
+    in.height = 1;
+    in.rgba8 = pixels;
+    in.format = CookedTextureFormat::Rgba8Unorm;
+    in.generateMips = false;
+    const engine::assets::TextureCookResult noMips = engine::assets::cookTexture(in);
+    REQUIRE(noMips.status == engine::assets::TextureCookStatus::Ok);
+    CHECK(noMips.bytes == cooked.result.bytes);
+}
+
+TEST_CASE("Golden C -- 5x3 BC5 linear, odd in both axes, with a non-nil GUID -- is 400 bytes (CT55)") {
+    const GoldenCook cooked =
+        checkGolden(aero_test::COOKED_TEXTURE_GOLDEN_BC5_5X3_INPUT, aero_test::COOKED_TEXTURE_GOLDEN_BC5_5X3,
+                    CookedTextureFormat::Bc5Unorm, 5, 3, GOLDEN_C_GUID);
+    CHECK(cooked.parse.view.levelCount() == 3);
+    // The two BC5 sample channel ids, at descriptor offsets 31 and 47 -- the descriptor starts at 152.
+    CHECK(aero_test::COOKED_TEXTURE_GOLDEN_BC5_5X3[152 + 31] == 0x00);  // RED
+    CHECK(aero_test::COOKED_TEXTURE_GOLDEN_BC5_5X3[152 + 47] == 0x01);  // GREEN
+    // The GUID's 32 lowercase hex characters, high half first, byte-visible at 231..262.
+    std::string spelled;
+    for (std::size_t i = 231; i < 263; ++i) {
+        spelled.push_back(static_cast<char>(aero_test::COOKED_TEXTURE_GOLDEN_BC5_5X3[i]));
+    }
+    CHECK(spelled == engine::formatGuid(GOLDEN_C_GUID));
+}
+
+TEST_CASE("Golden D -- 2x2 BC3 sRGB -- is 352 bytes and carries the 1F alpha qualifier (CT56)") {
+    const GoldenCook cooked =
+        checkGolden(aero_test::COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2_INPUT, aero_test::COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2,
+                    CookedTextureFormat::Bc3Srgb, 2, 2, engine::Guid{});
+    CHECK(cooked.parse.view.levelCount() == 2);
+
+    // THE REASON THIS GOLDEN EXISTS. BC3_SRGB's descriptor is NOT a one-byte edit of BC3_UNORM's:
+    // setChannelFlags sets KHR_DF_SAMPLE_DATATYPE_LINEAR (0x10) on an sRGB format's alpha sample, and
+    // both KHR_DF_CHANNEL_BC3_ALPHA and KHR_DF_CHANNEL_RGBSDA_ALPHA are 15, so the first sample's
+    // channel byte is 0x1F. The descriptor starts at 128, so that byte is at file offset 159. Without
+    // this golden the corrected byte was covered by exactly one case, over the TABLE rather than over
+    // a file the writer actually emitted.
+    CHECK(aero_test::COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2[128 + 14] == 0x02);  // transferFunction = KHR_DF_TRANSFER_SRGB
+    CHECK(aero_test::COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2[128 + 31] == 0x1F);  // alpha sample: channel 15 | LINEAR
+    CHECK(aero_test::COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2[128 + 47] == 0x00);  // colour sample: channel 0, no qualifier
+
+    // BC3's ALPHA-THEN-COLOUR composition, in bytes rather than only behaviourally: level 0's first
+    // eight bytes are the BC4 alpha block over the four alphas 255/128/64/0, whose endpoints are max
+    // then min, and its second eight are the BC1 colour block.
+    const std::span<const std::byte> level0 = cooked.parse.view.levelBytes(0);
+    REQUIRE(level0.size() == 16);
+    CHECK(std::to_integer<std::uint32_t>(level0[0]) == 255);  // r0 = max alpha
+    CHECK(std::to_integer<std::uint32_t>(level0[1]) == 0);    // r1 = min alpha
+    std::array<std::uint8_t, 16> alphaTexels{};
+    for (std::size_t i = 0; i < 16; ++i) {
+        // The 2x2 image clamped into a 4x4 block: every texel outside the image repeats the nearest
+        // one inside it, which is what TX34 proves for the colour half.
+        const std::size_t x = (i % 4) >= 2 ? 1 : (i % 4);
+        const std::size_t y = (i / 4) >= 2 ? 1 : (i / 4);
+        alphaTexels[i] = aero_test::COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2_INPUT[(y * 2 + x) * 4 + 3];
+    }
+    std::array<std::byte, 8> alphaBlock{};
+    engine::assets::encodeBc4Block(alphaTexels, alphaBlock);
+    for (std::size_t i = 0; i < 8; ++i) {
+        CHECK(std::to_integer<std::uint32_t>(level0[i]) == std::to_integer<std::uint32_t>(alphaBlock[i]));
+    }
+}
+
+TEST_CASE("levels[0] holds the LARGEST offset and the last level starts at the aligned KVD end (CT56a)") {
+    // The level-order inversion, on every golden that has more than one level. The level INDEX is
+    // level-0-first while the level DATA is smallest-first, so the stored offsets must be STRICTLY
+    // DECREASING in index order -- the single most likely place for an off-by-one in this format, and
+    // one a same-sized file would otherwise hide.
+    struct Case {
+        std::span<const std::uint8_t> golden;
+        CookedTextureFormat format;
+    };
+    const std::array<Case, 3> cases = {
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_BC1_4X4, CookedTextureFormat::Bc1RgbSrgb},
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_BC5_5X3, CookedTextureFormat::Bc5Unorm},
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2, CookedTextureFormat::Bc3Srgb},
+    };
+    std::size_t checked = 0;
+    for (const Case& c : cases) {
+        const std::vector<std::byte> file = goldenPixels(c.golden);
+        const CookedTextureParse parse = parseCookedTexture(file);
+        expectOk(parse);
+        const std::uint32_t levels = parse.view.levelCount();
+        REQUIRE(levels >= 2);
+        for (std::uint32_t level = 1; level < levels; ++level) {
+            CHECK(parse.view.levelRecord(level).byteOffset < parse.view.levelRecord(level - 1).byteOffset);
+        }
+        // The smallest level starts exactly at the aligned end of the key/value data, and the largest
+        // ends exactly at the end of the file.
+        const std::uint64_t kvdEnd =
+            engine::assets::getU32(file, H_KVD_OFFSET) + engine::assets::getU32(file, H_KVD_LENGTH);
+        const std::uint32_t alignment = cookedTextureLevelAlignment(c.format);
+        CHECK(parse.view.levelRecord(levels - 1).byteOffset == ((kvdEnd + alignment - 1) / alignment) * alignment);
+        CHECK(parse.view.levelRecord(0).byteOffset + parse.view.levelRecord(0).byteLength == file.size());
+        ++checked;
+    }
+    REQUIRE(checked == cases.size());
+}
+
+TEST_CASE("there is EXACTLY ONE padding site in each golden and no gap between levels (CT57)") {
+    // mipPadding can occur at exactly one place in the whole file -- between the end of the KVD and
+    // the start of the smallest level -- because every level's byteLength is a multiple of the
+    // alignment. That is a property of the FORMAT, so it is asserted over the goldens' real bytes
+    // rather than over the writer's own arithmetic.
+    struct Case {
+        std::span<const std::uint8_t> golden;
+        CookedTextureFormat format;
+        std::size_t expectedPadding;
+    };
+    const std::array<Case, 4> cases = {
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_BC1_4X4, CookedTextureFormat::Bc1RgbSrgb, 4},
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_RGBA8_1X1, CookedTextureFormat::Rgba8Unorm, 0},
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_BC5_5X3, CookedTextureFormat::Bc5Unorm, 4},
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2, CookedTextureFormat::Bc3Srgb, 12},
+    };
+    std::size_t checked = 0;
+    for (const Case& c : cases) {
+        const std::vector<std::byte> file = goldenPixels(c.golden);
+        const CookedTextureParse parse = parseCookedTexture(file);
+        expectOk(parse);
+        const std::uint64_t kvdEnd =
+            engine::assets::getU32(file, H_KVD_OFFSET) + engine::assets::getU32(file, H_KVD_LENGTH);
+        const std::uint32_t alignment = cookedTextureLevelAlignment(c.format);
+        const std::uint32_t levels = parse.view.levelCount();
+        const std::uint64_t smallest = parse.view.levelRecord(levels - 1).byteOffset;
+
+        // The gap is exactly (A - kvdEnd % A) % A bytes, and every one of them is 0x00.
+        CHECK(smallest - kvdEnd == (alignment - (kvdEnd % alignment)) % alignment);
+        CHECK(smallest - kvdEnd == c.expectedPadding);
+        for (std::uint64_t at = kvdEnd; at < smallest; ++at) {
+            CHECK(c.golden[static_cast<std::size_t>(at)] == 0x00);
+        }
+        // And there is NO gap anywhere else: each level abuts the next one down the file.
+        for (std::uint32_t level = levels - 1; level > 0; --level) {
+            const engine::assets::CookedTextureLevel& smaller = parse.view.levelRecord(level);
+            CHECK(smaller.byteOffset + smaller.byteLength == parse.view.levelRecord(level - 1).byteOffset);
+        }
+        ++checked;
+    }
+    REQUIRE(checked == cases.size());
+}
+
+TEST_CASE("the four goldens total 344, 320, 400 and 352 bytes, with NO trailing bytes (CT58)") {
+    // AC-10: the file ends exactly where the largest level ends. A writer that appended anything --
+    // padding, a footer, a stray alignment run -- would pass every other case in this TU.
+    struct Case {
+        std::span<const std::uint8_t> golden;
+        std::size_t expectedSize;
+    };
+    const std::array<Case, 4> cases = {
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_BC1_4X4, 344},
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_RGBA8_1X1, 320},
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_BC5_5X3, 400},
+        Case{aero_test::COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2, 352},
+    };
+    std::size_t checked = 0;
+    for (const Case& c : cases) {
+        CHECK(c.golden.size() == c.expectedSize);
+        const std::vector<std::byte> file = goldenPixels(c.golden);
+        const CookedTextureParse parse = parseCookedTexture(file);
+        expectOk(parse);
+        const engine::assets::CookedTextureLevel& largest = parse.view.levelRecord(0);
+        CHECK(largest.byteOffset + largest.byteLength == c.expectedSize);
+        ++checked;
+    }
+    REQUIRE(checked == cases.size());
 }
