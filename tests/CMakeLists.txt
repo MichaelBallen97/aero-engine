@@ -729,7 +729,13 @@ set(_aero_cooker_cases
     guid_written scale_applied no_materials
     determinism nothing_written_on_failure output_dir_missing
     # task 3.3.2 -- the texture subcommand. Fourteen more names, on the same terms: ungated, so
-    # ctest -N moves in ALL THREE configurations again.
+    # ctest -N moves in ALL THREE configurations again. MEASURED at the tip of this branch, never
+    # derived by addition: 117 -> 131 with tools ON, 28 -> 42 with -DAERO_REFLECT_TOOLS=OFF
+    # -DAERO_SHADER_TOOLS=OFF, and 41 -> 55 with -DAERO_REFLECT_TOOLS=OFF alone, the last two in
+    # build directories configured FRESH with -G Ninja (the generator enters the shadercross
+    # bootstrap's option hash, so the generator-less form reads the cached toolchain as COLD and pays
+    # a from-source DXC rebuild). CT1, TX1, BB1, TK1 and all fourteen names below are present in both
+    # reduced configurations -- which is the proof that this block is still ungated.
     texture_help texture_no_colorspace texture_both_colorspace
     texture_srgb_bc5_conflict texture_unknown_format
     texture_hdr_refused texture_unclaimed_extension
