@@ -6020,7 +6020,16 @@ the correct fix and costs nothing.
 **Branch:** `feat/3.3.1-mesh-cook-gpu-buffers`, cut from `main @ 3fc2658`. **Thirteen green commits**,
 measured with `git rev-list --count main..HEAD`, never remembered — eleven for the implementation and the
 sabotage round, one for a Windows-only compile failure the first CI run produced, and one closing the
-code-review round's two findings.
+code-review round's two findings. **Merged as PR #75, merge commit `17a6821`**, CI-green on macOS,
+Windows and Ubuntu with the green run's `headSha` asserted equal to `HEAD` before merging, and merged
+with a merge commit so all thirteen per-step commits survive on `main`.
+**macOS-validated ✅ PASS 12/12 on 2026-08-13**
+(`editor/validation/3.3.1-mesh-cook-gpu-buffers.md`), **with every measurement blank filled** — the
+first task in this project whose number-bearing rows were signed off with their numbers rather than
+with a tick, against seven such rows across four earlier tasks that were not. Row 1's "textured,
+multi-material Blender export" half is the one thing the pass did not cover (no Blender on the
+validating machine) and is recorded in the row rather than silently ticked. Windows and Linux rows
+remain pending, as they do for every task in Phases 0–3.
 
 Epic 3.3 opens here. A model the editor could already *import* becomes a file a runtime can *upload
 without parsing*: parallel arrays of `Vec3`/`Vec2`/`Vec4` become one interleaved, GPU-strided vertex blob
@@ -6270,6 +6279,27 @@ The 1.067 GB is against a plan-predicted worst case of ~928 MB for the *output b
 the honest number for the CLI as a whole: the source bytes, the `ImportedModel` and the output vector are
 all resident simultaneously, because nothing is streamed. **A CI runner has 7 GB, so this is comfortable
 — but it is a number a future task should know before adding a fifth cap case or a streaming claim.**
+
+**The macOS validation pass (2026-08-13, on merge commit `17a6821`) then measured two more shapes, and
+the result corrects R7's own premise.** R7 framed the risk as the cook's single zero-initialized output
+vector. It is not: **peak resident memory is dominated by the IMPORTER**, and the two source families
+differ by roughly 3×.
+
+| Shape | Source | Cooked | Ratio | Wall-clock | Peak RSS | Peak ÷ source |
+|---|---:|---:|---:|---:|---:|---:|
+| Binary `.gltf`+`.bin`, attribute-heavy (2 250 000 v / 13 482 006 i) | 120.1 MB | 120.1 MB | 1.00× | 0.37 s | 371.2 MB | **3.09×** |
+| ASCII `.obj`, index-heavy, positions only (810 000 v / 4 849 206 i) | 53.4 MB | 27.8 MB | 0.52× | 0.87 s | 478.0 MB | **8.96×** |
+| Binary `.gltf`+`.bin` (the 336 MB sample above) | 335.6 MB | 335.6 MB | 1.00× | 0.89 s | 1093 MB | **3.26×** |
+
+**A 53.4 MB ASCII source costs MORE peak memory than a 120.1 MB binary one** — 478 MB against 371 MB —
+because tinyobjloader's ASCII intermediate is far larger than the binary path's. Extrapolated to the
+256 MiB `MAX_MODEL_FILE_BYTES` cap that is ~790 MB for the binary path and **~2.3 GB for the ASCII
+one**. Neither is a defect and both fit a development machine, but the ASCII path is the one to watch,
+and it — not the cook's output vector — is where a future streaming importer would pay off. The two
+ratios also settle the size question the plan wanted two data points for: **the cooked/source ratio is a
+property of how compactly the SOURCE encoded the same floats, not of the cook.** A float32 `.glb` whose
+layout already matches the cook's is 1.00× because there is nothing to compress; ASCII shrinks sharply
+(0.52× here, 0.28× on the earlier headless sample).
 
 **A cap the plan did not account for, found while taking this measurement.** A first attempt used an
 *embedded* `.glb` of 223.9 MB and produced a **96-byte empty container**: `MAX_EMBEDDED_BYTES` bounds
