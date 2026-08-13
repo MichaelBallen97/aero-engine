@@ -130,6 +130,21 @@ specification is `docs/09-file-formats.md` section 10.
   produces a plausible image rather than an obviously broken one.
 - **Partial edge blocks CLAMP, never zero-fill.** Zero-fill drags the endpoints toward black and
   visibly darkens the right and bottom edges.
+- **BOTH halves validate the format, and the cook's half is not optional.** `CookedTextureFormat` has a
+  fixed underlying type, so `static_cast<CookedTextureFormat>(42)` is well-formed and every `u32` is a
+  valid value of it. `cookedTextureBlockBytes` answers 0 for such a value, `std::lcm(0, 4)` is 0, and
+  the level-data alignment then **divides by zero** — a UBSan report and a `SIGABRT`, not a wrong
+  picture. `cookTexture` gates on `isCookedTextureFormat` as its FIRST step, exactly as
+  `parseCookedTexture` does at its step 5. Nothing reachable from the CLI can trip it today; that is a
+  property of the CLI's six format tokens, not of the cook, and it changes the moment a format is read
+  from a `.meta`, a settings file or a `.pak`.
+- **`levelCount` is refused by the PARSER, not merely produced correctly by the cook**, and the two
+  statuses differ: a count *between* 1 and the full chain is `UnsupportedShape` (a partial pyramid is a
+  shape v1 does not store — nothing is over a cap, since 2 is inside 1…4 for an 8×8 image), while 0 and
+  a count *past* the chain are `CapExceeded`. The parser used to bound the field only above, and a
+  hand-built partial-chain file parsed `Ok` while `docs/09` §10.8 said it was refused. Where the subset
+  is narrower than KTX2, **the narrowing is a refusal in the parser and never a silent
+  reinterpretation** — that is §10.0's own rule, and it is the reading to apply to the next such gap.
 - **`--srgb`/`--linear` is mandatory on the CLI and there is no default**, and `--srgb` with `bc4`/`bc5`
   is a usage error because Vulkan defines no such format. sRGB is carried by the format enumerator and
   nowhere else, which is what makes "an sRGB normal map" unspellable rather than merely rejected.
@@ -151,6 +166,13 @@ specification is `docs/09-file-formats.md` section 10.
 - **Every case-local table in the four test TUs pins a LITERAL row count**, never `TABLE.size()`: a
   guard derived from the table it guards cannot see a row deleted, and two seeds proved it by deleting
   the rows that existed to catch two other seeds.
+- **`BC4_UNORM` is the one format with neither a byte golden nor a golden-pinned sRGB sibling**, so
+  `CT11` is its only cover and must stay a **literal per-format table of every DFD byte** — colour
+  model and sample words included. Measured: with only the old structural checks, declaring BC5's
+  colour model (byte 12, `0x83` → `0x84`) in every cooked BC4 artifact left the whole suite green at
+  131/131, because the writer emits the table the parser compares against. R1's `ktx validate` row
+  carries a BC4 artifact for the same reason. **A ninth format added here needs a row in that table on
+  the day it lands**, or it inherits exactly this hole.
 
 ## The named, unowned gap
 

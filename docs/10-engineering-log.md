@@ -6419,10 +6419,12 @@ over up to 129 ranges that buys nothing an attacker can use).
 
 ### Task 3.3.2 — Texture cook → KTX2/Basis (Epic 3.3)
 
-**Branch:** `feat/3.3.2-texture-cook-ktx2-basis`, cut from `main @ cd8de6f`. **Eleven green commits**,
+**Branch:** `feat/3.3.2-texture-cook-ktx2-basis`, cut from `main @ cd8de6f`. **Fifteen green commits**,
 measured with `git rev-list --count main..HEAD` — eight for the implementation, one for the sabotage
-round's gap closures, one for the reduced-configuration proof, one for these documents. Not yet pushed,
-not yet merged; the manual validation pass and its three measurement rows come after the merge.
+round's gap closures, one for the reduced-configuration proof, one for these documents, and **four for
+the code-review round** recorded at the end of this entry. The eleven were not amended, rebased or
+squashed; the round landed on top. Not yet pushed, not yet merged; the manual validation pass and its
+three measurement rows come after the merge.
 
 Epic 3.3's second task and the cooker's second artifact kind. **It is the first thing this project
 produces that a third-party tool can open**: a strict subset of Khronos KTX2, byte for byte, so
@@ -6720,12 +6722,85 @@ file, proven as a file — by its parser, its four goldens, its CLI, and (after 
 
 #### Open at the time of writing
 
-- **R1, R2 and R3 are unmeasured.** `ktx validate` against the four goldens plus a BC3-sRGB and an
-  RGBA8-sRGB artifact (R1 — the only non-circular proof this task can get, and the row that confirms or
-  refutes C1 and C2), BC1 PSNR against `stb_dxt` over five images (R2), and wall-clock plus peak RSS for
-  a 4096² and a 512² cook (R3). All three are validation-page rows written so a blank tick is
-  impossible. **`ktx` is not installed on the validating machine**, and there is no Homebrew formula for
-  it — `brew info ktx` errors and there is no cask — so row 3 names the real path (the Khronos 4.4.2
-  `.pkg` release, the same version `docs/01-tech-stack.md` already lists) and is expected to be recorded
-  as an attempt rather than ticked until that install happens.
+- **R1, R2 and R3 are unmeasured.** `ktx validate` against the four goldens plus a BC3-sRGB, an
+  RGBA8-sRGB and a **BC4** artifact (R1 — the only non-circular proof this task can get, and the row
+  that confirms or refutes C1 and C2; the BC4 artifact was added by the code-review round below, for
+  the format with neither a golden nor a golden-pinned sibling), BC1 PSNR against `stb_dxt` over five
+  images (R2), and wall-clock plus peak RSS for a 4096² and a 512² cook (R3). All three are
+  validation-page rows written so a blank tick is impossible. **`ktx` is not installed on the
+  validating machine**, and there is no Homebrew formula for it — `brew info ktx` errors and there is
+  no cask — so row 3 names the real path (the Khronos 4.4.2 `.pkg` release, the same version
+  `docs/01-tech-stack.md` already lists) and is expected to be recorded as an attempt rather than
+  ticked until that install happens.
+
+#### The code-review round — five findings, four commits, two of them real defects
+
+Run against the eleven-commit branch with the full local gate green (131/131 on both macOS presets,
+42/42 and 55/55 in the two reduced configurations, six guards, lint clean by exit code). All five were
+closed on top; none of the eleven commits was amended. Every closure was re-proven by re-seeding, and
+every seed's presence was asserted in the file before its verdict was trusted.
+
+**1 (correctness) — `cookTexture` divided by zero for a format outside the eight.**
+`CookedTextureFormat` has a fixed underlying type, so `static_cast<CookedTextureFormat>(42)` is
+well-formed and every `u32` is a valid value of it. The cook validated width, height, span size and
+level count and **never the format** — while `parseCookedTexture` gates exactly that question with
+`isCookedTextureFormat`, which already sat in the same public header. For an out-of-range enumerator
+`cookedTextureBlockBytes` answers 0, `std::lcm(0, 4)` is 0, and the level-data alignment computes
+`((kvdEnd + 0 - 1) / 0) * 0`. Measured rather than argued: UBSan reported *"division by zero"* at
+`texture_cook.cpp:432` and the case aborted with `SIGABRT`. The header promises **NEVER THROWS** and
+the status contract is `Ok`/`Refused`; a crash is neither. Unreachable from today's callers — the
+CLI's six format tokens all map into the eight — which is exactly why it shipped green, and it becomes
+reachable the moment a format is read from a `.meta`, a settings file or a `.pak`. Closed with the
+producer's half of the parser's own gate, placed first because every later step computes something
+from the format. `TX49` drives 42 (between two legal values) and 1000 (past every enumerator — the arm
+a *range* test rather than a *membership* test would let through); removing the guard reddens it with
+the same `SIGABRT`.
+
+**2 (doc/code disagreement) — §10.8 said partial chains are refused and the parser accepted them.**
+The parser bounded `levelCount` only **above**, so a hand-built file declaring 2 levels for an 8×8
+image — every record correctly sized, correctly aligned, everything else consistent — parsed `Ok`,
+while §10.8 and §10.0 both state the chain is complete or 1. Resolved by **adding the check, not by
+rewording the document**: §10.0's own principle is that where the subset is narrower than KTX2 the
+narrowing is a refusal here and never a silent reinterpretation. The status is **`UnsupportedShape`**,
+not `CapExceeded`, and the distinction is real — 2 is *inside* 1…4 for an 8×8 image, so nothing is
+over a cap; it belongs with `pixelDepth`/`layerCount`/`faceCount`, the three other "v1 stores exactly
+one shape" refusals. Zero and over-chain counts keep `CapExceeded`, so `CT26` and `CT27` are
+unchanged, and AC-27's round trip cannot break because the cook emits 1 or the full chain and nothing
+between — for a 1×1 image the two coincide, which `CT27a` asserts explicitly alongside both refused
+counts. `docs/09`'s error catalog and §10.8 now say which status is which.
+
+**3 (coverage) — `DFD_BC4_UNORM` had neither a golden nor a golden-pinned sibling.** The four goldens
+pin BC1-sRGB, RGBA8-Unorm, BC5 and BC3-sRGB; `CT12`'s exact-diff assertions transitively pin
+BC1-Unorm, BC3-Unorm and RGBA8-sRGB. **BC4 is pinned by neither** — 27 of its 44 bytes were asserted
+nowhere, including byte 12 (`colorModel`) and the whole sample word. Measured: setting byte 12 to
+`0x84`, so every cooked BC4 artifact declares **BC5's colour model**, left the whole suite green at
+**131/131** — the writer emits it, the parser compares against the same table, and only an external
+validator could tell. This is the C1/C2 class one format over, which is the shape this task existed to
+be careful about. `CT11` now checks **every byte of all eight tables** against a literal per-format
+table of `colorModel` and sample words, read off §10.5's printed tables rather than computed from the
+array under test. Re-seeding byte 12 reddens it (`132 == 131`); so does shortening BC4's sample
+`bitLength`, a byte that against the old case was green across all **656** `aero_tests` cases. R1's
+`ktx validate` row gains a **BC4 artifact** so the one tier that can break the circularity covers it
+too.
+
+**4 (plan non-compliance) — AC-32's repeated-flag arm was never added.** The plan's AC row requires
+"the repeated-flag arm added to `cooker.repeated_flag`"; that case was **byte-identical to `main`** and
+still drove only `mesh --input <f> --input <f>`. So `refuseRepeat` on the four texture-only flags had
+**zero** coverage: deleting the `--format` guard made `texture --format bc1 --format rgba8` take the
+last value and exit 0 with nothing reddening. The case now drives `--srgb`, `--linear`, `--no-mips` and
+`--format` under `texture` as well, each asserting the exit code, the "at most once" text and the
+flag's own name, with the `--format` pair spelled as two **different** values so "the last one silently
+wins" is the failure being caught. Each of the four guards was removed in turn and **each reddens the
+case on its own**.
+
+**5 (stated-rule violation) — one literal header offset.** `putU32(out, 36, 1);  // faceCount`, in a TU
+whose own comment fourteen lines earlier reads *"Nothing else in this TU spells a header offset as a
+literal"* (plan D-3.1 says the same). Now `H_FACE_COUNT`, beside the others, with a `static_assert`
+tying it to `H_LEVEL_COUNT`. No behavioural change; the cost of leaving it was a future header
+re-layout silently missing that line.
+
+**Re-measured after the round**, never derived by addition: `ctest -N` **131** with tools ON, **42**
+and **55** in the two reduced configurations — unchanged, because both closures extended existing
+cases rather than adding ctest entries. `aero_tests` **654 → 656** (`CT27a` and `TX49`),
+`aero_editor_shell_test` **1516**, and the other three suites unchanged.
 - **The code-review round has not been run**, and neither has CI. Both come before the merge.

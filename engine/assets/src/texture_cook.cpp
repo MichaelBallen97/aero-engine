@@ -260,7 +260,9 @@ constexpr std::size_t H_VK_FORMAT = 12;
 constexpr std::size_t H_TYPE_SIZE = 16;
 constexpr std::size_t H_PIXEL_WIDTH = 20;
 constexpr std::size_t H_PIXEL_HEIGHT = 24;
+constexpr std::size_t H_FACE_COUNT = 36;
 constexpr std::size_t H_LEVEL_COUNT = 40;
+static_assert(H_FACE_COUNT + 4 == H_LEVEL_COUNT);  // ... with pixelDepth and layerCount before it
 constexpr std::size_t H_DFD_OFFSET = 48;
 constexpr std::size_t H_DFD_LENGTH = 52;
 constexpr std::size_t H_KVD_OFFSET = 56;
@@ -481,7 +483,7 @@ TextureCookResult cookTexture(const TextureCookInput& input) {
     putU32(out, H_PIXEL_HEIGHT, input.height);
     // pixelDepth, layerCount, supercompressionScheme and the two sgd u64s are all ZERO, which the
     // zero-initialized buffer already gives; faceCount is the only shape field that is not.
-    putU32(out, 36, 1);  // faceCount
+    putU32(out, H_FACE_COUNT, 1);
     putU32(out, H_LEVEL_COUNT, levelCount);
     putU32(out, H_DFD_OFFSET, static_cast<std::uint32_t>(dfdOffset));
     putU32(out, H_DFD_LENGTH, static_cast<std::uint32_t>(descriptor.size()));
