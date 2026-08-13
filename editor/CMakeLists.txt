@@ -124,6 +124,7 @@ add_library(aero_editor_core STATIC
     src/blender_service.cpp      # task 3.2.4 -- the state machine; SDL_getenv only, never SDL_Process
     src/assimp_import.cpp        # task 3.2.5 -- the ONLY assimp TU; NO file operation at all
     src/mesh_cook_source.cpp     # task 3.3.1 -- the ONLY ImportedModel -> assets:: adapter; PURE
+    src/texture_cook_source.cpp  # task 3.3.2 -- the SECOND stb_image TU; PURE, no disk, no UI
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

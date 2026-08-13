@@ -321,6 +321,11 @@ find_package(Threads REQUIRED)
 # defined on this target, and it reads tests/cooked_mesh_golden.hpp through the ${CMAKE_CURRENT_SOURCE_DIR}
 # include root ALREADY set below -- ONE GOLDEN, TWO BINARIES. NO LINK-LINE CHANGE: aero::assets arrives
 # transitively and PUBLICly through aero::editor_core, and no new ctest entry is registered here.
+# task 3.3.2 joins it with ONE more, editor/texture_cook_source_test.cpp, on exactly the same terms:
+# UNCONDITIONAL, tier-0, no link-line change, no new ctest entry, and reachable in BOTH reduced
+# configurations -- prove it with --list-test-cases, which must show TK1 in both. It reads the two
+# committed PNG fixtures through AERO_ASSET_FIXTURES_DIR and texture_cook_source.cpp's own source text
+# through AERO_EDITOR_SRC_DIR, both ALREADY defined on this target; neither is redefined.
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -338,7 +343,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/fbx_import_test.cpp editor/obj_import_test.cpp
                editor/blender_tool_test.cpp editor/blender_service_test.cpp
                editor/assimp_import_test.cpp
-               editor/mesh_cook_source_test.cpp)
+               editor/mesh_cook_source_test.cpp
+               editor/texture_cook_source_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
