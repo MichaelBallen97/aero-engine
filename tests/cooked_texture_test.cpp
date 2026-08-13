@@ -21,6 +21,7 @@
 // enum is unaffected: its label function is deliberately named cookedTextureStatusLabel, not
 // toString.
 #include <aero/assets/cooked_texture.hpp>
+#include <aero/assets/texture_cook.hpp>
 #include <aero/core/guid.hpp>
 
 #include <doctest/doctest.h>
@@ -977,4 +978,88 @@ TEST_CASE("a non-zero supercompression global-data pair with scheme 0 is BadTabl
         ++checked;
     }
     REQUIRE(checked == 2);
+}
+
+// =================================================================================================
+// The round trip (CT45-CT52). THE PROPERTY THE REST OF THE TASK LEANS ON: every file the cook accepts
+// parses Ok through this container's own reader, for every one of the eight formats. It is also what
+// catches a divergence between the cook's level-byte arithmetic and the parser's, which are
+// deliberately separate implementations of the same rule.
+// =================================================================================================
+
+namespace {
+
+// One case body, run once per format, so the eight cases below are eight distinct ids over one
+// checked property rather than one table-driven case that could iterate nothing.
+void checkRoundTrip(CookedTextureFormat format, std::uint32_t width, std::uint32_t height) {
+    const engine::Guid guid{0x0F1E2D3C4B5A6978ULL, 0x8796A5B4C3D2E1F0ULL};
+    std::vector<std::byte> pixels(static_cast<std::size_t>(width) * height * 4, std::byte{0});
+    for (std::size_t i = 0; i < pixels.size() / 4; ++i) {
+        pixels[4 * i + 0] = static_cast<std::byte>((i * 29) & 0xFF);
+        pixels[4 * i + 1] = static_cast<std::byte>((i * 71 + 13) & 0xFF);
+        pixels[4 * i + 2] = static_cast<std::byte>((i * 137 + 200) & 0xFF);
+        pixels[4 * i + 3] = static_cast<std::byte>(i % 3 == 0 ? 255 : 90);
+    }
+    engine::assets::TextureCookInput input;
+    input.sourceGuid = guid;
+    input.width = width;
+    input.height = height;
+    input.rgba8 = pixels;
+    input.format = format;
+    const engine::assets::TextureCookResult cooked = engine::assets::cookTexture(input);
+    REQUIRE(cooked.status == engine::assets::TextureCookStatus::Ok);
+    REQUIRE_FALSE(cooked.bytes.empty());
+
+    const CookedTextureParse parse = parseCookedTexture(cooked.bytes);
+    expectOk(parse);
+    CHECK(toString(parse.view.format()) == toString(format));
+    CHECK(parse.view.width() == width);
+    CHECK(parse.view.height() == height);
+    CHECK(parse.view.levelCount() == cooked.stats.levelCount);
+    CHECK(parse.view.sourceGuid() == guid);
+    // Every level is reachable and non-empty, and the one past the end is an EMPTY span rather than a
+    // read.
+    std::size_t levels = 0;
+    for (std::uint32_t level = 0; level < parse.view.levelCount(); ++level) {
+        CHECK_FALSE(parse.view.levelBytes(level).empty());
+        ++levels;
+    }
+    REQUIRE(levels == parse.view.levelCount());
+    CHECK(parse.view.levelBytes(parse.view.levelCount()).empty());
+    // The nil GUID is legal too, and the file's SIZE must not depend on which was supplied -- the
+    // AeroSourceGuid record is written unconditionally.
+    input.sourceGuid = engine::Guid{};
+    const engine::assets::TextureCookResult nilGuid = engine::assets::cookTexture(input);
+    REQUIRE(nilGuid.status == engine::assets::TextureCookStatus::Ok);
+    CHECK(nilGuid.bytes.size() == cooked.bytes.size());
+    const CookedTextureParse nilParse = parseCookedTexture(nilGuid.bytes);
+    expectOk(nilParse);
+    CHECK_FALSE(nilParse.view.sourceGuid().valid());
+}
+
+}  // namespace
+
+TEST_CASE("a cooked Rgba8Unorm texture parses Ok through this container's reader (CT45)") {
+    checkRoundTrip(CookedTextureFormat::Rgba8Unorm, 5, 3);
+}
+TEST_CASE("a cooked Rgba8Srgb texture parses Ok through this container's reader (CT46)") {
+    checkRoundTrip(CookedTextureFormat::Rgba8Srgb, 5, 3);
+}
+TEST_CASE("a cooked Bc1RgbUnorm texture parses Ok through this container's reader (CT47)") {
+    checkRoundTrip(CookedTextureFormat::Bc1RgbUnorm, 9, 7);
+}
+TEST_CASE("a cooked Bc1RgbSrgb texture parses Ok through this container's reader (CT48)") {
+    checkRoundTrip(CookedTextureFormat::Bc1RgbSrgb, 9, 7);
+}
+TEST_CASE("a cooked Bc3Unorm texture parses Ok through this container's reader (CT49)") {
+    checkRoundTrip(CookedTextureFormat::Bc3Unorm, 16, 16);
+}
+TEST_CASE("a cooked Bc3Srgb texture parses Ok through this container's reader (CT50)") {
+    checkRoundTrip(CookedTextureFormat::Bc3Srgb, 16, 16);
+}
+TEST_CASE("a cooked Bc4Unorm texture parses Ok through this container's reader (CT51)") {
+    checkRoundTrip(CookedTextureFormat::Bc4Unorm, 1, 1);
+}
+TEST_CASE("a cooked Bc5Unorm texture parses Ok through this container's reader (CT52)") {
+    checkRoundTrip(CookedTextureFormat::Bc5Unorm, 5, 3);
 }

@@ -12,6 +12,7 @@
 // Every hand-computed expectation below is written as a LITERAL with its arithmetic in a comment, so
 // it can be re-derived on paper. A case whose expected value came out of the code it is testing is
 // not a test.
+#include <aero/assets/bc_block.hpp>
 #include <aero/assets/cooked_texture.hpp>
 #include <aero/assets/texture_cook.hpp>
 
@@ -24,11 +25,24 @@
 // stdlib's operator<<, which MS STL declares against an INCOMPLETE std::basic_ostream in headers only
 // <ostream> completes. libc++ and libstdc++ are self-sufficient, so omitting it builds clean on macOS
 // and Linux and fails only on the Windows lane, inside the STL headers rather than at the CHECK.
+#include <fstream>
+#include <iterator>
 #include <ostream>
 #include <span>
 #include <string>
 #include <vector>
 
+using engine::assets::cookedTextureBlockBytes;
+using engine::assets::CookedTextureFormat;
+using engine::assets::cookedTextureLevelAlignment;
+using engine::assets::cookTexture;
+using engine::assets::encodeBc1Block;
+using engine::assets::encodeBc4Block;
+using engine::assets::parseCookedTexture;
+using engine::assets::TextureCookInput;
+using engine::assets::TextureCookResult;
+using engine::assets::TextureCookStatus;
+using engine::assets::toString;
 using engine::assets::detail::downsampleRgba8;
 using engine::assets::detail::linearToSrgb;
 using engine::assets::detail::mipLevelCount;
@@ -477,4 +491,734 @@ TEST_CASE("the maximum dimension's chain is exactly MAX_TEXTURE_LEVELS (TX20)") 
     CHECK(mipLevelCount(1, engine::assets::MAX_TEXTURE_DIMENSION) == engine::assets::MAX_TEXTURE_LEVELS);
     // One below the cap is one level shorter, so the cap is not accidentally a plateau.
     CHECK(mipLevelCount(engine::assets::MAX_TEXTURE_DIMENSION / 2, 1) == engine::assets::MAX_TEXTURE_LEVELS - 1);
+}
+
+// =================================================================================================
+// cookTexture (TX21-TX48)
+//
+// NEVER WRITE `CHECK(someCookedTextureFormat == CookedTextureFormat::X)` HERE. doctest's
+// DOCTEST_STRINGIFY expands to an UNQUALIFIED `toString(...)`, so ADL finds
+// engine::assets::toString(CookedTextureFormat) -- a non-template exact match that beats doctest's own
+// template -- and the decomposer then tries `std::string_view + const char*`, a hard compile error on
+// EVERY lane. Compare through toString() on both sides, as tests/cooked_texture_test.cpp's header
+// explains at length.
+// =================================================================================================
+
+namespace {
+
+// INV-T3 in both directions, called by every cook case below rather than living in one case of its
+// own: `bytes` is non-empty IFF Ok, and `message` is non-empty IFF Refused.
+void checkCookInvariant(const TextureCookResult& result) {
+    if (result.status == TextureCookStatus::Ok) {
+        CHECK_FALSE(result.bytes.empty());
+        CHECK(result.message.empty());
+    } else {
+        CHECK(result.bytes.empty());
+        CHECK_FALSE(result.message.empty());
+    }
+    // v1's cook emits no warning at all, and this is the honest statement of that rather than a
+    // synthetic warning written to make the field look used.
+    CHECK(result.warnings.empty());
+    CHECK(result.warningTotal == 0);
+}
+
+[[nodiscard]] TextureCookResult cook(std::span<const std::byte> rgba8, std::uint32_t width, std::uint32_t height,
+                                     CookedTextureFormat format, bool generateMips = true) {
+    TextureCookInput input;
+    input.width = width;
+    input.height = height;
+    input.rgba8 = rgba8;
+    input.format = format;
+    input.generateMips = generateMips;
+    const TextureCookResult result = cookTexture(input);
+    checkCookInvariant(result);
+    return result;
+}
+
+// A deterministic non-trivial image: a diagonal gradient with a varying alpha.
+[[nodiscard]] std::vector<std::byte> testImage(std::uint32_t width, std::uint32_t height) {
+    std::vector<std::byte> out(static_cast<std::size_t>(width) * height * 4, std::byte{0});
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const std::size_t i = (static_cast<std::size_t>(y) * width + x) * 4;
+            out[i + 0] = static_cast<std::byte>((x * 37 + y * 11) & 0xFF);
+            out[i + 1] = static_cast<std::byte>((x * 5 + y * 61) & 0xFF);
+            out[i + 2] = static_cast<std::byte>((x * 97 + y * 3) & 0xFF);
+            out[i + 3] = static_cast<std::byte>((x + y) % 2 == 0 ? 255 : 128);
+        }
+    }
+    return out;
+}
+
+constexpr std::array<CookedTextureFormat, 8> COOK_FORMATS = {
+    CookedTextureFormat::Rgba8Unorm, CookedTextureFormat::Rgba8Srgb, CookedTextureFormat::Bc1RgbUnorm,
+    CookedTextureFormat::Bc1RgbSrgb, CookedTextureFormat::Bc3Unorm,  CookedTextureFormat::Bc3Srgb,
+    CookedTextureFormat::Bc4Unorm,   CookedTextureFormat::Bc5Unorm,
+};
+
+}  // namespace
+
+TEST_CASE("a zero or over-cap width is Refused with both numbers (TX21)") {
+    const std::vector<std::byte> pixels = testImage(4, 4);
+    const TextureCookResult zero = cook(pixels, 0, 4, CookedTextureFormat::Bc1RgbUnorm);
+    CHECK(zero.status == TextureCookStatus::Refused);
+    CHECK(zero.message.find("width") != std::string::npos);
+    CHECK(zero.message.find("16384") != std::string::npos);
+}
+
+TEST_CASE("a height one past MAX_TEXTURE_DIMENSION is Refused (TX22)") {
+    const std::vector<std::byte> pixels = testImage(4, 4);
+    const TextureCookResult over =
+        cook(pixels, 4, engine::assets::MAX_TEXTURE_DIMENSION + 1, CookedTextureFormat::Bc1RgbUnorm);
+    CHECK(over.status == TextureCookStatus::Refused);
+    CHECK(over.message.find("height") != std::string::npos);
+}
+
+TEST_CASE("a pixel span one byte short of the dimensions is Refused (TX23)") {
+    const std::vector<std::byte> pixels = testImage(4, 4);
+    const TextureCookResult shortSpan =
+        cook(std::span<const std::byte>(pixels).first(pixels.size() - 1), 4, 4, CookedTextureFormat::Bc1RgbUnorm);
+    CHECK(shortSpan.status == TextureCookStatus::Refused);
+    CHECK(shortSpan.message.find("63") != std::string::npos);  // the span's own size
+    CHECK(shortSpan.message.find("64") != std::string::npos);  // and what 4x4 RGBA8 must be
+}
+
+TEST_CASE("a pixel span one byte long is Refused too (TX24)") {
+    // The over-long direction matters as much as the short one: a span that is merely BIG ENOUGH
+    // would let a caller cook a 4x4 out of the first 64 bytes of something else entirely.
+    std::vector<std::byte> pixels = testImage(4, 4);
+    pixels.push_back(std::byte{0});
+    const TextureCookResult longSpan = cook(pixels, 4, 4, CookedTextureFormat::Bc1RgbUnorm);
+    CHECK(longSpan.status == TextureCookStatus::Refused);
+    CHECK(longSpan.message.find("65") != std::string::npos);
+}
+
+TEST_CASE("bytes are non-empty IFF Ok, across every format (TX25)") {
+    // checkCookInvariant asserts the biconditional on every call, so this case is where it is driven
+    // over BOTH sides deliberately rather than incidentally.
+    const std::vector<std::byte> pixels = testImage(5, 3);
+    std::size_t accepted = 0;
+    for (const CookedTextureFormat format : COOK_FORMATS) {
+        INFO("format ", toString(format));
+        const TextureCookResult result = cook(pixels, 5, 3, format);
+        CHECK(result.status == TextureCookStatus::Ok);
+        ++accepted;
+    }
+    REQUIRE(accepted == COOK_FORMATS.size());
+    const TextureCookResult refused = cook(pixels, 0, 3, CookedTextureFormat::Bc1RgbUnorm);
+    CHECK(refused.status == TextureCookStatus::Refused);
+}
+
+TEST_CASE("Rgba8Unorm level 0 is BIT-EXACT with its input (TX26)") {
+    const std::vector<std::byte> pixels = testImage(5, 3);
+    const TextureCookResult result = cook(pixels, 5, 3, CookedTextureFormat::Rgba8Unorm);
+    REQUIRE(result.status == TextureCookStatus::Ok);
+    const auto parse = parseCookedTexture(result.bytes);
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    const std::span<const std::byte> level0 = parse.view.levelBytes(0);
+    REQUIRE(level0.size() == pixels.size());
+    std::size_t compared = 0;
+    for (std::size_t i = 0; i < pixels.size(); ++i) {
+        CHECK(level0[i] == pixels[i]);
+        ++compared;
+    }
+    REQUIRE(compared == pixels.size());
+}
+
+TEST_CASE("Rgba8Srgb level 0 is bit-exact too -- the colour space never touches the bytes (TX27)") {
+    // The colour space changes the vkFormat and the descriptor's transferFunction, and NOTHING else
+    // about level 0. It does change the MIP levels, which is TX17's business.
+    const std::vector<std::byte> pixels = testImage(5, 3);
+    const TextureCookResult unorm = cook(pixels, 5, 3, CookedTextureFormat::Rgba8Unorm);
+    const TextureCookResult srgb = cook(pixels, 5, 3, CookedTextureFormat::Rgba8Srgb);
+    REQUIRE(unorm.status == TextureCookStatus::Ok);
+    REQUIRE(srgb.status == TextureCookStatus::Ok);
+    const auto parse = parseCookedTexture(srgb.bytes);
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    const std::span<const std::byte> level0 = parse.view.levelBytes(0);
+    REQUIRE(level0.size() == pixels.size());
+    std::size_t compared = 0;
+    for (std::size_t i = 0; i < pixels.size(); ++i) {
+        CHECK(level0[i] == pixels[i]);
+        ++compared;
+    }
+    REQUIRE(compared == pixels.size());
+    // Same total size, different bytes: the two files differ in vkFormat and in the descriptor.
+    CHECK(unorm.bytes.size() == srgb.bytes.size());
+    bool anyDiffers = false;
+    for (std::size_t i = 0; i < unorm.bytes.size(); ++i) {
+        anyDiffers = anyDiffers || unorm.bytes[i] != srgb.bytes[i];
+    }
+    CHECK(anyDiffers);
+}
+
+TEST_CASE("every level's byteLength is blocksX * blocksY * blockBytes, for all four BCn (TX28)") {
+    // Driven at 5x3 (partial blocks in both axes, and a level chain that hits 1x1) and at 16x16 (whole
+    // blocks throughout). A version that dropped the blocksY term would agree with every level that is
+    // one block tall -- which is all of the 5x3 chain except level 0 -- so 16x16 is here to see it.
+    constexpr std::array<CookedTextureFormat, 4> BLOCK_FORMATS = {
+        CookedTextureFormat::Bc1RgbUnorm, CookedTextureFormat::Bc3Unorm, CookedTextureFormat::Bc4Unorm,
+        CookedTextureFormat::Bc5Unorm};
+    struct Shape {
+        std::uint32_t width;
+        std::uint32_t height;
+    };
+    constexpr std::array<Shape, 2> SHAPES = {Shape{5, 3}, Shape{16, 16}};
+    std::size_t levelsChecked = 0;
+    for (const Shape& shape : SHAPES) {
+        const std::vector<std::byte> pixels = testImage(shape.width, shape.height);
+        for (const CookedTextureFormat format : BLOCK_FORMATS) {
+            INFO("format ", toString(format), " at ", shape.width, "x", shape.height);
+            const TextureCookResult result = cook(pixels, shape.width, shape.height, format);
+            REQUIRE(result.status == TextureCookStatus::Ok);
+            const auto parse = parseCookedTexture(result.bytes);
+            REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+            for (std::uint32_t level = 0; level < parse.view.levelCount(); ++level) {
+                const std::uint32_t levelWidth = parse.view.levelWidth(level);
+                const std::uint32_t levelHeight = parse.view.levelHeight(level);
+                const std::uint64_t blocksX = (levelWidth + 3) / 4;
+                const std::uint64_t blocksY = (levelHeight + 3) / 4;
+                const std::uint64_t expected = blocksX * blocksY * cookedTextureBlockBytes(format);
+                INFO("level ", level, " is ", levelWidth, "x", levelHeight);
+                CHECK(parse.view.levelBytes(level).size() == expected);
+                ++levelsChecked;
+            }
+        }
+    }
+    // 5x3 has 3 levels and 16x16 has 5, over four formats each.
+    REQUIRE(levelsChecked == (3 + 5) * 4);
+}
+
+TEST_CASE("a BC1 level is exactly one 8-byte block per 4x4 footprint (TX29)") {
+    const std::vector<std::byte> pixels = testImage(8, 8);
+    const TextureCookResult result = cook(pixels, 8, 8, CookedTextureFormat::Bc1RgbSrgb);
+    const auto parse = parseCookedTexture(result.bytes);
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    CHECK(parse.view.levelBytes(0).size() == 2 * 2 * 8);
+    CHECK(parse.view.levelBytes(1).size() == 1 * 1 * 8);  // 4x4
+    CHECK(parse.view.levelBytes(2).size() == 8);          // 2x2, still one block
+    CHECK(parse.view.levelBytes(3).size() == 8);          // 1x1, still one block
+    CHECK(parse.view.levelCount() == 4);
+}
+
+TEST_CASE("a BC5 level is 16 bytes per block and a BC4 level is 8 (TX30)") {
+    const std::vector<std::byte> pixels = testImage(8, 8);
+    const auto bc4 = parseCookedTexture(cook(pixels, 8, 8, CookedTextureFormat::Bc4Unorm).bytes);
+    const auto bc5 = parseCookedTexture(cook(pixels, 8, 8, CookedTextureFormat::Bc5Unorm).bytes);
+    REQUIRE(bc4.status == engine::assets::CookedTextureStatus::Ok);
+    REQUIRE(bc5.status == engine::assets::CookedTextureStatus::Ok);
+    CHECK(bc4.view.levelBytes(0).size() == 4 * 8);
+    CHECK(bc5.view.levelBytes(0).size() == 4 * 16);
+    CHECK(bc5.view.levelBytes(0).size() == 2 * bc4.view.levelBytes(0).size());
+}
+
+TEST_CASE("an uncompressed level is width * height * 4 at every level (TX31)") {
+    const std::vector<std::byte> pixels = testImage(5, 3);
+    const auto parse = parseCookedTexture(cook(pixels, 5, 3, CookedTextureFormat::Rgba8Unorm).bytes);
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    REQUIRE(parse.view.levelCount() == 3);
+    CHECK(parse.view.levelBytes(0).size() == 5 * 3 * 4);
+    CHECK(parse.view.levelBytes(1).size() == 2 * 1 * 4);
+    CHECK(parse.view.levelBytes(2).size() == 1 * 1 * 4);
+}
+
+TEST_CASE("BC3 is ALPHA-then-colour, computed here by calling the encoders directly (TX32)") {
+    // An output-byte decision, and one that produces a plausible image rather than an obviously broken
+    // one when it is wrong -- which is exactly why it gets its own case.
+    const std::vector<std::byte> pixels = testImage(4, 4);
+    const TextureCookResult result = cook(pixels, 4, 4, CookedTextureFormat::Bc3Unorm, false);
+    REQUIRE(result.status == TextureCookStatus::Ok);
+    const auto parse = parseCookedTexture(result.bytes);
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    const std::span<const std::byte> level0 = parse.view.levelBytes(0);
+    REQUIRE(level0.size() == 16);
+
+    std::array<std::uint8_t, 64> texels{};
+    std::array<std::uint8_t, 16> alpha{};
+    for (std::size_t i = 0; i < 16; ++i) {
+        for (std::size_t channel = 0; channel < 4; ++channel) {
+            texels[4 * i + channel] = static_cast<std::uint8_t>(pixels[4 * i + channel]);
+        }
+        alpha[i] = texels[4 * i + 3];
+    }
+    std::array<std::byte, 8> expectedAlpha{};
+    std::array<std::byte, 8> expectedColour{};
+    encodeBc4Block(alpha, expectedAlpha);
+    encodeBc1Block(texels, expectedColour);
+
+    std::size_t compared = 0;
+    for (std::size_t i = 0; i < 8; ++i) {
+        INFO("byte ", i);
+        CHECK(level0[i] == expectedAlpha[i]);       // bytes 0..7 are the ALPHA block
+        CHECK(level0[i + 8] == expectedColour[i]);  // bytes 8..15 are the COLOUR block
+        ++compared;
+    }
+    REQUIRE(compared == 8);
+    // ANTI-VACUITY: the two halves must actually DIFFER, or "alpha first" and "colour first" would be
+    // indistinguishable on this input.
+    bool halvesDiffer = false;
+    for (std::size_t i = 0; i < 8; ++i) {
+        halvesDiffer = halvesDiffer || expectedAlpha[i] != expectedColour[i];
+    }
+    CHECK(halvesDiffer);
+}
+
+TEST_CASE("BC5 is RED-then-green, by the same construction (TX33)") {
+    const std::vector<std::byte> pixels = testImage(4, 4);
+    const TextureCookResult result = cook(pixels, 4, 4, CookedTextureFormat::Bc5Unorm, false);
+    REQUIRE(result.status == TextureCookStatus::Ok);
+    const auto parse = parseCookedTexture(result.bytes);
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    const std::span<const std::byte> level0 = parse.view.levelBytes(0);
+    REQUIRE(level0.size() == 16);
+
+    std::array<std::uint8_t, 16> red{};
+    std::array<std::uint8_t, 16> green{};
+    for (std::size_t i = 0; i < 16; ++i) {
+        red[i] = static_cast<std::uint8_t>(pixels[4 * i + 0]);
+        green[i] = static_cast<std::uint8_t>(pixels[4 * i + 1]);
+    }
+    std::array<std::byte, 8> expectedRed{};
+    std::array<std::byte, 8> expectedGreen{};
+    encodeBc4Block(red, expectedRed);
+    encodeBc4Block(green, expectedGreen);
+
+    std::size_t compared = 0;
+    for (std::size_t i = 0; i < 8; ++i) {
+        INFO("byte ", i);
+        CHECK(level0[i] == expectedRed[i]);
+        CHECK(level0[i + 8] == expectedGreen[i]);
+        ++compared;
+    }
+    REQUIRE(compared == 8);
+    bool halvesDiffer = false;
+    for (std::size_t i = 0; i < 8; ++i) {
+        halvesDiffer = halvesDiffer || expectedRed[i] != expectedGreen[i];
+    }
+    CHECK(halvesDiffer);
+}
+
+TEST_CASE("a partial edge block CLAMPS the sample coordinate, never zero-fills (TX34)") {
+    // A 5x3 image whose column 4 differs sharply from column 3. The block at bx = 1 covers columns
+    // 4..7 and rows 0..3, of which columns 5..7 and row 3 do not exist -- so every one of them is a
+    // clamped copy of the nearest real texel. Zero-fill would drag the block's endpoints toward black
+    // and darken the image's right and bottom edges, and this case is what says so: the zero-filled
+    // gather is encoded too and asserted DIFFERENT.
+    std::vector<std::byte> pixels(std::size_t{5} * 3 * 4, std::byte{0});
+    for (std::uint32_t y = 0; y < 3; ++y) {
+        for (std::uint32_t x = 0; x < 5; ++x) {
+            const std::size_t i = (static_cast<std::size_t>(y) * 5 + x) * 4;
+            const auto value = static_cast<std::byte>(x == 4 ? 250 : 20 + 10 * x);
+            pixels[i + 0] = value;
+            pixels[i + 1] = value;
+            pixels[i + 2] = value;
+            pixels[i + 3] = std::byte{255};
+        }
+    }
+    const TextureCookResult result = cook(pixels, 5, 3, CookedTextureFormat::Bc1RgbUnorm, false);
+    REQUIRE(result.status == TextureCookStatus::Ok);
+    const auto parse = parseCookedTexture(result.bytes);
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    const std::span<const std::byte> level0 = parse.view.levelBytes(0);
+    REQUIRE(level0.size() == 2 * 8);  // ceil(5/4) x ceil(3/4) == 2 x 1 blocks
+
+    std::array<std::uint8_t, 64> clamped{};
+    std::array<std::uint8_t, 64> zeroFilled{};
+    for (std::uint32_t ty = 0; ty < 4; ++ty) {
+        for (std::uint32_t tx = 0; tx < 4; ++tx) {
+            const std::uint32_t x = 4 + tx;
+            const std::uint32_t y = ty;
+            const std::size_t to = (static_cast<std::size_t>(4 * ty + tx)) * 4;
+            const std::uint32_t clampedX = x < 5 ? x : 4;
+            const std::uint32_t clampedY = y < 3 ? y : 2;
+            const std::size_t from = (static_cast<std::size_t>(clampedY) * 5 + clampedX) * 4;
+            for (std::size_t channel = 0; channel < 4; ++channel) {
+                clamped[to + channel] = static_cast<std::uint8_t>(pixels[from + channel]);
+                zeroFilled[to + channel] = (x < 5 && y < 3) ? clamped[to + channel] : 0;
+            }
+        }
+    }
+    std::array<std::byte, 8> expected{};
+    std::array<std::byte, 8> zeroed{};
+    encodeBc1Block(clamped, expected);
+    encodeBc1Block(zeroFilled, zeroed);
+
+    std::size_t compared = 0;
+    for (std::size_t i = 0; i < 8; ++i) {
+        INFO("byte ", i);
+        CHECK(level0[8 + i] == expected[i]);  // the block at bx = 1
+        ++compared;
+    }
+    REQUIRE(compared == 8);
+    bool differsFromZeroFill = false;
+    for (std::size_t i = 0; i < 8; ++i) {
+        differsFromZeroFill = differsFromZeroFill || expected[i] != zeroed[i];
+    }
+    CHECK(differsFromZeroFill);
+}
+
+TEST_CASE("generateMips false gives levelCount 1 and an identical level 0 (TX35)") {
+    const std::vector<std::byte> pixels = testImage(8, 8);
+    const TextureCookResult mipped = cook(pixels, 8, 8, CookedTextureFormat::Bc1RgbSrgb, true);
+    const TextureCookResult flat = cook(pixels, 8, 8, CookedTextureFormat::Bc1RgbSrgb, false);
+    REQUIRE(mipped.status == TextureCookStatus::Ok);
+    REQUIRE(flat.status == TextureCookStatus::Ok);
+    const auto mippedParse = parseCookedTexture(mipped.bytes);
+    const auto flatParse = parseCookedTexture(flat.bytes);
+    REQUIRE(mippedParse.status == engine::assets::CookedTextureStatus::Ok);
+    REQUIRE(flatParse.status == engine::assets::CookedTextureStatus::Ok);
+    CHECK(mippedParse.view.levelCount() == 4);
+    CHECK(flatParse.view.levelCount() == 1);
+    CHECK(flat.bytes.size() < mipped.bytes.size());
+
+    const std::span<const std::byte> a = mippedParse.view.levelBytes(0);
+    const std::span<const std::byte> b = flatParse.view.levelBytes(0);
+    REQUIRE(a.size() == b.size());
+    std::size_t compared = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        CHECK(a[i] == b[i]);
+        ++compared;
+    }
+    REQUIRE(compared == a.size());
+}
+
+TEST_CASE("a 1x1 image cooks identically with and without mips (TX36)") {
+    // levelCount is 1 either way, so the two spellings must produce the SAME BYTES rather than merely
+    // the same picture -- there is no second level for the flag to change.
+    const std::vector<std::byte> pixels = testImage(1, 1);
+    std::size_t checked = 0;
+    for (const CookedTextureFormat format : COOK_FORMATS) {
+        INFO("format ", toString(format));
+        const TextureCookResult mipped = cook(pixels, 1, 1, format, true);
+        const TextureCookResult flat = cook(pixels, 1, 1, format, false);
+        REQUIRE(mipped.status == TextureCookStatus::Ok);
+        REQUIRE(flat.status == TextureCookStatus::Ok);
+        REQUIRE(mipped.bytes.size() == flat.bytes.size());
+        for (std::size_t i = 0; i < mipped.bytes.size(); ++i) {
+            CHECK(mipped.bytes[i] == flat.bytes[i]);
+        }
+        ++checked;
+    }
+    REQUIRE(checked == COOK_FORMATS.size());
+}
+
+TEST_CASE("a dimension over the cap is refused before anything is allocated (TX37)") {
+    const std::vector<std::byte> pixels = testImage(4, 4);
+    const TextureCookResult result =
+        cook(pixels, engine::assets::MAX_TEXTURE_DIMENSION + 1, 4, CookedTextureFormat::Bc1RgbUnorm);
+    CHECK(result.status == TextureCookStatus::Refused);
+    CHECK(result.stats.byteSize == 0);
+}
+
+TEST_CASE("a size mismatch is refused before the level count is computed (TX38)") {
+    const std::vector<std::byte> pixels = testImage(4, 4);
+    const TextureCookResult result =
+        cook(std::span<const std::byte>(pixels).first(4), 4, 4, CookedTextureFormat::Bc1RgbUnorm);
+    CHECK(result.status == TextureCookStatus::Refused);
+    CHECK(result.stats.levelCount == 0);
+}
+
+TEST_CASE("an artifact over MAX_COOKED_TEXTURE_BYTES is refused, naming both numbers (TX39)") {
+    // 12000 x 12000 Rgba8Unorm is 576 000 000 bytes at level 0 alone, against a 536 870 912-byte cap.
+    //
+    // The pixel span's SIZE is what the cook validates and its CONTENTS are never read before this
+    // refusal -- dimensions, then span size, then level count, then the byte cap, and only after all
+    // four is a single texel touched. So the span is formed over a real but much smaller allocation
+    // with a faked size, exactly as CT15 does, rather than by allocating 576 MB on every lane on every
+    // run. Nothing is dereferenced in either direction.
+    const std::vector<std::byte> backing(4096, std::byte{0});
+    constexpr std::uint64_t DIMENSION = 12000;
+    constexpr auto FAKED = static_cast<std::size_t>(DIMENSION * DIMENSION * 4);
+    const std::span<const std::byte> oversized(backing.data(), FAKED);
+
+    TextureCookInput input;
+    input.width = static_cast<std::uint32_t>(DIMENSION);
+    input.height = static_cast<std::uint32_t>(DIMENSION);
+    input.rgba8 = oversized;
+    input.format = CookedTextureFormat::Rgba8Unorm;
+    const TextureCookResult result = cookTexture(input);
+    checkCookInvariant(result);
+    CHECK(result.status == TextureCookStatus::Refused);
+    CHECK(result.message.find("536870912") != std::string::npos);  // the cap
+
+    // The total the message must name, computed HERE from the level rule rather than copied from the
+    // cook. Note that it is 767 998 156 and NOT 768 000 000: the chain's tail is
+    // 12000, 6000, 3000, 1500, 750, 375, 187, 93, 46, 23, 11, 5, 2, 1, and the odd extents floor,
+    // so the geometric 4/3 estimate is a few thousand bytes high.
+    std::uint64_t expectedTotal = 0;
+    for (std::uint32_t level = 0; level < mipLevelCount(12000, 12000); ++level) {
+        const std::uint64_t extent = std::max<std::uint64_t>(1, DIMENSION >> level);
+        expectedTotal += extent * extent * 4;
+    }
+    CHECK(expectedTotal == 767998156);
+    CHECK(expectedTotal > engine::assets::MAX_COOKED_TEXTURE_BYTES);
+    // The ARTIFACT is that plus its prefix: an 80-byte header, a 14-level index at 24 bytes each, the
+    // 92-byte descriptor for an unpacked format and the fixed 120-byte key/value region, which is 628
+    // and is already 4-aligned, so this format's single padding site is empty.
+    CHECK(mipLevelCount(12000, 12000) == 14);
+    const std::uint64_t prefix = engine::assets::KTX2_HEADER_BYTES + 14 * engine::assets::KTX2_LEVEL_RECORD_BYTES +
+                                 engine::assets::KTX2_DFD_BYTES_4_SAMPLE + engine::assets::KTX2_KVD_BYTES;
+    CHECK(prefix == 628);
+    CHECK(prefix % cookedTextureLevelAlignment(CookedTextureFormat::Rgba8Unorm) == 0);
+    CHECK(result.message.find(std::to_string(prefix + expectedTotal)) != std::string::npos);
+}
+
+TEST_CASE("the cap is on BYTES, not on dimension (TX40)") {
+    // At one fixed size the two format families produce wildly different artifacts, which is what
+    // makes "the cap is on bytes" mean something: Rgba8 is 4 bytes per texel and BC1 is half a byte,
+    // so the same dimensions give an eightfold difference.
+    const std::vector<std::byte> pixels = testImage(16, 16);
+    const TextureCookResult rgba = cook(pixels, 16, 16, CookedTextureFormat::Rgba8Unorm);
+    const TextureCookResult bc1 = cook(pixels, 16, 16, CookedTextureFormat::Bc1RgbUnorm);
+    REQUIRE(rgba.status == TextureCookStatus::Ok);
+    REQUIRE(bc1.status == TextureCookStatus::Ok);
+    // Level data only -- the 80-byte header, the index, the descriptor and the 120-byte key/value
+    // region are the same order of magnitude as a small image's payload and would drown the ratio.
+    const auto rgbaParse = parseCookedTexture(rgba.bytes);
+    const auto bc1Parse = parseCookedTexture(bc1.bytes);
+    REQUIRE(rgbaParse.status == engine::assets::CookedTextureStatus::Ok);
+    REQUIRE(bc1Parse.status == engine::assets::CookedTextureStatus::Ok);
+    // LEVEL 0 is where the ratio is exact: 16 x 16 x 4 = 1024 against 4 x 4 blocks x 8 = 128.
+    CHECK(rgbaParse.view.levelBytes(0).size() == 1024);
+    CHECK(bc1Parse.view.levelBytes(0).size() == 128);
+    CHECK(rgbaParse.view.levelBytes(0).size() == 8 * bc1Parse.view.levelBytes(0).size());
+
+    std::uint64_t rgbaLevels = 0;
+    std::uint64_t bc1Levels = 0;
+    for (std::uint32_t level = 0; level < 5; ++level) {
+        rgbaLevels += rgbaParse.view.levelBytes(level).size();
+        bc1Levels += bc1Parse.view.levelBytes(level).size();
+    }
+    CHECK(rgbaLevels == 1364);  // (256 + 64 + 16 + 4 + 1) texels x 4
+    CHECK(bc1Levels == 184);    // (16 + 4 + 1 + 1 + 1) blocks x 8
+    // Over the WHOLE chain the ratio is only 7.4x rather than 8x, because a 2x2 and a 1x1 level each
+    // still pay for a full 4x4 block. That is the format's, not the cook's, and it is recorded rather
+    // than asserted away.
+    CHECK(rgbaLevels > 7 * bc1Levels);
+    CHECK(rgbaLevels < 8 * bc1Levels);
+
+    // AND the arithmetic at the dimension TX39 refuses, computed here from the format's own block
+    // rule rather than by cooking: 12000 x 12000 is over the cap for Rgba8 and comfortably under it
+    // for BC1. THE BC1 COOK ITSELF IS DELIBERATELY NOT RUN -- it would need a 576 MB input buffer and
+    // twelve million block encodes on every lane on every run, which is not a unit test. TX39 is the
+    // behavioural half; this is the arithmetic half, and the two together are what AC-37 asks for.
+    constexpr std::uint64_t DIMENSION = 12000;
+    std::uint64_t rgbaTotal = 0;
+    std::uint64_t bc1Total = 0;
+    for (std::uint32_t level = 0; level < mipLevelCount(DIMENSION, DIMENSION); ++level) {
+        const std::uint64_t levelWidth = std::max<std::uint64_t>(1, DIMENSION >> level);
+        const std::uint64_t levelHeight = levelWidth;
+        rgbaTotal += levelWidth * levelHeight * 4;
+        bc1Total += ((levelWidth + 3) / 4) * ((levelHeight + 3) / 4) * 8;
+    }
+    CHECK(rgbaTotal > engine::assets::MAX_COOKED_TEXTURE_BYTES);
+    CHECK(bc1Total < engine::assets::MAX_COOKED_TEXTURE_BYTES);
+    MESSAGE("at 12000x12000 with a full chain: Rgba8Unorm " << rgbaTotal << " B, Bc1RgbUnorm " << bc1Total << " B, cap "
+                                                            << engine::assets::MAX_COOKED_TEXTURE_BYTES << " B");
+}
+
+TEST_CASE("the same input cooked twice is byte-identical, for all eight formats (TX41)") {
+    const std::vector<std::byte> pixels = testImage(9, 7);
+    std::size_t checked = 0;
+    for (const CookedTextureFormat format : COOK_FORMATS) {
+        INFO("format ", toString(format));
+        const TextureCookResult first = cook(pixels, 9, 7, format);
+        const TextureCookResult second = cook(pixels, 9, 7, format);
+        REQUIRE(first.status == TextureCookStatus::Ok);
+        REQUIRE(first.bytes.size() == second.bytes.size());
+        for (std::size_t i = 0; i < first.bytes.size(); ++i) {
+            CHECK(first.bytes[i] == second.bytes[i]);
+        }
+        ++checked;
+    }
+    REQUIRE(checked == COOK_FORMATS.size());
+}
+
+TEST_CASE("the output does not depend on the source buffer's address (TX42)") {
+    // Cheap, and it catches an accidental dependence on the source pointer -- an alignment-dependent
+    // fast path, a hash of an address, an uninitialised read that happens to be stable in one buffer.
+    const std::vector<std::byte> pixels = testImage(6, 6);
+    std::vector<std::byte> shifted(pixels.size() + 1, std::byte{0});
+    for (std::size_t i = 0; i < pixels.size(); ++i) {
+        shifted[i + 1] = pixels[i];
+    }
+    const TextureCookResult a = cook(pixels, 6, 6, CookedTextureFormat::Bc3Srgb);
+    const TextureCookResult b =
+        cook(std::span<const std::byte>(shifted).subspan(1), 6, 6, CookedTextureFormat::Bc3Srgb);
+    REQUIRE(a.status == TextureCookStatus::Ok);
+    REQUIRE(a.bytes.size() == b.bytes.size());
+    std::size_t compared = 0;
+    for (std::size_t i = 0; i < a.bytes.size(); ++i) {
+        CHECK(a.bytes[i] == b.bytes[i]);
+        ++compared;
+    }
+    REQUIRE(compared == a.bytes.size());
+}
+
+TEST_CASE("the stats match independently computed values (TX43)") {
+    const std::vector<std::byte> pixels = testImage(5, 3);
+    const TextureCookResult result = cook(pixels, 5, 3, CookedTextureFormat::Bc5Unorm);
+    REQUIRE(result.status == TextureCookStatus::Ok);
+    CHECK(result.stats.levelCount == 3);
+    CHECK(result.stats.sourceByteSize == 5 * 3 * 4);
+    CHECK(result.stats.byteSize == result.bytes.size());
+    // Levels are 5x3, 2x1 and 1x1, so the block counts are 2 x 1, 1 x 1 and 1 x 1.
+    CHECK(result.stats.blockCount == 2 + 1 + 1);
+    // And the whole file is header + index + descriptor + key/value + padding + level data:
+    //   80 + 24*3 = 152; BC5's descriptor is 60, so the key/value region starts at 212 and ends at
+    //   332; BC5 aligns to 16, so align(332, 16) = 336 and the single padding site is 4 bytes; the
+    //   levels are 16, 16 and 32 bytes, smallest first, so the total is 336 + 64 = 400.
+    CHECK(result.bytes.size() == 400);
+}
+
+TEST_CASE("v1's cook emits no warning on any path (TX44)") {
+    // The honest statement of the field's current state. checkCookInvariant already asserts it on
+    // every call in this TU; this case says it deliberately, so the day a warning IS emitted this is
+    // the case that has to be changed on purpose.
+    const std::vector<std::byte> pixels = testImage(4, 4);
+    std::size_t checked = 0;
+    for (const CookedTextureFormat format : COOK_FORMATS) {
+        const TextureCookResult result = cook(pixels, 4, 4, format);
+        CHECK(result.warnings.empty());
+        CHECK(result.warningTotal == 0);
+        ++checked;
+    }
+    REQUIRE(checked == COOK_FORMATS.size());
+    const TextureCookResult refused = cook(pixels, 0, 4, CookedTextureFormat::Bc1RgbUnorm);
+    CHECK(refused.warnings.empty());
+    CHECK(refused.warningTotal == 0);
+}
+
+TEST_CASE("a constant alpha channel survives BC3 exactly (TX45)") {
+    // BC4's six-value mode reproduces a constant EXACTLY: r0 == r1 == the constant with all-zero
+    // indices, and index 0 still decodes to r0. Asserted on the emitted bytes rather than through a
+    // decoder, because the emitted form is unambiguous and hand-checkable.
+    std::size_t checked = 0;
+    for (const std::uint8_t alpha : {std::uint8_t{0}, std::uint8_t{128}, std::uint8_t{255}}) {
+        std::vector<std::byte> pixels(std::size_t{4} * 4 * 4, std::byte{0});
+        for (std::size_t i = 0; i < 16; ++i) {
+            pixels[4 * i + 0] = static_cast<std::byte>(i * 16);
+            pixels[4 * i + 1] = static_cast<std::byte>(255 - i * 16);
+            pixels[4 * i + 2] = static_cast<std::byte>(i * 7);
+            pixels[4 * i + 3] = static_cast<std::byte>(alpha);
+        }
+        const TextureCookResult result = cook(pixels, 4, 4, CookedTextureFormat::Bc3Unorm, false);
+        REQUIRE(result.status == TextureCookStatus::Ok);
+        const auto parse = parseCookedTexture(result.bytes);
+        REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+        const std::span<const std::byte> level0 = parse.view.levelBytes(0);
+        REQUIRE(level0.size() == 16);
+        INFO("alpha ", alpha);
+        CHECK(level0[0] == static_cast<std::byte>(alpha));  // r0
+        CHECK(level0[1] == static_cast<std::byte>(alpha));  // r1 -- equal, so six-value mode
+        for (std::size_t i = 2; i < 8; ++i) {
+            CHECK(level0[i] == std::byte{0});  // all-zero indices, every texel exactly r0
+        }
+        ++checked;
+    }
+    REQUIRE(checked == 3);
+}
+
+TEST_CASE("a single-colour image takes the degenerate arm at every level (TX46)") {
+    std::vector<std::byte> pixels(std::size_t{8} * 8 * 4, std::byte{0});
+    for (std::size_t i = 0; i < 64; ++i) {
+        pixels[4 * i + 0] = std::byte{200};
+        pixels[4 * i + 1] = std::byte{100};
+        pixels[4 * i + 2] = std::byte{50};
+        pixels[4 * i + 3] = std::byte{255};
+    }
+    const TextureCookResult result = cook(pixels, 8, 8, CookedTextureFormat::Bc1RgbUnorm);
+    REQUIRE(result.status == TextureCookStatus::Ok);
+    const auto parse = parseCookedTexture(result.bytes);
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    std::size_t blocksChecked = 0;
+    for (std::uint32_t level = 0; level < parse.view.levelCount(); ++level) {
+        const std::span<const std::byte> data = parse.view.levelBytes(level);
+        for (std::size_t block = 0; block < data.size(); block += 8) {
+            INFO("level ", level, " block at ", block);
+            CHECK(data[block + 0] == data[block + 2]);  // c0 == c1
+            CHECK(data[block + 1] == data[block + 3]);
+            for (std::size_t i = 4; i < 8; ++i) {
+                CHECK(data[block + i] == std::byte{0});  // all-zero indices
+            }
+            ++blocksChecked;
+        }
+    }
+    // 4 + 1 + 1 + 1 blocks across the four levels of an 8x8 chain.
+    REQUIRE(blocksChecked == 7);
+    // And every level is the SAME block, because a filtered constant is that constant.
+    CHECK(parse.view.levelBytes(0)[0] == parse.view.levelBytes(3)[0]);
+    CHECK(parse.view.levelBytes(0)[1] == parse.view.levelBytes(3)[1]);
+}
+
+TEST_CASE("a 1x1 BC1 cook is one block of fifteen clamped copies (TX47)") {
+    std::vector<std::byte> pixels(4, std::byte{0});
+    pixels[0] = std::byte{200};
+    pixels[1] = std::byte{100};
+    pixels[2] = std::byte{50};
+    pixels[3] = std::byte{255};
+    const TextureCookResult result = cook(pixels, 1, 1, CookedTextureFormat::Bc1RgbUnorm);
+    REQUIRE(result.status == TextureCookStatus::Ok);
+    const auto parse = parseCookedTexture(result.bytes);
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    CHECK(parse.view.levelCount() == 1);
+    const std::span<const std::byte> level0 = parse.view.levelBytes(0);
+    REQUIRE(level0.size() == 8);
+    // All sixteen texels are the same colour after clamping, so this is the degenerate arm and the
+    // block must equal a flat block of that colour, computed here by calling the encoder directly.
+    std::array<std::uint8_t, 64> flat{};
+    for (std::size_t i = 0; i < 16; ++i) {
+        flat[4 * i + 0] = 200;
+        flat[4 * i + 1] = 100;
+        flat[4 * i + 2] = 50;
+        flat[4 * i + 3] = 255;
+    }
+    std::array<std::byte, 8> expected{};
+    encodeBc1Block(flat, expected);
+    std::size_t compared = 0;
+    for (std::size_t i = 0; i < 8; ++i) {
+        CHECK(level0[i] == expected[i]);
+        ++compared;
+    }
+    REQUIRE(compared == 8);
+    CHECK(level0[0] == level0[2]);  // c0 == c1
+    CHECK(level0[1] == level0[3]);
+}
+
+TEST_CASE("the byte-cap check comes BEFORE the allocation, asserted in source text (TX48)") {
+    // A SOURCE-TEXT case, and it has to be. A 512 MB allocation of virtual address space simply
+    // succeeds on a 64-bit host -- task 3.3.1 measured exactly that at 274 GB with the reserves moved
+    // deliberately above their checks -- so NO RUNTIME CASE IN THIS TREE CAN SEE THIS ORDERING
+    // VIOLATED. Reversing the two lines is a real defect that a fully green suite would ship.
+    //
+    // Comments are stripped first, so the prose above the check (which names the constant) cannot
+    // stand in for the check itself.
+    std::ifstream file(std::string(AERO_ASSETS_SRC_DIR) + "/texture_cook.cpp", std::ios::binary);
+    REQUIRE(file.is_open());
+    const std::string source((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    REQUIRE(source.size() > 1000);
+
+    std::string stripped;
+    stripped.reserve(source.size());
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        if (source[i] == '/' && i + 1 < source.size() && source[i + 1] == '/') {
+            while (i < source.size() && source[i] != '\n') {
+                ++i;
+            }
+        }
+        if (i < source.size()) {
+            stripped.push_back(source[i]);
+        }
+    }
+    // ANTI-VACUITY: stripping must have removed something and kept something.
+    CHECK(stripped.size() < source.size());
+    CHECK(stripped.find("cookTexture") != std::string::npos);
+
+    const std::size_t check = stripped.find("> MAX_COOKED_TEXTURE_BYTES");
+    const std::size_t allocation = stripped.find("std::vector<std::byte> artifact(");
+    REQUIRE(check != std::string::npos);
+    REQUIRE(allocation != std::string::npos);
+    CHECK(check < allocation);
+    // Exactly one allocation site, so "before the allocation" is unambiguous.
+    CHECK(stripped.find("std::vector<std::byte> artifact(", allocation + 1) == std::string::npos);
 }

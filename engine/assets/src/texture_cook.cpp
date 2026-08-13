@@ -3,14 +3,21 @@
 // docs/09-file-formats.md section 10.8 for the normative filter and table definitions.
 //
 // NEVER THROWS. NEVER READS A FILE. NEVER LOGS. NO FLOATING POINT.
+#include <aero/assets/bc_block.hpp>
 #include <aero/assets/texture_cook.hpp>
+#include <aero/core/guid.hpp>
 #include <aero/core/profiler.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace engine::assets::detail {
 namespace {
@@ -243,3 +250,310 @@ void downsampleRgba8(std::span<const std::byte> src, std::uint32_t srcWidth, std
 }
 
 }  // namespace engine::assets::detail
+
+namespace engine::assets {
+namespace {
+
+// The header's field offsets, named ONCE for the writer, exactly as cooked_texture.cpp names them for
+// the parser. Nothing else in this TU spells a header offset as a literal.
+constexpr std::size_t H_VK_FORMAT = 12;
+constexpr std::size_t H_TYPE_SIZE = 16;
+constexpr std::size_t H_PIXEL_WIDTH = 20;
+constexpr std::size_t H_PIXEL_HEIGHT = 24;
+constexpr std::size_t H_LEVEL_COUNT = 40;
+constexpr std::size_t H_DFD_OFFSET = 48;
+constexpr std::size_t H_DFD_LENGTH = 52;
+constexpr std::size_t H_KVD_OFFSET = 56;
+constexpr std::size_t H_KVD_LENGTH = 60;
+static_assert(H_KVD_LENGTH + 4 + 8 + 8 == KTX2_HEADER_BYTES);  // ... then the two u64 sgd fields
+
+constexpr std::size_t L_BYTE_OFFSET = 0;
+constexpr std::size_t L_BYTE_LENGTH = 8;
+constexpr std::size_t L_UNCOMPRESSED_LENGTH = 16;
+static_assert(L_UNCOMPRESSED_LENGTH + 8 == KTX2_LEVEL_RECORD_BYTES);
+
+constexpr std::string_view KVD_KEY_SOURCE_GUID = "AeroSourceGuid";
+constexpr std::string_view KVD_KEY_ORIENTATION = "KTXorientation";
+constexpr std::string_view KVD_VALUE_ORIENTATION = "rd";  // right-and-down: a TOP-LEFT origin
+constexpr std::string_view KVD_KEY_WRITER = "KTXwriter";
+
+[[nodiscard]] constexpr std::uint32_t levelExtent(std::uint32_t base, std::uint32_t level) noexcept {
+    return std::max(1U, base >> level);
+}
+
+// The same arithmetic cooked_texture.cpp's parser computes independently. The duplication is
+// deliberate and it is COVERED: CT45-CT52 parse the cook's own output for all eight formats, so a
+// divergence between the two is a red test rather than a file this tree's own reader refuses.
+[[nodiscard]] constexpr std::uint64_t levelByteLength(CookedTextureFormat format, std::uint32_t width,
+                                                      std::uint32_t height, std::uint32_t level) noexcept {
+    const std::uint32_t blockWidth = cookedTextureBlockWidth(format);
+    const std::uint32_t blockHeight = cookedTextureBlockHeight(format);
+    const std::uint64_t blocksX = (levelExtent(width, level) + blockWidth - 1) / blockWidth;
+    const std::uint64_t blocksY = (levelExtent(height, level) + blockHeight - 1) / blockHeight;
+    return blocksX * blocksY * cookedTextureBlockBytes(format);
+}
+
+[[nodiscard]] TextureCookResult refuse(std::string message) {
+    TextureCookResult out;
+    out.status = TextureCookStatus::Refused;
+    out.message = std::move(message);
+    return out;  // `bytes` stays EMPTY, which is the status's other half
+}
+
+struct KvdRecord {
+    std::string_view key;
+    std::string_view value;
+};
+
+// Gathers a 4x4 footprint out of `source` with the sample coordinate CLAMPED to the level's extent.
+// REPLICATION, NEVER ZERO-FILL: zero-fill drags the block's endpoints toward black and visibly darkens
+// the image's right and bottom edges. This is the caller's job precisely so the encoders always see
+// sixteen valid texels.
+[[nodiscard]] std::array<std::uint8_t, 64> gatherBlock(std::span<const std::byte> source, std::uint32_t width,
+                                                       std::uint32_t height, std::uint32_t blockX,
+                                                       std::uint32_t blockY) noexcept {
+    std::array<std::uint8_t, 64> texels{};
+    for (std::uint32_t ty = 0; ty < 4; ++ty) {
+        const std::uint32_t sy = std::min(blockY * 4 + ty, height - 1);
+        for (std::uint32_t tx = 0; tx < 4; ++tx) {
+            const std::uint32_t sx = std::min(blockX * 4 + tx, width - 1);
+            const std::size_t from = (static_cast<std::size_t>(sy) * width + sx) * 4;
+            const std::size_t to = static_cast<std::size_t>(4 * ty + tx) * 4;
+            for (std::size_t channel = 0; channel < 4; ++channel) {
+                texels[to + channel] = static_cast<std::uint8_t>(source[from + channel]);
+            }
+        }
+    }
+    return texels;
+}
+
+[[nodiscard]] std::array<std::uint8_t, 16> channelOf(const std::array<std::uint8_t, 64>& texels,
+                                                     std::size_t channel) noexcept {
+    std::array<std::uint8_t, 16> out{};
+    for (std::size_t i = 0; i < 16; ++i) {
+        out[i] = texels[4 * i + channel];
+    }
+    return out;
+}
+
+// Encodes one level of `source` into `artifact` at `at`. The block order within a level is ROW-MAJOR
+// OVER BLOCKS -- `by` outer, `bx` inner -- which is what every BCn consumer expects and what the
+// level's byteLength arithmetic assumes.
+void encodeLevel(std::span<const std::byte> source, std::uint32_t width, std::uint32_t height,
+                 CookedTextureFormat format, std::span<std::byte> artifact, std::size_t at) noexcept {
+    if (format == CookedTextureFormat::Rgba8Unorm || format == CookedTextureFormat::Rgba8Srgb) {
+        // VERBATIM. No conversion of any kind, which is what makes level 0 of an Rgba8* cook
+        // bit-identical to its input -- the colour space changes the vkFormat and the descriptor,
+        // never the bytes.
+        for (std::size_t i = 0; i < source.size(); ++i) {
+            artifact[at + i] = source[i];
+        }
+        return;
+    }
+    const std::uint32_t blocksX = (width + 3) / 4;
+    const std::uint32_t blocksY = (height + 3) / 4;
+    const std::uint32_t blockBytes = cookedTextureBlockBytes(format);
+    for (std::uint32_t by = 0; by < blocksY; ++by) {
+        for (std::uint32_t bx = 0; bx < blocksX; ++bx) {
+            const std::array<std::uint8_t, 64> texels = gatherBlock(source, width, height, bx, by);
+            const std::size_t block = at + (static_cast<std::size_t>(by) * blocksX + bx) * blockBytes;
+            switch (format) {
+                case CookedTextureFormat::Bc1RgbUnorm:
+                case CookedTextureFormat::Bc1RgbSrgb:
+                    encodeBc1Block(texels, std::span<std::byte, 8>(artifact.data() + block, 8));
+                    break;
+                case CookedTextureFormat::Bc3Unorm:
+                case CookedTextureFormat::Bc3Srgb:
+                    // ALPHA FIRST, then colour. An output-byte decision: swapping the two produces a
+                    // plausible image rather than an obviously broken one.
+                    encodeBc4Block(channelOf(texels, 3), std::span<std::byte, 8>(artifact.data() + block, 8));
+                    encodeBc1Block(texels, std::span<std::byte, 8>(artifact.data() + block + 8, 8));
+                    break;
+                case CookedTextureFormat::Bc4Unorm:
+                    encodeBc4Block(channelOf(texels, 0), std::span<std::byte, 8>(artifact.data() + block, 8));
+                    break;
+                case CookedTextureFormat::Bc5Unorm:
+                    // RED FIRST, then green. The same kind of decision as BC3's, with the same
+                    // failure mode.
+                    encodeBc4Block(channelOf(texels, 0), std::span<std::byte, 8>(artifact.data() + block, 8));
+                    encodeBc4Block(channelOf(texels, 1), std::span<std::byte, 8>(artifact.data() + block + 8, 8));
+                    break;
+                case CookedTextureFormat::Rgba8Unorm:
+                case CookedTextureFormat::Rgba8Srgb:
+                    break;  // handled above; listed so a new enumerator is a -Wswitch error
+            }
+        }
+    }
+}
+
+}  // namespace
+
+TextureCookResult cookTexture(const TextureCookInput& input) {
+    AERO_PROFILE_ZONE_NAMED("assets::cookTexture");
+
+    // 1. dimensions, before anything is computed from them.
+    if (input.width == 0 || input.width > MAX_TEXTURE_DIMENSION) {
+        return refuse(std::format("width is {}; the legal range is 1..{}", input.width, MAX_TEXTURE_DIMENSION));
+    }
+    if (input.height == 0 || input.height > MAX_TEXTURE_DIMENSION) {
+        return refuse(std::format("height is {}; the legal range is 1..{}", input.height, MAX_TEXTURE_DIMENSION));
+    }
+
+    // 2. the input span's size must match the dimensions EXACTLY. Computed in u64: at the dimension
+    //    cap this is 1 073 741 824, well inside range.
+    const std::uint64_t sourceByteSize = static_cast<std::uint64_t>(input.width) * input.height * 4;
+    if (input.rgba8.size() != sourceByteSize) {
+        return refuse(std::format("the pixel span is {} bytes but {}x{} RGBA8 is {} bytes", input.rgba8.size(),
+                                  input.width, input.height, sourceByteSize));
+    }
+
+    // 3. the level count. Complete chain or exactly one -- KTX2 permits an incomplete pyramid and this
+    //    container refuses it, because a partial chain's only effect is to make a consumer's sampler
+    //    configuration depend on the file.
+    const std::uint32_t levelCount = input.generateMips ? detail::mipLevelCount(input.width, input.height) : 1;
+    // ASSERTED, not assumed: it holds by construction of MAX_TEXTURE_DIMENSION, and this is what makes
+    // a future cap change a build-time conversation rather than a silently over-long level index.
+    if (levelCount == 0 || levelCount > MAX_TEXTURE_LEVELS) {
+        return refuse(std::format("the computed level count is {}, outside 1..{}", levelCount, MAX_TEXTURE_LEVELS));
+    }
+
+    // 4. the whole layout, computed in u64 BEFORE a single byte is allocated.
+    const CookedTextureFormat format = input.format;
+    const std::span<const std::uint8_t> descriptor = cookedTextureDescriptorBytes(format);
+    const std::uint32_t alignment = cookedTextureLevelAlignment(format);
+    const std::uint64_t levelIndexBytes = static_cast<std::uint64_t>(levelCount) * KTX2_LEVEL_RECORD_BYTES;
+    const std::uint64_t dfdOffset = KTX2_HEADER_BYTES + levelIndexBytes;
+    const std::uint64_t kvdOffset = dfdOffset + descriptor.size();
+    const std::uint64_t kvdEnd = kvdOffset + KTX2_KVD_BYTES;
+    // THE ONE PADDING SITE IN THE WHOLE FILE. Every level's byteLength is a multiple of the format's
+    // own alignment, so once the FIRST WRITTEN level (the smallest) is aligned every subsequent level
+    // start is aligned automatically. The parser checks every level anyway, because a hostile file is
+    // not obliged to share our arithmetic.
+    const std::uint64_t levelDataStart = ((kvdEnd + alignment - 1) / alignment) * alignment;
+
+    // Level DATA is written smallest-first while the level INDEX is filled level-0-first, so the
+    // offsets are computed in REVERSE and stored FORWARD. That inversion is the single most likely
+    // place for an off-by-one in this whole task, and CT56 plus the byte goldens exist to pin it.
+    std::array<std::uint64_t, MAX_TEXTURE_LEVELS> levelOffset{};
+    std::array<std::uint64_t, MAX_TEXTURE_LEVELS> levelBytes{};
+    std::uint64_t cursor = levelDataStart;
+    std::uint64_t blockCount = 0;
+    for (std::uint32_t level = levelCount; level-- > 0;) {
+        levelOffset[level] = cursor;
+        levelBytes[level] = levelByteLength(format, input.width, input.height, level);
+        blockCount += levelBytes[level] / cookedTextureBlockBytes(format);
+        cursor += levelBytes[level];
+    }
+    const std::uint64_t totalBytes = cursor;
+
+    // THE BYTE-CAP CHECK COMES BEFORE THE ALLOCATION IT BOUNDS, and that ordering is asserted in
+    // comment-stripped SOURCE TEXT by TX48 rather than by a runtime case -- a 512 MB reserve of
+    // virtual address space simply succeeds on a 64-bit host, so nothing at runtime can see this
+    // violated (task 3.3.1 measured exactly that at 274 GB).
+    if (totalBytes > MAX_COOKED_TEXTURE_BYTES) {
+        return refuse(std::format("the cooked artifact would be {} bytes, over the {}-byte cap", totalBytes,
+                                  MAX_COOKED_TEXTURE_BYTES));
+    }
+    // ONE zero-initialized buffer of the pre-computed total size, written field by field through
+    // cooked_mesh.hpp's primitives. ALL PADDING IS THEREFORE ZERO WITHOUT A SINGLE EXPLICIT PAD WRITE.
+    std::vector<std::byte> artifact(static_cast<std::size_t>(totalBytes), std::byte{0});
+    const std::span<std::byte> out(artifact);
+
+    for (std::size_t i = 0; i < KTX2_IDENTIFIER.size(); ++i) {
+        out[i] = static_cast<std::byte>(KTX2_IDENTIFIER[i]);
+    }
+    putU32(out, H_VK_FORMAT, static_cast<std::uint32_t>(format));
+    putU32(out, H_TYPE_SIZE, 1);
+    putU32(out, H_PIXEL_WIDTH, input.width);
+    putU32(out, H_PIXEL_HEIGHT, input.height);
+    // pixelDepth, layerCount, supercompressionScheme and the two sgd u64s are all ZERO, which the
+    // zero-initialized buffer already gives; faceCount is the only shape field that is not.
+    putU32(out, 36, 1);  // faceCount
+    putU32(out, H_LEVEL_COUNT, levelCount);
+    putU32(out, H_DFD_OFFSET, static_cast<std::uint32_t>(dfdOffset));
+    putU32(out, H_DFD_LENGTH, static_cast<std::uint32_t>(descriptor.size()));
+    putU32(out, H_KVD_OFFSET, static_cast<std::uint32_t>(kvdOffset));
+    putU32(out, H_KVD_LENGTH, KTX2_KVD_BYTES);
+
+    for (std::uint32_t level = 0; level < levelCount; ++level) {
+        const std::size_t record = KTX2_HEADER_BYTES + static_cast<std::size_t>(level) * KTX2_LEVEL_RECORD_BYTES;
+        putU64(out, record + L_BYTE_OFFSET, levelOffset[level]);
+        putU64(out, record + L_BYTE_LENGTH, levelBytes[level]);
+        // uncompressedByteLength == byteLength, since supercompressionScheme is 0.
+        putU64(out, record + L_UNCOMPRESSED_LENGTH, levelBytes[level]);
+    }
+
+    for (std::size_t i = 0; i < descriptor.size(); ++i) {
+        out[static_cast<std::size_t>(dfdOffset) + i] = static_cast<std::byte>(descriptor[i]);
+    }
+
+    // The three key/value records, CONSTRUCTED IN A DELIBERATELY WRONG ORDER AND THEN SORTED, so the
+    // sort is load-bearing: with the records already in sorted order a seed that removed the sort
+    // entirely would change nothing, and the spec's "sorted by Unicode code point" would have no case
+    // that could see it violated. Every key here is ASCII, so a byte-wise compare IS a code-point
+    // compare and `char`'s signedness cannot matter.
+    //
+    // AeroSourceGuid is written UNCONDITIONALLY, including for the nil GUID (32 '0' characters), so
+    // the layout never depends on whether a GUID was supplied. Keys beginning KTX/ktx are reserved by
+    // the spec; AeroSourceGuid is not.
+    const std::string guidText = formatGuid(input.sourceGuid);
+    std::array<KvdRecord, 3> records = {
+        KvdRecord{KVD_KEY_WRITER, COOKED_TEXTURE_WRITER_ID},
+        KvdRecord{KVD_KEY_SOURCE_GUID, guidText},
+        KvdRecord{KVD_KEY_ORIENTATION, KVD_VALUE_ORIENTATION},
+    };
+    std::sort(records.begin(), records.end(), [](const KvdRecord& a, const KvdRecord& b) { return a.key < b.key; });
+
+    auto kvdCursor = static_cast<std::size_t>(kvdOffset);
+    for (const KvdRecord& record : records) {
+        const std::size_t keyAndValueByteLength = record.key.size() + 1 + record.value.size() + 1;
+        putU32(out, kvdCursor, static_cast<std::uint32_t>(keyAndValueByteLength));
+        std::size_t at = kvdCursor + 4;
+        for (const char c : record.key) {
+            out[at++] = static_cast<std::byte>(c);
+        }
+        ++at;  // the key's NUL is already zero
+        for (const char c : record.value) {
+            out[at++] = static_cast<std::byte>(c);
+        }
+        // The value's NUL and the record's valuePadding are already zero -- see the buffer above.
+        kvdCursor += 4 + detail::align4(keyAndValueByteLength);
+    }
+
+    // The mip chain, with at most TWO levels resident at once. Level 0 is the caller's own span and is
+    // never copied; levels 1 and up alternate between two buffers, so the peak on top of the caller's
+    // image is level 1's RGBA8 plus level 2's -- for a 4096^2 BC3 cook, about 16.7 MB + 4.2 MB
+    // alongside the 22 MB output vector. A vector of ALL levels would instead hold 4/3 x the base in
+    // RGBA8 and turn a 179 MB BC1 cook into a 1.4 GB resident peak.
+    const bool srgb = isSrgbCookedFormat(format);
+    std::span<const std::byte> currentLevel = input.rgba8;
+    std::uint32_t currentWidth = input.width;
+    std::uint32_t currentHeight = input.height;
+    std::array<std::vector<std::byte>, 2> scratch;
+    for (std::uint32_t level = 0; level < levelCount; ++level) {
+        if (level > 0) {
+            const std::uint32_t nextWidth = levelExtent(input.width, level);
+            const std::uint32_t nextHeight = levelExtent(input.height, level);
+            std::vector<std::byte>& target = scratch[level % 2];
+            target.assign(static_cast<std::size_t>(nextWidth) * nextHeight * 4, std::byte{0});
+            // Level p is filtered FROM LEVEL p-1, never resampled from level 0: resampling from the
+            // base would make each level a different filter's output and would cost O(levels x base).
+            detail::downsampleRgba8(currentLevel, currentWidth, currentHeight, target, srgb);
+            currentLevel = target;
+            currentWidth = nextWidth;
+            currentHeight = nextHeight;
+        }
+        encodeLevel(currentLevel, currentWidth, currentHeight, format, out,
+                    static_cast<std::size_t>(levelOffset[level]));
+    }
+
+    TextureCookResult result;
+    result.bytes = std::move(artifact);
+    result.stats.levelCount = levelCount;
+    result.stats.blockCount = static_cast<std::uint32_t>(blockCount);
+    result.stats.byteSize = totalBytes;
+    result.stats.sourceByteSize = sourceByteSize;
+    return result;
+}
+
+}  // namespace engine::assets
