@@ -501,30 +501,130 @@ TEST_CASE("every DFD table's length matches its sample count and its own dfdTota
     REQUIRE(checked == 8);
 }
 
-TEST_CASE("every DFD's descriptorBlockSize, versionNumber and bytesPlane0 agree with the format (CT11)") {
+TEST_CASE("every DFD byte matches a LITERAL per-format table: basic block AND sample words (CT11)") {
+    // THE CASE THAT PINS EVERY BYTE OF EVERY TABLE, and it has to, because our own parser compares a
+    // file's descriptor against the same array our writer emits -- so a wrong table is invisible to
+    // the whole round trip (docs/09 section 10.12's circularity).
+    //
+    // It used to assert only versionNumber, descriptorBlockSize, bytesPlane0, the block extents and
+    // the three colour bytes, which left 27 of BC4's 44 bytes asserted NOWHERE: the four goldens pin
+    // BC1-sRGB, RGBA8-Unorm, BC5 and BC3-sRGB, CT12's exact-diff assertions transitively pin their
+    // three siblings, and BC4_UNORM is pinned by neither -- it is the one format with no golden and
+    // no golden-pinned pair. Measured, not argued: changing byte 12 from 0x83 to 0x84, so every cooked
+    // BC4 artifact declares BC5's COLOUR MODEL, left the whole suite green at 131/131.
+    //
+    // EVERY EXPECTED VALUE HERE IS A LITERAL, read off docs/09 section 10.5's printed tables and never
+    // computed from the array under test -- CT10's derivation of the sample count from
+    // descriptorBlockSize is the one place that is deliberately the other way round.
+    struct SampleFacts {
+        std::uint32_t bitOffset;
+        std::uint32_t bitLength;  // the real length; the file stores it MINUS ONE
+        std::uint8_t channelId;   // with KHR_DF_SAMPLE_DATATYPE_LINEAR (0x10) already folded in
+        std::uint32_t lower;
+        std::uint32_t upper;
+    };
+    struct DfdFacts {
+        CookedTextureFormat format;
+        std::uint8_t colorModel;  // byte 12: 1 RGBSDA, 128 BC1A, 130 BC3, 131 BC4, 132 BC5
+        std::size_t sampleCount;
+        std::array<SampleFacts, 4> samples;  // only the first sampleCount entries are read
+    };
+    constexpr SampleFacts NONE{0, 0, 0, 0, 0};
+    constexpr std::array<DfdFacts, 8> ROWS = {
+        DfdFacts{CookedTextureFormat::Rgba8Unorm,
+                 1,
+                 4,
+                 {SampleFacts{0, 8, 0, 0, 255}, SampleFacts{8, 8, 1, 0, 255}, SampleFacts{16, 8, 2, 0, 255},
+                  SampleFacts{24, 8, 15, 0, 255}}},
+        DfdFacts{CookedTextureFormat::Rgba8Srgb,
+                 1,
+                 4,
+                 // sample 3 is 15 | 0x10 == 31: the alpha qualifier KTX2 makes a MUST for an sRGB
+                 // format with an alpha channel. Correction C2, at byte 79.
+                 {SampleFacts{0, 8, 0, 0, 255}, SampleFacts{8, 8, 1, 0, 255}, SampleFacts{16, 8, 2, 0, 255},
+                  SampleFacts{24, 8, 31, 0, 255}}},
+        DfdFacts{CookedTextureFormat::Bc1RgbUnorm, 128, 1, {SampleFacts{0, 64, 0, 0, 0xFFFFFFFF}, NONE, NONE, NONE}},
+        DfdFacts{CookedTextureFormat::Bc1RgbSrgb, 128, 1, {SampleFacts{0, 64, 0, 0, 0xFFFFFFFF}, NONE, NONE, NONE}},
+        DfdFacts{CookedTextureFormat::Bc3Unorm,
+                 130,
+                 2,
+                 // ALPHA first (channel 15 BC3_ALPHA), then colour (channel 0).
+                 {SampleFacts{0, 64, 15, 0, 0xFFFFFFFF}, SampleFacts{64, 64, 0, 0, 0xFFFFFFFF}, NONE, NONE}},
+        DfdFacts{CookedTextureFormat::Bc3Srgb,
+                 130,
+                 2,
+                 // 15 | 0x10 == 31 again -- correction C1, at byte 31.
+                 {SampleFacts{0, 64, 31, 0, 0xFFFFFFFF}, SampleFacts{64, 64, 0, 0, 0xFFFFFFFF}, NONE, NONE}},
+        DfdFacts{CookedTextureFormat::Bc4Unorm, 131, 1, {SampleFacts{0, 64, 0, 0, 0xFFFFFFFF}, NONE, NONE, NONE}},
+        DfdFacts{CookedTextureFormat::Bc5Unorm,
+                 132,
+                 2,
+                 // RED first (channel 0 BC5_RED), then GREEN (channel 1).
+                 {SampleFacts{0, 64, 0, 0, 0xFFFFFFFF}, SampleFacts{64, 64, 1, 0, 0xFFFFFFFF}, NONE, NONE}},
+    };
+    // A LITERAL row count, never ROWS.size(): a guard derived from the table it guards cannot see a
+    // row deleted (sabotage seeds S48a/S48b, a third application).
+    CHECK(ROWS.size() == 8);
+    REQUIRE(ALL_FORMATS.size() == ROWS.size());
+
     std::size_t checked = 0;
-    for (const CookedTextureFormat f : ALL_FORMATS) {
-        const std::span<const std::uint8_t> dfd = cookedTextureDescriptorBytes(f);
-        REQUIRE(dfd.size() >= 28);
+    std::size_t samplesChecked = 0;
+    for (std::size_t r = 0; r < ROWS.size(); ++r) {
+        const DfdFacts& row = ROWS[r];
+        // The table IS the enum, in enum order -- so a row cannot silently describe the wrong format.
+        // Compared through toString on both sides, because a bare == on two CookedTextureFormats makes
+        // doctest's stringifier find engine::assets::toString by ADL (see this file's header note);
+        // CT7 is the case proving toString is injective over the eight.
+        CHECK(toString(row.format) == toString(ALL_FORMATS[r]));
+        const std::span<const std::uint8_t> dfd = cookedTextureDescriptorBytes(row.format);
+        REQUIRE(dfd.size() == 28 + 16 * row.sampleCount);
+
+        // word 0: vendorId 0 and descriptorType 0, which is four zero bytes.
+        CHECK(dfdU32(dfd, 4) == 0U);
         // word 1 is versionNumber in the low half, descriptorBlockSize in the high half.
         CHECK(dfdU16(dfd, 8) == 2U);  // KHR_DF_VERSIONNUMBER_1_4, which did not bump from 1.3
         CHECK(dfdU16(dfd, 10) == dfd.size() - 4);
-        // word 4's low byte is bytesPlane0 -- the block byte size, which must equal ours exactly, or
-        // a consumer sizing its upload from the DFD disagrees with one sizing it from the vkFormat.
-        CHECK(dfd[20] == cookedTextureBlockBytes(f));
+        // word 2: the colour model, the primaries, the transfer function and the flags. The MODEL is
+        // what had no cover for BC4 -- and 131 versus 132 is exactly the kind of difference an
+        // external validator rejects while every test here agrees with itself.
+        CHECK(dfd[12] == row.colorModel);
+        CHECK(dfd[13] == 1U);  // primaries BT709
+        // The transferFunction byte IS the colour space, and the only place in the file besides
+        // vkFormat where it appears. KTX2 makes SRGB a MUST for any *_SRGB* format.
+        CHECK(dfd[14] == (isSrgbCookedFormat(row.format) ? 2U : 1U));
+        CHECK(dfd[15] == 0U);  // flags: straight (not premultiplied) alpha
         // word 3 holds each texel-block extent MINUS ONE.
-        CHECK(dfd[16] == cookedTextureBlockWidth(f) - 1U);
-        CHECK(dfd[17] == cookedTextureBlockHeight(f) - 1U);
+        CHECK(dfd[16] == cookedTextureBlockWidth(row.format) - 1U);
+        CHECK(dfd[17] == cookedTextureBlockHeight(row.format) - 1U);
         CHECK(dfd[18] == 0U);  // depth 1
         CHECK(dfd[19] == 0U);  // the fourth extent, 1
-        // word 2's transferFunction byte IS the colour space, and it is the only place in the file
-        // besides vkFormat where it appears. KTX2 makes SRGB a MUST for any *_SRGB* format.
-        CHECK(dfd[14] == (isSrgbCookedFormat(f) ? 2U : 1U));
-        CHECK(dfd[13] == 1U);  // primaries BT709
-        CHECK(dfd[15] == 0U);  // flags: straight (not premultiplied) alpha
+        // word 4's low byte is bytesPlane0 -- the block byte size, which must equal ours exactly, or
+        // a consumer sizing its upload from the DFD disagrees with one sizing it from the vkFormat.
+        // Planes 1..3 above it are zero, as is the whole of word 5 (planes 4..7).
+        CHECK(dfd[20] == cookedTextureBlockBytes(row.format));
+        CHECK(dfd[21] == 0U);
+        CHECK(dfd[22] == 0U);
+        CHECK(dfd[23] == 0U);
+        CHECK(dfdU32(dfd, 24) == 0U);
+
+        // THE SAMPLE WORDS. Sample s starts at 28 + 16s: bitOffset (u16), bitLength - 1, channelId,
+        // then samplePosition, sampleLower and sampleUpper as three u32s.
+        for (std::size_t s = 0; s < row.sampleCount; ++s) {
+            const std::size_t at = 28 + 16 * s;
+            INFO("format ", toString(row.format), " sample ", s);
+            CHECK(dfdU16(dfd, at) == row.samples[s].bitOffset);
+            CHECK(dfd[at + 2] == row.samples[s].bitLength - 1U);
+            CHECK(dfd[at + 3] == row.samples[s].channelId);
+            CHECK(dfdU32(dfd, at + 4) == 0U);  // samplePosition
+            CHECK(dfdU32(dfd, at + 8) == row.samples[s].lower);
+            CHECK(dfdU32(dfd, at + 12) == row.samples[s].upper);
+            ++samplesChecked;
+        }
         ++checked;
     }
-    REQUIRE(checked == ALL_FORMATS.size());
+    REQUIRE(checked == 8);
+    // 4 + 4 + 1 + 1 + 2 + 2 + 1 + 2, in enum order -- a literal, for the same reason as above.
+    REQUIRE(samplesChecked == 17);
 }
 
 TEST_CASE("the UNORM/SRGB DFD pairs differ in ONE byte for BC1 and TWO for BC3 and RGBA8 (CT12)") {

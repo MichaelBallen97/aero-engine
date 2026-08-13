@@ -306,6 +306,45 @@ elseif(CASE STREQUAL "repeated_flag")
     aero_expect_contains("${err}" "at most once" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
+    # AND THE FOUR TEXTURE-ONLY FLAGS (AC-32). The shared prefix -- --input, --output, --guid -- is
+    # covered by the mesh arm above, because the flag loop reaches those three arms identically for
+    # both subcommands. --srgb, --linear, --format and --no-mips are reached ONLY under `texture`, so
+    # their refuseRepeat guards had no cover at all: deleting the --format one made
+    # `texture --format bc1 --format rgba8` take the LAST value and exit 0 with nothing reddening.
+    #
+    # Each arm needs the exit code AND the message, because exit 1 alone is what a texture command
+    # with no colour space also produces. And each pair is chosen so the seeded-guard behaviour is
+    # exit 0, never another exit 1: with the guard gone, `--srgb --srgb` cooks, `--format bc1
+    # --format rgba8` cooks as rgba8, and `--no-mips --no-mips` cooks with one level.
+    foreach(pair "--srgb;--srgb" "--linear;--linear" "--no-mips;--no-mips")
+        list(GET pair 0 first)
+        list(GET pair 1 second)
+        # --linear accompanies the two that are not themselves a colour space, so the command is
+        # otherwise complete and the ONLY thing wrong with it is the repeat.
+        set(colorspace "--linear")
+        if(first STREQUAL "--srgb" OR first STREQUAL "--linear")
+            set(colorspace "")
+        endif()
+        aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${TEXOUT}" ${colorspace}
+            "${first}" "${second}" OUT_RESULT repeatResult OUT_STDERR repeatErr)
+        aero_expect_exit("${repeatResult}" 1)
+        aero_expect_contains("${repeatErr}" "at most once" "stderr")
+        aero_expect_contains("${repeatErr}" "${first}" "stderr")
+    endforeach()
+
+    # --format takes a VALUE, so its repeat is spelled with two different values -- which is what makes
+    # "the last one silently wins" the failure this arm catches, rather than a duplicate that happens
+    # to be harmless.
+    aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${TEXOUT}" --linear
+        --format bc1 --format rgba8 OUT_RESULT formatResult OUT_STDERR formatErr)
+    aero_expect_exit("${formatResult}" 1)
+    aero_expect_contains("${formatErr}" "at most once" "stderr")
+    aero_expect_contains("${formatErr}" "--format" "stderr")
+
+    # NOTHING was written by any of the five commands above -- the repeat is diagnosed inside the flag
+    # loop, before the input is even read.
+    aero_verify_no_files_in("${WORK_DIR}")
+
 elseif(CASE STREQUAL "bad_guid")
     # Too short, and the dashed 36-character form: parseGuid takes EXACTLY 32 hex digits and nothing
     # else, so a dashed value is a usage error rather than a silently normalized success.
