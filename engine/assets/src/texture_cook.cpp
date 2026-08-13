@@ -391,7 +391,20 @@ void encodeLevel(std::span<const std::byte> source, std::uint32_t width, std::ui
 TextureCookResult cookTexture(const TextureCookInput& input) {
     AERO_PROFILE_ZONE_NAMED("assets::cookTexture");
 
-    // 1. dimensions, before anything is computed from them.
+    // 1. the FORMAT, before anything is derived from it. CookedTextureFormat has a fixed underlying
+    //    type, so every std::uint32_t is a valid value of it and static_cast<CookedTextureFormat>(42)
+    //    is well-formed -- an enumerator outside the eight is something this function can genuinely be
+    //    handed the moment a format is read from a .meta, a settings file or a .pak. For such a value
+    //    cookedTextureBlockBytes answers 0, std::lcm(0, 4) is 0, and the level-data alignment below
+    //    would DIVIDE BY ZERO. parseCookedTexture gates the identical question with the identical
+    //    predicate (cooked_texture.cpp step 5); this is the producer's own half of that gate, and it
+    //    comes first because every step after it computes something from the format.
+    if (!isCookedTextureFormat(static_cast<std::uint32_t>(input.format))) {
+        return refuse(std::format("vkFormat {} is outside this cook's eight-format subset",
+                                  static_cast<std::uint32_t>(input.format)));
+    }
+
+    // 2. dimensions, before anything is computed from them.
     if (input.width == 0 || input.width > MAX_TEXTURE_DIMENSION) {
         return refuse(std::format("width is {}; the legal range is 1..{}", input.width, MAX_TEXTURE_DIMENSION));
     }
@@ -399,7 +412,7 @@ TextureCookResult cookTexture(const TextureCookInput& input) {
         return refuse(std::format("height is {}; the legal range is 1..{}", input.height, MAX_TEXTURE_DIMENSION));
     }
 
-    // 2. the input span's size must match the dimensions EXACTLY. Computed in u64: at the dimension
+    // 3. the input span's size must match the dimensions EXACTLY. Computed in u64: at the dimension
     //    cap this is 1 073 741 824, well inside range.
     const std::uint64_t sourceByteSize = static_cast<std::uint64_t>(input.width) * input.height * 4;
     if (input.rgba8.size() != sourceByteSize) {
@@ -407,7 +420,7 @@ TextureCookResult cookTexture(const TextureCookInput& input) {
                                   input.width, input.height, sourceByteSize));
     }
 
-    // 3. the level count. Complete chain or exactly one -- KTX2 permits an incomplete pyramid and this
+    // 4. the level count. Complete chain or exactly one -- KTX2 permits an incomplete pyramid and this
     //    container refuses it, because a partial chain's only effect is to make a consumer's sampler
     //    configuration depend on the file.
     const std::uint32_t levelCount = input.generateMips ? detail::mipLevelCount(input.width, input.height) : 1;
@@ -417,7 +430,7 @@ TextureCookResult cookTexture(const TextureCookInput& input) {
         return refuse(std::format("the computed level count is {}, outside 1..{}", levelCount, MAX_TEXTURE_LEVELS));
     }
 
-    // 4. the whole layout, computed in u64 BEFORE a single byte is allocated.
+    // 5. the whole layout, computed in u64 BEFORE a single byte is allocated.
     const CookedTextureFormat format = input.format;
     const std::span<const std::uint8_t> descriptor = cookedTextureDescriptorBytes(format);
     const std::uint32_t alignment = cookedTextureLevelAlignment(format);

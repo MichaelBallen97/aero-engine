@@ -1314,3 +1314,38 @@ TEST_CASE("the byte-cap check comes BEFORE the allocation, asserted in source te
     // Exactly one allocation site, so "before the allocation" is unambiguous.
     CHECK(stripped.find("std::vector<std::byte> artifact(", allocation + 1) == std::string::npos);
 }
+
+TEST_CASE("a format outside the eight is Refused, never divided by (TX49)") {
+    // CookedTextureFormat has a FIXED underlying type, so every std::uint32_t is a valid value of it
+    // and this cast is well-formed rather than UB -- which means an enumerator outside the eight is
+    // something cookTexture can genuinely be handed the moment a format is read from a .meta, a
+    // settings file or a .pak. For such a value cookedTextureBlockBytes answers 0, std::lcm(0, 4) is
+    // 0, and the level-data alignment is computed as ((kvdEnd + 0 - 1) / 0) * 0 -- an integer DIVIDE
+    // BY ZERO, i.e. UB, a SIGFPE on x86 and a UBSan report on both Debug lanes. The header promises
+    // NEVER THROWS and the status contract is Ok/Refused; a crash is neither.
+    //
+    // The parser gates exactly this question with isCookedTextureFormat (cooked_texture.cpp step 5);
+    // this case is the cook's own half of that gate.
+    const std::vector<std::byte> pixels = testImage(4, 4);
+    constexpr std::uint32_t BAD_VALUE = 42;  // between 37 Rgba8Unorm and 43 Rgba8Srgb, and neither
+    CHECK_FALSE(engine::assets::isCookedTextureFormat(BAD_VALUE));
+    const TextureCookResult result = cook(pixels, 4, 4, static_cast<CookedTextureFormat>(BAD_VALUE));
+    CHECK(result.status == TextureCookStatus::Refused);
+    CHECK(result.message.find("42") != std::string::npos);  // the message names the value it refused
+    CHECK(result.bytes.empty());
+    CHECK(result.stats.byteSize == 0);
+    CHECK(result.stats.levelCount == 0);
+
+    // AND the two neighbouring in-range values, so this is a statement about the PREDICATE rather than
+    // about one unlucky number: 37 and 43 are both legal and both cook.
+    CHECK(cook(pixels, 4, 4, CookedTextureFormat::Rgba8Unorm).status == TextureCookStatus::Ok);
+    CHECK(cook(pixels, 4, 4, CookedTextureFormat::Rgba8Srgb).status == TextureCookStatus::Ok);
+
+    // A second bad value, past every enumerator rather than between two of them -- the arm a guard
+    // written as a RANGE test (37..141) instead of a membership test would let through.
+    constexpr std::uint32_t PAST_THE_END = 1000;
+    CHECK_FALSE(engine::assets::isCookedTextureFormat(PAST_THE_END));
+    const TextureCookResult past = cook(pixels, 4, 4, static_cast<CookedTextureFormat>(PAST_THE_END));
+    CHECK(past.status == TextureCookStatus::Refused);
+    CHECK(past.message.find("1000") != std::string::npos);
+}

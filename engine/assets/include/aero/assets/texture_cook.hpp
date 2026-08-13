@@ -67,9 +67,12 @@ struct TextureCookResult {
 // NEVER THROWS. NEVER READS A FILE. NEVER LOGS. NO FLOATING POINT.
 //
 // validate -> level count -> mip chain (level p from level p-1) -> per level: block loop -> assemble.
-// FORMAT SELECTION IS NOT A STEP: the format arrives in the input, because the policy that picks it
-// (the editor's chooseTextureFormat) lives one layer up and is called BEFORE this. Mechanism inside,
-// policy outside -- task 3.3.1's rule, restated.
+// The first thing validated is the FORMAT itself, against isCookedTextureFormat: the enum has a fixed
+// underlying type, so a value outside the eight is representable, and everything after that step
+// divides by a block size only the eight have. Format VALIDATION is a step; format SELECTION is not --
+// the format arrives in the input, because the policy that picks it (the editor's chooseTextureFormat)
+// lives one layer up and is called BEFORE this. Mechanism inside, policy outside -- task 3.3.1's rule,
+// restated.
 [[nodiscard]] TextureCookResult cookTexture(const TextureCookInput& input);
 
 // A TESTING SEAM, not a public API. These four are the pieces aero_tests drives directly -- the mip
