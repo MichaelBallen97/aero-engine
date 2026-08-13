@@ -1479,6 +1479,11 @@ permits one and this container refuses it, because a partial chain's only effect
 consumer's sampler configuration depend on the file. `levelCount == 0` is forbidden by the
 specification itself for block-compressed formats and is refused for every format here.
 
+**The refusal is the parser's, not merely the cook's**, and the two statuses differ: a count *between*
+1 and the full chain is `UnsupportedShape` (nothing is over a cap — 2 is inside 1…4 for an 8×8 image),
+while 0 and a count *past* the chain are `CapExceeded`. For a 1×1 image the two accepted answers
+coincide, so the round trip of the smallest legal file is unaffected.
+
 Level `p` is filtered **from level `p-1`**, never resampled from level 0.
 
 **The filter is an integer polyphase box**, per axis, and it is the reason an NPOT texture's small mips
@@ -1631,7 +1636,7 @@ part of the contract — a file that is wrong in two ways gets the status of the
 | `BadIdentifier` | the first 12 bytes are not the KTX2 identifier |
 | `Supercompressed` | `supercompressionScheme != 0`. A **distinct** status, checked **before** `vkFormat`, because a Basis file's `vkFormat` is legitimately `VK_FORMAT_UNDEFINED` and "unsupported format 0" would be the wrong diagnosis |
 | `UnsupportedFormat` | `vkFormat` outside the eight, or `typeSize != 1` |
-| `UnsupportedShape` | `pixelDepth != 0`, `layerCount != 0`, or `faceCount != 1` — the message names which |
+| `UnsupportedShape` | `pixelDepth != 0`, `layerCount != 0`, `faceCount != 1`, or a **partial mip pyramid** (a `levelCount` strictly between 1 and the image's full chain, 10.8) — the message names which. A count that is *over* the chain or zero is `CapExceeded` instead: those are range violations and a partial chain is not, since 2 is inside 1…4 for an 8×8 image |
 | `BadTable` | the DFD or key/value region is misplaced, mis-sized or does not tile exactly; a record declares length 0 (the infinite-loop guard) or overruns; or the global-data pair is non-zero with scheme 0 |
 | `BadDescriptor` | the DFD does not byte-match the frozen table for the declared `vkFormat` |
 | `BadRange` | a level's `byteLength` is wrong for its dimensions, its `uncompressedByteLength` disagrees, its offset is misaligned, or its range leaves the buffer |

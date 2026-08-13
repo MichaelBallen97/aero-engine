@@ -252,7 +252,10 @@ enum class CookedTextureStatus : std::uint8_t {
     TooSmall,           // shorter than the 80-byte header, or the level index does not fit
     BadIdentifier,      //
     UnsupportedFormat,  // vkFormat outside the eight, or typeSize != 1
-    UnsupportedShape,   // pixelDepth != 0, layerCount != 0, or faceCount != 1
+    UnsupportedShape,   // pixelDepth != 0, layerCount != 0, faceCount != 1, or a PARTIAL mip pyramid
+                        // (a levelCount strictly between 1 and the image's full chain -- over-cap and
+                        // zero counts are CapExceeded, since those are range violations and this is
+                        // not: 2 is inside 1..4 for an 8x8 image and still not a shape v1 stores)
     Supercompressed,    // supercompressionScheme != 0 -- a DISTINCT status, because "this is a Basis
                         // or Zstd file" is a genuinely different thing to tell a user than "corrupt"
     CapExceeded,        // a dimension, levelCount, or the buffer itself is over a frozen cap

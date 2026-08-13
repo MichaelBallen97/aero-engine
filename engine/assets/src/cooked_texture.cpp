@@ -511,6 +511,26 @@ CookedTextureParse parseCookedTexture(std::span<const std::byte> bytes) {
                       std::format("levelCount is {}, but a {}x{} image has at most {} levels", levelCount, width,
                                   height, maxLevels));
     }
+    // THE COMPLETE-OR-ONE RULE, which the two checks above do NOT give: they bound levelCount from
+    // both ends, and a count strictly between 1 and maxLevels satisfies both while describing a
+    // PARTIAL pyramid. docs/09 section 10.8 states the rule normatively and section 10.0 lists
+    // incomplete mip chains among the things v1 does not store, so the parser refusing is what makes
+    // the document true -- section 10.0's own principle is that every narrowing is a refusal here and
+    // never a silent reinterpretation.
+    //
+    // UnsupportedShape, not CapExceeded, and the distinction is real: 2 is INSIDE 1..4 for an 8x8
+    // image, so nothing is over any cap. It belongs with pixelDepth/layerCount/faceCount -- the three
+    // other "v1 stores exactly one shape" refusals -- and the message names the field, both accepted
+    // answers and the dimensions they were computed from.
+    //
+    // The cook only ever emits 1 or maxLevels, and for a 1x1 image the two coincide, so nothing this
+    // container writes can be refused here.
+    if (levelCount != 1 && levelCount != maxLevels) {
+        return refuse(CookedTextureStatus::UnsupportedShape,
+                      std::format("levelCount is {}; a {}x{} image stores either 1 level or its full chain of {}, "
+                                  "and v1 stores no partial mip pyramid",
+                                  levelCount, width, height, maxLevels));
+    }
 
     // 8. the level index must fit, written as a subtraction. With step 7 done, 24 * levelCount cannot
     //    overflow, which is exactly why step 7 precedes it.

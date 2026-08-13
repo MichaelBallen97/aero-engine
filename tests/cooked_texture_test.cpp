@@ -793,6 +793,59 @@ TEST_CASE("a levelCount legal in itself but impossible for the dimensions is Cap
     expectRefusal(parseCookedTexture(file), CookedTextureStatus::CapExceeded);
 }
 
+TEST_CASE("a levelCount between 1 and the full chain is a PARTIAL pyramid and is refused (CT27a)") {
+    // docs/09 section 10.8 states it normatively -- "levelCount is either floor(log2(max(w,h))) + 1 or
+    // 1. There is no partial pyramid: KTX2 permits one and this container refuses it" -- and section
+    // 10.0 lists incomplete mip chains among the things v1 does not store. The parser used to bound
+    // levelCount only ABOVE, so a hand-built file declaring 2 levels for an 8x8 image, both records
+    // correctly sized and correctly aligned, parsed Ok: the doc said refuse and the code accepted.
+    //
+    // UnsupportedShape rather than CapExceeded, and the distinction is the point: 2 is INSIDE 1..4 for
+    // an 8x8 image, so nothing is over any cap. It is the same kind of refusal as pixelDepth != 0 and
+    // faceCount != 1 -- a shape this container does not store.
+    //
+    // The id is suffixed rather than numbered onward because this case belongs beside CT27, whose
+    // ladder step it extends; CT44a and CT56a are the same shape.
+    Ktx2Build build;
+    build.width = 8;
+    build.height = 8;
+    build.levelCount = 4;  // 8, 4, 2, 1 -- the full chain, and the positive control
+    REQUIRE(parseCookedTexture(makeKtx2(build)).status == CookedTextureStatus::Ok);
+
+    // Every partial count for this image: 2 and 3. Each file is INTERNALLY CONSISTENT -- makeKtx2
+    // sizes, offsets and aligns every record it writes -- so nothing but the rule itself can refuse it.
+    constexpr std::array<std::uint32_t, 2> PARTIAL = {2U, 3U};
+    std::size_t checked = 0;
+    for (const std::uint32_t count : PARTIAL) {
+        Ktx2Build partial;
+        partial.width = 8;
+        partial.height = 8;
+        partial.levelCount = count;
+        const std::vector<std::byte> file = makeKtx2(partial);
+        INFO("levelCount ", count);
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::UnsupportedShape);
+        ++checked;
+    }
+    REQUIRE(checked == 2);  // a LITERAL, so a deleted row cannot shrink the guard with the table
+
+    // AND both accepted counts, so this is a statement about the RULE and not merely about 2 and 3:
+    // the full chain (above) and exactly 1, which is what --no-mips produces.
+    Ktx2Build baseOnly;
+    baseOnly.width = 8;
+    baseOnly.height = 8;
+    baseOnly.levelCount = 1;
+    expectOk(parseCookedTexture(makeKtx2(baseOnly)));
+
+    // A 1x1 image is where the two accepted answers COINCIDE (maxLevels == 1), which is what makes
+    // AC-27's round trip safe for it under a rule that would otherwise look like two separate cases.
+    Ktx2Build tiny;
+    tiny.format = CookedTextureFormat::Rgba8Unorm;
+    tiny.width = 1;
+    tiny.height = 1;
+    tiny.levelCount = 1;
+    expectOk(parseCookedTexture(makeKtx2(tiny)));
+}
+
 TEST_CASE("a buffer too short for its own level index is TooSmall (CT28)") {
     const std::vector<std::byte> file = makeKtx2(Ktx2Build{});
     // 80 + 24*3 = 152 bytes of header plus index; one byte short of that cannot hold the index, and
