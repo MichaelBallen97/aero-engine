@@ -728,6 +728,14 @@ set(_aero_cooker_cases
     gltf_happy gltf_external_bin obj_missing_mtl
     guid_written scale_applied no_materials
     determinism nothing_written_on_failure output_dir_missing
+    # task 3.3.2 -- the texture subcommand. Fourteen more names, on the same terms: ungated, so
+    # ctest -N moves in ALL THREE configurations again.
+    texture_help texture_no_colorspace texture_both_colorspace
+    texture_srgb_bc5_conflict texture_unknown_format
+    texture_hdr_refused texture_unclaimed_extension
+    texture_png_happy texture_auto_picks_bc3 texture_no_mips
+    texture_guid_written texture_determinism
+    texture_nothing_written_on_failure texture_output_dir_missing
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(

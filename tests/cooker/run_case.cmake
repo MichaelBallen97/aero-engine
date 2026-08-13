@@ -1,4 +1,6 @@
-# tests/cooker/run_case.cmake — task 3.3.1's process-boundary harness for aero_cooker.
+# tests/cooker/run_case.cmake — task 3.3.1's process-boundary harness for aero_cooker, driving BOTH
+# subcommands since task 3.3.2: `mesh` (source model -> .aeromesh) and `texture` (source image ->
+# KTX2). One driver, one case table, two grammars.
 #
 # Usage: cmake -DTOOL=<path to aero_cooker> -DCASE=<name> -DSOURCE_DIR=<repo root> -DWORK_DIR=<scratch
 #              dir, unique per case> -P run_case.cmake
@@ -101,6 +103,18 @@ function(aero_expect_hex_at path offset count expected)
     endif()
 endfunction()
 
+# Strictly smaller, never merely different: task 3.3.2's texture_no_mips asserts that dropping the mip
+# chain removes bytes, which "not identical" would also be true of a chain that grew.
+function(aero_expect_smaller_than path_a path_b)
+    aero_expect_files("${path_a}" "${path_b}")
+    file(SIZE "${path_a}" size_a)
+    file(SIZE "${path_b}" size_b)
+    if(NOT size_a LESS size_b)
+        message(FATAL_ERROR "case '${CASE}': '${path_a}' is ${size_a} bytes, expected fewer than '${path_b}'"
+                            " at ${size_b}")
+    endif()
+endfunction()
+
 function(aero_expect_identical path_a path_b)
     aero_expect_files("${path_a}" "${path_b}")
     file(MD5 "${path_a}" hash_a)
@@ -137,6 +151,25 @@ set(ANY_INPUT "${SOURCE_DIR}/tests/fixtures/assets/triangle.gltf")
 set(FIXTURES "${SOURCE_DIR}/tests/cooker/fixtures")
 set(OUT "${WORK_DIR}/out.aeromesh")
 
+# task 3.3.2: the tree's first two committed images, shared with aero_editor_shell_test's TK battery.
+# The 5x3 is opaque and odd in BOTH axes (so `auto` answers BC1 and the polyphase filter runs on both
+# axes); the 8x8 has a half-transparent quadrant (so `auto` answers BC3).
+set(TEXTURE_OPAQUE "${SOURCE_DIR}/tests/fixtures/assets/texture-rgb-5x3.png")
+set(TEXTURE_ALPHA "${SOURCE_DIR}/tests/fixtures/assets/texture-rgba-8x8.png")
+set(TEXOUT "${WORK_DIR}/out.ktx2")
+
+# KTX2 field offsets, restated here because the process tier cannot include a header.
+# engine/assets/include/aero/assets/cooked_texture.hpp is the normative copy; a disagreement between
+# these numbers and that header is a real defect in one of them.
+set(KTX2_IDENTIFIER_HEX "ab4b5458203230bb0d0a1a0a")
+set(OFFSET_VK_FORMAT 12)
+set(OFFSET_LEVEL_COUNT 40)
+# 80 header+Index + 24*3 level records = 152, + 44 (the BC1 descriptor) = 196 kvdByteOffset, + 4
+# (keyAndValueByteLength) + 15 ("AeroSourceGuid\0") = 215, where the 32 lowercase hex characters start.
+# The offset is exact for a 3-level BC1 file and for nothing else, which is why texture_guid_written
+# cooks exactly that shape.
+set(OFFSET_BC1_3LEVEL_GUID_VALUE 215)
+
 # Golden B's own size and two of its own field offsets, restated here because the process tier cannot
 # include a header. tests/cooked_mesh_golden.hpp is the normative copy; a disagreement between these
 # numbers and that array is a real defect in one of them.
@@ -168,13 +201,22 @@ elseif(CASE STREQUAL "no_subcommand")
     aero_run_tool(ARGS --input "${ANY_INPUT}" --output "${OUT}" OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 1)
     aero_expect_non_empty("${err}" "stderr")
+    # task 3.3.2 changed this literal from "(expected: mesh)". Asserted, so the next subcommand added
+    # cannot leave the message naming a subset of what the tool actually accepts.
+    aero_expect_contains("${err}" "expected: mesh or texture" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_subcommand")
-    # 3.3.2 will make this one pass, deliberately: the grammar is subcommand-shaped from day one.
-    aero_run_tool(ARGS texture --input "${ANY_INPUT}" --output "${OUT}" OUT_RESULT result OUT_STDERR err)
+    # REWRITTEN AT TASK 3.3.2, and this is the whole reason it needed rewriting: it used to pass
+    # `texture` as the unknown token, which was true at 3.3.1 and became FALSE the moment the second
+    # subcommand landed. Worse, it would have kept passing -- `texture --input x --output y` with no
+    # colour-space flag is still exit 1 with "texture" in the message -- so the case would have gone
+    # on looking green while asserting something that no longer existed. A genuinely unknown token,
+    # and the message that names both real ones.
+    aero_run_tool(ARGS sound --input "${ANY_INPUT}" --output "${OUT}" OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 1)
-    aero_expect_contains("${err}" "texture" "stderr")
+    aero_expect_contains("${err}" "unknown subcommand 'sound'" "stderr")
+    aero_expect_contains("${err}" "expected: mesh or texture" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_flag")
@@ -346,6 +388,185 @@ elseif(CASE STREQUAL "output_dir_missing")
     # mystery tree. aero_shaderc does create its --output-dir, and the difference is deliberate --
     # that flag names a directory, this one names a file.
     aero_run_tool(ARGS mesh --input "${ANY_INPUT}" --output "${WORK_DIR}/nope/out.aeromesh"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 3)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_expect_no_files("${WORK_DIR}/nope")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+# --- task 3.3.2: the texture subcommand -----------------------------------------------------------
+
+elseif(CASE STREQUAL "texture_help")
+    # One usage text serves both subcommands, and BOTH colour-space flags must appear in it: a
+    # mandatory flag a user cannot discover from --help is a mandatory flag they will not give.
+    aero_run_tool(ARGS texture --help OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit("${result}" 0)
+    aero_expect_contains("${out}" "aero_cooker texture --input" "the usage text")
+    aero_expect_contains("${out}" "--srgb" "the usage text")
+    aero_expect_contains("${out}" "--linear" "the usage text")
+    aero_expect_contains("${out}" "--no-mips" "the usage text")
+    if(NOT err STREQUAL "")
+        message(FATAL_ERROR "case '${CASE}': --help wrote to stderr: ${err}")
+    endif()
+
+elseif(CASE STREQUAL "texture_no_colorspace")
+    # THERE IS NO DEFAULT, and the message has to say why rather than merely say "required": every
+    # default is wrong for some large class of textures, and unlike most wrong defaults this one
+    # produces an image that still looks like a texture, just too dark or too washed out.
+    aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${TEXOUT}" OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 1)
+    aero_expect_contains("${err}" "--srgb" "stderr")
+    aero_expect_contains("${err}" "--linear" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "texture_both_colorspace")
+    aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${TEXOUT}" --srgb --linear
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 1)
+    aero_expect_contains("${err}" "--srgb" "stderr")
+    aero_expect_contains("${err}" "--linear" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "texture_srgb_bc5_conflict")
+    # Vulkan enumerates 139 BC4_UNORM, 140 BC4_SNORM, 141 BC5_UNORM, 142 BC5_SNORM with no sRGB value
+    # among them, so this combination is not unsupported by us -- it does not exist. Both halves,
+    # because one alone would not show the refusal is about the FORMAT rather than about --srgb.
+    aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${TEXOUT}" --srgb --format bc5
+        OUT_RESULT bc5Result OUT_STDERR bc5Err)
+    aero_expect_exit("${bc5Result}" 1)
+    aero_expect_contains("${bc5Err}" "bc5" "stderr")
+    aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${TEXOUT}" --srgb --format bc4
+        OUT_RESULT bc4Result OUT_STDERR bc4Err)
+    aero_expect_exit("${bc4Result}" 1)
+    aero_expect_contains("${bc4Err}" "bc4" "stderr")
+    # And the SAME formats with --linear are perfectly legal, which is what makes the two refusals
+    # above statements about the colour space rather than about the tokens.
+    aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${TEXOUT}" --linear --format bc5
+        OUT_RESULT okResult)
+    aero_expect_exit("${okResult}" 0)
+    aero_expect_files("${TEXOUT}")
+
+elseif(CASE STREQUAL "texture_unknown_format")
+    aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${TEXOUT}" --linear --format bc7
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 1)
+    aero_expect_contains("${err}" "bc7" "stderr")
+    aero_expect_contains("${err}" "bc1, bc3, bc4, bc5, rgba8 or auto" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "texture_hdr_refused")
+    # THE CASE THAT PROVES THE NAME DECIDES BEFORE THE READ. readFileBytes refuses an over-cap file
+    # WITHOUT OPENING IT, so a tool that read first would answer this 65 MiB .hdr with "too large"
+    # (exit 3) instead of "HDR is not supported" (exit 2). The file is generated here rather than
+    # committed, and in 1 MiB appends rather than one huge file(WRITE), which is slow.
+    set(bigHdr "${WORK_DIR}/sky.hdr")
+    string(REPEAT "0123456789abcdef" 65536 chunk)   # exactly 1 MiB
+    file(WRITE "${bigHdr}" "")
+    foreach(i RANGE 1 65)                           # 65 MiB, just over the 64 MiB read cap
+        file(APPEND "${bigHdr}" "${chunk}")
+    endforeach()
+    file(SIZE "${bigHdr}" hdrSize)
+    if(hdrSize LESS_EQUAL 67108864)
+        message(FATAL_ERROR "case '${CASE}': the .hdr is ${hdrSize} bytes, which is NOT over the 64 MiB read "
+                            "cap -- this case would prove nothing")
+    endif()
+    aero_run_tool(ARGS texture --input "${bigHdr}" --output "${TEXOUT}" --linear OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)              # 2, NOT 3: the name decided, the read never happened
+    aero_expect_contains("${err}" "high-dynamic-range" "stderr")
+    aero_expect_no_files("${TEXOUT}")
+
+elseif(CASE STREQUAL "texture_unclaimed_extension")
+    # A .ktx2 as --input: it is not stb-decodable, and re-cooking a cooked artifact is not a workflow.
+    # The file is real and non-empty, so the refusal is provably about the NAME and not about the read.
+    set(cooked "${WORK_DIR}/already.ktx2")
+    file(WRITE "${cooked}" "not really a ktx2, and it does not matter")
+    aero_run_tool(ARGS texture --input "${cooked}" --output "${TEXOUT}" --linear OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_contains("${err}" ".png .jpg .jpeg .tga .bmp .gif .psd" "stderr")
+    aero_expect_no_files("${TEXOUT}")
+
+elseif(CASE STREQUAL "texture_png_happy")
+    # 5x3, opaque, odd in both axes, --linear and no --format: `auto` therefore answers 131
+    # BC1_RGB_UNORM. The identifier is asserted as hex, which is also what proves the write was BINARY:
+    # it ends in 0D 0A 1A 0A, so a text-mode write would corrupt this file at byte 8 on one lane alone.
+    aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${TEXOUT}" --linear OUT_RESULT result)
+    aero_expect_exit("${result}" 0)
+    aero_expect_hex_at("${TEXOUT}" 0 12 "${KTX2_IDENTIFIER_HEX}")
+    aero_expect_hex_at("${TEXOUT}" "${OFFSET_VK_FORMAT}" 4 "83000000")     # 131 BC1_RGB_UNORM
+    aero_expect_hex_at("${TEXOUT}" "${OFFSET_LEVEL_COUNT}" 4 "03000000")   # the full chain for 5x3
+    # 80 + 24*3 + 44 (DFD) + 120 (KVD) = 316, aligned up to 320, then 8 + 8 + 16 bytes of level data.
+    aero_expect_size("${TEXOUT}" 352)
+
+elseif(CASE STREQUAL "texture_auto_picks_bc3")
+    # The 8x8 fixture's bottom-right quadrant is at alpha 128, so `auto` must answer BC3 -- and with
+    # --srgb that is 138 BC3_SRGB, the one format whose descriptor carries the corrected 1F alpha
+    # qualifier. The negative twin is texture_png_happy above, whose opaque input answers BC1.
+    aero_run_tool(ARGS texture --input "${TEXTURE_ALPHA}" --output "${TEXOUT}" --srgb OUT_RESULT result)
+    aero_expect_exit("${result}" 0)
+    aero_expect_hex_at("${TEXOUT}" "${OFFSET_VK_FORMAT}" 4 "8a000000")     # 138 BC3_SRGB
+    aero_expect_hex_at("${TEXOUT}" "${OFFSET_LEVEL_COUNT}" 4 "04000000")   # floor(log2(8)) + 1
+
+elseif(CASE STREQUAL "texture_no_mips")
+    # BOTH halves, because one alone proves nothing: with the flag levelCount is 1 and the file is
+    # strictly smaller; without it the same input produces the full four-level chain.
+    aero_run_tool(ARGS texture --input "${TEXTURE_ALPHA}" --output "${TEXOUT}" --srgb --no-mips OUT_RESULT result)
+    aero_expect_exit("${result}" 0)
+    aero_expect_hex_at("${TEXOUT}" "${OFFSET_LEVEL_COUNT}" 4 "01000000")
+
+    set(mipped "${WORK_DIR}/mipped.ktx2")
+    aero_run_tool(ARGS texture --input "${TEXTURE_ALPHA}" --output "${mipped}" --srgb OUT_RESULT mippedResult)
+    aero_expect_exit("${mippedResult}" 0)
+    aero_expect_hex_at("${mipped}" "${OFFSET_LEVEL_COUNT}" 4 "04000000")
+    aero_expect_smaller_than("${TEXOUT}" "${mipped}")
+
+elseif(CASE STREQUAL "texture_guid_written")
+    # The AeroSourceGuid value is 32 LOWERCASE hex characters, high half first, written unconditionally
+    # -- so the assertion is on the ASCII bytes of that text at an offset derived from the layout, not
+    # merely on the value's presence somewhere in the file. Both halves of the GUID are non-zero, which
+    # is what makes this a statement about ORDER as well as content.
+    aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${TEXOUT}" --linear
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result)
+    aero_expect_exit("${result}" 0)
+    aero_expect_hex_at("${TEXOUT}" "${OFFSET_BC1_3LEVEL_GUID_VALUE}" 32
+        "3031323334353637383961626364656666656463626139383736353433323130")
+
+elseif(CASE STREQUAL "texture_determinism")
+    # Two processes, two directories, one byte sequence. No timestamp, no path, no hostname and no
+    # build id reaches the container -- and, unlike the mesh cook, no floating point either, which is
+    # what makes this hold across the three CI lanes rather than merely across two runs on one.
+    set(dir1 "${WORK_DIR}/run1")
+    set(dir2 "${WORK_DIR}/run2")
+    file(MAKE_DIRECTORY "${dir1}")
+    file(MAKE_DIRECTORY "${dir2}")
+    aero_run_tool(ARGS texture --input "${TEXTURE_ALPHA}" --output "${dir1}/out.ktx2" --srgb
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result1)
+    aero_expect_exit("${result1}" 0)
+    aero_run_tool(ARGS texture --input "${TEXTURE_ALPHA}" --output "${dir2}/out.ktx2" --srgb
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result2)
+    aero_expect_exit("${result2}" 0)
+    aero_expect_identical("${dir1}/out.ktx2" "${dir2}/out.ktx2")
+
+elseif(CASE STREQUAL "texture_nothing_written_on_failure")
+    # The output path is opened only after the cook returned a complete byte vector, so a failing input
+    # leaves NEITHER the artifact NOR the .aero-tmp file writeTextFileAtomic would have created on its
+    # way to it. The input's NAME is claimed, so the refusal comes from the decode -- which is what
+    # separates this case from texture_unclaimed_extension.
+    # ASCII garbage under a CLAIMED name, rather than a truncated copy of the real fixture: CMake's
+    # file(READ) stops at the first NUL byte and has no binary-truncating write, so a "first 20 bytes
+    # of a real PNG" input is not expressible in this driver at all. The branch under test is the same
+    # one either way -- stb_image refuses the header and the tool exits 2 with its reason -- and the
+    # truncated-PNG shape is covered at the unit tier instead, by TK13.
+    set(broken "${WORK_DIR}/broken.png")
+    file(WRITE "${broken}" "this is not a png at all, and its extension is a claimed one")
+    aero_run_tool(ARGS texture --input "${broken}" --output "${TEXOUT}" --linear OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_expect_no_files("${TEXOUT}" "${TEXOUT}.aero-tmp")
+
+elseif(CASE STREQUAL "texture_output_dir_missing")
+    # The tool creates NO directory, for either subcommand: a build-time tool that invents them is how
+    # a typo becomes a mystery tree.
+    aero_run_tool(ARGS texture --input "${TEXTURE_OPAQUE}" --output "${WORK_DIR}/nope/out.ktx2" --linear
         OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 3)
     aero_expect_non_empty("${err}" "stderr")

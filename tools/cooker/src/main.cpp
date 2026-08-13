@@ -11,13 +11,17 @@
 // (task 3.2.4's D15). The gate grep for that invariant scans tools/ for SDL's process API and the
 // three C spawn primitives by name and does NOT strip comments, so none of those tokens may be
 // written in prose anywhere under this directory -- the 3.2.4 and 3.2.5 rule, a third application.
+#include <aero/assets/cooked_texture.hpp>
 #include <aero/assets/mesh_cook.hpp>
+#include <aero/assets/texture_cook.hpp>
 #include <aero/core/guid.hpp>
 #include <aero/editor/import_settings.hpp>
 #include <aero/editor/mesh_cook_source.hpp>
 #include <aero/editor/model_import.hpp>
 #include <aero/editor/text_file.hpp>
+#include <aero/editor/texture_cook_source.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -50,45 +54,75 @@ enum class ExitCode : std::uint8_t { Success = 0, UsageError = 1, CookError = 2,
 //   aero_cooker mesh --input <file> --output <file.aeromesh>
 //                    [--guid <32 hex>] [--scale <float>]
 //                    [--no-materials] [--no-animations] [--no-skins]
+//   aero_cooker texture --input <file> --output <file.ktx2>
+//                       (--srgb | --linear)
+//                       [--guid <32 hex>] [--format bc1|bc3|bc4|bc5|rgba8|auto] [--no-mips]
 //   aero_cooker --version
 //   aero_cooker --help
 //
-// SUBCOMMAND-SHAPED FROM DAY ONE so 3.3.2 adds `aero_cooker texture ...` with no reshuffle. `mesh` is
-// the only subcommand in v1; any other token is a usage error naming it.
+// SUBCOMMAND-SHAPED FROM DAY ONE, and task 3.3.2 filled the second one in with no reshuffle of the
+// mesh path: --input, --output and --guid stay in the shared prefix and the flag loop splits only on
+// the subcommand-specific arms. Any token that is neither `mesh` nor `texture` is a usage error
+// naming it.
 //
 // EVERY FLAG IS AT-MOST-ONCE. Unlike aero_shaderc --define, this grammar has no repeatable flag at
 // all, so the check is uniform: one `have<Flag>` bool each.
 void printUsage(std::ostream& out) {
-    out << "aero_cooker " << TOOL_VERSION << " -- source model -> cooked .aeromesh (task 3.3.1)\n"
+    out << "aero_cooker " << TOOL_VERSION << " -- source assets -> cooked .aeromesh / .ktx2\n"
         << "\n"
         << "Usage:\n"
         << "  aero_cooker mesh --input <file> --output <file.aeromesh>\n"
         << "                   [--guid <32 hex>] [--scale <float>]\n"
         << "                   [--no-materials] [--no-animations] [--no-skins]\n"
+        << "  aero_cooker texture --input <file> --output <file.ktx2>\n"
+        << "                      (--srgb | --linear)\n"
+        << "                      [--guid <32 hex>] [--format bc1|bc3|bc4|bc5|rgba8|auto] [--no-mips]\n"
         << "  aero_cooker --version\n"
         << "  aero_cooker --help\n"
         << "\n"
         << "Subcommands:\n"
         << "  mesh                   Cook one source model into one .aeromesh container.\n"
+        << "  texture                Cook one source image into one KTX2 container.\n"
         << "\n"
-        << "Required:\n"
-        << "  --input <file>         The source model. .gltf .glb .fbx .obj .mtl .dae .ply .stl.\n"
+        << "Required (both subcommands):\n"
+        << "  --input <file>         The source asset.\n"
+        << "                         mesh:    .gltf .glb .fbx .obj .mtl .dae .ply .stl\n"
+        << "                         texture: .png .jpg .jpeg .tga .bmp .gif .psd\n"
         << "  --output <file>        The artifact path. The directory must already exist.\n"
         << "\n"
-        << "Optional:\n"
+        << "Required (texture only):\n"
+        << "  --srgb | --linear      The source's colour space. EXACTLY ONE, and there is no default:\n"
+        << "                         sRGB is wrong for every normal, roughness, metallic and mask map,\n"
+        << "                         and linear is wrong for every base-colour and emissive map. Unlike\n"
+        << "                         most wrong defaults this one produces an image that still looks\n"
+        << "                         like a texture, just too dark or too washed out, so it survives\n"
+        << "                         review and ships.\n"
+        << "\n"
+        << "Optional (both subcommands):\n"
         << "  --guid <32 hex>        The source asset's GUID, exactly 32 hex digits, any case. It is\n"
-        << "                         written into the container's header. Default: the nil GUID.\n"
+        << "                         written into the artifact. Default: the nil GUID.\n"
+        << "\n"
+        << "Optional (mesh only):\n"
         << "  --scale <float>        The importer's uniform scale. Zero and negative are accepted;\n"
         << "                         only a non-finite value is refused. Default: 1.\n"
         << "  --no-materials         Import no materials; every submesh records no material.\n"
         << "  --no-animations        Import no animations (v1 cooks geometry only).\n"
         << "  --no-skins             Import no skin tables (v1 cooks geometry only).\n"
         << "\n"
+        << "Optional (texture only):\n"
+        << "  --format <token>       bc1, bc3, bc4, bc5, rgba8 or auto. Default: auto, which answers\n"
+        << "                         bc3 when any texel's alpha is below 255 and bc1 otherwise, in the\n"
+        << "                         requested colour space. It never answers bc4, bc5 or rgba8: those\n"
+        << "                         encode intent, which pixels cannot reveal. Vulkan defines no sRGB\n"
+        << "                         variant of bc4 or bc5, so --srgb with either is a usage error.\n"
+        << "  --no-mips              Emit level 0 only, instead of the full mip chain.\n"
+        << "\n"
         << "Every flag may be given at most once. Nothing is written unless the whole cook succeeded,\n"
         << "so a failing input leaves zero artifacts.\n"
         << "\n"
         << "A .blend is refused: convert it in the editor first (Import Details, task 3.2.4). This\n"
-        << "tool never spawns a process.\n"
+        << "tool never spawns a process. A .hdr is refused too: stb_image does not fail on a Radiance\n"
+        << "file, it silently tone-maps it to 8-bit, and HDR belongs to BC6H, which v1 does not cook.\n"
         << "\n"
         << "Exit codes: 0 success, 1 usage error, 2 import or cook error, 3 I/O error.\n";
 }
@@ -130,11 +164,23 @@ void printVersion(std::ostream& out) { out << "aero_cooker " << TOOL_VERSION << 
     return value;
 }
 
+enum class Subcommand : std::uint8_t { Mesh, Texture };
+
+// The six accepted --format tokens, in the order the usage text and every diagnostic list them. `auto`
+// is deliberately IN the table rather than a special case at the parse site: it is a legal value of
+// the flag, and a user who spells it out must get the same answer as one who omits the flag.
+constexpr std::array<std::string_view, 6> TEXTURE_FORMAT_TOKENS{"bc1", "bc3", "bc4", "bc5", "rgba8", "auto"};
+
 struct Args {
+    Subcommand subcommand = Subcommand::Mesh;
     std::string inputPath;
     std::string outputPath;
     engine::Guid guid;  // nil unless --guid was given; nil is legal and deterministic
     ImportSettings settings;
+    // --- texture only ---
+    bool srgb = false;                 // meaningful only after the exactly-one check below passed
+    std::string formatToken = "auto";  // one of TEXTURE_FORMAT_TOKENS
+    bool generateMips = true;          // --no-mips clears it
     bool wantHelp = false;
     bool wantVersion = false;
 };
@@ -159,14 +205,19 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     }
 
     if (argc < 2) {
-        std::cerr << "aero_cooker: error: no subcommand given (expected: mesh)\n";
+        std::cerr << "aero_cooker: error: no subcommand given (expected: mesh or texture)\n";
         return std::nullopt;
     }
     const std::string_view subcommand = argv[1];
-    if (subcommand != "mesh") {
-        std::cerr << "aero_cooker: error: unknown subcommand '" << subcommand << "' (expected: mesh)\n";
+    if (subcommand == "mesh") {
+        args.subcommand = Subcommand::Mesh;
+    } else if (subcommand == "texture") {
+        args.subcommand = Subcommand::Texture;
+    } else {
+        std::cerr << "aero_cooker: error: unknown subcommand '" << subcommand << "' (expected: mesh or texture)\n";
         return std::nullopt;
     }
+    const bool isTexture = args.subcommand == Subcommand::Texture;
 
     bool haveInput = false;
     bool haveOutput = false;
@@ -175,6 +226,10 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     bool haveNoMaterials = false;
     bool haveNoAnimations = false;
     bool haveNoSkins = false;
+    bool haveSrgb = false;
+    bool haveLinear = false;
+    bool haveFormat = false;
+    bool haveNoMips = false;
 
     for (int i = 2; i < argc; ++i) {
         const std::string_view flag = argv[i];
@@ -232,7 +287,11 @@ std::optional<Args> parseArgs(int argc, char** argv) {
                 return std::nullopt;
             }
             args.guid = *parsed;
-        } else if (flag == "--scale") {
+            // --- from here the arms are SUBCOMMAND-SPECIFIC. --input, --output and --guid above are
+            // the shared prefix. A mesh flag given to `texture` (or the reverse) falls through to the
+            // unknown-flag arm at the bottom, which names it -- deliberately, rather than accepting it
+            // silently for the wrong subcommand.
+        } else if (!isTexture && flag == "--scale") {
             if (!refuseRepeat(haveScale, flag)) {
                 return std::nullopt;
             }
@@ -247,21 +306,43 @@ std::optional<Args> parseArgs(int argc, char** argv) {
                 return std::nullopt;
             }
             args.settings.scale = *parsed;
-        } else if (flag == "--no-materials") {
+        } else if (!isTexture && flag == "--no-materials") {
             if (!refuseRepeat(haveNoMaterials, flag)) {
                 return std::nullopt;
             }
             args.settings.importMaterials = false;
-        } else if (flag == "--no-animations") {
+        } else if (!isTexture && flag == "--no-animations") {
             if (!refuseRepeat(haveNoAnimations, flag)) {
                 return std::nullopt;
             }
             args.settings.importAnimations = false;
-        } else if (flag == "--no-skins") {
+        } else if (!isTexture && flag == "--no-skins") {
             if (!refuseRepeat(haveNoSkins, flag)) {
                 return std::nullopt;
             }
             args.settings.importSkins = false;
+        } else if (isTexture && flag == "--srgb") {
+            if (!refuseRepeat(haveSrgb, flag)) {
+                return std::nullopt;
+            }
+        } else if (isTexture && flag == "--linear") {
+            if (!refuseRepeat(haveLinear, flag)) {
+                return std::nullopt;
+            }
+        } else if (isTexture && flag == "--format") {
+            if (!refuseRepeat(haveFormat, flag)) {
+                return std::nullopt;
+            }
+            const char* value = needValue(flag);
+            if (value == nullptr) {
+                return std::nullopt;
+            }
+            args.formatToken = value;
+        } else if (isTexture && flag == "--no-mips") {
+            if (!refuseRepeat(haveNoMips, flag)) {
+                return std::nullopt;
+            }
+            args.generateMips = false;
         } else {
             std::cerr << "aero_cooker: error: unknown flag '" << flag << "'\n";
             return std::nullopt;
@@ -274,6 +355,48 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     }
     if (!haveOutput) {
         std::cerr << "aero_cooker: error: --output is required\n";
+        return std::nullopt;
+    }
+    if (!isTexture) {
+        return args;
+    }
+
+    // ---- texture post-parse validation, in a FIXED order ------------------------------------------
+    // 1. EXACTLY ONE colour space, and there is no default. Both messages name BOTH flags, because a
+    //    user who gave neither and a user who gave both are asking the same question.
+    if (!haveSrgb && !haveLinear) {
+        std::cerr << "aero_cooker: error: texture requires exactly one of --srgb or --linear (there is no "
+                     "default: sRGB is wrong for every normal, roughness, metallic and mask map, and linear is "
+                     "wrong for every base-colour and emissive map)\n";
+        return std::nullopt;
+    }
+    if (haveSrgb && haveLinear) {
+        std::cerr << "aero_cooker: error: --srgb and --linear are mutually exclusive; give exactly one\n";
+        return std::nullopt;
+    }
+    args.srgb = haveSrgb;
+
+    // 2. The token must be one of the six, checked BEFORE the bc4/bc5 conflict so `--format bc7
+    //    --srgb` names the unknown token rather than a conflict it does not have.
+    bool known = false;
+    for (const std::string_view token : TEXTURE_FORMAT_TOKENS) {
+        if (args.formatToken == token) {
+            known = true;
+        }
+    }
+    if (!known) {
+        std::cerr << "aero_cooker: error: unknown --format value '" << args.formatToken
+                  << "' (expected: bc1, bc3, bc4, bc5, rgba8 or auto)\n";
+        return std::nullopt;
+    }
+
+    // 3. sRGB with a single- or two-channel format. Vulkan enumerates 139 BC4_UNORM, 140 BC4_SNORM,
+    //    141 BC5_UNORM, 142 BC5_SNORM with no sRGB value among them, so the combination is not
+    //    unsupported by us -- it does not exist.
+    if (args.srgb && (args.formatToken == "bc4" || args.formatToken == "bc5")) {
+        std::cerr << "aero_cooker: error: --srgb cannot be combined with --format " << args.formatToken
+                  << ": Vulkan defines no sRGB variant of either (BC4_UNORM is 139 and BC5_UNORM is 141, with "
+                     "no sRGB value between them)\n";
         return std::nullopt;
     }
     return args;
@@ -311,6 +434,107 @@ void reportWarnings(std::string_view origin, const std::vector<std::string>& war
     return std::span<const std::byte>(reinterpret_cast<const std::byte*>(text.data()), text.size());
 }
 
+// `token` is already known to be one of the six (parseArgs checked), and --srgb has already been
+// refused for bc4/bc5, so this switch-shaped chain is TOTAL over what can reach it. `auto` is the one
+// token that consults the pixels, through the editor's own policy function -- which is why the policy
+// lives one layer up from the cook and is called before it.
+[[nodiscard]] engine::assets::CookedTextureFormat resolveTextureFormat(const std::string& token, bool srgb,
+                                                                       std::span<const std::byte> rgba8) {
+    using engine::assets::CookedTextureFormat;
+    if (token == "bc1") {
+        return srgb ? CookedTextureFormat::Bc1RgbSrgb : CookedTextureFormat::Bc1RgbUnorm;
+    }
+    if (token == "bc3") {
+        return srgb ? CookedTextureFormat::Bc3Srgb : CookedTextureFormat::Bc3Unorm;
+    }
+    if (token == "bc4") {
+        return CookedTextureFormat::Bc4Unorm;  // no sRGB variant exists; parseArgs refused the pair
+    }
+    if (token == "bc5") {
+        return CookedTextureFormat::Bc5Unorm;  // likewise
+    }
+    if (token == "rgba8") {
+        return srgb ? CookedTextureFormat::Rgba8Srgb : CookedTextureFormat::Rgba8Unorm;
+    }
+    return engine::editor::chooseTextureFormat(rgba8, srgb);
+}
+
+ExitCode runTexture(const Args& args) {
+    // ---- 1. the file NAME decides what happens, before a byte is read ------------------------
+    // The same rule and the same reason as the mesh path's .blend arm: readFileBytes refuses an
+    // over-cap file WITHOUT OPENING IT, so reading first would answer a 300 MB .hdr with "the file is
+    // too large" instead of "HDR is not supported". A .hdr gets its own message because stb_image does
+    // NOT fail on a Radiance file -- it silently applies a fixed gamma-2.2 tone map and hands back
+    // 8-bit LDR bytes, so cooking one produces a plausible artifact that is quietly wrong.
+    const std::string leaf = fs::path(args.inputPath).filename().string();
+    if (!engine::editor::isCookableTextureName(leaf)) {
+        if (engine::editor::isHdrTextureName(leaf)) {
+            std::cerr << "aero_cooker: error: '" << leaf
+                      << "' is a high-dynamic-range image and is not cooked by v1 -- stb_image would silently "
+                         "tone-map it to 8 bits through a fixed gamma-2.2 curve, producing a plausible artifact "
+                         "that is quietly wrong. HDR belongs to BC6H, which arrives with a later task.\n";
+        } else {
+            std::cerr << "aero_cooker: error: no decoder claims '" << leaf
+                      << "' (expected .png .jpg .jpeg .tga .bmp .gif .psd)\n";
+        }
+        return ExitCode::CookError;
+    }
+
+    // ---- 2. the source bytes ------------------------------------------------------------------
+    // MAX_TEXTURE_FILE_BYTES, not MAX_MODEL_FILE_BYTES: the cap bounds the COMPRESSED source file,
+    // while the decoded pixel count is bounded separately and per-axis by decodeImageRgba8 below.
+    engine::editor::FileBytesResult source =
+        engine::editor::readFileBytes(args.inputPath, engine::editor::MAX_TEXTURE_FILE_BYTES);
+    if (!source.bytes.has_value()) {
+        if (source.refusedByCap) {
+            std::cerr << "aero_cooker: error: '" << args.inputPath << "' is " << source.size << " bytes, above the "
+                      << engine::editor::MAX_TEXTURE_FILE_BYTES << "-byte texture read limit\n";
+        } else {
+            std::cerr << "aero_cooker: error: cannot read '" << args.inputPath << "': " << source.error << '\n';
+        }
+        return ExitCode::IoError;
+    }
+
+    // ---- 3. the decode ------------------------------------------------------------------------
+    const engine::editor::DecodedImage image =
+        engine::editor::decodeImageRgba8(asBytes(*source.bytes), engine::assets::MAX_TEXTURE_DIMENSION);
+    if (!image.error.empty()) {
+        std::cerr << "aero_cooker: error: cannot decode '" << leaf << "': " << image.error << '\n';
+        return ExitCode::CookError;
+    }
+
+    // ---- 4. the format, then 5. the cook ------------------------------------------------------
+    engine::assets::TextureCookInput input;
+    input.sourceGuid = args.guid;
+    input.width = image.width;
+    input.height = image.height;
+    input.rgba8 = image.rgba8;
+    input.format = resolveTextureFormat(args.formatToken, args.srgb, image.rgba8);
+    input.generateMips = args.generateMips;
+
+    const engine::assets::TextureCookResult cooked = engine::assets::cookTexture(input);
+    // FIRST, so a refusal's warnings are not swallowed by the error path below.
+    reportWarnings("cook", cooked.warnings, cooked.warningTotal);
+    if (cooked.status == engine::assets::TextureCookStatus::Refused) {
+        std::cerr << "aero_cooker: error: " << cooked.message << '\n';
+        return ExitCode::CookError;
+    }
+
+    // ---- 6. the write. ONLY NOW is the output path touched -------------------------------------
+    // writeTextFileAtomic, the same call the mesh path makes: it is BINARY ON BOTH SIDES
+    // (std::ios::binary | std::ios::trunc), so its name is about its ATOMICITY and not about text
+    // mode. That is what stops a text-mode write turning every 0x0A in the container into 0x0D 0x0A on
+    // exactly one lane -- and a KTX2 identifier ends in 0x0D 0x0A 0x1A 0x0A, so this file would be
+    // corrupt at byte 8. Do not "fix" the name by reaching for a different primitive.
+    const std::string_view artifact(reinterpret_cast<const char*>(cooked.bytes.data()), cooked.bytes.size());
+    const std::string writeError = engine::editor::writeTextFileAtomic(args.outputPath, artifact);
+    if (!writeError.empty()) {
+        std::cerr << "aero_cooker: error: cannot write '" << args.outputPath << "': " << writeError << '\n';
+        return ExitCode::IoError;
+    }
+    return ExitCode::Success;
+}
+
 ExitCode runMain(int argc, char** argv) {
     // ---- 1. argv ---------------------------------------------------------------------------
     const std::optional<Args> parsed = parseArgs(argc, argv);
@@ -327,6 +551,12 @@ ExitCode runMain(int argc, char** argv) {
         return ExitCode::Success;
     }
     const Args& args = *parsed;
+    // The subcommand split, and the ONLY structural change task 3.3.2 made to this function: the mesh
+    // path below is byte-for-byte what it was, which is what "subcommand-shaped from day one" was
+    // promising.
+    if (args.subcommand == Subcommand::Texture) {
+        return runTexture(args);
+    }
 
     // ---- 2. the file NAME decides what happens, before a byte is read -----------------------
     // DEVIATION from the plan's own §D-8, which numbered the read first and this test second. Its
