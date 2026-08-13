@@ -76,6 +76,34 @@ namespace {
     return dst;
 }
 
+// The comment-stripped text of one engine/assets source file. TWO cases need it -- TX40's
+// "the cap is on BYTES, not on dimension" arm and TX48's ordering arm -- and both need the SAME
+// stripping, so it lives here rather than being written twice. Comments go first so prose that
+// merely NAMES a constant can never stand in for code that uses it.
+[[nodiscard]] std::string strippedAssetsSource(const std::string& fileName) {
+    std::ifstream file(std::string(AERO_ASSETS_SRC_DIR) + "/" + fileName, std::ios::binary);
+    REQUIRE(file.is_open());
+    const std::string source((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    REQUIRE(source.size() > 1000);
+
+    std::string stripped;
+    stripped.reserve(source.size());
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        if (source[i] == '/' && i + 1 < source.size() && source[i + 1] == '/') {
+            while (i < source.size() && source[i] != '\n') {
+                ++i;
+            }
+        }
+        if (i < source.size()) {
+            stripped.push_back(source[i]);
+        }
+    }
+    // ANTI-VACUITY: stripping must have removed something and kept something.
+    REQUIRE(stripped.size() < source.size());
+    REQUIRE_FALSE(stripped.empty());
+    return stripped;
+}
+
 // floor(log2(max(w, h))) + 1, written out LONGHAND here so TX1 never asserts the function against
 // itself.
 [[nodiscard]] std::uint32_t levelCountRef(std::uint32_t width, std::uint32_t height) {
@@ -114,7 +142,13 @@ TEST_CASE("mipLevelCount is floor(log2(max(w, h))) + 1 across POT, NPOT and dege
         CHECK(levelCountRef(row.width, row.height) == row.expected);
         ++checked;
     }
-    REQUIRE(checked == ROWS.size());
+    // THE COUNT IS A LITERAL, NEVER `ROWS.size()`. A guard derived from the very table it guards
+    // cannot see a row DELETED -- `checked` and `ROWS.size()` shrink together and the case stays
+    // green while testing less. Sabotage seed S48b removed the 1x2 and 1x64 rows (the only two rows
+    // that can see mipLevelCount using width alone, which is seed S47) and the whole suite stayed
+    // green. Every case-local table in this file, cooked_texture_test.cpp and
+    // editor/texture_cook_source_test.cpp pins its count the same way.
+    REQUIRE(checked == 10);
     // A zero extent has no chain at all. The cook refuses such an input long before this is reached,
     // but the function is total anyway.
     CHECK(mipLevelCount(0, 0) == 0);
@@ -297,7 +331,7 @@ TEST_CASE("the polyphase weights sum to their denominator, for every odd extent 
         }
         ++checked;
     }
-    REQUIRE(checked == EXTENTS.size());
+    REQUIRE(checked == 5);
 }
 
 TEST_CASE("a degenerate axis stays 1 and takes the one-tap branch at every level (TX12)") {
@@ -604,6 +638,10 @@ TEST_CASE("bytes are non-empty IFF Ok, across every format (TX25)") {
         CHECK(result.status == TextureCookStatus::Ok);
         ++accepted;
     }
+    // COOK_FORMATS is shared by several cases, so its SIZE is pinned here with a literal: the guards
+    // that read `== COOK_FORMATS.size()` cannot see the table itself shrink, and this is the one
+    // assertion that can (the ALL_FORMATS/CT1 arrangement one file over, restated).
+    CHECK(COOK_FORMATS.size() == 8);
     REQUIRE(accepted == COOK_FORMATS.size());
     const TextureCookResult refused = cook(pixels, 0, 3, CookedTextureFormat::Bc1RgbUnorm);
     CHECK(refused.status == TextureCookStatus::Refused);
@@ -882,6 +920,53 @@ TEST_CASE("generateMips false gives levelCount 1 and an identical level 0 (TX35)
     REQUIRE(compared == a.size());
 }
 
+TEST_CASE("the COOK's own chain filters level p from level p-1, not from level 0 (TX35a)") {
+    // TX19 proves the FILTER composes -- it halves twice by hand -- which is a DIFFERENT statement
+    // from "the cook chains its own levels", and the difference is not academic: sabotage seed S16
+    // pointed cookTexture's filter at level 0 for every level and TX19 stayed green. Only the byte
+    // goldens caught it, and a golden catches every change equally, so nothing named the rule that
+    // had broken. This case names it.
+    //
+    // Rgba8Unorm is what makes the chain OBSERVABLE: its level bytes ARE the filter's output,
+    // verbatim, with no block encoder in between.
+    std::array<std::uint8_t, 64> levels{};
+    constexpr std::array<std::uint8_t, 16> QUADRANT = {0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0};
+    for (std::size_t y = 0; y < 4; ++y) {
+        for (std::size_t x = 0; x < 4; ++x) {
+            levels[8 * y + x] = QUADRANT[4 * y + x];
+        }
+    }
+    const std::vector<std::byte> base = greyImage(levels);
+    const std::vector<std::byte> level1 = halve(base, 8, 8, false);
+    const std::vector<std::byte> level2 = halve(level1, 4, 4, false);
+
+    const TextureCookResult cooked = cook(base, 8, 8, CookedTextureFormat::Rgba8Unorm);
+    REQUIRE(cooked.status == TextureCookStatus::Ok);
+    const auto parse = parseCookedTexture(cooked.bytes);
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    REQUIRE(parse.view.levelCount() == 4);  // 8 -> 4 -> 2 -> 1
+
+    const std::span<const std::byte> cookedLevel1 = parse.view.levelBytes(1);
+    REQUIRE(cookedLevel1.size() == level1.size());
+    const std::span<const std::byte> cookedLevel2 = parse.view.levelBytes(2);
+    REQUIRE(cookedLevel2.size() == level2.size());
+    std::size_t compared = 0;
+    for (std::size_t i = 0; i < level2.size(); ++i) {
+        CHECK(cookedLevel2[i] == level2[i]);
+        ++compared;
+    }
+    REQUIRE(compared == 16);  // 2 x 2 texels x 4 channels, as a literal
+
+    // And the two answers genuinely differ, which is what lets this case see the rule violated:
+    // level 2 folded from level 1 is (1 + 1 + 1 + 0 + 2) / 4 = 1, while a resample straight from
+    // level 0 would have given (2 + 2 + 2 + 1 + 8) / 16 = 0. TX19 carries the same arithmetic.
+    CHECK(static_cast<std::uint8_t>(cookedLevel2[0]) == 1);
+    CHECK(static_cast<std::uint8_t>(cookedLevel2[0]) != 0);
+    // Level 1 is asserted too, but only for completeness: it is the ONE level a "from level 0"
+    // version gets right by construction, so a case that stopped here would discriminate nothing.
+    CHECK(static_cast<std::uint8_t>(cookedLevel1[0]) == 1);
+}
+
 TEST_CASE("a 1x1 image cooks identically with and without mips (TX36)") {
     // levelCount is 1 either way, so the two spellings must produce the SAME BYTES rather than merely
     // the same picture -- there is no second level for the flag to change.
@@ -1015,6 +1100,29 @@ TEST_CASE("the cap is on BYTES, not on dimension (TX40)") {
     CHECK(bc1Total < engine::assets::MAX_COOKED_TEXTURE_BYTES);
     MESSAGE("at 12000x12000 with a full chain: Rgba8Unorm " << rgbaTotal << " B, Bc1RgbUnorm " << bc1Total << " B, cap "
                                                             << engine::assets::MAX_COOKED_TEXTURE_BYTES << " B");
+
+    // AND THE SOURCE-TEXT HALF, which is the only thing in this tree that can see the rule violated.
+    // Everything above is arithmetic the TEST computes: nothing here ever calls cookTexture at a
+    // dimension where the two families disagree, because doing so needs a 576 MB input and twelve
+    // million block encodes on every lane on every run, and the RGBA8/BC1 crossover cannot be lowered
+    // (RGBA8 only passes the 512 MiB cap above ~10 033 texels a side). So a cap check rewritten as a
+    // DIMENSION test -- or one that merely gains a dimension clause beside the byte comparison --
+    // refuses exactly what TX39 expects it to refuse, with the same message, and every case in this
+    // tree stays green. Sabotage seeds S53 and S53b are those two edits and S53b reddened NOTHING
+    // before this assertion existed.
+    //
+    // The comment-stripped source text is the answer, the CM50/TX48 precedent: assert the cap check
+    // compares the computed byte TOTAL and names neither axis.
+    const std::string stripped = strippedAssetsSource("texture_cook.cpp");
+    const std::size_t at = stripped.find("if (totalBytes");
+    REQUIRE(at != std::string::npos);
+    CHECK(stripped.find("if (totalBytes", at + 1) == std::string::npos);  // exactly one such check
+    const std::size_t brace = stripped.find('{', at);
+    REQUIRE(brace != std::string::npos);
+    const std::string condition = stripped.substr(at, brace - at);
+    CHECK(condition.find("MAX_COOKED_TEXTURE_BYTES") != std::string::npos);
+    CHECK(condition.find("width") == std::string::npos);
+    CHECK(condition.find("height") == std::string::npos);
 }
 
 TEST_CASE("the same input cooked twice is byte-identical, for all eight formats (TX41)") {
@@ -1193,25 +1301,9 @@ TEST_CASE("the byte-cap check comes BEFORE the allocation, asserted in source te
     //
     // Comments are stripped first, so the prose above the check (which names the constant) cannot
     // stand in for the check itself.
-    std::ifstream file(std::string(AERO_ASSETS_SRC_DIR) + "/texture_cook.cpp", std::ios::binary);
-    REQUIRE(file.is_open());
-    const std::string source((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    REQUIRE(source.size() > 1000);
-
-    std::string stripped;
-    stripped.reserve(source.size());
-    for (std::size_t i = 0; i < source.size(); ++i) {
-        if (source[i] == '/' && i + 1 < source.size() && source[i + 1] == '/') {
-            while (i < source.size() && source[i] != '\n') {
-                ++i;
-            }
-        }
-        if (i < source.size()) {
-            stripped.push_back(source[i]);
-        }
-    }
-    // ANTI-VACUITY: stripping must have removed something and kept something.
-    CHECK(stripped.size() < source.size());
+    const std::string stripped = strippedAssetsSource("texture_cook.cpp");
+    // ANTI-VACUITY: the helper already asserts the strip removed something and kept something; this
+    // is the one that says the text is the file we meant.
     CHECK(stripped.find("cookTexture") != std::string::npos);
 
     const std::size_t check = stripped.find("> MAX_COOKED_TEXTURE_BYTES");

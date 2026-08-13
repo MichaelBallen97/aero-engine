@@ -32,6 +32,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>   // CT6's source-text arm reads cooked_texture.hpp through AERO_ASSETS_SRC_DIR
+#include <iterator>  // ditto -- std::istreambuf_iterator
 #include <limits>
 // <ostream> is load-bearing on MSVC (the 0.4.1 trap, a fifth occurrence): doctest stringifies the
 // std::string_view operands of the toString and status-label CHECKs below through the stdlib's
@@ -289,7 +291,7 @@ TEST_CASE("isCookedTextureFormat accepts exactly the eight and nothing else (CT2
         CHECK_FALSE(isCookedTextureFormat(v));
         ++rejected;
     }
-    REQUIRE(rejected == REJECTED.size());
+    REQUIRE(rejected == 7);
 }
 
 TEST_CASE("isSrgbCookedFormat is true for exactly the three sRGB formats (CT3)") {
@@ -354,6 +356,42 @@ TEST_CASE("cookedTextureLevelAlignment is lcm(blockBytes, 4), computed independe
     CHECK(lcmRef(12U, 4U) == 12U);
     CHECK(lcmRef(6U, 4U) == 12U);
     CHECK(lcmRef(1U, 4U) == 4U);
+
+    // AND THE SOURCE TEXT, because nothing above can see the rule violated. lcm(blockBytes, 4) and
+    // blockBytes agree for all EIGHT of today's formats, so a body rewritten as
+    // `return cookedTextureBlockBytes(format);` passes every assertion above -- computed lcm
+    // included -- and only a NINTH format whose block size is not a multiple of 4 could tell them
+    // apart. None exists to add: BCn is 8 or 16 bytes throughout, and ASTC (task 6.3.1) is 16. That
+    // is sabotage seed S46, which reddened NOTHING, and the plan named it as one of the three seeds
+    // aimed at "a rule with no case that can see it violated".
+    //
+    // So the rule is pinned where it lives, in comment-stripped source text -- the CM50/TX48
+    // precedent. The header is reached through AERO_ASSETS_SRC_DIR rather than a second compile
+    // definition nobody else would need.
+    std::ifstream header(std::string(AERO_ASSETS_SRC_DIR) + "/../include/aero/assets/cooked_texture.hpp",
+                         std::ios::binary);
+    REQUIRE(header.is_open());
+    const std::string source((std::istreambuf_iterator<char>(header)), std::istreambuf_iterator<char>());
+    REQUIRE(source.size() > 1000);
+    std::string stripped;
+    stripped.reserve(source.size());
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        if (source[i] == '/' && i + 1 < source.size() && source[i + 1] == '/') {
+            while (i < source.size() && source[i] != '\n') {
+                ++i;
+            }
+        }
+        if (i < source.size()) {
+            stripped.push_back(source[i]);
+        }
+    }
+    REQUIRE(stripped.size() < source.size());  // anti-vacuity: the strip did something
+    const std::size_t at = stripped.find("cookedTextureLevelAlignment(CookedTextureFormat format)");
+    REQUIRE(at != std::string::npos);
+    const std::size_t end = stripped.find('}', at);
+    REQUIRE(end != std::string::npos);
+    const std::string body = stripped.substr(at, end - at);
+    CHECK(body.find("std::lcm") != std::string::npos);
 }
 
 TEST_CASE("toString is total and distinct across the eight formats (CT7)") {
@@ -460,7 +498,7 @@ TEST_CASE("every DFD table's length matches its sample count and its own dfdTota
         CHECK((descriptorBlockSize - 24U) % 16U == 0U);
         ++checked;
     }
-    REQUIRE(checked == ROWS.size());
+    REQUIRE(checked == 8);
 }
 
 TEST_CASE("every DFD's descriptorBlockSize, versionNumber and bytesPlane0 agree with the format (CT11)") {
@@ -522,7 +560,7 @@ TEST_CASE("the UNORM/SRGB DFD pairs differ in ONE byte for BC1 and TWO for BC3 a
         CHECK(differing == pair.differences);
         ++checked;
     }
-    REQUIRE(checked == PAIRS.size());
+    REQUIRE(checked == 3);
 
     // The exact indices and values, spelled out, because "two bytes differ" would also be true of
     // two WRONG bytes.
@@ -634,7 +672,7 @@ TEST_CASE("a non-zero supercompressionScheme is Supercompressed, not Unsupported
         expectRefusal(parseCookedTexture(file), CookedTextureStatus::Supercompressed);
         ++checked;
     }
-    REQUIRE(checked == SCHEMES.size());
+    REQUIRE(checked == 3);
 }
 
 TEST_CASE("supercompression is diagnosed BEFORE vkFormat, which pins the ladder's order (CT18)") {
@@ -657,7 +695,7 @@ TEST_CASE("a vkFormat outside the eight is UnsupportedFormat (CT19)") {
         expectRefusal(parseCookedTexture(file), CookedTextureStatus::UnsupportedFormat);
         ++checked;
     }
-    REQUIRE(checked == FORMATS.size());
+    REQUIRE(checked == 5);
 }
 
 TEST_CASE("a typeSize other than 1 is UnsupportedFormat (CT20)") {
@@ -669,7 +707,7 @@ TEST_CASE("a typeSize other than 1 is UnsupportedFormat (CT20)") {
         expectRefusal(parseCookedTexture(file), CookedTextureStatus::UnsupportedFormat);
         ++checked;
     }
-    REQUIRE(checked == SIZES.size());
+    REQUIRE(checked == 3);
 }
 
 TEST_CASE("a non-zero pixelDepth is UnsupportedShape and the message names the field (CT21)") {
@@ -699,7 +737,7 @@ TEST_CASE("a faceCount other than 1 is UnsupportedShape and the message names th
         CHECK(parse.message.find("faceCount") != std::string::npos);
         ++checked;
     }
-    REQUIRE(checked == FACES.size());
+    REQUIRE(checked == 2);
 }
 
 TEST_CASE("pixelWidth outside 1..MAX_TEXTURE_DIMENSION is CapExceeded (CT24)") {
@@ -712,7 +750,7 @@ TEST_CASE("pixelWidth outside 1..MAX_TEXTURE_DIMENSION is CapExceeded (CT24)") {
         expectRefusal(parseCookedTexture(file), CookedTextureStatus::CapExceeded);
         ++checked;
     }
-    REQUIRE(checked == WIDTHS.size());
+    REQUIRE(checked == 3);
 }
 
 TEST_CASE("pixelHeight outside 1..MAX_TEXTURE_DIMENSION is CapExceeded (CT25)") {
@@ -724,7 +762,7 @@ TEST_CASE("pixelHeight outside 1..MAX_TEXTURE_DIMENSION is CapExceeded (CT25)") 
         expectRefusal(parseCookedTexture(file), CookedTextureStatus::CapExceeded);
         ++checked;
     }
-    REQUIRE(checked == HEIGHTS.size());
+    REQUIRE(checked == 2);
 }
 
 TEST_CASE("levelCount 0 is refused outright and so is one past the cap (CT26)") {
@@ -739,7 +777,7 @@ TEST_CASE("levelCount 0 is refused outright and so is one past the cap (CT26)") 
         expectRefusal(parseCookedTexture(file), CookedTextureStatus::CapExceeded);
         ++checked;
     }
-    REQUIRE(checked == COUNTS.size());
+    REQUIRE(checked == 2);
 }
 
 TEST_CASE("a levelCount legal in itself but impossible for the dimensions is CapExceeded (CT27)") {
@@ -814,7 +852,7 @@ TEST_CASE("an sRGB format carrying its UNORM sibling's descriptor is BadDescript
         expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadDescriptor);
         ++checked;
     }
-    REQUIRE(checked == PAIRS.size());
+    REQUIRE(checked == 3);
 }
 
 TEST_CASE("a single flipped descriptor byte is BadDescriptor, at each of four positions (CT33)") {
@@ -831,7 +869,7 @@ TEST_CASE("a single flipped descriptor byte is BadDescriptor, at each of four po
         expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadDescriptor);
         ++checked;
     }
-    REQUIRE(checked == POSITIONS.size());
+    REQUIRE(checked == 4);
 }
 
 TEST_CASE("a kvdByteOffset that is not exactly past the descriptor is BadTable (CT34)") {
@@ -919,7 +957,7 @@ TEST_CASE("a malformed AeroSourceGuid value yields the nil GUID rather than a re
         CHECK_FALSE(parse.view.sourceGuid().valid());
         ++checked;
     }
-    REQUIRE(checked == VALUES.size());
+    REQUIRE(checked == 3);
 }
 
 TEST_CASE("a level byteLength that is wrong for its dimensions is BadRange (CT41)") {
@@ -1280,7 +1318,7 @@ TEST_CASE("levels[0] holds the LARGEST offset and the last level starts at the a
         CHECK(parse.view.levelRecord(0).byteOffset + parse.view.levelRecord(0).byteLength == file.size());
         ++checked;
     }
-    REQUIRE(checked == cases.size());
+    REQUIRE(checked == 3);
 }
 
 TEST_CASE("there is EXACTLY ONE padding site in each golden and no gap between levels (CT57)") {
@@ -1308,6 +1346,12 @@ TEST_CASE("there is EXACTLY ONE padding site in each golden and no gap between l
             engine::assets::getU32(file, H_KVD_OFFSET) + engine::assets::getU32(file, H_KVD_LENGTH);
         const std::uint32_t alignment = cookedTextureLevelAlignment(c.format);
         const std::uint32_t levels = parse.view.levelCount();
+        // SHAPE BEFORE POSITION. `levels` is unsigned, so a refused parse (levelCount 0) turns both
+        // `levels - 1` below into 0xFFFFFFFF: the second one is a loop that then runs four billion
+        // times, each with a CHECK, and a case that should fail in milliseconds instead runs for
+        // hours. Found by seeding a wrong DFD byte (matrix seed S6), where the whole run had to be
+        // killed after 1.19 BILLION assertions. REQUIRE aborts this case cleanly instead.
+        REQUIRE(levels >= 1);
         const std::uint64_t smallest = parse.view.levelRecord(levels - 1).byteOffset;
 
         // The gap is exactly (A - kvdEnd % A) % A bytes, and every one of them is 0x00.
@@ -1323,7 +1367,7 @@ TEST_CASE("there is EXACTLY ONE padding site in each golden and no gap between l
         }
         ++checked;
     }
-    REQUIRE(checked == cases.size());
+    REQUIRE(checked == 4);
 }
 
 TEST_CASE("the four goldens total 344, 320, 400 and 352 bytes, with NO trailing bytes (CT58)") {
@@ -1349,5 +1393,5 @@ TEST_CASE("the four goldens total 344, 320, 400 and 352 bytes, with NO trailing 
         CHECK(largest.byteOffset + largest.byteLength == c.expectedSize);
         ++checked;
     }
-    REQUIRE(checked == cases.size());
+    REQUIRE(checked == 4);
 }

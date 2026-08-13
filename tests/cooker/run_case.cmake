@@ -137,6 +137,61 @@ function(aero_expect_non_empty text what)
     endif()
 endfunction()
 
+# A comment-stripped source-text ordering gate, for the ONE property in this tool that no process-tier
+# case can observe (see texture_nothing_written_on_failure). `//` comments are removed first, so prose
+# naming either needle cannot stand in for the code that uses it.
+#
+# The search is SCOPED to one function, between `region_begin` and `region_end`, because the two
+# subcommands are deliberate mirrors of each other: `writeTextFileAtomic(args.outputPath, artifact)`
+# is character-for-character identical in runMesh and runTexture, so an unscoped search would compare
+# a needle in one function against a needle in the other and report an ordering that means nothing.
+function(aero_expect_source_order path region_begin region_end first second)
+    if(NOT EXISTS "${path}")
+        message(FATAL_ERROR "case '${CASE}': expected source file '${path}' to exist")
+    endif()
+    file(READ "${path}" source)
+    string(LENGTH "${source}" source_length)
+    if(source_length LESS 1000)
+        message(FATAL_ERROR "case '${CASE}': '${path}' is only ${source_length} bytes; that is not the file")
+    endif()
+    string(REGEX REPLACE "//[^\n]*" "" stripped "${source}")
+    string(LENGTH "${stripped}" stripped_length)
+    if(NOT stripped_length LESS source_length)   # anti-vacuity: the strip must have removed something
+        message(FATAL_ERROR "case '${CASE}': stripping comments from '${path}' removed nothing")
+    endif()
+
+    string(FIND "${stripped}" "${region_begin}" region_at)
+    if(region_at EQUAL -1)
+        message(FATAL_ERROR "case '${CASE}': '${path}' does not contain the region opener '${region_begin}'")
+    endif()
+    string(SUBSTRING "${stripped}" ${region_at} -1 region)
+    string(FIND "${region}" "${region_end}" region_length)
+    if(region_length EQUAL -1)
+        message(FATAL_ERROR "case '${CASE}': '${path}' does not contain the region closer '${region_end}'")
+    endif()
+    string(SUBSTRING "${region}" 0 ${region_length} region)
+
+    string(FIND "${region}" "${first}" first_at)
+    string(FIND "${region}" "${second}" second_at)
+    if(first_at EQUAL -1)
+        message(FATAL_ERROR "case '${CASE}': '${path}' does not contain '${first}' in that region, outside"
+                            " a comment")
+    endif()
+    if(second_at EQUAL -1)
+        message(FATAL_ERROR "case '${CASE}': '${path}' does not contain '${second}' in that region, outside"
+                            " a comment")
+    endif()
+    if(NOT first_at LESS second_at)
+        message(FATAL_ERROR "case '${CASE}': in '${path}', '${first}' (at ${first_at}) must come BEFORE"
+                            " '${second}' (at ${second_at})")
+    endif()
+    string(FIND "${region}" "${second}" second_again REVERSE)
+    if(NOT second_again EQUAL second_at)
+        message(FATAL_ERROR "case '${CASE}': '${second}' occurs more than once in that region of"
+                            " '${path}', so 'before' is ambiguous")
+    endif()
+endfunction()
+
 function(aero_verify_no_files_in dir)
     file(GLOB leftover "${dir}/*")
     if(leftover)
@@ -562,6 +617,20 @@ elseif(CASE STREQUAL "texture_nothing_written_on_failure")
     aero_expect_exit("${result}" 2)
     aero_expect_non_empty("${err}" "stderr")
     aero_expect_no_files("${TEXOUT}" "${TEXOUT}.aero-tmp")
+
+    # AND THE ORDERING THE BEHAVIOURAL HALF ABOVE CANNOT REACH. The refusal above is the DECODE's; the
+    # COOK's own refusal cannot be provoked through this CLI at any affordable cost, because
+    # decodeImageRgba8 bounds every axis at MAX_TEXTURE_DIMENSION long before cookTexture's byte cap
+    # can trip, and the one input that would trip it (a ~16384x8192 image) costs a 537 MB decode on
+    # every lane on every run. So moving the write ABOVE the cook-status check -- sabotage seed S39 --
+    # reddened NOTHING: an empty artifact would have been written and the tool would still have exited
+    # 0. This is the source-text half, the CM50/TX48 shape one tier up, and SOURCE_DIR is already here
+    # so it needs no new plumbing. Comments are stripped first, so the prose above the check cannot
+    # stand in for the check.
+    aero_expect_source_order("${SOURCE_DIR}/tools/cooker/src/main.cpp"
+        "ExitCode runTexture(const Args& args) {" "ExitCode runMain(int argc, char** argv) {"
+        "cooked.status == engine::assets::TextureCookStatus::Refused"
+        "writeTextFileAtomic(args.outputPath")
 
 elseif(CASE STREQUAL "texture_output_dir_missing")
     # The tool creates NO directory, for either subcommand: a build-time tool that invents them is how

@@ -262,7 +262,7 @@ TEST_CASE("the cookable table has exactly SEVEN entries, counted through the pre
         }
         ++visited;
     }
-    REQUIRE(visited == CANDIDATES.size());  // anti-vacuity: the loop actually ran
+    REQUIRE(visited == 14);  // anti-vacuity: the loop actually ran
     CHECK(claimed == 7);
 }
 
