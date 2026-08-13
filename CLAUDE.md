@@ -15,19 +15,22 @@ macOS-validated, gate artifact at `samples/phase-2-editor-scene/`. A whole-phase
 found and fixed two silent data-loss paths, a never-absolute project root, and four stale
 documentation claims.
 
-**Phase 3 (Asset Pipeline & 3D Content) is OPEN, and Epic 3.3 (Cooker v0) has now opened.** Epic 3.1
+**Phase 3 (Asset Pipeline & 3D Content) is OPEN, and Epic 3.3 (Cooker v0) now has two tasks.** Epic 3.1
 (AssetDatabase · assets) is fully merged (3.1.1–3.1.4). Epic 3.2 (Importers) has **five** merged tasks
 — 3.2.1 glTF, 3.2.2 FBX, 3.2.3 OBJ, 3.2.4 Blender CLI, 3.2.5 Assimp (DAE/PLY/STL), the last merged as
 PR #74 (`7e0224f`) on 2026-08-12. **3.2 is closed in code; 3.1.5 (drag-into-scene) is the one Epic 3.1
-task still open.** **3.3.1 (Mesh cook → GPU buffers) is MERGED as PR #75 (merge commit `17a6821`,
-13 commits) and macOS-validated ✅ PASS 12/12 on 2026-08-13** — CI-green on all three lanes with the
-green run's `headSha` asserted equal to `HEAD`, sabotage-proven, code-review-closed. **Every row that
-demanded a measurement got one**, so R7 is closed with numbers on the validated build and not merely
-headless: rows 6 and 7 recorded source, cooked, ratio, wall-clock and peak RSS, and in doing so found
-that **peak memory is dominated by the IMPORTER, not the cook** — a binary `.gltf` peaks at ~3.1× its
-source while an ASCII `.obj` peaks at ~9.0×, which reframes R7's own premise. Row 1's
-"textured, multi-material Blender export" half is the one thing not covered (no Blender on the
-validating machine) and is recorded as such rather than ticked. Windows and Linux rows pending.
+task still open.** **3.3.1 (Mesh cook → GPU buffers) is MERGED as PR #75 (`17a6821`) and
+macOS-validated ✅ PASS 12/12 (2026-08-13) with every measurement blank filled.**
+**3.3.2 (Texture cook → KTX2/Basis) is the CURRENT BRANCH** — eleven green commits plus **four more
+from a closed code-review round**, mechanically green locally, **not pushed, not merged, not
+validated**. The round found **two real defects**: a division by zero in `cookTexture` for a format
+outside the eight (a UBSan report and a `SIGABRT`, unreachable from today's callers and reachable the
+moment a format is read from a `.meta` or a `.pak`), and a parser that **accepted** the partial mip
+chain `docs/09` §10.8 says it refuses — closed by adding the check, never by rewording the document.
+Plus two coverage holes that were green by construction: **BC4 was the one format with neither a byte
+golden nor a golden-pinned sibling**, so 27 of its 44 DFD bytes were asserted nowhere and declaring
+BC5's colour model in it left the suite green at 131/131; and AC-32's **repeated-flag arm was never
+added**, so `refuseRepeat` on all four texture-only flags had zero coverage.
 
 **Epics 3.1 and 3.2, condensed.** Full per-task detail — every sabotage matrix, every build-time
 finding, every dead end — lives permanently in `docs/10-engineering-log.md`'s Phase 3 entries; this is
@@ -50,106 +53,120 @@ code. **3.2.5** Assimp DAE/PLY/STL (PR #74 `7e0224f`, 36 seeds, 6 review finding
 fourth parser; Ubuntu LSan caught 4704 B in 17 allocations on assimp's own error paths, closed with
 two frame-scoped `tests/lsan.supp` entries.
 
-**3.3.1 — Mesh cook → GPU buffers, the current branch.** Epic 3.3's first task and **the first thing
-in this project that produces a runtime-consumable artifact**: a file whose whole design premise is
-that the thing reading it does no parsing at all. Three pieces land. **`engine/assets` OPENS** as
-`aero::assets` — the first new engine subsystem since 1.4.2 — holding the versioned `.aeromesh`
-container v1 (`cooked_mesh.{hpp,cpp}`: frozen enums, eight `constexpr` little-endian byte primitives,
-and a hostile-input parser that never throws, never reads a file, never logs, and validates every
-range by subtraction) and the cook (`mesh_cook.{hpp,cpp}`: classify → sort → caps → layouts → width →
-offsets → emit). Both are PURE and link **`aero::core` + `aero::profiling` and NO vcpkg package at
-all**, which is what makes their `PRIVATE` links a genuine compile-time boundary rather than the usual
-convention-plus-grep (R12). **`/editor` gains one adapter pair**, `mesh_cook_source.{hpp,cpp}`, two
-pure functions and no UI. **`/tools/cooker` opens** as the third first-party CLI, `aero_cooker mesh`,
-linking `aero::editor_core` for the five importer paths it refuses to re-implement — legal because
-`tools/` sits outside the golden rule on **both** halves (`check-golden-rule.sh` scans `engine` and
-`runtime`; `aero_assert_golden_rule`'s `CONSUMER_DIRS` is the same pair).
+**3.3.1 — Mesh cook → GPU buffers, compressed to its load-bearing residue.** Epic 3.3's first task and
+the first thing in this project that produces a **runtime-consumable artifact**. It opened
+`engine/assets` as `aero::assets` (the `.aeromesh` container v1 + the cook, both PURE, linking
+`aero::core` + `aero::profiling` and **no vcpkg package at all** — which is what makes their `PRIVATE`
+links a genuine compile-time boundary rather than convention-plus-grep, R12), added one editor adapter
+pair, and opened `/tools/cooker` as the third first-party CLI, legal because `tools/` sits outside the
+golden rule on **both** halves. **It is the tree's first BINARY format**, so `docs/09` gained a
+normative §9 restating every determinism guarantee for bytes: no struct `memcpy`, no hash container, no
+timestamp/path/hostname/build-id, explicit little-endian assembly through eight primitives whose
+endianness is a **`static_assert`**, a zero-initialized output buffer, and a sort that runs **before**
+the cap pass so a shuffled input cannot produce a different file. Nine spec statements were wrong, three
+load-bearing; a 42-seed matrix found five genuine gaps (`MC57`, `MC58`, `CM50`, `MK17`, `MC52`); CI
+caught a Windows-only `<ostream>`/`string_view` failure no local run could see. **R7 closed with
+numbers, and the numbers reframed its premise**: peak memory is dominated by the IMPORTER, not the cook
+(~3.1× source for a binary `.gltf`, ~9.0× for an ASCII `.obj`). **Its named, unowned gap is still
+open**: v1 stores no node hierarchy, so a consumer that instantiates a cooked mesh puts every submesh at
+the origin, and **the cook must not "solve" this by baking node transforms into vertices** —
+`ImportedMesh` is shared across nodes by construction. **3.1.5 is the first task that will hit it.**
 
-**It is the tree's first BINARY format**, so every determinism guarantee `docs/09` states for canonical
-*text* had to be re-derived for bytes. The answer is structural: no struct `memcpy`, no hash container,
-no timestamp/path/hostname/build-id, explicit little-endian assembly through primitives whose
-endianness is a **`static_assert`** rather than a test, a zero-initialized output buffer, and a sort
-that runs **before** the cap pass so a shuffled input cannot produce a different file. `docs/09` gained
-a full normative **§9** (with the old "Reserved for future formats" renumbered to §10, not replaced);
-`docs/03`'s asset-flow diagram was corrected — the importers produce an in-memory `ImportedModel`, not
-a glTF on disk, and the `.blend` path's GLB is the one on-disk intermediate.
+**3.3.2 — Texture cook → KTX2/Basis, the current branch.** Epic 3.3's second task and **the first thing
+this project produces that a third-party tool can open**: a strict subset of Khronos **KTX2**, byte for
+byte, so `ktx info`, `ktx validate` and RenderDoc read our artifacts. That one property changes the
+register of the whole task — every field is a **fact to be verified against `ktxspec.adoc`**, not a
+decision taken here. `engine/assets` grows from two pairs to **five**: `cooked_texture.{hpp,cpp}` (the
+container — the frozen `CookedTextureFormat` enum whose values *are* Khronos's `VkFormat` numbers, the
+eight frozen DFD tables, and a ten-status hostile-input parser), `texture_cook.{hpp,cpp}` (the cook —
+two committed gamma tables, an integer polyphase mip filter, the block loop and the assembly) and
+`bc_block.{hpp,cpp}` (the BC1 and BC4 encoders, from which BC3 and BC5 are composed with no third
+encoder). **`/editor` gains one adapter pair**, `texture_cook_source.{hpp,cpp}` — the tree's **second**
+stb_image implementation TU, the `auto`-format rule, and no UI at all. **`aero_cooker` gains its second
+subcommand**, `texture`, with a **mandatory** `--srgb`/`--linear` and no default. `docs/09` gained a
+full normative **§10** (with the old "Reserved for future formats" renumbered to **§11**, added rather
+than replaced), which also answers §9.0's forward reference: **there is still no platform field and no
+`--platform` flag**, because v1 emits exactly one profile; ASTC/ETC2 and the flag arrive together at
+6.3.1.
 
-**Nine spec statements were wrong and each was corrected before code was written**; three were
-load-bearing. `AC-4`'s "every offset is 16-aligned" contradicts the layout's own table — only the two
-**stored** offsets are 16-aligned, the three tables are packed, and a one-attribute file legitimately
-puts the section table at **104**. The spec's cap pass ran in **input** order, so a shuffled input
-produced a different file — and only on inputs that trip a cap, the exact combination a green suite
-never exercises. And the sort key is **not total** over a public API: a repeat is now diagnosed with a
-warning rather than being a silent determinism hole. Four more were found only by building it: `std::from_chars`'s
-floating-point overload does not exist in the pinned macOS SDK's libc++; the plan's phase-1 defensive
-drop would have made the vertex cap's own proofs unreachable (closed with `u64` counters instead); the
-section cap is unreachable by a **wider** margin than the plan assumed (the joints/weights pairing rule
-means only 2⁵ × 2 = **64** masks are producible, not 128); and `bugprone-branch-clone` forced two
-switches to merge arms that share a width without sharing a meaning.
+**Three properties are the whole task.** The output is a real KTX2 file, so conformance is verified
+rather than asserted. **The texture files carry NO FLOATING POINT** — no `float`, no `double`, no
+`<cmath>`, no runtime table generation — so cross-lane byte-identity is *structural*: a
+float here is a byte-identity hazard on three lanes (FMA contraction differs between clang and MSVC,
+libm between three C libraries), which is exactly why `stb_dxt.h` is installed, provides these four
+formats, and **is not used** — its BC1 path finds the principal axis by float power iteration. And
+**sRGB is not a flag but the format itself**: there is no `bool srgb` anywhere, Vulkan defines no
+`BC4_SRGB` or `BC5_SRGB`, so "an sRGB normal map" is **unspellable** rather than merely rejected.
 
-**A 42-seed sabotage matrix ran to completion, and FIVE genuine coverage gaps were found and closed**,
-each re-proven by re-seeding. The sharpest: **every existing ordering case supplied its primitives so
-that ascending mask and ascending source indices AGREED**, so dropping the mask from the comparator
-produced byte-identical output for all of them — the ordering rule the whole format rests on had no
-case that could see it violated (`MC57`). Also closed: the `±0.0f` fold-order witness no fixture
-carried (`MC58`, which also catches a seed that was a non-discriminator until it existed); a
-reserve-before-cap-check that is **unobservable at runtime here** because a 274 GB address-space
-reserve simply succeeds, measured, so it is asserted in comment-stripped source text instead (`CM50`);
-an adapter reading `ImportedPrimitive`'s attribute bitset, invisible because every committed fixture is
-internally consistent (`MK17`); and a table-driven case that **passed with zero assertions** until an
-anti-vacuity guard was added to it (`MC52`).
+**Eleven spec statements were wrong, and TWO were blocking in a way no test in this tree could catch.**
+`138 BC3_SRGB`'s byte 31 and `43 R8G8B8A8_SRGB`'s byte 79 must be `1F`, not `0F`: dfdutils'
+`setChannelFlags` sets `KHR_DF_SAMPLE_DATATYPE_LINEAR` when the channel id equals
+`KHR_DF_CHANNEL_RGBSDA_ALPHA` (15), and `KHR_DF_CHANNEL_BC3_ALPHA` is **also 15** — a numeric, not
+semantic, comparison. KTX2 makes it a **`must`**. Following the spec literally would have produced
+artifacts `ktx validate` rejects **with every test in this repository green**, because our own parser
+compares the descriptor against the same table our writer emits. A third correction moved the cook's
+test prefix from `TC` (13 cases in `thumbnail_cache_test.cpp` already own it) to `TX`; a fourth found
+that **there were no image fixtures in this tree at all**, which the two committed PNGs now close.
 
-**CI caught what a fully green local gate could not, for the fourth time in five tasks.** The first run
-failed on **Windows alone, at compile time**: doctest stringifies `std::string_view` operands through
-an `operator<<` that MS STL defines inline in `<string_view>` against a `std::basic_ostream` only
-`<iosfwd>` has declared. libc++ and libstdc++ supply the complete type transitively, so macOS and Linux
-built clean and no local run could have seen it. **This is the 0.4.1 trap's fourth occurrence**, so it
-is now a named section in `.claude/rules/ci-portability.md`. The failure incidentally proved the thing
-R8 existed to answer: `tools/cooker/src/main.cpp` had **already compiled**, so the
-cross-`add_subdirectory` alias resolution the tool depends on works under MSVC's generator.
+**A 53-seed sabotage matrix ran to completion and found FIVE genuine gaps plus one test-robustness
+defect**, each closed and re-proven by re-seeding. The sharpest three: **`TX40`'s "the cap is on BYTES,
+not on dimension" had no case that could see it violated** — a dimension clause added beside the byte
+comparison reddened nothing at all, because no case cooks at a dimension where the two families
+disagree (that needs a 576 MB input on every lane); **`TX19` proves the FILTER composes, never that the
+COOK chains its levels**, so pointing the cook's filter at level 0 for every level left it green and
+only the byte goldens caught it; and **every anti-vacuity guard guarded itself**, reading
+`REQUIRE(checked == TABLE.size())`, so deleting a row — including the two rows in `TX1` that exist
+specifically to catch another seed — left the suite green while it tested less. Also closed:
+`cookedTextureLevelAlignment`'s `lcm`, which **no format can distinguish** from `blockBytes` (BCn is 8
+or 16 throughout and ASTC is 16, so no fixture can ever close it), and the CLI's write-after-cook-status
+ordering, unreachable behaviourally because the decode's own bound refuses everything the cook's byte
+cap would. Three of the five are pinned in **comment-stripped source text**, the `CM50` precedent.
+**One seed reddened nothing exactly as predicted in advance** (reserve-before-cap-check, `S27`), and
+three plan predictions were falsified and recorded: dropping `STB_IMAGE_STATIC` does **not** produce a
+link failure on macOS today, so `TK18` is the only cover; `STBI_NO_FAILURE_STRINGS` still leaves a
+non-empty error through the adapter's own fallback; and the alpha-threshold seed reddens `TK6` alone,
+because the committed fixture's alpha is far below 254.
 
-**A code-review round then found two items, neither a defect**, both closed as documentation and
-comments because the code was already right and only the reason was missing. The **model** box folds
-submesh boxes in sorted order while an importer folds its own in source order, so the two can disagree
-in **the sign of a zero and nowhere else** — and the obvious "fix" is wrong: the model box is written
-into the header, so an input-order fold would break order-independence outright. `docs/09` §9.10
-carries the caveat, the fold site names AC-29 as the reason it cannot change, and `MK9` records that
-its bit-equality holds **because no committed fixture carries a signed zero**. The cooker's
-`taken >= MAX_EXTERNAL_URIS` guard cannot fire (every importer bounds `externalUris` before returning)
-and is **kept** with a comment naming the four enforcement sites — a guard deleted because it cannot
-fire today is a guard nobody restores when that changes.
+**A new CI-portability trap is now a named section in `.claude/rules/ci-portability.md`, and it is a
+recurring class rather than a one-off.** doctest's `DOCTEST_STRINGIFY` expands to an **unqualified**
+`toString(...)`, so an engine `toString(SomeEnum)` is found by ADL, beats doctest's own template, and
+the decomposer then tries `std::string_view + const char*` — a **hard compile error on every lane**,
+reported inside `doctest.h` rather than at the `CHECK`. This is its **second** occurrence
+(`tests/rhi_format_test.cpp` already dodges it with double parens for `engine::rhi::toString`). Every
+future `toString(SomeEnum)` on a public engine header inherits it; a label function named something else
+(`cookedTextureStatusLabel`) is unaffected, which is why it is named that way.
 
-**R7 is CLOSED with numbers.** A generated `.gltf` + external `.bin` at **7 997 584 vertices and
-23 984 268 indices** (essentially both importer caps at once) cooks on `macos-release` in **0.89 s
-warm / 1.16 s cold** at a peak resident set of **1.067 GB**, producing a 351 859 984-byte artifact from
-a 351 860 625-byte source, byte-identical across three runs. `aero_tests` Debug under ASan/UBSan peaks
-at **554 MB in 11.05 s**. The cooked-versus-source ratio is **a property of how compactly the SOURCE
-encoded the same floats, not of the cook**: an ASCII `.obj` grid went 31.75 MB → 8.94 MB (**0.28×**)
-while a float32 `.glb` whose layout already matched came out at **1.00×**. **One cap the plan did not
-account for**, found while measuring: `MAX_EMBEDDED_BYTES` bounds embedded GLB data at **128 MiB**
-against 512 MiB for an external buffer, so the format's own ~928 MB worst case is **not reachable
-through the CLI at all** — its cook-side arm is genuinely unreachable defence in depth, as its comment
-says. Full table in the engineering log.
+**INV-T4, stated accurately.** The invariant is that **the texture files carry no floating point** —
+not that `engine/assets` contains none, which is and always was false: 3.3.1's `mesh_cook.cpp` includes
+`<cmath>` and `cooked_mesh.hpp` has `putF32`/`getF32`, because mesh vertex data *is* float. The three
+new files add no `float`, no `double`, no `<cmath>` and no runtime table; `<numeric>`'s `std::lcm` is
+integer-only and is the one include the rule does not reach.
 
-**The named, unowned gap: v1 stores no node hierarchy**, so a consumer that instantiates a cooked mesh
-puts every submesh at the origin. **The cook must not "solve" this by baking node transforms into
-vertices** — `ImportedMesh` is shared across nodes by construction, so baking would force per-node mesh
-copies. A cooked model/prefab container is the right answer and belongs to whoever owns instantiation;
-**3.1.5 is the first task that will hit it.** This is a decision waiting to be taken, not a scope
-boundary. `editor/validation/3.3.1-mesh-cook-gpu-buffers.md` is **macOS ✅ PASS 12/12 (2026-08-13, on
-merge commit `17a6821`), with every measurement blank filled** — the first task in this project whose
-number-bearing rows were signed off with their numbers rather than with a tick.
+**The named, unowned gap: nothing in this tree can upload the artifact.** `rhi::TextureFormat` carries
+no block formats, and adding them is a **contract change, not an enumerator addition** —
+`texelBlockSize` is documented as bytes per *texel* and `uploadTexture`'s precondition is
+`data.size() == texelBlockSize(format) × mipWidth × mipHeight`, which is not expressible for a
+block-compressed format. **Task 3.4.1 owns it** and depends on this one. The deliverable here is a file,
+proven as a file. **`editor/validation/3.3.2-texture-cook-ktx2-basis.md` is created and UNFILLED**: its
+three measurement rows (`ktx validate` against all four goldens plus a BC3-sRGB and an RGBA8-sRGB
+artifact; BC1 PSNR against `stb_dxt` over five images; wall-clock and peak RSS for a 4096² and a 512²
+cook) are written so a blank tick is impossible. **`ktx` is not installed on this machine and there is
+no Homebrew formula for it** — the row names the real path (the Khronos 4.4.2 `.pkg` release,
+`gh release download v4.4.2 --repo KhronosGroup/KTX-Software`) and is to be recorded as an attempt
+rather than ticked until that install happens. **R1 stays open until it is.**
 
 **Carried-forward debt, unchanged by this task and worth scheduling as work of its own.** Seven ticked
 validation rows across four tasks were signed off with their measurement blanks empty (3.2.5 rows 3, 8,
 9, 11, 13; 3.2.2 row 9; 3.2.4 row 12) — each row's *behaviour* passed, each row's *evidence* is absent,
 so **R4 and R8's in-editor half stay unmeasured** and D9's centimetre-versus-metre comparison has no
-recorded figures. **3.3.1 is deliberately not among those seven** — its rows 6 and 7 were written to
-make a blank tick impossible and were signed off with real figures, which is the pattern the other
-four should be brought up to rather than the exception. Separately: **no Windows or Linux validation
-pass exists for any of the thirteen Phase 2 tasks, for 3.1.1–3.1.4, for 3.2.1–3.2.5, or for 3.3.1**,
-and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. That is platform-validation
-debt spanning four phases, and with macOS fully green it is the whole of the remaining validation risk.
+recorded figures. **Neither 3.3.1 nor 3.3.2 is among those seven** — both had their number-bearing rows
+written so a blank tick is impossible, which is the pattern the other four should be brought up to
+rather than the exception. Separately: **no Windows or Linux validation pass exists for any of the
+thirteen Phase 2 tasks, for 3.1.1–3.1.4, for 3.2.1–3.2.5, or for 3.3.1**, and Phase 0's gate is still
+held open on Windows/Linux 60 fps sign-off. That is platform-validation debt spanning four phases, and
+with macOS fully green it is the whole of the remaining validation risk. **3.3.2 adds a macOS row to
+that list too until its own pass is run**, and its `ktx validate` row additionally needs a tool that is
+not installed on this machine.
 
 | | State |
 |---|---|
@@ -157,8 +174,8 @@ debt spanning four phases, and with macOS fully green it is the whole of the rem
 | **Phase 1** — Reflection, ECS & Serialization | **COMPLETE** — epics 1.1–1.4 all CLOSED. Gate reached in code, macOS-validated; Windows/Linux render rows pending (`samples/phase-1-scene/VALIDATION.md`). |
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics (2.1 Editor shell, 2.2 Core panels, 2.3 Manipulation, 2.4 Undo/redo, 2.5 Scene I/O, 2.6 Project system v0) CLOSED in code and macOS-validated PASS, with Windows/Linux rows pending for every task (`editor/VALIDATION.md`). The whole-phase audit (2026-08-02) fixed two silent data-loss paths, a project root that was never made absolute, two CI false-greens, and four stale documentation claims. Full per-task and per-epic history — every defect, every sabotage matrix, every deviation — lives in `docs/10-engineering-log.md`'s Phase 2 entries; this row is deliberately a summary, not a duplicate. |
 | **Phase 2 gate** | **MET 2026-08-02.** `samples/phase-2-editor-scene/` holds a project and a 4-entity scene authored entirely through the editor, with the save → New Scene → Open Scene round trip confirmed (`samples/phase-2-editor-scene/VALIDATION.md`); provenance is recorded there rather than asserted, since a hand-written `scene.json` is byte-identical to a real one and no test tier can tell them apart. Deliberately NOT `add_subdirectory`'d — this artifact is data (a provenance proof of the editor), not a compile-proof of engine code. |
-| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **Epic 3.1** is fully merged except **3.1.5 (drag-into-scene), still open**: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds), macOS-validated ✅ PASS 14/14, 14/14, 16/16, 10/10 — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash`, the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache and the real Asset Browser all shipped across them. **Epic 3.2 (Importers) is CLOSED IN CODE — five merged tasks**, one canonical in-memory `ImportedModel` and eight claimed extensions: 3.2.1 glTF/fastgltf (PR #70 `f02ca65`, ✅ 12/12), 3.2.2 FBX/ufbx (PR #71 `c597a5b`, ✅ 13/13), 3.2.3 OBJ/tinyobjloader (PR #72 `c412e83`, ✅ 13/13), 3.2.4 Blender CLI/`.blend` (PR #73 `5ab07f3`, ✅ 15/15), 3.2.5 Assimp DAE/PLY/STL (PR #74 `7e0224f`, ✅ 14/14). Windows/Linux rows pending for all five, and seven of their ticked rows are missing the measurement they asked for. **Epic 3.3 (Cooker v0) is OPEN and 3.3.1 (Mesh cook → GPU buffers) is MERGED as PR #75 (`17a6821`, 13 commits), macOS-validated ✅ PASS 12/12 (2026-08-13) with every measurement blank filled; Windows/Linux rows pending.** It opens `engine/assets` (the `.aeromesh` container v1 + the cook, core-only, no vcpkg package at all), adds one editor adapter pair and `tools/cooker` (`aero_cooker mesh`), and is the first task to produce a runtime-consumable artifact. Mechanical gate green: **117/117 on both macOS presets** with `AERO_REQUIRE_GPU=1`, six guards passing, both reduced configurations rebuilt FRESH with `-G Ninja` and green at **28** and **41** ctest entries with `CM1`/`MC1`/`MK1` present, clang-format and clang-tidy clean by exit code, and `vcpkg.json`/`.github/`/`cmake/`/`runtime/` byte-identical to `main`. A 42-seed sabotage matrix ran to completion with **five genuine gaps found and closed** (`MC57`, `MC58`, `CM50`, `MK17`, `MC52`'s anti-vacuity guard), each re-proven by re-seeding; a code-review round found two more items, neither a defect, both closed as documentation. CI caught a **Windows-only `<ostream>`/`string_view` compile failure** no local run could see — the 0.4.1 trap's fourth occurrence, now a named section in `.claude/rules/ci-portability.md`. **R7 is closed with numbers on the validated build**: a 120.1 MB binary `.gltf` (2 250 000 verts, 13 482 006 indices) cooks in **0.37 s at 371.2 MB peak, ratio 1.00×**, and a 53.4 MB ASCII `.obj` in **0.87 s at 478.0 MB peak, ratio 0.52×** — **a smaller source costing MORE memory, because peak is dominated by the importer, not the cook** (~3.1× source for the binary path, ~9.0× for ASCII), which reframes R7's premise that the cook's single zero-initialized output vector was the binding constraint. **The no-engine-change streak ENDS here at seven, deliberately.** Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
-| **Next task** | **~~Merge 3.3.1 and run its macOS validation pass~~ DONE** — merged as PR #75 (`17a6821`) with `headSha == HEAD` asserted, and macOS-validated ✅ PASS 12/12 (2026-08-13) with every measurement recorded, including the finding that peak memory tracks the importer rather than the cook. Every macOS validation row in the tree is now ticked. Then: **(b) 3.1.5 (drag-into-scene)**, fully unblocked — it depends on 3.1.3 and 3.2.1 (both merged), `ImportedModel` gives it something to reference, all eight importable extensions work, and 3.3.1 gives it a cooked artifact to place. **3.1.5 owns three decisions now**: sub-asset identity (3.2.1's D13), replacing `LOCAL_MESH_HALF_EXTENT` (2.3.1's knowingly-wrong constant), and **the node-hierarchy gap 3.3.1 named but does not own** — a cooked mesh carries no hierarchy, so a naive instantiation puts every submesh at the origin. **(c) 3.3.2 (texture cook)** is also unblocked and inherits 3.3.1's container shape and CLI grammar (`aero_cooker texture …` needs no reshuffle). And **(d) the seven ticked-but-unmeasured validation rows**, plus the four-phase Windows/Linux platform-validation debt. See `docs/tasks/phase-3.md`. |
+| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **Epic 3.1** is fully merged except **3.1.5 (drag-into-scene), still open**: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds), macOS-validated ✅ PASS 14/14, 14/14, 16/16, 10/10 — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash`, the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache and the real Asset Browser all shipped across them. **Epic 3.2 (Importers) is CLOSED IN CODE — five merged tasks**, one canonical in-memory `ImportedModel` and eight claimed extensions: 3.2.1 glTF/fastgltf (PR #70 `f02ca65`, ✅ 12/12), 3.2.2 FBX/ufbx (PR #71 `c597a5b`, ✅ 13/13), 3.2.3 OBJ/tinyobjloader (PR #72 `c412e83`, ✅ 13/13), 3.2.4 Blender CLI/`.blend` (PR #73 `5ab07f3`, ✅ 15/15), 3.2.5 Assimp DAE/PLY/STL (PR #74 `7e0224f`, ✅ 14/14). Windows/Linux rows pending for all five, and seven of their ticked rows are missing the measurement they asked for. **Epic 3.3 (Cooker v0) is OPEN and 3.3.1 (Mesh cook → GPU buffers) is MERGED as PR #75 (`17a6821`, 13 commits), macOS-validated ✅ PASS 12/12 (2026-08-13) with every measurement blank filled; Windows/Linux rows pending.** It opens `engine/assets` (the `.aeromesh` container v1 + the cook, core-only, no vcpkg package at all), adds one editor adapter pair and `tools/cooker` (`aero_cooker mesh`), and is the first task to produce a runtime-consumable artifact. Mechanical gate green: **117/117 on both macOS presets** with `AERO_REQUIRE_GPU=1`, six guards passing, both reduced configurations rebuilt FRESH with `-G Ninja` and green at **28** and **41** ctest entries with `CM1`/`MC1`/`MK1` present, clang-format and clang-tidy clean by exit code, and `vcpkg.json`/`.github/`/`cmake/`/`runtime/` byte-identical to `main`. A 42-seed sabotage matrix ran to completion with **five genuine gaps found and closed** (`MC57`, `MC58`, `CM50`, `MK17`, `MC52`'s anti-vacuity guard), each re-proven by re-seeding; a code-review round found two more items, neither a defect, both closed as documentation. CI caught a **Windows-only `<ostream>`/`string_view` compile failure** no local run could see — the 0.4.1 trap's fourth occurrence, now a named section in `.claude/rules/ci-portability.md`. **R7 is closed with numbers on the validated build**: a 120.1 MB binary `.gltf` (2 250 000 verts, 13 482 006 indices) cooks in **0.37 s at 371.2 MB peak, ratio 1.00×**, and a 53.4 MB ASCII `.obj` in **0.87 s at 478.0 MB peak, ratio 0.52×** — **a smaller source costing MORE memory, because peak is dominated by the importer, not the cook** (~3.1× source for the binary path, ~9.0× for ASCII), which reframes R7's premise that the cook's single zero-initialized output vector was the binding constraint. **The no-engine-change streak ENDED there at seven, deliberately.** **3.3.2 (Texture cook → KTX2/Basis) is the current branch: eleven green commits plus four from a closed code-review round, not yet pushed, merged or validated.** It grows `engine/assets` to **five** pairs (the KTX2 subset container, the cook and the two integer block encoders — still no vcpkg package at all), adds one editor adapter pair (the tree's second stb_image TU) and the `aero_cooker texture` subcommand, and is the first artifact this project produces that a third-party tool can open. Mechanical gate green: **131/131 on `macos-debug`** with `AERO_REQUIRE_GPU=1`, six guards passing, both reduced configurations built FRESH with `-G Ninja` and green at **42** and **55** ctest entries with `CT1`/`TX1`/`BB1`/`TK1` and all fourteen `cooker.texture_*` names present, clang-format and clang-tidy clean by exit code, and `vcpkg.json`/`.github/`/`cmake/`/`runtime/` byte-identical to `main`. A **53-seed** matrix found **five genuine gaps plus one test-robustness defect**, each re-proven by re-seeding; **eleven spec statements were wrong and two were blocking** (the sRGB DFD tables' alpha-qualifier byte, which only `ktx validate` can catch). **A code-review round then closed five more findings, two of them real defects**: `cookTexture` divided by zero for a format outside the eight (UBSan + `SIGABRT`, unreachable from today's callers), and the parser accepted the partial mip chain `docs/09` §10.8 says it refuses (closed by adding the check, not by rewording the doc, as `UnsupportedShape`). The other three were a **BC4 DFD pinned by no tier at all** (27 of 44 bytes, and declaring BC5's colour model in it left the suite green at 131/131 — now every byte of all eight tables is pinned by `CT11` against a literal table, and R1 gains a BC4 artifact), **AC-32's repeated-flag arm, never added** (so `refuseRepeat` on all four texture-only flags had zero coverage — each guard now reddens `cooker.repeated_flag` on its own), and one literal header offset in a TU that says it has none. **R1, R2 and R3 are open until the post-merge validation pass**, and `ktx` is not installed on this machine. Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
+| **Next task** | **Finish 3.3.2**: the code-review round is CLOSED (five findings, four commits on top of the eleven, two real defects); next is to push and assert the green run's `headSha == HEAD` before merging with `gh pr merge <n> --merge`, then run its macOS validation pass — **including installing `ktx` 4.4.2 from the Khronos release**, since R1 is the only non-circular proof the two corrected DFD tables are right and no first-party test can supply it. Then: **(b) 3.1.5 (drag-into-scene)**, fully unblocked — it depends on 3.1.3 and 3.2.1 (both merged), all eight importable extensions work, and both cooks now give it artifacts to place. **3.1.5 owns three decisions**: sub-asset identity (3.2.1's D13), replacing `LOCAL_MESH_HALF_EXTENT` (2.3.1's knowingly-wrong constant), and **the node-hierarchy gap 3.3.1 named but does not own**. **(c) 3.3.3 (cook determinism golden test)** is unblocked and now has **both** cook kinds to compare — it is the task that turns cross-platform byte-identity into a CI job, which is what the no-floating-point design exists for. **(d) 3.4.1** owns the `rhi::TextureFormat` block-format contract change 3.3.2 names, and nothing can upload a cooked texture until it lands. And **(e) the seven ticked-but-unmeasured validation rows**, plus the four-phase Windows/Linux platform-validation debt. See `docs/tasks/phase-3.md`. |
 
 Engine layers that exist today, in dependency order: `core` (gained `guid.hpp`/`guid.cpp` at task
 3.1.1, beside `handle.hpp`; gained `content_hash.hpp`/`content_hash.cpp` at task 3.1.2, beside `guid`)
@@ -168,10 +185,11 @@ Engine layers that exist today, in dependency order: `core` (gained `guid.hpp`/`
 **`engine/assets/` OPENED at task 3.3.1** and its `.gitkeep` is gone. The old reason for keeping it
 shut — "unopened until a **runtime** consumer exists (Phase 5's pak table)" — was satisfied by the
 task itself: the `.aeromesh` container's *reader* **is** a runtime component by definition, so the
-consumer in question is the thing being built. It holds the cooked-asset formats and nothing else
-(`cooked_mesh.{hpp,cpp}`, `mesh_cook.{hpp,cpp}`); it links `aero::core` + `aero::profiling` and **no
+consumer in question is the thing being built. It holds the cooked-asset formats and nothing else — **five pairs since task
+3.3.2**: `cooked_mesh.{hpp,cpp}`, `mesh_cook.{hpp,cpp}`, `cooked_texture.{hpp,cpp}`,
+`texture_cook.{hpp,cpp}` and `bc_block.{hpp,cpp}`; it links `aero::core` + `aero::profiling` and **no
 vcpkg package at all**, and adding a `find_package` there would void that boundary silently while CI
-stayed green. The editor's `AssetDatabase` and its import cache (3.1.1/3.1.2) still live entirely in
+stayed green — which is also why the stb_image decode lives in `/editor` rather than here. The editor's `AssetDatabase` and its import cache (3.1.1/3.1.2) still live entirely in
 `/editor`, not here. **`tools/` no longer links zero engine targets**: `aero_cooker` links
 `aero::assets` and `aero::editor_core`, which is legal because `tools/` is enumerated by neither half
 of the golden rule.
@@ -185,7 +203,8 @@ plus one `add_subdirectory(assets)` line — every other subsystem is byte-ident
 `vcpkg.json`, `.github/`, `cmake/` and `runtime/`. (3.2.3 touched `cmake/sanitizers.cmake`, forced by
 its Windows-only `LNK2038`; that is a build-system path, not an `engine/` one, so the streak held.
 3.2.5 touched `vcpkg.json` for one dependency, `assimp`, with the baseline and submodule unmoved.
-3.3.1 adds **no dependency of any kind**.)
+Neither 3.3.1 nor 3.3.2 adds **any dependency of any kind** — 3.3.2's engine diff is three new pairs
+inside the subdirectory 3.3.1 opened, and `engine/CMakeLists.txt` is untouched by it.)
 `/editor` gained **ten** new `.hpp`/`.cpp` pairs across 2.6.2, 3.1.1, 3.1.2, 3.1.3 and 3.1.4
 (`project_settings.{hpp,cpp}` / `project_settings_panel.{hpp,cpp}` (2.6.2),
 `asset_meta.{hpp,cpp}` / `asset_database.{hpp,cpp}` (3.1.1), `asset_cache.{hpp,cpp}` (3.1.2),
@@ -210,38 +229,53 @@ all, because Blender is an external PROCESS, never a library. **3.2.5 adds ONE m
 (`scanPlyTextureFiles`, `plyDeclaredCountsExceedBytes`, `scanColladaAssetSpace`, `MAX_NODE_DEPTH`).
 **3.3.1 adds ONE more pair**, `mesh_cook_source.{hpp,cpp}` (PUBLIC and PURE — two functions, no UI,
 no state, no `Library/` write, no panel), and `aero::assets` on `aero_editor_core`'s **PUBLIC** link
-group. The `.hpp`s live under `editor/include/aero/editor/` (except the six named src-private), the
-`.cpp`s under `editor/src/`.
+group. **3.3.2 adds the ELEVENTH pair**, `texture_cook_source.{hpp,cpp}` (PUBLIC and PURE — a decode,
+an auto-format rule and two name predicates; no UI, no `.meta` change, no `Library/` write) — the
+tree's **second stb_image implementation TU**, which keeps `STB_IMAGE_STATIC` and deliberately does
+**not** define `STBI_NO_FAILURE_STRINGS`, unlike `thumbnail_store.cpp`, because it is the CLI's only
+source of a readable decode reason. The `.hpp`s live under `editor/include/aero/editor/` (except the
+six named src-private), the `.cpp`s under `editor/src/`.
 
-Test inventory at the tip of `feat/3.3.1-mesh-cook-gpu-buffers`, every number
+Test inventory at the tip of `feat/3.3.2-texture-cook-ktx2-basis`, every number
 **re-measured there, never derived by addition and never carried forward from an earlier step or an
 earlier task** — read the totals from doctest's own `filters:` line, never from a `grep -c` of case
-names. **`ctest -N` moves in ALL THREE configurations for the first time in this epic**, because
-`aero_cooker` takes **no gate flag** and its 22 cases are therefore registered everywhere: **95 → 117**
-with tools ON, **6 → 28** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`, **19 → 41** with
+names. **`ctest -N` moves in ALL THREE configurations again**, because `aero_cooker` still takes **no
+gate flag** and its cases (22 mesh + 14 texture) are therefore registered everywhere: **117 → 131**
+with tools ON, **28 → 42** with `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`, **41 → 55** with
 `-DAERO_REFLECT_TOOLS=OFF` alone. A future gate flag on the cooker would silently shrink the reduced
-configurations' coverage with no test able to report it. `aero_tests` **415 → 523** (two new TUs,
-`cooked_mesh_test.cpp` (`CM*`) and `mesh_cook_test.cpp` (`MC*`), plus `aero::assets` on its link line).
-`aero_editor_shell_test` **1481 → 1498** (one new TU, `tests/editor/mesh_cook_source_test.cpp`,
-`MK1`–`MK17`). `aero_editor_imgui_test` **104**, `aero_scene_serialize_test` **23** and
+configurations' coverage with no test able to report it — and the **code-review round moved none of the
+three ctest numbers**, because both of its coverage closures extended an existing case rather than
+adding an entry. `aero_tests` **523 → 656** (three new TUs, plus `CT27a` and `TX49` from that round;
+`cooked_texture_test.cpp` (`CT*`), `texture_cook_test.cpp` (`TX*`) and `bc_block_test.cpp` (`BB*`) —
+**`TC*` was TAKEN** by `tests/editor/thumbnail_cache_test.cpp`, which is why the cook's prefix is `TX`;
+`aero::assets` was already on the link line, so no link-line change at all).
+`aero_editor_shell_test` **1498 → 1516** (one new TU, `tests/editor/texture_cook_source_test.cpp`,
+`TK1`–`TK18`). `aero_editor_imgui_test` **104**, `aero_scene_serialize_test` **23** and
 `aero_editor_inspector_test` **22**, all unchanged — this task ships **no UI at all**. Both reduced
-configurations were built FRESH in `build/tools-off-3.3.1` / `build/reflect-off-3.3.1` and are green.
+configurations were built FRESH in `build/tools-off-3.3.2` / `build/reflect-off-3.3.2` and are green,
+with `CT1`, `TX1`, `BB1`, `TK1` and all fourteen `cooker.texture_*` entries present in both.
 **A reduced-configuration probe must be configured with `-G Ninja`**: `CMAKE_GENERATOR` enters the
 shadercross bootstrap's option hash, so the generator-less form reads the cached toolchain as COLD and
 pays a from-source DXC rebuild that peaked at 7.6 GB here before a memory guard killed it.
-`aero_editor_core` sources **57 → 58** (`mesh_cook_source.cpp`) and `editor/src/*.cpp` **58 → 59**,
+`aero_editor_core` sources **58 → 59** (`texture_cook_source.cpp`) and `editor/src/*.cpp` **59 → 60**,
 with **no** new `find_package` and **no** new `vcpkg.json` dependency.
-`check-math-boundary.sh`'s scanned count **305 → 316** and `check-project-no-delete.sh`'s Check B scan
-**58 → 59**, both picked up automatically — **neither script changes, and `.github/scripts/` is
+`check-math-boundary.sh`'s scanned count **316 → 329** and `check-project-no-delete.sh`'s Check B scan
+**59 → 60**, both picked up automatically — **neither script changes, and `.github/scripts/` is
 byte-identical to `main`.** Guard count stays **six**; Check A's six-file denylist and Check B's
-two-file `PERMITTED_DELETERS` are unchanged in membership, and `mesh_cook_source.cpp` is in **neither**,
-which is exactly what makes a future `std::filesystem::remove` there a hard CI failure.
+two-file `PERMITTED_DELETERS` are unchanged in membership, and `texture_cook_source.cpp` is in
+**neither**, which is exactly what makes a future `std::filesystem::remove` there a hard CI failure.
+**The tree's first two committed images** land here, `tests/fixtures/assets/texture-rgb-5x3.png` and
+`texture-rgba-8x8.png` — before them `git ls-files | grep -iE '\.(png|jpg|tga|bmp|gif|psd|hdr)$'`
+returned nothing at all.
 `git grep -nE '_WIN32|__APPLE__|__linux__' -- engine/assets tools/cooker` reads **zero lines**, and the
 same grep over `editor/src` + `editor/include` still reads **exactly three lines in one file**
 (3.2.4's `currentHostOs()`). Every purity grep over `engine/assets` (`<filesystem>`, `<fstream>`,
 `<iostream>`, `AERO_LOG`, `std::cout`/`std::cerr`, `std::map`/`std::set`/`unordered_*`,
 `reinterpret_cast`, `memcpy`, `rhi/`) returns **only prose in `//` comments stating the prohibition** —
-never a use. Counts diverge by OS (Windows skips `golden-rule.include_scan_e2e`, and **fourteen** whole
+never a use. **Two gate greps are NOT literally zero and must be READ rather than counted**:
+`git grep -n 'find_package' -- engine/assets/` returns two comment lines stating the prohibition, and
+the `tools/` process-spawn grep matches "libsdl-org fork" twice in `tools/shaderc/README.md`.
+Counts diverge by OS (Windows skips `golden-rule.include_scan_e2e`, and **fourteen** whole
 `BS` cases plus one arm of `BS11` and one GPU case, `I80`, skip loudly there), so never assume one —
 measure with `ctest -N` and `--list-test-cases`. **Those 3.2.4 skips are not a random sample**:
 together they are the only coverage anywhere of the two Blender timeouts, cancellation, the `Converted`

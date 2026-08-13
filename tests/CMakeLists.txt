@@ -27,6 +27,9 @@ add_executable(aero_tests
     content_hash_test.cpp  # task 3.1.2 — engine::ContentHash: MurmurHash3 x64_128, text codec, ordering, incremental hasher
     cooked_mesh_test.cpp   # task 3.3.1 — the .aeromesh container v1: layout, parse, hostile input
     mesh_cook_test.cpp     # task 3.3.1 — cookMesh: grouping, layouts, interleave, bounds, caps
+    cooked_texture_test.cpp # task 3.3.2 — the KTX2 subset v1: vocabulary, DFD tables, parse, hostile input
+    bc_block_test.cpp       # task 3.3.2 — the two encoders against per-block byte goldens
+    texture_cook_test.cpp   # task 3.3.2 — cookTexture: levels, polyphase filter, gamma, caps
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -318,6 +321,11 @@ find_package(Threads REQUIRED)
 # defined on this target, and it reads tests/cooked_mesh_golden.hpp through the ${CMAKE_CURRENT_SOURCE_DIR}
 # include root ALREADY set below -- ONE GOLDEN, TWO BINARIES. NO LINK-LINE CHANGE: aero::assets arrives
 # transitively and PUBLICly through aero::editor_core, and no new ctest entry is registered here.
+# task 3.3.2 joins it with ONE more, editor/texture_cook_source_test.cpp, on exactly the same terms:
+# UNCONDITIONAL, tier-0, no link-line change, no new ctest entry, and reachable in BOTH reduced
+# configurations -- prove it with --list-test-cases, which must show TK1 in both. It reads the two
+# committed PNG fixtures through AERO_ASSET_FIXTURES_DIR and texture_cook_source.cpp's own source text
+# through AERO_EDITOR_SRC_DIR, both ALREADY defined on this target; neither is redefined.
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -335,7 +343,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/fbx_import_test.cpp editor/obj_import_test.cpp
                editor/blender_tool_test.cpp editor/blender_service_test.cpp
                editor/assimp_import_test.cpp
-               editor/mesh_cook_source_test.cpp)
+               editor/mesh_cook_source_test.cpp
+               editor/texture_cook_source_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -719,6 +728,20 @@ set(_aero_cooker_cases
     gltf_happy gltf_external_bin obj_missing_mtl
     guid_written scale_applied no_materials
     determinism nothing_written_on_failure output_dir_missing
+    # task 3.3.2 -- the texture subcommand. Fourteen more names, on the same terms: ungated, so
+    # ctest -N moves in ALL THREE configurations again. MEASURED at the tip of this branch, never
+    # derived by addition: 117 -> 131 with tools ON, 28 -> 42 with -DAERO_REFLECT_TOOLS=OFF
+    # -DAERO_SHADER_TOOLS=OFF, and 41 -> 55 with -DAERO_REFLECT_TOOLS=OFF alone, the last two in
+    # build directories configured FRESH with -G Ninja (the generator enters the shadercross
+    # bootstrap's option hash, so the generator-less form reads the cached toolchain as COLD and pays
+    # a from-source DXC rebuild). CT1, TX1, BB1, TK1 and all fourteen names below are present in both
+    # reduced configurations -- which is the proof that this block is still ungated.
+    texture_help texture_no_colorspace texture_both_colorspace
+    texture_srgb_bc5_conflict texture_unknown_format
+    texture_hdr_refused texture_unclaimed_extension
+    texture_png_happy texture_auto_picks_bc3 texture_no_mips
+    texture_guid_written texture_determinism
+    texture_nothing_written_on_failure texture_output_dir_missing
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(

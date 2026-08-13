@@ -44,11 +44,43 @@ only inside the template doctest expands, invisible until MSVC parses it.
 Four occurrences so far: task 0.4.1, `tests/rhi_format_test.cpp`, `tests/scene_format_test.cpp`, and
 task 3.3.1 (`tests/cooked_mesh_test.cpp`, `CHECK`ing the magic and `cookedMeshStatusLabel`).
 
+Task 3.3.2's four new TUs (`cooked_texture_test.cpp`, `texture_cook_test.cpp`, `bc_block_test.cpp`,
+`editor/texture_cook_source_test.cpp`) each carry the include **preventively**, written when the TU was
+created rather than after a Windows lane said so. That is the posture to copy; they are not a fifth
+occurrence, because no lane ever reddened for them.
+
 **The fix is always the same: `#include <ostream>` in the test TU.** Not `<iostream>` (heavier, and it
 adds a static initializer to every TU that includes it), and never a `static_cast<std::string>` at the
 call site, which hides the cause and has to be repeated at every future `CHECK`. If a test compares or
 prints a `std::string_view`, include `<ostream>` when you write it rather than after a Windows lane
 tells you to.
+
+## An engine `toString(YourEnum)` hijacks doctest's stringifier — every lane, hard error
+
+`DOCTEST_STRINGIFY` expands to an **unqualified** `toString(...)`. So for any enum whose engine header
+declares `std::string_view toString(YourEnum)`, **ADL finds ours** — a non-template exact match that
+beats doctest's own template — and doctest then feeds the result into its decomposer, which tries
+`std::string_view + const char*`. That is a **hard compile error on all three lanes**, reported inside
+`doctest.h` rather than at the `CHECK` that caused it, so the message names neither your enum nor your
+test.
+
+It bites the moment a test writes `CHECK(someValue == YourEnum::X)` — the comparison doctest must
+stringify. It has happened **twice**: `tests/rhi_format_test.cpp` (`engine::rhi::toString`) and task
+3.3.2's `tests/cooked_texture_test.cpp` / `texture_cook_test.cpp` (`engine::assets::toString`
+over `CookedTextureFormat`). Treat it as a recurring class, not a one-off — every future
+`toString(SomeEnum)` on a public engine header inherits it.
+
+**Two fixes, both fine, and the choice is per file:**
+
+- Compare through `toString()` on **both** sides — `CHECK(toString(a) == toString(b))` — which needs a
+  case proving `toString` is injective over the enum, or a difference can hide inside it. Task 3.3.2's
+  `CT7` is exactly that case.
+- Wrap the comparison in a **second pair of parentheses**: `CHECK((a == YourEnum::X))`. That stops
+  doctest's expression decomposition entirely, which is what `tests/rhi_format_test.cpp` does.
+
+**A status/label function named something other than `toString` is unaffected** — that is why
+`cookedTextureStatusLabel` and `cookedMeshStatusLabel` are named the way they are, and it is worth
+keeping in mind when naming the next one.
 
 ## clang-tidy (Linux Debug lane only, `--warnings-as-errors='*'`)
 

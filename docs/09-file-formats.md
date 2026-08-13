@@ -1218,9 +1218,459 @@ not a test edit.
 
 ---
 
-## 10. Reserved for future formats
+## 10. Cooked texture container v1 (`.ktx2`)
+
+> Enforced in code by `engine/assets` (`cooked_texture.{hpp,cpp}` = the format and its parser,
+> `texture_cook.{hpp,cpp}` = the producer, `bc_block.{hpp,cpp}` = the two block encoders, task 3.3.2);
+> the doctest batteries in `tests/cooked_texture_test.cpp`, `tests/texture_cook_test.cpp` and
+> `tests/bc_block_test.cpp` are its machine-checkable form, and `tests/cooked_texture_golden.hpp` holds
+> four byte-level goldens. Produced by `aero_cooker texture`.
+
+### 10.0 Scope — the first THIRD-PARTY format in this document
+
+Sections 1–9 describe formats this project invented. **This one it did not.** The container is a strict
+subset of Khronos **KTX2**, and a real one: `ktx info`, `ktx validate` and RenderDoc open these files.
+Every field below is therefore a **fact extracted from `ktxspec.adoc`**, not a decision taken here, and
+where our subset is narrower than the specification that narrowing is a **refusal** rather than a
+reinterpretation.
+
+Section 1's canonical-**text** rules do not apply, for the same reason they do not apply to section 9.
+Section 9's byte rules do, and 10.10 restates the ones that differ.
+
+**Section 9.0's forward reference is answered here.** It says the mesh container is
+platform-independent and that "that changes for textures at task 3.3.2, where BCn/ASTC/ETC2 diverge".
+The answer for v1 is: **there is still no platform field and no `--platform` flag**, because v1 emits
+exactly one profile — desktop BCn. A flag with one legal value would be a promise the cooker cannot
+keep. ASTC, ETC2 and the flag itself arrive together at task **6.3.1**, with the second profile.
+
+**What v1 stores:** one 2D image, its full mip chain or its base level alone, in one of eight Vulkan
+formats, plus the source asset's GUID, an orientation declaration and a writer id.
+**What it does not store:** cubemaps, array layers, 3D/volume textures, incomplete mip chains,
+supercompression of any kind (Basis/UASTC/ETC1S, Zstd, ZLIB), BC7, BC6H, and any per-texture cook
+setting. Each is a refusal with a named owner in the task's own record, not an omission.
+
+### 10.1 Conventions
+
+- **Little-endian, DECLARED rather than "native"**, and formed through **section 9's eight `constexpr`
+  primitives** (`putU16`/`putU32`/`putU64`/`putF32` and their `get*` inverses, in `cooked_mesh.hpp`).
+  There is deliberately **no second set** in this subsystem: a second set is a second place for a
+  big-endian mistake to hide, and the `static_assert` only protects the set it is attached to.
+  `putF32`/`getF32` go unused here — this format has no float field — and that is not a reason to
+  split the header.
+- **NO FLOATING POINT ANYWHERE IN THESE FILES.** Not in the container, not in the cook, not in the
+  encoders, not in the mip filter: no `float`, no `double`, no `<cmath>`, no runtime table generation.
+  This is not a style rule. A float here is a **byte-identity hazard on three CI lanes** — FMA
+  contraction differs between clang and MSVC, and libm differs between three C libraries — and task
+  3.3.3 turns cross-platform byte-identity into a CI job for **both** cook kinds. (`<numeric>`'s
+  `std::lcm` is integer-only and is the one exception the rule does not reach.)
+- **Offsets and byte lengths inside the header are `u32`; the level index's three fields are `u64`**,
+  because that is what the specification says, not because either width was chosen here.
+- **Alignment: exactly one padding site per file** (10.4).
+- **`sizeof` is never taken of an on-disk record.** `KTX2_HEADER_BYTES` (80), `KTX2_LEVEL_RECORD_BYTES`
+  (24) and `KTX2_KVD_BYTES` (120) are the only sizes.
+
+### 10.2 The header and Index — 80 bytes at offset 0
+
+| Offset | Size | Type | Field | Value in v1 |
+|---|---|---|---|---|
+| 0 | 12 | `u8[12]` | `identifier` | `AB 4B 54 58 20 32 30 BB 0D 0A 1A 0A` — «KTX 20» wrapped in bytes that make a text-mode write corrupt the file at byte 0 rather than silently deeper in |
+| 12 | 4 | `u32` | `vkFormat` | one of the eight of 10.7 and **nothing else** |
+| 16 | 4 | `u32` | `typeSize` | **1**. The specification requires 1 for every `_BLOCK` format; the two RGBA8 formats have 1-byte channels, so 1 is right for all eight |
+| 20 | 4 | `u32` | `pixelWidth` | 1 … `MAX_TEXTURE_DIMENSION` |
+| 24 | 4 | `u32` | `pixelHeight` | 1 … `MAX_TEXTURE_DIMENSION` |
+| 28 | 4 | `u32` | `pixelDepth` | **0** — 2D images only |
+| 32 | 4 | `u32` | `layerCount` | **0** — no texture arrays |
+| 36 | 4 | `u32` | `faceCount` | **1** — no cubemaps |
+| 40 | 4 | `u32` | `levelCount` | the full chain or **1**; **never 0** (10.8) |
+| 44 | 4 | `u32` | `supercompressionScheme` | **0**, always. A non-zero value is a parse refusal with its own status |
+| 48 | 4 | `u32` | `dfdByteOffset` | exactly `80 + 24 × levelCount` |
+| 52 | 4 | `u32` | `dfdByteLength` | 44, 60 or 92, decided by the format (10.5) |
+| 56 | 4 | `u32` | `kvdByteOffset` | exactly `dfdByteOffset + dfdByteLength` |
+| 60 | 4 | `u32` | `kvdByteLength` | **120**, always (10.6) |
+| 64 | 8 | `u64` | `sgdByteOffset` | **0** |
+| 72 | 8 | `u64` | `sgdByteLength` | **0** |
+
+The parser refuses a `dfdByteOffset` or `kvdByteOffset` that is not *exactly* where the layout puts it.
+The specification permits more freedom; a first-party cooked-asset reader does not need it, and a file
+that disagrees with our own arithmetic is either corrupt or our own bug.
+
+### 10.3 The level index and the mip level array — the ORDERING INVERSION
+
+`levelCount` records of 24 bytes, packed, at offset 80:
+
+| Offset | Size | Type | Field |
+|---|---|---|---|
+| 0 | 8 | `u64` | `byteOffset` — absolute into the file |
+| 8 | 8 | `u64` | `byteLength` |
+| 16 | 8 | `u64` | `uncompressedByteLength` — **equal to `byteLength`**, since the scheme is 0 |
+
+**The index and the data run in opposite directions, and this is the single most likely place in the
+whole format for an off-by-one.** `ktxspec.adoc` states both halves:
+
+> *"The array is ordered starting with level_base (the level with the largest size images) at index 0"*
+
+> *"Mip level data is ordered from the level with the smallest size images, level_p to that with the
+> largest size images, level_base"*
+
+So the record at index 0 describes the **largest** level, and it holds the **numerically largest**
+`byteOffset` in the file. The offsets are **strictly decreasing** in index order; the last record's
+offset is the smallest and equals the aligned end of the key/value data; the first record's
+`byteOffset + byteLength` equals the file's total size. The writer computes the offsets in **reverse**
+and stores them **forward**.
+
+A level's dimensions are `max(1, pixelWidth >> level)` by `max(1, pixelHeight >> level)`, and its
+`byteLength` is `ceil(w / blockWidth) × ceil(h / blockHeight) × blockBytes`. The parser recomputes both
+and refuses a record that disagrees.
+
+### 10.4 Alignment and the single padding site
+
+Every level's `byteOffset` is a multiple of `lcm(blockBytes, 4)` — KTX2's own `mipPadding` rule, quoted
+verbatim as *"between 0 and lcm(texel_block_size, 4) - 1 bytes of value 0x00"*, required exactly
+because `supercompressionScheme` is 0.
+
+**There is exactly ONE padding site in the whole file**: between the end of the key/value data and the
+start of the *smallest* level, which is the first level written. Every level's `byteLength` is itself a
+multiple of that alignment, so once the first written level is aligned every subsequent level start is
+aligned automatically, and no gap can exist between two levels. The pad is `(A - kvdEnd % A) % A` bytes
+of `0x00`, and it is zero for a file whose key/value data happens to end aligned (golden B).
+
+**The parser checks the alignment of every level anyway**, not only the first: a hostile file is not
+obliged to share our arithmetic.
+
+### 10.5 The eight frozen Data Format Descriptors
+
+Each format carries a DFD that **must byte-match the frozen table** for its `vkFormat`. Layout: 4 bytes
+of `dfdTotalSize`, then six basic-block words, then 16 bytes per sample.
+
+| Word | Composition |
+|---|---|
+| 0 | `vendorId` (0) \| `descriptorType` (0) << 17 |
+| 1 | `versionNumber` (**2**) \| `descriptorBlockSize` << 16 |
+| 2 | `colorModel` \| `primaries` (1, BT709) << 8 \| `transferFunction` << 16 \| `flags` (0, straight alpha) << 24 |
+| 3 | `(blockW-1)` \| `(blockH-1)` << 8 \| `(blockD-1)` << 16 \| `(blockE-1)` << 24 |
+| 4 | `bytesPlane0` (the block byte size), planes 1–3 above it |
+| 5 | `bytesPlane4..7`, all zero |
+| sample | `bitOffset` \| `(bitLength-1)` << 16 \| `channelId` << 24 ; `samplePosition` ; `sampleLower` ; `sampleUpper` |
+
+`versionNumber` 2 is `KHR_DF_VERSIONNUMBER_1_4`, which `khr_df.h` notes *did not bump the block version
+number* from 1.3 — so the byte is the same either way, and the label matters only to whoever reads a
+future dfdutils that does bump it.
+
+**Every table was DERIVED from `dfdutils`' own `createdfd.c`** (`createDFDCompressed`,
+`createDFDUnpacked`, `writeHeader`, `writeSample`) with the enumerator values read out of `khr_df.h`,
+then regenerated by compiling that file and dumping its output byte for byte. Deriving them by hand was
+tried and is exactly how the two corrections below were nearly missed.
+
+**They are explicit byte literals and never shift-and-or expressions**, for two reasons. A table that
+is *computed* can be computed wrongly in a way its own reader agrees with (10.12's circularity). And
+`(uint32_t)channel << 24` shifts into a sign bit for the channel values 128–132 if the value is ever
+handled as a signed type — `createdfd.c` carries its own comment about that. A literal cannot.
+
+```
+131 BC1_RGB_UNORM   (44 bytes)
+2C 00 00 00  00 00 00 00  02 00 28 00  80 01 01 00  03 03 00 00  08 00 00 00
+00 00 00 00  00 00 3F 00  00 00 00 00  00 00 00 00  FF FF FF FF
+
+132 BC1_RGB_SRGB    (44 bytes)  — 131 with byte 14: 01 -> 02, and NOTHING ELSE
+
+137 BC3_UNORM       (60 bytes)
+3C 00 00 00  00 00 00 00  02 00 38 00  82 01 01 00  03 03 00 00  10 00 00 00
+00 00 00 00  00 00 3F 0F  00 00 00 00  00 00 00 00  FF FF FF FF
+40 00 3F 00  00 00 00 00  00 00 00 00  FF FF FF FF
+
+138 BC3_SRGB        (60 bytes)  — 137 with byte 14: 01 -> 02 AND byte 31: 0F -> 1F
+
+139 BC4_UNORM       (44 bytes)
+2C 00 00 00  00 00 00 00  02 00 28 00  83 01 01 00  03 03 00 00  08 00 00 00
+00 00 00 00  00 00 3F 00  00 00 00 00  00 00 00 00  FF FF FF FF
+
+141 BC5_UNORM       (60 bytes)
+3C 00 00 00  00 00 00 00  02 00 38 00  84 01 01 00  03 03 00 00  10 00 00 00
+00 00 00 00  00 00 3F 00  00 00 00 00  00 00 00 00  FF FF FF FF
+40 00 3F 01  00 00 00 00  00 00 00 00  FF FF FF FF
+
+37  R8G8B8A8_UNORM  (92 bytes)
+5C 00 00 00  00 00 00 00  02 00 58 00  01 01 01 00  00 00 00 00  04 00 00 00
+00 00 00 00  00 00 07 00  00 00 00 00  00 00 00 00  FF 00 00 00
+08 00 07 01  00 00 00 00  00 00 00 00  FF 00 00 00
+10 00 07 02  00 00 00 00  00 00 00 00  FF 00 00 00
+18 00 07 0F  00 00 00 00  00 00 00 00  FF 00 00 00
+
+43  R8G8B8A8_SRGB   (92 bytes)  — 37 with byte 14: 01 -> 02 AND byte 79: 0F -> 1F
+```
+
+**THE ALPHA QUALIFIER, AND WHY TWO OF THE THREE sRGB TABLES ARE NOT ONE-BYTE EDITS OF THEIR SIBLINGS.**
+This paragraph is the most important prose in this section. `createdfd.c`'s `setChannelFlags` sets
+`KHR_DF_SAMPLE_DATATYPE_LINEAR` (`0x10`) on a sample whose channel id equals
+`KHR_DF_CHANNEL_RGBSDA_ALPHA` (15) when the suffix is sRGB. `KHR_DF_CHANNEL_BC3_ALPHA` is **also 15**,
+and `writeSample` maps a channel-3 request to `KHR_DF_CHANNEL_RGBSDA_ALPHA` before applying the same
+rule — so **BC3_SRGB's first sample and R8G8B8A8_SRGB's fourth carry channel byte `1F`, not `0F`**. The
+comparison is numeric, not semantic, which is exactly why the library's rule reaches BC3 at all.
+
+KTX2 makes it a **`must`**, not a preference:
+
+> *"If transferFunction is not KHR_DF_TRANSFER_LINEAR or KHR_DF_TRANSFER_UNSPECIFIED and an alpha
+> channel exists, KHR_DF_SAMPLE_DATATYPE_LINEAR must be set in the qualifiers field of the alpha
+> sample."*
+
+So of the three UNORM/SRGB pairs, exactly **one** differs in a single byte: 131/132, whose only sample
+is channel 0 (`KHR_DF_CHANNEL_BC1A_COLOR`) and which the alpha rule cannot reach. 137/138 and 37/43
+differ in **two**. BC4 and BC5 have no sRGB sibling at any Vulkan value.
+
+**Do not "simplify" the sRGB tables into byte patches of their siblings.** One of them is; two of them
+are not; and the two that are not are precisely the ones an external validator rejects — while our own
+parser, which compares against the same table our writer emits, accepts them happily.
+
+### 10.6 Key/value data — three keys, 120 bytes, always
+
+Each record is `4` bytes of `keyAndValueByteLength`, then the NUL-terminated key, then the
+NUL-terminated value, then `valuePadding` zeroes to the next 4-byte boundary.
+
+| Key | Value | key+value | Record |
+|---|---|---|---|
+| `AeroSourceGuid` | 32 lowercase hex characters + NUL | 15 + 33 | 52 |
+| `KTXorientation` | `rd` + NUL — right and down, i.e. a **TOP-LEFT origin** | 15 + 3 | 24 |
+| `KTXwriter` | `Aero Engine texture cook 1` + NUL | 10 + 27 | 44 |
+
+**`KTX2_KVD_BYTES = 120` is a closed form, not a magic number**, and a `static_assert` recomputes it
+from the three records — so a `COOKED_TEXTURE_COOKER_VERSION` bump that lengthens the writer string is a
+**build failure** rather than a silently wrong `kvdByteLength` and every offset after it.
+
+**The records are sorted by Unicode code point**, which the specification requires. Every key here is
+ASCII, so a byte-wise compare *is* a code-point compare. The writer constructs them in a **deliberately
+wrong order** and sorts — otherwise the sort would be load-bearing in a way no test could see.
+
+**`AeroSourceGuid` is written unconditionally, including for the nil GUID** (32 `'0'` characters), so
+the file's layout never depends on whether a GUID was supplied.
+
+**The reader tolerates unknown keys, and that does NOT contradict section 9.11's reserved-field
+refusal.** A KTX2 key is *named* and *length-prefixed*, so it can genuinely be skipped with every one of
+its bytes accounted for; a binary reserved field has no name, no length and no way to be skipped. A
+missing or malformed `AeroSourceGuid` yields the **nil** GUID and is not a refusal either: a broken
+provenance key is not a corrupt image.
+
+### 10.7 The eight formats
+
+| `vkFormat` | Name | Block | Bytes/block | Alignment | sRGB sibling |
+|---|---|---|---|---|---|
+| 37 | `R8G8B8A8_UNORM` | 1×1 | 4 | 4 | 43 |
+| 43 | `R8G8B8A8_SRGB` | 1×1 | 4 | 4 | — |
+| 131 | `BC1_RGB_UNORM_BLOCK` | 4×4 | 8 | 8 | 132 |
+| 132 | `BC1_RGB_SRGB_BLOCK` | 4×4 | 8 | 8 | — |
+| 137 | `BC3_UNORM_BLOCK` | 4×4 | 16 | 16 | 138 |
+| 138 | `BC3_SRGB_BLOCK` | 4×4 | 16 | 16 | — |
+| 139 | `BC4_UNORM_BLOCK` | 4×4 | 8 | 8 | **none exists** |
+| 141 | `BC5_UNORM_BLOCK` | 4×4 | 16 | 16 | **none exists** |
+
+**133/134 (`BC1_RGBA_UNORM`/`_SRGB`) are deliberately absent**: those are the punch-through-alpha
+variants, and this cook's BC1 encoder always emits opaque four-colour blocks. A value in this table is a
+promise the encoder must keep.
+
+**There is no `BC4_SRGB` and no `BC5_SRGB` at any Vulkan value** — the enumeration runs 139 `BC4_UNORM`,
+140 `BC4_SNORM`, 141 `BC5_UNORM`, 142 `BC5_SNORM` — which is what makes "an sRGB normal map"
+**unspellable** rather than merely rejected. The colour space is carried by the format enumerator and
+by nothing else: there is no `bool srgb` anywhere in the subsystem, so the invalid combination is not a
+state to validate, log about and eventually get wrong.
+
+### 10.8 The mip chain
+
+`levelCount` is either `floor(log2(max(width, height))) + 1` or **1**. There is no partial pyramid: KTX2
+permits one and this container refuses it, because a partial chain's only effect is to make a
+consumer's sampler configuration depend on the file. `levelCount == 0` is forbidden by the
+specification itself for block-compressed formats and is refused for every format here.
+
+**The refusal is the parser's, not merely the cook's**, and the two statuses differ: a count *between*
+1 and the full chain is `UnsupportedShape` (nothing is over a cap — 2 is inside 1…4 for an 8×8 image),
+while 0 and a count *past* the chain are `CapExceeded`. For a 1×1 image the two accepted answers
+coincide, so the round trip of the smallest legal file is unaffected.
+
+Level `p` is filtered **from level `p-1`**, never resampled from level 0.
+
+**The filter is an integer polyphase box**, per axis, and it is the reason an NPOT texture's small mips
+do not walk:
+
+| Source extent `S` | Taps | Weights | Denominator | Source indices |
+|---|---|---|---|---|
+| `S == 1` | 1 | `{1}` | 1 | `{0}` |
+| even, `S == 2D` | 2 | `{1, 1}` | 2 | `{2i, 2i+1}` |
+| odd, `S == 2D+1` | 3 | `{D-i, D, i+1}` | `2D+1` | `{2i, 2i+1, 2i+2}` |
+
+The odd weights sum to `2D+1` for every `i`, which is what makes the filter energy-preserving; the naive
+alternatives (drop the last row/column, or clamp the second tap) shift the image by a fraction of a
+texel **per level**, so the shift compounds down the chain. The two axes are combined into **one fused
+2D weighted sum with ONE rounding step**, round-half-up — two separable passes would round twice, the
+second time over already-rounded values.
+
+**The filter is gamma-correct.** For an `*Srgb` format each colour sample is decoded to linear light,
+averaged there, and re-encoded; for a `*Unorm` format the stored values already *are* linear and are
+averaged as they stand. **Alpha is averaged as stored in BOTH cases**: alpha is coverage, never a
+gamma-encoded colour.
+
+**The two gamma tables are committed literals**, `SRGB_TO_LINEAR[256]` (16-bit fixed point) and the 255
+midpoint thresholds of its inverse. The sRGB transfer function is a `pow`, so it is evaluated exactly
+**zero** times at runtime; a table generated at startup would put a libm implementation into the output
+bytes, which is worse than the FMA hazard the first-party encoders exist to avoid. Three
+`static_assert`s hold them: the forward table spans 0…65535 exactly, it is strictly increasing, and the
+threshold table **is** the midpoint sequence derived from it — so only one of the two arrays can be
+independently wrong.
+
+### 10.9 The block encoders — output-byte decisions, stated normatively
+
+There are **two** encoders, and BC3 and BC5 have none of their own:
+
+- **BC3** = `encodeBc4Block(alpha)` into bytes 0–7, then `encodeBc1Block(rgb)` into bytes 8–15.
+- **BC5** = `encodeBc4Block(red)` into bytes 0–7, then `encodeBc4Block(green)` into bytes 8–15.
+
+Both composition **orders** are part of the format: swapping either produces a plausible image rather
+than an obviously broken one.
+
+**BC1.** Bounding box of the 16 texels → RGB565 endpoints (round to nearest; no exact half exists, so
+the tie rule is moot) → dequantize by **bit replication**, which is what a hardware decoder does → build
+the four-colour palette with the format's frozen `(2a+b+1)/3` rounding → assign each texel the index
+minimising the weighted squared error with the **frozen weights 3/6/1** → **exactly two** least-squares
+refinement iterations, integer, Cramer's rule, keeping the current endpoints when the system is
+degenerate → order the endpoints so `c0 > c1` (four-colour mode), remapping every index with `^ 1`,
+which is exact → if the quantized endpoints coincide, all indices are zero. Ties take the **lower**
+index. Texel `(x, y)`'s 2 bits sit at bit `2 × (4y + x)` of the little-endian `u32` at byte 4. Alpha is
+ignored: `VK_FORMAT_BC1_RGB_*` carries none.
+
+**BC4.** `r0 = max`, `r1 = min` (the eight-value mode), the six interpolants
+`((7-k)·r0 + k·r1 + 3) / 7` for `k = 1…6`, nearest value with ties taking the **lower** index, and 3
+bits per texel at bit `3 × (4y + x)` of the 48-bit little-endian field at byte 2. Equal endpoints make
+the block a constant, which index 0 reproduces exactly.
+
+**The iteration count and the error weights are frozen quality decisions, not tunables.** Moving either
+is a `COOKED_TEXTURE_COOKER_VERSION` bump. An error-driven stopping rule would be a second determinism
+surface — one whose behaviour depends on an epsilon.
+
+**Partial edge blocks CLAMP the sample coordinate; they never zero-fill.** A 5×3 image's second block
+column covers columns 4–7, of which 5–7 are replicated copies of column 4. Zero-fill would drag the
+block's endpoints toward black and visibly darken the right and bottom edges. The gather is the block
+loop's job precisely so the encoders always see sixteen valid texels.
+
+### 10.10 Determinism
+
+The same input cooks to the same bytes across two runs and three toolchains. Section 9.10's six
+structural sources carry over unchanged; **two more are new here and are the whole reason the encoders
+are first-party**:
+
+7. **No floating point anywhere in the subsystem.** FMA contraction differs between clang on arm64 and
+   MSVC under `/fp:precise`, so a float endpoint search can produce different bytes on two of this
+   project's three lanes. `stb_dxt.h` — already installed, and providing exactly these four formats —
+   finds BC1's principal axis by float power iteration, and that is why it is not used. The argument is
+   determinism, not quality.
+8. **No runtime table generation.** The gamma tables are committed literals rather than `std::pow` at
+   startup, because libm differs between three C libraries.
+
+There is **no order-dependence to close** here: the cook takes one image, not a set of primitives, so
+section 9.10's ordering caveat has no analogue.
+
+Determinism *across platforms* is asserted by four committed byte goldens plus the cook's own
+round-trip cases on all three CI lanes. Task 3.3.3 turns that into a dedicated job across both cook
+kinds.
+
+### 10.11 The caps
+
+| Constant | Value | Why |
+|---|---|---|
+| `MAX_TEXTURE_DIMENSION` | 16384 | per axis. A `static_assert` ties it to the level cap: `16384 == 2^(15-1)` |
+| `MAX_TEXTURE_LEVELS` | 15 | `floor(log2(16384)) + 1` — the full chain of the largest legal image |
+| `MAX_COOKED_TEXTURE_BYTES` | 512 MiB | a cheap parser early-out **and** a real cook refusal |
+| `MAX_TEXTURE_FILE_BYTES` | 64 MiB | the **compressed source file** the editor's adapter will read, matching `MAX_THUMBNAIL_SOURCE_BYTES` rather than `MAX_MODEL_FILE_BYTES`'s 256 MiB. The decoded pixel count is bounded separately and per axis |
+
+The consequence of the third is stated rather than discovered: a 16384² **RGBA8** cook needs 1.07 GB for
+level 0 alone and **is refused**. The maximum dimension is reachable for BC1/BC4 (~179 MB with the full
+chain) and BC3/BC5 (~358 MB) and not for RGBA8 — deliberately, because the uncompressed path is an
+escape hatch for small textures rather than a way to ship a 1 GB artifact.
+
+Unlike section 9's caps, **a texture cap never truncates**: a cook either produces the whole image or
+refuses it. There is no "some of the image", which is why the cook's status is binary.
+
+### 10.12 The writer/reader asymmetry, and interop
+
+**Interop is ONE-DIRECTIONAL, and that is a decision rather than a limitation to be fixed later.** Our
+files open in any conforming KTX2 reader. Arbitrary third-party KTX2 files do **not** open in ours: a
+valid file from another tool may legitimately differ in its DFD (the specification explicitly permits a
+sample's `KHR_DF_SAMPLE_DATATYPE_LINEAR` qualifier to differ), carry key/value data we do not write, or
+use a `vkFormat` outside our eight. This is a first-party cooked-asset reader, not a general loader. A
+general KTX2 **importer** — dragging a third-party `.ktx2` into a project — is a different feature with
+a different owner.
+
+**The DFD byte-match is where the reader is deliberately stricter than the specification.** It is also
+where the reader is **circular**: it compares the descriptor against the same table the writer emits, so
+every test in this repository passes with a wrong table. Only an external validator can break that
+circle, which is why `ktx validate` is a mandatory row on this task's validation page and why the two
+corrections in 10.5 were derived from `createdfd.c` rather than copied.
+
+Three things the parser deliberately does **not** check:
+
+1. **That levels do not overlap each other, the tables or the key/value data.** Every read goes through
+   the bounds-checked `levelBytes(level)`, so an overlap is a wrong *picture*, never a memory error —
+   the same reasoning and the same Phase 5 trigger as section 9.12's second residual.
+2. **That there are no trailing bytes after the last level.** The writer emits none; the reader
+   tolerates them, exactly as the mesh reader tolerates non-zero trailing padding.
+3. **The block CONTENTS.** There is no such thing as an invalid BCn block: every 8- or 16-byte pattern
+   decodes to something.
+
+Everything it *does* check is a **subtraction** against a known-good size
+(`length <= size && offset <= size - length`), never an addition that can wrap, and **nothing is
+allocated before the count it is allocating for has been checked against a frozen cap**.
+
+**THE NAMED, UNOWNED GAP: nothing in this tree can upload one of these files.** `rhi::TextureFormat`
+carries no block formats, and adding them is a **contract change, not an enumerator addition** —
+`rhi::texelBlockSize` is documented as bytes per *texel* and `uploadTexture`'s precondition is
+`data.size() == texelBlockSize(format) × mipWidth × mipHeight`, which is not expressible for a
+block-compressed format. That belongs to task **3.4.1**, which depends on this one. The deliverable here
+is a file, proven as a file.
+
+### 10.13 Error catalog
+
+`parseCookedTexture` never throws, never reads a file and never logs. It returns one of ten statuses
+with a human-readable message; the message is empty **iff** the status is `Ok`. The ladder's order is
+part of the contract — a file that is wrong in two ways gets the status of the **first** check it fails.
+
+| Status | Cause |
+|---|---|
+| `TooSmall` | fewer than 80 bytes, or the level index does not fit |
+| `CapExceeded` | the buffer is over `MAX_COOKED_TEXTURE_BYTES` (checked **before any field is read**); or a dimension, or `levelCount`, is outside its range — including a `levelCount` that is legal in itself but impossible for the declared dimensions |
+| `BadIdentifier` | the first 12 bytes are not the KTX2 identifier |
+| `Supercompressed` | `supercompressionScheme != 0`. A **distinct** status, checked **before** `vkFormat`, because a Basis file's `vkFormat` is legitimately `VK_FORMAT_UNDEFINED` and "unsupported format 0" would be the wrong diagnosis |
+| `UnsupportedFormat` | `vkFormat` outside the eight, or `typeSize != 1` |
+| `UnsupportedShape` | `pixelDepth != 0`, `layerCount != 0`, `faceCount != 1`, or a **partial mip pyramid** (a `levelCount` strictly between 1 and the image's full chain, 10.8) — the message names which. A count that is *over* the chain or zero is `CapExceeded` instead: those are range violations and a partial chain is not, since 2 is inside 1…4 for an 8×8 image |
+| `BadTable` | the DFD or key/value region is misplaced, mis-sized or does not tile exactly; a record declares length 0 (the infinite-loop guard) or overruns; or the global-data pair is non-zero with scheme 0 |
+| `BadDescriptor` | the DFD does not byte-match the frozen table for the declared `vkFormat` |
+| `BadRange` | a level's `byteLength` is wrong for its dimensions, its `uncompressedByteLength` disagrees, its offset is misaligned, or its range leaves the buffer |
+| `Ok` | the buffer is a valid v1 container |
+
+### 10.14 Golden fixtures
+
+Four byte-level goldens live in `tests/cooked_texture_golden.hpp` as annotated in-source arrays, each
+carrying the exact RGBA8 texels it was cooked from — so every case **re-cooks** that input and compares
+the whole file byte for byte. A golden that is only a captured blob proves nothing about the transform
+that produced it.
+
+- **Golden A, `COOKED_TEXTURE_GOLDEN_BC1_4X4`, 344 bytes** — 4×4 BC1-sRGB, three levels, nil GUID.
+  `80 + 24×3 = 152`, `+44` DFD `= 196`, `+120` KVD `= 316`, aligned to 8 → 4 pad bytes, three 8-byte
+  levels at 320/328/336.
+- **Golden B, `COOKED_TEXTURE_GOLDEN_RGBA8_1X1`, 320 bytes** — the smallest legal file: 1×1
+  `Rgba8Unorm`, one level, and **zero padding**, which is the point of it. `80 + 24 = 104`, `+92 = 196`,
+  `+120 = 316`, already 4-aligned, one 4-byte level at 316.
+- **Golden C, `COOKED_TEXTURE_GOLDEN_BC5_5X3`, 400 bytes** — 5×3 BC5, odd in **both** axes, three
+  levels, a non-nil GUID. The polyphase filter's asymmetric weights and the 16-byte alignment are both
+  visible in its bytes.
+- **Golden D, `COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2`, 352 bytes** — 2×2 BC3-sRGB, two levels. It exists
+  because none of the other three carries the corrected `1F` alpha-qualifier byte of 10.5, and it also
+  pins BC3's alpha-then-colour composition in bytes.
+
+**They are frozen.** A change to any layout, ordering, padding, filter or encoder rule fails them by
+construction. If one has to change, the cook changed — and that is a `COOKED_TEXTURE_COOKER_VERSION`
+decision, not a test edit.
+
+---
+
+## 11. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
-  applies unchanged. Section appends here. Still unowned: the `.pak` container itself, cooked scenes,
-  and cooked textures (task 3.3.2). The cooked **mesh** container moved out of this list and is
-  section 9.
+  applies unchanged. Section appends here. Still unowned: the `.pak` container itself and cooked
+  scenes. The cooked **mesh** container is section 9 and the cooked **texture** container is
+  section 10.
