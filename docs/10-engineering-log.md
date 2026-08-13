@@ -6414,3 +6414,318 @@ over up to 129 ranges that buys nothing an attacker can use).
   rather than left ambiguous. The directory is claimed for the cooked-format vocabulary, which is exactly
   what a runtime asset database will read. If the two ever need separating it is a rename inside one
   subsystem, not a cross-layer move.
+
+---
+
+### Task 3.3.2 — Texture cook → KTX2/Basis (Epic 3.3)
+
+**Branch:** `feat/3.3.2-texture-cook-ktx2-basis`, cut from `main @ cd8de6f`. **Eleven green commits**,
+measured with `git rev-list --count main..HEAD` — eight for the implementation, one for the sabotage
+round's gap closures, one for the reduced-configuration proof, one for these documents. Not yet pushed,
+not yet merged; the manual validation pass and its three measurement rows come after the merge.
+
+Epic 3.3's second task and the cooker's second artifact kind. **It is the first thing this project
+produces that a third-party tool can open**: a strict subset of Khronos KTX2, byte for byte, so
+`ktx info`, `ktx validate` and RenderDoc read our files. That single property changes the register of
+the whole task — every field is a **fact to be verified against `ktxspec.adoc`**, not a decision to be
+taken here, and the two places the plan's derivation was wrong would have shipped artifacts that violate
+a specification `must` with every test in this repository green.
+
+#### What shipped
+
+**`engine/assets` grows from two pairs to five**, still linking `aero::core` PUBLIC + `aero::profiling`
+PRIVATE and **no vcpkg package at all**: `cooked_texture.{hpp,cpp}` (the container — the frozen
+`CookedTextureFormat` enum whose values *are* Khronos's `VkFormat` numbers, the eight frozen DFD tables,
+the ten-status hostile-input parser and the non-owning `CookedTextureView`), `texture_cook.{hpp,cpp}`
+(the cook — the two committed gamma tables, the integer polyphase mip filter, the block loop and the
+assembly) and `bc_block.{hpp,cpp}` (the BC1 and BC4 encoders, integer-only, from which BC3 and BC5 are
+composed with no third encoder).
+
+**`/editor` gains one pair**, `texture_cook_source.{hpp,cpp}` — `decodeImageRgba8` (the tree's **second**
+stb_image implementation TU), `chooseTextureFormat`, `isCookableTextureName`, `isHdrTextureName`, plus
+`MAX_TEXTURE_FILE_BYTES`. No panel, no menu item, no `.meta` change, no `Library/` write, no
+`EditorApp` edit.
+
+**`aero_cooker` gains its second subcommand**, `texture`, with a **mandatory** `--srgb`/`--linear` and
+optional `--format`/`--no-mips`/`--guid`. `tools/cooker/CMakeLists.txt` is unchanged — both targets it
+links were already there, and the decode arrives through `aero::editor_core`.
+
+**Five new test TUs and fourteen new `cooker.*` ctest entries**; `tests/cooked_texture_golden.hpp` holds
+**four** frozen byte goldens (344 / 320 / 400 / 352 bytes).
+
+**The tree's first two committed images.** `git ls-files | grep -iE '\.(png|jpg|tga|bmp|gif|psd|hdr)$'`
+returned *nothing* at `cd8de6f`; `tests/fixtures/assets/texture-rgb-5x3.png` (opaque, odd in both axes)
+and `texture-rgba-8x8.png` (a half-transparent quadrant) close that. TGA and BMP byte streams are built
+inside the test instead — both are hand-writable with no compressor — and `.jpg`/`.jpeg`/`.gif`/`.psd`
+are covered **by name only**, which the test says in as many words rather than shipping a case that only
+looks like proof.
+
+**No new dependency of any kind.** `vcpkg.json`, `.github/`, `cmake/`, `runtime/`,
+`engine/CMakeLists.txt` and `tools/cooker/CMakeLists.txt` are byte-identical to `main`.
+
+#### The eleven spec corrections — two of them blocking
+
+Every derived statement in the spec was recomputed against HEAD or against a normative Khronos source
+downloaded while planning. Eleven were wrong. **Two would have produced artifacts `ktx validate`
+rejects, with every test in this tree green**, because our own parser compares the descriptor against
+the same table our writer emits — R1's circularity, exactly.
+
+**C1 (BLOCKING) — `138 BC3_SRGB`'s byte 31 must be `1F`, not `0F`.** `createdfd.c`'s `setChannelFlags`
+sets `KHR_DF_SAMPLE_DATATYPE_LINEAR` (`0x10`) when the channel id equals `KHR_DF_CHANNEL_RGBSDA_ALPHA`
+(15), and `KHR_DF_CHANNEL_BC3_ALPHA` is **also 15** — the comparison is numeric, not semantic, which is
+why the library's rule reaches BC3 at all. `15 | 0x10 = 0x1F`.
+
+**C2 (BLOCKING) — `43 R8G8B8A8_SRGB`'s byte 79 must be `1F`, not `0F`.** Same mechanism one function
+over: `writeSample` maps a channel-3 request to `KHR_DF_CHANNEL_RGBSDA_ALPHA` and then applies
+`setChannelFlags`. Sample 3 starts at `28 + 3×16 = 76`; the channel id is the fourth byte of its first
+word. KTX2 states it as a **`must`**, quoted in `docs/09` §10.5.
+
+**C3 — "the two members of each UNORM/SRGB pair differ in exactly one byte" is false for two of the
+three pairs.** After C1 and C2 it holds only for 131/132, whose single sample is channel 0. 137/138 and
+37/43 differ in **two**. D6's argument is unharmed — the colour space is still carried by the enumerator
+alone — but `docs/09` §10.5 states the two-byte cases explicitly, with the mechanism, or the next person
+to derive a table by copy-and-edit reproduces the defect.
+
+**C4 — the `TC*` case-id prefix was already taken** by `tests/editor/thumbnail_cache_test.cpp`'s 13
+cases. Two binaries do not collide at link time, but in this repo a case id is a **global** identifier
+cited from the sabotage matrix, the validation page, `docs/10` and `CLAUDE.md`. The cook's prefix is
+`TX`; `CT`, `BB` and `TK` were verified to read zero occurrences.
+
+**C5 — `KHR_DF_VERSIONNUMBER_LATEST` is `_1_4`, not `_1_3`, and the byte is unchanged** (both are `2U`;
+1.4 did not bump the block version number). Recorded because a future dfdutils that *does* bump it would
+change the byte, and the comment beside the constant now names which enumerator it encodes.
+
+**C6 — there were no image fixtures in this tree at all**, and the spec's `TK` battery assumed committed
+ones. Closed as described above.
+
+**C7 — `COOKED_TEXTURE_GOLDEN_BC5_5X3`'s size was never stated**; it is **400 bytes**, derived in the
+plan and confirmed by the golden.
+
+**C8 — the "largest square" figures are right but must not be hard-coded as a boundary.** The true
+mip-chain cost is `Σ ceil(w/2^p) × ceil(h/2^p) × 4`, which exceeds `4/3 × w²` because of the `max(1, …)`
+floor at the tail, so a test asserting 10033 exactly would be asserting the wrong arithmetic. The cap
+cases assert *behaviour* comfortably past and below the boundary instead.
+
+**C9 — `KTX2_KVD_BYTES` must be a `static_assert`ed closed form**, not a bare 120 with the writer string
+spelled twice. A `COOKED_TEXTURE_COOKER_VERSION` bump that lengthens `KTXwriter`'s value is now a build
+failure rather than a silently wrong `kvdByteLength` and every offset after it.
+
+**C10 — the parse ladder was missing the two-byte cap early-out** `parseCookedMesh` opens with. Added as
+step 1b, `CapExceeded`, before a single field is interpreted.
+
+**C11 — `stbi_failure_reason` does not exist in `thumbnail_store.cpp`'s configuration.** That TU defines
+`STBI_NO_FAILURE_STRINGS` because it reports a *state*; copying its macro block wholesale — the obvious
+thing to do — would have left the CLI's only source of a human-readable decode reason with no text at
+all. The new TU deliberately does **not** define it, and `TK18` asserts the absence.
+
+#### The gamma tables, and the generator that produced them — recorded here and nowhere else
+
+`SRGB_TO_LINEAR[256]` and `LINEAR_TO_SRGB_THRESHOLDS[255]` are 511 committed literals. The sRGB transfer
+function is a `pow`, so it is evaluated exactly **zero** times at runtime: a table built at startup would
+put a libm implementation into the output bytes, and libm differs between three C libraries — worse than
+the FMA-contraction hazard the first-party encoders exist to avoid.
+
+This is the one place the generator exists. It is **deliberately not in the tree**: a generator that
+lives in the build is a generator somebody eventually runs at configure time.
+
+```python
+#!/usr/bin/env python3
+# Regenerates the two committed gamma tables in engine/assets/src/texture_cook.cpp.
+# Verified to reproduce both arrays EXACTLY, entry for entry, at task 3.3.2.
+def eotf(c):                       # the sRGB electro-optical transfer function
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+forward = [round(65535 * eotf(v / 255)) for v in range(256)]          # SRGB_TO_LINEAR
+thresholds = [(forward[i] + forward[i + 1] + 1) // 2 for i in range(255)]  # LINEAR_TO_SRGB_THRESHOLDS
+
+for name, table in (("SRGB_TO_LINEAR", forward), ("LINEAR_TO_SRGB_THRESHOLDS", thresholds)):
+    print(name)
+    for row in range(0, len(table), 16):
+        print("    " + ", ".join(str(v) for v in table[row:row + 16]) + ",")
+```
+
+`round()` is banker's rounding in Python 3 and round-half-up is what the table's comment claims, and the
+two agree here because **no entry lands on an exact half** — checked programmatically while
+re-verifying, not assumed. The threshold table is not independently trusted anyway: a `static_assert`
+derives it from the forward table at compile time, so only **one** of the two arrays can be wrong, and
+that one is covered by five hand-recomputed anchors (`TX4`) and the exhaustive round trip (`TX6`).
+
+#### The sabotage matrix — 53 seeds, five genuine gaps and one test-robustness defect
+
+The plan's matrix has 52 seeds; **S53 makes 53**, and three of them were run in two arms each (S20's one
+and three refinement iterations, S48's two tables, S53's two shapes), so 56 seedings in total. Every
+seed's presence was asserted in the file before its verdict was trusted — three of them (S43, S44, and
+the S6 re-run) would otherwise have been read backwards.
+
+Forty-seven discriminated. **Six reddened nothing**, one of them predicted in advance:
+
+| Seed | What reddened | Genuine gap? | Closure, and the re-seed that proved it |
+|---|---|---|---|
+| S1 store levels largest-first | goldens A, C, D | no | — |
+| S2 index smallest-first | 19 `aero_tests` cases + `TK17` | no | — |
+| S3 drop the `align(A)` | 21 cases + `TK17` + `cooker.texture_png_happy` | no | — |
+| S4 align every format to 4 | 21 cases + `TK17` + `cooker.texture_png_happy` | no | — |
+| S5 `uncompressedByteLength` 0 | 26 cases + `TK17` | no | — |
+| S6 flip 132's transferFunction | `CT11`, `CT12`, `CT32`, `CT53`, `CT56a`, `CT57`, `CT58` | **test defect** | `CT57`'s `REQUIRE(levels >= 1)`; re-seeded → red in 12 s instead of 1.19 billion assertions |
+| S7 UNORM DFD for an sRGB format | the same seven | no | — |
+| S8 drop the alpha qualifier from 138 and 43 | `CT12`, **`CT56` (golden D)**, `CT56a`, `CT57`, `CT58` | no | the fourth golden earns its place: the plan predicted `CT12` alone before it existed |
+| S9 sort the KVD the other way | all four goldens + `cooker.texture_guid_written` | no | — |
+| S10 omit `valuePadding` | 26 cases + `TK17` | no | — |
+| S11 `AeroSourceGuid` only when non-nil | 25 cases + `TK17` (**not** golden C, whose GUID is non-nil) | no | — |
+| S12 average sRGB bytes directly | `TX14`, `TX16`, `TX17`, goldens A and D | no | — |
+| S13 gamma-correct alpha too | `TX16`, golden D | no | — |
+| S14 truncated 2×2 box for odd extents | `TX9`, `TX10`, golden C | no | — |
+| S15 swap the polyphase weights | **`TX10` only**, + golden C | no | exactly as predicted — `TX9`'s 3×3 has symmetric weights and structurally cannot see it |
+| S16 resample every level from level 0 | goldens A and C, `TX46` — **not `TX19`** | **YES** | `TX35a`, a cook-driven chain case; re-seeded → red |
+| S17 round half down | `TX13`, `TX15`, `TX16`, `TX19`, golden C | no | — |
+| S18 zero-fill partial edge blocks | `TX34`, `TX47`, `TX46`, goldens A, C, D | no | — |
+| S19 drop BC1's endpoint swap | `BB2`–`BB9`, `BB11`, `BB22`, goldens A and D | no | — |
+| S20a one refinement iteration | `BB2`, `BB8`, `BB9`, `BB11`, golden A | no | — |
+| S20b three refinement iterations | `BB9`, golden A | no | — |
+| S21 error weights 1/1/1 | `BB2`, `BB8`, `BB9`, goldens A and D | no | — |
+| S22 reverse BC4's `r0`/`r1` | `BB13`–`BB17`, goldens C and D | no | — |
+| S23 transpose BC1's index bits | `BB2`–`BB4`, `BB7`, `BB9`, `BB11`, `BB22`, goldens A and D | no | — |
+| S24 transpose BC4's index bits | `BB13`, `BB15`, `BB16`, `BB17`, goldens C and D | no | — |
+| S25 BC3 colour-then-alpha | `TX32`, `TX45`, golden D | no | — |
+| S26 BC5 green-then-red | `TX33`, golden C | no | — |
+| S27 reserve before the cap check | **`TX48` only** | no | **predicted in advance**: a 512 MB reserve of address space simply succeeds, so nothing behavioural can see it |
+| S28 accept `supercompressionScheme != 0` | `CT17`, `CT18` | no | — |
+| S29 accept `faceCount == 6` | `CT23` | no | — |
+| S30 accept `levelCount == 0` | `CT26` | no | — |
+| S31 subtraction → addition in `fits` | `CT44`, **and the binary aborted (SIGABRT)** | no | the loudest possible failure |
+| S32 refuse unknown KVD keys | `CT38` | no | — |
+| S33 BC3 threshold at alpha 254 | **`TK6` only** — *not* `cooker.texture_auto_picks_bc3` | no | the fixture's alpha is far below 254, so the CLI case is not a boundary case. Recorded rather than "fixed": `TK6` is where the boundary belongs |
+| S34 add `.hdr` to the cookable table | `TK1`, `TK3`, `TK4`, `cooker.texture_hdr_refused` | no | — |
+| S35 derive the table from the thumbnail one | the same four | no | — |
+| S36 default the colour space to sRGB | `cooker.texture_no_colorspace` | no | — |
+| S37 allow `--srgb --format bc5` | `cooker.texture_srgb_bc5_conflict` | no | — |
+| S38 read the input before the extension test | `cooker.texture_hdr_refused` | no | — |
+| S39 write before checking the cook status | **NOTHING** | **YES** | `aero_expect_source_order` inside `cooker.texture_nothing_written_on_failure`; re-seeded → red |
+| S40 drop `STB_IMAGE_STATIC` | **`TK18` only** — the predicted LINK failure **did not occur** | no | see below |
+| S41 add `STBI_NO_FAILURE_STRINGS` | **`TK18` only** — `TK13` stayed green | no | see below |
+| S42 `find_package(Stb)` in `engine/assets` | the AC-41 gate grep | no | see the grep note below |
+| S43 non-monotonic `SRGB_TO_LINEAR` | **two compile errors** | no | the `static_assert`s are not decorative |
+| S44 one threshold off by 1 | **a compile error** | no | ditto |
+| S45 reverse `chooseTextureFormat`'s colour space | `TK5`–`TK8`, `TK11`, `TK12`, `TK17`, `cooker.texture_png_happy`, `cooker.texture_auto_picks_bc3` | no | — |
+| S46 alignment returns `blockBytes` | **NOTHING** | **YES** | `CT6`'s source-text arm; re-seeded → red |
+| S47 `mipLevelCount` from width alone | `TX1`, `TX12`, `TX20` | no | — |
+| S48a drop one row from `CT58`'s table | **NOTHING** | **YES** | literal row counts; re-seeded → `CT58` red |
+| S48b drop `TX1`'s 1×2 and 1×64 rows | **NOTHING** | **YES** (same gap) | literal row counts; re-seeded → `TX1` red |
+| S49 KVD walk without `align4` | 40 cases + `TK17` | no | — |
+| S50 drop the KVD sort | all four goldens + `cooker.texture_guid_written` | no | the writer's deliberately-wrong construction order is what makes the sort load-bearing |
+| S51 drop the `blocksY` term | `CT45`, an abort, and three cooker cases | no | — |
+| S52 ignore `maxDimension` | `TK15` | no | — |
+| S53 dimension test replaces the byte cap | `TX40`, `TX48` — **only after the closure below**; before it, `TX48` alone | **YES** | `TX40`'s source-text arm |
+| S53b dimension clause **added beside** the byte cap | **NOTHING** | **YES** (the sharp form) | `TX40`'s source-text arm; re-seeded → red |
+
+**The five genuine gaps, and why each was invisible.**
+
+- **`TX19` proves the FILTER composes, not that the COOK chains its levels (S16).** It halves by hand,
+  twice, through `downsampleRgba8` — it never calls `cookTexture`. Pointing the cook's filter at level 0
+  for every level left it green; only the byte goldens caught it, and a golden catches every change
+  equally, so nothing *named* the rule that had broken. `TX35a` cooks `Rgba8Unorm`, whose level bytes are
+  the filter's output verbatim, and compares level 2 against the twice-halved chain.
+- **`TX40`'s "the cap is on BYTES, not on dimension" had no case that could see it violated (S53/S53b).**
+  Its 12000² half recomputes the level arithmetic *inside the test* and never calls `cookTexture` at that
+  dimension — deliberately, because doing so needs a 576 MB input and twelve million block encodes on
+  every lane on every run, and the RGBA8/BC1 crossover cannot be lowered (RGBA8 only passes the cap above
+  ~10 033 texels a side). So a dimension clause added *beside* the byte comparison refuses exactly what
+  `TX39` expects, with the same message, and everything stays green. Closed with a comment-stripped
+  source-text assertion that the check compares the byte total and names neither axis — the `CM50`/`TX48`
+  precedent, a third use in this file.
+- **`cookedTextureLevelAlignment`'s `lcm` has no format that can see it (S46).** `lcm(blockBytes, 4)`
+  equals `blockBytes` for all eight of today's formats, so a body returning `blockBytes` passes every
+  assertion in `CT6` including the independently computed `lcm`. **No ninth format exists to add** — BCn
+  is 8 or 16 bytes throughout and ASTC is 16 — so a fixture cannot close it and the source text does.
+- **The cook's own refusal is unreachable through the CLI (S39).** `decodeImageRgba8` bounds every axis
+  at `MAX_TEXTURE_DIMENSION` long before `cookTexture`'s byte cap can trip, and the one input that would
+  trip it (~16384×8192) costs a 537 MB decode on every lane. `cooker.texture_nothing_written_on_failure`
+  proves the *decode's* refusal writes nothing; the ordering of the write against the *cook's* status is
+  now a comment-stripped source-text gate in `run_case.cmake`, **scoped to `runTexture`** because
+  `writeTextFileAtomic(args.outputPath, artifact)` is character-for-character identical in the mesh path.
+- **Every anti-vacuity guard guarded itself (S48a/S48b).** They read `REQUIRE(checked == TABLE.size())`,
+  and both sides shrink together when a row is deleted — so dropping golden D from `CT58`, or the 1×2 and
+  1×64 rows from `TX1` (which exist *specifically* to catch S47), left the suite green while it tested
+  less. Every case-local table now pins a **literal**; `COOK_FORMATS`'s size is pinned once, as
+  `ALL_FORMATS`'s already was by `CT1`.
+
+**And one test-robustness defect the matrix found by accident (S6).** `CT57` computes
+`levels = parse.view.levelCount()` and then `levels - 1`. On a *refused* parse that is `0xFFFFFFFF` on an
+unsigned, and the second use is a loop — so a case that should fail in milliseconds ran for ten minutes
+and **1.19 billion assertions** before the run was killed. `REQUIRE(levels >= 1)` aborts it cleanly.
+Shape before position, the 2.6.2 lesson in a new costume; the same seed now reddens seven cases in 12 s.
+
+**Three predictions the matrix falsified, recorded because a wrong prediction is worth as much as a
+gap.** S40's predicted **link failure did not happen**: dropping `STB_IMAGE_STATIC` from the new TU
+builds and links clean on macOS today, because `thumbnail_store.cpp`'s implementation is itself `static`
+and the assimp port's copy is in a static archive whose members the linker never has to pull —
+**`TK18` is the only cover that exists**, not a belt beside a brace. S41's `TK13` stayed green because
+`decodeImageRgba8` falls back to its own message when `stbi_failure_reason()` returns null, so the
+decode still reports *a* reason — `TK18`'s absence assertion is again the only real cover. And S33
+reddened `TK6` alone, not the CLI case the plan expected, because the committed 8×8 fixture's alpha is
+far below 254.
+
+**Two gate greps in §V.4 are not literally zero, and must be read rather than counted.**
+`git grep -n 'find_package' -- engine/assets/` returns **two comment lines** stating the prohibition
+(the seeded violation makes it three, which is how S42 is graded), and
+`git grep -nE '…|fork|…' -- tools/` returns **two matches inside `tools/shaderc/README.md`'s prose**
+("libsdl-org fork"). Both are the boundary guards' own "prose in comments" nuance, one tier down.
+
+#### The mechanical gate
+
+Every number **re-measured** at the tip, never derived by addition. `ctest --preset macos-debug`
+**131/131 with `AERO_REQUIRE_GPU=1`**. `ctest -N` **117 → 131** with tools ON, **28 → 42** with both tool
+flags OFF, **41 → 55** with `AERO_REFLECT_TOOLS=OFF` alone — **`ctest -N` moves in all three
+configurations again**, because `aero_cooker` still takes no gate flag. Both reduced configurations were
+configured **fresh** with `-G Ninja` (the generator enters the shadercross bootstrap's option hash) and
+are green, with `CT1`, `TX1`, `BB1`, `TK1` and all fourteen `cooker.texture_*` entries present in both.
+
+`aero_tests` **523 → 654** (three new TUs; the extra case over the plan's predicted 651 is `TX35a` plus
+`CT44a` and `CT56a`), `aero_editor_shell_test` **1498 → 1516**, `aero_editor_imgui_test` **104**,
+`aero_scene_serialize_test` **23**, `aero_editor_inspector_test` **22** — the last three unchanged,
+because this task ships **no UI at all**. `editor/src/*.cpp` **59 → 60**, `aero_editor_core` sources
+**58 → 59**. `check-math-boundary.sh` **316 → 329** tracked files scanned and
+`check-project-no-delete.sh` Check B **59 → 60**, both picked up automatically with **no script edit**;
+guard count stays **six**, and `texture_cook_source.cpp` is in neither Check A's denylist nor Check B's
+`PERMITTED_DELETERS`, which is what makes a future `std::filesystem::remove` there a hard CI failure.
+
+`git grep -nE '_WIN32|__APPLE__|__linux__' -- engine/assets tools/cooker` reads **zero lines**; over
+`editor/src` + `editor/include` it still reads **exactly three, in one file** (3.2.4's `currentHostOs`).
+Every purity grep over `engine/assets` returns only prose in `//` comments — including the
+`float`/`double` one, whose only hits in the three new files are the comments explaining why there is no
+floating point. clang-format and clang-tidy are clean **by exit code**.
+
+#### What was deliberately left out
+
+BC7 and BC6H (a later quality/HDR task — additive: a ninth `vkFormat`, a ninth DFD table, a third
+encoder, and no change to any rule in §10.2–§10.7). ASTC, ETC2, mobile profiles and `--platform`
+(**6.3.1**, which is what `docs/09` §9.0's forward reference was pointing at). Basis Universal / UASTC /
+ETC1S and Zstd/ZLIB supercompression (**6.3.1** — the "Basis" in the task's title is the ecosystem's name
+for the family; `supercompressionScheme` is 0, always). Cubemaps, arrays, 3D textures and incomplete mip
+chains (unowned; each is a header-field relaxation with no consumer). Extending `rhi::TextureFormat`
+(**3.4.1**, see below). Per-texture cook settings in `.meta` and a panel to edit them (bound by 3.2.1's
+D6 — `.meta` stays at v1). Deriving sRGB from glTF material usage (blocked on the above; it needs
+somewhere to put the answer). Cook-on-import and a cooked-asset cache (Phase 5). A general KTX2/DDS
+**importer** — this reader is explicitly not it. Normal-map renormalization, alpha-coverage
+preservation, channel packing, atlassing, swizzling, premultiplied alpha, vertical flip and
+resize-to-POT — **and no setting for any of them**, for the same reason there is no `MeshCookSettings`.
+`.hdr` input, refused by name before a byte is read.
+
+**The named, unowned gap: nothing in this tree can upload the artifact.** `rhi::TextureFormat` carries no
+block formats, and adding them is a **contract change, not an enumerator addition** — `texelBlockSize`
+is documented as bytes per *texel* and `uploadTexture`'s precondition is
+`data.size() == texelBlockSize(format) × mipWidth × mipHeight`, which is not expressible for a
+block-compressed format. **Task 3.4.1 owns it**, and it depends on this one. The deliverable here is a
+file, proven as a file — by its parser, its four goldens, its CLI, and (after the merge) `ktx validate`.
+
+#### Open at the time of writing
+
+- **R1, R2 and R3 are unmeasured.** `ktx validate` against the four goldens plus a BC3-sRGB and an
+  RGBA8-sRGB artifact (R1 — the only non-circular proof this task can get, and the row that confirms or
+  refutes C1 and C2), BC1 PSNR against `stb_dxt` over five images (R2), and wall-clock plus peak RSS for
+  a 4096² and a 512² cook (R3). All three are validation-page rows written so a blank tick is
+  impossible. **`ktx` is not installed on the validating machine**, and there is no Homebrew formula for
+  it — `brew info ktx` errors and there is no cask — so row 3 names the real path (the Khronos 4.4.2
+  `.pkg` release, the same version `docs/01-tech-stack.md` already lists) and is expected to be recorded
+  as an attempt rather than ticked until that install happens.
+- **The code-review round has not been run**, and neither has CI. Both come before the merge.

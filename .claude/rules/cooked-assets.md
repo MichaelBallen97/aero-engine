@@ -94,6 +94,64 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
 - **`tools/cooker/src/main.cpp` is the first `/tools` TU that is always in the compile database**, so
   CI's `--warnings-as-errors='*'` clang-tidy applies to it in full — unlike the two gated tools.
 
+## Textures (task 3.3.2) — the container, the cook and the encoders
+
+`engine/assets` also holds the **cooked texture container v1**: `cooked_texture.{hpp,cpp}` (a strict
+subset of Khronos **KTX2**, and a real one — `ktx info`, `ktx validate` and RenderDoc open our files),
+`texture_cook.{hpp,cpp}` (the cook) and `bc_block.{hpp,cpp}` (the two encoders). The **normative**
+specification is `docs/09-file-formats.md` section 10.
+
+- **`engine/assets` still links NO vcpkg package, and the stb_image decode lives in `/editor` BECAUSE
+  OF THAT**, not for convenience. `find_package(Stb)` in `engine/assets/CMakeLists.txt` voids the
+  boundary silently while CI stays green. The same sentence as the mesh half, one task later, and it is
+  the reason the adapter pair exists at all.
+- **NO FLOATING POINT IN `engine/assets`. AT ALL.** Not a style rule: a float here is a byte-identity
+  hazard on three lanes (FMA contraction differs between clang and MSVC; libm differs between three C
+  libraries), and 3.3.3 turns byte-identity into a CI job for **both** cook kinds. That is the whole
+  reason `stb_dxt.h` is installed, provides exactly these four formats, and **is not used** — its BC1
+  path finds the principal axis by float power iteration. `<numeric>`'s `std::lcm` is integer-only and
+  is the one include the rule does not reach; do not "tidy" it away.
+- **The gamma tables are committed literals with `static_assert`ed monotonicity and a `static_assert`ed
+  derivation of the threshold table from the forward one.** Never generate them at runtime, never add
+  the generator to the build. Its source is in `docs/10`'s 3.3.2 entry, verbatim, and nowhere else.
+- **The sRGB DFD tables are NOT one-byte edits of their UNORM siblings** for BC3 and RGBA8: the alpha
+  sample carries `KHR_DF_SAMPLE_DATATYPE_LINEAR`, so byte 31 of 138 and byte 79 of 43 are `1F`. KTX2
+  makes it a **`must`**; **our own parser cannot catch a wrong table**, because it compares against the
+  same one the writer emits. **Only `ktx validate` can.** Do not "simplify" the three sRGB tables into
+  byte patches — one of them is, two of them are not.
+- **The level INDEX is level-0-first and the level DATA is smallest-first.** The writer computes the
+  offsets in reverse and stores them forward, so `levels[0].byteOffset` is the numerically largest
+  offset in the file.
+- **`mipPadding` occurs at exactly ONE site per file**, between the key/value data and the smallest
+  level. The parser checks every level's alignment anyway — a hostile file is not obliged to share our
+  arithmetic.
+- **BC3 and BC5 have no encoders and may never grow one.** BC3 is alpha-then-colour; BC5 is
+  red-then-green; both orders are output-byte decisions with their own seeds, because swapping either
+  produces a plausible image rather than an obviously broken one.
+- **Partial edge blocks CLAMP, never zero-fill.** Zero-fill drags the endpoints toward black and
+  visibly darkens the right and bottom edges.
+- **`--srgb`/`--linear` is mandatory on the CLI and there is no default**, and `--srgb` with `bc4`/`bc5`
+  is a usage error because Vulkan defines no such format. sRGB is carried by the format enumerator and
+  nowhere else, which is what makes "an sRGB normal map" unspellable rather than merely rejected.
+- **`.hdr` is refused by a THIRD extension table, before the read.** `stbi_load` does not fail on a
+  Radiance file — it silently tone-maps it through a fixed gamma-2.2 curve and hands back 8-bit LDR
+  bytes, which cook to a plausible artifact that is quietly wrong.
+- **`texture_cook_source.cpp` defines `STB_IMAGE_STATIC` and must keep defining it, and deliberately
+  does NOT define `STBI_NO_FAILURE_STRINGS`**, unlike `thumbnail_store.cpp`. Copying that TU's macro
+  block wholesale silently loses every decode reason. **`TK18` is the only cover for both halves** —
+  measured, not assumed: dropping `STB_IMAGE_STATIC` links clean on macOS today, and adding
+  `STBI_NO_FAILURE_STRINGS` still leaves a non-empty error string through the adapter's own fallback.
+- **Three properties have no case that can see them violated and are pinned in comment-stripped SOURCE
+  TEXT instead** (the `CM50` shape): the byte-cap check comes before the allocation (`TX48`); that check
+  compares the byte TOTAL and names neither axis (`TX40`); `cookedTextureLevelAlignment` computes
+  `std::lcm` (`CT6`); and, one tier up, the CLI checks the cook's status before it writes
+  (`cooker.texture_nothing_written_on_failure`, scoped to `runTexture` because the mesh path's write
+  call is character-identical). Do not replace any of them with a runtime case that only looks like
+  proof.
+- **Every case-local table in the four test TUs pins a LITERAL row count**, never `TABLE.size()`: a
+  guard derived from the table it guards cannot see a row deleted, and two seeds proved it by deleting
+  the rows that existed to catch two other seeds.
+
 ## The named, unowned gap
 
 **v1 stores no node hierarchy**, so a consumer that instantiates a cooked mesh puts every submesh at
@@ -103,4 +161,4 @@ mesh copies and change the canonical model's shape for one format. A cooked mode
 carrying the node tree is the right answer and belongs to whoever owns instantiation — task 3.1.5 is
 the first task that will hit it. This is a **decision waiting to be taken**, not a scope boundary.
 
-Full history: `docs/10-engineering-log.md`, task 3.3.1's entry under Phase 3.
+Full history: `docs/10-engineering-log.md`, tasks 3.3.1 and 3.3.2's entries under Phase 3.
