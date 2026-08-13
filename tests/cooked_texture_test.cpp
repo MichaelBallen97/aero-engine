@@ -10,7 +10,18 @@
 // binaries do not collide at link time, but in this repo a case id is a GLOBAL identifier cited from
 // the sabotage matrix, the validation page, docs/10 and CLAUDE.md, and every one of those is
 // grepped.
+//
+// NEVER WRITE `CHECK(someCookedTextureFormat == CookedTextureFormat::X)` IN THIS TU. doctest's
+// DOCTEST_STRINGIFY expands to an UNQUALIFIED `toString(...)`, so ADL finds
+// engine::assets::toString(CookedTextureFormat) -- a non-template exact match that beats doctest's
+// own template -- and the decomposer then tries `std::string_view + const char*`, which is a hard
+// compile error on EVERY lane, inside doctest.h rather than at the CHECK. Compare through toString()
+// on both sides (CT7 proves it is injective over the eight) or wrap the comparison in a second pair
+// of parentheses, which is what tests/rhi_format_test.cpp does for engine::rhi::toString. The status
+// enum is unaffected: its label function is deliberately named cookedTextureStatusLabel, not
+// toString.
 #include <aero/assets/cooked_texture.hpp>
+#include <aero/core/guid.hpp>
 
 #include <doctest/doctest.h>
 
@@ -26,7 +37,9 @@
 // lane, with errors pointing inside the STL headers rather than at the CHECK.
 #include <ostream>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 using engine::assets::cookedTextureBlockBytes;
 using engine::assets::cookedTextureBlockHeight;
@@ -34,10 +47,12 @@ using engine::assets::cookedTextureBlockWidth;
 using engine::assets::cookedTextureDescriptorBytes;
 using engine::assets::CookedTextureFormat;
 using engine::assets::cookedTextureLevelAlignment;
+using engine::assets::CookedTextureParse;
 using engine::assets::CookedTextureStatus;
 using engine::assets::cookedTextureStatusLabel;
 using engine::assets::isCookedTextureFormat;
 using engine::assets::isSrgbCookedFormat;
+using engine::assets::parseCookedTexture;
 using engine::assets::toString;
 
 namespace {
@@ -75,6 +90,164 @@ constexpr std::array<CookedTextureFormat, 8> ALL_FORMATS = {
 }
 [[nodiscard]] std::uint32_t dfdU32(std::span<const std::uint8_t> dfd, std::size_t at) {
     return dfdU16(dfd, at) | (dfdU16(dfd, at + 2) << 16U);
+}
+
+// ---- the hand-built valid file, and the knobs the refusal arms need ------------------------------
+//
+// EVERY buffer the parser cases below feed it is built HERE, from docs/09 section 10's own rules,
+// and NOT by the cook -- which does not exist yet at this step and, more importantly, would let a
+// cook bug mask a parser bug. Each refusal arm then mutates exactly ONE field of something already
+// valid, so the arm's status names the mutation rather than an accident of construction.
+struct Ktx2Build {
+    CookedTextureFormat format = CookedTextureFormat::Bc1RgbSrgb;
+    std::uint32_t width = 4;
+    std::uint32_t height = 4;
+    std::uint32_t levelCount = 3;  // the full chain for 4x4
+    engine::Guid guid{};           // nil unless a case says otherwise
+    bool includeGuidKey = true;
+    bool useGuidValueOverride = false;
+    std::string guidValueOverride;  // written verbatim (plus a NUL) instead of formatGuid(guid)
+    bool includeUnknownKey = false;
+};
+
+constexpr std::size_t H_VK_FORMAT = 12;
+constexpr std::size_t H_TYPE_SIZE = 16;
+constexpr std::size_t H_PIXEL_WIDTH = 20;
+constexpr std::size_t H_PIXEL_HEIGHT = 24;
+constexpr std::size_t H_PIXEL_DEPTH = 28;
+constexpr std::size_t H_LAYER_COUNT = 32;
+constexpr std::size_t H_FACE_COUNT = 36;
+constexpr std::size_t H_LEVEL_COUNT = 40;
+constexpr std::size_t H_SUPERCOMPRESSION = 44;
+constexpr std::size_t H_DFD_OFFSET = 48;
+constexpr std::size_t H_DFD_LENGTH = 52;
+constexpr std::size_t H_KVD_OFFSET = 56;
+constexpr std::size_t H_KVD_LENGTH = 60;
+constexpr std::size_t H_SGD_OFFSET = 64;
+
+[[nodiscard]] std::uint32_t levelExtentRef(std::uint32_t base, std::uint32_t level) {
+    const std::uint32_t v = base >> level;
+    return v == 0 ? 1U : v;
+}
+
+[[nodiscard]] std::uint64_t levelBytesRef(CookedTextureFormat format, std::uint32_t width, std::uint32_t height,
+                                          std::uint32_t level) {
+    const std::uint32_t bw = cookedTextureBlockWidth(format);
+    const std::uint32_t bh = cookedTextureBlockHeight(format);
+    const std::uint64_t blocksX = (levelExtentRef(width, level) + bw - 1) / bw;
+    const std::uint64_t blocksY = (levelExtentRef(height, level) + bh - 1) / bh;
+    return blocksX * blocksY * cookedTextureBlockBytes(format);
+}
+
+void appendKvdRecord(std::vector<std::byte>& kvd, std::string_view key, std::string_view value) {
+    // keyAndValueByteLength counts BOTH NUL terminators; the payload is then padded to a multiple of
+    // four with zero bytes, and that padding is part of the region.
+    const std::size_t kv = key.size() + 1 + value.size() + 1;
+    std::array<std::byte, 4> lengthBytes{};
+    engine::assets::putU32(lengthBytes, 0, static_cast<std::uint32_t>(kv));
+    for (const std::byte b : lengthBytes) {
+        kvd.push_back(b);
+    }
+    for (const char c : key) {
+        kvd.push_back(static_cast<std::byte>(c));
+    }
+    kvd.push_back(std::byte{0});
+    for (const char c : value) {
+        kvd.push_back(static_cast<std::byte>(c));
+    }
+    kvd.push_back(std::byte{0});
+    for (std::size_t i = kv; i < align4Ref(kv); ++i) {
+        kvd.push_back(std::byte{0});
+    }
+}
+
+[[nodiscard]] std::vector<std::byte> buildKvd(const Ktx2Build& build) {
+    // Sorted by Unicode code point of the key, which the spec requires of a writer: 'A' (0x41) is
+    // below 'K' (0x4B), and within the two KTX keys 'o' (0x6F) is below 'w' (0x77).
+    std::vector<std::byte> kvd;
+    if (build.includeGuidKey) {
+        const std::string value = build.useGuidValueOverride ? build.guidValueOverride : engine::formatGuid(build.guid);
+        appendKvdRecord(kvd, "AeroSourceGuid", value);
+    }
+    appendKvdRecord(kvd, "KTXorientation", "rd");
+    appendKvdRecord(kvd, "KTXwriter", engine::assets::COOKED_TEXTURE_WRITER_ID);
+    if (build.includeUnknownKey) {
+        // Sorts after KTXwriter, so appending it keeps the region sorted. The parser must SKIP it.
+        appendKvdRecord(kvd, "ZZAeroFutureKey", "whatever");
+    }
+    return kvd;
+}
+
+[[nodiscard]] std::vector<std::byte> makeKtx2(const Ktx2Build& build) {
+    const std::span<const std::uint8_t> dfd = cookedTextureDescriptorBytes(build.format);
+    const std::vector<std::byte> kvd = buildKvd(build);
+    const std::size_t levelIndexBytes = std::size_t{24} * build.levelCount;
+    const std::size_t dfdOffset = 80 + levelIndexBytes;
+    const std::size_t kvdOffset = dfdOffset + dfd.size();
+    const std::size_t kvdEnd = kvdOffset + kvd.size();
+    const std::uint32_t alignment = cookedTextureLevelAlignment(build.format);
+    const std::size_t levelDataStart = ((kvdEnd + alignment - 1) / alignment) * alignment;
+
+    // Level DATA is written smallest-first while the level INDEX is filled level-0-first, so the
+    // offsets are computed in reverse and stored forward. That inversion is the single most likely
+    // place for an off-by-one in this whole format.
+    std::vector<std::uint64_t> offsets(build.levelCount, 0);
+    std::size_t cursor = levelDataStart;
+    for (std::uint32_t level = build.levelCount; level-- > 0;) {
+        offsets[level] = cursor;
+        cursor += static_cast<std::size_t>(levelBytesRef(build.format, build.width, build.height, level));
+    }
+
+    std::vector<std::byte> file(cursor, std::byte{0});
+    const std::span<std::byte> out(file);
+    for (std::size_t i = 0; i < engine::assets::KTX2_IDENTIFIER.size(); ++i) {
+        out[i] = static_cast<std::byte>(engine::assets::KTX2_IDENTIFIER[i]);
+    }
+    engine::assets::putU32(out, H_VK_FORMAT, static_cast<std::uint32_t>(build.format));
+    engine::assets::putU32(out, H_TYPE_SIZE, 1);
+    engine::assets::putU32(out, H_PIXEL_WIDTH, build.width);
+    engine::assets::putU32(out, H_PIXEL_HEIGHT, build.height);
+    engine::assets::putU32(out, H_PIXEL_DEPTH, 0);
+    engine::assets::putU32(out, H_LAYER_COUNT, 0);
+    engine::assets::putU32(out, H_FACE_COUNT, 1);
+    engine::assets::putU32(out, H_LEVEL_COUNT, build.levelCount);
+    engine::assets::putU32(out, H_SUPERCOMPRESSION, 0);
+    engine::assets::putU32(out, H_DFD_OFFSET, static_cast<std::uint32_t>(dfdOffset));
+    engine::assets::putU32(out, H_DFD_LENGTH, static_cast<std::uint32_t>(dfd.size()));
+    engine::assets::putU32(out, H_KVD_OFFSET, static_cast<std::uint32_t>(kvdOffset));
+    engine::assets::putU32(out, H_KVD_LENGTH, static_cast<std::uint32_t>(kvd.size()));
+    // sgdByteOffset and sgdByteLength stay zero, which is what the zero-initialized buffer gives.
+
+    for (std::uint32_t level = 0; level < build.levelCount; ++level) {
+        const std::size_t record = 80 + std::size_t{24} * level;
+        const std::uint64_t bytes = levelBytesRef(build.format, build.width, build.height, level);
+        engine::assets::putU64(out, record + 0, offsets[level]);
+        engine::assets::putU64(out, record + 8, bytes);
+        engine::assets::putU64(out, record + 16, bytes);  // uncompressedByteLength == byteLength
+    }
+    for (std::size_t i = 0; i < dfd.size(); ++i) {
+        out[dfdOffset + i] = static_cast<std::byte>(dfd[i]);
+    }
+    for (std::size_t i = 0; i < kvd.size(); ++i) {
+        out[kvdOffset + i] = kvd[i];
+    }
+    // The level payloads are arbitrary: the parser deliberately does not check block CONTENTS,
+    // because there is no such thing as an invalid BCn block.
+    for (std::size_t i = levelDataStart; i < file.size(); ++i) {
+        out[i] = static_cast<std::byte>(0xA5);
+    }
+    return file;
+}
+
+// AC-21's biconditional, asserted by every parser case rather than in one case of its own: the
+// message is non-empty IFF the status is not Ok.
+void expectRefusal(const CookedTextureParse& parse, CookedTextureStatus expected) {
+    CHECK(parse.status == expected);
+    CHECK_FALSE(parse.message.empty());
+}
+void expectOk(const CookedTextureParse& parse) {
+    CHECK(parse.status == CookedTextureStatus::Ok);
+    CHECK(parse.message.empty());
 }
 
 }  // namespace
@@ -381,4 +554,427 @@ TEST_CASE("the UNORM/SRGB DFD pairs differ in ONE byte for BC1 and TWO for BC3 a
         }
     }
     REQUIRE(srgbBlockFormats == 3);
+}
+
+// =================================================================================================
+// The parser (CT13-CT44). Every arm mutates exactly ONE field of a buffer makeKtx2() built valid.
+// =================================================================================================
+
+TEST_CASE("a buffer shorter than the 80-byte header is TooSmall (CT13)") {
+    const std::vector<std::byte> empty;
+    expectRefusal(parseCookedTexture(empty), CookedTextureStatus::TooSmall);
+
+    const std::vector<std::byte> almost(engine::assets::KTX2_HEADER_BYTES - 1, std::byte{0});
+    expectRefusal(parseCookedTexture(almost), CookedTextureStatus::TooSmall);
+}
+
+TEST_CASE("a valid file parses Ok and its view reports what was written (CT14)") {
+    // The positive control. Without it every refusal case below could pass against a parser that
+    // refuses everything.
+    Ktx2Build build;
+    build.guid = engine::Guid{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+    const std::vector<std::byte> file = makeKtx2(build);
+    const CookedTextureParse parse = parseCookedTexture(file);
+    expectOk(parse);
+    // Compared through toString rather than as raw enumerators -- see the header comment on the
+    // DOCTEST_STRINGIFY / ADL collision. CT7 proved toString is injective over the eight, so this is
+    // the same assertion with a readable failure message.
+    CHECK(toString(parse.view.format()) == toString(CookedTextureFormat::Bc1RgbSrgb));
+    CHECK(parse.view.width() == 4);
+    CHECK(parse.view.height() == 4);
+    CHECK(parse.view.levelCount() == 3);
+    CHECK(parse.view.sourceGuid() == build.guid);
+    CHECK(parse.view.levelWidth(0) == 4);
+    CHECK(parse.view.levelWidth(1) == 2);
+    CHECK(parse.view.levelWidth(2) == 1);
+    CHECK(parse.view.levelHeight(2) == 1);
+    // Out of range is an answer, never a read.
+    CHECK(parse.view.levelWidth(3) == 0);
+    CHECK(parse.view.levelHeight(3) == 0);
+    CHECK(parse.view.levelBytes(3).empty());
+    CHECK(parse.view.levelBytes(0).size() == 8);  // one 4x4 BC1 block
+}
+
+TEST_CASE("a buffer over MAX_COOKED_TEXTURE_BYTES is CapExceeded before a field is read (CT15)") {
+    // The check is the parser's SECOND step, before the identifier is even compared, so proving it
+    // needs a span whose size() is over the cap. Allocating 512 MiB for real would cost every lane
+    // half a gigabyte on every run, so the span is formed over a genuinely VALID small file with a
+    // faked size instead. That is deliberate and it is safe in both directions: with the check
+    // present nothing is dereferenced at all, and with the check REMOVED (the sabotage direction)
+    // the parser walks a real, well-formed 344-byte file and touches no byte outside it -- so the
+    // seed shows up as a different STATUS rather than as an out-of-bounds read.
+    const std::vector<std::byte> valid = makeKtx2(Ktx2Build{});
+    REQUIRE(parseCookedTexture(valid).status == CookedTextureStatus::Ok);
+    const std::span<const std::byte> oversized(valid.data(),
+                                               static_cast<std::size_t>(engine::assets::MAX_COOKED_TEXTURE_BYTES) + 1);
+    expectRefusal(parseCookedTexture(oversized), CookedTextureStatus::CapExceeded);
+}
+
+TEST_CASE("every one of the 12 identifier bytes is checked (CT16)") {
+    std::size_t flipped = 0;
+    for (std::size_t i = 0; i < engine::assets::KTX2_IDENTIFIER.size(); ++i) {
+        std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+        file[i] ^= std::byte{0xFF};
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadIdentifier);
+        ++flipped;
+    }
+    REQUIRE(flipped == 12);
+}
+
+TEST_CASE("a non-zero supercompressionScheme is Supercompressed, not UnsupportedFormat (CT17)") {
+    constexpr std::array<std::uint32_t, 3> SCHEMES = {1U, 2U, std::numeric_limits<std::uint32_t>::max()};
+    std::size_t checked = 0;
+    for (const std::uint32_t scheme : SCHEMES) {
+        std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+        engine::assets::putU32(file, H_SUPERCOMPRESSION, scheme);
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::Supercompressed);
+        ++checked;
+    }
+    REQUIRE(checked == SCHEMES.size());
+}
+
+TEST_CASE("supercompression is diagnosed BEFORE vkFormat, which pins the ladder's order (CT18)") {
+    // A Basis file's vkFormat is legitimately VK_FORMAT_UNDEFINED (0). Answering "unsupported format
+    // 0" instead of "this file is supercompressed" is the wrong diagnosis, and this is the case that
+    // says so: both fields are wrong at once and the scheme must win.
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    engine::assets::putU32(file, H_SUPERCOMPRESSION, 1);
+    engine::assets::putU32(file, H_VK_FORMAT, 0);
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::Supercompressed);
+}
+
+TEST_CASE("a vkFormat outside the eight is UnsupportedFormat (CT19)") {
+    // 133/134 are BC1_RGBA, 140/142 are the SNORM siblings: real Vulkan formats, deliberately out.
+    constexpr std::array<std::uint32_t, 5> FORMATS = {133U, 134U, 140U, 142U, 0U};
+    std::size_t checked = 0;
+    for (const std::uint32_t vk : FORMATS) {
+        std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+        engine::assets::putU32(file, H_VK_FORMAT, vk);
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::UnsupportedFormat);
+        ++checked;
+    }
+    REQUIRE(checked == FORMATS.size());
+}
+
+TEST_CASE("a typeSize other than 1 is UnsupportedFormat (CT20)") {
+    constexpr std::array<std::uint32_t, 3> SIZES = {0U, 2U, 4U};
+    std::size_t checked = 0;
+    for (const std::uint32_t size : SIZES) {
+        std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+        engine::assets::putU32(file, H_TYPE_SIZE, size);
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::UnsupportedFormat);
+        ++checked;
+    }
+    REQUIRE(checked == SIZES.size());
+}
+
+TEST_CASE("a non-zero pixelDepth is UnsupportedShape and the message names the field (CT21)") {
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    engine::assets::putU32(file, H_PIXEL_DEPTH, 1);
+    const CookedTextureParse parse = parseCookedTexture(file);
+    expectRefusal(parse, CookedTextureStatus::UnsupportedShape);
+    CHECK(parse.message.find("pixelDepth") != std::string::npos);
+}
+
+TEST_CASE("a non-zero layerCount is UnsupportedShape and the message names the field (CT22)") {
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    engine::assets::putU32(file, H_LAYER_COUNT, 1);
+    const CookedTextureParse parse = parseCookedTexture(file);
+    expectRefusal(parse, CookedTextureStatus::UnsupportedShape);
+    CHECK(parse.message.find("layerCount") != std::string::npos);
+}
+
+TEST_CASE("a faceCount other than 1 is UnsupportedShape and the message names the field (CT23)") {
+    constexpr std::array<std::uint32_t, 2> FACES = {0U, 6U};  // 6 is a cubemap, the plausible one
+    std::size_t checked = 0;
+    for (const std::uint32_t faces : FACES) {
+        std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+        engine::assets::putU32(file, H_FACE_COUNT, faces);
+        const CookedTextureParse parse = parseCookedTexture(file);
+        expectRefusal(parse, CookedTextureStatus::UnsupportedShape);
+        CHECK(parse.message.find("faceCount") != std::string::npos);
+        ++checked;
+    }
+    REQUIRE(checked == FACES.size());
+}
+
+TEST_CASE("pixelWidth outside 1..MAX_TEXTURE_DIMENSION is CapExceeded (CT24)") {
+    constexpr std::array<std::uint32_t, 3> WIDTHS = {0U, engine::assets::MAX_TEXTURE_DIMENSION + 1,
+                                                     std::numeric_limits<std::uint32_t>::max()};
+    std::size_t checked = 0;
+    for (const std::uint32_t width : WIDTHS) {
+        std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+        engine::assets::putU32(file, H_PIXEL_WIDTH, width);
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::CapExceeded);
+        ++checked;
+    }
+    REQUIRE(checked == WIDTHS.size());
+}
+
+TEST_CASE("pixelHeight outside 1..MAX_TEXTURE_DIMENSION is CapExceeded (CT25)") {
+    constexpr std::array<std::uint32_t, 2> HEIGHTS = {0U, engine::assets::MAX_TEXTURE_DIMENSION + 1};
+    std::size_t checked = 0;
+    for (const std::uint32_t height : HEIGHTS) {
+        std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+        engine::assets::putU32(file, H_PIXEL_HEIGHT, height);
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::CapExceeded);
+        ++checked;
+    }
+    REQUIRE(checked == HEIGHTS.size());
+}
+
+TEST_CASE("levelCount 0 is refused outright and so is one past the cap (CT26)") {
+    // KTX2 itself allows levelCount == 0 (a hint that the reader should generate mips) EXCEPT for
+    // block-compressed formats. This container refuses it for every format: the chain is complete or
+    // it is one level, and there is no third state.
+    constexpr std::array<std::uint32_t, 2> COUNTS = {0U, engine::assets::MAX_TEXTURE_LEVELS + 1};
+    std::size_t checked = 0;
+    for (const std::uint32_t count : COUNTS) {
+        std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+        engine::assets::putU32(file, H_LEVEL_COUNT, count);
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::CapExceeded);
+        ++checked;
+    }
+    REQUIRE(checked == COUNTS.size());
+}
+
+TEST_CASE("a levelCount legal in itself but impossible for the dimensions is CapExceeded (CT27)") {
+    // 8x8 has exactly four levels (8, 4, 2, 1). Five is inside 1..15 and still impossible, and this
+    // is the clause that makes it a refusal rather than one empty level.
+    Ktx2Build build;
+    build.width = 8;
+    build.height = 8;
+    build.levelCount = 4;
+    std::vector<std::byte> file = makeKtx2(build);
+    REQUIRE(parseCookedTexture(file).status == CookedTextureStatus::Ok);
+    engine::assets::putU32(file, H_LEVEL_COUNT, 5);
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::CapExceeded);
+}
+
+TEST_CASE("a buffer too short for its own level index is TooSmall (CT28)") {
+    const std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    // 80 + 24*3 = 152 bytes of header plus index; one byte short of that cannot hold the index, and
+    // the check is written as a subtraction so it cannot be defeated by a huge levelCount.
+    const std::span<const std::byte> truncated(file.data(), 151);
+    expectRefusal(parseCookedTexture(truncated), CookedTextureStatus::TooSmall);
+}
+
+TEST_CASE("a dfdByteOffset that is not exactly past the level index is BadTable (CT29)") {
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    const std::uint32_t dfdOffset = engine::assets::getU32(file, H_DFD_OFFSET);
+    CHECK(dfdOffset == 152);  // 80 + 24*3, pinned so a layout change is visible here
+    engine::assets::putU32(file, H_DFD_OFFSET, dfdOffset + 1);
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadTable);
+}
+
+TEST_CASE("a dfdByteLength that is wrong for the vkFormat is BadTable (CT30)") {
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});  // BC1: a 44-byte descriptor
+    engine::assets::putU32(file, H_DFD_LENGTH, 60);       // BC3's length, on a BC1 format
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadTable);
+}
+
+TEST_CASE("a descriptor whose own dfdTotalSize disagrees with the header is BadTable (CT31)") {
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    const std::uint32_t dfdOffset = engine::assets::getU32(file, H_DFD_OFFSET);
+    engine::assets::putU32(file, dfdOffset, 60);  // the descriptor claims 60; the header says 44
+    // BadTable, not BadDescriptor: the self-consistency of the region's own size is a STRUCTURAL
+    // fact, checked before a single descriptor byte is compared. The ladder's order is the contract.
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadTable);
+}
+
+TEST_CASE("an sRGB format carrying its UNORM sibling's descriptor is BadDescriptor (CT32)") {
+    // THE CASE THAT MAKES THE C1/C2 BYTES LOAD-BEARING AT PARSE TIME. The two tables in each pair
+    // have the same LENGTH, so every structural check passes and only the byte comparison can tell
+    // them apart.
+    struct Pair {
+        CookedTextureFormat srgb;
+        CookedTextureFormat unorm;
+    };
+    constexpr std::array<Pair, 3> PAIRS = {
+        Pair{CookedTextureFormat::Bc1RgbSrgb, CookedTextureFormat::Bc1RgbUnorm},
+        Pair{CookedTextureFormat::Bc3Srgb, CookedTextureFormat::Bc3Unorm},
+        Pair{CookedTextureFormat::Rgba8Srgb, CookedTextureFormat::Rgba8Unorm},
+    };
+    std::size_t checked = 0;
+    for (const Pair& pair : PAIRS) {
+        Ktx2Build build;
+        build.format = pair.srgb;
+        std::vector<std::byte> file = makeKtx2(build);
+        REQUIRE(parseCookedTexture(file).status == CookedTextureStatus::Ok);
+        const std::uint32_t dfdOffset = engine::assets::getU32(file, H_DFD_OFFSET);
+        const std::span<const std::uint8_t> sibling = cookedTextureDescriptorBytes(pair.unorm);
+        REQUIRE(sibling.size() == cookedTextureDescriptorBytes(pair.srgb).size());
+        for (std::size_t i = 0; i < sibling.size(); ++i) {
+            file[dfdOffset + i] = static_cast<std::byte>(sibling[i]);
+        }
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadDescriptor);
+        ++checked;
+    }
+    REQUIRE(checked == PAIRS.size());
+}
+
+TEST_CASE("a single flipped descriptor byte is BadDescriptor, at each of four positions (CT33)") {
+    // colorModel, transferFunction, bytesPlane0 and a sample's channel id. All four are past
+    // dfdTotalSize, so the structural checks pass and the byte comparison is what fires.
+    constexpr std::array<std::size_t, 4> POSITIONS = {12, 14, 20, 31};
+    std::size_t checked = 0;
+    for (const std::size_t position : POSITIONS) {
+        Ktx2Build build;
+        build.format = CookedTextureFormat::Bc3Srgb;  // 60 bytes, two samples: all four exist
+        std::vector<std::byte> file = makeKtx2(build);
+        const std::uint32_t dfdOffset = engine::assets::getU32(file, H_DFD_OFFSET);
+        file[dfdOffset + position] ^= std::byte{0x40};
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadDescriptor);
+        ++checked;
+    }
+    REQUIRE(checked == POSITIONS.size());
+}
+
+TEST_CASE("a kvdByteOffset that is not exactly past the descriptor is BadTable (CT34)") {
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    const std::uint32_t kvdOffset = engine::assets::getU32(file, H_KVD_OFFSET);
+    engine::assets::putU32(file, H_KVD_OFFSET, kvdOffset + 1);
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadTable);
+}
+
+TEST_CASE("a key/value record declaring length 0 is BadTable -- the infinite-loop guard (CT35)") {
+    // Without this guard the walk advances by 4 forever on a region whose length is a multiple of 4,
+    // which is every region this format can produce.
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    const std::uint32_t kvdOffset = engine::assets::getU32(file, H_KVD_OFFSET);
+    engine::assets::putU32(file, kvdOffset, 0);
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadTable);
+}
+
+TEST_CASE("a key/value record whose length overruns its region is BadTable (CT36)") {
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    const std::uint32_t kvdOffset = engine::assets::getU32(file, H_KVD_OFFSET);
+    const std::uint32_t kvdLength = engine::assets::getU32(file, H_KVD_LENGTH);
+    engine::assets::putU32(file, kvdOffset, kvdLength);  // the whole region, with no room for its own header
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadTable);
+
+    // And the wrapping variant: a length near UINT32_MAX must be refused by subtraction, never
+    // accepted because `offset + length` wrapped.
+    std::vector<std::byte> wrapped = makeKtx2(Ktx2Build{});
+    engine::assets::putU32(wrapped, kvdOffset, std::numeric_limits<std::uint32_t>::max());
+    expectRefusal(parseCookedTexture(wrapped), CookedTextureStatus::BadTable);
+}
+
+TEST_CASE("records that do not tile the region exactly are BadTable (CT37)") {
+    // Shrinking kvdByteLength by one leaves the first two records intact and makes the third overrun
+    // -- which is also what catches a walk that advances by `4 + kv` instead of `4 + align4(kv)`,
+    // since AeroSourceGuid's own kv is already a multiple of four and hides the bug on record one.
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    const std::uint32_t kvdLength = engine::assets::getU32(file, H_KVD_LENGTH);
+    CHECK(kvdLength == engine::assets::KTX2_KVD_BYTES);
+    engine::assets::putU32(file, H_KVD_LENGTH, kvdLength - 1);
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadTable);
+}
+
+TEST_CASE("an unknown key/value key is SKIPPED, not refused (CT38)") {
+    // Key/value data is the format's one additive extension point, and that does NOT contradict
+    // docs/09 section 9.11's reserved-field refusal: a KTX2 key is NAMED and LENGTH-PREFIXED, so it
+    // can genuinely be skipped and every one of its bytes is accounted for.
+    Ktx2Build build;
+    build.guid = engine::Guid{0xAAAABBBBCCCCDDDDULL, 0x1111222233334444ULL};
+    build.includeUnknownKey = true;
+    const std::vector<std::byte> file = makeKtx2(build);
+    const CookedTextureParse parse = parseCookedTexture(file);
+    expectOk(parse);
+    CHECK(parse.view.sourceGuid() == build.guid);
+    // The region really did grow -- otherwise this case proves nothing.
+    CHECK(engine::assets::getU32(file, H_KVD_LENGTH) > engine::assets::KTX2_KVD_BYTES);
+}
+
+TEST_CASE("a missing AeroSourceGuid yields the nil GUID rather than a refusal (CT39)") {
+    Ktx2Build build;
+    build.includeGuidKey = false;
+    const std::vector<std::byte> file = makeKtx2(build);
+    const CookedTextureParse parse = parseCookedTexture(file);
+    expectOk(parse);
+    CHECK_FALSE(parse.view.sourceGuid().valid());
+    CHECK(engine::assets::getU32(file, H_KVD_LENGTH) < engine::assets::KTX2_KVD_BYTES);
+}
+
+TEST_CASE("a malformed AeroSourceGuid value yields the nil GUID rather than a refusal (CT40)") {
+    // A wrong length and a non-hex digit, both at the right length boundary. Provenance that cannot
+    // be read is not a corrupt image.
+    constexpr std::array<std::string_view, 3> VALUES = {
+        "0123456789abcdef0123456789abcde",    // 31 digits
+        "0123456789abcdef0123456789abcdefg",  // 33 characters
+        "0123456789abcdef0123456789abcdeZ",   // 32 characters, one not hex
+    };
+    std::size_t checked = 0;
+    for (const std::string_view value : VALUES) {
+        Ktx2Build build;
+        build.guid = engine::Guid{1, 2};
+        build.useGuidValueOverride = true;
+        build.guidValueOverride = std::string(value);
+        const CookedTextureParse parse = parseCookedTexture(makeKtx2(build));
+        expectOk(parse);
+        CHECK_FALSE(parse.view.sourceGuid().valid());
+        ++checked;
+    }
+    REQUIRE(checked == VALUES.size());
+}
+
+TEST_CASE("a level byteLength that is wrong for its dimensions is BadRange (CT41)") {
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    const std::size_t record = 80;  // level 0
+    const std::uint64_t declared = engine::assets::getU64(file, record + 8);
+    CHECK(declared == 8);  // one 4x4 BC1 block
+    engine::assets::putU64(file, record + 8, declared + 8);
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadRange);
+}
+
+TEST_CASE("a level whose uncompressedByteLength disagrees with its byteLength is BadRange (CT42)") {
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    engine::assets::putU64(file, 80 + 16, 0);  // level 0's uncompressedByteLength
+    expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadRange);
+}
+
+TEST_CASE("a misaligned level byteOffset is BadRange, at every level (CT43)") {
+    // The writer can only ever misalign the FIRST level it emits (the smallest), because every
+    // level's byteLength is a multiple of its own alignment. The parser checks all of them anyway: a
+    // hostile file is not obliged to share our arithmetic.
+    std::size_t checked = 0;
+    for (std::uint32_t level = 0; level < 3; ++level) {
+        std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+        const std::size_t record = 80 + std::size_t{24} * level;
+        const std::uint64_t offset = engine::assets::getU64(file, record);
+        CHECK(offset % 8 == 0);
+        engine::assets::putU64(file, record, offset + 4);  // BC1 aligns to 8, so +4 misaligns
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadRange);
+        ++checked;
+    }
+    REQUIRE(checked == 3);
+}
+
+TEST_CASE("a level offset near UINT64_MAX is BadRange by SUBTRACTION, never a read (CT44)") {
+    // THE CASE THE SUBTRACTION IDIOM EXISTS FOR. 0xFFFFFFFFFFFFFFF8 + 8 wraps to 0, so an
+    // addition-based bounds check (`offset + length > size`) computes 0 > 344, decides the range is
+    // fine, and hands levelBytes() an offset eighteen exabytes past the buffer. Written as
+    // `length <= size && offset <= size - length` it cannot wrap. ASan must stay clean here.
+    std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+    engine::assets::putU64(file, 80, 0xFFFFFFFFFFFFFFF8ULL);  // 8-aligned, so the alignment check passes
+    const CookedTextureParse parse = parseCookedTexture(file);
+    expectRefusal(parse, CookedTextureStatus::BadRange);
+    // And the view it did not build cannot be read through either.
+    CHECK(parse.view.levelBytes(0).empty());
+}
+
+// The ladder's step 13. Numbered CT44a rather than CT45 because CT45-CT52 are reserved for step 5's
+// cook round-trip battery, and a case id is a global identifier in this repo -- the tree's own prefix
+// grep already accepts a trailing letter.
+TEST_CASE("a non-zero supercompression global-data pair with scheme 0 is BadTable (CT44a)") {
+    // v1 emits no global data at all, so a non-zero pair alongside scheme 0 is malformed rather than
+    // an extension: the two fields describe a section that, by the scheme, does not exist.
+    std::size_t checked = 0;
+    for (const std::size_t field : {H_SGD_OFFSET, H_SGD_OFFSET + 8}) {
+        std::vector<std::byte> file = makeKtx2(Ktx2Build{});
+        engine::assets::putU64(file, field, 1);
+        expectRefusal(parseCookedTexture(file), CookedTextureStatus::BadTable);
+        ++checked;
+    }
+    REQUIRE(checked == 2);
 }

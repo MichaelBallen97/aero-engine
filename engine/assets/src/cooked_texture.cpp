@@ -1,14 +1,22 @@
-// Aero Engine — the cooked texture container v1: the frozen DFD tables, the labels and (from step 2)
-// the hostile-input parser (task 3.3.2). See cooked_texture.hpp for the contract and
+// Aero Engine — the cooked texture container v1: the frozen DFD tables, the labels and the
+// hostile-input parser (task 3.3.2). See cooked_texture.hpp for the contract and
 // docs/09-file-formats.md section 10 for the normative format. NEVER THROWS. NEVER READS A FILE.
 // NEVER LOGS. NO FLOATING POINT.
 #include <aero/assets/cooked_texture.hpp>
+#include <aero/core/guid.hpp>
+#include <aero/core/profiler.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <format>
+#include <optional>
 #include <span>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace engine::assets {
 namespace {
@@ -246,6 +254,57 @@ constexpr std::array<std::uint8_t, KTX2_DFD_BYTES_4_SAMPLE> DFD_RGBA8_SRGB = {
     0xFF, 0x00, 0x00, 0x00,  //           sampleUpper 255
 };
 
+// ---- the parse helpers ---------------------------------------------------------------------------
+
+// EVERY range check in this file goes through this, and it is written as SUBTRACTION so no arithmetic
+// can wrap. A crafted header with an offset near UINT64_MAX is refused, not accepted.
+//
+// RE-DECLARED HERE rather than exported from cooked_mesh.cpp, and that duplication is a DECISION: it
+// is three tokens and it is constexpr, and promoting it to a public header to share it would put a
+// private validation helper on the format's public surface for no gain.
+[[nodiscard]] constexpr bool fits(std::uint64_t offset, std::uint64_t length, std::uint64_t size) noexcept {
+    return length <= size && offset <= size - length;
+}
+
+// The full mip-chain length for an image, floor(log2(max(w, h))) + 1, by an integer shift loop and
+// never std::log2 -- there is no floating point in this subsystem. Duplicated in texture_cook.cpp's
+// own seam for the same reason fits() is duplicated: the parser needs it to refuse a header claiming
+// fifteen levels for an 8x8 image, and the cook needs it to build one, and neither is a reason to put
+// it on the format's public surface.
+[[nodiscard]] constexpr std::uint32_t maxLevelsFor(std::uint32_t width, std::uint32_t height) noexcept {
+    std::uint32_t levels = 1;
+    for (std::uint32_t v = std::max(width, height); v > 1; v >>= 1U) {
+        ++levels;
+    }
+    return levels;
+}
+
+// A level's dimensions and its byte size. `level` is always < levelCount <= MAX_TEXTURE_LEVELS == 15,
+// so the shift is bounded by 14 and can never reach a std::uint32_t's width (which would be UB).
+[[nodiscard]] constexpr std::uint32_t levelExtent(std::uint32_t base, std::uint32_t level) noexcept {
+    return std::max(1U, base >> level);
+}
+
+[[nodiscard]] constexpr std::uint64_t expectedLevelBytes(CookedTextureFormat format, std::uint32_t width,
+                                                         std::uint32_t height, std::uint32_t level) noexcept {
+    const std::uint32_t blockWidth = cookedTextureBlockWidth(format);
+    const std::uint32_t blockHeight = cookedTextureBlockHeight(format);
+    const std::uint64_t blocksX = (levelExtent(width, level) + blockWidth - 1) / blockWidth;
+    const std::uint64_t blocksY = (levelExtent(height, level) + blockHeight - 1) / blockHeight;
+    return blocksX * blocksY * cookedTextureBlockBytes(format);
+}
+
+[[nodiscard]] CookedTextureParse refuse(CookedTextureStatus status, std::string message) {
+    CookedTextureParse out;
+    out.status = status;
+    out.message = std::move(message);
+    return out;
+}
+
+// The three keys this writer emits. Only the first is READ back -- the other two are structure the
+// parser walks past, exactly like any unknown key (A-10).
+constexpr std::string_view KVD_KEY_SOURCE_GUID = "AeroSourceGuid";
+
 }  // namespace
 
 std::string_view toString(CookedTextureFormat format) noexcept {
@@ -316,6 +375,321 @@ std::string_view cookedTextureStatusLabel(CookedTextureStatus status) noexcept {
             return "Bad descriptor";
     }
     return "Unknown";  // unreachable; the switch has no default so a new enumerator is a -Wswitch error
+}
+
+// ---- CookedTextureView ---------------------------------------------------------------------------
+
+const CookedTextureLevel& CookedTextureView::levelRecord(std::uint32_t level) const noexcept {
+    // An out-of-range level yields a shared empty record rather than a read. Static because a
+    // reference has to outlive the call, and constexpr because nothing may write through it.
+    static constexpr CookedTextureLevel EMPTY{};
+    if (level >= levels.size()) {
+        return EMPTY;
+    }
+    return levels[level];
+}
+
+std::uint32_t CookedTextureView::levelWidth(std::uint32_t level) const noexcept {
+    if (level >= levels.size()) {
+        return 0;
+    }
+    return levelExtent(widthValue, level);
+}
+
+std::uint32_t CookedTextureView::levelHeight(std::uint32_t level) const noexcept {
+    if (level >= levels.size()) {
+        return 0;
+    }
+    return levelExtent(heightValue, level);
+}
+
+std::span<const std::byte> CookedTextureView::levelBytes(std::uint32_t level) const noexcept {
+    if (level >= levels.size()) {
+        return {};
+    }
+    const CookedTextureLevel& record = levels[level];
+    if (!fits(record.byteOffset, record.byteLength, bytes.size())) {
+        return {};
+    }
+    return bytes.subspan(static_cast<std::size_t>(record.byteOffset), static_cast<std::size_t>(record.byteLength));
+}
+
+// ---- parseCookedTexture --------------------------------------------------------------------------
+// THE LADDER'S ORDER IS PART OF THE CONTRACT: a file that is wrong in two ways gets the status of the
+// FIRST check it fails, and the CT cases pin that.
+CookedTextureParse parseCookedTexture(std::span<const std::byte> bytes) {
+    AERO_PROFILE_ZONE_NAMED("assets::parseCookedTexture");
+
+    // 1. shorter than the header.
+    if (bytes.size() < KTX2_HEADER_BYTES) {
+        return refuse(CookedTextureStatus::TooSmall,
+                      std::format("the buffer is {} bytes, shorter than the {}-byte KTX2 header", bytes.size(),
+                                  KTX2_HEADER_BYTES));
+    }
+    // 2. absurdly large -- the cheapest possible refusal, BEFORE a single field is interpreted. The
+    //    mesh parser's second step, for the same reason.
+    if (bytes.size() > MAX_COOKED_TEXTURE_BYTES) {
+        return refuse(CookedTextureStatus::CapExceeded,
+                      std::format("the buffer is {} bytes, over the {}-byte cooked texture cap", bytes.size(),
+                                  MAX_COOKED_TEXTURE_BYTES));
+    }
+
+    // 3. the 12-byte identifier, compared BYTE BY BYTE -- never a memcmp of a reinterpret_cast'd
+    //    pointer, for the same reason nothing else in this subsystem does that.
+    for (std::size_t i = 0; i < KTX2_IDENTIFIER.size(); ++i) {
+        if (bytes[H_IDENTIFIER + i] != static_cast<std::byte>(KTX2_IDENTIFIER[i])) {
+            return refuse(
+                CookedTextureStatus::BadIdentifier,
+                std::format("the buffer does not begin with the 12-byte KTX2 identifier (byte {} differs)", i));
+        }
+    }
+
+    // 4. supercompression, checked BEFORE vkFormat: a Basis file's vkFormat is legitimately
+    //    VK_FORMAT_UNDEFINED (0), and telling the user "unsupported format 0" instead of "this file
+    //    is supercompressed" is the wrong diagnosis.
+    const std::uint32_t supercompression = getU32(bytes, H_SUPERCOMPRESSION);
+    if (supercompression != 0) {
+        return refuse(CookedTextureStatus::Supercompressed,
+                      std::format("supercompressionScheme is {}; this reader accepts 0 only (no Basis, no Zstd, "
+                                  "no ZLIB)",
+                                  supercompression));
+    }
+
+    // 5. vkFormat and typeSize.
+    const std::uint32_t vkFormat = getU32(bytes, H_VK_FORMAT);
+    if (!isCookedTextureFormat(vkFormat)) {
+        return refuse(CookedTextureStatus::UnsupportedFormat,
+                      std::format("vkFormat {} is outside this reader's eight-format subset", vkFormat));
+    }
+    const auto format = static_cast<CookedTextureFormat>(vkFormat);
+    const std::uint32_t typeSize = getU32(bytes, H_TYPE_SIZE);
+    if (typeSize != 1) {
+        return refuse(CookedTextureStatus::UnsupportedFormat,
+                      std::format("typeSize is {}; every format in this subset requires 1", typeSize));
+    }
+
+    // 6. the shape. v1 is a single 2D image: no volume, no array layers, no cube faces.
+    const std::uint32_t pixelDepth = getU32(bytes, H_PIXEL_DEPTH);
+    const std::uint32_t layerCount = getU32(bytes, H_LAYER_COUNT);
+    const std::uint32_t faceCount = getU32(bytes, H_FACE_COUNT);
+    if (pixelDepth != 0) {
+        return refuse(CookedTextureStatus::UnsupportedShape,
+                      std::format("pixelDepth is {}; v1 stores 2D images only, so it must be 0", pixelDepth));
+    }
+    if (layerCount != 0) {
+        return refuse(CookedTextureStatus::UnsupportedShape,
+                      std::format("layerCount is {}; v1 stores no texture arrays, so it must be 0", layerCount));
+    }
+    if (faceCount != 1) {
+        return refuse(CookedTextureStatus::UnsupportedShape,
+                      std::format("faceCount is {}; v1 stores no cubemaps, so it must be 1", faceCount));
+    }
+
+    // 7. dimensions and level count against their frozen caps. The third clause is what makes a
+    //    header claiming 15 levels for an 8x8 image a REFUSAL rather than fourteen empty levels.
+    //    NOTHING IS ALLOCATED UNTIL THIS BLOCK HAS PASSED -- that is the whole point of doing it here.
+    const std::uint32_t width = getU32(bytes, H_PIXEL_WIDTH);
+    const std::uint32_t height = getU32(bytes, H_PIXEL_HEIGHT);
+    if (width == 0 || width > MAX_TEXTURE_DIMENSION) {
+        return refuse(CookedTextureStatus::CapExceeded,
+                      std::format("pixelWidth is {}; the legal range is 1..{}", width, MAX_TEXTURE_DIMENSION));
+    }
+    if (height == 0 || height > MAX_TEXTURE_DIMENSION) {
+        return refuse(CookedTextureStatus::CapExceeded,
+                      std::format("pixelHeight is {}; the legal range is 1..{}", height, MAX_TEXTURE_DIMENSION));
+    }
+    const std::uint32_t levelCount = getU32(bytes, H_LEVEL_COUNT);
+    if (levelCount == 0 || levelCount > MAX_TEXTURE_LEVELS) {
+        return refuse(CookedTextureStatus::CapExceeded,
+                      std::format("levelCount is {}; the legal range is 1..{} (0 is forbidden outright for "
+                                  "block-compressed formats)",
+                                  levelCount, MAX_TEXTURE_LEVELS));
+    }
+    const std::uint32_t maxLevels = maxLevelsFor(width, height);
+    if (levelCount > maxLevels) {
+        return refuse(CookedTextureStatus::CapExceeded,
+                      std::format("levelCount is {}, but a {}x{} image has at most {} levels", levelCount, width,
+                                  height, maxLevels));
+    }
+
+    // 8. the level index must fit, written as a subtraction. With step 7 done, 24 * levelCount cannot
+    //    overflow, which is exactly why step 7 precedes it.
+    const std::uint64_t levelIndexBytes = static_cast<std::uint64_t>(levelCount) * KTX2_LEVEL_RECORD_BYTES;
+    if (!fits(KTX2_HEADER_BYTES, levelIndexBytes, bytes.size())) {
+        return refuse(CookedTextureStatus::TooSmall,
+                      std::format("the buffer is {} bytes and cannot hold an {}-byte level index at offset {}",
+                                  bytes.size(), levelIndexBytes, KTX2_HEADER_BYTES));
+    }
+
+    // 9. the Data Format Descriptor: its position, its length, its self-declared size, then its bytes.
+    const std::uint64_t expectedDfdOffset = KTX2_HEADER_BYTES + levelIndexBytes;
+    const std::uint32_t dfdOffset = getU32(bytes, H_DFD_OFFSET);
+    const std::uint32_t dfdLength = getU32(bytes, H_DFD_LENGTH);
+    if (dfdOffset != expectedDfdOffset) {
+        return refuse(CookedTextureStatus::BadTable,
+                      std::format("dfdByteOffset is {}, but the header and a {}-level index end at {}", dfdOffset,
+                                  levelCount, expectedDfdOffset));
+    }
+    const std::span<const std::uint8_t> expectedDfd = cookedTextureDescriptorBytes(format);
+    if (dfdLength != expectedDfd.size()) {
+        return refuse(CookedTextureStatus::BadTable,
+                      std::format("dfdByteLength is {}, but vkFormat {} has a {}-byte descriptor", dfdLength, vkFormat,
+                                  expectedDfd.size()));
+    }
+    if (!fits(dfdOffset, dfdLength, bytes.size())) {
+        return refuse(CookedTextureStatus::BadTable,
+                      std::format("the {}-byte descriptor at offset {} leaves the {}-byte buffer", dfdLength, dfdOffset,
+                                  bytes.size()));
+    }
+    const std::uint32_t dfdTotalSize = getU32(bytes, dfdOffset);
+    if (dfdTotalSize != dfdLength) {
+        return refuse(CookedTextureStatus::BadTable,
+                      std::format("the descriptor declares dfdTotalSize {} but the header declares dfdByteLength {}",
+                                  dfdTotalSize, dfdLength));
+    }
+    for (std::size_t i = 0; i < expectedDfd.size(); ++i) {
+        if (bytes[dfdOffset + i] != static_cast<std::byte>(expectedDfd[i])) {
+            return refuse(CookedTextureStatus::BadDescriptor,
+                          std::format("the descriptor for vkFormat {} differs from this reader's frozen table at "
+                                      "byte {}",
+                                      vkFormat, i));
+        }
+    }
+
+    // 10. the key/value data: its position, its extent, and that its records TILE it exactly. An
+    //     unknown key is skipped, which does NOT contradict docs/09 section 9.11's reserved-field
+    //     refusal: a KTX2 key is NAMED and LENGTH-PREFIXED, so it can genuinely be skipped and every
+    //     one of its bytes is accounted for. There are no reserved fields in this container to apply
+    //     that rule to.
+    const std::uint32_t kvdOffset = getU32(bytes, H_KVD_OFFSET);
+    const std::uint32_t kvdLength = getU32(bytes, H_KVD_LENGTH);
+    if (kvdOffset != dfdOffset + dfdLength) {
+        return refuse(CookedTextureStatus::BadTable, std::format("kvdByteOffset is {}, but the descriptor ends at {}",
+                                                                 kvdOffset, dfdOffset + dfdLength));
+    }
+    if (!fits(kvdOffset, kvdLength, bytes.size())) {
+        return refuse(CookedTextureStatus::BadTable,
+                      std::format("the {}-byte key/value region at offset {} leaves the {}-byte buffer", kvdLength,
+                                  kvdOffset, bytes.size()));
+    }
+
+    Guid sourceGuid;
+    std::uint64_t cursor = kvdOffset;
+    const std::uint64_t kvdEnd = static_cast<std::uint64_t>(kvdOffset) + kvdLength;
+    while (cursor < kvdEnd) {
+        const std::uint64_t remaining = kvdEnd - cursor;
+        if (remaining < 4) {
+            return refuse(CookedTextureStatus::BadTable,
+                          std::format("a key/value record begins {} bytes before the region's end, which cannot "
+                                      "hold its 4-byte length",
+                                      remaining));
+        }
+        const std::uint32_t keyAndValueByteLength = getU32(bytes, static_cast<std::size_t>(cursor));
+        // A zero length would advance the cursor by 4 forever on a region whose length is a multiple
+        // of 4. THE INFINITE-LOOP GUARD, and it must exist.
+        if (keyAndValueByteLength == 0) {
+            return refuse(CookedTextureStatus::BadTable, "a key/value record declares a length of 0");
+        }
+        const std::uint64_t advance = 4 + detail::align4(keyAndValueByteLength);
+        if (advance > remaining) {
+            return refuse(CookedTextureStatus::BadTable,
+                          std::format("a key/value record of {} bytes (padded to {}) overruns the {} bytes left in "
+                                      "the region",
+                                      keyAndValueByteLength, advance, remaining));
+        }
+
+        // 11. AeroSourceGuid, if present and well formed. ANYTHING ELSE LEAVES THE NIL GUID AND IS NOT
+        //     A REFUSAL -- a missing or malformed provenance key is not a corrupt image.
+        const std::size_t payload = static_cast<std::size_t>(cursor) + 4;
+        std::size_t keyEnd = payload;
+        const std::size_t payloadEnd = payload + keyAndValueByteLength;
+        while (keyEnd < payloadEnd && bytes[keyEnd] != std::byte{0}) {
+            ++keyEnd;
+        }
+        if (keyEnd < payloadEnd) {  // a NUL was found, so there is a key and possibly a value
+            const std::size_t keyLength = keyEnd - payload;
+            bool keyMatches = keyLength == KVD_KEY_SOURCE_GUID.size();
+            for (std::size_t i = 0; keyMatches && i < keyLength; ++i) {
+                keyMatches = bytes[payload + i] == static_cast<std::byte>(KVD_KEY_SOURCE_GUID[i]);
+            }
+            const std::size_t valueLength = payloadEnd - (keyEnd + 1);
+            if (keyMatches && valueLength == engine::GUID_TEXT_LENGTH + 1 && bytes[payloadEnd - 1] == std::byte{0}) {
+                std::string text;
+                text.reserve(engine::GUID_TEXT_LENGTH);
+                for (std::size_t i = 0; i < engine::GUID_TEXT_LENGTH; ++i) {
+                    text.push_back(static_cast<char>(bytes[keyEnd + 1 + i]));
+                }
+                if (const std::optional<Guid> parsed = parseGuid(text)) {
+                    sourceGuid = *parsed;
+                }
+            }
+        }
+        cursor += advance;
+    }
+    if (cursor != kvdEnd) {
+        return refuse(
+            CookedTextureStatus::BadTable,
+            std::format("the key/value records end at {} rather than tiling the region exactly to {}", cursor, kvdEnd));
+    }
+
+    // 12. the levels. `levels` is reserved only NOW, with levelCount bounded by MAX_TEXTURE_LEVELS at
+    //     step 7 -- the same discipline parseCookedMesh applies at a much larger scale, kept here even
+    //     though the number is 15, because the DISCIPLINE is what is being preserved.
+    const std::uint32_t alignment = cookedTextureLevelAlignment(format);
+    std::vector<CookedTextureLevel> levels;
+    levels.reserve(levelCount);
+    for (std::uint32_t level = 0; level < levelCount; ++level) {
+        const std::size_t record = KTX2_HEADER_BYTES + static_cast<std::size_t>(level) * KTX2_LEVEL_RECORD_BYTES;
+        const std::uint64_t byteOffset = getU64(bytes, record + L_BYTE_OFFSET);
+        const std::uint64_t byteLength = getU64(bytes, record + L_BYTE_LENGTH);
+        const std::uint64_t uncompressedByteLength = getU64(bytes, record + L_UNCOMPRESSED_LENGTH);
+        const std::uint64_t expected = expectedLevelBytes(format, width, height, level);
+        if (byteLength != expected) {
+            return refuse(CookedTextureStatus::BadRange,
+                          std::format("level {} declares {} bytes, but {}x{} at that level is {} bytes", level,
+                                      byteLength, width, height, expected));
+        }
+        // supercompressionScheme is 0, so the two lengths must agree exactly.
+        if (uncompressedByteLength != byteLength) {
+            return refuse(CookedTextureStatus::BadRange,
+                          std::format("level {} declares uncompressedByteLength {} against byteLength {}", level,
+                                      uncompressedByteLength, byteLength));
+        }
+        // THE PARSER CHECKS ALIGNMENT AT EVERY LEVEL even though the writer can only ever misalign the
+        // first one it emits: a hostile file is not obliged to share our arithmetic.
+        if (byteOffset % alignment != 0) {
+            return refuse(CookedTextureStatus::BadRange,
+                          std::format("level {} begins at {}, which is not a multiple of the format's {}-byte "
+                                      "alignment",
+                                      level, byteOffset, alignment));
+        }
+        if (!fits(byteOffset, byteLength, bytes.size())) {
+            return refuse(CookedTextureStatus::BadRange,
+                          std::format("level {}'s {} bytes at offset {} leave the {}-byte buffer", level, byteLength,
+                                      byteOffset, bytes.size()));
+        }
+        levels.push_back(CookedTextureLevel{byteOffset, byteLength});
+    }
+
+    // 13. v1 emits no supercompression global data, so a non-zero pair with scheme 0 is malformed.
+    const std::uint64_t sgdOffset = getU64(bytes, H_SGD_OFFSET);
+    const std::uint64_t sgdLength = getU64(bytes, H_SGD_LENGTH);
+    if (sgdOffset != 0 || sgdLength != 0) {
+        return refuse(CookedTextureStatus::BadTable,
+                      std::format("supercompressionScheme is 0 but the global-data pair is ({}, {}) rather than "
+                                  "(0, 0)",
+                                  sgdOffset, sgdLength));
+    }
+
+    // 14. done. `bytes` is retained as-is; the accessors are now total by construction.
+    CookedTextureParse out;
+    out.view.formatValue = format;
+    out.view.widthValue = width;
+    out.view.heightValue = height;
+    out.view.sourceGuidValue = sourceGuid;
+    out.view.levels = std::move(levels);
+    out.view.bytes = bytes;
+    return out;
 }
 
 }  // namespace engine::assets

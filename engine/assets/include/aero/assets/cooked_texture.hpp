@@ -30,7 +30,9 @@
 #include <numeric>  // std::lcm. NOT <cmath>: std::lcm is integer-only, so the no-floating-point rule
                     // above is untouched by this include. Do not "tidy" it away.
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace engine::assets {
 
@@ -260,5 +262,84 @@ enum class CookedTextureStatus : std::uint8_t {
 };
 // A switch with NO `default:` (the cookedMeshStatusLabel precedent).
 [[nodiscard]] std::string_view cookedTextureStatusLabel(CookedTextureStatus status) noexcept;
+
+// ---- the parsed view ----------------------------------------------------------------------------
+struct CookedTextureLevel {
+    std::uint64_t byteOffset = 0;  // absolute into the parsed buffer, cookedTextureLevelAlignment-aligned
+    std::uint64_t byteLength = 0;
+};
+
+struct CookedTextureParse;
+
+// LIFETIME: `bytes` IS the buffer handed to parseCookedTexture, retained as a span. Every level's
+// offset is absolute into it, so it means exactly what the file says and needs no rebasing. The level
+// records are an OWNED copy (bounded by MAX_TEXTURE_LEVELS, so at most 15 of them); the level data is
+// NEVER copied -- that is the whole promise of this format. A CookedTextureView outliving its buffer
+// is a dangling read, and the only defences are this comment and the accessors below, which are the
+// sanctioned way to reach level data. Nothing else should index `bytes` by hand.
+class CookedTextureView {
+public:
+    [[nodiscard]] CookedTextureFormat format() const noexcept { return formatValue; }
+    [[nodiscard]] std::uint32_t width() const noexcept { return widthValue; }
+    [[nodiscard]] std::uint32_t height() const noexcept { return heightValue; }
+    [[nodiscard]] std::uint32_t levelCount() const noexcept { return static_cast<std::uint32_t>(levels.size()); }
+    // Nil if the file carried no AeroSourceGuid key, or carried a malformed one. Neither is a refusal:
+    // a missing or unreadable provenance key is not a corrupt image.
+    [[nodiscard]] Guid sourceGuid() const noexcept { return sourceGuidValue; }
+    [[nodiscard]] const CookedTextureLevel& levelRecord(std::uint32_t level) const noexcept;
+
+    // 0 if `level` is out of range. In range the shift is bounded by MAX_TEXTURE_LEVELS - 1 == 14, so
+    // it can never reach the width of a std::uint32_t -- shifting by 32 or more would be UB and UBSan
+    // catches it on the Debug lanes, which is why the bound is stated here rather than assumed.
+    [[nodiscard]] std::uint32_t levelWidth(std::uint32_t level) const noexcept;
+    [[nodiscard]] std::uint32_t levelHeight(std::uint32_t level) const noexcept;
+
+    // TOTAL on a view parseCookedTexture returned Ok for. An out-of-range level returns an EMPTY span
+    // rather than reading -- a caller bug must not become a read. The fits() re-check inside is
+    // deliberate belt-and-braces: it can never fire on an Ok view, and it is what makes the accessor
+    // total against a HAND-CONSTRUCTED view, which a test can build and a caller could.
+    [[nodiscard]] std::span<const std::byte> levelBytes(std::uint32_t level) const noexcept;
+
+private:
+    friend CookedTextureParse parseCookedTexture(std::span<const std::byte> bytes);
+
+    CookedTextureFormat formatValue = CookedTextureFormat::Bc1RgbSrgb;
+    std::uint32_t widthValue = 0;
+    std::uint32_t heightValue = 0;
+    Guid sourceGuidValue;
+    std::vector<CookedTextureLevel> levels;  // at most MAX_TEXTURE_LEVELS
+    std::span<const std::byte> bytes;
+};
+
+struct CookedTextureParse {
+    CookedTextureStatus status = CookedTextureStatus::Ok;
+    std::string message;     // "" IFF status == Ok
+    CookedTextureView view;  // meaningful only when status == Ok
+};
+
+// NEVER THROWS. NEVER READS A FILE. NEVER LOGS.
+//
+// Written to the hostile-input standard from day one, because at Phase 5 this reads bytes out of a
+// .pak that may have been shipped, patched, truncated by a failed download, or crafted. Every range
+// check is a SUBTRACTION against the known-good size, never an addition that can wrap; nothing is
+// allocated before the count it is allocating for has been checked against a frozen cap.
+//
+// DELIBERATELY STRICTER THAN KTX2 IN ONE PLACE: the DFD must byte-match the frozen table for the
+// declared vkFormat. The spec explicitly permits a sample's KHR_DF_SAMPLE_DATATYPE_LINEAR qualifier
+// bit to differ, so a perfectly valid third-party file can be refused here. That is correct for a
+// first-party cooked-asset reader and wrong for a general loader, and this is the former.
+//
+// THREE THINGS IT DELIBERATELY DOES NOT CHECK:
+//   1. that the levels do not overlap each other, the tables or the key/value data. Every read goes
+//      through levelBytes(level), which is bounds-checked against the buffer, so an overlap is a
+//      wrong PICTURE, never a memory error -- the same reasoning and the same Phase 5 trigger as
+//      docs/09 section 9.12's second residual.
+//   2. that there are no trailing bytes after the last level. The writer emits none; the reader
+//      tolerates them, exactly as the mesh reader tolerates non-zero trailing padding, so a future
+//      writer that pads differently is not locked out of a format whose meaningful content it
+//      reproduced.
+//   3. the block CONTENTS. There is no such thing as an invalid BCn block; every 8- or 16-byte
+//      pattern decodes to something.
+[[nodiscard]] CookedTextureParse parseCookedTexture(std::span<const std::byte> bytes);
 
 }  // namespace engine::assets
