@@ -848,7 +848,10 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         set(KIND_PREFIX "texture-")
         set(TUPLE_COUNT 8)              # LITERAL, beside the eight calls it counts
         # `auto` on the half-transparent 8x8 -> 138 BC3_SRGB: the one format carrying the corrected
-        # 1F alpha qualifier, and the only tuple that exercises format resolution from pixels.
+        # 1F alpha qualifier. TWO of the eight tuples carry no --format and therefore resolve the
+        # format from pixels -- this one and -nomips below. MEASURED, not read off the table: seeding
+        # chooseTextureFormat's alpha threshold, and separately the BC3_SRGB descriptor's byte 31,
+        # reddens exactly those two lines and no other.
         aero_manifest_tuple(texture-rgba8x8-srgb-auto.ktx2
             --input "${ASSETS}/texture-rgba-8x8.png" --srgb)
         # BC1 plus the sRGB gamma tables on a power-of-two chain.
@@ -863,7 +866,8 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # Uncompressed passthrough plus a real GUID in the key/value data.
         aero_manifest_tuple(texture-rgba8x8-linear-rgba8-guid.ktx2
             --input "${ASSETS}/texture-rgba-8x8.png" --linear --format rgba8 --guid "${TEST_GUID}")
-        # levelCount 1 -- the single-level layout.
+        # levelCount 1 -- the single-level layout. It carries no --format either, so it is the SECOND
+        # tuple resolving through `auto`: it reddens together with -srgb-auto above, never alone.
         aero_manifest_tuple(texture-rgba8x8-srgb-nomips.ktx2
             --input "${ASSETS}/texture-rgba-8x8.png" --srgb --no-mips)
         # Odd in BOTH axes: the polyphase filter runs on both, on the uncompressed path, in sRGB.
