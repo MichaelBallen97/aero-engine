@@ -6804,3 +6804,147 @@ and **55** in the two reduced configurations — unchanged, because both closure
 cases rather than adding ctest entries. `aero_tests` **654 → 656** (`CT27a` and `TX49`),
 `aero_editor_shell_test` **1516**, and the other three suites unchanged.
 - **The code-review round has not been run**, and neither has CI. Both come before the merge.
+
+---
+
+### Task 3.3.3 — Cook determinism golden test (Epic 3.3)
+
+**Branch:** `feat/3.3.3-cook-determinism-golden-test`, cut from `main @ 8c501db`. **Eight green
+commits** — seven for the implementation, one for the code-review round — merged as **PR #77**, merge
+commit `234a009`, with the green run's `headSha` asserted equal to `HEAD` first. Merged, not squashed:
+all eight survive on `main`.
+
+Epic 3.3's third task, and the one that turns determinism from a **per-lane** property into a
+**cross-lane, cross-config, cross-time contract with a frozen expectation**. It ships **zero C++** —
+no `engine/` diff, no `editor/` diff, no new dependency of any kind — and touches exactly eleven files.
+
+#### What was actually left, stated honestly
+
+The roadmap line reads "CI job cooking a fixture twice and byte-comparing", and **that already
+existed**: 3.3.1 and 3.3.2 each built the run-to-run half into their own batteries
+(`cooker.determinism`, `cooker.texture_determinism`), on all three lanes in both configurations.
+Re-delivering it under a new name would have been theatre. What no test anywhere asserted is that
+**macOS, Windows and Linux produce the same bytes as each other** — each lane double-cooked against
+*itself*, and the byte goldens pin the **cook layer** on in-memory inputs, not the CLI path through the
+importers and the decoder. `docs/09` §9.10 and §10.10 both promised a dedicated job by name; this is it.
+
+#### What shipped
+
+**`tests/cooker/determinism.sha256`** — 13 artifacts in `sha256sum` check format, crossing every
+byte-producing path of both cooks once: all four BC encoders plus the RGBA8 passthrough, both gamma
+tables, `auto` and explicit format resolution, full chain and `--no-mips`, power-of-two and
+odd-in-both-axes, data-URI / two-file / multi-primitive glTF, the importer's one float multiply at a
+dyadic factor, and both the nil and a supplied GUID. A hash file rather than committed binaries because
+**both golden headers explicitly reserve against a second committed copy of cook bytes**, and because
+CMake, coreutils and macOS all read the format natively — so the expectation is checkable by three
+independent implementations.
+
+**Two ungated ctest cases** (`cooker.golden_manifest`, `cooker.texture_golden_manifest`) in
+`tests/cooker/run_case.cmake`. Because `aero_cooker` takes no gate flag they register in all three
+configurations, so the manifest is checked **six times per push at no new build cost** — and all six
+green means every lane and both configurations equal the frozen expectation, therefore each other.
+**Cross-configuration identity is asserted here for the first time**: nothing previously compared a
+Debug/ASan artifact against a Release expectation.
+
+**The `cook-determinism` CI job** — 26 `cmp` runs with both sides physically present, a second reading
+of the manifest through coreutils `sha256sum` rather than CMake, and a pinned Khronos `ktx validate`
+4.4.2 over every cooked `.ktx2`. It builds nothing and ran in **8 seconds on the cache-miss path**.
+
+**`tests/cooker/fixtures/multi.gltf`** — the tree's first CLI-reachable multi-primitive glTF. Measured
+first: every geometry-bearing glTF the CLI could reach had exactly one mesh and one primitive, so the
+sort-before-caps rule, the section-grouping pass and the emission-order model box were pinned at the
+unit tier and **never crossed end to end**. Mesh 0's first-declared primitive carries the strictly
+richer attribute mask, so the ascending-mask sort emits it **last** and declared order ≠ emission order
+by construction. Cooks to 576 bytes, `sectionCount` 2, `submeshCount` 3.
+
+#### The bootstrap, which is the only part that could have been vacuous
+
+A manifest that records whatever the code produced proves nothing. Three things make it evidence.
+It was written **all-zero first** and both cases were watched failing, printing all thirteen
+replacement lines, **before a single hash was right** — so the failure path and the paste-ready printer
+were proven before the expectation existed. `mesh-triangle.aeromesh`'s line equals the SHA-256 of
+`COOKED_GOLDEN_TRIANGLE`'s 272 bytes, a golden frozen by 3.3.1, derived with no cooker involved. And
+the thirteen were then re-checked by coreutils, by a clean re-cook, and in the other configuration.
+
+**The two halves are NOT anchored equally, and the manifest header now says so.** No texture line has
+an equivalent cross-tier tie — the four texture goldens pin the cook layer on in-memory inputs, not the
+CLI path — so the eight texture hashes are anchored only by having been generated once and frozen.
+What keeps them honest is external and continuous: `ktx validate` on every push, the one check our own
+code cannot self-confirm, because our parser compares the descriptor against the same tables our writer
+emits.
+
+#### Traps found — four, and two would have shipped broken
+
+**A CMake `set()` flattens every `;` inside a quoted element**, so the tuple table the spec specified
+**cannot exist**: a five-row table reports `LENGTH` 14 and an eight-row one 39, and an anti-vacuity
+guard derived from it therefore cannot see a deleted row. That is `MC52`'s shape a second time. Each
+tuple is now one macro call and the guard counts **calls that ran**.
+
+**The perturbed re-cook wrote into the directory the CI job uploads**, which would have made the upload
+set 15 files and failed the job's exact-count check on all three lanes on the first run — a red that
+would have read as a determinism failure and been nothing of the kind. `artifacts/` and `perturbed/`
+are siblings, and the upload names only the first.
+
+**`grep -v '^#'` is insufficient for `sha256sum -c --strict`**: the manifest's blank line is an
+"improperly formatted line". Every filter in the tree is `grep -vE '^#|^$'`.
+
+**A top-level `macro()` between two `elseif` arms belongs to the preceding arm's body**, so the
+placement the plan specified gives `Unknown CMake command` at the call site. Proven with a throwaway
+script rather than worked around blind.
+
+Also: `mesh-triangle` and `mesh-external` **legitimately share a hash** — same geometry, and where a
+buffer came from never reaches the file — so lookup is by name and a distinct-hash check would have
+been red on the day it was written.
+
+#### The sabotage matrix — 24 seeds, every one matching its prediction
+
+The three that justify the design. **Re-seeding 3.3.2's C1** (the sRGB DFD alpha-qualifier byte) reds
+`texture_golden_manifest` *and* makes `ktx validate` exit 3 with error-6028 naming `qualifierLinear` —
+the CI step's detection surface demonstrated, not argued. **Perturbing the importer's emission order**
+reds `golden_manifest` while `aero_tests` stays **656/656 green** — a layer the byte goldens' in-memory
+inputs structurally cannot see, and the single clearest reason this manifest exists. **Reversing the
+cook's sort comparator** reds `mesh-multi` **and no other mesh tuple**, which is the new fixture's
+justification made falsifiable rather than asserted.
+
+Recorded green by design: permuting the manifest's line order (lookup is by name), and reordering the
+tuples. Recorded as a Linux-lane prediction rather than simulated: removing `std::ios::binary` from the
+artifact write is green everywhere on POSIX and reds Windows alone.
+
+#### The code-review round — four findings, one a real defect
+
+**The `file(GLOB)` upload-set guard ran BEFORE the perturbed re-cook.** That guard exists specifically
+so the upload contract is enforceable locally instead of only in YAML — and as placed, anything the arm
+wrote into `artifacts/` after it was invisible to every local run, leaving the job's own count as the
+sole enforcer. The guard had the defect it existed to prevent. Demonstrated by seeding a stray write
+(green, six files in a five-file directory), fixed by moving the block last, and re-proven by
+re-seeding: `artifacts holds 6 files, expected 5`.
+
+Also closed: the `ktx validate` step's "A LITERAL 8" comment described a vacuity **bash cannot
+produce** — without `nullglob` a non-matching pattern expands to itself, so the loop runs once and
+fails on a file that does not exist, red for the right reason with the wrong diagnosis. `shopt -s
+nullglob` makes the stated reasoning true. Plus a stale "the six this tool owns" of a directory holding
+seven, and the anchor-asymmetry paragraph above.
+
+#### Measured, never derived
+
+`ctest -N` **131 → 133** with tools ON, **42 → 44** and **55 → 57** in the two reduced configurations,
+both rebuilt fresh with `-G Ninja`. All five doctest binaries **unmoved** at 656 / 1516 / 104 / 23 / 22
+— which is the proof that a task promising zero C++ delivered zero C++. `cooker.*` **36 → 38**;
+`git ls-files` **495 → 497**. Six guards green with their scanned counts unmoved (329, 60).
+`git diff main...HEAD -- engine/ editor/ vcpkg.json cmake/ runtime/` empty; `.github/` only `ci.yml`.
+
+CI green on all three lanes with the new job green, its log carrying the sentence the task exists to
+produce: **`26 byte comparisons agreed: macOS == Windows == Linux, byte for byte.`**, 13 × `: OK` from
+`sha256sum`, and 8 × `warning-7010` as the only diagnostic from `ktx validate`.
+
+#### Deliberately left out
+
+Non-glTF importer determinism (FBX/OBJ/DAE/PLY/STL through the CLI) — a **named residual**, not an
+omission: it would put three third-party importers' unestablished internal determinism on this
+contract's critical path, for inputs the pipeline does not treat as canonical. An external validator for
+`.aeromesh`, because none exists — it is a first-party format whose proof surface is its own
+hostile-input parser, its byte goldens and this manifest, and the job says so in its own comment.
+Flag-grammar variants beyond `--scale` and `--no-mips`, since the matrix crosses byte-producing code
+paths rather than the flag grammar. And the staged Step-4 push the plan wanted, which was skipped: the
+whole CI half landed in one push instead, after the riskiest of its three unknowns (the artifact API
+under `permissions: contents: read`) was settled against the documentation rather than by a run.
