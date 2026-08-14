@@ -30,10 +30,25 @@ file(MAKE_DIRECTORY "${WORK_DIR}")
 # exit-time leaks are not what any case here is about, and aero_editor_core drags in four third-party
 # parsers that leak on their own error paths (the two assimp frames tests/lsan.supp already names).
 # UBSan and ASan memory-error detection stay live.
+#
+# task 3.3.3 added the two OPTIONAL keywords and nothing else:
+#   ENV <NAME=VALUE>...   extra environment entries, appended AFTER the ASan pair so this function
+#                         stays the ONE place that pair is spelled -- the golden_manifest arms'
+#                         perturbed re-cook needs a hostile TZ and locale, and a second
+#                         execute_process in the arm would make preserving ASAN_OPTIONS a convention
+#                         between two copies instead of a property of one function.
+#   WORKING_DIRECTORY <d> run from somewhere other than ctest's cwd. Passed through only when
+#                         non-empty: execute_process REJECTS an empty WORKING_DIRECTORY rather than
+#                         ignoring it.
 function(aero_run_tool)
-    cmake_parse_arguments(RT "" "OUT_RESULT;OUT_STDOUT;OUT_STDERR" "ARGS" ${ARGN})
+    cmake_parse_arguments(RT "" "OUT_RESULT;OUT_STDOUT;OUT_STDERR;WORKING_DIRECTORY" "ARGS;ENV" ${ARGN})
+    set(_aero_where)
+    if(RT_WORKING_DIRECTORY)
+        set(_aero_where WORKING_DIRECTORY "${RT_WORKING_DIRECTORY}")
+    endif()
     execute_process(
-        COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0 "${TOOL}" ${RT_ARGS}
+        COMMAND "${CMAKE_COMMAND}" -E env ASAN_OPTIONS=detect_leaks=0 ${RT_ENV} "${TOOL}" ${RT_ARGS}
+        ${_aero_where}
         RESULT_VARIABLE _aero_result
         OUTPUT_VARIABLE _aero_stdout
         ERROR_VARIABLE _aero_stderr
