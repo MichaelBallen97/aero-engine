@@ -21,6 +21,16 @@
 # Two names share one hash on purpose: mesh-triangle and mesh-external cook to the same 272 bytes,
 # because external.gltf carries the same geometry as triangle.gltf and where a buffer came from
 # never reaches the file. Lookup is by NAME; do not add a distinct-hash check.
+#
+# THE TWO HALVES ARE NOT ANCHORED EQUALLY, AND THE ASYMMETRY IS REAL. mesh-triangle's line is
+# independently derivable: it equals the SHA-256 of COOKED_GOLDEN_TRIANGLE's 272 bytes in
+# tests/cooked_mesh_golden.hpp, a golden frozen by task 3.3.1 with no cooker involved, so at least one
+# mesh line cannot be self-confirming. NO TEXTURE LINE HAS AN EQUIVALENT TIE -- the four texture byte
+# goldens pin the cook layer on in-memory inputs, not this file's CLI path, so the eight texture hashes
+# are anchored only by having been generated once and frozen. What keeps them honest is external:
+# ci.yml's cook-determinism job runs Khronos ktx validate over every cooked .ktx2 on every push, and
+# that is the one check our own code cannot self-confirm (our parser compares the descriptor against
+# the same tables our writer emits). Read a red texture line with that in mind.
 
 906f245857049a8267e73319f8e46a80ece2d294ec59c27d63e1b0fc4f9c5288  mesh-triangle.aeromesh
 156db3030083614d97e29e847412ee98dd60ee9c9b2ad638e30109e18f475d1d  mesh-asymmetric.aeromesh

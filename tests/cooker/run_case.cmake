@@ -279,7 +279,7 @@ function(aero_verify_no_files_in dir)
     endif()
 endfunction()
 
-# Two fixture roots: the ones the editor suites already share, and the six this tool owns. The driver
+# Two fixture roots: the ones the editor suites already share, and the seven this tool owns. The driver
 # composes both from SOURCE_DIR, which is what lets the process tier reach a committed fixture without
 # hard-coding a relative path (tests/cooker/fixtures/README.md lists what each one is for).
 set(ANY_INPUT "${SOURCE_DIR}/tests/fixtures/assets/triangle.gltf")
@@ -916,17 +916,6 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
     if(NOT TUPLES_COOKED EQUAL TUPLE_COUNT)
         message(FATAL_ERROR "case '${CASE}': ${TUPLES_COOKED} tuples cooked, expected ${TUPLE_COUNT}")
     endif()
-    # 3. the upload set, enforceable LOCALLY rather than only in ci.yml. Misdirecting a tuple's
-    #    --output leaves every hash correct and every count above satisfied, so without this the only
-    #    enforcer of "this directory holds exactly the manifest's own files" would live in YAML and
-    #    could not be run on a developer's machine at all.
-    file(GLOB _produced "${ARTIFACTS}/*")
-    list(LENGTH _produced _producedCount)
-    if(NOT _producedCount EQUAL TUPLE_COUNT)
-        message(FATAL_ERROR "case '${CASE}': ${ARTIFACTS} holds ${_producedCount} files, expected "
-                            "${TUPLE_COUNT} -- this directory IS the CI upload set")
-    endif()
-
     # --- the environment-perturbed re-cook ---------------------------------------------------------
     # THIS ARM CANNOT FAIL TODAY, and saying so is the point. aero_cooker never calls setlocale (its
     # one float parse imbues std::locale::classic()), never reads the clock, and is handed absolute
@@ -958,13 +947,29 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
                             "dependency.")
     endif()
     math(EXPR PERTURBED_RUNS "${PERTURBED_RUNS} + 1")
-    # 4. the arm's OWN literal count, separate from the tuple count on purpose: one shared counter
+    # 3. the arm's OWN literal count, separate from the tuple count on purpose: one shared counter
     #    makes "a tuple row was deleted" and "the arm was skipped" produce the identical message.
     if(NOT PERTURBED_RUNS EQUAL 1)
         message(FATAL_ERROR "case '${CASE}': ${PERTURBED_RUNS} perturbed runs, expected exactly 1")
     endif()
-    # The perturbed artifact stays OUT of ${ARTIFACTS}: that directory is the CI upload set and must
-    # hold exactly the manifest's own files. See ci.yml's cook-determinism upload step.
+
+    # 4. the upload set, enforceable LOCALLY rather than only in ci.yml. Misdirecting a tuple's
+    #    --output leaves every hash correct and every count above satisfied, so without this the only
+    #    enforcer of "this directory holds exactly the manifest's own files" would live in YAML and
+    #    could not be run on a developer's machine at all.
+    #
+    #    IT RUNS LAST, AND THAT PLACEMENT IS THE WHOLE POINT. Anything this arm writes into
+    #    ${ARTIFACTS} after the check is a file no local run can see and only the job's own
+    #    `find | wc -l -ne 13` would catch -- which is precisely the single-enforcer-in-YAML shape
+    #    this check exists to eliminate. The perturbed re-cook above deliberately writes to
+    #    ${WORK_DIR}/perturbed instead, so today the count is clean; keep any future addition to this
+    #    arm above this block only if it writes nothing here, and re-run it last regardless.
+    file(GLOB _produced "${ARTIFACTS}/*")
+    list(LENGTH _produced _producedCount)
+    if(NOT _producedCount EQUAL TUPLE_COUNT)
+        message(FATAL_ERROR "case '${CASE}': ${ARTIFACTS} holds ${_producedCount} files, expected "
+                            "${TUPLE_COUNT} -- this directory IS the CI upload set")
+    endif()
 
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")

@@ -556,14 +556,22 @@ jobs:
             export LD_LIBRARY_PATH="$(dirname "$lib")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           fi
           "$ktx_bin" --version
+          # nullglob so a non-matching pattern expands to NOTHING rather than to itself. Without it
+          # bash hands the literal string `flat/linux/*.ktx2` to the validator, which fails on a file
+          # that does not exist -- a red step for the right reason but with the wrong diagnosis, and
+          # it makes the counter below unreachable. With it, zero matches means zero iterations, which
+          # is the case the literal 8 is actually here to catch.
+          shopt -s nullglob
           validated=0
           for f in flat/linux/*.ktx2; do
             echo "--- $f"
             "$ktx_bin" validate "$f"
             validated=$((validated + 1))
           done
-          # A LITERAL 8: a glob that matched nothing would otherwise make this step green by looping
-          # zero times, which is exactly the shape a conformance check must not have.
+          # A LITERAL 8: with nullglob set, a glob that matched nothing loops zero times and would
+          # otherwise leave this step green having validated nothing, which is exactly the shape a
+          # conformance check must not have. It also catches 7 or 9 -- a lane that gained or lost an
+          # artifact between the count check above and here.
           if [ "$validated" -ne 8 ]; then
             echo "::error::$validated .ktx2 artifacts validated, expected exactly 8"
             exit 1
