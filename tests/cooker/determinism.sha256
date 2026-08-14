@@ -1,0 +1,48 @@
+# tests/cooker/determinism.sha256 -- THE FROZEN COOK-DETERMINISM MANIFEST (task 3.3.3).
+#
+# SHA-256 of the artifact each of thirteen fixed aero_cooker invocations produces. The invocations
+# live in tests/cooker/run_case.cmake's `golden_manifest` (5, mesh) and `texture_golden_manifest`
+# (8, texture) arms; those two ctest cases check every line of this file in every build
+# configuration on every lane, and .github/workflows/ci.yml's `cook-determinism` job checks the
+# same lines a second time with coreutils sha256sum and byte-compares the three lanes' copies.
+#
+# THIS FILE IS FROZEN. A changed line means THE SAME INPUT NOW COOKS TO DIFFERENT BYTES -- which is,
+# verbatim, docs/09-file-formats.md section 9.11's definition of a cookerVersion bump. So a
+# regeneration travels IN THE SAME COMMIT as the cook change and the matching
+# COOKED_MESH_COOKER_VERSION / COOKED_TEXTURE_COOKER_VERSION bump, with the pull request saying why.
+# NEVER EDIT A HASH TO GREEN A RED RUN.
+#
+# To regenerate, when and only when the change is deliberate:
+#   1. cmake --build --preset <host>-release
+#   2. ctest --preset <host>-release -R 'cooker\.(golden_manifest|texture_golden_manifest)'
+#   3. each failing case prints its new `<sha256>  <name>` lines verbatim, one per line; paste them
+#      in, re-run, and confirm green in BOTH the debug and the release preset.
+#
+# Two names share one hash on purpose: mesh-triangle and mesh-external cook to the same 272 bytes,
+# because external.gltf carries the same geometry as triangle.gltf and where a buffer came from
+# never reaches the file. Lookup is by NAME; do not add a distinct-hash check.
+#
+# THE TWO HALVES ARE NOT ANCHORED EQUALLY, AND THE ASYMMETRY IS REAL. mesh-triangle's line is
+# independently derivable: it equals the SHA-256 of COOKED_GOLDEN_TRIANGLE's 272 bytes in
+# tests/cooked_mesh_golden.hpp, a golden frozen by task 3.3.1 with no cooker involved, so at least one
+# mesh line cannot be self-confirming. NO TEXTURE LINE HAS AN EQUIVALENT TIE -- the four texture byte
+# goldens pin the cook layer on in-memory inputs, not this file's CLI path, so the eight texture hashes
+# are anchored only by having been generated once and frozen. What keeps them honest is external:
+# ci.yml's cook-determinism job runs Khronos ktx validate over every cooked .ktx2 on every push, and
+# that is the one check our own code cannot self-confirm (our parser compares the descriptor against
+# the same tables our writer emits). Read a red texture line with that in mind.
+
+906f245857049a8267e73319f8e46a80ece2d294ec59c27d63e1b0fc4f9c5288  mesh-triangle.aeromesh
+156db3030083614d97e29e847412ee98dd60ee9c9b2ad638e30109e18f475d1d  mesh-asymmetric.aeromesh
+906f245857049a8267e73319f8e46a80ece2d294ec59c27d63e1b0fc4f9c5288  mesh-external.aeromesh
+c9921e70dddc53bcf29eb1a5ca29205c687e886fd0943a1281b0f2e0c30bfdb0  mesh-material-scaled.aeromesh
+2934125b4074c31c8f361285b73994a7eaf48fc0629e1dba4236419d822a5f67  mesh-multi.aeromesh
+
+1fa1350446390463f39c09e7913208e162da203858fddec80758fe5cdb5c9e11  texture-rgba8x8-srgb-auto.ktx2
+495ecf2e3f9552dec1324d70a35e9c29fa698749e5ca70167ddd438ff6e639a1  texture-rgba8x8-srgb-bc1.ktx2
+cdb981a8562a3438ee63395b5a13c31c22291b5c8b2a382f39cb8697fe6cda09  texture-rgba8x8-linear-bc4.ktx2
+8db04f65e7e522395207971df8992f77c3f7cad3163997da551dd514621d0201  texture-rgba8x8-linear-bc5.ktx2
+035afe45e1a70b7c5a89f315ec09451dd55068badbfea9a0b99dc7d97e9ca647  texture-rgba8x8-linear-rgba8-guid.ktx2
+36f5040154c50e7f9e4c602f02f9fcae830bd47001a813fbe8d47dc9b9adb2ed  texture-rgba8x8-srgb-nomips.ktx2
+16fddfc45f3ceb1e3b1e23ac6fb8e0dabc12454bc44a1f6ae8fbedc658d6e6f4  texture-rgb5x3-srgb-rgba8.ktx2
+f032aed271f649147ed7c823cd22af086b366b6dd532246d8f9bf1e0ca047cb1  texture-rgb5x3-linear-bc1.ktx2

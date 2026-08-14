@@ -36,6 +36,16 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
 - **No `std::map`, `std::unordered_map`, `std::set` or `std::unordered_set` in `engine/assets`.** There
   must be no iteration order for the output to depend on, and MSVC's node-based containers are not
   nothrow-movable (3.1.2's R9, measured in CI as `C2607`). Grouping is a sorted vector.
+- **`tests/cooker/determinism.sha256` is FROZEN, and a red `cooker.golden_manifest` /
+  `cooker.texture_golden_manifest` is `docs/09` section 9.11's `cookerVersion` sentence firing** — the
+  same input now cooks to different bytes. Regenerate **in the same commit** as the cook change and the
+  matching `COOKED_MESH_COOKER_VERSION` / `COOKED_TEXTURE_COOKER_VERSION` bump, with the PR saying why;
+  the procedure is in the manifest's own header and the failing case prints every replacement line
+  verbatim. **Never edit a hash to green a red run.** A vcpkg baseline bump that reds it is the tripwire
+  WORKING, not flake — root-cause first, and never per-lane manifests. Lookup is by name and two names
+  legitimately share a hash, so do not add a distinct-hash check. And if either cook ever gains
+  threading, this manifest is what forces the scheduling to be output-order-deterministic before it can
+  merge.
 
 ## The cook
 

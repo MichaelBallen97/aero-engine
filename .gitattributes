@@ -34,8 +34,22 @@ project.json   text eol=lf
 # Verify with `git check-attr text eol -- <path>`.
 tests/fixtures/assets/*.json text eol=lf
 
+# The cook-determinism manifest is fed to `sha256sum -c --strict` by ci.yml's cook-determinism job
+# (task 3.3.3), and a CRLF checkout would put a \r at the end of every NAME field and fail all
+# thirteen lines with a hygiene complaint rather than a byte difference. The blanket
+# `* text=auto eol=lf` above already forces LF; this line is what stops a future narrowing of that
+# rule from silently breaking the job -- the same sentence *.scene.json already carries.
+# Verify with `git check-attr text eol -- tests/cooker/determinism.sha256`.
+tests/cooker/determinism.sha256 text eol=lf
+
 # Binary asset types (extended as asset work lands in Phase 3+)
 *.png binary
 *.jpg binary
 *.ktx2 binary
 *.glb binary
+# task 3.3.3: external.bin is an INPUT to tests/cooker/determinism.sha256, so its bytes are part of a
+# frozen contract. It rides on `* text=auto` content sniffing today and that works -- but a manifest
+# input whose bytes depend on a heuristic is one CRLF-mangle away from a cross-lane red that looks
+# exactly like a cook bug. Verify with
+# `git check-attr text eol binary -- tests/cooker/fixtures/external.bin`.
+*.bin binary
