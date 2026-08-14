@@ -201,8 +201,10 @@ Genuinely asymmetric, and measured rather than assumed — this is the part that
 
 ## Tests
 
-`tests/cooker/run_case.cmake` drives the real binary through 36 `cooker.*` ctest entries — 22 for
-`mesh` and 14 for `texture` — argv in, exit code plus files out. A CLI's honest test is its process
+`tests/cooker/run_case.cmake` drives the real binary through 38 `cooker.*` ctest entries — 23 for
+`mesh` and 15 for `texture` — argv in, exit code plus files out. Two of them,
+`cooker.golden_manifest` and `cooker.texture_golden_manifest`, cook a fixed thirteen-artifact matrix
+and compare every byte against the frozen `tests/cooker/determinism.sha256` (task 3.3.3). A CLI's honest test is its process
 boundary, so there is no doctest translation unit for the tool and no tool code links into
 `aero_tests`; the pure halves it is built from (`cookMesh`, `parseCookedMesh`, `meshCookPrimitives`,
 `cookTexture`, `parseCookedTexture`, `decodeImageRgba8`, `chooseTextureFormat`) are covered there and

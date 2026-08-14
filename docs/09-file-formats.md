@@ -1124,9 +1124,10 @@ so the two folds can disagree in **the sign of a zero and nowhere else**. No box
 a ±0 bound is the same box — and no committed fixture in this repository carries a signed zero, which
 is why the cooked and imported model boxes are currently bit-equal as well as geometrically equal.
 
-Determinism *across platforms* is asserted by three committed byte goldens plus the cook's own
-round-trip cases on all three CI lanes. Task 3.3.3 turns that into a dedicated job across both cook
-kinds.
+Determinism *across platforms* is asserted by three committed byte goldens, the cook's own round-trip
+cases on all three CI lanes, and the frozen manifest `tests/cooker/determinism.sha256`, which the
+`cooker.golden_manifest` case checks in every build configuration on every lane and the dedicated
+`cook-determinism` CI job re-checks against the three lanes' actually-produced artifacts (task 3.3.3).
 
 ### 9.11 Versioning and evolution
 
@@ -1565,9 +1566,11 @@ are first-party**:
 There is **no order-dependence to close** here: the cook takes one image, not a set of primitives, so
 section 9.10's ordering caveat has no analogue.
 
-Determinism *across platforms* is asserted by four committed byte goldens plus the cook's own
-round-trip cases on all three CI lanes. Task 3.3.3 turns that into a dedicated job across both cook
-kinds.
+Determinism *across platforms* is asserted by four committed byte goldens, the cook's own round-trip
+cases on all three CI lanes, and the frozen manifest `tests/cooker/determinism.sha256`, which the
+`cooker.texture_golden_manifest` case checks in every build configuration on every lane and the
+dedicated `cook-determinism` CI job re-checks against the three lanes' actually-produced artifacts —
+including a pinned Khronos `ktx validate` over every cooked `.ktx2` (task 3.3.3).
 
 ### 10.11 The caps
 
