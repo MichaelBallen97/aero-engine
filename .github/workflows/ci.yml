@@ -372,3 +372,200 @@ jobs:
             build/${{ matrix.preset }}-release/tests/cooker/texture_golden_manifest/artifacts/
           retention-days: 7            # the consuming job runs minutes later; a week covers a re-run
           if-no-files-found: error     # an empty upload is a broken contract, not a quiet skip
+
+  # Cross-lane cook determinism (task 3.3.3). Three things no ctest case can provide, and nothing else:
+  #
+  #   1. THE THREE LANES' ACTUALLY-PRODUCED BYTES, COMPARED WITH BOTH SIDES PRESENT. The two manifest
+  #      cases already prove every lane and both configurations equal the frozen expectation, and
+  #      therefore each other -- but that is a transitive argument, and this is the one place in the
+  #      project where "macOS == Windows == Linux, byte for byte" is a single green check somebody can
+  #      point at. 13 names x 2 lane pairs = 26 comparisons, all required.
+  #   2. A SECOND, FOREIGN IMPLEMENTATION OF THE FROZEN EXPECTATION. coreutils sha256sum, not CMake's
+  #      file(SHA256), so a defect in our own hashing or manifest parsing cannot self-confirm.
+  #   3. CONTINUOUS EXTERNAL CONFORMANCE. A pinned Khronos ktx validate over every cooked .ktx2. The
+  #      sRGB DFD defect class is invisible to every internal test BY CONSTRUCTION -- our parser
+  #      compares the descriptor against the same table our writer emits -- and task 3.3.2's own
+  #      validation pass proved a foreign validator sees it: re-seeding the corrected byte made
+  #      ktx validate exit 3 with error-6028 naming qualifierLinear. This step keeps that running.
+  #
+  # WHAT IT DELIBERATELY DOES NOT DO. It builds nothing, so it costs seconds and cannot fail for a
+  # reason unrelated to determinism. It never regenerates the manifest -- that ritual is local, manual
+  # and documented in tests/cooker/determinism.sha256's own header. It validates ONE lane's copies,
+  # because step 3 has just proven the three sets identical and validating the same bytes three times
+  # proves nothing further. And there is no analogous external check for .aeromesh, because none
+  # exists: it is a first-party format whose proof surface is its own hostile-input parser, its three
+  # byte goldens, and this manifest.
+  cook-determinism:
+    name: Cook determinism (cross-lane)
+    needs: build            # `build` sets fail-fast: false, so a red lane SKIPS this job rather than
+    runs-on: ubuntu-24.04   # letting it compare two surviving lanes and call that a pass
+    steps:
+      - name: Checkout (no submodules — this job needs the manifest and nothing else)
+        uses: actions/checkout@v4
+
+      # Three explicit downloads rather than one `pattern:`, deliberately: a named download fails loudly
+      # when its artifact is absent, whereas a pattern silently yields fewer sets and the count check
+      # would then report a confusing "0 files" for a lane that never uploaded.
+      - name: Download the Linux lane's artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: cook-determinism-linux
+          path: cooked/linux
+      - name: Download the macOS lane's artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: cook-determinism-macos
+          path: cooked/macos
+      - name: Download the Windows lane's artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: cook-determinism-windows
+          path: cooked/windows
+
+      - name: Set equality — each lane holds exactly the manifest's thirteen artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `grep -vE '^#|^$'` and not `grep -v '^#'`: the manifest has a blank line between its mesh
+          # and texture blocks, and a blank line is an improperly formatted line to sha256sum -c
+          # --strict. The name field starts at column 67 (64 hex + two spaces).
+          names="$(grep -vE '^#|^$' tests/cooker/determinism.sha256 | cut -c67-)"
+          count="$(printf '%s\n' "$names" | wc -l | tr -d ' ')"
+          if [ "$count" -ne 13 ]; then
+            echo "::error file=tests/cooker/determinism.sha256::the manifest lists $count artifacts, expected exactly 13"
+            exit 1
+          fi
+          for lane in linux macos windows; do
+            # The exact count comes FIRST: a future case writing an extra file into a manifest
+            # WORK_DIR is invisible to a name-driven loop, and this is where it surfaces.
+            found="$(find "cooked/$lane" -type f | wc -l | tr -d ' ')"
+            if [ "$found" -ne 13 ]; then
+              echo "::error::lane $lane uploaded $found files, expected exactly 13"
+              find "cooked/$lane" -type f | sort
+              exit 1
+            fi
+            mkdir -p "flat/$lane"
+            while IFS= read -r name; do
+              matches="$(find "cooked/$lane" -type f -name "$name")"
+              if [ "$(printf '%s\n' "$matches" | grep -c . || true)" -ne 1 ]; then
+                echo "::error::lane $lane does not hold exactly one '$name'"
+                exit 1
+              fi
+              cp "$matches" "flat/$lane/$name"
+            done <<< "$names"
+            flat="$(find "flat/$lane" -type f | wc -l | tr -d ' ')"
+            if [ "$flat" -ne 13 ]; then
+              echo "::error::flattening lane $lane produced $flat files, expected 13"
+              exit 1
+            fi
+          done
+          echo "three lanes, thirteen artifacts each, flattened for comparison."
+
+      - name: Cross-lane byte comparison — 26 cmp runs, all required
+        shell: bash
+        run: |
+          set -euo pipefail
+          comparisons=0
+          # Process substitution, not a pipe: a piped `while` runs in a subshell and the counter would
+          # be lost, which would make the anti-vacuity check below vacuous.
+          while IFS= read -r name; do
+            for other in macos windows; do
+              if ! cmp -s "flat/linux/$name" "flat/$other/$name"; then
+                echo "::error::$name DIFFERS between linux and $other"
+                ls -l "flat/linux/$name" "flat/$other/$name"
+                # cmp -l prints `<1-based byte offset> <octal linux> <octal other>` per differing byte.
+                cmp -l "flat/linux/$name" "flat/$other/$name" | head -5 || true
+                exit 1
+              fi
+              comparisons=$((comparisons + 1))
+            done
+          done < <(grep -vE '^#|^$' tests/cooker/determinism.sha256 | cut -c67-)
+          if [ "$comparisons" -ne 26 ]; then
+            echo "::error::$comparisons byte comparisons ran, expected exactly 26 (13 artifacts x 2 lane pairs)"
+            exit 1
+          fi
+          echo "26 byte comparisons agreed: macOS == Windows == Linux, byte for byte."
+
+      - name: The frozen manifest, re-checked by a second implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          # coreutils sha256sum rather than CMake's file(SHA256), on purpose: the two ctest cases and
+          # this step are then two independent readings of the same expectation, and a defect in one
+          # cannot confirm itself. --strict makes a malformed line a failure rather than a warning.
+          grep -vE '^#|^$' tests/cooker/determinism.sha256 > "$RUNNER_TEMP/manifest.lines"
+          lines="$(wc -l < "$RUNNER_TEMP/manifest.lines" | tr -d ' ')"
+          if [ "$lines" -ne 13 ]; then
+            echo "::error::the filtered manifest holds $lines lines, expected 13"
+            exit 1
+          fi
+          ( cd flat/linux && sha256sum -c --strict "$RUNNER_TEMP/manifest.lines" )
+
+      - name: Cache the pinned KTX-Software 4.4.2 tools
+        id: ktx-cache
+        uses: actions/cache@v4
+        with:
+          path: ktx-tools
+          # Keyed on version AND checksum, so a re-pin cannot resurrect the old tree. No restore-keys,
+          # for the same reason the shadercross cache above has none.
+          key: ktx-4.4.2-a8781bad05f9624edbf910b7f258cd0a4ba7d3e63b49ecc0a0ab440bf6a0a245
+
+      - name: Fetch and verify KTX-Software 4.4.2
+        if: steps.ktx-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # PINNED BY VERSION AND BY CHECKSUM. A floating "latest" would let an upstream release change
+          # what this job means on a push that touched nothing; a pinned URL without a checksum would
+          # let a substituted asset do the same silently. Bumping the validator is a deliberate PR that
+          # changes the two literals below and the cache key above, together.
+          # 4.4.2 is the exact version task 3.3.2's validation pass used to catch the sRGB DFD defect.
+          # The SHA-1 of these same bytes is c6b08c817f8c8dd299deccae4f2fbb8d55e9acd2, which equals the
+          # .sha1 sibling Khronos publishes beside the tarball -- so the pin is a statement about
+          # Khronos's bytes rather than about whatever a CDN served twice.
+          url='https://github.com/KhronosGroup/KTX-Software/releases/download/v4.4.2/KTX-Software-4.4.2-Linux-x86_64.tar.bz2'
+          sha='a8781bad05f9624edbf910b7f258cd0a4ba7d3e63b49ecc0a0ab440bf6a0a245'
+          command -v bzip2 >/dev/null || { echo "::error::bzip2 is not on this runner image"; exit 1; }
+          curl -fsSL --retry 3 -o ktx.tar.bz2 "$url"
+          echo "$sha  ktx.tar.bz2" | sha256sum -c -
+          mkdir -p ktx-tools
+          tar -xjf ktx.tar.bz2 -C ktx-tools
+
+      - name: ktx validate — every cooked .ktx2 through a conforming external validator
+        shell: bash
+        run: |
+          set -euo pipefail
+          # warning-7010 ("Custom key in Key/Value Data -- AeroSourceGuid") is EXPECTED on every one of
+          # these files: the key is deliberate and documented, and the diagnostic is a warning rather
+          # than an error. No warnings-as-errors flag is passed here, on purpose.
+          #
+          # The binary is located rather than hard-coded, and the search is required to find EXACTLY
+          # one: the tarball's internal layout is an upstream packaging choice, not a contract, and a
+          # find that quietly picked the first of several would be a validator chosen by luck. (For
+          # the record, 4.4.2 unpacks to KTX-Software-4.4.2-Linux-x86_64/{bin,lib,include,share} with
+          # one bin/ktx and one real lib/libktx.so.4.4.2 behind two symlinks.)
+          mapfile -t ktx_bins < <(find ktx-tools -type f -name ktx -perm -u+x)
+          if [ "${#ktx_bins[@]}" -ne 1 ]; then
+            echo "::error::found ${#ktx_bins[@]} ktx binaries under ktx-tools, expected exactly 1"
+            find ktx-tools -maxdepth 4 | head -50
+            exit 1
+          fi
+          ktx_bin="${ktx_bins[0]}"
+          lib="$(find ktx-tools -type f -name 'libktx.so*' | head -1 || true)"
+          if [ -n "$lib" ]; then
+            export LD_LIBRARY_PATH="$(dirname "$lib")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
+          "$ktx_bin" --version
+          validated=0
+          for f in flat/linux/*.ktx2; do
+            echo "--- $f"
+            "$ktx_bin" validate "$f"
+            validated=$((validated + 1))
+          done
+          # A LITERAL 8: a glob that matched nothing would otherwise make this step green by looping
+          # zero times, which is exactly the shape a conformance check must not have.
+          if [ "$validated" -ne 8 ]; then
+            echo "::error::$validated .ktx2 artifacts validated, expected exactly 8"
+            exit 1
+          fi
+          echo "8 cooked KTX2 artifacts accepted by Khronos ktx validate 4.4.2."
