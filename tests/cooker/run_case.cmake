@@ -152,6 +152,71 @@ function(aero_expect_non_empty text what)
     endif()
 endfunction()
 
+# --- task 3.3.3: the frozen cook-determinism manifest -----------------------------------------------
+#
+# Parses tests/cooker/determinism.sha256 into two parallel lists. The format is FIXED WIDTH by
+# construction -- 64 lowercase hex, exactly two spaces, then a name with no whitespace -- so the split
+# is positional rather than a regex capture, which also makes every malformed shape its own message.
+#
+# file(STRINGS) strips \r, so a CRLF checkout parses identically (measured, not assumed); it also
+# keeps BLANK lines as empty entries, which is why the empty check comes first and why every consumer
+# of this file elsewhere filters with `grep -vE '^#|^$'` rather than `grep -v '^#'`.
+#
+# DUPLICATE DETECTION IS BY NAME AND NEVER BY HASH. mesh-triangle and mesh-external genuinely share a
+# hash -- same geometry, no material, nil GUID, and where the buffer came from never reaches the file
+# -- so a "the 13 hashes are distinct" check would be red on the day it was written.
+function(aero_read_manifest out_names out_hashes)
+    set(path "${SOURCE_DIR}/tests/cooker/determinism.sha256")
+    if(NOT EXISTS "${path}")
+        message(FATAL_ERROR "case '${CASE}': the manifest '${path}' does not exist")
+    endif()
+    file(STRINGS "${path}" raw)
+    set(names "")
+    set(hashes "")
+    foreach(line IN LISTS raw)
+        if(line STREQUAL "")
+            continue()
+        endif()
+        string(SUBSTRING "${line}" 0 1 lead)
+        if(lead STREQUAL "#")
+            continue()
+        endif()
+        string(LENGTH "${line}" len)
+        if(len LESS 67)
+            message(FATAL_ERROR "case '${CASE}': malformed manifest line (shorter than 67 characters): "
+                                "'${line}'")
+        endif()
+        string(SUBSTRING "${line}" 0 64 hash)
+        string(SUBSTRING "${line}" 64 2 gap)
+        string(SUBSTRING "${line}" 66 -1 name)
+        if(NOT hash MATCHES "^[0-9a-f]+$")
+            message(FATAL_ERROR "case '${CASE}': a manifest line must start with 64 LOWERCASE hex "
+                                "digits: '${line}'")
+        endif()
+        if(NOT gap STREQUAL "  ")
+            message(FATAL_ERROR "case '${CASE}': a manifest line needs exactly two spaces after the "
+                                "hash (sha256sum -c check format): '${line}'")
+        endif()
+        if(name STREQUAL "" OR name MATCHES "[ \t]")
+            message(FATAL_ERROR "case '${CASE}': a manifest name is empty or holds whitespace: '${line}'")
+        endif()
+        list(FIND names "${name}" dup)
+        if(NOT dup EQUAL -1)
+            message(FATAL_ERROR "case '${CASE}': the manifest lists '${name}' twice")
+        endif()
+        list(APPEND names "${name}")
+        list(APPEND hashes "${hash}")
+    endforeach()
+    list(LENGTH names count)
+    # A LITERAL 13, never a count derived from the file it is checking: a guard computed from its own
+    # subject cannot see a line deleted. Both cases assert it, so a deletion reddens both at once.
+    if(NOT count EQUAL 13)
+        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 13")
+    endif()
+    set(${out_names} "${names}" PARENT_SCOPE)
+    set(${out_hashes} "${hashes}" PARENT_SCOPE)
+endfunction()
+
 # A comment-stripped source-text ordering gate, for the ONE property in this tool that no process-tier
 # case can observe (see texture_nothing_written_on_failure). `//` comments are removed first, so prose
 # naming either needle cannot stand in for the code that uses it.
@@ -695,6 +760,207 @@ elseif(CASE STREQUAL "texture_output_dir_missing")
     aero_expect_non_empty("${err}" "stderr")
     aero_expect_no_files("${WORK_DIR}/nope")
     aero_verify_no_files_in("${WORK_DIR}")
+
+# --- task 3.3.3: the frozen cook-determinism manifest ---------------------------------------------
+#
+# Two cases, one shape. Each cooks its tuples ONCE through the real binary and requires the artifact's
+# SHA-256 to equal the line tests/cooker/determinism.sha256 records for that name. Because the cooker
+# takes no gate flag, both register in all three build configurations, and because CI runs ctest in
+# Debug and Release on three lanes, the manifest is checked SIX times per push: all six green means
+# every lane and both configurations equal the manifest, therefore they equal each other.
+#
+# The artifacts land in ${WORK_DIR}/artifacts/ and the CI job uploads exactly that directory. The
+# perturbed re-cook lands in ${WORK_DIR}/perturbed/ so it cannot enter the upload set, which is
+# thirteen files across the two cases and nothing else.
+
+elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest")
+    set(ASSETS "${SOURCE_DIR}/tests/fixtures/assets")
+    set(ARTIFACTS "${WORK_DIR}/artifacts")
+    file(MAKE_DIRECTORY "${ARTIFACTS}")
+    set(TEST_GUID 0123456789abcdeffedcba9876543210)
+
+    aero_read_manifest(MANIFEST_NAMES MANIFEST_HASHES)
+    set(TUPLES_COOKED 0)
+    set(PERTURBED_RUNS 0)
+    set(CONSUMED "")
+    set(MISMATCHES "")
+    set(FIRST_NAME "")
+    set(FIRST_ARGS "")
+
+    # One tuple: cook it, hash it, compare it against the manifest line of the same name. Defined
+    # inside this arm, immediately above the two tuple blocks that use it, because it accumulates into
+    # the arm's own scope -- a macro, not a function, for exactly that reason. (It cannot sit BETWEEN
+    # the arms: CMake would attach a top-level macro() there to the PRECEDING arm's body, so it would
+    # be defined only when texture_output_dir_missing ran. Measured with a throwaway script.)
+    #
+    # There is deliberately NO tuple TABLE. A CMake list cannot carry an argv list: every `;` inside a
+    # quoted element is flattened by the enclosing set(), so a five-row table reports LENGTH 14 and an
+    # eight-row one reports 39 -- and a row-count guard derived from that is a guard that cannot see a
+    # deleted row. Each tuple is one call, and the anti-vacuity guard counts CALLS THAT RAN.
+    #
+    # Mismatches are COLLECTED rather than fatal on the first, so one run prints every replacement line.
+    macro(aero_manifest_tuple tupleName)
+        list(FIND MANIFEST_NAMES "${tupleName}" _at)
+        if(_at EQUAL -1)
+            message(FATAL_ERROR "case '${CASE}': the manifest has no line for '${tupleName}' -- a tuple the "
+                                "frozen expectation does not know about is not covered by anything")
+        endif()
+        list(GET MANIFEST_HASHES ${_at} _expected)
+        aero_run_tool(ARGS ${SUBCOMMAND} ${ARGN} --output "${ARTIFACTS}/${tupleName}"
+            OUT_RESULT _result OUT_STDERR _err)
+        aero_expect_exit("${_result}" 0)
+        aero_expect_files("${ARTIFACTS}/${tupleName}")
+        file(SHA256 "${ARTIFACTS}/${tupleName}" _actual)
+        if(NOT _actual STREQUAL _expected)
+            list(APPEND MISMATCHES "${_actual}  ${tupleName}")
+        endif()
+        list(APPEND CONSUMED "${tupleName}")
+        math(EXPR TUPLES_COOKED "${TUPLES_COOKED} + 1")
+        if(FIRST_NAME STREQUAL "")
+            set(FIRST_NAME "${tupleName}")
+            set(FIRST_ARGS ${ARGN})
+        endif()
+    endmacro()
+
+    if(CASE STREQUAL "golden_manifest")
+        set(SUBCOMMAND mesh)
+        set(KIND_PREFIX "mesh-")
+        set(TUPLE_COUNT 5)              # LITERAL, beside the five calls it counts
+        # The minimal path, and the one tuple with a cross-tier tie: these 272 bytes ARE
+        # tests/cooked_mesh_golden.hpp's COOKED_GOLDEN_TRIANGLE, so this line's hash is checkable
+        # from the golden header alone, with no cooker involved.
+        aero_manifest_tuple(mesh-triangle.aeromesh        --input "${ASSETS}/triangle.gltf")
+        # A non-trivial bounds fold -- the header's six float fields carry real bit patterns.
+        aero_manifest_tuple(mesh-asymmetric.aeromesh      --input "${ASSETS}/asymmetric.gltf")
+        # The tree's only two-file glTF: the external-buffer read, end to end. Its BYTES equal
+        # mesh-triangle's on purpose (same geometry, no material, nil GUID); what this tuple covers
+        # is the PATH, not a distinct byte string.
+        aero_manifest_tuple(mesh-external.aeromesh        --input "${FIXTURES}/external.gltf")
+        # The importer's one float multiply, at a DYADIC factor so no decimal-parse last-ulp question
+        # enters the contract; plus a real GUID and a submesh that names material 0.
+        aero_manifest_tuple(mesh-material-scaled.aeromesh --input "${FIXTURES}/material.gltf"
+                                                          --scale 1.5 --guid "${TEST_GUID}")
+        # The only input whose bytes depend on the sort running: two meshes, three primitives, and a
+        # first-declared primitive whose richer mask sends it LAST. sectionCount 2, submeshCount 3.
+        aero_manifest_tuple(mesh-multi.aeromesh           --input "${FIXTURES}/multi.gltf")
+    else()
+        set(SUBCOMMAND texture)
+        set(KIND_PREFIX "texture-")
+        set(TUPLE_COUNT 8)              # LITERAL, beside the eight calls it counts
+        # `auto` on the half-transparent 8x8 -> 138 BC3_SRGB: the one format carrying the corrected
+        # 1F alpha qualifier, and the only tuple that exercises format resolution from pixels.
+        aero_manifest_tuple(texture-rgba8x8-srgb-auto.ktx2
+            --input "${ASSETS}/texture-rgba-8x8.png" --srgb)
+        # BC1 plus the sRGB gamma tables on a power-of-two chain.
+        aero_manifest_tuple(texture-rgba8x8-srgb-bc1.ktx2
+            --input "${ASSETS}/texture-rgba-8x8.png" --srgb --format bc1)
+        # The BC4 encoder -- the format with neither a byte golden nor a golden-pinned sRGB sibling.
+        aero_manifest_tuple(texture-rgba8x8-linear-bc4.ktx2
+            --input "${ASSETS}/texture-rgba-8x8.png" --linear --format bc4)
+        # BC5's red-then-green composition.
+        aero_manifest_tuple(texture-rgba8x8-linear-bc5.ktx2
+            --input "${ASSETS}/texture-rgba-8x8.png" --linear --format bc5)
+        # Uncompressed passthrough plus a real GUID in the key/value data.
+        aero_manifest_tuple(texture-rgba8x8-linear-rgba8-guid.ktx2
+            --input "${ASSETS}/texture-rgba-8x8.png" --linear --format rgba8 --guid "${TEST_GUID}")
+        # levelCount 1 -- the single-level layout.
+        aero_manifest_tuple(texture-rgba8x8-srgb-nomips.ktx2
+            --input "${ASSETS}/texture-rgba-8x8.png" --srgb --no-mips)
+        # Odd in BOTH axes: the polyphase filter runs on both, on the uncompressed path, in sRGB.
+        aero_manifest_tuple(texture-rgb5x3-srgb-rgba8.ktx2
+            --input "${ASSETS}/texture-rgb-5x3.png" --srgb --format rgba8)
+        # Partial edge blocks -- the clamp-never-zero-fill path, NPOT, linear.
+        aero_manifest_tuple(texture-rgb5x3-linear-bc1.ktx2
+            --input "${ASSETS}/texture-rgb-5x3.png" --linear --format bc1)
+    endif()
+
+    # --- the mismatch report ------------------------------------------------------------------------
+    # message(NOTICE) prints its argument BYTE FOR BYTE with no prefix and no wrapping. FATAL_ERROR and
+    # WARNING hard-wrap at ~76 columns and indent by two, which would break an 87-character
+    # `<sha256>  <name>` line across two lines and make "ready to paste" false. So the lines go out as
+    # NOTICE, one call each, and the explanation goes out as the failure.
+    list(LENGTH MISMATCHES _badCount)
+    if(_badCount GREATER 0)
+        message(NOTICE "")
+        message(NOTICE "case '${CASE}': ${_badCount} artifact(s) no longer match "
+                       "tests/cooker/determinism.sha256. If -- AND ONLY IF -- the change is deliberate, "
+                       "replace those lines with exactly these, in the same commit as the cook change "
+                       "and the matching COOKED_*_COOKER_VERSION bump:")
+        foreach(bad IN LISTS MISMATCHES)
+            message(NOTICE "${bad}")
+        endforeach()
+        message(NOTICE "")
+        message(FATAL_ERROR "case '${CASE}': ${_badCount} of ${TUPLES_COOKED} artifacts cooked to a "
+                            "different byte sequence than the frozen manifest records. The replacement "
+                            "lines are printed above, verbatim. NEVER edit a hash to green a red run -- "
+                            "see the manifest's own header for the regeneration ritual.")
+    endif()
+
+    # --- anti-vacuity, in the order that makes each seed name itself -------------------------------
+    # 1. every manifest line of THIS case's kind was actually cooked. An orphan line is a lie about
+    #    coverage, and this check names the orphan, which a bare count cannot.
+    foreach(entry IN LISTS MANIFEST_NAMES)
+        if(entry MATCHES "^${KIND_PREFIX}")
+            list(FIND CONSUMED "${entry}" _consumedAt)
+            if(_consumedAt EQUAL -1)
+                message(FATAL_ERROR "case '${CASE}': the manifest lists '${entry}' but no tuple in this "
+                                    "case cooks it")
+            endif()
+        endif()
+    endforeach()
+    # 2. the LITERAL tuple count, set beside the calls it counts.
+    if(NOT TUPLES_COOKED EQUAL TUPLE_COUNT)
+        message(FATAL_ERROR "case '${CASE}': ${TUPLES_COOKED} tuples cooked, expected ${TUPLE_COUNT}")
+    endif()
+    # 3. the upload set, enforceable LOCALLY rather than only in ci.yml. Misdirecting a tuple's
+    #    --output leaves every hash correct and every count above satisfied, so without this the only
+    #    enforcer of "this directory holds exactly the manifest's own files" would live in YAML and
+    #    could not be run on a developer's machine at all.
+    file(GLOB _produced "${ARTIFACTS}/*")
+    list(LENGTH _produced _producedCount)
+    if(NOT _producedCount EQUAL TUPLE_COUNT)
+        message(FATAL_ERROR "case '${CASE}': ${ARTIFACTS} holds ${_producedCount} files, expected "
+                            "${TUPLE_COUNT} -- this directory IS the CI upload set")
+    endif()
+
+    # --- the environment-perturbed re-cook ---------------------------------------------------------
+    # THIS ARM CANNOT FAIL TODAY, and saying so is the point. aero_cooker never calls setlocale (its
+    # one float parse imbues std::locale::classic()), never reads the clock, and is handed absolute
+    # paths, so TZ, LC_ALL and the working directory are all structurally inert. The arm exists for the
+    # regression class: a transitively-initialised library calling setlocale(LC_ALL, "") -- common in
+    # GUI init paths, and aero_editor_core already puts four parsers and ImGui on this binary's link
+    # line -- or a CWD-relative probe growing into the tool.
+    #
+    # Its STRENGTH is lane-dependent even though its OUTCOME is defined everywhere: macOS ships
+    # tr_TR.UTF-8, a Linux runner generally generates only C/C++.UTF-8/en_US.UTF-8 (an unavailable
+    # locale makes setlocale return NULL and change nothing), and the Windows CRT does not read LC_ALL
+    # from the environment at all. Do not read this arm as uniform coverage.
+    set(PERTURBED_DIR "${WORK_DIR}/perturbed")
+    set(ELSEWHERE "${WORK_DIR}/elsewhere")
+    file(MAKE_DIRECTORY "${PERTURBED_DIR}")
+    file(MAKE_DIRECTORY "${ELSEWHERE}")
+    list(FIND MANIFEST_NAMES "${FIRST_NAME}" _firstAt)
+    list(GET MANIFEST_HASHES ${_firstAt} _firstExpected)
+    aero_run_tool(ARGS ${SUBCOMMAND} ${FIRST_ARGS} --output "${PERTURBED_DIR}/${FIRST_NAME}"
+        ENV TZ=Pacific/Kiritimati LC_ALL=tr_TR.UTF-8
+        WORKING_DIRECTORY "${ELSEWHERE}"
+        OUT_RESULT _pResult OUT_STDERR _pErr)
+    aero_expect_exit("${_pResult}" 0)
+    file(SHA256 "${PERTURBED_DIR}/${FIRST_NAME}" _pActual)
+    if(NOT _pActual STREQUAL "${_firstExpected}")
+        message(FATAL_ERROR "case '${CASE}': re-cooking '${FIRST_NAME}' under TZ=Pacific/Kiritimati, "
+                            "LC_ALL=tr_TR.UTF-8 and a different working directory produced ${_pActual}, "
+                            "not the manifest's ${_firstExpected}. The tool has grown an environment "
+                            "dependency.")
+    endif()
+    math(EXPR PERTURBED_RUNS "${PERTURBED_RUNS} + 1")
+    # 4. the arm's OWN literal count, separate from the tuple count on purpose: one shared counter
+    #    makes "a tuple row was deleted" and "the arm was skipped" produce the identical message.
+    if(NOT PERTURBED_RUNS EQUAL 1)
+        message(FATAL_ERROR "case '${CASE}': ${PERTURBED_RUNS} perturbed runs, expected exactly 1")
+    endif()
+    # The perturbed artifact stays OUT of ${ARTIFACTS}: that directory is the CI upload set and must
+    # hold exactly the manifest's own files. See ci.yml's cook-determinism upload step.
 
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")

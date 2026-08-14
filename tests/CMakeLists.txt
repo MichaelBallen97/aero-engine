@@ -742,6 +742,19 @@ set(_aero_cooker_cases
     texture_png_happy texture_auto_picks_bc3 texture_no_mips
     texture_guid_written texture_determinism
     texture_nothing_written_on_failure texture_output_dir_missing
+    # task 3.3.3 -- the frozen cook-determinism manifest. Two more names, on the same terms: ungated,
+    # so ctest -N moves in ALL THREE configurations again. MEASURED at the tip of this branch, never
+    # derived by addition: 131 -> 133 with tools ON, 42 -> 44 with -DAERO_REFLECT_TOOLS=OFF
+    # -DAERO_SHADER_TOOLS=OFF, and 55 -> 57 with -DAERO_REFLECT_TOOLS=OFF alone, the last two in
+    # build directories configured FRESH with -G Ninja (the generator enters the shadercross
+    # bootstrap's option hash). Both names are present in both reduced configurations, which is the
+    # proof that this block is still ungated.
+    #
+    # These two cook the whole 13-artifact matrix through the real binary and compare against
+    # tests/cooker/determinism.sha256. Their WORK_DIRs are what ci.yml's `build` legs upload and its
+    # `cook-determinism` job downloads -- if either case is renamed, THREE places change together:
+    # this list, the upload step's two paths, and the job's directory expectations.
+    golden_manifest texture_golden_manifest
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(
