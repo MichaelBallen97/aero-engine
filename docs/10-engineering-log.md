@@ -6948,3 +6948,330 @@ Flag-grammar variants beyond `--scale` and `--no-mips`, since the matrix crosses
 paths rather than the flag grammar. And the staged Step-4 push the plan wanted, which was skipped: the
 whole CI half landed in one push instead, after the riskiest of its three unknowns (the artifact API
 under `permissions: contents: read`) was settled against the documentation rather than by a run.
+
+---
+
+### Task 3.4.1 — Material asset + PBR shader (Epic 3.4) — OPENS Epic 3.4
+
+**Branch:** `feat/3.4.1-material-asset-pbr-shader`, cut from `main @ 1dbc7c1`. **Nine green
+commits**, measured with `git rev-list --count main..HEAD` — eight for the build order and one
+closing the two coverage gaps the sabotage round found **outside** its own matrix — plus this
+documentation commit. The code-review round ran over the full branch diff and found **no correctness
+defects**. Not yet pushed, not yet merged; the eleven-row macOS validation pass comes after the
+merge, and four of its rows are the **only** witness that five declared shader-only sabotage seeds
+have anywhere.
+
+Epic 3.4 opens here and the renderer learns what a material is. Three firsts land with it: **the
+first cooked texture this project has ever drawn on a GPU**, the first `.aeromat` parsed end to end,
+and the first asset resolved at run time **by GUID** — the Phase 5 pak-resolution shape in miniature,
+three phases early, carried by a sample rather than by a runtime.
+
+#### What shipped — four layers, bottom-up
+
+**`engine/rhi` — the block-format contract change 3.3.2 named and assigned here.** `TextureFormat`
+gains six enumerators (`BC1RGBAUnorm`, `BC1RGBAUnormSrgb`, `BC3RGBAUnorm`, `BC3RGBAUnormSrgb`,
+`BC4RUnorm`, `BC5RGUnorm`) and `Count` moves 19 → **25**; `texelBlockSize` keeps its name and gains
+Vulkan's block-unit meaning, **bit-for-bit unchanged for every pre-3.4.1 enumerator**;
+`texelBlockWidth`/`texelBlockHeight` are new — two functions and never one `blockExtent`, because
+ASTC's non-square blocks arrive at 6.3.1 and a caller that assumed one call answered both questions
+would be silently wrong for every one of them (the `cookedTextureBlockWidth/Height` rationale, one
+layer up); `textureLevelByteSize` becomes **the** upload-size formula, `docs/09` §10's arithmetic
+spelled exactly once; `createTexture` refuses a non-block-aligned **top** level uniformly on all
+three backends; six SDL format mappings and a block-rounded explicit transfer pitch land in the
+backend. There is deliberately **no BC4/BC5 sRGB variant** — Vulkan defines neither and SDL defines
+neither, which is what keeps 3.3.2's "an sRGB normal map is unspellable" true one layer up.
+
+**`engine/reflect` — `material_format.{hpp,cpp}`, the `.aeromat` document layer**, beside
+`scene_format` and shaped exactly like it: `MaterialDocument`, four format-owned enums
+(`MaterialAlphaMode`, `MaterialWrapMode`, `MaterialFilter`, `MaterialMipFilter`) each with a
+`material*Label` function — **never a `toString`**, which is the ADL trap
+`.claude/rules/ci-portability.md` names — two `parseMaterial` overloads, `validateMaterial`,
+`writeMaterial`, and the canonical `writeMaterialText` with its byte-stable fixpoint, satisfying both
+of `docs/09` §1's round-trip guarantees. **The link line does not change**: `aero_reflect` already
+linked `PUBLIC aero::core`, so the only CMake edit in that subsystem is one source line.
+
+**`docs/09` gains a normative §11, "Material asset v1 (`.aeromat`)"** — §11.0 scope, §11.1 envelope,
+§11.2 strictness, §11.3 canonical form, §11.4 the normative token→`SamplerDesc` table, §11.5 what the
+format deliberately does not carry, §11.6 versioning — and the old "Reserved for future formats"
+renumbers §11 → **§12**, added rather than replaced (the 3.3.2 precedent).
+
+**`engine/render` — the material system.** `material.hpp` (public: `MaterialParams`,
+`MaterialTextureSlot`/`MaterialTextureSlots`, `MaterialHandle`, and the slot→default-texture mapping
+described below); `texture_upload.{hpp,cpp}` (the cooked-texture bridge — an
+`assets::CookedTextureView` in, an `rhi::TextureHandle` with every mip level uploaded out);
+`material_pack.hpp` (src-private, the two CPU cbuffer mirrors and their packers); `MeshVertex` at
+**48 bytes** — position, normal, tangent, uv, with `tangent.w` carrying the glTF handedness and the
+bitangent computed in-shader, so there is no fifth attribute — with analytic UVs and tangents across
+the whole primitive catalog; and the registry inside `ForwardRenderer`
+(`createMaterial`/`updateMaterial`/`destroyMaterial`/`defaultMaterial` over a core `SlotMap`, so a
+stale handle is a logged no-op rather than a dangling read; three 1×1 identity default textures;
+sampler dedup; two pipelines differing only in `cullMode`; and a draw loop whose per-draw state is a
+pure function of the resolved material, correct under any instance order and cheap under the common
+one). `aero_render` gains **`PUBLIC aero::assets`** — the one new link edge, downward and cycle-free.
+Two diagnostic accessors, `samplerCacheSize()` and `hasWarnedBlendOpaque()`, are on the public
+surface deliberately and documented as diagnostics: without them the dedup rule and the Blend latch
+are unfalsifiable at tier 0 without a log sink.
+
+**`shaders/` — the GGX pair, rewritten in place.** Same two filenames, same `shaders/CMakeLists.txt`,
+**zero build diff**: Cook-Torrance with height-correlated Smith in Frostbite's form, Schlick Fresnel,
+`α = roughness²` behind a 0.045 roughness floor, diffuse `(1−F)(1−metallic)/π`, the point-light
+falloff unchanged from 1.4.1, ambient occlusion on the ambient diffuse term **only**, emissive added
+last, five `Texture2D`/`SamplerState` pairs at `t0–t4`/`s0–s4` in `space2`, and two cbuffers at
+`b0`/`b1` in `space3` (Lights 320 B pushed per view, MaterialParams 48 B pushed on material change).
+Opaque and Mask are honoured — Opaque pushes cutoff 0.0 so its `discard` can never fire — and Blend
+is drawn opaque behind a latched WARN. Output stays raw linear; 3.6.3 owns tonemap and gamma.
+
+**`samples/phase-3-materials` — 16 new files and one modified.** A 6×6 roughness×metallic sphere
+grid, a fully-mapped cube and an alpha-mask cube; six committed 32×32 PNGs authored by exact integer
+formulas and the six `.ktx2` cooked from them with pinned GUIDs, resolved at load time through
+`CookedTextureView::sourceGuid()`. The sample owns its `RenderView` by hand and holds no `World` —
+it is the documentation of "what a caller with materials does" until 3.1.5 and 3.4.2 give the scene a
+path. `samples/CMakeLists.txt` is the one modified file.
+
+#### The 0.4.1 D18 public-header amendment record
+
+`engine/rhi`'s public surface is the one this tree treats as sacred (ADR-002), so every amendment is
+named here with the source that verified it, per the protocol 0.4.1 established and 0.4.2 last used.
+
+| # | Amendment | Verification source |
+|---|---|---|
+| 1 | `TextureFormat` +6 BC enumerators; `Count` 19 → 25 | The pinned SDL 3.4.12 `SDL_gpu.h` format list, for all six SDL enumerators. Legal because rhi enum values are never serialized — the cooked formats carry Khronos numbers and `.aeromat` carries no colour space at all |
+| 2 | `texelBlockSize` re-documented: bytes per texel → bytes per texel **block** | The exhaustive per-value table in `tests/rhi_format_test.cpp`, which pins all thirteen uncompressed formats' old values unchanged and the six new ones at 8/16 |
+| 3 | `texelBlockWidth` / `texelBlockHeight`, new | `cooked_texture.hpp`'s own two-function rationale, plus ASTC's non-square blocks as the reason they must not merge |
+| 4 | `textureLevelByteSize`, new — THE upload-size formula | `docs/09` §10's level arithmetic, cross-checked row by row (including both mip tails and the 5×3 shape) against the cooked container's own sizes |
+| 5 | `device.hpp`'s `uploadTexture` precondition rewritten to `textureLevelByteSize(format, w, h)` | The backend site it describes, rewritten in the same commit; the old per-texel product is bit-identical for every 1×1-block format |
+| 6 | `device.hpp`'s `createTexture` block-aligned-top-level rule | D3D12's documented requirement for BC resources, adopted engine-wide per ADR-002 rather than shipping per-OS behaviour. Its live retirement is the Windows CI lane under WARP |
+| 7 | `format.hpp`'s "universally supported" promise gains a **scoped exception** | The pinned `SDL_gpu.h`'s SAMPLER list: seventeen uncompressed formats and no BC format (§0.2 below). The exception names `Device::supportsTextureFormat` as the query path and 6.3.1 as the mobile owner |
+| 8 | `isSrgbFormat`'s doc: "the two *Srgb formats" → "the four" | The enum itself after amendment 1 |
+| 9 | The header's growth note, whose "arrive with the cooker (Phase 2)" parenthetical was stale on both counts | The tree: BCn landed with the first cooked-texture consumer, and ASTC is 6.3.1's |
+
+The backend's transfer-pitch change is not a public-header amendment, but it is part of the same
+verification chain and is recorded under §0.1 below.
+
+#### AC-9's call-site audit, verbatim
+
+`git grep -n 'texelBlockSize'` at the branch point, every hit outside `format.{hpp,cpp}`:
+
+1. `engine/rhi/src/sdl_gpu_backend.cpp:1552` — the upload size check. **Rewritten** to call
+   `textureLevelByteSize`; the depth-reject beside it keeps using the 0 return.
+2. `engine/rhi/include/aero/rhi/device.hpp:139` — the doc comment. **Rewritten.**
+3. `editor/src/thumbnail_store.cpp:152` — the editor's RGBA8 thumbnail upload. RGBA8 is a 1×1-block
+   format, so the bit-for-bit clause makes its behaviour identical. **No edit** — and none was
+   possible, since `/editor` must stay byte-identical.
+4. `tests/rhi_format_test.cpp`, `tests/rhi_device_test.cpp` — grown rather than merely audited.
+
+**No first-party non-test caller of `texelBlockSize` exists outside `engine/rhi`.** The wider
+question — who calls `uploadTexture` at all — has the same answer in a stronger form: every
+pre-3.4.1 caller (`editor/src/thumbnail_store.cpp:152`, `samples/phase-0-cube/main.cpp:100`, three
+sites in `tests/render_cube_test.cpp`) uses a 1×1-block format and is therefore behaviourally
+identical, **proven** by the full suite staying green with none of them touched.
+
+#### The two SDL findings, resolved from the pinned source rather than from documentation
+
+**§0.1 — the transfer pitch is in TEXELS, and each backend treats it differently.** Read out of
+`vcpkg/buildtrees/sdl3/src/…clean/` rather than assumed:
+`SDL_GPUTextureTransferInfo.pixels_per_row`/`rows_per_layer` are counts of pixels and rows — not
+blocks, not bytes. **Vulkan** forwards `pixels_per_row` straight into
+`VkBufferImageCopy::bufferRowLength`, which for a block-compressed format carries the valid-usage
+rule that a non-zero value must be a multiple of the block width. **Metal ignores both fields on
+upload** and derives a block-aware `sourceBytesPerRow` from the region itself. **D3D12** defaults
+zero to the region extent and then block-rounds. The existing arm carries a recorded posture —
+*"explicit — never relying on 0-means-packed"* — so the change generalizes it rather than abandoning
+it: the code passes block-rounded texel values, which are **bit-identical to the old values for every
+1×1-block format** and satisfy Vulkan's multiple-of-block-width rule on the 2×2/1×1 mip tail.
+
+**§0.2 — BCn is NOT on SDL's universal SAMPLER list.** The list in the pinned `SDL_gpu.h` holds
+**seventeen uncompressed formats and no BC format**, so `format.hpp`'s promise that every non-depth
+value is universally supported **could not be extended verbatim** to the six. It gained a scoped
+exception instead of an SDL-universal claim: the six are a hardware fact on the three desktop
+backends (D3D12 requires every BC format at all feature levels, desktop Vulkan exposes
+`textureCompressionBC`, Metal supports BC on all Macs), they are absent on most mobile GPUs, the
+query path is `Device::supportsTextureFormat`, and the mobile profile arrives at 6.3.1. No runtime
+support gate was added inside `createTexture`: the ACs do not ask for one, it is dead code on every
+backend supported today, and the query API is the sanctioned escape hatch if a backend ever says no.
+
+#### The D11/AC-40 VERIFY, retired with numbers before any picture was judged
+
+Two fragment uniform buffers is a first for this tree, and a crossed slot renders a **plausible**
+image rather than a broken one — R5's whole premise. So the cooked sidecars were read first:
+`scene.frag.json` reports `samplerCount 5, uniformBufferCount 2` and `scene.vert.json` reports
+`0, 1`. `PB11` then pushes a **320-byte** block at slot 0 and a **48-byte** block at slot 1 and
+draws, so a crossed slot is a size mismatch rather than a picture anybody has to squint at.
+
+#### The deviations from plan and spec — five of them errors in the documents, found by building
+
+- **`PB2`'s row said a 5×3 BC5 level is 16 bytes. It is 32** — `ceil(5/4) × ceil(3/4) × 16` — which
+  3.3.2's own golden already states in a comment. The plan's row was arithmetic, not taste, and it
+  was simply wrong.
+- **The plan's claim that `1e999` becomes `null` at the JSON layer is false, and the spec's edge-case
+  table repeated it.** `parseJson` stores number lexemes **verbatim**, so `1e999` arrives as a valid
+  `Number`, passes the kind check, and only then does `asF32()` return nothing. Without a third
+  arm — *"not representable as a 32-bit float"* — the parser would have silently left the field's
+  default in place for an input the document says is an error. The arm exists and names the lexeme in
+  its message.
+- **Uppercase GUIDs are accepted, not rejected.** The plan wanted a REJECT; `guid.hpp` documents
+  `parseGuid` as accepting any case, and `docs/09` states the tolerant-read / lowercase-write rule
+  three times for other formats. `.aeromat` follows the tree rather than inventing a fourth posture,
+  and §11 records it.
+- **`NON_NEGATIVE_RANGE`'s upper bound is a finite float max, never infinity.** An infinite factor
+  would pass a naive "≥ 0" validation, write as `null`, and then fail re-parse — breaking the exact
+  round-trip guarantee the validator exists to protect. "Unbounded above" in §11.1's HDR-emissive
+  sense means *every finite float passes*, and that is what the constant spells.
+- **§6.7's "upload one committed golden per block family" is unexecutable.** Only the BC1 4×4 golden
+  has a block-aligned top level; the 5×3 BC5 and 2×2 BC3 goldens are D3 **refusals** by construction,
+  and BC4 has no golden at all (a recorded 3.3.2 property). So the per-family upload cases cook their
+  artifacts in memory via `assets::cookTexture` at a block-aligned size, Golden A is the one verbatim
+  committed-golden upload, and Goldens C and D became the refusal fixtures — the 2×2 one a second
+  refusal case the spec never named, taken because it exists.
+- **The VFS mount prefix must be `res://materials`, not `materials`.** The plan's form mounts
+  nothing. Caught at runtime by the sample failing to find its own material, not by any test — the
+  kind of defect that only a run can produce.
+- **The sample is 16 new files and one modified, not 15.** The §0.4 six-PNG/six-`.ktx2` resolution
+  had already corrected the spec's own miscount; the file total followed it.
+- **`engine/render/src/material_pack.hpp` is a new src-private header the plan did not anticipate**
+  (see the second out-of-matrix gap below), which is why `check-math-boundary.sh` scans **338** files
+  rather than the predicted 337. The prediction was 329 + 8; the answer is 329 + 9.
+
+#### The sabotage matrix — 30 seeds, run to completion, no gap inside the matrix
+
+Every seed applied, its presence asserted with `git diff` before its verdict was trusted, then
+reverted with `git status` clean. **All 23 X.1 seeds reddened at least one case.** The interesting
+results are the four that did not match their prediction and the five that were predicted green.
+
+**Two seeds exceeded prediction.** **S20** — a draw loop that ignores `MeshInstance::material` and
+always resolves the default — was declared *weak* in advance, with validation row 3 named as its
+primary witness; it in fact reddens **`PB12`**. **S22** — transposed cube UVs — was declared
+shader-only; it reddens **`PB3`'s corner-convention case**, because the generator convention and the
+on-screen orientation are pinned by the same corner table. That is a better outcome for the seed and
+a worse one for the *class* it was meant to represent, so the on-screen transposition class is
+instead witnessed by a **vertex-shader UV swap** (probe X3) which stays green and belongs to
+validation row 4. The seed was replaced rather than reclassified.
+
+**Two predictions were refined by measurement, and both refinements say something structural.**
+**S5** (delete the D3 arm in `validateDesc`) does **not** redden `PB7`: the bridge checks alignment
+**first**, so removing the backend's arm is invisible from there — `rhi device T1-7` is the case that
+catches it, which is exactly the two-sites-one-predicate split working as designed. **S8** (the
+bridge uploads levels in reverse index order) does **not** redden `PB6`: Golden A's three levels are
+each exactly one 8-byte block, so a reversed order is **size-identical** and every upload succeeds —
+`PB5`'s 8×8 chain, whose levels differ in size, is the case that catches it.
+
+**Five shader-only seeds remain green as declared, and each names the row that is its only witness**:
+**S24** (`float4(color, 1.0)` dropped from the baseColor multiply) → row 6, the tinted instance;
+**S25** (`.bg` → `.gb`, the metallic/roughness channel swap) → row 2, the grid axes invert; **S26**
+(`f0 = 0.04` constant, metallic ignored in Fresnel) → row 2, the metal row loses its tint; **S27**
+(Z-reconstruction skipped) → row 4, the normal cube flattens; **S28** (`occlusion` multiplied into
+the direct-light term too) → row 5, the directly-lit crevice darkens. The validation page lists each
+beside its row, so the manual pass is executed knowing what it alone can catch — the `CM50`-shaped
+honesty, applied to pixels.
+
+#### Two coverage gaps found OUTSIDE the matrix, both closed structurally
+
+Neither was a seed. Both were found by asking what a tier-0 case would fail to notice, and both were
+re-proven by re-seeding after the closure.
+
+**`packLights`' `eyePosition` had no witness at all.** Zeroing it left **all 712** cases green. It is
+the one CPU-side field the GGX rewrite added, and it feeds **every** specular highlight — so a seed
+that drops it still records a frame and still renders a lit image, merely a wrong one. That is
+precisely R5's "plausible garbage" class, in the field most likely to be forgotten. Closed by
+hoisting the whole light mirror and its packer into `engine/render/src/material_pack.hpp` beside
+`packMaterial` — whose own comment already argued that **a file-local packer is unfalsifiable**, a
+piece of reasoning that had simply never been applied to the light block — plus `PB13`, which pins
+all 320 bytes field by field with mutually distinct values. Re-seeded: **`PB13` alone fails, 2
+assertions.**
+
+**The per-slot default-texture table had no witness.** Binding the flat normal to slot 0 left the
+suite green — and that renders **every untextured primitive in the engine** with `80 80 FF` as its
+base colour, which is not a subtle failure. Closed **structurally rather than by a test**:
+`MaterialDefaultTextureKind` plus `defaultTextureKindForSlot(slot)` in `material.hpp` is now the
+single place the slot→default mapping is decided, `defaultTextureTexel(slot)` is its composition
+rather than a second switch, the renderer holds a `std::array<TextureHandle, 3>` indexed by kind, and
+the hand-written five-entry table is **gone** — the defect site no longer exists. `PB10` grew to pin
+the mapping. Re-seeded by swapping the kind function's arms: **`PB10` alone fails, 9 assertions.**
+
+#### The code-review round — no correctness defects, and one fact about SDL worth keeping
+
+Run over the full branch diff with the local gate green. Its sharpest check is recorded here because
+the answer is a fact about SDL rather than about our code: **the draw loop binds fragment textures
+*before* a possible pipeline rebind.** Reading all three backends, `BindGraphicsPipeline` only
+acquires uniform buffers and marks descriptor sets for rebuild — **none of the three clears the
+stored fragment texture/sampler bindings** — so the ordering is safe on Vulkan, Metal and D3D12. It
+is the sort of thing that would have been an intermittent, backend-specific black texture if it were
+false.
+
+Also verified in the round, each against its source rather than from memory: the GGX terms against
+the spec's §D8 (height-correlated Smith in Frostbite's form, Schlick, `α = roughness²`, diffuse
+`(1−F)(1−metallic)/π`, the falloff unchanged, AO on the ambient diffuse term only, emissive last, raw
+linear out); **both CPU mirrors field-for-field against the HLSL**, with no std140 straddle in either;
+`docs/09` §11's defaults and ranges against `material_format.hpp`'s, which agree field for field; and
+the sample's token→`SamplerDesc` mapping against §11's normative table, exact including
+`mipFilter: none` ⇒ `MipmapMode::Nearest` + `maxLod 0`.
+
+#### The mechanical gate
+
+Every number **re-measured** at the tip, never derived by addition. `ctest --preset macos-debug` and
+`--preset macos-release` both **133/133 with `AERO_REQUIRE_GPU=1`**. Both reduced configurations
+rebuilt **fresh with `-G Ninja`** and green at **44** and **57** ctest entries, with `MT1`, `PB1`,
+`PB10`, `PB13`, `CT1`, `TX1`, `BB1` and all fifteen `cooker.texture_*` entries present in both. Six
+architecture guards exit 0; clang-format and clang-tidy clean **by exit code**; 3.3.3's two
+`golden_manifest` cases green with the manifest untouched.
+
+**`ctest -N` reads 133 / 44 / 57 — unchanged in all three configurations, and the reason matters more
+than the number.** `aero_tests` registers with ctest as **one entry**, so a task that adds two test
+TUs and 57 cases moves nothing there at all; the growth is visible only in doctest's own `filters:`
+totals. Anybody reading an unmoved `ctest -N` as "no tests were added" would be wrong for this task
+and right for 3.3.3, which is why both facts are written down.
+
+Doctest: **713 / 1516 / 104 / 23 / 22**. `aero_tests` moved **656 → 660 → 694 → 699 → 710 → 712 →
+713** across the nine commits, so the growth is traceable to the step that produced it; the other
+four binaries are **unmoved**, which is what "this task ships no UI" means as a measurement rather
+than a claim. `check-math-boundary.sh` scans **329 → 338** files and `check-project-no-delete.sh`'s
+Check B scans **60**, unchanged; guard count stays **six** and **no guard script changed**.
+
+**Byte-identical to `main`**: `/editor`, `/tools`, `engine/assets`, `engine/scene`,
+`engine/scene_serialize`, `vcpkg.json`, `.github/`, `cmake/`, `runtime/`,
+`tests/cooker/determinism.sha256`, and `shaders/CMakeLists.txt` — the last because the shader
+rewrite is genuinely in place, so the build system sees no diff at all. **No new dependency of any
+kind.**
+
+#### What was deliberately left out
+
+No `engine/scene` change — no `MeshRenderer` material field and no scene-side GUID, because
+entity↔asset references belong to 3.1.5 and 3.4.2. No `/editor` change of any kind, no `/tools`
+change, no `engine/assets` change. No import-materialization (an `ImportedMaterial` still ends its
+life in the import panel). No BLEND transparency **rendering** — drawn opaque behind a latched WARN.
+No IBL, environment map or skybox. No shadows (3.6.2), no tonemap or gamma (3.6.3), no culling or
+draw-order sorting (3.6.1 and Phase 8). No BC7/BC6H/ASTC, no shader permutations, no cooked-mesh
+drawing (the primitives carry the sample; 3.1.5 owns `.aeromesh` instantiation). No texture
+streaming — uploads block, and the cost is measured on the validation page rather than hand-waved.
+No cooker subcommand, no `.meta` change and no browser kind for `.aeromat`.
+
+#### The named handoffs, each with an owner
+
+- **Scene-side material references** → **3.1.5 / 3.4.2.** Nothing in a scene file can name a material
+  today; `MeshInstance::material` is set by the caller who assembles the view.
+- **The material inspector, an `.aeromat` browser kind, and reflection of material params** →
+  **3.4.2**, whose starting point is the spec's D15 paragraph: the reflect-gen subset has no `Vec4`
+  and no enums, so "just reflect `MaterialDocument`" is not available and the decision is real work,
+  not a checkbox.
+- **Import-materialization** (a glTF's materials becoming `.aeromat` files on disk) → first needed by
+  **3.1.5**.
+- **BLEND transparency** → a named **decision-waiting** gap, renderer-only: the format already
+  carries everything a blended material needs, so what is missing is sorted or order-independent
+  drawing, not data.
+- **IBL / environment lighting** → a named **unowned** gap, and it is blocked on a format decision
+  rather than on shader work: it needs a cubemap, which `docs/09` §10 currently **refuses**
+  (`faceCount == 6` is an `UnsupportedShape`). Whoever takes it relaxes that first. Until then metals
+  in the grid are lit by analytic highlights against near-black — physically honest, visually stark,
+  and written into the validation page's known-and-expected list so it is never filed as a defect.
+- **A shared token→`SamplerDesc` helper** → decided by the **second** consumer. The sample is the
+  first; promoting a six-line mapping to a public header on a sample size of one would be guessing
+  where it belongs.
+
+#### Open at the time of writing
+
+The eleven-row macOS validation pass, whose measurement rows (texture-load milliseconds for six
+uploads, steady-state fps, the sidecar counts re-confirmed on the merge commit) are written
+blank-bearing so a blank tick is impossible. **Rows 2, 4, 5 and 6 are the only witness the five
+declared shader-only seeds have**, and the page says so beside each row. Windows and Linux rows join
+the standing platform-validation debt; the Windows lane is additionally the **live retirement** of
+the D3D12 alignment basis this task adopted engine-wide from documentation.
