@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "name": "mapped cube",
+  "baseColorFactor": [
+    1,
+    1,
+    1,
+    1
+  ],
+  "metallicFactor": 1,
+  "roughnessFactor": 1,
+  "emissiveFactor": [
+    1,
+    1,
+    1
+  ],
+  "normalScale": 1,
+  "occlusionStrength": 1,
+  "alphaMode": "opaque",
+  "alphaCutoff": 0.5,
+  "doubleSided": false,
+  "textures": {
+    "baseColor": {
+      "guid": "341a0000000000000000000000000001",
+      "uvSet": 0,
+      "wrapU": "repeat",
+      "wrapV": "repeat",
+      "minFilter": "linear",
+      "magFilter": "linear",
+      "mipFilter": "linear"
+    },
+    "metallicRoughness": {
+      "guid": "341a0000000000000000000000000002",
+      "uvSet": 0,
+      "wrapU": "repeat",
+      "wrapV": "repeat",
+      "minFilter": "linear",
+      "magFilter": "linear",
+      "mipFilter": "linear"
+    },
+    "normal": {
+      "guid": "341a0000000000000000000000000003",
+      "uvSet": 0,
+      "wrapU": "repeat",
+      "wrapV": "repeat",
+      "minFilter": "linear",
+      "magFilter": "linear",
+      "mipFilter": "linear"
+    },
+    "occlusion": {
+      "guid": "341a0000000000000000000000000004",
+      "uvSet": 0,
+      "wrapU": "repeat",
+      "wrapV": "repeat",
+      "minFilter": "linear",
+      "magFilter": "linear",
+      "mipFilter": "linear"
+    },
+    "emissive": {
+      "guid": "341a0000000000000000000000000005",
+      "uvSet": 0,
+      "wrapU": "repeat",
+      "wrapV": "repeat",
+      "minFilter": "linear",
+      "magFilter": "linear",
+      "mipFilter": "linear"
+    }
+  }
+}
