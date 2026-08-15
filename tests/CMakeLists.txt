@@ -43,6 +43,7 @@ add_executable(aero_tests
     render_clear_test.cpp # task 0.5.1 — tier-0 config default + tier-2 clear/resize/move/leak
     render_cube_test.cpp   # task 0.5.2 — tier-0 mesh invariants + tier-2 textured-cube draw pipeline
     scene_format_test.cpp # task 1.2.3 — scene format v1: envelope/version/hierarchy + canonical round-trip
+    material_format_test.cpp # task 3.4.1 — material format v1: envelope/defaults/tokens + canonical round-trip
     scene_test.cpp        # task 1.3.1 — engine::World over EnTT: entities, components, queries, registration
     transform_test.cpp    # task 1.3.2 — engine::Transform, the World-owned forest, world matrices
     camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
