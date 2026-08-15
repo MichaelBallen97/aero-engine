@@ -113,6 +113,14 @@ public:
     [[nodiscard]] BufferHandle createBuffer(const BufferDesc& desc);
     void destroyBuffer(BufferHandle buffer);
 
+    // BLOCK-COMPRESSED formats additionally require a block-aligned TOP level (task 3.4.1):
+    // width % texelBlockWidth == 0 && height % texelBlockHeight == 0, on EVERY backend — D3D12
+    // requires it for BC resources, and the engine adopts the strictest backend's rule uniformly
+    // rather than shipping per-OS behaviour (ADR-002). Mip levels below the top are exempt by
+    // construction (the 2x2/1x1 tail of any chain is one partial block, legal everywhere).
+    // Violation: invalid handle + ERROR. A cooked .ktx2 with an unaligned top level (legal for the
+    // cooker, e.g. the committed 5x3 BC5 golden) is therefore a valid ARTIFACT this device will not
+    // create a texture for — cook as rgba8 or resize the source.
     [[nodiscard]] TextureHandle createTexture(const TextureDesc& desc);
     void destroyTexture(TextureHandle texture);
 
@@ -136,8 +144,11 @@ public:
     // data belongs in push uniforms until the streaming API lands (Phase 3).
     //   uploadBuffer: dstOffset + data.size() must fit in the buffer.
     //   uploadTexture: tightly-packed full mip level; data.size() must equal
-    //                  texelBlockSize(format) * mipWidth * mipHeight; depth formats are rejected
-    //                  (texelBlockSize == 0 — depth targets are GPU-written).
+    //                  textureLevelByteSize(format, mipWidth, mipHeight) — for 1x1-block (all
+    //                  uncompressed color) formats that is texelBlockSize * w * h exactly as before;
+    //                  for the BC* formats it is bytesPerBlock * ceil(w/4) * ceil(h/4), so a 4x4 BC1
+    //                  level is 8 bytes and the 2x2/1x1 mip tail is ONE block. Depth formats are
+    //                  rejected (texelBlockSize == 0 — depth targets are GPU-written).
     bool uploadBuffer(BufferHandle buffer, std::uint32_t dstOffset, std::span<const std::byte> data);
     bool uploadTexture(TextureHandle texture, std::uint32_t mipLevel, std::span<const std::byte> data);
 

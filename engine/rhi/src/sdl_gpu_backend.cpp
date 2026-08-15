@@ -84,6 +84,24 @@ constexpr SDL_GPUTextureFormat toSdl(TextureFormat format) noexcept {
             return SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
         case TextureFormat::D32FloatS8Uint:
             return SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
+        // Block-compressed (task 3.4.1). BC1 note, stated rather than silently assumed: our cooked
+        // BC1 files declare VULKAN's BC1_RGB (vkFormat 131/132) while SDL exposes only the BC1_RGBA
+        // spelling. The cook's encoder emits ONLY opaque four-colour blocks (never the
+        // one-bit-alpha three-colour mode), and such a block decodes identically under both
+        // spellings -- alpha reads 1 everywhere -- so the mapping is exact, not a lossy
+        // reinterpretation.
+        case TextureFormat::BC1RGBAUnorm:
+            return SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM;
+        case TextureFormat::BC1RGBAUnormSrgb:
+            return SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM_SRGB;
+        case TextureFormat::BC3RGBAUnorm:
+            return SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM;
+        case TextureFormat::BC3RGBAUnormSrgb:
+            return SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM_SRGB;
+        case TextureFormat::BC4RUnorm:
+            return SDL_GPU_TEXTUREFORMAT_BC4_R_UNORM;
+        case TextureFormat::BC5RGUnorm:
+            return SDL_GPU_TEXTUREFORMAT_BC5_RG_UNORM;
         default:
             return SDL_GPU_TEXTUREFORMAT_INVALID;  // Invalid, Count
     }
@@ -1030,6 +1048,23 @@ bool validateDesc(const TextureDesc& desc) {
         AERO_LOG_ERROR("rhi: createTexture: a color format cannot have DepthStencilTarget usage");
         return false;
     }
+    // D3 (task 3.4.1): a block-compressed TOP level must be block-aligned, on EVERY backend. D3D12
+    // requires it for BC resources; Vulkan and Metal would accept it. The wrapper adopts the
+    // strictest backend's rule uniformly rather than shipping a texture that creates on macOS and
+    // fails on Windows (ADR-002). Mip levels BELOW the top are exempt by construction -- the 2x2/1x1
+    // tail of any chain is one partial block, legal everywhere -- so the check reads the top extent
+    // only. Placed after the dimension checks, so width/height > 0 already holds; blockW/blockH are
+    // 0 for depth and both sentinels, which makes the `> 1` guard self-skip there rather than
+    // divide-by-zero on a modulo.
+    const std::uint32_t blockW = texelBlockWidth(desc.format);
+    const std::uint32_t blockH = texelBlockHeight(desc.format);
+    if ((blockW > 1 || blockH > 1) && (desc.width % blockW != 0 || desc.height % blockH != 0)) {
+        AERO_LOG_ERROR(
+            "rhi: createTexture: {}x{} top level is not block-aligned for {} ({}x{} blocks); "
+            "block-compressed textures require an aligned top level on every backend (device.hpp)",
+            desc.width, desc.height, toString(desc.format), blockW, blockH);
+        return false;
+    }
     return true;
 }
 
@@ -1549,8 +1584,8 @@ bool Device::uploadTexture(TextureHandle texture, std::uint32_t mipLevel, std::s
         AERO_LOG_ERROR("rhi: Device::uploadTexture: mipLevel {} >= mipLevels {}", mipLevel, slot->mipLevels);
         return false;
     }
-    const std::uint32_t texelSize = texelBlockSize(slot->format);
-    if (texelSize == 0) {
+    const std::uint32_t blockBytes = texelBlockSize(slot->format);
+    if (blockBytes == 0) {
         // Depth formats (and Invalid) are not CPU-uploadable (format.hpp).
         AERO_LOG_ERROR("rhi: Device::uploadTexture: format {} is not CPU-uploadable", toString(slot->format));
         return false;
@@ -1562,10 +1597,16 @@ bool Device::uploadTexture(TextureHandle texture, std::uint32_t mipLevel, std::s
     // E10: validate against the MIP's extent, not the base.
     const std::uint32_t mipWidth = std::max<std::uint32_t>(1U, slot->extent.width >> mipLevel);
     const std::uint32_t mipHeight = std::max<std::uint32_t>(1U, slot->extent.height >> mipLevel);
-    const std::uint64_t expectedBytes = std::uint64_t{texelSize} * mipWidth * mipHeight;
+    // ONE arithmetic, spelled once (task 3.4.1): textureLevelByteSize is the only place upload sizes
+    // live, and it is the same ceil-div rule docs/09 section 10 fixes for a cooked level -- so a
+    // cooked level's byteLength and this expectation agree by construction, mip tail included.
+    const std::uint64_t expectedBytes = textureLevelByteSize(slot->format, mipWidth, mipHeight);
     if (data.size() != expectedBytes) {
-        AERO_LOG_ERROR("rhi: Device::uploadTexture: data.size() ({}) != expected ({}) for {}x{}@{}B/texel", data.size(),
-                       expectedBytes, mipWidth, mipHeight, texelSize);
+        AERO_LOG_ERROR(
+            "rhi: Device::uploadTexture: data.size() ({}) != expected ({}) for {}x{} {} "
+            "({}B/block, {}x{} blocks)",
+            data.size(), expectedBytes, mipWidth, mipHeight, toString(slot->format), blockBytes,
+            texelBlockWidth(slot->format), texelBlockHeight(slot->format));
         return false;
     }
 
@@ -1603,8 +1644,19 @@ bool Device::uploadTexture(TextureHandle texture, std::uint32_t mipLevel, std::s
     SDL_GPUTextureTransferInfo source{};
     source.transfer_buffer = transferBuffer;
     source.offset = 0;
-    source.pixels_per_row = mipWidth;   // explicit — never relying on 0-means-packed
-    source.rows_per_layer = mipHeight;  // explicit
+    // Explicit pitch, block-rounded — the 0.4.2 "never relying on 0-means-packed" posture kept,
+    // generalized (task 3.4.1). The fields are in TEXELS (SDL_gpu.h): Vulkan forwards
+    // pixels_per_row to VkBufferImageCopy::bufferRowLength, which for block-compressed formats
+    // must be a multiple of the block width (a 2x2 BC mip tail may NOT pass 2); Metal ignores
+    // both fields and derives a block-aware BytesPerRow from the region extent; D3D12
+    // block-rounds whatever arrives. ceil-to-block of the mip extent is bit-identical to the old
+    // mipWidth/mipHeight for every 1x1-block format and correct for BC on all three backends.
+    // Neither extent can be 0 here: the texelBlockSize == 0 guard above already returned for every
+    // format whose block extent is 0, so the two divisions below are safe by construction.
+    const std::uint32_t pitchBlockW = texelBlockWidth(slot->format);
+    const std::uint32_t pitchBlockH = texelBlockHeight(slot->format);
+    source.pixels_per_row = ((mipWidth + pitchBlockW - 1) / pitchBlockW) * pitchBlockW;
+    source.rows_per_layer = ((mipHeight + pitchBlockH - 1) / pitchBlockH) * pitchBlockH;
     SDL_GPUTextureRegion region{};
     region.texture = slot->texture;
     region.mip_level = mipLevel;

@@ -310,6 +310,52 @@ TEST_CASE("rhi device: T1-7 the E8/D5 rejection battery — TextureDesc") {
                                   .height = 4})
                   .valid());
     }
+    // Task 3.4.1 (D3) — a block-compressed TOP level must be block-aligned on EVERY backend,
+    // including the two (Vulkan, Metal) that would have accepted it. The rule is engine-owned and
+    // uniform rather than per-OS, so these subcases assert the same verdict on all three lanes.
+    SUBCASE("a 5x3 BC5 top level is rejected (the committed cooked golden's own shape)") {
+        CHECK_FALSE(
+            dev->createTexture(
+                   {.format = TextureFormat::BC5RGUnorm, .usage = TextureUsage::Sampler, .width = 5, .height = 3})
+                .valid());
+    }
+    SUBCASE("a 2x2 BC3 top level is rejected (a legal cooked artifact, not a legal texture)") {
+        CHECK_FALSE(
+            dev->createTexture(
+                   {.format = TextureFormat::BC3RGBAUnormSrgb, .usage = TextureUsage::Sampler, .width = 2, .height = 2})
+                .valid());
+    }
+    SUBCASE("one unaligned axis is enough to reject") {
+        CHECK_FALSE(
+            dev->createTexture(
+                   {.format = TextureFormat::BC1RGBAUnorm, .usage = TextureUsage::Sampler, .width = 8, .height = 6})
+                .valid());
+        CHECK_FALSE(
+            dev->createTexture(
+                   {.format = TextureFormat::BC1RGBAUnorm, .usage = TextureUsage::Sampler, .width = 6, .height = 8})
+                .valid());
+    }
+    SUBCASE("a 4x4 BC1 top level is ACCEPTED (the contrast that keeps the refusals honest)") {
+        const TextureHandle aligned = dev->createTexture(
+            {.format = TextureFormat::BC1RGBAUnorm, .usage = TextureUsage::Sampler, .width = 4, .height = 4});
+        CHECK(aligned.valid());
+        if (aligned.valid()) {
+            dev->destroyTexture(aligned);
+        }
+    }
+    SUBCASE("an 8x8 BC1 with the FULL 4-level chain is ACCEPTED — sub-top levels are exempt") {
+        // The whole point of "top level" in the rule: levels 2 and 3 of this chain are 2x2 and 1x1,
+        // neither block-aligned. Applying the check per mip level would refuse this create outright.
+        const TextureHandle chained = dev->createTexture({.format = TextureFormat::BC1RGBAUnorm,
+                                                          .usage = TextureUsage::Sampler,
+                                                          .width = 8,
+                                                          .height = 8,
+                                                          .mipLevels = 4});
+        CHECK(chained.valid());
+        if (chained.valid()) {
+            dev->destroyTexture(chained);
+        }
+    }
 }
 
 TEST_CASE("rhi device: T1-7 the E8/D5 rejection battery — SamplerDesc") {
@@ -481,11 +527,88 @@ TEST_CASE("rhi device: T1-8 upload happy paths and rejections (AC-7)") {
         dev->destroyTexture(texture);
     }
     SUBCASE("depth-format target rejected") {
+        // The 0-return path is doubly load-bearing since task 3.4.1: texelBlockSize answers 0 (the
+        // guard that fires here) and textureLevelByteSize answers 0 for the same formats, so a
+        // depth upload can never accidentally match an expected size of 0 either.
         const TextureHandle texture = dev->createTexture(
             {.format = TextureFormat::D16Unorm, .usage = TextureUsage::DepthStencilTarget, .width = 4, .height = 4});
         REQUIRE(texture.valid());
         const std::array<std::byte, 64> data{};
         CHECK_FALSE(dev->uploadTexture(texture, 0, data));
+        dev->destroyTexture(texture);
+
+        const TextureHandle depth32 = dev->createTexture(
+            {.format = TextureFormat::D32Float, .usage = TextureUsage::DepthStencilTarget, .width = 4, .height = 4});
+        if (depth32.valid()) {  // D24 or D32 is guaranteed, not both (E7) — skip the one this GPU lacks
+            const std::array<std::byte, 64> depthData{};
+            CHECK_FALSE(dev->uploadTexture(depth32, 0, depthData));
+            dev->destroyTexture(depth32);
+        }
+    }
+    // --- task 3.4.1: the block-unit upload contract, on a real GPU ------------------------------
+    SUBCASE("a 4x4 BC1 mip0 is exactly ONE 8-byte block") {
+        const TextureHandle texture = dev->createTexture(
+            {.format = TextureFormat::BC1RGBAUnorm, .usage = TextureUsage::Sampler, .width = 4, .height = 4});
+        REQUIRE(texture.valid());
+        const std::array<std::byte, 8> block{};
+        CHECK(dev->uploadTexture(texture, 0, block));
+        dev->destroyTexture(texture);
+    }
+    SUBCASE("the PER-TEXEL byte count is rejected for a BC format (32B for a 4x4 BC1)") {
+        // The regression this whole contract change exists to prevent: 4 * 4 * 2 (or any per-texel
+        // reading) is not a legal BC1 level size. 32 is what the pre-3.4.1 formula would produce if
+        // texelBlockSize were still read as bytes per texel with BC1's value of 8.
+        const TextureHandle texture = dev->createTexture(
+            {.format = TextureFormat::BC1RGBAUnorm, .usage = TextureUsage::Sampler, .width = 4, .height = 4});
+        REQUIRE(texture.valid());
+        const std::array<std::byte, 32> perTexel{};
+        CHECK_FALSE(dev->uploadTexture(texture, 0, perTexel));
+        const std::array<std::byte, 128> wayTooBig{};
+        CHECK_FALSE(dev->uploadTexture(texture, 0, wayTooBig));
+        dev->destroyTexture(texture);
+    }
+    SUBCASE("the BC mip tail uploads as ONE block at 2x2 and at 1x1") {
+        const TextureHandle texture = dev->createTexture({.format = TextureFormat::BC1RGBAUnorm,
+                                                          .usage = TextureUsage::Sampler,
+                                                          .width = 8,
+                                                          .height = 8,
+                                                          .mipLevels = 4});
+        REQUIRE(texture.valid());
+        const std::array<std::byte, 32> level0{};  // 2x2 blocks
+        const std::array<std::byte, 8> level1{};   // 4x4 -> 1x1 blocks
+        const std::array<std::byte, 8> level2{};   // 2x2 -> one partial block
+        const std::array<std::byte, 8> level3{};   // 1x1 -> one partial block
+        CHECK(dev->uploadTexture(texture, 0, level0));
+        CHECK(dev->uploadTexture(texture, 1, level1));
+        CHECK(dev->uploadTexture(texture, 2, level2));
+        CHECK(dev->uploadTexture(texture, 3, level3));
+        dev->destroyTexture(texture);
+    }
+    SUBCASE("the 16-byte block families upload 16 bytes for a 4x4 level, and 8 is rejected") {
+        const std::array<TextureFormat, 2> wide{TextureFormat::BC3RGBAUnorm, TextureFormat::BC5RGUnorm};
+        std::size_t checked = 0;
+        for (const TextureFormat format : wide) {
+            INFO("format ", toString(format));
+            const TextureHandle texture =
+                dev->createTexture({.format = format, .usage = TextureUsage::Sampler, .width = 4, .height = 4});
+            REQUIRE(texture.valid());
+            const std::array<std::byte, 16> block{};
+            CHECK(dev->uploadTexture(texture, 0, block));
+            const std::array<std::byte, 8> halfBlock{};
+            CHECK_FALSE(dev->uploadTexture(texture, 0, halfBlock));
+            dev->destroyTexture(texture);
+            ++checked;
+        }
+        CHECK(checked == 2);  // LITERAL: proves the loop ran
+    }
+    SUBCASE("BC4 is an 8-byte block family, and 16 is rejected") {
+        const TextureHandle texture = dev->createTexture(
+            {.format = TextureFormat::BC4RUnorm, .usage = TextureUsage::Sampler, .width = 4, .height = 4});
+        REQUIRE(texture.valid());
+        const std::array<std::byte, 8> block{};
+        CHECK(dev->uploadTexture(texture, 0, block));
+        const std::array<std::byte, 16> doubleBlock{};
+        CHECK_FALSE(dev->uploadTexture(texture, 0, doubleBlock));
         dev->destroyTexture(texture);
     }
     SUBCASE("stale handles rejected") {
