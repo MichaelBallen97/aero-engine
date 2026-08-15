@@ -7,6 +7,8 @@
 
 #include <aero/render/forward_renderer.hpp>  // task 1.4.1
 #include <aero/render/lighting.hpp>          // task 1.4.1
+#include <aero/render/material.hpp>          // task 3.4.1
 #include <aero/render/mesh.hpp>              // task 1.4.1
 #include <aero/render/render_target.hpp>     // task 2.2.3
 #include <aero/render/renderer.hpp>
+#include <aero/render/texture_upload.hpp>  // task 3.4.1
