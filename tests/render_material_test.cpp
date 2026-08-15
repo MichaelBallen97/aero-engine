@@ -7,9 +7,9 @@
 // the cooked-texture bridge per block family, the committed golden uploaded verbatim, the two
 // D3-refusal goldens, and the registry's lifecycle / stale-handle / sampler-dedup behaviour.
 //
-// primitives.hpp is PRIVATE to engine/render (src/, never installed), so it is reached by a relative
-// include — the tests/editor/blender_service_test.cpp precedent. The SYMBOLS come from aero_render,
-// which aero_tests already links; no link-line and no include-directory change.
+// primitives.hpp and material_pack.hpp are PRIVATE to engine/render (src/, never installed), so they
+// are reached by a relative include — the tests/editor/blender_service_test.cpp precedent. The SYMBOLS
+// come from aero_render, which aero_tests already links; no link-line and no include-directory change.
 //
 // <ostream> is included preventively: MSVC alone needs the complete type to stringify a string_view
 // inside a doctest CHECK (the four-time trap in .claude/rules/ci-portability.md). Enum comparisons
@@ -26,6 +26,7 @@
 #include <aero/render/render.hpp>
 #include <aero/rhi/rhi.hpp>
 
+#include "../engine/render/src/material_pack.hpp"
 #include "../engine/render/src/primitives.hpp"
 #include "cooked_texture_golden.hpp"  // the frozen byte goldens, shared with the cooked-texture suite
 #include "rhi_test_support.hpp"
@@ -182,6 +183,12 @@ struct Extent {
     std::uint32_t height;
 };
 
+struct CutoffRow {
+    engine::render::MaterialAlpha alpha;
+    float fileCutoff;
+    float pushedCutoff;
+};
+
 }  // namespace
 
 TEST_CASE("render material: the cooked -> rhi format mapping is total and injective (PB1)") {
@@ -268,7 +275,7 @@ TEST_CASE("render material: textureLevelByteSize matches docs/09 section 10's le
     }
 }
 
-TEST_CASE("render material: the default material's params are the near-Lambert set, not glTF's (PB4)") {
+TEST_CASE("render material: the default material's params, and packMaterial's cutoff rule (PB4)") {
     // Two different defaults for two different questions, both pinned as literals here. The FILE
     // FORMAT keeps glTF's metallic 1 (docs/09 section 11); the RENDER-SIDE fallback is metallic 0,
     // because a metal with no environment renders near-black under analytic lights and v1 has no IBL.
@@ -282,6 +289,42 @@ TEST_CASE("render material: the default material's params are the near-Lambert s
     CHECK(engine::render::DEFAULT_MATERIAL_PARAMS.occlusionStrength == 1.0F);
     CHECK((engine::render::DEFAULT_MATERIAL_PARAMS.alpha == engine::render::MaterialAlpha::Opaque));
     CHECK(engine::render::DEFAULT_MATERIAL_PARAMS.doubleSided == false);
+
+    // The cutoff-packing arm (AC-39). The shader carries ONE `if (alpha < uAlphaCutoff) discard;`
+    // and no variant, so "Opaque never discards" is a property of what the CPU pushes, not of the
+    // HLSL — and it is the CPU side that must be falsifiable. Mask pushes the material's own cutoff;
+    // Opaque and Blend push 0.0, which no texel's alpha can fall below.
+    constexpr std::array CUTOFF_ROWS{
+        CutoffRow{engine::render::MaterialAlpha::Opaque, 0.75F, 0.0F},
+        CutoffRow{engine::render::MaterialAlpha::Mask, 0.75F, 0.75F},
+        CutoffRow{engine::render::MaterialAlpha::Blend, 0.75F, 0.0F},
+        CutoffRow{engine::render::MaterialAlpha::Mask, 0.0F, 0.0F},
+    };
+    CHECK(CUTOFF_ROWS.size() == 4);
+
+    for (const CutoffRow& row : CUTOFF_ROWS) {
+        INFO("alpha mode index: ", static_cast<int>(row.alpha), " file cutoff: ", row.fileCutoff);
+        const engine::render::MaterialParams params{.alpha = row.alpha, .alphaCutoff = row.fileCutoff};
+        CHECK(engine::render::detail::packMaterial(params).alphaCutoff == row.pushedCutoff);
+    }
+
+    // Everything else rides through untouched — a packer that dropped or transposed a field would
+    // push a plausible-looking block, so each member is checked against a DISTINCT value.
+    const engine::render::MaterialParams full{.baseColorFactor = Vec4{0.1F, 0.2F, 0.3F, 0.4F},
+                                              .emissiveFactor = Vec3{0.5F, 0.6F, 0.7F},
+                                              .metallicFactor = 0.125F,
+                                              .roughnessFactor = 0.25F,
+                                              .normalScale = 0.375F,
+                                              .occlusionStrength = 0.5F};
+    const engine::render::detail::GpuMaterialParams packed = engine::render::detail::packMaterial(full);
+    CHECK(packed.baseColorFactor == Vec4{0.1F, 0.2F, 0.3F, 0.4F});
+    CHECK(packed.emissiveFactor == Vec3{0.5F, 0.6F, 0.7F});
+    CHECK(packed.metallicFactor == 0.125F);
+    CHECK(packed.roughnessFactor == 0.25F);
+    CHECK(packed.normalScale == 0.375F);
+    CHECK(packed.occlusionStrength == 0.5F);
+    // The block the shader's b1 cbuffer declares: 48 bytes, three 16-byte registers, no straddle.
+    CHECK(sizeof(engine::render::detail::GpuMaterialParams) == 48);
 }
 
 TEST_CASE("render material: the five slots index in D7's binding order (PB4)") {
@@ -484,6 +527,46 @@ namespace {
         device, vfs, {.colorFormat = target.colorFormat(), .depthFormat = target.depthFormat()});
 }
 
+// Cook an 8x8 source in memory and push it through the bridge — the whole chain this task built,
+// used here only so the draw has a REAL texture in every slot rather than the built-in defaults.
+// Invalid on any failure; the caller REQUIREs validity, so a silent fallback cannot hide.
+[[nodiscard]] engine::rhi::TextureHandle makeCookedTexture(engine::rhi::Device& device, CookedTextureFormat format) {
+    const std::vector<std::byte> source = makeSourceTexels();
+    const engine::assets::TextureCookResult cooked = engine::assets::cookTexture(
+        {.sourceGuid = {}, .width = 8, .height = 8, .rgba8 = source, .format = format, .generateMips = true});
+    if (cooked.status != engine::assets::TextureCookStatus::Ok) {
+        return {};
+    }
+    const engine::assets::CookedTextureParse parse = engine::assets::parseCookedTexture(cooked.bytes);
+    if (parse.status != engine::assets::CookedTextureStatus::Ok) {
+        return {};
+    }
+    return engine::render::createTextureFromCookedTexture(device, parse.view);
+}
+
+// One instance at the origin with an identity model matrix, so normalMatrix is identity too (the
+// embed(transpose(inverse(toMat3(model)))) scene_render computes, for this trivial case).
+[[nodiscard]] engine::render::MeshInstance makeInstance(engine::render::PrimitiveId primitive,
+                                                        const engine::Mat4& viewProj,
+                                                        engine::render::MaterialHandle material) {
+    engine::render::MeshInstance instance;
+    instance.primitive = primitive;
+    instance.model = engine::Mat4::identity();
+    instance.normalMatrix = engine::Mat4::identity();
+    instance.mvp = viewProj;
+    instance.material = material;
+    return instance;
+}
+
+// A camera looking at the origin from a fixed eye. eyePosition is the field 1.4.1 carried unused and
+// the GGX view vector finally reads, so it is set to the SAME point the view matrix was built from —
+// a mismatch there is invisible in every tier-0 case and wrong in every specular highlight.
+[[nodiscard]] engine::render::CameraView makeCamera() {
+    const Vec3 eye{0.0F, 1.5F, 3.0F};
+    return {engine::lookAt(eye, Vec3{}, Vec3{0.0F, 1.0F, 0.0F}),
+            engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 100.0F), eye};
+}
+
 }  // namespace
 
 TEST_CASE("render material: registry create/update/destroy, and stale handles are logged no-ops (PB8)") {
@@ -619,6 +702,142 @@ TEST_CASE("render material: a moved-from ForwardRenderer releases nothing twice 
     CHECK(movedTo.defaultMaterial().valid());
     CHECK(movedTo.samplerCacheSize() == 1);
     CHECK_FALSE(second->defaultMaterial().valid());
+}
+
+TEST_CASE("render material: a five-slot draw pushes BOTH fragment uniform blocks (PB11)") {
+    // D11's VERIFY, the runtime half. The cooked sidecars say the fragment stage declares five
+    // samplers and TWO uniform buffers (recorded before any visual judgment); this case is what
+    // proves HLSL register b1 reaches pushFragmentUniforms(cmd, 1, ...) on a real device. The two
+    // blocks are deliberately SIZE-DISTINGUISHABLE — Lights is 320 bytes and MaterialParams is 48 —
+    // so a slot-crossed push is a size mismatch the backend surfaces, not a plausible picture.
+    // No pixel assertions: this suite records draws without asserting their output (the task's own
+    // posture), so the assertion is that recording and submission complete.
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    // One cooked texture per slot, each in the format the sample cooks that slot in, so every block
+    // family this task added reaches a BOUND SAMPLER and not merely an upload. Literal count 5.
+    constexpr std::array SLOT_FORMATS{CookedTextureFormat::Bc1RgbSrgb, CookedTextureFormat::Bc1RgbUnorm,
+                                      CookedTextureFormat::Bc5Unorm, CookedTextureFormat::Bc4Unorm,
+                                      CookedTextureFormat::Bc1RgbSrgb};
+    CHECK(SLOT_FORMATS.size() == 5);
+    std::array<engine::rhi::TextureHandle, 5> textures{};
+    for (std::size_t i = 0; i < SLOT_FORMATS.size(); ++i) {
+        INFO("slot: ", i);
+        textures[i] = makeCookedTexture(*device, SLOT_FORMATS[i]);
+        REQUIRE(textures[i].valid());
+    }
+
+    engine::render::MaterialTextureSlots slots;
+    slots.baseColor.texture = textures[0];
+    slots.metallicRoughness.texture = textures[1];
+    slots.normal.texture = textures[2];
+    slots.occlusion.texture = textures[3];
+    slots.emissive.texture = textures[4];
+    const engine::render::MaterialParams params{.baseColorFactor = Vec4{0.0F, 1.0F, 0.0F, 1.0F},
+                                                .emissiveFactor = Vec3{0.0F, 0.0F, 0.25F},
+                                                .metallicFactor = 0.75F,
+                                                .roughnessFactor = 0.3F};
+    const engine::render::MaterialHandle mapped = forward->createMaterial(params, slots);
+    REQUIRE(mapped.valid());
+
+    // A double-sided Mask material, so the SAME recording exercises the cull-none pipeline, the flip
+    // back to cull-back, and a non-zero pushed cutoff.
+    engine::render::MaterialTextureSlots maskSlots;
+    maskSlots.baseColor.texture = textures[0];
+    const engine::render::MaterialHandle masked = forward->createMaterial(
+        {.alpha = engine::render::MaterialAlpha::Mask, .alphaCutoff = 0.5F, .doubleSided = true}, maskSlots);
+    REQUIRE(masked.valid());
+
+    const engine::render::CameraView camera = makeCamera();
+    const engine::Mat4 viewProj = camera.proj * camera.view;
+    // Three instances in one view: the five-slot material, the double-sided mask (pipeline flips out
+    // and back), and a DEFAULT-INVALID handle that must resolve to the built-in default material.
+    const std::array<engine::render::MeshInstance, 3> instances{
+        makeInstance(engine::render::PrimitiveId::Sphere, viewProj, mapped),
+        makeInstance(engine::render::PrimitiveId::Cube, viewProj, masked),
+        makeInstance(engine::render::PrimitiveId::Plane, viewProj, engine::render::MaterialHandle{}),
+    };
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.ambient = Vec3{1.0F, 0.0F, 0.0F};  // distinguishable from the material block's green
+    view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
+    view.instances = instances;
+
+    for (int frame = 0; frame < 2; ++frame) {
+        INFO("frame: ", frame);
+        std::optional<engine::render::Frame> open = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+        REQUIRE(open.has_value());
+        forward->draw(*open, view);
+        CHECK(target->endFrame(std::move(*open)));
+    }
+
+    CHECK_FALSE(forward->hasWarnedBlendOpaque());  // nothing here is Blend
+
+    // Textures are BORROWED: destroying them is the caller's job and the registry never touches them.
+    for (const engine::rhi::TextureHandle texture : textures) {
+        device->destroyTexture(texture);
+    }
+}
+
+TEST_CASE("render material: a Blend material draws opaque behind a latch that fires once (PB12)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    const engine::render::MaterialHandle blend =
+        forward->createMaterial({.alpha = engine::render::MaterialAlpha::Blend}, {});
+    REQUIRE(blend.valid());
+    // Registering one must NOT warn: the latch belongs to the DRAW path, so a material that is
+    // created and never drawn stays silent.
+    CHECK_FALSE(forward->hasWarnedBlendOpaque());
+
+    const engine::render::CameraView camera = makeCamera();
+    const engine::Mat4 viewProj = camera.proj * camera.view;
+    const std::array<engine::render::MeshInstance, 2> instances{
+        makeInstance(engine::render::PrimitiveId::Cube, viewProj, blend),
+        makeInstance(engine::render::PrimitiveId::Sphere, viewProj, engine::render::MaterialHandle{}),
+    };
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
+    view.instances = instances;
+
+    std::optional<engine::render::Frame> first = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(first.has_value());
+    forward->draw(*first, view);
+    CHECK(target->endFrame(std::move(*first)));
+    // Drawn, not refused — Blend renders OPAQUE in v1 — and the latch is now set.
+    CHECK(forward->hasWarnedBlendOpaque());
+
+    // A second frame with the same material: the latch stays set and the WARN cannot fire again.
+    // "Once per renderer lifetime" is a property of the `if (!warnedBlendOnce)` guard rather than of
+    // anything a bool can count, so this arm pins the guard's other half — the latch is never reset.
+    std::optional<engine::render::Frame> second = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(second.has_value());
+    forward->draw(*second, view);
+    CHECK(target->endFrame(std::move(*second)));
+    CHECK(forward->hasWarnedBlendOpaque());
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED

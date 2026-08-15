@@ -11,6 +11,7 @@
 #include <aero/rhi/device.hpp>
 #include <aero/rhi/shader_loader.hpp>
 
+#include "material_pack.hpp"
 #include "primitives.hpp"
 
 #include <algorithm>
@@ -57,8 +58,14 @@ struct GpuLightBlock {
     std::uint32_t pointCount = 0;
     GpuDirLight dir;
     std::array<GpuPointLight, MAX_POINT_LIGHTS> points{};
+    // task 3.4.1 — the one field the GGX BRDF needs that Lambert did not. CameraView has carried
+    // eyePosition unused since 1.4.1, whose own comment says it exists "for future specular/fresnel
+    // terms" (lighting.hpp). Appended AFTER the existing members, so every pre-3.4.1 field keeps its
+    // offset and the growth is invisible to anything that does not read the tail.
+    Vec3 eyePosition;
+    float pad0 = 0.0F;
 };
-static_assert(sizeof(GpuLightBlock) == 16 + 32 + (32 * 8));  // 304
+static_assert(sizeof(GpuLightBlock) == 16 + 32 + (32 * 8) + 16);  // 320 (was 304)
 static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
 
 // >= PrimitiveId::Count (an out-of-range MeshInstance::primitive, defensive — the bridge already
@@ -91,6 +98,7 @@ static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
         block.points[i] = {src.position, src.range, src.color, src.intensity};
     }
     block.pointCount = static_cast<std::uint32_t>(count);
+    block.eyePosition = view.camera.eyePosition;  // task 3.4.1 — the BRDF's view vector origin
     return block;
 }
 
@@ -390,6 +398,23 @@ std::size_t ForwardRenderer::samplerCacheSize() const noexcept { return samplerC
 
 bool ForwardRenderer::hasWarnedBlendOpaque() const noexcept { return warnedBlendOnce; }
 
+void ForwardRenderer::bindMaterialTextures(rhi::RenderPassHandle pass, const MaterialSlot& slot) {
+    // A-4: resolution to the built-in defaults happens at BIND time, and "which default belongs to
+    // slot k" is spelled HERE and nowhere else. The three physical textures cover five slots because
+    // occlusion shares metallicRoughness' white-linear texel and emissive shares baseColor's
+    // white-sRGB one — exactly the aliasing material.hpp's defaultTextureTexel already encodes.
+    const std::array<rhi::TextureHandle, MATERIAL_TEXTURE_SLOT_COUNT> defaults{
+        defaultWhiteSrgb, defaultWhiteLinear, defaultFlatNormal, defaultWhiteLinear, defaultWhiteSrgb};
+    std::array<rhi::TextureSamplerBinding, MATERIAL_TEXTURE_SLOT_COUNT> bindings{};
+    for (std::size_t i = 0; i < MATERIAL_TEXTURE_SLOT_COUNT; ++i) {
+        const MaterialTextureSlot& source = materialSlotAt(slot.slots, i);
+        bindings[i] = {source.texture.valid() ? source.texture : defaults[i], slot.samplers[i]};
+    }
+    // ONE call for all five (AC-26): slot order is declaration order, the shaderc contract, so t0..t4
+    // and s0..s4 land in D7's binding order by construction.
+    device->bindFragmentSamplers(pass, 0, bindings);
+}
+
 void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     AERO_PROFILE_ZONE;
     if (!view.hasCamera) {
@@ -398,12 +423,48 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     const rhi::RenderPassHandle pass = frame.pass();
     const rhi::CommandBufferHandle cmd = frame.commandBuffer();
 
-    device->bindGraphicsPipeline(pass, pipeline);
+    device->bindGraphicsPipeline(pass, pipeline);  // cull-back is the reset state
+    bool boundCullNone = false;
 
     const GpuLightBlock lights = pack(view);
     device->pushFragmentUniforms(cmd, 0, std::as_bytes(std::span{&lights, 1}));
 
+    // The state cache is three variables, and the loop is correct under ANY instance order because
+    // every draw's state is a pure function of its RESOLVED material — cheap under the common order
+    // (materials arrive grouped) and never wrong under an adversarial one. No sorting happens here;
+    // 3.6.1/Phase 8 own draw ordering.
+    MaterialHandle lastMaterial{};
+    bool firstMaterial = true;
+
     for (const MeshInstance& instance : view.instances) {
+        const MaterialHandle resolved =
+            materials.contains(instance.material) ? instance.material : defaultMaterialHandle;
+        if (firstMaterial || resolved != lastMaterial) {
+            // Never null: `resolved` is either a handle contains() just proved live, or the built-in
+            // default, which destroyMaterial refuses to remove. The comment is the argument; a dead
+            // runtime arm here would be untestable by construction (A-6's posture).
+            const MaterialSlot& slot = *materials.get(resolved);
+            if (slot.params.alpha == MaterialAlpha::Blend && !warnedBlendOnce) {
+                AERO_LOG_WARN(
+                    "ForwardRenderer: Blend material drawn OPAQUE (transparency has no owner yet); "
+                    "this warning latches once per renderer");
+                warnedBlendOnce = true;
+            }
+            const detail::GpuMaterialParams gpuParams = detail::packMaterial(slot.params);
+            device->pushFragmentUniforms(cmd, 1, std::as_bytes(std::span{&gpuParams, 1}));
+            bindMaterialTextures(pass, slot);
+            // The pipeline rebinds ONLY when doubleSided flips. Pushed uniforms are per-COMMAND
+            // BUFFER, not per-pipeline (device.hpp's push-uniform contract), so slots 0 and 1 survive
+            // the rebind and do not have to be re-pushed after it.
+            const bool wantCullNone = slot.params.doubleSided;
+            if (wantCullNone != boundCullNone) {
+                device->bindGraphicsPipeline(pass, wantCullNone ? pipelineCullNone : pipeline);
+                boundCullNone = wantCullNone;
+            }
+            lastMaterial = resolved;
+            firstMaterial = false;
+        }
+
         const GpuPerObject perObject{instance.mvp, instance.model, instance.normalMatrix, instance.color, 0.0F};
         device->pushVertexUniforms(cmd, 0, std::as_bytes(std::span{&perObject, 1}));
 

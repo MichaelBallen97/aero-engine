@@ -132,6 +132,9 @@ private:
     // any create or upload fails; the caller then abandons the whole renderer, whose destructor
     // releases everything already made.
     [[nodiscard]] bool createDefaults();
+    // One bindFragmentSamplers call for all five slots (task 3.4.1), resolving every invalid texture
+    // handle to its built-in default at BIND time. Called on material change only, from draw().
+    void bindMaterialTextures(rhi::RenderPassHandle pass, const MaterialSlot& slot);
 
     rhi::Device* device = nullptr;                   // non-owning; outlives the ForwardRenderer (contract)
     rhi::GraphicsPipelineHandle pipeline{};          // CullMode::Back — the engine convention
