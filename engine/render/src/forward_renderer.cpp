@@ -157,10 +157,16 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
         return std::nullopt;
     }
 
+    // Four attributes over the 48-byte MeshVertex (task 3.4.1). The layout may describe attributes
+    // the CURRENT shader does not consume — legal on all three backends — which is why the vertex
+    // layout grows one commit BEFORE the PBR shader rewrite that reads locations 2 and 3. The reverse
+    // order is invalid: a shader consuming an undescribed attribute is a pipeline-creation failure.
     const rhi::VertexBufferLayout vbLayout{.slot = 0, .pitch = sizeof(MeshVertex)};
-    const std::array<rhi::VertexAttribute, 2> attrs{{
+    const std::array<rhi::VertexAttribute, 4> attrs{{
         {.location = 0, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 0},
         {.location = 1, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 12},
+        {.location = 2, .bufferSlot = 0, .format = rhi::VertexFormat::Float4, .offset = 24},
+        {.location = 3, .bufferSlot = 0, .format = rhi::VertexFormat::Float2, .offset = 40},
     }};
     const rhi::ColorTargetDesc colorTarget{.format = config.colorFormat};
     const rhi::GraphicsPipelineDesc pipelineDesc{

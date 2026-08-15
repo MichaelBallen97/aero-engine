@@ -5,20 +5,24 @@
 // (render::detail::make{Cube,Sphere,Plane}()) ForwardRenderer::create() builds once.
 
 #include <aero/core/math.hpp>
+#include <aero/render/material.hpp>  // task 3.4.1 — MeshInstance::material
 
 #include <cstdint>
 #include <type_traits>
 
 namespace engine::render {
 
-// GPU vertex layout for the built-in primitives (D9): position + normal, no UV/color — v0 lit
-// primitives are untextured; the base color is per-object (MeshInstance::color), lighting needs the
-// normal. 24-byte stride, matches shaders/scene.vert.hlsl's VsInput.
+// GPU vertex layout for the built-in primitives (D9 -> task 3.4.1): position + normal + tangent + uv.
+// tangent.w is the glTF handedness (+1/-1) and the bitangent is computed in-shader as
+// cross(N, T.xyz) * T.w — no fifth attribute. 48-byte stride, locations 0-3, matches
+// shaders/scene.vert.hlsl's VsInput and ForwardRenderer::create's four vertex attributes.
 struct MeshVertex {
     Vec3 position;
     Vec3 normal;
+    Vec4 tangent;
+    Vec2 uv;
 };
-static_assert(sizeof(MeshVertex) == 6 * sizeof(float));
+static_assert(sizeof(MeshVertex) == 12 * sizeof(float));
 static_assert(std::is_standard_layout_v<MeshVertex>);
 
 // Selects a built-in procedural mesh. Mirrors engine::MeshRenderer::primitive's raw uint32 (scene
@@ -36,6 +40,10 @@ struct MeshInstance {
     Mat4 model;         // world-space position source (point-light distance)
     Mat4 normalMatrix;  // transpose(inverse(toMat3(model))) embedded in a Mat4 (upper-left 3x3 used)
     Vec3 color = Vec3::one();
+    // task 3.4.1: which registered material to draw with. DEFAULT-INVALID, which resolves to
+    // ForwardRenderer::defaultMaterial() at draw time — so every caller written before materials
+    // existed (scene_render::buildRenderView included) compiles and draws unchanged.
+    MaterialHandle material{};
 };
 
 }  // namespace engine::render
