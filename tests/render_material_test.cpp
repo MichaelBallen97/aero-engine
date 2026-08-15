@@ -2,7 +2,9 @@
 //
 // Tier 0 (no GPU, every lane): the primitive generators' tangent/UV invariants, the cooked ->
 // rhi format mapping's totality, the upload-size formula cross-checked against docs/09 section 10's
-// own level arithmetic, the default material's params, and the three built-in default texels.
+// own level arithmetic, the default material's params, the per-slot built-in defaults (which KIND,
+// which texel, which colour space), and both CPU-side packers — the material block's cutoff rule and
+// the light block, eyePosition included.
 // Tier 1 (a real Device, NO window — RenderTarget supplies the formats, gated by AERO_SKIP_OR_FAIL):
 // the cooked-texture bridge per block family, the committed golden uploaded verbatim, the two
 // D3-refusal goldens, and the registry's lifecycle / stale-handle / sampler-dedup behaviour.
@@ -174,6 +176,7 @@ struct LevelSizeRow {
 
 struct DefaultTexelRow {
     std::size_t slotIndex;
+    engine::render::MaterialDefaultTextureKind kind;
     std::array<std::uint8_t, 4> texel;
     TextureFormat format;
 };
@@ -342,25 +345,139 @@ TEST_CASE("render material: the five slots index in D7's binding order (PB4)") {
     }
 }
 
-TEST_CASE("render material: the three built-in 1x1 default texels and their colour spaces (PB10)") {
-    // ForwardRenderer::create uploads exactly what defaultTextureTexel returns, so a texel typo here
-    // is a red test rather than a silently wrong-looking surface — no pixel readback needed. The
-    // expectations are literals: reading them back out of the function under test would prove nothing.
+TEST_CASE("render material: which built-in default each slot falls back to, and what it holds (PB10)") {
+    // ForwardRenderer::create uploads exactly what defaultTextureTexelForKind returns, and
+    // bindMaterialTextures picks slot k's fallback with defaultTextureKindForSlot — so BOTH halves of
+    // "slot k gets the white sRGB texel" are pinned here, and no hand-written per-slot table survives
+    // in the renderer to disagree with this one. That second half matters: binding the flat normal as
+    // a base colour draws a fully lit surface with 80 80 FF as its albedo, which is loud on screen and
+    // invisible to every automated case unless the mapping itself is asserted. The expectations are
+    // literals — reading them back out of the functions under test would prove nothing.
+    using engine::render::MaterialDefaultTextureKind;
     constexpr std::array DEFAULT_TEXEL_ROWS{
-        DefaultTexelRow{0, {0xFF, 0xFF, 0xFF, 0xFF}, TextureFormat::RGBA8UnormSrgb},  // baseColor
-        DefaultTexelRow{1, {0xFF, 0xFF, 0xFF, 0xFF}, TextureFormat::RGBA8Unorm},      // metallicRoughness
-        DefaultTexelRow{2, {0x80, 0x80, 0xFF, 0xFF}, TextureFormat::RGBA8Unorm},      // normal (flat +Z)
-        DefaultTexelRow{3, {0xFF, 0xFF, 0xFF, 0xFF}, TextureFormat::RGBA8Unorm},      // occlusion
-        DefaultTexelRow{4, {0xFF, 0xFF, 0xFF, 0xFF}, TextureFormat::RGBA8UnormSrgb},  // emissive
+        // slot, kind, texel, format
+        DefaultTexelRow{0,
+                        MaterialDefaultTextureKind::WhiteSrgb,
+                        {0xFF, 0xFF, 0xFF, 0xFF},
+                        TextureFormat::RGBA8UnormSrgb},  // baseColor
+        DefaultTexelRow{1,
+                        MaterialDefaultTextureKind::WhiteLinear,
+                        {0xFF, 0xFF, 0xFF, 0xFF},
+                        TextureFormat::RGBA8Unorm},  // metallicRoughness
+        DefaultTexelRow{2,
+                        MaterialDefaultTextureKind::FlatNormal,
+                        {0x80, 0x80, 0xFF, 0xFF},
+                        TextureFormat::RGBA8Unorm},  // normal (flat +Z)
+        DefaultTexelRow{3,
+                        MaterialDefaultTextureKind::WhiteLinear,
+                        {0xFF, 0xFF, 0xFF, 0xFF},
+                        TextureFormat::RGBA8Unorm},  // occlusion
+        DefaultTexelRow{4,
+                        MaterialDefaultTextureKind::WhiteSrgb,
+                        {0xFF, 0xFF, 0xFF, 0xFF},
+                        TextureFormat::RGBA8UnormSrgb},  // emissive
     };
     CHECK(DEFAULT_TEXEL_ROWS.size() == 5);
+    CHECK(engine::render::MATERIAL_DEFAULT_TEXTURE_KIND_COUNT == 3);
 
     for (const DefaultTexelRow& row : DEFAULT_TEXEL_ROWS) {
         INFO("slot: ", row.slotIndex);
+        // The mapping the renderer's fallback array is indexed by — a swapped pair here is what
+        // renders normals decoded from white and albedo read off the flat-normal texel.
+        CHECK((engine::render::defaultTextureKindForSlot(row.slotIndex) == row.kind));
+        // The bytes that kind stands for...
+        const engine::render::MaterialDefaultTexture byKind = engine::render::defaultTextureTexelForKind(row.kind);
+        CHECK(byKind.texel == row.texel);
+        CHECK((byKind.format == row.format));
+        // ...and the composition a caller outside the renderer sees, which must be the same answer.
         const engine::render::MaterialDefaultTexture entry = engine::render::defaultTextureTexel(row.slotIndex);
         CHECK(entry.texel == row.texel);
         CHECK((entry.format == row.format));
     }
+
+    // Three DISTINCT kinds, so the five slots really do alias onto three physical textures and no two
+    // rows above could be satisfied by one degenerate answer.
+    CHECK((engine::render::defaultTextureTexelForKind(MaterialDefaultTextureKind::WhiteSrgb).format !=
+           engine::render::defaultTextureTexelForKind(MaterialDefaultTextureKind::WhiteLinear).format));
+    CHECK(engine::render::defaultTextureTexelForKind(MaterialDefaultTextureKind::FlatNormal).texel !=
+          engine::render::defaultTextureTexelForKind(MaterialDefaultTextureKind::WhiteLinear).texel);
+}
+
+TEST_CASE("render material: packLights mirrors the whole view into the 320-byte Lights block (PB13)") {
+    // The light block is the second thing a file-local packer hid, and its 3.4.1 addition is the one
+    // that matters: eyePosition is the GGX view vector's ORIGIN. Zero it and the image is still lit,
+    // the frame still submits, every registry and bridge case still passes — only the specular
+    // highlights are wrong, which is R5's "renders plausible garbage" class in its purest form. So the
+    // block is pinned field by field, against values chosen to be MUTUALLY DISTINCT: the eye is the
+    // only vector with a negative component, the ambient the only one below 1, and no light shares a
+    // component with another, so a transposed, aliased or dropped field cannot land on the value the
+    // assertion expects.
+    constexpr std::array POINT_LIGHTS{
+        engine::render::PointLightData{
+            .position = Vec3{11.0F, 12.0F, 13.0F}, .color = Vec3{0.1F, 0.2F, 0.3F}, .intensity = 4.5F, .range = 20.0F},
+        engine::render::PointLightData{
+            .position = Vec3{21.0F, 22.0F, 23.0F}, .color = Vec3{0.4F, 0.5F, 0.6F}, .intensity = 5.5F, .range = 30.0F},
+        engine::render::PointLightData{.position = Vec3{31.0F, 32.0F, 33.0F},
+                                       .color = Vec3{0.55F, 0.65F, 0.75F},
+                                       .intensity = 6.5F,
+                                       .range = 40.0F},
+    };
+    CHECK(POINT_LIGHTS.size() == 3);
+
+    const Vec3 eye{7.5F, -2.25F, 3.75F};
+    const Vec3 ambient{0.125F, 0.25F, 0.5F};
+    engine::render::RenderView view;
+    view.camera = {engine::lookAt(eye, Vec3{}, Vec3{0.0F, 1.0F, 0.0F}),
+                   engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 100.0F), eye};
+    view.ambient = ambient;
+    view.directional = {.direction = Vec3{-0.5F, -0.75F, 0.25F}, .color = Vec3{0.9F, 0.8F, 0.7F}, .intensity = 2.5F};
+    view.points = POINT_LIGHTS;
+
+    // The size the HLSL cbuffer declares, as a literal beside the static_assert rather than instead of
+    // it: 16 (ambient + count) + 32 (dir) + 8*32 (points) + 16 (eye + pad).
+    CHECK(sizeof(engine::render::detail::GpuLightBlock) == 320);
+
+    const engine::render::detail::GpuLightBlock block = engine::render::detail::packLights(view);
+    CHECK(block.eyePosition == eye);  // THE field; zeroing it reddens here and nowhere else
+    CHECK(block.ambient == ambient);
+    CHECK(block.pointCount == 3);
+    CHECK(block.dir.direction == Vec3{-0.5F, -0.75F, 0.25F});
+    CHECK(block.dir.intensity == 2.5F);
+    CHECK(block.dir.color == Vec3{0.9F, 0.8F, 0.7F});
+    CHECK(block.dir.pad0 == 0.0F);
+
+    // PointLightData orders its members position/color/intensity/range and the GPU block orders them
+    // position/range/color/intensity — the two scalars are deliberately given different values, so a
+    // packer that carried them across in struct order rather than in HLSL order reddens.
+    for (std::size_t i = 0; i < POINT_LIGHTS.size(); ++i) {
+        INFO("point light: ", i);
+        CHECK(block.points[i].position == POINT_LIGHTS[i].position);
+        CHECK(block.points[i].color == POINT_LIGHTS[i].color);
+        CHECK(block.points[i].intensity == POINT_LIGHTS[i].intensity);
+        CHECK(block.points[i].range == POINT_LIGHTS[i].range);
+    }
+
+    // Everything past pointCount is ZEROED, not left holding whatever the stack had: the shader loops
+    // to uPointCount, but the bytes travel whole and a garbage tail is a garbage upload.
+    CHECK(block.points[3].position == Vec3{});
+    CHECK(block.points[3].color == Vec3{});
+    CHECK(block.points[3].intensity == 0.0F);
+    CHECK(block.points[3].range == 0.0F);
+    CHECK(block.pad0 == 0.0F);
+
+    // The clamp: MAX_POINT_LIGHTS is the array's size, so a view carrying more (assembled by hand, as
+    // the sample does — buildRenderView is not the only producer) must truncate rather than overrun.
+    std::array<engine::render::PointLightData, 10> tooMany{};
+    for (std::size_t i = 0; i < tooMany.size(); ++i) {
+        tooMany[i].position = Vec3{static_cast<float>(i), 0.0F, 0.0F};
+        tooMany[i].intensity = static_cast<float>(i);
+    }
+    view.points = tooMany;
+    const engine::render::detail::GpuLightBlock clamped = engine::render::detail::packLights(view);
+    CHECK(clamped.pointCount == engine::render::MAX_POINT_LIGHTS);
+    CHECK(clamped.pointCount == 8);
+    CHECK(clamped.points[7].intensity == 7.0F);  // the first 8 in order, not the last 8
+    CHECK(clamped.eyePosition == eye);
 }
 
 // ================================================================================================

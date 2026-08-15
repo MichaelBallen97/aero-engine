@@ -14,7 +14,6 @@
 #include "material_pack.hpp"
 #include "primitives.hpp"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <span>
@@ -25,8 +24,10 @@ namespace engine::render {
 
 namespace {
 
-// CPU mirrors of the HLSL cbuffers (shaders/scene.{vert,frag}.hlsl) — field order MUST match the
-// HLSL exactly (D8); the sizeof static_asserts are the tripwire against a silent packing drift.
+// The VERTEX stage's CPU mirror (shaders/scene.vert.hlsl) — field order MUST match the HLSL exactly
+// (D8); the sizeof static_assert is the tripwire against a silent packing drift. The two FRAGMENT
+// blocks (Lights b0, MaterialParams b1) live in material_pack.hpp instead, beside the functions that
+// fill them, because a packer nobody outside this file can call is a packer no test can falsify.
 struct GpuPerObject {
     Mat4 mvp;
     Mat4 model;
@@ -36,37 +37,6 @@ struct GpuPerObject {
 };
 static_assert(sizeof(GpuPerObject) == 208);
 static_assert(std::is_trivially_copyable_v<GpuPerObject>);
-
-struct GpuDirLight {
-    Vec3 direction;
-    float intensity = 0.0F;
-    Vec3 color;
-    float pad0 = 0.0F;
-};
-static_assert(sizeof(GpuDirLight) == 32);
-
-struct GpuPointLight {
-    Vec3 position;
-    float range = 0.0F;
-    Vec3 color;
-    float intensity = 0.0F;
-};
-static_assert(sizeof(GpuPointLight) == 32);
-
-struct GpuLightBlock {
-    Vec3 ambient;
-    std::uint32_t pointCount = 0;
-    GpuDirLight dir;
-    std::array<GpuPointLight, MAX_POINT_LIGHTS> points{};
-    // task 3.4.1 — the one field the GGX BRDF needs that Lambert did not. CameraView has carried
-    // eyePosition unused since 1.4.1, whose own comment says it exists "for future specular/fresnel
-    // terms" (lighting.hpp). Appended AFTER the existing members, so every pre-3.4.1 field keeps its
-    // offset and the growth is invisible to anything that does not read the tail.
-    Vec3 eyePosition;
-    float pad0 = 0.0F;
-};
-static_assert(sizeof(GpuLightBlock) == 16 + 32 + (32 * 8) + 16);  // 320 (was 304)
-static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
 
 // >= PrimitiveId::Count (an out-of-range MeshInstance::primitive, defensive — the bridge already
 // clamps) -> Cube.
@@ -88,20 +58,6 @@ static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
            a.enableCompare == b.enableCompare && a.compareOp == b.compareOp;
 }
 
-[[nodiscard]] GpuLightBlock pack(const RenderView& view) {
-    GpuLightBlock block{};
-    block.ambient = view.ambient;
-    block.dir = {view.directional.direction, view.directional.intensity, view.directional.color, 0.0F};
-    const std::size_t count = std::min<std::size_t>(view.points.size(), MAX_POINT_LIGHTS);
-    for (std::size_t i = 0; i < count; ++i) {
-        const PointLightData& src = view.points[i];
-        block.points[i] = {src.position, src.range, src.color, src.intensity};
-    }
-    block.pointCount = static_cast<std::uint32_t>(count);
-    block.eyePosition = view.camera.eyePosition;  // task 3.4.1 — the BRDF's view vector origin
-    return block;
-}
-
 }  // namespace
 
 ForwardRenderer::ForwardRenderer(rhi::Device* deviceIn, rhi::GraphicsPipelineHandle pipelineIn,
@@ -113,9 +69,7 @@ ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
       pipeline(other.pipeline),
       pipelineCullNone(other.pipelineCullNone),
       primitives(other.primitives),
-      defaultWhiteSrgb(other.defaultWhiteSrgb),
-      defaultWhiteLinear(other.defaultWhiteLinear),
-      defaultFlatNormal(other.defaultFlatNormal),
+      defaultTextures(other.defaultTextures),
       materials(std::move(other.materials)),
       samplerCache(std::move(other.samplerCache)),
       defaultMaterialHandle(other.defaultMaterialHandle),
@@ -130,9 +84,7 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         pipeline = other.pipeline;
         pipelineCullNone = other.pipelineCullNone;
         primitives = other.primitives;
-        defaultWhiteSrgb = other.defaultWhiteSrgb;
-        defaultWhiteLinear = other.defaultWhiteLinear;
-        defaultFlatNormal = other.defaultFlatNormal;
+        defaultTextures = other.defaultTextures;
         materials = std::move(other.materials);
         samplerCache = std::move(other.samplerCache);
         defaultMaterialHandle = other.defaultMaterialHandle;
@@ -149,9 +101,7 @@ void ForwardRenderer::reset() noexcept {
     pipeline = {};
     pipelineCullNone = {};
     primitives = {};
-    defaultWhiteSrgb = {};
-    defaultWhiteLinear = {};
-    defaultFlatNormal = {};
+    defaultTextures = {};
     materials.clear();  // a moved-from SlotMap keeps its scalar bookkeeping; clear() zeroes it
     samplerCache.clear();
     defaultMaterialHandle = {};
@@ -178,7 +128,7 @@ void ForwardRenderer::destroyAll() noexcept {
     }
     // Renderer-owned, unlike the materials' textures: a material BORROWS its textures from the
     // caller, so nothing here walks the registry looking for rhi::TextureHandles to release.
-    for (const rhi::TextureHandle texture : {defaultWhiteSrgb, defaultWhiteLinear, defaultFlatNormal}) {
+    for (const rhi::TextureHandle texture : defaultTextures) {
         if (texture.valid()) {
             device->destroyTexture(texture);
         }
@@ -308,19 +258,19 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
 }
 
 bool ForwardRenderer::createDefaults() {
-    // The three 1x1 identity textures (D7). material.hpp's defaultTextureTexel is the SINGLE
-    // definition of their bytes and formats — restating them here would be the second place for a
-    // texel typo to hide, and the tier-0 case that pins them would then prove nothing about what the
-    // GPU actually receives.
-    const std::array<rhi::TextureHandle*, 3> targets{&defaultWhiteSrgb, &defaultWhiteLinear, &defaultFlatNormal};
-    const std::array<std::size_t, 3> slotForTarget{0, 1, 2};  // baseColor (sRGB), metallicRoughness, normal
-    for (std::size_t i = 0; i < targets.size(); ++i) {
-        const MaterialDefaultTexture entry = defaultTextureTexel(slotForTarget[i]);
+    // The three 1x1 identity textures (D7), created IN KIND ORDER into the array bindMaterialTextures
+    // indexes by kind — one loop index used on both sides of the assignment, so "which texture is at
+    // index k" is not a fact stated anywhere that could disagree with material.hpp. That header's
+    // defaultTextureTexelForKind is the SINGLE definition of their bytes and formats; restating them
+    // here would be the second place for a texel typo to hide, and the tier-0 case that pins them
+    // would then prove nothing about what the GPU actually receives.
+    for (std::size_t kind = 0; kind < defaultTextures.size(); ++kind) {
+        const MaterialDefaultTexture entry = defaultTextureTexelForKind(static_cast<MaterialDefaultTextureKind>(kind));
         const rhi::TextureHandle texture = device->createTexture(
             {.format = entry.format, .usage = rhi::TextureUsage::Sampler, .width = 1, .height = 1});
-        *targets[i] = texture;
+        defaultTextures[kind] = texture;
         if (!texture.valid() || !device->uploadTexture(texture, 0, std::as_bytes(std::span{entry.texel}))) {
-            AERO_LOG_ERROR("ForwardRenderer::create: built-in default texture {} could not be created", i);
+            AERO_LOG_ERROR("ForwardRenderer::create: built-in default texture {} could not be created", kind);
             return false;
         }
     }
@@ -400,15 +350,17 @@ bool ForwardRenderer::hasWarnedBlendOpaque() const noexcept { return warnedBlend
 
 void ForwardRenderer::bindMaterialTextures(rhi::RenderPassHandle pass, const MaterialSlot& slot) {
     // A-4: resolution to the built-in defaults happens at BIND time, and "which default belongs to
-    // slot k" is spelled HERE and nowhere else. The three physical textures cover five slots because
-    // occlusion shares metallicRoughness' white-linear texel and emissive shares baseColor's
-    // white-sRGB one — exactly the aliasing material.hpp's defaultTextureTexel already encodes.
-    const std::array<rhi::TextureHandle, MATERIAL_TEXTURE_SLOT_COUNT> defaults{
-        defaultWhiteSrgb, defaultWhiteLinear, defaultFlatNormal, defaultWhiteLinear, defaultWhiteSrgb};
+    // slot k" is answered by material.hpp's defaultTextureKindForSlot — the same function whose answer
+    // defaultTextureTexel returns the bytes of, so what a tier-0 case pins IS what this loop binds.
+    // There is deliberately no per-slot table here: the three physical textures cover five slots
+    // (occlusion shares metallicRoughness' white-linear texel, emissive shares baseColor's white-sRGB
+    // one), and a hand-written five-name table restating that aliasing is a swap waiting to happen
+    // with no automated witness — binding the flat normal as a base colour still draws a lit surface.
     std::array<rhi::TextureSamplerBinding, MATERIAL_TEXTURE_SLOT_COUNT> bindings{};
     for (std::size_t i = 0; i < MATERIAL_TEXTURE_SLOT_COUNT; ++i) {
         const MaterialTextureSlot& source = materialSlotAt(slot.slots, i);
-        bindings[i] = {source.texture.valid() ? source.texture : defaults[i], slot.samplers[i]};
+        const rhi::TextureHandle fallback = defaultTextures[static_cast<std::size_t>(defaultTextureKindForSlot(i))];
+        bindings[i] = {source.texture.valid() ? source.texture : fallback, slot.samplers[i]};
     }
     // ONE call for all five (AC-26): slot order is declaration order, the shaderc contract, so t0..t4
     // and s0..s4 land in D7's binding order by construction.
@@ -426,7 +378,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     device->bindGraphicsPipeline(pass, pipeline);  // cull-back is the reset state
     bool boundCullNone = false;
 
-    const GpuLightBlock lights = pack(view);
+    const detail::GpuLightBlock lights = detail::packLights(view);
     device->pushFragmentUniforms(cmd, 0, std::as_bytes(std::span{&lights, 1}));
 
     // The state cache is three variables, and the loop is correct under ANY instance order because

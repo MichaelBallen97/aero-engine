@@ -110,7 +110,16 @@ struct MaterialDefaultTexture {
     rhi::TextureFormat format = rhi::TextureFormat::RGBA8Unorm;
 };
 
-// THE definition of the three built-in defaults (D7), by slot index in binding order:
+// THREE physical 1x1 textures cover FIVE slots, because occlusion shares metallicRoughness' white
+// linear texel and emissive shares baseColor's white sRGB one. Naming that set makes the renderer's
+// fallbacks addressable BY KIND rather than by a hand-written per-slot table of member names — see
+// defaultTextureKindForSlot below for why that distinction is load-bearing.
+enum class MaterialDefaultTextureKind : std::uint8_t { WhiteSrgb, WhiteLinear, FlatNormal };
+
+inline constexpr std::size_t MATERIAL_DEFAULT_TEXTURE_KIND_COUNT = 3;
+
+// THE single decision of "which built-in default belongs to slot k" (D7), by slot index in binding
+// order:
 //   0 baseColor         white, sRGB    — the factor does the work
 //   1 metallicRoughness white, linear  — glTF reads metallic from B and roughness from G, so a white
 //                                        texel passes both factors through unscaled
@@ -118,18 +127,43 @@ struct MaterialDefaultTexture {
 //   3 occlusion         white, linear  — occlusion 1 == unoccluded
 //   4 emissive          white, sRGB    — glTF's emissive factor defaults to 0, so an absent emissive
 //                                        map renders black THROUGH a white texel
-// ForwardRenderer::create() uploads exactly these bytes; nothing else spells them, so a texel typo is
-// a red test rather than a silently wrong-looking surface.
-[[nodiscard]] inline MaterialDefaultTexture defaultTextureTexel(std::size_t slotIndex) noexcept {
+// ForwardRenderer::bindMaterialTextures resolves slot k's fallback THROUGH THIS FUNCTION, indexing an
+// array held by kind — it does not keep a second, hand-written table of its own. That is deliberate: a
+// per-slot table inside the renderer is a place where "slot 0 gets the flat normal" is a one-token
+// typo with no witness at all, since binding the wrong default still draws a fully lit surface (a
+// baseColor of 80 80 FF and normals decoded from white). With the mapping spelled once, a swap here
+// moves defaultTextureTexel's answer and reddens the tier-0 case that pins it.
+[[nodiscard]] inline MaterialDefaultTextureKind defaultTextureKindForSlot(std::size_t slotIndex) noexcept {
     switch (slotIndex) {
         case 1:
         case 3:
-            return {{0xFF, 0xFF, 0xFF, 0xFF}, rhi::TextureFormat::RGBA8Unorm};
+            return MaterialDefaultTextureKind::WhiteLinear;
         case 2:
-            return {{0x80, 0x80, 0xFF, 0xFF}, rhi::TextureFormat::RGBA8Unorm};
+            return MaterialDefaultTextureKind::FlatNormal;
         default:
-            return {{0xFF, 0xFF, 0xFF, 0xFF}, rhi::TextureFormat::RGBA8UnormSrgb};
+            return MaterialDefaultTextureKind::WhiteSrgb;
     }
+}
+
+// THE definition of the three built-in defaults' bytes. ForwardRenderer::create() uploads exactly
+// these; nothing else spells them, so a texel typo is a red test rather than a silently wrong surface.
+[[nodiscard]] inline MaterialDefaultTexture defaultTextureTexelForKind(MaterialDefaultTextureKind kind) noexcept {
+    switch (kind) {
+        case MaterialDefaultTextureKind::WhiteLinear:
+            return {{0xFF, 0xFF, 0xFF, 0xFF}, rhi::TextureFormat::RGBA8Unorm};
+        case MaterialDefaultTextureKind::FlatNormal:
+            return {{0x80, 0x80, 0xFF, 0xFF}, rhi::TextureFormat::RGBA8Unorm};
+        case MaterialDefaultTextureKind::WhiteSrgb:
+            break;
+    }
+    return {{0xFF, 0xFF, 0xFF, 0xFF}, rhi::TextureFormat::RGBA8UnormSrgb};
+}
+
+// What slot k's built-in default LOOKS like — the composition of the two functions above, and the
+// only form a caller outside the renderer ever needs. Composed rather than restated: a second switch
+// over slot indices would be a second place for the two answers to disagree.
+[[nodiscard]] inline MaterialDefaultTexture defaultTextureTexel(std::size_t slotIndex) noexcept {
+    return defaultTextureTexelForKind(defaultTextureKindForSlot(slotIndex));
 }
 
 // Phantom tag, deliberately never defined — the rhi handles.hpp shape. A Handle<Material> is not

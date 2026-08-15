@@ -140,9 +140,13 @@ private:
     rhi::GraphicsPipelineHandle pipeline{};          // CullMode::Back — the engine convention
     rhi::GraphicsPipelineHandle pipelineCullNone{};  // the doubleSided twin, same two shaders
     std::array<PrimitiveMesh, static_cast<std::size_t>(PrimitiveId::Count)> primitives{};
-    rhi::TextureHandle defaultWhiteSrgb{};    // FF FF FF FF, RGBA8UnormSrgb (baseColor, emissive)
-    rhi::TextureHandle defaultWhiteLinear{};  // FF FF FF FF, RGBA8Unorm     (metallicRoughness, occlusion)
-    rhi::TextureHandle defaultFlatNormal{};   // 80 80 FF FF, RGBA8Unorm     (normal)
+    // The three built-in 1x1 defaults, INDEXED BY MaterialDefaultTextureKind — never by slot, and
+    // never as three separately named members. Five slots map onto these three through
+    // material.hpp's defaultTextureKindForSlot, which is the single place that mapping is decided;
+    // the alternative (three names plus a five-entry table of them inside the .cpp) put the same
+    // decision in two places, where a swapped pair renders a loud visual defect that no automated
+    // case in this tree can see.
+    std::array<rhi::TextureHandle, MATERIAL_DEFAULT_TEXTURE_KIND_COUNT> defaultTextures{};
     SlotMap<MaterialSlot, Material> materials;
     std::vector<std::pair<rhi::SamplerDesc, rhi::SamplerHandle>> samplerCache;  // linear scan; tiny
     MaterialHandle defaultMaterialHandle{};
