@@ -68,6 +68,19 @@ static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
     return index < static_cast<std::size_t>(PrimitiveId::Count) ? index : static_cast<std::size_t>(PrimitiveId::Cube);
 }
 
+// Full-field SamplerDesc equality — rhi::SamplerDesc has no operator== (it is a plain descriptor
+// aggregate), and adding one there would be an rhi public-header change this task does not need.
+// AC-25 only requires wrap U/V, min/mag, mip mode and the maxLod-0 idiom in the dedup key; comparing
+// EVERY field is strictly safer, costs nothing at these sizes, and cannot silently miss a field a
+// future desc gains — a new member is a compile error here rather than a wrongly-shared sampler.
+[[nodiscard]] bool samplerDescEquals(const rhi::SamplerDesc& a, const rhi::SamplerDesc& b) noexcept {
+    return a.minFilter == b.minFilter && a.magFilter == b.magFilter && a.mipmapMode == b.mipmapMode &&
+           a.addressU == b.addressU && a.addressV == b.addressV && a.addressW == b.addressW &&
+           a.mipLodBias == b.mipLodBias && a.minLod == b.minLod && a.maxLod == b.maxLod &&
+           a.enableAnisotropy == b.enableAnisotropy && a.maxAnisotropy == b.maxAnisotropy &&
+           a.enableCompare == b.enableCompare && a.compareOp == b.compareOp;
+}
+
 [[nodiscard]] GpuLightBlock pack(const RenderView& view) {
     GpuLightBlock block{};
     block.ambient = view.ambient;
@@ -83,16 +96,23 @@ static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
 
 }  // namespace
 
-ForwardRenderer::ForwardRenderer(
-    rhi::Device* deviceIn, rhi::GraphicsPipelineHandle pipelineIn,
-    std::array<PrimitiveMesh, static_cast<std::size_t>(PrimitiveId::Count)> primitivesIn) noexcept
-    : device(deviceIn), pipeline(pipelineIn), primitives(primitivesIn) {}
+ForwardRenderer::ForwardRenderer(rhi::Device* deviceIn, rhi::GraphicsPipelineHandle pipelineIn,
+                                 rhi::GraphicsPipelineHandle pipelineCullNoneIn) noexcept
+    : device(deviceIn), pipeline(pipelineIn), pipelineCullNone(pipelineCullNoneIn) {}
 
 ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
-    : device(other.device), pipeline(other.pipeline), primitives(other.primitives) {
-    other.device = nullptr;
-    other.pipeline = {};
-    other.primitives = {};
+    : device(other.device),
+      pipeline(other.pipeline),
+      pipelineCullNone(other.pipelineCullNone),
+      primitives(other.primitives),
+      defaultWhiteSrgb(other.defaultWhiteSrgb),
+      defaultWhiteLinear(other.defaultWhiteLinear),
+      defaultFlatNormal(other.defaultFlatNormal),
+      materials(std::move(other.materials)),
+      samplerCache(std::move(other.samplerCache)),
+      defaultMaterialHandle(other.defaultMaterialHandle),
+      warnedBlendOnce(other.warnedBlendOnce) {
+    other.reset();
 }
 
 ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
@@ -100,15 +120,35 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         destroyAll();
         device = other.device;
         pipeline = other.pipeline;
+        pipelineCullNone = other.pipelineCullNone;
         primitives = other.primitives;
-        other.device = nullptr;
-        other.pipeline = {};
-        other.primitives = {};
+        defaultWhiteSrgb = other.defaultWhiteSrgb;
+        defaultWhiteLinear = other.defaultWhiteLinear;
+        defaultFlatNormal = other.defaultFlatNormal;
+        materials = std::move(other.materials);
+        samplerCache = std::move(other.samplerCache);
+        defaultMaterialHandle = other.defaultMaterialHandle;
+        warnedBlendOnce = other.warnedBlendOnce;
+        other.reset();
     }
     return *this;
 }
 
 ForwardRenderer::~ForwardRenderer() { destroyAll(); }
+
+void ForwardRenderer::reset() noexcept {
+    device = nullptr;
+    pipeline = {};
+    pipelineCullNone = {};
+    primitives = {};
+    defaultWhiteSrgb = {};
+    defaultWhiteLinear = {};
+    defaultFlatNormal = {};
+    materials.clear();  // a moved-from SlotMap keeps its scalar bookkeeping; clear() zeroes it
+    samplerCache.clear();
+    defaultMaterialHandle = {};
+    warnedBlendOnce = false;
+}
 
 void ForwardRenderer::destroyAll() noexcept {
     if (device == nullptr) {
@@ -116,6 +156,9 @@ void ForwardRenderer::destroyAll() noexcept {
     }
     if (pipeline.valid()) {
         device->destroyGraphicsPipeline(pipeline);
+    }
+    if (pipelineCullNone.valid()) {
+        device->destroyGraphicsPipeline(pipelineCullNone);
     }
     for (const PrimitiveMesh& mesh : primitives) {
         if (mesh.vbuf.valid()) {
@@ -125,9 +168,19 @@ void ForwardRenderer::destroyAll() noexcept {
             device->destroyBuffer(mesh.ibuf);
         }
     }
-    device = nullptr;
-    pipeline = {};
-    primitives = {};
+    // Renderer-owned, unlike the materials' textures: a material BORROWS its textures from the
+    // caller, so nothing here walks the registry looking for rhi::TextureHandles to release.
+    for (const rhi::TextureHandle texture : {defaultWhiteSrgb, defaultWhiteLinear, defaultFlatNormal}) {
+        if (texture.valid()) {
+            device->destroyTexture(texture);
+        }
+    }
+    for (const auto& entry : samplerCache) {
+        if (entry.second.valid()) {
+            device->destroySampler(entry.second);
+        }
+    }
+    reset();
 }
 
 std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, const VirtualFileSystem& shaderVfs,
@@ -179,23 +232,31 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
         .depthStencilFormat = config.depthFormat,
     };
     const rhi::GraphicsPipelineHandle pipeline = device.createGraphicsPipeline(pipelineDesc);
+    // The doubleSided twin (task 3.4.1): identical in every respect but cullMode, built from the SAME
+    // two shader handles so there is no second shader load and no way for the pair to drift.
+    rhi::GraphicsPipelineDesc cullNoneDesc = pipelineDesc;
+    cullNoneDesc.rasterizer.cullMode = rhi::CullMode::None;
+    const rhi::GraphicsPipelineHandle pipelineCullNone = device.createGraphicsPipeline(cullNoneDesc);
     device.destroyShader(vs);  // safe after pipeline creation (device.hpp)
     device.destroyShader(fs);
-    if (!pipeline.valid()) {
+    if (!pipeline.valid() || !pipelineCullNone.valid()) {
         AERO_LOG_ERROR("ForwardRenderer::create: pipeline creation failed");
+        if (pipeline.valid()) {
+            device.destroyGraphicsPipeline(pipeline);
+        }
+        if (pipelineCullNone.valid()) {
+            device.destroyGraphicsPipeline(pipelineCullNone);
+        }
         return std::nullopt;
     }
 
-    std::array<ForwardRenderer::PrimitiveMesh, static_cast<std::size_t>(PrimitiveId::Count)> primitives{};
-    const auto destroyPartial = [&](std::size_t uploadedCount) {
-        device.destroyGraphicsPipeline(pipeline);
-        for (std::size_t i = 0; i < uploadedCount; ++i) {
-            device.destroyBuffer(primitives[i].vbuf);
-            device.destroyBuffer(primitives[i].ibuf);
-        }
-    };
+    // From here on the renderer OWNS everything created, and its destructor IS the failure path —
+    // which is why the old destroyPartial bookkeeping is gone: every early return below releases the
+    // pipelines, the buffers uploaded so far, the default textures and the samplers, with no list to
+    // keep in sync as that set grows.
+    ForwardRenderer renderer{&device, pipeline, pipelineCullNone};
 
-    for (std::size_t i = 0; i < primitives.size(); ++i) {
+    for (std::size_t i = 0; i < renderer.primitives.size(); ++i) {
         detail::PrimitiveGeometry geometry;
         switch (static_cast<PrimitiveId>(i)) {
             case PrimitiveId::Cube:
@@ -215,26 +276,119 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
         const auto ibytes = static_cast<std::uint32_t>(geometry.indices.size() * sizeof(std::uint16_t));
         const rhi::BufferHandle vbuf = device.createBuffer({.usage = rhi::BufferUsage::Vertex, .size = vbytes});
         const rhi::BufferHandle ibuf = device.createBuffer({.usage = rhi::BufferUsage::Index, .size = ibytes});
+        // Recorded BEFORE the success check, so a failed upload still leaves both buffers owned by
+        // `renderer` and released by its destructor on the early return below.
+        renderer.primitives[i] = {vbuf, ibuf, static_cast<std::uint32_t>(geometry.indices.size())};
         const bool uploadedVertices =
             vbuf.valid() && device.uploadBuffer(vbuf, 0, std::as_bytes(std::span{geometry.vertices}));
         const bool uploadedIndices =
             ibuf.valid() && device.uploadBuffer(ibuf, 0, std::as_bytes(std::span{geometry.indices}));
         if (!uploadedVertices || !uploadedIndices) {
             AERO_LOG_ERROR("ForwardRenderer::create: primitive {} upload failed", i);
-            if (vbuf.valid()) {
-                device.destroyBuffer(vbuf);
-            }
-            if (ibuf.valid()) {
-                device.destroyBuffer(ibuf);
-            }
-            destroyPartial(i);
             return std::nullopt;
         }
-        primitives[i] = {vbuf, ibuf, static_cast<std::uint32_t>(geometry.indices.size())};
     }
 
-    return ForwardRenderer{&device, pipeline, primitives};
+    if (!renderer.createDefaults()) {
+        return std::nullopt;
+    }
+    // Never fails: a material owns no GPU resource of its own, and createDefaults has already proven
+    // the default SamplerDesc resolves, which is the only device call this can make.
+    renderer.defaultMaterialHandle = renderer.createMaterial(DEFAULT_MATERIAL_PARAMS, {});
+
+    return renderer;
 }
+
+bool ForwardRenderer::createDefaults() {
+    // The three 1x1 identity textures (D7). material.hpp's defaultTextureTexel is the SINGLE
+    // definition of their bytes and formats — restating them here would be the second place for a
+    // texel typo to hide, and the tier-0 case that pins them would then prove nothing about what the
+    // GPU actually receives.
+    const std::array<rhi::TextureHandle*, 3> targets{&defaultWhiteSrgb, &defaultWhiteLinear, &defaultFlatNormal};
+    const std::array<std::size_t, 3> slotForTarget{0, 1, 2};  // baseColor (sRGB), metallicRoughness, normal
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        const MaterialDefaultTexture entry = defaultTextureTexel(slotForTarget[i]);
+        const rhi::TextureHandle texture = device->createTexture(
+            {.format = entry.format, .usage = rhi::TextureUsage::Sampler, .width = 1, .height = 1});
+        *targets[i] = texture;
+        if (!texture.valid() || !device->uploadTexture(texture, 0, std::as_bytes(std::span{entry.texel}))) {
+            AERO_LOG_ERROR("ForwardRenderer::create: built-in default texture {} could not be created", i);
+            return false;
+        }
+    }
+    // Pre-resolve the default SamplerDesc so the default material (and every slot a caller leaves
+    // unset) shares one handle, and so a device that cannot create a sampler at all fails HERE,
+    // where there is still something to say about it.
+    if (!resolveSampler(rhi::SamplerDesc{}).valid()) {
+        AERO_LOG_ERROR("ForwardRenderer::create: the default sampler could not be created");
+        return false;
+    }
+    return true;
+}
+
+rhi::SamplerHandle ForwardRenderer::resolveSampler(const rhi::SamplerDesc& desc) {
+    for (const auto& entry : samplerCache) {
+        if (samplerDescEquals(entry.first, desc)) {
+            return entry.second;
+        }
+    }
+    const rhi::SamplerHandle sampler = device->createSampler(desc);
+    if (sampler.valid()) {
+        samplerCache.emplace_back(desc, sampler);
+    }
+    return sampler;
+}
+
+MaterialHandle ForwardRenderer::createMaterial(const MaterialParams& params, const MaterialTextureSlots& slots) {
+    AERO_PROFILE_ZONE;
+    MaterialSlot slot;
+    slot.params = params;
+    slot.slots = slots;
+    for (std::size_t i = 0; i < MATERIAL_TEXTURE_SLOT_COUNT; ++i) {
+        slot.samplers[i] = resolveSampler(materialSlotAt(slots, i).sampler);
+    }
+    // No std::move: MaterialSlot is trivially copyable (handles, floats and enums throughout), so a
+    // move would be a copy with extra ceremony — and clang-tidy says so.
+    return materials.insert(slot);
+}
+
+bool ForwardRenderer::updateMaterial(MaterialHandle material, const MaterialParams& params,
+                                     const MaterialTextureSlots& slots) {
+    AERO_PROFILE_ZONE;
+    if (!materials.contains(material)) {
+        AERO_LOG_WARN("ForwardRenderer::updateMaterial: stale or invalid MaterialHandle — no-op");
+        return false;
+    }
+    // Resolved BEFORE the registry is touched: resolveSampler may append to samplerCache, and doing
+    // the work first keeps the material's five handles from being half-written if it ever cannot.
+    std::array<rhi::SamplerHandle, MATERIAL_TEXTURE_SLOT_COUNT> samplers{};
+    for (std::size_t i = 0; i < MATERIAL_TEXTURE_SLOT_COUNT; ++i) {
+        samplers[i] = resolveSampler(materialSlotAt(slots, i).sampler);
+    }
+    MaterialSlot* const slot = materials.get(material);
+    slot->params = params;
+    slot->slots = slots;
+    slot->samplers = samplers;
+    return true;
+}
+
+void ForwardRenderer::destroyMaterial(MaterialHandle material) {
+    if (material == defaultMaterialHandle && material.valid()) {
+        // Destroying the fallback would leave every invalid MeshInstance::material with nothing to
+        // resolve to, so this is a logged no-op rather than a refusal the caller must handle.
+        AERO_LOG_WARN("ForwardRenderer::destroyMaterial: the built-in default material is not destroyable — no-op");
+        return;
+    }
+    if (!materials.remove(material)) {
+        AERO_LOG_WARN("ForwardRenderer::destroyMaterial: stale or invalid MaterialHandle — no-op");
+    }
+}
+
+MaterialHandle ForwardRenderer::defaultMaterial() const noexcept { return defaultMaterialHandle; }
+
+std::size_t ForwardRenderer::samplerCacheSize() const noexcept { return samplerCache.size(); }
+
+bool ForwardRenderer::hasWarnedBlendOpaque() const noexcept { return warnedBlendOnce; }
 
 void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     AERO_PROFILE_ZONE;

@@ -1,8 +1,11 @@
 // tests/render_material_test.cpp — task 3.4.1: the render-side material system (PB*).
 //
-// Tier 0 (this section, no GPU, every lane): the primitive generators' tangent/UV invariants.
-// Later steps grow this TU with the cooked-texture format mapping, the upload-size cross-check, and
-// the GPU-gated registry / bridge cases.
+// Tier 0 (no GPU, every lane): the primitive generators' tangent/UV invariants, the cooked ->
+// rhi format mapping's totality, the upload-size formula cross-checked against docs/09 section 10's
+// own level arithmetic, the default material's params, and the three built-in default texels.
+// Tier 1 (a real Device, NO window — RenderTarget supplies the formats, gated by AERO_SKIP_OR_FAIL):
+// the cooked-texture bridge per block family, the committed golden uploaded verbatim, the two
+// D3-refusal goldens, and the registry's lifecycle / stale-handle / sampler-dedup behaviour.
 //
 // primitives.hpp is PRIVATE to engine/render (src/, never installed), so it is reached by a relative
 // include — the tests/editor/blender_service_test.cpp precedent. The SYMBOLS come from aero_render,
@@ -11,23 +14,40 @@
 // <ostream> is included preventively: MSVC alone needs the complete type to stringify a string_view
 // inside a doctest CHECK (the four-time trap in .claude/rules/ci-portability.md). Enum comparisons
 // use double parentheses, because engine::rhi::toString is found by ADL from doctest's stringifier.
+//
+// Every case-local table pins a LITERAL row count, never TABLE.size() against itself: a guard derived
+// from the table it guards cannot see a row deleted (3.3.2's anti-vacuity lesson). The tables are
+// `constexpr std::array` with CTAD and no explicit size, so a deleted row SHRINKS the array and the
+// literal count reddens.
 
+#include <aero/assets/cooked_texture.hpp>
+#include <aero/assets/texture_cook.hpp>
+#include <aero/platform/platform.hpp>
 #include <aero/render/render.hpp>
+#include <aero/rhi/rhi.hpp>
 
 #include "../engine/render/src/primitives.hpp"
+#include "cooked_texture_golden.hpp"  // the frozen byte goldens, shared with the cooked-texture suite
+#include "rhi_test_support.hpp"
 
 #include <doctest/doctest.h>
 
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <ostream>
+#include <span>
 #include <string_view>
+#include <vector>
 
 using engine::Vec2;
 using engine::Vec3;
 using engine::Vec4;
+using engine::assets::CookedTextureFormat;
 using engine::render::MeshVertex;
+using engine::rhi::TextureFormat;
 
 namespace {
 
@@ -132,3 +152,473 @@ TEST_CASE("render material: the sphere's UVs span the full [0,1] range in both a
     CHECK(sphere.vertices[288].uv == Vec2{1.0F, 1.0F});
     CHECK(sphere.vertices[272].uv == Vec2{0.0F, 1.0F});
 }
+
+// ================================================================================================
+// Tier 0 — the cooked-texture format mapping, the upload-size arithmetic, the material defaults.
+// ================================================================================================
+
+namespace {
+
+struct FormatMappingRow {
+    CookedTextureFormat cooked;
+    TextureFormat rhi;
+};
+
+struct LevelSizeRow {
+    TextureFormat format;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint64_t expectedBytes;
+};
+
+struct DefaultTexelRow {
+    std::size_t slotIndex;
+    std::array<std::uint8_t, 4> texel;
+    TextureFormat format;
+};
+
+struct Extent {
+    std::uint32_t width;
+    std::uint32_t height;
+};
+
+}  // namespace
+
+TEST_CASE("render material: the cooked -> rhi format mapping is total and injective (PB1)") {
+    // The mapping RE-STATED as a literal table, deliberately: reading it back out of the same switch
+    // under test would agree with any source-side swap. Eight rows for the eight cooked formats.
+    constexpr std::array MAPPING_ROWS{
+        FormatMappingRow{CookedTextureFormat::Rgba8Unorm, TextureFormat::RGBA8Unorm},
+        FormatMappingRow{CookedTextureFormat::Rgba8Srgb, TextureFormat::RGBA8UnormSrgb},
+        FormatMappingRow{CookedTextureFormat::Bc1RgbUnorm, TextureFormat::BC1RGBAUnorm},
+        FormatMappingRow{CookedTextureFormat::Bc1RgbSrgb, TextureFormat::BC1RGBAUnormSrgb},
+        FormatMappingRow{CookedTextureFormat::Bc3Unorm, TextureFormat::BC3RGBAUnorm},
+        FormatMappingRow{CookedTextureFormat::Bc3Srgb, TextureFormat::BC3RGBAUnormSrgb},
+        FormatMappingRow{CookedTextureFormat::Bc4Unorm, TextureFormat::BC4RUnorm},
+        FormatMappingRow{CookedTextureFormat::Bc5Unorm, TextureFormat::BC5RGUnorm},
+    };
+    CHECK(MAPPING_ROWS.size() == 8);
+
+    for (const FormatMappingRow& row : MAPPING_ROWS) {
+        // Double parentheses: engine::rhi::toString(TextureFormat) is found by ADL from doctest's
+        // stringifier and would be a hard compile error on every lane without them.
+        CHECK((engine::render::cookedTextureToRhiFormat(row.cooked) == row.rhi));
+        // Colour space must survive the crossing in BOTH directions — an sRGB cooked format maps to
+        // an sRGB rhi format and never the reverse, which is the half a swapped pair of arms breaks.
+        CHECK(engine::assets::isSrgbCookedFormat(row.cooked) == engine::rhi::isSrgbFormat(row.rhi));
+        // ...and so must the block geometry, which is what makes levelBytes' length and
+        // textureLevelByteSize's expectation agree by construction rather than by luck.
+        CHECK(engine::assets::cookedTextureBlockBytes(row.cooked) == engine::rhi::texelBlockSize(row.rhi));
+        CHECK(engine::assets::cookedTextureBlockWidth(row.cooked) == engine::rhi::texelBlockWidth(row.rhi));
+        CHECK(engine::assets::cookedTextureBlockHeight(row.cooked) == engine::rhi::texelBlockHeight(row.rhi));
+    }
+
+    // Injective: eight cooked formats, eight DISTINCT rhi formats. A swap that maps two cooked values
+    // onto one rhi value passes every per-row check above (both would still be BCn, both still sRGB)
+    // and fails only here.
+    for (std::size_t i = 0; i < MAPPING_ROWS.size(); ++i) {
+        for (std::size_t j = i + 1; j < MAPPING_ROWS.size(); ++j) {
+            CHECK((MAPPING_ROWS[i].rhi != MAPPING_ROWS[j].rhi));
+        }
+    }
+}
+
+TEST_CASE("render material: textureLevelByteSize matches docs/09 section 10's level arithmetic (PB2)") {
+    // Hand-computed against blockBytes * ceil(w/blockW) * ceil(h/blockH). The mip-tail rows (2x2, 1x1)
+    // are the whole point: a 2x2 BC1 level is ONE 8-byte block, not four texels' worth of anything.
+    // The 5x3 BC5 row reads 32 because ceil(5/4) * ceil(3/4) == 2 blocks of 16 — which the committed
+    // 5x3 BC5 golden's own level-0 length confirms independently.
+    constexpr std::array LEVEL_SIZE_ROWS{
+        LevelSizeRow{TextureFormat::BC1RGBAUnorm, 4, 4, 8},      LevelSizeRow{TextureFormat::BC1RGBAUnorm, 5, 3, 16},
+        LevelSizeRow{TextureFormat::BC1RGBAUnorm, 2, 2, 8},      LevelSizeRow{TextureFormat::BC1RGBAUnorm, 1, 1, 8},
+        LevelSizeRow{TextureFormat::BC1RGBAUnormSrgb, 8, 8, 32}, LevelSizeRow{TextureFormat::BC3RGBAUnorm, 8, 8, 64},
+        LevelSizeRow{TextureFormat::BC3RGBAUnormSrgb, 2, 2, 16}, LevelSizeRow{TextureFormat::BC4RUnorm, 7, 5, 32},
+        LevelSizeRow{TextureFormat::BC5RGUnorm, 5, 3, 32},       LevelSizeRow{TextureFormat::RGBA8Unorm, 5, 3, 60},
+        LevelSizeRow{TextureFormat::D32Float, 4, 4, 0},          LevelSizeRow{TextureFormat::Invalid, 4, 4, 0},
+    };
+    CHECK(LEVEL_SIZE_ROWS.size() == 12);
+
+    for (const LevelSizeRow& row : LEVEL_SIZE_ROWS) {
+        INFO("format: ", engine::rhi::toString(row.format), " ", row.width, "x", row.height);
+        CHECK(engine::rhi::textureLevelByteSize(row.format, row.width, row.height) == row.expectedBytes);
+    }
+
+    // The independent half: for every cooked format, the rhi formula must agree with the cooked
+    // container's OWN block arithmetic over a range of extents including both mip tails and two
+    // partial-block shapes. Two implementations of one rule, cross-checked (INV-M4).
+    constexpr std::array COOKED_FORMATS{CookedTextureFormat::Rgba8Unorm,  CookedTextureFormat::Rgba8Srgb,
+                                        CookedTextureFormat::Bc1RgbUnorm, CookedTextureFormat::Bc1RgbSrgb,
+                                        CookedTextureFormat::Bc3Unorm,    CookedTextureFormat::Bc3Srgb,
+                                        CookedTextureFormat::Bc4Unorm,    CookedTextureFormat::Bc5Unorm};
+    constexpr std::array EXTENTS{Extent{1, 1}, Extent{2, 2}, Extent{3, 7},  Extent{4, 4},
+                                 Extent{5, 3}, Extent{8, 8}, Extent{16, 9}, Extent{32, 32}};
+    CHECK(COOKED_FORMATS.size() == 8);
+    CHECK(EXTENTS.size() == 8);
+
+    for (const CookedTextureFormat cooked : COOKED_FORMATS) {
+        const TextureFormat rhiFormat = engine::render::cookedTextureToRhiFormat(cooked);
+        const std::uint64_t blockW = engine::assets::cookedTextureBlockWidth(cooked);
+        const std::uint64_t blockH = engine::assets::cookedTextureBlockHeight(cooked);
+        for (const Extent& extent : EXTENTS) {
+            const std::uint64_t blocksX = (extent.width + blockW - 1) / blockW;
+            const std::uint64_t blocksY = (extent.height + blockH - 1) / blockH;
+            const std::uint64_t cookedBytes = blocksX * blocksY * engine::assets::cookedTextureBlockBytes(cooked);
+            CHECK(engine::rhi::textureLevelByteSize(rhiFormat, extent.width, extent.height) == cookedBytes);
+        }
+    }
+}
+
+TEST_CASE("render material: the default material's params are the near-Lambert set, not glTF's (PB4)") {
+    // Two different defaults for two different questions, both pinned as literals here. The FILE
+    // FORMAT keeps glTF's metallic 1 (docs/09 section 11); the RENDER-SIDE fallback is metallic 0,
+    // because a metal with no environment renders near-black under analytic lights and v1 has no IBL.
+    CHECK(engine::render::MaterialParams{}.metallicFactor == 1.0F);   // the struct default: glTF's
+    CHECK(engine::render::MaterialParams{}.roughnessFactor == 1.0F);  //
+    CHECK(engine::render::DEFAULT_MATERIAL_PARAMS.metallicFactor == 0.0F);
+    CHECK(engine::render::DEFAULT_MATERIAL_PARAMS.roughnessFactor == 1.0F);
+    CHECK(engine::render::DEFAULT_MATERIAL_PARAMS.baseColorFactor == Vec4::one());
+    CHECK(engine::render::DEFAULT_MATERIAL_PARAMS.emissiveFactor == Vec3{});
+    CHECK(engine::render::DEFAULT_MATERIAL_PARAMS.normalScale == 1.0F);
+    CHECK(engine::render::DEFAULT_MATERIAL_PARAMS.occlusionStrength == 1.0F);
+    CHECK((engine::render::DEFAULT_MATERIAL_PARAMS.alpha == engine::render::MaterialAlpha::Opaque));
+    CHECK(engine::render::DEFAULT_MATERIAL_PARAMS.doubleSided == false);
+}
+
+TEST_CASE("render material: the five slots index in D7's binding order (PB4)") {
+    engine::render::MaterialTextureSlots slots;
+    slots.baseColor.texture = engine::rhi::TextureHandle{10, 1};
+    slots.metallicRoughness.texture = engine::rhi::TextureHandle{11, 1};
+    slots.normal.texture = engine::rhi::TextureHandle{12, 1};
+    slots.occlusion.texture = engine::rhi::TextureHandle{13, 1};
+    slots.emissive.texture = engine::rhi::TextureHandle{14, 1};
+
+    CHECK(engine::render::MATERIAL_TEXTURE_SLOT_COUNT == 5);
+    for (std::size_t i = 0; i < engine::render::MATERIAL_TEXTURE_SLOT_COUNT; ++i) {
+        INFO("slot: ", i);
+        CHECK(engine::render::materialSlotAt(slots, i).texture.index == 10 + static_cast<std::uint32_t>(i));
+    }
+}
+
+TEST_CASE("render material: the three built-in 1x1 default texels and their colour spaces (PB10)") {
+    // ForwardRenderer::create uploads exactly what defaultTextureTexel returns, so a texel typo here
+    // is a red test rather than a silently wrong-looking surface — no pixel readback needed. The
+    // expectations are literals: reading them back out of the function under test would prove nothing.
+    constexpr std::array DEFAULT_TEXEL_ROWS{
+        DefaultTexelRow{0, {0xFF, 0xFF, 0xFF, 0xFF}, TextureFormat::RGBA8UnormSrgb},  // baseColor
+        DefaultTexelRow{1, {0xFF, 0xFF, 0xFF, 0xFF}, TextureFormat::RGBA8Unorm},      // metallicRoughness
+        DefaultTexelRow{2, {0x80, 0x80, 0xFF, 0xFF}, TextureFormat::RGBA8Unorm},      // normal (flat +Z)
+        DefaultTexelRow{3, {0xFF, 0xFF, 0xFF, 0xFF}, TextureFormat::RGBA8Unorm},      // occlusion
+        DefaultTexelRow{4, {0xFF, 0xFF, 0xFF, 0xFF}, TextureFormat::RGBA8UnormSrgb},  // emissive
+    };
+    CHECK(DEFAULT_TEXEL_ROWS.size() == 5);
+
+    for (const DefaultTexelRow& row : DEFAULT_TEXEL_ROWS) {
+        INFO("slot: ", row.slotIndex);
+        const engine::render::MaterialDefaultTexture entry = engine::render::defaultTextureTexel(row.slotIndex);
+        CHECK(entry.texel == row.texel);
+        CHECK((entry.format == row.format));
+    }
+}
+
+// ================================================================================================
+// Tier 1 — a real Device, no window. The bridge's first cooked-texture-to-GPU crossing in this
+// project's history, and the registry's lifecycle.
+// ================================================================================================
+
+namespace {
+
+// A deterministic 8x8 RGBA8 source: a red/blue ramp across, green down, fully opaque. 64 distinct
+// texels, so no encoder takes its degenerate flat-block arm by accident, and 8x8 is block-aligned in
+// every format here so the top level uploads under the alignment rule while the chain's 2x2 and 1x1
+// tail exercises the single-partial-block upload on a real GPU.
+[[nodiscard]] std::vector<std::byte> makeSourceTexels() {
+    std::vector<std::byte> texels(static_cast<std::size_t>(8U) * 8U * 4U);
+    for (std::uint32_t y = 0; y < 8; ++y) {
+        for (std::uint32_t x = 0; x < 8; ++x) {
+            const std::size_t base = ((static_cast<std::size_t>(y) * 8U) + x) * 4U;
+            texels[base + 0] = static_cast<std::byte>(255U - (x * 32U));
+            texels[base + 1] = static_cast<std::byte>(y * 32U);
+            texels[base + 2] = static_cast<std::byte>(x * 32U);
+            texels[base + 3] = static_cast<std::byte>(255U);
+        }
+    }
+    return texels;
+}
+
+struct CookedFamilyRow {
+    CookedTextureFormat format;
+    std::uint32_t expectedLevels;
+};
+
+}  // namespace
+
+TEST_CASE("render material: every cooked format uploads through the bridge, mip tail included (PB5)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+
+    // Artifacts COOKED IN MEMORY rather than read from a committed golden: only one of the four
+    // frozen goldens (the 4x4 BC1) has a block-aligned top level, so "one committed golden per block
+    // family" is not executable — the other two BC goldens are the refusal fixtures below. Cooking
+    // here is sound because 3.3.3's manifest makes the cook deterministic, and it commits no fixture.
+    constexpr std::array COOKED_FAMILY_ROWS{
+        CookedFamilyRow{CookedTextureFormat::Bc1RgbUnorm, 4}, CookedFamilyRow{CookedTextureFormat::Bc1RgbSrgb, 4},
+        CookedFamilyRow{CookedTextureFormat::Bc3Unorm, 4},    CookedFamilyRow{CookedTextureFormat::Bc3Srgb, 4},
+        CookedFamilyRow{CookedTextureFormat::Bc4Unorm, 4},    CookedFamilyRow{CookedTextureFormat::Bc5Unorm, 4},
+        CookedFamilyRow{CookedTextureFormat::Rgba8Unorm, 4},  CookedFamilyRow{CookedTextureFormat::Rgba8Srgb, 4},
+    };
+    CHECK(COOKED_FAMILY_ROWS.size() == 8);
+
+    const std::vector<std::byte> source = makeSourceTexels();
+    for (const CookedFamilyRow& row : COOKED_FAMILY_ROWS) {
+        INFO("cooked format: ", engine::assets::toString(row.format));
+        const engine::assets::TextureCookResult cooked = engine::assets::cookTexture(
+            {.sourceGuid = {}, .width = 8, .height = 8, .rgba8 = source, .format = row.format, .generateMips = true});
+        REQUIRE(cooked.status == engine::assets::TextureCookStatus::Ok);
+
+        const engine::assets::CookedTextureParse parse = engine::assets::parseCookedTexture(cooked.bytes);
+        REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+        CHECK(parse.view.levelCount() == row.expectedLevels);
+        // The tail really is one partial block: at level 3 the extent is 1x1 and the level's own byte
+        // length equals one block, which is exactly what uploadTexture validates against.
+        CHECK(parse.view.levelWidth(3) == 1);
+        CHECK(parse.view.levelBytes(3).size() == engine::assets::cookedTextureBlockBytes(row.format));
+
+        const engine::rhi::TextureHandle texture = engine::render::createTextureFromCookedTexture(*device, parse.view);
+        CHECK(texture.valid());
+        if (texture.valid()) {
+            device->destroyTexture(texture);
+        }
+    }
+}
+
+TEST_CASE("render material: the committed 4x4 BC1 golden uploads verbatim (PB6)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+
+    // Golden A's bytes as committed — the one literal committed-artifact upload in this suite, and
+    // the only place a file this project froze in 3.3.2 reaches a GPU unchanged.
+    const engine::assets::CookedTextureParse parse =
+        engine::assets::parseCookedTexture(std::as_bytes(std::span{aero_test::COOKED_TEXTURE_GOLDEN_BC1_4X4}));
+    REQUIRE(parse.status == engine::assets::CookedTextureStatus::Ok);
+    CHECK(parse.view.width() == 4);
+    CHECK(parse.view.height() == 4);
+    CHECK(parse.view.levelCount() == 3);
+    CHECK((parse.view.format() == CookedTextureFormat::Bc1RgbSrgb));
+
+    const engine::rhi::TextureHandle texture = engine::render::createTextureFromCookedTexture(*device, parse.view);
+    CHECK(texture.valid());
+    if (texture.valid()) {
+        device->destroyTexture(texture);
+    }
+}
+
+TEST_CASE("render material: a cooked artifact with an unaligned top level is refused, not uploaded (PB7)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+
+    // Golden C (5x3 BC5) and Golden D (2x2 BC3) are PERFECTLY VALID cooked artifacts that this device
+    // will not create a texture for: the block-alignment rule is D3D12's, adopted uniformly on every
+    // backend rather than shipping a texture that uploads on macOS and fails on Windows. They are the
+    // refusal fixtures precisely because they exist.
+    const engine::assets::CookedTextureParse bc5 =
+        engine::assets::parseCookedTexture(std::as_bytes(std::span{aero_test::COOKED_TEXTURE_GOLDEN_BC5_5X3}));
+    REQUIRE(bc5.status == engine::assets::CookedTextureStatus::Ok);
+    CHECK(bc5.view.width() == 5);
+    CHECK(bc5.view.height() == 3);
+    CHECK_FALSE(engine::render::createTextureFromCookedTexture(*device, bc5.view).valid());
+
+    const engine::assets::CookedTextureParse bc3 =
+        engine::assets::parseCookedTexture(std::as_bytes(std::span{aero_test::COOKED_TEXTURE_GOLDEN_BC3_SRGB_2X2}));
+    REQUIRE(bc3.status == engine::assets::CookedTextureStatus::Ok);
+    CHECK(bc3.view.width() == 2);
+    CHECK(bc3.view.height() == 2);
+    CHECK_FALSE(engine::render::createTextureFromCookedTexture(*device, bc3.view).valid());
+
+    // The 1x1 RGBA8 golden is the CONTRAST that keeps the two refusals honest: a 1x1-block format is
+    // trivially aligned, so a bridge that refused everything would redden here.
+    const engine::assets::CookedTextureParse rgba8 =
+        engine::assets::parseCookedTexture(std::as_bytes(std::span{aero_test::COOKED_TEXTURE_GOLDEN_RGBA8_1X1}));
+    REQUIRE(rgba8.status == engine::assets::CookedTextureStatus::Ok);
+    const engine::rhi::TextureHandle texture = engine::render::createTextureFromCookedTexture(*device, rgba8.view);
+    CHECK(texture.valid());
+    if (texture.valid()) {
+        device->destroyTexture(texture);
+    }
+}
+
+#if AERO_SHADER_TOOLS_ENABLED
+
+    #include <aero/core/vfs.hpp>
+
+    #include <memory>
+    #include <utility>
+
+namespace {
+
+// A ForwardRenderer needs a colour and a depth format, which a RenderTarget supplies without a window
+// (render_target_test.cpp's own pattern). Returns nullopt only when the caller has already gated on a
+// live Device, so a nullopt here is a genuine failure rather than an environment skip.
+[[nodiscard]] std::optional<engine::render::ForwardRenderer> makeForwardRenderer(
+    engine::rhi::Device& device, const engine::render::RenderTarget& target) {
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    return engine::render::ForwardRenderer::create(
+        device, vfs, {.colorFormat = target.colorFormat(), .depthFormat = target.depthFormat()});
+}
+
+}  // namespace
+
+TEST_CASE("render material: registry create/update/destroy, and stale handles are logged no-ops (PB8)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    const engine::render::MaterialHandle fallback = forward->defaultMaterial();
+    CHECK(fallback.valid());
+
+    const engine::render::MaterialParams params{
+        .baseColorFactor = Vec4{0.2F, 0.4F, 0.6F, 1.0F}, .metallicFactor = 0.5F, .roughnessFactor = 0.25F};
+    const engine::render::MaterialHandle material = forward->createMaterial(params, {});
+    CHECK(material.valid());
+    CHECK((material != fallback));
+
+    CHECK(forward->updateMaterial(material, engine::render::MaterialParams{}, {}));
+
+    forward->destroyMaterial(material);
+    // Stale from here on: update reports false, and a second destroy is a no-op rather than a
+    // double-free (ASan is the backstop for the half a bool cannot express).
+    CHECK_FALSE(forward->updateMaterial(material, params, {}));
+    forward->destroyMaterial(material);
+
+    // A never-minted handle is equally inert.
+    CHECK_FALSE(forward->updateMaterial(engine::render::MaterialHandle{99, 7}, params, {}));
+    forward->destroyMaterial(engine::render::MaterialHandle{});
+
+    // Destroying the built-in default is a LOGGED NO-OP: it stays live, which is exactly what an
+    // invalid MeshInstance::material needs in order to have something to fall back to.
+    forward->destroyMaterial(fallback);
+    CHECK((forward->defaultMaterial() == fallback));
+    CHECK(forward->updateMaterial(fallback, engine::render::DEFAULT_MATERIAL_PARAMS, {}));
+
+    // A slot reused after a destroy mints a NEW generation, so the old handle stays rejected.
+    const engine::render::MaterialHandle reused = forward->createMaterial(params, {});
+    CHECK(reused.valid());
+    CHECK((reused != material));
+    CHECK_FALSE(forward->updateMaterial(material, params, {}));
+}
+
+TEST_CASE("render material: identical sampler state dedups; mip mode and maxLod are in the key (PB9)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    // create() pre-resolves the default SamplerDesc, so exactly one entry exists before anything here
+    // asks for a sampler. A literal, not a re-read of the value under test.
+    CHECK(forward->samplerCacheSize() == 1);
+
+    const engine::render::MaterialHandle first = forward->createMaterial({}, {});
+    const engine::render::MaterialHandle second = forward->createMaterial({}, {});
+    CHECK(first.valid());
+    CHECK(second.valid());
+    CHECK(forward->samplerCacheSize() == 1);  // ten default descs, still one handle
+
+    // Vary the MIP MODE alone: a dedup key that omitted it would report 1 here, which is the whole
+    // point of the case (a wrong mip mode is invisible until a texture is minified on screen).
+    engine::render::MaterialTextureSlots nearestMips;
+    nearestMips.baseColor.sampler.mipmapMode = engine::rhi::MipmapMode::Nearest;
+    CHECK(forward->createMaterial({}, nearestMips).valid());
+    CHECK(forward->samplerCacheSize() == 2);
+    CHECK(forward->createMaterial({}, nearestMips).valid());
+    CHECK(forward->samplerCacheSize() == 2);  // the second ask hits the cache
+
+    // Vary maxLod alone — the "mipFilter: none" idiom is Nearest + maxLod 0, so a key that stopped at
+    // the mip mode would alias clamp-to-base onto plain nearest mipping.
+    engine::render::MaterialTextureSlots clampToBase;
+    clampToBase.baseColor.sampler.mipmapMode = engine::rhi::MipmapMode::Nearest;
+    clampToBase.baseColor.sampler.maxLod = 0.0F;
+    CHECK(forward->createMaterial({}, clampToBase).valid());
+    CHECK(forward->samplerCacheSize() == 3);
+
+    // Vary the wrap mode on a NON-FIRST slot, proving all five slots run through the same resolver.
+    engine::render::MaterialTextureSlots clampedEmissive;
+    clampedEmissive.emissive.sampler.addressU = engine::rhi::AddressMode::ClampToEdge;
+    CHECK(forward->createMaterial({}, clampedEmissive).valid());
+    CHECK(forward->samplerCacheSize() == 4);
+
+    // updateMaterial runs the same resolution path — it may GROW the cache and never shrinks it.
+    CHECK(forward->updateMaterial(first, {}, clampedEmissive));
+    CHECK(forward->samplerCacheSize() == 4);
+
+    // The Blend latch is renderer state, and nothing has drawn yet: it must read false here. Step 7's
+    // draw loop is what sets it, and PB12 is what watches it latch exactly once.
+    CHECK_FALSE(forward->hasWarnedBlendOpaque());
+}
+
+TEST_CASE("render material: a moved-from ForwardRenderer releases nothing twice (PB8)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto first = makeForwardRenderer(*device, *target);
+    REQUIRE(first.has_value());
+    const engine::render::MaterialHandle fallback = first->defaultMaterial();
+
+    // The registry, the sampler cache and the three default textures all joined the members a move has
+    // to transfer; ASan is what catches a missed one as a double free at scope exit.
+    engine::render::ForwardRenderer movedTo = std::move(*first);
+    CHECK((movedTo.defaultMaterial() == fallback));
+    CHECK(movedTo.samplerCacheSize() == 1);
+    CHECK_FALSE(first->defaultMaterial().valid());
+    CHECK(first->samplerCacheSize() == 0);
+
+    auto second = makeForwardRenderer(*device, *target);
+    REQUIRE(second.has_value());
+    movedTo = std::move(*second);  // move-assign over a LIVE renderer: exactly one release of each
+    CHECK(movedTo.defaultMaterial().valid());
+    CHECK(movedTo.samplerCacheSize() == 1);
+    CHECK_FALSE(second->defaultMaterial().valid());
+}
+
+#endif  // AERO_SHADER_TOOLS_ENABLED
