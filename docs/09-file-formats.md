@@ -1671,9 +1671,269 @@ decision, not a test edit.
 
 ---
 
-## 11. Reserved for future formats
+## 11. Material asset v1 (`.aeromat`)
+
+> Enforced in code by `engine/reflect` (`material_format.{hpp,cpp}`, task 3.4.1); the doctest battery
+> in `tests/material_format_test.cpp` is its machine-checkable form, and the two worked examples in
+> 11.3 are byte-pinned there.
+
+### 11.0 Scope
+
+One material per file, JSON, authored and committed alongside the project's other source assets — the
+same medium and the same rules as the scene format in section 2. Section 1 applies in full: the
+two-layer strictness split, the canonical form, and **both round-trip guarantees**.
+
+The extension is **`.aeromat`**, not bare `.json`, and it is load-bearing: materials are N-per-project
+files identified by type-by-extension, the way `.aeromesh` and `.ktx2` are. Nothing sniffs content.
+
+Consumers, all reading through the one parser: the material sample (task 3.4.1), the inspector (task
+3.4.2) and the runtime (Phase 5, from the pak). A material is a *description*; it names its textures
+by GUID (section 5's identity system) and resolves nothing itself.
+
+### 11.1 Envelope
+
+Root object. Key order below is also the canonical write order (11.3).
+
+| Key | Kind | Required | Default | Rule |
+|---|---|---|---|---|
+| `version` | number, integral | yes | — | must equal `1`; validated **first**, before anything structural |
+| `name` | string | no | `""` (≡ absent) | informational; never interpreted |
+| `baseColorFactor` | array of 4 numbers | no | `[1, 1, 1, 1]` | every component in `[0, 1]`; RGBA, linear |
+| `metallicFactor` | number | no | `1` | in `[0, 1]` |
+| `roughnessFactor` | number | no | `1` | in `[0, 1]` |
+| `emissiveFactor` | array of 3 numbers | no | `[0, 0, 0]` | every component `>= 0`, **unbounded above** (HDR-legal, matching the lights' unclamped precedent) |
+| `normalScale` | number | no | `1` | `>= 0`, unbounded above |
+| `occlusionStrength` | number | no | `1` | in `[0, 1]` |
+| `alphaMode` | string | no | `"opaque"` | `"opaque"` \| `"mask"` \| `"blend"` |
+| `alphaCutoff` | number | no | `0.5` | in `[0, 1]`; meaningful only for `"mask"`, stored regardless |
+| `doubleSided` | bool | no | `false` | |
+| `textures` | object | no | `{}` (≡ absent) | member keys are slot names, member values are slot objects |
+
+Every default is **glTF 2.0's own**, verbatim — so `{"version": 1}` is a legal, fully-defaulted
+material. Note that a *rendered* glTF default (metallic 1) looks nothing like a renderer's *fallback*
+material; the two answer different questions and neither is defined by the other.
+
+`textures` has exactly five member keys, which are also their canonical order: `baseColor`,
+`metallicRoughness`, `normal`, `occlusion`, `emissive`. Each is optional; each value is a slot object.
+
+Slot object. Key order below is also the canonical write order.
+
+| Key | Kind | Required | Default | Rule |
+|---|---|---|---|---|
+| `guid` | string | **yes** | — | exactly 32 hex digits, any case; **must not be nil** |
+| `uvSet` | number, integral | no | `0` | in `[0, 3]` |
+| `wrapU` / `wrapV` | string | no | `"repeat"` | `"repeat"` \| `"clamp"` \| `"mirror"` |
+| `minFilter` / `magFilter` | string | no | `"linear"` | `"nearest"` \| `"linear"` |
+| `mipFilter` | string | no | `"linear"` | `"none"` \| `"nearest"` \| `"linear"` |
+
+**Absence of a texture is spelled by omitting the slot, never by a nil `guid`** — the nil GUID is the
+reserved none sentinel everywhere in this document (section 5.2), so a present slot naming it is a
+contradiction and is refused.
+
+`uvSet` is stored for fidelity, so that materializing an import is lossless. A v1 consumer honours set
+`0` only (the vertex layout carries one UV set) and warns on anything else; the cap of 4 is a small
+frozen bound consistent with the cooked mesh container's TexCoord0/1 reality and glTF's practical
+range.
+
+Guid case follows section 5's rule unchanged: **readers accept either case, writers always emit
+lowercase.** An uppercase `guid` therefore loads and is rewritten lowercase on the next canonical
+save; it is not an error, because making `.aeromat` the one format in this document that rejects it
+would be a difference with no reason behind it.
+
+### 11.2 Strictness
+
+Section 1's two layers, applied exactly.
+
+**REJECT** — fail-fast, one deterministic first error, nothing partial returned. The error names the
+offending key as a dotted path (`textures.normal.wrapU`, `baseColorFactor[2]`).
+
+| Condition | Example |
+|---|---|
+| root is not an object | `[]`, `7`, `"x"` |
+| `version` missing, non-integral, or not `1` | `{"version": 2}`, `{"version": "1"}` |
+| wrong kind for any key | `"metallicFactor": "x"`, `"textures": []` |
+| wrong length for either factor array | `"baseColorFactor": [1, 1, 1]` |
+| unknown token for `alphaMode`, `wrapU`/`wrapV`, `minFilter`/`magFilter`, `mipFilter` | `"alphaMode": "shiny"` |
+| present slot with a missing, malformed or nil `guid` | `{}`, `"guid": "0-1-2"`, 32 zeros |
+| `uvSet` outside `[0, 3]`, or non-integral | `"uvSet": 4`, `"uvSet": 1.5` |
+| a factor outside its stated range | `"metallicFactor": 1.1`, `"normalScale": -1` |
+| `null` where a number is required | `"alphaCutoff": null` |
+| a number that is not representable as a 32-bit float | `"metallicFactor": 1e999` |
+
+**`null` where a number belongs REJECTs.** That is deliberately stricter than the scene reader's
+component-payload tolerance, which maps `null` to NaN and continues (section 2.3): a material factor
+has no meaningful "unknown" state, and a NaN roughness is a rendering artefact rather than a missing
+value. Stated here so the difference reads as a decision, not an inconsistency.
+
+Tokens are matched **exactly**, never case-folded: `"OPAQUE"` is an unknown token.
+
+**WARN + ignore** — unknown keys, at any of the three levels (root, `textures`, slot). They load, they
+are warned about once each in document order, and they are **stripped on the next canonical save**.
+That is the additive-evolution path section 1 describes: an older reader keeps loading a newer,
+additively-extended material without a version bump.
+
+A **rejected** document emits exactly one error and **zero** warnings — the unknown-key sweep runs only
+after the whole document has validated.
+
+Duplicate keys in raw text collapse **last-wins** at the JSON layer, before the material layer sees
+them (inherited parser tolerance, exactly as section 2.3 records for scenes). Unlike scenes there is no
+hand-built-DOM corner here: the five slots are five named members of the document, so two records of
+one slot cannot exist.
+
+### 11.3 Canonical form
+
+Section 1's canonical form (UTF-8, no BOM, LF, pretty 2-space, one trailing newline), plus:
+
+- **Root key order:** `version`, `name`, `baseColorFactor`, `metallicFactor`, `roughnessFactor`,
+  `emissiveFactor`, `normalScale`, `occlusionStrength`, `alphaMode`, `alphaCutoff`, `doubleSided`,
+  `textures`.
+- **Slot order inside `textures`:** `baseColor`, `metallicRoughness`, `normal`, `occlusion`,
+  `emissive` — never file order.
+- **Slot key order:** `guid`, `uvSet`, `wrapU`, `wrapV`, `minFilter`, `magFilter`, `mipFilter`.
+- **Scalars are always emitted**, even at their defaults, so a material file reads as its own
+  documentation and two materials diff field for field.
+- **Four omission rules, and only four:** `name` is omitted iff empty; each texture slot is omitted iff
+  absent; `textures` is omitted iff no slot is bound; a bound slot **never** omits a sub-key — it
+  spells its sampler state in full.
+- **Numbers** canonicalize per section 2.4 (integral lexemes re-emit exactly; everything else is the
+  shortest round-trip). So `1.0` writes as `1` and `1e1` writes as `10`.
+
+A fully-defaulted material, which is what `{"version": 1}` means:
+
+```json
+{
+  "version": 1,
+  "baseColorFactor": [
+    1,
+    1,
+    1,
+    1
+  ],
+  "metallicFactor": 1,
+  "roughnessFactor": 1,
+  "emissiveFactor": [
+    0,
+    0,
+    0
+  ],
+  "normalScale": 1,
+  "occlusionStrength": 1,
+  "alphaMode": "opaque",
+  "alphaCutoff": 0.5,
+  "doubleSided": false
+}
+```
+
+One with every key spelled and two slots bound:
+
+```json
+{
+  "version": 1,
+  "name": "brushed steel",
+  "baseColorFactor": [
+    0.8,
+    0.75,
+    0.7,
+    1
+  ],
+  "metallicFactor": 0.9,
+  "roughnessFactor": 0.35,
+  "emissiveFactor": [
+    0,
+    0,
+    2.5
+  ],
+  "normalScale": 1.5,
+  "occlusionStrength": 0.8,
+  "alphaMode": "mask",
+  "alphaCutoff": 0.25,
+  "doubleSided": true,
+  "textures": {
+    "baseColor": {
+      "guid": "0123456789abcdef0123456789abcdef",
+      "uvSet": 0,
+      "wrapU": "repeat",
+      "wrapV": "clamp",
+      "minFilter": "linear",
+      "magFilter": "nearest",
+      "mipFilter": "linear"
+    },
+    "metallicRoughness": {
+      "guid": "fedcba9876543210fedcba9876543210",
+      "uvSet": 1,
+      "wrapU": "mirror",
+      "wrapV": "mirror",
+      "minFilter": "nearest",
+      "magFilter": "nearest",
+      "mipFilter": "none"
+    }
+  }
+}
+```
+
+Both round-trip guarantees hold and each is pinned by its own case: canonical text is a byte-stable
+fixpoint, and for any successfully-parsed input write → parse → write reproduces the first write's
+bytes exactly.
+
+### 11.4 The sampler mapping (normative)
+
+A slot's sampler tokens map to `rhi::SamplerDesc` as follows. The mapping is normative — a consumer
+that resolves these differently is wrong, not merely different — and it is **consumer-implemented**:
+`engine/reflect` deliberately names no rhi type, so that the JSON layer never couples to the GPU layer
+for six lines of switch.
+
+| Field | Token | `rhi::SamplerDesc` |
+|---|---|---|
+| `wrapU` → `addressU`, `wrapV` → `addressV` | `"repeat"` | `AddressMode::Repeat` |
+| | `"clamp"` | `AddressMode::ClampToEdge` |
+| | `"mirror"` | `AddressMode::MirroredRepeat` |
+| `minFilter` → `minFilter`, `magFilter` → `magFilter` | `"nearest"` | `Filter::Nearest` |
+| | `"linear"` | `Filter::Linear` |
+| `mipFilter` → `mipmapMode` | `"nearest"` | `MipmapMode::Nearest`, `maxLod` left at the desc default |
+| | `"linear"` | `MipmapMode::Linear`, `maxLod` left at the desc default |
+| | `"none"` | `MipmapMode::Nearest` **and** `maxLod = 0.0` |
+
+`"none"` is the one row that is not a rename. `rhi::MipmapMode` has no `None`, so "do not use mips" is
+expressed as the clamp-to-base idiom: sample the top level only. `addressW` is untouched — v1 materials
+reference 2D textures.
+
+### 11.5 What this format deliberately does not carry
+
+- **No colour space, anywhere.** sRGB-ness is a property of the referenced artifact and is carried by
+  its own format enumerator (section 10.7); a material cannot re-declare it, and there is no
+  combination of keys here that could contradict a cooked file. Stated so that no future revision adds
+  an `srgb` key: the right place to change a texture's colour space is the cook.
+- **No shader reference.** v1 has one lit shader, so a per-material shader key would name a choice that
+  does not exist. It is a version-bump candidate the day a second one does.
+- **No texture paths.** Only GUIDs — the resolution step belongs to whoever owns the loaded set (the
+  asset database in the editor, the pak in the runtime).
+- **No cooked or binary form.** Section 12's bullet names the owner.
+
+### 11.6 Versioning
+
+Section 1's policy verbatim: formats may break without migration until v1.0, and `version` exists so
+that post-1.0 migrations are possible without archaeology. `version` must equal `1`; a file declaring
+anything else is refused by name, never partially read.
+
+Two worked evolution cases, so the boundary is not re-argued each time:
+
+- **Additive — no bump.** A new *optional* key, at the root or inside a slot, with a default that
+  reproduces today's behaviour. Old readers warn once and ignore it; the value is lost on their next
+  save, which is exactly the section 1 contract.
+- **Bump.** A new *required* key, a removed key, a changed default, a narrowed or widened range, a new
+  token in an existing vocabulary, or any change to what an existing key means. Adding a token counts:
+  an old reader REJECTs the file rather than ignoring the token, so the change is visible as a version
+  difference rather than as a mystery error.
+
+---
+
+## 12. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
   applies unchanged. Section appends here. Still unowned: the `.pak` container itself and cooked
   scenes. The cooked **mesh** container is section 9 and the cooked **texture** container is
   section 10.
+- **Cooked / binary materials** — the pak-rev cooker work, together with cooked scenes. Until then
+  every consumer, editor and runtime alike, reads `.aeromat` through `engine/reflect`'s parser, and a
+  binary material would be a second reader with no second producer. Task 3.4.1 recorded the decision;
+  the trigger is the `.pak` container itself.
