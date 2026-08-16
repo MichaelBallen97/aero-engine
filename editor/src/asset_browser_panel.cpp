@@ -300,16 +300,16 @@ void AssetBrowserPanel::drawHeader() {
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0F);
-    // task 3.4.2: SEVEN, in enum order -- AssetKind::Material sits before Unknown, which stays last.
-    constexpr std::array<AssetKind, 7> KIND_OPTIONS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
-                                                    AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
-                                                    AssetKind::Unknown};
+    // task 3.4.2: the list lives in asset_view.hpp beside the enum, NOT here. A copy in this function
+    // is invisible to every test tier -- seed S2 dropped Material from the local copy this line used
+    // to hold and the whole suite stayed green, because no tier can read a combo's contents. AV53
+    // pins the shared constant instead, which only works while this is the sole reader.
     labelScratch = filter.anyKind ? std::string("All") : std::string(assetKindLabel(filter.kind));
     if (ImGui::BeginCombo("##kindFilter", labelScratch.c_str())) {
         if (ImGui::Selectable("All", filter.anyKind)) {
             record(ActionKind::SetKindFilter, "all");
         }
-        for (const AssetKind kind : KIND_OPTIONS) {
+        for (const AssetKind kind : ASSET_KIND_FILTER_OPTIONS) {
             const bool selected = !filter.anyKind && filter.kind == kind;
             labelScratch = std::string(assetKindLabel(kind));
             ImGui::PushID(static_cast<int>(kind));

@@ -7757,8 +7757,12 @@ TEST_CASE("editor: .aeromat bytes have exactly ONE physical write path (task 3.4
     // And nowhere else in this task's four TUs. editor_app.cpp is deliberately NOT on this list: it is
     // full of unrelated writes (recents, project manifests) and its material arm is asserted the other
     // way round, below.
-    const std::array<std::string_view, 3> mustNotWrite{"/material_panel.cpp", "/material_preview.cpp",
-                                                       "/material_edit.cpp"};
+    // asset_browser_panel.cpp is on this list for a reason the S21 run made concrete: moving the whole
+    // create into its applyPending arm did redden this case, but only through the `soleLineContaining`
+    // REQUIRE above -- an ABSENCE in editor_app.cpp. A seed that ADDED a panel-side write while leaving
+    // the drain in place would have slipped past, and that panel is read-only by contract (D19).
+    const std::array<std::string_view, 4> mustNotWrite{"/material_panel.cpp", "/material_preview.cpp",
+                                                       "/material_edit.cpp", "/asset_browser_panel.cpp"};
     for (const std::string_view leaf : mustNotWrite) {
         CAPTURE(leaf);
         std::string path = AERO_EDITOR_SRC_DIR;
@@ -7778,4 +7782,47 @@ TEST_CASE("editor: .aeromat bytes have exactly ONE physical write path (task 3.4
     for (const std::string& line : appCode) {
         CHECK(line.find("writeMaterialText(") == std::string::npos);
     }
+}
+
+TEST_CASE("editor: every numeric material edit is CLAMPED IN C++, not by the widget (task 3.4.2, I98, AC-18)") {
+    // THE CLOSURE FOR A MEASURED GAP. Seed S18 removed all twelve clamp calls from the Material
+    // panel's scalar rows -- "trust the widget" -- and every one of the 1570 shell cases and 119 GPU
+    // cases stayed green. That is structural, not an oversight in the cases: no tier in this tree can
+    // Ctrl+Click an ImGui slider and type 40 into a [0,1] field, which is precisely the input the
+    // clamp exists for. AC-18 says the widget is NEVER the enforcement, and this is the only place
+    // that sentence can be checked at all.
+    //
+    // Apply's validateMaterial is the BELT (ME41 proves it), so the damage a missing clamp does is not
+    // corruption -- it is an Apply button disabled by a value the user cannot see is out of range.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_panel.cpp");
+
+    // The numeric fields docs/09 section 11.1 bounds. `name` and `doubleSided` are deliberately absent:
+    // neither has a range, so neither is clamped, and listing them would demand a clamp that means
+    // nothing.
+    const std::array<std::string_view, 8> boundedFields{
+        "form.baseColorFactor.", "form.metallicFactor",    "form.roughnessFactor", "form.emissiveFactor.",
+        "form.normalScale",      "form.occlusionStrength", "form.alphaCutoff",     "slot->uvSet"};
+
+    std::size_t assignments = 0;
+    for (const std::string& line : code) {
+        const std::size_t assignAt = line.find(" = ");
+        if (assignAt == std::string::npos) {
+            continue;
+        }
+        for (const std::string_view field : boundedFields) {
+            const std::size_t fieldAt = line.find(field);
+            // The field must be on the LEFT of the `=` for this to be a WRITE. `float metallic =
+            // form.metallicFactor;` reads it and is not this case's business.
+            if (fieldAt == std::string::npos || fieldAt > assignAt) {
+                continue;
+            }
+            ++assignments;
+            CAPTURE(field);
+            CAPTURE(line);
+            CHECK(line.find("clamp") != std::string::npos);
+        }
+    }
+    // ANTI-VACUITY, and the number is deliberately a floor rather than an equality: a future row adds
+    // an assignment, it does not remove one. Twelve is what the panel ships today.
+    CHECK(assignments >= 12U);
 }

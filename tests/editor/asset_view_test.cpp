@@ -24,6 +24,7 @@
 #include <string_view>
 #include <vector>
 
+using engine::editor::ASSET_KIND_FILTER_OPTIONS;
 using engine::editor::AssetFilter;
 using engine::editor::AssetKind;
 using engine::editor::assetKindLabel;
@@ -471,4 +472,29 @@ TEST_CASE("asset view: .aeromat is NOT thumbnail-decodable (AV52, AC-3)") {
     // recorded design, and a rendered material-ball thumbnail is a named deferral with no owner.
     CHECK_FALSE(isThumbnailDecodable("x.aeromat"));
     CHECK_FALSE(isThumbnailDecodable("X.AEROMAT"));
+}
+
+TEST_CASE("asset view: the kind-filter option list is EVERY kind, in enum order (AV53, seed S2)") {
+    // THE CLOSURE FOR A MEASURED GAP. This list used to be a `constexpr std::array` local inside
+    // AssetBrowserPanel::drawHeader, where no tier in this tree could reach it: seed S2 dropped
+    // AssetKind::Material from it -- making materials unfilterable in the only UI that offers the
+    // filter -- and all 1570 shell cases and all 119 GPU cases stayed green. No runtime tier can read
+    // a combo's contents, so the fix was to delete the second copy rather than to test the panel: the
+    // list now lives beside the enum and this case is its pin.
+    constexpr std::array<AssetKind, 7> EXPECTED{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+                                                AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
+                                                AssetKind::Unknown};
+    REQUIRE(ASSET_KIND_FILTER_OPTIONS.size() == EXPECTED.size());
+    for (std::size_t i = 0; i < EXPECTED.size(); ++i) {
+        CAPTURE(i);
+        CHECK((ASSET_KIND_FILTER_OPTIONS[i] == EXPECTED[i]));
+    }
+    // ENUM ORDER is load-bearing, not cosmetic: the filter action encodes the kind as
+    // static_cast<int>(kind) and decodes it as path[0] - '0', so a list whose order disagrees with the
+    // enum would still round-trip -- it is the COMBO that would show the wrong name beside each row.
+    for (std::size_t i = 0; i < ASSET_KIND_FILTER_OPTIONS.size(); ++i) {
+        CAPTURE(i);
+        CHECK(static_cast<std::size_t>(ASSET_KIND_FILTER_OPTIONS[i]) == i);
+        CHECK_FALSE(assetKindLabel(ASSET_KIND_FILTER_OPTIONS[i]).empty());
+    }
 }

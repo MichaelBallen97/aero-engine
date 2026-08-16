@@ -7,6 +7,7 @@
 #include <aero/editor/asset_meta.hpp>     // AssetRecord
 #include <aero/editor/project_files.hpp>  // FileEntry -- code-review BLOCKING-2 (filterEntriesByKind)
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -38,6 +39,16 @@ enum class AssetKind : std::uint8_t { Folder = 0, Texture, Model, Audio, Text, M
 
 [[nodiscard]] std::string_view assetKindLabel(AssetKind kind) noexcept;  // for the filter combo;
                                                                          // switch with NO default:
+
+// EVERY AssetKind, in enum order -- the Asset Browser's kind-filter combo iterates exactly this and
+// owns no list of its own. It lives HERE, beside the enum, because a copy inside the panel's draw
+// function is unreachable from every test tier in this tree: dropping an entry from one leaves that
+// kind unfilterable with no error, no log and no red test anywhere (measured directly -- sabotage seed
+// S2 stayed green through all 1570 + 119 cases before this constant existed). AV53 is the pin, and it
+// works only because there is one list rather than two.
+inline constexpr std::array<AssetKind, 7> ASSET_KIND_FILTER_OPTIONS{
+    AssetKind::Folder, AssetKind::Texture,  AssetKind::Model,  AssetKind::Audio,
+    AssetKind::Text,   AssetKind::Material, AssetKind::Unknown};
 
 // "wood.png"->"PNG"; "scene.gltf"->"GLTF"; "model.blend1"->"BLE1" (4 max); "README"->"FILE".
 // ASCII uppercase only; a non-ASCII byte anywhere in the extension falls back to "FILE" rather than
