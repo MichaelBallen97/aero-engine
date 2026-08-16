@@ -7267,11 +7267,29 @@ No cooker subcommand, no `.meta` change and no browser kind for `.aeromat`.
   first; promoting a six-line mapping to a public header on a sample size of one would be guessing
   where it belongs.
 
-#### Open at the time of writing
+#### Merged, and the macOS validation pass — ✅ PASS, all 11 rows
 
-The eleven-row macOS validation pass, whose measurement rows (texture-load milliseconds for six
-uploads, steady-state fps, the sidecar counts re-confirmed on the merge commit) are written
-blank-bearing so a blank tick is impossible. **Rows 2, 4, 5 and 6 are the only witness the five
-declared shader-only seeds have**, and the page says so beside each row. Windows and Linux rows join
-the standing platform-validation debt; the Windows lane is additionally the **live retirement** of
-the D3D12 alignment basis this task adopted engine-wide from documentation.
+Merged as **PR #78, merge commit `a01765d`, 10 commits**, with all six CI checks green and the green
+run's `headSha` asserted equal to `HEAD` beforehand. Per-lane: **macOS 133/133**, **Linux 133/133**,
+**Windows 131/131** (it registers two fewer by design), each in both Debug/ASan and Release, plus the
+cross-lane `cook-determinism` job green with the manifest untouched. `AERO_REQUIRE_GPU` is set from
+the matrix on both test steps, so the T1 upload cases **executed** under WARP and lavapipe rather than
+skipping — which is what makes this the first live exercise of the D3D12 block-alignment rule and the
+first BCn sampling this project has done outside Metal.
+
+The **eleven-row macOS pass is ✅ PASS with every measurement blank filled** (2026-08-16, on
+`a01765d`): six cooked textures upload in **6.2 ms, mean 1.0 ms** on `macos-release` (8.7 ms / 1.4 ms
+under Debug/ASan — R4's answer to finding 8's per-call stall, measured rather than assumed); the
+sample holds **120.6–128.9 fps, steady ≈ 121** at 1280×720, so the 60 fps gate mode passes with
+margin; and the sidecars re-read **5/2** and **0/1** on the merge commit with `PB11` green in the same
+build (1 case, 15 assertions). The startup log carries zero ERROR, CRITICAL or WARNING lines.
+
+**Rows 2, 4, 5 and 6 were the only witness the five declared shader-only seeds (S24–S28) and probe X3
+have anywhere in this project**, and they passed — so the GGX metallic/roughness axes, the Fresnel
+behaviour, the instance tint, the normal-map orientation and the ambient-only occlusion are confirmed
+by observation, which no automated tier here can do. Row 3's delete-a-slot probe confirmed the
+`.aeromat` genuinely drives the bound maps rather than the sample hard-coding them.
+
+Still open: the **Windows and Linux rows**, which join the standing platform-validation debt. CI has
+run the T1 upload cases on both, but no on-hardware pass exists for either, and the Windows one
+carries the D3D12 alignment rule's on-hardware confirmation.
