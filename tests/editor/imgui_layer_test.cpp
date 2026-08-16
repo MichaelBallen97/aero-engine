@@ -41,6 +41,7 @@
 #include <aero/editor/transform_command.hpp>  // task 2.4.1
 #include <aero/editor/transform_ops.hpp>      // task 2.4.1
 #include <aero/platform/platform.hpp>
+#include <aero/reflect/material_format.hpp>  // task 3.4.2: MaterialDocument, named directly (I84)
 #include <aero/rhi/device.hpp>
 #include <aero/scene/scene.hpp>
 #include <aero/scene/world.hpp>
@@ -201,14 +202,15 @@ TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke
         *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
-    // The D8 registration -- SIX absolute panel-count sites in the tree, measured directly rather than
-    // assumed (this one plus :264, :492, :597, :2597 and :2761 -- the "FOUR ... :219, :447 and :551"
-    // this comment used to claim was already stale before this task touched it, a real drift this
-    // task's own edit is what surfaced), all of which moved from 6 to 7 the moment task 3.2.1
-    // registered the seventh default panel, "Import Details". (`:1410`/`:1416`'s captured
-    // `panelCountBefore` is a seventh, count-agnostic site by construction -- the "gizmo" window is not
-    // a panel -- and is NOT one of the six.)
-    CHECK(app->panels().count() == 7);
+    // The D8 registration -- SEVEN absolute panel-count sites in the tree, measured directly rather
+    // than assumed (this one plus :273, :501, :606, :2606, :2776 and :4728 at the moment task 3.4.2
+    // moved them), all of which moved from 7 to 8 the moment this task registered the eighth default
+    // panel, "Material". The count this comment used to claim was SIX, with line numbers that had
+    // drifted by about eight: task 3.2.1's own AC-50 site was added and never listed -- the identical
+    // drift the comment boasts of having caught once, caught a second time by the task that had to
+    // move all of them. (`:1419`/`:1425`'s captured `panelCountBefore` is a count-AGNOSTIC site by
+    // construction -- the "gizmo" window is not a panel -- and is NOT one of the seven.)
+    CHECK(app->panels().count() == 8);
 
     // wantsDefaultLayout() is true even with persistLayout = false (F1b), so frame 1 below exercises
     // buildDefaultLayout for real. Use REQUIRE on tick(), not CHECK: a spurious Quit/WindowClose from
@@ -269,7 +271,7 @@ TEST_CASE("editor: the Hierarchy panel draws a seeded scene and survives edits (
 
     // AC-18: the default config seeds three entities.
     CHECK(app->world().entityCount() == 3);
-    CHECK(app->panels().count() == 7);
+    CHECK(app->panels().count() == 8);
     CHECK(app->selection().empty());
 
     for (int i = 0; i < 3; ++i) {
@@ -497,7 +499,7 @@ TEST_CASE(
                                                                                       .projectPath = "",
                                                                                       .restoreLastProject = false});
     REQUIRE(app.has_value());
-    CHECK(app->panels().count() == 7);
+    CHECK(app->panels().count() == 8);
     CHECK_FALSE(app->projectIsOpen());
     CHECK(app->assetBrowserRoot().empty());
 
@@ -602,7 +604,7 @@ TEST_CASE("editor: the Console panel draws the engine log stream (task 2.2.5)") 
     REQUIRE(app.has_value());
 
     // The D8 registration -- the ONE absolute panel count in the tree (plan C3's proof).
-    CHECK(app->panels().count() == 7);
+    CHECK(app->panels().count() == 8);
 
     // The create()-time records are staged in the sink; only the pump fills the history.
     CHECK(app->logRecordCount() == 0);
@@ -2602,7 +2604,7 @@ TEST_CASE(
     REQUIRE(app.has_value());
 
     // 2. Registration and ORDER -- what makes sabotage seed S13 (registering before Inspector) redden.
-    CHECK(app->panels().count() == 7);
+    CHECK(app->panels().count() == 8);
 
     // EVERY id, in order (Phase 2 audit). Each panel's own header calls its id FROZEN because it is
     // the imgui.ini settings key -- renaming one orphans every user's saved layout for that panel --
@@ -2612,8 +2614,13 @@ TEST_CASE(
     // panel would simply stop being hidden and the case that depends on hiding it would assert
     // against a panel that never draws -- 2.2.4's C5 trap, re-armed. This is a PERSISTED FORMAT, so
     // treat a diff here like a file-format change, not a test to update.
-    const std::array<const char*, 6> frozenPanelIds{"Hierarchy", "Inspector", "Viewport",
-                                                    "Console",   "Assets",    "Project Settings"};
+    // task 3.4.2: EIGHT, so the two ids added since the Phase 2 audit -- "Import Details" (3.2.1) and
+    // "Material" (this task) -- carry the same id-freeze pin the other six already have. The array was
+    // a PREFIX check covering indices 0-5 while its own comment claimed "EVERY id", so growing it is
+    // new coverage rather than a rewording pass: it makes an accidental rename of a FROZEN imgui.ini
+    // key a red test instead of a silently migrated layout.
+    const std::array<const char*, 8> frozenPanelIds{"Hierarchy", "Inspector",        "Viewport",       "Console",
+                                                    "Assets",    "Project Settings", "Import Details", "Material"};
     for (std::size_t i = 0; i < frozenPanelIds.size(); ++i) {
         CAPTURE(i);
         CHECK_EQ(std::string(app->panels().panelAt(i).id()), std::string(frozenPanelIds[i]));
@@ -2766,7 +2773,7 @@ TEST_CASE("editor: a registered panel that is not DOCKED in a restored layout ge
                                                .recentProjectsPath = uniqueRecentsFile(),
                                                .layoutIniPath = iniPath});
         REQUIRE(app.has_value());
-        CHECK(app->panels().count() == 7);
+        CHECK(app->panels().count() == 8);
 
         for (int i = 0; i < 3; ++i) {
             REQUIRE(app->tick());
@@ -4718,7 +4725,7 @@ TEST_CASE("editor: the Import Details panel is registered right of the Inspector
         *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
     // AC-50: registered in create(), BEFORE the first tick() -- checked here, before any tick runs.
-    CHECK(app->panels().count() == 7);
+    CHECK(app->panels().count() == 8);
 
     const engine::editor::Panel* panel = app->panels().find("Import Details");
     REQUIRE(panel != nullptr);
@@ -6582,6 +6589,232 @@ TEST_CASE(
         CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
         app->requestPanelFocus("Import Details");
         REQUIRE(app->tick());  // draws the Imported state for real
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 3.4.2: the Material panel's registration and its sticky target (I83-I85) ---------------
+
+namespace {
+
+// A canonical .aeromat, written into a temp project by the cases below. The GPU tier deliberately
+// writes its OWN material text rather than reaching for AERO_MATERIAL_FIXTURES_DIR: that definition
+// is on aero_editor_shell_test, and no fixture path belongs in this file (the "each TU keeps its own
+// fixture" precedent, a sixth application).
+constexpr std::string_view MINIMAL_AEROMAT_TEXT =
+    "{\n"
+    "  \"version\": 1,\n"
+    "  \"name\": \"First\",\n"
+    "  \"metallicFactor\": 0.25,\n"
+    "  \"roughnessFactor\": 0.75\n"
+    "}\n";
+constexpr std::string_view SECOND_AEROMAT_TEXT =
+    "{\n"
+    "  \"version\": 1,\n"
+    "  \"name\": \"Second\",\n"
+    "  \"roughnessFactor\": 0.125\n"
+    "}\n";
+// version 2: refused by name, never partially read (docs/09 section 11.6).
+constexpr std::string_view REJECT_AEROMAT_TEXT = "{\n  \"version\": 2\n}\n";
+
+}  // namespace
+
+TEST_CASE("editor: the Material panel is registered eighth, right of the Inspector (task 3.4.2, I83)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i83", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+    // Registered in create(), BEFORE the first tick() -- checked here, before any tick runs, which is
+    // exactly the condition placeUnplacedPanels requires (the I52 shape).
+    CHECK(app->panels().count() == 8);
+    // ... and LAST, so no existing panel's registration index shifted and the Inspector keeps the
+    // selected Right-dock tab.
+    CHECK(std::string_view(app->panels().panelAt(7).id()) == "Material");
+
+    const engine::editor::Panel* panel = app->panels().find("Material");
+    REQUIRE(panel != nullptr);
+    CHECK(std::string_view(panel->id()) == "Material");
+    CHECK(std::string_view(panel->title()) == "Material");
+    CHECK(panel->defaultDockSlot() == engine::editor::DockSlot::Right);
+    // options() is deliberately NOT overridden: the panel's own window must keep scrolling.
+    const engine::editor::PanelOptions opts = panel->options();
+    CHECK_FALSE(opts.noScrollbar);
+    CHECK_FALSE(opts.hasMenuBar);
+    CHECK_FALSE(opts.noPadding);
+    CHECK_FALSE(opts.noScrollWithMouse);
+
+    // The black-box surface's own default state, before any selection has ever happened.
+    CHECK(app->materialTargetPath().empty());
+    CHECK_FALSE(app->materialParseOk());
+    CHECK_FALSE(app->materialDirty());
+    CHECK(app->materialDocument() == nullptr);
+
+    // Three real frames with no project at all -- the untargeted branch draws, and an unbalanced
+    // Begin/End there would be an IM_ASSERT abort in the Debug ImGui build.
+    app->panels().setVisible("Inspector", false);  // Inspector registers first and wins the Right tab
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->materialTargetPath().empty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the material target is STICKY across selections (task 3.4.2, I84, AC-7/AC-8)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i84", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/second.aeromat", SECOND_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/notes.txt", "not a material").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    // "Assets" shares DockSlot::Bottom with "Console", which registers first and wins the tab, so
+    // AssetBrowserPanel::onDraw() would never run and the SelectEntry action would never drain
+    // (2.2.4's C5 precedent). "Inspector" shares DockSlot::Right with "Material" for the same reason.
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());  // 1: the initial scan
+    CHECK(app->materialTargetPath().empty());
+
+    app->requestAssetBrowserSelectEntry("first.aeromat");
+    REQUIRE(app->tick());  // 2: drains SelectEntry -> selection() == "first.aeromat"
+    REQUIRE(app->tick());  // 3: the reconcile's SIXTH statement sees it and targets the material
+    CHECK(app->materialTargetPath() == "first.aeromat");
+    CHECK(app->materialParseOk());
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->name == "First");
+    CHECK_FALSE(app->materialDirty());
+
+    // An edit through the request seam -- exactly what a widget records.
+    engine::MaterialDocument edited = *app->materialDocument();
+    edited.roughnessFactor = 0.5F;
+    app->requestMaterialDocument(edited);
+    REQUIRE(app->tick());
+    CHECK(app->materialDirty());
+
+    // STICKY (D3, seed S3's GPU half): selecting a NON-material leaves the target -- and the unapplied
+    // edit -- exactly where they are. Without this, every click hunting for a texture to reference
+    // would tear the edit session down.
+    app->requestAssetBrowserSelectEntry("notes.txt");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->materialTargetPath() == "first.aeromat");
+    CHECK(app->materialDirty());
+
+    // Clearing the selection is the same answer.
+    app->requestAssetBrowserSelectEntry("");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->materialTargetPath() == "first.aeromat");
+    CHECK(app->materialDirty());
+
+    // A DIFFERENT existing .aeromat DOES retarget, and the unapplied edit is discarded -- recorded as
+    // accepted (D4/D5), and the one path that can lose an edit.
+    app->requestAssetBrowserSelectEntry("second.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->materialTargetPath() == "second.aeromat");
+    CHECK(app->materialParseOk());
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->name == "Second");
+    CHECK_FALSE(app->materialDirty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a rejected .aeromat draws its error and refuses Apply (task 3.4.2, I85, AC-9)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i85", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string badPath = created.root + "/assets/bad.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(badPath, REJECT_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+
+    app->requestAssetBrowserSelectEntry("bad.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->materialTargetPath() == "bad.aeromat");
+    CHECK_FALSE(app->materialParseOk());  // no editor at all -- never a half-loaded document
+    CHECK(app->materialDocument() == nullptr);
+    CHECK_FALSE(app->materialDirty());
+
+    // Apply and Revert are refused, and the file is NEVER "repaired": it may hold a hand-recoverable
+    // value one `git checkout` away (the invalid-.meta D7 posture, applied to a second format).
+    app->requestMaterialApply();
+    REQUIRE(app->tick());
+    app->requestMaterialRevert();
+    REQUIRE(app->tick());
+    const engine::editor::FileReadResult after = engine::editor::readTextFile(badPath);
+    REQUIRE(after.text.has_value());
+    CHECK(*after.text == std::string(REJECT_AEROMAT_TEXT));
+
+    // The error branch drew on every one of those frames; an unbalanced Begin/End would have been an
+    // IM_ASSERT abort in the Debug ImGui build, so a green run IS the assertion.
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
         CHECK(app->presentedLastFrame());
     }
 

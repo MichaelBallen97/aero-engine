@@ -27,6 +27,12 @@
                                            // which holds a reference and forward-declares.
 #include <aero/editor/entity_ops.hpp>      // a VALUE member (rootOrder) needs RootOrder's definition
 #include <aero/editor/imgui_layer.hpp>
+#include <aero/editor/material_session.hpp>      // task 3.4.2 -- a VALUE member (materialSession) needs
+                                                 // the definition, the asset_database.hpp precedent.
+                                                 // ImGui-free, render-free and GPU-free, so this
+                                                 // header's ImGui-FREE-BY-RULE contract is intact; it
+                                                 // brings MaterialDocument, which the one-shot below
+                                                 // holds by value.
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1 -- a VALUE member (importSession), held
                                                  // to the same `noexcept = default` move requirement
                                                  // as assetDatabase and assetWatcher
@@ -69,6 +75,8 @@ class AssetBrowserPanel;   // task 2.2.4: src-private (editor/src/asset_browser_
 class ImportDetailsPanel;  // task 3.2.1: src-private (editor/src/import_details_panel.hpp). Only the
                            // NAME is needed here -- the ViewportPanel/ConsolePanel/AssetBrowserPanel
                            // precedent, a fourth application.
+class MaterialPanel;       // task 3.4.2: src-private (editor/src/material_panel.hpp). Only the NAME is
+                           // needed here -- the same precedent, a fifth application.
 
 struct EditorAppConfig {
     rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
@@ -399,6 +407,24 @@ public:
     // branch non-vacuous -- without it, "a frame drew" proves nothing about WHICH branch drew.
     [[nodiscard]] bool blenderLogRefusedByCap() const noexcept;
 
+    // ---- task 3.4.2 request hooks: drive the Material panel without a widget (the
+    // requestAssetBrowserSelectEntry shape, a SEVENTH application). Each records EXACTLY what the
+    // panel's own control records, and each is drained by the next tick()'s reconcile block.
+    // requestMaterialDocument takes the WHOLE document, which is precisely what a widget records: the
+    // pending edit is one last-writer-wins slot, the house's pending-action shape.
+    void requestMaterialDocument(MaterialDocument document);
+    void requestMaterialApply() noexcept;
+    void requestMaterialRevert() noexcept;
+    // ---- task 3.4.2 black-box accessors: the ImGui-free GPU tier's only window into the session.
+    // MaterialSessionState itself stays out of this surface, exactly as modelImportState() keeps
+    // SessionState out -- the two booleans below are what a case actually asserts.
+    [[nodiscard]] std::string_view materialTargetPath() const noexcept;  // "" when untargeted
+    [[nodiscard]] bool materialParseOk() const noexcept;                 // the session holds a document
+    [[nodiscard]] bool materialDirty() const noexcept;
+    // The SESSION copy, const. Null when untargeted or in the error state -- a caller holding it
+    // ACROSS a tick would dangle after a retarget; copy what it needs.
+    [[nodiscard]] const MaterialDocument* materialDocument() const noexcept;
+
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
     // importSession and toolPrefsPath. THE ONLY PLACE THIS TASK LOGS (INV-B10).
@@ -508,6 +534,19 @@ private:
     // The PREVIOUS tick's session state, so the two Blender log lines fire on a TRANSITION rather than
     // every frame. A Converting session logging once per frame would be a hundred lines a second.
     int lastBlenderSessionState = 0;
+
+    // ---- task 3.4.2 -------------------------------------------------------------------------------
+    MaterialSession materialSession;         // a VALUE member (A-2/INV-4); material_session.hpp's own
+                                             // two static_asserts hold the noexcept-move guarantee
+                                             // this member needs.
+    MaterialPanel* materialPanel = nullptr;  // non-owning; owned by `registry` (unique_ptr ->
+                                             // address-stable, survives an EditorApp move). Null when
+                                             // registerDefaultPanels == false -- ALWAYS null-check.
+    // The three one-shots, all consumed by the next tick()'s reconcile block, each drained as its OWN
+    // statement before it is inspected (F9).
+    std::optional<MaterialDocument> requestedMaterialDocument;
+    bool requestedMaterialApply = false;
+    bool requestedMaterialRevert = false;
 };
 
 }  // namespace engine::editor

@@ -27,6 +27,8 @@
                                      // shared_ptr/unique_ptr-completeness precedent above, applied to a
                                      // registry-owned panel instead
 #include "inspector_panel.hpp"
+#include "material_panel.hpp"  // task 3.4.2 -- MaterialPanel's definition, the ImportDetailsPanel
+                               // precedent one panel over
 #include "project_settings_panel.hpp"
 #include "shell_ui.hpp"
 #include "viewport_panel.hpp"
@@ -348,6 +350,13 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         // free-floating. Default VISIBLE: a default-hidden panel makes this task's whole deliverable
         // something a user must hunt for in the View menu.
         app.importDetailsPanel = app.registry.emplace<ImportDetailsPanel>();
+        // task 3.4.2 (D2): the EIGHTH panel, registered LAST so no existing panel's registration index
+        // shifts and the Inspector keeps the selected Right-dock tab by default. Registered in
+        // create(), BEFORE the first tick() -- exactly the condition placeUnplacedPanels requires, so a
+        // restored layout docks it beside the Inspector instead of free-floating (the 3.2.1
+        // precedent). Default VISIBLE, for 3.2.1's reason: a default-hidden panel makes this task's
+        // whole deliverable something a user must hunt for in the View menu.
+        app.materialPanel = app.registry.emplace<MaterialPanel>();
     }
 
     // task 2.6.1: `&& !app.project.isOpen()` is MANDATORY, not defensive. Opening a project above went
@@ -471,6 +480,12 @@ bool EditorApp::tick() {
         // named local is MANDATORY, not style: project.root() returns a std::string_view bound to the
         // live ProjectSession (2.6.1's FileDialogHost::projectRoot lesson).
         const std::string projectRootForScan = std::string(project.root());
+        // task 3.4.2 (AC-15/the INV-6 family): captured HERE, before `wanted` is moved into rescan()
+        // below, so the material session resets in the SAME operation that reconciles the browser root
+        // rather than through a second path that half-performs a swap. True exactly when the assets
+        // root the database is holding is not the one the open project names -- which is a project
+        // swap, and, on the very first tick with a project open, a reset of an already-empty session.
+        const bool assetsRootChanged = assetDatabase.root() != wanted;
         // task 3.1.4: the watcher's roots are reconciled from the SAME `wanted` string, in the SAME
         // block -- the FOURTH occupant (2.6.1's panel root, 3.1.1's database, 3.1.3's report, 3.1.4's
         // watcher). 3.1.2's D9 two-parameter rule applies here exactly as it does to rescan():
@@ -529,7 +544,10 @@ bool EditorApp::tick() {
             // in before phase 4 ever ran (AssetDatabase's own comments on the method and the flag).
             assetDatabase.invalidateCache();
         }
-        if (assetDatabase.root() != wanted || refresh || reimport) {
+        if (assetsRootChanged) {
+            materialSession.resetForProjectSwap();  // task 3.4.2 -- see the capture above
+        }
+        if (assetsRootChanged || refresh || reimport) {
             // task 3.1.2: rescan now takes the project root and the assets root as two SEPARATE
             // parameters (D-9) -- <assetsRoot>/.. is wrong the moment paths.assets is nested or ".",
             // and deriving it would put the cache inside the user's own asset tree (A7/AC-38). The
@@ -695,6 +713,50 @@ bool EditorApp::tick() {
                               importSession.blender().message(), importSession.blender().logPath());
             }
             lastBlenderSessionState = blenderSessionState;
+        }
+        // task 3.4.2 (D3/A-4): the SIXTH occupant of this block -- 2.6.1's panel root, 3.1.1's
+        // database, 3.1.3's report, 3.1.4's watcher, 3.2.1's import session, and now the material
+        // session. EXTEND, NEVER TWIN: 3.1.4's seed S15 reddened TWELVE tier-0 cases by skipping ONE
+        // statement in here, and this block is now the whole of the editor's per-frame reconciliation.
+        //
+        // STICKY, unlike the import session above, and the asymmetry is D3 rather than an oversight:
+        // MaterialSession::reconcile retargets ONLY on a different, existing *.aeromat, so clicking
+        // through the browser to find a texture to reference cannot tear down an edit session.
+        //
+        // assetDatabase.root() rather than project.assetsRoot(): the two are the SAME string by
+        // construction (INV-A9/A16 -- both are reconciled from `wanted` in this very block), and the
+        // database's accessor returns a const reference, so nothing here can bind a string_view to a
+        // by-value temporary (2.6.1's FileDialogHost::projectRoot lesson). It is also the more correct
+        // of the two: the session resolves paths that are relative to the root the RECORDS are
+        // relative to.
+        if (assetBrowserPanel != nullptr) {
+            materialSession.reconcile(assetBrowserPanel->selection(), assetDatabase.generation(), assetDatabase,
+                                      assetDatabase.root());
+        }
+        // F9, a SEVENTH application: EVERY one-shot is drained as its OWN statement, unconditionally,
+        // BEFORE it is inspected. A `panelX || editorX` expression would short-circuit past a drain
+        // and strand the request until the next frame -- I30 is that bug's mechanical proof.
+        std::optional<MaterialDocument> materialEdit = std::move(requestedMaterialDocument);
+        requestedMaterialDocument.reset();
+        const bool materialApply = requestedMaterialApply;
+        requestedMaterialApply = false;
+        const bool materialRevert = requestedMaterialRevert;
+        requestedMaterialRevert = false;
+        if (materialEdit.has_value()) {
+            materialSession.edit(*materialEdit);
+        }
+        if (materialApply) {
+            materialSession.requestApply();
+        }
+        if (materialRevert) {
+            materialSession.requestRevert();
+        }
+        materialSession.service(assetDatabase, assetDatabase.root());
+        // Reconciled BEFORE drawShellUi, unlike ImportDetailsPanel's own setSession (which runs in the
+        // post-draw slot): the material panel has no service pass of its own to run afterwards, so
+        // there is nothing to be gained by making its first drawn frame see a null pointer.
+        if (materialPanel != nullptr) {
+            materialPanel->setSession(&materialSession);
         }
     }
     if (window != nullptr) {
@@ -903,6 +965,16 @@ std::size_t EditorApp::blenderExportRunCount() const noexcept { return importSes
 std::size_t EditorApp::blenderProbeRunCount() const noexcept { return importSession.blender().probeRunCount(); }
 std::string_view EditorApp::blenderBinaryPath() const noexcept { return importSession.blender().binaryPath(); }
 bool EditorApp::blenderLogRefusedByCap() const noexcept { return importSession.blender().logRefusedByCap(); }
+
+// task 3.4.2: the request seams and the black-box reads. Each seam records EXACTLY what the panel's
+// own control records and is drained by the next tick()'s reconcile block -- never applied here.
+void EditorApp::requestMaterialDocument(MaterialDocument document) { requestedMaterialDocument = std::move(document); }
+void EditorApp::requestMaterialApply() noexcept { requestedMaterialApply = true; }
+void EditorApp::requestMaterialRevert() noexcept { requestedMaterialRevert = true; }
+std::string_view EditorApp::materialTargetPath() const noexcept { return materialSession.targetPath(); }
+bool EditorApp::materialParseOk() const noexcept { return materialSession.document() != nullptr; }
+bool EditorApp::materialDirty() const noexcept { return materialSession.dirty(); }
+const MaterialDocument* EditorApp::materialDocument() const noexcept { return materialSession.document(); }
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
