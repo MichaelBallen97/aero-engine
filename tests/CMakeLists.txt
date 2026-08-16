@@ -31,6 +31,7 @@ add_executable(aero_tests
     bc_block_test.cpp       # task 3.3.2 — the two encoders against per-block byte goldens
     texture_cook_test.cpp   # task 3.3.2 — cookTexture: levels, polyphase filter, gamma, caps
     cooked_skeleton_test.cpp # task 3.5.1 — the .aeroskel container v1: layout, parse, hostile input
+    skeleton_cook_test.cpp   # task 3.5.1 — cookSkeleton: canonical order, refusals, byte-exactness
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)

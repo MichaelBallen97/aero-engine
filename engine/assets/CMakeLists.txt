@@ -29,6 +29,7 @@ add_library(aero_assets STATIC
     src/bc_block.cpp         # task 3.3.2 -- the two INTEGER block encoders; BC3/BC5 compose them
     src/texture_cook.cpp     # task 3.3.2 -- cookTexture: mip chain, gamma tables, block loop, assembly
     src/cooked_skeleton.cpp  # task 3.5.1 -- the .aeroskel container v1: the hostile-input parser
+    src/skeleton_cook.cpp    # task 3.5.1 -- cookSkeleton: closure canonicalization, ordering, emit
 )
 add_library(aero::assets ALIAS aero_assets)
 
