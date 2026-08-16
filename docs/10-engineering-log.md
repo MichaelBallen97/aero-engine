@@ -7302,9 +7302,11 @@ carries the D3D12 alignment rule's on-hardware confirmation.
 commits** — measured with `git rev-list --count main..HEAD`, tip `2ac77b2` — nine for the build
 order, one closing the sabotage matrix's two gaps, one closing a reduced-configuration failure that
 only Step 10 could find, and three closing the code-review round, plus this documentation commit.
-Not yet pushed, not yet merged; the twelve-row macOS validation pass comes after the merge, and
-**seven declared sabotage seeds have no automated witness anywhere in this project** — six of them are
-covered by that pass and the seventh, S26, by no pass this machine can run at all.
+Merged as **PR #79** (merge commit `3aebbad`), CI-green on all three lanes with the green run's
+`headSha` asserted equal to `HEAD` before the merge, and **macOS-validated ✅ PASS on all twelve rows
+(2026-08-16) with every measurement blank filled**. **Seven declared sabotage seeds have no automated
+witness anywhere in this project** — six are covered by that pass and the seventh, S26, by no pass
+this machine can run at all.
 
 The editor learns what a material is. 3.4.1 shipped the whole material stack and deliberately left
 `/editor` byte-identical to `main`, so at the branch point an `.aeromat` classified `Unknown`,
@@ -7768,10 +7770,20 @@ coverage and does not age away. `docs/tasks/phase-3.md`'s 3.4.2 lines are amende
 
 #### Still open
 
-The **twelve-row macOS validation pass** (`editor/validation/3.4.2-material-inspector-editing.md`,
-written before the pass runs, as always), whose rows 3, 4 and 6 are the only coverage six of the
-seven declared seeds have anywhere — the seventh, S26, has no macOS witness at all and waits on the
-Windows and Linux sections. Two corrections were applied to the spec's §9 table before the page
+The **twelve-row macOS validation pass is COMPLETE — ✅ PASS on all twelve rows, 2026-08-16, every
+measurement blank filled** (`editor/validation/3.4.2-material-inspector-editing.md`, written before
+the pass ran, as always). Rows 3, 4 and 6 are the only coverage six of the seven declared seeds have
+anywhere, so that pass is the whole of their evidence. **Rows 7 and 9 are harness-measured rather
+than observed by eye** — real `EditorApp::tick()` frames on a real Metal device, on `macos-release`:
+Apply echoes **+1** and Create **+1** (9/9, no spread), the rescan after Apply writes **zero bytes**
+(9/9), first-open completes inside a **single** vsync-paced frame (13/13, marginal +0.21 ms — below
+the noise floor, so plan risk R2 is not visible as a hitch), and the worst committed fixture uploads
+in **2.1 ms**. Row 9's **~120 fps is a harness artifact, not the editor's true frame rate**: a
+320×180 window with a 64×192 preview target, vsync-locked to a 120 Hz display, so the figure is the
+refresh rate rather than a headroom measurement. The hidden-panel clause is confirmed **structurally**
+instead — `materialPreviewFrameCount()` moved by exactly 0 across 360 hidden ticks — because both
+states sit on the same vsync and timing cannot separate them. **What remains open is S26**, which has
+no macOS witness at all and waits on the Windows and Linux sections. Two corrections were applied to the spec's §9 table before the page
 shipped, both measured on this branch: **row 7's Create echo is +1, not +2** — an internal create
 rescans in its own pass, so one sweep sees both the file and its freshly minted sidecar, and the +2
 rule holds only for an **externally** created file (`I44`'s shape) — and **the declared-seed list is
