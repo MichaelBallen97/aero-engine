@@ -7449,6 +7449,212 @@ TEST_CASE("editor: a broken image fails ONCE and stays failed (task 3.4.2, I92, 
     app.reset();
 }
 
+// ---- task 3.4.2: New Material, and the watcher interplay it shares with Apply (I93, I94) -----------
+
+namespace {
+
+// task 3.4.2 (AC-41/D15/INV-C5): every file under the assets tree and its mtime, sorted by path. The
+// D15 assertion shape widened from ONE file to the WHOLE tree: "the rescan wrote zero bytes" is a
+// statement about everything, and a per-file check can only ever prove it about the file it names.
+// Directories are excluded -- a directory's own mtime moves when a `.aero-tmp` sibling appears and
+// vanishes, which is writeTextFileAtomic working, not a byte written to an asset.
+[[nodiscard]] std::vector<std::pair<std::string, std::filesystem::file_time_type>> assetsTreeMtimes(
+    const std::string& assetsRootUtf8) {
+    std::vector<std::pair<std::string, std::filesystem::file_time_type>> stamps;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(std::filesystem::path(assetsRootUtf8), ec), end;
+         it != end && !ec; it.increment(ec)) {
+        if (it->is_directory(ec)) {
+            continue;
+        }
+        const std::filesystem::file_time_type when = std::filesystem::last_write_time(it->path(), ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        const std::u8string bytes = it->path().u8string();
+        stamps.emplace_back(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()), when);
+    }
+    std::sort(stamps.begin(), stamps.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    return stamps;
+}
+
+}  // namespace
+
+TEST_CASE("editor: New Material creates, mints and selects, all outside the draw walk (task 3.4.2, I93, AC-5)") {
+    // The authoring loop closed: before this, the only way to get a first .aeromat into a project was a
+    // text editor. The click records; tick() drains; the file appears with the canonical DEFAULT bytes;
+    // the scan that same pass mints its .meta; the new entry is selected and the Material panel is
+    // holding it. ME47 is the tier-0 half (the bytes); this is the whole path.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i93", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    // The Assets panel must actually DRAW, or the recorded action is never drained through
+    // applyPending() and the request never reaches tick() at all (2.2.4's C5 rule).
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+
+    // MANDATORY before any trigger arithmetic (3.1.4's §A-1): the first scan writes sidecars of its own.
+    REQUIRE(tickToQuiescence(*app));
+    const std::uint64_t baseTriggers = app->assetWatchTriggerCount();
+    const std::size_t baseAssets = app->assetCount();
+
+    app->requestAssetBrowserCreateMaterial();
+    // Tick 1 drains the recorded action through the panel's own applyPending; tick 2's reconcile drains
+    // the request, writes the file and rescans; tick 2's draw drains the selection the drain queued;
+    // tick 3's reconcile is where the material session sees it. Four is one spare.
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+
+    const std::string materialPath = assetsRoot + "/NewMaterial.aeromat";
+    const engine::editor::FileReadResult written = engine::editor::readTextFile(materialPath);
+    REQUIRE(written.text.has_value());
+    // THE DEFAULT DOCUMENT, canonically written -- seed S20's runtime witness.
+    CHECK(*written.text == engine::writeMaterialText(engine::MaterialDocument{}));
+
+    // The scan minted its identity: the sidecar exists and the record carries a real GUID.
+    std::error_code existsEc;
+    CHECK(std::filesystem::exists(std::filesystem::path(materialPath + ".meta"), existsEc));
+    CHECK_FALSE(existsEc);
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("NewMaterial.aeromat");
+    REQUIRE(guid.has_value());
+    CHECK(guid->valid());
+    CHECK(app->assetCount() == baseAssets + 1);
+
+    // AUTO-SELECTED: the Material panel is already holding the file the button just made, clean.
+    CHECK(app->materialTargetPath() == "NewMaterial.aeromat");
+    CHECK(app->materialParseOk());
+    CHECK_FALSE(app->materialDirty());
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK((*app->materialDocument() == engine::MaterialDocument{}));
+
+    // The watcher's own view of a brand-new file, asserted as a DELTA after a SECOND quiescence and
+    // never as an absolute (3.1.4's rule). MEASURED, not predicted: the file and its freshly minted
+    // sidecar both exist before the next sweep runs, because the drain rescans in its OWN pass -- so
+    // one sweep sees both and fires ONCE. The +2 that an EXTERNALLY created file produces (I44) needs
+    // the two to appear in different sweeps, which an internal create never does.
+    REQUIRE(tickToQuiescence(*app));
+    CHECK(app->assetWatchTriggerCount() == baseTriggers + 1);
+
+    // A SECOND create in the same directory counts up rather than overwriting -- the unique-name rule
+    // driven by a real listing, not by a literal (AC-5).
+    app->requestAssetBrowserCreateMaterial();
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    const engine::editor::FileReadResult second = engine::editor::readTextFile(assetsRoot + "/NewMaterial-2.aeromat");
+    REQUIRE(second.text.has_value());
+    CHECK(*second.text == engine::writeMaterialText(engine::MaterialDocument{}));
+    // And the FIRST one is untouched -- a create never overwrites (this is what the listing is for).
+    const engine::editor::FileReadResult first = engine::editor::readTextFile(materialPath);
+    REQUIRE(first.text.has_value());
+    CHECK(*first.text == engine::writeMaterialText(engine::MaterialDocument{}));
+    CHECK(app->materialTargetPath() == "NewMaterial-2.aeromat");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Apply echoes ONCE and the rescan behind it writes zero bytes (task 3.4.2, I94, AC-41)") {
+    // D10's Apply half, mechanically. The watcher has no self-write suppression (3.1.4, confirmed in
+    // code), so an Apply IS seen -- once. What must not happen is the scan that follows rewriting
+    // anything in the assets tree: the .meta is valid and D6 never rewrites a valid one, so the whole
+    // tree's mtimes must be identical across it. That is the D15/INV-C5 assertion, widened from the
+    // cache index to every file a user owns.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i94", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    const std::string materialPath = assetsRoot + "/echo.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(materialPath, MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/notes.txt", "an ordinary neighbour").empty());
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    app->requestAssetBrowserSelectEntry("echo.aeromat");
+
+    REQUIRE(tickToQuiescence(*app));
+    REQUIRE(app->materialTargetPath() == "echo.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    const std::uint64_t baseTriggers = app->assetWatchTriggerCount();
+
+    engine::MaterialDocument edited = *app->materialDocument();
+    edited.name = "Echoed";
+    edited.roughnessFactor = 0.75F;
+    app->requestMaterialDocument(edited);
+    REQUIRE(app->tick());
+    REQUIRE(app->materialDirty());
+    // A pending edit costs the watcher NOTHING: nothing has touched the disk yet.
+    CHECK(app->assetWatchTriggerCount() == baseTriggers);
+
+    app->requestMaterialApply();
+    REQUIRE(app->tick());
+    REQUIRE_FALSE(app->materialDirty());
+    const engine::editor::FileReadResult applied = engine::editor::readTextFile(materialPath);
+    REQUIRE(applied.text.has_value());
+    CHECK(*applied.text == engine::writeMaterialText(edited));
+
+    // The snapshot is taken AFTER the write and BEFORE the rescan the watcher is about to drive, which
+    // is exactly the window the assertion is about.
+    const std::vector<std::pair<std::string, std::filesystem::file_time_type>> before = assetsTreeMtimes(assetsRoot);
+    REQUIRE(before.size() >= 4U);  // echo.aeromat + notes.txt + both sidecars -- never a vacuous sweep
+
+    REQUIRE(tickToQuiescence(*app));
+    CHECK(app->assetWatchTriggerCount() == baseTriggers + 1);  // ONE echo, not two: no new sidecar
+    const std::vector<std::pair<std::string, std::filesystem::file_time_type>> after = assetsTreeMtimes(assetsRoot);
+    CHECK(after == before);  // ZERO bytes written to the assets tree by the rescan (D6/D15)
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
 // ---- task 3.4.2: the two source-text pins the preview's lifetime rule needs (I95, I96) -------------
 //
 // WHY SOURCE TEXT: SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan and D3D12 and defers only on
@@ -7529,5 +7735,47 @@ TEST_CASE("editor: every preview GPU destroy sits in the service pass (task 3.4.
             CAPTURE(needle);
             CHECK(line.find(needle) == std::string::npos);
         }
+    }
+}
+
+TEST_CASE("editor: .aeromat bytes have exactly ONE physical write path (task 3.4.2, I97, D12, seed S8)") {
+    // THE AMENDED INV-A1, as a grep rather than a habit. Apply and New Material are TWO LOGICAL writes
+    // through ONE physical one: material_session.cpp's saveMaterialFile holds the single
+    // writeTextFileAtomic call site, and every caller assembles the absolute path into a named local
+    // first so the invariant stays decidable by reading rather than by reasoning. Duplicating the
+    // helper into a second call site (seed S8) reddens here and nowhere else -- no runtime tier can
+    // see a second write path that happens to write the same bytes.
+    const std::vector<std::string> sessionCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_session.cpp");
+    std::size_t writeSites = 0;
+    for (const std::string& line : sessionCode) {
+        if (line.find("writeTextFileAtomic(") != std::string::npos) {
+            ++writeSites;
+        }
+    }
+    CHECK(writeSites == 1);
+
+    // And nowhere else in this task's four TUs. editor_app.cpp is deliberately NOT on this list: it is
+    // full of unrelated writes (recents, project manifests) and its material arm is asserted the other
+    // way round, below.
+    const std::array<std::string_view, 3> mustNotWrite{"/material_panel.cpp", "/material_preview.cpp",
+                                                       "/material_edit.cpp"};
+    for (const std::string_view leaf : mustNotWrite) {
+        CAPTURE(leaf);
+        std::string path = AERO_EDITOR_SRC_DIR;
+        path += leaf;
+        for (const std::string& line : editorSourceCodeLines(path)) {
+            CHECK(line.find("writeTextFileAtomic(") == std::string::npos);
+            CHECK(line.find("saveMaterialFile(") == std::string::npos);
+        }
+    }
+
+    // The create drain routes through the SAME helper, exactly once, and writes no bytes of its own:
+    // one saveMaterialFile call, zero writeMaterialText calls (the helper owns the serialisation) and
+    // -- the load-bearing half -- the named local the invariant is read from.
+    const std::vector<std::string> appCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    (void)soleLineContaining(appCode, "saveMaterialFile(");
+    (void)soleLineContaining(appCode, "const std::string materialAbsolutePath =");
+    for (const std::string& line : appCode) {
+        CHECK(line.find("writeMaterialText(") == std::string::npos);
     }
 }

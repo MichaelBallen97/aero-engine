@@ -415,6 +415,11 @@ public:
     void requestMaterialDocument(MaterialDocument document);
     void requestMaterialApply() noexcept;
     void requestMaterialRevert() noexcept;
+    // task 3.4.2 (D9/AC-5): what the Asset Browser's New Material button records, reachable without a
+    // click -- the requestAssetBrowserReimportAll() forward verbatim, queueing the SAME ActionKind the
+    // widget queues so the drain sees no difference between the two. A no-op when no Asset Browser
+    // panel is registered.
+    void requestAssetBrowserCreateMaterial() noexcept;
     // ---- task 3.4.2 black-box accessors: the ImGui-free GPU tier's only window into the session.
     // MaterialSessionState itself stays out of this surface, exactly as modelImportState() keeps
     // SessionState out -- the two booleans below are what a case actually asserts.
@@ -446,6 +451,16 @@ private:
     // importSession and toolPrefsPath. THE ONLY PLACE THIS TASK LOGS (INV-B10).
     void resolveBlender();
     void applyBlenderOverride(std::string_view absolutePathUtf8);
+
+    // task 3.4.2 (D9/AC-5/AC-6): New Material's DRAIN, called from tick()'s reconcile block and
+    // nowhere else -- never from a draw walk. `directoryRel` is the Asset Browser's own current
+    // directory ("" == the assets root). Returns true iff a file was written, which the caller folds
+    // into the same `refresh` the orphan delete does, so the write and the scan that mints its `.meta`
+    // are ONE pass. Every failure arm -- no root, an unlistable directory, name exhaustion, a refused
+    // write -- logs exactly ONE WARN and writes nothing (AC-6: no file, no partial state, nothing
+    // deleted). The bytes go through material_session.cpp's saveMaterialFile, the ONE .aeromat write
+    // path (D12), so this adds no writeTextFileAtomic call site at all.
+    [[nodiscard]] bool createMaterialAsset(std::string_view directoryRel);
 
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.

@@ -9,6 +9,9 @@
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/material_edit.hpp>  // task 3.4.2: uniqueMaterialFileName -- New Material's
+                                          // one naming rule, PURE and shared with the ME tier
+#include <aero/editor/project_files.hpp>  // task 3.4.2: listDirectory/joinRelative, for the same drain
 #include <aero/editor/scene_session.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
@@ -537,7 +540,21 @@ bool EditorApp::tick() {
             // delete and the rescan that observes it are ONE pass, not two ticks apart (seed S28).
             orphanHandled = true;
         }
-        const bool refresh = assetRescanRequested || panelRefresh || orphanHandled || watchFired;  // task 3.1.4
+        // task 3.4.2 (D9/AC-5): a FOURTH one-shot in this block, drained as its OWN statement for the
+        // identical F9 reason -- an engaged optional carrying "" (the assets root) is a legitimate
+        // request, which is exactly why the channel is an optional and not a string.
+        std::optional<std::string> createMaterialDir;
+        if (assetBrowserPanel != nullptr) {
+            createMaterialDir = assetBrowserPanel->takeCreateMaterialRequest();
+        }
+        bool materialCreated = false;
+        if (createMaterialDir.has_value()) {
+            // The orphan-delete posture verbatim: the write happens BEFORE the refresh test below, so
+            // the new file and the scan that mints its `.meta` are ONE pass rather than two ticks apart.
+            materialCreated = createMaterialAsset(*createMaterialDir);
+        }
+        const bool refresh =
+            assetRescanRequested || panelRefresh || orphanHandled || watchFired || materialCreated;  // task 3.1.4
         const bool reimport = assetReimportRequested || panelReimport;
         assetRescanRequested = false;
         assetReimportRequested = false;
@@ -1006,6 +1023,15 @@ bool EditorApp::blenderLogRefusedByCap() const noexcept { return importSession.b
 
 // task 3.4.2: the request seams and the black-box reads. Each seam records EXACTLY what the panel's
 // own control records and is drained by the next tick()'s reconcile block -- never applied here.
+// task 3.4.2 (D9/AC-5): the requestAssetBrowserReimportAll() forward verbatim -- it queues the SAME
+// ActionKind::CreateMaterial the New Material button queues, so the request picks up the panel's own
+// committed currentDir in applyPending() and the tick() drain cannot tell a seam from a click.
+void EditorApp::requestAssetBrowserCreateMaterial() noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestCreateMaterial();
+    }
+}
+
 void EditorApp::requestMaterialDocument(MaterialDocument document) { requestedMaterialDocument = std::move(document); }
 void EditorApp::requestMaterialApply() noexcept { requestedMaterialApply = true; }
 void EditorApp::requestMaterialRevert() noexcept { requestedMaterialRevert = true; }
@@ -1172,6 +1198,64 @@ void EditorApp::applyBlenderOverride(std::string_view absolutePathUtf8) {
         AERO_LOG_WARN("editor: could not save the Blender path to '{}' -- {}", toolPrefsPath, reason);
     }
     resolveBlender();  // setOverridePath resets the service to Unknown; re-resolve against the new value
+}
+
+// task 3.4.2 (D9/AC-5/AC-6): New Material's whole drain. Called from tick()'s reconcile block and
+// nowhere else, so nothing here runs inside a draw walk. Every failure arm returns false having logged
+// exactly ONE WARN and written nothing -- and "written nothing" is literal: writeTextFileAtomic writes
+// through a `.aero-tmp` sibling and removes it on either failure path, so there is no partial state and
+// nothing is ever deleted (the D7/INV-P4 family).
+bool EditorApp::createMaterialAsset(std::string_view directoryRel) {
+    if (assetBrowserPanel == nullptr) {
+        return false;
+    }
+    // The PANEL's root, not project.assetsRoot(): `directoryRel` is relative to the root the panel was
+    // showing when the button was pressed, and the two can differ for exactly one tick after a project
+    // swap (the panel's root is reconciled later in this same block). An empty root is the
+    // blenderExportDir() lesson one subsystem over -- concatenating onto it would name
+    // "/NewMaterial.aeromat", an absolute path at the filesystem root.
+    const std::string& assetsRoot = assetBrowserPanel->root();
+    if (assetsRoot.empty()) {
+        AERO_LOG_WARN("editor: cannot create a material -- no project is open");
+        return false;
+    }
+    // The listing is REQUIRED, not an optimisation: saveMaterialFile overwrites whatever is at the path
+    // it is given, so a directory we cannot enumerate is a directory in which we cannot prove a name is
+    // unused. Refusing is the only safe answer. Hidden entries are included -- a hidden file still owns
+    // its name.
+    const DirectoryListing listing = listDirectory(assetsRoot, directoryRel, true);
+    if (listing.status != ScanStatus::Ok) {
+        AERO_LOG_WARN("editor: cannot create a material in '{}' -- the folder could not be read",
+                      directoryRel.empty() ? std::string_view("<assets root>") : directoryRel);
+        return false;
+    }
+    std::vector<std::string_view> taken;
+    taken.reserve(listing.entries.size());
+    for (const FileEntry& entry : listing.entries) {
+        taken.emplace_back(entry.name);
+    }
+    const std::string fileName = uniqueMaterialFileName("NewMaterial", taken);
+    if (fileName.empty()) {
+        AERO_LOG_WARN("editor: cannot create a material in '{}' -- no unused name after {} attempts",
+                      directoryRel.empty() ? std::string_view("<assets root>") : directoryRel,
+                      MAX_NEW_MATERIAL_ATTEMPTS);
+        return false;
+    }
+    const std::string relativePath = joinRelative(directoryRel, fileName);
+    // A NAMED LOCAL, exactly as the amended INV-A1 requires of every path handed to the one write path.
+    const std::string materialAbsolutePath = assetsRoot + "/" + relativePath;
+    // material_session.cpp's saveMaterialFile -- the ONE function in this tree that writes .aeromat
+    // bytes (D12). NOT a second writeTextFileAtomic call site: Apply and Create are two logical writes
+    // through ONE physical one, which is what keeps the invariant a grep.
+    if (const std::string error = saveMaterialFile(materialAbsolutePath, MaterialDocument{}); !error.empty()) {
+        AERO_LOG_WARN("editor: could not create '{}' -- {}", relativePath, error);
+        return false;
+    }
+    AERO_LOG_INFO("editor: created material '{}'", relativePath);
+    // The SAME action a real click on the new row records, so the material session's own sticky
+    // reconcile retargets to it next tick and the Material panel opens on it (AC-5's last clause).
+    assetBrowserPanel->requestSelectEntry(relativePath);
+    return true;
 }
 
 // code-review BLOCKING-1 test seam: stores the id for tick()'s ShellUiState construction to carry --

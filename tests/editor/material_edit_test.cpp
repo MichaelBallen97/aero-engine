@@ -1036,6 +1036,38 @@ TEST_CASE("material session: a REJECT file is an error state, never a half-load 
     }
 }
 
+TEST_CASE("material session: New Material's bytes are the CANONICAL default document (ME47, AC-5, seed S20)") {
+    // THE TIER-0 HALF OF THE CREATE PATH. New Material writes writeMaterialText(MaterialDocument{})
+    // through saveMaterialFile -- the SAME helper Apply uses, which is D12's whole point -- so what is
+    // provable without a window is that those bytes are the canonical default and that they round-trip
+    // to a document a session loads CLEAN. I93 is the runtime half (the drain, the name, the sidecar,
+    // the selection); a seed writing a non-default document reddens both.
+    SessionHarness harness;
+    const std::string absolute = harness.absolutePathOf("NewMaterial.aeromat");
+    REQUIRE(engine::editor::saveMaterialFile(absolute, MaterialDocument{}).empty());
+
+    const std::string bytes = readBytes(absolute);
+    CHECK(bytes == engine::writeMaterialText(MaterialDocument{}));
+    // The same bytes the committed `defaulted.aeromat` fixture stands for, semantically: it is exactly
+    // {"version": 1}, and both parse to a default document. This asserts the DOCUMENT, not the text,
+    // because the writer is canonical and the fixture is minimal -- two legal spellings of one value.
+    const engine::MaterialParseResult parsed = engine::parseMaterial(bytes);
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.document.has_value());
+    CHECK((*parsed.document == MaterialDocument{}));
+    CHECK(parsed.warnings.empty());
+
+    // And a session that targets it is Ready and CLEAN -- so the file the button just made is not
+    // already asking to be saved (D5/INV-2: a freshly created material is not a dirty one).
+    harness.rescan();
+    engine::editor::MaterialSession session;
+    session.reconcile("NewMaterial.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK((session.state() == engine::editor::MaterialSessionState::Ready));
+    CHECK_FALSE(session.dirty());
+    REQUIRE(session.document() != nullptr);
+    CHECK((*session.document() == MaterialDocument{}));
+}
+
 // ---- the preview's cache key, at tier 0 (ME48) ---------------------------------------------------
 
 TEST_CASE("material edit: one GUID in two slots is TWO cache keys, by colour space (ME48, D7, seed S22)") {

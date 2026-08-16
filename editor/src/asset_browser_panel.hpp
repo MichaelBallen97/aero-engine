@@ -182,6 +182,24 @@ public:
         return requested;
     }
 
+    // task 3.4.2 (D9/AC-5): the New Material button's one-shot -- the takeWatchToggleRequest() shape,
+    // a FIFTH instance, and an OPTIONAL rather than a bare string for a reason: the payload is the
+    // directory to create in, and "" is the legitimate value for the ROOT, so an empty string cannot
+    // also mean "nothing was requested". Drained by EditorApp's reconcile as its OWN statement (F9);
+    // THIS PANEL NEVER TOUCHES DISK (D7/D19 -- it is read-only by contract, and creation happens
+    // outside the draw walk in tick(), exactly like Refresh's rescan).
+    [[nodiscard]] std::optional<std::string> takeCreateMaterialRequest() noexcept {
+        std::optional<std::string> requested = std::move(createMaterialRequest);
+        createMaterialRequest.reset();  // a moved-from optional is still ENGAGED -- the move is not a drain
+        return requested;
+    }
+
+    // task 3.4.2: the requestReimportAll() shape verbatim -- identical in effect to a real click on the
+    // New Material button, because it queues the SAME ActionKind the button queues, so the next
+    // onDraw() drains it through the SAME applyPending() arm. The ImGui-free-at-source GPU tier has no
+    // other way to press a widget.
+    void requestCreateMaterial() noexcept;
+
     // task 3.1.3 (A12): black-box observability for the GPU tier, forwarded by EditorApp -- the
     // assetCacheEntryCount() shape verbatim.
     [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept { return ledger.readyCount(); }
@@ -221,6 +239,10 @@ private:
         // path: "1" to enable, "0" to disable -- task 3.1.4 (D10), APPENDED (never inserted --
         // performance-enum-size, and this enum's own existing comment rule).
         SetAutoRefresh,
+        // path: unused -- task 3.4.2 (D9/AC-5), APPENDED (this enum's own rule, again). The arm sets
+        // createMaterialRequest to the CURRENT DIRECTORY and nothing else; the file is written by
+        // EditorApp::tick(), outside the draw walk.
+        CreateMaterial,
     };
     struct PendingAction {
         ActionKind kind = ActionKind::None;
@@ -321,6 +343,11 @@ private:
     // 50 000-record project does not allocate two large vectors on every rescan.
     std::vector<ThumbnailKey> liveKeyScratch;
     std::vector<Guid> abstainingScratch;
+
+    // ---- task 3.4.2 ------------------------------------------------------------------------------
+    // One-shot, drained by takeCreateMaterialRequest(). Engaged == "create a material in this
+    // directory" ("" == the root); disengaged == nothing requested.
+    std::optional<std::string> createMaterialRequest;
 };
 
 }  // namespace engine::editor

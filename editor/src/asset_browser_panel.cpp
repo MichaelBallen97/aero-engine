@@ -206,6 +206,18 @@ void AssetBrowserPanel::drawHeader() {
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Discard the import cache and re-hash every asset. Use this if the editor missed a change.");
     }
+    // task 3.4.2 (D9/AC-5): a THIRD button on the same row. The click RECORDS and nothing else -- this
+    // panel is read-only by contract (D19) and performs no I/O (D7), so the file is written by
+    // EditorApp::tick(), outside the draw walk, exactly like Refresh's rescan. The orphan-delete drain
+    // shape, a second application: a create inside the draw walk would write a file, request a scan and
+    // mutate the selection while ImGui holds this frame's tree open.
+    ImGui::SameLine();
+    if (ImGui::Button("New Material")) {
+        record(ActionKind::CreateMaterial, {});
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Create a new material in this folder and select it.");
+    }
     // task 3.1.4 (D10/AC-35): SESSION state, deliberately not persisted -- 3.1.3's D4 posture
     // verbatim (view mode and tile size take the same one, with the same documented "resets on
     // relaunch" limitation). EditorAppConfig is per-launch; project.json is a shared, committed,
@@ -1216,6 +1228,13 @@ void AssetBrowserPanel::applyPending() {
             // reconcile). The one mutation path INV-5 names is unchanged.
             watchToggleRequest = action.path == "1";
             break;
+        case ActionKind::CreateMaterial:
+            // task 3.4.2 (D9/AC-5): RECORDS the target directory and NOTHING else -- no listing, no
+            // write, no selection change. `currentDir` is read HERE rather than at the record() call
+            // site because applyPending() is the one place that sees committed model state: a Navigate
+            // recorded in the same frame is resolved by this same switch, and the last writer wins.
+            createMaterialRequest = currentDir;
+            break;
     }
 }
 
@@ -1392,6 +1411,10 @@ void AssetBrowserPanel::requestDeleteOrphanClick(std::string relativeMetaPath) {
 void AssetBrowserPanel::requestSelectEntry(std::string relativePath) {
     record(ActionKind::SelectEntry, std::move(relativePath));
 }
+// task 3.4.2: the requestReimportAll() shape verbatim -- record(ActionKind::CreateMaterial, {}) is
+// exactly what drawHeader() calls when the New Material button returns true, so the request travels
+// the SAME applyPending() arm and picks up the SAME currentDir a click would.
+void AssetBrowserPanel::requestCreateMaterial() noexcept { record(ActionKind::CreateMaterial, {}); }
 
 // ---- the frame ---------------------------------------------------------------------------------
 void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context is IGNORED
