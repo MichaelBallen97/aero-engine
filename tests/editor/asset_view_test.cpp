@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <ostream>
 #include <span>
 #include <string>
 #include <string_view>
@@ -122,7 +123,8 @@ TEST_CASE("asset view: classifyAssetKind is total (AV14)") {
     for (const std::string_view name : UNKNOWNS) {
         const AssetKind kind = classifyAssetKind(name, false);
         CHECK((kind == AssetKind::Folder || kind == AssetKind::Texture || kind == AssetKind::Model ||
-               kind == AssetKind::Audio || kind == AssetKind::Text || kind == AssetKind::Unknown));
+               kind == AssetKind::Audio || kind == AssetKind::Text || kind == AssetKind::Material ||
+               kind == AssetKind::Unknown));
     }
 }
 
@@ -186,8 +188,9 @@ TEST_CASE("asset view: iconLabelFor is always <= 4 chars and ASCII uppercase (AV
 }
 
 TEST_CASE("asset view: iconColorFor is total and stable across calls (AV25)") {
-    constexpr std::array<AssetKind, 6> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
-                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
+    constexpr std::array<AssetKind, 7> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
+                                             AssetKind::Unknown};
     for (const AssetKind kind : KINDS) {
         const auto c1 = iconColorFor(kind);
         const auto c2 = iconColorFor(kind);
@@ -199,8 +202,9 @@ TEST_CASE("asset view: iconColorFor is total and stable across calls (AV25)") {
 }
 
 TEST_CASE("asset view: iconColorFor gives distinct colours to every kind (AV26)") {
-    constexpr std::array<AssetKind, 6> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
-                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
+    constexpr std::array<AssetKind, 7> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
+                                             AssetKind::Unknown};
     for (std::size_t i = 0; i < KINDS.size(); ++i) {
         for (std::size_t j = i + 1; j < KINDS.size(); ++j) {
             const auto a = iconColorFor(KINDS[i]);
@@ -213,8 +217,9 @@ TEST_CASE("asset view: iconColorFor gives distinct colours to every kind (AV26)"
 }
 
 TEST_CASE("asset view: assetKindLabel is total and non-empty (AV27)") {
-    constexpr std::array<AssetKind, 6> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
-                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
+    constexpr std::array<AssetKind, 7> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
+                                             AssetKind::Unknown};
     for (const AssetKind kind : KINDS) {
         CHECK_FALSE(assetKindLabel(kind).empty());
     }
@@ -429,4 +434,41 @@ TEST_CASE(
     filter.anyKind = false;
     filter.kind = AssetKind::Texture;
     CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), filter).empty());
+}
+
+// ---- task 3.4.2: .aeromat becomes a first-class kind (AV48-AV52, AC-1/AC-3) ----------------------
+
+TEST_CASE("asset view: .aeromat classifies Material, in any ASCII case (AV48, AC-1, seed S1)") {
+    CHECK((classifyAssetKind("wood.aeromat", false) == AssetKind::Material));
+    CHECK((classifyAssetKind("WOOD.AEROMAT", false) == AssetKind::Material));
+    CHECK((classifyAssetKind("Wood.AeroMat", false) == AssetKind::Material));
+    // A DIRECTORY called "materials.aeromat" is still a Folder -- the isDirectory arm wins first.
+    CHECK((classifyAssetKind("materials.aeromat", true) == AssetKind::Folder));
+}
+
+TEST_CASE("asset view: .mtl STAYS Unknown -- the 3.2.3 fact, re-pinned (AV49)") {
+    // Recorded at task 3.2.3: a Wavefront material library is a CLAIMED IMPORTABLE FILE but not a
+    // browser kind, so it is invisible while the kind filter is set to Model. This task touches the
+    // same table, so the fact is pinned here rather than left to be re-derived.
+    CHECK((classifyAssetKind("chair.mtl", false) == AssetKind::Unknown));
+    CHECK((classifyAssetKind("chair.aeromat", false) == AssetKind::Material));
+}
+
+TEST_CASE("asset view: assetKindLabel answers \"Material\" (AV50, AC-1)") {
+    CHECK(assetKindLabel(AssetKind::Material) == std::string_view("Material"));
+    CHECK(assetKindLabel(AssetKind::Unknown) == std::string_view("Unknown"));
+}
+
+TEST_CASE("asset view: the icon LABEL for .aeromat is unchanged at \"AERT\" (AV51)") {
+    // iconLabelFor is extension-derived and kind-INDEPENDENT: seven characters take the >4 branch, so
+    // "aeromat" becomes ext[0..2] + ext.back(). AC-1 moves the COLOUR, never the label -- pinned so a
+    // future label change is visible rather than surprising.
+    CHECK(iconLabelFor("x.aeromat") == std::string("AERT"));
+}
+
+TEST_CASE("asset view: .aeromat is NOT thumbnail-decodable (AV52, AC-3)") {
+    // isThumbnailDecodable is deliberately untouched by this task: the two tables are separate by
+    // recorded design, and a rendered material-ball thumbnail is a named deferral with no owner.
+    CHECK_FALSE(isThumbnailDecodable("x.aeromat"));
+    CHECK_FALSE(isThumbnailDecodable("X.AEROMAT"));
 }

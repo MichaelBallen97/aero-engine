@@ -288,8 +288,10 @@ void AssetBrowserPanel::drawHeader() {
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0F);
-    constexpr std::array<AssetKind, 6> KIND_OPTIONS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
-                                                    AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
+    // task 3.4.2: SEVEN, in enum order -- AssetKind::Material sits before Unknown, which stays last.
+    constexpr std::array<AssetKind, 7> KIND_OPTIONS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+                                                    AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
+                                                    AssetKind::Unknown};
     labelScratch = filter.anyKind ? std::string("All") : std::string(assetKindLabel(filter.kind));
     if (ImGui::BeginCombo("##kindFilter", labelScratch.c_str())) {
         if (ImGui::Selectable("All", filter.anyKind)) {
@@ -1178,8 +1180,13 @@ void AssetBrowserPanel::applyPending() {
             if (action.path == "all") {
                 filter.anyKind = true;
             } else if (!action.path.empty()) {
-                // A single digit, 0-5 -- static_cast<int>(AssetKind) (§D-7's PendingAction shape).
+                // A single digit, 0-6 -- static_cast<int>(AssetKind) (§D-7's PendingAction shape).
                 // No std::stoi: the no-exceptions rule (docs/04) extends to this control-flow path too.
+                //
+                // THE CEILING, written down at task 3.4.2 rather than discovered at kind eleven: this
+                // encoding BREAKS SILENTLY at a TENTH enumerator. std::to_string(10) is "10" and the
+                // line below reads path[0] only, so kind 10 would decode as kind 1 -- a wrong filter,
+                // no error, no red test. A tenth AssetKind must widen both halves together.
                 filter.anyKind = false;
                 filter.kind = static_cast<AssetKind>(action.path[0] - '0');
             }

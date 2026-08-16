@@ -65,6 +65,10 @@ constexpr std::array<std::string_view, 10> TEXTURE_EXTENSIONS{"png", "jpg", "jpe
 constexpr std::array<std::string_view, 8> MODEL_EXTENSIONS{"gltf", "glb", "fbx", "obj", "blend", "dae", "ply", "stl"};
 constexpr std::array<std::string_view, 4> AUDIO_EXTENSIONS{"wav", "mp3", "ogg", "flac"};
 constexpr std::array<std::string_view, 7> TEXT_EXTENSIONS{"json", "txt", "md", "hlsl", "glsl", "ts", "js"};
+// task 3.4.2 (D9): the FIFTH kind table. Deliberately not folded into TEXT_EXTENSIONS even though an
+// .aeromat IS JSON: the browser's job here is to say what a file MEANS, and a material is an editable
+// asset with its own panel, not a text file.
+constexpr std::array<std::string_view, 1> MATERIAL_EXTENSIONS{"aeromat"};
 
 // The stb-decodable SUBSET of TEXTURE_EXTENSIONS -- deliberately a SEPARATE table (D7/seed S32), not
 // derived from it: .ktx2 and .dds are textures that get an icon, never a decode attempt.
@@ -93,6 +97,9 @@ AssetKind classifyAssetKind(std::string_view fileName, bool isDirectory) noexcep
     if (extensionIn(ext, TEXT_EXTENSIONS)) {
         return AssetKind::Text;
     }
+    if (extensionIn(ext, MATERIAL_EXTENSIONS)) {
+        return AssetKind::Material;
+    }
     return AssetKind::Unknown;
 }
 
@@ -116,6 +123,8 @@ std::string_view assetKindLabel(AssetKind kind) noexcept {
             return "Audio";
         case AssetKind::Text:
             return "Text";
+        case AssetKind::Material:
+            return "Material";
         case AssetKind::Unknown:
             return "Unknown";
     }
@@ -172,6 +181,8 @@ IconColor iconColorFor(AssetKind kind) noexcept {
             return IconColor{.r = 0xA0U, .g = 0x60U, .b = 0xC0U, .a = 255U};  // a violet
         case AssetKind::Text:
             return IconColor{.r = 0x90U, .g = 0x90U, .b = 0x90U, .a = 255U};  // a neutral grey
+        case AssetKind::Material:
+            return IconColor{.r = 0xE0U, .g = 0x70U, .b = 0x45U, .a = 255U};  // a warm coral
         case AssetKind::Unknown:
             return IconColor{.r = 0x50U, .g = 0x50U, .b = 0x50U, .a = 255U};  // a darker grey
     }
