@@ -28,6 +28,7 @@ add_library(aero_assets STATIC
     src/cooked_texture.cpp   # task 3.3.2 -- the KTX2 subset v1: the writer and the hostile-input reader
     src/bc_block.cpp         # task 3.3.2 -- the two INTEGER block encoders; BC3/BC5 compose them
     src/texture_cook.cpp     # task 3.3.2 -- cookTexture: mip chain, gamma tables, block loop, assembly
+    src/cooked_skeleton.cpp  # task 3.5.1 -- the .aeroskel container v1: the hostile-input parser
 )
 add_library(aero::assets ALIAS aero_assets)
 
