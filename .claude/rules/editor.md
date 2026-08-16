@@ -1254,5 +1254,79 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   shadercross bootstrap's option hash, so a Makefiles configure reads the cached toolchain as COLD and pays
   a twenty-minute from-source DXC rebuild that has nothing to do with what the probe tests.
 
+## Materials (task 3.4.2)
+
+- **`"Material"` is FROZEN** — the panel id is both the ImGui window name and the `imgui.ini` settings
+  key, so renaming it orphans every saved layout. `imgui_layer_test.cpp`'s `frozenPanelIds` array is the
+  pin, and it now covers all eight ids rather than the first six.
+- **The target is STICKY: only a DIFFERENT, EXISTING `.aeromat` retargets the panel.** Selecting a
+  texture, a folder or nothing leaves it alone. Import Details keeps retargeting on everything; the two
+  are **tabs, not shared state**. Invert this and every click made while hunting for a texture to
+  reference destroys an unapplied edit session — the browser has exactly one selection. The target
+  clears only when its record disappears from the database, or on a project swap.
+- **`.aeromat` bytes are written by exactly two logical operations — Apply and New Material — through
+  ONE helper**, `saveMaterialFile` in `material_session.cpp`, whose body holds the single
+  `writeTextFileAtomic` call site. **The amended INV-A1**: the assets-root call-site count is now
+  **two** (`asset_database.cpp`'s `metaAbsolutePath`, `material_session.cpp`'s helper) and the
+  library-directory count is still two, with every absolute path assembled into a **named local**
+  (`materialAbsolutePath`) so the invariant stays a grep rather than a heuristic. No scan, rescan,
+  watcher, selection or draw path writes one, ever.
+- **Dirty is `sessionCopy != fileCopy`** through `MaterialDocument`'s defaulted `==` — never "would
+  Apply change the bytes". A valid but non-canonical file therefore loads **clean** and the editor never
+  rewrites a file nobody edited. Apply validates first, writes **only when dirty**, and a validation
+  failure changes nothing anywhere.
+- **New Material refuses a directory it could not enumerate IN FULL.** `listDirectory` signals
+  incompleteness three ways — `status`, `truncated`, `skipped` — and a truncated or partially-skipped
+  listing still carries `ScanStatus::Ok` while handing back a **prefix**. Ask `listingIsComplete`, never
+  `status == Ok`: a prefix cannot prove a name is unused, and acting on one renames the default document
+  over an authored material with no warning and no undo. A caller that merely **displays** a listing is
+  still right to ignore all of it.
+- **`AssetRecord::contentHash` is meaningless unless the scan hashed the file this pass.** Ask
+  `assetContentHashUsable`, never "is the digest zero?" — an all-zero digest is the **empty file's real
+  value**, not a sentinel, and `metaWriteFailed` records are never assigned a `change` at all, so they
+  read as `UpToDate` to any test on `change` alone. An unhashed record gets no cache key and no
+  external-change notice.
+- **Every preview GPU create and destroy lives in `servicePreview`**, never in `onDraw` — with **one
+  deliberate exception, which is the whole rule below**.
+- **THE RESIZE-BEFORE-READ ORDERING RULE — any future panel embedding a `RenderTarget` inherits this
+  trap.** ImGui **records** an `ImTextureID` during the draw walk and **binds** it inside
+  `ImGuiLayer::endFrame`, which runs **after** `tick()`'s post-draw service pass. `RenderTarget::allocate`
+  destroys the previous pair first, and `RenderTarget`'s own comment — "the backend defers the actual GPU
+  release" — is true of the device **memory** and **false of the handle**: in the pinned SDL 3.4.12 tree,
+  Vulkan (`SDL_gpu_vulkan.c:7070-7073`) and D3D12 (`SDL_gpu_d3d12.c:1385, :1460`) `SDL_free` the container
+  **immediately** ("Containers are just client handles, so we can destroy immediately") while Metal
+  (`SDL_gpu_metal.m:936-944`) queues it. So a reallocation between the record and the bind is a **heap
+  use-after-free on Vulkan and D3D12 and benign on Metal** — deterministic on the two platforms with no
+  validation pass, invisible under every sanitizer on the one that has one. **Resize where the handle is
+  read: inside the draw walk, immediately before the read** (`MaterialPreview::prepareFrame`,
+  `ViewportPanel::onDraw`'s steps 5–8), and return false when there is nothing to bind — including the
+  allocation-failure arm, where the previous pair is already gone and the `Image` must be skipped that
+  very frame. This is why the viewport has never had the defect, and it shipped green in the Material
+  panel until the code-review round.
+- **A source-text pin must encode the property that matters, not a proxy for it.** `I96` originally
+  greped for `destroyTexture(`/`destroyMaterial(` and required them inside the service function — and the
+  destroy that mattered was inside `RenderTarget::resize` → `allocate`, invisible to that grep, so the
+  defective code **satisfied** the pin. It now pins **ordering against ImGui's consumption**: `resize`
+  belongs to `prepareFrame` and nowhere else, cache destroys stay in the service pass and the destructor,
+  and `material_panel.cpp`'s three preview statements must read prepare, read, `Image`.
+- **The reconcile block now does SEXTUPLE duty and the post-draw slot QUADRUPLE.** Extend; never twin.
+- **`aero::render` is PUBLIC on `aero_editor_core`** so `material_edit.hpp` can be a public, tier-0
+  testable header — the `aero::assets` precedent from 3.3.1, criterion for criterion.
+  `aero::scene_render` stays PRIVATE; that distinction is the point, not an oversight, and it is why a
+  public editor header may name `render::MaterialParams` but not a `SceneRenderer`.
+- **The slot→colour-space rule is COMPOSED from `render::defaultTextureKindForSlot`**, never restated
+  beside it — 3.4.1 deleted a hand-written per-slot table for exactly this reason. The preview's texture
+  cache key is `(guid, contentHash, srgb)`, so one source in two slots with different spaces loads twice.
+- **The Material panel writes files, and it still mutates nothing in the draw walk.** Every control
+  writes into a per-frame copy and records ONE pending whole-document edit; `tick()` drains it. Numeric
+  edits clamp **in C++** against the same ranges `material_format.cpp` validates with — an ImGui slider
+  with a `v_min` still lets a Ctrl+Click type anything at all, and no tier in this tree can perform that
+  click, so the clamp's only mechanical witness is a source-text pin (`I98`).
+- **A reduced-configuration claim must name which binaries it ran.** `I88`–`I92` failed in a
+  tools-OFF build (115/120) after an earlier probe of that path built `aero_editor_shell_test` only.
+  `aero_editor_imgui_test` now carries `AERO_SHADER_TOOLS_ENABLED=1` inside its own
+  `if(AERO_SHADER_TOOLS)` block, and both arms **assert** — a skip would leave AC-32 untested in the one
+  configuration that can test it.
+
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
-3.1.3, 3.1.4, 3.2.1, 3.2.2, 3.2.3, 3.2.4 and 3.2.5's entries under Phase 3.
+3.1.3, 3.1.4, 3.2.1, 3.2.2, 3.2.3, 3.2.4, 3.2.5 and 3.4.2's entries under Phase 3.

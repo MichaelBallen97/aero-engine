@@ -160,9 +160,11 @@ Subtasks:
 
 ### 3.4.2 Material inspector editing · P1 · M · depends: 3.4.1, 2.2.2
 **Goal:** materials are edited, not hand-authored JSON.
-**Deliverable:** reflected material parameters editable in the inspector with live viewport preview.
+**Deliverable:** material parameters editable in the editor with live preview.
 Subtasks:
-- Reflect material params; inspector editing; live preview
+- Material panel editing; live preview
+
+*(Wording amended at task 3.4.2 per its D1: reflection is deliberately not used — fully reflecting `MaterialDocument` needs four new reflect-gen categories and would mint a second serializer for a normative on-disk format. The rationale lives in `docs/10-engineering-log.md`'s 3.4.2 entry; this file stays a task index.)*
 
 ---
 
