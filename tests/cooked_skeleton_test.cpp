@@ -8,6 +8,8 @@
 // those same tables before being frozen.
 #include <aero/assets/cooked_skeleton.hpp>
 
+#include "cooked_skeleton_golden.hpp"
+
 #include <doctest/doctest.h>
 
 #include <array>
@@ -154,7 +156,110 @@ struct JointSpec {
 
 [[nodiscard]] std::uint32_t bits(float value) { return std::bit_cast<std::uint32_t>(value); }
 
+// A frozen golden, read as the bytes it is.
+[[nodiscard]] CookedSkeletonParseResult parseGolden(std::span<const std::uint8_t> golden) {
+    return parseCookedSkeleton(std::as_bytes(golden));
+}
+
+// Every cell of an inverse bind matrix against a literal expectation, so a transposed or
+// column-shifted read cannot pass by matching a symmetric matrix.
+void checkMatrix(const engine::Mat4& actual, const std::array<float, 16>& expected) {
+    CHECK(expected.size() == 16);  // literal cell count
+    for (std::size_t c = 0; c < 4; ++c) {
+        CHECK(actual.columns[c].x == doctest::Approx(expected[(c * 4) + 0]));
+        CHECK(actual.columns[c].y == doctest::Approx(expected[(c * 4) + 1]));
+        CHECK(actual.columns[c].z == doctest::Approx(expected[(c * 4) + 2]));
+        CHECK(actual.columns[c].w == doctest::Approx(expected[(c * 4) + 3]));
+    }
+}
+
 }  // namespace
+
+TEST_CASE("cooked skeleton: the frozen minimal golden parses Ok, field for field (SK1)") {
+    const CookedSkeletonParseResult r = parseGolden(aero_test::COOKED_SKELETON_GOLDEN_MINIMAL);
+    REQUIRE((r.status == CookedSkeletonStatus::Ok));
+    CHECK(r.message.empty());
+    CHECK(r.skeleton.formatVersion == 1);
+    CHECK(r.skeleton.cookerVersion == 1);
+    CHECK(!r.skeleton.sourceGuid.valid());
+    CHECK(r.skeleton.sourceSkinIndex == 0);
+    CHECK(r.skeleton.paletteJointCount == 2);
+    REQUIRE(r.skeleton.joints.size() == 2);
+
+    const engine::assets::CookedSkeletonJoint& root = r.skeleton.joints[0];
+    CHECK(root.parent == COOKED_SKELETON_INVALID_INDEX);
+    CHECK(root.paletteSlot == 0);
+    CHECK(root.sourceNodeLocalId == 3);
+    CHECK(root.translation.x == doctest::Approx(1.0F));
+    CHECK(root.translation.y == doctest::Approx(2.0F));
+    CHECK(root.translation.z == doctest::Approx(3.0F));
+    CHECK(root.rotation.x == doctest::Approx(0.0F));
+    CHECK(root.rotation.y == doctest::Approx(0.0F));
+    CHECK(root.rotation.z == doctest::Approx(0.0F));
+    CHECK(root.rotation.w == doctest::Approx(1.0F));
+    CHECK(root.scale.x == doctest::Approx(1.0F));
+    CHECK(root.scale.y == doctest::Approx(1.0F));
+    CHECK(root.scale.z == doctest::Approx(1.0F));
+    checkMatrix(root.inverseBind,
+                {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F});
+
+    const engine::assets::CookedSkeletonJoint& child = r.skeleton.joints[1];
+    CHECK(child.parent == 0);  // the EMISSION index of its parent, not the parent's localId (3)
+    CHECK(child.paletteSlot == 1);
+    CHECK(child.sourceNodeLocalId == 7);
+    CHECK(child.translation.x == doctest::Approx(0.0F));
+    CHECK(child.translation.y == doctest::Approx(0.5F));
+    CHECK(child.translation.z == doctest::Approx(0.0F));
+    CHECK(child.rotation.z == doctest::Approx(1.0F));  // 180 degrees about Z
+    CHECK(child.rotation.w == doctest::Approx(0.0F));
+    CHECK(child.scale.x == doctest::Approx(2.0F));
+    CHECK(child.scale.y == doctest::Approx(2.0F));
+    CHECK(child.scale.z == doctest::Approx(2.0F));
+    checkMatrix(child.inverseBind,
+                {0.5F, 0.0F, 0.0F, 0.0F, 0.0F, 0.5F, 0.0F, 0.0F, 0.0F, 0.0F, 0.5F, 0.0F, -0.5F, -1.25F, 0.0F, 1.0F});
+}
+
+TEST_CASE("cooked skeleton: the frozen closure golden parses Ok, slots diverging from order (SK2)") {
+    const CookedSkeletonParseResult r = parseGolden(aero_test::COOKED_SKELETON_GOLDEN_CLOSURE);
+    REQUIRE((r.status == CookedSkeletonStatus::Ok));
+    CHECK(r.message.empty());
+    CHECK(r.skeleton.sourceGuid.hi == 0x0123456789ABCDEFULL);
+    CHECK(r.skeleton.sourceGuid.lo == 0xFEDCBA9876543210ULL);
+    CHECK(r.skeleton.sourceSkinIndex == 0);
+    CHECK(r.skeleton.paletteJointCount == 2);
+    REQUIRE(r.skeleton.joints.size() == 3);
+
+    // Record 0 -- the hierarchy-only ancestor. Its IBM is identity IN THE FILE, whatever the rig it
+    // came from carried, and its slot marker is the root marker's twin.
+    const engine::assets::CookedSkeletonJoint& ancestor = r.skeleton.joints[0];
+    CHECK(ancestor.parent == COOKED_SKELETON_INVALID_INDEX);
+    CHECK(ancestor.paletteSlot == COOKED_SKELETON_INVALID_INDEX);
+    CHECK(ancestor.sourceNodeLocalId == 10);
+    CHECK(ancestor.translation.y == doctest::Approx(1.0F));
+    checkMatrix(ancestor.inverseBind,
+                {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F});
+
+    const engine::assets::CookedSkeletonJoint& left = r.skeleton.joints[1];
+    CHECK(left.parent == 0);
+    CHECK(left.paletteSlot == 1);
+    CHECK(left.sourceNodeLocalId == 20);
+    CHECK(left.translation.x == doctest::Approx(1.0F));
+    checkMatrix(left.inverseBind,
+                {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, -1.0F, -1.0F, 0.0F, 1.0F});
+
+    const engine::assets::CookedSkeletonJoint& right = r.skeleton.joints[2];
+    CHECK(right.parent == 0);
+    CHECK(right.paletteSlot == 0);
+    CHECK(right.sourceNodeLocalId == 30);
+    CHECK(right.translation.x == doctest::Approx(-1.0F));
+    checkMatrix(right.inverseBind,
+                {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 1.0F, -1.0F, 0.0F, 1.0F});
+
+    // THE property this golden exists for: the palette slots are NOT in record order, so a consumer
+    // that writes its palette by record index instead of by paletteSlot produces a wrong rig.
+    CHECK(left.paletteSlot > right.paletteSlot);
+    CHECK(left.sourceNodeLocalId < right.sourceNodeLocalId);
+}
 
 TEST_CASE("cooked skeleton: buffers shorter than a whole file are refused at every boundary (SK3)") {
     const std::vector<std::byte> whole = buildPair();

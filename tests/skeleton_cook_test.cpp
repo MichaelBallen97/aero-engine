@@ -4,11 +4,12 @@
 //
 // Tier-0: no GPU, no window, no disk. Every case drives the PUBLIC cookSkeleton() and reads its
 // output back through the PUBLIC parseCookedSkeleton(), so nothing here depends on an internal of
-// either. The two golden INPUTS live here (minimalJoints/closureJoints); their frozen BYTES arrive
-// with the golden header in the next commit, which is what turns this file's round trips into byte
-// equalities.
+// either. The two golden INPUTS live here (minimalJoints/closureJoints) and their frozen BYTES live
+// in cooked_skeleton_golden.hpp -- one array, two test binaries, no drift.
 #include <aero/assets/cooked_skeleton.hpp>
 #include <aero/assets/skeleton_cook.hpp>
+
+#include "cooked_skeleton_golden.hpp"
 
 #include <doctest/doctest.h>
 
@@ -155,7 +156,43 @@ private:
     return joints;
 }
 
+// Byte equality against a frozen golden, reported as the first differing offset rather than as a
+// bare false: a 448-entry mismatch nobody can read is a failure nobody can act on.
+void checkEqualsGolden(const std::vector<std::byte>& cooked, std::span<const std::uint8_t> golden) {
+    REQUIRE(cooked.size() == golden.size());
+    for (std::size_t i = 0; i < golden.size(); ++i) {
+        const auto actual = static_cast<std::uint32_t>(cooked[i]);
+        const auto expected = static_cast<std::uint32_t>(golden[i]);
+        INFO("byte offset ", i);
+        REQUIRE(actual == expected);
+    }
+}
+
 }  // namespace
+
+TEST_CASE("skeleton cook: the minimal golden is reproduced byte for byte (KC1)") {
+    const std::array<SkeletonCookJoint, 2> joints = minimalJoints();
+    const SkeletonCookResult r = cook(joints);
+    REQUIRE((r.status == SkeletonCookStatus::Ok));
+    CHECK(r.message.empty());
+    checkEqualsGolden(r.bytes, aero_test::COOKED_SKELETON_GOLDEN_MINIMAL);
+}
+
+TEST_CASE("skeleton cook: the closure golden is reproduced from a REVERSED input (KC2)") {
+    // The same three joints supplied last-to-first. Byte equality with an array produced from the
+    // forward order is therefore the order-independence proof as well as the golden check -- a
+    // tiebreak that fell back to input order cannot survive it.
+    const std::array<SkeletonCookJoint, 3> forward = closureJoints();
+    const std::array<SkeletonCookJoint, 3> reversed = {forward[2], forward[1], forward[0]};
+    const SkeletonCookResult r = cook(reversed, closureGuid());
+    REQUIRE((r.status == SkeletonCookStatus::Ok));
+    CHECK(r.message.empty());
+    checkEqualsGolden(r.bytes, aero_test::COOKED_SKELETON_GOLDEN_CLOSURE);
+    // And the forward order agrees with it, which is the same statement from the other side.
+    const SkeletonCookResult forwardCooked = cook(forward, closureGuid());
+    REQUIRE((forwardCooked.status == SkeletonCookStatus::Ok));
+    CHECK(forwardCooked.bytes == r.bytes);
+}
 
 TEST_CASE("skeleton cook: any permutation of the same joints cooks identical bytes (KC3)") {
     const std::vector<SkeletonCookJoint> base = chain(6);
