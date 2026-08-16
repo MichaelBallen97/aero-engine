@@ -174,6 +174,19 @@ struct AssetRecord {
     ImportSettings importSettings;
 };
 
+// TRUE iff this scan actually hashed this record's bytes, so `contentHash` means something. Stated
+// here, beside the field whose own comment states the rule, because every consumer needs it and each
+// one that re-derives it gets one more chance to forget: an unhashed record keeps an ALL-ZERO digest,
+// which is the EMPTY FILE's real value and never a sentinel, so "is it zero?" is not the question the
+// caller wants asked. A record is unhashed when the per-scan budget ran out before reaching it
+// (NotHashed), when its bytes could not be read at all (Unhashable), or when its sidecar write failed
+// this scan (metaWriteFailed, whose records phase 8 never assigns a `change` to at all -- so a failed
+// write reads as the default UpToDate unless this flag is checked FIRST).
+//
+// 3.1.3's ThumbnailKey rule is the shape every consumer follows: a record with no usable hash has no
+// cache key, so it is not keyed, not cached and not compared -- never keyed on zeros.
+[[nodiscard]] bool assetContentHashUsable(const AssetRecord& record) noexcept;
+
 struct AssetPlanEntry {
     std::string relativePath;
     std::optional<Guid> guid;  // nullopt == no sidecar, OR one that failed to parse

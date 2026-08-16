@@ -76,15 +76,20 @@ void MaterialSession::loadTarget(std::string_view assetsRootAbs) {
     externalChange = false;
 
     const std::string materialPath = materialAbsolutePathFor(assetsRootAbs, targetPathValue);
-    const FileReadResult read = readTextFile(materialPath);
-    if (!read.text.has_value()) {
+    // readFileBytes, NOT readTextFile: the latter has no cap at all (text_file.hpp says so), and a
+    // browser click is all it takes to point this at a file of any size. The refusal is discriminated
+    // on the flag, never on the error text -- 3.1.3's code-review finding 6, whose whole point was that
+    // a message-wording change must not silently reclassify an outcome.
+    const FileBytesResult read = readFileBytes(materialPath, MAX_MATERIAL_FILE_BYTES);
+    if (!read.bytes.has_value()) {
         // Line/column stay zero: nothing reached the JSON stage, so there is no position to report
         // (material_format.hpp's own `line > 0` contract).
-        parseError = MaterialError{.message = read.error};
+        parseError =
+            MaterialError{.message = read.refusedByCap ? "this file is too large to be a material" : read.error};
         documentChanged = true;
         return;
     }
-    MaterialParseResult parsed = parseMaterial(*read.text);
+    MaterialParseResult parsed = parseMaterial(*read.bytes);
     // The `|| !has_value()` half is NOT defensive programming: bugprone-unchecked-optional-access is
     // --warnings-as-errors on the Linux Debug lane and cannot correlate ok() with the engagement of a
     // separate member (editor_app.cpp's logScope carries the identical note for the identical reason).
@@ -113,7 +118,12 @@ void MaterialSession::reconcile(std::string_view selection, std::uint64_t genera
         targetGeneration = generation;
         loadTarget(assetsRootAbs);
         const AssetRecord* record = database.findByPath(targetPathValue);
-        if (record != nullptr) {
+        // assetContentHashUsable, never a bare read: an unhashed record keeps an ALL-ZERO digest, which
+        // is the empty file's real value rather than a sentinel. Adopting one would arm a phantom
+        // external-change notice the moment the scan does hash the file (3.1.3's ThumbnailKey rule,
+        // applied to this session's own key). Leaving it disengaged means "not yet seen", which is
+        // exactly what the reconcile below already knows how to handle.
+        if (record != nullptr && assetContentHashUsable(*record)) {
             lastKnownContentHash = record->contentHash;
         }
         return;
@@ -136,6 +146,14 @@ void MaterialSession::reconcile(std::string_view selection, std::uint64_t genera
         clear();
         message = gone;
         documentChanged = true;
+        return;
+    }
+    if (!assetContentHashUsable(*record)) {
+        // THE SCAN DID NOT HASH THIS FILE THIS PASS, so its digest is all zeros and says nothing about
+        // whether the bytes moved. Comparing against it would fire "this file changed on disk; Apply
+        // will overwrite it" at a file nobody touched, and fire it AGAIN every time the hash flipped
+        // back -- the exact false alarm the code-review round found. Nothing is adopted and nothing is
+        // reported; the next scan that does hash it settles the question.
         return;
     }
     if (!lastKnownContentHash.has_value()) {

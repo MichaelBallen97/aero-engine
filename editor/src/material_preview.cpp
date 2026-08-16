@@ -15,6 +15,7 @@
 #include <aero/core/math.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/editor/asset_database.hpp>
+#include <aero/editor/asset_meta.hpp>  // assetContentHashUsable -- named explicitly, not via the above
 #include <aero/editor/material_edit.hpp>
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/text_file.hpp>
@@ -214,7 +215,15 @@ bool MaterialPreview::rebuildSlots(const MaterialDocument* document, const Asset
                 // load, the slot draws its built-in default, and the panel already names that case
                 // from the record side (AC-21). The preview does not duplicate the sentence.
                 const AssetRecord* record = database->findByGuid(slot->guid);
-                if (record != nullptr) {
+                // assetContentHashUsable is the SECOND half of that condition and it is 3.1.3's
+                // ThumbnailKey rule verbatim: a record this scan did not hash keeps an ALL-ZERO digest,
+                // which is the empty file's real value and not a sentinel. Keying on it would either
+                // serve a stale upload forever (the zero key never moves while the file does) or
+                // re-cook on every flip between zero and real. A record with no usable hash has NO KEY
+                // AT ALL, so the slot shows its built-in default until a scan hashes it -- which
+                // rebuildSlots notices, because it runs every service pass rather than only on a
+                // document change.
+                if (record != nullptr && assetContentHashUsable(*record)) {
                     wanted = TextureKey{.guid = slot->guid,
                                         .hash = record->contentHash,
                                         // D7: the colour space comes from the SLOT, mirroring

@@ -153,6 +153,14 @@ std::string parseImporterBlock(const JsonValue& block, MetaImporterBlock& out,
 
 }  // namespace
 
+bool assetContentHashUsable(const AssetRecord& record) noexcept {
+    // metaWriteFailed FIRST, for the reason AssetRecord's own comment gives: phase 8 never assigns a
+    // `change` to such a record, so it keeps the default UpToDate and every test on `change` alone
+    // reads a failed sidecar write as "up to date" for a file with no sidecar and no cache entry.
+    return !record.metaWriteFailed && record.change != ImportChange::Unhashable &&
+           record.change != ImportChange::NotHashed;
+}
+
 std::string metaFileNameFor(std::string_view assetFileName) {
     std::string out(assetFileName);
     out += ASSET_META_SUFFIX;

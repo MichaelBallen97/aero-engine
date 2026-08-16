@@ -212,11 +212,32 @@ void AssetBrowserPanel::drawHeader() {
     // shape, a second application: a create inside the draw walk would write a file, request a scan and
     // mutate the selection while ImGui holds this frame's tree open.
     ImGui::SameLine();
+    // DISABLED WITH NO PROJECT (plan D-6, the code-review round's finding 5). The drain already refuses
+    // an empty root with one WARN, but a live-looking button whose only feedback is a Console line reads
+    // as a broken button; the disabled state is what says "not yet" before the click. 1:1 with
+    // EndDisabled -- nothing returns or continues between them.
+    const bool canCreate = !rootUtf8.empty();
+    ImGui::BeginDisabled(!canCreate);
     if (ImGui::Button("New Material")) {
         record(ActionKind::CreateMaterial, {});
     }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Create a new material in this folder and select it.");
+    ImGui::EndDisabled();
+    // AllowWhenDisabled, or the tooltip that explains the disabled state is the one tooltip nobody can
+    // ever see (viewport_panel.cpp's A6 note, and the Apply button one panel over). The enabled text
+    // NAMES THE TARGET DIRECTORY, because "this folder" is ambiguous the moment the tree selection and
+    // the contents pane disagree about what the user is looking at.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (canCreate) {
+            // Concatenated rather than std::format'ed only to keep <format> out of this TU; the rule
+            // that matters is unchanged -- a NAMED LOCAL, passed as a "%s" argument, never as the
+            // format string itself.
+            labelScratch = "Create a new material in '";
+            labelScratch += currentDir.empty() ? rootDisplayName(rootUtf8) : currentDir;
+            labelScratch += "' and select it.";
+        } else {
+            labelScratch = "Open a project first -- there is no assets folder to create a material in.";
+        }
+        ImGui::SetTooltip("%s", labelScratch.c_str());
     }
     // task 3.1.4 (D10/AC-35): SESSION state, deliberately not persisted -- 3.1.3's D4 posture
     // verbatim (view mode and tile size take the same one, with the same documented "resets on

@@ -20,7 +20,9 @@
 // UNQUALIFIED toString(...), so an engine one is found by ADL and hard-errors every lane inside
 // doctest.h. material_format.hpp's own header says the same thing about its material*Label naming.
 #include <aero/core/guid.hpp>
+#include <aero/editor/asset_cache.hpp>     // ME49: ImportChange -- the record's own "was this hashed?"
 #include <aero/editor/asset_database.hpp>  // ME33+: the session takes the REAL database, by parameter
+#include <aero/editor/asset_meta.hpp>      // ME49: AssetRecord + assetContentHashUsable
 #include <aero/editor/material_edit.hpp>
 #include <aero/editor/material_session.hpp>
 #include <aero/editor/model_import.hpp>  // ME25-ME28: the editor value sets the four format enums mirror
@@ -637,6 +639,18 @@ public:
 
     void rescan() { (void)database.rescan(dir.utf8(), assetsRootValue, guids); }
 
+    // ME49: the SAME scan under a starved per-scan hash budget, which is how a record legitimately ends
+    // up NotHashed -- and therefore carrying an all-zero contentHash that means nothing (AD55's lever,
+    // borrowed rather than re-invented).
+    void rescanWithHashBudget(std::uint64_t bytes) {
+        // invalidateCache FIRST, or there is nothing for the budget to starve: an unchanged file takes
+        // the cache's (size, mtime) fast path and is never hashed at all, so its record keeps the
+        // CACHED digest and reads as UpToDate. Discarding the index is what makes every file need a
+        // hash again -- Reimport All's own lever (AC-39), used here to reach NotHashed deliberately.
+        database.invalidateCache();
+        (void)database.rescan(dir.utf8(), assetsRootValue, guids, bytes);
+    }
+
     [[nodiscard]] std::string absolutePathOf(std::string_view relativePath) const {
         return assetsRootValue + "/" + std::string(relativePath);
     }
@@ -1109,4 +1123,115 @@ TEST_CASE("material edit: one GUID in two slots is TWO cache keys, by colour spa
         }
     }
     CHECK(keys.size() == 2U);
+}
+
+// ---- the code-review round's session closures (ME49, ME50) ---------------------------------------
+
+TEST_CASE("material session: an UNHASHED record raises no phantom external change (ME49)") {
+    // THE CODE-REVIEW ROUND'S FINDING 3. AssetRecord::contentHash is documented as MEANINGLESS unless
+    // the scan actually hashed the file this pass, and an unhashed record keeps an ALL-ZERO digest --
+    // which is the empty file's real value, never a sentinel. The session compared against it anyway,
+    // so a scan that ran out of hash budget made a file nobody touched announce "this file changed on
+    // disk; Apply will overwrite it", and it re-announced it every time the hash flipped back.
+    //
+    // The lever is AD55's: a starved per-scan budget, spent by the file that sorts first, leaves the
+    // one that sorts second NotHashed. That REQUIRE is the case's non-vacuity -- without it a green run
+    // would prove only that the budget was generous.
+    SessionHarness harness;
+    harness.writeAsset("a-decoy.txt", "something to spend the hash budget on");
+    harness.writeAsset("z.aeromat", fixtureText("canonical.aeromat"));
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("z.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    REQUIRE((session.state() == engine::editor::MaterialSessionState::Ready));
+    MaterialDocument mine = *session.document();
+    mine.roughnessFactor = 0.0625F;
+    session.edit(mine);
+    REQUIRE(session.dirty());
+    REQUIRE_FALSE(session.externalChangeNoticed());
+
+    // A scan that hashes the decoy and runs out before reaching the material. NOTHING on disk changed.
+    harness.rescanWithHashBudget(1);
+    const engine::editor::AssetRecord* starved = harness.db().findByPath("z.aeromat");
+    REQUIRE(starved != nullptr);
+    REQUIRE((starved->change == engine::editor::ImportChange::NotHashed));
+    REQUIRE_FALSE(engine::editor::assetContentHashUsable(*starved));
+
+    session.reconcile("z.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    // NO NOTICE, and the edit is untouched: an unhashed record says nothing about the bytes, so the
+    // session says nothing to the user.
+    CHECK_FALSE(session.externalChangeNoticed());
+    CHECK(session.dirty());
+    REQUIRE(session.document() != nullptr);
+    CHECK(session.document()->roughnessFactor == doctest::Approx(0.0625F));
+
+    // AND IT DOES NOT ARM ONE FOR NEXT TIME. A scan that DOES hash the file again, still with the file
+    // unchanged, must stay silent too -- which is only true if the starved scan adopted nothing. This
+    // is the half that a "just skip the notice this once" fix would fail.
+    harness.rescan();
+    const engine::editor::AssetRecord* rehashed = harness.db().findByPath("z.aeromat");
+    REQUIRE(rehashed != nullptr);
+    REQUIRE(engine::editor::assetContentHashUsable(*rehashed));
+    session.reconcile("z.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK_FALSE(session.externalChangeNoticed());
+    CHECK(session.dirty());
+
+    // A REAL external edit still lands, so none of the above bought its silence by going deaf.
+    MaterialDocument theirs = *session.document();
+    theirs.name = "written behind our back";
+    harness.writeAsset("z.aeromat", engine::writeMaterialText(theirs));
+    harness.rescan();
+    session.reconcile("z.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK(session.externalChangeNoticed());
+}
+
+TEST_CASE("material session: an oversized .aeromat is REFUSED, never materialised (ME50)") {
+    // THE CODE-REVIEW ROUND'S FINDING 11. readTextFile is documented as having NO cap and builds the
+    // whole file into a std::string through an istreambuf_iterator, so one browser click on a huge file
+    // that happens to be named *.aeromat was an out-of-memory abort -- inside a reconcile driven by a
+    // selection change, with no way for the user to know which click did it. The preview's own texture
+    // path had capped at 64 MiB since the day it shipped; this path had no cap at all.
+    //
+    // The fixture is written just past MAX_MATERIAL_FILE_BYTES rather than at some huge size: the cap
+    // is enforced from std::filesystem::file_size ALONE, so the file is never opened and one byte over
+    // is exactly as refused as a gigabyte over -- and the case costs 4 MiB of scratch instead of a
+    // gigabyte of it.
+    //
+    // IT IS ALSO VALID JSON, padded with legal inter-token whitespace, and that is what makes the case
+    // discriminate rather than merely observe. An oversized file of garbage would land in the error
+    // state whether the cap fired or the parser did; this one PARSES CLEANLY the moment the cap is
+    // removed, so the assertions below distinguish "refused by size" from "read and rejected".
+    SessionHarness harness;
+    std::string oversized = "{";
+    oversized.append(static_cast<std::size_t>(engine::editor::MAX_MATERIAL_FILE_BYTES), ' ');
+    oversized += "\"version\": 1}\n";
+    REQUIRE(oversized.size() > engine::editor::MAX_MATERIAL_FILE_BYTES);
+    harness.writeAsset("huge.aeromat", oversized);
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("huge.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    // The ERROR state, with a reason -- the AC-9 posture, not a crash and not a silent Untargeted.
+    CHECK(session.targetPath() == std::string_view("huge.aeromat"));
+    CHECK((session.state() == engine::editor::MaterialSessionState::Error));
+    REQUIRE(session.error() != nullptr);
+    CHECK_FALSE(session.error()->message.empty());
+    CHECK(session.error()->line == 0);  // nothing reached the JSON stage, so there is no position
+    CHECK(session.document() == nullptr);
+    CHECK_FALSE(session.dirty());
+
+    // Nothing was written back, exactly as for every other unreadable file (INV-7): the bytes on disk
+    // are byte-identical afterwards.
+    CHECK(session.writeCount() == 0U);
+    CHECK(readBytes(harness.absolutePathOf("huge.aeromat")).size() == oversized.size());
+
+    // AND THE CAP IS NOT MERELY "BIG FILES FAIL": one byte UNDER it still loads. Without this half the
+    // case would pass just as well against a cap of zero.
+    const std::string canonical = fixtureText("canonical.aeromat");
+    REQUIRE(canonical.size() < engine::editor::MAX_MATERIAL_FILE_BYTES);
+    harness.writeAsset("fine.aeromat", canonical);
+    harness.rescan();
+    session.reconcile("fine.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK((session.state() == engine::editor::MaterialSessionState::Ready));
 }

@@ -498,3 +498,39 @@ TEST_CASE("asset view: the kind-filter option list is EVERY kind, in enum order 
         CHECK_FALSE(assetKindLabel(ASSET_KIND_FILTER_OPTIONS[i]).empty());
     }
 }
+
+TEST_CASE("asset view: the Material kind FILTERS, both predicate and wiring (AV54, task 3.4.2 AC-2)") {
+    // AC-2 was covered only TRANSITIVELY until the code-review round: AV53 pins that Material is in the
+    // combo's option list and the classification cases pin that a .aeromat classifies Material, but
+    // nothing drove the two functions that actually decide what a chosen kind SHOWS. Those are the
+    // filter's whole implementation, and both take AssetKind by value -- so a new enumerator is exactly
+    // the input neither had ever been given.
+    CHECK(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Material, .anyKind = false}));
+    CHECK_FALSE(matchesFilter("wood.png", false, AssetFilter{.kind = AssetKind::Material, .anyKind = false}));
+    // A DIRECTORY only ever matches Folder, whatever it is called -- matchesFilter's own rule, restated
+    // for the new kind because "a folder named like a material" is the case that would break it.
+    CHECK_FALSE(matchesFilter("brass.aeromat", true, AssetFilter{.kind = AssetKind::Material, .anyKind = false}));
+    // And a .aeromat is NOT swept up by any other specific kind -- Unknown included, which is where it
+    // used to land and where a reverted classification arm would put it back.
+    CHECK_FALSE(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Unknown, .anyKind = false}));
+    CHECK_FALSE(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Texture, .anyKind = false}));
+    // The query half still composes: the kind narrows, the substring narrows further, and both apply.
+    CHECK(matchesFilter("brass.aeromat", false,
+                        AssetFilter{.query = "bra", .kind = AssetKind::Material, .anyKind = false}));
+    CHECK_FALSE(matchesFilter("brass.aeromat", false,
+                              AssetFilter{.query = "steel", .kind = AssetKind::Material, .anyKind = false}));
+
+    // The WIRING (the code-review BLOCKING-2 that AV43-AV46 exist for), driven with the new kind: the
+    // panel's non-search path filters a listing through this, in the listing's own order.
+    std::vector<FileEntry> entries(4);
+    entries[0].name = "brass.aeromat";
+    entries[1].name = "materials";
+    entries[1].isDirectory = true;  // classifies Folder, never Material
+    entries[2].name = "wood.png";
+    entries[3].name = "steel.AEROMAT";  // case-folded, like every other extension table
+    const AssetFilter filter{.kind = AssetKind::Material, .anyKind = false};
+    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter);
+    REQUIRE(indices.size() == 2);
+    CHECK(indices[0] == 0);
+    CHECK(indices[1] == 3);
+}

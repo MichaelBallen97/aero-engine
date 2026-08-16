@@ -27,6 +27,22 @@ namespace engine::editor {
 
 class AssetDatabase;  // BY PARAMETER ONLY (A-2/INV-4) -- never a member, so only the name is needed
 
+// The cap on a `.aeromat` READ, enforced by readFileBytes from std::filesystem::file_size ALONE -- the
+// file is never opened when it trips. readTextFile, which this session used until the code-review
+// round, is documented as having NO cap and materialises whatever it is pointed at through an
+// istreambuf_iterator, so one browser click on a multi-gigabyte file named `*.aeromat` was an
+// out-of-memory abort inside a draw-driven reconcile. The preview's own texture path already capped at
+// 64 MiB for the identical reason; nothing else about a click should be able to do more damage than
+// looking at a picture.
+//
+// 4 MiB, and the number is not arbitrary in either direction. A canonical material document is a few
+// hundred bytes and the format is bounded by construction -- ten scalars and five slots, no arrays,
+// docs/09 section 11 -- so the cap sits four orders of magnitude above anything writeMaterialText can
+// produce, which means it can only ever fire on a file that is not a material. It is deliberately not
+// tighter: an unknown-key-laden or heavily-commented hand-authored file is legal input this editor
+// must keep loading, and a cap a user can trip by hand is a cap that gets raised in a hurry.
+inline constexpr std::uint64_t MAX_MATERIAL_FILE_BYTES = 4ULL * 1024 * 1024;
+
 // What the panel renders. One value, no pointers.
 enum class MaterialSessionState : std::uint8_t {
     Untargeted,  // nothing selected yet, or the record vanished
