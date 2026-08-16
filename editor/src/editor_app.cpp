@@ -356,7 +356,12 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         // restored layout docks it beside the Inspector instead of free-floating (the 3.2.1
         // precedent). Default VISIBLE, for 3.2.1's reason: a default-hidden panel makes this task's
         // whole deliverable something a user must hunt for in the View menu.
-        app.materialPanel = app.registry.emplace<MaterialPanel>();
+        // The device is passed AT CONSTRUCTION (3.1.3's A17, a third application): the preview owns a
+        // RenderTarget and a ForwardRenderer of its own, and unlike the project root a device can never
+        // change during a session, so there is nothing to reconcile. Nothing is CREATED here -- the
+        // preview is lazy and latched, so a session that never opens a material allocates no GPU
+        // object at all (A-9/R2).
+        app.materialPanel = app.registry.emplace<MaterialPanel>(device);
     }
 
     // task 2.6.1: `&& !app.project.isOpen()` is MANDATORY, not defensive. Opening a project above went
@@ -845,6 +850,23 @@ bool EditorApp::tick() {
     if (importDetailsPanel != nullptr) {
         importDetailsPanel->setSession(&importSession);
     }
+    // task 3.4.2 (D6/INV-5): the FOURTH occupant of this slot -- renderScene, serviceThumbnails, the
+    // import session, and now the material preview. OUTSIDE the ImGui draw walk and BEFORE endFrame,
+    // so our command buffer is submitted before ImGui's and the preview's colour texture is
+    // sampler-ready by the time ImGui samples it (render_target.hpp's own synchronisation note).
+    //
+    // NEVER CALL THIS FROM onDraw(). Every preview GPU create and every preview GPU destroy lives
+    // inside it, and SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan and D3D12 while deferring only
+    // on Metal -- the 3.1.3 BLOCKING-1 class, deterministic on two platforms and invisible on the one
+    // with a completed validation pass. I95 pins this call site's position in this file's own source
+    // text; no runtime tier here can see the general-case violation.
+    //
+    // assetDatabase.root() rather than project.assetsRoot(), for the reconcile block's own reason: the
+    // two are the same string by construction and the accessor returns a const reference, so nothing
+    // binds a string_view to a by-value temporary.
+    if (materialPanel != nullptr) {
+        materialPanel->servicePreview(materialSession, assetDatabase, assetDatabase.root(), frameClock.deltaSeconds());
+    }
     presented = layer.endFrame(config.clearColor);
     if (fileFlow.quitConfirmed) {
         // File > Exit / Ctrl+Q / the window [X] -- all AFTER the guard said yes (task 2.5.1 D1). This
@@ -991,6 +1013,15 @@ std::string_view EditorApp::materialTargetPath() const noexcept { return materia
 bool EditorApp::materialParseOk() const noexcept { return materialSession.document() != nullptr; }
 bool EditorApp::materialDirty() const noexcept { return materialSession.dirty(); }
 const MaterialDocument* EditorApp::materialDocument() const noexcept { return materialSession.document(); }
+bool EditorApp::materialPreviewAvailable() const noexcept {
+    return materialPanel != nullptr && materialPanel->previewAvailable();
+}
+std::size_t EditorApp::materialPreviewFrameCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewFrameCount() : 0;
+}
+bool EditorApp::materialPreviewBlendDrawnOpaque() const noexcept {
+    return materialPanel != nullptr && materialPanel->previewBlendDrawnOpaque();
+}
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }

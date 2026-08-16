@@ -32,7 +32,9 @@
 
 #include "text_input.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -51,6 +53,21 @@ static_assert(MaterialPanel::SLOT_COUNT == render::MATERIAL_TEXTURE_SLOT_COUNT);
 
 constexpr ImVec4 WARNING_COLOR{1.0F, 0.4F, 0.4F, 1.0F};  // project_ui.cpp's own error-text colour
 constexpr ImVec4 NOTICE_COLOR{1.0F, 0.8F, 0.4F, 1.0F};   // a warm amber for the non-fatal notices
+
+// A FIXED preview height in POINTS, deliberately not GetContentRegionAvail().y: this panel SCROLLS, so
+// by the time the slot sections have been submitted the remaining vertical space is routinely zero or
+// negative, and a height derived from it would collapse the preview to nothing on exactly the machines
+// where the panel is most useful. The width still follows the panel (a docked column is narrow).
+constexpr float PREVIEW_HEIGHT_POINTS = 180.0F;
+
+// D7/E9's rule from the viewport, verbatim: GetContentRegionAvail() is in LOGICAL units and a GPU
+// allocation must be sized in PIXELS. A non-finite or non-positive scale falls back to 1.0, spelled
+// with the negated `>` so NaN takes the fallback branch.
+[[nodiscard]] std::uint32_t toPixels(float logical, float scale) noexcept {
+    const float safeScale = (scale > 0.0F) ? scale : 1.0F;
+    const long rounded = std::lround(static_cast<double>(logical) * static_cast<double>(safeScale));
+    return rounded < 1 ? 1U : static_cast<std::uint32_t>(rounded);
+}
 
 // docs/09 section 11.1's two ranges, spelled exactly as material_format.cpp's UNIT_RANGE and
 // NON_NEGATIVE_RANGE spell them. NaN fails the negated comparison and lands on the low bound, which is
@@ -326,6 +343,63 @@ template <typename Enum, std::size_t N, typename LabelFn>
 
 }  // namespace
 
+MaterialPanel::MaterialPanel(rhi::Device& device) noexcept : preview(&device) {}
+
+// ---- the preview strip (AC-28/AC-32) --------------------------------------------------------------
+// RECORDS a request and READS a native handle. No GPU object is created, resized or destroyed here --
+// that is all MaterialPreview::service's, called from tick()'s post-draw slot (INV-5).
+void MaterialPanel::drawPreview() {
+    ImGui::SeparatorText("Preview");
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (!(avail.x > 0.0F)) {
+        return;  // a degenerate/collapsed region: no request, no image (the viewport's own E1 rule)
+    }
+    const ImVec2 imageSize{avail.x, PREVIEW_HEIGHT_POINTS};
+    const ImGuiIO& io = ImGui::GetIO();
+    rhi::Extent2D pixels{toPixels(imageSize.x, io.DisplayFramebufferScale.x),
+                         toPixels(imageSize.y, io.DisplayFramebufferScale.y)};
+    // §6.4's cap, applied HERE and with the ASPECT PRESERVED rather than left to RenderTargetConfig's
+    // maxExtent: that one clamps each axis independently, which would silently stretch the sphere on
+    // any panel wider than 512 px.
+    const std::uint32_t larger = std::max(pixels.width, pixels.height);
+    if (larger > PREVIEW_MAX_EXTENT) {
+        const double k = static_cast<double>(PREVIEW_MAX_EXTENT) / static_cast<double>(larger);
+        pixels.width = static_cast<std::uint32_t>(std::max(1L, std::lround(pixels.width * k)));
+        pixels.height = static_cast<std::uint32_t>(std::max(1L, std::lround(pixels.height * k)));
+    }
+    preview.requestFrame(pixels);
+
+    void* const native = preview.nativeColorTexture();
+    const rhi::Extent2D drawExtent = preview.drawExtent();
+    const rhi::Extent2D textureExtent = preview.textureExtent();
+    if (!preview.available() || native == nullptr || textureExtent.width == 0 || textureExtent.height == 0) {
+        const char* const why = preview.unavailableReason();
+        // The ONE line AC-32 asks for in a tools-OFF build, and the same line for every other reason a
+        // preview is not on screen. Never an empty string: an empty TextDisabled is a blank gap that
+        // reads as a rendering bug.
+        ImGui::TextDisabled("%s", (why != nullptr && *why != '\0') ? why : "Preview unavailable.");
+        return;
+    }
+    // The UV sub-rect (the viewport's D5/D6): textureExtent() >= drawExtent() on both axes, always, so
+    // uvMax is in (0,1]. Both come from the SAME allocation, so they agree even on the frame after a
+    // resize request -- the resize itself happens in the service pass, one frame later, by design.
+    const ImVec2 uvMax{static_cast<float>(drawExtent.width) / static_cast<float>(textureExtent.width),
+                       static_cast<float>(drawExtent.height) / static_cast<float>(textureExtent.height)};
+    // ImTextureID is an ImU64 holding the raw native texture pointer (viewport_panel.cpp's step 8); a
+    // pointer-to-integer conversion is the only way to spell that.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto texId = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(native));
+    ImGui::Image(texId, imageSize, ImVec2(0, 0), uvMax);
+}
+
+void MaterialPanel::servicePreview(MaterialSession& session, const AssetDatabase& database,
+                                   std::string_view assetsRootAbs, float deltaSeconds) {
+    // The one-shot is drained as its OWN statement, unconditionally, before it is inspected (F9's
+    // ||-short-circuit rule, applied to a channel that crosses into the GPU layer).
+    const bool documentChanged = session.takeDocumentChanged();
+    preview.service(session.document(), documentChanged, &database, assetsRootAbs, deltaSeconds);
+}
+
 void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/Project read (the
                                                          // ImportDetailsPanel "context is ignored"
                                                          // precedent)
@@ -356,6 +430,8 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
             // Nothing editable, and no Apply or Revert drawn at all (AC-9): the file may hold a
             // hand-recoverable value one `git checkout` away, and this editor never "repairs" one.
             ImGui::TextDisabled("This file cannot be edited until it parses.");
+            drawPreview();  // the strip is drawn under the error state too -- there is nothing to
+                            // preview, and saying so is better than a silently missing section
             return;
         }
         case MaterialSessionState::Ready:
@@ -445,6 +521,12 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
         ImGui::TextWrapped("%s", labelScratch.c_str());
         ImGui::PopStyleColor();
     }
+
+    // LAST, under the editing form: the live picture of the SESSION copy, so it tracks every
+    // unapplied edit (D6). It is drawn last for the same reason Apply is -- the form above is what a
+    // user reads first, and a 180-point image between the rows and the buttons would push them off a
+    // narrow dock.
+    drawPreview();
 }
 
 }  // namespace engine::editor

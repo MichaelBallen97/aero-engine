@@ -424,6 +424,16 @@ public:
     // The SESSION copy, const. Null when untargeted or in the error state -- a caller holding it
     // ACROSS a tick would dangle after a retarget; copy what it needs.
     [[nodiscard]] const MaterialDocument* materialDocument() const noexcept;
+    // ---- task 3.4.2: the live preview, as three numbers -------------------------------------------
+    // materialPreviewFrameCount() is P7's NON-VACUITY WITNESS and the reason it exists: without it a
+    // green tick proves the editor did not crash and says nothing at all about whether a second render
+    // pass ran beside the viewport's in the same frame. It counts COMPLETED endFrame submissions on
+    // the preview's own target, so it is also S25's runtime half -- a tabbed-away panel must not move
+    // it. materialPreviewBlendDrawnOpaque() surfaces the renderer's own latched WARN, which is AC-30's
+    // only mechanical half (a picture is the rest).
+    [[nodiscard]] bool materialPreviewAvailable() const noexcept;
+    [[nodiscard]] std::size_t materialPreviewFrameCount() const noexcept;
+    [[nodiscard]] bool materialPreviewBlendDrawnOpaque() const noexcept;
 
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch

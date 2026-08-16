@@ -7063,3 +7063,308 @@ TEST_CASE("editor: edit -> dirty -> Apply writes canonical bytes; Revert round-t
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ---- task 3.4.2: the live preview (I88-I90) -------------------------------------------------------
+
+TEST_CASE("editor: the preview and the viewport both render in ONE frame (task 3.4.2, I88, AC-28/AC-31)") {
+    // P7's COEXISTENCE PROBE, and the FIRST case of this task's preview half by deliberate order.
+    // NOTHING IN THIS TREE HAS EVER RUN TWO RenderTargets AND TWO ForwardRenderers ALIVE IN ONE EDITOR
+    // FRAME. render_target.hpp's own synchronisation note argues it works -- endFrame() submits its own
+    // command buffer and command buffers submitted earlier order before later ones, so ImGui's may
+    // sample either colour texture with no explicit barrier -- and tests/render_material_test.cpp
+    // already drives one target through two sequential frames. Neither proves TWO targets in one frame
+    // with ImGui sampling both, which is exactly what the Material panel does beside the Viewport.
+    //
+    // It also runs the whole teardown chain -- texture cache, material, renderer, target, then the
+    // device -- under ASan on the Debug lane, which is AC-31's clean-shutdown clause and the OTHER half
+    // of what this case is for.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i88", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(
+        engine::editor::writeTextFileAtomic(created.root + "/assets/preview.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);    // so Assets draws and SelectEntry drains
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right dock tab and onDraw runs
+    // The Viewport is CENTER-docked and visible throughout: every tick below submits its offscreen
+    // scene pass as well as the preview's.
+    REQUIRE(app->panels().find("Viewport") != nullptr);
+    REQUIRE(app->viewportCamera() != nullptr);
+
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("preview.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->materialTargetPath() == "preview.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+
+    // Five frames with BOTH passes live. Each tick: the panel draws (recording a preview request), the
+    // viewport's renderScene submits, the preview's service submits, and ImGui's own command buffer
+    // samples both colour textures.
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());  // the ImGui frame reached the screen with both images in it
+    }
+    CHECK(app->materialPreviewAvailable());
+    // THE NON-VACUITY WITNESS. Without this number a green run above proves only that the editor did
+    // not crash: it would look identical if the preview had never rendered a single frame.
+    CHECK(app->materialPreviewFrameCount() >= 3);
+    // The viewport is still there and still answering -- it was not torn down or starved by the second
+    // renderer, and the editor camera it draws through survived the whole run.
+    CHECK(app->viewportCamera() != nullptr);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();  // texture cache -> material -> renderer -> target -> device, under ASan
+}
+
+TEST_CASE("editor: a blend material latches the preview renderer's opaque WARN (task 3.4.2, I89, AC-30)") {
+    // AC-30's MECHANICAL half. `blend` is stored by the format, drawn OPAQUE by the renderer and
+    // latched once per renderer lifetime (3.4.1's D9) -- so the latch is the only part of "the mode
+    // reached the preview" that is observable without reading pixels. It is also this case's own
+    // non-vacuity witness for the push: the latch cannot flip unless updateMaterial carried the edited
+    // alphaMode into the registry AND a frame actually drew that material.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i89", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/blend.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("blend.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "blend.aeromat");
+    REQUIRE(app->materialPreviewAvailable());
+    REQUIRE(app->materialPreviewFrameCount() >= 1);
+    // The fixture is OPAQUE, and several frames of it have already drawn: the latch is still down.
+    CHECK_FALSE(app->materialPreviewBlendDrawnOpaque());
+
+    REQUIRE(app->materialDocument() != nullptr);
+    engine::MaterialDocument blended = *app->materialDocument();
+    blended.alphaMode = engine::MaterialAlphaMode::Blend;
+    app->requestMaterialDocument(blended);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK((app->materialDocument()->alphaMode == engine::MaterialAlphaMode::Blend));
+    // The edit reached the GPU through updateMaterial and the next draw took the blend arm -- which
+    // draws OPAQUE and says so once. A known-and-expected of this task, not a defect (3.4.1's own gap).
+    CHECK(app->materialPreviewBlendDrawnOpaque());
+    // The edit is UNAPPLIED throughout: the preview shows the session copy, never the file (D6).
+    CHECK(app->materialDirty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a hidden Material panel renders nothing and still edits (task 3.4.2, I90, AC-32)") {
+    // TWO properties in one case, because they are the same property seen from both sides.
+    //   * S25's RUNTIME half: the preview renders only on frames the panel actually DREW, so a Material
+    //     panel the user closed creates no GPU object and submits no pass at all. A seed that renders
+    //     every tick regardless moves materialPreviewFrameCount() here.
+    //   * AC-32's SHAPE: with no preview at all -- which is exactly what a tools-OFF build has
+    //     permanently -- targeting, editing, validation and Apply are untouched. This is the closest a
+    //     GPU-tier case can get to that build; §V.2's fresh tools-OFF configuration is the real proof.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i90", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string materialPath = created.root + "/assets/hidden.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(materialPath, MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    // Console hidden so the Assets panel draws and SelectEntry drains; Material hidden outright, which
+    // is the ONE reliable way to keep onDraw from running -- shell_ui.cpp's walk `continue`s before
+    // Begin for a hidden panel. MEASURED, correcting this case's first draft: hiding the *Inspector's*
+    // rival instead does not work, because in the default layout the LAST panel docked into the shared
+    // Right node is the selected tab, so Material draws even with the Inspector visible (the preview
+    // rendered 5 frames in 6 ticks that way). The existing setVisible("Inspector", false) in I84/I86 is
+    // therefore belt-and-braces on this machine rather than load-bearing -- left exactly as it is,
+    // since a restored layout on someone else's machine can select any tab it likes.
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Material", false);
+    REQUIRE_FALSE(app->panels().visible("Material"));
+    app->requestAssetBrowserSelectEntry("hidden.aeromat");
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    // Targeted and parsed -- the SESSION runs off tick(), not off the panel.
+    REQUIRE(app->materialTargetPath() == "hidden.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    // ... and the preview cost exactly nothing: no target, no renderer, no pass.
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewFrameCount() == 0);
+
+    // Editing and Apply are completely unaffected by the preview's absence (AC-32's clause).
+    engine::MaterialDocument edited = *app->materialDocument();
+    edited.name = "EditedWhileHidden";
+    edited.roughnessFactor = 0.5F;
+    app->requestMaterialDocument(edited);
+    REQUIRE(app->tick());
+    CHECK(app->materialDirty());
+    app->requestMaterialApply();
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->materialDirty());
+    const engine::editor::FileReadResult applied = engine::editor::readTextFile(materialPath);
+    REQUIRE(applied.text.has_value());
+    CHECK(*applied.text == engine::writeMaterialText(edited));
+    CHECK(app->materialPreviewFrameCount() == 0);  // still nothing rendered, through an entire Apply
+
+    // Show the panel again and the preview starts -- which is what makes every assertion above a
+    // statement about VISIBILITY rather than about a preview that could never work here.
+    app->panels().setVisible("Material", true);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewFrameCount() >= 1);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 3.4.2: the two source-text pins the preview's lifetime rule needs (I95, I96) -------------
+//
+// WHY SOURCE TEXT: SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan and D3D12 and defers only on
+// Metal, so a GPU destroy moved into the draw walk is deterministic corruption on two platforms and
+// completely invisible on this one -- 3.1.3's BLOCKING-1 and 3.1.4's D9, both of which were confirmed
+// by direct sabotage to redden NOTHING on Metal. There is no runtime tier in this tree that can see
+// the violation, so the rule is pinned mechanically instead of trusted.
+
+TEST_CASE("editor: the preview's service pass runs AFTER the draw walk, exactly once (task 3.4.2, I95)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    const std::size_t drawWalkAt = soleLineContaining(code, "drawShellUi(");
+    const std::size_t serviceAt = soleLineContaining(code, "servicePreview(");
+    // ONE call site (soleLineContaining REQUIREs it), and it is textually AFTER the single call that
+    // invokes every panel's onDraw -- I60's own proof shape, applied to this task's fourth occupant of
+    // the post-draw slot. A proof about THIS file's current text, not a guarantee against a future
+    // refactor that moves the call somewhere else; validation row 9's cost blank is the other cover.
+    CHECK(serviceAt > drawWalkAt);
+}
+
+TEST_CASE("editor: every preview GPU destroy sits in the service pass (task 3.4.2, I96, INV-5)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_preview.cpp");
+
+    // The functions a GPU destroy may appear in. THE DESTRUCTOR IS PERMITTED and the draw path is not:
+    // ~MaterialPreview runs inside ~PanelRegistry inside ~EditorApp, which precedes ~Device, and it is
+    // not a frame at all. Anything else -- a helper called from onDraw, a lazily "cleaned up" cache
+    // read -- is the defect this pin exists to catch. A step that adds a destroying helper adds it
+    // HERE, deliberately, in the same commit.
+    const std::array<std::string_view, 2> permitted{"~MaterialPreview", "service"};
+
+    std::size_t destroySites = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        const bool destroys = code[i].find("destroyTexture(") != std::string::npos ||
+                              code[i].find("destroyMaterial(") != std::string::npos;
+        if (!destroys) {
+            continue;
+        }
+        ++destroySites;
+        // Walk UP to the nearest DEFINITION HEADER -- a line whose first non-blank character is in
+        // column 0 and which names MaterialPreview:: -- and read the function name out of it. Every
+        // definition in that file is written that way (`void MaterialPreview::service(`,
+        // `MaterialPreview::~MaterialPreview()`), and a member's body is always indented, so the first
+        // such line above any statement is the function that statement belongs to.
+        std::string owner;
+        for (std::size_t j = i + 1U; j > 0; --j) {
+            const std::string& line = code[j - 1U];
+            const std::size_t at = line.find("MaterialPreview::");
+            if (at == std::string::npos || line.find_first_not_of(" \t") != 0) {
+                continue;
+            }
+            const std::size_t nameStart = at + std::string_view("MaterialPreview::").size();
+            const std::size_t paren = line.find('(', nameStart);
+            owner = line.substr(nameStart, paren == std::string::npos ? std::string::npos : paren - nameStart);
+            break;
+        }
+        CAPTURE(i);
+        CAPTURE(owner);
+        CHECK(std::find(permitted.begin(), permitted.end(), std::string_view(owner)) != permitted.end());
+    }
+    // ANTI-VACUITY: a rename of the destroy calls would make the loop above find nothing and pass
+    // saying nothing at all.
+    CHECK(destroySites >= 1);
+
+    // The other half of the rule, and the one a reader is most likely to break: the ImGui TU touches no
+    // GPU lifetime AT ALL -- it records a request and reads a native handle, nothing else.
+    const std::vector<std::string> panelCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_panel.cpp");
+    const std::array<std::string_view, 8> forbiddenInDrawWalk{"destroyTexture(",
+                                                              "destroyMaterial(",
+                                                              "createMaterial(",
+                                                              "updateMaterial(",
+                                                              "RenderTarget::create",
+                                                              "ForwardRenderer::create",
+                                                              "createTextureFromCookedTexture(",
+                                                              "beginFrame("};
+    for (const std::string& line : panelCode) {
+        for (const std::string_view needle : forbiddenInDrawWalk) {
+            CAPTURE(needle);
+            CHECK(line.find(needle) == std::string::npos);
+        }
+    }
+}

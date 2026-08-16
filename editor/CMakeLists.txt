@@ -128,6 +128,7 @@ add_library(aero_editor_core STATIC
     src/material_edit.cpp        # task 3.4.2 -- the PURE document->render bridge (D8); no ImGui, no GPU
     src/material_session.cpp     # task 3.4.2 -- the target/dirty/apply machine; the ONE .aeromat write
     src/material_panel.cpp       # task 3.4.2 -- the only new ImGui TU
+    src/material_preview.cpp     # task 3.4.2 -- the only new GPU TU: target, renderer, texture cache
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

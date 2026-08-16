@@ -15,11 +15,18 @@
 #include <aero/editor/material_session.hpp>
 #include <aero/editor/panel.hpp>
 
+#include "material_preview.hpp"
+
 #include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+
+namespace engine::rhi {
+class Device;  // forward-declared: the preview holds the pointer, this header names no other rhi type
+}  // namespace engine::rhi
 
 namespace engine::editor {
 
@@ -28,6 +35,11 @@ class AssetDatabase;  // a reconciled POINTER, never a reference member (3.1.1's
 
 class MaterialPanel final : public Panel {
 public:
+    // The device arrives AT CONSTRUCTION, exactly like ViewportPanel's and AssetBrowserPanel's (3.1.3's
+    // A17): unlike the project root it can never change during a session, so there is nothing to
+    // reconcile. It is stored by the preview alone; this class never touches the GPU.
+    explicit MaterialPanel(rhi::Device& device) noexcept;
+
     // render::MATERIAL_TEXTURE_SLOT_COUNT, restated so this header stays out of the render umbrella.
     // material_panel.cpp static_asserts the two equal, so a disagreement is a COMPILE ERROR rather
     // than a slot section that silently stops being drawn.
@@ -68,7 +80,21 @@ public:
         return r;
     }
 
+    // ---- the preview's service pass (task 3.4.2, D6/INV-5) ----------------------------------------
+    // Called from EditorApp::tick()'s POST-DRAW SLOT and nowhere else -- the ViewportPanel::renderScene
+    // mould, not a second path into a subsystem. It drains the session's documentChanged one-shot and
+    // forwards; every GPU create, destroy and submit happens inside MaterialPreview::service.
+    void servicePreview(MaterialSession& session, const AssetDatabase& database, std::string_view assetsRootAbs,
+                        float deltaSeconds);
+
+    // Black-box reads for EditorApp's accessors (the modelImportState() family's shape).
+    [[nodiscard]] bool previewAvailable() const noexcept { return preview.available(); }
+    [[nodiscard]] std::size_t previewFrameCount() const noexcept { return preview.frameCount(); }
+    [[nodiscard]] bool previewBlendDrawnOpaque() const noexcept { return preview.blendDrawnOpaque(); }
+
 private:
+    void drawPreview();  // the preview strip: an ImGui::Image, or ONE line saying why not (AC-32)
+
     const MaterialSession* sessionPtr = nullptr;  // non-owning; ALWAYS null-check
     const AssetDatabase* databasePtr = nullptr;   // non-owning; null before the first scan
     std::optional<MaterialDocument> pendingDocument;
@@ -83,6 +109,7 @@ private:
     bool nameEditing = false;
     std::array<std::string, SLOT_COUNT> slotSearch;  // one picker search line per slot
     std::string labelScratch;                        // per-frame scratch, NOT model state (the 2.2.1 idiom)
+    MaterialPreview preview;                         // OWNED; the only GPU state anywhere in this panel
 };
 
 }  // namespace engine::editor
