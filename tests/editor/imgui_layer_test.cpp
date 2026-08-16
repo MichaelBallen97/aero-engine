@@ -6822,3 +6822,244 @@ TEST_CASE("editor: a rejected .aeromat draws its error and refuses Apply (task 3
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ---- task 3.4.2: the Material panel's editing half (I86-I87) -------------------------------------
+
+namespace {
+
+// Every scalar docs/09 section 11 defines, at a distinct non-default value, plus one unknown key so
+// the status strip's WARN list renders too. alphaMode is "mask", so the conditional alphaCutoff row
+// (AC-19) is drawn from the very first frame rather than only after an edit.
+constexpr std::string_view FULL_AEROMAT_TEXT =
+    "{\n"
+    "  \"version\": 1,\n"
+    "  \"name\": \"Full\",\n"
+    "  \"baseColorFactor\": [0.9, 0.8, 0.7, 1.0],\n"
+    "  \"metallicFactor\": 0.5,\n"
+    "  \"roughnessFactor\": 0.4,\n"
+    "  \"emissiveFactor\": [0.0, 1.5, 0.0],\n"
+    "  \"normalScale\": 1.25,\n"
+    "  \"occlusionStrength\": 0.6,\n"
+    "  \"alphaMode\": \"mask\",\n"
+    "  \"alphaCutoff\": 0.875,\n"
+    "  \"doubleSided\": true,\n"
+    "  \"authoredBy\": \"a key no reader of this format knows\"\n"
+    "}\n";
+
+}  // namespace
+
+TEST_CASE("editor: the Material panel draws every state and every slot arm (task 3.4.2, I86, AC-24)") {
+    // THE BALANCE ORACLE. A green run IS the assertion: an unbalanced Begin/End, PushID/PopID,
+    // PushStyleColor/PopStyleColor or BeginDisabled/EndDisabled is an IM_ASSERT ABORT in the Debug
+    // ImGui build, not a wrong picture, so every branch this case reaches is a branch proven balanced.
+    //
+    // A STATED COVERAGE GAP, so nobody reads this case as more than it is: no tier in this tree can
+    // click, so a BeginCombo's LIST BODY never executes here -- the picker's per-record loop, its
+    // Selectable arms and the five token combos' bodies are drawn only by a hand on a mouse. That is
+    // the same closed-node limitation the CollapsingHeader sections carry (3.2.4's recorded lesson),
+    // which is exactly why every header below is DefaultOpen and why the manual pass owns the rest.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i86", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/bad.aeromat", REJECT_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/notes.txt", "not a texture").empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // so Assets draws and SelectEntry drains
+    // Hiding the Inspector is what lets Material win the Right-dock tab (2.2.4's C5 rule, an eighth
+    // application). MEASURED, not assumed, because a balance oracle whose panel never draws is
+    // vacuous and looks identical to a passing one: seeding an unbalanced PushID inside the AC-22
+    // uvSet branch below -- a branch reachable only AFTER the bindings land, 38 assertions in -- makes
+    // this case abort with SIGABRT. Import Details shares the same dock slot and does not need hiding.
+    app->panels().setVisible("Inspector", false);
+
+    // --- state 1: untargeted ----------------------------------------------------------------------
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->materialTargetPath().empty());
+
+    // --- state 2: the error document ----------------------------------------------------------------
+    app->requestAssetBrowserSelectEntry("bad.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->materialTargetPath() == "bad.aeromat");
+    CHECK_FALSE(app->materialParseOk());
+
+    // --- state 3: the full document, every scalar row + the WARN list -------------------------------
+    app->requestAssetBrowserSelectEntry("full.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    REQUIRE(app->materialTargetPath() == "full.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->name == "Full");
+    CHECK(app->materialDocument()->alphaCutoff == 0.875F);
+    CHECK((app->materialDocument()->alphaMode == engine::MaterialAlphaMode::Mask));
+    CHECK_FALSE(app->materialDirty());  // reading a non-canonical file is not an edit (D5)
+
+    // --- every slot arm at once: resolved Texture, resolved NON-texture, unresolvable, unbound ------
+    const std::optional<engine::Guid> textureGuid = app->assetGuidForPath("wood.png");
+    REQUIRE(textureGuid.has_value());
+    const std::optional<engine::Guid> notesGuid = app->assetGuidForPath("notes.txt");
+    REQUIRE(notesGuid.has_value());
+
+    engine::MaterialDocument bound = *app->materialDocument();
+    bound.baseColor = engine::MaterialTextureSlot{.guid = *textureGuid,
+                                                  .uvSet = 2,  // AC-22's "consumers honour set 0" note
+                                                  .wrapU = engine::MaterialWrap::Clamp,
+                                                  .wrapV = engine::MaterialWrap::Mirror,
+                                                  .minFilter = engine::MaterialFilter::Nearest,
+                                                  .magFilter = engine::MaterialFilter::Linear,
+                                                  .mipFilter = engine::MaterialMipFilter::None};
+    bound.metallicRoughness = engine::MaterialTextureSlot{.guid = *notesGuid};  // AC-21: not a texture
+    // A non-nil GUID belonging to nothing: AC-21's "not in this project" arm, and Apply must stay
+    // legal for it, so validateMaterial must still pass -- which is why it is non-nil.
+    bound.normal = engine::MaterialTextureSlot{.guid = engine::Guid{.hi = 0xDEADBEEFU, .lo = 0xFEEDFACEU}};
+    bound.occlusion.reset();  // the unbound arm
+    bound.emissive.reset();
+    app->requestMaterialDocument(bound);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+    CHECK(app->materialDocument()->baseColor->uvSet == 2U);
+    CHECK(app->materialDirty());
+
+    // --- AC-19: the row hides, the value does NOT reset ---------------------------------------------
+    engine::MaterialDocument opaque = *app->materialDocument();
+    opaque.alphaMode = engine::MaterialAlphaMode::Opaque;
+    app->requestMaterialDocument(opaque);
+    for (int i = 0; i < 5; ++i) {  // several frames of drawing WITHOUT the cutoff row
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK((app->materialDocument()->alphaMode == engine::MaterialAlphaMode::Opaque));
+    CHECK(app->materialDocument()->alphaCutoff == 0.875F);  // preserved across the mode change
+
+    // Back to mask: the row returns with the value it had.
+    engine::MaterialDocument masked = *app->materialDocument();
+    masked.alphaMode = engine::MaterialAlphaMode::Mask;
+    app->requestMaterialDocument(masked);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->alphaCutoff == 0.875F);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: edit -> dirty -> Apply writes canonical bytes; Revert round-trips (task 3.4.2, I87)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i87", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string materialPath = created.root + "/assets/edit.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(materialPath, MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    app->requestAssetBrowserSelectEntry("edit.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "edit.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    const engine::MaterialDocument onDisk = *app->materialDocument();
+    CHECK_FALSE(app->materialDirty());
+
+    // --- edit -> dirty --------------------------------------------------------------------------
+    engine::MaterialDocument edited = onDisk;
+    edited.name = "Edited";
+    edited.roughnessFactor = 0.125F;
+    edited.doubleSided = true;
+    app->requestMaterialDocument(edited);
+    REQUIRE(app->tick());
+    CHECK(app->materialDirty());
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->name == "Edited");
+    // Not one byte has moved yet: an edit is a session state, never a write (INV-2).
+    const engine::editor::FileReadResult untouched = engine::editor::readTextFile(materialPath);
+    REQUIRE(untouched.text.has_value());
+    CHECK(*untouched.text == std::string(MINIMAL_AEROMAT_TEXT));
+
+    // --- Apply -> the canonical writer's own bytes, exactly ---------------------------------------
+    app->requestMaterialApply();
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->materialDirty());  // the file copy ADOPTED the session copy
+    const engine::editor::FileReadResult applied = engine::editor::readTextFile(materialPath);
+    REQUIRE(applied.text.has_value());
+    CHECK(*applied.text == engine::writeMaterialText(edited));
+
+    // --- Revert -> back to what is on disk, discarding the session copy ---------------------------
+    engine::MaterialDocument abandoned = edited;
+    abandoned.metallicFactor = 0.03125F;
+    app->requestMaterialDocument(abandoned);
+    REQUIRE(app->tick());
+    REQUIRE(app->materialDirty());
+    app->requestMaterialRevert();
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->materialDirty());
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->metallicFactor == edited.metallicFactor);
+    CHECK(app->materialDocument()->name == "Edited");
+    // Revert re-READS the file, so what it restored is what Apply wrote -- never a cached copy.
+    const engine::editor::FileReadResult afterRevert = engine::editor::readTextFile(materialPath);
+    REQUIRE(afterRevert.text.has_value());
+    CHECK(*afterRevert.text == engine::writeMaterialText(edited));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

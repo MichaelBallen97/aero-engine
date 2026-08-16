@@ -736,27 +736,43 @@ bool EditorApp::tick() {
         // F9, a SEVENTH application: EVERY one-shot is drained as its OWN statement, unconditionally,
         // BEFORE it is inspected. A `panelX || editorX` expression would short-circuit past a drain
         // and strand the request until the next frame -- I30 is that bug's mechanical proof.
+        std::optional<MaterialDocument> panelMaterialEdit;
+        bool panelMaterialApply = false;
+        bool panelMaterialRevert = false;
+        if (materialPanel != nullptr) {
+            panelMaterialEdit = materialPanel->takePendingDocument();
+            panelMaterialApply = materialPanel->takeApplyRequest();
+            panelMaterialRevert = materialPanel->takeRevertRequest();
+        }
         std::optional<MaterialDocument> materialEdit = std::move(requestedMaterialDocument);
         requestedMaterialDocument.reset();
         const bool materialApply = requestedMaterialApply;
         requestedMaterialApply = false;
         const bool materialRevert = requestedMaterialRevert;
         requestedMaterialRevert = false;
+        // The PANEL's edit first, then the request seam's: one pending slot, last writer wins, and the
+        // seam is what a test drives, so it must be able to override what a widget happened to record.
+        if (panelMaterialEdit.has_value()) {
+            materialSession.edit(*panelMaterialEdit);
+        }
         if (materialEdit.has_value()) {
             materialSession.edit(*materialEdit);
         }
-        if (materialApply) {
+        if (panelMaterialApply || materialApply) {
             materialSession.requestApply();
         }
-        if (materialRevert) {
+        if (panelMaterialRevert || materialRevert) {
             materialSession.requestRevert();
         }
         materialSession.service(assetDatabase, assetDatabase.root());
         // Reconciled BEFORE drawShellUi, unlike ImportDetailsPanel's own setSession (which runs in the
         // post-draw slot): the material panel has no service pass of its own to run afterwards, so
-        // there is nothing to be gained by making its first drawn frame see a null pointer.
+        // there is nothing to be gained by making its first drawn frame see a null pointer. The
+        // database is reconciled the same way and for the 3.1.1 D13 reason -- a POINTER, refreshed
+        // every tick, never a reference member bound to a pre-move address.
         if (materialPanel != nullptr) {
             materialPanel->setSession(&materialSession);
+            materialPanel->setDatabase(&assetDatabase);
         }
     }
     if (window != nullptr) {

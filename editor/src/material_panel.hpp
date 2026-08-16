@@ -1,21 +1,38 @@
 #pragma once
 // Aero Engine — src-private: the Material panel (task 3.4.2, D2). This HEADER is ImGui-free
 // (editor_app.cpp registers the class and never sees ImGui); every ImGui call lives in
-// material_panel.cpp, the only new ImGui TU this task adds.
+// material_panel.cpp, the only new ImGui TU this task adds. It is also render-free and rhi-free:
+// material_edit.hpp's render/rhi aggregates are needed by the .cpp alone.
 //
 // FRAME SHAPE -- onDraw READS the reconciled session and RECORDS requests; it writes nothing (INV-3).
-// No file, no GPU object, no database lookup and no session mutation happens inside the draw walk;
+// No file, no GPU object, no database WRITE and no session mutation happens inside the draw walk;
 // EditorApp::tick() drains everything, exactly as it already does for Import Details. This is the
 // house rule's first application to a panel that WRITES FILES, which is why it is restated here.
+//
+// Every control writes into a per-frame COPY of the session document and, if that copy differs,
+// records it as ONE pending whole-document edit -- last-writer-wins, the house's pending-action
+// shape. The document is small, and one slot cannot half-apply the way a per-field channel can.
 #include <aero/editor/material_session.hpp>
 #include <aero/editor/panel.hpp>
 
+#include <array>
+#include <cstddef>
+#include <optional>
 #include <string>
+#include <utility>
 
 namespace engine::editor {
 
+class AssetDatabase;  // a reconciled POINTER, never a reference member (3.1.1's D13 / A-2 / INV-4):
+                      // EditorApp is movable, so a reference binds to a pre-move address.
+
 class MaterialPanel final : public Panel {
 public:
+    // render::MATERIAL_TEXTURE_SLOT_COUNT, restated so this header stays out of the render umbrella.
+    // material_panel.cpp static_asserts the two equal, so a disagreement is a COMPILE ERROR rather
+    // than a slot section that silently stops being drawn.
+    static constexpr std::size_t SLOT_COUNT = 5;
+
     // FROZEN FROM THE DAY IT SHIPS (D2; the "Import Details" / "Project Settings" rule restated
     // because it applies identically): this string is the ImGui WINDOW NAME **and** the imgui.ini
     // SETTINGS KEY. RENAMING IT ORPHANS EVERY USER'S SAVED LAYOUT FOR THIS PANEL. Treat it as a
@@ -31,10 +48,41 @@ public:
     void onDraw(PanelContext& context) override;
 
     void setSession(const MaterialSession* s) noexcept { sessionPtr = s; }  // reconciled, NEVER owned
+    void setDatabase(const AssetDatabase* d) noexcept { databasePtr = d; }  // reconciled, NEVER owned
+
+    // The one-shot channels (ImportDetailsPanel's shape, a second application). Each is drained by
+    // EditorApp::tick() AS ITS OWN STATEMENT, before it is inspected (F9's ||-short-circuit rule).
+    [[nodiscard]] std::optional<MaterialDocument> takePendingDocument() noexcept {
+        std::optional<MaterialDocument> r = std::move(pendingDocument);
+        pendingDocument.reset();  // a moved-from optional is still ENGAGED -- the move alone is not a drain
+        return r;
+    }
+    [[nodiscard]] bool takeApplyRequest() noexcept {
+        const bool r = applyRequested;
+        applyRequested = false;
+        return r;
+    }
+    [[nodiscard]] bool takeRevertRequest() noexcept {
+        const bool r = revertRequested;
+        revertRequested = false;
+        return r;
+    }
 
 private:
     const MaterialSession* sessionPtr = nullptr;  // non-owning; ALWAYS null-check
-    std::string labelScratch;                     // per-frame scratch, NOT model state (the 2.2.1 idiom)
+    const AssetDatabase* databasePtr = nullptr;   // non-owning; null before the first scan
+    std::optional<MaterialDocument> pendingDocument;
+    bool applyRequested = false;
+    bool revertRequested = false;
+    // ---- UI-ONLY state, never model state --------------------------------------------------------
+    // The name field's draft. InputText commits on deactivate-after-edit (AC-17), and on THAT frame
+    // ImGui reports no per-frame change, so a form copy rebuilt from the session would already have
+    // discarded what was typed. The draft persists across the gesture and re-syncs from the document
+    // on every frame the widget is not active -- which is also how a retarget reaches it.
+    std::string nameDraft;
+    bool nameEditing = false;
+    std::array<std::string, SLOT_COUNT> slotSearch;  // one picker search line per slot
+    std::string labelScratch;                        // per-frame scratch, NOT model state (the 2.2.1 idiom)
 };
 
 }  // namespace engine::editor
