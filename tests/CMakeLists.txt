@@ -136,6 +136,20 @@ file(TO_CMAKE_PATH "${CMAKE_COMMAND}" AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE)
 target_compile_definitions(aero_editor_imgui_test PRIVATE
     AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src"
     AERO_TEST_CMAKE_COMMAND="${AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE}")
+
+# task 3.4.2 (AC-32): the five preview cases (I88-I92) must assert a DIFFERENT contract in a build with
+# no cooked shaders. MaterialPreview latches Unavailable in its CONSTRUCTOR there, so the preview is
+# permanently absent while targeting, editing, validation, Apply/Revert and creation must work
+# identically -- and that "identically" is the claim worth testing, so both arms ASSERT and neither
+# skips. This is the aero_tests shape at :104-109 applied to this target; it cannot live inside that
+# block, because aero_editor_imgui_test is not defined until :121. AERO_EDITOR_SHADERS itself is
+# PRIVATE to aero_editor_core (editor/CMakeLists.txt), so no test TU can see it -- this definition is
+# how the arm is selected here. No add_dependencies(aero_shaders) is needed: aero_editor_core already
+# carries it, and no AERO_SHADERS_DIR either, since nothing in this TU loads a shader itself.
+if(AERO_SHADER_TOOLS)
+    target_compile_definitions(aero_editor_imgui_test PRIVATE AERO_SHADER_TOOLS_ENABLED=1)
+endif()
+
 add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 
 # ---------------------------------------------------------------------------------------------
@@ -328,6 +342,12 @@ find_package(Threads REQUIRED)
 # configurations -- prove it with --list-test-cases, which must show TK1 in both. It reads the two
 # committed PNG fixtures through AERO_ASSET_FIXTURES_DIR and texture_cook_source.cpp's own source text
 # through AERO_EDITOR_SRC_DIR, both ALREADY defined on this target; neither is redefined.
+# task 3.4.2 joins it with editor/material_edit_test.cpp on the same terms: UNCONDITIONAL, tier-0, no
+# new ctest entry, and reachable in BOTH reduced configurations -- prove it with --list-test-cases,
+# which must show ME1 in both. THE LINK LINE BELOW IS STILL UNCHANGED even though the TU names
+# render::MaterialParams and rhi::SamplerDesc: aero::render joined aero_editor_core's PUBLIC group at
+# this task (editor/CMakeLists.txt records the four criteria), so engine/render/include arrives here
+# transitively through aero::editor_core exactly as aero::assets' include root already does.
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -346,7 +366,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/blender_tool_test.cpp editor/blender_service_test.cpp
                editor/assimp_import_test.cpp
                editor/mesh_cook_source_test.cpp
-               editor/texture_cook_source_test.cpp)
+               editor/texture_cook_source_test.cpp
+               editor/material_edit_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -370,7 +391,14 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # rule as AERO_PROJECT_FIXTURES_DIR above (2.5.2's D8, third application): not optional, not
     # #ifdef-guarded. AG1-AG5 use describeMismatch's context window and never dumpActual, so nothing
     # here writes anywhere and `ctest -j` has no collision surface at all.
-    AERO_ASSET_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/assets")
+    AERO_ASSET_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/assets"
+    # task 3.4.2: the seven committed .aeromat fixtures reach the UNGATED material_edit_test.cpp. Same
+    # rule as the two above (2.5.2's D8, a fourth application): a PATH, not a flag -- a missing
+    # definition is a COMPILE error and a missing fixture file is a REQUIRE failure, so neither can
+    # silently skip. canonical.aeromat is writeMaterialText's OWN output for a fully-specified
+    # document (the fixpoint anchor ME40 compares against); the four reject-*.aeromat files are the
+    # hostile inputs validation row 11 re-checks by hand.
+    AERO_MATERIAL_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/materials")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,

@@ -27,6 +27,12 @@
                                            // which holds a reference and forward-declares.
 #include <aero/editor/entity_ops.hpp>      // a VALUE member (rootOrder) needs RootOrder's definition
 #include <aero/editor/imgui_layer.hpp>
+#include <aero/editor/material_session.hpp>      // task 3.4.2 -- a VALUE member (materialSession) needs
+                                                 // the definition, the asset_database.hpp precedent.
+                                                 // ImGui-free, render-free and GPU-free, so this
+                                                 // header's ImGui-FREE-BY-RULE contract is intact; it
+                                                 // brings MaterialDocument, which the one-shot below
+                                                 // holds by value.
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1 -- a VALUE member (importSession), held
                                                  // to the same `noexcept = default` move requirement
                                                  // as assetDatabase and assetWatcher
@@ -69,6 +75,8 @@ class AssetBrowserPanel;   // task 2.2.4: src-private (editor/src/asset_browser_
 class ImportDetailsPanel;  // task 3.2.1: src-private (editor/src/import_details_panel.hpp). Only the
                            // NAME is needed here -- the ViewportPanel/ConsolePanel/AssetBrowserPanel
                            // precedent, a fourth application.
+class MaterialPanel;       // task 3.4.2: src-private (editor/src/material_panel.hpp). Only the NAME is
+                           // needed here -- the same precedent, a fifth application.
 
 struct EditorAppConfig {
     rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
@@ -399,11 +407,76 @@ public:
     // branch non-vacuous -- without it, "a frame drew" proves nothing about WHICH branch drew.
     [[nodiscard]] bool blenderLogRefusedByCap() const noexcept;
 
+    // ---- task 3.4.2 request hooks: drive the Material panel without a widget (the
+    // requestAssetBrowserSelectEntry shape, a SEVENTH application). Each records EXACTLY what the
+    // panel's own control records, and each is drained by the next tick()'s reconcile block.
+    // requestMaterialDocument takes the WHOLE document, which is precisely what a widget records: the
+    // pending edit is one last-writer-wins slot, the house's pending-action shape.
+    void requestMaterialDocument(MaterialDocument document);
+    void requestMaterialApply() noexcept;
+    void requestMaterialRevert() noexcept;
+    // task 3.4.2 (D9/AC-5): what the Asset Browser's New Material button records, reachable without a
+    // click -- the requestAssetBrowserReimportAll() forward verbatim, queueing the SAME ActionKind the
+    // widget queues so the drain sees no difference between the two. A no-op when no Asset Browser
+    // panel is registered.
+    void requestAssetBrowserCreateMaterial() noexcept;
+    // ---- task 3.4.2 black-box accessors: the ImGui-free GPU tier's only window into the session.
+    // MaterialSessionState itself stays out of this surface, exactly as modelImportState() keeps
+    // SessionState out -- the two booleans below are what a case actually asserts.
+    [[nodiscard]] std::string_view materialTargetPath() const noexcept;  // "" when untargeted
+    [[nodiscard]] bool materialParseOk() const noexcept;                 // the session holds a document
+    [[nodiscard]] bool materialDirty() const noexcept;
+    // The SESSION copy, const. Null when untargeted or in the error state -- a caller holding it
+    // ACROSS a tick would dangle after a retarget; copy what it needs.
+    [[nodiscard]] const MaterialDocument* materialDocument() const noexcept;
+    // ---- task 3.4.2: the live preview, as three numbers -------------------------------------------
+    // materialPreviewFrameCount() is P7's NON-VACUITY WITNESS and the reason it exists: without it a
+    // green tick proves the editor did not crash and says nothing at all about whether a second render
+    // pass ran beside the viewport's in the same frame. It counts COMPLETED endFrame submissions on
+    // the preview's own target, so it is also S25's runtime half -- a tabbed-away panel must not move
+    // it. materialPreviewBlendDrawnOpaque() surfaces the renderer's own latched WARN, which is AC-30's
+    // only mechanical half (a picture is the rest).
+    [[nodiscard]] bool materialPreviewAvailable() const noexcept;
+    [[nodiscard]] std::size_t materialPreviewFrameCount() const noexcept;
+    [[nodiscard]] bool materialPreviewBlendDrawnOpaque() const noexcept;
+    // The preview's texture cache: how many slot uploads are live, and how many loads have ever been
+    // ATTEMPTED. The second number is what makes STICKY FAILURE observable -- a count that stays 0
+    // while attempts stay 1 is a broken image refused once, and a count that stays 0 while attempts
+    // climb every tick is the retry loop this cache exists to prevent (3.1.3's loadAttempts, again).
+    [[nodiscard]] std::size_t materialPreviewTextureCount() const noexcept;
+    [[nodiscard]] std::size_t materialPreviewTextureLoadAttempts() const noexcept;
+    // ---- the code-review round's four preview observables -----------------------------------------
+    // materialPreviewStaleImageCount() MUST BE ZERO on every tick of every case. It counts frames whose
+    // colour texture ImGui was handed did not survive to the end of that frame -- the use-after-free
+    // that the resize ordering exists to make impossible, and which is invisible to every sanitizer on
+    // Metal because SDL queues the container free there and releases it immediately on Vulkan and
+    // D3D12. materialPreviewImageCount() is its companion: without it, "no image was bound" and "the
+    // right image was bound" look identical, and it is also what makes the error state's refusal to
+    // blit the previous material's last frame observable at all. The extent pair is the NON-VACUITY
+    // witness for a resize case -- textureExtent IS the allocation, so a changed value is a
+    // reallocation having actually happened rather than a case that resized nothing.
+    [[nodiscard]] std::size_t materialPreviewImageCount() const noexcept;
+    [[nodiscard]] std::size_t materialPreviewStaleImageCount() const noexcept;
+    [[nodiscard]] std::uint32_t materialPreviewTextureWidth() const noexcept;
+    [[nodiscard]] std::uint32_t materialPreviewTextureHeight() const noexcept;
+    // AC-22's latched WARN, as a count so "latched" is assertable rather than asserted.
+    [[nodiscard]] std::size_t materialPreviewUvSetWarnCount() const noexcept;
+
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
     // importSession and toolPrefsPath. THE ONLY PLACE THIS TASK LOGS (INV-B10).
     void resolveBlender();
     void applyBlenderOverride(std::string_view absolutePathUtf8);
+
+    // task 3.4.2 (D9/AC-5/AC-6): New Material's DRAIN, called from tick()'s reconcile block and
+    // nowhere else -- never from a draw walk. `directoryRel` is the Asset Browser's own current
+    // directory ("" == the assets root). Returns true iff a file was written, which the caller folds
+    // into the same `refresh` the orphan delete does, so the write and the scan that mints its `.meta`
+    // are ONE pass. Every failure arm -- no root, an unlistable directory, name exhaustion, a refused
+    // write -- logs exactly ONE WARN and writes nothing (AC-6: no file, no partial state, nothing
+    // deleted). The bytes go through material_session.cpp's saveMaterialFile, the ONE .aeromat write
+    // path (D12), so this adds no writeTextFileAtomic call site at all.
+    [[nodiscard]] bool createMaterialAsset(std::string_view directoryRel);
 
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
@@ -508,6 +581,19 @@ private:
     // The PREVIOUS tick's session state, so the two Blender log lines fire on a TRANSITION rather than
     // every frame. A Converting session logging once per frame would be a hundred lines a second.
     int lastBlenderSessionState = 0;
+
+    // ---- task 3.4.2 -------------------------------------------------------------------------------
+    MaterialSession materialSession;         // a VALUE member (A-2/INV-4); material_session.hpp's own
+                                             // two static_asserts hold the noexcept-move guarantee
+                                             // this member needs.
+    MaterialPanel* materialPanel = nullptr;  // non-owning; owned by `registry` (unique_ptr ->
+                                             // address-stable, survives an EditorApp move). Null when
+                                             // registerDefaultPanels == false -- ALWAYS null-check.
+    // The three one-shots, all consumed by the next tick()'s reconcile block, each drained as its OWN
+    // statement before it is inspected (F9).
+    std::optional<MaterialDocument> requestedMaterialDocument;
+    bool requestedMaterialApply = false;
+    bool requestedMaterialRevert = false;
 };
 
 }  // namespace engine::editor

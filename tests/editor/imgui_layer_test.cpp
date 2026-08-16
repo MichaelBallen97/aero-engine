@@ -41,6 +41,7 @@
 #include <aero/editor/transform_command.hpp>  // task 2.4.1
 #include <aero/editor/transform_ops.hpp>      // task 2.4.1
 #include <aero/platform/platform.hpp>
+#include <aero/reflect/material_format.hpp>  // task 3.4.2: MaterialDocument, named directly (I84)
 #include <aero/rhi/device.hpp>
 #include <aero/scene/scene.hpp>
 #include <aero/scene/world.hpp>
@@ -201,14 +202,15 @@ TEST_CASE("editor: EditorApp create -> tick -> quit -> teardown (GPU-gated smoke
         *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
-    // The D8 registration -- SIX absolute panel-count sites in the tree, measured directly rather than
-    // assumed (this one plus :264, :492, :597, :2597 and :2761 -- the "FOUR ... :219, :447 and :551"
-    // this comment used to claim was already stale before this task touched it, a real drift this
-    // task's own edit is what surfaced), all of which moved from 6 to 7 the moment task 3.2.1
-    // registered the seventh default panel, "Import Details". (`:1410`/`:1416`'s captured
-    // `panelCountBefore` is a seventh, count-agnostic site by construction -- the "gizmo" window is not
-    // a panel -- and is NOT one of the six.)
-    CHECK(app->panels().count() == 7);
+    // The D8 registration -- SEVEN absolute panel-count sites in the tree, measured directly rather
+    // than assumed (this one plus :273, :501, :606, :2606, :2776 and :4728 at the moment task 3.4.2
+    // moved them), all of which moved from 7 to 8 the moment this task registered the eighth default
+    // panel, "Material". The count this comment used to claim was SIX, with line numbers that had
+    // drifted by about eight: task 3.2.1's own AC-50 site was added and never listed -- the identical
+    // drift the comment boasts of having caught once, caught a second time by the task that had to
+    // move all of them. (`:1419`/`:1425`'s captured `panelCountBefore` is a count-AGNOSTIC site by
+    // construction -- the "gizmo" window is not a panel -- and is NOT one of the seven.)
+    CHECK(app->panels().count() == 8);
 
     // wantsDefaultLayout() is true even with persistLayout = false (F1b), so frame 1 below exercises
     // buildDefaultLayout for real. Use REQUIRE on tick(), not CHECK: a spurious Quit/WindowClose from
@@ -269,7 +271,7 @@ TEST_CASE("editor: the Hierarchy panel draws a seeded scene and survives edits (
 
     // AC-18: the default config seeds three entities.
     CHECK(app->world().entityCount() == 3);
-    CHECK(app->panels().count() == 7);
+    CHECK(app->panels().count() == 8);
     CHECK(app->selection().empty());
 
     for (int i = 0; i < 3; ++i) {
@@ -497,7 +499,7 @@ TEST_CASE(
                                                                                       .projectPath = "",
                                                                                       .restoreLastProject = false});
     REQUIRE(app.has_value());
-    CHECK(app->panels().count() == 7);
+    CHECK(app->panels().count() == 8);
     CHECK_FALSE(app->projectIsOpen());
     CHECK(app->assetBrowserRoot().empty());
 
@@ -602,7 +604,7 @@ TEST_CASE("editor: the Console panel draws the engine log stream (task 2.2.5)") 
     REQUIRE(app.has_value());
 
     // The D8 registration -- the ONE absolute panel count in the tree (plan C3's proof).
-    CHECK(app->panels().count() == 7);
+    CHECK(app->panels().count() == 8);
 
     // The create()-time records are staged in the sink; only the pump fills the history.
     CHECK(app->logRecordCount() == 0);
@@ -2602,7 +2604,7 @@ TEST_CASE(
     REQUIRE(app.has_value());
 
     // 2. Registration and ORDER -- what makes sabotage seed S13 (registering before Inspector) redden.
-    CHECK(app->panels().count() == 7);
+    CHECK(app->panels().count() == 8);
 
     // EVERY id, in order (Phase 2 audit). Each panel's own header calls its id FROZEN because it is
     // the imgui.ini settings key -- renaming one orphans every user's saved layout for that panel --
@@ -2612,8 +2614,13 @@ TEST_CASE(
     // panel would simply stop being hidden and the case that depends on hiding it would assert
     // against a panel that never draws -- 2.2.4's C5 trap, re-armed. This is a PERSISTED FORMAT, so
     // treat a diff here like a file-format change, not a test to update.
-    const std::array<const char*, 6> frozenPanelIds{"Hierarchy", "Inspector", "Viewport",
-                                                    "Console",   "Assets",    "Project Settings"};
+    // task 3.4.2: EIGHT, so the two ids added since the Phase 2 audit -- "Import Details" (3.2.1) and
+    // "Material" (this task) -- carry the same id-freeze pin the other six already have. The array was
+    // a PREFIX check covering indices 0-5 while its own comment claimed "EVERY id", so growing it is
+    // new coverage rather than a rewording pass: it makes an accidental rename of a FROZEN imgui.ini
+    // key a red test instead of a silently migrated layout.
+    const std::array<const char*, 8> frozenPanelIds{"Hierarchy", "Inspector",        "Viewport",       "Console",
+                                                    "Assets",    "Project Settings", "Import Details", "Material"};
     for (std::size_t i = 0; i < frozenPanelIds.size(); ++i) {
         CAPTURE(i);
         CHECK_EQ(std::string(app->panels().panelAt(i).id()), std::string(frozenPanelIds[i]));
@@ -2766,7 +2773,7 @@ TEST_CASE("editor: a registered panel that is not DOCKED in a restored layout ge
                                                .recentProjectsPath = uniqueRecentsFile(),
                                                .layoutIniPath = iniPath});
         REQUIRE(app.has_value());
-        CHECK(app->panels().count() == 7);
+        CHECK(app->panels().count() == 8);
 
         for (int i = 0; i < 3; ++i) {
             REQUIRE(app->tick());
@@ -4718,7 +4725,7 @@ TEST_CASE("editor: the Import Details panel is registered right of the Inspector
         *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
     // AC-50: registered in create(), BEFORE the first tick() -- checked here, before any tick runs.
-    CHECK(app->panels().count() == 7);
+    CHECK(app->panels().count() == 8);
 
     const engine::editor::Panel* panel = app->panels().find("Import Details");
     REQUIRE(panel != nullptr);
@@ -6588,4 +6595,1711 @@ TEST_CASE(
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ---- task 3.4.2: the Material panel's registration and its sticky target (I83-I85) ---------------
+
+namespace {
+
+// A canonical .aeromat, written into a temp project by the cases below. The GPU tier deliberately
+// writes its OWN material text rather than reaching for AERO_MATERIAL_FIXTURES_DIR: that definition
+// is on aero_editor_shell_test, and no fixture path belongs in this file (the "each TU keeps its own
+// fixture" precedent, a sixth application).
+constexpr std::string_view MINIMAL_AEROMAT_TEXT =
+    "{\n"
+    "  \"version\": 1,\n"
+    "  \"name\": \"First\",\n"
+    "  \"metallicFactor\": 0.25,\n"
+    "  \"roughnessFactor\": 0.75\n"
+    "}\n";
+constexpr std::string_view SECOND_AEROMAT_TEXT =
+    "{\n"
+    "  \"version\": 1,\n"
+    "  \"name\": \"Second\",\n"
+    "  \"roughnessFactor\": 0.125\n"
+    "}\n";
+// version 2: refused by name, never partially read (docs/09 section 11.6).
+constexpr std::string_view REJECT_AEROMAT_TEXT = "{\n  \"version\": 2\n}\n";
+
+}  // namespace
+
+TEST_CASE("editor: the Material panel is registered eighth, right of the Inspector (task 3.4.2, I83)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i83", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+    // Registered in create(), BEFORE the first tick() -- checked here, before any tick runs, which is
+    // exactly the condition placeUnplacedPanels requires (the I52 shape).
+    CHECK(app->panels().count() == 8);
+    // ... and LAST, so no existing panel's registration index shifted and the Inspector keeps the
+    // selected Right-dock tab.
+    CHECK(std::string_view(app->panels().panelAt(7).id()) == "Material");
+
+    const engine::editor::Panel* panel = app->panels().find("Material");
+    REQUIRE(panel != nullptr);
+    CHECK(std::string_view(panel->id()) == "Material");
+    CHECK(std::string_view(panel->title()) == "Material");
+    CHECK(panel->defaultDockSlot() == engine::editor::DockSlot::Right);
+    // options() is deliberately NOT overridden: the panel's own window must keep scrolling.
+    const engine::editor::PanelOptions opts = panel->options();
+    CHECK_FALSE(opts.noScrollbar);
+    CHECK_FALSE(opts.hasMenuBar);
+    CHECK_FALSE(opts.noPadding);
+    CHECK_FALSE(opts.noScrollWithMouse);
+
+    // The black-box surface's own default state, before any selection has ever happened.
+    CHECK(app->materialTargetPath().empty());
+    CHECK_FALSE(app->materialParseOk());
+    CHECK_FALSE(app->materialDirty());
+    CHECK(app->materialDocument() == nullptr);
+
+    // Three real frames with no project at all -- the untargeted branch draws, and an unbalanced
+    // Begin/End there would be an IM_ASSERT abort in the Debug ImGui build.
+    app->panels().setVisible("Inspector", false);  // Inspector registers first and wins the Right tab
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->materialTargetPath().empty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the material target is STICKY across selections (task 3.4.2, I84, AC-7/AC-8)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i84", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/first.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/second.aeromat", SECOND_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/notes.txt", "not a material").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    // "Assets" shares DockSlot::Bottom with "Console", which registers first and wins the tab, so
+    // AssetBrowserPanel::onDraw() would never run and the SelectEntry action would never drain
+    // (2.2.4's C5 precedent). "Inspector" shares DockSlot::Right with "Material" for the same reason.
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());  // 1: the initial scan
+    CHECK(app->materialTargetPath().empty());
+
+    app->requestAssetBrowserSelectEntry("first.aeromat");
+    REQUIRE(app->tick());  // 2: drains SelectEntry -> selection() == "first.aeromat"
+    REQUIRE(app->tick());  // 3: the reconcile's SIXTH statement sees it and targets the material
+    CHECK(app->materialTargetPath() == "first.aeromat");
+    CHECK(app->materialParseOk());
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->name == "First");
+    CHECK_FALSE(app->materialDirty());
+
+    // An edit through the request seam -- exactly what a widget records.
+    engine::MaterialDocument edited = *app->materialDocument();
+    edited.roughnessFactor = 0.5F;
+    app->requestMaterialDocument(edited);
+    REQUIRE(app->tick());
+    CHECK(app->materialDirty());
+
+    // STICKY (D3, seed S3's GPU half): selecting a NON-material leaves the target -- and the unapplied
+    // edit -- exactly where they are. Without this, every click hunting for a texture to reference
+    // would tear the edit session down.
+    app->requestAssetBrowserSelectEntry("notes.txt");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->materialTargetPath() == "first.aeromat");
+    CHECK(app->materialDirty());
+
+    // Clearing the selection is the same answer.
+    app->requestAssetBrowserSelectEntry("");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->materialTargetPath() == "first.aeromat");
+    CHECK(app->materialDirty());
+
+    // A DIFFERENT existing .aeromat DOES retarget, and the unapplied edit is discarded -- recorded as
+    // accepted (D4/D5), and the one path that can lose an edit.
+    app->requestAssetBrowserSelectEntry("second.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->materialTargetPath() == "second.aeromat");
+    CHECK(app->materialParseOk());
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->name == "Second");
+    CHECK_FALSE(app->materialDirty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a rejected .aeromat draws its error and refuses Apply (task 3.4.2, I85, AC-9)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i85", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string badPath = created.root + "/assets/bad.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(badPath, REJECT_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+
+    app->requestAssetBrowserSelectEntry("bad.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->materialTargetPath() == "bad.aeromat");
+    CHECK_FALSE(app->materialParseOk());  // no editor at all -- never a half-loaded document
+    CHECK(app->materialDocument() == nullptr);
+    CHECK_FALSE(app->materialDirty());
+
+    // Apply and Revert are refused, and the file is NEVER "repaired": it may hold a hand-recoverable
+    // value one `git checkout` away (the invalid-.meta D7 posture, applied to a second format).
+    app->requestMaterialApply();
+    REQUIRE(app->tick());
+    app->requestMaterialRevert();
+    REQUIRE(app->tick());
+    const engine::editor::FileReadResult after = engine::editor::readTextFile(badPath);
+    REQUIRE(after.text.has_value());
+    CHECK(*after.text == std::string(REJECT_AEROMAT_TEXT));
+
+    // The error branch drew on every one of those frames; an unbalanced Begin/End would have been an
+    // IM_ASSERT abort in the Debug ImGui build, so a green run IS the assertion.
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 3.4.2: the Material panel's editing half (I86-I87) -------------------------------------
+
+namespace {
+
+// Every scalar docs/09 section 11 defines, at a distinct non-default value, plus one unknown key so
+// the status strip's WARN list renders too. alphaMode is "mask", so the conditional alphaCutoff row
+// (AC-19) is drawn from the very first frame rather than only after an edit.
+constexpr std::string_view FULL_AEROMAT_TEXT =
+    "{\n"
+    "  \"version\": 1,\n"
+    "  \"name\": \"Full\",\n"
+    "  \"baseColorFactor\": [0.9, 0.8, 0.7, 1.0],\n"
+    "  \"metallicFactor\": 0.5,\n"
+    "  \"roughnessFactor\": 0.4,\n"
+    "  \"emissiveFactor\": [0.0, 1.5, 0.0],\n"
+    "  \"normalScale\": 1.25,\n"
+    "  \"occlusionStrength\": 0.6,\n"
+    "  \"alphaMode\": \"mask\",\n"
+    "  \"alphaCutoff\": 0.875,\n"
+    "  \"doubleSided\": true,\n"
+    "  \"authoredBy\": \"a key no reader of this format knows\"\n"
+    "}\n";
+
+}  // namespace
+
+TEST_CASE("editor: the Material panel draws every state and every slot arm (task 3.4.2, I86, AC-24)") {
+    // THE BALANCE ORACLE. A green run IS the assertion: an unbalanced Begin/End, PushID/PopID,
+    // PushStyleColor/PopStyleColor or BeginDisabled/EndDisabled is an IM_ASSERT ABORT in the Debug
+    // ImGui build, not a wrong picture, so every branch this case reaches is a branch proven balanced.
+    //
+    // A STATED COVERAGE GAP, so nobody reads this case as more than it is: no tier in this tree can
+    // click, so a BeginCombo's LIST BODY never executes here -- the picker's per-record loop, its
+    // Selectable arms and the five token combos' bodies are drawn only by a hand on a mouse. That is
+    // the same closed-node limitation the CollapsingHeader sections carry (3.2.4's recorded lesson),
+    // which is exactly why every header below is DefaultOpen and why the manual pass owns the rest.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i86", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/bad.aeromat", REJECT_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/notes.txt", "not a texture").empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // so Assets draws and SelectEntry drains
+    // Hiding the Inspector is what lets Material win the Right-dock tab (2.2.4's C5 rule, an eighth
+    // application). MEASURED, not assumed, because a balance oracle whose panel never draws is
+    // vacuous and looks identical to a passing one: seeding an unbalanced PushID inside the AC-22
+    // uvSet branch below -- a branch reachable only AFTER the bindings land, 38 assertions in -- makes
+    // this case abort with SIGABRT. Import Details shares the same dock slot and does not need hiding.
+    app->panels().setVisible("Inspector", false);
+
+    // --- state 1: untargeted ----------------------------------------------------------------------
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->materialTargetPath().empty());
+
+    // --- state 2: the error document ----------------------------------------------------------------
+    app->requestAssetBrowserSelectEntry("bad.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->materialTargetPath() == "bad.aeromat");
+    CHECK_FALSE(app->materialParseOk());
+
+    // --- state 3: the full document, every scalar row + the WARN list -------------------------------
+    app->requestAssetBrowserSelectEntry("full.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    REQUIRE(app->materialTargetPath() == "full.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->name == "Full");
+    CHECK(app->materialDocument()->alphaCutoff == 0.875F);
+    CHECK((app->materialDocument()->alphaMode == engine::MaterialAlphaMode::Mask));
+    CHECK_FALSE(app->materialDirty());  // reading a non-canonical file is not an edit (D5)
+
+    // --- every slot arm at once: resolved Texture, resolved NON-texture, unresolvable, unbound ------
+    const std::optional<engine::Guid> textureGuid = app->assetGuidForPath("wood.png");
+    REQUIRE(textureGuid.has_value());
+    const std::optional<engine::Guid> notesGuid = app->assetGuidForPath("notes.txt");
+    REQUIRE(notesGuid.has_value());
+
+    engine::MaterialDocument bound = *app->materialDocument();
+    bound.baseColor = engine::MaterialTextureSlot{.guid = *textureGuid,
+                                                  .uvSet = 2,  // AC-22's "consumers honour set 0" note
+                                                  .wrapU = engine::MaterialWrap::Clamp,
+                                                  .wrapV = engine::MaterialWrap::Mirror,
+                                                  .minFilter = engine::MaterialFilter::Nearest,
+                                                  .magFilter = engine::MaterialFilter::Linear,
+                                                  .mipFilter = engine::MaterialMipFilter::None};
+    bound.metallicRoughness = engine::MaterialTextureSlot{.guid = *notesGuid};  // AC-21: not a texture
+    // A non-nil GUID belonging to nothing: AC-21's "not in this project" arm, and Apply must stay
+    // legal for it, so validateMaterial must still pass -- which is why it is non-nil.
+    bound.normal = engine::MaterialTextureSlot{.guid = engine::Guid{.hi = 0xDEADBEEFU, .lo = 0xFEEDFACEU}};
+    bound.occlusion.reset();  // the unbound arm
+    bound.emissive.reset();
+    app->requestMaterialDocument(bound);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+    CHECK(app->materialDocument()->baseColor->uvSet == 2U);
+    CHECK(app->materialDirty());
+
+    // --- AC-19: the row hides, the value does NOT reset ---------------------------------------------
+    engine::MaterialDocument opaque = *app->materialDocument();
+    opaque.alphaMode = engine::MaterialAlphaMode::Opaque;
+    app->requestMaterialDocument(opaque);
+    for (int i = 0; i < 5; ++i) {  // several frames of drawing WITHOUT the cutoff row
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK((app->materialDocument()->alphaMode == engine::MaterialAlphaMode::Opaque));
+    CHECK(app->materialDocument()->alphaCutoff == 0.875F);  // preserved across the mode change
+
+    // Back to mask: the row returns with the value it had.
+    engine::MaterialDocument masked = *app->materialDocument();
+    masked.alphaMode = engine::MaterialAlphaMode::Mask;
+    app->requestMaterialDocument(masked);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->alphaCutoff == 0.875F);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: edit -> dirty -> Apply writes canonical bytes; Revert round-trips (task 3.4.2, I87)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i87", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string materialPath = created.root + "/assets/edit.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(materialPath, MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    app->requestAssetBrowserSelectEntry("edit.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "edit.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    const engine::MaterialDocument onDisk = *app->materialDocument();
+    CHECK_FALSE(app->materialDirty());
+
+    // --- edit -> dirty --------------------------------------------------------------------------
+    engine::MaterialDocument edited = onDisk;
+    edited.name = "Edited";
+    edited.roughnessFactor = 0.125F;
+    edited.doubleSided = true;
+    app->requestMaterialDocument(edited);
+    REQUIRE(app->tick());
+    CHECK(app->materialDirty());
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->name == "Edited");
+    // Not one byte has moved yet: an edit is a session state, never a write (INV-2).
+    const engine::editor::FileReadResult untouched = engine::editor::readTextFile(materialPath);
+    REQUIRE(untouched.text.has_value());
+    CHECK(*untouched.text == std::string(MINIMAL_AEROMAT_TEXT));
+
+    // --- Apply -> the canonical writer's own bytes, exactly ---------------------------------------
+    app->requestMaterialApply();
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->materialDirty());  // the file copy ADOPTED the session copy
+    const engine::editor::FileReadResult applied = engine::editor::readTextFile(materialPath);
+    REQUIRE(applied.text.has_value());
+    CHECK(*applied.text == engine::writeMaterialText(edited));
+
+    // --- Revert -> back to what is on disk, discarding the session copy ---------------------------
+    engine::MaterialDocument abandoned = edited;
+    abandoned.metallicFactor = 0.03125F;
+    app->requestMaterialDocument(abandoned);
+    REQUIRE(app->tick());
+    REQUIRE(app->materialDirty());
+    app->requestMaterialRevert();
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->materialDirty());
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->metallicFactor == edited.metallicFactor);
+    CHECK(app->materialDocument()->name == "Edited");
+    // Revert re-READS the file, so what it restored is what Apply wrote -- never a cached copy.
+    const engine::editor::FileReadResult afterRevert = engine::editor::readTextFile(materialPath);
+    REQUIRE(afterRevert.text.has_value());
+    CHECK(*afterRevert.text == engine::writeMaterialText(edited));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 3.4.2: the live preview (I88-I90) -------------------------------------------------------
+
+TEST_CASE("editor: the preview and the viewport both render in ONE frame (task 3.4.2, I88, AC-28/AC-31)") {
+    // P7's COEXISTENCE PROBE, and the FIRST case of this task's preview half by deliberate order.
+    // NOTHING IN THIS TREE HAS EVER RUN TWO RenderTargets AND TWO ForwardRenderers ALIVE IN ONE EDITOR
+    // FRAME. render_target.hpp's own synchronisation note argues it works -- endFrame() submits its own
+    // command buffer and command buffers submitted earlier order before later ones, so ImGui's may
+    // sample either colour texture with no explicit barrier -- and tests/render_material_test.cpp
+    // already drives one target through two sequential frames. Neither proves TWO targets in one frame
+    // with ImGui sampling both, which is exactly what the Material panel does beside the Viewport.
+    //
+    // It also runs the whole teardown chain -- texture cache, material, renderer, target, then the
+    // device -- under ASan on the Debug lane, which is AC-31's clean-shutdown clause and the OTHER half
+    // of what this case is for.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i88", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(
+        engine::editor::writeTextFileAtomic(created.root + "/assets/preview.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);    // so Assets draws and SelectEntry drains
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right dock tab and onDraw runs
+    // The Viewport is CENTER-docked and visible throughout: every tick below submits its offscreen
+    // scene pass as well as the preview's.
+    REQUIRE(app->panels().find("Viewport") != nullptr);
+    REQUIRE(app->viewportCamera() != nullptr);
+
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("preview.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->materialTargetPath() == "preview.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+
+    // Five frames with BOTH passes live. Each tick: the panel draws (recording a preview request), the
+    // viewport's renderScene submits, the preview's service submits, and ImGui's own command buffer
+    // samples both colour textures.
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());  // the ImGui frame reached the screen with both images in it
+    }
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(app->materialPreviewAvailable());
+    // THE NON-VACUITY WITNESS. Without this number a green run above proves only that the editor did
+    // not crash: it would look identical if the preview had never rendered a single frame.
+    CHECK(app->materialPreviewFrameCount() >= 3);
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32). The coexistence this case exists to probe is not merely unproven
+    // here, it CANNOT occur: with no cooked shaders MaterialPreview latches Unavailable in its
+    // constructor and neither offscreen renderer is ever created. That portion -- and only that portion
+    // -- is unobservable in this configuration, so the OFF CONTRACT is asserted in its place rather
+    // than the case being skipped: the preview costs exactly nothing (no target, no renderer, no pass),
+    // while the five frames above still ticked and still presented, and the session is untouched by its
+    // absence. The other half of this case needs no arm at all -- app.reset() runs the whole teardown
+    // chain under ASan in both configurations.
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewFrameCount() == 0);
+    CHECK(app->materialTargetPath() == "preview.aeromat");
+    CHECK(app->materialDocument() != nullptr);
+    CHECK_FALSE(app->materialDirty());
+#endif
+    // The viewport is still there and still answering -- it was not torn down or starved by the second
+    // renderer, and the editor camera it draws through survived the whole run.
+    CHECK(app->viewportCamera() != nullptr);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();  // texture cache -> material -> renderer -> target -> device, under ASan
+}
+
+TEST_CASE("editor: a blend material latches the preview renderer's opaque WARN (task 3.4.2, I89, AC-30)") {
+    // AC-30's MECHANICAL half. `blend` is stored by the format, drawn OPAQUE by the renderer and
+    // latched once per renderer lifetime (3.4.1's D9) -- so the latch is the only part of "the mode
+    // reached the preview" that is observable without reading pixels. It is also this case's own
+    // non-vacuity witness for the push: the latch cannot flip unless updateMaterial carried the edited
+    // alphaMode into the registry AND a frame actually drew that material.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i89", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/blend.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("blend.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "blend.aeromat");
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(app->materialPreviewAvailable());
+    REQUIRE(app->materialPreviewFrameCount() >= 1);
+    // The fixture is OPAQUE, and several frames of it have already drawn: the latch is still down.
+    CHECK_FALSE(app->materialPreviewBlendDrawnOpaque());
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32). The latch this case reads lives on the preview's own
+    // ForwardRenderer, and in this configuration there is no renderer to hold one -- so the POSITIVE
+    // arm below is the one portion of this case that cannot be observed without cooked shaders. The
+    // rest is asserted identically: the OFF contract here is no preview, no frames, and therefore a
+    // latch that is down for a reason that has nothing to do with alphaMode.
+    REQUIRE_FALSE(app->materialPreviewAvailable());
+    REQUIRE(app->materialPreviewFrameCount() == 0);
+    CHECK_FALSE(app->materialPreviewBlendDrawnOpaque());
+#endif
+
+    REQUIRE(app->materialDocument() != nullptr);
+    engine::MaterialDocument blended = *app->materialDocument();
+    blended.alphaMode = engine::MaterialAlphaMode::Blend;
+    app->requestMaterialDocument(blended);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK((app->materialDocument()->alphaMode == engine::MaterialAlphaMode::Blend));
+#if AERO_SHADER_TOOLS_ENABLED
+    // The edit reached the GPU through updateMaterial and the next draw took the blend arm -- which
+    // draws OPAQUE and says so once. A known-and-expected of this task, not a defect (3.4.1's own gap).
+    CHECK(app->materialPreviewBlendDrawnOpaque());
+#else
+    // The same edit, the same four ticks, the same stored mode -- and still no latch, because there is
+    // no renderer to take the blend arm. This is AC-32's "everything else works identically" as an
+    // assertion rather than a claim: the edit reached the SESSION exactly as it does above, and the
+    // preview's absence changed nothing about it.
+    CHECK_FALSE(app->materialPreviewBlendDrawnOpaque());
+    CHECK(app->materialPreviewFrameCount() == 0);
+#endif
+    // The edit is UNAPPLIED throughout: the preview shows the session copy, never the file (D6).
+    CHECK(app->materialDirty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a hidden Material panel renders nothing and still edits (task 3.4.2, I90, AC-32)") {
+    // TWO properties in one case, because they are the same property seen from both sides.
+    //   * S25's RUNTIME half: the preview renders only on frames the panel actually DREW, so a Material
+    //     panel the user closed creates no GPU object and submits no pass at all. A seed that renders
+    //     every tick regardless moves materialPreviewFrameCount() here.
+    //   * AC-32's SHAPE: with no preview at all -- which is exactly what a tools-OFF build has
+    //     permanently -- targeting, editing, validation and Apply are untouched. This is the closest a
+    //     GPU-tier case can get to that build; §V.2's fresh tools-OFF configuration is the real proof.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i90", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string materialPath = created.root + "/assets/hidden.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(materialPath, MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    // Console hidden so the Assets panel draws and SelectEntry drains; Material hidden outright, which
+    // is the ONE reliable way to keep onDraw from running -- shell_ui.cpp's walk `continue`s before
+    // Begin for a hidden panel. MEASURED, correcting this case's first draft: hiding the *Inspector's*
+    // rival instead does not work, because in the default layout the LAST panel docked into the shared
+    // Right node is the selected tab, so Material draws even with the Inspector visible (the preview
+    // rendered 5 frames in 6 ticks that way). The existing setVisible("Inspector", false) in I84/I86 is
+    // therefore belt-and-braces on this machine rather than load-bearing -- left exactly as it is,
+    // since a restored layout on someone else's machine can select any tab it likes.
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Material", false);
+    REQUIRE_FALSE(app->panels().visible("Material"));
+    app->requestAssetBrowserSelectEntry("hidden.aeromat");
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    // Targeted and parsed -- the SESSION runs off tick(), not off the panel.
+    REQUIRE(app->materialTargetPath() == "hidden.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    // ... and the preview cost exactly nothing: no target, no renderer, no pass.
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewFrameCount() == 0);
+
+    // Editing and Apply are completely unaffected by the preview's absence (AC-32's clause).
+    engine::MaterialDocument edited = *app->materialDocument();
+    edited.name = "EditedWhileHidden";
+    edited.roughnessFactor = 0.5F;
+    app->requestMaterialDocument(edited);
+    REQUIRE(app->tick());
+    CHECK(app->materialDirty());
+    app->requestMaterialApply();
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->materialDirty());
+    const engine::editor::FileReadResult applied = engine::editor::readTextFile(materialPath);
+    REQUIRE(applied.text.has_value());
+    CHECK(*applied.text == engine::writeMaterialText(edited));
+    CHECK(app->materialPreviewFrameCount() == 0);  // still nothing rendered, through an entire Apply
+
+    app->panels().setVisible("Material", true);
+#if AERO_SHADER_TOOLS_ENABLED
+    // Show the panel again and the preview starts -- which is what makes every assertion above a
+    // statement about VISIBILITY rather than about a preview that could never work here.
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewFrameCount() >= 1);
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32), and this is the arm that states the difference between the two
+    // configurations exactly: making the panel VISIBLE cannot conjure a preview in a build with no
+    // cooked shaders. The panel draws its one "preview unavailable" line instead -- four ticks that all
+    // present, with no IM_ASSERT -- while the counters stay at the same zeros the HIDDEN panel produced
+    // above, and everything the case already asserted (targeting, the edit, Apply, the bytes on disk)
+    // held identically on the way here. Only the "the preview starts" arm is unobservable without
+    // cooked shaders; nothing else in this case is.
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewFrameCount() == 0);
+    CHECK(app->materialTargetPath() == "hidden.aeromat");
+    CHECK_FALSE(app->materialDirty());
+#endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 3.4.2: the preview's texture chain (I91, I92) -------------------------------------------
+
+TEST_CASE("editor: a slot GUID loads through decode -> cook -> parse -> upload (task 3.4.2, I91, AC-31/D7)") {
+    // The real pipeline in miniature, driven end to end by a real .png in a real project, and the
+    // RUNTIME half of D7's cache key: the SAME source bound to baseColor AND occlusion loads TWICE,
+    // because those two slots sample different colour spaces and a cooked artifact's colour space is
+    // its format. ME48 is the tier-0 half of the same rule.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i91", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/tex.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    app->requestAssetBrowserSelectEntry("tex.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "tex.aeromat");
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(app->materialPreviewAvailable());
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32): no preview exists, so MaterialPreview::service returns before
+    // rebuildSlots and a bound GUID is never even looked up. What this case can still prove here -- and
+    // does, arm by arm below -- is that NO LOAD IS ATTEMPTED (a strictly stronger statement than "no
+    // texture is ready", which is why textureLoadAttempts() is asserted beside the count every time)
+    // and that binding, rebinding and clearing a slot reach the session exactly as they do with the
+    // preview live.
+    REQUIRE_FALSE(app->materialPreviewAvailable());
+#endif
+    // Nothing referenced yet: no key, no entry, no attempt.
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);
+
+    const std::optional<engine::Guid> textureGuid = app->assetGuidForPath("wood.png");
+    REQUIRE(textureGuid.has_value());
+    REQUIRE(app->materialDocument() != nullptr);
+    engine::MaterialDocument bound = *app->materialDocument();
+    bound.baseColor = engine::MaterialTextureSlot{.guid = *textureGuid};
+    app->requestMaterialDocument(bound);
+    // ONE LOAD PER TICK, so this is a budget assertion as much as a chain assertion.
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(app->materialPreviewTextureCount() == 1);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 1);  // decoded, cooked, parsed and uploaded ONCE
+#else
+    // Nothing was read, decoded, cooked or uploaded -- the five ticks above cost the texture chain
+    // exactly zero work. The BINDING itself is unaffected: the session holds the slot and is dirty.
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+    CHECK((app->materialDocument()->baseColor->guid == *textureGuid));
+    CHECK(app->materialDirty());
+#endif
+
+    // The ORM-atlas shape: the same GUID in a LINEAR slot. Two entries, two uploads, one source.
+    engine::MaterialDocument both = *app->materialDocument();
+    both.occlusion = engine::MaterialTextureSlot{.guid = *textureGuid};
+    app->requestMaterialDocument(both);
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(app->materialPreviewTextureCount() == 2);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 2);
+#else
+    // Still not attempted -- twice over, now from two slots naming one source. The colour-space rule
+    // that makes those two DIFFERENT keys is tier-0's (ME48); what this arm pins is that neither slot
+    // provoked a read here.
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->baseColor.has_value());
+    CHECK(app->materialDocument()->occlusion.has_value());
+#endif
+
+    // Clearing both slots orphans both uploads, and the service pass -- never the draw walk -- is what
+    // releases them (INV-5). The count returning to zero is that pass having run.
+    engine::MaterialDocument cleared = *app->materialDocument();
+    cleared.baseColor.reset();
+    cleared.occlusion.reset();
+    app->requestMaterialDocument(cleared);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 2);  // releasing is not a load
+    CHECK(app->materialPreviewFrameCount() >= 3);           // and the preview kept drawing throughout
+#else
+    // Nothing was ever uploaded, so there is nothing to orphan and no service pass to release it in --
+    // and no frame was ever drawn. The document round-tripped through bind, rebind and clear untouched
+    // by any of that, which is the whole of AC-32's claim for this case.
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);
+    CHECK(app->materialPreviewFrameCount() == 0);
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK_FALSE(app->materialDocument()->baseColor.has_value());
+    CHECK_FALSE(app->materialDocument()->occlusion.has_value());
+#endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a broken image fails ONCE and stays failed (task 3.4.2, I92, AC-31)") {
+    // STICKY FAILURE, the ThumbnailLedger rule restated for a second cache. Without it a broken image
+    // re-reads and re-fails every tick forever, which is a frame-rate defect rather than a wrong
+    // picture -- and it is INVISIBLE to a count-only assertion, which is why textureLoadAttempts()
+    // exists and is asserted here rather than "the count is still zero".
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i92", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/broken.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    // A valid texture NAME whose bytes are ASCII: it fails at stbi_info_from_memory, before any decode
+    // loop, which is this tree's chosen corrupt-image shape (3.1.3's R3).
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/bad.png", CORRUPT_PNG_BYTES).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    app->requestAssetBrowserSelectEntry("broken.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "broken.aeromat");
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(app->materialPreviewAvailable());
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32). Stickiness is unobservable where nothing is ever attempted, so
+    // the arms below assert the shape that IS true here and is the stronger one: the broken image is
+    // not read once and remembered, it is never read at all, and thirteen ticks later that is still so.
+    // The half of this case that is configuration-independent -- Apply stays legal over an unloadable
+    // reference -- is asserted outside every arm, exactly as it was.
+    REQUIRE_FALSE(app->materialPreviewAvailable());
+#endif
+
+    const std::optional<engine::Guid> badGuid = app->assetGuidForPath("bad.png");
+    REQUIRE(badGuid.has_value());
+    REQUIRE(app->materialDocument() != nullptr);
+    engine::MaterialDocument bound = *app->materialDocument();
+    bound.baseColor = engine::MaterialTextureSlot{.guid = *badGuid};
+    app->requestMaterialDocument(bound);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewTextureCount() == 0);
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(app->materialPreviewTextureLoadAttempts() == 1);
+#else
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);  // not attempted, so not failed either
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+    CHECK((app->materialDocument()->baseColor->guid == *badGuid));
+#endif
+
+    // TEN more frames: still one attempt, ever. The slot draws its built-in default and the preview
+    // keeps rendering -- a broken reference degrades the picture, it does not stop it.
+    const std::size_t framesBefore = app->materialPreviewFrameCount();
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(app->materialPreviewTextureLoadAttempts() == 1);
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewFrameCount() > framesBefore);
+#else
+    // Ten more frames, still zero attempts: a broken reference costs nothing per tick here for the same
+    // reason a good one does -- the chain is never entered. The editor itself kept presenting through
+    // all ten, which is the part of "it does not stop it" this configuration can still show.
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(framesBefore == 0);
+    CHECK(app->materialPreviewFrameCount() == framesBefore);
+#endif
+    // Apply stays legal with an unloadable reference: a material may name an asset that is not usable
+    // yet, and the editor never blocks a save over it (AC-21).
+    CHECK(app->materialDirty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 3.4.2: New Material, and the watcher interplay it shares with Apply (I93, I94) -----------
+
+namespace {
+
+// task 3.4.2 (AC-41/D15/INV-C5): every file under the assets tree and its mtime, sorted by path. The
+// D15 assertion shape widened from ONE file to the WHOLE tree: "the rescan wrote zero bytes" is a
+// statement about everything, and a per-file check can only ever prove it about the file it names.
+// Directories are excluded -- a directory's own mtime moves when a `.aero-tmp` sibling appears and
+// vanishes, which is writeTextFileAtomic working, not a byte written to an asset.
+[[nodiscard]] std::vector<std::pair<std::string, std::filesystem::file_time_type>> assetsTreeMtimes(
+    const std::string& assetsRootUtf8) {
+    std::vector<std::pair<std::string, std::filesystem::file_time_type>> stamps;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(std::filesystem::path(assetsRootUtf8), ec), end;
+         it != end && !ec; it.increment(ec)) {
+        if (it->is_directory(ec)) {
+            continue;
+        }
+        const std::filesystem::file_time_type when = std::filesystem::last_write_time(it->path(), ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        const std::u8string bytes = it->path().u8string();
+        stamps.emplace_back(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()), when);
+    }
+    std::sort(stamps.begin(), stamps.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    return stamps;
+}
+
+}  // namespace
+
+TEST_CASE("editor: New Material creates, mints and selects, all outside the draw walk (task 3.4.2, I93, AC-5)") {
+    // The authoring loop closed: before this, the only way to get a first .aeromat into a project was a
+    // text editor. The click records; tick() drains; the file appears with the canonical DEFAULT bytes;
+    // the scan that same pass mints its .meta; the new entry is selected and the Material panel is
+    // holding it. ME47 is the tier-0 half (the bytes); this is the whole path.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i93", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    // The Assets panel must actually DRAW, or the recorded action is never drained through
+    // applyPending() and the request never reaches tick() at all (2.2.4's C5 rule).
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+
+    // MANDATORY before any trigger arithmetic (3.1.4's §A-1): the first scan writes sidecars of its own.
+    REQUIRE(tickToQuiescence(*app));
+    const std::uint64_t baseTriggers = app->assetWatchTriggerCount();
+    const std::size_t baseAssets = app->assetCount();
+
+    app->requestAssetBrowserCreateMaterial();
+    // Tick 1 drains the recorded action through the panel's own applyPending; tick 2's reconcile drains
+    // the request, writes the file and rescans; tick 2's draw drains the selection the drain queued;
+    // tick 3's reconcile is where the material session sees it. Four is one spare.
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+
+    const std::string materialPath = assetsRoot + "/NewMaterial.aeromat";
+    const engine::editor::FileReadResult written = engine::editor::readTextFile(materialPath);
+    REQUIRE(written.text.has_value());
+    // THE DEFAULT DOCUMENT, canonically written -- seed S20's runtime witness.
+    CHECK(*written.text == engine::writeMaterialText(engine::MaterialDocument{}));
+
+    // The scan minted its identity: the sidecar exists and the record carries a real GUID.
+    std::error_code existsEc;
+    CHECK(std::filesystem::exists(std::filesystem::path(materialPath + ".meta"), existsEc));
+    CHECK_FALSE(existsEc);
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("NewMaterial.aeromat");
+    REQUIRE(guid.has_value());
+    CHECK(guid->valid());
+    CHECK(app->assetCount() == baseAssets + 1);
+
+    // AUTO-SELECTED: the Material panel is already holding the file the button just made, clean.
+    CHECK(app->materialTargetPath() == "NewMaterial.aeromat");
+    CHECK(app->materialParseOk());
+    CHECK_FALSE(app->materialDirty());
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK((*app->materialDocument() == engine::MaterialDocument{}));
+
+    // The watcher's own view of a brand-new file, asserted as a DELTA after a SECOND quiescence and
+    // never as an absolute (3.1.4's rule). MEASURED, not predicted: the file and its freshly minted
+    // sidecar both exist before the next sweep runs, because the drain rescans in its OWN pass -- so
+    // one sweep sees both and fires ONCE. The +2 that an EXTERNALLY created file produces (I44) needs
+    // the two to appear in different sweeps, which an internal create never does.
+    REQUIRE(tickToQuiescence(*app));
+    CHECK(app->assetWatchTriggerCount() == baseTriggers + 1);
+
+    // A SECOND create in the same directory counts up rather than overwriting -- the unique-name rule
+    // driven by a real listing, not by a literal (AC-5).
+    app->requestAssetBrowserCreateMaterial();
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    const engine::editor::FileReadResult second = engine::editor::readTextFile(assetsRoot + "/NewMaterial-2.aeromat");
+    REQUIRE(second.text.has_value());
+    CHECK(*second.text == engine::writeMaterialText(engine::MaterialDocument{}));
+    // And the FIRST one is untouched -- a create never overwrites (this is what the listing is for).
+    const engine::editor::FileReadResult first = engine::editor::readTextFile(materialPath);
+    REQUIRE(first.text.has_value());
+    CHECK(*first.text == engine::writeMaterialText(engine::MaterialDocument{}));
+    CHECK(app->materialTargetPath() == "NewMaterial-2.aeromat");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Apply echoes ONCE and the rescan behind it writes zero bytes (task 3.4.2, I94, AC-41)") {
+    // D10's Apply half, mechanically. The watcher has no self-write suppression (3.1.4, confirmed in
+    // code), so an Apply IS seen -- once. What must not happen is the scan that follows rewriting
+    // anything in the assets tree: the .meta is valid and D6 never rewrites a valid one, so the whole
+    // tree's mtimes must be identical across it. That is the D15/INV-C5 assertion, widened from the
+    // cache index to every file a user owns.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i94", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    const std::string materialPath = assetsRoot + "/echo.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(materialPath, MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/notes.txt", "an ordinary neighbour").empty());
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    app->requestAssetBrowserSelectEntry("echo.aeromat");
+
+    REQUIRE(tickToQuiescence(*app));
+    REQUIRE(app->materialTargetPath() == "echo.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    const std::uint64_t baseTriggers = app->assetWatchTriggerCount();
+
+    engine::MaterialDocument edited = *app->materialDocument();
+    edited.name = "Echoed";
+    edited.roughnessFactor = 0.75F;
+    app->requestMaterialDocument(edited);
+    REQUIRE(app->tick());
+    REQUIRE(app->materialDirty());
+    // A pending edit costs the watcher NOTHING: nothing has touched the disk yet.
+    CHECK(app->assetWatchTriggerCount() == baseTriggers);
+
+    app->requestMaterialApply();
+    REQUIRE(app->tick());
+    REQUIRE_FALSE(app->materialDirty());
+    const engine::editor::FileReadResult applied = engine::editor::readTextFile(materialPath);
+    REQUIRE(applied.text.has_value());
+    CHECK(*applied.text == engine::writeMaterialText(edited));
+
+    // The snapshot is taken AFTER the write and BEFORE the rescan the watcher is about to drive, which
+    // is exactly the window the assertion is about.
+    const std::vector<std::pair<std::string, std::filesystem::file_time_type>> before = assetsTreeMtimes(assetsRoot);
+    REQUIRE(before.size() >= 4U);  // echo.aeromat + notes.txt + both sidecars -- never a vacuous sweep
+
+    REQUIRE(tickToQuiescence(*app));
+    CHECK(app->assetWatchTriggerCount() == baseTriggers + 1);  // ONE echo, not two: no new sidecar
+    const std::vector<std::pair<std::string, std::filesystem::file_time_type>> after = assetsTreeMtimes(assetsRoot);
+    CHECK(after == before);  // ZERO bytes written to the assets tree by the rescan (D6/D15)
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task 3.4.2: the two source-text pins the preview's lifetime rule needs (I95, I96) -------------
+//
+// WHY SOURCE TEXT: SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan and D3D12 and defers only on
+// Metal, so a GPU destroy moved into the draw walk is deterministic corruption on two platforms and
+// completely invisible on this one -- 3.1.3's BLOCKING-1 and 3.1.4's D9, both of which were confirmed
+// by direct sabotage to redden NOTHING on Metal. There is no runtime tier in this tree that can see
+// the violation, so the rule is pinned mechanically instead of trusted.
+
+TEST_CASE("editor: the preview's service pass runs AFTER the draw walk, exactly once (task 3.4.2, I95)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    const std::size_t drawWalkAt = soleLineContaining(code, "drawShellUi(");
+    const std::size_t serviceAt = soleLineContaining(code, "servicePreview(");
+    // ONE call site (soleLineContaining REQUIREs it), and it is textually AFTER the single call that
+    // invokes every panel's onDraw -- I60's own proof shape, applied to this task's fourth occupant of
+    // the post-draw slot. A proof about THIS file's current text, not a guarantee against a future
+    // refactor that moves the call somewhere else; validation row 9's cost blank is the other cover.
+    CHECK(serviceAt > drawWalkAt);
+}
+
+TEST_CASE("editor: every preview GPU lifetime call sits where ImGui's ordering allows (task 3.4.2, I96, INV-5)") {
+    // REWRITTEN BY THE CODE-REVIEW ROUND, because the claim this case used to make was satisfied by the
+    // defect it was supposed to catch. It asserted "a destroy lives in the service pass" and greped for
+    // `destroyTexture(`/`destroyMaterial(` alone -- so `target->resize(...)`, which destroys BOTH
+    // textures inside RenderTarget::allocate, was invisible to it, and a resize sitting in the service
+    // pass PASSED the old rule while being exactly the use-after-free the rule exists to prevent.
+    //
+    // THE RULE, RESTATED AS ORDERING RATHER THAN MEMBERSHIP. ImGui records an ImTextureID during the
+    // draw walk and binds it inside ImGuiLayer::endFrame, which runs AFTER tick()'s post-draw service
+    // pass. So:
+    //   * a call that RELEASES the texture ImGui is holding (resize -> allocate -> destroyTexture) must
+    //     happen BEFORE the handle is read, i.e. in the draw walk -- ViewportPanel's own ordering;
+    //   * a call that releases anything ImGui never sees (the slot upload cache) stays in the service
+    //     pass, where a create-then-destroy cannot race a frame at all.
+    // The two are not in tension: one is about the texture ImGui BINDS, the other about textures it
+    // never touches.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_preview.cpp");
+
+    // Walk UP to the nearest DEFINITION HEADER -- a line whose first non-blank character is in column 0
+    // and which names MaterialPreview:: -- and read the function name out of it. Every definition in
+    // that file is written that way (`void MaterialPreview::service(`,
+    // `MaterialPreview::~MaterialPreview()`), and a member's body is always indented, so the first such
+    // line above any statement is the function that statement belongs to.
+    const auto ownerOf = [&code](std::size_t index) {
+        std::string owner;
+        for (std::size_t j = index + 1U; j > 0; --j) {
+            const std::string& line = code[j - 1U];
+            const std::size_t at = line.find("MaterialPreview::");
+            if (at == std::string::npos || line.find_first_not_of(" \t") != 0) {
+                continue;
+            }
+            const std::size_t nameStart = at + std::string_view("MaterialPreview::").size();
+            const std::size_t paren = line.find('(', nameStart);
+            owner = line.substr(nameStart, paren == std::string::npos ? std::string::npos : paren - nameStart);
+            break;
+        }
+        return owner;
+    };
+
+    // The functions a CACHE destroy may appear in. THE DESTRUCTOR IS PERMITTED and the draw path is
+    // not: ~MaterialPreview runs inside ~PanelRegistry inside ~EditorApp, which precedes ~Device, and it
+    // is not a frame at all. `destroyOrphans` is permitted because it is private and service() is its
+    // one caller -- which this list is the record of, since nothing else in the tree can state it.
+    const std::array<std::string_view, 3> destroyPermitted{"~MaterialPreview", "service", "destroyOrphans"};
+    std::size_t destroySites = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        const bool destroys = code[i].find("destroyTexture(") != std::string::npos ||
+                              code[i].find("destroyMaterial(") != std::string::npos;
+        if (!destroys) {
+            continue;
+        }
+        ++destroySites;
+        const std::string owner = ownerOf(i);
+        CAPTURE(i);
+        CAPTURE(owner);
+        CHECK(std::find(destroyPermitted.begin(), destroyPermitted.end(), std::string_view(owner)) !=
+              destroyPermitted.end());
+    }
+    // ANTI-VACUITY: a rename of the destroy calls would make the loop above find nothing and pass
+    // saying nothing at all.
+    CHECK(destroySites >= 1);
+
+    // THE NEEDLE THE OLD PIN LACKED. `resize(` releases the colour texture ImGui may be holding, so it
+    // may appear in ONE function only: prepareFrame, which the draw walk calls and which reads the
+    // handle immediately afterwards. In service(), renderFrame() or any helper they call, the release
+    // lands between ImGui recording the id and ImGui binding it.
+    std::size_t resizeSites = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("->resize(") == std::string::npos) {
+            continue;
+        }
+        ++resizeSites;
+        const std::string owner = ownerOf(i);
+        CAPTURE(i);
+        CAPTURE(owner);
+        CHECK(owner == "prepareFrame");
+    }
+    CHECK(resizeSites == 1);
+
+    // The ImGui TU touches no GPU lifetime AT ALL beyond that one call, and the ORDER of its three
+    // preview statements is the property this whole case is about: settle the allocation, THEN read the
+    // handle, THEN hand it to ImGui. soleLineContaining REQUIREs exactly one of each, so a second
+    // Image, a second read or a second prepare reddens here too.
+    const std::vector<std::string> panelCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_panel.cpp");
+    const std::size_t prepareAt = soleLineContaining(panelCode, "prepareFrame(");
+    const std::size_t handleAt = soleLineContaining(panelCode, "nativeColorTexture(");
+    const std::size_t imageAt = soleLineContaining(panelCode, "ImGui::Image(");
+    CHECK(prepareAt < handleAt);
+    CHECK(handleAt < imageAt);
+
+    const std::array<std::string_view, 8> forbiddenInDrawWalk{"destroyTexture(",
+                                                              "destroyMaterial(",
+                                                              "createMaterial(",
+                                                              "updateMaterial(",
+                                                              "RenderTarget::create",
+                                                              "ForwardRenderer::create",
+                                                              "createTextureFromCookedTexture(",
+                                                              "beginFrame("};
+    for (const std::string& line : panelCode) {
+        for (const std::string_view needle : forbiddenInDrawWalk) {
+            CAPTURE(needle);
+            CHECK(line.find(needle) == std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("editor: .aeromat bytes have exactly ONE physical write path (task 3.4.2, I97, D12, seed S8)") {
+    // THE AMENDED INV-A1, as a grep rather than a habit. Apply and New Material are TWO LOGICAL writes
+    // through ONE physical one: material_session.cpp's saveMaterialFile holds the single
+    // writeTextFileAtomic call site, and every caller assembles the absolute path into a named local
+    // first so the invariant stays decidable by reading rather than by reasoning. Duplicating the
+    // helper into a second call site (seed S8) reddens here and nowhere else -- no runtime tier can
+    // see a second write path that happens to write the same bytes.
+    const std::vector<std::string> sessionCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_session.cpp");
+    std::size_t writeSites = 0;
+    for (const std::string& line : sessionCode) {
+        if (line.find("writeTextFileAtomic(") != std::string::npos) {
+            ++writeSites;
+        }
+    }
+    CHECK(writeSites == 1);
+
+    // And nowhere else in this task's four TUs. editor_app.cpp is deliberately NOT on this list: it is
+    // full of unrelated writes (recents, project manifests) and its material arm is asserted the other
+    // way round, below.
+    // asset_browser_panel.cpp is on this list for a reason the S21 run made concrete: moving the whole
+    // create into its applyPending arm did redden this case, but only through the `soleLineContaining`
+    // REQUIRE above -- an ABSENCE in editor_app.cpp. A seed that ADDED a panel-side write while leaving
+    // the drain in place would have slipped past, and that panel is read-only by contract (D19).
+    const std::array<std::string_view, 4> mustNotWrite{"/material_panel.cpp", "/material_preview.cpp",
+                                                       "/material_edit.cpp", "/asset_browser_panel.cpp"};
+    for (const std::string_view leaf : mustNotWrite) {
+        CAPTURE(leaf);
+        std::string path = AERO_EDITOR_SRC_DIR;
+        path += leaf;
+        for (const std::string& line : editorSourceCodeLines(path)) {
+            CHECK(line.find("writeTextFileAtomic(") == std::string::npos);
+            CHECK(line.find("saveMaterialFile(") == std::string::npos);
+        }
+    }
+
+    // The create drain routes through the SAME helper, exactly once, and writes no bytes of its own:
+    // one saveMaterialFile call, zero writeMaterialText calls (the helper owns the serialisation) and
+    // -- the load-bearing half -- the named local the invariant is read from.
+    const std::vector<std::string> appCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    (void)soleLineContaining(appCode, "saveMaterialFile(");
+    (void)soleLineContaining(appCode, "const std::string materialAbsolutePath =");
+    for (const std::string& line : appCode) {
+        CHECK(line.find("writeMaterialText(") == std::string::npos);
+    }
+}
+
+TEST_CASE("editor: every numeric material edit is CLAMPED IN C++, not by the widget (task 3.4.2, I98, AC-18)") {
+    // THE CLOSURE FOR A MEASURED GAP. Seed S18 removed all twelve clamp calls from the Material
+    // panel's scalar rows -- "trust the widget" -- and every one of the 1570 shell cases and 119 GPU
+    // cases stayed green. That is structural, not an oversight in the cases: no tier in this tree can
+    // Ctrl+Click an ImGui slider and type 40 into a [0,1] field, which is precisely the input the
+    // clamp exists for. AC-18 says the widget is NEVER the enforcement, and this is the only place
+    // that sentence can be checked at all.
+    //
+    // Apply's validateMaterial is the BELT (ME41 proves it), so the damage a missing clamp does is not
+    // corruption -- it is an Apply button disabled by a value the user cannot see is out of range.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_panel.cpp");
+
+    // The numeric fields docs/09 section 11.1 bounds. `name` and `doubleSided` are deliberately absent:
+    // neither has a range, so neither is clamped, and listing them would demand a clamp that means
+    // nothing.
+    const std::array<std::string_view, 8> boundedFields{
+        "form.baseColorFactor.", "form.metallicFactor",    "form.roughnessFactor", "form.emissiveFactor.",
+        "form.normalScale",      "form.occlusionStrength", "form.alphaCutoff",     "slot->uvSet"};
+
+    std::size_t assignments = 0;
+    for (const std::string& line : code) {
+        const std::size_t assignAt = line.find(" = ");
+        if (assignAt == std::string::npos) {
+            continue;
+        }
+        for (const std::string_view field : boundedFields) {
+            const std::size_t fieldAt = line.find(field);
+            // The field must be on the LEFT of the `=` for this to be a WRITE. `float metallic =
+            // form.metallicFactor;` reads it and is not this case's business.
+            if (fieldAt == std::string::npos || fieldAt > assignAt) {
+                continue;
+            }
+            ++assignments;
+            CAPTURE(field);
+            CAPTURE(line);
+            CHECK(line.find("clamp") != std::string::npos);
+        }
+    }
+    // ANTI-VACUITY, and the number is deliberately a floor rather than an equality: a future row adds
+    // an assignment, it does not remove one. Twelve is what the panel ships today.
+    CHECK(assignments >= 12U);
+}
+
+// ---- task 3.4.2, the code-review round's closures (I99-I101) --------------------------------------
+
+TEST_CASE("editor: a RESIZED Material panel never binds a released preview texture (task 3.4.2, I99)") {
+    // THE CODE-REVIEW ROUND'S BLOCKING-1, AND THE COVERAGE GAP THAT LET IT SHIP GREEN. No case in this
+    // suite ever changed the preview's requested extent, so RenderTarget::resize never reallocated
+    // anywhere -- which is precisely why a resize sitting in the post-draw service pass, AFTER ImGui had
+    // already recorded the old colour texture into this frame's draw list and BEFORE ImGuiLayer::endFrame
+    // bound it, was invisible to all 133 tests.
+    //
+    // IT IS ALSO INVISIBLE TO ASan HERE, WHICH IS WHY THIS CASE COUNTS RATHER THAN CRASHES. SDL frees the
+    // texture CONTAINER immediately on Vulkan and D3D12 and merely queues it on Metal, so the dangling
+    // pointer is real on the Ubuntu and Windows lanes and harmless on this one. materialPreviewStaleImageCount()
+    // is the deterministic, platform-independent witness: it counts frames whose handed-out colour
+    // texture was no longer the target's live one by the time the next draw walk began.
+    //
+    // THE EXTENT IS DRIVEN BY A WINDOW RESIZE **PLUS** A LAYOUT RESET, and the second half is not
+    // ceremony -- it was measured. Resizing the window alone moves the viewport and the centre node but
+    // leaves the Right dock column at its absolute width (64 px of preview at 320x180 AND at 800x500,
+    // observed directly while writing this case), so a window-only case reallocates nothing and proves
+    // nothing. View > Reset Layout re-derives the dock split from the new work area, which is what
+    // actually widens the column. Both reallocation branches are then exercised: the grow, and the
+    // shrink, which only reallocates once the need at least halves (nextTargetExtent's hysteresis).
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i99", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/resize.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right dock tab and onDraw runs
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("resize.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "resize.aeromat");
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(app->materialPreviewAvailable());
+    const std::uint32_t narrowWidth = app->materialPreviewTextureWidth();
+    const std::size_t imagesBeforeGrow = app->materialPreviewImageCount();
+    REQUIRE(narrowWidth > 0U);
+    REQUIRE(imagesBeforeGrow > 0U);  // the panel really did hand ImGui a texture before the resize
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+
+    // --- grow: the dock column widens, the request crosses the 64-pixel quantum, allocate() runs ---
+    window->setSize(800, 500);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+    app->requestLayoutReset();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+    const std::uint32_t wideWidth = app->materialPreviewTextureWidth();
+    CAPTURE(narrowWidth);
+    CAPTURE(wideWidth);
+    // NON-VACUITY, and it is a REQUIRE rather than a CHECK on purpose: textureExtent IS the allocation,
+    // so an unchanged value means this case reallocated nothing and proved nothing. A window manager
+    // that refuses the resize must fail loudly rather than pass silently.
+    REQUIRE(wideWidth != narrowWidth);
+    CHECK(app->materialPreviewImageCount() > imagesBeforeGrow);
+
+    // --- shrink: back under half the allocation, so the hysteresis branch reallocates too ----------
+    window->setSize(320, 180);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+    app->requestLayoutReset();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+    const std::uint32_t shrunkWidth = app->materialPreviewTextureWidth();
+    CAPTURE(shrunkWidth);
+    CHECK(shrunkWidth < wideWidth);
+    CHECK(app->materialPreviewFrameCount() >= 3U);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32): there is no target to reallocate, so the ordering this case
+    // exists to prove is not merely unobserved, it cannot occur. The OFF contract is asserted instead --
+    // the window still resizes, the editor still ticks, and the preview still costs exactly nothing.
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewTextureWidth() == 0U);
+    window->setSize(800, 500);
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+    window->setSize(320, 180);
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewImageCount() == 0U);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+#endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the error state shows NO picture, not the last material's (task 3.4.2, I100)") {
+    // THE CODE-REVIEW ROUND'S FINDING 9. A render target keeps whatever was last rendered into it, and
+    // MaterialPreview::service refuses to render with no document -- so drawing the preview strip's
+    // ImGui::Image under an error message blits a stale frame OF A DIFFERENT MATERIAL and presents it as
+    // if it belonged to the file that failed to parse. Selecting a good material first is what makes the
+    // case discriminating: with nothing rendered beforehand there is no stale picture to show.
+    //
+    // materialPreviewImageCount() is the observable, and it is the only one there can be: a correct
+    // picture and a stale one are the same bytes to every tier in this tree.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i100", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/good.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/bad.aeromat", REJECT_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("good.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "good.aeromat");
+    const std::size_t imagesAfterGood = app->materialPreviewImageCount();
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(app->materialPreviewAvailable());
+    REQUIRE(imagesAfterGood > 0U);  // a real picture existed before the error state was entered
+    REQUIRE(app->materialPreviewFrameCount() >= 1U);
+#else
+    REQUIRE(imagesAfterGood == 0U);  // AC-32: no target, so no picture to go stale in the first place
+#endif
+
+    app->requestAssetBrowserSelectEntry("bad.aeromat");
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "bad.aeromat");
+    REQUIRE_FALSE(app->materialParseOk());
+    // The count is snapshotted HERE, once the error state is on screen, rather than before the request:
+    // the browser applies a selection inside its own draw walk, while tick()'s reconcile has already
+    // run, so exactly one further frame legitimately draws the STILL-TARGETED good material. That frame
+    // is correct; every frame after it is the defect.
+    const std::size_t imagesInError = app->materialPreviewImageCount();
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    // THE ASSERTION: not one further frame handed ImGui the target's texture while the error was on
+    // screen. Before the fix this climbed by one per tick, blitting `good.aeromat`'s last frame under
+    // `bad.aeromat`'s parse error.
+    CHECK(app->materialPreviewImageCount() == imagesInError);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+    CHECK(app->materialTargetPath() == "bad.aeromat");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a non-zero uvSet latches ONE preview WARN (task 3.4.2, I101, AC-22)") {
+    // AC-22 asks for a latched WARN "exactly as the sample does", and until the code-review round there
+    // was none: the panel drew an inline note and nothing logged. Nothing downstream COULD log it --
+    // render::MaterialTextureSlot carries no uvSet field at all -- so the preview is the only place the
+    // sentence can come from, which is why it lives beside the push rather than in the renderer.
+    //
+    // The count, not a bool, is what makes LATCHED assertable: an unlatched implementation climbs past
+    // one as further edits re-push the document.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i101", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/uv.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("uv.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "uv.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    // A material with NO bound slot says nothing at all -- the WARN is about a bound slot's uvSet, never
+    // about the field's mere existence.
+    CHECK(app->materialPreviewUvSetWarnCount() == 0U);
+
+    engine::MaterialDocument withUvSet = *app->materialDocument();
+    engine::MaterialTextureSlot slot;
+    // A GUID no asset in this project owns, deliberately. The WARN is about what the SLOT DECLARES, not
+    // about a texture that loaded -- exactly as the sample's own resolveSlot warns before it resolves.
+    slot.guid = engine::Guid{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+    slot.uvSet = 1;
+    withUvSet.baseColor = slot;
+    app->requestMaterialDocument(withUvSet);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(app->materialPreviewUvSetWarnCount() == 1U);
+#else
+    // AC-32: no renderer, so no push, so no WARN. The edit still reached the session identically.
+    CHECK(app->materialPreviewUvSetWarnCount() == 0U);
+#endif
+
+    // Further edits re-push the document; the latch must hold across every one of them.
+    for (int round = 0; round < 3; ++round) {
+        engine::MaterialDocument nudged = *app->materialDocument();
+        nudged.roughnessFactor = 0.1F + (0.2F * static_cast<float>(round));
+        app->requestMaterialDocument(nudged);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+    }
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(app->materialPreviewUvSetWarnCount() == 1U);
+#else
+    CHECK(app->materialPreviewUvSetWarnCount() == 0U);
+#endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: New Material refuses a directory it could not enumerate IN FULL (task 3.4.2, I102)") {
+    // THE CODE-REVIEW ROUND'S BLOCKING-2, pinned where it can be. The drain's own comment already states
+    // the rule -- "a directory we cannot enumerate is a directory in which we cannot prove a name is
+    // unused. Refusing is the only safe answer" -- and the code enforced one third of it: `status != Ok`
+    // alone, while listDirectory ALSO signals incompleteness through `truncated` (over
+    // MAX_ENTRIES_PER_DIRECTORY / MAX_ENTRIES_EXAMINED) and `skipped` (an increment(ec) failure part way
+    // through -- the antivirus-lock and cloud-sync case 3.1.4's D5 records as real). Both keep the
+    // status at Ok and return a PREFIX, so uniqueMaterialFileName hands back a name that already exists
+    // and the canonical default document is written over an authored material, with no warning and no
+    // undo (D4 keeps materials off the CommandStack).
+    //
+    // NO RUNTIME TIER HERE CAN REACH EITHER ARM: one needs 10 001 files in a directory inside a GPU-tier
+    // frame budget, the other needs the OS to fail an iterator mid-walk on demand. The predicate itself
+    // is proven exhaustively at tier 0 (project_files_test.cpp PF-c6/PF-c7); this pins that the CALL
+    // SITE asks it rather than re-deriving one third of it inline.
+    const std::vector<std::string> appCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    (void)soleLineContaining(appCode, "listingIsComplete(listing)");
+    for (const std::string& line : appCode) {
+        // The regressed shape this proof must reject, in either spelling.
+        CHECK(line.find("listing.status != ScanStatus::Ok") == std::string::npos);
+        CHECK(line.find("listing.status == ScanStatus::Ok") == std::string::npos);
+    }
 }

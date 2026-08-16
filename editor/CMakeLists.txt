@@ -125,6 +125,10 @@ add_library(aero_editor_core STATIC
     src/assimp_import.cpp        # task 3.2.5 -- the ONLY assimp TU; NO file operation at all
     src/mesh_cook_source.cpp     # task 3.3.1 -- the ONLY ImportedModel -> assets:: adapter; PURE
     src/texture_cook_source.cpp  # task 3.3.2 -- the SECOND stb_image TU; PURE, no disk, no UI
+    src/material_edit.cpp        # task 3.4.2 -- the PURE document->render bridge (D8); no ImGui, no GPU
+    src/material_session.cpp     # task 3.4.2 -- the target/dirty/apply machine; the ONE .aeromat write
+    src/material_panel.cpp       # task 3.4.2 -- the only new ImGui TU
+    src/material_preview.cpp     # task 3.4.2 -- the only new GPU TU: target, renderer, texture cache
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -148,7 +152,20 @@ target_link_libraries(aero_editor_core
     # links spdlog/glm/enkiTS PRIVATE -- the same property tests/math_boundary_probe.cpp rests on. It
     # is NOT gated on AERO_REFLECT_TOOLS, so both reduced configurations and the ungated tier-0 shell
     # test survive unchanged.
-    PUBLIC  aero::rhi aero::platform aero::scene aero::core aero::assets
+    # aero::render is PUBLIC because material_edit.hpp names render::MaterialParams,
+    # render::MaterialAlpha and render::defaultTextureKindForSlot in its own signatures (task 3.4.2).
+    # A RECORDED DEVIATION from the spec's "no link-line change at all", taken because that clause and
+    # AC-25 cannot both hold: aero::scene_render is PRIVATE below, which on a STATIC library propagates
+    # as $<LINK_ONLY:...> -- the archive reaches consumers, engine/render/include does NOT -- so a
+    # public editor header naming a render type does not compile without this edge, and
+    # aero_editor_shell_test cannot see the header at all. It is the aero::assets precedent one epic
+    # old, criterion for criterion: engine/render/CMakeLists.txt calls NO find_package, its PUBLIC
+    # dependencies are aero::rhi and aero::assets -- BOTH ALREADY PUBLIC on this line, so the edge adds
+    # nothing to a consumer's compile line but engine/render/include -- it carries no build gate of any
+    # kind, and no tests/*_boundary_probe.cpp links aero::editor_core, so no probe can be weakened by
+    # it. The golden rule is untouched: editor -> render is the legal direction, and
+    # check-golden-rule.sh polices the reverse.
+    PUBLIC  aero::rhi aero::platform aero::scene aero::core aero::assets aero::render
     # EnTT is PRIVATE for the SAME reason imgui is (D1/2.1.3): the editor's PUBLIC headers stay
     # entt-free BY FILE PLACEMENT -- every entt entry point lives in editor/src/. That is convention +
     # review, NOT enforcement: this target's consumers link doctest/vcpkg roots, so a leaked

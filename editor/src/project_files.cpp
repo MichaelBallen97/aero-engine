@@ -78,6 +78,12 @@ bool hasSubdirectory(const DirectoryListing& listing) noexcept {
 
 }  // namespace
 
+bool listingIsComplete(const DirectoryListing& listing) noexcept {
+    // All three signals, because any one of them alone leaves `entries` a PREFIX -- see the header for
+    // why a truncated or partially-skipped listing still carries ScanStatus::Ok.
+    return listing.status == ScanStatus::Ok && !listing.truncated && listing.skipped == 0;
+}
+
 bool isHiddenName(std::string_view name) noexcept { return !name.empty() && name.front() == '.'; }
 
 bool entryOrderLess(const FileEntry& a, const FileEntry& b) noexcept {

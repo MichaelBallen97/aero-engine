@@ -432,10 +432,17 @@ bool isKnownKey(std::string_view key, std::span<const std::string_view> known) {
 // every level, so the warning stream is deterministic. Re-walks the DOM rather than threading a
 // collected list through the readers — the scene_format:264-285 shape, and the one that cannot drift
 // out of sync with what extract() actually consumed, because both read the same two key arrays.
-void warnUnknownMaterialKeys(const JsonValue& root) {
+//
+// Task 3.4.2: every finding is BOTH logged and appended to `out`. The sentence is formatted ONCE and
+// used twice — the log adds only its own "material: " channel prefix — so the returned entry and the
+// Console line can never say two different things. Appending is not conditional on the log level: a
+// consumer's list must not depend on whether anything is listening.
+void warnUnknownMaterialKeys(const JsonValue& root, std::vector<std::string>& out) {
     for (const JsonMember& member : root.members()) {
         if (!isKnownKey(member.key, ROOT_KEYS)) {
-            AERO_LOG_WARN("material: ignoring unknown key \"{}\"", member.key);
+            std::string text = std::format("ignoring unknown key \"{}\"", member.key);
+            AERO_LOG_WARN("material: {}", text);
+            out.push_back(std::move(text));
         }
     }
     const JsonValue* textures = root.find(TEXTURES_KEY);
@@ -451,13 +458,22 @@ void warnUnknownMaterialKeys(const JsonValue& root) {
             }
         }
         if (!isSlot) {
-            AERO_LOG_WARN("material: \"{}\": ignoring unknown key \"{}\"", TEXTURES_KEY, member.key);
+            // A raw literal, not an escaped one: modernize-raw-string-literal is --warnings-as-errors
+            // on the Linux lane and fires here now that the format string left the AERO_LOG_WARN macro
+            // (a check skips macro-expanded locations). It is NOT a doctest macro argument, so the
+            // MSVC legacy-preprocessor trap that bans a raw literal containing an ESCAPED quote in a
+            // macro does not apply -- these quotes are plain.
+            std::string text = std::format(R"("{}": ignoring unknown key "{}")", TEXTURES_KEY, member.key);
+            AERO_LOG_WARN("material: {}", text);
+            out.push_back(std::move(text));
             continue;
         }
         for (const JsonMember& slotMember : member.value.members()) {
             if (!isKnownKey(slotMember.key, SLOT_KEYS)) {
-                AERO_LOG_WARN("material: \"{}.{}\": ignoring unknown key \"{}\"", TEXTURES_KEY, member.key,
-                              slotMember.key);
+                std::string text =
+                    std::format(R"("{}.{}": ignoring unknown key "{}")", TEXTURES_KEY, member.key, slotMember.key);
+                AERO_LOG_WARN("material: {}", text);
+                out.push_back(std::move(text));
             }
         }
     }
@@ -547,7 +563,7 @@ MaterialParseResult parseMaterial(const JsonValue& root) {
         result.error = std::move(*error);
         return result;  // nothing partial: `document` stays unengaged
     }
-    warnUnknownMaterialKeys(root);  // success-only sweep, document order
+    warnUnknownMaterialKeys(root, result.warnings);  // success-only sweep, document order
     result.document = std::move(document);
     return result;
 }

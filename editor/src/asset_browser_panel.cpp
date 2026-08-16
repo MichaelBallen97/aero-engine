@@ -206,6 +206,39 @@ void AssetBrowserPanel::drawHeader() {
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Discard the import cache and re-hash every asset. Use this if the editor missed a change.");
     }
+    // task 3.4.2 (D9/AC-5): a THIRD button on the same row. The click RECORDS and nothing else -- this
+    // panel is read-only by contract (D19) and performs no I/O (D7), so the file is written by
+    // EditorApp::tick(), outside the draw walk, exactly like Refresh's rescan. The orphan-delete drain
+    // shape, a second application: a create inside the draw walk would write a file, request a scan and
+    // mutate the selection while ImGui holds this frame's tree open.
+    ImGui::SameLine();
+    // DISABLED WITH NO PROJECT (plan D-6, the code-review round's finding 5). The drain already refuses
+    // an empty root with one WARN, but a live-looking button whose only feedback is a Console line reads
+    // as a broken button; the disabled state is what says "not yet" before the click. 1:1 with
+    // EndDisabled -- nothing returns or continues between them.
+    const bool canCreate = !rootUtf8.empty();
+    ImGui::BeginDisabled(!canCreate);
+    if (ImGui::Button("New Material")) {
+        record(ActionKind::CreateMaterial, {});
+    }
+    ImGui::EndDisabled();
+    // AllowWhenDisabled, or the tooltip that explains the disabled state is the one tooltip nobody can
+    // ever see (viewport_panel.cpp's A6 note, and the Apply button one panel over). The enabled text
+    // NAMES THE TARGET DIRECTORY, because "this folder" is ambiguous the moment the tree selection and
+    // the contents pane disagree about what the user is looking at.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (canCreate) {
+            // Concatenated rather than std::format'ed only to keep <format> out of this TU; the rule
+            // that matters is unchanged -- a NAMED LOCAL, passed as a "%s" argument, never as the
+            // format string itself.
+            labelScratch = "Create a new material in '";
+            labelScratch += currentDir.empty() ? rootDisplayName(rootUtf8) : currentDir;
+            labelScratch += "' and select it.";
+        } else {
+            labelScratch = "Open a project first -- there is no assets folder to create a material in.";
+        }
+        ImGui::SetTooltip("%s", labelScratch.c_str());
+    }
     // task 3.1.4 (D10/AC-35): SESSION state, deliberately not persisted -- 3.1.3's D4 posture
     // verbatim (view mode and tile size take the same one, with the same documented "resets on
     // relaunch" limitation). EditorAppConfig is per-launch; project.json is a shared, committed,
@@ -288,14 +321,16 @@ void AssetBrowserPanel::drawHeader() {
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0F);
-    constexpr std::array<AssetKind, 6> KIND_OPTIONS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
-                                                    AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
+    // task 3.4.2: the list lives in asset_view.hpp beside the enum, NOT here. A copy in this function
+    // is invisible to every test tier -- seed S2 dropped Material from the local copy this line used
+    // to hold and the whole suite stayed green, because no tier can read a combo's contents. AV53
+    // pins the shared constant instead, which only works while this is the sole reader.
     labelScratch = filter.anyKind ? std::string("All") : std::string(assetKindLabel(filter.kind));
     if (ImGui::BeginCombo("##kindFilter", labelScratch.c_str())) {
         if (ImGui::Selectable("All", filter.anyKind)) {
             record(ActionKind::SetKindFilter, "all");
         }
-        for (const AssetKind kind : KIND_OPTIONS) {
+        for (const AssetKind kind : ASSET_KIND_FILTER_OPTIONS) {
             const bool selected = !filter.anyKind && filter.kind == kind;
             labelScratch = std::string(assetKindLabel(kind));
             ImGui::PushID(static_cast<int>(kind));
@@ -1178,8 +1213,13 @@ void AssetBrowserPanel::applyPending() {
             if (action.path == "all") {
                 filter.anyKind = true;
             } else if (!action.path.empty()) {
-                // A single digit, 0-5 -- static_cast<int>(AssetKind) (§D-7's PendingAction shape).
+                // A single digit, 0-6 -- static_cast<int>(AssetKind) (§D-7's PendingAction shape).
                 // No std::stoi: the no-exceptions rule (docs/04) extends to this control-flow path too.
+                //
+                // THE CEILING, written down at task 3.4.2 rather than discovered at kind eleven: this
+                // encoding BREAKS SILENTLY at a TENTH enumerator. std::to_string(10) is "10" and the
+                // line below reads path[0] only, so kind 10 would decode as kind 1 -- a wrong filter,
+                // no error, no red test. A tenth AssetKind must widen both halves together.
                 filter.anyKind = false;
                 filter.kind = static_cast<AssetKind>(action.path[0] - '0');
             }
@@ -1208,6 +1248,13 @@ void AssetBrowserPanel::applyPending() {
             // records a request; consumption happens outside the draw walk, in EditorApp's
             // reconcile). The one mutation path INV-5 names is unchanged.
             watchToggleRequest = action.path == "1";
+            break;
+        case ActionKind::CreateMaterial:
+            // task 3.4.2 (D9/AC-5): RECORDS the target directory and NOTHING else -- no listing, no
+            // write, no selection change. `currentDir` is read HERE rather than at the record() call
+            // site because applyPending() is the one place that sees committed model state: a Navigate
+            // recorded in the same frame is resolved by this same switch, and the last writer wins.
+            createMaterialRequest = currentDir;
             break;
     }
 }
@@ -1385,6 +1432,10 @@ void AssetBrowserPanel::requestDeleteOrphanClick(std::string relativeMetaPath) {
 void AssetBrowserPanel::requestSelectEntry(std::string relativePath) {
     record(ActionKind::SelectEntry, std::move(relativePath));
 }
+// task 3.4.2: the requestReimportAll() shape verbatim -- record(ActionKind::CreateMaterial, {}) is
+// exactly what drawHeader() calls when the New Material button returns true, so the request travels
+// the SAME applyPending() arm and picks up the SAME currentDir a click would.
+void AssetBrowserPanel::requestCreateMaterial() noexcept { record(ActionKind::CreateMaterial, {}); }
 
 // ---- the frame ---------------------------------------------------------------------------------
 void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context is IGNORED

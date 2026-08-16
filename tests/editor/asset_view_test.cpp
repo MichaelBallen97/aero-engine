@@ -18,11 +18,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <ostream>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
+using engine::editor::ASSET_KIND_FILTER_OPTIONS;
 using engine::editor::AssetFilter;
 using engine::editor::AssetKind;
 using engine::editor::assetKindLabel;
@@ -122,7 +124,8 @@ TEST_CASE("asset view: classifyAssetKind is total (AV14)") {
     for (const std::string_view name : UNKNOWNS) {
         const AssetKind kind = classifyAssetKind(name, false);
         CHECK((kind == AssetKind::Folder || kind == AssetKind::Texture || kind == AssetKind::Model ||
-               kind == AssetKind::Audio || kind == AssetKind::Text || kind == AssetKind::Unknown));
+               kind == AssetKind::Audio || kind == AssetKind::Text || kind == AssetKind::Material ||
+               kind == AssetKind::Unknown));
     }
 }
 
@@ -186,8 +189,9 @@ TEST_CASE("asset view: iconLabelFor is always <= 4 chars and ASCII uppercase (AV
 }
 
 TEST_CASE("asset view: iconColorFor is total and stable across calls (AV25)") {
-    constexpr std::array<AssetKind, 6> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
-                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
+    constexpr std::array<AssetKind, 7> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
+                                             AssetKind::Unknown};
     for (const AssetKind kind : KINDS) {
         const auto c1 = iconColorFor(kind);
         const auto c2 = iconColorFor(kind);
@@ -199,8 +203,9 @@ TEST_CASE("asset view: iconColorFor is total and stable across calls (AV25)") {
 }
 
 TEST_CASE("asset view: iconColorFor gives distinct colours to every kind (AV26)") {
-    constexpr std::array<AssetKind, 6> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
-                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
+    constexpr std::array<AssetKind, 7> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
+                                             AssetKind::Unknown};
     for (std::size_t i = 0; i < KINDS.size(); ++i) {
         for (std::size_t j = i + 1; j < KINDS.size(); ++j) {
             const auto a = iconColorFor(KINDS[i]);
@@ -213,8 +218,9 @@ TEST_CASE("asset view: iconColorFor gives distinct colours to every kind (AV26)"
 }
 
 TEST_CASE("asset view: assetKindLabel is total and non-empty (AV27)") {
-    constexpr std::array<AssetKind, 6> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
-                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Unknown};
+    constexpr std::array<AssetKind, 7> KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+                                             AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
+                                             AssetKind::Unknown};
     for (const AssetKind kind : KINDS) {
         CHECK_FALSE(assetKindLabel(kind).empty());
     }
@@ -429,4 +435,102 @@ TEST_CASE(
     filter.anyKind = false;
     filter.kind = AssetKind::Texture;
     CHECK(filterEntriesByKind(std::span<const FileEntry>(entries), filter).empty());
+}
+
+// ---- task 3.4.2: .aeromat becomes a first-class kind (AV48-AV52, AC-1/AC-3) ----------------------
+
+TEST_CASE("asset view: .aeromat classifies Material, in any ASCII case (AV48, AC-1, seed S1)") {
+    CHECK((classifyAssetKind("wood.aeromat", false) == AssetKind::Material));
+    CHECK((classifyAssetKind("WOOD.AEROMAT", false) == AssetKind::Material));
+    CHECK((classifyAssetKind("Wood.AeroMat", false) == AssetKind::Material));
+    // A DIRECTORY called "materials.aeromat" is still a Folder -- the isDirectory arm wins first.
+    CHECK((classifyAssetKind("materials.aeromat", true) == AssetKind::Folder));
+}
+
+TEST_CASE("asset view: .mtl STAYS Unknown -- the 3.2.3 fact, re-pinned (AV49)") {
+    // Recorded at task 3.2.3: a Wavefront material library is a CLAIMED IMPORTABLE FILE but not a
+    // browser kind, so it is invisible while the kind filter is set to Model. This task touches the
+    // same table, so the fact is pinned here rather than left to be re-derived.
+    CHECK((classifyAssetKind("chair.mtl", false) == AssetKind::Unknown));
+    CHECK((classifyAssetKind("chair.aeromat", false) == AssetKind::Material));
+}
+
+TEST_CASE("asset view: assetKindLabel answers \"Material\" (AV50, AC-1)") {
+    CHECK(assetKindLabel(AssetKind::Material) == std::string_view("Material"));
+    CHECK(assetKindLabel(AssetKind::Unknown) == std::string_view("Unknown"));
+}
+
+TEST_CASE("asset view: the icon LABEL for .aeromat is unchanged at \"AERT\" (AV51)") {
+    // iconLabelFor is extension-derived and kind-INDEPENDENT: seven characters take the >4 branch, so
+    // "aeromat" becomes ext[0..2] + ext.back(). AC-1 moves the COLOUR, never the label -- pinned so a
+    // future label change is visible rather than surprising.
+    CHECK(iconLabelFor("x.aeromat") == std::string("AERT"));
+}
+
+TEST_CASE("asset view: .aeromat is NOT thumbnail-decodable (AV52, AC-3)") {
+    // isThumbnailDecodable is deliberately untouched by this task: the two tables are separate by
+    // recorded design, and a rendered material-ball thumbnail is a named deferral with no owner.
+    CHECK_FALSE(isThumbnailDecodable("x.aeromat"));
+    CHECK_FALSE(isThumbnailDecodable("X.AEROMAT"));
+}
+
+TEST_CASE("asset view: the kind-filter option list is EVERY kind, in enum order (AV53, seed S2)") {
+    // THE CLOSURE FOR A MEASURED GAP. This list used to be a `constexpr std::array` local inside
+    // AssetBrowserPanel::drawHeader, where no tier in this tree could reach it: seed S2 dropped
+    // AssetKind::Material from it -- making materials unfilterable in the only UI that offers the
+    // filter -- and all 1570 shell cases and all 119 GPU cases stayed green. No runtime tier can read
+    // a combo's contents, so the fix was to delete the second copy rather than to test the panel: the
+    // list now lives beside the enum and this case is its pin.
+    constexpr std::array<AssetKind, 7> EXPECTED{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
+                                                AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
+                                                AssetKind::Unknown};
+    REQUIRE(ASSET_KIND_FILTER_OPTIONS.size() == EXPECTED.size());
+    for (std::size_t i = 0; i < EXPECTED.size(); ++i) {
+        CAPTURE(i);
+        CHECK((ASSET_KIND_FILTER_OPTIONS[i] == EXPECTED[i]));
+    }
+    // ENUM ORDER is load-bearing, not cosmetic: the filter action encodes the kind as
+    // static_cast<int>(kind) and decodes it as path[0] - '0', so a list whose order disagrees with the
+    // enum would still round-trip -- it is the COMBO that would show the wrong name beside each row.
+    for (std::size_t i = 0; i < ASSET_KIND_FILTER_OPTIONS.size(); ++i) {
+        CAPTURE(i);
+        CHECK(static_cast<std::size_t>(ASSET_KIND_FILTER_OPTIONS[i]) == i);
+        CHECK_FALSE(assetKindLabel(ASSET_KIND_FILTER_OPTIONS[i]).empty());
+    }
+}
+
+TEST_CASE("asset view: the Material kind FILTERS, both predicate and wiring (AV54, task 3.4.2 AC-2)") {
+    // AC-2 was covered only TRANSITIVELY until the code-review round: AV53 pins that Material is in the
+    // combo's option list and the classification cases pin that a .aeromat classifies Material, but
+    // nothing drove the two functions that actually decide what a chosen kind SHOWS. Those are the
+    // filter's whole implementation, and both take AssetKind by value -- so a new enumerator is exactly
+    // the input neither had ever been given.
+    CHECK(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Material, .anyKind = false}));
+    CHECK_FALSE(matchesFilter("wood.png", false, AssetFilter{.kind = AssetKind::Material, .anyKind = false}));
+    // A DIRECTORY only ever matches Folder, whatever it is called -- matchesFilter's own rule, restated
+    // for the new kind because "a folder named like a material" is the case that would break it.
+    CHECK_FALSE(matchesFilter("brass.aeromat", true, AssetFilter{.kind = AssetKind::Material, .anyKind = false}));
+    // And a .aeromat is NOT swept up by any other specific kind -- Unknown included, which is where it
+    // used to land and where a reverted classification arm would put it back.
+    CHECK_FALSE(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Unknown, .anyKind = false}));
+    CHECK_FALSE(matchesFilter("brass.aeromat", false, AssetFilter{.kind = AssetKind::Texture, .anyKind = false}));
+    // The query half still composes: the kind narrows, the substring narrows further, and both apply.
+    CHECK(matchesFilter("brass.aeromat", false,
+                        AssetFilter{.query = "bra", .kind = AssetKind::Material, .anyKind = false}));
+    CHECK_FALSE(matchesFilter("brass.aeromat", false,
+                              AssetFilter{.query = "steel", .kind = AssetKind::Material, .anyKind = false}));
+
+    // The WIRING (the code-review BLOCKING-2 that AV43-AV46 exist for), driven with the new kind: the
+    // panel's non-search path filters a listing through this, in the listing's own order.
+    std::vector<FileEntry> entries(4);
+    entries[0].name = "brass.aeromat";
+    entries[1].name = "materials";
+    entries[1].isDirectory = true;  // classifies Folder, never Material
+    entries[2].name = "wood.png";
+    entries[3].name = "steel.AEROMAT";  // case-folded, like every other extension table
+    const AssetFilter filter{.kind = AssetKind::Material, .anyKind = false};
+    const std::vector<std::size_t> indices = filterEntriesByKind(std::span<const FileEntry>(entries), filter);
+    REQUIRE(indices.size() == 2);
+    CHECK(indices[0] == 0);
+    CHECK(indices[1] == 3);
 }

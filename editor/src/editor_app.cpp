@@ -9,6 +9,9 @@
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/material_edit.hpp>  // task 3.4.2: uniqueMaterialFileName -- New Material's
+                                          // one naming rule, PURE and shared with the ME tier
+#include <aero/editor/project_files.hpp>  // task 3.4.2: listDirectory/joinRelative, for the same drain
 #include <aero/editor/scene_session.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
@@ -27,6 +30,8 @@
                                      // shared_ptr/unique_ptr-completeness precedent above, applied to a
                                      // registry-owned panel instead
 #include "inspector_panel.hpp"
+#include "material_panel.hpp"  // task 3.4.2 -- MaterialPanel's definition, the ImportDetailsPanel
+                               // precedent one panel over
 #include "project_settings_panel.hpp"
 #include "shell_ui.hpp"
 #include "viewport_panel.hpp"
@@ -348,6 +353,18 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         // free-floating. Default VISIBLE: a default-hidden panel makes this task's whole deliverable
         // something a user must hunt for in the View menu.
         app.importDetailsPanel = app.registry.emplace<ImportDetailsPanel>();
+        // task 3.4.2 (D2): the EIGHTH panel, registered LAST so no existing panel's registration index
+        // shifts and the Inspector keeps the selected Right-dock tab by default. Registered in
+        // create(), BEFORE the first tick() -- exactly the condition placeUnplacedPanels requires, so a
+        // restored layout docks it beside the Inspector instead of free-floating (the 3.2.1
+        // precedent). Default VISIBLE, for 3.2.1's reason: a default-hidden panel makes this task's
+        // whole deliverable something a user must hunt for in the View menu.
+        // The device is passed AT CONSTRUCTION (3.1.3's A17, a third application): the preview owns a
+        // RenderTarget and a ForwardRenderer of its own, and unlike the project root a device can never
+        // change during a session, so there is nothing to reconcile. Nothing is CREATED here -- the
+        // preview is lazy and latched, so a session that never opens a material allocates no GPU
+        // object at all (A-9/R2).
+        app.materialPanel = app.registry.emplace<MaterialPanel>(device);
     }
 
     // task 2.6.1: `&& !app.project.isOpen()` is MANDATORY, not defensive. Opening a project above went
@@ -471,6 +488,12 @@ bool EditorApp::tick() {
         // named local is MANDATORY, not style: project.root() returns a std::string_view bound to the
         // live ProjectSession (2.6.1's FileDialogHost::projectRoot lesson).
         const std::string projectRootForScan = std::string(project.root());
+        // task 3.4.2 (AC-15/the INV-6 family): captured HERE, before `wanted` is moved into rescan()
+        // below, so the material session resets in the SAME operation that reconciles the browser root
+        // rather than through a second path that half-performs a swap. True exactly when the assets
+        // root the database is holding is not the one the open project names -- which is a project
+        // swap, and, on the very first tick with a project open, a reset of an already-empty session.
+        const bool assetsRootChanged = assetDatabase.root() != wanted;
         // task 3.1.4: the watcher's roots are reconciled from the SAME `wanted` string, in the SAME
         // block -- the FOURTH occupant (2.6.1's panel root, 3.1.1's database, 3.1.3's report, 3.1.4's
         // watcher). 3.1.2's D9 two-parameter rule applies here exactly as it does to rescan():
@@ -517,7 +540,21 @@ bool EditorApp::tick() {
             // delete and the rescan that observes it are ONE pass, not two ticks apart (seed S28).
             orphanHandled = true;
         }
-        const bool refresh = assetRescanRequested || panelRefresh || orphanHandled || watchFired;  // task 3.1.4
+        // task 3.4.2 (D9/AC-5): a FOURTH one-shot in this block, drained as its OWN statement for the
+        // identical F9 reason -- an engaged optional carrying "" (the assets root) is a legitimate
+        // request, which is exactly why the channel is an optional and not a string.
+        std::optional<std::string> createMaterialDir;
+        if (assetBrowserPanel != nullptr) {
+            createMaterialDir = assetBrowserPanel->takeCreateMaterialRequest();
+        }
+        bool materialCreated = false;
+        if (createMaterialDir.has_value()) {
+            // The orphan-delete posture verbatim: the write happens BEFORE the refresh test below, so
+            // the new file and the scan that mints its `.meta` are ONE pass rather than two ticks apart.
+            materialCreated = createMaterialAsset(*createMaterialDir);
+        }
+        const bool refresh =
+            assetRescanRequested || panelRefresh || orphanHandled || watchFired || materialCreated;  // task 3.1.4
         const bool reimport = assetReimportRequested || panelReimport;
         assetRescanRequested = false;
         assetReimportRequested = false;
@@ -529,7 +566,10 @@ bool EditorApp::tick() {
             // in before phase 4 ever ran (AssetDatabase's own comments on the method and the flag).
             assetDatabase.invalidateCache();
         }
-        if (assetDatabase.root() != wanted || refresh || reimport) {
+        if (assetsRootChanged) {
+            materialSession.resetForProjectSwap();  // task 3.4.2 -- see the capture above
+        }
+        if (assetsRootChanged || refresh || reimport) {
             // task 3.1.2: rescan now takes the project root and the assets root as two SEPARATE
             // parameters (D-9) -- <assetsRoot>/.. is wrong the moment paths.assets is nested or ".",
             // and deriving it would put the cache inside the user's own asset tree (A7/AC-38). The
@@ -696,6 +736,66 @@ bool EditorApp::tick() {
             }
             lastBlenderSessionState = blenderSessionState;
         }
+        // task 3.4.2 (D3/A-4): the SIXTH occupant of this block -- 2.6.1's panel root, 3.1.1's
+        // database, 3.1.3's report, 3.1.4's watcher, 3.2.1's import session, and now the material
+        // session. EXTEND, NEVER TWIN: 3.1.4's seed S15 reddened TWELVE tier-0 cases by skipping ONE
+        // statement in here, and this block is now the whole of the editor's per-frame reconciliation.
+        //
+        // STICKY, unlike the import session above, and the asymmetry is D3 rather than an oversight:
+        // MaterialSession::reconcile retargets ONLY on a different, existing *.aeromat, so clicking
+        // through the browser to find a texture to reference cannot tear down an edit session.
+        //
+        // assetDatabase.root() rather than project.assetsRoot(): the two are the SAME string by
+        // construction (INV-A9/A16 -- both are reconciled from `wanted` in this very block), and the
+        // database's accessor returns a const reference, so nothing here can bind a string_view to a
+        // by-value temporary (2.6.1's FileDialogHost::projectRoot lesson). It is also the more correct
+        // of the two: the session resolves paths that are relative to the root the RECORDS are
+        // relative to.
+        if (assetBrowserPanel != nullptr) {
+            materialSession.reconcile(assetBrowserPanel->selection(), assetDatabase.generation(), assetDatabase,
+                                      assetDatabase.root());
+        }
+        // F9, a SEVENTH application: EVERY one-shot is drained as its OWN statement, unconditionally,
+        // BEFORE it is inspected. A `panelX || editorX` expression would short-circuit past a drain
+        // and strand the request until the next frame -- I30 is that bug's mechanical proof.
+        std::optional<MaterialDocument> panelMaterialEdit;
+        bool panelMaterialApply = false;
+        bool panelMaterialRevert = false;
+        if (materialPanel != nullptr) {
+            panelMaterialEdit = materialPanel->takePendingDocument();
+            panelMaterialApply = materialPanel->takeApplyRequest();
+            panelMaterialRevert = materialPanel->takeRevertRequest();
+        }
+        std::optional<MaterialDocument> materialEdit = std::move(requestedMaterialDocument);
+        requestedMaterialDocument.reset();
+        const bool materialApply = requestedMaterialApply;
+        requestedMaterialApply = false;
+        const bool materialRevert = requestedMaterialRevert;
+        requestedMaterialRevert = false;
+        // The PANEL's edit first, then the request seam's: one pending slot, last writer wins, and the
+        // seam is what a test drives, so it must be able to override what a widget happened to record.
+        if (panelMaterialEdit.has_value()) {
+            materialSession.edit(*panelMaterialEdit);
+        }
+        if (materialEdit.has_value()) {
+            materialSession.edit(*materialEdit);
+        }
+        if (panelMaterialApply || materialApply) {
+            materialSession.requestApply();
+        }
+        if (panelMaterialRevert || materialRevert) {
+            materialSession.requestRevert();
+        }
+        materialSession.service(assetDatabase, assetDatabase.root());
+        // Reconciled BEFORE drawShellUi, unlike ImportDetailsPanel's own setSession (which runs in the
+        // post-draw slot): the material panel has no service pass of its own to run afterwards, so
+        // there is nothing to be gained by making its first drawn frame see a null pointer. The
+        // database is reconciled the same way and for the 3.1.1 D13 reason -- a POINTER, refreshed
+        // every tick, never a reference member bound to a pre-move address.
+        if (materialPanel != nullptr) {
+            materialPanel->setSession(&materialSession);
+            materialPanel->setDatabase(&assetDatabase);
+        }
     }
     if (window != nullptr) {
         std::string title = session.windowTitle(!commandStack.isClean(), project.name());
@@ -766,6 +866,25 @@ bool EditorApp::tick() {
     importSession.service(project.assetsRoot(), assetDatabase, frameClock.deltaSeconds());
     if (importDetailsPanel != nullptr) {
         importDetailsPanel->setSession(&importSession);
+    }
+    // task 3.4.2 (D6/INV-5): the FOURTH occupant of this slot -- renderScene, serviceThumbnails, the
+    // import session, and now the material preview. OUTSIDE the ImGui draw walk and BEFORE endFrame,
+    // so our command buffer is submitted before ImGui's and the preview's colour texture is
+    // sampler-ready by the time ImGui samples it (render_target.hpp's own synchronisation note).
+    //
+    // NEVER CALL THIS FROM onDraw(). Every preview GPU create and every preview GPU destroy lives
+    // inside it -- with ONE deliberate exception the code-review round established: the colour target's
+    // own reallocation, which must happen in the draw walk, before the handle ImGui records is read
+    // (MaterialPreview::prepareFrame states why). SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan
+    // and D3D12 while deferring only on Metal -- the 3.1.3 BLOCKING-1 class, deterministic on two
+    // platforms and invisible on the one with a completed validation pass. I95 pins this call site's
+    // position in this file's own source text; no runtime tier here can see the general-case violation.
+    //
+    // assetDatabase.root() rather than project.assetsRoot(), for the reconcile block's own reason: the
+    // two are the same string by construction and the accessor returns a const reference, so nothing
+    // binds a string_view to a by-value temporary.
+    if (materialPanel != nullptr) {
+        materialPanel->servicePreview(materialSession, assetDatabase, assetDatabase.root(), frameClock.deltaSeconds());
     }
     presented = layer.endFrame(config.clearColor);
     if (fileFlow.quitConfirmed) {
@@ -903,6 +1022,55 @@ std::size_t EditorApp::blenderExportRunCount() const noexcept { return importSes
 std::size_t EditorApp::blenderProbeRunCount() const noexcept { return importSession.blender().probeRunCount(); }
 std::string_view EditorApp::blenderBinaryPath() const noexcept { return importSession.blender().binaryPath(); }
 bool EditorApp::blenderLogRefusedByCap() const noexcept { return importSession.blender().logRefusedByCap(); }
+
+// task 3.4.2: the request seams and the black-box reads. Each seam records EXACTLY what the panel's
+// own control records and is drained by the next tick()'s reconcile block -- never applied here.
+// task 3.4.2 (D9/AC-5): the requestAssetBrowserReimportAll() forward verbatim -- it queues the SAME
+// ActionKind::CreateMaterial the New Material button queues, so the request picks up the panel's own
+// committed currentDir in applyPending() and the tick() drain cannot tell a seam from a click.
+void EditorApp::requestAssetBrowserCreateMaterial() noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestCreateMaterial();
+    }
+}
+
+void EditorApp::requestMaterialDocument(MaterialDocument document) { requestedMaterialDocument = std::move(document); }
+void EditorApp::requestMaterialApply() noexcept { requestedMaterialApply = true; }
+void EditorApp::requestMaterialRevert() noexcept { requestedMaterialRevert = true; }
+std::string_view EditorApp::materialTargetPath() const noexcept { return materialSession.targetPath(); }
+bool EditorApp::materialParseOk() const noexcept { return materialSession.document() != nullptr; }
+bool EditorApp::materialDirty() const noexcept { return materialSession.dirty(); }
+const MaterialDocument* EditorApp::materialDocument() const noexcept { return materialSession.document(); }
+bool EditorApp::materialPreviewAvailable() const noexcept {
+    return materialPanel != nullptr && materialPanel->previewAvailable();
+}
+std::size_t EditorApp::materialPreviewFrameCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewFrameCount() : 0;
+}
+bool EditorApp::materialPreviewBlendDrawnOpaque() const noexcept {
+    return materialPanel != nullptr && materialPanel->previewBlendDrawnOpaque();
+}
+std::size_t EditorApp::materialPreviewTextureCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewTextureCount() : 0;
+}
+std::size_t EditorApp::materialPreviewTextureLoadAttempts() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewTextureLoadAttempts() : 0;
+}
+std::size_t EditorApp::materialPreviewImageCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewImageCount() : 0;
+}
+std::size_t EditorApp::materialPreviewStaleImageCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewStaleImageCount() : 0;
+}
+std::size_t EditorApp::materialPreviewUvSetWarnCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewUvSetWarnCount() : 0;
+}
+std::uint32_t EditorApp::materialPreviewTextureWidth() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewTextureWidth() : 0;
+}
+std::uint32_t EditorApp::materialPreviewTextureHeight() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewTextureHeight() : 0;
+}
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }
@@ -1047,6 +1215,73 @@ void EditorApp::applyBlenderOverride(std::string_view absolutePathUtf8) {
         AERO_LOG_WARN("editor: could not save the Blender path to '{}' -- {}", toolPrefsPath, reason);
     }
     resolveBlender();  // setOverridePath resets the service to Unknown; re-resolve against the new value
+}
+
+// task 3.4.2 (D9/AC-5/AC-6): New Material's whole drain. Called from tick()'s reconcile block and
+// nowhere else, so nothing here runs inside a draw walk. Every failure arm returns false having logged
+// exactly ONE WARN and written nothing -- and "written nothing" is literal: writeTextFileAtomic writes
+// through a `.aero-tmp` sibling and removes it on either failure path, so there is no partial state and
+// nothing is ever deleted (the D7/INV-P4 family).
+bool EditorApp::createMaterialAsset(std::string_view directoryRel) {
+    if (assetBrowserPanel == nullptr) {
+        return false;
+    }
+    // The PANEL's root, not project.assetsRoot(): `directoryRel` is relative to the root the panel was
+    // showing when the button was pressed, and the two can differ for exactly one tick after a project
+    // swap (the panel's root is reconciled later in this same block). An empty root is the
+    // blenderExportDir() lesson one subsystem over -- concatenating onto it would name
+    // "/NewMaterial.aeromat", an absolute path at the filesystem root.
+    const std::string& assetsRoot = assetBrowserPanel->root();
+    if (assetsRoot.empty()) {
+        AERO_LOG_WARN("editor: cannot create a material -- no project is open");
+        return false;
+    }
+    // The listing is REQUIRED, not an optimisation: saveMaterialFile overwrites whatever is at the path
+    // it is given, so a directory we cannot enumerate is a directory in which we cannot prove a name is
+    // unused. Refusing is the only safe answer. Hidden entries are included -- a hidden file still owns
+    // its name.
+    //
+    // listingIsComplete, NOT `status == Ok` -- the code-review round's BLOCKING-2. A listing that hit
+    // MAX_ENTRIES_PER_DIRECTORY / MAX_ENTRIES_EXAMINED, or whose iterator failed part way through (the
+    // antivirus-lock and cloud-sync case 3.1.4's D5 records as real), keeps ScanStatus::Ok and hands
+    // back a PREFIX. Trusting that prefix means uniqueMaterialFileName returns a name that already
+    // exists and writeTextFileAtomic renames the canonical default document over an authored material:
+    // no warning, no undo, since D4 keeps materials off the CommandStack. The refusal is the same
+    // one-WARN-no-file arm either way, because "we could not read the folder" and "we could not read
+    // ALL of the folder" have the same consequence here.
+    const DirectoryListing listing = listDirectory(assetsRoot, directoryRel, true);
+    if (!listingIsComplete(listing)) {
+        AERO_LOG_WARN("editor: cannot create a material in '{}' -- the folder could not be read in full",
+                      directoryRel.empty() ? std::string_view("<assets root>") : directoryRel);
+        return false;
+    }
+    std::vector<std::string_view> taken;
+    taken.reserve(listing.entries.size());
+    for (const FileEntry& entry : listing.entries) {
+        taken.emplace_back(entry.name);
+    }
+    const std::string fileName = uniqueMaterialFileName("NewMaterial", taken);
+    if (fileName.empty()) {
+        AERO_LOG_WARN("editor: cannot create a material in '{}' -- no unused name after {} attempts",
+                      directoryRel.empty() ? std::string_view("<assets root>") : directoryRel,
+                      MAX_NEW_MATERIAL_ATTEMPTS);
+        return false;
+    }
+    const std::string relativePath = joinRelative(directoryRel, fileName);
+    // A NAMED LOCAL, exactly as the amended INV-A1 requires of every path handed to the one write path.
+    const std::string materialAbsolutePath = assetsRoot + "/" + relativePath;
+    // material_session.cpp's saveMaterialFile -- the ONE function in this tree that writes .aeromat
+    // bytes (D12). NOT a second writeTextFileAtomic call site: Apply and Create are two logical writes
+    // through ONE physical one, which is what keeps the invariant a grep.
+    if (const std::string error = saveMaterialFile(materialAbsolutePath, MaterialDocument{}); !error.empty()) {
+        AERO_LOG_WARN("editor: could not create '{}' -- {}", relativePath, error);
+        return false;
+    }
+    AERO_LOG_INFO("editor: created material '{}'", relativePath);
+    // The SAME action a real click on the new row records, so the material session's own sticky
+    // reconcile retargets to it next tick and the Material panel opens on it (AC-5's last clause).
+    assetBrowserPanel->requestSelectEntry(relativePath);
+    return true;
 }
 
 // code-review BLOCKING-1 test seam: stores the id for tick()'s ShellUiState construction to carry --

@@ -2669,6 +2669,27 @@ TEST_CASE(
     CHECK(modelImporterIdentity("statue.blend") == ImporterIdentity{});
 }
 
+TEST_CASE("model_import: .aeromat is claimed by NO importer (MI154, task 3.4.2 AC-4)") {
+    // The MI133 shape applied to task 3.4.2's new extension, and the reason is the same one stated
+    // there: the importer tables and asset_view's kind table are SEPARATE by recorded design, so a
+    // format newly named in one must be pinned as absent from the other or a future edit promotes it
+    // silently. A .aeromat IS a first-class browser kind (AssetKind::Material) and is NOT a model
+    // source: it is an artifact this editor WRITES, so handing it to importModel would report an import
+    // failure on every scan of every project that contains one.
+    CHECK_FALSE(isImportableModelName("brass.aeromat"));
+    // The SECOND fact, which breaks independently (MI133's half 2, verbatim): today this answers false
+    // only BECAUSE the table does not claim .aeromat, so the two are coupled in one direction only.
+    CHECK_FALSE(modelImporterNeedsExternalBuffers("brass.aeromat"));
+    // And nothing probes one, so its import-cache entry stays at ("", 0) rather than oscillating.
+    CHECK(modelImporterIdentity("brass.aeromat") == ImporterIdentity{});
+
+    // The suffix test is on the FULL name here too (MI21's rule): a .aeromat is not made importable by
+    // being called something else first, and a name that merely ENDS in a claimed extension after
+    // ".aeromat" is claimed by that extension, not refused by this one.
+    CHECK_FALSE(isImportableModelName("archive.tar.aeromat"));
+    CHECK(isImportableModelName("brass.aeromat.obj"));
+}
+
 // ---- task 3.2.5, step 2: the two PURE helpers ------------------------------------------------------
 // Both are driven entirely from string literals -- no disk, no Assimp, no locale. scanPlyTextureFiles
 // IS the .ply Structure pass, and scanColladaAssetSpace IS where .dae's SourceSpace comes from, so

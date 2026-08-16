@@ -7293,3 +7293,489 @@ by observation, which no automated tier here can do. Row 3's delete-a-slot probe
 Still open: the **Windows and Linux rows**, which join the standing platform-validation debt. CI has
 run the T1 upload cases on both, but no on-hardware pass exists for either, and the Windows one
 carries the D3D12 alignment rule's on-hardware confirmation.
+
+---
+
+### Task 3.4.2 — Material inspector editing (Epic 3.4)
+
+**Branch:** `feat/3.4.2-material-inspector-editing`, cut from `main @ cb86f49`. **Fourteen green
+commits** — measured with `git rev-list --count main..HEAD`, tip `2ac77b2` — nine for the build
+order, one closing the sabotage matrix's two gaps, one closing a reduced-configuration failure that
+only Step 10 could find, and three closing the code-review round, plus this documentation commit.
+Not yet pushed, not yet merged; the twelve-row macOS validation pass comes after the merge, and
+**seven declared sabotage seeds have no automated witness anywhere in this project** — six of them are
+covered by that pass and the seventh, S26, by no pass this machine can run at all.
+
+The editor learns what a material is. 3.4.1 shipped the whole material stack and deliberately left
+`/editor` byte-identical to `main`, so at the branch point an `.aeromat` classified `Unknown`,
+selecting one told the Import Details panel that no importer claims the file type, and editing one
+meant hand-authoring JSON in another program. This task closes that loop: a browser kind, an eighth
+panel, a session with explicit Apply/Revert, a live 3D preview that tracks **unapplied** edits, and a
+New Material button — which is what makes the epic's own sentence, *"materials are edited, not
+hand-authored JSON"*, true rather than aspirational.
+
+#### What shipped — four editor pairs, bottom-up, plus one engine seam
+
+**`material_edit.{hpp,cpp}` — PUBLIC and pure.** The document→render bridge `docs/09` §11.4 declares
+normative and 3.4.1's D12 left to its second consumer: `materialParamsFor` (nine scalars plus the
+alpha tri-state to `render::MaterialParams`), `documentSlotAt` in both directions plus
+`materialSlotLabel` (the five slots in `material.hpp`'s own binding order), `materialAddressModeFor`
+/ `materialFilterFor` / `materialSamplerDescFor` (the normative token→`rhi::SamplerDesc` table, with
+`mipFilter: none` spelled as the clamp-to-base idiom — `MipmapMode::Nearest` **and** `maxLod 0`,
+the one row that is not a rename), `materialSlotIsSrgb` (**composed from**
+`render::defaultTextureKindForSlot`, never restated beside it — 3.4.1's deleted five-entry table is
+the reason), and `uniqueMaterialFileName`. No ImGui, no `<filesystem>`, no GPU call, no logging;
+every function is provable from a `MaterialDocument` literal. It also discharges the obligation
+`material_format.hpp:27-30` assigned to this task **by name**: `ME25`–`ME28` assert all four format
+enums against `ImportedMaterial`'s value sets, in both directions, in the one tier where the golden
+rule allows both types to be named at once.
+
+**`material_session.{hpp,cpp}` — PUBLIC, GPU-free and ImGui-free.** The state machine: sticky
+targeting (only a **different existing** `.aeromat` retargets — browsing for a texture must not tear
+down an edit session, and the browser has one selection), dirty as `sessionCopy != fileCopy` through
+`MaterialDocument`'s defaulted `==`, Apply as validate → write once, atomically, **only when dirty**
+→ adopt, Revert as a re-read, external-change handling (a clean session reloads silently, a dirty one
+keeps its edits behind a notice and Apply still wins), and `resetForProjectSwap`. It holds values and
+takes the `AssetDatabase` **as a parameter per call** — 3.1.1's D13, whose reference-member sabotage
+reddened nothing and is a recorded coverage gap rather than a green light. Two `static_assert`s hold
+the nothrow-move guarantee `EditorApp`'s defaulted move needs (3.1.2's R9, measured on MSVC as
+C2607). `saveMaterialFile` lives here and is the **only** function in this tree that writes
+`.aeromat` bytes.
+
+**`material_panel.{hpp,cpp}` — src-private, the only new ImGui TU.** The **eighth** panel, id and
+title `"Material"`, **FROZEN from the day it ships** because the id is both the ImGui window name and
+the `imgui.ini` settings key; `DockSlot::Right`, so it tabs with the Inspector and Import Details —
+all three answer *"what is the selected thing?"*, one for entities, one for imports, one for
+materials. Registered **last** in `create()`, so no existing panel's registration index shifts and
+`placeUnplacedPanels` docks it on every machine with a restored layout; the View menu row appears
+with **no** menu-code change. Every `docs/09` §11 field is editable, with the name going through
+`inputTextString` (never `imgui_stdlib.h`, which vcpkg ships without ASan and the Windows Debug lane
+cannot link), and **every numeric edit clamps in C++ against the same two ranges
+`material_format.cpp` validates with**, NaN-safely by negated comparison — the widget is never the
+enforcement, because an ImGui slider with a `v_min` still lets a Ctrl+Click type anything at all.
+`alphaCutoff` is drawn only for `mask` and **preserved across mode changes**, because the file stores
+it regardless. Five slot sections carry bound state, a picker over `Texture`-kind records with a
+search line, a Clear, and — while bound — `uvSet` plus five token combos. The panel mutates nothing
+during the draw walk: every control writes into a per-frame **copy** and records one pending
+whole-document edit, drained by `tick()`. This is the house rule's **first application to a panel
+that writes files**, which is why it is restated in the header.
+
+**`material_preview.{hpp,cpp}` — src-private, the only new GPU TU.** Its own `RenderTarget` and its
+own `ForwardRenderer` — not a preference: a `MaterialHandle` is per-`ForwardRenderer` and the
+viewport's is private to its `SceneRenderer`, so there is no handle the two could share. One lit
+sphere under the sample's **copied** orbit and lighting (`PREVIEW_ORBIT_RADIUS 3.0`,
+`HEIGHT 1.2`, `SPEED 0.35` rad/s, the sample's directional and ambient verbatim), quantum 64, capped
+at 512 on the larger axis, lazy and latched behind `AERO_EDITOR_SHADERS` — copied rather than
+re-derived because validation row 3 judges this preview against the sample's known-good look and two
+framings would make that comparison meaningless. **It gives `ForwardRenderer::updateMaterial` its
+first production call site**; 3.4.1 built that seam for this task by name and it had no caller
+outside tests until now. Referenced textures load through the **real** decode → cook → parse → upload
+chain, one per tick, in the post-draw service pass: a `.ktx2` source skips the first two steps
+because a cooked artifact's colour space **is** its format, everything else decodes and cooks in
+memory as RGBA8 with mips in the **slot's** colour space (baseColor and emissive sRGB, the other
+three linear, mirroring `defaultTextureKindForSlot`'s own split). That is the "sRGB from usage"
+derivation 3.3.2 deferred for want of somewhere to put the answer — the slot is the somewhere. The
+cache key is `(guid, contentHash, srgb)`, so one source referenced by two slots with different spaces
+loads twice, and failures are **sticky per key** with one notice row naming the reason.
+
+**`.aeromat` becomes `AssetKind::Material`.** Inserted before `Unknown` so the catch-all stays last,
+which is safe because the kind is presentation-only — nothing anywhere persists its numeric value.
+`MATERIAL_EXTENSIONS` is the fifth kind table (deliberately not folded into `TEXT_EXTENSIONS` even
+though an `.aeromat` is JSON: the browser's job is to say what a file **means**), `assetKindLabel`
+answers `"Material"`, `iconColorFor` answers a warm coral `E0 70 45` distinct from all six existing
+colours, both switches keep **no `default:`**, and `isThumbnailDecodable` and the four importer
+tables are untouched.
+
+**New Material** is one header button beside Refresh and Reimport All. The click records a pending
+request and touches no disk inside the draw walk; `tick()` drains it, lists the panel's current
+directory, builds a unique name, writes the canonical default document through **the same helper
+Apply uses**, sets the refresh flag so the **same** pass mints the `.meta`, and selects the new entry
+so the Material panel targets it immediately. The request channel is an **optional** string rather
+than a string, because the payload is the directory and `""` is the legitimate value for the assets
+root. Every failure arm — no project, an unlistable directory, name exhaustion, a refused write —
+logs exactly **one** WARN and writes nothing.
+
+**`EditorApp`** gains four request seams, four session accessors and nine preview accessors, a
+`MaterialSession` value member, and a `createMaterialAsset` drain. The reconcile block gains a
+**sixth** occupant and the post-draw slot a **fourth**, both **extended, never twinned**, with their
+ordering comments rewritten to enumerate the new one — skipping a single statement in that block once
+reddened twelve tier-0 cases, which is why it is one block.
+
+#### The two approved deviations, and AC-34 is amended
+
+**Deviation 1 — `aero::render` joins `aero_editor_core`'s PUBLIC link group.** The spec's §6.1 says
+*"no link-line change at all"* and D11 says render types stay out of public editor headers; AC-25
+says `material_edit.hpp` is public and carries the document→`MaterialParams` mapping. **Those cannot
+both hold**, and the plan's reconciliation pass is what established it rather than inferred it:
+`aero::scene_render` is PRIVATE on `aero_editor_core`, which for a STATIC library propagates as
+`$<LINK_ONLY:…>` — the archive reaches consumers, `engine/render/include` does **not** — so a public
+editor header naming a render type does not compile, and `aero_editor_shell_test` cannot see the
+header at all. §6.1's clause is simply wrong, and is recorded here as wrong rather than quietly
+sidestepped. The edge is the `aero::assets` precedent from 3.3.1 applied **criterion for criterion**:
+`engine/render/CMakeLists.txt` calls **no `find_package`**; its PUBLIC dependencies are `aero::rhi`
+and `aero::assets`, **both already PUBLIC on this line**, so the edge adds nothing to a consumer's
+compile line but one include root; it carries **no build gate**, so both reduced configurations and
+the ungated tier-0 shell test survive unchanged; and **no `tests/*_boundary_probe.cpp` links
+`aero::editor_core`**, so no probe can be weakened by it. The golden rule is untouched — editor →
+render is the legal direction. The recorded fallback (split the pair, move the params mapping into
+`material_preview.hpp`) was **not** taken; its cost was stated in advance and is worse — AC-26's
+params half loses its tier-0 witness and seed S16 becomes unwitnessable.
+
+**Deviation 2 — the engine gains a warnings channel on `MaterialParseResult`.** This one invokes
+**D11's own escape hatch** (*"if implementation finds a genuinely missing engine seam, that is a
+recorded deviation with its own justification"*), and the seam was genuinely missing. The session
+shipped in Step 3 with an **aggregate** non-canonical notice, decided by comparing the file's bytes
+against the canonical writer's — and that comparison is the one thing that **cannot tell a
+destructive difference from a cosmetic one**. A reordered key and an uppercase GUID are harmless; an
+unknown key is **deleted on save**; only the second is worth interrupting somebody over, and the
+aggregate could say only "something here is not canonical". The alternative to the engine change was
+enumerating `docs/09` §11's key vocabulary a second time in `/editor`, which is a second owner for a
+normative format's key set — the exact silent-skew class 3.3.2's DFD lesson exists to warn about.
+So `MaterialParseResult` gained a `std::vector<std::string> warnings`, **appended after `error`** so
+every pre-existing caller compiles untouched (`samples/phase-3-materials` builds with zero edits),
+and `warnUnknownMaterialKeys` now formats each finding **once** and uses it twice — the
+`AERO_LOG_WARN` keeps its exact wording and adds only its own `material: ` channel prefix, and the
+same sentence is appended to the result, unconditionally on whether any sink is listening. It also
+makes an old comment **assertable**: *"a rejected document reports exactly one error and zero
+warnings"* was a comment because no tier here can read a log line; `MT35`/`MT36`/`MT37` now pin the
+empty case, the five-key case with its source order, and the rejected case at **both** the material
+and the JSON stage. `ME38` asserts the **named** list rather than "not empty" — the non-canonical
+fixture warns about `authoredBy` and nothing else, which is precisely the distinction the aggregate
+could not express.
+
+**AC-34 is therefore amended.** `engine/` is **not** byte-identical to `main`, and the diff is
+exactly two files: `engine/reflect/include/aero/reflect/material_format.hpp` (the appended field,
+plus two comment blocks) and `engine/reflect/src/material_format.cpp` (the sweep formats each
+sentence once and appends it). No format change, no writer change, no version bump, **no link-line
+change** and no dependency. Everything else the AC names — `tools/`, `shaders/`, `runtime/`,
+`samples/`, `vcpkg.json`, `.github/`, `cmake/`, `tests/cooker/determinism.sha256` — is byte-identical,
+verified with `git diff --name-only main...HEAD -- <path>` returning empty for each.
+
+#### The sabotage matrix — 30 seeds, two genuine gaps, both closed structurally
+
+Every seed applied, its presence asserted with `git diff` **before** its verdict was trusted, then
+reverted with `git status` clean. Twenty-eight of the thirty behaved as predicted or better. **Two
+reddened nothing in either full suite**, and both closures were re-proven by re-seeding.
+
+**S2 — the Asset Browser's kind-filter option list left at six**, so materials are unfilterable in the
+one UI that offers the filter. All 1570 shell cases and all 119 GPU cases stayed green, and
+**structurally they had to**: the list was a `constexpr` local inside `drawHeader` and no tier in this
+tree can read a combo's contents. Closed by **deleting the second copy** rather than by testing the
+panel — `ASSET_KIND_FILTER_OPTIONS` now lives in `asset_view.hpp` beside the enum it enumerates, the
+panel is its only reader, and `AV53` pins it as every kind in enum order. Re-seeded **twice**: a
+six-entry list fails the size `REQUIRE`, and a seven-entry list with `Material` replaced by a
+duplicate fails both the element-wise check and the enum-order check, so neither half is vacuous.
+
+**S18 — clamp-then-store dropped from all twelve numeric rows**, leaving the widget as the only
+enforcement. Green everywhere, and again structurally: no tier can Ctrl+Click a slider and type `40`
+into a `[0,1]` field, which is exactly the input AC-18's clamp exists for. Closed with **`I98`**, a
+comment-stripped source pin: every line that **writes** one of the eight bounded document or slot
+fields — the field left of the `=`, so a read of the same field is not mistaken for a write — must
+call a clamp, with a floor of twelve such assignments so a rename cannot make the case vacuous.
+Re-seeded with two clamps removed: two CHECKs red.
+
+**`I97` was hardened from a near-miss rather than a gap.** S21 (the whole create moved into the
+panel's draw walk) **did** redden it — but only through the sole-call-site `REQUIRE`, which is an
+**absence** in `editor_app.cpp`. A seed that **added** a panel-side write while leaving the drain in
+place would have passed, so `asset_browser_panel.cpp` joined the must-not-write list, which also
+states that panel's own read-only contract mechanically for the first time. Re-seeded exactly that
+way: red.
+
+#### Six witness attributions in the plan's §X that the run corrected
+
+Recorded rather than smoothed over, because a matrix whose predictions are never wrong is a matrix
+nobody checked.
+
+1. **S22** (drop `srgb` from the texture-cache key) was predicted to redden `ME48`'s key case plus
+   validation row 4's visual half. It also reddens **`I91` at three assertions** — the case asserts
+   the resident count reaching **two** for one GUID bound to two slots with different spaces, so the
+   defect is a red test rather than a plausible wrong picture.
+2. **S23** (flip the slot colour space) was declared preview-visual with row 4 as its only witness.
+   It **splits**: the *rule* half is caught at tier 0 by **`ME14b`**, which pins `materialSlotIsSrgb`
+   against `defaultTextureKindForSlot`; only the cook-format variant is genuinely preview-visual.
+3. **S24** (drop the `updateMaterial` push) was predicted "weak at `I91`, primary witness row 3". It
+   is caught mechanically by **`I89`**, because the renderer's blend WARN reaches the preview **only**
+   through `updateMaterial` — so the mechanical half has a real witness and only the visual half is
+   declared.
+4. **S25** (render every tick regardless of panel visibility) was predicted to have no runtime tier
+   at all, leaving `I95`'s source pin and row 9's cost blank. **`I90`** catches it: a hidden panel
+   must render nothing, and the frame count says so.
+5. **`ME24` cannot see S13, by construction.** The 36-combination cross product asserts
+   `desc.addressU == materialAddressModeFor(wrap)` and `desc.minFilter == materialFilterFor(min)` —
+   it compares the mapping function **against itself**, so swapping clamp and mirror inside
+   `materialAddressModeFor` leaves every one of its assertions true. `ME15`–`ME17` and `ME22` pin
+   those against **literals** and are what actually redden. The cross product is still worth having
+   for totality and for the `maxLod`/`mipmapMode` half, but it is not a witness for the mapping's
+   content, and the plan's §X row said it was.
+6. **S21's witness was thinner than it read** — see `I97` above. Predicted as "source-text pin + the
+   review round"; it passed only on an absence, which a seed that adds rather than moves would have
+   walked straight past.
+
+#### The declared class, narrowed from eight to seven
+
+The plan declared eight seeds unwitnessable by any automated tier. The run reduced it to **seven**:
+S25 is covered by `I90`, S23's rule half by `ME14b` (only its cook-format half is declared), and
+S24's mechanical half by `I89` (only its visual half is declared). What remains, each named beside
+the validation row that is its **only** coverage anywhere in this project: **S19** (draw
+`alphaCutoff` regardless of mode) → row 6; **S23-cook-format** (a base-colour source cooked linear)
+→ row 4; **S24-visual** (the preview shows creation-time state) → row 3; **S27** (freeze the orbit)
+→ row 3; **S28** (zero the preview light or put the eye at the origin) → row 3; **S29** (ignore
+`doubleSided`) → row 6. **S26 (a GPU destroy moved into the draw walk) is the odd one out and the page
+says so: it has no macOS witness at all**, because SDL queues the container free on Metal and performs
+it immediately on Vulkan and D3D12 — its automated cover is `I96`'s rewritten ordering pin and its
+observational cover is the **Windows and Linux** sections, which is a first for this project's
+validation pages. The macOS page lists the other six beside their rows so the pass is run knowing what
+it alone can catch.
+
+#### The code-review round — eleven gaps, two blocking, all closed
+
+Run over the full branch diff with the local gate green, and it found the most serious defect of the
+task. The closures land in `8ad2343`, `7032675` and `2ac77b2`; the round's own numbering survives in
+the source comments for findings 3, 5, 9 and 11.
+
+**BLOCKING-1 — a real use-after-free on two of the three backends.** The Material panel read the
+preview's colour texture during the draw walk and handed it to `ImGui::Image`; `tick()`'s post-draw
+slot then called `MaterialPreview::service`, whose `renderFrame` **resized** the render target;
+`ImGuiLayer::endFrame` then bound the id recorded in step one. Between the record and the bind,
+`RenderTarget::allocate` had destroyed the old pair. The fix is the viewport's own ordering, which is
+why the viewport has never had this defect: `requestFrame` became `prepareFrame`, applies the resize
+**inside the draw walk immediately before the handle is read**, and returns `false` when there is
+nothing to bind — including the allocation-failure arm, where `allocate()` has already destroyed the
+previous pair and the `Image` must be skipped that **very** frame rather than the next one.
+`renderFrame` no longer resizes at all.
+
+**BLOCKING-2 — New Material accepted an incomplete listing as proof a name was free.** `listDirectory`
+signals incompleteness **three** ways and the create drain checked one: `truncated` (at
+`MAX_ENTRIES_PER_DIRECTORY` 10 000 or `MAX_ENTRIES_EXAMINED` 20 000) and `skipped` (an
+`increment(ec)` failure that terminates the walk part way through — the antivirus-lock and cloud-sync
+case 3.1.4's D5 records as real) both leave `ScanStatus::Ok` and hand back a **prefix**. Acting on a
+prefix is a **silent overwrite**, not a cosmetic miss: `uniqueMaterialFileName` finds
+`NewMaterial.aeromat` absent from the entries it was given, `writeTextFileAtomic` renames the
+canonical default document over the authored material that was really there, and there is no warning
+and no undo, because D4 keeps materials off the `CommandStack`. The function's own comment already
+stated the rule it failed to enforce. The three conditions became one named predicate,
+**`listingIsComplete`**, beside the struct whose fields they read.
+
+**Finding 3 — `AssetRecord::contentHash` was read without its validity guard.** The header says the
+field is meaningless unless the scan actually hashed the file this pass, and an unhashed record keeps
+an **all-zero digest** — the empty file's real value, not a sentinel — so "is it zero?" is not the
+question a caller wants asked. Two live consequences: a dirty session announced *"this file changed
+on disk; Apply will overwrite it"* for a file nobody had touched, re-announcing it every time the
+hash flipped between zero and real; and the preview's `TextureKey` took an all-zero hash, so it
+either served a stale upload indefinitely or re-cooked on every flip. Closed with
+**`assetContentHashUsable`**, declared beside the field whose own comment states the rule rather than
+as a fourth private copy, with `metaWriteFailed` checked **first** because phase 8 never assigns such
+a record a `change` at all and it therefore reads as `UpToDate` to any test on `change` alone.
+
+**Finding 11 — the `.aeromat` read had no cap.** `loadTarget` used `readTextFile`, documented as
+having no cap and materialising the whole file through an `istreambuf_iterator`, so one browser click
+on a huge file named `*.aeromat` was an out-of-memory abort inside a selection-driven reconcile. It
+now reads through `readFileBytes` at `MAX_MATERIAL_FILE_BYTES` (4 MiB), which refuses from
+`file_size` alone and never opens the file, and discriminates the refusal **on the flag, never on the
+message text** (3.1.3's finding 6). `ME50`'s fixture is valid JSON padded with legal whitespace, so
+removing the cap makes it parse cleanly and the case fails on the state rather than on a message.
+
+**Finding 9 — the error state was blitting the previous material's picture.** A render target keeps
+whatever was last rendered into it and `service()` refuses to render with no document, so an error
+message was being drawn over the **last good material's** frame, presented as if it belonged to the
+file that failed to parse. The error state no longer draws the image at all; `I100` pins it.
+
+**Finding 5 — New Material was live-looking with no project open.** The drain already refused an
+empty root with one WARN, but a button whose only feedback is a Console line reads as broken. It is
+now `BeginDisabled`, with the tooltip `AllowWhenDisabled` — or the one tooltip explaining the
+disabled state is the one nobody can see — and naming the target directory when enabled.
+
+**Finding 10 — AC-2 and AC-4 had thin pins.** AC-4 had none at all: `MI154` asserts `.aeromat` is
+claimed by **no importer**, in the `MI133` shape and for the `MI133` reason. AC-2 was covered only
+transitively, so `AV54` drives `matchesFilter` and `filterEntriesByKind` with `AssetKind::Material`
+directly — those two **are** the filter, and neither had ever been handed the new enumerator.
+
+**Plus:** a non-zero `uvSet` now latches **one** WARN, which AC-22 asked for and nothing delivered
+(`render::MaterialTextureSlot` carries no `uvSet` field, so nothing downstream of the preview can say
+it) — the sample's own sentence and the sample's own latch, **counted** rather than flagged so "once"
+is assertable (`I101`); `I96` was rewritten (below); and `I99` closed the coverage gap that let
+BLOCKING-1 ship — no case in the suite had ever changed the preview's requested extent, so
+`RenderTarget::resize` never reallocated anywhere. `I99` drives a real grow and a real shrink — a
+window resize **plus a layout reset**, because resizing the window alone leaves the dock column at
+its absolute width, measured — and asserts the handed-out texture survives every frame. Re-seeding
+the original ordering reddens it **twice**, once per reallocation, and reddens `I96`'s new needle at
+the same time.
+
+#### The two rules the next task most needs
+
+**1 — SDL's container-vs-memory distinction, which `RenderTarget`'s own comment gets half right.**
+`RenderTarget::allocate` says the backend defers the GPU release. That is true of the device
+**memory** and **false of the handle**. Read out of the pinned SDL 3.4.12 tree rather than assumed:
+Vulkan (`SDL_gpu_vulkan.c:7070-7073`) and D3D12 (`SDL_gpu_d3d12.c:1385, :1460`) `SDL_free` the
+container **immediately**, under the comment *"Containers are just client handles, so we can destroy
+immediately"*, while Metal (`SDL_gpu_metal.m:936-944`) pushes it onto `textureContainersToDestroy`
+under the dispose lock. So a texture handed to ImGui and then reallocated is a **heap
+use-after-free on Vulkan and D3D12 and benign on Metal** — invisible to every test this project runs
+locally, under every sanitizer, on the only platform with a completed validation pass. **The rule:
+reallocate where the handle is read — inside the draw walk, immediately before the read — never in
+the service pass afterwards.** `ViewportPanel` already did exactly this, which is why it has never
+had the defect; any future panel embedding a `RenderTarget` inherits the trap and should copy the
+ordering rather than the prose.
+
+**2 — a source-text pin can certify the invariant it is blind to.** `I96` greped for
+`destroyTexture(` and `destroyMaterial(` and required them inside the service function. The destroy
+that mattered was inside `RenderTarget::resize` → `allocate`, which the grep cannot see — so the
+defective code **satisfied** the pin, and the rule the pin encoded ("destroys happen in the service
+pass") was true of it. The pin was rewritten to encode the property that actually matters:
+**ordering against ImGui's consumption** — `resize` belongs to `prepareFrame` and nowhere else, the
+cache destroys stay in the service pass and the destructor, and `material_panel.cpp`'s three preview
+statements must appear in the order prepare, read, `Image`. A source-text pin is only as good as the
+property it names; naming a *function membership* when the property is an *ordering* is how a green
+pin ships a use-after-free.
+
+#### The AC-32 near-miss, and the lesson about reduced-configuration claims
+
+`I88`–`I92` asserted unconditionally that the preview **is** available, which is only true when
+cooked shaders exist. With `-DAERO_SHADER_TOOLS=OFF` there are none, `MaterialPreview` correctly
+latches `Unavailable` in its constructor, and all five cases failed — **115/120, 7 assertions** — so
+AC-32's "both reduced configurations build and their tests stay green" did not hold. **It was found
+by Step 10's fresh reduced configuration, and the earlier probe of that path missed it because it
+built `aero_editor_shell_test` only and never built this target.** The lesson is small and exact: a
+reduced-configuration claim must **name which binaries it ran**, or it is a claim about the subset
+that happened to be built.
+
+The fix gives `aero_editor_imgui_test` an `AERO_SHADER_TOOLS_ENABLED=1` definition inside its own
+`if(AERO_SHADER_TOOLS)` block — the `aero_tests` shape at `tests/CMakeLists.txt:104`, needing a block
+of its own because the target is not defined until `:121`, and because `AERO_EDITOR_SHADERS` is
+PRIVATE to `aero_editor_core` and no test TU can read it. **Both arms assert; neither skips**, because
+a skip would leave AC-32 untested in the only configuration that can test it: the OFF arm asserts the
+preview is unavailable and its frame count stays 0, and — the half that carries the claim — that
+targeting, dirty tracking, editing, Apply/Revert and the bytes on disk behave **identically**. For
+`I91`/`I92` it asserts no texture load is ever **attempted**, which is a stronger statement than "none
+became ready". Only four portions are genuinely unobservable without cooked shaders and each was
+replaced in place rather than dropped. Proven non-vacuous by inverting one assertion in every OFF arm
+at once: exactly five cases red, one assertion each.
+
+#### Files the plan's §F.2 inventory did not name
+
+Four, each forced by a finding rather than by the design:
+
+- **`editor/include/aero/editor/project_files.{hpp,cpp}`** — BLOCKING-2's `listingIsComplete`, with
+  `PF-c6`/`PF-c7` driving every arm from a `DirectoryListing` **value**, so the case that matters
+  needs neither 10 001 files nor an antivirus lock.
+- **`editor/include/aero/editor/asset_meta.{hpp,cpp}`** — finding 3's `assetContentHashUsable`.
+- **`tests/material_format_test.cpp`** — `MT35`–`MT37` for the warnings channel (and `MT24` touched).
+- **`tests/editor/model_import_test.cpp`** — finding 10's `MI154`.
+
+#### The mechanical gate — every number re-measured at the tip
+
+`AERO_REQUIRE_GPU=1 ctest` **133/133 on `macos-debug` and 133/133 on `macos-release`**. Both reduced
+configurations rebuilt **fresh with `-G Ninja`** into `build/tools-off-3.4.2` /
+`build/reflect-off-3.4.2`: **44/44** and **57/57**, with `ME1` present in both. Six architecture
+guards exit 0; clang-format and clang-tidy clean **by exit code**; 3.3.3's two `golden_manifest`
+cases green with the manifest untouched.
+
+**`ctest -N` reads 133 / 44 / 57 — unmoved in all three configurations**, because every new test rides
+an existing binary and each of the three that grew registers as a **single ctest entry**. Read that as
+"no new ctest entry", never as "no tests were added": this task adds **84 doctest cases** across three
+binaries and moves the triple not at all.
+
+Doctest, from each binary's own `filters:` line: **716 / 1577 / 124 / 23 / 22**.
+
+| Binary | Before | After | What moved |
+|---|---|---|---|
+| `aero_tests` | 713 | **716** | `MT35`–`MT37`, the warnings channel — **a plan-recorded surprise**: AC-38 predicted this binary unmoved, and deviation 2 is why it is not |
+| `aero_editor_shell_test` | 1516 | **1577** | +61: `material_edit_test.cpp` (`ME1`–`ME50` plus `ME14b`, 51 cases), `AV48`–`AV54`, `PF-c6`/`PF-c7`, `MI154` |
+| `aero_editor_imgui_test` | 104 | **124** | +20: `I83`–`I102`, of which `I95`–`I98` and `I102` are comment-stripped source-text pins |
+| `aero_scene_serialize_test` | 23 | **23** | unmoved |
+| `aero_editor_inspector_test` | 22 | **22** | unmoved |
+
+Guards: `check-math-boundary.sh` scans **338 → 347** — exactly the plan's prediction, 338 + 9 (eight
+new editor C-family files plus one test TU), re-measured **after `git add`** because `git ls-files`
+sees only tracked files. `check-project-no-delete.sh` Check A reads **6** files and Check B **60 →
+64**, both memberships unchanged; the four new `editor/src/*.cpp` are in **neither** list, which is
+what makes a future `std::filesystem::remove` in them a hard CI failure. The other four guards read
+102 (golden-rule), 61 (platform), 100 (rhi), 61 (scene). **No guard script changed** —
+`.github/scripts/` is byte-identical to `main`.
+
+Inventory: `aero_editor_core` sources **59 → 63**, tracked `editor/src/*.cpp` **60 → 64**, editor
+pairs **eleven → fifteen** (two public, two src-private, re-counted at task end rather than added to
+the remembered number). The write-path invariant: `git grep -c 'writeTextFileAtomic('` reads **1** in
+`material_session.cpp` and **0** in `material_panel.cpp`, `material_preview.cpp` and
+`material_edit.cpp`. The per-OS branch count over first-party editor code is **unmoved at three lines
+in one file** (3.2.4's `currentHostOs()`), and `imgui_stdlib` still appears only in `text_input.hpp`'s
+comments.
+
+#### The amended INV-A1
+
+3.1.1's invariant was "exactly one `writeTextFileAtomic` call site built from the **assets** root";
+3.1.2 amended it to add two built from the **library** directory. This task makes it **exactly two
+from the assets root** — `asset_database.cpp`'s `metaAbsolutePath` and `material_session.cpp`'s
+`saveMaterialFile` — and leaves the library count at two. **Two logical writes through one physical
+one**: Apply calls `saveMaterialFile` from the session, New Material calls it from
+`EditorApp::createMaterialAsset`, and both assemble the absolute path into a named local
+(`materialAbsolutePath`) so the invariant stays a **grep** rather than a heuristic. `I97` pins all of
+it, including zero `writeMaterialText` calls outside the helper.
+
+#### What was deliberately left out, each with its owner
+
+No scene-side material reference (the `MeshRenderer` field, drop-assignment, per-entity material in
+the entity Inspector) — **3.1.5**, whose own task text claims that field. No import-materialization
+(an `ImportedMaterial` still ends its life in the import panel) — first needed by **3.1.5**. No
+main-viewport live preview — automatic once 3.1.5 lands, since the seam and the per-draw resolution
+both exist. No rendered material thumbnails in the browser — a named deferral, **unowned**; it needs
+preview readback plus ledger integration, and `isThumbnailDecodable` was deliberately not touched. No
+drag-drop texture assignment — **3.1.5** introduces the tree's first drag payloads; the picker is
+this task's assignment surface. No undoable asset edits — D4 records why the posture is deliberate
+and no deferral anywhere promises otherwise. No GUID-keyed session targeting, no per-target dirty
+preservation, no unsaved-changes prompt on quit — named UX escalations, unowned until they hurt. No
+BLEND transparency rendering and no IBL — 3.4.1's two named gaps, unchanged. No material **cook** or
+binary material — the pak-rev cooker work. **No reflect-gen growth** — see D1 below. No multi-select
+material editing — the browser is single-select by construction.
+
+**D1's refusal of reflect-gen growth, with its reversal condition.** Fully reflecting
+`MaterialDocument` needs **four** new subset categories, not the two 3.4.1's D15 estimated: `Vec4`
+(`baseColorFactor`), enums (`alphaMode` plus four token enums), `engine::Guid` (slot `guid`), and
+`std::optional<MaterialTextureSlot>` — a nested struct inside an optional, five times. The decision
+is **no reflect-gen change**, for four compounding reasons: a generated serializer for
+`MaterialDocument` would be a **second writer for a normative on-disk format**, and reflect-gen's two
+emit halves are inseparable by design; the on-disk conventions already disagree (`serialize.hpp`
+writes `Vec3` as an object, §11 writes factors as arrays, enums would emit as numbers where §11
+requires tokens); the panel is mostly bespoke regardless (slot pickers, the conditional `alphaCutoff`
+row, Apply/Revert, preview plumbing — and the Inspector's walk is **registry**-driven, while a
+free-standing document is in no registry); and the subset's future growth has owners with
+component-shaped needs (3.1.5's `Guid` on `MeshRenderer`, 3.5.2's first plausible enum). **Reversal
+condition, stated so it cannot rot:** if a later task grows the subset with `Vec4` and enums for
+components, the material panel **still** stays hand-built — reason one is independent of subset
+coverage and does not age away. `docs/tasks/phase-3.md`'s 3.4.2 lines are amended accordingly
+(deliverable → *"material parameters editable in the editor with live preview"*, subtask →
+*"Material panel editing; live preview"*), the 3.1.3 precedent being the licence.
+
+#### Named handoffs
+
+- **`model_import_session.cpp`'s `sourceHashUsable` is now a duplicate** of
+  `assetContentHashUsable` — same three conditions, same order. The one-line delegation was
+  **deliberately not taken** in this task: it touches a TU this task otherwise does not, on a branch
+  already carrying two recorded deviations. Whoever next edits that file should collapse it.
+- **`RenderTarget::resize() == false` is unreachable from any tier here.** `prepareFrame`'s
+  allocation-failure arm — where `allocate()` has already destroyed the previous pair and the frame
+  must be skipped immediately — is correct by construction and by reading, and has no test. Reaching
+  it needs an **injectable allocation failure**, which is an engine change, and this task was not the
+  place to make one.
+- **The five new preview accessors are load-bearing test surface, not diagnostics for their own
+  sake.** `materialPreviewImageCount`, `materialPreviewStaleImageCount`,
+  `materialPreviewTextureWidth`/`Height` and `materialPreviewUvSetWarnCount` are the **only**
+  tier-visible witnesses for four of the review gaps (the stale bind, the error state's picture, the
+  reallocation's non-vacuity, and AC-22's latch). Removing one silently un-tests a finding.
+- Unchanged from 3.4.1: scene-side references → 3.1.5; import-materialization → 3.1.5; BLEND
+  transparency → decision-waiting, renderer-only; IBL → unowned, blocked on a cubemap the format
+  refuses; shadows → 3.6.2; tonemap/gamma → 3.6.3.
+
+#### Still open
+
+The **twelve-row macOS validation pass** (`editor/validation/3.4.2-material-inspector-editing.md`,
+written before the pass runs, as always), whose rows 3, 4 and 6 are the only coverage six of the
+seven declared seeds have anywhere — the seventh, S26, has no macOS witness at all and waits on the
+Windows and Linux sections. Two corrections were applied to the spec's §9 table before the page
+shipped, both measured on this branch: **row 7's Create echo is +1, not +2** — an internal create
+rescans in its own pass, so one sweep sees both the file and its freshly minted sidecar, and the +2
+rule holds only for an **externally** created file (`I44`'s shape) — and **the declared-seed list is
+seven, not eight**. Windows and Linux ship **Pending**, with rows 3–6 named priority because the
+preview is the platform-sensitive half: Metal versus Vulkan/D3D12 destroy timing (BLOCKING-1's whole
+subject) and sRGB behaviour independent of the swapchain. The four-phase platform-validation debt
+grows by one more task.
