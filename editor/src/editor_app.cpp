@@ -1240,9 +1240,18 @@ bool EditorApp::createMaterialAsset(std::string_view directoryRel) {
     // it is given, so a directory we cannot enumerate is a directory in which we cannot prove a name is
     // unused. Refusing is the only safe answer. Hidden entries are included -- a hidden file still owns
     // its name.
+    //
+    // listingIsComplete, NOT `status == Ok` -- the code-review round's BLOCKING-2. A listing that hit
+    // MAX_ENTRIES_PER_DIRECTORY / MAX_ENTRIES_EXAMINED, or whose iterator failed part way through (the
+    // antivirus-lock and cloud-sync case 3.1.4's D5 records as real), keeps ScanStatus::Ok and hands
+    // back a PREFIX. Trusting that prefix means uniqueMaterialFileName returns a name that already
+    // exists and writeTextFileAtomic renames the canonical default document over an authored material:
+    // no warning, no undo, since D4 keeps materials off the CommandStack. The refusal is the same
+    // one-WARN-no-file arm either way, because "we could not read the folder" and "we could not read
+    // ALL of the folder" have the same consequence here.
     const DirectoryListing listing = listDirectory(assetsRoot, directoryRel, true);
-    if (listing.status != ScanStatus::Ok) {
-        AERO_LOG_WARN("editor: cannot create a material in '{}' -- the folder could not be read",
+    if (!listingIsComplete(listing)) {
+        AERO_LOG_WARN("editor: cannot create a material in '{}' -- the folder could not be read in full",
                       directoryRel.empty() ? std::string_view("<assets root>") : directoryRel);
         return false;
     }

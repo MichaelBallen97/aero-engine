@@ -859,3 +859,56 @@ TEST_CASE("editor: currentFileTimeTicks and FileEntry::mtime share the SAME doma
     const std::int64_t now = engine::editor::currentFileTimeTicks();
     CHECK(listing.entries[static_cast<std::size_t>(idx)].mtime <= now);
 }
+
+// ---- listingIsComplete (task 3.4.2, the code-review round's BLOCKING-2) --------------------------
+//
+// A listing that could not be enumerated IN FULL cannot prove a name is unused, and it says so three
+// ways -- not one. `status` is the obvious signal; `truncated` and `skipped` both leave the status at
+// Ok and hand back a PREFIX of the directory, which is exactly what makes them dangerous to a caller
+// that is about to write a file at a name it believes to be free. Every arm below is driven from a
+// DirectoryListing VALUE: the predicate is pure, so no directory of 10 001 files and no antivirus lock
+// is needed to test the case that matters.
+
+TEST_CASE("editor: a fully enumerated listing is complete (PF-c6)") {
+    DirectoryListing listing;
+    listing.status = ScanStatus::Ok;
+    listing.entries.push_back(FileEntry{.name = "a.aeromat"});
+    CHECK(engine::editor::listingIsComplete(listing));
+
+    // An EMPTY directory is complete too -- "nothing is here" is a fact, not a failure.
+    const DirectoryListing empty;
+    CHECK(engine::editor::listingIsComplete(empty));
+}
+
+TEST_CASE("editor: every incompleteness signal refuses, INCLUDING the two that keep status Ok (PF-c7)") {
+    // The three failing arms, each on its own, so a fix that checks only one of them reddens here.
+    for (const ScanStatus status : {ScanStatus::Missing, ScanStatus::NotADirectory, ScanStatus::Unreadable}) {
+        DirectoryListing bad;
+        bad.status = status;
+        CAPTURE(static_cast<int>(status));
+        CHECK_FALSE(engine::editor::listingIsComplete(bad));
+    }
+
+    // TRUNCATED: hit MAX_ENTRIES_PER_DIRECTORY or MAX_ENTRIES_EXAMINED. Status Ok, entries a prefix.
+    DirectoryListing truncated;
+    truncated.status = ScanStatus::Ok;
+    truncated.truncated = true;
+    truncated.entries.push_back(FileEntry{.name = "a.aeromat"});
+    CHECK_FALSE(engine::editor::listingIsComplete(truncated));
+
+    // SKIPPED: an entry the OS refused to classify, or -- the case that matters -- an increment(ec)
+    // failure that terminated the walk part way through (3.1.4's D5: an antivirus lock, a cloud-sync
+    // pass, a permission change). Status Ok, entries a prefix.
+    DirectoryListing skipped;
+    skipped.status = ScanStatus::Ok;
+    skipped.skipped = 1;
+    skipped.entries.push_back(FileEntry{.name = "a.aeromat"});
+    CHECK_FALSE(engine::editor::listingIsComplete(skipped));
+
+    // And both at once, since nothing forbids it.
+    DirectoryListing both;
+    both.status = ScanStatus::Ok;
+    both.truncated = true;
+    both.skipped = 7;
+    CHECK_FALSE(engine::editor::listingIsComplete(both));
+}

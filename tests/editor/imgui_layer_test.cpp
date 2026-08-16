@@ -8279,3 +8279,27 @@ TEST_CASE("editor: a non-zero uvSet latches ONE preview WARN (task 3.4.2, I101, 
     CHECK(app->tick() == false);
     app.reset();
 }
+
+TEST_CASE("editor: New Material refuses a directory it could not enumerate IN FULL (task 3.4.2, I102)") {
+    // THE CODE-REVIEW ROUND'S BLOCKING-2, pinned where it can be. The drain's own comment already states
+    // the rule -- "a directory we cannot enumerate is a directory in which we cannot prove a name is
+    // unused. Refusing is the only safe answer" -- and the code enforced one third of it: `status != Ok`
+    // alone, while listDirectory ALSO signals incompleteness through `truncated` (over
+    // MAX_ENTRIES_PER_DIRECTORY / MAX_ENTRIES_EXAMINED) and `skipped` (an increment(ec) failure part way
+    // through -- the antivirus-lock and cloud-sync case 3.1.4's D5 records as real). Both keep the
+    // status at Ok and return a PREFIX, so uniqueMaterialFileName hands back a name that already exists
+    // and the canonical default document is written over an authored material, with no warning and no
+    // undo (D4 keeps materials off the CommandStack).
+    //
+    // NO RUNTIME TIER HERE CAN REACH EITHER ARM: one needs 10 001 files in a directory inside a GPU-tier
+    // frame budget, the other needs the OS to fail an iterator mid-walk on demand. The predicate itself
+    // is proven exhaustively at tier 0 (project_files_test.cpp PF-c6/PF-c7); this pins that the CALL
+    // SITE asks it rather than re-deriving one third of it inline.
+    const std::vector<std::string> appCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    (void)soleLineContaining(appCode, "listingIsComplete(listing)");
+    for (const std::string& line : appCode) {
+        // The regressed shape this proof must reject, in either spelling.
+        CHECK(line.find("listing.status != ScanStatus::Ok") == std::string::npos);
+        CHECK(line.find("listing.status == ScanStatus::Ok") == std::string::npos);
+    }
+}

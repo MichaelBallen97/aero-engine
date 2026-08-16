@@ -87,6 +87,20 @@ inline constexpr std::size_t MAX_ENTRIES_EXAMINED = 2 * MAX_ENTRIES_PER_DIRECTOR
 
 // ---- pure helpers (no I/O; every one of them is a tier-0 test case) ----
 
+// TRUE iff this listing enumerated the WHOLE directory, so a name absent from `entries` is a name that
+// is genuinely unused. A listing signals incompleteness THREE ways and `status` is only one of them:
+// `truncated` fires at MAX_ENTRIES_PER_DIRECTORY or MAX_ENTRIES_EXAMINED, and `skipped` counts entries
+// the OS refused to classify -- including the increment(ec) failure that TERMINATES the walk mid
+// directory, which is the antivirus-lock / cloud-sync case 3.1.4's D5 documents as real. In both, the
+// status stays Ok and `entries` is a PREFIX.
+//
+// A caller that merely DISPLAYS a listing is right to ignore all this (a partial listing is still worth
+// drawing, which is why the bounds are surfaced rather than fatal). A caller that decides "this name is
+// free, so I may write to it" is not: a prefix cannot prove absence, and acting on one overwrites a
+// user's file. Task 3.4.2's New Material is the first such caller; this predicate is the answer it
+// checks, stated once here rather than as three conditions at each future call site.
+[[nodiscard]] bool listingIsComplete(const DirectoryListing& listing) noexcept;
+
 // Hidden == a leading '.', which is what removes .git / .DS_Store / .vscode (D10). "" is not hidden.
 // No Windows FILE_ATTRIBUTE_HIDDEN check: that needs a platform call in editor code for a rule the
 // dot-prefix already covers on the files that matter.
