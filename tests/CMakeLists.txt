@@ -136,6 +136,20 @@ file(TO_CMAKE_PATH "${CMAKE_COMMAND}" AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE)
 target_compile_definitions(aero_editor_imgui_test PRIVATE
     AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src"
     AERO_TEST_CMAKE_COMMAND="${AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE}")
+
+# task 3.4.2 (AC-32): the five preview cases (I88-I92) must assert a DIFFERENT contract in a build with
+# no cooked shaders. MaterialPreview latches Unavailable in its CONSTRUCTOR there, so the preview is
+# permanently absent while targeting, editing, validation, Apply/Revert and creation must work
+# identically -- and that "identically" is the claim worth testing, so both arms ASSERT and neither
+# skips. This is the aero_tests shape at :104-109 applied to this target; it cannot live inside that
+# block, because aero_editor_imgui_test is not defined until :121. AERO_EDITOR_SHADERS itself is
+# PRIVATE to aero_editor_core (editor/CMakeLists.txt), so no test TU can see it -- this definition is
+# how the arm is selected here. No add_dependencies(aero_shaders) is needed: aero_editor_core already
+# carries it, and no AERO_SHADERS_DIR either, since nothing in this TU loads a shader itself.
+if(AERO_SHADER_TOOLS)
+    target_compile_definitions(aero_editor_imgui_test PRIVATE AERO_SHADER_TOOLS_ENABLED=1)
+endif()
+
 add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 
 # ---------------------------------------------------------------------------------------------

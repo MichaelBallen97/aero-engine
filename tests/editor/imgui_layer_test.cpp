@@ -7125,10 +7125,26 @@ TEST_CASE("editor: the preview and the viewport both render in ONE frame (task 3
         REQUIRE(app->tick());
         CHECK(app->presentedLastFrame());  // the ImGui frame reached the screen with both images in it
     }
+#if AERO_SHADER_TOOLS_ENABLED
     CHECK(app->materialPreviewAvailable());
     // THE NON-VACUITY WITNESS. Without this number a green run above proves only that the editor did
     // not crash: it would look identical if the preview had never rendered a single frame.
     CHECK(app->materialPreviewFrameCount() >= 3);
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32). The coexistence this case exists to probe is not merely unproven
+    // here, it CANNOT occur: with no cooked shaders MaterialPreview latches Unavailable in its
+    // constructor and neither offscreen renderer is ever created. That portion -- and only that portion
+    // -- is unobservable in this configuration, so the OFF CONTRACT is asserted in its place rather
+    // than the case being skipped: the preview costs exactly nothing (no target, no renderer, no pass),
+    // while the five frames above still ticked and still presented, and the session is untouched by its
+    // absence. The other half of this case needs no arm at all -- app.reset() runs the whole teardown
+    // chain under ASan in both configurations.
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewFrameCount() == 0);
+    CHECK(app->materialTargetPath() == "preview.aeromat");
+    CHECK(app->materialDocument() != nullptr);
+    CHECK_FALSE(app->materialDirty());
+#endif
     // The viewport is still there and still answering -- it was not torn down or starved by the second
     // renderer, and the editor camera it draws through survived the whole run.
     CHECK(app->viewportCamera() != nullptr);
@@ -7177,10 +7193,21 @@ TEST_CASE("editor: a blend material latches the preview renderer's opaque WARN (
         REQUIRE(app->tick());
     }
     REQUIRE(app->materialTargetPath() == "blend.aeromat");
+#if AERO_SHADER_TOOLS_ENABLED
     REQUIRE(app->materialPreviewAvailable());
     REQUIRE(app->materialPreviewFrameCount() >= 1);
     // The fixture is OPAQUE, and several frames of it have already drawn: the latch is still down.
     CHECK_FALSE(app->materialPreviewBlendDrawnOpaque());
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32). The latch this case reads lives on the preview's own
+    // ForwardRenderer, and in this configuration there is no renderer to hold one -- so the POSITIVE
+    // arm below is the one portion of this case that cannot be observed without cooked shaders. The
+    // rest is asserted identically: the OFF contract here is no preview, no frames, and therefore a
+    // latch that is down for a reason that has nothing to do with alphaMode.
+    REQUIRE_FALSE(app->materialPreviewAvailable());
+    REQUIRE(app->materialPreviewFrameCount() == 0);
+    CHECK_FALSE(app->materialPreviewBlendDrawnOpaque());
+#endif
 
     REQUIRE(app->materialDocument() != nullptr);
     engine::MaterialDocument blended = *app->materialDocument();
@@ -7191,9 +7218,18 @@ TEST_CASE("editor: a blend material latches the preview renderer's opaque WARN (
     }
     REQUIRE(app->materialDocument() != nullptr);
     CHECK((app->materialDocument()->alphaMode == engine::MaterialAlphaMode::Blend));
+#if AERO_SHADER_TOOLS_ENABLED
     // The edit reached the GPU through updateMaterial and the next draw took the blend arm -- which
     // draws OPAQUE and says so once. A known-and-expected of this task, not a defect (3.4.1's own gap).
     CHECK(app->materialPreviewBlendDrawnOpaque());
+#else
+    // The same edit, the same four ticks, the same stored mode -- and still no latch, because there is
+    // no renderer to take the blend arm. This is AC-32's "everything else works identically" as an
+    // assertion rather than a claim: the edit reached the SESSION exactly as it does above, and the
+    // preview's absence changed nothing about it.
+    CHECK_FALSE(app->materialPreviewBlendDrawnOpaque());
+    CHECK(app->materialPreviewFrameCount() == 0);
+#endif
     // The edit is UNAPPLIED throughout: the preview shows the session copy, never the file (D6).
     CHECK(app->materialDirty());
 
@@ -7274,14 +7310,32 @@ TEST_CASE("editor: a hidden Material panel renders nothing and still edits (task
     CHECK(*applied.text == engine::writeMaterialText(edited));
     CHECK(app->materialPreviewFrameCount() == 0);  // still nothing rendered, through an entire Apply
 
+    app->panels().setVisible("Material", true);
+#if AERO_SHADER_TOOLS_ENABLED
     // Show the panel again and the preview starts -- which is what makes every assertion above a
     // statement about VISIBILITY rather than about a preview that could never work here.
-    app->panels().setVisible("Material", true);
     for (int i = 0; i < 4; ++i) {
         REQUIRE(app->tick());
     }
     CHECK(app->materialPreviewAvailable());
     CHECK(app->materialPreviewFrameCount() >= 1);
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32), and this is the arm that states the difference between the two
+    // configurations exactly: making the panel VISIBLE cannot conjure a preview in a build with no
+    // cooked shaders. The panel draws its one "preview unavailable" line instead -- four ticks that all
+    // present, with no IM_ASSERT -- while the counters stay at the same zeros the HIDDEN panel produced
+    // above, and everything the case already asserted (targeting, the edit, Apply, the bytes on disk)
+    // held identically on the way here. Only the "the preview starts" arm is unobservable without
+    // cooked shaders; nothing else in this case is.
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewFrameCount() == 0);
+    CHECK(app->materialTargetPath() == "hidden.aeromat");
+    CHECK_FALSE(app->materialDirty());
+#endif
 
     app->requestQuit();
     CHECK(app->tick() == false);
@@ -7329,7 +7383,17 @@ TEST_CASE("editor: a slot GUID loads through decode -> cook -> parse -> upload (
         REQUIRE(app->tick());
     }
     REQUIRE(app->materialTargetPath() == "tex.aeromat");
+#if AERO_SHADER_TOOLS_ENABLED
     REQUIRE(app->materialPreviewAvailable());
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32): no preview exists, so MaterialPreview::service returns before
+    // rebuildSlots and a bound GUID is never even looked up. What this case can still prove here -- and
+    // does, arm by arm below -- is that NO LOAD IS ATTEMPTED (a strictly stronger statement than "no
+    // texture is ready", which is why textureLoadAttempts() is asserted beside the count every time)
+    // and that binding, rebinding and clearing a slot reach the session exactly as they do with the
+    // preview live.
+    REQUIRE_FALSE(app->materialPreviewAvailable());
+#endif
     // Nothing referenced yet: no key, no entry, no attempt.
     CHECK(app->materialPreviewTextureCount() == 0);
     CHECK(app->materialPreviewTextureLoadAttempts() == 0);
@@ -7344,8 +7408,19 @@ TEST_CASE("editor: a slot GUID loads through decode -> cook -> parse -> upload (
     for (int i = 0; i < 5; ++i) {
         REQUIRE(app->tick());
     }
+#if AERO_SHADER_TOOLS_ENABLED
     CHECK(app->materialPreviewTextureCount() == 1);
     CHECK(app->materialPreviewTextureLoadAttempts() == 1);  // decoded, cooked, parsed and uploaded ONCE
+#else
+    // Nothing was read, decoded, cooked or uploaded -- the five ticks above cost the texture chain
+    // exactly zero work. The BINDING itself is unaffected: the session holds the slot and is dirty.
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+    CHECK((app->materialDocument()->baseColor->guid == *textureGuid));
+    CHECK(app->materialDirty());
+#endif
 
     // The ORM-atlas shape: the same GUID in a LINEAR slot. Two entries, two uploads, one source.
     engine::MaterialDocument both = *app->materialDocument();
@@ -7354,8 +7429,19 @@ TEST_CASE("editor: a slot GUID loads through decode -> cook -> parse -> upload (
     for (int i = 0; i < 5; ++i) {
         REQUIRE(app->tick());
     }
+#if AERO_SHADER_TOOLS_ENABLED
     CHECK(app->materialPreviewTextureCount() == 2);
     CHECK(app->materialPreviewTextureLoadAttempts() == 2);
+#else
+    // Still not attempted -- twice over, now from two slots naming one source. The colour-space rule
+    // that makes those two DIFFERENT keys is tier-0's (ME48); what this arm pins is that neither slot
+    // provoked a read here.
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK(app->materialDocument()->baseColor.has_value());
+    CHECK(app->materialDocument()->occlusion.has_value());
+#endif
 
     // Clearing both slots orphans both uploads, and the service pass -- never the draw walk -- is what
     // releases them (INV-5). The count returning to zero is that pass having run.
@@ -7366,9 +7452,21 @@ TEST_CASE("editor: a slot GUID loads through decode -> cook -> parse -> upload (
     for (int i = 0; i < 4; ++i) {
         REQUIRE(app->tick());
     }
+#if AERO_SHADER_TOOLS_ENABLED
     CHECK(app->materialPreviewTextureCount() == 0);
     CHECK(app->materialPreviewTextureLoadAttempts() == 2);  // releasing is not a load
     CHECK(app->materialPreviewFrameCount() >= 3);           // and the preview kept drawing throughout
+#else
+    // Nothing was ever uploaded, so there is nothing to orphan and no service pass to release it in --
+    // and no frame was ever drawn. The document round-tripped through bind, rebind and clear untouched
+    // by any of that, which is the whole of AC-32's claim for this case.
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);
+    CHECK(app->materialPreviewFrameCount() == 0);
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK_FALSE(app->materialDocument()->baseColor.has_value());
+    CHECK_FALSE(app->materialDocument()->occlusion.has_value());
+#endif
 
     app->requestQuit();
     CHECK(app->tick() == false);
@@ -7416,7 +7514,16 @@ TEST_CASE("editor: a broken image fails ONCE and stays failed (task 3.4.2, I92, 
         REQUIRE(app->tick());
     }
     REQUIRE(app->materialTargetPath() == "broken.aeromat");
+#if AERO_SHADER_TOOLS_ENABLED
     REQUIRE(app->materialPreviewAvailable());
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32). Stickiness is unobservable where nothing is ever attempted, so
+    // the arms below assert the shape that IS true here and is the stronger one: the broken image is
+    // not read once and remembered, it is never read at all, and thirteen ticks later that is still so.
+    // The half of this case that is configuration-independent -- Apply stays legal over an unloadable
+    // reference -- is asserted outside every arm, exactly as it was.
+    REQUIRE_FALSE(app->materialPreviewAvailable());
+#endif
 
     const std::optional<engine::Guid> badGuid = app->assetGuidForPath("bad.png");
     REQUIRE(badGuid.has_value());
@@ -7428,7 +7535,14 @@ TEST_CASE("editor: a broken image fails ONCE and stays failed (task 3.4.2, I92, 
         REQUIRE(app->tick());
     }
     CHECK(app->materialPreviewTextureCount() == 0);
+#if AERO_SHADER_TOOLS_ENABLED
     CHECK(app->materialPreviewTextureLoadAttempts() == 1);
+#else
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);  // not attempted, so not failed either
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+    CHECK((app->materialDocument()->baseColor->guid == *badGuid));
+#endif
 
     // TEN more frames: still one attempt, ever. The slot draws its built-in default and the preview
     // keeps rendering -- a broken reference degrades the picture, it does not stop it.
@@ -7437,9 +7551,19 @@ TEST_CASE("editor: a broken image fails ONCE and stays failed (task 3.4.2, I92, 
         REQUIRE(app->tick());
         CHECK(app->presentedLastFrame());
     }
+#if AERO_SHADER_TOOLS_ENABLED
     CHECK(app->materialPreviewTextureLoadAttempts() == 1);
     CHECK(app->materialPreviewTextureCount() == 0);
     CHECK(app->materialPreviewFrameCount() > framesBefore);
+#else
+    // Ten more frames, still zero attempts: a broken reference costs nothing per tick here for the same
+    // reason a good one does -- the chain is never entered. The editor itself kept presenting through
+    // all ten, which is the part of "it does not stop it" this configuration can still show.
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(framesBefore == 0);
+    CHECK(app->materialPreviewFrameCount() == framesBefore);
+#endif
     // Apply stays legal with an unloadable reference: a material may name an asset that is not usable
     // yet, and the editor never blocks a save over it (AC-21).
     CHECK(app->materialDirty());
