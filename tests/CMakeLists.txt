@@ -328,6 +328,12 @@ find_package(Threads REQUIRED)
 # configurations -- prove it with --list-test-cases, which must show TK1 in both. It reads the two
 # committed PNG fixtures through AERO_ASSET_FIXTURES_DIR and texture_cook_source.cpp's own source text
 # through AERO_EDITOR_SRC_DIR, both ALREADY defined on this target; neither is redefined.
+# task 3.4.2 joins it with editor/material_edit_test.cpp on the same terms: UNCONDITIONAL, tier-0, no
+# new ctest entry, and reachable in BOTH reduced configurations -- prove it with --list-test-cases,
+# which must show ME1 in both. THE LINK LINE BELOW IS STILL UNCHANGED even though the TU names
+# render::MaterialParams and rhi::SamplerDesc: aero::render joined aero_editor_core's PUBLIC group at
+# this task (editor/CMakeLists.txt records the four criteria), so engine/render/include arrives here
+# transitively through aero::editor_core exactly as aero::assets' include root already does.
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -346,7 +352,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/blender_tool_test.cpp editor/blender_service_test.cpp
                editor/assimp_import_test.cpp
                editor/mesh_cook_source_test.cpp
-               editor/texture_cook_source_test.cpp)
+               editor/texture_cook_source_test.cpp
+               editor/material_edit_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
