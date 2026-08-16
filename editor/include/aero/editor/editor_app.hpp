@@ -445,6 +445,22 @@ public:
     // climb every tick is the retry loop this cache exists to prevent (3.1.3's loadAttempts, again).
     [[nodiscard]] std::size_t materialPreviewTextureCount() const noexcept;
     [[nodiscard]] std::size_t materialPreviewTextureLoadAttempts() const noexcept;
+    // ---- the code-review round's four preview observables -----------------------------------------
+    // materialPreviewStaleImageCount() MUST BE ZERO on every tick of every case. It counts frames whose
+    // colour texture ImGui was handed did not survive to the end of that frame -- the use-after-free
+    // that the resize ordering exists to make impossible, and which is invisible to every sanitizer on
+    // Metal because SDL queues the container free there and releases it immediately on Vulkan and
+    // D3D12. materialPreviewImageCount() is its companion: without it, "no image was bound" and "the
+    // right image was bound" look identical, and it is also what makes the error state's refusal to
+    // blit the previous material's last frame observable at all. The extent pair is the NON-VACUITY
+    // witness for a resize case -- textureExtent IS the allocation, so a changed value is a
+    // reallocation having actually happened rather than a case that resized nothing.
+    [[nodiscard]] std::size_t materialPreviewImageCount() const noexcept;
+    [[nodiscard]] std::size_t materialPreviewStaleImageCount() const noexcept;
+    [[nodiscard]] std::uint32_t materialPreviewTextureWidth() const noexcept;
+    [[nodiscard]] std::uint32_t materialPreviewTextureHeight() const noexcept;
+    // AC-22's latched WARN, as a count so "latched" is assertable rather than asserted.
+    [[nodiscard]] std::size_t materialPreviewUvSetWarnCount() const noexcept;
 
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch

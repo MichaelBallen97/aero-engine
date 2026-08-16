@@ -4,12 +4,19 @@
 // ForwardRenderer are alive in the same editor frame as the viewport's.
 //
 // THE LIFETIME RULE (INV-5) IS STATED FIRST, BECAUSE IT IS THE ONE DEFECT CLASS THIS PLATFORM CANNOT
-// SEE. Every GPU create and every GPU destroy happens inside service(), which EditorApp::tick() calls
-// from its post-draw slot; onDraw() only ever RECORDS a request and READS nativeColorTexture().
-// SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan and D3D12 and defers only on Metal, so a destroy
-// moved into the draw walk is deterministic corruption on Windows and Linux and INVISIBLE on the one
-// platform with a completed validation pass -- 3.1.3's BLOCKING-1, which shipped once already. Its
-// only witnesses are I96's source-text pin and validation row 9; no runtime tier here can see it.
+// SEE, AND THE CODE-REVIEW ROUND CORRECTED HOW IT IS STATED. SDL_ReleaseGPUTexture frees the texture
+// CONTAINER SYNCHRONOUSLY on Vulkan and D3D12 and only queues it on Metal, so a release at the wrong
+// moment is deterministic corruption on Windows and Linux and INVISIBLE on the one platform with a
+// completed validation pass -- 3.1.3's BLOCKING-1, which shipped once already. The rule that follows
+// from that is about ORDERING AGAINST ImGui'S CONSUMPTION, not about which function a call sits in:
+//   * the COLOUR TARGET, which ImGui samples, is reallocated in prepareFrame -- inside the draw walk,
+//     immediately BEFORE the handle is read, so the id ImGui records is the id ImGui binds at
+//     endFrame. This is ViewportPanel::onDraw's own ordering, and moving that resize into the service
+//     pass (where it originally sat) puts the release BETWEEN the record and the bind;
+//   * everything ImGui never sees -- the slot upload cache, the material handle, the renderer, the
+//     target itself -- is created and destroyed ONLY in service(), which EditorApp::tick() calls from
+//     its post-draw slot, and in the destructor.
+// I96 pins both halves; no runtime tier here can see either violated, so they are held by construction.
 //
 // ITS OWN ForwardRenderer IS NOT A PREFERENCE: a MaterialHandle is per-ForwardRenderer, and the
 // viewport's renderer is private to its SceneRenderer, so there is no handle the two could share.
@@ -75,10 +82,23 @@ public:
     MaterialPreview(MaterialPreview&&) = delete;
     MaterialPreview& operator=(MaterialPreview&&) = delete;
 
-    // ---- called from onDraw(): RECORDS, and does nothing else ------------------------------------
-    // No GPU call, no allocation, no destroy. `pixels` is the region the panel wants rendered, already
-    // converted from logical points; service() is what acts on it.
-    void requestFrame(rhi::Extent2D pixels) noexcept;
+    // ---- called from onDraw(), and the ONE GPU operation the draw walk performs -------------------
+    // Records the region the panel wants (already converted from logical points to pixels) and APPLIES
+    // THE RESIZE, in that order. Returns true iff nativeColorTexture() may be handed to ImGui::Image
+    // this frame.
+    //
+    // THE RESIZE LIVES HERE, NOT IN service(), AND THE ORDERING IS THE WHOLE POINT. ImGui RECORDS an
+    // ImTextureID during the draw walk and BINDS it inside ImGuiLayer::endFrame -- which runs AFTER
+    // tick()'s post-draw service pass. RenderTarget::allocate destroys the previous pair FIRST, and SDL
+    // frees the texture CONTAINER immediately on Vulkan and D3D12 ("Containers are just client handles,
+    // so we can destroy immediately", SDL_gpu_vulkan.c / SDL_gpu_d3d12.c), queueing it only on Metal;
+    // it is the device MEMORY that is deferred, never the pointer. So a reallocation between the draw
+    // walk and endFrame hands the GPU a pointer that is already freed on two of the three backends and
+    // still live on the one this project has validated on. Resizing HERE, before the handle is read, is
+    // ViewportPanel::onDraw's own ordering (its steps 5-8) and is why the viewport has never had this
+    // defect. A destroy is still forbidden everywhere else in the draw walk -- see I96, which pins the
+    // ordering rather than the function name.
+    [[nodiscard]] bool prepareFrame(rhi::Extent2D pixels);
 
     // ---- called from EditorApp::tick()'s post-draw slot, and NOWHERE ELSE (INV-5) ------------------
     // `document` is the SESSION copy (null when untargeted or unparseable); `documentChanged` is the
@@ -95,6 +115,17 @@ public:
     [[nodiscard]] rhi::Extent2D textureExtent() const noexcept;    // the UV sub-rect's denominator
     [[nodiscard]] std::size_t frameCount() const noexcept;         // completed endFrame submissions
     [[nodiscard]] bool blendDrawnOpaque() const noexcept;          // the renderer's latched WARN
+    // Frames on which prepareFrame handed the draw walk a texture to bind. It is what makes "the error
+    // state shows NO picture" observable: a stale image under an error message is otherwise
+    // indistinguishable from a correct one, because the target keeps whatever was last rendered into it.
+    [[nodiscard]] std::size_t imageCount() const noexcept;
+    // MUST BE ZERO, ALWAYS. Frames whose handed-out colour texture was no longer the target's live one
+    // by the time the next draw walk began -- i.e. frames on which ImGui bound a released texture. See
+    // prepareFrame for why no sanitizer on this platform can see that happen.
+    [[nodiscard]] std::size_t staleImageCount() const noexcept;
+    // AC-22's latched WARN, as a count rather than a bool, so "latched" is assertable: an unlatched
+    // implementation climbs past 1 as edits re-push.
+    [[nodiscard]] std::size_t uvSetWarnCount() const noexcept;
 
     // ---- the texture cache, as the panel and the GPU tier see it (task 3.4.2 step 7, D7) ----------
     [[nodiscard]] PreviewTextureState slotTextureState(std::size_t slotIndex) const noexcept;
@@ -155,18 +186,29 @@ private:
     std::vector<TextureEntry> textures;
     std::array<std::optional<TextureKey>, render::MATERIAL_TEXTURE_SLOT_COUNT> slotKeys;
     std::vector<render::MeshInstance> instances;  // a MEMBER: RenderView BORROWS the span (F6)
-    rhi::Extent2D requestedExtent{};              // last recorded by requestFrame
+    rhi::Extent2D requestedExtent{};              // last recorded by prepareFrame
+    // The colour texture prepareFrame last handed the draw walk, held so the NEXT prepareFrame can
+    // check it survived the frame. Invalid whenever no image was handed out.
+    rhi::TextureHandle imageHandle{};
     float orbitAngle = 0.0F;
-    std::size_t frames = 0;        // materialPreviewFrameCount()'s source
-    std::size_t loadAttempts = 0;  // textureLoadAttempts()'s source; monotonic, never reset
+    std::size_t frames = 0;         // materialPreviewFrameCount()'s source
+    std::size_t loadAttempts = 0;   // textureLoadAttempts()'s source; monotonic, never reset
+    std::size_t images = 0;         // imageCount()'s source; monotonic
+    std::size_t staleImages = 0;    // staleImageCount()'s source; must never leave 0
+    std::size_t uvSetWarnings = 0;  // uvSetWarnCount()'s source; 0 or 1 while the latch below holds
     Status status = Status::Uninitialized;
     // A string LITERAL, shown by the panel whenever !available(). Its INITIAL value is the honest
     // answer for a preview that has not been created yet: creation is lazy, so an error document or an
     // empty selection legitimately never reaches Ready and must say why rather than say "starting"
     // forever.
     const char* reason = "Preview starts when a material is loaded.";
-    bool drewLastFrame = false;  // set by requestFrame, consumed UNCONDITIONALLY by service
+    bool drewLastFrame = false;  // set by prepareFrame, consumed UNCONDITIONALLY by service
     bool pushPending = false;    // the session's documentChanged, held until a renderer exists
+    // AC-22: uvSet != 0 is STORED by the format and honoured by nothing -- MeshVertex carries one UV
+    // set, and render::MaterialTextureSlot carries no uvSet at all, so the renderer cannot say this and
+    // the preview is the only place that can. Latched once per preview lifetime, exactly as
+    // samples/phase-3-materials/main.cpp latches its own: a drag would otherwise print one line a frame.
+    bool warnedUvSet = false;
 };
 
 }  // namespace engine::editor

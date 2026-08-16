@@ -1,6 +1,8 @@
 // Aero Engine — the Material panel's live preview (task 3.4.2, D6/D-4). See material_preview.hpp for
-// the INV-5 lifetime rule this file exists to hold: every GPU create and every GPU destroy below sits
-// inside service(), which runs in EditorApp::tick()'s post-draw slot and never in a draw walk.
+// the INV-5 lifetime rule this file exists to hold, stated as ordering rather than as membership: the
+// COLOUR TARGET is reallocated in prepareFrame, inside the draw walk and immediately before the handle
+// ImGui will bind is read; everything ImGui never sees is created and destroyed only in service(),
+// which runs in EditorApp::tick()'s post-draw slot, and in the destructor.
 //
 // This is ForwardRenderer::updateMaterial's FIRST PRODUCTION CALL SITE. 3.4.1 built that seam for this
 // task by name and it has had no caller outside tests since; every session-document change reaches the
@@ -123,11 +125,42 @@ MaterialPreview::~MaterialPreview() {
     target.reset();
 }
 
-void MaterialPreview::requestFrame(rhi::Extent2D pixels) noexcept {
-    // RECORD ONLY. Called from the draw walk, so there is deliberately nothing here that touches the
-    // GPU, allocates, or reads the database.
+bool MaterialPreview::prepareFrame(rhi::Extent2D pixels) {
+    // (a) THE OUTSTANDING-HANDLE CHECK, and this is the one moment it can be made. Between a draw walk
+    // and the ImGuiLayer::endFrame that binds what it recorded, the ONLY thing that runs is the
+    // post-draw service pass -- and by the time control reaches here, that whole window has closed for
+    // the previous frame. So a colour texture that is no longer the one the draw walk handed out is a
+    // texture ImGui bound after RenderTarget::allocate released it. That must be impossible by
+    // construction (the resize below is the only reallocation site, and it runs BEFORE the handle is
+    // read); this counter is the only tier-visible witness that it stays impossible, because Metal
+    // queues the container free and no sanitizer on this platform can see the defect at all.
+    if (imageHandle.valid() && (!target || target->colorTexture() != imageHandle)) {
+        ++staleImages;
+    }
+    imageHandle = {};
+
     requestedExtent = pixels;
     drewLastFrame = true;
+    if (status != Status::Ready || !target) {
+        // Nothing is allocated yet (creation is lazy and happens in the service pass, A-9) or the
+        // status has latched. Either way there is no texture to hand out and no resize to apply.
+        return false;
+    }
+    if (!target->resize(pixels)) {
+        // A real allocation failure. allocate() has ALREADY destroyed the previous pair, so returning
+        // false here is not merely a message: it is what stops the panel binding a texture that ceased
+        // to exist inside this very call. Latched, like the viewport's -- retrying every frame would
+        // spend the whole frame budget failing.
+        status = Status::Unavailable;
+        reason = "Preview unavailable -- render target allocation failed.";
+        return false;
+    }
+    imageHandle = target->colorTexture();
+    if (!imageHandle.valid()) {
+        return false;
+    }
+    ++images;
+    return true;
 }
 
 void MaterialPreview::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent) {
@@ -362,6 +395,18 @@ void MaterialPreview::pushMaterial(const MaterialDocument& document) {
         if (!docSlot.has_value()) {
             continue;  // unbound: the built-in default, with the desc's own defaults
         }
+        if (docSlot->uvSet != 0 && !warnedUvSet) {
+            // AC-22, and the SAMPLE's own sentence rather than a second wording
+            // (samples/phase-3-materials/main.cpp's resolveSlot): v1 honours UV set 0 because MeshVertex
+            // carries one set, so a non-zero set is stored by the format for fidelity and sampled by
+            // nothing. render::MaterialTextureSlot has no uvSet field at all, so nothing downstream of
+            // here CAN say it -- the preview is the only place the warning can come from. LATCHED, or a
+            // drag on any other field would reprint it every frame the document is re-pushed.
+            AERO_LOG_WARN("editor: material preview -- uvSet {} is stored but not sampled; v1 honours set 0 only",
+                          docSlot->uvSet);
+            warnedUvSet = true;
+            ++uvSetWarnings;
+        }
         bound[i]->sampler = materialSamplerDescFor(*docSlot);
         // Bound to a NAMED LOCAL before the dereference: bugprone-unchecked-optional-access does not
         // track a has_value() test through a std::array subscript, and it is an error on the Linux
@@ -389,13 +434,9 @@ void MaterialPreview::renderFrame(float deltaSeconds) {
     if (!target || !renderer) {
         return;  // defensive, for pushMaterial's reason exactly
     }
-    if (!target->resize(requestedExtent)) {
-        // A real allocation failure. Latched, like the viewport's: retrying every frame would spend the
-        // whole frame budget failing.
-        status = Status::Unavailable;
-        reason = "Preview unavailable -- render target allocation failed.";
-        return;
-    }
+    // NO resize() HERE, DELIBERATELY. The allocation was settled by prepareFrame, inside the draw walk,
+    // before the handle ImGui is about to bind was read -- see prepareFrame's own note for why calling
+    // it from this pass is a use-after-free on Vulkan and D3D12 and invisible on Metal.
     std::optional<render::Frame> frame = target->beginFrame(PREVIEW_CLEAR_COLOR);
     if (!frame) {
         return;  // a transient command-buffer miss; the next service pass tries again
@@ -536,6 +577,12 @@ std::size_t MaterialPreview::readyTextureCount() const noexcept {
 }
 
 std::size_t MaterialPreview::textureLoadAttempts() const noexcept { return loadAttempts; }
+
+std::size_t MaterialPreview::imageCount() const noexcept { return images; }
+
+std::size_t MaterialPreview::staleImageCount() const noexcept { return staleImages; }
+
+std::size_t MaterialPreview::uvSetWarnCount() const noexcept { return uvSetWarnings; }
 
 bool MaterialPreview::blendDrawnOpaque() const noexcept { return renderer && renderer->hasWarnedBlendOpaque(); }
 

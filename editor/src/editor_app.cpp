@@ -873,10 +873,12 @@ bool EditorApp::tick() {
     // sampler-ready by the time ImGui samples it (render_target.hpp's own synchronisation note).
     //
     // NEVER CALL THIS FROM onDraw(). Every preview GPU create and every preview GPU destroy lives
-    // inside it, and SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan and D3D12 while deferring only
-    // on Metal -- the 3.1.3 BLOCKING-1 class, deterministic on two platforms and invisible on the one
-    // with a completed validation pass. I95 pins this call site's position in this file's own source
-    // text; no runtime tier here can see the general-case violation.
+    // inside it -- with ONE deliberate exception the code-review round established: the colour target's
+    // own reallocation, which must happen in the draw walk, before the handle ImGui records is read
+    // (MaterialPreview::prepareFrame states why). SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan
+    // and D3D12 while deferring only on Metal -- the 3.1.3 BLOCKING-1 class, deterministic on two
+    // platforms and invisible on the one with a completed validation pass. I95 pins this call site's
+    // position in this file's own source text; no runtime tier here can see the general-case violation.
     //
     // assetDatabase.root() rather than project.assetsRoot(), for the reconcile block's own reason: the
     // two are the same string by construction and the accessor returns a const reference, so nothing
@@ -1053,6 +1055,21 @@ std::size_t EditorApp::materialPreviewTextureCount() const noexcept {
 }
 std::size_t EditorApp::materialPreviewTextureLoadAttempts() const noexcept {
     return materialPanel != nullptr ? materialPanel->previewTextureLoadAttempts() : 0;
+}
+std::size_t EditorApp::materialPreviewImageCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewImageCount() : 0;
+}
+std::size_t EditorApp::materialPreviewStaleImageCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewStaleImageCount() : 0;
+}
+std::size_t EditorApp::materialPreviewUvSetWarnCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewUvSetWarnCount() : 0;
+}
+std::uint32_t EditorApp::materialPreviewTextureWidth() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewTextureWidth() : 0;
+}
+std::uint32_t EditorApp::materialPreviewTextureHeight() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewTextureHeight() : 0;
 }
 
 void EditorApp::requestQuit() noexcept { running = false; }

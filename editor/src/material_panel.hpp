@@ -19,6 +19,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -93,6 +94,11 @@ public:
     [[nodiscard]] bool previewBlendDrawnOpaque() const noexcept { return preview.blendDrawnOpaque(); }
     [[nodiscard]] std::size_t previewTextureCount() const noexcept { return preview.readyTextureCount(); }
     [[nodiscard]] std::size_t previewTextureLoadAttempts() const noexcept { return preview.textureLoadAttempts(); }
+    [[nodiscard]] std::size_t previewImageCount() const noexcept { return preview.imageCount(); }
+    [[nodiscard]] std::size_t previewStaleImageCount() const noexcept { return preview.staleImageCount(); }
+    [[nodiscard]] std::size_t previewUvSetWarnCount() const noexcept { return preview.uvSetWarnCount(); }
+    [[nodiscard]] std::uint32_t previewTextureWidth() const noexcept { return preview.textureExtent().width; }
+    [[nodiscard]] std::uint32_t previewTextureHeight() const noexcept { return preview.textureExtent().height; }
 
 private:
     void drawPreview();  // the preview strip: an ImGui::Image, or ONE line saying why not (AC-32)

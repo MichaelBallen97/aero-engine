@@ -7798,33 +7798,32 @@ TEST_CASE("editor: the preview's service pass runs AFTER the draw walk, exactly 
     CHECK(serviceAt > drawWalkAt);
 }
 
-TEST_CASE("editor: every preview GPU destroy sits in the service pass (task 3.4.2, I96, INV-5)") {
+TEST_CASE("editor: every preview GPU lifetime call sits where ImGui's ordering allows (task 3.4.2, I96, INV-5)") {
+    // REWRITTEN BY THE CODE-REVIEW ROUND, because the claim this case used to make was satisfied by the
+    // defect it was supposed to catch. It asserted "a destroy lives in the service pass" and greped for
+    // `destroyTexture(`/`destroyMaterial(` alone -- so `target->resize(...)`, which destroys BOTH
+    // textures inside RenderTarget::allocate, was invisible to it, and a resize sitting in the service
+    // pass PASSED the old rule while being exactly the use-after-free the rule exists to prevent.
+    //
+    // THE RULE, RESTATED AS ORDERING RATHER THAN MEMBERSHIP. ImGui records an ImTextureID during the
+    // draw walk and binds it inside ImGuiLayer::endFrame, which runs AFTER tick()'s post-draw service
+    // pass. So:
+    //   * a call that RELEASES the texture ImGui is holding (resize -> allocate -> destroyTexture) must
+    //     happen BEFORE the handle is read, i.e. in the draw walk -- ViewportPanel's own ordering;
+    //   * a call that releases anything ImGui never sees (the slot upload cache) stays in the service
+    //     pass, where a create-then-destroy cannot race a frame at all.
+    // The two are not in tension: one is about the texture ImGui BINDS, the other about textures it
+    // never touches.
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_preview.cpp");
 
-    // The functions a GPU destroy may appear in. THE DESTRUCTOR IS PERMITTED and the draw path is not:
-    // ~MaterialPreview runs inside ~PanelRegistry inside ~EditorApp, which precedes ~Device, and it is
-    // not a frame at all. `destroyOrphans` is permitted because it is private and service() is its one
-    // caller -- which this list is the record of, since nothing else in the tree can state it.
-    // Anything else -- a helper called from onDraw, a lazily "cleaned up" cache read -- is the defect
-    // this pin exists to catch. A step that adds a destroying helper adds it HERE, deliberately, in
-    // the same commit.
-    const std::array<std::string_view, 3> permitted{"~MaterialPreview", "service", "destroyOrphans"};
-
-    std::size_t destroySites = 0;
-    for (std::size_t i = 0; i < code.size(); ++i) {
-        const bool destroys = code[i].find("destroyTexture(") != std::string::npos ||
-                              code[i].find("destroyMaterial(") != std::string::npos;
-        if (!destroys) {
-            continue;
-        }
-        ++destroySites;
-        // Walk UP to the nearest DEFINITION HEADER -- a line whose first non-blank character is in
-        // column 0 and which names MaterialPreview:: -- and read the function name out of it. Every
-        // definition in that file is written that way (`void MaterialPreview::service(`,
-        // `MaterialPreview::~MaterialPreview()`), and a member's body is always indented, so the first
-        // such line above any statement is the function that statement belongs to.
+    // Walk UP to the nearest DEFINITION HEADER -- a line whose first non-blank character is in column 0
+    // and which names MaterialPreview:: -- and read the function name out of it. Every definition in
+    // that file is written that way (`void MaterialPreview::service(`,
+    // `MaterialPreview::~MaterialPreview()`), and a member's body is always indented, so the first such
+    // line above any statement is the function that statement belongs to.
+    const auto ownerOf = [&code](std::size_t index) {
         std::string owner;
-        for (std::size_t j = i + 1U; j > 0; --j) {
+        for (std::size_t j = index + 1U; j > 0; --j) {
             const std::string& line = code[j - 1U];
             const std::size_t at = line.find("MaterialPreview::");
             if (at == std::string::npos || line.find_first_not_of(" \t") != 0) {
@@ -7835,17 +7834,60 @@ TEST_CASE("editor: every preview GPU destroy sits in the service pass (task 3.4.
             owner = line.substr(nameStart, paren == std::string::npos ? std::string::npos : paren - nameStart);
             break;
         }
+        return owner;
+    };
+
+    // The functions a CACHE destroy may appear in. THE DESTRUCTOR IS PERMITTED and the draw path is
+    // not: ~MaterialPreview runs inside ~PanelRegistry inside ~EditorApp, which precedes ~Device, and it
+    // is not a frame at all. `destroyOrphans` is permitted because it is private and service() is its
+    // one caller -- which this list is the record of, since nothing else in the tree can state it.
+    const std::array<std::string_view, 3> destroyPermitted{"~MaterialPreview", "service", "destroyOrphans"};
+    std::size_t destroySites = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        const bool destroys = code[i].find("destroyTexture(") != std::string::npos ||
+                              code[i].find("destroyMaterial(") != std::string::npos;
+        if (!destroys) {
+            continue;
+        }
+        ++destroySites;
+        const std::string owner = ownerOf(i);
         CAPTURE(i);
         CAPTURE(owner);
-        CHECK(std::find(permitted.begin(), permitted.end(), std::string_view(owner)) != permitted.end());
+        CHECK(std::find(destroyPermitted.begin(), destroyPermitted.end(), std::string_view(owner)) !=
+              destroyPermitted.end());
     }
     // ANTI-VACUITY: a rename of the destroy calls would make the loop above find nothing and pass
     // saying nothing at all.
     CHECK(destroySites >= 1);
 
-    // The other half of the rule, and the one a reader is most likely to break: the ImGui TU touches no
-    // GPU lifetime AT ALL -- it records a request and reads a native handle, nothing else.
+    // THE NEEDLE THE OLD PIN LACKED. `resize(` releases the colour texture ImGui may be holding, so it
+    // may appear in ONE function only: prepareFrame, which the draw walk calls and which reads the
+    // handle immediately afterwards. In service(), renderFrame() or any helper they call, the release
+    // lands between ImGui recording the id and ImGui binding it.
+    std::size_t resizeSites = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("->resize(") == std::string::npos) {
+            continue;
+        }
+        ++resizeSites;
+        const std::string owner = ownerOf(i);
+        CAPTURE(i);
+        CAPTURE(owner);
+        CHECK(owner == "prepareFrame");
+    }
+    CHECK(resizeSites == 1);
+
+    // The ImGui TU touches no GPU lifetime AT ALL beyond that one call, and the ORDER of its three
+    // preview statements is the property this whole case is about: settle the allocation, THEN read the
+    // handle, THEN hand it to ImGui. soleLineContaining REQUIREs exactly one of each, so a second
+    // Image, a second read or a second prepare reddens here too.
     const std::vector<std::string> panelCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_panel.cpp");
+    const std::size_t prepareAt = soleLineContaining(panelCode, "prepareFrame(");
+    const std::size_t handleAt = soleLineContaining(panelCode, "nativeColorTexture(");
+    const std::size_t imageAt = soleLineContaining(panelCode, "ImGui::Image(");
+    CHECK(prepareAt < handleAt);
+    CHECK(handleAt < imageAt);
+
     const std::array<std::string_view, 8> forbiddenInDrawWalk{"destroyTexture(",
                                                               "destroyMaterial(",
                                                               "createMaterial(",
@@ -7949,4 +7991,291 @@ TEST_CASE("editor: every numeric material edit is CLAMPED IN C++, not by the wid
     // ANTI-VACUITY, and the number is deliberately a floor rather than an equality: a future row adds
     // an assignment, it does not remove one. Twelve is what the panel ships today.
     CHECK(assignments >= 12U);
+}
+
+// ---- task 3.4.2, the code-review round's closures (I99-I101) --------------------------------------
+
+TEST_CASE("editor: a RESIZED Material panel never binds a released preview texture (task 3.4.2, I99)") {
+    // THE CODE-REVIEW ROUND'S BLOCKING-1, AND THE COVERAGE GAP THAT LET IT SHIP GREEN. No case in this
+    // suite ever changed the preview's requested extent, so RenderTarget::resize never reallocated
+    // anywhere -- which is precisely why a resize sitting in the post-draw service pass, AFTER ImGui had
+    // already recorded the old colour texture into this frame's draw list and BEFORE ImGuiLayer::endFrame
+    // bound it, was invisible to all 133 tests.
+    //
+    // IT IS ALSO INVISIBLE TO ASan HERE, WHICH IS WHY THIS CASE COUNTS RATHER THAN CRASHES. SDL frees the
+    // texture CONTAINER immediately on Vulkan and D3D12 and merely queues it on Metal, so the dangling
+    // pointer is real on the Ubuntu and Windows lanes and harmless on this one. materialPreviewStaleImageCount()
+    // is the deterministic, platform-independent witness: it counts frames whose handed-out colour
+    // texture was no longer the target's live one by the time the next draw walk began.
+    //
+    // THE EXTENT IS DRIVEN BY A WINDOW RESIZE **PLUS** A LAYOUT RESET, and the second half is not
+    // ceremony -- it was measured. Resizing the window alone moves the viewport and the centre node but
+    // leaves the Right dock column at its absolute width (64 px of preview at 320x180 AND at 800x500,
+    // observed directly while writing this case), so a window-only case reallocates nothing and proves
+    // nothing. View > Reset Layout re-derives the dock split from the new work area, which is what
+    // actually widens the column. Both reallocation branches are then exercised: the grow, and the
+    // shrink, which only reallocates once the need at least halves (nextTargetExtent's hysteresis).
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i99", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/resize.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right dock tab and onDraw runs
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("resize.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "resize.aeromat");
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(app->materialPreviewAvailable());
+    const std::uint32_t narrowWidth = app->materialPreviewTextureWidth();
+    const std::size_t imagesBeforeGrow = app->materialPreviewImageCount();
+    REQUIRE(narrowWidth > 0U);
+    REQUIRE(imagesBeforeGrow > 0U);  // the panel really did hand ImGui a texture before the resize
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+
+    // --- grow: the dock column widens, the request crosses the 64-pixel quantum, allocate() runs ---
+    window->setSize(800, 500);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+    app->requestLayoutReset();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+    const std::uint32_t wideWidth = app->materialPreviewTextureWidth();
+    CAPTURE(narrowWidth);
+    CAPTURE(wideWidth);
+    // NON-VACUITY, and it is a REQUIRE rather than a CHECK on purpose: textureExtent IS the allocation,
+    // so an unchanged value means this case reallocated nothing and proved nothing. A window manager
+    // that refuses the resize must fail loudly rather than pass silently.
+    REQUIRE(wideWidth != narrowWidth);
+    CHECK(app->materialPreviewImageCount() > imagesBeforeGrow);
+
+    // --- shrink: back under half the allocation, so the hysteresis branch reallocates too ----------
+    window->setSize(320, 180);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+    app->requestLayoutReset();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+    const std::uint32_t shrunkWidth = app->materialPreviewTextureWidth();
+    CAPTURE(shrunkWidth);
+    CHECK(shrunkWidth < wideWidth);
+    CHECK(app->materialPreviewFrameCount() >= 3U);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+#else
+    // -DAERO_SHADER_TOOLS=OFF (AC-32): there is no target to reallocate, so the ordering this case
+    // exists to prove is not merely unobserved, it cannot occur. The OFF contract is asserted instead --
+    // the window still resizes, the editor still ticks, and the preview still costs exactly nothing.
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewTextureWidth() == 0U);
+    window->setSize(800, 500);
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+    window->setSize(320, 180);
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewImageCount() == 0U);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+#endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the error state shows NO picture, not the last material's (task 3.4.2, I100)") {
+    // THE CODE-REVIEW ROUND'S FINDING 9. A render target keeps whatever was last rendered into it, and
+    // MaterialPreview::service refuses to render with no document -- so drawing the preview strip's
+    // ImGui::Image under an error message blits a stale frame OF A DIFFERENT MATERIAL and presents it as
+    // if it belonged to the file that failed to parse. Selecting a good material first is what makes the
+    // case discriminating: with nothing rendered beforehand there is no stale picture to show.
+    //
+    // materialPreviewImageCount() is the observable, and it is the only one there can be: a correct
+    // picture and a stale one are the same bytes to every tier in this tree.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i100", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/good.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/bad.aeromat", REJECT_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("good.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "good.aeromat");
+    const std::size_t imagesAfterGood = app->materialPreviewImageCount();
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(app->materialPreviewAvailable());
+    REQUIRE(imagesAfterGood > 0U);  // a real picture existed before the error state was entered
+    REQUIRE(app->materialPreviewFrameCount() >= 1U);
+#else
+    REQUIRE(imagesAfterGood == 0U);  // AC-32: no target, so no picture to go stale in the first place
+#endif
+
+    app->requestAssetBrowserSelectEntry("bad.aeromat");
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "bad.aeromat");
+    REQUIRE_FALSE(app->materialParseOk());
+    // The count is snapshotted HERE, once the error state is on screen, rather than before the request:
+    // the browser applies a selection inside its own draw walk, while tick()'s reconcile has already
+    // run, so exactly one further frame legitimately draws the STILL-TARGETED good material. That frame
+    // is correct; every frame after it is the defect.
+    const std::size_t imagesInError = app->materialPreviewImageCount();
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    // THE ASSERTION: not one further frame handed ImGui the target's texture while the error was on
+    // screen. Before the fix this climbed by one per tick, blitting `good.aeromat`'s last frame under
+    // `bad.aeromat`'s parse error.
+    CHECK(app->materialPreviewImageCount() == imagesInError);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+    CHECK(app->materialTargetPath() == "bad.aeromat");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a non-zero uvSet latches ONE preview WARN (task 3.4.2, I101, AC-22)") {
+    // AC-22 asks for a latched WARN "exactly as the sample does", and until the code-review round there
+    // was none: the panel drew an inline note and nothing logged. Nothing downstream COULD log it --
+    // render::MaterialTextureSlot carries no uvSet field at all -- so the preview is the only place the
+    // sentence can come from, which is why it lives beside the push rather than in the renderer.
+    //
+    // The count, not a bool, is what makes LATCHED assertable: an unlatched implementation climbs past
+    // one as further edits re-push the document.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i101", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/uv.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("uv.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "uv.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    // A material with NO bound slot says nothing at all -- the WARN is about a bound slot's uvSet, never
+    // about the field's mere existence.
+    CHECK(app->materialPreviewUvSetWarnCount() == 0U);
+
+    engine::MaterialDocument withUvSet = *app->materialDocument();
+    engine::MaterialTextureSlot slot;
+    // A GUID no asset in this project owns, deliberately. The WARN is about what the SLOT DECLARES, not
+    // about a texture that loaded -- exactly as the sample's own resolveSlot warns before it resolves.
+    slot.guid = engine::Guid{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+    slot.uvSet = 1;
+    withUvSet.baseColor = slot;
+    app->requestMaterialDocument(withUvSet);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(app->materialPreviewUvSetWarnCount() == 1U);
+#else
+    // AC-32: no renderer, so no push, so no WARN. The edit still reached the session identically.
+    CHECK(app->materialPreviewUvSetWarnCount() == 0U);
+#endif
+
+    // Further edits re-push the document; the latch must hold across every one of them.
+    for (int round = 0; round < 3; ++round) {
+        engine::MaterialDocument nudged = *app->materialDocument();
+        nudged.roughnessFactor = 0.1F + (0.2F * static_cast<float>(round));
+        app->requestMaterialDocument(nudged);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+    }
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(app->materialPreviewUvSetWarnCount() == 1U);
+#else
+    CHECK(app->materialPreviewUvSetWarnCount() == 0U);
+#endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }

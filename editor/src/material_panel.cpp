@@ -366,8 +366,11 @@ template <typename Enum, std::size_t N, typename LabelFn>
 MaterialPanel::MaterialPanel(rhi::Device& device) noexcept : preview(&device) {}
 
 // ---- the preview strip (AC-28/AC-32) --------------------------------------------------------------
-// RECORDS a request and READS a native handle. No GPU object is created, resized or destroyed here --
-// that is all MaterialPreview::service's, called from tick()'s post-draw slot (INV-5).
+// Records a request, APPLIES THE RESIZE and reads a native handle -- in that order, which is the whole
+// of the code-review round's BLOCKING-1. ImGui records the ImTextureID here and binds it in
+// ImGuiLayer::endFrame, AFTER the post-draw service pass, so the allocation must be settled before the
+// handle is read; MaterialPreview::prepareFrame carries the full reasoning. Nothing else GPU-shaped
+// happens in this walk: every create, upload and destroy stays in the service pass (INV-5).
 void MaterialPanel::drawPreview() {
     ImGui::SeparatorText("Preview");
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -387,12 +390,15 @@ void MaterialPanel::drawPreview() {
         pixels.width = static_cast<std::uint32_t>(std::max(1L, std::lround(pixels.width * k)));
         pixels.height = static_cast<std::uint32_t>(std::max(1L, std::lround(pixels.height * k)));
     }
-    preview.requestFrame(pixels);
+    // The resize happens INSIDE this call, before the handle below is read (the viewport's step 5/6
+    // ordering). A false return means there is no texture this frame -- including the frame an
+    // allocation failed, where the previous pair has already been destroyed and must not be bound.
+    const bool renderable = preview.prepareFrame(pixels);
 
-    void* const native = preview.nativeColorTexture();
+    void* const native = renderable ? preview.nativeColorTexture() : nullptr;
     const rhi::Extent2D drawExtent = preview.drawExtent();
     const rhi::Extent2D textureExtent = preview.textureExtent();
-    if (!preview.available() || native == nullptr || textureExtent.width == 0 || textureExtent.height == 0) {
+    if (!renderable || native == nullptr || textureExtent.width == 0 || textureExtent.height == 0) {
         const char* const why = preview.unavailableReason();
         // The ONE line AC-32 asks for in a tools-OFF build, and the same line for every other reason a
         // preview is not on screen. Never an empty string: an empty TextDisabled is a blank gap that
@@ -401,8 +407,8 @@ void MaterialPanel::drawPreview() {
         return;
     }
     // The UV sub-rect (the viewport's D5/D6): textureExtent() >= drawExtent() on both axes, always, so
-    // uvMax is in (0,1]. Both come from the SAME allocation, so they agree even on the frame after a
-    // resize request -- the resize itself happens in the service pass, one frame later, by design.
+    // uvMax is in (0,1]. Both come from the allocation prepareFrame just settled, so they describe the
+    // texture ImGui is about to be handed rather than the one it held last frame.
     const ImVec2 uvMax{static_cast<float>(drawExtent.width) / static_cast<float>(textureExtent.width),
                        static_cast<float>(drawExtent.height) / static_cast<float>(textureExtent.height)};
     // ImTextureID is an ImU64 holding the raw native texture pointer (viewport_panel.cpp's step 8); a
@@ -450,8 +456,14 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
             // Nothing editable, and no Apply or Revert drawn at all (AC-9): the file may hold a
             // hand-recoverable value one `git checkout` away, and this editor never "repairs" one.
             ImGui::TextDisabled("This file cannot be edited until it parses.");
-            drawPreview();  // the strip is drawn under the error state too -- there is nothing to
-                            // preview, and saying so is better than a silently missing section
+            // NO IMAGE HERE, and the section says so rather than going missing. Calling drawPreview()
+            // would blit the LAST GOOD MATERIAL's picture under this error text: the render target
+            // keeps whatever was last rendered into it, and service() refuses to render with no
+            // document -- so the image would be a stale frame of a different material, presented as if
+            // it were this file. The code-review round's finding 9; materialPreviewImageCount() is what
+            // pins it, because a stale picture and a correct one look identical to every tier here.
+            ImGui::SeparatorText("Preview");
+            ImGui::TextDisabled("%s", "Nothing to preview until this file parses.");
             return;
         }
         case MaterialSessionState::Ready:
