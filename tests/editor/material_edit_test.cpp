@@ -19,7 +19,10 @@
 // decomposition entirely. No toString overload is added anywhere: DOCTEST_STRINGIFY expands to an
 // UNQUALIFIED toString(...), so an engine one is found by ADL and hard-errors every lane inside
 // doctest.h. material_format.hpp's own header says the same thing about its material*Label naming.
+#include <aero/core/guid.hpp>
+#include <aero/editor/asset_database.hpp>  // ME33+: the session takes the REAL database, by parameter
 #include <aero/editor/material_edit.hpp>
+#include <aero/editor/material_session.hpp>
 #include <aero/editor/model_import.hpp>  // ME25-ME28: the editor value sets the four format enums mirror
 #include <aero/reflect/material_format.hpp>
 #include <aero/render/material.hpp>
@@ -31,11 +34,16 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <optional>
 #include <ostream>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 using engine::Guid;
@@ -540,4 +548,484 @@ TEST_CASE("material edit: exhaustion returns \"\" and never tries a 65th name (M
     const std::array<std::string_view, 1> one{"NewMaterial.aeromat"};
     CHECK(uniqueMaterialFileName("NewMaterial", one, 1).empty());
     CHECK(uniqueMaterialFileName("NewMaterial", one, 2) == std::string("NewMaterial-2.aeromat"));
+}
+
+// ==== the session (ME33-ME46) =====================================================================
+// Driven against a REAL AssetDatabase over a scratch tree -- the asset_database_test.cpp precedent,
+// and house style throughout this repository: the real type, never a mock. Still tier-0: no GPU, no
+// window, no ImGui context, and bounded disk I/O through a TempDir that removes itself.
+
+namespace {
+
+// A unique temp directory that removes itself on destruction -- the same TU-local shape
+// asset_database_test.cpp carries (scaffolding is copied; the ASSERTION is shared).
+class TempDir {
+public:
+    TempDir() {
+        std::error_code ec;
+        const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+        static int counter = 0;  // doctest runs serially in one process; a plain counter suffices
+        dirPath = base / ("aero_material_session_test_" + std::to_string(++counter));
+        std::filesystem::remove_all(dirPath, ec);
+        std::filesystem::create_directories(dirPath, ec);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(dirPath, ec);
+    }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+    TempDir(TempDir&&) = delete;
+    TempDir& operator=(TempDir&&) = delete;
+
+    [[nodiscard]] std::string utf8() const {
+        const std::u8string bytes = dirPath.u8string();
+        return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    }
+
+private:
+    std::filesystem::path dirPath;
+};
+
+// A path built from UTF-8 BYTES, never from a narrow std::string: filesystem::path's narrow-char
+// constructor assumes the ACTIVE CODE PAGE on Windows (asset_database_test.cpp's AD30 lesson).
+[[nodiscard]] std::filesystem::path pathOf(std::string_view utf8) {
+    const std::u8string bytes(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
+    return std::filesystem::path(bytes);
+}
+
+[[nodiscard]] std::string readBytes(std::string_view absolutePath) {
+    const std::ifstream in(pathOf(absolutePath), std::ios::binary);
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+// A committed fixture, by leaf name. A PATH, not a flag: a missing file is a REQUIRE failure here,
+// never a silent skip.
+[[nodiscard]] std::string fixtureText(std::string_view leaf) {
+    std::string path = AERO_MATERIAL_FIXTURES_DIR;
+    path += '/';
+    path += leaf;
+    const std::string text = readBytes(path);
+    REQUIRE_MESSAGE(!text.empty(), "missing material fixture: ", path);
+    return text;
+}
+
+// A project root + assets root + a real AssetDatabase over it.
+class SessionHarness {
+public:
+    SessionHarness() {
+        assetsRootValue = dir.utf8() + "/assets";
+        std::error_code ec;
+        std::filesystem::create_directories(pathOf(assetsRootValue), ec);
+    }
+
+    void writeAsset(std::string_view relativePath, std::string_view bytes) const {
+        std::ofstream out(pathOf(absolutePathOf(relativePath)), std::ios::binary | std::ios::trunc);
+        REQUIRE(static_cast<bool>(out));
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+
+    void removeAsset(std::string_view relativePath) const {
+        std::error_code ec;
+        std::filesystem::remove(pathOf(absolutePathOf(relativePath)), ec);
+        std::filesystem::remove(pathOf(absolutePathOf(relativePath) + ".meta"), ec);
+    }
+
+    void rescan() { (void)database.rescan(dir.utf8(), assetsRootValue, guids); }
+
+    [[nodiscard]] std::string absolutePathOf(std::string_view relativePath) const {
+        return assetsRootValue + "/" + std::string(relativePath);
+    }
+    [[nodiscard]] const engine::editor::AssetDatabase& db() const noexcept { return database; }
+    [[nodiscard]] const std::string& assetsRoot() const noexcept { return assetsRootValue; }
+    [[nodiscard]] std::uint64_t generation() const noexcept { return database.generation(); }
+
+private:
+    TempDir dir;
+    std::string assetsRootValue;
+    engine::editor::AssetDatabase database;
+    engine::GuidGenerator guids{0x3442U};
+};
+
+}  // namespace
+
+TEST_CASE("material session: a DIFFERENT existing .aeromat retargets (ME33, AC-7)") {
+    SessionHarness harness;
+    harness.writeAsset("a.aeromat", fixtureText("canonical.aeromat"));
+    harness.writeAsset("b.aeromat", fixtureText("defaulted.aeromat"));
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("a.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK(session.targetPath() == std::string_view("a.aeromat"));
+    CHECK((session.state() == engine::editor::MaterialSessionState::Ready));
+    REQUIRE(session.document() != nullptr);
+    CHECK(session.document()->name == "Brushed Copper");
+
+    session.reconcile("b.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK(session.targetPath() == std::string_view("b.aeromat"));
+    REQUIRE(session.document() != nullptr);
+    CHECK((*session.document() == MaterialDocument{}));  // defaulted.aeromat is exactly {"version": 1}
+    CHECK_FALSE(session.dirty());
+}
+
+TEST_CASE("material session: a NON-material selection leaves the target alone (ME34, D3, seed S3)") {
+    // The sticky rule's whole point: finding a texture to reference means clicking through the
+    // browser, and the browser has ONE selection. Retargeting on every selection would make every
+    // such click tear down the edit session.
+    SessionHarness harness;
+    harness.writeAsset("a.aeromat", fixtureText("canonical.aeromat"));
+    harness.writeAsset("wood.png", "not really a png, but the browser only reads the extension");
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("a.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    MaterialDocument edited = *session.document();
+    edited.roughnessFactor = 0.125F;
+    session.edit(edited);
+    REQUIRE(session.dirty());
+
+    session.reconcile("wood.png", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK(session.targetPath() == std::string_view("a.aeromat"));
+    CHECK(session.dirty());  // the unapplied edit SURVIVES the click
+    REQUIRE(session.document() != nullptr);
+    CHECK(session.document()->roughnessFactor == doctest::Approx(0.125F));
+
+    // A FOLDER selection is the same answer.
+    session.reconcile("", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK(session.targetPath() == std::string_view("a.aeromat"));
+}
+
+TEST_CASE("material session: an EMPTY selection leaves the target alone (ME35, D3, seed S3)") {
+    SessionHarness harness;
+    harness.writeAsset("a.aeromat", fixtureText("canonical.aeromat"));
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("a.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    REQUIRE(session.targetPath() == std::string_view("a.aeromat"));
+    session.reconcile("", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK(session.targetPath() == std::string_view("a.aeromat"));
+    CHECK((session.state() == engine::editor::MaterialSessionState::Ready));
+    // ... and a material that does NOT exist in the database is not a target either.
+    session.reconcile("ghost.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK(session.targetPath() == std::string_view("a.aeromat"));
+}
+
+TEST_CASE("material session: re-selecting the SAME path is a no-op (ME36, AC-7)") {
+    SessionHarness harness;
+    harness.writeAsset("a.aeromat", fixtureText("canonical.aeromat"));
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("a.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    MaterialDocument edited = *session.document();
+    edited.metallicFactor = 0.0F;
+    session.edit(edited);
+    REQUIRE(session.dirty());
+    CHECK(session.takeDocumentChanged());  // drained, so a stale flag cannot fake the assertion below
+
+    session.reconcile("a.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK(session.dirty());                      // NOT reloaded -- the edit is still here
+    CHECK_FALSE(session.takeDocumentChanged());  // and nothing re-pushed to the preview
+    CHECK(session.document()->metallicFactor == doctest::Approx(0.0F));
+}
+
+TEST_CASE("material session: an UPPER-CASE .AEROMAT retargets -- the extension is folded (ME37)") {
+    SessionHarness harness;
+    harness.writeAsset("Shiny.AEROMAT", fixtureText("canonical.aeromat"));
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("Shiny.AEROMAT", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK(session.targetPath() == std::string_view("Shiny.AEROMAT"));
+    CHECK((session.state() == engine::editor::MaterialSessionState::Ready));
+}
+
+TEST_CASE("material session: a valid but NON-CANONICAL file loads CLEAN (ME38, D5, seed S4)") {
+    // Dirty is sessionCopy != fileCopy through the DEFAULTED ==, never "would Apply change the
+    // bytes". Reordered keys, an upper-case GUID and an unknown key all parse; none of them is an
+    // edit, so Apply stays disabled and the editor never rewrites a file nobody touched.
+    SessionHarness harness;
+    const std::string source = fixtureText("noncanonical.aeromat");
+    harness.writeAsset("odd.aeromat", source);
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("odd.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    REQUIRE((session.state() == engine::editor::MaterialSessionState::Ready));
+    CHECK_FALSE(session.dirty());
+    // The upper-case GUID was accepted (the tolerant-read / lowercase-write rule) ...
+    REQUIRE(session.document() != nullptr);
+    REQUIRE(session.document()->baseColor.has_value());
+    CHECK(engine::formatGuid(session.document()->baseColor->guid) == std::string("1111111111111111aaaaaaaaaaaaaaaa"));
+    // ... and the panel is told the file will be normalized before it happens.
+    CHECK_FALSE(session.warnings().empty());
+    // Nothing was written by merely LOOKING at it.
+    CHECK(session.writeCount() == 0U);
+    CHECK(readBytes(harness.absolutePathOf("odd.aeromat")) == source);
+}
+
+TEST_CASE("material session: Apply on a CLEAN session writes nothing (ME39, AC-12, seed S6)") {
+    SessionHarness harness;
+    const std::string source = fixtureText("canonical.aeromat");
+    harness.writeAsset("a.aeromat", source);
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("a.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    REQUIRE_FALSE(session.dirty());
+    session.requestApply();
+    session.service(harness.db(), harness.assetsRoot());
+    CHECK(session.writeCount() == 0U);
+    CHECK(readBytes(harness.absolutePathOf("a.aeromat")) == source);
+}
+
+TEST_CASE("material session: Apply on a DIRTY session writes ONCE, canonically (ME40, seed S7)") {
+    SessionHarness harness;
+    harness.writeAsset("a.aeromat", fixtureText("canonical.aeromat"));
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("a.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    MaterialDocument edited = *session.document();
+    edited.roughnessFactor = 0.75F;
+    edited.name = "Edited";
+    session.edit(edited);
+    REQUIRE(session.dirty());
+
+    session.requestApply();
+    session.service(harness.db(), harness.assetsRoot());
+    CHECK(session.writeCount() == 1U);
+    CHECK_FALSE(session.dirty());  // the file copy ADOPTED the session copy
+    // Byte for byte the canonical writer's own output -- S7's witness, and the fixpoint.
+    CHECK(readBytes(harness.absolutePathOf("a.aeromat")) == engine::writeMaterialText(edited));
+
+    // A SECOND Apply with nothing further edited writes nothing more.
+    session.requestApply();
+    session.service(harness.db(), harness.assetsRoot());
+    CHECK(session.writeCount() == 1U);
+}
+
+TEST_CASE("material session: Apply REFUSES a NaN smuggled in through C++ (ME41, INV-7, seed S5)") {
+    // validateMaterial reaches the arm a file cannot: a NaN factor is unspellable in JSON and
+    // trivially assignable in C++, and every range check is written so NaN fails it. A validation
+    // failure changes NOTHING anywhere.
+    SessionHarness harness;
+    const std::string source = fixtureText("canonical.aeromat");
+    harness.writeAsset("a.aeromat", source);
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("a.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    MaterialDocument poisoned = *session.document();
+    poisoned.roughnessFactor = std::numeric_limits<float>::quiet_NaN();
+    session.edit(poisoned);
+    REQUIRE(session.dirty());
+
+    session.requestApply();
+    session.service(harness.db(), harness.assetsRoot());
+    CHECK(session.writeCount() == 0U);
+    CHECK_FALSE(session.lastMessage().empty());  // the reason surfaces
+    CHECK(session.dirty());                      // the session copy is INTACT so the value can be fixed
+    CHECK(readBytes(harness.absolutePathOf("a.aeromat")) == source);
+}
+
+TEST_CASE("material session: Revert re-reads the file and discards the session copy (ME42, seed S9)") {
+    SessionHarness harness;
+    const std::string source = fixtureText("canonical.aeromat");
+    harness.writeAsset("a.aeromat", source);
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("a.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    const MaterialDocument original = *session.document();
+    MaterialDocument edited = original;
+    edited.roughnessFactor = 0.01F;
+    session.edit(edited);
+    REQUIRE(session.dirty());
+
+    session.requestRevert();
+    session.service(harness.db(), harness.assetsRoot());
+    CHECK_FALSE(session.dirty());
+    REQUIRE(session.document() != nullptr);
+    CHECK((*session.document() == original));
+    CHECK(session.writeCount() == 0U);  // Revert reads; it never writes
+    CHECK(readBytes(harness.absolutePathOf("a.aeromat")) == source);
+}
+
+TEST_CASE("material session: an external change reloads CLEAN and notices DIRTY (ME43, AC-14, seed S10)") {
+    // BOTH arms in one case on purpose: a dropped clean-reload path and a notice that fires on a
+    // clean session are the same one-line mistake seen from two sides, and splitting them lets one
+    // hide behind the other.
+    SessionHarness harness;
+    harness.writeAsset("clean.aeromat", fixtureText("canonical.aeromat"));
+    harness.writeAsset("dirty.aeromat", fixtureText("canonical.aeromat"));
+    harness.rescan();
+
+    // --- clean: reloads SILENTLY -----------------------------------------------------------------
+    engine::editor::MaterialSession clean;
+    clean.reconcile("clean.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    REQUIRE_FALSE(clean.dirty());
+    MaterialDocument fromDisk = *clean.document();
+    fromDisk.name = "changed by another program";
+    fromDisk.metallicFactor = 0.125F;
+    harness.writeAsset("clean.aeromat", engine::writeMaterialText(fromDisk));
+    harness.rescan();
+    clean.reconcile("clean.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK_FALSE(clean.externalChangeNoticed());
+    REQUIRE(clean.document() != nullptr);
+    CHECK(clean.document()->name == "changed by another program");
+    CHECK(clean.document()->metallicFactor == doctest::Approx(0.125F));
+    CHECK_FALSE(clean.dirty());
+
+    // --- dirty: KEEPS the edits and raises the notice ---------------------------------------------
+    engine::editor::MaterialSession dirty;
+    dirty.reconcile("dirty.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    MaterialDocument mine = *dirty.document();
+    mine.roughnessFactor = 0.0625F;
+    dirty.edit(mine);
+    REQUIRE(dirty.dirty());
+    MaterialDocument theirs = *dirty.document();
+    theirs.roughnessFactor = 0.9375F;
+    theirs.name = "written behind our back";
+    harness.writeAsset("dirty.aeromat", engine::writeMaterialText(theirs));
+    harness.rescan();
+    dirty.reconcile("dirty.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK(dirty.externalChangeNoticed());
+    CHECK(dirty.dirty());
+    REQUIRE(dirty.document() != nullptr);
+    CHECK(dirty.document()->roughnessFactor == doctest::Approx(0.0625F));  // OUR edit survived
+    CHECK_FALSE(dirty.lastMessage().empty());
+}
+
+TEST_CASE("material session: resetForProjectSwap clears EVERY cross-frame field (ME44, AC-15, seed S12)") {
+    SessionHarness harness;
+    harness.writeAsset("odd.aeromat", fixtureText("noncanonical.aeromat"));
+    harness.writeAsset("bad.aeromat", fixtureText("reject-version.aeromat"));
+    harness.writeAsset("plain.aeromat", fixtureText("canonical.aeromat"));
+    harness.rescan();
+
+    // --- a READY session with every field driven off its default ----------------------------------
+    engine::editor::MaterialSession session;
+    session.reconcile("odd.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    REQUIRE((session.state() == engine::editor::MaterialSessionState::Ready));
+    MaterialDocument mine = *session.document();
+    mine.roughnessFactor = 0.03125F;
+    session.edit(mine);
+    MaterialDocument theirs = *session.document();
+    theirs.name = "external";
+    harness.writeAsset("odd.aeromat", engine::writeMaterialText(theirs));
+    harness.rescan();
+    session.reconcile("odd.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    session.requestApply();
+    session.requestRevert();
+
+    // Every one of the twelve is now non-default. Asserted individually FIRST, so a reset that
+    // silently had nothing to clear cannot pass this case.
+    REQUIRE_FALSE(session.targetPath().empty());                                // targetPathValue
+    REQUIRE((session.state() == engine::editor::MaterialSessionState::Ready));  // fileCopy+sessionCopy
+    REQUIRE(session.document() != nullptr);
+    REQUIRE(session.fileDocument() != nullptr);
+    REQUIRE(session.dirty());
+    REQUIRE_FALSE(session.warnings().empty());     // parseWarnings
+    REQUIRE(session.externalChangeNoticed());      // externalChange
+    REQUIRE_FALSE(session.lastMessage().empty());  // message
+    MaterialDocument again = *session.document();
+    again.metallicFactor = 0.4375F;
+    session.edit(again);
+    REQUIRE(session.takeDocumentChanged());  // documentChanged was set ...
+    session.edit(*session.fileDocument());   // ... and is re-armed here, so the reset has one to clear
+    session.edit(again);
+
+    session.resetForProjectSwap();
+
+    CHECK(session.targetPath().empty());
+    CHECK((session.state() == engine::editor::MaterialSessionState::Untargeted));
+    CHECK(session.document() == nullptr);
+    CHECK(session.fileDocument() == nullptr);
+    CHECK_FALSE(session.dirty());
+    CHECK(session.error() == nullptr);
+    CHECK(session.warnings().empty());
+    CHECK_FALSE(session.externalChangeNoticed());
+    CHECK(session.lastMessage().empty());
+    CHECK_FALSE(session.takeDocumentChanged());
+
+    // applyRequested / revertRequested / targetGeneration are PRIVATE, so they are asserted through
+    // behaviour: target a fresh material, dirty it, and service(). A surviving Apply would write; a
+    // surviving Revert would reload and clear the dirt. Neither may happen. And a surviving
+    // targetGeneration would make the reconcile below take the "generation unchanged" early return
+    // instead of retargeting -- which the target assertion catches.
+    const std::size_t writesBefore = session.writeCount();
+    session.reconcile("plain.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    REQUIRE(session.targetPath() == std::string_view("plain.aeromat"));
+    MaterialDocument fresh = *session.document();
+    fresh.occlusionStrength = 0.5F;
+    session.edit(fresh);
+    REQUIRE(session.dirty());
+    session.service(harness.db(), harness.assetsRoot());
+    CHECK(session.writeCount() == writesBefore);  // no surviving Apply
+    CHECK(session.dirty());                       // no surviving Revert
+
+    // --- an ERROR session: parseError is the one field the Ready block above cannot set ------------
+    engine::editor::MaterialSession broken;
+    broken.reconcile("bad.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    REQUIRE((broken.state() == engine::editor::MaterialSessionState::Error));
+    REQUIRE(broken.error() != nullptr);
+    broken.resetForProjectSwap();
+    CHECK(broken.error() == nullptr);
+    CHECK((broken.state() == engine::editor::MaterialSessionState::Untargeted));
+}
+
+TEST_CASE("material session: a vanished record CLEARS the session with a message (ME45, AC-14, seed S11)") {
+    SessionHarness harness;
+    harness.writeAsset("gone.aeromat", fixtureText("canonical.aeromat"));
+    harness.rescan();
+
+    engine::editor::MaterialSession session;
+    session.reconcile("gone.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    REQUIRE((session.state() == engine::editor::MaterialSessionState::Ready));
+
+    harness.removeAsset("gone.aeromat");
+    harness.rescan();
+    session.reconcile("gone.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+    CHECK((session.state() == engine::editor::MaterialSessionState::Untargeted));
+    CHECK(session.targetPath().empty());
+    CHECK(session.document() == nullptr);
+    CHECK_FALSE(session.lastMessage().empty());
+}
+
+TEST_CASE("material session: a REJECT file is an error state, never a half-load (ME46, AC-9/AC-10)") {
+    // One error, ZERO warnings -- the parser's own contract, surfaced. And the file is never
+    // "repaired": it may hold a hand-recoverable value one git checkout away.
+    constexpr std::array<std::string_view, 4> REJECTS{"reject-version.aeromat", "reject-token.aeromat",
+                                                      "reject-nil-guid.aeromat", "reject-1e999.aeromat"};
+    for (const std::string_view leaf : REJECTS) {
+        CAPTURE(leaf);
+        SessionHarness harness;
+        const std::string source = fixtureText(leaf);
+        harness.writeAsset("bad.aeromat", source);
+        harness.rescan();
+
+        engine::editor::MaterialSession session;
+        session.reconcile("bad.aeromat", harness.generation(), harness.db(), harness.assetsRoot());
+        CHECK((session.state() == engine::editor::MaterialSessionState::Error));
+        REQUIRE(session.error() != nullptr);
+        CHECK_FALSE(session.error()->message.empty());
+        CHECK(session.warnings().empty());
+        CHECK(session.document() == nullptr);
+        CHECK_FALSE(session.dirty());
+
+        // Apply and Revert cannot rewrite it, and an edit cannot sneak a document in.
+        MaterialDocument sneak;
+        sneak.name = "not going anywhere";
+        session.edit(sneak);
+        CHECK(session.document() == nullptr);
+        session.requestApply();
+        session.service(harness.db(), harness.assetsRoot());
+        CHECK(session.writeCount() == 0U);
+        CHECK(readBytes(harness.absolutePathOf("bad.aeromat")) == source);
+    }
 }

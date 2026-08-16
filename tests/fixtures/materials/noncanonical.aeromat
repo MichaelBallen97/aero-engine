@@ -1,0 +1,20 @@
+{
+    "roughnessFactor": 0.35,
+    "name": "Brushed Copper",
+    "version": 1,
+    "metallicFactor": 0.9,
+    "baseColorFactor": [0.95, 0.64, 0.54, 1.0],
+    "alphaMode": "mask",
+    "alphaCutoff": 0.25,
+    "doubleSided": true,
+    "authoredBy": "a key no reader of this format knows",
+    "textures": {
+        "baseColor": {
+            "guid": "1111111111111111AAAAAAAAAAAAAAAA",
+            "wrapU": "clamp",
+            "wrapV": "mirror",
+            "minFilter": "nearest",
+            "mipFilter": "none"
+        }
+    }
+}

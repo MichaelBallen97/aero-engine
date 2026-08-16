@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "name": "Brushed Copper",
+  "baseColorFactor": [
+    0.95,
+    0.64,
+    0.54,
+    1
+  ],
+  "metallicFactor": 0.9,
+  "roughnessFactor": 0.35,
+  "emissiveFactor": [
+    0,
+    0,
+    0
+  ],
+  "normalScale": 1,
+  "occlusionStrength": 1,
+  "alphaMode": "mask",
+  "alphaCutoff": 0.25,
+  "doubleSided": true,
+  "textures": {
+    "baseColor": {
+      "guid": "1111111111111111aaaaaaaaaaaaaaaa",
+      "uvSet": 0,
+      "wrapU": "clamp",
+      "wrapV": "mirror",
+      "minFilter": "nearest",
+      "magFilter": "linear",
+      "mipFilter": "none"
+    },
+    "normal": {
+      "guid": "2222222222222222bbbbbbbbbbbbbbbb",
+      "uvSet": 0,
+      "wrapU": "repeat",
+      "wrapV": "repeat",
+      "minFilter": "linear",
+      "magFilter": "linear",
+      "mipFilter": "linear"
+    }
+  }
+}

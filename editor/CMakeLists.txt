@@ -126,6 +126,7 @@ add_library(aero_editor_core STATIC
     src/mesh_cook_source.cpp     # task 3.3.1 -- the ONLY ImportedModel -> assets:: adapter; PURE
     src/texture_cook_source.cpp  # task 3.3.2 -- the SECOND stb_image TU; PURE, no disk, no UI
     src/material_edit.cpp        # task 3.4.2 -- the PURE document->render bridge (D8); no ImGui, no GPU
+    src/material_session.cpp     # task 3.4.2 -- the target/dirty/apply machine; the ONE .aeromat write
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

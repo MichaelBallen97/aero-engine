@@ -377,7 +377,14 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # rule as AERO_PROJECT_FIXTURES_DIR above (2.5.2's D8, third application): not optional, not
     # #ifdef-guarded. AG1-AG5 use describeMismatch's context window and never dumpActual, so nothing
     # here writes anywhere and `ctest -j` has no collision surface at all.
-    AERO_ASSET_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/assets")
+    AERO_ASSET_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/assets"
+    # task 3.4.2: the seven committed .aeromat fixtures reach the UNGATED material_edit_test.cpp. Same
+    # rule as the two above (2.5.2's D8, a fourth application): a PATH, not a flag -- a missing
+    # definition is a COMPILE error and a missing fixture file is a REQUIRE failure, so neither can
+    # silently skip. canonical.aeromat is writeMaterialText's OWN output for a fully-specified
+    # document (the fixpoint anchor ME40 compares against); the four reject-*.aeromat files are the
+    # hostile inputs validation row 11 re-checks by hand.
+    AERO_MATERIAL_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/materials")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,
