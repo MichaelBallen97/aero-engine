@@ -7,15 +7,26 @@
 // preview through it on the next service pass, token-only changes included.
 #include "material_preview.hpp"
 
+#include <aero/assets/cooked_texture.hpp>
+#include <aero/assets/texture_cook.hpp>
 #include <aero/core/log.hpp>
 #include <aero/core/math.hpp>
 #include <aero/core/profiler.hpp>
+#include <aero/editor/asset_database.hpp>
 #include <aero/editor/material_edit.hpp>
+#include <aero/editor/project_files.hpp>
+#include <aero/editor/text_file.hpp>
+#include <aero/editor/texture_cook_source.hpp>
+#include <aero/render/texture_upload.hpp>
+#include <aero/rhi/device.hpp>
 #include <aero/rhi/internal/native_device.hpp>
 
+#include <array>
 #include <cmath>
 #include <memory>
 #include <optional>
+#include <span>
+#include <string>
 #include <utility>
 
 namespace engine::editor {
@@ -34,6 +45,40 @@ constexpr Vec3 PREVIEW_AMBIENT{0.03F, 0.03F, 0.03F};
 constexpr float PREVIEW_FOV_DEGREES = 60.0F;
 constexpr float PREVIEW_NEAR = 0.1F;
 constexpr float PREVIEW_FAR = 100.0F;
+
+// A cooked artifact is not a SOURCE, so it belongs to none of the four extension tables the editor
+// already keeps -- asset_view's Texture kind (10 extensions, presentation), its thumbnail-decodable
+// subset (stb), texture_cook_source's cookable set (7, and deliberately not .hdr) and the importer
+// tables. Each answers a different question; this one answers "is this already the thing the bridge
+// uploads?", and deriving it from any of the others is exactly what would let an edit to one silently
+// move this. ASCII-case-folded, the extensionEqualsFolded posture.
+[[nodiscard]] bool hasKtx2Extension(std::string_view leaf) noexcept {
+    constexpr std::string_view SUFFIX = ".ktx2";
+    if (leaf.size() <= SUFFIX.size()) {
+        return false;
+    }
+    // Indexed rather than substr'd: substr THROWS on a bad position, so clang-tidy's
+    // bugprone-exception-escape refuses it inside a noexcept function even behind the size guard above.
+    const std::size_t offset = leaf.size() - SUFFIX.size();
+    for (std::size_t i = 0; i < SUFFIX.size(); ++i) {
+        char c = leaf[offset + i];
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+        if (c != SUFFIX[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The cooker's own asBytes, restated here rather than shared: readFileBytes hands back a std::string
+// used as a BYTE container, and every consumer below takes a std::span<const std::byte>.
+// NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) -- thumbnail_store.cpp:98's idiom
+[[nodiscard]] std::span<const std::byte> asBytes(const std::string& text) noexcept {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    return {reinterpret_cast<const std::byte*>(text.data()), text.size()};
+}
 
 }  // namespace
 
@@ -58,9 +103,18 @@ MaterialPreview::MaterialPreview(rhi::Device* deviceIn) noexcept : device(device
 
 MaterialPreview::~MaterialPreview() {
     // THE EXPLICIT TEARDOWN ORDER (INV-5/AC-31), spelled out rather than left to member declaration
-    // order: the material (and, from step 7, the texture cache) first, then the renderer, then the
-    // target -- all before ~Device, which EditorApp destroys after the panel registry. I88 runs this
-    // whole chain under ASan.
+    // order: the TEXTURE CACHE first, then the material, then the renderer, then the target -- all
+    // before ~Device, which EditorApp destroys after the panel registry. I88 runs this whole chain
+    // under ASan. The textures are OURS to release even though the material referenced them: the
+    // registry BORROWS a slot's texture and destroyMaterial never touches one (material.hpp).
+    if (device != nullptr) {
+        for (const TextureEntry& entry : textures) {
+            if (entry.texture.valid()) {
+                device->destroyTexture(entry.texture);
+            }
+        }
+    }
+    textures.clear();
     if (renderer && material.valid()) {
         renderer->destroyMaterial(material);
     }
@@ -107,10 +161,190 @@ void MaterialPreview::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExte
 #endif
 }
 
+const MaterialPreview::TextureEntry* MaterialPreview::findEntry(const TextureKey& key) const noexcept {
+    for (const TextureEntry& entry : textures) {
+        if (entry.key == key) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+bool MaterialPreview::rebuildSlots(const MaterialDocument* document, const AssetDatabase* database) {
+    bool moved = false;
+    for (std::size_t i = 0; i < render::MATERIAL_TEXTURE_SLOT_COUNT; ++i) {
+        std::optional<TextureKey> wanted;
+        if (document != nullptr && database != nullptr) {
+            const std::optional<MaterialTextureSlot>& slot = documentSlotAt(*document, i);
+            if (slot.has_value() && slot->guid.valid()) {
+                // A GUID the database does not know resolves to NO key at all: there is nothing to
+                // load, the slot draws its built-in default, and the panel already names that case
+                // from the record side (AC-21). The preview does not duplicate the sentence.
+                const AssetRecord* record = database->findByGuid(slot->guid);
+                if (record != nullptr) {
+                    wanted = TextureKey{.guid = slot->guid,
+                                        .hash = record->contentHash,
+                                        // D7: the colour space comes from the SLOT, mirroring
+                                        // defaultTextureKindForSlot's own kind split -- the "sRGB from
+                                        // usage" derivation 3.3.2 deferred for want of somewhere to put
+                                        // the answer. A .ktx2 source overrides it at load time, because
+                                        // a cooked artifact's colour space IS its format.
+                                        .srgb = materialSlotIsSrgb(i)};
+                }
+            }
+        }
+        if (slotKeys[i] != wanted) {
+            slotKeys[i] = wanted;
+            moved = true;
+        }
+        if (wanted.has_value() && findEntry(*wanted) == nullptr) {
+            // A CACHE ENTRY, not a GPU object: nothing is created on the device until loadOneTexture
+            // reaches it, one per tick.
+            textures.push_back(TextureEntry{.key = *wanted, .state = PreviewTextureState::Loading});
+            moved = true;
+        }
+    }
+    return moved;
+}
+
+bool MaterialPreview::loadOneTexture(const AssetDatabase* database, std::string_view assetsRootAbs) {
+    // AT MOST ONE PER TICK (AC-31). The first Loading entry in insertion order, which is slot order.
+    TextureEntry* pending = nullptr;
+    for (TextureEntry& entry : textures) {
+        if (entry.state == PreviewTextureState::Loading) {
+            pending = &entry;
+            break;
+        }
+    }
+    if (pending == nullptr || database == nullptr || device == nullptr) {
+        return false;
+    }
+    ++loadAttempts;
+    // STICKY FROM HERE ON: every path below ends in Ready or Failed, and a Failed key is never
+    // retried this session -- the ThumbnailLedger rule, restated. An external edit changes the
+    // record's contentHash, which is a DIFFERENT key and therefore a new entry (D7).
+    const AssetRecord* record = database->findByGuid(pending->key.guid);
+    if (record == nullptr) {
+        pending->state = PreviewTextureState::Failed;
+        pending->message = "This texture is no longer in this project.";
+        return false;
+    }
+    const std::string_view leaf = leafOf(record->relativePath);
+    const std::string absolutePath = std::string(assetsRootAbs) + "/" + record->relativePath;
+    const FileBytesResult source = readFileBytes(absolutePath, MAX_TEXTURE_FILE_BYTES);
+    if (!source.bytes.has_value()) {
+        pending->state = PreviewTextureState::Failed;
+        pending->message = source.refusedByCap ? "This texture is too large to preview (over 64 MiB)."
+                                               : "This texture could not be read: " + source.error;
+        return false;
+    }
+
+    // The parse-side view BORROWS its buffer (cooked_texture.hpp's lifetime note), so both the source
+    // bytes and any cooked bytes must outlive the upload below -- hence both locals live to the end of
+    // this function.
+    std::vector<std::byte> cookedBytes;
+    std::span<const std::byte> artifact = asBytes(*source.bytes);
+    if (!hasKtx2Extension(leaf)) {
+        if (isHdrTextureName(leaf)) {
+            // NAMED SPECIFICALLY, which is why isHdrTextureName exists: stb does not FAIL on a
+            // Radiance file, it silently tone-maps it to 8-bit, so a cook of one is plausible and
+            // quietly wrong (3.3.2's own recorded reason).
+            pending->state = PreviewTextureState::Failed;
+            pending->message = "Radiance .hdr images are not previewable (v1 cooks 8-bit textures only).";
+            return false;
+        }
+        if (!isCookableTextureName(leaf)) {
+            pending->state = PreviewTextureState::Failed;
+            pending->message = "This file type cannot be previewed as a texture.";
+            return false;
+        }
+        // The real chain in miniature: decode -> cook -> parse -> upload. The decode is
+        // header-checked before it allocates, and capped per axis by the cook's own bound.
+        const DecodedImage image = decodeImageRgba8(artifact, assets::MAX_TEXTURE_DIMENSION);
+        if (!image.error.empty()) {
+            pending->state = PreviewTextureState::Failed;
+            pending->message = "This image could not be decoded: " + image.error;
+            return false;
+        }
+        // RGBA8, never the cooker's auto BC rule (D7): a BC format refuses a non-block-aligned top
+        // level at upload, so an odd-sized PNG would need an RGBA8 arm anyway. Making that arm the
+        // whole path removes the fork -- at the cost of showing no block-compression artifacts, which
+        // is a stated known-and-expected rather than a defect.
+        const assets::TextureCookResult cooked =
+            assets::cookTexture({.sourceGuid = pending->key.guid,
+                                 .width = image.width,
+                                 .height = image.height,
+                                 .rgba8 = image.rgba8,
+                                 .format = pending->key.srgb ? assets::CookedTextureFormat::Rgba8Srgb
+                                                             : assets::CookedTextureFormat::Rgba8Unorm,
+                                 .generateMips = true});
+        if (cooked.status != assets::TextureCookStatus::Ok) {
+            pending->state = PreviewTextureState::Failed;
+            pending->message = "This image could not be cooked: " + cooked.message;
+            return false;
+        }
+        cookedBytes = cooked.bytes;
+        artifact = cookedBytes;
+    }
+    // A .ktx2 SOURCE ARRIVES HERE UNTOUCHED: it is already an artifact, and its own format enumerator
+    // governs everything the slot might have wanted to say -- colour space included, because a cooked
+    // artifact's colour space IS the format and never a flag (3.3.2's INV). The key's srgb bit still
+    // distinguishes two slots referencing it, which costs one redundant upload and keeps the rule
+    // uniform.
+    const assets::CookedTextureParse parsed = assets::parseCookedTexture(artifact);
+    if (parsed.status != assets::CookedTextureStatus::Ok) {
+        pending->state = PreviewTextureState::Failed;
+        pending->message = "This cooked texture could not be read (" +
+                           std::string(assets::cookedTextureStatusLabel(parsed.status)) + "): " + parsed.message;
+        return false;
+    }
+    // THE 3.4.1 BRIDGE, unchanged, and the returned texture is THE CALLER'S TO DESTROY: the material
+    // registry borrows it, and destroyMaterial never touches an rhi::TextureHandle.
+    const rhi::TextureHandle uploaded = render::createTextureFromCookedTexture(*device, parsed.view);
+    if (!uploaded.valid()) {
+        // 3.4.1's refusal semantics verbatim -- a non-block-aligned .ktx2 top level keeps them, and
+        // the bridge has already logged the artifact-level reason.
+        pending->state = PreviewTextureState::Failed;
+        pending->message = "The GPU refused this texture (see the Console for the reason).";
+        return false;
+    }
+    pending->texture = uploaded;
+    pending->state = PreviewTextureState::Ready;
+    pending->message.clear();
+    return true;
+}
+
+void MaterialPreview::destroyOrphans() {
+    // THE ONLY PLACE A PREVIEW TEXTURE IS DESTROYED OUTSIDE THE DESTRUCTOR (A-8/INV-5), and it runs in
+    // the service pass by construction: the function is private and service() is its one caller.
+    if (device == nullptr) {
+        return;
+    }
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < textures.size(); ++i) {
+        bool desired = false;
+        for (const std::optional<TextureKey>& key : slotKeys) {
+            desired = desired || (key.has_value() && *key == textures[i].key);
+        }
+        if (desired) {
+            if (kept != i) {
+                textures[kept] = std::move(textures[i]);
+            }
+            ++kept;
+            continue;
+        }
+        if (textures[i].texture.valid()) {
+            device->destroyTexture(textures[i].texture);
+        }
+    }
+    textures.resize(kept);
+}
+
 void MaterialPreview::pushMaterial(const MaterialDocument& document) {
-    // The pure bridge does the mapping; this function only decides create-vs-update. Slots stay empty
-    // in this step: an invalid texture handle resolves to that slot's built-in default at BIND time
-    // (material.hpp's own rule), so an untextured preview needs no bookkeeping at all.
+    // The pure bridge does the mapping; this function only decides create-vs-update and which cached
+    // upload each slot is currently entitled to. An INVALID handle is not a hole: it resolves to that
+    // slot's built-in default at BIND time (material.hpp's own rule), which is exactly what "defaults
+    // bound while pending or failed" means in code.
     if (!renderer) {
         return;  // defensive, and the same reasoning viewport_panel.cpp records for its own pair:
                  // service() already checked, and re-checking HERE is what makes every access below a
@@ -118,7 +352,29 @@ void MaterialPreview::pushMaterial(const MaterialDocument& document) {
                  // Linux Debug lane and does not reason across functions)
     }
     const render::MaterialParams params = materialParamsFor(document);
-    const render::MaterialTextureSlots slots{};
+    render::MaterialTextureSlots slots{};
+    // DECLARATION ORDER IS BINDING ORDER (material.hpp's contract), so this array and
+    // documentSlotAt/materialSlotAt all index the same five things in the same order.
+    const std::array<render::MaterialTextureSlot*, render::MATERIAL_TEXTURE_SLOT_COUNT> bound{
+        &slots.baseColor, &slots.metallicRoughness, &slots.normal, &slots.occlusion, &slots.emissive};
+    for (std::size_t i = 0; i < render::MATERIAL_TEXTURE_SLOT_COUNT; ++i) {
+        const std::optional<MaterialTextureSlot>& docSlot = documentSlotAt(document, i);
+        if (!docSlot.has_value()) {
+            continue;  // unbound: the built-in default, with the desc's own defaults
+        }
+        bound[i]->sampler = materialSamplerDescFor(*docSlot);
+        // Bound to a NAMED LOCAL before the dereference: bugprone-unchecked-optional-access does not
+        // track a has_value() test through a std::array subscript, and it is an error on the Linux
+        // Debug lane.
+        const std::optional<TextureKey>& key = slotKeys[i];
+        if (!key.has_value()) {
+            continue;
+        }
+        const TextureEntry* entry = findEntry(*key);
+        if (entry != nullptr && entry->state == PreviewTextureState::Ready) {
+            bound[i]->texture = entry->texture;
+        }
+    }
     if (!material.valid()) {
         material = renderer->createMaterial(params, slots);
         return;
@@ -181,8 +437,8 @@ void MaterialPreview::renderFrame(float deltaSeconds) {
     }
 }
 
-void MaterialPreview::service(const MaterialDocument* document, bool documentChanged, const AssetDatabase* /*database*/,
-                              std::string_view /*assetsRootAbs*/, float deltaSeconds) {
+void MaterialPreview::service(const MaterialDocument* document, bool documentChanged, const AssetDatabase* database,
+                              std::string_view assetsRootAbs, float deltaSeconds) {
     // Consumed UNCONDITIONALLY and FIRST, before any early return -- ViewportPanel::renderScene's E2/S6
     // rule: a latch left set by a frame that returned early makes a hidden panel render one stale frame.
     const bool drew = std::exchange(drewLastFrame, false);
@@ -200,12 +456,22 @@ void MaterialPreview::service(const MaterialDocument* document, bool documentCha
     if (status != Status::Ready || !target || !renderer) {
         return;
     }
-    // 1. the document -> MaterialParams push (D-4 step 1).
-    if (pushPending && document != nullptr) {
+    // 1. the desired slot set, then the document -> MaterialParams push (D-4 step 1). rebuildSlots
+    // runs EVERY pass, not only on a document change: an external edit to a referenced texture moves
+    // that record's contentHash, which is a different key and therefore a re-load, and nothing in the
+    // session's own one-shot can report that.
+    const bool slotsMoved = rebuildSlots(document, database);
+    if ((pushPending || slotsMoved) && document != nullptr) {
         pushMaterial(*document);
         pushPending = false;
     }
-    // 2/3. the texture cache's load and its destroy pass land here at step 7 -- and NOWHERE else.
+    // 2. ONE queued texture per tick (D-4 step 2 / AC-31). A completed upload moves the slot table but
+    // not the handle, so the re-push is an updateMaterial rather than anything larger.
+    if (loadOneTexture(database, assetsRootAbs) && document != nullptr) {
+        pushMaterial(*document);
+    }
+    // 3. superseded and orphaned uploads -- DESTROYED HERE AND NOWHERE ELSE (A-8/INV-5).
+    destroyOrphans();
     // 4. render, only on a frame the panel actually drew and only with something to show.
     if (!drew || document == nullptr || !material.valid()) {
         return;
@@ -232,6 +498,44 @@ rhi::Extent2D MaterialPreview::textureExtent() const noexcept {
 }
 
 std::size_t MaterialPreview::frameCount() const noexcept { return frames; }
+
+PreviewTextureState MaterialPreview::slotTextureState(std::size_t slotIndex) const noexcept {
+    if (slotIndex >= slotKeys.size()) {
+        return PreviewTextureState::None;
+    }
+    const std::optional<TextureKey>& key = slotKeys[slotIndex];  // the named-local rule, again
+    if (!key.has_value()) {
+        return PreviewTextureState::None;
+    }
+    const TextureEntry* entry = findEntry(*key);
+    // A desired key with no entry yet is a Loading one by construction (rebuildSlots creates it in the
+    // same pass), so "not found" reads as Loading rather than as None.
+    return entry != nullptr ? entry->state : PreviewTextureState::Loading;
+}
+
+std::string_view MaterialPreview::slotNotice(std::size_t slotIndex) const noexcept {
+    if (slotIndex >= slotKeys.size()) {
+        return {};
+    }
+    const std::optional<TextureKey>& key = slotKeys[slotIndex];
+    if (!key.has_value()) {
+        return {};
+    }
+    const TextureEntry* entry = findEntry(*key);
+    return entry != nullptr ? std::string_view(entry->message) : std::string_view{};
+}
+
+std::size_t MaterialPreview::readyTextureCount() const noexcept {
+    std::size_t ready = 0;
+    for (const TextureEntry& entry : textures) {
+        if (entry.state == PreviewTextureState::Ready) {
+            ++ready;
+        }
+    }
+    return ready;
+}
+
+std::size_t MaterialPreview::textureLoadAttempts() const noexcept { return loadAttempts; }
 
 bool MaterialPreview::blendDrawnOpaque() const noexcept { return renderer && renderer->hasWarnedBlendOpaque(); }
 

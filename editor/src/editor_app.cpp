@@ -1022,6 +1022,12 @@ std::size_t EditorApp::materialPreviewFrameCount() const noexcept {
 bool EditorApp::materialPreviewBlendDrawnOpaque() const noexcept {
     return materialPanel != nullptr && materialPanel->previewBlendDrawnOpaque();
 }
+std::size_t EditorApp::materialPreviewTextureCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewTextureCount() : 0;
+}
+std::size_t EditorApp::materialPreviewTextureLoadAttempts() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewTextureLoadAttempts() : 0;
+}
 
 void EditorApp::requestQuit() noexcept { running = false; }
 void EditorApp::requestLayoutReset() noexcept { applyDefaultLayout = true; }

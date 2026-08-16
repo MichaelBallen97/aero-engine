@@ -7288,6 +7288,167 @@ TEST_CASE("editor: a hidden Material panel renders nothing and still edits (task
     app.reset();
 }
 
+// ---- task 3.4.2: the preview's texture chain (I91, I92) -------------------------------------------
+
+TEST_CASE("editor: a slot GUID loads through decode -> cook -> parse -> upload (task 3.4.2, I91, AC-31/D7)") {
+    // The real pipeline in miniature, driven end to end by a real .png in a real project, and the
+    // RUNTIME half of D7's cache key: the SAME source bound to baseColor AND occlusion loads TWICE,
+    // because those two slots sample different colour spaces and a cooked artifact's colour space is
+    // its format. ME48 is the tier-0 half of the same rule.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i91", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/tex.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    app->requestAssetBrowserSelectEntry("tex.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "tex.aeromat");
+    REQUIRE(app->materialPreviewAvailable());
+    // Nothing referenced yet: no key, no entry, no attempt.
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 0);
+
+    const std::optional<engine::Guid> textureGuid = app->assetGuidForPath("wood.png");
+    REQUIRE(textureGuid.has_value());
+    REQUIRE(app->materialDocument() != nullptr);
+    engine::MaterialDocument bound = *app->materialDocument();
+    bound.baseColor = engine::MaterialTextureSlot{.guid = *textureGuid};
+    app->requestMaterialDocument(bound);
+    // ONE LOAD PER TICK, so this is a budget assertion as much as a chain assertion.
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewTextureCount() == 1);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 1);  // decoded, cooked, parsed and uploaded ONCE
+
+    // The ORM-atlas shape: the same GUID in a LINEAR slot. Two entries, two uploads, one source.
+    engine::MaterialDocument both = *app->materialDocument();
+    both.occlusion = engine::MaterialTextureSlot{.guid = *textureGuid};
+    app->requestMaterialDocument(both);
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewTextureCount() == 2);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 2);
+
+    // Clearing both slots orphans both uploads, and the service pass -- never the draw walk -- is what
+    // releases them (INV-5). The count returning to zero is that pass having run.
+    engine::MaterialDocument cleared = *app->materialDocument();
+    cleared.baseColor.reset();
+    cleared.occlusion.reset();
+    app->requestMaterialDocument(cleared);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 2);  // releasing is not a load
+    CHECK(app->materialPreviewFrameCount() >= 3);           // and the preview kept drawing throughout
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a broken image fails ONCE and stays failed (task 3.4.2, I92, AC-31)") {
+    // STICKY FAILURE, the ThumbnailLedger rule restated for a second cache. Without it a broken image
+    // re-reads and re-fails every tick forever, which is a frame-rate defect rather than a wrong
+    // picture -- and it is INVISIBLE to a count-only assertion, which is why textureLoadAttempts()
+    // exists and is asserted here rather than "the count is still zero".
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i92", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/broken.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    // A valid texture NAME whose bytes are ASCII: it fails at stbi_info_from_memory, before any decode
+    // loop, which is this tree's chosen corrupt-image shape (3.1.3's R3).
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/bad.png", CORRUPT_PNG_BYTES).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    app->requestAssetBrowserSelectEntry("broken.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "broken.aeromat");
+    REQUIRE(app->materialPreviewAvailable());
+
+    const std::optional<engine::Guid> badGuid = app->assetGuidForPath("bad.png");
+    REQUIRE(badGuid.has_value());
+    REQUIRE(app->materialDocument() != nullptr);
+    engine::MaterialDocument bound = *app->materialDocument();
+    bound.baseColor = engine::MaterialTextureSlot{.guid = *badGuid};
+    app->requestMaterialDocument(bound);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewTextureLoadAttempts() == 1);
+
+    // TEN more frames: still one attempt, ever. The slot draws its built-in default and the preview
+    // keeps rendering -- a broken reference degrades the picture, it does not stop it.
+    const std::size_t framesBefore = app->materialPreviewFrameCount();
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+    CHECK(app->materialPreviewTextureLoadAttempts() == 1);
+    CHECK(app->materialPreviewTextureCount() == 0);
+    CHECK(app->materialPreviewFrameCount() > framesBefore);
+    // Apply stays legal with an unloadable reference: a material may name an asset that is not usable
+    // yet, and the editor never blocks a save over it (AC-21).
+    CHECK(app->materialDirty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
 // ---- task 3.4.2: the two source-text pins the preview's lifetime rule needs (I95, I96) -------------
 //
 // WHY SOURCE TEXT: SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan and D3D12 and defers only on
@@ -7312,10 +7473,12 @@ TEST_CASE("editor: every preview GPU destroy sits in the service pass (task 3.4.
 
     // The functions a GPU destroy may appear in. THE DESTRUCTOR IS PERMITTED and the draw path is not:
     // ~MaterialPreview runs inside ~PanelRegistry inside ~EditorApp, which precedes ~Device, and it is
-    // not a frame at all. Anything else -- a helper called from onDraw, a lazily "cleaned up" cache
-    // read -- is the defect this pin exists to catch. A step that adds a destroying helper adds it
-    // HERE, deliberately, in the same commit.
-    const std::array<std::string_view, 2> permitted{"~MaterialPreview", "service"};
+    // not a frame at all. `destroyOrphans` is permitted because it is private and service() is its one
+    // caller -- which this list is the record of, since nothing else in the tree can state it.
+    // Anything else -- a helper called from onDraw, a lazily "cleaned up" cache read -- is the defect
+    // this pin exists to catch. A step that adds a destroying helper adds it HERE, deliberately, in
+    // the same commit.
+    const std::array<std::string_view, 3> permitted{"~MaterialPreview", "service", "destroyOrphans"};
 
     std::size_t destroySites = 0;
     for (std::size_t i = 0; i < code.size(); ++i) {

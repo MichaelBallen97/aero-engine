@@ -434,6 +434,12 @@ public:
     [[nodiscard]] bool materialPreviewAvailable() const noexcept;
     [[nodiscard]] std::size_t materialPreviewFrameCount() const noexcept;
     [[nodiscard]] bool materialPreviewBlendDrawnOpaque() const noexcept;
+    // The preview's texture cache: how many slot uploads are live, and how many loads have ever been
+    // ATTEMPTED. The second number is what makes STICKY FAILURE observable -- a count that stays 0
+    // while attempts stay 1 is a broken image refused once, and a count that stays 0 while attempts
+    // climb every tick is the retry loop this cache exists to prevent (3.1.3's loadAttempts, again).
+    [[nodiscard]] std::size_t materialPreviewTextureCount() const noexcept;
+    [[nodiscard]] std::size_t materialPreviewTextureLoadAttempts() const noexcept;
 
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch

@@ -91,6 +91,8 @@ public:
     [[nodiscard]] bool previewAvailable() const noexcept { return preview.available(); }
     [[nodiscard]] std::size_t previewFrameCount() const noexcept { return preview.frameCount(); }
     [[nodiscard]] bool previewBlendDrawnOpaque() const noexcept { return preview.blendDrawnOpaque(); }
+    [[nodiscard]] std::size_t previewTextureCount() const noexcept { return preview.readyTextureCount(); }
+    [[nodiscard]] std::size_t previewTextureLoadAttempts() const noexcept { return preview.textureLoadAttempts(); }
 
 private:
     void drawPreview();  // the preview strip: an ImGui::Image, or ONE line saying why not (AC-32)

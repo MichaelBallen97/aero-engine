@@ -31,6 +31,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>  // ME48: std::find over the key list
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +45,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>  // ME48: std::pair, the (guid, srgb) key half provable at this tier
 #include <vector>
 
 using engine::Guid;
@@ -1032,4 +1034,47 @@ TEST_CASE("material session: a REJECT file is an error state, never a half-load 
         CHECK(session.writeCount() == 0U);
         CHECK(readBytes(harness.absolutePathOf("bad.aeromat")) == source);
     }
+}
+
+// ---- the preview's cache key, at tier 0 (ME48) ---------------------------------------------------
+
+TEST_CASE("material edit: one GUID in two slots is TWO cache keys, by colour space (ME48, D7, seed S22)") {
+    // THE TIER-0 HALF OF D7's KEY. The preview's cache is keyed by (guid, contentHash, srgb) and its
+    // own type is src-private, so what is provable here is the part that decides the interesting case:
+    // the SAME source referenced by baseColor and by occlusion -- the ORM-atlas shape -- must load
+    // TWICE, because a cooked artifact's colour space IS its format and those two slots want different
+    // ones. Drop `srgb` from the key (seed S22) and the second slot silently samples the first slot's
+    // sRGB upload as if it were linear: a plausible, wrong picture with no error anywhere.
+    //
+    // I91 is the runtime half and asserts the same rule as an observable count.
+    const Guid shared{.hi = 0x0102030405060708ULL, .lo = 0x090A0B0C0D0E0F10ULL};
+    MaterialDocument doc;
+    doc.baseColor = MaterialTextureSlot{.guid = shared};
+    doc.occlusion = MaterialTextureSlot{.guid = shared};
+
+    const std::optional<MaterialTextureSlot>& base = documentSlotAt(doc, 0);
+    const std::optional<MaterialTextureSlot>& occlusion = documentSlotAt(doc, 3);
+    REQUIRE(base.has_value());
+    REQUIRE(occlusion.has_value());
+    // The GUID alone CANNOT tell them apart -- which is precisely why it is not the whole key.
+    CHECK(base->guid == occlusion->guid);
+    // The colour space can, and it is the slot that decides it (never the file, which has no
+    // colour-space field at all -- material_format.hpp says so by name).
+    CHECK(materialSlotIsSrgb(0) != materialSlotIsSrgb(3));
+
+    // Spelled as the key comparison itself, over all five slots: two slots share a key iff they share
+    // BOTH the guid and the colour space. With this document that is exactly {0,4} and {1,2,3} --
+    // baseColor/emissive sample sRGB, the other three linear -- so a five-slot walk finds two distinct
+    // keys for one GUID and never one.
+    std::vector<std::pair<Guid, bool>> keys;
+    for (std::size_t i = 0; i < engine::render::MATERIAL_TEXTURE_SLOT_COUNT; ++i) {
+        const std::optional<MaterialTextureSlot>& slot = documentSlotAt(doc, i);
+        if (slot.has_value()) {
+            const std::pair<Guid, bool> key{slot->guid, materialSlotIsSrgb(i)};
+            if (std::find(keys.begin(), keys.end(), key) == keys.end()) {
+                keys.push_back(key);
+            }
+        }
+    }
+    CHECK(keys.size() == 2U);
 }

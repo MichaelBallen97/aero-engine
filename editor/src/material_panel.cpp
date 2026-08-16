@@ -225,7 +225,8 @@ template <typename Enum, std::size_t N, typename LabelFn>
 // PushID/PopID are 1:1 across EVERY path through this function -- no continue, no break, no return
 // between them (an unbalanced id stack is an IM_ASSERT abort in the Debug ImGui build).
 [[nodiscard]] bool drawSlotSection(std::size_t index, MaterialDocument& form, const AssetDatabase* database,
-                                   std::string& search, std::string& scratch) {
+                                   std::string& search, std::string& scratch, PreviewTextureState textureState,
+                                   std::string_view textureNotice) {
     bool changed = false;
     ImGui::PushID(static_cast<int>(index));
     scratch = std::string(materialSlotLabel(index));
@@ -258,6 +259,25 @@ template <typename Enum, std::size_t N, typename LabelFn>
                 ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
                 ImGui::TextWrapped("%s", "This GUID is not in this project; the slot will use its default.");
                 ImGui::PopStyleColor();
+            }
+            // --- what the PREVIEW made of it (task 3.4.2 step 7, D7/AC-21) -----------------------
+            // Exactly ONE row, and only when there is something to say. The refusal's own sentence
+            // comes from the loader, which is the only thing that knows whether the file was missing,
+            // a .hdr, undecodable, uncookable or refused by the GPU. No `default:` -- a fifth state
+            // is a -Wswitch failure here rather than a slot that silently says nothing.
+            switch (textureState) {
+                case PreviewTextureState::Loading:
+                    ImGui::TextDisabled("%s", "Loading the preview texture...");
+                    break;
+                case PreviewTextureState::Failed:
+                    scratch = std::string(textureNotice);
+                    ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+                    ImGui::TextWrapped("%s", scratch.c_str());
+                    ImGui::PopStyleColor();
+                    break;
+                case PreviewTextureState::None:
+                case PreviewTextureState::Ready:
+                    break;
             }
         }
 
@@ -485,7 +505,11 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
     bool changed = drawScalarRows(form, nameDraft, nameEditing, labelScratch);
     ImGui::SeparatorText("Textures");
     for (std::size_t i = 0; i < SLOT_COUNT; ++i) {
-        changed = drawSlotSection(i, form, databasePtr, slotSearch[i], labelScratch) || changed;
+        // The preview is READ here, never driven: slotTextureState/slotNotice are const reads of state
+        // the service pass owns, exactly like nativeColorTexture below (INV-5).
+        changed = drawSlotSection(i, form, databasePtr, slotSearch[i], labelScratch, preview.slotTextureState(i),
+                                  preview.slotNotice(i)) ||
+                  changed;
     }
     if (changed && !(form == *document)) {
         pendingDocument = form;  // last-writer-wins; nothing is applied here
