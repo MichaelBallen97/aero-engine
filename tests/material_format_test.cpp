@@ -868,3 +868,91 @@ TEST_CASE("material: an empty textures object is legal and is omitted on rewrite
     REQUIRE(fromDom.ok());
     CHECK((*fromDom.document == parsed));
 }
+
+// ---- task 3.4.2: the warnings channel (MT35-MT37) ------------------------------------------------
+// MT24 already proves the unknown keys are TOLERATED and STRIPPED; what it could not prove is that the
+// parser tells anyone WHICH keys those were. Until this task the answer existed only inside
+// AERO_LOG_WARN, and no tier in this tree can read a log line -- so "exactly one error and zero
+// warnings" was a comment. These three cases make the whole contract observable.
+
+TEST_CASE("material: a document with no unknown keys parses with ZERO warnings (MT35)") {
+    // Both extremes: the minimal document, and the fully-specified five-slot one whose every key at
+    // every level is known. A warning here would mean a KNOWN key is being mistaken for an unknown --
+    // the failure mode a "warnings are non-empty" check could never see.
+    const engine::MaterialParseResult minimal = engine::parseMaterial(R"({"version": 1})");
+    REQUIRE(minimal.ok());
+    CHECK(minimal.warnings.empty());
+
+    const engine::MaterialParseResult full = engine::parseMaterial(FULL_CANONICAL);
+    REQUIRE(full.ok());
+    CHECK(full.warnings.empty());
+
+    // An empty textures object reaches the second half of the sweep and must still find nothing.
+    const engine::MaterialParseResult empty = engine::parseMaterial(R"({"version": 1, "textures": {}})");
+    REQUIRE(empty.ok());
+    CHECK(empty.warnings.empty());
+}
+
+TEST_CASE("material: every unknown key is reported once, by name, in SOURCE order (MT36, AC-10)") {
+    // Five unknown keys across all three levels, deliberately interleaved with known ones so a sweep
+    // that reported positions instead of keys, or that walked the canonical order instead of the
+    // file's, would produce a different list rather than merely a shorter one.
+    const std::string text = R"({
+      "alpha": 1,
+      "version": 1,
+      "metallicFactor": 0.25,
+      "beta": {"nested": [1, 2, 3]},
+      "textures": {
+        "gamma": {"guid": "0123456789abcdef0123456789abcdef"},
+        "baseColor": {"guid": "0123456789abcdef0123456789abcdef", "delta": 7, "wrapU": "clamp"},
+        "normal": {"guid": "fedcba9876543210fedcba9876543210", "epsilon": false}
+      }
+    })";
+    const engine::MaterialParseResult result = engine::parseMaterial(text);
+    REQUIRE(result.ok());
+    // A LITERAL row count, never warnings.size(): deleting an expectation must redden, not test less.
+    REQUIRE(result.warnings.size() == 5U);
+    CHECK(result.warnings[0] == R"(ignoring unknown key "alpha")");
+    CHECK(result.warnings[1] == R"(ignoring unknown key "beta")");
+    CHECK(result.warnings[2] == R"("textures": ignoring unknown key "gamma")");
+    CHECK(result.warnings[3] == R"("textures.baseColor": ignoring unknown key "delta")");
+    CHECK(result.warnings[4] == R"("textures.normal": ignoring unknown key "epsilon")");
+    // The document itself is unaffected -- the keys are reported, then dropped (MT24's half).
+    REQUIRE(result.document.has_value());
+    CHECK(result.document->metallicFactor == 0.25F);
+    REQUIRE(result.document->baseColor.has_value());
+    CHECK((result.document->baseColor->wrapU == engine::MaterialWrap::Clamp));
+
+    // The DOM overload is the primitive and the text overload a wrapper, so both must carry the list.
+    const engine::JsonParseResult json = engine::parseJson(text);
+    REQUIRE(json.value.has_value());
+    const engine::MaterialParseResult fromDom = engine::parseMaterial(*json.value);
+    REQUIRE(fromDom.ok());
+    CHECK(fromDom.warnings == result.warnings);
+}
+
+TEST_CASE("material: a REJECTed document carries exactly one error and ZERO warnings (MT37)") {
+    // MT25 could only assert that unknown keys change nothing ABOUT the failure. This asserts the other
+    // half it named and could not reach: the sweep is success-only, so a rejected document reports its
+    // one reason and never a list of keys nobody will ever drop.
+    constexpr std::array<std::string_view, 4> NOISY_REJECTS{
+        R"({"version": 2, "junkA": 1, "textures": {"junkB": 2}})",
+        R"({"version": 1, "junkA": 1, "metallicFactor": 5, "textures": {"junkB": 2}})",
+        R"({"version": 1, "junkA": 1, "textures": {"baseColor": {"guid": "nope", "junkC": 3}}})",
+        R"({"junkA": 1})",  // no version at all
+    };
+    REQUIRE(NOISY_REJECTS.size() == 4U);
+    for (const std::string_view text : NOISY_REJECTS) {
+        CAPTURE(text);
+        const engine::MaterialParseResult result = engine::parseMaterial(text);
+        REQUIRE_FALSE(result.ok());
+        CHECK_FALSE(result.error.message.empty());
+        CHECK(result.warnings.empty());
+    }
+
+    // A JSON-stage failure never reaches the sweep either.
+    const engine::MaterialParseResult broken = engine::parseMaterial(R"({"version": 1, "junkA": 1,)");
+    REQUIRE_FALSE(broken.ok());
+    CHECK(broken.error.line > 0);
+    CHECK(broken.warnings.empty());
+}

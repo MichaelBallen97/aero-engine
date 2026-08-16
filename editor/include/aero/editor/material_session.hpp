@@ -83,19 +83,10 @@ public:
     // CLEAN, and the editor never rewrites a file nobody edited (INV-2).
     [[nodiscard]] bool dirty() const noexcept;
     [[nodiscard]] const MaterialError* error() const noexcept;  // engaged iff state() == Error
-    // Non-fatal notices about the LOADED file, shown by the panel's status strip.
-    //
-    // RECORDED DEVIATION, and read this before changing it. The plan asked for the parser's own
-    // per-key "ignoring unknown key" list. parseMaterial CANNOT supply it: MaterialParseResult carries
-    // a document and one error and nothing else, and warnUnknownMaterialKeys emits its findings
-    // through AERO_LOG_WARN -- so the per-key detail exists only in the log, which the Console panel
-    // already shows. The two ways to enumerate the keys HERE are both refused: growing
-    // MaterialParseResult is an engine change this task forbids (AC-34), and re-deriving the key
-    // vocabulary in the editor would make docs/09 section 11's key set have two owners -- the exact
-    // second-source hazard D1 refuses reflect-gen for. So this list carries the AGGREGATE fact the
-    // user actually needs before pressing Apply -- "this file is not in canonical form; saving
-    // normalizes it and drops anything unknown" -- decided EXACTLY, by comparing the file's bytes with
-    // writeMaterialText's, which needs no vocabulary at all. Per-key detail stays in the Console.
+    // The parser's own per-key "ignoring unknown key" list for the LOADED file, in source order, shown
+    // by the panel's status strip. ENGINE-PROVIDED as of this task: MaterialParseResult carries the
+    // warnings it logs, so nothing here re-derives docs/09 section 11's key set and the panel and the
+    // Console say the same sentence. Empty for a rejected file, by the parser's own contract.
     [[nodiscard]] std::span<const std::string> warnings() const noexcept;
     // True while the file changed on disk UNDER a dirty session (AC-14). A clean session reloads
     // silently and never sets this.

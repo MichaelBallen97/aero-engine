@@ -13,7 +13,8 @@
 //
 // Nothing here throws, touches disk, or logs an ERROR for file content: a rejected document returns
 // exactly ONE MaterialError and ZERO warnings, and warnings exist only for unknown keys on a document
-// that fully validated.
+// that fully validated. Since task 3.4.2 that sentence is ASSERTABLE rather than merely documented:
+// MaterialParseResult carries the warnings it also logs (see the struct below).
 //
 // NAMING NOTE — the ADL trap (.claude/rules/ci-portability.md). The four token-label functions below
 // are named material*Label and NEVER toString. doctest's DOCTEST_STRINGIFY expands to an UNQUALIFIED
@@ -39,6 +40,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace engine {
 
@@ -113,13 +115,25 @@ struct MaterialError {
 struct MaterialParseResult {
     std::optional<MaterialDocument> document;
     MaterialError error;
+    // Task 3.4.2, APPENDED (never inserted): the unknown keys this document carried, one entry per key,
+    // at all three levels, in the SOURCE's own member order. Each entry is exactly the sentence the
+    // matching AERO_LOG_WARN carries, minus that log's own "material: " channel prefix -- ONE phrasing,
+    // formatted once, so a consumer can render an entry verbatim and it can never drift from the log.
+    //
+    // ALWAYS EMPTY for a rejected document: the sweep is success-only, so "exactly one error and zero
+    // warnings" stops being a comment and becomes a thing a test can check. The channel exists because
+    // an unknown key is the one thing a rewrite DELETES, and a consumer that means to announce that
+    // must be able to name the keys rather than say "something here is not canonical" -- which cannot
+    // tell a dropped key apart from a harmless key order or an uppercase GUID.
+    std::vector<std::string> warnings;
 
     [[nodiscard]] bool ok() const;
 };
 
 // DOM entry point (the primitive): validate + extract per docs/09 §11. WARNs (unknown keys, at any of
 // the three levels) are emitted only when the whole document validates; a rejected document yields
-// exactly one error and zero WARNs.
+// exactly one error and zero WARNs. Every WARN is ALSO returned, in source order, through
+// MaterialParseResult::warnings -- the log line and the returned entry are formatted once, together.
 [[nodiscard]] MaterialParseResult parseMaterial(const JsonValue& root);
 
 // Text convenience: parseJson (position-carrying errors) then the DOM overload.

@@ -761,8 +761,12 @@ TEST_CASE("material session: a valid but NON-CANONICAL file loads CLEAN (ME38, D
     REQUIRE(session.document() != nullptr);
     REQUIRE(session.document()->baseColor.has_value());
     CHECK(engine::formatGuid(session.document()->baseColor->guid) == std::string("1111111111111111aaaaaaaaaaaaaaaa"));
-    // ... and the panel is told the file will be normalized before it happens.
-    CHECK_FALSE(session.warnings().empty());
+    // ... and the panel is handed the parser's OWN per-key list, naming the one key Apply will DELETE.
+    // The reordered keys and the upper-case GUID are cosmetic and produce no warning at all: that
+    // distinction is the whole reason the engine carries this channel instead of the editor guessing
+    // at it from a byte comparison, which could only ever say "something here is not canonical".
+    REQUIRE(session.warnings().size() == 1U);
+    CHECK(session.warnings()[0] == std::string(R"(ignoring unknown key "authoredBy")"));
     // Nothing was written by merely LOOKING at it.
     CHECK(session.writeCount() == 0U);
     CHECK(readBytes(harness.absolutePathOf("odd.aeromat")) == source);

@@ -94,15 +94,12 @@ void MaterialSession::loadTarget(std::string_view assetsRootAbs) {
         return;
     }
     MaterialDocument loaded = std::move(*parsed.document);
-    // The AGGREGATE non-canonical notice (see the header's recorded deviation). Decided exactly, by
-    // comparing bytes with the canonical writer's own output -- no key vocabulary is duplicated here,
-    // and the parser's per-key WARNs are already in the Console.
-    const bool isCanonical = writeMaterialText(loaded) == *read.text;
+    // The parser's OWN per-key list, carried across verbatim. Nothing is re-derived here and no key
+    // vocabulary is duplicated: docs/09 section 11's key set has exactly one owner, and this is the
+    // channel it speaks through (task 3.4.2 grew MaterialParseResult for precisely this).
+    parseWarnings = std::move(parsed.warnings);
     fileCopy = loaded;
     sessionCopy = std::move(loaded);
-    if (!isCanonical) {
-        parseWarnings.emplace_back("this file is not in canonical form; Apply rewrites it and drops any unknown keys");
-    }
     documentChanged = true;
 }
 
@@ -220,7 +217,9 @@ void MaterialSession::service(const AssetDatabase& database, std::string_view as
         // The bytes on disk are ours now, so the rescan that follows must not read as an external
         // edit. Disengaging is what makes the next generation bump ADOPT the new hash silently.
         lastKnownContentHash.reset();
-        parseWarnings.clear();  // whatever was non-canonical about the file is no longer true
+        // The unknown keys are gone: what is on disk now is the canonical writer's output, which
+        // carries none of them. Leaving the list up would warn about keys that no longer exist.
+        parseWarnings.clear();
         message = "saved '" + targetPathValue + "'";
         return;
     }
