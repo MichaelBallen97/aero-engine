@@ -15,27 +15,21 @@ macOS-validated, gate artifact at `samples/phase-2-editor-scene/`. A whole-phase
 found and fixed two silent data-loss paths, a never-absolute project root, and four stale
 documentation claims.
 
-**Phase 3 (Asset Pipeline & 3D Content) is OPEN. Epic 3.3 (Cooker v0) is CLOSED — all three tasks
-merged, macOS-validated, no macOS debt — and Epic 3.4 (PBR materials) is OPEN: 3.4.1 MERGED and
-macOS-validated, 3.4.2 COMPLETE IN CODE on its branch and PENDING its macOS validation pass.** Epic 3.1
+**Phase 3 (Asset Pipeline & 3D Content) is OPEN. Epics 3.3 (Cooker v0) and 3.4 (PBR materials) are
+both CLOSED — every task merged, CI-green on all three lanes with `headSha == HEAD` asserted, and
+macOS-validated with every measurement blank filled — and Epic 3.5 (Skeletal animation · render) is
+OPEN: 3.5.1 is COMPLETE IN CODE on its branch and PENDING its macOS validation pass.** Epic 3.1
 (AssetDatabase · assets) is merged except **3.1.5 (drag-into-scene), still open**.
 Epic 3.2 (Importers) is **closed in code** — five merged tasks: 3.2.1 glTF, 3.2.2 FBX, 3.2.3 OBJ,
 3.2.4 Blender CLI, 3.2.5 Assimp (DAE/PLY/STL), the last merged as PR #74 (`7e0224f`) on 2026-08-12.
 **Epic 3.3's three tasks are PR #75 (`17a6821`, ✅ 12/12), PR #76 (`cf8575a`, ✅ every row) and PR #77
-(`234a009`, ✅ 13/13)** — every one CI-green on all three lanes with `headSha == HEAD` asserted before
-the merge, and every one macOS-validated with **every measurement blank filled**.
-**3.4.1 (Material asset + PBR shader) is MERGED as PR #78 (merge commit `a01765d`, 10 commits) and
-macOS-validated ✅ PASS on ALL 11 ROWS (2026-08-16), every measurement blank filled** — CI-green on all
-three lanes (macOS 133/133, Linux 133/133, Windows 131/131, each in Debug/ASan and Release, plus the
-`cook-determinism` job) with the green run's `headSha` asserted equal to `HEAD` before the merge.
-**Rows 2, 4, 5 and 6 of that page are the ONLY witness anywhere for five shader-only sabotage seeds
-(S24–S28) and probe X3** — no automated tier in this tree can see them, which is why the page states
-each row's seeds beside it.
-**3.4.2 (Material inspector editing) is MERGED as PR #79 (merge commit `3aebbad`, 15 commits) and
-CI-green on all three lanes with the green run's `headSha` asserted equal to `HEAD` before the merge,
-and macOS-validated ✅ PASS on ALL 12 ROWS (2026-08-16), every measurement blank filled.** Rows 3, 4
-and 6 of that page are the only coverage six of **seven** declared sabotage seeds have anywhere; the
-seventh, S26, is observable on no Apple platform at all and waits on a Windows or Linux pass.
+(`234a009`, ✅ 13/13)**; **Epic 3.4's two are PR #78 (`a01765d`, 10 commits, ✅ 11/11, 2026-08-16) and
+PR #79 (`3aebbad`, 15 commits, ✅ 12/12, 2026-08-16)** — 3.4.1's rows 2, 4, 5 and 6 are the ONLY
+witness anywhere for five shader-only sabotage seeds (S24–S28) and probe X3, and 3.4.2's rows 3, 4 and
+6 are the only coverage six of its **seven** declared seeds have anywhere. **3.4.2's seventh seed, S26,
+is observable on no Apple platform at all** — SDL queues a texture-container free on Metal and performs
+it immediately on Vulkan and D3D12 — so it is the first seed in this project whose only observational
+cover is a Windows or Linux pass, and it is still uncovered.
 
 **Epics 3.1 and 3.2, condensed.** Full per-task detail — every sabotage matrix, every build-time
 finding, every dead end — lives permanently in `docs/10-engineering-log.md`'s Phase 3 entries; this is
@@ -116,7 +110,10 @@ rather than at the `CHECK`. Every future `toString(SomeEnum)` on a public engine
 a label function named something else is unaffected, which is why `cookedTextureStatusLabel` and
 3.4.1's four `material*Label` functions are named the way they are.
 
-**3.4.1 — Material asset + PBR shader, MERGED and macOS-validated.** Epic 3.4 opened with three
+**Epic 3.4 (PBR materials), condensed — two merged tasks, both macOS-validated, no macOS debt.** Full
+per-task detail lives in `docs/10-engineering-log.md`; this is the residue that still governs new work.
+
+**3.4.1 — Material asset + PBR shader.** Epic 3.4 opened with three
 firsts: the **first cooked texture this project has ever drawn on a GPU**, the first `.aeromat` parsed
 end to end, and the first asset resolved at run time **by GUID**. Four layers moved. **`engine/rhi`**
 finished the block-format contract change 3.3.2 assigned it — six BC enumerators (`Count` 19 → **25**),
@@ -137,7 +134,7 @@ default-texture table was deleted, not tested — `defaultTextureKindForSlot` is
 slot→default decision is made, and 3.4.2's `materialSlotIsSrgb` is composed from it rather than
 restated). Full detail in `docs/10`.
 
-**3.4.2 — Material inspector editing, complete in code and awaiting its macOS pass.** The editor learns
+**3.4.2 — Material inspector editing.** The editor learns
 what a material is: at the branch point an `.aeromat` classified `Unknown`, selecting one told Import
 Details that no importer claims the file type, and editing one meant hand-authoring JSON elsewhere.
 Four editor pairs, split by **dependency** rather than by feature: **`material_edit.{hpp,cpp}`**
@@ -212,8 +209,101 @@ list** (seventeen uncompressed formats, no BC format), so `format.hpp`'s univers
 scoped exception naming `Device::supportsTextureFormat` and task 6.3.1 rather than an SDL-universal
 claim it cannot support.
 
+**3.5.1 — Skeleton & GPU skinning: Epic 3.5 is OPEN, and this task is COMPLETE IN CODE and PENDING its
+macOS validation pass.** Thirteen green commits on `feat/3.5.1-skeleton-gpu-skinning`. The renderer
+learns what a rig is: the import layer has carried complete skeletal data since 3.2.1 and `.aeromesh`
+has carried `Joints0`/`Weights0` semantics since 3.3.1, but **nothing downstream could hold a
+skeleton** — no container, no runtime type, no way to get a cooked mesh onto a GPU at all, and no
+vertex shader that had ever seen a matrix palette. Four firsts: the **first `.aeroskel`** (the tree's
+second first-party binary format, designed as a *sibling* of `.aeromesh` rather than a region inside
+it, so `.aeromesh` is byte-untouched — no `formatVersion` bump, no golden churn; **`docs/09` gains a
+normative §12 and Reserved renumbers §12 → §13**, so §13 is the current Reserved section and its bullet
+list now names `.aeroanim` for 3.5.2); the **first mesh
+registry** (before this, `ForwardRenderer` could draw only its three built-in procedural primitives);
+the **first integer vertex attribute** anywhere here (`rhi::VertexFormat::Uint4`) and the **first
+two-UBO vertex stage**; and **pipelines 2 → 4** from three shader loads.
+
+Its load-bearing design choice is an **ordering invariant that makes topology a byte-layout property**:
+records are parents-before-children (ties by ascending `sourceNodeLocalId`), the parser enforces it as
+the one-line `parent < index`, so **a cycle is unrepresentable rather than detected** and every
+consumer walks the records in a **single forward pass with no recursion and no visited set** — *do not
+add one*. The producer reaches that order with **Kahn's algorithm over sorted vectors**, so **Kahn
+exhaustion IS the cycle detector** and there is no second traversal to keep in sync. Two more standing
+rules from it: **a `.aeroskel` is never empty** (both counts ≥ 1 at parse, because the cook is
+per-**skin** and a model with no skin produces no artifact and a CLI error, unlike §9.2's legal empty
+mesh file); and the cook does **zero floating-point arithmetic** — every TRS component and every
+inverse-bind cell travels `std::bit_cast` bit for bit, and **INV-T4 does not extend here**: that
+invariant is about the *texture* files, and mesh and skeleton data are float data moved bit for bit.
+
+**`MAX_SKINNING_JOINTS` is 85, measured rather than guessed, and the measurement is the interesting
+part.** SDL's Vulkan backend binds **every** push-uniform descriptor with a fixed 4096-byte range
+(`MAX_UBO_SECTION_SIZE` 4096 at `SDL_gpu_vulkan.c:71`, applied at `:5300`, `:5419`, `:8671`), so bytes
+past 4096 are memcpy'd into the ring and **never visible to a Vulkan shader**, while D3D12 and Metal
+are bounded by the 32 KiB block and show the full data — a **silent cross-backend divergence**, so the
+engine adopts the portable ceiling uniformly and every skinned draw pushes the **full zeroed 4080-byte
+block**. The **format's** caps are wider on purpose (1024 records / 256 palette slots) and live in
+`cooked_skeleton.hpp`, never mixed with the renderer's: **formats outlive renderers**, so a 200-slot
+rig is a valid file today's renderer refuses to draw with a latched WARN, not a file the cook should
+have refused to write.
+
+**Two AC amendments, both recorded.** **AC-2's include list**: it asked for a core-and-std-only include
+list *and* for bytes formed exclusively through the eight `put*`/`get*` primitives — both cannot hold,
+because those primitives live in `cooked_mesh.hpp`, so `cooked_skeleton.hpp` includes it with the
+identical one-line comment `cooked_texture.hpp:24` has carried since 3.3.2 and **the eight-places rule
+wins**. **AC-46 (byte-identity) holds exactly as written**, verified path by path; what was amended is
+a plan *assertion* — §V.5 claimed the determinism manifest's diff removes nothing, and the two new
+lines made **four statements in its own header false** (the artifact count, the arm list, the
+cooker-version list, and the regeneration `ctest -R` regex, which would otherwise have **silently
+skipped the new arm**). Every rule sentence and all 13 existing hashes are byte-identical.
+
+**Its sabotage matrix ran all 36 seeds; three reddened nothing and all three were closed structurally
+and re-proven by re-seeding.** The generalizable one: **`paletteJointCount > jointCount` ALWAYS leaves
+a hole too**, so no fixture anywhere can separate that check from the unclaimed-slot check *by status*
+— only the message can, so the wording is pinned. Also: `SK15`'s two-record fixture made a duplicate
+slot indistinguishable from an unclaimed one (fixed with a three-record/two-slot arm claiming
+`0,1,0`), and **`cookImportedSkeleton` uses `skinIndex` twice** while `KS11` pinned only the header —
+so an artifact could be numbered skin 1 while carrying skin 0's rig with status, warning and
+`sourceSkinIndex` all correct. **A parameter used twice needs both uses witnessed.** Six of the plan's
+own witness attributions were wrong and are corrected in `docs/10`, the sharpest being that **seed S29
+does not compile at all** — `mesh_pack.hpp`'s own `static_assert(sizeof(SkinVertex) == 32)` plus four
+narrowing errors catch it, which is a stronger witness than any test. **Four declared shader-only seeds
+(S33–S36) reddened nothing in the whole 144-entry suite** (with the build log checked for the shader
+recompile each time, so the green is not vacuous); **validation rows 4, 5 and 6 are their only coverage
+anywhere**, and the page names each row's seeds beside it. **A real defect in that same blind spot was
+then found by reading rather than by seeding** (`73052bc`): the skinned VS accumulated the weight sum
+**before** its out-of-range joint guard, so a vertex whose every influence named an index past the cap
+summed non-zero over a position nothing had contributed to and **collapsed to the origin** — the exact
+outcome the Σw = 0 passthrough exists to prevent. Reachable only from a corrupt or hand-built artifact,
+and unfindable by any tier here, because nothing in this tree renders a pixel.
+
+**Three things from it that outlive the task.** (1) **`JP12` cannot witness what its title implies** —
+its largest joint index is **65535**, exactly what a `u16` holds, so it cannot see a `u16` narrowing in
+the repack; defensible today because `ImportedPrimitive::joints` is `u16`, but it is not the
+independent width witness it reads as, and the `UShort4` bundle is the day it must gain a larger value.
+(2) **The stale-binary trap**: after a seed's `git checkout --`, the built binaries still hold the seed,
+so any "clean baseline" measurement must be preceded by a **rebuild**. (3) **`computeJointPalette`'s
+scratch cost**, named as a future optimization: the fixed `std::array<Mat4, 1024>` is
+default-initialised to identity on every call because `Mat4` carries an identity member-initialiser —
+roughly 64 KiB of stores (~3 µs) per skinned draw, invisible for one instance and scaling **per
+instance**. The allocation-free fixed array is what the design mandates and every alternative is an
+`engine/core` change, so it stays; **this is the first place to look if skinned-instance counts grow.**
+
 **Named handoffs, each with an owner.** Scene-side material references → **3.1.5** (nothing in a scene
-file can name a material today; the `MeshRenderer` field is 3.1.5's by its own task text).
+file can name a material, a mesh **or a skeleton** today; `engine/scene` and `engine/scene_serialize`
+were byte-identical across 3.4.1, 3.4.2 and 3.5.1, and the `MeshRenderer` field is 3.1.5's by its own
+task text). **3.1.5 is now additionally handed a WORKING mesh path** by 3.5.1 — `createMesh`,
+`MeshInstance::mesh`/`submesh`, per-section byte-offset draws and a registry with generational
+staleness — where before it had no renderer-side destination for a dragged-in model at all.
+**Animation clips → 3.5.2**, with its seam written down on both sides rather than guessed at:
+`render::JointPose` is the clip sampler's output type (which is why the format stores bind **locals**
+as TRS — a clip drives T, R and S member-wise), `sourceNodeLocalId` is the clip→joint binding key, and
+**`.aeroanim` is reserved by name in `docs/09` §13**. **The storage-buffer palette unlock** (raising
+85) → whoever hits that wall: it needs an rhi surface change, since `BufferUsage` has `Vertex` and
+`Index` only, and a fingered humanoid fits inside 85. **`TexCoord1`/`Color0` seats in `MeshVertex`**
+(they decode and drop with one latched WARN today) → the first feature needing a second UV set or
+vertex colours. **The `UShort4` / `.aeromesh` v2 bundle** → a deliberate bundle, never alone, because
+it is a `formatVersion` bump: `Joints0` is `Uint4` only because `rhi::VertexFormat` has no
+unsigned-16×4 enumerator, so a skinned vertex pays 8 bytes per vertex it does not need.
 Import-materialization → first needed by **3.1.5**; 3.4.2's slot-derived preview colour space is the
 only contribution to that story so far. Drag-drop texture assignment → **3.1.5**, which introduces the
 tree's first drag payloads; 3.4.2's picker is the assignment surface until then. Main-viewport live
@@ -234,27 +324,25 @@ duplicate of `assetContentHashUsable` and should be collapsed by whoever next ed
 `RenderTarget::resize() == false` is unreachable from any tier without an injectable allocation
 failure — an engine change nobody has needed yet.
 
-**Carried-forward debt, and 3.4.2 adds to both halves of it.** Seven ticked validation rows across four
+**Carried-forward debt, and 3.5.1 adds to one half of it.** Seven ticked validation rows across four
 tasks were signed off with their measurement blanks empty (3.2.5 rows 3, 8, 9, 11, 13; 3.2.2 row 9;
 3.2.4 row 12) — each row's *behaviour* passed, each row's *evidence* is absent, so **R4 and R8's
 in-editor half stay unmeasured** and D9's centimetre-versus-metre comparison has no recorded figures.
-**None of Epic 3.3's three tasks is among those seven**, nor is 3.4.1 — those four had their
+**None of Epic 3.3's or Epic 3.4's five tasks is among those seven** — all five had their
 number-bearing rows written so a blank tick is impossible, which is the pattern the other four should
-be brought up to rather than the exception, and 3.4.2's twelve-row page is written the same way (row 7
-carries two trigger counts, row 9 three costs). Separately: **no Windows or Linux validation pass
-exists for any of the thirteen Phase 2 tasks, for 3.1.1–3.1.4, for 3.2.1–3.2.5, or for 3.3.1–3.3.3**,
-and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. **3.4.1 grew that debt by one
-task and 3.4.2 grows it by another**, and each carries something specific: 3.4.1's Windows lane is the
-**live retirement** of the D3D12 block-alignment rule it adopted engine-wide from documentation, and
-3.4.2's Windows and Linux lanes are the only places its preview's destroy timing differs from the
-platform it was written on — SDL frees a texture container **immediately** on Vulkan and D3D12 and
-queues it on Metal, which is exactly the class of defect its code-review round caught. That is
-platform-validation debt spanning four phases, and with macOS otherwise green it is the whole of the
-remaining validation risk. **3.4.2's own macOS pass is NOT YET RUN** — the page exists, written before
-the pass as always, and until it is run its rows 3, 4 and 6 are six declared seeds' only coverage
-*in principle* rather than in fact. The seventh, **S26, has no macOS witness at all** — SDL queues a
-texture-container free on Metal and performs it immediately on Vulkan and D3D12 — so that one seed is
-the first this project has whose only observational cover is a Windows or Linux pass.
+be brought up to rather than the exception, and 3.5.1's twelve-row page is written the same way (rows
+8–12 each carry their blank in bold). Separately: **no Windows or Linux validation pass exists for any
+of the thirteen Phase 2 tasks, for 3.1.1–3.1.4, for 3.2.1–3.2.5, for 3.3.1–3.3.3, or for 3.4.1/3.4.2**,
+and Phase 0's gate is still held open on Windows/Linux 60 fps sign-off. **3.5.1 grows that debt by one
+more task, but by less than a full task's worth**, and the difference is worth stating: CI already
+covers its sharpest cross-platform half, because `SN3` compiles and draws the skinned pipeline under
+**WARP and lavapipe** on every push — which is exactly where the tree's first `uint4` vertex attribute
+and first two-UBO vertex stage could have diverged. What the lanes do **not** cover is what a
+validation pass is for: the picture. That is platform-validation debt spanning four phases, and with
+macOS otherwise green it is the whole of the remaining validation risk. **3.5.1's own macOS pass is NOT
+YET RUN** — the page exists, written before the pass as always, and until it is run its rows 4, 5 and 6
+are four declared shader-only seeds' (S33–S36) only coverage *in principle* rather than in fact. **The
+one seed still uncovered by any pass anywhere is 3.4.2's S26**, which no Apple platform can observe.
 
 | | State |
 |---|---|
@@ -262,8 +350,8 @@ the first this project has whose only observational cover is a Windows or Linux 
 | **Phase 1** — Reflection, ECS & Serialization | **COMPLETE** — epics 1.1–1.4 all CLOSED. Gate reached in code, macOS-validated; Windows/Linux render rows pending (`samples/phase-1-scene/VALIDATION.md`). |
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics (2.1 Editor shell, 2.2 Core panels, 2.3 Manipulation, 2.4 Undo/redo, 2.5 Scene I/O, 2.6 Project system v0) CLOSED in code and macOS-validated PASS, with Windows/Linux rows pending for every task (`editor/VALIDATION.md`). The whole-phase audit (2026-08-02) fixed two silent data-loss paths, a project root that was never made absolute, two CI false-greens, and four stale documentation claims. Full per-task and per-epic history — every defect, every sabotage matrix, every deviation — lives in `docs/10-engineering-log.md`'s Phase 2 entries; this row is deliberately a summary, not a duplicate. |
 | **Phase 2 gate** | **MET 2026-08-02.** `samples/phase-2-editor-scene/` holds a project and a 4-entity scene authored entirely through the editor, with the save → New Scene → Open Scene round trip confirmed (`samples/phase-2-editor-scene/VALIDATION.md`); provenance is recorded there rather than asserted, since a hand-written `scene.json` is byte-identical to a real one and no test tier can tell them apart. Deliberately NOT `add_subdirectory`'d — this artifact is data (a provenance proof of the editor), not a compile-proof of engine code. |
-| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **Epic 3.1** is fully merged except **3.1.5 (drag-into-scene), still open**: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds), macOS-validated ✅ PASS 14/14, 14/14, 16/16, 10/10 — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash`, the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache and the real Asset Browser all shipped across them. **Epic 3.2 (Importers) is CLOSED IN CODE — five merged tasks**, one canonical in-memory `ImportedModel` and eight claimed extensions: 3.2.1 glTF/fastgltf (PR #70 `f02ca65`, ✅ 12/12), 3.2.2 FBX/ufbx (PR #71 `c597a5b`, ✅ 13/13), 3.2.3 OBJ/tinyobjloader (PR #72 `c412e83`, ✅ 13/13), 3.2.4 Blender CLI/`.blend` (PR #73 `5ab07f3`, ✅ 15/15), 3.2.5 Assimp DAE/PLY/STL (PR #74 `7e0224f`, ✅ 14/14). Windows/Linux rows pending for all five, and seven of their ticked rows are missing the measurement they asked for. **Epic 3.3 (Cooker v0) is CLOSED — three merged tasks, every one CI-green on all three lanes with `headSha == HEAD` asserted, and every one macOS-validated with every measurement blank filled**: 3.3.1 Mesh cook → GPU buffers (PR #75 `17a6821`, 13 commits, 42 seeds, ✅ 12/12) opened `engine/assets` and `tools/cooker` and produced the tree's first binary format and first runtime-consumable artifact; 3.3.2 Texture cook → KTX2/Basis (PR #76 `cf8575a`, 15 commits, 53 seeds, ✅ every row) added the KTX2 subset container, the texture cook and the two integer block encoders, and is the first artifact this project produces that a third-party tool can open — `ktx validate` 4.4.2 PASS on all eight artifacts, proven non-vacuous by re-seeding the corrected DFD byte and watching the validator reject it with the exact predicted `error-6028`; 3.3.3 Cook determinism golden test (PR #77 `234a009`, 8 commits, 24 seeds, ✅ 13/13) ships zero C++ and turns cross-lane, cross-config and cross-time byte-identity into a continuous CI check. Windows/Linux rows pending for all three. **Epic 3.4 (PBR materials) is OPEN with BOTH its tasks done in code.** **3.4.1 (Material asset + PBR shader) is MERGED as PR #78 (merge commit `a01765d`, 10 commits), CI-green on all three lanes with `headSha == HEAD` asserted before the merge, and macOS-validated ✅ PASS on ALL 11 ROWS (2026-08-16) with every measurement blank filled — 6 cooked textures upload in 6.2 ms (mean 1.0 ms), the sample holds ~121 fps, and the sidecars read 5/2 and 0/1.** It made a cooked texture mean something: the first cooked texture ever drawn on a GPU here, the first `.aeromat` parsed end to end, the first asset resolved at run time by GUID, six BC formats and `textureLevelByteSize` in `engine/rhi` (recorded per the 0.4.1 D18 protocol), `docs/09`'s normative §11, the `MaterialHandle` registry, and the GGX shader pair rewritten in place. **3.4.2 (Material inspector editing) is MERGED as PR #79 (merge commit `3aebbad`, 15 commits), CI-green on all three lanes with `headSha == HEAD` asserted before the merge, and macOS-validated ✅ PASS on ALL 12 ROWS (2026-08-16) with every measurement blank filled — Apply echoes +1 and Create +1 (not +2), the panel first-opens inside a single vsync-paced frame, and the worst committed fixture uploads in 2.1 ms.** It is the task that makes materials editable rather than hand-authored: four editor pairs (`material_edit` pure, `material_session` GPU-free, `material_panel` the only new ImGui TU, `material_preview` the only new GPU TU), `AssetKind::Material`, the eighth panel (id `"Material"`, FROZEN, right dock, registered last), a live preview with its own `RenderTarget` and its own `ForwardRenderer` that gives `updateMaterial` its **first production call site**, slot textures through the real decode → cook → parse → upload chain, and a New Material button. **Two recorded deviations**: `aero::render` joins `aero_editor_core`'s PUBLIC link group (the spec's "no link-line change" and its own AC-25 cannot both hold, since `aero::scene_render` is PRIVATE), and `MaterialParseResult` gains a `warnings` vector under D11's own escape hatch — so **AC-34 is amended and `engine/` is NOT byte-identical**, the diff being exactly `engine/reflect/{include/aero/reflect/material_format.hpp, src/material_format.cpp}`, with `tools/`, `shaders/`, `runtime/`, `samples/`, `vcpkg.json`, `.github/`, `cmake/` and the determinism manifest all byte-identical and **no dependency of any kind**. Mechanical gate green: **133/133 on both macOS presets** with `AERO_REQUIRE_GPU=1`; fresh `-G Ninja` reduced configurations **44/44** and **57/57**; `ctest -N` **133 / 44 / 57 — unmoved**, because every new test rides an existing binary and each editor test binary is ONE ctest entry, so the growth reads only in the doctest totals (**716 / 1577 / 124 / 23 / 22**; `aero_tests` 713 → 716 is a plan-recorded surprise caused by the reflect deviation); six guards exit 0 (math-boundary **347**, project-no-delete Check B **64**); clang-format and clang-tidy clean by exit code. A **30-seed** matrix ran to completion with **two genuine gaps**, both closed **structurally** and re-proven by re-seeding, and six of the plan's own witness attributions corrected. A code-review round found **eleven gaps, two blocking**, all closed — including a use-after-free that is deterministic on Vulkan and D3D12 and benign on Metal. Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
-| **Next task** | **~~3.4.1~~ DONE, MERGED and macOS-VALIDATED** (PR #78, `a01765d`). **~~3.4.2~~ DONE, MERGED and macOS-VALIDATED** as PR #79 (`3aebbad`), CI-green on all three lanes with `headSha == HEAD` asserted, ✅ PASS on all 12 rows. Its Windows and Linux lanes were the first run of the preview's second `RenderTarget` under WARP and lavapipe — exactly where a mistimed texture release bites and Metal does not — and both passed. **S26 remains uncovered by any pass and cannot be covered from macOS** — SDL queues the texture-container free on Metal and performs it immediately on Vulkan and D3D12, so it waits on a Windows or Linux run. Immediate next steps, in order: **(a) 3.1.5 (drag-into-scene)**, fully unblocked and now additionally unblocked for material assignment by 3.4.2's picker and session — it owns four decisions: sub-asset identity (3.2.1's D13), replacing `LOCAL_MESH_HALF_EXTENT` (2.3.1's knowingly-wrong constant), **the node-hierarchy gap 3.3.1 named but does not own**, and the `MeshRenderer` material field this epic has been deferring to it. And **(b) the seven ticked-but-unmeasured validation rows**, plus the four-phase Windows/Linux platform-validation debt, which with macOS otherwise green is the whole of the remaining validation risk. **A note for whoever adds a fixture or a cook change next**: `tests/cooker/determinism.sha256` is FROZEN, a red manifest case is `docs/09` §9.11's `cookerVersion` sentence firing, and the regeneration ritual lives in the manifest's own header — never edit a hash to green a red run. See `docs/tasks/phase-3.md`. |
+| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **Epic 3.1** is fully merged except **3.1.5 (drag-into-scene), still open**: 3.1.1/3.1.2/3.1.3/3.1.4 (PRs #65/#66/#67/#69), CI-green on all three platforms, sabotage-proven (26/31/35/25 seeds), macOS-validated ✅ PASS 14/14, 14/14, 16/16, 10/10 — Windows/Linux rows pending for all four. `engine::Guid`/`engine::ContentHash`, the `.meta` v1 format, `AssetDatabase::rescan`'s eight phases, the machine-local `Library/asset-cache.json` import cache and the real Asset Browser all shipped across them. **Epic 3.2 (Importers) is CLOSED IN CODE — five merged tasks**, one canonical in-memory `ImportedModel` and eight claimed extensions: 3.2.1 glTF/fastgltf (PR #70 `f02ca65`, ✅ 12/12), 3.2.2 FBX/ufbx (PR #71 `c597a5b`, ✅ 13/13), 3.2.3 OBJ/tinyobjloader (PR #72 `c412e83`, ✅ 13/13), 3.2.4 Blender CLI/`.blend` (PR #73 `5ab07f3`, ✅ 15/15), 3.2.5 Assimp DAE/PLY/STL (PR #74 `7e0224f`, ✅ 14/14). Windows/Linux rows pending for all five, and seven of their ticked rows are missing the measurement they asked for. **Epic 3.3 (Cooker v0) is CLOSED — three merged tasks, every one CI-green on all three lanes with `headSha == HEAD` asserted, and every one macOS-validated with every measurement blank filled**: 3.3.1 Mesh cook → GPU buffers (PR #75 `17a6821`, 13 commits, 42 seeds, ✅ 12/12) opened `engine/assets` and `tools/cooker` and produced the tree's first binary format and first runtime-consumable artifact; 3.3.2 Texture cook → KTX2/Basis (PR #76 `cf8575a`, 15 commits, 53 seeds, ✅ every row) added the KTX2 subset container, the texture cook and the two integer block encoders, and is the first artifact this project produces that a third-party tool can open — `ktx validate` 4.4.2 PASS on all eight artifacts, proven non-vacuous by re-seeding the corrected DFD byte and watching the validator reject it with the exact predicted `error-6028`; 3.3.3 Cook determinism golden test (PR #77 `234a009`, 8 commits, 24 seeds, ✅ 13/13) ships zero C++ and turns cross-lane, cross-config and cross-time byte-identity into a continuous CI check. Windows/Linux rows pending for all three. **Epic 3.4 (PBR materials) is CLOSED — both tasks merged, CI-green on all three lanes with `headSha == HEAD` asserted, and macOS-validated with every measurement blank filled.** **3.4.1 (Material asset + PBR shader) is MERGED as PR #78 (merge commit `a01765d`, 10 commits), CI-green on all three lanes with `headSha == HEAD` asserted before the merge, and macOS-validated ✅ PASS on ALL 11 ROWS (2026-08-16) with every measurement blank filled — 6 cooked textures upload in 6.2 ms (mean 1.0 ms), the sample holds ~121 fps, and the sidecars read 5/2 and 0/1.** It made a cooked texture mean something: the first cooked texture ever drawn on a GPU here, the first `.aeromat` parsed end to end, the first asset resolved at run time by GUID, six BC formats and `textureLevelByteSize` in `engine/rhi` (recorded per the 0.4.1 D18 protocol), `docs/09`'s normative §11, the `MaterialHandle` registry, and the GGX shader pair rewritten in place. **3.4.2 (Material inspector editing) is MERGED as PR #79 (merge commit `3aebbad`, 15 commits), CI-green on all three lanes with `headSha == HEAD` asserted before the merge, and macOS-validated ✅ PASS on ALL 12 ROWS (2026-08-16) with every measurement blank filled — Apply echoes +1 and Create +1 (not +2), the panel first-opens inside a single vsync-paced frame, and the worst committed fixture uploads in 2.1 ms.** It is the task that makes materials editable rather than hand-authored: four editor pairs (`material_edit` pure, `material_session` GPU-free, `material_panel` the only new ImGui TU, `material_preview` the only new GPU TU), `AssetKind::Material`, the eighth panel (id `"Material"`, FROZEN, right dock, registered last), a live preview with its own `RenderTarget` and its own `ForwardRenderer` that gives `updateMaterial` its **first production call site**, slot textures through the real decode → cook → parse → upload chain, and a New Material button. **Two recorded deviations**: `aero::render` joins `aero_editor_core`'s PUBLIC link group (the spec's "no link-line change" and its own AC-25 cannot both hold, since `aero::scene_render` is PRIVATE), and `MaterialParseResult` gains a `warnings` vector under D11's own escape hatch — so **AC-34 is amended and `engine/` is NOT byte-identical**, the diff being exactly `engine/reflect/{include/aero/reflect/material_format.hpp, src/material_format.cpp}`, with `tools/`, `shaders/`, `runtime/`, `samples/`, `vcpkg.json`, `.github/`, `cmake/` and the determinism manifest all byte-identical and **no dependency of any kind**. Mechanical gate green: **133/133 on both macOS presets** with `AERO_REQUIRE_GPU=1`; fresh `-G Ninja` reduced configurations **44/44** and **57/57**; `ctest -N` **133 / 44 / 57 — unmoved**, because every new test rides an existing binary and each editor test binary is ONE ctest entry, so the growth reads only in the doctest totals (**716 / 1577 / 124 / 23 / 22**; `aero_tests` 713 → 716 is a plan-recorded surprise caused by the reflect deviation); six guards exit 0 (math-boundary **347**, project-no-delete Check B **64**); clang-format and clang-tidy clean by exit code. A **30-seed** matrix ran to completion with **two genuine gaps**, both closed **structurally** and re-proven by re-seeding, and six of the plan's own witness attributions corrected. A code-review round found **eleven gaps, two blocking**, all closed — including a use-after-free that is deterministic on Vulkan and D3D12 and benign on Metal. **Epic 3.5 (Skeletal animation · render) is OPEN, and 3.5.1 (Skeleton & GPU skinning) is COMPLETE IN CODE on `feat/3.5.1-skeleton-gpu-skinning` (thirteen commits, tip `73052bc`) and PENDING its macOS validation pass — not yet pushed, not yet merged.** It builds the whole missing half between the importers and the GPU: the **first `.aeroskel`** (`docs/09` gains normative **§12**; Reserved renumbers §12 → **§13** and gains `.aeroanim` for 3.5.2), the tree's **first mesh registry**, the **first integer vertex attribute** and **first two-UBO vertex stage**, and **pipelines 2 → 4**. Two `engine/assets` pairs (`cooked_skeleton`, `skeleton_cook`), one editor pair (`skeleton_cook_source`, the **sixteenth**, and the fourth consumer of the `localId` rule), four `engine/render` files (`skinning.{hpp,cpp}` + src-private `skinning_pack.hpp`/`mesh_pack.hpp`) plus the registry inside `ForwardRenderer`, one new shader, one cooker subcommand, and `samples/phase-3-skinning`. **`GLTF_IMPORTER_VERSION` moves 1 → 2** because `--no-skins` finally means something for glTF, and the machine-local import cache re-imports every `.gltf`/`.glb` once per machine and nothing else. Mechanical gate green: **144/144 on both macOS presets** with `AERO_REQUIRE_GPU=1`; fresh `-G Ninja` reduced configurations; `ctest -N` **144 / 55 / 68**, +11 in **all three** configurations in lockstep (the eleven ungated `cooker.*` cases; every other new case rides an existing binary), doctest **773 / 1594 / 124 / 23 / 22**; six guards exit 0 (math-boundary **363**, project-no-delete Check B **65**); clang-format and clang-tidy clean by exit code. The determinism manifest grows **13 → 15 lines / 26 → 30 cross-lane comparisons**, `ktx validate`'s 8 unchanged, with all 13 existing hashes byte-identical. **`engine/rhi`, `engine/scene*`, `engine/reflect`, `engine/platform`, `engine/core`, `runtime/`, `vcpkg.json`, `cmake/` and `.github/scripts/` are byte-identical; no link line moves anywhere; no dependency of any kind lands.** A **36-seed** matrix ran to completion with **three genuine gaps**, all closed structurally and re-proven by re-seeding, six of the plan's own witness attributions corrected, and four declared shader-only seeds (S33–S36) whose only coverage anywhere is validation rows 4, 5 and 6. Full detail for every task in `docs/10-engineering-log.md`'s Phase 3 entries. |
+| **Next task** | **~~3.4.1~~ DONE, MERGED and macOS-VALIDATED** (PR #78, `a01765d`). **~~3.4.2~~ DONE, MERGED and macOS-VALIDATED** (PR #79, `3aebbad`, ✅ 12/12); its Windows and Linux lanes were the first run of the preview's second `RenderTarget` under WARP and lavapipe — exactly where a mistimed texture release bites and Metal does not — and both passed, while **S26 remains uncovered by any pass and cannot be covered from macOS**. **3.5.1 is COMPLETE IN CODE and its twelve-row macOS pass is the immediate next step** (`editor/validation/3.5.1-skeleton-gpu-skinning.md`, written before the pass): rows 4, 5 and 6 are the only coverage S33–S36 have anywhere, rows 7 and 8 need locally-generated content that is deliberately not committed (an over-85-joint chain, and a rigged humanoid ≤ 85 joints), and both are driven through the sample's `argv[1]` override. After that: **(a) 3.1.5 (drag-into-scene)**, fully unblocked, additionally unblocked for material assignment by 3.4.2's picker and session, and now handed a **working `createMesh`/draw path** by 3.5.1 — it owns four decisions: sub-asset identity (3.2.1's D13), replacing `LOCAL_MESH_HALF_EXTENT` (2.3.1's knowingly-wrong constant), **the node-hierarchy gap 3.3.1 named but does not own**, and the `MeshRenderer` material field this epic has been deferring to it. **(b) 3.5.2 (animation clips)**, unblocked with its seam already written down: `render::JointPose` is the sampler's output type, `sourceNodeLocalId` is the clip→joint binding key, and `.aeroanim` is reserved by name in `docs/09` §13. And **(c) the seven ticked-but-unmeasured validation rows**, plus the four-phase Windows/Linux platform-validation debt, which with macOS otherwise green is the whole of the remaining validation risk. **A note for whoever adds a fixture or a cook change next**: `tests/cooker/determinism.sha256` is FROZEN at **15 lines across three arms**, a red manifest case is `docs/09` §9.11's `cookerVersion` sentence firing, and the regeneration ritual lives in the manifest's own header — never edit a hash to green a red run. See `docs/tasks/phase-3.md`. |
 
 Engine layers that exist today, in dependency order: `core` (gained `guid.hpp`/`guid.cpp` at task
 3.1.1, beside `handle.hpp`; gained `content_hash.hpp`/`content_hash.cpp` at task 3.1.2, beside `guid`)
@@ -273,9 +361,10 @@ Engine layers that exist today, in dependency order: `core` (gained `guid.hpp`/`
 **`engine/assets/` OPENED at task 3.3.1** and its `.gitkeep` is gone. The old reason for keeping it
 shut — "unopened until a **runtime** consumer exists (Phase 5's pak table)" — was satisfied by the
 task itself: the `.aeromesh` container's *reader* **is** a runtime component by definition, so the
-consumer in question is the thing being built. It holds the cooked-asset formats and nothing else — **five pairs since task
-3.3.2**: `cooked_mesh.{hpp,cpp}`, `mesh_cook.{hpp,cpp}`, `cooked_texture.{hpp,cpp}`,
-`texture_cook.{hpp,cpp}` and `bc_block.{hpp,cpp}`; it links `aero::core` + `aero::profiling` and **no
+consumer in question is the thing being built. It holds the cooked-asset formats and nothing else — **seven pairs since task
+3.5.1**: `cooked_mesh.{hpp,cpp}`, `mesh_cook.{hpp,cpp}`, `cooked_texture.{hpp,cpp}`,
+`texture_cook.{hpp,cpp}`, `bc_block.{hpp,cpp}`, `cooked_skeleton.{hpp,cpp}` and
+`skeleton_cook.{hpp,cpp}`; it links `aero::core` + `aero::profiling` and **no
 vcpkg package at all**, and adding a `find_package` there would void that boundary silently while CI
 stayed green — which is also why the stb_image decode lives in `/editor` rather than here. The editor's `AssetDatabase` and its import cache (3.1.1/3.1.2) still live entirely in
 `/editor`, not here. **`tools/` no longer links zero engine targets**: `aero_cooker` links
@@ -313,6 +402,19 @@ never disagree. No format change, no version bump, **no link-line change**, no d
 adds the tree's second editor→engine link edge: **`aero::render` joins `aero_editor_core`'s PUBLIC
 group**, so a public editor header can name `render::MaterialParams`; `aero::scene_render` stays
 PRIVATE, and that distinction is the point rather than an oversight.
+**Task 3.5.1's whole `engine/` diff is two new `engine/assets` pairs** (`cooked_skeleton`,
+`skeleton_cook` — the subdirectory's first growth since 3.3.2, `engine/CMakeLists.txt` untouched) **and
+four new `engine/render` files** (`skinning.{hpp,cpp}` public, `src/skinning_pack.hpp` and
+`src/mesh_pack.hpp` src-private), plus the mesh registry inside `forward_renderer.{hpp,cpp}`, three
+defaulted members on `MeshInstance`, `MeshTag`/`MeshHandle` in `mesh.hpp` and one umbrella include.
+**`engine/rhi`, `engine/scene`, `engine/scene_render`, `engine/scene_serialize`, `engine/reflect`,
+`engine/platform`, `engine/core` and all five pre-existing `engine/assets` pairs are byte-identical**,
+as are `runtime/`, `vcpkg.json`, `cmake/` and `.github/scripts/`. **No link line moves anywhere and no
+dependency of any kind lands**: `skinning.hpp` naming `assets::CookedSkeleton` rides `aero_render`'s
+existing `PUBLIC aero::assets` (3.4.1's edge), the adapter rides `aero_editor_core`'s, and the
+subcommand rides `aero_cooker`'s. `shaders/CMakeLists.txt` gains **exactly one line** and both existing
+scene shaders are byte-identical — a second vertex shader shares the fragment stage rather than forking
+it, so nothing downstream can tell which VS fed it.
 `/editor` gained **ten** new `.hpp`/`.cpp` pairs across 2.6.2, 3.1.1, 3.1.2, 3.1.3 and 3.1.4
 (`project_settings.{hpp,cpp}` / `project_settings_panel.{hpp,cpp}` (2.6.2),
 `asset_meta.{hpp,cpp}` / `asset_database.{hpp,cpp}` (3.1.1), `asset_cache.{hpp,cpp}` (3.1.2),
@@ -349,35 +451,44 @@ PURE — the document→render bridge; no ImGui, no disk, no GPU call, no loggin
 **one** `.aeromat` write path), `material_panel.{hpp,cpp}` (src-private, the only new ImGui TU) and
 `material_preview.{hpp,cpp}` (src-private, the only new GPU TU). It also adds two pure predicates to
 existing public headers, both forced by its code-review round: `listingIsComplete` in
-`project_files.hpp` and `assetContentHashUsable` in `asset_meta.hpp`. The `.hpp`s live under
+`project_files.hpp` and `assetContentHashUsable` in `asset_meta.hpp`.
+**3.5.1 adds ONE more pair, taking the count to SIXTEEN** (re-counted at task end, never added to the
+remembered number): `skeleton_cook_source.{hpp,cpp}` (PUBLIC and PURE — the `ImportedModel` → skeleton
+cook adapter, on `mesh_cook_source`'s terms: no disk, no UI, no SDL, no `<filesystem>`, no logging, and
+warnings **returned** rather than printed). It is the **fourth named consumer of the `localId` rule**
+and the first outside a panel; it also gates `gltf_import.cpp`'s `JOINTS_0`/`WEIGHTS_0` reads on
+`importSkins` and moves `GLTF_IMPORTER_VERSION` 1 → 2. The `.hpp`s live under
 `editor/include/aero/editor/` (except those named src-private, which live beside their `.cpp` in
-`editor/src/` — 21 tracked `editor/src/*.hpp` in total), the `.cpp`s under `editor/src/`.
+`editor/src/` — 21 tracked `editor/src/*.hpp` in total, unmoved at 3.5.1 because its header is public),
+the `.cpp`s under `editor/src/`.
 
-Test inventory at `main` after PR #79 (`3aebbad`), every number
+Test inventory on `feat/3.5.1-skeleton-gpu-skinning`, measured at `db888e1` (the one later code commit
+is shader-only and moves no count), every number
 **re-measured there, never derived by addition and never carried forward from an earlier step or an
 earlier task** — read the totals from doctest's own `filters:` line, never from a `grep -c` of case
-names. **`ctest -N` reads 133 / 44 / 57 and DID NOT MOVE at 3.4.1 or at 3.4.2** — tools ON, then
+names. **`ctest -N` reads 144 / 55 / 68** — tools ON, then
 `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`, then `-DAERO_REFLECT_TOOLS=OFF` alone. **The
 reason matters more than the number**: `aero_tests`, `aero_editor_shell_test` and
 `aero_editor_imgui_test` each register with ctest as a **single entry** (`tests/CMakeLists.txt`), so
-3.4.1's 57 new doctest cases and 3.4.2's **84** move nothing there at all, and samples register no
-test. An unmoved `ctest -N` means "zero C++" for task 3.3.3 and means nothing of the kind for either
-3.4 task — check a zero-C++ claim against the **doctest** totals instead. The triple
-last moved for the cooker's own cases (**117 → 131 → 133**, **28 → 42 → 44**, **41 → 55 → 57**),
-because `aero_cooker` takes **no gate flag** and its 38 cases plus 3.3.3's two manifest cases are
-registered everywhere; a future gate flag on the cooker would silently shrink the reduced
-configurations' coverage with no test able to report it.
+3.4.1's 57 new doctest cases, 3.4.2's 84 and 3.5.1's **74** move it not at all, and samples register no
+test. **The triple moves only for `cooker.*` cases** (**117 → 131 → 133 → 144**, **28 → 42 → 44 → 55**,
+**41 → 55 → 57 → 68**), because `aero_cooker` takes **no gate flag** and every one of its cases is
+registered in every configuration; 3.5.1's +11 (ten skeleton-subcommand arms plus the third manifest
+arm) is therefore **identical in all three**, and that lockstep is itself an assertion — a smaller move
+in a reduced configuration would mean the cooker block had accidentally grown a gate. **A future gate
+flag on the cooker would silently shrink the reduced configurations' coverage with no test able to
+report it.** An unmoved `ctest -N` means "zero C++" for task 3.3.3 and means nothing of the kind for a
+task that grows an existing binary — check a zero-C++ claim against the **doctest** totals instead.
 
-Doctest, all five binaries: **716 / 1577 / 124 / 23 / 22**. `aero_tests` **713 → 716** — `MT35`–`MT37`
-on the grown `tests/material_format_test.cpp`, and a **plan-recorded surprise**: 3.4.2's AC-38 expected
-this binary unmoved, and the `MaterialParseResult` warnings deviation is exactly why it is not.
-`aero_editor_shell_test` **1516 → 1577** (+61: the new `tests/editor/material_edit_test.cpp` with
-`ME1`–`ME50` plus `ME14b`, then `AV48`–`AV54`, `PF-c6`/`PF-c7` and `MI154`), and
-`aero_editor_imgui_test` **104 → 124** (+20: `I83`–`I102`, of which `I95`–`I98` and `I102` are
-comment-stripped **source-text pins** for rules no runtime tier here can see).
-`aero_scene_serialize_test` **23** and `aero_editor_inspector_test` **22** are **unmoved**. Both
-reduced configurations were built FRESH in `build/tools-off-3.4.2` / `build/reflect-off-3.4.2` and are
-green at **44/44** and **57/57**, with `ME1` present in both.
+Doctest, all five binaries: **773 / 1594 / 124 / 23 / 22**. `aero_tests` **716 → 773** (+57:
+`SK1`–`SK20` and `KC1`–`KC18` on the `.aeroskel` container and its cook, plus `JP1`–`JP13` and
+`SN1`–`SN6` on the pose/palette/repack tier and the GPU-gated registry and skinned draw, across three
+new TUs). `aero_editor_shell_test` **1577 → 1594** (+17: the new
+`tests/editor/skeleton_cook_source_test.cpp` with `KS1`–`KS14`, plus `MI155`–`MI157` asserting that
+`importSkins == false` means the same thing in all three skinning-capable importers).
+`aero_editor_imgui_test` **124**, `aero_scene_serialize_test` **23** and `aero_editor_inspector_test`
+**22** are all **unmoved** — 3.5.1 adds no editor UI at all, as predicted. Both reduced configurations
+were built FRESH in `build/tools-off-3.5.1` / `build/reflect-off-3.5.1`.
 **A reduced-configuration probe must be configured with `-G Ninja`**: `CMAKE_GENERATOR` enters the
 shadercross bootstrap's option hash, so the generator-less form reads the cached toolchain as COLD and
 pays a from-source DXC rebuild that peaked at 7.6 GB here before a memory guard killed it. **And it
@@ -386,20 +497,25 @@ preview cases that assert the wrong contract in a tools-OFF build (115/120) surv
 gate. `aero_editor_imgui_test` now carries `AERO_SHADER_TOOLS_ENABLED=1` in its own
 `if(AERO_SHADER_TOOLS)` block and **both arms assert** — a skip would leave AC-32 untested in the one
 configuration that can test it.
-`aero_editor_core` sources **59 → 63** and tracked `editor/src/*.cpp` **60 → 64** (3.4.2's four pairs).
-`check-math-boundary.sh`'s scanned count **338 → 347** (eight new editor C-family files plus one test
-TU — exactly the prediction, re-measured **after `git add`**, since `git ls-files` sees only tracked
-files) and `check-project-no-delete.sh`'s Check B scan **60 → 64**, its glob picking the new files up
-automatically — **neither script changes, and `.github/scripts/` is byte-identical to `main`.** Guard
-count stays **six**; Check A's six-file denylist and Check B's two-file `PERMITTED_DELETERS` are
-unchanged in membership, and 3.4.2's four new TUs are in **neither**, which is what makes a future
-destructive call in them a hard CI failure. The other four guards read 102 / 61 / 100 / 61.
+`aero_editor_core` sources **63 → 64** and tracked `editor/src/*.cpp` **64 → 65** (3.5.1's one pair).
+`check-math-boundary.sh`'s scanned count **347 → 363** (+16 tracked C-family files: 4 `engine/assets`,
+4 `engine/render`, 2 `editor`, 5 `tests` and 1 sample `main.cpp` — exactly the prediction, re-measured
+**after `git add`**, since `git ls-files` sees only tracked files; `.hlsl`, `.gltf`, `.aeromesh` and
+`.aeroskel` are not C-family) and `check-project-no-delete.sh`'s Check B scan **64 → 65**, its glob
+picking the new file up automatically — **neither script changes, and `.github/scripts/` is
+byte-identical to `main`.** Guard count stays **six**; Check A's six-file denylist and Check B's
+two-file `PERMITTED_DELETERS` are unchanged in membership, and `skeleton_cook_source.cpp` is in
+**neither**, which is what makes a future destructive call in it a hard CI failure.
 **Committed images: two at `tests/fixtures/assets/` (3.3.2) plus six 32×32 PNGs and six `.ktx2` under
 `samples/phase-3-materials/textures/` (3.4.1)** — the `.ktx2` cooked once with pinned GUIDs and
 regenerable byte-identically from the PNGs by the README's recorded commands, which is 3.3.3's
 guarantee being spent rather than re-proven. **Committed text fixtures gained seven `.aeromat` files at
 `tests/fixtures/materials/` (3.4.2)**, reached through `AERO_MATERIAL_FIXTURES_DIR` — a path, not a
-flag, so a missing one is a `REQUIRE` failure rather than a silent skip.
+flag, so a missing one is a `REQUIRE` failure rather than a silent skip. **3.5.1 commits the tree's
+first `.aeromesh` and first `.aeroskel`** — `samples/phase-3-skinning/arm.aeromesh` (7216 B) and
+`arm.aeroskel` (704 B), two cooks of one self-authored `arm.gltf` under **one pinned GUID**, since
+`sourceGuid` means "the asset these bytes came from" — plus one `tests/cooker/fixtures/skinned-quad.gltf`
+whose two manifest lines are the first cross-lane witness the skinned emit path has ever had.
 `git grep -nE '_WIN32|__APPLE__|__linux__' -- engine/assets tools/cooker` reads **zero lines**, and the
 same grep over `editor/src` + `editor/include` still reads **exactly three lines in one file**
 (3.2.4's `currentHostOs()`). Every purity grep over `engine/assets` (`<filesystem>`, `<fstream>`,

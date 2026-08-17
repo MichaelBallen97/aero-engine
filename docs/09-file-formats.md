@@ -883,8 +883,9 @@ outright (9.11 says why).
 
 **What v1 stores:** geometry only — interleaved vertex blobs at GPU stride, one index buffer, an
 axis-aligned box per submesh and one for the model, plus each submesh's source coordinates and
-material index. **What it does not store:** node hierarchy, materials, images, skeletons, inverse bind
-matrices and animation. A consumer that instantiates a cooked mesh with no hierarchy therefore puts
+material index. **What it does not store:** node hierarchy, materials, images, skeletons and inverse
+bind matrices — which, since task 3.5.1, live in section 12's sibling container (`.aeroskel`) — and
+animation. A consumer that instantiates a cooked mesh with no hierarchy therefore puts
 every submesh at the origin. **That gap is named, not owned** — a cooked model/prefab container
 carrying the node tree is the right answer and belongs to whoever owns instantiation; task 3.1.5 is
 the first task that will hit it.
@@ -1907,7 +1908,7 @@ reference 2D textures.
   does not exist. It is a version-bump candidate the day a second one does.
 - **No texture paths.** Only GUIDs — the resolution step belongs to whoever owns the loaded set (the
   asset database in the editor, the pak in the runtime).
-- **No cooked or binary form.** Section 12's bullet names the owner.
+- **No cooked or binary form.** Section 13's bullet names the owner.
 
 ### 11.6 Versioning
 
@@ -1927,13 +1928,308 @@ Two worked evolution cases, so the boundary is not re-argued each time:
 
 ---
 
-## 12. Reserved for future formats
+## 12. Cooked skeleton container v1 (`.aeroskel`)
+
+> Enforced in code by `engine/assets` (`cooked_skeleton.{hpp,cpp}` = the format and its parser,
+> `skeleton_cook.{hpp,cpp}` = the producer, task 3.5.1); the doctest batteries in
+> `tests/cooked_skeleton_test.cpp` and `tests/skeleton_cook_test.cpp` are its machine-checkable form,
+> and `tests/cooked_skeleton_golden.hpp` holds two byte-level goldens. Produced by
+> `aero_cooker skeleton`.
+
+### 12.0 Scope
+
+**One skin's deformation rig, and nothing else.** A `.aeroskel` stores the joints a skinned mesh
+binds to: each joint's bind-**local** TRS, its parent, its inverse bind matrix and the palette slot a
+vertex's `Joints0` index names. It is a **sibling** of section 9's `.aeromesh`, not a region inside
+one, because a skeleton is a property of a *skin* while a cooked mesh is a property of a *model* —
+and making it a sibling is what let it ship without bumping `.aeromesh`'s `formatVersion` or churning
+a single mesh golden.
+
+**What it does not carry is 12.11's list**, and one omission is worth stating up front: this format
+carries **no placement**. It is a rig, not a scene node — where the rig stands in the world is the
+consumer's business, exactly as it is for a cooked mesh.
+
+**One deliberate asymmetry with 9.2, and it is a parse requirement rather than a convention: a
+`.aeroskel` is NEVER EMPTY.** Both `jointCount` and `paletteJointCount` are ≥ 1, and a buffer
+declaring zero of either is refused. Section 9.2's empty file is legal because a model whose every
+primitive was dropped is still an asset that must have an artifact; the skeleton cook is per-**skin**,
+so a model with no skin produces **no artifact at all** and a CLI error, never an empty one. An empty
+skeleton is not a degenerate rig; it is the absence of one.
+
+### 12.1 Conventions
+
+**Section 9.1 applies by reference and unchanged**: little-endian declared rather than native, formed
+and read exclusively through the same eight `constexpr` primitives whose endianness is a
+`static_assert`; IEEE-754 binary32 floats moved bit for bit through `std::bit_cast`; counts are `u32`
+and byte totals are `u64`; `sizeof` is never taken of an on-disk record.
+
+Two things differ from section 9 and are restated here rather than inherited:
+
+- **There is no padding site anywhere in this format.** The header is 64 bytes and a joint record is
+  128 (a multiple of 16), so `totalBytes = 64 + 128 × jointCount` **always**, with no gap between any
+  two regions and no alignment arithmetic for a reader to reproduce. Section 9.1's 16-alignment rule
+  for stored offsets has nothing to apply to: this format stores no offsets at all.
+- **The two `COOKED_SKELETON_*_BYTES` constants (64 / 128) are the only sizes**, the same rule as
+  section 9.1's four.
+
+The cook performs **zero floating-point arithmetic** (12.6).
+
+### 12.2 The header — 64 bytes at offset 0
+
+| Offset | Size | Type | Field | Meaning |
+|---|---|---|---|---|
+| 0 | 8 | `char[8]` | `magic` | `AEROSKEL`, ASCII, **no NUL terminator**; compared over all eight bytes |
+| 8 | 4 | `u32` | `formatVersion` | must equal `1`; a different value is refused |
+| 12 | 4 | `u32` | `cookerVersion` | the producing cooker's version. **Informational** — never gates a parse |
+| 16 | 8 | `u64` | `sourceGuid.hi` | the source asset's GUID, high half first |
+| 24 | 8 | `u64` | `sourceGuid.lo` | the low half. The nil GUID (both zero) is legal |
+| 32 | 4 | `u32` | `reservedFlags` | **must be 0** — a non-zero value is a refusal (12.7) |
+| 36 | 4 | `u32` | `jointCount` | total joint records. **≥ 1**, ≤ `MAX_COOKED_SKELETON_JOINTS` |
+| 40 | 4 | `u32` | `paletteJointCount` | skin slots. **≥ 1**, ≤ `MAX_COOKED_SKELETON_PALETTE`, and ≤ `jointCount` |
+| 44 | 4 | `u32` | `sourceSkinIndex` | the **position** in `ImportedModel::skins` — see below |
+| 48 | 8 | `u64` | `totalBytes` | must equal the buffer's own size **and** `64 + 128 × jointCount` |
+| 56 | 4 | `u32` | `reserved0` | **must be 0** |
+| 60 | 4 | `u32` | `reserved1` | **must be 0** |
+
+**`sourceSkinIndex` is the POSITION in `ImportedModel::skins`, never a `localId`** — the same
+discipline section 9.5 states for `sourceMeshIndex`, one table over. One invocation cooks one skin,
+chosen by that position, so a two-skin model produces two artifacts and a warning naming the total.
+
+`totalBytes` is **stored and compared, never derived**: the parser checks the stored value against the
+buffer's own size *and* against the format's own arithmetic. Deriving it from `jointCount` and
+carrying on would make the field decorative, and a file whose header and body disagree is exactly the
+file this check exists to refuse.
+
+### 12.3 Joint records — 128 bytes each, packed at offset 64
+
+`jointCount` records, packed, starting immediately after the header. Record *i* begins at
+`64 + 128 × i`.
+
+| Offset | Size | Type | Field | Meaning |
+|---|---|---|---|---|
+| 0 | 4 | `u32` | `parent` | index into this table; `0xFFFFFFFF` = root; otherwise **must be strictly less than this record's own index** (12.4) |
+| 4 | 4 | `u32` | `paletteSlot` | `< paletteJointCount`, or `0xFFFFFFFF` = **hierarchy-only**; the non-INVALID slots form a **bijection** onto `[0, paletteJointCount)` |
+| 8 | 4 | `u32` | `sourceNodeLocalId` | provenance: the source node's `localId`. The binding key a cooked animation clip (section 13) resolves against |
+| 12 | 4 | `u32` | `reserved0` | **must be 0** |
+| 16 | 12 | `f32[3]` | `translation` | bind-**local** TRS, x/y/z, bit-copied |
+| 28 | 16 | `f32[4]` | `rotation` | quaternion, **x, y, z, w** — glTF's accessor order, which is also `engine::Quat`'s member order |
+| 44 | 12 | `f32[3]` | `scale` | x/y/z |
+| 56 | 64 | `f32[16]` | `inverseBind` | **column-major**, cell for cell, bit-copied; **identity** for a hierarchy-only record |
+| 120 | 8 | `u64` | `reserved2` | **must be 0** |
+
+**The TRS is bind-LOCAL, not a baked global**, and that is the load-bearing representation choice: an
+animation clip overwrites translation, rotation and scale **member-wise** — a clip may drive rotation
+alone — so a baked global matrix would have to be decomposed before it could be posed, which is float
+math this format exists to avoid. Composition is the consumer's one forward pass (12.4).
+
+**A hierarchy-only record** (`paletteSlot` = `0xFFFFFFFF`) is an ancestor that carries a transform but
+is bound to no vertex — glTF permits non-joint nodes between and above joints, and a joint's global
+transform is the product of **all** its ancestors. Its `inverseBind` is written as identity whatever
+the source carried: it is never read against a palette slot, and writing identity keeps the bytes a
+function of the rig rather than of whatever scratch the caller happened to pass.
+
+### 12.4 Ordering (normative)
+
+**Records are emitted parents-before-children, with ties broken by ascending `sourceNodeLocalId`.**
+Both halves are normative: the first makes the file walkable, the second makes it unique.
+
+The consequence is the point. **The parser enforces topology as a one-line byte-layout property** —
+every non-root `parent` must be **strictly less than its own record index** — so:
+
+- a cycle is **unrepresentable** rather than merely detected: there is no arrangement of bytes that
+  encodes one and passes;
+- a consumer computes global transforms in **one forward pass, with no recursion and no visited set**,
+  and `engine/render`'s `computeJointPalette` does exactly that. **Do not add a visited set** — it
+  would be dead code guarding an invariant the parser already refused to admit;
+- no graph traversal happens at parse time at all.
+
+The producer reaches that order with Kahn's algorithm over sorted vectors, choosing among the ready
+set in ascending source `localId` order, and then remaps every parent to its **emission index**. So
+the same joints supplied in any input permutation cook to identical bytes, and
+`tests/cooked_skeleton_golden.hpp`'s second golden is simultaneously the golden and the
+order-independence proof (12.10).
+
+### 12.5 Caps
+
+| Cap | Value | Why |
+|---|---|---|
+| `MAX_COOKED_SKELETON_JOINTS` | **1024** | total records. Mirrors the importer's own `MAX_JOINTS_PER_SKIN`; closure ancestors are path-bounded, so they cannot push a legal rig past it in practice |
+| `MAX_COOKED_SKELETON_PALETTE` | **256** | skin slots. The **format's** headroom, deliberately wider than any renderer's |
+
+**Both are enforced by the writer AND the parser**, and nothing is allocated before the header's
+counts have passed them — the same rule section 9.9 states.
+
+**The renderer's own limit is narrower and does not live here.** `engine/render`'s
+`MAX_SKINNING_JOINTS` is **85**, derived from a measured 4096-byte per-slot push-uniform ceiling in
+the pinned SDL source, and it lives in `skinning.hpp` with its derivation. That separation is
+deliberate: **formats outlive renderers**, so a cooked file must not be narrowed by whatever a
+particular draw path can bind this year. A rig between 86 and 256 palette slots is a **valid** file
+that today's forward renderer refuses to draw with a warning naming the cap — not a file the cook
+should have refused to write.
+
+### 12.6 Determinism
+
+The same input cooks to the same bytes across two runs, three toolchains and any permutation of the
+caller's own joint list. Section 9.10's structural closures all apply, and one is stronger here:
+
+1. **No struct `memcpy`, no `reinterpret_cast` of a record pointer, no packed-struct pragma.**
+2. **No hash container anywhere in `engine/assets`** — grouping, membership and ordering are sorted
+   vectors, so there is no iteration order for the output to depend on.
+3. **Every reserved field is zero without a single explicit store**, because the output buffer is
+   allocated value-initialized.
+4. **No timestamp, path, hostname, user name or build id.** The only provenance is `cookerVersion` (a
+   compile-time constant) and the caller-supplied `sourceGuid`.
+5. **Zero floating-point ARITHMETIC.** Not merely "no arithmetic on the hot path": the cook never
+   composes, decomposes, renormalizes, converts or scales anything. Every TRS component and every one
+   of the sixteen inverse-bind cells travels `std::bit_cast` bit for bit from its input to its
+   `putF32`. Canonicalization, validation and ordering are integer work end to end.
+6. **Order-independence**, per 12.4.
+
+**Its one stated limit, and it is UPSTREAM of the cook.** A glTF node that spells `matrix` instead of
+TRS is **decomposed at import**, and decomposition is real float math whose cross-lane bit-identity
+this project has never had to prove. Both committed skeleton fixtures therefore use **TRS-form nodes
+exclusively**, which makes the manifest's skeleton line independent of decomposition by construction.
+A matrix-form rig stays legal input whose cooked bytes are deterministic **per machine** — the
+cooker's double-cook case proves that much on every lane — with cross-lane identity **unpinned** until
+someone commits such a fixture deliberately. That is a stated residual, not an oversight; the fix is a
+fixture plus a manifest line, and it belongs to whoever first needs matrix-form rigs to be
+cross-lane-byte-stable.
+
+Determinism *across platforms* is asserted by the two committed byte goldens, the cook's own
+round-trip cases on all three CI lanes, and the frozen manifest `tests/cooker/determinism.sha256`,
+whose `skeleton_golden_manifest` case checks the skeleton line in every build configuration on every
+lane and whose `cook-determinism` CI job re-checks it against the three lanes' actually-produced
+artifacts.
+
+### 12.7 Versioning and evolution
+
+**Section 9.11's two-field model, verbatim and unchanged:**
+
+- **`formatVersion`** — bumped when an older **reader** can no longer read the file. The parser
+  refuses any value it does not equal.
+- **`cookerVersion`** — bumped when **the same input now cooks to different bytes**. It is a
+  cache-invalidation signal and nothing else; it never gates a parse.
+
+**Reserved space is a BREAKING extension point, not an additive one.** A non-zero `reservedFlags`,
+header `reserved0`/`reserved1`, or record `reserved0`/`reserved2` is a **parse refusal**, deliberately
+— so **occupying a reserved field requires a `formatVersion` bump**, not merely a `cookerVersion` one,
+because every v1 reader will refuse the whole file. That refusal is the *intended* behaviour: it is
+what stops a v1 reader silently misreading a v2 file.
+
+Two v1-specific corollaries:
+
+- **Adding a field to a joint record is a `formatVersion` bump even if it fits in the reserved
+  space**, by the rule above — and 12.11's list is written with that price in mind.
+- **Appending a whole new region past `totalBytes` is not possible**, because `totalBytes` must equal
+  the buffer's own size.
+
+### 12.8 The writer/reader asymmetry
+
+The **writer** emits exactly one canonical arrangement: 12.4's order, hierarchy-only IBMs forced to
+identity, every reserved field zero. The **reader** is more permissive on everything that is not a
+correctness property — it accepts palette slots in **any** order across the records (only the
+bijection is required), any `sourceSkinIndex`, any GUID including the nil one, and any
+`cookerVersion`. That is deliberate, so a future writer that orders slots differently is not locked
+out of a format whose meaningful content it reproduced exactly.
+
+**Like `.aeromesh` and unlike `.ktx2`, this format has no external validator.** Nothing outside this
+repository can tell us a `.aeroskel` is well-formed, and our own parser compares against the same
+constants our own writer emits — the self-confirmation trap section 10.12 records for the DFD tables.
+Three things keep it honest instead, and they are the three to preserve:
+
+1. **The hostile-input parser** (12.9), written to the importer's standard: every range check is a
+   subtraction against a known-good size, nothing is reserved before the counts pass their caps, and
+   every structural rule is a refusal rather than a repair.
+2. **The two frozen byte goldens**, each verified field by field against *these tables* before being
+   frozen — not against the code that produced them (12.10).
+3. **The determinism manifest**, which turns "the cook is deterministic" into a cross-lane,
+   cross-config, cross-time check rather than a claim.
+
+### 12.9 Error catalog
+
+`parseCookedSkeleton` never throws, never reads a file and never logs. It returns one of eight
+statuses with a human-readable message; the message is empty **iff** the status is `Ok`, and it names
+the offending record index wherever there is one.
+
+| Status | Cause |
+|---|---|
+| `Ok` | the buffer is a valid v1 container |
+| `TooSmall` | fewer than 64 bytes — shorter than the header |
+| `BadMagic` | the first eight bytes are not `AEROSKEL` |
+| `UnsupportedVersion` | `formatVersion` is not 1 |
+| `ReservedNotZero` | `reservedFlags`, a header `reserved0`/`reserved1`, or a record's `reserved0`/`reserved2`, is non-zero |
+| `SizeMismatch` | `totalBytes` does not equal the buffer's own size, or does not equal `64 + 128 × jointCount` |
+| `CapExceeded` | `jointCount` > 1024, or `paletteJointCount` > 256 |
+| `BadHierarchy` | `jointCount` or `paletteJointCount` is 0; `paletteJointCount` > `jointCount`; a `parent` that is not strictly before its own record; a `paletteSlot` ≥ `paletteJointCount`; a slot claimed twice; or a slot claimed by nobody |
+
+**`BadHierarchy` deliberately covers six distinct defects with one status**, because they are one
+question — *is this a rig?* — and a consumer's only useful reaction to any of them is identical. The
+**message** is what distinguishes them, and that is load-bearing rather than cosmetic:
+`paletteJointCount > jointCount` **always** leaves a slot unclaimed too, so no buffer anywhere can
+separate that check from the unclaimed-slot check **by status**. Only the wording can, which is why a
+test pins the sentence.
+
+### 12.10 Golden fixtures
+
+Two byte-level goldens live in `tests/cooked_skeleton_golden.hpp` as annotated in-source arrays,
+shared by `aero_tests` and reachable from the editor's shell battery so there is one copy and no
+drift:
+
+- **`COOKED_SKELETON_GOLDEN_MINIMAL`, 320 bytes** — a nil GUID and two joints, a root palette joint
+  and its child, every float exactly representable in binary32 so every one is hand-checkable in the
+  hex. It pins `totalBytes` 320 = 64 + 128 × 2, and the child's `parent` word reading **0** — the
+  parent's *emission index*, not its source `localId`.
+- **`COOKED_SKELETON_GOLDEN_CLOSURE`, 448 bytes** — a real GUID in both header halves, and three
+  joints: a **hierarchy-only** root over two sibling palette joints. It is the only artifact in this
+  project that pins three properties at once: the hierarchy-only record's IBM written as **identity**
+  regardless of the absurd matrix its input carried; 12.4's emitted order; and palette slots that
+  **diverge from record order** (record 1 holds slot 1, record 2 holds slot 0), so a consumer writing
+  the palette in record order produces a visibly wrong rig rather than a coincidentally right one. The
+  cook test supplies these same three joints in **reverse** order and requires the same bytes, which
+  makes the array the order-independence proof as well as the golden.
+
+**They are frozen, and the way they were made is part of the rule.** Each was produced by a real cook
+and then verified **field by field against this section's own tables** — header word by header word,
+record by record, including the parent remap, the slots, every TRS component, every inverse-bind cell
+and both reserved regions — *before* being frozen. They are not "the bytes the code happens to produce
+today". A change to any layout rule, offset, ordering rule or padding rule fails them by construction;
+if a golden has to change, the **format** changed, and that is a `formatVersion` decision, not a test
+edit.
+
+### 12.11 What this format deliberately does not carry
+
+- **No joint names.** A name is display and retargeting metadata, and v1's consumers bind by
+  `paletteSlot` and resolve by `sourceNodeLocalId` — neither needs a string, and a string table is the
+  only variable-length region this format would have. **Reversal condition, stated so it does not have
+  to be rediscovered:** the first consumer that needs display names in a UI, or name-based
+  retargeting between rigs, bumps `formatVersion` and adds the table. That is cheap pre-1.0
+  (docs/04:51) and it is the honest price; smuggling names into the reserved space is the same bump
+  wearing a disguise (12.7).
+- **No per-joint bounds.** A joint's influence volume is derivable from the mesh that binds to it, and
+  this format deliberately does not know its meshes (below). A skinned bounding volume that actually
+  tracks a pose is a renderer concern with a per-frame answer, not a cooked constant.
+- **No mesh reference of any kind.** The skeleton does not know which mesh or which submesh binds to
+  it; **the binding is the consumer's**, and the consumer is whoever loaded both artifacts. Two cooks
+  of one source asset legitimately share a `sourceGuid`, which is what ties an `.aeromesh` and an
+  `.aeroskel` together without either file naming the other.
+- **No clip or animation data of any kind** — no channels, no keyframes, no sampler, no clip list.
+  Section 13 reserves cooked animation clips (`.aeroanim`) for task 3.5.2, which references this
+  format's joints by `sourceNodeLocalId` and carries its own version field.
+- **No placement, no scene node, no instancing metadata.** Which entity wears this rig, and how many
+  do, is scene data. That is the same line section 9.0's named node-hierarchy gap sits on.
+
+---
+
+## 13. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
   applies unchanged. Section appends here. Still unowned: the `.pak` container itself and cooked
-  scenes. The cooked **mesh** container is section 9 and the cooked **texture** container is
-  section 10.
+  scenes. The cooked **mesh** container is section 9, the cooked **texture** container is section 10
+  and the cooked **skeleton** container is section 12.
 - **Cooked / binary materials** — the pak-rev cooker work, together with cooked scenes. Until then
   every consumer, editor and runtime alike, reads `.aeromat` through `engine/reflect`'s parser, and a
   binary material would be a second reader with no second producer. Task 3.4.1 recorded the decision;
   the trigger is the `.pak` container itself.
+- **Cooked animation clips (`.aeroanim`)** — task 3.5.2, referencing section 12's skeletons by
+  `sourceNodeLocalId`; own version field. The seam already exists on both sides: `render::JointPose`
+  is the sampler's output type and section 12.3's `sourceNodeLocalId` is the binding key.

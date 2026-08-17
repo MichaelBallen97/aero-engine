@@ -7791,3 +7791,532 @@ seven, not eight**. Windows and Linux ship **Pending**, with rows 3–6 named pr
 preview is the platform-sensitive half: Metal versus Vulkan/D3D12 destroy timing (BLOCKING-1's whole
 subject) and sRGB behaviour independent of the swapchain. The four-phase platform-validation debt
 grows by one more task.
+
+---
+
+### Task 3.5.1 — Skeleton & GPU skinning (Epic 3.5) — OPENS Epic 3.5
+
+**Branch:** `feat/3.5.1-skeleton-gpu-skinning`, cut from `main @ a577759`. **Thirteen green commits** —
+one per build step, one closing the sabotage matrix's gaps, and one shader fix found after it — tip
+`73052bc`, plus this documentation commit. **Complete in code; the twelve-row macOS validation pass has
+NOT been run yet** (`editor/validation/3.5.1-skeleton-gpu-skinning.md`, written before the pass as
+always).
+
+The renderer learns what a rig is. The import layer has carried complete skeletal data since 3.2.1
+and `.aeromesh` has carried `Joints0`/`Weights0` semantics since 3.3.1, but **nothing downstream
+could hold a skeleton**: there was no container to cook one into, no runtime type to parse one back
+out of, no way to get a cooked mesh onto a GPU at all, and no vertex shader that had ever seen a
+matrix palette. This task builds the whole missing half end to end, and it does it with **no
+dependency of any kind and no link line moved anywhere**.
+
+Four firsts, and each is worth naming because each sets a precedent:
+
+- the **first `.aeroskel`** — the tree's second first-party binary format, and the first one designed
+  as a *sibling* of an existing container rather than as a region inside it;
+- the **first mesh registry** — before this task `ForwardRenderer` could only draw the three built-in
+  procedural primitives, so no cooked mesh had ever reached a GPU;
+- the **first integer vertex attribute** anywhere in this project (`rhi::VertexFormat::Uint4`), and
+  the **first two-UBO vertex stage**;
+- **pipelines 2 → 4**, from three shader loads.
+
+#### What shipped, layer by layer
+
+**`engine/assets` — two new pairs, taking the subsystem from five to seven.**
+`cooked_skeleton.{hpp,cpp}` is the format and its hostile-input parser: a 64-byte header, 128-byte
+packed joint records, `totalBytes = 64 + 128 × jointCount` with **no padding site anywhere in the
+format**, and bytes formed and read exclusively through `cooked_mesh.hpp`'s eight primitives.
+`skeleton_cook.{hpp,cpp}` is the producer: already-resolved plain data in, v1 bytes out, with the
+mesh cook's split repeated member for member — the *editor adapter* owns model semantics, the *cook*
+owns canonicalization and the emit. The subsystem's link line does not move and still names **no
+vcpkg package at all**.
+
+**The load-bearing design choice is the ordering invariant, and it is worth restating as a rule
+rather than as a fact about this format.** Records are emitted parents-before-children (ties by
+ascending `sourceNodeLocalId`), which lets the parser enforce topology in **one line** — every
+non-root `parent` must be strictly less than its own record index. The consequence is that **a cycle
+is unrepresentable rather than detected**: there is no arrangement of bytes that encodes one and
+passes, so the parser does no graph work at all, and every consumer walks the records in a **single
+forward pass with no recursion and no visited set**. The producer reaches that order with **Kahn's
+algorithm over sorted vectors** and then remaps parents to their emission indices, so **Kahn
+exhaustion IS the cycle detector** — there is no second traversal that could drift out of sync with
+the first.
+
+**One deliberate asymmetry with `.aeromesh`, and it is a parse requirement rather than a comment: a
+`.aeroskel` is never empty.** `jointCount` and `paletteJointCount` are both ≥ 1 at parse. Section
+9.2's empty mesh file is legal because an asset that exists must have an artifact; the skeleton cook
+is per-**skin**, so a model with no skin produces no artifact at all and a CLI error. An empty
+skeleton is not a degenerate rig; it is the absence of one.
+
+**The cook does zero floating-point arithmetic** — not "none on the hot path": it never composes,
+decomposes, renormalizes, converts or scales anything. Every TRS component and every one of the
+sixteen inverse-bind cells travels `std::bit_cast` bit for bit through `putF32`, and closure,
+ordering and validation are integer work end to end. The output buffer is value-initialized, so every
+reserved field is zero **without a single explicit store**.
+
+**`/editor` — one new pair, the sixteenth.** `skeleton_cook_source.{hpp,cpp}` is the
+`ImportedModel` → cook adapter, pure to `mesh_cook_source`'s standard (no disk, no UI, no SDL, no
+`<filesystem>`, no logging — warnings are **returned**, never printed). It is the **fourth consumer of
+the `localId` rule**, and it was designed around the two prior findings rather than merely aware of
+them: `ImportedSkin::joints`, `ImportedNode::parent` and `::children` all hold `localId`s — positions
+for glTF, raw ufbx `typed_id`s for FBX — and **every** resolution goes through one `localId →
+position` **sorted vector** built once per call. A sorted vector rather than a hash container, so the
+adapter's output order cannot depend on an iteration order.
+
+Its ancestor closure includes every non-joint ancestor up to the root as a **hierarchy-only** record,
+because glTF permits non-joint nodes between and above joints and a joint's global transform is the
+product of **all** its ancestors. The walk is iterative and capped by the importer's own
+`MAX_NODE_DEPTH`, so a hostile parent cycle is an **error, never a hang**. `ImportedSkin::skeletonRoot`
+is deliberately **not** consulted — the closure derives from parents alone, and E24 records that field
+as unvalidated provenance. Refusals name what exists (an out-of-range skin index reports the model's
+real skin count; a Structure-depth model is refused **by name**, because half-imported inverse bind
+matrices must never become identity by accident); two advisories are warnings and never demotions (a
+multi-skin model names the total and the index cooked; a vertex joint index at or above the skin's
+joint count names its mesh and primitive, because that artifact pair would be memory-safe and
+**visually wrong**).
+
+**`/editor` — the glTF gate, and the importer version bump.** `gltf_import.cpp` gated the *skin table*
+on `settings.importSkins` while reading `JOINTS_0` and `WEIGHTS_0` **unconditionally** in its mesh
+phase, so `importSkins=false` produced orphaned joint indices with no skin to resolve them — while FBX
+and Assimp suppressed both halves. Two condition edits close it, so all three skinning-capable
+importers now mean the same thing by the flag. `GLTF_IMPORTER_VERSION` moves **1 → 2** with it (V3
+below), and the bump's whole blast radius — the writer-side literals that pinned the old value —
+travelled in the same commit: `importer-settings.meta` (the byte-for-byte `writeMetaText` golden) plus
+its two reader assertions, four `asset_cache` cases and six `asset_database` expectations. Those stay
+**literals** rather than becoming `GLTF_IMPORTER_VERSION`, on purpose: an assertion comparing the
+identity mapping against the constant that produced it can no longer see a wrong-format arm. The
+`cacheEntry` helper now says so, so the next bump gets the same deliberate review instead of a silent
+green.
+
+**`engine/render` — four new files and a registry.** `skinning.{hpp,cpp}` is the runtime skeleton
+surface, and `assets::CookedSkeleton` **is** the runtime skeleton — no mirror struct, the same posture
+`texture_upload.hpp` takes toward `CookedTextureView`, riding the `PUBLIC aero::assets` edge 3.4.1
+added so the header adds no link line. The pure layer over it is exactly three names: `JointPose`
+(the 3.5.2 seam), `bindPose`, and `computeJointPalette` — one forward pass, iterative, allocation-free.
+`src/skinning_pack.hpp` holds the `Mat4` → three-row conversion and `src/mesh_pack.hpp` the
+cooked-section → two-stream repack; both are src-private with headers for the reason
+`material_pack.hpp`'s own comment records — **a file-local packer is unfalsifiable**.
+
+`ForwardRenderer` gains the tree's **first mesh registry**, with the material registry's semantics
+member for member: `MeshHandle` over the same `SlotMap`, `createMesh`/`destroyMesh`/
+`meshSubmeshCount`, and generational staleness, so a stale handle is a logged no-op and a stale
+`MeshInstance::mesh` draws nothing rather than reading a freed buffer. `createMesh` repacks each
+cooked section on the CPU into at most two streams — a 48-byte `MeshVertex` for **every** vertex with
+identity defaults where an attribute is absent, and a 32-byte `{uint4, float4}` stream **only** for
+sections carrying the `Joints0`/`Weights0` pair — and uploads through the existing **blocking
+init-time** path, because `rhi::Device::uploadBuffer`'s own contract says it is not a per-frame path.
+Static meshes pay nothing at all. `TexCoord1` and `Color0` decode and **drop** with one latched WARN,
+because the vertex layout has no seat for them.
+
+**`MAX_SKINNING_JOINTS` is 85, measured rather than guessed**, and the derivation is recorded in the
+header with its line numbers because `vcpkg clean` wipes the tree that proves it: SDL's Vulkan backend
+binds **every** push-uniform descriptor with a fixed 4096-byte range
+(`MAX_UBO_SECTION_SIZE` 4096 at `src/gpu/vulkan/SDL_gpu_vulkan.c:71`, applied at `:5300`, `:5419`,
+`:8671`), so bytes past 4096 are memcpy'd into the uniform ring and **never visible to a Vulkan
+shader**, while D3D12 and Metal are bounded instead by the 32 KiB block (`UNIFORM_BUFFER_SIZE 32768`,
+`src/gpu/SDL_sysgpu.h:35`) and show the full data. That is a **silent cross-backend divergence** —
+exactly the class 3.4.2's use-after-free lesson warns about — so the engine adopts the portable
+ceiling uniformly. Three row-major `float4` rows per affine joint matrix is 48 bytes;
+`floor(4096 / 48) = 85`; a `static_assert` ties the arithmetic down. Every skinned draw pushes the
+**full 4080-byte block** from a zeroed renderer-owned scratch, so no backend's partial-cbuffer
+semantics is ever exercised.
+
+**`shaders/` — one new file, and the family's first sibling.** `scene_skinned.vert.hlsl` takes
+locations 0–3 verbatim from the static VS plus `uint4 joints` and `float4 weights` from stream 1, a
+bit-identical `PerObject` block at `b0, space1`, and the 4080-byte `JointPalette` at `b1, space1`.
+Transform-then-blend for position and for normal/tangent.xyz through the 3×3 part, a Σw = 0
+passthrough honouring the importers' all-zero contract, then the existing tail verbatim — **the
+fragment stage cannot tell which vertex shader fed it**, and `scene.vert.hlsl` and `scene.frag.hlsl`
+are byte-identical to `main`. `shaders/CMakeLists.txt` gains exactly one line.
+
+**The draw arm resolves in a fixed order**, and each step degrades to a *correct* picture rather than
+a fallback: an invalid `MeshHandle` is today's primitive path untouched; an out-of-range submesh skips
+with a latched WARN; **no skin stream or an empty palette takes the static pipeline**, because the
+vertices are authored in bind pose and "skinned mesh, no pose yet" is exactly the right picture at
+zero cost; a palette over 85 skips with a latched WARN naming the cap and the storage-buffer unlock.
+
+**`tools/cooker` — a third subcommand.** `aero_cooker skeleton --input <file> --output <file.aeroskel>
+[--guid <32 hex>] [--skin <index>] [--scale <float>]`, under the frozen grammar conventions verbatim:
+at-most-once flags, the shared GUID parser, name-decides-before-read, Structure-then-Full
+external-buffer budgeting, atomic write, no directory creation, and the same exit-code table — the
+usage text's exit-code line is byte-identical (AC-36). `--skin` parses through `std::from_chars`, which
+is locale-independent by definition.
+
+**`samples/phase-3-skinning` — the deliverable made visible.** The phase-3-materials mold applied
+verbatim: an executable gated by `AERO_SHADER_TOOLS` with the stub-`main` fallback, two mounts on one
+VFS (cooked shaders at the `res://` root, committed fixtures under `res://skinning`), no scene and no
+reflect. The content is one self-authored rig — `arm.gltf`, a five-joint chain deforming a segmented
+tube, **TRS-form nodes**, one embedded buffer — cooked once into committed `arm.aeromesh` and
+`arm.aeroskel` with **one pinned GUID for both**, because they are two cooks of one source asset and
+`sourceGuid` means "the asset these bytes came from", the same meaning it has for a `.ktx2`. The
+program draws **two instances of the same `MeshHandle`**: one with an empty palette, frozen in bind
+pose — the degradation path shown deliberately rather than hidden — and one posed each frame through
+`bindPose`, a sine-phased rotation on joints 1–4, and `computeJointPalette`. An optional `argv[1]`
+overrides the fixture directory, which is what the validation page's real-model and cap-refusal rows
+drive, and the sample logs the skeleton's joint counts, the `createMesh` wall time and a rolling
+`computeJointPalette` mean so the number-bearing rows read from a log rather than from feel.
+
+#### The two amendments, and what AC-46 actually achieved
+
+**AC-2's include list is amended, with the precedent named.** AC-2 asked for the new pair's includes
+to be `<aero/core/guid.hpp>`, `<aero/core/math.hpp>` and the standard library, **nothing else** — and,
+in the same criterion, for bytes to be formed and read **exclusively** through the eight existing
+`put*`/`get*` primitives. **Both cannot hold**: those primitives live in `cooked_mesh.hpp`. The tree
+had already resolved this exact tension one format earlier, and `cooked_texture.hpp:24` carries the
+line verbatim, so `cooked_skeleton.hpp` opens with
+`#include <aero/assets/cooked_mesh.hpp>  // the eight byte primitives + their endianness static_assert`
+and nothing else beyond `guid.hpp`, `math.hpp` and std. **The eight-places rule wins**, because the
+alternative — a second copy of the primitives — violates the cooked-assets rule outright and creates a
+second place for an endianness mistake to live.
+
+**AC-46 (byte-identity) holds exactly as written, verified path by path** with
+`git diff --name-only main...HEAD -- <path>` returning empty for each: `engine/rhi`, `engine/scene`,
+`engine/scene_render`, `engine/scene_serialize`, `engine/reflect`, `engine/platform`, `engine/core`,
+all five pre-existing `engine/assets` pairs, `runtime/`, `vcpkg.json`, `cmake/`, `.github/scripts/`,
+`tests/cooked_mesh_golden.hpp`, and every shader except the one new file. **No link line moves
+anywhere** and **no dependency of any kind lands** (AC-47) — `skinning.hpp` naming
+`assets::CookedSkeleton` rides `aero_render`'s existing `PUBLIC aero::assets`, the adapter rides
+`aero_editor_core`'s, and the subcommand rides `aero_cooker`'s. The whole `engine/` diff is two new
+`engine/assets` pairs, four new `engine/render` files and the edits to `mesh.hpp`/`forward_renderer.*`
+/`render.hpp`, plus two `CMakeLists.txt` source lines.
+
+**What was amended instead was a plan ASSERTION, not an acceptance criterion: the determinism
+manifest's header.** §F.2 said `tests/cooker/determinism.sha256` gains "+2 lines, 13 untouched", and
+§V.5 asserted that `git diff … | grep '^-[^-]'` over that file comes back **empty**. It does not, and
+it should not have: the two new lines made **four statements in the file's own header false** — the
+artifact count ("thirteen fixed invocations"), the arm list (two arms, now three), the
+cooker-version list in the regeneration ritual (`COOKED_SKELETON_COOKER_VERSION` was missing), and,
+most importantly, the regeneration command's `ctest -R` regex, which named two cases and **would have
+silently skipped the new arm** — the exact failure mode of a ritual nobody re-reads. All four moved.
+**Every rule sentence is byte-identical** — the freeze, `NEVER EDIT A HASH TO GREEN A RED RUN`, the
+lookup-by-name note and the two-halves-are-not-anchored-equally paragraph — and so is **every one of
+the thirteen existing hashes**. Nothing in this task changes any existing cook, so a moved hash there
+would have been somebody's regression, full stop.
+
+#### Four more decisions the plan took, each with the alternative it rejected
+
+**Per-section draws use BIND-TIME BYTE OFFSETS, and `drawIndexed`'s `vertexOffset` stays 0.** The
+obvious realization — pass the section's base vertex as `vertexOffset` — **applies that base to every
+bound stream uniformly**, and stream 1 holds entries only for *skinned* sections. So a mesh whose
+static section precedes its skinned one would need stream 1 either zero-filled for every vertex (32 B
+per vertex of dead data) or bound at a **negative** offset, which is unrepresentable. Binding each
+stream at its own section's byte start sidesteps the entire class: stream 0 at
+`48 × (vertices before this section)`, stream 1 at that section's own start within the skin stream,
+the index buffer once at offset 0, and `CookedSubmesh::firstIndex` used as-is because §9.5 already
+defines it as absolute in index units. That is why `MeshEntry` stores per-section **byte offsets**
+rather than vertex counts. Every offset is a multiple of 48 or 32, so it satisfies every backend's
+alignment rule.
+
+**The cooker's import prelude is EXTRACTED, not duplicated.** `runSkeleton` needs steps 2–5 of the
+mesh path verbatim — name-decides-before-read, capped read, Structure pass, external-buffer budget,
+Full import — and those ~90 lines of budgeted I/O took three tasks to harden. A second copy is a drift
+hazard nobody tests (two budget loops that only diverge on inputs no case cooks), so `main.cpp` gained
+one file-local `importModelForCook` helper shared by both subcommands. **The nineteen existing mesh
+CLI cases are the regression harness that proves the extraction moved nothing**, which is exactly what
+made the refactor safe to do and cheap to review.
+
+**The skeleton's manifest coverage is a THIRD arm, not a widened tuple table.** `aero_manifest_tuple`
+reads the **arm-level** `SUBCOMMAND`, and the `KIND_PREFIX` orphan check — "every manifest line of
+this case's kind was actually cooked" — stays sound only while **every line's prefix is claimed by
+exactly one arm**. So `skeleton_golden_manifest` is its own arm with `SUBCOMMAND skeleton`,
+`KIND_PREFIX "skeleton-"`, a literal `TUPLE_COUNT 1`, its own perturbed re-cook and its own
+artifacts-directory check; `mesh-skinned.aeromesh` joined the **existing** `golden_manifest` arm
+(`TUPLE_COUNT` 5 → 6). The skeleton tuple carries a **real GUID** on purpose, so the new format's
+hi/lo emit order gets a cross-lane witness from day one — `mesh-skinned` keeps the no-`--guid`
+posture `mesh-triangle` has.
+
+**Two diagnostics accessors on `ForwardRenderer`, in the 3.4.1 posture.** `skinnedDrawCount()` and
+`hasWarnedSkinningCap()` are documented as observability rather than smuggled in, exactly as
+`samplerCacheSize()`/`hasWarnedBlendOpaque()` were: **they report; they never change behaviour.**
+Without them the draw-arm resolution is unobservable — this project deliberately has no log sink a
+test can read — and seeds S30 (a skinned mesh with an empty palette routed to the skinned pipeline)
+and S31 (an over-cap palette pushed anyway) would have had no witness at all. `SN4` and `SN6` exist
+because these two accessors do.
+
+#### V1, V2, V3 — the three VERIFY-AT-IMPLEMENTATION items, retired with evidence
+
+**V1 — does a two-UBO vertex stage work, and does HLSL `b1` mean push-slot 1?** Retired at Step 9,
+with two independent halves. The **recorded check**: the cooked `scene_skinned.vert.json` sidecar
+reads `"uniformBufferCount": 2` on **both** macOS presets — and sidecar counts come from shadercross
+reflection, never hand-typed, so that number is the compiler's opinion rather than ours. The **live
+half**: `SN3` draws a real skinned mesh with **distinguishable values** in both uniform slots, and the
+submission is clean under Metal API Validation. A `b1`-means-slot-0 mistake would have shown as the
+palette reading the per-object block's bytes, which is not a subtle picture.
+
+**V2 — does a `uint4` integer vertex attribute survive DXC → SPIR-V/DXIL/MSL?** Retired on the macOS
+lane at Step 9: **all four artifacts** (`.spv`, `.msl`, `.dxil`, `.json`) build, and `SN3` draws with
+the attribute live. The **cross-backend half is deferred to CI's WARP and lavapipe lanes**, which is
+where a backend that misdeclares the format would first show. §R.8's fallback — reformat stream 1's
+joints as `Float4` (`static_cast<float>(index)`, exact for indices ≤ 2²⁴, and every legal index is
+< 1024), with the shader taking `float4 joints` and one cast — is **recorded and NOT applied**; no
+format byte moves if it ever has to be, which is why it was written down before it was needed.
+
+**V3 — does the 3.1.2 import cache embed an importer version that can invalidate cached
+`importSkins=false` entries?** **Pre-verified YES while the plan was being written**, from the tree
+rather than from memory: `asset_cache.hpp:53` records `importer` + `importerVersion` on every entry,
+`asset_cache.cpp:438` compares both and answers `ImportChange::ImporterChanged`, and the comment at
+`asset_cache.cpp:449-459` names *this exact re-trigger* as the reason the comparison was fixed. So the
+"accept the staleness" branch was never taken: `GLTF_IMPORTER_VERSION` moves 1 → 2 and the
+machine-local cache re-imports every `.gltf`/`.glb` **once per machine** and nothing else — `.fbx` is
+untouched by construction. Committed `.meta` files **do not move**: the never-rewrite rule protects
+them, and an importer block carrying `"version": 1` still **engages**, because engagement is presence
+and type, never a value.
+
+#### The sabotage matrix — 36 seeds, three genuine gaps, all closed structurally
+
+Every seed applied, its presence asserted with `git diff` **before** its verdict was trusted, then
+reverted with `git status` clean. Thirty-two had a declared automated witness; **three of those
+reddened nothing**, and each was closed **structurally** and re-proven by re-seeding (commit
+`db888e1`, which touches two test files and no engine, editor, tool or shader source).
+
+**S3 — the parser tolerates a duplicate `paletteSlot`.** Green across all three tiers (773/773,
+1594/1594, cooker 49/49), and **structurally it had to be**: `SK15`'s fixture is two records over two
+slots, so a duplicate necessarily leaves the other slot **unclaimed**, and step 9's "claimed by no
+joint record" arm refuses the identical file with the identical `BadHierarchy` status. The duplicate
+check was never the reason the file was refused. Closed by giving `SK15` a **three-record, two-slot**
+arm claiming `0, 1, 0`: every slot is claimed by somebody, so there is no hole at all and the
+duplicate is the only violation left. Re-seeded: `SK15` red, 3 assertions.
+
+**S4 — the parser tolerates `paletteJointCount > jointCount`.** Green at 773/773 for the mirror-image
+reason, and this one generalizes into a rule: **`jointCount` records can claim at most `jointCount`
+slots, so an excess palette count ALWAYS leaves a hole too.** No fixture anywhere can separate those
+two checks **by status** — it is arithmetic, not a gap in the fixture. Only the **message** can, so
+`SK12` now pins the count comparison's own sentence (`"3 palette joints over 2 joint records"`).
+Re-seeded: `SK12` red, 1 assertion. The lesson worth carrying: when two checks provably share a
+status, the wording *is* the discriminator and must be pinned as one.
+
+**S19's adapter half — `--skin` parsed but never forwarded.** Green at 14/14, and the reason is
+sharp: **`cookImportedSkeleton` uses `skinIndex` twice** — once as `input.sourceSkinIndex = skinIndex`
+straight into the header, and once handed to `skeletonCookJoints` — and `KS11` asserted only the
+header. So seeding `skeletonCookJoints(model, 0)` beside an unmodified header assignment produced an
+artifact **numbered skin 1 and carrying skin 0's rig**, with the status, the multi-skin warning and
+`sourceSkinIndex` all still exactly right. `KS11` now asserts the parsed **joint records** are skin
+1's, by `localId`. Re-seeded: red at the joint-count `REQUIRE`. **A parameter used twice needs both
+uses witnessed**, or the test certifies the copy that happens to be right.
+
+#### Six witness attributions in the plan's §X that the run corrected
+
+Recorded rather than smoothed over, because a matrix whose predictions are never wrong is a matrix
+nobody checked.
+
+1. **S8 (the cook's tiebreak falls back to input order) — the second witness is `KC13`, not `KC3`.**
+   `KC3` permutes a **strict linear chain**, where the ready set never holds more than one joint, so
+   it never produces a tie **at all** and the tiebreak is untested by it. `KC13` is the case with two
+   siblings ready at once and is what actually reddens; `KC2`'s reverse-order closure golden reddens
+   with it.
+2. **S13 (the palette cap unenforced, 257 accepted) reddens `KC12` ONLY.** The plan paired it with
+   `SK9`, "the parse of its output" — but there is no output to parse: the cook refuses **before it
+   emits a single byte**, so nothing in the tree ever hands the parser an over-cap artifact. `SK9`
+   pins the parser's own cap against a hand-built buffer and is untouched by a cook-side seed.
+3. **S17 (the adapter's closure skips non-joint ancestors) — the second witness is `KS9`, not
+   `JP3`.** `JP3` reads a **frozen golden**, and no change to the adapter can reach a byte array
+   compiled into the test binary. `KS9`'s over-`MAX_NODE_DEPTH` chain is reachable only *through* the
+   closure walk, so a closure that skips ancestors never trips the depth refusal — it reddens.
+4. **S19's "adapter half" claim was false as written** and became true only after this round's `KS11`
+   fix — see above.
+5. **S21 and S22 additionally redden `JP2`.** The plan named `JP4` and `JP5` alone; `JP2` pins the
+   minimal golden's bind palette as `globalBind × inverseBind`, so both a reversed parent-child
+   composition and a reversed palette multiply show up there too. More witnesses than predicted, which
+   is the harmless direction.
+6. **S29 does not compile at all, and the plan's arithmetic for it was wrong.** The seed was
+   "stream-1 stride 28 (`u16 × 4` joints slipped in)" — but `u16 × 4 + Vec4` is **24**, not 28. What
+   actually happens is better than any test: `mesh_pack.hpp`'s own
+   `static_assert(sizeof(SkinVertex) == 32)` fires, and four narrowing errors fire with it. **A
+   compile-time refusal is a stronger witness than a red case**, and it is worth preferring
+   deliberately where the property is a layout one.
+
+#### The four declared shader-only seeds
+
+**S33** (the shader ignores weights and rigid-binds to `joints[0]`), **S34** (the Σw = 0 passthrough
+dropped), **S35** (the shader dots columns instead of rows) and **S36** (position skinned but not the
+normal) have **no automated tier here that can see them** — this project has no pixel tests and no
+readback path, exactly 3.4.1's S24–S28 class and 3.4.2's declared class one epic later. Each was
+applied and **the full 144-entry suite ran green**, and the **build log was checked for the shader
+recompile each time**, so the green is a recorded observation rather than a stale binary reporting on
+code that never rebuilt. Their only coverage anywhere is validation **rows 4, 5 and 6**, and the page
+names each row's seeds beside it so the pass is executed knowing what it alone proves. A green run
+under any of these is never read as proof.
+
+#### One real defect the matrix could not have found, fixed after it (`73052bc`)
+
+**The skinned VS's out-of-range joint guard sat AFTER the weight accumulation**, so a vertex whose
+every influence named an index past the cap accumulated a **non-zero** weight sum over a position that
+had received **no** contribution at all — and the Σw = 0 passthrough, which selects on that sum, then
+chose the all-zero accumulator. Such a vertex **collapsed to the origin**, which is precisely the
+defect the passthrough exists to prevent and which the file's own comment calls the loudest thing it
+can produce. Accumulating **after** the guard makes the sum count influences actually *applied*. Every
+other case is bit-identical: a fully valid vertex sums the same weights, a genuinely unrigged one still
+sums zero and passes through at its authored position, and only the corrupt-index case changes — from
+the origin to the authored position.
+
+It is reachable **only from a hand-built or corrupt artifact**: the cook refuses an out-of-range
+palette slot, the adapter warns at cook time about a vertex index beyond its skin's joint count, and
+the renderer refuses an over-cap palette. **That is exactly why the sabotage matrix could not find
+it** — no automated tier in this tree renders a pixel, so nothing here could have caught it, and it is
+one file over from S34's declared class. Validation **row 6** is the row it lives under.
+
+#### Two observations worth carrying past this task
+
+**1 — `JP12` cannot witness what its title implies, and that is defensible today but should not be
+forgotten.** The case is *"joint indices cross as u32, verbatim, past every narrower width"*, and its
+largest value is **65535** — which is **exactly what a `u16` holds**. So a repack that narrowed the
+index back to 16 bits would pass every one of its assertions. It is defensible **today** because
+`ImportedPrimitive::joints` is `std::array<std::uint16_t, 4>` by construction, so 65535 genuinely is
+the largest index the pipeline can carry, and the case does independently pin that the section
+declares `Uint4` rather than `Float4`. But it is **not the independent width witness it reads as**,
+and the day the importer widens (the `UShort4`/`.aeromesh` v2 bundle below is the same neighbourhood)
+that case needs a value past 65535 or it becomes vacuous.
+
+**2 — the stale-binary trap, which cost a false reading before it was caught.** After a seed is
+reverted with `git checkout --`, **the built binaries still contain the seed**. Any measurement
+described as "the clean baseline" — a case count, an assertion count, a green run — must be preceded
+by a **rebuild**, or it is a measurement of the seeded tree wearing the clean tree's name. This bites
+hardest at the *end* of a matrix, where the temptation is to read the last run as the baseline for the
+next step.
+
+#### `computeJointPalette`'s scratch cost — named as a future optimization, deliberately not taken
+
+`computeJointPalette` needs every record's global transform to survive for its later children, while
+`out` holds only the palette slots — so the pass needs its own retained buffer, and D6 requires it to
+be allocation-free. It is `std::array<Mat4, MAX_COOKED_SKELETON_JOINTS> globals;` — 1024 × 64 B =
+**64 KiB of stack**, comfortably inside every platform's default (≥ 512 KiB on all three).
+
+**The cost that is worth writing down is not the stack, it is the initialization.** `Mat4` carries an
+identity member-initialiser, so that array is **default-constructed to 1024 identity matrices on every
+call** — roughly 64 KiB of stores, about **3 µs**, per skinned draw. For one instance that is
+invisible (validation row 9 measures it); it scales **per instance**, so a scene with a hundred
+skinned characters pays it a hundred times for data it overwrites or never reads.
+
+It stays as it is, for two reasons: the allocation-free fixed array is what D6 and §0.9 mandate, and
+every alternative worth having — an uninitialized-by-design matrix storage type, or a caller-supplied
+scratch span — is an **`engine/core` change**, and `engine/core` is byte-identical this task by AC-46.
+**This is the first place to look if skinned-instance counts grow**, and the fix is cheap when it is
+wanted: a caller-supplied scratch span with the same debug asserts, or a `Mat4` storage variant that
+does not pay for an identity nobody reads.
+
+#### Two implementation deviations, both small and both recorded
+
+**`destroyAll()` walks a `liveMeshes` vector beside the registry, because `SlotMap` exposes no
+iteration.** Registered meshes **own** their GPU buffers — unlike materials, which *borrow* their
+textures from the caller, which is why the material registry has never had to be walked — so
+`destroyAll()` has to reach every entry. `SlotMap` has no iteration API and `engine/core` is
+byte-identical this task, so the live handles are recorded in a `std::vector<MeshHandle>` **written in
+exactly two places** (`createMesh` appends, `destroyMesh` erases) and **read in one** (`destroyAll`).
+It is a linear vector for the same reason `samplerCache` is: the bound is a program's live mesh count.
+`destroyAll()` ends with `reset()`, so it is **idempotent** and `reset()` keeps its "null every member
+without releasing anything" contract literally true for the moved-from state.
+
+**`packMeshSection` is declared in `src/mesh_pack.hpp` and DEFINED in `forward_renderer.cpp`.** There
+is no `mesh_pack.cpp`: the repack's only caller is `createMesh`, and adding a fourth `engine/render`
+source file to carry one function would have moved the CMake source list for no separation that the
+header does not already provide. The header is what makes the function **falsifiable** from
+`tests/render_skinning_test.cpp` through a relative include, which is the whole point of the
+`material_pack.hpp` precedent; where the definition sits is a build detail. Stated here so the
+placement is not later read as an oversight.
+
+#### The mechanical gate
+
+`AERO_REQUIRE_GPU=1 ctest` **144/144 on both macOS presets**. Both reduced configurations built fresh
+with `-G Ninja` into `build/tools-off-3.5.1` / `build/reflect-off-3.5.1`. Six architecture guards exit
+0; clang-format and clang-tidy clean **by exit code**; the three manifest cases green against the
+15-line manifest with the thirteen pre-existing hashes untouched.
+
+**`ctest -N` reads 144 / 55 / 68 — and it moved by +11 in ALL THREE configurations, identically.**
+That lockstep is itself an assertion rather than a coincidence: `aero_cooker` **takes no gate flag**,
+so its cases are registered everywhere, and a *smaller* move in a reduced configuration would have
+meant the new cooker block had accidentally grown a gate. Every other new test rides an existing
+binary, and `aero_tests`, `aero_editor_shell_test` and `aero_editor_imgui_test` each register as a
+**single** ctest entry — so this task's **74 new doctest cases** (57 + 17, read off the two `filters:`
+lines rather than added up from case-ID ranges) move that triple not at all.
+
+Doctest, from each binary's own `filters:` line: **773 / 1594 / 124 / 23 / 22**.
+
+| Binary | Before | After | What moved |
+|---|---|---|---|
+| `aero_tests` | 716 | **773** | +57: `SK1`–`SK20`, `KC1`–`KC18`, `JP1`–`JP13` and `SN1`–`SN6` across three new TUs |
+| `aero_editor_shell_test` | 1577 | **1594** | +17: the new `tests/editor/skeleton_cook_source_test.cpp` (`KS1`–`KS14`) plus `MI155`–`MI157` |
+| `aero_editor_imgui_test` | 124 | **124** | **unmoved** — no editor UI in this task (D17), as predicted |
+| `aero_scene_serialize_test` | 23 | **23** | unmoved |
+| `aero_editor_inspector_test` | 22 | **22** | unmoved |
+
+Guards: `check-math-boundary.sh` scans **347 → 363**, exactly the plan's prediction of +16 tracked
+C-family files (4 `engine/assets` + 4 `engine/render` + 2 `editor` + 5 `tests` + 1 sample `main.cpp`;
+`.hlsl`, `.gltf`, `.aeromesh` and `.aeroskel` are not C-family), re-measured **after `git add`**
+because `git ls-files` sees only tracked files. `check-project-no-delete.sh` Check A reads 6 files and
+Check B **64 → 65**, both memberships unchanged — `skeleton_cook_source.cpp` is in **neither** list,
+which is what makes a future destructive call there a hard CI failure. **No guard script changed;
+`.github/scripts/` is byte-identical to `main`.**
+
+Inventory: `aero_editor_core` sources **63 → 64**, tracked `editor/src/*.cpp` **64 → 65**, tracked
+`editor/src/*.hpp` **unmoved at 21** (the new pair's header is public), editor pairs **fifteen →
+sixteen**, `engine/assets` pairs **five → seven**. The per-OS branch count over first-party editor
+code is **unmoved at three lines in one file** (3.2.4's `currentHostOs()`), and
+`git grep -nE '_WIN32|__APPLE__|__linux__' -- engine/assets tools/cooker engine/render` still reads
+**zero lines**.
+
+#### What was deliberately left out, each with its owner
+
+- **Nothing in a scene can name a mesh, a material or a skeleton.** `engine/scene` and
+  `engine/scene_serialize` are byte-identical, and instantiation is **3.1.5's**, which now inherits a
+  *working* `createMesh`/draw path rather than a design note.
+- **No animation of any kind** — no clip, no sampler, no channel, no `.aeroanim`. That is **3.5.2**,
+  and this task wrote its seam down rather than guessing at it (below).
+- **No skinned bounding volumes.** A pose-tracking bound is a renderer concern with a per-frame
+  answer, and the format deliberately carries no per-joint bounds (`docs/09` §12.11).
+- **No joint names in the container**, with the reversal condition stated in §12.11: the first
+  consumer needing display names or name-based retargeting bumps `formatVersion`, which is cheap
+  pre-1.0 and is the honest price.
+- **No storage-buffer palette**, so 85 joints is the live ceiling — see the handoff below.
+- **No editor UI at all** (D17): no skeleton panel, no joint list, no pose scrubber. The Import
+  Details panel's existing skin section is untouched.
+
+#### Named handoffs
+
+- **3.1.5 (drag-into-scene)** keeps everything 3.4.2 handed it — instantiation, scene-side material
+  references, the node-hierarchy gap `docs/09` §9.0 names, `LOCAL_MESH_HALF_EXTENT`, the
+  `MeshRenderer` material field — and is **now additionally handed a working mesh path**: `createMesh`,
+  `MeshInstance::mesh`/`submesh`, per-section byte-offset draws and a registry with generational
+  staleness. Before this task there was no way to draw a cooked mesh at all, so 3.1.5's "drag a model
+  into the scene" had no renderer-side destination.
+- **3.5.2 (animation clips)** has its seam written down on both sides: **`JointPose` is the clip
+  sampler's output type** (which is the whole reason the format stores bind **locals** as TRS rather
+  than baked globals — a clip drives T, R and S channels member-wise), **`sourceNodeLocalId` is the
+  clip → joint binding key**, and **`.aeroanim` is reserved in `docs/09` §13** by name. Its own
+  reflect-gen growth (a first plausible enum) is 3.4.2's D1 handoff, unchanged.
+- **The storage-buffer palette unlock, with its trigger.** Raising `MAX_SKINNING_JOINTS` past 85 means
+  a storage buffer instead of a push-uniform slot, which is an **rhi surface change**
+  (`BufferUsage` has `Vertex` and `Index` only, and its own comment already says indirect/storage
+  usages are future appends). **The trigger is a real rig that needs it** — a fingered humanoid fits
+  inside 85 — and it belongs to whoever hits that wall, not to this epic.
+- **`TexCoord1` and `Color0` have no seat in `MeshVertex`**, so the repack decodes and drops them with
+  one latched WARN. Adding either is a `MeshVertex` layout change plus a pipeline attribute, and it
+  belongs to the first feature that needs a second UV set or vertex colours.
+- **The `UShort4` / `.aeromesh` v2 bundle**, unchanged from 3.3.1's own note and now with a second
+  reason to want it: `Joints0` is `Uint4` because `rhi::VertexFormat` has no unsigned-16×4 enumerator,
+  so a skinned vertex pays **8 bytes per vertex it does not need** in the cooked file *and* in stream
+  1. The fix is `CookedVertexFormat::UShort4` beside a new `rhi::VertexFormat::UShort4`, which is a
+  **`formatVersion` bump** — so it travels as one deliberate bundle with whatever else v2 wants, never
+  alone. `JP12`'s width caveat above is in the same neighbourhood.
+
+#### One spec-citation drift, recorded rather than smoothed over
+
+The plan's reconciliation pass (§R.0) re-verified every §2 fact of the spec against `HEAD` and found
+**zero semantic staleness and one citation drift**: fact F1 cites `ImportedPrimitive`'s joints and
+weights at `model_import.hpp:148-149`; they are at **`:133-134`**
+(`std::vector<std::array<std::uint16_t, 4>> joints; std::vector<Vec4> weights;` verbatim). The fact
+holds; only the line anchor was off, and no step changed because of it.
+
+#### Still open
+
+**The twelve-row macOS validation pass has not been run.** The page exists and was written before the
+pass, as always. Until it runs, **rows 4, 5 and 6 are the only coverage the four declared shader-only
+seeds (S33–S36) have anywhere — in principle rather than in fact**, and the page names each row's
+seeds beside it. Rows 7 and 8 need locally-generated content that is deliberately **not** committed
+(an over-85-joint chain for the cap refusal, and a rigged humanoid for the real-model row), which is
+why both are driven through the sample's `argv[1]` override rather than through a fixture.
+
+Windows and Linux ship **Pending**, and this task's platform-validation debt is **smaller than the
+usual full task** because CI already covers its sharpest cross-platform half: `SN3` compiles and draws
+the skinned pipeline under **WARP and lavapipe** on every push, which is V2's cross-backend half and
+the one place the tree's first `uint4` vertex attribute and first two-UBO vertex stage could have
+diverged. What the lanes do **not** cover is everything a validation pass is for — the picture. The
+four-phase platform-validation debt grows by one more task.
