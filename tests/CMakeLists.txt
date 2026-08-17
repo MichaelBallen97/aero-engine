@@ -30,6 +30,8 @@ add_executable(aero_tests
     cooked_texture_test.cpp # task 3.3.2 — the KTX2 subset v1: vocabulary, DFD tables, parse, hostile input
     bc_block_test.cpp       # task 3.3.2 — the two encoders against per-block byte goldens
     texture_cook_test.cpp   # task 3.3.2 — cookTexture: levels, polyphase filter, gamma, caps
+    cooked_skeleton_test.cpp # task 3.5.1 — the .aeroskel container v1: layout, parse, hostile input
+    skeleton_cook_test.cpp   # task 3.5.1 — cookSkeleton: canonical order, refusals, byte-exactness
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -51,6 +53,7 @@ add_executable(aero_tests
     scene_render_test.cpp # task 1.4.1 — buildRenderView (tier-0) + gated SceneRenderer GPU draw-smoke
     render_target_test.cpp # task 2.2.3 — tier-0 sizing policy + GPU-gated RenderTarget lifecycle
     render_material_test.cpp # task 3.4.1 — tier-0 generator/format invariants + GPU-gated registry & bridge
+    render_skinning_test.cpp # task 3.5.1 — tier-0 pose/palette/repack invariants + GPU-gated mesh registry & skinned draw
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
@@ -95,6 +98,18 @@ target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::
 # comment-stripped source-text gate, the AERO_EDITOR_SRC_DIR / I73 / MS41 / AI34 shape one layer down.
 # UNGATED on purpose: both reduced configurations build this TU and must run this case too.
 target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/assets/src")
+
+# task 3.5.1, added by the code-review round: the SOURCE tree's shader directory, for
+# render_skinning_test.cpp's JP14 -- the comment-stripped source-text pin tying
+# scene_skinned.vert.hlsl's own 85 and 255 to render::MAX_SKINNING_JOINTS. Nothing else can: the
+# constant is duplicated across a C++ header and an HLSL file that never see each other's tokens, and
+# every mismatched variant compiles, links, submits and draws (Vulkan clamps its descriptor range to
+# 4096 and shows uniform-ring residue past joint 85; D3D12 and Metal freeze those vertices instead).
+# DISTINCT FROM AERO_SHADERS_DIR at :123, which points at the BUILD output (the compiled artifacts a
+# loader reads) -- this one points at the SOURCE (the HLSL text). Do not merge or reuse them.
+# UNGATED on purpose, like AERO_ASSETS_SRC_DIR above: the HLSL source exists in the source tree
+# whether or not AERO_SHADER_TOOLS built it, and both reduced configurations must run this case.
+target_compile_definitions(aero_tests PRIVATE AERO_SHADERS_SRC_DIR="${CMAKE_SOURCE_DIR}/shaders")
 
 # Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,
 # in build/<preset>/shaders). aero_shaders exists ONLY when AERO_SHADER_TOOLS is ON (cmake/shaders.cmake),
@@ -367,7 +382,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/assimp_import_test.cpp
                editor/mesh_cook_source_test.cpp
                editor/texture_cook_source_test.cpp
-               editor/material_edit_test.cpp)
+               editor/material_edit_test.cpp
+               editor/skeleton_cook_source_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -780,11 +796,37 @@ set(_aero_cooker_cases
     # bootstrap's option hash). Both names are present in both reduced configurations, which is the
     # proof that this block is still ungated.
     #
-    # These two cook the whole 13-artifact matrix through the real binary and compare against
-    # tests/cooker/determinism.sha256. Their WORK_DIRs are what ci.yml's `build` legs upload and its
-    # `cook-determinism` job downloads -- if either case is renamed, THREE places change together:
-    # this list, the upload step's two paths, and the job's directory expectations.
+    # These two -- three since task 3.5.1 added skeleton_golden_manifest below -- cook the whole
+    # 15-artifact matrix through the real binary and compare against tests/cooker/determinism.sha256.
+    # Their WORK_DIRs are what ci.yml's `build` legs upload and its `cook-determinism` job downloads
+    # -- if any of them is renamed, THREE places change together: this list, the upload step's three
+    # paths, and the job's directory expectations.
     golden_manifest texture_golden_manifest
+    # task 3.5.1 -- the skeleton subcommand. Ten more names, on the same terms: ungated, so ctest -N
+    # moves in ALL THREE configurations again. MEASURED at the tip of this branch, never derived by
+    # addition: 133 -> 143 with tools ON, 44 -> 54 with -DAERO_REFLECT_TOOLS=OFF
+    # -DAERO_SHADER_TOOLS=OFF, and 57 -> 67 with -DAERO_REFLECT_TOOLS=OFF alone, the last two in
+    # build directories configured FRESH with -G Ninja (the generator enters the shadercross
+    # bootstrap's option hash). All ten names are present in both reduced configurations, which is the
+    # proof that this block is still ungated.
+    #
+    # Nine drive the new `skeleton` subcommand against tests/cooker/fixtures/skinned-quad.gltf; the
+    # tenth drives `mesh` twice, with and without --no-skins, and is the artifact-level witness that
+    # the flag finally does something for the glTF path.
+    skeleton_happy skeleton_unknown_flag skeleton_bad_skin
+    skeleton_no_skin skeleton_skin_out_of_range
+    skeleton_guid_written skeleton_determinism
+    skeleton_nothing_written_on_failure skeleton_output_dir_missing
+    no_skins_gltf
+    # task 3.5.1 -- the manifest's THIRD arm, and the eleventh name this task adds. It is a separate
+    # arm rather than a sixth mesh tuple because aero_manifest_tuple reads the arm-level SUBCOMMAND
+    # and the per-kind orphan check stays sound only while one arm claims each name prefix. It cooks
+    # skeleton-skinned.aeroskel; golden_manifest gained mesh-skinned.aeromesh in the same commit, so
+    # tests/cooker/determinism.sha256 goes 13 -> 15 lines and every literal pinning it moves at once.
+    # MEASURED, never derived by addition: 143 -> 144 with tools ON, 54 -> 55 with
+    # -DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF, and 67 -> 68 with -DAERO_REFLECT_TOOLS=OFF
+    # alone, the last two in build directories configured with -G Ninja.
+    skeleton_golden_manifest
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(

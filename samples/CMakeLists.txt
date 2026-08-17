@@ -7,6 +7,7 @@ add_subdirectory(phase-0-clear)  # task 0.5.1 — first pixels
 add_subdirectory(phase-0-cube)   # task 0.5.2 — textured cube (phase-0 gate artifact)
 add_subdirectory(phase-1-scene)  # task 1.4.2 — load & draw a JSON scene (phase-1 gate artifact)
 add_subdirectory(phase-3-materials)  # task 3.4.1 — materials + cooked textures
+add_subdirectory(phase-3-skinning)   # task 3.5.1 — a bind-pose twin beside a waving twin
 # phase-2-editor-scene is DATA, not a sample app, and is deliberately NOT add_subdirectory'd: it is an
 # Aero project (project.json + assets/ + scenes/) authored through the editor, with no main.cpp and no
 # CMakeLists.txt of its own. The other three samples are compile-proofs of engine code; the Phase 2

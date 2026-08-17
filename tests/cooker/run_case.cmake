@@ -208,10 +208,10 @@ function(aero_read_manifest out_names out_hashes)
         list(APPEND hashes "${hash}")
     endforeach()
     list(LENGTH names count)
-    # A LITERAL 13, never a count derived from the file it is checking: a guard computed from its own
-    # subject cannot see a line deleted. Both cases assert it, so a deletion reddens both at once.
-    if(NOT count EQUAL 13)
-        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 13")
+    # A LITERAL 15, never a count derived from the file it is checking: a guard computed from its own
+    # subject cannot see a line deleted. All three cases assert it, so a deletion reddens them at once.
+    if(NOT count EQUAL 15)
+        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 15")
     endif()
     set(${out_names} "${names}" PARENT_SCOPE)
     set(${out_hashes} "${hashes}" PARENT_SCOPE)
@@ -315,6 +315,19 @@ set(OFFSET_BOUNDS_MAX_Y 80)
 # 96 header + 8*1 attribute + 32*1 section = 136, then M_MATERIAL at +12.
 set(OFFSET_FIRST_SUBMESH_MATERIAL 148)
 
+# task 3.5.1: the skeleton subcommand and its own fixture. The .aeroskel header puts formatVersion at
+# byte 8 and the source GUID at byte 16 -- the SAME two offsets .aeromesh uses, by that format's own
+# design, so the two constants above are REUSED here rather than restated under new names; a
+# disagreement between the two layouts would be a real defect in one of them.
+#
+# A skeleton's size is its record count and nothing else -- 64 + 128 * jointCount, with no padding
+# site anywhere -- so 448 bytes IS "three records": the two palette joints skinned-quad.gltf declares
+# plus the one non-joint root its ancestor closure adds.
+set(SKINNED_QUAD "${SOURCE_DIR}/tests/cooker/fixtures/skinned-quad.gltf")
+set(SKELOUT "${WORK_DIR}/out.aeroskel")
+set(SKELETON_MAGIC_HEX "4145524f534b454c")   # "AEROSKEL"
+set(SKINNED_QUAD_SKELETON_BYTES 448)
+
 # --- the case table -------------------------------------------------------------------------------
 
 if(CASE STREQUAL "help")
@@ -322,6 +335,10 @@ if(CASE STREQUAL "help")
     aero_expect_exit("${result}" 0)
     aero_expect_non_empty("${out}" "stdout")
     aero_expect_contains("${out}" "aero_cooker mesh --input" "the usage text")
+    # task 3.5.1: the third subcommand's own usage line. A subcommand a user cannot discover from
+    # --help is a subcommand they will not use, and the texture_help arm already makes the same
+    # assertion for the second one.
+    aero_expect_contains("${out}" "aero_cooker skeleton --input" "the usage text")
     # stdout is reserved for --help/--version; diagnostics go to stderr only, so this one is silent.
     if(NOT err STREQUAL "")
         message(FATAL_ERROR "case '${CASE}': --help wrote to stderr: ${err}")
@@ -336,9 +353,11 @@ elseif(CASE STREQUAL "no_subcommand")
     aero_run_tool(ARGS --input "${ANY_INPUT}" --output "${OUT}" OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 1)
     aero_expect_non_empty("${err}" "stderr")
-    # task 3.3.2 changed this literal from "(expected: mesh)". Asserted, so the next subcommand added
-    # cannot leave the message naming a subset of what the tool actually accepts.
-    aero_expect_contains("${err}" "expected: mesh or texture" "stderr")
+    # task 3.3.2 changed this literal from "(expected: mesh)" and task 3.5.1 changed it again from
+    # "(expected: mesh or texture)". Asserted, so the next subcommand added cannot leave the message
+    # naming a subset of what the tool actually accepts -- which is exactly what this literal caught
+    # both times.
+    aero_expect_contains("${err}" "expected: mesh, texture or skeleton" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_subcommand")
@@ -347,11 +366,11 @@ elseif(CASE STREQUAL "unknown_subcommand")
     # subcommand landed. Worse, it would have kept passing -- `texture --input x --output y` with no
     # colour-space flag is still exit 1 with "texture" in the message -- so the case would have gone
     # on looking green while asserting something that no longer existed. A genuinely unknown token,
-    # and the message that names both real ones.
+    # and the message that names every real one -- three of them since task 3.5.1.
     aero_run_tool(ARGS sound --input "${ANY_INPUT}" --output "${OUT}" OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 1)
     aero_expect_contains("${err}" "unknown subcommand 'sound'" "stderr")
-    aero_expect_contains("${err}" "expected: mesh or texture" "stderr")
+    aero_expect_contains("${err}" "expected: mesh, texture or skeleton" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_flag")
@@ -761,19 +780,153 @@ elseif(CASE STREQUAL "texture_output_dir_missing")
     aero_expect_no_files("${WORK_DIR}/nope")
     aero_verify_no_files_in("${WORK_DIR}")
 
+# --- task 3.5.1: the skeleton subcommand ----------------------------------------------------------
+#
+# Ten arms, ungated like every case above, so `ctest -N` moves in ALL THREE build configurations
+# again. Nine drive `skeleton`; the tenth (no_skins_gltf) drives `mesh` twice and is the
+# artifact-level witness that --no-skins finally does something for the glTF path.
+#
+# They sit ABOVE the manifest block rather than below it because that block is this file's heavy tail
+# and grows again at this task's own Step 11 -- keeping every manifest arm together is what makes the
+# KIND_PREFIX orphan check readable at a glance.
+
+elseif(CASE STREQUAL "skeleton_happy")
+    aero_run_tool(ARGS skeleton --input "${SKINNED_QUAD}" --output "${SKELOUT}" OUT_RESULT result)
+    aero_expect_exit("${result}" 0)
+    # aero_expect_magic is AEROMESH-specific by construction, so a second container kind asserts its
+    # own magic through the generic hex helper instead of widening that one.
+    aero_expect_hex_at("${SKELOUT}" 0 8 "${SKELETON_MAGIC_HEX}")
+    # 64 + 128 * 3. Two palette joints plus the non-joint root the ancestor closure had to add, so at
+    # this tier the file's SIZE is the closure's own witness: without it the artifact would be 320.
+    aero_expect_size("${SKELOUT}" "${SKINNED_QUAD_SKELETON_BYTES}")
+    aero_expect_hex_at("${SKELOUT}" "${OFFSET_FORMAT_VERSION}" 4 "01000000")
+
+elseif(CASE STREQUAL "skeleton_unknown_flag")
+    # A MESH-ONLY flag, not an invented one. The flag arms are subcommand-scoped, so --no-materials is
+    # genuinely unknown under `skeleton` and falls through to the arm that names it; an invented token
+    # would prove only that the fallback exists, which the unknown_flag case already proves.
+    aero_run_tool(ARGS skeleton --input "${SKINNED_QUAD}" --output "${SKELOUT}" --no-materials
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 1)
+    aero_expect_contains("${err}" "--no-materials" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "skeleton_bad_skin")
+    # Not a number; a trailing character the parse does not consume; and a leading sign, which
+    # std::from_chars's UNSIGNED overload refuses at the first character rather than wrapping -1 into
+    # 4294967295. Each names the flag, so the message cannot degrade into a bare "usage error".
+    foreach(bad abc 1x -1)
+        aero_run_tool(ARGS skeleton --input "${SKINNED_QUAD}" --output "${SKELOUT}" --skin "${bad}"
+            OUT_RESULT result OUT_STDERR err)
+        aero_expect_exit("${result}" 1)
+        aero_expect_contains("${err}" "--skin" "stderr")
+    endforeach()
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "skeleton_no_skin")
+    # triangle.gltf declares no skins at all, and the refusal names what EXISTS -- "0 skin(s)" is the
+    # honest answer rather than a special case. Exit 2, not 1: the model imported perfectly well and
+    # what failed is the cook.
+    aero_run_tool(ARGS skeleton --input "${ANY_INPUT}" --output "${SKELOUT}" OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_contains("${err}" "has 0 skin" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "skeleton_skin_out_of_range")
+    # The SAME refusal one skin higher: skinned-quad.gltf has exactly one, so --skin 1 is out of range
+    # and the count comes from the model. The zero case above cannot show that on its own -- a message
+    # printing a hard-coded 0 would satisfy it.
+    aero_run_tool(ARGS skeleton --input "${SKINNED_QUAD}" --output "${SKELOUT}" --skin 1
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_contains("${err}" "has 1 skin" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "skeleton_guid_written")
+    # hi = 0x0123456789abcdef, lo = 0xfedcba9876543210, each stored little-endian, so the sixteen
+    # bytes read back-to-front per half. Every one of them is non-zero, which is what makes this a
+    # statement about byte ORDER and not merely about presence -- the mesh path's guid_written
+    # assertion, at the same offset, because this format puts its source GUID exactly where that one
+    # does.
+    aero_run_tool(ARGS skeleton --input "${SKINNED_QUAD}" --output "${SKELOUT}"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result)
+    aero_expect_exit("${result}" 0)
+    aero_expect_hex_at("${SKELOUT}" "${OFFSET_SOURCE_GUID}" 16 "efcdab89674523011032547698badcfe")
+
+elseif(CASE STREQUAL "skeleton_determinism")
+    # Two processes, two directories, one byte sequence. As with both older containers no timestamp,
+    # no path, no hostname and no build id reaches the artifact -- and, as with the texture container,
+    # no floating point is COMPUTED anywhere: every TRS and IBM cell is bit-copied from the importer's
+    # own float through putF32.
+    set(dir1 "${WORK_DIR}/run1")
+    set(dir2 "${WORK_DIR}/run2")
+    file(MAKE_DIRECTORY "${dir1}")
+    file(MAKE_DIRECTORY "${dir2}")
+    aero_run_tool(ARGS skeleton --input "${SKINNED_QUAD}" --output "${dir1}/out.aeroskel"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result1)
+    aero_expect_exit("${result1}" 0)
+    aero_run_tool(ARGS skeleton --input "${SKINNED_QUAD}" --output "${dir2}/out.aeroskel"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result2)
+    aero_expect_exit("${result2}" 0)
+    aero_expect_identical("${dir1}/out.aeroskel" "${dir2}/out.aeroskel")
+
+elseif(CASE STREQUAL "skeleton_nothing_written_on_failure")
+    # The output path is opened only after cookSkeleton returned a complete byte vector, so a model
+    # with no skin leaves the working directory EMPTY -- of the artifact and of the .aero-tmp file
+    # writeTextFileAtomic would have created on its way to it. The input imports perfectly and it is
+    # the COOK that refuses, which is what separates this arm from skeleton_output_dir_missing.
+    aero_run_tool(ARGS skeleton --input "${ANY_INPUT}" --output "${SKELOUT}" OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+    aero_expect_no_files("${SKELOUT}" "${SKELOUT}.aero-tmp")
+
+elseif(CASE STREQUAL "skeleton_output_dir_missing")
+    # The tool creates NO directory, for any subcommand: a build-time tool that invents them is how a
+    # typo becomes a mystery tree.
+    aero_run_tool(ARGS skeleton --input "${SKINNED_QUAD}" --output "${WORK_DIR}/nope/out.aeroskel"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 3)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_expect_no_files("${WORK_DIR}/nope")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "no_skins_gltf")
+    # THE ARTIFACT-LEVEL WITNESS for the flag whose README row this task had to rewrite: until the
+    # glTF importer's JOINTS_0/WEIGHTS_0 reads were gated on importSkins, --no-skins changed NOTHING
+    # for a .gltf -- it suppressed the skin table, which the mesh container does not store anyway.
+    # BOTH halves, because one alone proves nothing: with the flag the cooked mesh carries no Joints0
+    # and no Weights0 section and is strictly smaller; without it the same input carries both.
+    set(withSkins "${WORK_DIR}/with-skins.aeromesh")
+    set(noSkins "${WORK_DIR}/no-skins.aeromesh")
+    aero_run_tool(ARGS mesh --input "${SKINNED_QUAD}" --output "${withSkins}" OUT_RESULT withResult)
+    aero_expect_exit("${withResult}" 0)
+    aero_expect_magic("${withSkins}")
+    aero_run_tool(ARGS mesh --input "${SKINNED_QUAD}" --output "${noSkins}" --no-skins
+        OUT_RESULT withoutResult)
+    aero_expect_exit("${withoutResult}" 0)
+    aero_expect_magic("${noSkins}")
+    aero_expect_smaller_than("${noSkins}" "${withSkins}")
+
 # --- task 3.3.3: the frozen cook-determinism manifest ---------------------------------------------
 #
-# Two cases, one shape. Each cooks its tuples ONCE through the real binary and requires the artifact's
-# SHA-256 to equal the line tests/cooker/determinism.sha256 records for that name. Because the cooker
-# takes no gate flag, both register in all three build configurations, and because CI runs ctest in
-# Debug and Release on three lanes, the manifest is checked SIX times per push: all six green means
-# every lane and both configurations equal the manifest, therefore they equal each other.
+# Three cases, one shape (task 3.5.1 added the third). Each cooks its tuples ONCE through the real
+# binary and requires the artifact's SHA-256 to equal the line tests/cooker/determinism.sha256 records
+# for that name. Because the cooker takes no gate flag, all three register in all three build
+# configurations, and because CI runs ctest in Debug and Release on three lanes, the manifest is
+# checked NINE times per push: all nine green means every lane and both configurations equal the
+# manifest, therefore they equal each other.
+#
+# A THIRD ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
+# arm-level SUBCOMMAND, and the KIND_PREFIX orphan check below ("every manifest line of THIS case's
+# kind was actually cooked") stays sound only while every line's prefix is claimed by exactly one arm.
 #
 # The artifacts land in ${WORK_DIR}/artifacts/ and the CI job uploads exactly that directory. The
 # perturbed re-cook lands in ${WORK_DIR}/perturbed/ so it cannot enter the upload set, which is
-# thirteen files across the two cases and nothing else.
+# fifteen files across the three cases and nothing else.
 
-elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest")
+elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest"
+       OR CASE STREQUAL "skeleton_golden_manifest")
     set(ASSETS "${SOURCE_DIR}/tests/fixtures/assets")
     set(ARTIFACTS "${WORK_DIR}/artifacts")
     file(MAKE_DIRECTORY "${ARTIFACTS}")
@@ -825,7 +978,7 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
     if(CASE STREQUAL "golden_manifest")
         set(SUBCOMMAND mesh)
         set(KIND_PREFIX "mesh-")
-        set(TUPLE_COUNT 5)              # LITERAL, beside the five calls it counts
+        set(TUPLE_COUNT 6)              # LITERAL, beside the six calls it counts
         # The minimal path, and the one tuple with a cross-tier tie: these 272 bytes ARE
         # tests/cooked_mesh_golden.hpp's COOKED_GOLDEN_TRIANGLE, so this line's hash is checkable
         # from the golden header alone, with no cooker involved.
@@ -843,7 +996,11 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # The only input whose bytes depend on the sort running: two meshes, three primitives, and a
         # first-declared primitive whose richer mask sends it LAST. sectionCount 2, submeshCount 3.
         aero_manifest_tuple(mesh-multi.aeromesh           --input "${FIXTURES}/multi.gltf")
-    else()
+        # task 3.5.1 -- the FIRST manifest artifact carrying Joints0/Weights0 sections. Every mesh
+        # tuple above is unskinned, so until this line the joint/weight emit path had no cross-lane
+        # witness at all. No --guid, the mesh-triangle posture: what this pins is the layout.
+        aero_manifest_tuple(mesh-skinned.aeromesh         --input "${FIXTURES}/skinned-quad.gltf")
+    elseif(CASE STREQUAL "texture_golden_manifest")
         set(SUBCOMMAND texture)
         set(KIND_PREFIX "texture-")
         set(TUPLE_COUNT 8)              # LITERAL, beside the eight calls it counts
@@ -876,6 +1033,19 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # Partial edge blocks -- the clamp-never-zero-fill path, NPOT, linear.
         aero_manifest_tuple(texture-rgb5x3-linear-bc1.ktx2
             --input "${ASSETS}/texture-rgb-5x3.png" --linear --format bc1)
+    else()
+        set(SUBCOMMAND skeleton)
+        set(KIND_PREFIX "skeleton-")
+        set(TUPLE_COUNT 1)              # LITERAL, beside the one call it counts
+        # task 3.5.1 -- the .aeroskel format anchored cross-lane, cross-configuration and cross-time
+        # from the day it shipped, rather than after the first divergence. One tuple is enough because
+        # the input is the one that exercises the whole cook: two SIBLING palette joints under a
+        # non-joint root, so the ancestor closure, Kahn's tie and the source-order independence all
+        # run. It carries a REAL --guid, unlike the mesh posture, so the header's hi/lo emit order is
+        # pinned across lanes too -- swapping those two u64 writes is otherwise invisible to any
+        # single-lane check, since our own parser reads them back in the order our writer wrote them.
+        aero_manifest_tuple(skeleton-skinned.aeroskel
+            --input "${FIXTURES}/skinned-quad.gltf" --guid "${TEST_GUID}")
     endif()
 
     # --- the mismatch report ------------------------------------------------------------------------

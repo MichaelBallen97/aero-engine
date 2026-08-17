@@ -811,6 +811,11 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   that reads `ImportedNode::children`, `ImportedModel::roots`, `ImportedSkin::joints` or
   `ImportedAnimationChannel::targetNode` must resolve through a map like this one -- never index
   `ImportedModel::nodes` with the raw value.**
+  **`skeleton_cook_source.cpp` (task 3.5.1) is the fourth named consumer of this rule and the first
+  outside a panel**: it reads `ImportedSkin::joints` AND `ImportedNode::parent` for its ancestor
+  closure, and every one of those resolutions goes through one `localId -> position` **sorted vector**
+  built once per call (a sorted vector rather than a hash container, because the adapter's output
+  order must not depend on an iteration order) -- never `nodes[localId]`.
 - **Every platform-dependent ufbx default is set EXPLICITLY.** `path_separator` above all: its default
   is `'\'` on Windows and `'/'` everywhere else, inside a function whose output three CI lanes must
   agree about byte for byte in tests comparing `relativePath` against literals.

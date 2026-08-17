@@ -685,6 +685,12 @@ namespace {
 Guid guidOf(std::uint64_t n) { return Guid{n, n}; }
 ContentHash hashOf(std::uint64_t n) { return ContentHash{n, n}; }
 
+// The `importerVersion` argument is a LITERAL on purpose, never GLTF_IMPORTER_VERSION: a case asserting
+// UpToDate against the constant that produced the value would compare the identity mapping with itself
+// and could no longer see a wrong-format arm. A case wanting UpToDate for a .gltf therefore passes the
+// glTF importer's CURRENT version (2 since task 3.5.1's importSkins gate); a case wanting
+// ImporterChanged passes a deliberately different one (0, 3, 999). A future bump moves the former set
+// and leaves the latter alone -- which is the review the bump deserves.
 AssetCacheEntry cacheEntry(Guid guid, std::string path, ContentHash contentHash, ContentHash metaHash = ContentHash{},
                            std::string importer = "", std::uint32_t importerVersion = 0,
                            std::vector<Guid> dependencies = {}, std::uint32_t missing = 0) {
@@ -1365,7 +1371,7 @@ TEST_CASE(
     // DependencyChanged for an unrelated reason and defeat the point of this case. AC-p5 already covers
     // the dependency-list-survives half.
     const AssetCacheIndex firstPrevious =
-        indexOf({cacheEntry(guidOf(1), "chair.gltf", hashOf(10), hashOf(20), "gltf", 1)});
+        indexOf({cacheEntry(guidOf(1), "chair.gltf", hashOf(10), hashOf(20), "gltf", 2)});
     const std::vector<ImportInput> firstInputs = {importInput(guidOf(1), "chair.gltf", hashOf(10), hashOf(20))};
     const ImportPlanResult firstPlan = planImports(firstInputs, firstPrevious);
     REQUIRE(firstPlan.entries.size() == 1);
@@ -1379,7 +1385,7 @@ TEST_CASE(
     const AssetCacheIndex afterSecond = commitImports(afterFirst, secondInputs, secondPlan);
     REQUIRE(afterSecond.entries.size() == 1);
     CHECK(afterSecond.entries[0].importer == "gltf");
-    CHECK(afterSecond.entries[0].importerVersion == 1);
+    CHECK(afterSecond.entries[0].importerVersion == 2);
 }
 
 TEST_CASE(
@@ -1431,7 +1437,7 @@ TEST_CASE(
     // ImporterChanged forever -- and, if the identity were instead one SHARED constant rather than a
     // per-format function, would make it agree with the .gltf row below by accident.
     const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "chair.fbx", hashOf(10), hashOf(20), "fbx", 0),
-                                              cacheEntry(guidOf(2), "table.gltf", hashOf(30), hashOf(40), "gltf", 1)});
+                                              cacheEntry(guidOf(2), "table.gltf", hashOf(30), hashOf(40), "gltf", 2)});
     const std::vector<ImportInput> inputs = {importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20)),
                                              importInput(guidOf(2), "table.gltf", hashOf(30), hashOf(40))};
     const ImportPlanResult result = planImports(inputs, previous);
@@ -1515,7 +1521,7 @@ TEST_CASE(
         CHECK(findEntry(plan, guidOf(2))->change == ImportChange::ImporterChanged);
         const std::vector<ImportInput> probed = {
             importInput(guidOf(1), "chair.fbx", hashOf(10), hashOf(20), ProbeOutcome{"fbx", 1, {}}),
-            importInput(guidOf(2), "table.gltf", hashOf(30), hashOf(40), ProbeOutcome{"gltf", 1, {}})};
+            importInput(guidOf(2), "table.gltf", hashOf(30), hashOf(40), ProbeOutcome{"gltf", 2, {}})};
         index = commitImports(index, probed, plan);
     }
     // Rounds 2-4: every entry now carries the RIGHT identity for its own extension -- UpToDate, forever,
@@ -1541,7 +1547,7 @@ TEST_CASE(
     // AC-p10's own shape, one format over: proves modelImporterIdentity's OBJ arm is genuinely
     // independent of the glTF one, not a shared constant that happens to pass a single-format case.
     const AssetCacheIndex previous = indexOf({cacheEntry(guidOf(1), "chair.obj", hashOf(10), hashOf(20), "obj", 0),
-                                              cacheEntry(guidOf(2), "table.gltf", hashOf(30), hashOf(40), "gltf", 1)});
+                                              cacheEntry(guidOf(2), "table.gltf", hashOf(30), hashOf(40), "gltf", 2)});
     const std::vector<ImportInput> inputs = {importInput(guidOf(1), "chair.obj", hashOf(10), hashOf(20)),
                                              importInput(guidOf(2), "table.gltf", hashOf(30), hashOf(40))};
     const ImportPlanResult result = planImports(inputs, previous);

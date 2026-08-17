@@ -1002,7 +1002,12 @@ ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::
             // JOINTS_0 -- read as fastgltf::math::u16vec4 (there is NO ElementTraits for std::array) and
             // copied component-wise; UNSIGNED_BYTE and UNSIGNED_SHORT sources both widen to uint16_t via
             // the SAME static_cast path (verified in tools.hpp's convertComponent -- AC-24's sibling).
-            if (const auto it = prim.findAttribute("JOINTS_0"); it != prim.attributes.cend()) {
+            //
+            // GATED ON settings.importSkins SINCE TASK 3.5.1. Phase 7 has always skipped the skin table
+            // for !importSkins, and reading the vertex half anyway left orphaned joint indices with no
+            // skin to resolve them -- which the FBX and Assimp backends never did. All three importers
+            // now mean the same thing by the flag.
+            if (const auto it = prim.findAttribute("JOINTS_0"); settings.importSkins && it != prim.attributes.cend()) {
                 if (validateAccessor(asset, it->accessorIndex, fastgltf::AccessorType::Vec4, adapter) &&
                     asset.accessors[it->accessorIndex].count == vertexCount) {
                     const fastgltf::Accessor& acc = asset.accessors[it->accessorIndex];
@@ -1019,8 +1024,9 @@ ImportResult importGltf(std::string_view assetRelativeDir, std::span<const std::
                 }
             }
 
-            // WEIGHTS_0 -- Vec4.
-            if (const auto it = prim.findAttribute("WEIGHTS_0"); it != prim.attributes.cend()) {
+            // WEIGHTS_0 -- Vec4. Gated identically (task 3.5.1): joints and weights are read together
+            // or not at all, which is also the cook's own pairing rule.
+            if (const auto it = prim.findAttribute("WEIGHTS_0"); settings.importSkins && it != prim.attributes.cend()) {
                 if (validateAccessor(asset, it->accessorIndex, fastgltf::AccessorType::Vec4, adapter) &&
                     asset.accessors[it->accessorIndex].count == vertexCount) {
                     const fastgltf::Accessor& acc = asset.accessors[it->accessorIndex];

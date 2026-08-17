@@ -1,0 +1,165 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "aero-engine test fixture (hand-authored) -- task 3.5.1: the tree's first SKINNED cooker fixture. Two palette joints (nodes 1 and 2) are SIBLINGS under one non-joint root (node 0), so the ancestor closure has to add that root as a hierarchy-only record and Kahn's ready set genuinely ties between them. skins[0].joints is [2, 1] -- deliberately NOT ascending -- so emission order differs from both source order and palette-slot order. Self-contained: the buffer is an embedded data URI, so this file has no sibling."
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0,
+        3
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Root",
+      "translation": [
+        0.0,
+        0.5,
+        0.0
+      ],
+      "children": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "JointA",
+      "translation": [
+        0.5,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "JointB",
+      "translation": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "MeshNode",
+      "translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mesh": 0,
+      "skin": 0
+    }
+  ],
+  "skins": [
+    {
+      "name": "TwoSiblingJoints",
+      "skeleton": 0,
+      "joints": [
+        2,
+        1
+      ],
+      "inverseBindMatrices": 4
+    }
+  ],
+  "meshes": [
+    {
+      "name": "SkinnedQuad",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "JOINTS_0": 1,
+            "WEIGHTS_0": 2
+          },
+          "indices": 3
+        }
+      ]
+    }
+  ],
+  "accessors": [
+    {
+      "name": "POSITION",
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3",
+      "min": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max": [
+        1.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "JOINTS_0",
+      "bufferView": 1,
+      "componentType": 5123,
+      "count": 4,
+      "type": "VEC4"
+    },
+    {
+      "name": "WEIGHTS_0",
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC4"
+    },
+    {
+      "name": "INDICES",
+      "bufferView": 3,
+      "componentType": 5123,
+      "count": 6,
+      "type": "SCALAR"
+    },
+    {
+      "name": "INVERSE_BIND_MATRICES",
+      "bufferView": 4,
+      "componentType": 5126,
+      "count": 2,
+      "type": "MAT4"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 48,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 48,
+      "byteLength": 32,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 80,
+      "byteLength": 64,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 144,
+      "byteLength": 12,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 156,
+      "byteLength": 128
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 284,
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAAABAAAAAAAAAAEAAAAAAAAAAQAAAAAAAAABAAAAAAAAAIA/AAAAAAAAAAAAAAAAAABAPwAAgD4AAAAAAAAAAAAAgD4AAEA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAABAAIAAQADAAIAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAwL8AAAAAAACAPwAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAL8AAAC/AAAAAAAAgD8="
+    }
+  ]
+}

@@ -11,4 +11,5 @@ aero_add_shaders(aero_shaders
         cube.frag.hlsl       # task 0.5.2
         scene.vert.hlsl      # task 1.4.1
         scene.frag.hlsl      # task 1.4.1
+        scene_skinned.vert.hlsl  # task 3.5.1 -- the skinned twin; shares scene.frag.hlsl unchanged
 )

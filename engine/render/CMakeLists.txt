@@ -10,6 +10,7 @@ add_library(aero_render STATIC
     src/primitives.cpp        # task 1.4.1
     src/render_target.cpp     # task 2.2.3 -- the offscreen sibling of Renderer
     src/texture_upload.cpp    # task 3.4.1 -- the cooked-texture (.ktx2) -> GPU bridge
+    src/skinning.cpp          # task 3.5.1 -- joint poses, the matrix palette, the palette row packer
 )
 add_library(aero::render ALIAS aero_render)
 

@@ -87,6 +87,19 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
   residuals with the same Phase 5 trigger, not oversights — every read goes through a bounds-checked
   accessor, so either is a wrong picture and never a memory error. The Phase 5 answer for the first is
   an opt-in `parseCookedMeshStrict`, chosen by the caller, never forced on every load.
+  **SINCE TASK 3.5.1 THAT SAFETY ARGUMENT NO LONGER COVERS EVERY CONSUMER, AND THE RESIDUAL STAYS OPEN
+  ON A NARROWER ONE.** "Always a wrong picture, never a memory error" was a true statement about
+  `get*`-based CPU code, which was the only kind of consumer this format had. `ForwardRenderer::createMesh`
+  now UPLOADS the index region verbatim and `draw()` issues `drawIndexed` against it with a bound vertex
+  stream, so an out-of-range index value becomes a **GPU vertex fetch past the end of a buffer** — nothing
+  of ours bounds-checks that, and SDL exposes Vulkan's `robustBufferAccess` as an OPTIONAL feature, so on
+  a device that does not report it the result is undefined behaviour rather than a clamped read. The
+  residual is still legitimately open: the cook is the only producer in this tree, its own output is
+  in range by construction, and a hand-edited or hostile artifact is the only way to reach it. What
+  changed is the COST of being wrong for a consumer that uploads. **Owner and trigger: the same Phase 5
+  `.pak` path already named above** — the opt-in `parseCookedMeshStrict` is where an uploading consumer
+  gets index-value validation, and a `.pak` loader is the first consumer that will be handed bytes it
+  did not cook itself.
 - **The three byte goldens in `tests/cooked_mesh_golden.hpp` are FROZEN.** A change to any layout rule,
   offset, ordering rule or padding rule fails them by construction. If a golden needs to change, the
   format changed — and that is a `formatVersion` decision, not a test edit.
@@ -184,6 +197,68 @@ specification is `docs/09-file-formats.md` section 10.
   carries a BC4 artifact for the same reason. **A ninth format added here needs a row in that table on
   the day it lands**, or it inherits exactly this hole.
 
+## Skeletons (task 3.5.1) — the second first-party binary format
+
+`engine/assets` also holds the **cooked skeleton container v1** (`.aeroskel`):
+`cooked_skeleton.{hpp,cpp}` is the format and its hostile-input parser, `skeleton_cook.{hpp,cpp}` is
+the producer. The **normative** specification is `docs/09-file-formats.md` section 12. It is a
+**sibling** of `.aeromesh`, never a region inside it — which is why the whole task shipped with
+`.aeromesh` byte-untouched: no `formatVersion` bump, no golden churn.
+
+- **A `.aeroskel` is NEVER EMPTY, and that is the one deliberate asymmetry with section 9.2.** Both
+  `jointCount` and `paletteJointCount` are `>= 1` **at parse**, not by convention. A mesh cook can
+  legitimately produce a 96-byte empty file (an asset that exists must have an artifact), but the
+  skeleton cook is per-**skin**: a model with no skin produces no artifact at all and a CLI error. An
+  empty skeleton is not a degenerate rig; it is the absence of one. Do not "relax" this to match the
+  mesh container.
+- **Parents-before-children is a FORMAT INVARIANT, enforced as one line: `parent < index`.** Topology
+  is a byte-layout property here, so a cycle is unrepresentable rather than detected, and the parser
+  does no graph work at all. **Consumers may and do walk the records in a single forward pass with no
+  recursion and no visited set — do not add one.** `render::computeJointPalette` is written that way
+  on purpose; a visited set there would be dead code guarding an invariant the parser already refused
+  to admit. The producer reaches the order with Kahn's algorithm over sorted vectors (ties by
+  ascending `sourceNodeLocalId`) and remaps parents to **emission** indices, so **Kahn exhaustion IS
+  the cycle detector** — there is no second traversal to keep in sync.
+- **The palette slots are a BIJECTION onto `[0, paletteJointCount)`, checked in both halves.** A slot
+  twice and a slot missing are both refusals, and both come back as `BadHierarchy`. Note the
+  arithmetic before writing a test against either: `paletteJointCount > jointCount` **always** leaves a
+  hole too, so no buffer can separate that check from the unclaimed-slot check **by status** — only
+  the message can, which is why a case pins the sentence.
+- **ZERO FLOATING-POINT ARITHMETIC in the cook — bit-copy only.** Every TRS component and every one of
+  the sixteen inverse-bind cells travels `std::bit_cast` bit for bit through `putF32`; closure,
+  ordering and validation are integer work end to end. **INV-T4 does NOT extend here.** That invariant
+  is *"the texture files carry no floating point"*, and it never was a statement about
+  `engine/assets`: mesh vertex data and skeleton transforms **are** float data, and both are moved bit
+  for bit rather than computed. Do not "fix" `putF32`/`getF32` out of these files, and do not read
+  their presence as a violation.
+- **The eight byte primitives come from `cooked_mesh.hpp`, and that include is deliberate.**
+  `cooked_skeleton.hpp` opens with
+  `#include <aero/assets/cooked_mesh.hpp>  // the eight byte primitives + their endianness static_assert`
+  — the identical line `cooked_texture.hpp:24` has carried since 3.3.2. The task's own AC asked for a
+  core-and-standard-library-only include list *and* for bytes formed exclusively through those
+  primitives; both cannot hold, and **the eight-places rule wins**. Duplicating the primitives is the
+  rejected alternative, recorded as such.
+- **`sourceSkinIndex` is the POSITION in `ImportedModel::skins`, never a `localId`** — the same
+  discipline `sourceMeshIndex` carries one table over. One invocation cooks one skin; a multi-skin
+  model gets one artifact per invocation plus a warning naming the total, and the *pairing* of meshes
+  to skeletons is instancing metadata, on the named gap's side of the line.
+- **The renderer's joint limit is NOT a format cap and must not migrate here.** The format's caps are
+  1024 records and 256 palette slots; `engine/render`'s `MAX_SKINNING_JOINTS` is **85**, derived from a
+  measured push-uniform ceiling, and lives in `skinning.hpp` with its derivation. **Formats outlive
+  renderers**: a 200-slot rig is a valid file that today's forward renderer refuses to draw with a
+  latched warning, not a file the cook should have refused to write.
+- **The two byte goldens in `tests/cooked_skeleton_golden.hpp` are FROZEN**, on the mesh goldens'
+  terms: each was produced by a real cook and then verified **field by field against `docs/09` section
+  12's own tables** before being frozen. If a golden has to change, the format changed — a
+  `formatVersion` decision, not a test edit. The closure golden is simultaneously the
+  order-independence proof (the same three joints supplied in reverse produce the same bytes) and the
+  only artifact pinning hierarchy-only IBM-forced-to-identity and palette slots that diverge from
+  record order.
+- **There is no external validator, unlike `.ktx2`.** Our parser compares against the same constants
+  our writer emits, so what keeps this format honest is exactly three things: the hostile-input
+  parser, the two frozen goldens, and the determinism manifest's `skeleton_golden_manifest` arm. Keep
+  all three.
+
 ## The named, unowned gap
 
 **v1 stores no node hierarchy**, so a consumer that instantiates a cooked mesh puts every submesh at
@@ -193,4 +268,9 @@ mesh copies and change the canonical model's shape for one format. A cooked mode
 carrying the node tree is the right answer and belongs to whoever owns instantiation — task 3.1.5 is
 the first task that will hit it. This is a **decision waiting to be taken**, not a scope boundary.
 
-Full history: `docs/10-engineering-log.md`, tasks 3.3.1 and 3.3.2's entries under Phase 3.
+**Two of the things section 9.0 lists as unstored now have a home elsewhere and are no longer part of
+this gap**: skeletons and inverse bind matrices live in `docs/09` section 12's sibling container
+(`.aeroskel`) as of task 3.5.1. **The node tree does not**, and nothing above changes for it — it is
+still unowned, still not the cook's to bake, and still 3.1.5's first.
+
+Full history: `docs/10-engineering-log.md`, tasks 3.3.1, 3.3.2 and 3.5.1's entries under Phase 3.
