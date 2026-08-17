@@ -208,10 +208,10 @@ function(aero_read_manifest out_names out_hashes)
         list(APPEND hashes "${hash}")
     endforeach()
     list(LENGTH names count)
-    # A LITERAL 13, never a count derived from the file it is checking: a guard computed from its own
-    # subject cannot see a line deleted. Both cases assert it, so a deletion reddens both at once.
-    if(NOT count EQUAL 13)
-        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 13")
+    # A LITERAL 15, never a count derived from the file it is checking: a guard computed from its own
+    # subject cannot see a line deleted. All three cases assert it, so a deletion reddens them at once.
+    if(NOT count EQUAL 15)
+        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 15")
     endif()
     set(${out_names} "${names}" PARENT_SCOPE)
     set(${out_hashes} "${hashes}" PARENT_SCOPE)
@@ -910,17 +910,23 @@ elseif(CASE STREQUAL "no_skins_gltf")
 
 # --- task 3.3.3: the frozen cook-determinism manifest ---------------------------------------------
 #
-# Two cases, one shape. Each cooks its tuples ONCE through the real binary and requires the artifact's
-# SHA-256 to equal the line tests/cooker/determinism.sha256 records for that name. Because the cooker
-# takes no gate flag, both register in all three build configurations, and because CI runs ctest in
-# Debug and Release on three lanes, the manifest is checked SIX times per push: all six green means
-# every lane and both configurations equal the manifest, therefore they equal each other.
+# Three cases, one shape (task 3.5.1 added the third). Each cooks its tuples ONCE through the real
+# binary and requires the artifact's SHA-256 to equal the line tests/cooker/determinism.sha256 records
+# for that name. Because the cooker takes no gate flag, all three register in all three build
+# configurations, and because CI runs ctest in Debug and Release on three lanes, the manifest is
+# checked NINE times per push: all nine green means every lane and both configurations equal the
+# manifest, therefore they equal each other.
+#
+# A THIRD ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
+# arm-level SUBCOMMAND, and the KIND_PREFIX orphan check below ("every manifest line of THIS case's
+# kind was actually cooked") stays sound only while every line's prefix is claimed by exactly one arm.
 #
 # The artifacts land in ${WORK_DIR}/artifacts/ and the CI job uploads exactly that directory. The
 # perturbed re-cook lands in ${WORK_DIR}/perturbed/ so it cannot enter the upload set, which is
-# thirteen files across the two cases and nothing else.
+# fifteen files across the three cases and nothing else.
 
-elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest")
+elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest"
+       OR CASE STREQUAL "skeleton_golden_manifest")
     set(ASSETS "${SOURCE_DIR}/tests/fixtures/assets")
     set(ARTIFACTS "${WORK_DIR}/artifacts")
     file(MAKE_DIRECTORY "${ARTIFACTS}")
@@ -972,7 +978,7 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
     if(CASE STREQUAL "golden_manifest")
         set(SUBCOMMAND mesh)
         set(KIND_PREFIX "mesh-")
-        set(TUPLE_COUNT 5)              # LITERAL, beside the five calls it counts
+        set(TUPLE_COUNT 6)              # LITERAL, beside the six calls it counts
         # The minimal path, and the one tuple with a cross-tier tie: these 272 bytes ARE
         # tests/cooked_mesh_golden.hpp's COOKED_GOLDEN_TRIANGLE, so this line's hash is checkable
         # from the golden header alone, with no cooker involved.
@@ -990,7 +996,11 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # The only input whose bytes depend on the sort running: two meshes, three primitives, and a
         # first-declared primitive whose richer mask sends it LAST. sectionCount 2, submeshCount 3.
         aero_manifest_tuple(mesh-multi.aeromesh           --input "${FIXTURES}/multi.gltf")
-    else()
+        # task 3.5.1 -- the FIRST manifest artifact carrying Joints0/Weights0 sections. Every mesh
+        # tuple above is unskinned, so until this line the joint/weight emit path had no cross-lane
+        # witness at all. No --guid, the mesh-triangle posture: what this pins is the layout.
+        aero_manifest_tuple(mesh-skinned.aeromesh         --input "${FIXTURES}/skinned-quad.gltf")
+    elseif(CASE STREQUAL "texture_golden_manifest")
         set(SUBCOMMAND texture)
         set(KIND_PREFIX "texture-")
         set(TUPLE_COUNT 8)              # LITERAL, beside the eight calls it counts
@@ -1023,6 +1033,19 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # Partial edge blocks -- the clamp-never-zero-fill path, NPOT, linear.
         aero_manifest_tuple(texture-rgb5x3-linear-bc1.ktx2
             --input "${ASSETS}/texture-rgb-5x3.png" --linear --format bc1)
+    else()
+        set(SUBCOMMAND skeleton)
+        set(KIND_PREFIX "skeleton-")
+        set(TUPLE_COUNT 1)              # LITERAL, beside the one call it counts
+        # task 3.5.1 -- the .aeroskel format anchored cross-lane, cross-configuration and cross-time
+        # from the day it shipped, rather than after the first divergence. One tuple is enough because
+        # the input is the one that exercises the whole cook: two SIBLING palette joints under a
+        # non-joint root, so the ancestor closure, Kahn's tie and the source-order independence all
+        # run. It carries a REAL --guid, unlike the mesh posture, so the header's hi/lo emit order is
+        # pinned across lanes too -- swapping those two u64 writes is otherwise invisible to any
+        # single-lane check, since our own parser reads them back in the order our writer wrote them.
+        aero_manifest_tuple(skeleton-skinned.aeroskel
+            --input "${FIXTURES}/skinned-quad.gltf" --guid "${TEST_GUID}")
     endif()
 
     # --- the mismatch report ------------------------------------------------------------------------

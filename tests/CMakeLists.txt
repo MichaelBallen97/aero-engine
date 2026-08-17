@@ -784,10 +784,11 @@ set(_aero_cooker_cases
     # bootstrap's option hash). Both names are present in both reduced configurations, which is the
     # proof that this block is still ungated.
     #
-    # These two cook the whole 13-artifact matrix through the real binary and compare against
-    # tests/cooker/determinism.sha256. Their WORK_DIRs are what ci.yml's `build` legs upload and its
-    # `cook-determinism` job downloads -- if either case is renamed, THREE places change together:
-    # this list, the upload step's two paths, and the job's directory expectations.
+    # These two -- three since task 3.5.1 added skeleton_golden_manifest below -- cook the whole
+    # 15-artifact matrix through the real binary and compare against tests/cooker/determinism.sha256.
+    # Their WORK_DIRs are what ci.yml's `build` legs upload and its `cook-determinism` job downloads
+    # -- if any of them is renamed, THREE places change together: this list, the upload step's three
+    # paths, and the job's directory expectations.
     golden_manifest texture_golden_manifest
     # task 3.5.1 -- the skeleton subcommand. Ten more names, on the same terms: ungated, so ctest -N
     # moves in ALL THREE configurations again. MEASURED at the tip of this branch, never derived by
@@ -805,6 +806,15 @@ set(_aero_cooker_cases
     skeleton_guid_written skeleton_determinism
     skeleton_nothing_written_on_failure skeleton_output_dir_missing
     no_skins_gltf
+    # task 3.5.1 -- the manifest's THIRD arm, and the eleventh name this task adds. It is a separate
+    # arm rather than a sixth mesh tuple because aero_manifest_tuple reads the arm-level SUBCOMMAND
+    # and the per-kind orphan check stays sound only while one arm claims each name prefix. It cooks
+    # skeleton-skinned.aeroskel; golden_manifest gained mesh-skinned.aeromesh in the same commit, so
+    # tests/cooker/determinism.sha256 goes 13 -> 15 lines and every literal pinning it moves at once.
+    # MEASURED, never derived by addition: 143 -> 144 with tools ON, 54 -> 55 with
+    # -DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF, and 67 -> 68 with -DAERO_REFLECT_TOOLS=OFF
+    # alone, the last two in build directories configured with -G Ninja.
+    skeleton_golden_manifest
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(
