@@ -19,17 +19,24 @@
 //
 // Every case-local table pins a LITERAL row count, never TABLE.size() against itself.
 
+#include <aero/assets/cooked_mesh.hpp>
 #include <aero/assets/cooked_skeleton.hpp>
+#include <aero/assets/mesh_cook.hpp>
+#include <aero/platform/platform.hpp>
 #include <aero/render/render.hpp>
+#include <aero/rhi/rhi.hpp>
 
+#include "../engine/render/src/mesh_pack.hpp"
 #include "../engine/render/src/skinning_pack.hpp"
 #include "cooked_skeleton_golden.hpp"
+#include "rhi_test_support.hpp"
 
 #include <doctest/doctest.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <ostream>
 #include <span>
 #include <vector>
@@ -37,12 +44,16 @@
 using engine::Mat4;
 using engine::Quat;
 using engine::Trs;
+using engine::Vec2;
 using engine::Vec3;
 using engine::Vec4;
 using engine::assets::COOKED_SKELETON_INVALID_INDEX;
 using engine::assets::CookedSkeleton;
 using engine::assets::CookedSkeletonJoint;
 using engine::render::JointPose;
+using engine::render::MeshVertex;
+using engine::render::detail::PackedMeshSection;
+using engine::render::detail::SkinVertex;
 
 namespace {
 
@@ -88,6 +99,49 @@ namespace {
     joint.scale = trs.scale;
     joint.inverseBind = inverseBind;
     return joint;
+}
+
+// ---- the cooked-mesh fixtures the repack cases drive ------------------------------------------
+// Cooked IN MEMORY rather than read from a committed artifact: 3.3.3 makes the cook deterministic
+// cross-lane, so a cook here is as stable as a golden and commits no fixture. The returned bytes
+// must OUTLIVE every CookedMesh parsed from them — a CookedMesh retains a span into them (the
+// docs/09 section 9 contract), which is exactly the lifetime createMesh's own doc comment states.
+[[nodiscard]] std::vector<std::byte> cookPrimitives(std::span<const engine::assets::MeshCookPrimitive> primitives) {
+    engine::assets::MeshCookResult result = engine::assets::cookMesh({.sourceGuid = {}, .primitives = primitives});
+    REQUIRE(result.status == engine::assets::MeshCookStatus::Ok);
+    REQUIRE_FALSE(result.bytes.empty());
+    return std::move(result.bytes);
+}
+
+[[nodiscard]] std::vector<std::byte> cookOne(const engine::assets::MeshCookPrimitive& primitive) {
+    const std::array<engine::assets::MeshCookPrimitive, 1> primitives{primitive};
+    return cookPrimitives(primitives);
+}
+
+// The three-vertex source every full-attribute repack case reads back, with MUTUALLY DISTINCT
+// values in every field: a transposed or aliased attribute cannot land on the value expected.
+constexpr std::array<Vec3, 3> SOURCE_POSITIONS{Vec3{1.0F, 2.0F, 3.0F}, Vec3{4.0F, 5.0F, 6.0F}, Vec3{7.0F, 8.0F, 9.0F}};
+constexpr std::array<Vec3, 3> SOURCE_NORMALS{Vec3{0.0F, 1.0F, 0.0F}, Vec3{1.0F, 0.0F, 0.0F}, Vec3{0.0F, 0.0F, -1.0F}};
+constexpr std::array<Vec4, 3> SOURCE_TANGENTS{Vec4{1.0F, 0.0F, 0.0F, 1.0F}, Vec4{0.0F, 0.0F, 1.0F, -1.0F},
+                                              Vec4{0.0F, 1.0F, 0.0F, 1.0F}};
+constexpr std::array<Vec2, 3> SOURCE_UV0{Vec2{0.25F, 0.5F}, Vec2{0.75F, 0.125F}, Vec2{1.0F, 0.0F}};
+constexpr std::array<std::array<std::uint16_t, 4>, 3> SOURCE_JOINTS{std::array<std::uint16_t, 4>{0, 1, 2, 3},
+                                                                    std::array<std::uint16_t, 4>{4, 255, 256, 1000},
+                                                                    std::array<std::uint16_t, 4>{300, 7, 65535, 2}};
+constexpr std::array<Vec4, 3> SOURCE_WEIGHTS{Vec4{0.5F, 0.25F, 0.125F, 0.125F}, Vec4{1.0F, 0.0F, 0.0F, 0.0F},
+                                             Vec4{0.25F, 0.25F, 0.25F, 0.25F}};
+constexpr std::array<std::uint32_t, 3> SOURCE_INDICES{0, 1, 2};
+
+[[nodiscard]] engine::assets::MeshCookPrimitive skinnedPrimitive() {
+    engine::assets::MeshCookPrimitive primitive;
+    primitive.positions = SOURCE_POSITIONS;
+    primitive.normals = SOURCE_NORMALS;
+    primitive.tangents = SOURCE_TANGENTS;
+    primitive.uv0 = SOURCE_UV0;
+    primitive.joints = SOURCE_JOINTS;
+    primitive.weights = SOURCE_WEIGHTS;
+    primitive.indices = SOURCE_INDICES;
+    return primitive;
 }
 
 }  // namespace
@@ -330,3 +384,277 @@ TEST_CASE("render skinning: the 85-joint cap is the measured 4096-byte push-unif
     CHECK(engine::assets::MAX_COOKED_SKELETON_PALETTE == 256);
     CHECK(engine::render::MAX_SKINNING_JOINTS < engine::assets::MAX_COOKED_SKELETON_PALETTE);
 }
+
+// ================================================================================================
+// Tier 0 — the cooked-section repack (task 3.5.1's other pure half).
+// ================================================================================================
+
+TEST_CASE("render skinning: a full skinned section repacks into both streams, field for field (JP9)") {
+    const std::vector<std::byte> bytes = cookOne(skinnedPrimitive());
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    REQUIRE(parse.mesh.sections.size() == 1);
+
+    const PackedMeshSection packed = engine::render::detail::packMeshSection(parse.mesh, 0);
+    REQUIRE(packed.stream0.size() == 3);
+    REQUIRE(packed.stream1.size() == 3);
+    CHECK_FALSE(packed.droppedAttributes);
+
+    // Every field of every vertex, against the SOURCE the cook was handed — not against the cooked
+    // bytes re-read by the same offsets the repack used, which would agree with any consistent
+    // mistake. Six attributes, three vertices, no two values alike.
+    for (std::size_t v = 0; v < packed.stream0.size(); ++v) {
+        INFO("vertex: ", v);
+        CHECK(packed.stream0[v].position == SOURCE_POSITIONS[v]);
+        CHECK(packed.stream0[v].normal == SOURCE_NORMALS[v]);
+        CHECK(packed.stream0[v].tangent == SOURCE_TANGENTS[v]);
+        CHECK(packed.stream0[v].uv == SOURCE_UV0[v]);
+        CHECK(packed.stream1[v].weights == SOURCE_WEIGHTS[v]);
+        for (std::size_t k = 0; k < 4; ++k) {
+            INFO("influence: ", k);
+            CHECK(packed.stream1[v].joints[k] == static_cast<std::uint32_t>(SOURCE_JOINTS[v][k]));
+        }
+    }
+
+    // The two GPU strides, as literals beside the pipeline that describes them: 48 bytes of
+    // MeshVertex at slot 0 and 32 bytes of {uint4, float4} at slot 1. A stride drift here neither
+    // fails to compile nor fails to submit — it draws garbage.
+    CHECK(sizeof(MeshVertex) == 48);
+    CHECK(sizeof(SkinVertex) == 32);
+    CHECK(offsetof(SkinVertex, joints) == 0);
+    CHECK(offsetof(SkinVertex, weights) == 16);
+}
+
+TEST_CASE("render skinning: a position-only section gets the absent-attribute identity defaults (JP10)") {
+    engine::assets::MeshCookPrimitive primitive;
+    primitive.positions = SOURCE_POSITIONS;
+    primitive.indices = SOURCE_INDICES;
+    const std::vector<std::byte> bytes = cookOne(primitive);
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    REQUIRE(parse.mesh.sections.size() == 1);
+
+    const PackedMeshSection packed = engine::render::detail::packMeshSection(parse.mesh, 0);
+    REQUIRE(packed.stream0.size() == 3);
+    // No Joints0/Weights0 pair: a static section pays NOTHING for stream 1.
+    CHECK(packed.stream1.empty());
+    CHECK_FALSE(packed.droppedAttributes);
+
+    for (std::size_t v = 0; v < packed.stream0.size(); ++v) {
+        INFO("vertex: ", v);
+        CHECK(packed.stream0[v].position == SOURCE_POSITIONS[v]);
+        // The identity values, as literals. A zero normal is the seed this pins: it draws a black
+        // surface under every light, which no other case here could see.
+        CHECK(packed.stream0[v].normal == Vec3{0.0F, 0.0F, 1.0F});
+        CHECK(packed.stream0[v].tangent == Vec4{1.0F, 0.0F, 0.0F, 1.0F});
+        CHECK(packed.stream0[v].uv == Vec2{0.0F, 0.0F});
+    }
+}
+
+TEST_CASE("render skinning: TexCoord1 and Color0 decode, drop, and latch the flag (JP11)") {
+    constexpr std::array<Vec2, 3> UV1{Vec2{0.5F, 0.5F}, Vec2{0.25F, 0.75F}, Vec2{0.0F, 1.0F}};
+    constexpr std::array<Vec4, 3> COLORS{Vec4{1.0F, 0.0F, 0.0F, 1.0F}, Vec4{0.0F, 1.0F, 0.0F, 1.0F},
+                                         Vec4{0.0F, 0.0F, 1.0F, 1.0F}};
+    engine::assets::MeshCookPrimitive primitive;
+    primitive.positions = SOURCE_POSITIONS;
+    primitive.normals = SOURCE_NORMALS;
+    primitive.uv0 = SOURCE_UV0;
+    primitive.uv1 = UV1;
+    primitive.colors = COLORS;
+    primitive.indices = SOURCE_INDICES;
+
+    const std::vector<std::byte> bytes = cookOne(primitive);
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    REQUIRE(parse.mesh.sections.size() == 1);
+
+    const PackedMeshSection packed = engine::render::detail::packMeshSection(parse.mesh, 0);
+    REQUIRE(packed.stream0.size() == 3);
+    // The flag is what the renderer latches its one WARN on — the vertex layout has no seat for
+    // either attribute, and dropping them SILENTLY is the behaviour this pins against.
+    CHECK(packed.droppedAttributes);
+    CHECK(packed.stream1.empty());
+    // ...and the attributes that DO have a seat are unaffected by the two that do not.
+    for (std::size_t v = 0; v < packed.stream0.size(); ++v) {
+        INFO("vertex: ", v);
+        CHECK(packed.stream0[v].position == SOURCE_POSITIONS[v]);
+        CHECK(packed.stream0[v].normal == SOURCE_NORMALS[v]);
+        CHECK(packed.stream0[v].uv == SOURCE_UV0[v]);
+        CHECK(packed.stream0[v].tangent == Vec4{1.0F, 0.0F, 0.0F, 1.0F});  // still the default
+    }
+}
+
+TEST_CASE("render skinning: joint indices cross as u32, verbatim, past every narrower width (JP12)") {
+    const std::vector<std::byte> bytes = cookOne(skinnedPrimitive());
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    const PackedMeshSection packed = engine::render::detail::packMeshSection(parse.mesh, 0);
+    REQUIRE(packed.stream1.size() == 3);
+
+    // The source deliberately straddles every narrowing boundary a careless widening could hit:
+    // 255/256 (u8), 300 and 1000 (past a byte), and 65535 (the u16 ceiling the cook widens FROM).
+    CHECK(packed.stream1[1].joints[1] == 255U);
+    CHECK(packed.stream1[1].joints[2] == 256U);
+    CHECK(packed.stream1[1].joints[3] == 1000U);
+    CHECK(packed.stream1[2].joints[0] == 300U);
+    CHECK(packed.stream1[2].joints[2] == 65535U);
+    // The section really does declare Uint4 for Joints0 — a Float4 there would still repack into a
+    // u32 quad, holding the BIT PATTERN of a float rather than the index.
+    REQUIRE(parse.mesh.sections.size() == 1);
+    bool sawJoints = false;
+    for (std::uint32_t a = 0; a < parse.mesh.sections[0].attributeCount; ++a) {
+        const engine::assets::CookedVertexAttribute& attribute =
+            parse.mesh.attributes[parse.mesh.sections[0].firstAttribute + a];
+        if (attribute.semantic == engine::assets::CookedVertexSemantic::Joints0) {
+            sawJoints = true;
+            CHECK((attribute.format == engine::assets::CookedVertexFormat::Uint4));
+        }
+    }
+    CHECK(sawJoints);
+}
+
+TEST_CASE("render skinning: the repack READS the attribute table's offsets and stride (JP13)") {
+    const std::vector<std::byte> bytes = cookOne(skinnedPrimitive());
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    REQUIRE(parse.mesh.sections.size() == 1);
+
+    // Arm 1 — SWAP two same-width attributes' offsets in the parsed table. Position and Normal are
+    // both Float3, so the file's bytes are untouched and only the table moves; a repack that read
+    // hard-coded offsets would return the UNSWAPPED result and redden here. This is the case that
+    // makes "attribute-table-driven" a claim rather than a comment.
+    engine::assets::CookedMesh permuted = parse.mesh;
+    std::uint32_t positionSlot = 0;
+    std::uint32_t normalSlot = 0;
+    bool sawPosition = false;
+    bool sawNormal = false;
+    for (std::uint32_t a = 0; a < permuted.sections[0].attributeCount; ++a) {
+        const std::uint32_t index = permuted.sections[0].firstAttribute + a;
+        if (permuted.attributes[index].semantic == engine::assets::CookedVertexSemantic::Position) {
+            positionSlot = index;
+            sawPosition = true;
+        }
+        if (permuted.attributes[index].semantic == engine::assets::CookedVertexSemantic::Normal) {
+            normalSlot = index;
+            sawNormal = true;
+        }
+    }
+    REQUIRE(sawPosition);
+    REQUIRE(sawNormal);
+    std::swap(permuted.attributes[positionSlot].offset, permuted.attributes[normalSlot].offset);
+
+    const PackedMeshSection swapped = engine::render::detail::packMeshSection(permuted, 0);
+    REQUIRE(swapped.stream0.size() == 3);
+    for (std::size_t v = 0; v < swapped.stream0.size(); ++v) {
+        INFO("vertex: ", v);
+        CHECK(swapped.stream0[v].position == SOURCE_NORMALS[v]);
+        CHECK(swapped.stream0[v].normal == SOURCE_POSITIONS[v]);
+        CHECK(swapped.stream0[v].tangent == SOURCE_TANGENTS[v]);  // untouched by the swap
+    }
+
+    // Arm 2 — HOSTILE STRIDES. 29 and 31 are both smaller than the end of the Tangent attribute, so
+    // the section is refused WHOLE: empty streams, never a partial repack reading past its slice.
+    constexpr std::array<std::uint32_t, 2> HOSTILE_STRIDES{29, 31};
+    CHECK(HOSTILE_STRIDES.size() == 2);
+    for (const std::uint32_t stride : HOSTILE_STRIDES) {
+        INFO("stride: ", stride);
+        engine::assets::CookedMesh narrowed = parse.mesh;
+        narrowed.sections[0].vertexStride = stride;
+        const PackedMeshSection refused = engine::render::detail::packMeshSection(narrowed, 0);
+        CHECK(refused.stream0.empty());
+        CHECK(refused.stream1.empty());
+    }
+
+    // Arm 3 — an out-of-range section index is a caller bug, answered with empty streams.
+    const PackedMeshSection outOfRange = engine::render::detail::packMeshSection(parse.mesh, 7);
+    CHECK(outOfRange.stream0.empty());
+    CHECK(outOfRange.stream1.empty());
+}
+
+// ================================================================================================
+// Tier 1 — a real Device, no window. The mesh registry and the skinned draw path.
+//
+// Gated on AERO_SHADER_TOOLS_ENABLED for the reason render_material_test.cpp's own tier-1 block is:
+// a ForwardRenderer loads its shaders from build/<preset>/shaders, which only exists when the
+// shader toolchain is built. The tier-0 battery above runs in every configuration.
+// ================================================================================================
+
+#if AERO_SHADER_TOOLS_ENABLED
+
+    #include <aero/core/vfs.hpp>
+
+    #include <memory>
+    #include <utility>
+
+namespace {
+
+// A ForwardRenderer needs a colour and a depth format, which a RenderTarget supplies without a
+// window (the render_material_test.cpp / render_target_test.cpp pattern).
+[[nodiscard]] std::optional<engine::render::ForwardRenderer> makeForwardRenderer(
+    engine::rhi::Device& device, const engine::render::RenderTarget& target) {
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    return engine::render::ForwardRenderer::create(
+        device, vfs, {.colorFormat = target.colorFormat(), .depthFormat = target.depthFormat()});
+}
+
+}  // namespace
+
+TEST_CASE("render skinning: createMesh registers a cooked mesh; stale handles are logged no-ops (SN1)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    // TWO primitives sharing one attribute mask: the cook groups them into one section with two
+    // submeshes, so meshSubmeshCount has a value other than 1 to be right about.
+    engine::assets::MeshCookPrimitive first;
+    first.sourceMeshIndex = 0;
+    first.sourcePrimitiveIndex = 0;
+    first.positions = SOURCE_POSITIONS;
+    first.indices = SOURCE_INDICES;
+    engine::assets::MeshCookPrimitive second = first;
+    second.sourcePrimitiveIndex = 1;
+    const std::array<engine::assets::MeshCookPrimitive, 2> primitives{first, second};
+
+    // The parse BUFFER outlives createMesh, which is the lifetime contract createMesh documents:
+    // a CookedMesh's bulk data is a retained span into exactly these bytes.
+    const std::vector<std::byte> bytes = cookPrimitives(primitives);
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    REQUIRE(parse.mesh.submeshes.size() == 2);
+
+    const engine::render::MeshHandle mesh = forward->createMesh(parse.mesh);
+    CHECK(mesh.valid());
+    CHECK(forward->meshSubmeshCount(mesh) == 2);
+
+    // A never-minted handle answers 0 rather than reading anything, and destroying one warns.
+    CHECK(forward->meshSubmeshCount(engine::render::MeshHandle{}) == 0);
+    CHECK(forward->meshSubmeshCount(engine::render::MeshHandle{99, 7}) == 0);
+    forward->destroyMesh(engine::render::MeshHandle{99, 7});
+
+    forward->destroyMesh(mesh);
+    // Stale from here on: the count reads 0, and a SECOND destroy is a no-op rather than a
+    // double-free (ASan is the backstop for the half a return value cannot express).
+    CHECK(forward->meshSubmeshCount(mesh) == 0);
+    forward->destroyMesh(mesh);
+
+    // A slot reused after a destroy mints a NEW generation, so the old handle stays rejected.
+    const engine::render::MeshHandle reused = forward->createMesh(parse.mesh);
+    CHECK(reused.valid());
+    CHECK((reused != mesh));
+    CHECK(forward->meshSubmeshCount(reused) == 2);
+    CHECK(forward->meshSubmeshCount(mesh) == 0);
+    // Left REGISTERED on purpose: the renderer's destructor is what must release its buffers, and
+    // ASan at scope exit is the assertion that it does exactly once.
+}
+
+#endif  // AERO_SHADER_TOOLS_ENABLED

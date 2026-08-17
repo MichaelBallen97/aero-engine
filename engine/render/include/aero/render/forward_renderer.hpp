@@ -22,6 +22,7 @@
 // MeshInstance::material resolves to. Ownership splits three ways and material.hpp states it in
 // full: textures are BORROWED from the caller, samplers and the defaults are renderer-owned.
 
+#include <aero/assets/cooked_mesh.hpp>  // task 3.5.1 — createMesh's parameter (the 3.4.1 assets edge)
 #include <aero/core/slot_map.hpp>
 #include <aero/render/lighting.hpp>
 #include <aero/render/material.hpp>
@@ -29,9 +30,11 @@
 #include <aero/render/renderer.hpp>  // Frame
 #include <aero/rhi/descriptors.hpp>  // rhi::SamplerDesc
 #include <aero/rhi/format.hpp>       // rhi::TextureFormat
+#include <aero/rhi/types.hpp>        // rhi::IndexType
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -94,6 +97,28 @@ public:
     // NOT glTF's metallic-1 default (material.hpp's DEFAULT_MATERIAL_PARAMS carries the reason).
     [[nodiscard]] MaterialHandle defaultMaterial() const noexcept;
 
+    // --- meshes (task 3.5.1) --------------------------------------------------------------------
+    // The tree's first mesh registry, with the material registry's semantics member for member:
+    // generational handles, so a stale one is a logged no-op and a stale MeshInstance::mesh draws
+    // nothing rather than reading a freed buffer.
+    //
+    // createMesh repacks every cooked section on the CPU and uploads it into at most two GPU streams
+    // through the existing BLOCKING init-time path — uploads happen at LOAD, never per frame (the
+    // 3.4.1 D17 posture, and rhi::Device::uploadBuffer's own "NOT a per-frame path" contract).
+    //
+    // LIFETIME: the caller's parse BUFFER must stay alive ACROSS this call. A CookedMesh's bulk data
+    // is a RETAINED SPAN into the bytes handed to parseCookedMesh (the docs/09 section 9 contract),
+    // and createMesh reads it through sectionVertexBytes/indexBytes. Nothing is retained after
+    // createMesh returns. Returns an invalid handle (+ ERROR) if any buffer create or upload fails.
+    [[nodiscard]] MeshHandle createMesh(const assets::CookedMesh& mesh);
+    // Releases the entry's GPU buffers. A stale or invalid handle is a logged no-op, so a
+    // double-destroy is safe.
+    void destroyMesh(MeshHandle mesh);
+    // How many submeshes a registered mesh has — the range MeshInstance::submesh must index into.
+    // 0 for an invalid or stale handle, which is what makes "no submesh is in range" the answer a
+    // caller gets without having to ask twice.
+    [[nodiscard]] std::uint32_t meshSubmeshCount(MeshHandle mesh) const noexcept;
+
     // --- diagnostics (task 3.4.1) ---------------------------------------------------------------
     // Two small observability accessors, documented as such rather than smuggled in: the sampler
     // cache's size and the Blend-drawn-opaque latch are otherwise unobservable without a log sink,
@@ -119,6 +144,32 @@ private:
         std::array<rhi::SamplerHandle, MATERIAL_TEXTURE_SLOT_COUNT> samplers{};
     };
 
+    // One registered cooked mesh (task 3.5.1). Every section is concatenated into ONE stream-0
+    // buffer and (for skinned sections only) one stream-1 buffer, so a draw binds by BYTE OFFSET
+    // rather than by base vertex — see the draw loop's own note for why vertexOffset stays 0.
+    struct MeshSectionDraw {
+        std::uint32_t stream0ByteOffset = 0;
+        std::uint32_t stream1ByteOffset = 0;  // meaningful IFF hasSkin
+        bool hasSkin = false;
+    };
+    struct MeshSubmeshDraw {
+        std::uint32_t sectionIndex = 0;
+        std::uint32_t firstIndex = 0;  // ABSOLUTE, in index units, into the file's single index region
+        std::uint32_t indexCount = 0;
+        // Copied VERBATIM from the cooked submesh. Resolving it to a MaterialHandle stays the
+        // CALLER's job (3.4.1's posture: a material is registered by whoever loaded the .aeromat),
+        // so the registry stores the number and never interprets it.
+        std::uint32_t materialIndex = 0;
+    };
+    struct MeshEntry {
+        rhi::BufferHandle vertexBuffer;  // stream 0 — 48-byte MeshVertex, every section concatenated
+        rhi::BufferHandle skinBuffer;    // stream 1 — 32-byte SkinVertex, skinned sections only; invalid when none
+        rhi::BufferHandle indexBuffer;   // the file's index region, uploaded VERBATIM
+        rhi::IndexType indexType = rhi::IndexType::Uint16;  // a Uint16 file draws 16-bit
+        std::vector<MeshSectionDraw> sections;
+        std::vector<MeshSubmeshDraw> submeshes;
+    };
+
     ForwardRenderer(rhi::Device* device, rhi::GraphicsPipelineHandle pipeline,
                     rhi::GraphicsPipelineHandle pipelineCullNone) noexcept;
     void destroyAll() noexcept;  // dtor + move-assign share this; no-op when device == nullptr
@@ -132,6 +183,9 @@ private:
     // any create or upload fails; the caller then abandons the whole renderer, whose destructor
     // releases everything already made.
     [[nodiscard]] bool createDefaults();
+    // Releases an entry's up-to-three buffers (task 3.5.1). Shared by createMesh's failure path,
+    // destroyMesh and destroyAll, so "which buffers a mesh owns" is stated exactly once.
+    void destroyMeshBuffers(const MeshEntry& entry) noexcept;
     // One bindFragmentSamplers call for all five slots (task 3.4.1), resolving every invalid texture
     // handle to its built-in default at BIND time. Called on material change only, from draw().
     void bindMaterialTextures(rhi::RenderPassHandle pass, const MaterialSlot& slot);
@@ -148,9 +202,18 @@ private:
     // case in this tree can see.
     std::array<rhi::TextureHandle, MATERIAL_DEFAULT_TEXTURE_KIND_COUNT> defaultTextures{};
     SlotMap<MaterialSlot, Material> materials;
+    SlotMap<MeshEntry, MeshTag> meshes;  // task 3.5.1 — the same generational shape as `materials`
+    // ...and, beside it, the live handles. SlotMap deliberately exposes no iteration and engine/core
+    // is byte-identical this task, so this is what lets destroyAll() release every registered mesh's
+    // buffers. It is written in exactly two places (createMesh appends, destroyMesh erases) and read
+    // in one (destroyAll), and it is a linear vector for the same reason samplerCache is: the bound
+    // is a program's live mesh count. Materials need no equivalent — a material owns no GPU resource
+    // of its own, which is why the registry beside it has never had to be walked.
+    std::vector<MeshHandle> liveMeshes;
     std::vector<std::pair<rhi::SamplerDesc, rhi::SamplerHandle>> samplerCache;  // linear scan; tiny
     MaterialHandle defaultMaterialHandle{};
-    bool warnedBlendOnce = false;  // D9's latch: once per renderer lifetime, never per frame
+    bool warnedBlendOnce = false;          // D9's latch: once per renderer lifetime, never per frame
+    bool warnedDroppedAttributes = false;  // task 3.5.1 — TexCoord1/Color0 dropped at repack, latched once
 };
 
 }  // namespace engine::render

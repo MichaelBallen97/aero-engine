@@ -12,13 +12,16 @@
 #include <aero/rhi/shader_loader.hpp>
 
 #include "material_pack.hpp"
+#include "mesh_pack.hpp"
 #include "primitives.hpp"
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace engine::render {
 
@@ -58,7 +61,132 @@ static_assert(std::is_trivially_copyable_v<GpuPerObject>);
            a.enableCompare == b.enableCompare && a.compareOp == b.compareOp;
 }
 
+// --- task 3.5.1: the cooked-section repack's byte readers ---------------------------------------
+// Every read goes through cooked_mesh.hpp's bounds-checked get* primitives, so a hostile or
+// hand-edited offset yields zeroes rather than a read past the section's slice.
+[[nodiscard]] Vec2 readVec2(std::span<const std::byte> bytes, std::size_t at) noexcept {
+    return Vec2{assets::getF32(bytes, at), assets::getF32(bytes, at + 4)};
+}
+[[nodiscard]] Vec3 readVec3(std::span<const std::byte> bytes, std::size_t at) noexcept {
+    return Vec3{assets::getF32(bytes, at), assets::getF32(bytes, at + 4), assets::getF32(bytes, at + 8)};
+}
+[[nodiscard]] Vec4 readVec4(std::span<const std::byte> bytes, std::size_t at) noexcept {
+    return Vec4{assets::getF32(bytes, at), assets::getF32(bytes, at + 4), assets::getF32(bytes, at + 8),
+                assets::getF32(bytes, at + 12)};
+}
+
+// The ABSENT-ATTRIBUTE IDENTITY VALUES (D7), stated once. A vertex with no normal faces +Z, a vertex
+// with no tangent runs along +X with glTF's +1 handedness, and a vertex with no UV samples texel
+// (0,0). A zero normal is the seed this constant exists to make impossible: it renders a black,
+// unlit surface that no automated case in this tree could otherwise see.
+constexpr MeshVertex ABSENT_ATTRIBUTE_DEFAULTS{
+    .position = Vec3{}, .normal = Vec3{0.0F, 0.0F, 1.0F}, .tangent = Vec4{1.0F, 0.0F, 0.0F, 1.0F}, .uv = Vec2{}};
+
 }  // namespace
+
+namespace detail {
+
+PackedMeshSection packMeshSection(const assets::CookedMesh& mesh, std::uint32_t sectionIndex) {
+    PackedMeshSection packed;
+    if (sectionIndex >= mesh.sections.size()) {
+        return packed;
+    }
+    const assets::CookedSection& section = mesh.sections[sectionIndex];
+    if (section.vertexCount == 0 || section.vertexStride == 0) {
+        return packed;
+    }
+    // The section's slice of the FLAT attribute table, bounds-checked against the table rather than
+    // trusted: a parsed mesh always agrees, and a hand-built one must not become a read.
+    if (section.firstAttribute > mesh.attributes.size() ||
+        mesh.attributes.size() - section.firstAttribute < section.attributeCount) {
+        return packed;
+    }
+    const std::span<const assets::CookedVertexAttribute> attributes{mesh.attributes.data() + section.firstAttribute,
+                                                                    section.attributeCount};
+    const std::span<const std::byte> bytes = assets::sectionVertexBytes(mesh, sectionIndex);
+    if (bytes.size() < static_cast<std::uint64_t>(section.vertexCount) * section.vertexStride) {
+        return packed;
+    }
+
+    // One pass over the TABLE before one pass over the vertices: which streams exist, and whether
+    // every attribute lies wholly inside the stride. Widened to u64 so an absurd offset cannot wrap.
+    bool hasJoints = false;
+    bool hasWeights = false;
+    for (const assets::CookedVertexAttribute& attribute : attributes) {
+        const std::uint64_t end =
+            static_cast<std::uint64_t>(attribute.offset) + assets::cookedVertexFormatBytes(attribute.format);
+        if (end > section.vertexStride) {
+            return packed;
+        }
+        switch (attribute.semantic) {
+            case assets::CookedVertexSemantic::Joints0:
+                hasJoints = true;
+                break;
+            case assets::CookedVertexSemantic::Weights0:
+                hasWeights = true;
+                break;
+            // Decoded and DROPPED: the 48-byte MeshVertex has no seat for a second UV set or a
+            // vertex colour, and inventing one would change the pipeline's layout for every mesh.
+            case assets::CookedVertexSemantic::TexCoord1:
+            case assets::CookedVertexSemantic::Color0:
+                packed.droppedAttributes = true;
+                break;
+            case assets::CookedVertexSemantic::Position:
+            case assets::CookedVertexSemantic::Normal:
+            case assets::CookedVertexSemantic::Tangent:
+            case assets::CookedVertexSemantic::TexCoord0:
+                break;
+        }
+    }
+
+    packed.stream0.assign(section.vertexCount, ABSENT_ATTRIBUTE_DEFAULTS);
+    // Both or neither, mirroring the format's own pairing rule (docs/09 section 9.8): the cook emits
+    // Joints0 and Weights0 together or not at all, and the repack asserts nothing beyond that.
+    if (hasJoints && hasWeights) {
+        packed.stream1.assign(section.vertexCount, SkinVertex{});
+    }
+
+    for (std::uint32_t v = 0; v < section.vertexCount; ++v) {
+        const std::size_t base = static_cast<std::size_t>(v) * section.vertexStride;
+        MeshVertex& vertex = packed.stream0[v];
+        for (const assets::CookedVertexAttribute& attribute : attributes) {
+            const std::size_t at = base + attribute.offset;
+            switch (attribute.semantic) {
+                case assets::CookedVertexSemantic::Position:
+                    vertex.position = readVec3(bytes, at);
+                    break;
+                case assets::CookedVertexSemantic::Normal:
+                    vertex.normal = readVec3(bytes, at);
+                    break;
+                case assets::CookedVertexSemantic::Tangent:
+                    vertex.tangent = readVec4(bytes, at);
+                    break;
+                case assets::CookedVertexSemantic::TexCoord0:
+                    vertex.uv = readVec2(bytes, at);
+                    break;
+                case assets::CookedVertexSemantic::TexCoord1:
+                case assets::CookedVertexSemantic::Color0:
+                    break;  // already latched above
+                case assets::CookedVertexSemantic::Joints0:
+                    if (!packed.stream1.empty()) {
+                        // u32 VERBATIM — the wire format's own width, never narrowed on the way to
+                        // the GPU (rhi::VertexFormat::Uint4 is what the pipeline describes).
+                        packed.stream1[v].joints = {assets::getU32(bytes, at), assets::getU32(bytes, at + 4),
+                                                    assets::getU32(bytes, at + 8), assets::getU32(bytes, at + 12)};
+                    }
+                    break;
+                case assets::CookedVertexSemantic::Weights0:
+                    if (!packed.stream1.empty()) {
+                        packed.stream1[v].weights = readVec4(bytes, at);
+                    }
+                    break;
+            }
+        }
+    }
+    return packed;
+}
+
+}  // namespace detail
 
 ForwardRenderer::ForwardRenderer(rhi::Device* deviceIn, rhi::GraphicsPipelineHandle pipelineIn,
                                  rhi::GraphicsPipelineHandle pipelineCullNoneIn) noexcept
@@ -71,9 +199,12 @@ ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
       primitives(other.primitives),
       defaultTextures(other.defaultTextures),
       materials(std::move(other.materials)),
+      meshes(std::move(other.meshes)),
+      liveMeshes(std::move(other.liveMeshes)),
       samplerCache(std::move(other.samplerCache)),
       defaultMaterialHandle(other.defaultMaterialHandle),
-      warnedBlendOnce(other.warnedBlendOnce) {
+      warnedBlendOnce(other.warnedBlendOnce),
+      warnedDroppedAttributes(other.warnedDroppedAttributes) {
     other.reset();
 }
 
@@ -86,9 +217,12 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         primitives = other.primitives;
         defaultTextures = other.defaultTextures;
         materials = std::move(other.materials);
+        meshes = std::move(other.meshes);
+        liveMeshes = std::move(other.liveMeshes);
         samplerCache = std::move(other.samplerCache);
         defaultMaterialHandle = other.defaultMaterialHandle;
         warnedBlendOnce = other.warnedBlendOnce;
+        warnedDroppedAttributes = other.warnedDroppedAttributes;
         other.reset();
     }
     return *this;
@@ -103,9 +237,15 @@ void ForwardRenderer::reset() noexcept {
     primitives = {};
     defaultTextures = {};
     materials.clear();  // a moved-from SlotMap keeps its scalar bookkeeping; clear() zeroes it
+    // Releases nothing, deliberately: MeshEntry holds plain rhi handles, so clearing the registry and
+    // its live-handle list abandons them without a device call — which is exactly what the moved-from
+    // state needs, and what destroyAll() has already done the releasing for.
+    meshes.clear();
+    liveMeshes.clear();
     samplerCache.clear();
     defaultMaterialHandle = {};
     warnedBlendOnce = false;
+    warnedDroppedAttributes = false;
 }
 
 void ForwardRenderer::destroyAll() noexcept {
@@ -124,6 +264,13 @@ void ForwardRenderer::destroyAll() noexcept {
         }
         if (mesh.ibuf.valid()) {
             device->destroyBuffer(mesh.ibuf);
+        }
+    }
+    // Registered meshes DO own their buffers (task 3.5.1), unlike materials — walked through the
+    // live-handle list beside the registry, because SlotMap exposes no iteration.
+    for (const MeshHandle handle : liveMeshes) {
+        if (const MeshEntry* const entry = meshes.get(handle); entry != nullptr) {
+            destroyMeshBuffers(*entry);
         }
     }
     // Renderer-owned, unlike the materials' textures: a material BORROWS its textures from the
@@ -343,6 +490,113 @@ void ForwardRenderer::destroyMaterial(MaterialHandle material) {
 }
 
 MaterialHandle ForwardRenderer::defaultMaterial() const noexcept { return defaultMaterialHandle; }
+
+void ForwardRenderer::destroyMeshBuffers(const MeshEntry& entry) noexcept {
+    if (entry.vertexBuffer.valid()) {
+        device->destroyBuffer(entry.vertexBuffer);
+    }
+    if (entry.skinBuffer.valid()) {
+        device->destroyBuffer(entry.skinBuffer);
+    }
+    if (entry.indexBuffer.valid()) {
+        device->destroyBuffer(entry.indexBuffer);
+    }
+}
+
+MeshHandle ForwardRenderer::createMesh(const assets::CookedMesh& mesh) {
+    AERO_PROFILE_ZONE;
+    MeshEntry entry;
+    // A Uint16 file draws 16-bit. The index region is uploaded VERBATIM — no widening, no re-emit —
+    // so this is the only place the file's width becomes a bind-time decision.
+    entry.indexType =
+        mesh.indexType == assets::CookedIndexType::Uint32 ? rhi::IndexType::Uint32 : rhi::IndexType::Uint16;
+
+    // Repack EVERY section on the CPU first, so both buffer sizes are known before a single GPU
+    // object exists and a repack refusal costs nothing to unwind.
+    std::vector<MeshVertex> stream0;
+    std::vector<detail::SkinVertex> stream1;
+    entry.sections.reserve(mesh.sections.size());
+    for (std::size_t i = 0; i < mesh.sections.size(); ++i) {
+        const detail::PackedMeshSection packed = detail::packMeshSection(mesh, static_cast<std::uint32_t>(i));
+        if (packed.droppedAttributes && !warnedDroppedAttributes) {
+            AERO_LOG_WARN(
+                "ForwardRenderer::createMesh: a cooked section carries TexCoord1 and/or Color0, which the "
+                "48-byte vertex layout has no seat for — decoded and dropped; this warning latches once "
+                "per renderer");
+            warnedDroppedAttributes = true;
+        }
+        MeshSectionDraw draw;
+        draw.stream0ByteOffset = static_cast<std::uint32_t>(stream0.size() * sizeof(MeshVertex));
+        draw.stream1ByteOffset = static_cast<std::uint32_t>(stream1.size() * sizeof(detail::SkinVertex));
+        draw.hasSkin = !packed.stream1.empty();
+        entry.sections.push_back(draw);
+        stream0.insert(stream0.end(), packed.stream0.begin(), packed.stream0.end());
+        stream1.insert(stream1.end(), packed.stream1.begin(), packed.stream1.end());
+    }
+
+    entry.submeshes.reserve(mesh.submeshes.size());
+    for (const assets::CookedSubmesh& submesh : mesh.submeshes) {
+        // firstIndex is already ABSOLUTE in index units into the file's single index region
+        // (docs/09 section 9.5), which is what lets one bindIndexBuffer at offset 0 serve every
+        // submesh. materialIndex travels verbatim; resolving it stays the caller's job.
+        entry.submeshes.push_back({.sectionIndex = submesh.sectionIndex,
+                                   .firstIndex = submesh.firstIndex,
+                                   .indexCount = submesh.indexCount,
+                                   .materialIndex = submesh.materialIndex});
+    }
+
+    const std::span<const std::byte> indices = assets::indexBytes(mesh);
+    if (stream0.empty() || indices.empty()) {
+        // A zero-primitive .aeromesh is a VALID 96-byte file (docs/09 section 9), so this is a
+        // refusal rather than a parse concern: there is nothing to create a buffer for, and a
+        // zero-size createBuffer is itself an rhi validation failure.
+        AERO_LOG_ERROR("ForwardRenderer::createMesh: the cooked mesh carries no drawable geometry");
+        return {};
+    }
+
+    const auto vertexBytes = static_cast<std::uint32_t>(stream0.size() * sizeof(MeshVertex));
+    const auto skinBytes = static_cast<std::uint32_t>(stream1.size() * sizeof(detail::SkinVertex));
+    entry.vertexBuffer = device->createBuffer({.usage = rhi::BufferUsage::Vertex, .size = vertexBytes});
+    entry.indexBuffer =
+        device->createBuffer({.usage = rhi::BufferUsage::Index, .size = static_cast<std::uint32_t>(indices.size())});
+    if (!stream1.empty()) {
+        entry.skinBuffer = device->createBuffer({.usage = rhi::BufferUsage::Vertex, .size = skinBytes});
+    }
+    // Uploads go through the BLOCKING init-time path on purpose (device.hpp: "NOT a per-frame path").
+    // Short-circuiting is deliberate: nothing is uploaded into a buffer that failed to create.
+    const bool ok = entry.vertexBuffer.valid() && entry.indexBuffer.valid() &&
+                    (stream1.empty() || entry.skinBuffer.valid()) &&
+                    device->uploadBuffer(entry.vertexBuffer, 0, std::as_bytes(std::span{stream0})) &&
+                    device->uploadBuffer(entry.indexBuffer, 0, indices) &&
+                    (stream1.empty() || device->uploadBuffer(entry.skinBuffer, 0, std::as_bytes(std::span{stream1})));
+    if (!ok) {
+        // The entry never reached the registry, so its destructor is not the failure path here the
+        // way the renderer's own is — release explicitly, then report one handle's worth of failure.
+        AERO_LOG_ERROR("ForwardRenderer::createMesh: GPU buffer creation or upload failed");
+        destroyMeshBuffers(entry);
+        return {};
+    }
+
+    const MeshHandle handle = meshes.insert(std::move(entry));
+    liveMeshes.push_back(handle);
+    return handle;
+}
+
+void ForwardRenderer::destroyMesh(MeshHandle mesh) {
+    const MeshEntry* const entry = meshes.get(mesh);
+    if (entry == nullptr) {
+        AERO_LOG_WARN("ForwardRenderer::destroyMesh: stale or invalid MeshHandle — no-op");
+        return;
+    }
+    destroyMeshBuffers(*entry);
+    meshes.remove(mesh);
+    std::erase(liveMeshes, mesh);
+}
+
+std::uint32_t ForwardRenderer::meshSubmeshCount(MeshHandle mesh) const noexcept {
+    const MeshEntry* const entry = meshes.get(mesh);
+    return entry == nullptr ? 0U : static_cast<std::uint32_t>(entry->submeshes.size());
+}
 
 std::size_t ForwardRenderer::samplerCacheSize() const noexcept { return samplerCache.size(); }
 
