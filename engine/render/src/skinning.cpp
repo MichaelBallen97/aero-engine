@@ -75,8 +75,8 @@ void packJointPaletteRows(std::span<const Mat4> palette, std::span<Vec4> rows) {
     for (std::size_t i = 0; i < count; ++i) {
         const Mat4& m = palette[i];
         // Row k of a COLUMN-MAJOR matrix gathers component k of all four columns. Written out per
-        // row rather than through transpose() so the extraction is visible at the point a reviewer
-        // reads it, and so nothing computes the dropped fourth row.
+        // row rather than through transpose() so the extraction is visible where it is read, and so
+        // nothing computes the dropped fourth row.
         rows[(3 * i) + 0] = Vec4{m.columns[0].x, m.columns[1].x, m.columns[2].x, m.columns[3].x};
         rows[(3 * i) + 1] = Vec4{m.columns[0].y, m.columns[1].y, m.columns[2].y, m.columns[3].y};
         rows[(3 * i) + 2] = Vec4{m.columns[0].z, m.columns[1].z, m.columns[2].z, m.columns[3].z};

@@ -657,4 +657,321 @@ TEST_CASE("render skinning: createMesh registers a cooked mesh; stale handles ar
     // ASan at scope exit is the assertion that it does exactly once.
 }
 
+namespace {
+
+// A camera looking at the origin from a fixed eye — the render_material_test.cpp shape, with
+// eyePosition set to the SAME point the view matrix was built from.
+[[nodiscard]] engine::render::CameraView makeCamera() {
+    const Vec3 eye{0.0F, 1.5F, 3.0F};
+    return {engine::lookAt(eye, Vec3{}, Vec3{0.0F, 1.0F, 0.0F}),
+            engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 100.0F), eye};
+}
+
+// One instance of a REGISTERED mesh at the origin. `palette` is left empty by default — the caller
+// sets it for the skinned arms, which is the whole distinction the draw resolution turns on.
+[[nodiscard]] engine::render::MeshInstance makeMeshInstance(engine::render::MeshHandle mesh, std::uint32_t submesh,
+                                                            const engine::Mat4& viewProj) {
+    engine::render::MeshInstance instance;
+    instance.mesh = mesh;
+    instance.submesh = submesh;
+    instance.model = engine::Mat4::identity();
+    instance.normalMatrix = engine::Mat4::identity();
+    instance.mvp = viewProj;
+    return instance;
+}
+
+// The joint indices a DRAWN skinned fixture uses: exactly the closure golden's two palette slots, so
+// the shader's own bounds clamp is never the thing under test here.
+constexpr std::array<std::array<std::uint16_t, 4>, 3> DRAW_JOINTS{std::array<std::uint16_t, 4>{0, 1, 0, 0},
+                                                                  std::array<std::uint16_t, 4>{1, 0, 0, 0},
+                                                                  std::array<std::uint16_t, 4>{0, 1, 0, 0}};
+constexpr std::array<Vec4, 3> DRAW_WEIGHTS{Vec4{1.0F, 0.0F, 0.0F, 0.0F}, Vec4{0.5F, 0.5F, 0.0F, 0.0F},
+                                           Vec4{0.25F, 0.75F, 0.0F, 0.0F}};
+
+[[nodiscard]] engine::assets::MeshCookPrimitive drawableSkinnedPrimitive() {
+    engine::assets::MeshCookPrimitive primitive;
+    primitive.positions = SOURCE_POSITIONS;
+    primitive.normals = SOURCE_NORMALS;
+    primitive.tangents = SOURCE_TANGENTS;
+    primitive.uv0 = SOURCE_UV0;
+    primitive.joints = DRAW_JOINTS;
+    primitive.weights = DRAW_WEIGHTS;
+    primitive.indices = SOURCE_INDICES;
+    return primitive;
+}
+
+[[nodiscard]] engine::assets::MeshCookPrimitive drawableStaticPrimitive() {
+    engine::assets::MeshCookPrimitive primitive;
+    primitive.positions = SOURCE_POSITIONS;
+    primitive.normals = SOURCE_NORMALS;
+    primitive.uv0 = SOURCE_UV0;
+    primitive.indices = SOURCE_INDICES;
+    return primitive;
+}
+
+// The closure golden, POSED so its two palette matrices are distinct and non-identity — the
+// "distinguishable values" SN3 pushes through vertex slot 1 while slot 0 carries the 208-byte
+// PerObject block. A slot-crossed push is a 4080-vs-208 size mismatch the backend surfaces, not a
+// plausible picture.
+[[nodiscard]] std::vector<Mat4> posedClosurePalette(const CookedSkeleton& skeleton) {
+    std::vector<JointPose> pose = bindPoseOf(skeleton);
+    REQUIRE(pose.size() == 3);
+    pose[0].translation = Vec3{0.0F, 5.0F, 0.0F};
+    pose[1].rotation = engine::fromAxisAngle(Vec3{0.0F, 0.0F, 1.0F}, engine::radians(35.0F));
+    pose[2].rotation = engine::fromAxisAngle(Vec3{1.0F, 0.0F, 0.0F}, engine::radians(-50.0F));
+    return paletteOf(skeleton, pose);
+}
+
+}  // namespace
+
+TEST_CASE("render skinning: a registered STATIC mesh draws through the static pipeline (SN2)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    const std::vector<std::byte> bytes = cookOne(drawableStaticPrimitive());
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    const engine::render::MeshHandle mesh = forward->createMesh(parse.mesh);
+    REQUIRE(mesh.valid());
+    REQUIRE(forward->meshSubmeshCount(mesh) == 1);
+
+    const engine::render::CameraView camera = makeCamera();
+    // A second instance with NO registered mesh, so one recording covers both arm 1 (the built-in
+    // primitive path, byte-identical to 1.4.1's) and the registered-static arm.
+    engine::render::MeshInstance primitiveInstance;
+    primitiveInstance.primitive = engine::render::PrimitiveId::Cube;
+    primitiveInstance.model = engine::Mat4::identity();
+    primitiveInstance.normalMatrix = engine::Mat4::identity();
+    primitiveInstance.mvp = camera.proj * camera.view;
+    const std::array<engine::render::MeshInstance, 2> instances{makeMeshInstance(mesh, 0, camera.proj * camera.view),
+                                                                primitiveInstance};
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
+    view.instances = instances;
+
+    std::optional<engine::render::Frame> open = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(open.has_value());
+    forward->draw(*open, view);
+    CHECK(target->endFrame(std::move(*open)));
+
+    // A cooked mesh with no skin stream never reaches a skinned pipeline, whatever else is in the
+    // view — this is the counter's zero, and it is what makes SN3's 1 mean something.
+    CHECK(forward->skinnedDrawCount() == 0);
+    CHECK_FALSE(forward->hasWarnedSkinningCap());
+}
+
+TEST_CASE("render skinning: a skinned mesh + palette draws through the skinned pipeline (SN3)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    const std::vector<std::byte> bytes = cookOne(drawableSkinnedPrimitive());
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    const engine::render::MeshHandle mesh = forward->createMesh(parse.mesh);
+    REQUIRE(mesh.valid());
+
+    // The palette comes from the real chain — the frozen golden, parsed, posed, and run through
+    // computeJointPalette — rather than from hand-built matrices, so this case exercises everything
+    // between a .aeroskel and a bound uniform block.
+    const CookedSkeleton skeleton = closureGolden();
+    const std::vector<Mat4> palette = posedClosurePalette(skeleton);
+    REQUIRE(palette.size() == 2);
+    CHECK(palette[0] != palette[1]);  // distinguishable, which a wrong slot mapping cannot fake
+
+    const engine::render::CameraView camera = makeCamera();
+    engine::render::MeshInstance instance = makeMeshInstance(mesh, 0, camera.proj * camera.view);
+    instance.palette = palette;
+    const std::array<engine::render::MeshInstance, 1> instances{instance};
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
+    view.instances = instances;
+
+    std::optional<engine::render::Frame> open = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(open.has_value());
+    forward->draw(*open, view);
+    // Submission is the assertion: the skinned pipeline's two vertex buffer layouts, its six
+    // attributes (the tree's first Uint4 one) and its SECOND vertex uniform buffer all have to be
+    // consistent with the compiled shader, or the backend refuses this recording.
+    CHECK(target->endFrame(std::move(*open)));
+
+    CHECK(forward->skinnedDrawCount() == 1);
+    CHECK_FALSE(forward->hasWarnedSkinningCap());
+}
+
+TEST_CASE("render skinning: a palette past the cap skips the instance and latches once (SN4)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    const std::vector<std::byte> bytes = cookOne(drawableSkinnedPrimitive());
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    const engine::render::MeshHandle mesh = forward->createMesh(parse.mesh);
+    REQUIRE(mesh.valid());
+
+    // EXACTLY one past the cap: the arm must fire on 86 and not on 85, which is what makes this a
+    // boundary case rather than a "big number" case.
+    std::vector<Mat4> overCap(engine::render::MAX_SKINNING_JOINTS + 1, Mat4::identity());
+    CHECK(overCap.size() == 86);
+
+    const engine::render::CameraView camera = makeCamera();
+    engine::render::MeshInstance instance = makeMeshInstance(mesh, 0, camera.proj * camera.view);
+    instance.palette = overCap;
+    const std::array<engine::render::MeshInstance, 1> instances{instance};
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
+    view.instances = instances;
+
+    CHECK_FALSE(forward->hasWarnedSkinningCap());
+    // TWO frames: the latch is "once per renderer lifetime", which is a property of the guard rather
+    // than of anything a bool can count, so the second frame is what pins that it is never reset.
+    for (int frame = 0; frame < 2; ++frame) {
+        INFO("frame: ", frame);
+        std::optional<engine::render::Frame> open = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+        REQUIRE(open.has_value());
+        forward->draw(*open, view);
+        CHECK(target->endFrame(std::move(*open)));
+        CHECK(forward->hasWarnedSkinningCap());
+        // SKIPPED, never truncated: a truncated palette binds the tail's vertices to joint 0 and
+        // looks like a modelling defect rather than a refusal.
+        CHECK(forward->skinnedDrawCount() == 0);
+    }
+
+    // ...and the cap itself is not off by one: 85 draws.
+    const std::vector<Mat4> atCap(engine::render::MAX_SKINNING_JOINTS, Mat4::identity());
+    CHECK(atCap.size() == 85);
+    engine::render::MeshInstance allowed = makeMeshInstance(mesh, 0, camera.proj * camera.view);
+    allowed.palette = atCap;
+    const std::array<engine::render::MeshInstance, 1> allowedInstances{allowed};
+    view.instances = allowedInstances;
+    std::optional<engine::render::Frame> open = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(open.has_value());
+    forward->draw(*open, view);
+    CHECK(target->endFrame(std::move(*open)));
+    CHECK(forward->skinnedDrawCount() == 1);
+}
+
+TEST_CASE("render skinning: an out-of-range submesh skips the instance without a crash (SN5)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    const std::vector<std::byte> bytes = cookOne(drawableSkinnedPrimitive());
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    const engine::render::MeshHandle mesh = forward->createMesh(parse.mesh);
+    REQUIRE(mesh.valid());
+    const std::uint32_t count = forward->meshSubmeshCount(mesh);
+    REQUIRE(count == 1);
+
+    const CookedSkeleton skeleton = closureGolden();
+    const std::vector<Mat4> palette = posedClosurePalette(skeleton);
+
+    const engine::render::CameraView camera = makeCamera();
+    // submesh == count is the first index past the table; a STALE handle rides the same recording,
+    // so both of arm 2's halves are exercised in one frame.
+    engine::render::MeshInstance pastEnd = makeMeshInstance(mesh, count, camera.proj * camera.view);
+    pastEnd.palette = palette;
+    const engine::render::MeshInstance stale =
+        makeMeshInstance(engine::render::MeshHandle{99, 7}, 0, camera.proj * camera.view);
+    const std::array<engine::render::MeshInstance, 2> instances{pastEnd, stale};
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
+    view.instances = instances;
+
+    std::optional<engine::render::Frame> open = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(open.has_value());
+    forward->draw(*open, view);
+    CHECK(target->endFrame(std::move(*open)));
+    CHECK(forward->skinnedDrawCount() == 0);  // neither instance drew anything
+}
+
+TEST_CASE("render skinning: a skinned mesh with an EMPTY palette takes the static path (SN6)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    const std::vector<std::byte> bytes = cookOne(drawableSkinnedPrimitive());
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    const engine::render::MeshHandle mesh = forward->createMesh(parse.mesh);
+    REQUIRE(mesh.valid());
+
+    const engine::render::CameraView camera = makeCamera();
+    // A skinned SECTION with no palette. This is not a degenerate case to tolerate: the vertices are
+    // authored in bind pose, so the static pipeline draws exactly the right picture at zero cost, and
+    // no identity palette is substituted anywhere.
+    const engine::render::MeshInstance instance = makeMeshInstance(mesh, 0, camera.proj * camera.view);
+    CHECK(instance.palette.empty());
+    const std::array<engine::render::MeshInstance, 1> instances{instance};
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
+    view.instances = instances;
+
+    std::optional<engine::render::Frame> open = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(open.has_value());
+    forward->draw(*open, view);
+    CHECK(target->endFrame(std::move(*open)));
+    // UNMOVED: routing this through the skinned pipeline would push a palette that does not exist.
+    CHECK(forward->skinnedDrawCount() == 0);
+    CHECK_FALSE(forward->hasWarnedSkinningCap());
+}
+
 #endif  // AERO_SHADER_TOOLS_ENABLED

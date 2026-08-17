@@ -14,6 +14,7 @@
 #include "material_pack.hpp"
 #include "mesh_pack.hpp"
 #include "primitives.hpp"
+#include "skinning_pack.hpp"
 
 #include <array>
 #include <cstddef>
@@ -189,13 +190,21 @@ PackedMeshSection packMeshSection(const assets::CookedMesh& mesh, std::uint32_t 
 }  // namespace detail
 
 ForwardRenderer::ForwardRenderer(rhi::Device* deviceIn, rhi::GraphicsPipelineHandle pipelineIn,
-                                 rhi::GraphicsPipelineHandle pipelineCullNoneIn) noexcept
-    : device(deviceIn), pipeline(pipelineIn), pipelineCullNone(pipelineCullNoneIn) {}
+                                 rhi::GraphicsPipelineHandle pipelineCullNoneIn,
+                                 rhi::GraphicsPipelineHandle pipelineSkinnedIn,
+                                 rhi::GraphicsPipelineHandle pipelineSkinnedCullNoneIn) noexcept
+    : device(deviceIn),
+      pipeline(pipelineIn),
+      pipelineCullNone(pipelineCullNoneIn),
+      pipelineSkinned(pipelineSkinnedIn),
+      pipelineSkinnedCullNone(pipelineSkinnedCullNoneIn) {}
 
 ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
     : device(other.device),
       pipeline(other.pipeline),
       pipelineCullNone(other.pipelineCullNone),
+      pipelineSkinned(other.pipelineSkinned),
+      pipelineSkinnedCullNone(other.pipelineSkinnedCullNone),
       primitives(other.primitives),
       defaultTextures(other.defaultTextures),
       materials(std::move(other.materials)),
@@ -203,8 +212,13 @@ ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
       liveMeshes(std::move(other.liveMeshes)),
       samplerCache(std::move(other.samplerCache)),
       defaultMaterialHandle(other.defaultMaterialHandle),
+      paletteScratch(other.paletteScratch),
+      skinnedDraws(other.skinnedDraws),
       warnedBlendOnce(other.warnedBlendOnce),
-      warnedDroppedAttributes(other.warnedDroppedAttributes) {
+      warnedDroppedAttributes(other.warnedDroppedAttributes),
+      warnedSubmeshRange(other.warnedSubmeshRange),
+      warnedSkinningCap(other.warnedSkinningCap),
+      warnedStrayPalette(other.warnedStrayPalette) {
     other.reset();
 }
 
@@ -214,6 +228,8 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         device = other.device;
         pipeline = other.pipeline;
         pipelineCullNone = other.pipelineCullNone;
+        pipelineSkinned = other.pipelineSkinned;
+        pipelineSkinnedCullNone = other.pipelineSkinnedCullNone;
         primitives = other.primitives;
         defaultTextures = other.defaultTextures;
         materials = std::move(other.materials);
@@ -221,8 +237,13 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         liveMeshes = std::move(other.liveMeshes);
         samplerCache = std::move(other.samplerCache);
         defaultMaterialHandle = other.defaultMaterialHandle;
+        paletteScratch = other.paletteScratch;
+        skinnedDraws = other.skinnedDraws;
         warnedBlendOnce = other.warnedBlendOnce;
         warnedDroppedAttributes = other.warnedDroppedAttributes;
+        warnedSubmeshRange = other.warnedSubmeshRange;
+        warnedSkinningCap = other.warnedSkinningCap;
+        warnedStrayPalette = other.warnedStrayPalette;
         other.reset();
     }
     return *this;
@@ -234,6 +255,8 @@ void ForwardRenderer::reset() noexcept {
     device = nullptr;
     pipeline = {};
     pipelineCullNone = {};
+    pipelineSkinned = {};
+    pipelineSkinnedCullNone = {};
     primitives = {};
     defaultTextures = {};
     materials.clear();  // a moved-from SlotMap keeps its scalar bookkeeping; clear() zeroes it
@@ -244,8 +267,13 @@ void ForwardRenderer::reset() noexcept {
     liveMeshes.clear();
     samplerCache.clear();
     defaultMaterialHandle = {};
+    paletteScratch = {};
+    skinnedDraws = 0;
     warnedBlendOnce = false;
     warnedDroppedAttributes = false;
+    warnedSubmeshRange = false;
+    warnedSkinningCap = false;
+    warnedStrayPalette = false;
 }
 
 void ForwardRenderer::destroyAll() noexcept {
@@ -257,6 +285,12 @@ void ForwardRenderer::destroyAll() noexcept {
     }
     if (pipelineCullNone.valid()) {
         device->destroyGraphicsPipeline(pipelineCullNone);
+    }
+    if (pipelineSkinned.valid()) {
+        device->destroyGraphicsPipeline(pipelineSkinned);
+    }
+    if (pipelineSkinnedCullNone.valid()) {
+        device->destroyGraphicsPipeline(pipelineSkinnedCullNone);
     }
     for (const PrimitiveMesh& mesh : primitives) {
         if (mesh.vbuf.valid()) {
@@ -302,12 +336,19 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
         return std::nullopt;
     }
 
+    // THREE shaders, FOUR pipelines (task 3.5.1). The skinned vertex stage shares the fragment stage
+    // byte for byte — its VsOutput is field-for-field identical, so the fragment stage cannot tell
+    // which one fed it — which is why scene.frag.hlsl is untouched by this task.
     const rhi::ShaderHandle vs = rhi::loadShader(device, shaderVfs, config.vertexShaderPath);
+    const rhi::ShaderHandle vsSkinned = rhi::loadShader(device, shaderVfs, config.skinnedVertexShaderPath);
     const rhi::ShaderHandle fs = rhi::loadShader(device, shaderVfs, config.fragmentShaderPath);
-    if (!vs.valid() || !fs.valid()) {
+    if (!vs.valid() || !vsSkinned.valid() || !fs.valid()) {
         AERO_LOG_ERROR("ForwardRenderer::create: scene shader load failed");
         if (vs.valid()) {
             device.destroyShader(vs);
+        }
+        if (vsSkinned.valid()) {
+            device.destroyShader(vsSkinned);
         }
         if (fs.valid()) {
             device.destroyShader(fs);
@@ -342,15 +383,44 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
     rhi::GraphicsPipelineDesc cullNoneDesc = pipelineDesc;
     cullNoneDesc.rasterizer.cullMode = rhi::CullMode::None;
     const rhi::GraphicsPipelineHandle pipelineCullNone = device.createGraphicsPipeline(cullNoneDesc);
+
+    // The SKINNED pair (task 3.5.1): two vertex buffer layouts and six attributes. Locations 0-3 are
+    // the static layout verbatim from slot 0; locations 4-5 come from slot 1's 32-byte SkinVertex —
+    // a Uint4 of joint indices at offset 0 and a Float4 of weights at offset 16, which is the tree's
+    // first INTEGER vertex attribute. The same two-field copy produces its cull-none twin, so the
+    // doubleSided idiom is applied twice from the same descriptors rather than restated.
+    const std::array<rhi::VertexBufferLayout, 2> skinnedLayouts{{
+        {.slot = 0, .pitch = sizeof(MeshVertex)},
+        {.slot = 1, .pitch = sizeof(detail::SkinVertex)},
+    }};
+    const std::array<rhi::VertexAttribute, 6> skinnedAttrs{{
+        {.location = 0, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 0},
+        {.location = 1, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 12},
+        {.location = 2, .bufferSlot = 0, .format = rhi::VertexFormat::Float4, .offset = 24},
+        {.location = 3, .bufferSlot = 0, .format = rhi::VertexFormat::Float2, .offset = 40},
+        {.location = 4, .bufferSlot = 1, .format = rhi::VertexFormat::Uint4, .offset = 0},
+        {.location = 5, .bufferSlot = 1, .format = rhi::VertexFormat::Float4, .offset = 16},
+    }};
+    rhi::GraphicsPipelineDesc skinnedDesc = pipelineDesc;
+    skinnedDesc.vertexShader = vsSkinned;
+    skinnedDesc.vertexBuffers = skinnedLayouts;
+    skinnedDesc.vertexAttributes = skinnedAttrs;
+    const rhi::GraphicsPipelineHandle pipelineSkinned = device.createGraphicsPipeline(skinnedDesc);
+    rhi::GraphicsPipelineDesc skinnedCullNoneDesc = skinnedDesc;
+    skinnedCullNoneDesc.rasterizer.cullMode = rhi::CullMode::None;
+    const rhi::GraphicsPipelineHandle pipelineSkinnedCullNone = device.createGraphicsPipeline(skinnedCullNoneDesc);
+
     device.destroyShader(vs);  // safe after pipeline creation (device.hpp)
+    device.destroyShader(vsSkinned);
     device.destroyShader(fs);
-    if (!pipeline.valid() || !pipelineCullNone.valid()) {
+    if (!pipeline.valid() || !pipelineCullNone.valid() || !pipelineSkinned.valid() ||
+        !pipelineSkinnedCullNone.valid()) {
         AERO_LOG_ERROR("ForwardRenderer::create: pipeline creation failed");
-        if (pipeline.valid()) {
-            device.destroyGraphicsPipeline(pipeline);
-        }
-        if (pipelineCullNone.valid()) {
-            device.destroyGraphicsPipeline(pipelineCullNone);
+        for (const rhi::GraphicsPipelineHandle handle :
+             {pipeline, pipelineCullNone, pipelineSkinned, pipelineSkinnedCullNone}) {
+            if (handle.valid()) {
+                device.destroyGraphicsPipeline(handle);
+            }
         }
         return std::nullopt;
     }
@@ -359,7 +429,7 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
     // which is why the old destroyPartial bookkeeping is gone: every early return below releases the
     // pipelines, the buffers uploaded so far, the default textures and the samplers, with no list to
     // keep in sync as that set grows.
-    ForwardRenderer renderer{&device, pipeline, pipelineCullNone};
+    ForwardRenderer renderer{&device, pipeline, pipelineCullNone, pipelineSkinned, pipelineSkinnedCullNone};
 
     for (std::size_t i = 0; i < renderer.primitives.size(); ++i) {
         detail::PrimitiveGeometry geometry;
@@ -602,6 +672,10 @@ std::size_t ForwardRenderer::samplerCacheSize() const noexcept { return samplerC
 
 bool ForwardRenderer::hasWarnedBlendOpaque() const noexcept { return warnedBlendOnce; }
 
+std::size_t ForwardRenderer::skinnedDrawCount() const noexcept { return skinnedDraws; }
+
+bool ForwardRenderer::hasWarnedSkinningCap() const noexcept { return warnedSkinningCap; }
+
 void ForwardRenderer::bindMaterialTextures(rhi::RenderPassHandle pass, const MaterialSlot& slot) {
     // A-4: resolution to the built-in defaults happens at BIND time, and "which default belongs to
     // slot k" is answered by material.hpp's defaultTextureKindForSlot — the same function whose answer
@@ -629,11 +703,33 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     const rhi::RenderPassHandle pass = frame.pass();
     const rhi::CommandBufferHandle cmd = frame.commandBuffer();
 
-    device->bindGraphicsPipeline(pass, pipeline);  // cull-back is the reset state
+    device->bindGraphicsPipeline(pass, pipeline);  // cull-back, static: the reset state
     bool boundCullNone = false;
+    bool boundSkinned = false;
 
     const detail::GpuLightBlock lights = detail::packLights(view);
     device->pushFragmentUniforms(cmd, 0, std::as_bytes(std::span{&lights, 1}));
+
+    // Which of the FOUR pipelines is bound is now a function of TWO booleans, so it moved out of the
+    // material-change block and into the per-instance path — the (skinned, cullNone) pair is compared
+    // against the bound pair. For a view with no skinned instance the rebind still fires at exactly
+    // the same points it always did (only when doubleSided flips), so the static command stream is
+    // unchanged. Pushed uniforms are per-COMMAND BUFFER, not per-pipeline (device.hpp), so slots
+    // survive every rebind and are never re-pushed for one.
+    const auto bindPipelineFor = [&](bool skinned, bool cullNone) {
+        if (skinned == boundSkinned && cullNone == boundCullNone) {
+            return;
+        }
+        rhi::GraphicsPipelineHandle wanted = pipeline;
+        if (skinned) {
+            wanted = cullNone ? pipelineSkinnedCullNone : pipelineSkinned;
+        } else if (cullNone) {
+            wanted = pipelineCullNone;
+        }
+        device->bindGraphicsPipeline(pass, wanted);
+        boundSkinned = skinned;
+        boundCullNone = cullNone;
+    };
 
     // The state cache is three variables, and the loop is correct under ANY instance order because
     // every draw's state is a pure function of its RESOLVED material — cheap under the common order
@@ -641,6 +737,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     // 3.6.1/Phase 8 own draw ordering.
     MaterialHandle lastMaterial{};
     bool firstMaterial = true;
+    bool doubleSided = false;  // the resolved material's, carried across instances with the cache
 
     for (const MeshInstance& instance : view.instances) {
         const MaterialHandle resolved =
@@ -659,25 +756,97 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
             const detail::GpuMaterialParams gpuParams = detail::packMaterial(slot.params);
             device->pushFragmentUniforms(cmd, 1, std::as_bytes(std::span{&gpuParams, 1}));
             bindMaterialTextures(pass, slot);
-            // The pipeline rebinds ONLY when doubleSided flips. Pushed uniforms are per-COMMAND
-            // BUFFER, not per-pipeline (device.hpp's push-uniform contract), so slots 0 and 1 survive
-            // the rebind and do not have to be re-pushed after it.
-            const bool wantCullNone = slot.params.doubleSided;
-            if (wantCullNone != boundCullNone) {
-                device->bindGraphicsPipeline(pass, wantCullNone ? pipelineCullNone : pipeline);
-                boundCullNone = wantCullNone;
-            }
+            doubleSided = slot.params.doubleSided;
             lastMaterial = resolved;
             firstMaterial = false;
         }
 
         const GpuPerObject perObject{instance.mvp, instance.model, instance.normalMatrix, instance.color, 0.0F};
+
+        // --- D8's draw resolution, in order ---------------------------------------------------
+        // ARM 1: no registered mesh -> the built-in primitive path, byte-identical to 1.4.1's.
+        if (!instance.mesh.valid()) {
+            bindPipelineFor(false, doubleSided);
+            device->pushVertexUniforms(cmd, 0, std::as_bytes(std::span{&perObject, 1}));
+            const PrimitiveMesh& mesh = primitives[clampPrimitiveIndex(instance.primitive)];
+            device->bindVertexBuffer(pass, 0, mesh.vbuf);
+            device->bindIndexBuffer(pass, mesh.ibuf, rhi::IndexType::Uint16);
+            device->drawIndexed(pass, mesh.indexCount);
+            continue;
+        }
+
+        // ARM 2: a stale handle or an out-of-range submesh SKIPS the instance. Neither is a reason to
+        // abandon the frame, and neither may become a read of a freed buffer.
+        const MeshEntry* const entry = meshes.get(instance.mesh);
+        if (entry == nullptr) {
+            AERO_LOG_WARN("ForwardRenderer::draw: stale or invalid MeshHandle — instance skipped");
+            continue;
+        }
+        if (instance.submesh >= entry->submeshes.size()) {
+            if (!warnedSubmeshRange) {
+                AERO_LOG_WARN(
+                    "ForwardRenderer::draw: MeshInstance::submesh is past the mesh's submesh table — "
+                    "instance skipped; this warning latches once per renderer");
+                warnedSubmeshRange = true;
+            }
+            continue;
+        }
+        const MeshSubmeshDraw& submesh = entry->submeshes[instance.submesh];
+        if (submesh.sectionIndex >= entry->sections.size()) {
+            continue;  // unreachable through createMesh (the parse validated it); never a read
+        }
+        const MeshSectionDraw& section = entry->sections[submesh.sectionIndex];
+
+        // ARM 3: no skin stream OR an empty palette -> the STATIC pipeline. An empty palette on a
+        // skinned section IS the bind pose the vertices are authored in, so this degrades to exactly
+        // the right picture at zero cost — no identity palette is substituted, and none is needed.
+        const bool skinned = section.hasSkin && !instance.palette.empty();
+        if (!section.hasSkin && !instance.palette.empty() && !warnedStrayPalette) {
+            AERO_LOG_WARN(
+                "ForwardRenderer::draw: a palette was supplied for a mesh section with no skin stream — "
+                "ignored; this warning latches once per renderer");
+            warnedStrayPalette = true;
+        }
+
+        // ARM 4: a palette past the measured cap SKIPS the instance rather than truncating it — a
+        // truncated palette binds the tail's vertices to joint 0 and looks like a modelling defect.
+        if (skinned && instance.palette.size() > MAX_SKINNING_JOINTS) {
+            if (!warnedSkinningCap) {
+                AERO_LOG_WARN(
+                    "ForwardRenderer::draw: skinning palette of {} joints exceeds MAX_SKINNING_JOINTS ({}), "
+                    "the measured portable push-uniform ceiling — instance skipped. Raising it means a "
+                    "storage buffer instead of a push-uniform slot, which is an rhi surface change. This "
+                    "warning latches once per renderer",
+                    instance.palette.size(), MAX_SKINNING_JOINTS);
+                warnedSkinningCap = true;
+            }
+            continue;
+        }
+
+        bindPipelineFor(skinned, doubleSided);
         device->pushVertexUniforms(cmd, 0, std::as_bytes(std::span{&perObject, 1}));
 
-        const PrimitiveMesh& mesh = primitives[clampPrimitiveIndex(instance.primitive)];
-        device->bindVertexBuffer(pass, 0, mesh.vbuf);
-        device->bindIndexBuffer(pass, mesh.ibuf, rhi::IndexType::Uint16);
-        device->drawIndexed(pass, mesh.indexCount);
+        if (skinned) {
+            // ALWAYS the full 4080-byte block from a ZEROED scratch (INV-S5), so no backend's
+            // partial-cbuffer semantics are ever exercised and the unused tail is deterministic.
+            paletteScratch.fill(Vec4{});
+            detail::packJointPaletteRows(instance.palette,
+                                         std::span{paletteScratch}.first(3 * instance.palette.size()));
+            device->pushVertexUniforms(cmd, 1, std::as_bytes(std::span{paletteScratch}));
+            ++skinnedDraws;
+        }
+
+        // BIND-TIME BYTE OFFSETS, and drawIndexed's vertexOffset stays 0 (the plan's section 0.3): a
+        // base-vertex draw applies the base to EVERY bound stream uniformly, so a mesh whose static
+        // section precedes a skinned one would need stream 1 zero-filled for every vertex or bound at
+        // a negative offset. firstIndex is already absolute into the file's single index region, so
+        // the index buffer binds once at offset 0.
+        device->bindVertexBuffer(pass, 0, entry->vertexBuffer, section.stream0ByteOffset);
+        if (skinned) {
+            device->bindVertexBuffer(pass, 1, entry->skinBuffer, section.stream1ByteOffset);
+        }
+        device->bindIndexBuffer(pass, entry->indexBuffer, entry->indexType);
+        device->drawIndexed(pass, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
     }
 }
 

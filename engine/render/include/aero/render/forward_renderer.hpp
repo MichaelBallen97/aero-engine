@@ -28,6 +28,7 @@
 #include <aero/render/material.hpp>
 #include <aero/render/mesh.hpp>
 #include <aero/render/renderer.hpp>  // Frame
+#include <aero/render/skinning.hpp>  // task 3.5.1 — MAX_SKINNING_JOINTS (the palette scratch's size)
 #include <aero/rhi/descriptors.hpp>  // rhi::SamplerDesc
 #include <aero/rhi/format.hpp>       // rhi::TextureFormat
 #include <aero/rhi/types.hpp>        // rhi::IndexType
@@ -58,6 +59,10 @@ struct ForwardRendererConfig {
     rhi::TextureFormat colorFormat = rhi::TextureFormat::Invalid;  // required (renderer.colorFormat())
     rhi::TextureFormat depthFormat = rhi::TextureFormat::Invalid;  // required, != Invalid (renderer.depthFormat())
     std::string_view vertexShaderPath = "res://scene.vert";
+    // task 3.5.1 — the skinned twin, sharing fragmentShaderPath byte for byte. create() loads all
+    // three and builds FOUR pipelines (static/skinned x cull-back/cull-none); a missing skinned
+    // shader fails create() loudly, exactly as a missing static one always has.
+    std::string_view skinnedVertexShaderPath = "res://scene_skinned.vert";
     std::string_view fragmentShaderPath = "res://scene.frag";
 };
 
@@ -127,6 +132,13 @@ public:
     [[nodiscard]] std::size_t samplerCacheSize() const noexcept;
     [[nodiscard]] bool hasWarnedBlendOpaque() const noexcept;
 
+    // --- diagnostics (task 3.5.1) ---------------------------------------------------------------
+    // The same posture, two more: which arm of the draw resolution an instance took is otherwise
+    // unobservable, so "this drew skinned" and "the joint cap fired" would each be a behaviour no
+    // automated case could witness. They report; they never change behaviour.
+    [[nodiscard]] std::size_t skinnedDrawCount() const noexcept;  // through the skinned pipelines, renderer lifetime
+    [[nodiscard]] bool hasWarnedSkinningCap() const noexcept;     // the over-cap latch fired at least once
+
 private:
     struct PrimitiveMesh {
         rhi::BufferHandle vbuf;
@@ -170,8 +182,12 @@ private:
         std::vector<MeshSubmeshDraw> submeshes;
     };
 
+    // The four pipelines are built before the renderer exists (create() owns that sequence), so they
+    // arrive here rather than being assigned afterwards — which is what makes the destructor the
+    // failure path for everything created past this point.
     ForwardRenderer(rhi::Device* device, rhi::GraphicsPipelineHandle pipeline,
-                    rhi::GraphicsPipelineHandle pipelineCullNone) noexcept;
+                    rhi::GraphicsPipelineHandle pipelineCullNone, rhi::GraphicsPipelineHandle pipelineSkinned,
+                    rhi::GraphicsPipelineHandle pipelineSkinnedCullNone) noexcept;
     void destroyAll() noexcept;  // dtor + move-assign share this; no-op when device == nullptr
     void reset() noexcept;       // null every member WITHOUT releasing anything (the moved-from state)
     // Linear scan over samplerCache, creating and appending on a miss. The cache is
@@ -193,6 +209,11 @@ private:
     rhi::Device* device = nullptr;                   // non-owning; outlives the ForwardRenderer (contract)
     rhi::GraphicsPipelineHandle pipeline{};          // CullMode::Back — the engine convention
     rhi::GraphicsPipelineHandle pipelineCullNone{};  // the doubleSided twin, same two shaders
+    // task 3.5.1 — the same two, built from the SKINNED vertex shader and the same fragment stage:
+    // two vertex buffer layouts and six attributes instead of one and four. Four pipelines total,
+    // from three shader handles, all destroyed after creation exactly as the pair always was.
+    rhi::GraphicsPipelineHandle pipelineSkinned{};
+    rhi::GraphicsPipelineHandle pipelineSkinnedCullNone{};
     std::array<PrimitiveMesh, static_cast<std::size_t>(PrimitiveId::Count)> primitives{};
     // The three built-in 1x1 defaults, INDEXED BY MaterialDefaultTextureKind — never by slot, and
     // never as three separately named members. Five slots map onto these three through
@@ -212,8 +233,17 @@ private:
     std::vector<MeshHandle> liveMeshes;
     std::vector<std::pair<rhi::SamplerDesc, rhi::SamplerHandle>> samplerCache;  // linear scan; tiny
     MaterialHandle defaultMaterialHandle{};
+    // The palette staging buffer: 255 rows x 16 bytes = 4080. Renderer-owned and ZEROED before every
+    // skinned draw, so the FULL block is pushed every time (INV-S5) and no backend's partial-cbuffer
+    // semantics are ever exercised — a shorter push would be legal on one backend and read stale ring
+    // bytes on another, which is exactly the class of divergence this task refuses to introduce.
+    std::array<Vec4, 3ULL * MAX_SKINNING_JOINTS> paletteScratch{};
+    std::size_t skinnedDraws = 0;
     bool warnedBlendOnce = false;          // D9's latch: once per renderer lifetime, never per frame
     bool warnedDroppedAttributes = false;  // task 3.5.1 — TexCoord1/Color0 dropped at repack, latched once
+    bool warnedSubmeshRange = false;       // an instance's submesh index is past the mesh's table
+    bool warnedSkinningCap = false;        // a palette longer than MAX_SKINNING_JOINTS was refused
+    bool warnedStrayPalette = false;       // a palette on a mesh section that carries no skin stream
 };
 
 }  // namespace engine::render
