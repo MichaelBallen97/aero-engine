@@ -2950,3 +2950,213 @@ TEST_CASE("model_import: plyDeclaredCountsExceedBytes refuses a lying header, pa
         CHECK_FALSE(plyDeclaredCountsExceedBytes(std::span<const std::byte>{}));
     }
 }
+
+// ---- MI155-MI157: importSkins == false means the SAME THING in all three skinning-capable
+// backends (task 3.5.1, AC-18) -------------------------------------------------------------------
+//
+// Until task 3.5.1 the glTF backend read JOINTS_0 and WEIGHTS_0 unconditionally while skipping the
+// skin table, so importSkins=false left orphaned joint indices with no skin to resolve them. FBX and
+// Assimp always suppressed both halves. These three cases assert the SAME three emptinesses -- no
+// skins, no per-vertex joints/weights, and neither attribute bit -- once per backend, which is what
+// makes the agreement a regression case rather than a paragraph.
+//
+// Each document is authored HERE and kept as small as the assertion allows. The FBX and Assimp
+// suites' own skinned documents are file-local statics with much larger jobs (FI63 and AI74 cover
+// their backends in depth); restating a copy of either would put two fixtures where one belongs.
+namespace {
+
+// A skinned glTF: two joint nodes, one skin with inverse bind matrices, one mesh carrying
+// POSITION + JOINTS_0 + WEIGHTS_0, and a node instancing the mesh with the skin. The 244-byte
+// embedded buffer holds positions @0, joints @36, weights @60, indices @108, two padding bytes, and
+// the two inverse bind matrices @116.
+constexpr std::string_view SKINNED_GLTF_DOC =
+    R"({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0, 2]}], )"
+    R"("nodes": [{"name": "J0", "children": [1]}, {"name": "J1"}, )"
+    R"({"name": "Skinned", "mesh": 0, "skin": 0}], )"
+    R"("skins": [{"joints": [0, 1], "inverseBindMatrices": 4}], )"
+    R"("meshes": [{"primitives": [{"attributes": )"
+    R"({"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}, "indices": 3, "mode": 4}]}], )"
+    R"("accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}, )"
+    R"({"bufferView": 1, "componentType": 5123, "count": 3, "type": "VEC4"}, )"
+    R"({"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4"}, )"
+    R"({"bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR"}, )"
+    R"({"bufferView": 4, "componentType": 5126, "count": 2, "type": "MAT4"}], )"
+    R"("bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, )"
+    R"({"buffer": 0, "byteOffset": 36, "byteLength": 24}, )"
+    R"({"buffer": 0, "byteOffset": 60, "byteLength": 48}, )"
+    R"({"buffer": 0, "byteOffset": 108, "byteLength": 6}, )"
+    R"({"buffer": 0, "byteOffset": 116, "byteLength": 128}], )"
+    R"("buffers": [{"byteLength": 244, "uri": "data:application/octet-stream;base64,)"
+    R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAAAAAABAAAAAAAAAAAAAQAAAAAAAACAPwAAAAAAAAAA)"
+    R"(AAAAAAAAAD8AAAA/AAAAAAAAAAAAAIA+AABAPwAAAAAAAAAAAAABAAIAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAA)"
+    R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAA)"
+    R"(AAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPw=="}]})";
+
+// A minimal ASCII FBX 7.4.0 document: one mesh, one bone, one skin deformer with one cluster.
+[[nodiscard]] std::string skinnedFbxDoc() {
+    return "; FBX 7.4.0 project file\n"
+           "FBXHeaderExtension:  {\n"
+           "    FBXHeaderVersion: 1003\n"
+           "    FBXVersion: 7400\n"
+           "    Creator: \"aero test fixture\"\n"
+           "}\n"
+           "GlobalSettings:  {\n"
+           "    Version: 1000\n"
+           "    Properties70:  {\n"
+           "    }\n"
+           "}\n"
+           "Objects:  {\n"
+           "    Geometry: 200, \"Geometry::box\", \"Mesh\" {\n"
+           "        Vertices: *12 { a: 0,0,0,1,0,0,1,1,0,0,1,0 }\n"
+           "        PolygonVertexIndex: *4 { a: 0,1,2,-4 }\n"
+           "        GeometryVersion: 124\n"
+           "    }\n"
+           "    Model: 100, \"Model::box\", \"Mesh\" { Version: 232 }\n"
+           "    Model: 110, \"Model::boneA\", \"LimbNode\" { Version: 232 }\n"
+           "    Deformer: 300, \"Deformer::skin\", \"Skin\" { Version: 101 }\n"
+           "    Deformer: 301, \"SubDeformer::clusterA\", \"Cluster\" {\n"
+           "        Version: 100\n        Indexes: *1 { a: 0 }\n        Weights: *1 { a: 1.0 }\n"
+           "        Transform: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+           "        TransformLink: *16 { a: 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }\n"
+           "    }\n"
+           "}\n"
+           "Connections:  {\n"
+           "    C: \"OO\",100,0\n"
+           "    C: \"OO\",110,0\n"
+           "    C: \"OO\",200,100\n"
+           "    C: \"OO\",300,200\n"
+           "    C: \"OO\",301,300\n"
+           "    C: \"OO\",110,301\n"
+           "}\n";
+}
+
+// A minimal skinned COLLADA: one triangle, two joints, one controller, one instance_controller.
+constexpr std::string_view SKINNED_DAE_DOC =
+    R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset>
+  <library_geometries><geometry id="g1" name="Tri"><mesh>
+    <source id="p"><float_array id="pa" count="9">0 0 0 1 0 0 0 1 0</float_array>
+      <technique_common><accessor source="#pa" count="3" stride="3">
+        <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+      </accessor></technique_common></source>
+    <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>
+    <triangles count="1"><input semantic="VERTEX" source="#v" offset="0"/><p>0 1 2</p></triangles>
+  </mesh></geometry></library_geometries>
+  <library_controllers>
+    <controller id="skin1" name="SkinCtrl">
+      <skin source="#g1">
+        <bind_shape_matrix>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</bind_shape_matrix>
+        <source id="jointNames">
+          <Name_array id="jn" count="2">Bone1 Bone2</Name_array>
+          <technique_common><accessor source="#jn" count="2" stride="1">
+            <param name="JOINT" type="name"/></accessor></technique_common>
+        </source>
+        <source id="invBind">
+          <float_array id="ib" count="32">1 0 0 1 0 1 0 2 0 0 1 3 0 0 0 1 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</float_array>
+          <technique_common><accessor source="#ib" count="2" stride="16">
+            <param name="TRANSFORM" type="float4x4"/></accessor></technique_common>
+        </source>
+        <source id="skinWeights">
+          <float_array id="wa" count="3">1 0.5 0.5</float_array>
+          <technique_common><accessor source="#wa" count="3" stride="1">
+            <param name="WEIGHT" type="float"/></accessor></technique_common>
+        </source>
+        <joints>
+          <input semantic="JOINT" source="#jointNames"/>
+          <input semantic="INV_BIND_MATRIX" source="#invBind"/>
+        </joints>
+        <vertex_weights count="3">
+          <input semantic="JOINT" source="#jointNames" offset="0"/>
+          <input semantic="WEIGHT" source="#skinWeights" offset="1"/>
+          <vcount>1 2 1</vcount>
+          <v>0 0 0 1 1 2 1 0</v>
+        </vertex_weights>
+      </skin>
+    </controller>
+  </library_controllers>
+  <library_visual_scenes><visual_scene id="S" name="S">
+    <node id="Bone1" sid="Bone1" name="Bone1" type="JOINT">
+      <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+      <node id="Bone2" sid="Bone2" name="Bone2" type="JOINT">
+        <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+      </node>
+    </node>
+    <node id="Mesh" name="Mesh">
+      <instance_controller url="#skin1"><skeleton>#Bone1</skeleton></instance_controller>
+    </node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#S"/></scene>
+</COLLADA>
+)";
+
+// The three emptinesses, asserted identically for every backend: no skins, no per-vertex joints or
+// weights on any primitive, and neither attribute bit claimed.
+void checkNoSkinningData(const ImportResult& result) {
+    CHECK(result.model.skins.empty());
+    CHECK(result.model.summary.skinCount == 0);
+    CHECK(result.model.summary.jointCount == 0);
+    for (const auto& mesh : result.model.meshes) {
+        for (const auto& primitive : mesh.primitives) {
+            CHECK(primitive.joints.empty());
+            CHECK(primitive.weights.empty());
+            CHECK_FALSE(has(primitive.attributes, VertexAttribute::Joints0));
+            CHECK_FALSE(has(primitive.attributes, VertexAttribute::Weights0));
+        }
+    }
+}
+
+}  // namespace
+
+TEST_CASE("model_import: glTF importSkins == false leaves no joints, no weights and no skins (MI155)") {
+    const std::string doc(SKINNED_GLTF_DOC);
+    ImportSettings off;
+    off.importSkins = false;
+    const ImportResult on = importModel("skinned.gltf", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult result = importModel("skinned.gltf", "", asBytes(doc), off, ImportDepth::Full, {});
+    REQUIRE(on.status == ImportStatus::Ok);
+    REQUIRE(result.status == ImportStatus::Ok);
+
+    // With skins ON the document really does carry all three -- otherwise the OFF assertions below
+    // would pass over a document that never had them.
+    REQUIRE(on.model.skins.size() == 1);
+    REQUIRE(on.model.meshes.size() == 1);
+    REQUIRE(on.model.meshes[0].primitives.size() == 1);
+    CHECK(on.model.meshes[0].primitives[0].joints.size() == 3);
+    CHECK(on.model.meshes[0].primitives[0].weights.size() == 3);
+    CHECK(has(on.model.meshes[0].primitives[0].attributes, VertexAttribute::Joints0));
+    CHECK(has(on.model.meshes[0].primitives[0].attributes, VertexAttribute::Weights0));
+
+    checkNoSkinningData(result);
+    // The mesh itself is NOT short-circuited: geometry survives, only the skinning half is gone.
+    REQUIRE(result.model.meshes.size() == 1);
+    REQUIRE(result.model.meshes[0].primitives.size() == 1);
+    CHECK(result.model.meshes[0].primitives[0].positions.size() == 3);
+    CHECK(result.model.summary.vertexCount == on.model.summary.vertexCount);
+}
+
+TEST_CASE("model_import: FBX agrees -- importSkins == false empties both halves (MI156)") {
+    const std::string doc = skinnedFbxDoc();
+    ImportSettings off;
+    off.importSkins = false;
+    const ImportResult on = importModel("skinned.fbx", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult result = importModel("skinned.fbx", "", asBytes(doc), off, ImportDepth::Full, {});
+    REQUIRE(on.status == ImportStatus::Ok);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE_FALSE(on.model.skins.empty());
+    checkNoSkinningData(result);
+    CHECK(result.model.meshes.size() == on.model.meshes.size());
+}
+
+TEST_CASE("model_import: Assimp agrees -- importSkins == false empties both halves (MI157)") {
+    const std::string doc(SKINNED_DAE_DOC);
+    ImportSettings off;
+    off.importSkins = false;
+    const ImportResult on = importModel("skinned.dae", "", asBytes(doc), ImportSettings{}, ImportDepth::Full, {});
+    const ImportResult result = importModel("skinned.dae", "", asBytes(doc), off, ImportDepth::Full, {});
+    REQUIRE(on.status == ImportStatus::Ok);
+    REQUIRE(result.status == ImportStatus::Ok);
+    REQUIRE_FALSE(on.model.skins.empty());
+    checkNoSkinningData(result);
+    CHECK(result.model.meshes.size() == on.model.meshes.size());
+}

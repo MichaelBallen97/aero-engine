@@ -809,7 +809,7 @@ TEST_CASE(
     REQUIRE(parsed.guid.has_value());
     REQUIRE(parsed.importer.has_value());
     CHECK(parsed.importer->name == "gltf");
-    CHECK(parsed.importer->version == 1);
+    CHECK(parsed.importer->version == 2);  // task 3.5.1: GLTF_IMPORTER_VERSION 1 -> 2 (the importSkins gate)
     CHECK(parsed.importer->settings == ImportSettings{0.01F, false, true, false});
     CHECK(parsed.unknownKeys.empty());
     CHECK(parsed.importerMessage.empty());
@@ -1031,7 +1031,7 @@ TEST_CASE(
     REQUIRE(parsed.guid.has_value());
     REQUIRE(parsed.importer.has_value());
     CHECK(parsed.importer->name == "gltf");
-    CHECK(parsed.importer->version == 1);
+    CHECK(parsed.importer->version == 2);  // task 3.5.1: GLTF_IMPORTER_VERSION 1 -> 2 (the importSkins gate)
     CHECK(parsed.importer->settings == ImportSettings{0.01F, false, true, false});
     CHECK(parsed.unknownKeys.empty());
     CHECK(parsed.importerMessage.empty());

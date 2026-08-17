@@ -22,7 +22,12 @@ namespace engine::editor {
 // HERE rather than in model_import.hpp so asset_meta.cpp can write the block without depending on the
 // importer -- the dependency must run .meta -> settings, never .meta -> importer.
 inline constexpr std::string_view GLTF_IMPORTER_NAME = "gltf";
-inline constexpr std::uint32_t GLTF_IMPORTER_VERSION = 1;
+// 1 -> 2 at task 3.5.1: the glTF backend's observable output for a RECORDED setting changed
+// (importSkins=false now suppresses the JOINTS_0/WEIGHTS_0 vertex reads as well as the skin table),
+// which is exactly the event the import cache's ImporterChanged arm exists for. The machine-local
+// cache re-imports every .gltf/.glb once and nothing else; committed .meta files do not move, because
+// they are never rewritten and an importer block carrying the old version still engages.
+inline constexpr std::uint32_t GLTF_IMPORTER_VERSION = 2;
 // task 3.2.2 (D15). HERE, beside the glTF pair and NOT in model_import.hpp, for the identical reason:
 // asset_meta.cpp must write the block without depending on the importer, and this header's own rule is
 // that it includes <cstdint>/<string_view> and nothing else, forever. Two inline constexprs add no

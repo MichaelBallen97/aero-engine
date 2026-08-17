@@ -1902,7 +1902,7 @@ TEST_CASE(
 // AD32-AD62 above -- the plumbing, end to end, on real files.
 // =====================================================================================================
 
-TEST_CASE("asset_database: a scanned model records \"gltf\"/1 as its importer (AD-i1, AC-1)") {
+TEST_CASE("asset_database: a scanned model records \"gltf\"/2 as its importer (AD-i1, AC-1)") {
     const TempDir dir;
     writeFile(dir.join("chair.gltf"), R"({"asset":{"version":"2.0"}})");
     AssetDatabase db;
@@ -1920,7 +1920,7 @@ TEST_CASE("asset_database: a scanned model records \"gltf\"/1 as its importer (A
     const AssetCacheEntry* const entry = parsed.index.find(record->guid);
     REQUIRE(entry != nullptr);
     CHECK(entry->importer == "gltf");
-    CHECK(entry->importerVersion == 1);
+    CHECK(entry->importerVersion == 2);  // task 3.5.1: the glTF importer's current version
 }
 
 TEST_CASE("asset_database: a non-model asset's importer stays empty and version stays 0 (AD-i2, AC-2)") {
@@ -2120,7 +2120,7 @@ TEST_CASE(
     const AssetCacheEntry* const entry = parsed.index.find(record->guid);
     REQUIRE(entry != nullptr);
     CHECK(entry->importer == "gltf");  // carried forward from the FIRST scan's probe, never reset
-    CHECK(entry->importerVersion == 1);
+    CHECK(entry->importerVersion == 2);
 }
 
 TEST_CASE(
@@ -2252,7 +2252,7 @@ TEST_CASE(
     const AssetCacheEntry* const entry = parsed.index.find(guid);
     REQUIRE(entry != nullptr);
     CHECK(entry->importer == "gltf");
-    CHECK(entry->importerVersion == 1);
+    CHECK(entry->importerVersion == 2);
 }
 
 TEST_CASE(
@@ -2416,7 +2416,7 @@ TEST_CASE(
     const AssetCacheEntry* const entry = parsed.index.find(chairRecord->guid);
     REQUIRE(entry != nullptr);
     CHECK(entry->importer == "gltf");
-    CHECK(entry->importerVersion == 1);
+    CHECK(entry->importerVersion == 2);
     REQUIRE(entry->dependencies.size() == 1);
     CHECK(entry->dependencies[0] == binGuid);
 }
@@ -2476,7 +2476,7 @@ TEST_CASE(
     CHECK(fbxEntry->importer == "fbx");
     CHECK(fbxEntry->importerVersion == 1);
     CHECK(gltfEntry->importer == "gltf");
-    CHECK(gltfEntry->importerVersion == 1);
+    CHECK(gltfEntry->importerVersion == 2);  // glTF moved at 3.5.1; the fbx row above did not
 }
 
 TEST_CASE(
@@ -2930,7 +2930,7 @@ TEST_CASE(
     CHECK(identityOf("scan.ply") == std::pair<std::string, std::uint32_t>{"assimp", 1});
     CHECK(identityOf("part.stl") == std::pair<std::string, std::uint32_t>{"assimp", 1});
     // ...and the shipped identities are UNMOVED, which is the half a one-format case cannot have.
-    CHECK(identityOf("chair.gltf") == std::pair<std::string, std::uint32_t>{"gltf", 1});
+    CHECK(identityOf("chair.gltf") == std::pair<std::string, std::uint32_t>{"gltf", 2});
     CHECK(identityOf("chair.mtl") == std::pair<std::string, std::uint32_t>{"obj", 1});
 }
 
