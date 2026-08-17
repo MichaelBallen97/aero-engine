@@ -10,9 +10,15 @@ whose whole design premise is that the thing reading it does no parsing at all.
 KTX2 container — BCn blocks, a gamma-correct integer mip chain, and a strict subset of the Khronos
 format, so `ktx info`, `ktx validate` and RenderDoc open what it writes.
 
-This document is the permanent home of the frozen contracts these tasks promise (3.3.1 and 3.3.2). The
-normative specification of the containers themselves is `docs/09-file-formats.md`; this file specifies
-the *tool*.
+**Task 3.5.1 added its third**: `aero_cooker skeleton` turns one *skin* of one source model into one
+`.aeroskel` container — a flat joint table in parents-before-children order, each record carrying a
+bind-local TRS, an inverse bind matrix and its palette slot. It reads the same models the `mesh`
+subcommand does, through the same import prelude, and writes a sibling artifact rather than a region
+inside the `.aeromesh`: a skeleton is the *deformation rig*, and `.aeromesh` v1 did not move for it.
+
+This document is the permanent home of the frozen contracts these tasks promise (3.3.1, 3.3.2 and
+3.5.1). The normative specification of the containers themselves is `docs/09-file-formats.md`; this
+file specifies the *tool*.
 
 ## Why it links the editor
 
@@ -37,7 +43,7 @@ none of them, opens no window and creates no GPU device. If that ever bites, the
 importer translation units into their own ImGui-free target, a self-contained refactor that changes no
 consumer. It is not this task's change.
 
-## The four frozen contracts
+## The five frozen contracts
 
 ### 1. The mesh grammar
 
@@ -49,9 +55,9 @@ aero_cooker --version
 aero_cooker --help
 ```
 
-- **Subcommand-shaped from day one**, and task 3.3.2 kept that promise: `texture` was added with no
-  reshuffle of anything above. A missing or unknown subcommand is a usage error naming the token and
-  listing both real ones.
+- **Subcommand-shaped from day one**, and tasks 3.3.2 and 3.5.1 both kept that promise: `texture` and
+  `skeleton` were each added with no reshuffle of anything above. A missing or unknown subcommand is a
+  usage error naming the token and listing every real one.
 - `--input` and `--output` are both **required**. `--output` names a **file**, not a directory.
 - **Every flag may be given at most once.** Unlike `aero_shaderc --define`, this grammar has no
   repeatable flag at all, so the rule is uniform.
@@ -111,12 +117,48 @@ aero_cooker texture --input <file> --output <file.ktx2>
   `AeroSourceGuid` key as 32 lowercase hex characters plus a NUL — **unconditionally**, including for
   the nil GUID, so the layout never depends on whether one was supplied.
 
-### 3. The artifact rule
+### 3. The skeleton grammar
 
-**Nothing is written unless the whole cook succeeded.** The output file is opened only after `cookMesh`
-or `cookTexture` has returned with a complete byte vector, so a failing input leaves **zero** artifacts
-— never a partial one, never a stale one, and never the `.aero-tmp` file the atomic write would have
-created on its way to the final name.
+```
+aero_cooker skeleton --input <file> --output <file.aeroskel>
+                     [--guid <32 hex>] [--skin <index>] [--scale <float>]
+```
+
+- **The input is a MODEL, not a mesh artifact.** `skeleton` accepts exactly the extensions `mesh`
+  accepts, reads them through exactly the same prelude — name-decides-before-read, capped read,
+  Structure pass, external-buffer budget, Full import — and then walks the imported model's skin
+  instead of its meshes. That prelude is one shared helper rather than two copies, because ninety
+  lines of budgeted I/O that took three tasks to harden would only ever diverge on inputs no test
+  cooks.
+- **`--skin <index>` is a POSITION in the model's skin list**, parsed as a plain non-negative whole
+  number and defaulting to `0`. A leading sign, a trailing character, an empty value and a value past
+  2³²−1 are each a usage error naming the flag; an index the model does not have is an *import or cook*
+  error (exit `2`) whose message reports how many skins the model actually declares — `0 skin(s)` for a
+  model with none, which is the honest answer rather than a special case.
+- **One artifact per invocation, and that is a boundary rather than a limitation.** Cooking every skin
+  of a multi-skin model in one run would need a naming rule for the outputs *and* a way to record
+  which cooked mesh each skeleton belongs to — and that pairing is instancing metadata, which is the
+  named gap `docs/09-file-formats.md` §9.0 assigns elsewhere, not this tool's. A model with more skins
+  than the one cooked emits one warning naming the total, so the omission is never silent.
+- **`--scale` applies here too**, unlike `--no-materials` and its two siblings: the importer's uniform
+  scale reaches node translations as well as vertex positions, so it changes a cooked joint's
+  bind-local TRS. `--guid` behaves exactly as it does for the other two subcommands.
+- **The joint table is not the skin's joint list.** Every non-joint ancestor of a joint is added as a
+  *hierarchy-only* record — a transform with no palette slot and an identity inverse bind matrix —
+  because glTF permits ordinary nodes between and above joints and a joint's global transform is the
+  product of all of them. So a two-joint skin under one plain root cooks to **three** records, and the
+  artifact is 448 bytes rather than 320.
+- **The record order is the format's, not the source's.** Records are emitted parents-before-children,
+  breaking ties by ascending source node id, so the file's order depends on the *hierarchy* and never
+  on the order the source happened to list its joints in. The palette slot is what carries the source's
+  own binding order, and it is stored per record.
+
+### 4. The artifact rule
+
+**Nothing is written unless the whole cook succeeded.** The output file is opened only after `cookMesh`,
+`cookTexture` or `cookSkeleton` has returned with a complete byte vector, so a failing input leaves
+**zero** artifacts — never a partial one, never a stale one, and never the `.aero-tmp` file the atomic
+write would have created on its way to the final name.
 
 **The tool creates no directory.** `--output` inside a directory that does not exist is exit `3`.
 `aero_shaderc` does create its `--output-dir`, and the difference is deliberate: that flag names a
@@ -124,17 +166,19 @@ created on its way to the final name.
 becomes a mystery tree.
 
 **The output is deterministic.** The same input cooks to the same bytes across two runs, three
-toolchains and any ordering of the model's own primitives. No timestamp, no path, no hostname, no user
-name and no build id reaches either container; the only provenance fields are the cooker version (a
-compile-time constant) and the GUID the caller supplied. The texture path adds two guarantees the mesh
-path did not need: **no floating-point arithmetic anywhere in `engine/assets`**, so FMA contraction and
-x87 excess precision cannot reach the output, and **no runtime table generation**, so no libm
-implementation can either. Both exist because the same bytes must fall out of clang on arm64, MSVC and
-GCC.
+toolchains and any ordering of the model's own primitives — or, for `skeleton`, any ordering of the
+skin's own joint list. No timestamp, no path, no hostname, no user name and no build id reaches any of
+the three containers; the only provenance fields are the cooker version (a compile-time constant) and
+the GUID the caller supplied. The texture path adds two guarantees the mesh path did not need: **no
+floating-point arithmetic anywhere in `engine/assets`**, so FMA contraction and x87 excess precision
+cannot reach the output, and **no runtime table generation**, so no libm implementation can either.
+Both exist because the same bytes must fall out of clang on arm64, MSVC and GCC. The skeleton path
+inherits them for free: every TRS component and every inverse-bind cell is *bit-copied* from the
+importer's own float, never computed.
 
-### 4. The extension tables
+### 5. The extension tables
 
-`mesh`:
+`mesh` and `skeleton` (one table — they take the same inputs and refuse them identically):
 
 | Extension | Result |
 |---|---|
@@ -151,7 +195,7 @@ GCC.
 | `.ktx2` `.dds` | Refused with exit `2`. Neither is stb-decodable, and re-cooking a cooked artifact is not a workflow. |
 | anything else | Refused with exit `2` and a message listing the seven claimed. Nothing is read. |
 
-The extension is tested against the file **name** before a single byte is read, for both subcommands.
+The extension is tested against the file **name** before a single byte is read, for every subcommand.
 `readFileBytes` refuses an over-cap file *without opening it*, so a tool that read first would answer a
 300 MB `.hdr` with "too large" instead of "HDR is not supported", and an over-cap or missing `.blend`
 with an I/O complaint instead of the message that helps.
@@ -168,8 +212,9 @@ Genuinely asymmetric, and measured rather than assumed — this is the part that
 |---|---|
 | `--scale <f>` | **Real.** The importer applies it to positions and to root node translations, so cooked positions **and** cooked bounds change. The cook itself applies nothing — it converts nothing at all. |
 | `--no-materials` | **Real.** Every cooked submesh's `materialIndex` becomes `0xFFFFFFFF`. |
-| `--no-animations` | **None**, for every backend. v1 cooks geometry only. |
-| `--no-skins` | **None for the glTF path**: `gltf_import.cpp` reads `JOINTS_0`/`WEIGHTS_0` unconditionally in its mesh phase, and `importSkins` gates only the skin *table*, which v1 does not cook. Other backends may differ; this row is deliberately not phrased as a symmetric claim. |
+| `--no-animations` | **None**, for every backend. Neither container stores animation. |
+| `--no-skins` | **Real for all three skinning-capable backends since task 3.5.1**: `gltf_import.cpp`'s `JOINTS_0`/`WEIGHTS_0` reads are gated with the skin table, exactly as the FBX and Assimp backends already gated both halves, so the cooked mesh carries no `Joints0` and no `Weights0` section and is strictly smaller. `--no-skins` therefore produces a genuinely unskinned artifact rather than a fully skinned one with the table suppressed. This row said "**None for the glTF path**" until 3.5.1, and it was true when it was written. |
+| `--skin <index>` | **Real, and it is the whole of what a `skeleton` invocation cooks.** It selects which of the model's skins becomes the artifact; nothing else in the file depends on it except the `sourceSkinIndex` field that records the choice. Mesh output is unaffected — the flag does not exist for `mesh`. |
 | `--srgb` / `--linear` | **Real, and in three places at once.** It selects the `vkFormat`, the descriptor's `transferFunction`, and whether the mip filter averages in linear light. All three are derived from the one format enumerator, so they cannot disagree. |
 | `--format <token>` | **Real.** It selects the `vkFormat`, the descriptor, the bytes per block, the level alignment and therefore almost every offset in the file. |
 | `--no-mips` | **Real.** `levelCount` becomes 1 and the file is strictly smaller; level 0's bytes are unchanged. |
@@ -182,13 +227,20 @@ Genuinely asymmetric, and measured rather than assumed — this is the part that
 - **No conversion of any kind** — no axis flip, no winding reversal, no unit scaling, no handedness
   change, no normal renormalization, no tangent orthogonalization, no UV flip, and no setting for any
   of them. Every conversion this pipeline performs already happened inside the importer, per format.
-- **No node hierarchy, no materials, no images, no skeletons and no animation** in the container. v1
+- **No node hierarchy, no materials, no images and no animation** in the `.aeromesh` container. v1
   stores geometry only, so a consumer that instantiates a cooked mesh with no hierarchy puts every
   submesh at the origin. A cooked model/prefab container carrying the node tree is the right answer
-  and belongs to whoever owns instantiation.
+  and belongs to whoever owns instantiation. **Skeletons left that list at task 3.5.1** — they are
+  cooked, into the sibling `.aeroskel` container, by a separate invocation.
+- **No animation clips, and no joint names, in the `.aeroskel` container** either. A record carries
+  its source node id as provenance, which is what a cooked clip will bind against; a name table is a
+  size and a decision nobody needs yet.
+- **No pairing of a cooked mesh to a cooked skeleton.** Both name their source GUID and the skeleton
+  names its skin index, and that is all — which mesh a skeleton deforms is instancing metadata,
+  belonging to the same absent container as the node tree.
 - **No cook-on-import in the editor**, no `Library/Cooked/`, no panel and no menu item. This tool is
   the only thing that cooks today; task 3.3.2 added exactly one pure adapter pair to the editor and
-  changed no other editor file.
+  task 3.5.1 added one more, neither of them a UI change.
 - **No BC7, no BC6H, no ASTC, no ETC2, no Basis Universal, no supercompression.** `supercompressionScheme`
   is `0`, always, and a non-zero value is a parse refusal. The "Basis" in task 3.3.2's title is the
   ecosystem's name for the family; the encoders are first-party and integer-only, because a
@@ -201,14 +253,16 @@ Genuinely asymmetric, and measured rather than assumed — this is the part that
 
 ## Tests
 
-`tests/cooker/run_case.cmake` drives the real binary through 38 `cooker.*` ctest entries — 23 for
-`mesh` and 15 for `texture` — argv in, exit code plus files out. Two of them,
+`tests/cooker/run_case.cmake` drives the real binary through 48 `cooker.*` ctest entries — 24 for
+`mesh`, 15 for `texture` and 9 for `skeleton` — argv in, exit code plus files out. Two of them,
 `cooker.golden_manifest` and `cooker.texture_golden_manifest`, cook a fixed thirteen-artifact matrix
 and compare every byte against the frozen `tests/cooker/determinism.sha256` (task 3.3.3). A CLI's honest test is its process
 boundary, so there is no doctest translation unit for the tool and no tool code links into
 `aero_tests`; the pure halves it is built from (`cookMesh`, `parseCookedMesh`, `meshCookPrimitives`,
-`cookTexture`, `parseCookedTexture`, `decodeImageRgba8`, `chooseTextureFormat`) are covered there and
+`cookTexture`, `parseCookedTexture`, `decodeImageRgba8`, `chooseTextureFormat`, `cookSkeleton`,
+`parseCookedSkeleton`, `skeletonCookJoints`) are covered there and
 in `aero_editor_shell_test` instead. The cases are registered with **no gate flag**, so they run in
-every build configuration. The mesh inputs are listed in `tests/cooker/fixtures/README.md`; the two
+every build configuration. The mesh and skeleton inputs are listed in
+`tests/cooker/fixtures/README.md`; the two
 texture inputs are the committed `tests/fixtures/assets/texture-rgb-5x3.png` and
 `texture-rgba-8x8.png`, shared with the editor suite.

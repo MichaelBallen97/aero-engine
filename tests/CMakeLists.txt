@@ -788,6 +788,22 @@ set(_aero_cooker_cases
     # `cook-determinism` job downloads -- if either case is renamed, THREE places change together:
     # this list, the upload step's two paths, and the job's directory expectations.
     golden_manifest texture_golden_manifest
+    # task 3.5.1 -- the skeleton subcommand. Ten more names, on the same terms: ungated, so ctest -N
+    # moves in ALL THREE configurations again. MEASURED at the tip of this branch, never derived by
+    # addition: 133 -> 143 with tools ON, 44 -> 54 with -DAERO_REFLECT_TOOLS=OFF
+    # -DAERO_SHADER_TOOLS=OFF, and 57 -> 67 with -DAERO_REFLECT_TOOLS=OFF alone, the last two in
+    # build directories configured FRESH with -G Ninja (the generator enters the shadercross
+    # bootstrap's option hash). All ten names are present in both reduced configurations, which is the
+    # proof that this block is still ungated.
+    #
+    # Nine drive the new `skeleton` subcommand against tests/cooker/fixtures/skinned-quad.gltf; the
+    # tenth drives `mesh` twice, with and without --no-skins, and is the artifact-level witness that
+    # the flag finally does something for the glTF path.
+    skeleton_happy skeleton_unknown_flag skeleton_bad_skin
+    skeleton_no_skin skeleton_skin_out_of_range
+    skeleton_guid_written skeleton_determinism
+    skeleton_nothing_written_on_failure skeleton_output_dir_missing
+    no_skins_gltf
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(

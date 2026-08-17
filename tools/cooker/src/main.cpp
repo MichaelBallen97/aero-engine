@@ -18,10 +18,12 @@
 #include <aero/editor/import_settings.hpp>
 #include <aero/editor/mesh_cook_source.hpp>
 #include <aero/editor/model_import.hpp>
+#include <aero/editor/skeleton_cook_source.hpp>
 #include <aero/editor/text_file.hpp>
 #include <aero/editor/texture_cook_source.hpp>
 
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +35,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -57,18 +60,20 @@ enum class ExitCode : std::uint8_t { Success = 0, UsageError = 1, CookError = 2,
 //   aero_cooker texture --input <file> --output <file.ktx2>
 //                       (--srgb | --linear)
 //                       [--guid <32 hex>] [--format bc1|bc3|bc4|bc5|rgba8|auto] [--no-mips]
+//   aero_cooker skeleton --input <file> --output <file.aeroskel>
+//                        [--guid <32 hex>] [--skin <index>] [--scale <float>]
 //   aero_cooker --version
 //   aero_cooker --help
 //
-// SUBCOMMAND-SHAPED FROM DAY ONE, and task 3.3.2 filled the second one in with no reshuffle of the
-// mesh path: --input, --output and --guid stay in the shared prefix and the flag loop splits only on
-// the subcommand-specific arms. Any token that is neither `mesh` nor `texture` is a usage error
-// naming it.
+// SUBCOMMAND-SHAPED FROM DAY ONE, and tasks 3.3.2 and 3.5.1 each filled one in with no reshuffle of
+// the mesh path: --input, --output and --guid stay in the shared prefix and the flag loop splits only
+// on the subcommand-specific arms. Any token that is none of `mesh`, `texture` and `skeleton` is a
+// usage error naming it.
 //
 // EVERY FLAG IS AT-MOST-ONCE. Unlike aero_shaderc --define, this grammar has no repeatable flag at
 // all, so the check is uniform: one `have<Flag>` bool each.
 void printUsage(std::ostream& out) {
-    out << "aero_cooker " << TOOL_VERSION << " -- source assets -> cooked .aeromesh / .ktx2\n"
+    out << "aero_cooker " << TOOL_VERSION << " -- source assets -> cooked .aeromesh / .ktx2 / .aeroskel\n"
         << "\n"
         << "Usage:\n"
         << "  aero_cooker mesh --input <file> --output <file.aeromesh>\n"
@@ -77,17 +82,20 @@ void printUsage(std::ostream& out) {
         << "  aero_cooker texture --input <file> --output <file.ktx2>\n"
         << "                      (--srgb | --linear)\n"
         << "                      [--guid <32 hex>] [--format bc1|bc3|bc4|bc5|rgba8|auto] [--no-mips]\n"
+        << "  aero_cooker skeleton --input <file> --output <file.aeroskel>\n"
+        << "                       [--guid <32 hex>] [--skin <index>] [--scale <float>]\n"
         << "  aero_cooker --version\n"
         << "  aero_cooker --help\n"
         << "\n"
         << "Subcommands:\n"
         << "  mesh                   Cook one source model into one .aeromesh container.\n"
         << "  texture                Cook one source image into one KTX2 container.\n"
+        << "  skeleton               Cook one skin of one source model into one .aeroskel container.\n"
         << "\n"
-        << "Required (both subcommands):\n"
+        << "Required (all subcommands):\n"
         << "  --input <file>         The source asset.\n"
-        << "                         mesh:    .gltf .glb .fbx .obj .mtl .dae .ply .stl\n"
-        << "                         texture: .png .jpg .jpeg .tga .bmp .gif .psd\n"
+        << "                         mesh, skeleton: .gltf .glb .fbx .obj .mtl .dae .ply .stl\n"
+        << "                         texture:        .png .jpg .jpeg .tga .bmp .gif .psd\n"
         << "  --output <file>        The artifact path. The directory must already exist.\n"
         << "\n"
         << "Required (texture only):\n"
@@ -98,16 +106,23 @@ void printUsage(std::ostream& out) {
         << "                         like a texture, just too dark or too washed out, so it survives\n"
         << "                         review and ships.\n"
         << "\n"
-        << "Optional (both subcommands):\n"
+        << "Optional (all subcommands):\n"
         << "  --guid <32 hex>        The source asset's GUID, exactly 32 hex digits, any case. It is\n"
         << "                         written into the artifact. Default: the nil GUID.\n"
         << "\n"
-        << "Optional (mesh only):\n"
+        << "Optional (mesh and skeleton):\n"
         << "  --scale <float>        The importer's uniform scale. Zero and negative are accepted;\n"
         << "                         only a non-finite value is refused. Default: 1.\n"
+        << "\n"
+        << "Optional (mesh only):\n"
         << "  --no-materials         Import no materials; every submesh records no material.\n"
         << "  --no-animations        Import no animations (v1 cooks geometry only).\n"
-        << "  --no-skins             Import no skin tables (v1 cooks geometry only).\n"
+        << "  --no-skins             Import no vertex joint/weight streams and no skin tables.\n"
+        << "\n"
+        << "Optional (skeleton only):\n"
+        << "  --skin <index>         Which skin to cook, as a position in the model's skin list.\n"
+        << "                         Default: 0. A model with more skins than the one cooked warns\n"
+        << "                         naming the total.\n"
         << "\n"
         << "Optional (texture only):\n"
         << "  --format <token>       bc1, bc3, bc4, bc5, rgba8 or auto. Default: auto, which answers\n"
@@ -164,7 +179,29 @@ void printVersion(std::ostream& out) { out << "aero_cooker " << TOOL_VERSION << 
     return value;
 }
 
-enum class Subcommand : std::uint8_t { Mesh, Texture };
+// PURE, LOCALE-FREE decimal -> uint32, fully consumed or refused.
+//
+// std::from_chars, unlike parseScale's istringstream neighbour above, because the INTEGER overload is
+// the one every toolchain this project builds with does ship (the float overload is the missing one --
+// see parseScale's own note). It is locale-independent BY DEFINITION rather than by imbuing, it never
+// throws, and it reports overflow as a distinct error rather than saturating the way strtoul does.
+//
+// FULL CONSUMPTION is required, so "1x" is refused whole rather than read as 1; and a LEADING SIGN is
+// refused because from_chars's unsigned overload does not accept one at all -- "-1" fails at the first
+// character, which is the answer we want and is stated here so a future reader does not "fix" it into
+// a signed parse followed by a range check.
+[[nodiscard]] std::optional<std::uint32_t> parseSkinIndex(std::string_view text) {
+    std::uint32_t value = 0;
+    const char* const first = text.data();
+    const char* const last = first + text.size();
+    const std::from_chars_result parsed = std::from_chars(first, last, value);
+    if (parsed.ec != std::errc{} || parsed.ptr != last) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+enum class Subcommand : std::uint8_t { Mesh, Texture, Skeleton };
 
 // The six accepted --format tokens, in the order the usage text and every diagnostic list them. `auto`
 // is deliberately IN the table rather than a special case at the parse site: it is a legal value of
@@ -181,6 +218,8 @@ struct Args {
     bool srgb = false;                 // meaningful only after the exactly-one check below passed
     std::string formatToken = "auto";  // one of TEXTURE_FORMAT_TOKENS
     bool generateMips = true;          // --no-mips clears it
+    // --- skeleton only ---
+    std::uint32_t skinIndex = 0;  // --skin; a POSITION in the model's skin list, never a localId
     bool wantHelp = false;
     bool wantVersion = false;
 };
@@ -205,7 +244,7 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     }
 
     if (argc < 2) {
-        std::cerr << "aero_cooker: error: no subcommand given (expected: mesh or texture)\n";
+        std::cerr << "aero_cooker: error: no subcommand given (expected: mesh, texture or skeleton)\n";
         return std::nullopt;
     }
     const std::string_view subcommand = argv[1];
@@ -213,11 +252,22 @@ std::optional<Args> parseArgs(int argc, char** argv) {
         args.subcommand = Subcommand::Mesh;
     } else if (subcommand == "texture") {
         args.subcommand = Subcommand::Texture;
+    } else if (subcommand == "skeleton") {
+        args.subcommand = Subcommand::Skeleton;
     } else {
-        std::cerr << "aero_cooker: error: unknown subcommand '" << subcommand << "' (expected: mesh or texture)\n";
+        std::cerr << "aero_cooker: error: unknown subcommand '" << subcommand
+                  << "' (expected: mesh, texture or skeleton)\n";
         return std::nullopt;
     }
+    // EXPLICIT PER-SUBCOMMAND PREDICATES, replacing task 3.3.2's single `isTexture` discriminator: with
+    // three subcommands "not texture" and "mesh" stopped being the same set, and --scale belongs to two
+    // of them. Named booleans rather than a comparison at each arm, so the scoping of a flag is
+    // readable in one place instead of inferred from a chain of negations.
+    const bool isMesh = args.subcommand == Subcommand::Mesh;
     const bool isTexture = args.subcommand == Subcommand::Texture;
+    const bool isSkeleton = args.subcommand == Subcommand::Skeleton;
+    const bool takesScale = isMesh || isSkeleton;  // the importer's scale reaches node TRS as well as
+                                                   // positions, so a skeleton cook honours it too
 
     bool haveInput = false;
     bool haveOutput = false;
@@ -230,6 +280,7 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     bool haveLinear = false;
     bool haveFormat = false;
     bool haveNoMips = false;
+    bool haveSkin = false;
 
     for (int i = 2; i < argc; ++i) {
         const std::string_view flag = argv[i];
@@ -288,10 +339,10 @@ std::optional<Args> parseArgs(int argc, char** argv) {
             }
             args.guid = *parsed;
             // --- from here the arms are SUBCOMMAND-SPECIFIC. --input, --output and --guid above are
-            // the shared prefix. A mesh flag given to `texture` (or the reverse) falls through to the
-            // unknown-flag arm at the bottom, which names it -- deliberately, rather than accepting it
-            // silently for the wrong subcommand.
-        } else if (!isTexture && flag == "--scale") {
+            // the shared prefix. A flag given to a subcommand that does not take it falls through to
+            // the unknown-flag arm at the bottom, which names it -- deliberately, rather than accepting
+            // it silently for the wrong subcommand.
+        } else if (takesScale && flag == "--scale") {
             if (!refuseRepeat(haveScale, flag)) {
                 return std::nullopt;
             }
@@ -306,21 +357,36 @@ std::optional<Args> parseArgs(int argc, char** argv) {
                 return std::nullopt;
             }
             args.settings.scale = *parsed;
-        } else if (!isTexture && flag == "--no-materials") {
+        } else if (isMesh && flag == "--no-materials") {
             if (!refuseRepeat(haveNoMaterials, flag)) {
                 return std::nullopt;
             }
             args.settings.importMaterials = false;
-        } else if (!isTexture && flag == "--no-animations") {
+        } else if (isMesh && flag == "--no-animations") {
             if (!refuseRepeat(haveNoAnimations, flag)) {
                 return std::nullopt;
             }
             args.settings.importAnimations = false;
-        } else if (!isTexture && flag == "--no-skins") {
+        } else if (isMesh && flag == "--no-skins") {
             if (!refuseRepeat(haveNoSkins, flag)) {
                 return std::nullopt;
             }
             args.settings.importSkins = false;
+        } else if (isSkeleton && flag == "--skin") {
+            if (!refuseRepeat(haveSkin, flag)) {
+                return std::nullopt;
+            }
+            const char* value = needValue(flag);
+            if (value == nullptr) {
+                return std::nullopt;
+            }
+            const std::optional<std::uint32_t> parsed = parseSkinIndex(value);
+            if (!parsed.has_value()) {
+                std::cerr << "aero_cooker: error: invalid --skin value '" << value
+                          << "' (expected one non-negative whole number)\n";
+                return std::nullopt;
+            }
+            args.skinIndex = *parsed;
         } else if (isTexture && flag == "--srgb") {
             if (!refuseRepeat(haveSrgb, flag)) {
                 return std::nullopt;
@@ -358,7 +424,8 @@ std::optional<Args> parseArgs(int argc, char** argv) {
         return std::nullopt;
     }
     if (!isTexture) {
-        return args;
+        return args;  // mesh and skeleton have no post-parse validation: every flag they take is
+                      // already fully decided at its own arm above
     }
 
     // ---- texture post-parse validation, in a FIXED order ------------------------------------------
@@ -432,6 +499,186 @@ void reportWarnings(std::string_view origin, const std::vector<std::string>& war
 
 [[nodiscard]] std::span<const std::byte> asBytes(const std::string& text) noexcept {
     return std::span<const std::byte>(reinterpret_cast<const std::byte*>(text.data()), text.size());
+}
+
+// ---- the model-import prelude, shared by `mesh` and `skeleton` (task 3.5.1) ----------------------
+//
+// Steps 2-5 of the model-cook path -- the file NAME check, the capped read, the Structure pass, the
+// external-buffer budget and the Full import -- EXTRACTED rather than duplicated. Those ninety lines
+// of budgeted I/O took three tasks to harden (3.3.1's budget, 3.2.3's .mtl warning posture, 3.2.4's
+// .blend refusal), and a second copy would only ever diverge on inputs no case cooks. The nineteen
+// mesh CLI cases that existed before this function are the regression harness proving the extraction
+// moved nothing -- measured, not rounded: eighteen arms that pass `mesh` as argv[1], plus
+// golden_manifest, which cooks five tuples through it.
+//
+// nullopt => the failure was ALREADY PRINTED and `exitCode` holds what runMain must return. On
+// success `exitCode` is untouched and the status is Ok or Truncated, never anything else.
+//
+// The RESULT IS FULLY OWNED: ImportedModel holds vectors and strings only, no span into the source
+// bytes, so the file buffer read here may die with this frame. Verified against model_import.hpp
+// rather than assumed -- the mesh path used to keep both alive together by accident of scope.
+[[nodiscard]] std::optional<ImportResult> importModelForCook(const Args& args, ExitCode& exitCode) {
+    // ---- 2. the file NAME decides what happens, before a byte is read -----------------------
+    // DEVIATION from task 3.3.1's plan §D-8, which numbered the read first and this test second. Its
+    // §A-12 says the .blend arm sits "before anything is read", and that is the reading that
+    // survives contact: readFileBytes refuses an over-cap file WITHOUT OPENING IT, so reading first
+    // would answer a 300 MB .blend with "the file is too large" instead of "convert it in the
+    // editor". Nothing else moves -- a missing .gltf still reaches the read below and still exits 3,
+    // because its NAME is importable.
+    const std::string leaf = fs::path(args.inputPath).filename().string();
+    if (!engine::editor::isImportableModelName(leaf)) {
+        if (endsWithFolded(leaf, ".blend")) {
+            std::cerr << "aero_cooker: error: '" << leaf
+                      << "' must be converted before it can be cooked -- open it in the editor and use the "
+                         "Import Details panel's Convert with Blender action (task 3.2.4). This tool never "
+                         "spawns a process.\n";
+        } else {
+            std::cerr << "aero_cooker: error: no importer claims '" << leaf
+                      << "' (expected .gltf .glb .fbx .obj .mtl .dae .ply .stl)\n";
+        }
+        exitCode = ExitCode::CookError;
+        return std::nullopt;
+    }
+
+    // ---- 3. the source bytes ----------------------------------------------------------------
+    engine::editor::FileBytesResult source =
+        engine::editor::readFileBytes(args.inputPath, engine::editor::MAX_MODEL_FILE_BYTES);
+    if (!source.bytes.has_value()) {
+        if (source.refusedByCap) {
+            std::cerr << "aero_cooker: error: '" << args.inputPath << "' is " << source.size << " bytes, above the "
+                      << engine::editor::MAX_MODEL_FILE_BYTES << "-byte import limit\n";
+        } else {
+            std::cerr << "aero_cooker: error: cannot read '" << args.inputPath << "': " << source.error << '\n';
+        }
+        exitCode = ExitCode::IoError;
+        return std::nullopt;
+    }
+    const std::span<const std::byte> sourceBytes = asBytes(*source.bytes);
+
+    // ---- 4. the Structure pass, ONLY for a file kind whose Full pass needs external bytes ----
+    // ModelImportSession::service() gates its own first pass on exactly this predicate, and for the
+    // same reason: for .fbx, .dae, .ply, .stl and .mtl the Structure pass has nothing to tell us and
+    // the reads it would drive are pure waste.
+    //
+    // assetRelativeDir is "" everywhere: the input file's OWN directory is the resolution root, so
+    // relative URIs resolve inside it and every escape above it is refused by the existing
+    // classifyUri with no new code here.
+    std::vector<ExternalBuffer> externals;
+    if (engine::editor::modelImporterNeedsExternalBuffers(leaf)) {
+        const ImportResult structure =
+            engine::editor::importModel(leaf, "", sourceBytes, args.settings, ImportDepth::Structure, {});
+        if (structure.status != ImportStatus::Ok && structure.status != ImportStatus::Truncated) {
+            std::cerr << "aero_cooker: error: " << engine::editor::importStatusLabel(structure.status) << ": "
+                      << structure.message << '\n';
+            exitCode = ExitCode::CookError;
+            return std::nullopt;
+        }
+        const fs::path inputDir = fs::path(args.inputPath).parent_path();
+        externals.reserve(structure.externalUris.size());
+        std::uint64_t total = 0;
+        std::size_t taken = 0;
+        for (const std::string& uri : structure.externalUris) {
+            // DEFENCE IN DEPTH, and unreachable today. The real cap is enforced inside every
+            // importer before an ImportResult is returned -- gltf_import.cpp, fbx_import.cpp,
+            // obj_import.cpp and assimp_import.cpp each bound externalUris at MAX_EXTERNAL_URIS --
+            // so structure.externalUris can never exceed it and `taken`, which only ever increments
+            // on a successful read, can never reach it. Kept because this loop is the CALLER's own
+            // budget and a future importer that forgot the bound would find it here rather than in
+            // an unbounded allocation. Deliberately NOT deleted: a guard removed because it cannot
+            // fire today is a guard nobody restores when the reason it could not fire changes.
+            if (taken >= engine::editor::MAX_EXTERNAL_URIS) {
+                std::cerr << "aero_cooker: warning: more than " << engine::editor::MAX_EXTERNAL_URIS
+                          << " external buffers were named; the rest were skipped\n";
+                break;
+            }
+            const std::string path = (inputDir / fs::path(uri)).string();
+            engine::editor::FileBytesResult buffer =
+                engine::editor::readFileBytes(path, engine::editor::MAX_EXTERNAL_BYTES_PER_MODEL);
+            if (!buffer.bytes.has_value()) {
+                // A missing or unreadable buffer is a WARNING and is skipped -- the .mtl precedent.
+                // Whether it is fatal is the IMPORTER's call: a glTF whose geometry lived in that
+                // buffer reports MissingBuffer below, a .obj whose .mtl is absent does not.
+                std::cerr << "aero_cooker: warning: cannot read external buffer '" << uri << "': " << buffer.error
+                          << '\n';
+                continue;
+            }
+            // Charged with the OBSERVED size and broken on overflow, mirroring the session's own
+            // loop. Unlike the session there is no Truncated-instead-of-partial fallback: a
+            // build-time tool that silently emitted structure-only geometry would be worse than one
+            // that says a buffer was skipped.
+            if (buffer.bytes->size() > engine::editor::MAX_EXTERNAL_BYTES_PER_MODEL - total) {
+                std::cerr << "aero_cooker: warning: the external buffers exceed this importer's per-model limit of "
+                          << engine::editor::MAX_EXTERNAL_BYTES_PER_MODEL << " bytes; '" << uri
+                          << "' and everything after it were skipped\n";
+                break;
+            }
+            total += buffer.bytes->size();
+            ++taken;
+            externals.push_back(ExternalBuffer{uri, std::move(*buffer.bytes)});
+        }
+    }
+
+    // ---- 5. the Full pass --------------------------------------------------------------------
+    ImportResult imported =
+        engine::editor::importModel(leaf, "", sourceBytes, args.settings, ImportDepth::Full, externals);
+    if (imported.status != ImportStatus::Ok && imported.status != ImportStatus::Truncated) {
+        reportWarnings("import", imported.warnings, imported.warningTotal);
+        std::cerr << "aero_cooker: error: " << engine::editor::importStatusLabel(imported.status) << ": "
+                  << imported.message << '\n';
+        exitCode = ExitCode::CookError;
+        return std::nullopt;
+    }
+    reportWarnings("import", imported.warnings, imported.warningTotal);
+    if (imported.status == ImportStatus::Truncated) {
+        std::cerr << "aero_cooker: warning: import truncated: " << imported.message << '\n';
+    }
+    return imported;
+}
+
+// ---- the skeleton subcommand (task 3.5.1) -------------------------------------------------------
+//
+// PLACED ABOVE runTexture DELIBERATELY, and the reason is a test rather than taste:
+// cooker.texture_nothing_written_on_failure pins a source-text ordering inside the region between
+// `ExitCode runTexture(...)` and `ExitCode runMain(...)`, and that check requires
+// `writeTextFileAtomic(args.outputPath` to occur EXACTLY ONCE in it. A third subcommand written
+// between those two would put a second, unrelated occurrence there and make "before" ambiguous. Do
+// not move this function below runTexture.
+//
+// ONE ARTIFACT PER INVOCATION, chosen by --skin. Cooking every skin of a multi-skin model in one run
+// would need a naming rule for the outputs and a way to say which cooked mesh each skeleton belongs
+// to, and that PAIRING is instancing metadata -- docs/09 section 9.0's named gap, not this tool's.
+ExitCode runSkeleton(const Args& args) {
+    ExitCode failure = ExitCode::CookError;
+    const std::optional<ImportResult> imported = importModelForCook(args, failure);
+    if (!imported.has_value()) {
+        return failure;
+    }
+
+    // ---- 6. the cook -------------------------------------------------------------------------
+    // The adapter owns every refusal that is about the MODEL (an out-of-range skin index, a
+    // Structure-depth model, a dangling joint) and every advisory (the multi-skin notice, the
+    // weight-range scan); the cook owns the ones about the BYTES. Both arrive on one result, so the
+    // CLI needs no second implementation of either.
+    const engine::assets::SkeletonCookResult cooked =
+        engine::editor::cookImportedSkeleton(imported->model, args.skinIndex, args.guid);
+    // FIRST, so a refusal's warnings are not swallowed by the error path below.
+    reportWarnings("cook", cooked.warnings, cooked.warnings.size());
+    if (cooked.status == engine::assets::SkeletonCookStatus::Invalid) {
+        std::cerr << "aero_cooker: error: " << cooked.message << '\n';
+        return ExitCode::CookError;
+    }
+
+    // ---- 7. the write. ONLY NOW is the output path touched -----------------------------------
+    // The same primitive, the same reason and the same refusal to create a directory as both older
+    // subcommands: writeTextFileAtomic is binary on BOTH sides, so a text-mode write cannot turn a
+    // 0x0A inside a float or a matrix cell into 0x0D 0x0A on exactly one lane.
+    const std::string_view artifact(reinterpret_cast<const char*>(cooked.bytes.data()), cooked.bytes.size());
+    const std::string writeError = engine::editor::writeTextFileAtomic(args.outputPath, artifact);
+    if (!writeError.empty()) {
+        std::cerr << "aero_cooker: error: cannot write '" << args.outputPath << "': " << writeError << '\n';
+        return ExitCode::IoError;
+    }
+    return ExitCode::Success;
 }
 
 // `token` is already known to be one of the six (parseArgs checked), and --srgb has already been
@@ -551,126 +798,25 @@ ExitCode runMain(int argc, char** argv) {
         return ExitCode::Success;
     }
     const Args& args = *parsed;
-    // The subcommand split, and the ONLY structural change task 3.3.2 made to this function: the mesh
-    // path below is byte-for-byte what it was, which is what "subcommand-shaped from day one" was
-    // promising.
+    // The subcommand split. Task 3.3.2 added the first branch and task 3.5.1 the second; the mesh
+    // path below is still the same sequence it was at 3.3.1, with steps 2-5 now living in
+    // importModelForCook so the skeleton path can share them rather than copy them.
     if (args.subcommand == Subcommand::Texture) {
         return runTexture(args);
     }
-
-    // ---- 2. the file NAME decides what happens, before a byte is read -----------------------
-    // DEVIATION from the plan's own §D-8, which numbered the read first and this test second. Its
-    // §A-12 says the .blend arm sits "before anything is read", and that is the reading that
-    // survives contact: readFileBytes refuses an over-cap file WITHOUT OPENING IT, so reading first
-    // would answer a 300 MB .blend with "the file is too large" instead of "convert it in the
-    // editor". Nothing else moves -- a missing .gltf still reaches the read below and still exits 3,
-    // because its NAME is importable.
-    const std::string leaf = fs::path(args.inputPath).filename().string();
-    if (!engine::editor::isImportableModelName(leaf)) {
-        if (endsWithFolded(leaf, ".blend")) {
-            std::cerr << "aero_cooker: error: '" << leaf
-                      << "' must be converted before it can be cooked -- open it in the editor and use the "
-                         "Import Details panel's Convert with Blender action (task 3.2.4). This tool never "
-                         "spawns a process.\n";
-        } else {
-            std::cerr << "aero_cooker: error: no importer claims '" << leaf
-                      << "' (expected .gltf .glb .fbx .obj .mtl .dae .ply .stl)\n";
-        }
-        return ExitCode::CookError;
+    if (args.subcommand == Subcommand::Skeleton) {
+        return runSkeleton(args);
     }
 
-    // ---- 3. the source bytes ----------------------------------------------------------------
-    engine::editor::FileBytesResult source =
-        engine::editor::readFileBytes(args.inputPath, engine::editor::MAX_MODEL_FILE_BYTES);
-    if (!source.bytes.has_value()) {
-        if (source.refusedByCap) {
-            std::cerr << "aero_cooker: error: '" << args.inputPath << "' is " << source.size << " bytes, above the "
-                      << engine::editor::MAX_MODEL_FILE_BYTES << "-byte import limit\n";
-        } else {
-            std::cerr << "aero_cooker: error: cannot read '" << args.inputPath << "': " << source.error << '\n';
-        }
-        return ExitCode::IoError;
-    }
-    const std::span<const std::byte> sourceBytes = asBytes(*source.bytes);
-
-    // ---- 4. the Structure pass, ONLY for a file kind whose Full pass needs external bytes ----
-    // ModelImportSession::service() gates its own first pass on exactly this predicate, and for the
-    // same reason: for .fbx, .dae, .ply, .stl and .mtl the Structure pass has nothing to tell us and
-    // the reads it would drive are pure waste.
-    //
-    // assetRelativeDir is "" everywhere (AC-38): the input file's OWN directory is the resolution
-    // root, so relative URIs resolve inside it and every escape above it is refused by the existing
-    // classifyUri with no new code here.
-    std::vector<ExternalBuffer> externals;
-    if (engine::editor::modelImporterNeedsExternalBuffers(leaf)) {
-        const ImportResult structure =
-            engine::editor::importModel(leaf, "", sourceBytes, args.settings, ImportDepth::Structure, {});
-        if (structure.status != ImportStatus::Ok && structure.status != ImportStatus::Truncated) {
-            std::cerr << "aero_cooker: error: " << engine::editor::importStatusLabel(structure.status) << ": "
-                      << structure.message << '\n';
-            return ExitCode::CookError;
-        }
-        const fs::path inputDir = fs::path(args.inputPath).parent_path();
-        externals.reserve(structure.externalUris.size());
-        std::uint64_t total = 0;
-        std::size_t taken = 0;
-        for (const std::string& uri : structure.externalUris) {
-            // DEFENCE IN DEPTH, and unreachable today. The real cap is enforced inside every
-            // importer before an ImportResult is returned -- gltf_import.cpp, fbx_import.cpp,
-            // obj_import.cpp and assimp_import.cpp each bound externalUris at MAX_EXTERNAL_URIS --
-            // so structure.externalUris can never exceed it and `taken`, which only ever increments
-            // on a successful read, can never reach it. Kept because this loop is the CALLER's own
-            // budget and a future importer that forgot the bound would find it here rather than in
-            // an unbounded allocation. Deliberately NOT deleted: a guard removed because it cannot
-            // fire today is a guard nobody restores when the reason it could not fire changes.
-            if (taken >= engine::editor::MAX_EXTERNAL_URIS) {
-                std::cerr << "aero_cooker: warning: more than " << engine::editor::MAX_EXTERNAL_URIS
-                          << " external buffers were named; the rest were skipped\n";
-                break;
-            }
-            const std::string path = (inputDir / fs::path(uri)).string();
-            engine::editor::FileBytesResult buffer =
-                engine::editor::readFileBytes(path, engine::editor::MAX_EXTERNAL_BYTES_PER_MODEL);
-            if (!buffer.bytes.has_value()) {
-                // A missing or unreadable buffer is a WARNING and is skipped -- the .mtl precedent.
-                // Whether it is fatal is the IMPORTER's call: a glTF whose geometry lived in that
-                // buffer reports MissingBuffer below, a .obj whose .mtl is absent does not.
-                std::cerr << "aero_cooker: warning: cannot read external buffer '" << uri << "': " << buffer.error
-                          << '\n';
-                continue;
-            }
-            // Charged with the OBSERVED size and broken on overflow, mirroring the session's own
-            // loop. Unlike the session there is no Truncated-instead-of-partial fallback: a
-            // build-time tool that silently emitted structure-only geometry would be worse than one
-            // that says a buffer was skipped.
-            if (buffer.bytes->size() > engine::editor::MAX_EXTERNAL_BYTES_PER_MODEL - total) {
-                std::cerr << "aero_cooker: warning: the external buffers exceed this importer's per-model limit of "
-                          << engine::editor::MAX_EXTERNAL_BYTES_PER_MODEL << " bytes; '" << uri
-                          << "' and everything after it were skipped\n";
-                break;
-            }
-            total += buffer.bytes->size();
-            ++taken;
-            externals.push_back(ExternalBuffer{uri, std::move(*buffer.bytes)});
-        }
-    }
-
-    // ---- 5. the Full pass --------------------------------------------------------------------
-    const ImportResult imported =
-        engine::editor::importModel(leaf, "", sourceBytes, args.settings, ImportDepth::Full, externals);
-    if (imported.status != ImportStatus::Ok && imported.status != ImportStatus::Truncated) {
-        reportWarnings("import", imported.warnings, imported.warningTotal);
-        std::cerr << "aero_cooker: error: " << engine::editor::importStatusLabel(imported.status) << ": "
-                  << imported.message << '\n';
-        return ExitCode::CookError;
-    }
-    reportWarnings("import", imported.warnings, imported.warningTotal);
-    if (imported.status == ImportStatus::Truncated) {
-        std::cerr << "aero_cooker: warning: import truncated: " << imported.message << '\n';
+    // ---- 2-5. the name check, the capped read, Structure, the external budget, Full ----------
+    ExitCode failure = ExitCode::CookError;
+    const std::optional<ImportResult> imported = importModelForCook(args, failure);
+    if (!imported.has_value()) {
+        return failure;
     }
 
     // ---- 6. the cook -------------------------------------------------------------------------
-    const engine::assets::MeshCookResult cooked = engine::editor::cookImportedModel(imported.model, args.guid);
+    const engine::assets::MeshCookResult cooked = engine::editor::cookImportedModel(imported->model, args.guid);
     reportWarnings("cook", cooked.warnings, cooked.warningTotal);
     if (cooked.bytes.empty()) {
         // The ONLY way this happens is the allocation-failure arm, which reports Truncated with the
