@@ -57,14 +57,18 @@ VsOutput main(VsInput input) {
     [unroll]
     for (uint k = 0; k < 4; ++k) {
         float w = input.weights[k];
-        wsum += w;
         uint j = input.joints[k];
         // Defensive clamp, not a policy: an index past the pushed block would read whatever the
         // uniform ring held. The cook and the adapter both validate indices, and the renderer
         // refuses a palette larger than the cap, so this can only fire on a hand-built artifact.
+        // wsum accumulates AFTER this test, deliberately: it counts influences actually APPLIED, so
+        // a vertex whose every index is out of range leaves wsum at 0 and takes the passthrough
+        // below. Counting it before the test would give that vertex a non-zero wsum over a zero
+        // posM and collapse it to the origin — the exact defect the passthrough exists to prevent.
         if (j >= (uint)MAX_SKINNING_JOINTS_) {
             continue;
         }
+        wsum += w;
         float4 r0 = uPaletteRows[(3u * j) + 0u];
         float4 r1 = uPaletteRows[(3u * j) + 1u];
         float4 r2 = uPaletteRows[(3u * j) + 2u];
