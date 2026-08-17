@@ -3,7 +3,9 @@
 // Tier 0 (no GPU, every lane, JP*): bindPose against the two frozen .aeroskel goldens, the matrix
 // palette's composition order in both of the places it can be reversed (parent x child, global x
 // inverse bind), the hierarchy-only ancestor's contribution, palette placement BY SLOT rather than by
-// record order, the cooked-section repack, and the Mat4 -> three-rows packer.
+// record order, the cooked-section repack, the Mat4 -> three-rows packer, and — JP14, the one case
+// here that touches the disk — the SHADER's own copy of the joint cap, as comment-stripped source
+// text, because the HLSL and the C++ constant never meet at compile time in any lane.
 //
 // Tier 1 (a real Device, NO window — RenderTarget supplies the formats, gated by AERO_SKIP_OR_FAIL,
 // SN*): the mesh registry's lifecycle and the four-pipeline draw path.
@@ -36,9 +38,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <ostream>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 using engine::Mat4;
@@ -572,6 +578,111 @@ TEST_CASE("render skinning: the repack READS the attribute table's offsets and s
 }
 
 // ================================================================================================
+// JP14 is the ONE case in this TU that touches the disk, and it is a comment-stripped SOURCE-TEXT
+// pin (the CM50 / I95-I98 shape) rather than a behaviour, because there is no behaviour to observe:
+// the shader's copy of the joint cap and the C++ one never see each other's tokens, and EVERY
+// mismatched variant compiles, links, creates its pipelines, submits and draws.
+// ================================================================================================
+
+namespace {
+
+// A source line with its `//` comment removed — CM50's own helper, one layer up. HLSL uses the same
+// comment syntax, and without this the gate below would match scene_skinned.vert.hlsl's own prose
+// about the 85 and the 4080 and pass for exactly the wrong reason.
+[[nodiscard]] std::string_view codeOf(std::string_view line) {
+    const std::size_t commentStart = line.find("//");
+    return commentStart == std::string_view::npos ? line : line.substr(0, commentStart);
+}
+
+[[nodiscard]] std::string strippedShaderSource(const std::string& relativePath) {
+    const std::string path = std::string(AERO_SHADERS_SRC_DIR) + "/" + relativePath;
+    std::ifstream stream{path, std::ios::binary};
+    REQUIRE_MESSAGE(stream.good(), path);
+    const std::string text{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    REQUIRE_FALSE(text.empty());
+    std::string out;
+    out.reserve(text.size());
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        const std::string_view line = newline == std::string_view::npos ? remaining : remaining.substr(0, newline);
+        out.append(codeOf(line));
+        out.push_back('\n');
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        remaining.remove_prefix(newline + 1U);
+    }
+    return out;
+}
+
+// The decimal literal that follows `marker`, with spaces and tabs skipped. Disengaged when the marker
+// is absent or is not followed by a digit — both of which the caller REQUIREs against, so a renamed
+// token fails loudly rather than passing vacuously.
+[[nodiscard]] std::optional<std::uint32_t> literalAfter(std::string_view code, std::string_view marker) {
+    const std::size_t at = code.find(marker);
+    if (at == std::string_view::npos) {
+        return std::nullopt;
+    }
+    std::size_t cursor = at + marker.size();
+    while (cursor < code.size() && (code[cursor] == ' ' || code[cursor] == '\t')) {
+        ++cursor;
+    }
+    std::uint32_t value = 0;
+    std::size_t digits = 0;
+    while (cursor < code.size() && code[cursor] >= '0' && code[cursor] <= '9') {
+        value = (value * 10U) + static_cast<std::uint32_t>(code[cursor] - '0');
+        ++cursor;
+        ++digits;
+    }
+    return digits == 0 ? std::nullopt : std::optional<std::uint32_t>{value};
+}
+
+}  // namespace
+
+TEST_CASE("render skinning: the SHADER's own joint cap and row count equal MAX_SKINNING_JOINTS (JP14)") {
+    // THE C++ SIDE IS PINNED TWICE AND THE SHADER SIDE WAS PINNED BY NOTHING — that asymmetry is the
+    // whole reason this case exists. skinning.hpp's own static_assert refuses any value whose packed
+    // block exceeds 4096 bytes (so raising the constant to 100 is a BUILD failure, not a green
+    // variant) and JP8 pins it at exactly 85. The shader's two numbers live in a file no compiler
+    // ever compares against that header: shaders are built by a separate toolchain into
+    // DXIL/MSL/SPIR-V, so a divergence there is a build error nowhere and a red test nowhere.
+    //
+    // What a shader-side drift actually does, measured by seeding both directions:
+    //   #define lowered to 60      -> the loop's clamp rejects j >= 60, so every vertex bound to
+    //                                joints 60..84 silently freezes at bind pose while the renderer
+    //                                packs and pushes all 85 rows. A wrong picture on every backend.
+    //   uPaletteRows[] shrunk      -> the shader reads a block smaller than the 4080 bytes the
+    //                                renderer pushes whole every skinned draw; what the tail rows
+    //                                resolve to is then a per-backend accident.
+    //   uPaletteRows[] grown       -> the block passes 4096, which SDL's Vulkan backend binds with a
+    //                                FIXED descriptor range: the rows past it read uniform-ring
+    //                                residue there and the authored data on D3D12 and Metal.
+    // Both seeds ran: each reddens ONLY this case, and the whole suite is green without it.
+    const std::string code = strippedShaderSource("scene_skinned.vert.hlsl");
+
+    // Arm 1 — the `#define`. The bounds clamp inside the loop reads this token, so it is what
+    // decides which joints the shader is willing to look at.
+    const std::optional<std::uint32_t> defined = literalAfter(code, "#define MAX_SKINNING_JOINTS_");
+    REQUIRE(defined.has_value());  // anti-vacuity: a renamed macro must fail, never pass
+    CHECK(*defined == engine::render::MAX_SKINNING_JOINTS);
+
+    // Arm 2 — the cbuffer's declared row count, which is what fixes the block's SIZE at 4080 bytes.
+    // The declaration is matched, not the three indexing expressions below it (`uPaletteRows[(3u *`),
+    // which is why the marker carries the type.
+    const std::optional<std::uint32_t> rows = literalAfter(code, "float4 uPaletteRows[");
+    REQUIRE(rows.has_value());  // anti-vacuity: a renamed uniform must fail, never pass
+    CHECK(*rows == 3U * engine::render::MAX_SKINNING_JOINTS);
+
+    // ...and the two shader-side numbers are consistent with each other, stated as the arithmetic
+    // rather than as two literals, so whoever trips this reads the relationship and not just a
+    // mismatch. THREE PLACES CHANGE TOGETHER: skinning.hpp's MAX_SKINNING_JOINTS, the #define, and
+    // the uPaletteRows dimension — the renderer pushes the whole array every skinned draw.
+    CHECK(*rows == 3U * *defined);
+    CHECK(*rows * 16U <= 4096U);
+}
+
+// ================================================================================================
 // Tier 1 — a real Device, no window. The mesh registry and the skinned draw path.
 //
 // Gated on AERO_SHADER_TOOLS_ENABLED for the reason render_material_test.cpp's own tier-1 block is:
@@ -972,6 +1083,189 @@ TEST_CASE("render skinning: a skinned mesh with an EMPTY palette takes the stati
     // UNMOVED: routing this through the skinned pipeline would push a palette that does not exist.
     CHECK(forward->skinnedDrawCount() == 0);
     CHECK_FALSE(forward->hasWarnedSkinningCap());
+}
+
+TEST_CASE("render skinning: a section that declares vertices but repacks EMPTY refuses the whole mesh (SN7)") {
+    // AN EMPTY REPACK IS A REFUSAL SIGNAL, NOT AN EMPTY SECTION (mesh_pack.hpp's own contract), and
+    // the two are told apart by the section's DECLARED vertexCount — which parseCookedMesh does not
+    // constrain (it refuses attributeCount == 0 and vertexStride == 0, never vertexCount == 0).
+    //
+    // What the un-refused shape does, and why it is worth a GPU-tier case rather than a comment: the
+    // registry records each section's byte offset as the CURRENT size of the concatenated stream,
+    // BEFORE appending. A section that packs to nothing therefore inherits the offset of whatever is
+    // appended NEXT — the following section's vertices, or the end of the buffer when it is the last
+    // one. A submesh naming it then binds there and issues drawIndexed against index values sized for
+    // its own vertex count, which is another section's geometry at best and a fetch past the end of
+    // the buffer at worst (SDL exposes robustBufferAccess as an OPTIONAL Vulkan feature, so that is
+    // UB on a device that does not report it, not a clamped read).
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    // TWO sections, because the cook groups by ATTRIBUTE MASK: a skinned primitive and a static one
+    // cannot share a layout. Two is what makes the defect concrete — with one section the stale
+    // offset would merely be 0.
+    engine::assets::MeshCookPrimitive skinned = drawableSkinnedPrimitive();
+    skinned.sourceMeshIndex = 0;
+    skinned.sourcePrimitiveIndex = 0;
+    engine::assets::MeshCookPrimitive plain = drawableStaticPrimitive();
+    plain.sourceMeshIndex = 1;
+    plain.sourcePrimitiveIndex = 0;
+    const std::array<engine::assets::MeshCookPrimitive, 2> primitives{skinned, plain};
+
+    const std::vector<std::byte> bytes = cookPrimitives(primitives);
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    REQUIRE(parse.mesh.sections.size() == 2);
+    REQUIRE(parse.mesh.submeshes.size() == 2);
+
+    // The hand edit a hostile or hand-repaired artifact would carry: a stride too small to hold the
+    // section's own Position attribute, with vertexCount left alone. parseCookedMesh accepts the FILE
+    // this describes (vertexDataBytes is checked against vertexCount x vertexStride at parse time, so
+    // the equivalent real file is simply one whose header says 4), and the repack refuses the section
+    // WHOLE rather than reading past its slice — JP13 arm 2's fixture, one tier up.
+    engine::assets::CookedMesh hostile = parse.mesh;
+    hostile.sections[0].vertexStride = 4;
+    REQUIRE(hostile.sections[0].vertexCount == 3);
+    const PackedMeshSection refusedPack = engine::render::detail::packMeshSection(hostile, 0);
+    REQUIRE(refusedPack.stream0.empty());  // the precondition; SN7 is about what createMesh does with it
+    // ...and the SECOND section is untouched, so a createMesh that only refused when EVERY section
+    // packed empty would still register this mesh.
+    CHECK_FALSE(engine::render::detail::packMeshSection(hostile, 1).stream0.empty());
+
+    const engine::render::MeshHandle refused = forward->createMesh(hostile);
+    CHECK_FALSE(refused.valid());
+    CHECK(forward->meshSubmeshCount(refused) == 0);
+
+    // The UNEDITED mesh still registers, so the refusal above is a statement about the edit and not
+    // about the fixture — without this the case would pass just as well against a createMesh that
+    // refused everything.
+    const engine::render::MeshHandle accepted = forward->createMesh(parse.mesh);
+    CHECK(accepted.valid());
+    CHECK(forward->meshSubmeshCount(accepted) == 2);
+}
+
+TEST_CASE("render skinning: a STATIC and a SKINNED instance in ONE view drive both transitions (SN8)") {
+    // The transition matrix nothing else covers. SN2 draws two static instances, SN3 and SN6 draw
+    // one, SN4 and SN5 skip theirs — so bindPipelineFor was only ever driven false->true. The
+    // deliverable sample does submit a mixed view every frame, but in the order that never reaches
+    // the other edge either: its bind-pose twin (a skinned section with an EMPTY palette, so the
+    // static path) is instances[0] and the animated twin is instances[1], and every frame re-enters
+    // draw() with the state cache reset. So the skinned->static edge and pipelineSkinnedCullNone are
+    // both reached HERE and nowhere else in the tree.
+    //
+    // The skinned instance goes FIRST and carries a doubleSided material, so one recording covers:
+    //   static (the reset bind) -> skinned+cull-none   [the fourth pipeline's only exercise anywhere]
+    //   skinned+cull-none       -> static              [the true->false edge]
+    // ...and the static draw inherits a command buffer that still has stream 1 bound at slot 1 and
+    // vertex uniform slot 1 pushed with 4080 bytes, which the static pipeline describes neither of.
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    auto forward = makeForwardRenderer(*device, *target);
+    REQUIRE(forward.has_value());
+
+    // TWO registered meshes, from two separate cooks: a skinned one and a static one. Separate
+    // registrations rather than two sections of one mesh, because the pipeline decision is per
+    // INSTANCE and this keeps the two instances independent of the section table's own ordering.
+    const std::vector<std::byte> skinnedBytes = cookOne(drawableSkinnedPrimitive());
+    const engine::assets::CookedMeshParseResult skinnedParse = engine::assets::parseCookedMesh(skinnedBytes);
+    REQUIRE(skinnedParse.status == engine::assets::CookedMeshStatus::Ok);
+    const engine::render::MeshHandle skinnedMesh = forward->createMesh(skinnedParse.mesh);
+    REQUIRE(skinnedMesh.valid());
+
+    // The static mesh is a QUAD — FOUR vertices against the skinned fixture's three, deliberately.
+    // With both at three, a draw that wrongly kept the skinned pipeline bound would fetch stream 1
+    // within the bound skin buffer's length and submit happily; four makes that fetch run past it,
+    // which is the one class of mixed-view defect a backend can actually refuse.
+    constexpr std::array<Vec3, 4> QUAD_POSITIONS{Vec3{-1.0F, -1.0F, 0.0F}, Vec3{1.0F, -1.0F, 0.0F},
+                                                 Vec3{1.0F, 1.0F, 0.0F}, Vec3{-1.0F, 1.0F, 0.0F}};
+    constexpr Vec3 QUAD_NORMAL{0.0F, 0.0F, 1.0F};
+    constexpr std::array<Vec3, 4> QUAD_NORMALS{QUAD_NORMAL, QUAD_NORMAL, QUAD_NORMAL, QUAD_NORMAL};
+    constexpr std::array<Vec2, 4> QUAD_UV0{Vec2{0.0F, 0.0F}, Vec2{1.0F, 0.0F}, Vec2{1.0F, 1.0F}, Vec2{0.0F, 1.0F}};
+    constexpr std::array<std::uint32_t, 6> QUAD_INDICES{0, 1, 2, 0, 2, 3};
+    engine::assets::MeshCookPrimitive quad;
+    quad.positions = QUAD_POSITIONS;
+    quad.normals = QUAD_NORMALS;
+    quad.uv0 = QUAD_UV0;
+    quad.indices = QUAD_INDICES;
+
+    const std::vector<std::byte> staticBytes = cookOne(quad);
+    const engine::assets::CookedMeshParseResult staticParse = engine::assets::parseCookedMesh(staticBytes);
+    REQUIRE(staticParse.status == engine::assets::CookedMeshStatus::Ok);
+    REQUIRE(staticParse.mesh.sections.size() == 1);
+    REQUIRE(staticParse.mesh.sections[0].vertexCount == 4);  // strictly more than the skinned fixture's 3
+    const engine::render::MeshHandle staticMesh = forward->createMesh(staticParse.mesh);
+    REQUIRE(staticMesh.valid());
+    CHECK((skinnedMesh != staticMesh));
+
+    // The doubleSided material is what reaches pipelineSkinnedCullNone; the static instance resolves
+    // to the built-in default, whose doubleSided is false, so the pair straddles BOTH booleans.
+    const engine::render::MaterialHandle cullNone = forward->createMaterial({.doubleSided = true}, {});
+    REQUIRE(cullNone.valid());
+    CHECK((cullNone != forward->defaultMaterial()));
+
+    const CookedSkeleton skeleton = closureGolden();
+    const std::vector<Mat4> palette = posedClosurePalette(skeleton);
+    REQUIRE(palette.size() == 2);
+
+    const engine::render::CameraView camera = makeCamera();
+    engine::render::MeshInstance skinnedInstance = makeMeshInstance(skinnedMesh, 0, camera.proj * camera.view);
+    skinnedInstance.palette = palette;
+    skinnedInstance.material = cullNone;
+    const engine::render::MeshInstance staticInstance = makeMeshInstance(staticMesh, 0, camera.proj * camera.view);
+    CHECK(staticInstance.palette.empty());
+    // ORDER IS THE POINT: skinned first, static second.
+    const std::array<engine::render::MeshInstance, 2> instances{skinnedInstance, staticInstance};
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
+    view.instances = instances;
+
+    std::optional<engine::render::Frame> open = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(open.has_value());
+    forward->draw(*open, view);
+    CHECK(target->endFrame(std::move(*open)));
+
+    // EXACTLY one of the two instances took a skinned pipeline. THIS is the discriminating assertion
+    // and the submission above is NOT — measured, not assumed: two seeded defects in the transition
+    // itself (the doubleSided skinned arm binding the STATIC cull-none pipeline, and the
+    // skinned->static edge never firing at all, which leaves the quad drawing through the skinned
+    // pipeline and fetching stream 1 past the bound skin buffer) were BOTH accepted by Metal with
+    // the whole suite green, while a counter that increments per instance rather than per skinned
+    // draw reddens this line. So on this platform the recording's acceptance proves less than it
+    // looks like it does; Vulkan and D3D12 are where that half of the case earns its keep, and this
+    // is the FIRST time either will see a mixed view at all.
+    CHECK(forward->skinnedDrawCount() == 1);
+    CHECK_FALSE(forward->hasWarnedSkinningCap());
+
+    // ...and THIS is the assertion that closes the hole the paragraph above describes. Two instances
+    // wanting two different pipelines must produce exactly TWO transitions: static(reset) ->
+    // skinned+cull-none, then skinned+cull-none -> static. The per-frame reset bind is deliberately
+    // not counted, so this number is the transition count and nothing else.
+    //
+    // Verified to discriminate rather than assumed: seeding bindPipelineFor to early-return for any
+    // non-skinned request — which leaves the quad drawing through the skinned pipeline and fetching
+    // stream 1 past the bound skin buffer's end — leaves BOTH checks above green and Metal silent,
+    // and reddens exactly this one, at 1 instead of 2.
+    CHECK(forward->pipelineBindCount() == 2);
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED

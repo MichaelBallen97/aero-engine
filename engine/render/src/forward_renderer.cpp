@@ -214,8 +214,10 @@ ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
       defaultMaterialHandle(other.defaultMaterialHandle),
       paletteScratch(other.paletteScratch),
       skinnedDraws(other.skinnedDraws),
+      pipelineBinds(other.pipelineBinds),
       warnedBlendOnce(other.warnedBlendOnce),
       warnedDroppedAttributes(other.warnedDroppedAttributes),
+      warnedStaleMesh(other.warnedStaleMesh),
       warnedSubmeshRange(other.warnedSubmeshRange),
       warnedSkinningCap(other.warnedSkinningCap),
       warnedStrayPalette(other.warnedStrayPalette) {
@@ -239,8 +241,10 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         defaultMaterialHandle = other.defaultMaterialHandle;
         paletteScratch = other.paletteScratch;
         skinnedDraws = other.skinnedDraws;
+        pipelineBinds = other.pipelineBinds;
         warnedBlendOnce = other.warnedBlendOnce;
         warnedDroppedAttributes = other.warnedDroppedAttributes;
+        warnedStaleMesh = other.warnedStaleMesh;
         warnedSubmeshRange = other.warnedSubmeshRange;
         warnedSkinningCap = other.warnedSkinningCap;
         warnedStrayPalette = other.warnedStrayPalette;
@@ -269,8 +273,10 @@ void ForwardRenderer::reset() noexcept {
     defaultMaterialHandle = {};
     paletteScratch = {};
     skinnedDraws = 0;
+    pipelineBinds = 0;
     warnedBlendOnce = false;
     warnedDroppedAttributes = false;
+    warnedStaleMesh = false;
     warnedSubmeshRange = false;
     warnedSkinningCap = false;
     warnedStrayPalette = false;
@@ -588,6 +594,27 @@ MeshHandle ForwardRenderer::createMesh(const assets::CookedMesh& mesh) {
     entry.sections.reserve(mesh.sections.size());
     for (std::size_t i = 0; i < mesh.sections.size(); ++i) {
         const detail::PackedMeshSection packed = detail::packMeshSection(mesh, static_cast<std::uint32_t>(i));
+        // AN EMPTY REPACK IS A REFUSAL SIGNAL, NOT AN EMPTY SECTION (mesh_pack.hpp:44-47), and the
+        // section's own DECLARED vertexCount is what tells the two apart — parseCookedMesh refuses
+        // attributeCount == 0 and vertexStride == 0 but NOT vertexCount == 0, so a genuinely empty
+        // section is a legal thing to be handed and packs empty for an ordinary reason.
+        //
+        // Checked BEFORE the offset is recorded, because the offset is `stream0.size()` taken before
+        // the append: a section that packs to nothing would inherit whatever is appended NEXT — the
+        // following section's vertices, or the end of the buffer when it is the last one — and a
+        // submesh naming it would then bind there and drawIndexed past the end of the buffer
+        // (robustBufferAccess is an OPTIONAL Vulkan feature in SDL, so that is UB on a device that
+        // does not report it) or silently draw another section's geometry. Refusing the WHOLE mesh
+        // matches the zero-geometry posture below and costs nothing to unwind: no GPU object exists
+        // yet, which is exactly why the repack runs first.
+        if (mesh.sections[i].vertexCount > 0 && packed.stream0.empty()) {
+            AERO_LOG_ERROR(
+                "ForwardRenderer::createMesh: section {} declares {} vertices but repacked to nothing — the "
+                "cooked layout is inconsistent (a stride, an attribute offset or a slice does not fit); mesh "
+                "refused",
+                i, mesh.sections[i].vertexCount);
+            return {};
+        }
         if (packed.droppedAttributes && !warnedDroppedAttributes) {
             AERO_LOG_WARN(
                 "ForwardRenderer::createMesh: a cooked section carries TexCoord1 and/or Color0, which the "
@@ -674,6 +701,8 @@ bool ForwardRenderer::hasWarnedBlendOpaque() const noexcept { return warnedBlend
 
 std::size_t ForwardRenderer::skinnedDrawCount() const noexcept { return skinnedDraws; }
 
+std::size_t ForwardRenderer::pipelineBindCount() const noexcept { return pipelineBinds; }
+
 bool ForwardRenderer::hasWarnedSkinningCap() const noexcept { return warnedSkinningCap; }
 
 void ForwardRenderer::bindMaterialTextures(rhi::RenderPassHandle pass, const MaterialSlot& slot) {
@@ -727,6 +756,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
             wanted = pipelineCullNone;
         }
         device->bindGraphicsPipeline(pass, wanted);
+        ++pipelineBinds;
         boundSkinned = skinned;
         boundCullNone = cullNone;
     };
@@ -779,7 +809,16 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
         // abandon the frame, and neither may become a read of a freed buffer.
         const MeshEntry* const entry = meshes.get(instance.mesh);
         if (entry == nullptr) {
-            AERO_LOG_WARN("ForwardRenderer::draw: stale or invalid MeshHandle — instance skipped");
+            // LATCHED like every sibling arm below, and for the sharper reason: a stale MeshHandle in
+            // a RenderView is PERSISTENT by nature — a deleted asset with live entity references
+            // produces one every frame, forever, for every instance naming it — so an unlatched line
+            // here is a 60 Hz log flood rather than the one-off a bad submesh index is.
+            if (!warnedStaleMesh) {
+                AERO_LOG_WARN(
+                    "ForwardRenderer::draw: stale or invalid MeshHandle — instance skipped; this warning "
+                    "latches once per renderer");
+                warnedStaleMesh = true;
+            }
             continue;
         }
         if (instance.submesh >= entry->submeshes.size()) {

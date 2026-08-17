@@ -99,6 +99,18 @@ target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::
 # UNGATED on purpose: both reduced configurations build this TU and must run this case too.
 target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/assets/src")
 
+# task 3.5.1, added by the code-review round: the SOURCE tree's shader directory, for
+# render_skinning_test.cpp's JP14 -- the comment-stripped source-text pin tying
+# scene_skinned.vert.hlsl's own 85 and 255 to render::MAX_SKINNING_JOINTS. Nothing else can: the
+# constant is duplicated across a C++ header and an HLSL file that never see each other's tokens, and
+# every mismatched variant compiles, links, submits and draws (Vulkan clamps its descriptor range to
+# 4096 and shows uniform-ring residue past joint 85; D3D12 and Metal freeze those vertices instead).
+# DISTINCT FROM AERO_SHADERS_DIR at :123, which points at the BUILD output (the compiled artifacts a
+# loader reads) -- this one points at the SOURCE (the HLSL text). Do not merge or reuse them.
+# UNGATED on purpose, like AERO_ASSETS_SRC_DIR above: the HLSL source exists in the source tree
+# whether or not AERO_SHADER_TOOLS built it, and both reduced configurations must run this case.
+target_compile_definitions(aero_tests PRIVATE AERO_SHADERS_SRC_DIR="${CMAKE_SOURCE_DIR}/shaders")
+
 # Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,
 # in build/<preset>/shaders). aero_shaders exists ONLY when AERO_SHADER_TOOLS is ON (cmake/shaders.cmake),
 # and tests/ is add_subdirectory'd AFTER shaders/ (root CMakeLists.txt), so the target is in scope here.

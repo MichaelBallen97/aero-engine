@@ -138,6 +138,16 @@ public:
     // automated case could witness. They report; they never change behaviour.
     [[nodiscard]] std::size_t skinnedDrawCount() const noexcept;  // through the skinned pipelines, renderer lifetime
     [[nodiscard]] bool hasWarnedSkinningCap() const noexcept;     // the over-cap latch fired at least once
+    // How many pipeline TRANSITIONS draw() has issued, renderer lifetime — the per-frame reset bind
+    // is deliberately NOT counted, so this reads 0 for any view whose instances all want the same
+    // pipeline and N for a view that alternates N times. Added by the
+    // code-review round for a reason worth stating: a WRONG pipeline for an instance is invisible to
+    // every other observable here. skinnedDrawCount() counts the instances that took the skinned ARM,
+    // not the pipeline they were drawn with, and a static instance that wrongly inherits the skinned
+    // pipeline reads stale stream-1 data — valid memory, no validation error, wrong picture. Counting
+    // binds makes both transitions of the four-pipeline state machine observable: N alternating
+    // instances must produce N binds, and a skipped rebind shows up as a smaller number.
+    [[nodiscard]] std::size_t pipelineBindCount() const noexcept;
 
 private:
     struct PrimitiveMesh {
@@ -239,8 +249,10 @@ private:
     // bytes on another, which is exactly the class of divergence this task refuses to introduce.
     std::array<Vec4, 3ULL * MAX_SKINNING_JOINTS> paletteScratch{};
     std::size_t skinnedDraws = 0;
+    std::size_t pipelineBinds = 0;         // every bindGraphicsPipeline draw() issues, renderer lifetime
     bool warnedBlendOnce = false;          // D9's latch: once per renderer lifetime, never per frame
     bool warnedDroppedAttributes = false;  // task 3.5.1 — TexCoord1/Color0 dropped at repack, latched once
+    bool warnedStaleMesh = false;          // an instance named a MeshHandle the registry no longer holds
     bool warnedSubmeshRange = false;       // an instance's submesh index is past the mesh's table
     bool warnedSkinningCap = false;        // a palette longer than MAX_SKINNING_JOINTS was refused
     bool warnedStrayPalette = false;       // a palette on a mesh section that carries no skin stream

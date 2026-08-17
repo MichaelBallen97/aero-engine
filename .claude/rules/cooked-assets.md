@@ -87,6 +87,19 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
   residuals with the same Phase 5 trigger, not oversights — every read goes through a bounds-checked
   accessor, so either is a wrong picture and never a memory error. The Phase 5 answer for the first is
   an opt-in `parseCookedMeshStrict`, chosen by the caller, never forced on every load.
+  **SINCE TASK 3.5.1 THAT SAFETY ARGUMENT NO LONGER COVERS EVERY CONSUMER, AND THE RESIDUAL STAYS OPEN
+  ON A NARROWER ONE.** "Always a wrong picture, never a memory error" was a true statement about
+  `get*`-based CPU code, which was the only kind of consumer this format had. `ForwardRenderer::createMesh`
+  now UPLOADS the index region verbatim and `draw()` issues `drawIndexed` against it with a bound vertex
+  stream, so an out-of-range index value becomes a **GPU vertex fetch past the end of a buffer** — nothing
+  of ours bounds-checks that, and SDL exposes Vulkan's `robustBufferAccess` as an OPTIONAL feature, so on
+  a device that does not report it the result is undefined behaviour rather than a clamped read. The
+  residual is still legitimately open: the cook is the only producer in this tree, its own output is
+  in range by construction, and a hand-edited or hostile artifact is the only way to reach it. What
+  changed is the COST of being wrong for a consumer that uploads. **Owner and trigger: the same Phase 5
+  `.pak` path already named above** — the opt-in `parseCookedMeshStrict` is where an uploading consumer
+  gets index-value validation, and a `.pak` loader is the first consumer that will be handed bytes it
+  did not cook itself.
 - **The three byte goldens in `tests/cooked_mesh_golden.hpp` are FROZEN.** A change to any layout rule,
   offset, ordering rule or padding rule fails them by construction. If a golden needs to change, the
   format changed — and that is a `formatVersion` decision, not a test edit.
