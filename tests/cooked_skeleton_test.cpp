@@ -416,6 +416,13 @@ TEST_CASE("cooked skeleton: more palette slots than joint records is refused (SK
     const CookedSkeletonParseResult r = parse(b);
     CHECK((r.status == CookedSkeletonStatus::BadHierarchy));
     CHECK(!r.message.empty());
+    // THE MESSAGE IS THE ONLY DISCRIMINATOR HERE, and that is a property of the arithmetic rather
+    // than of this fixture: jointCount records can claim at most jointCount slots, so
+    // paletteJointCount > jointCount ALWAYS leaves a slot unclaimed too, and step 9's "claimed by no
+    // joint record" arm refuses the identical file with the identical status. No fixture can separate
+    // the two by status; only the wording says which check fired. Without this line, deleting the
+    // count comparison reddens nothing anywhere in the tree.
+    CHECK(r.message.find("3 palette joints over 2 joint records") != std::string::npos);
 }
 
 TEST_CASE("cooked skeleton: a parent at or after its own record is refused at every boundary (SK13)") {
@@ -456,6 +463,20 @@ TEST_CASE("cooked skeleton: a palette slot claimed twice is refused (SK15)") {
     const CookedSkeletonParseResult r = parse(b);
     CHECK((r.status == CookedSkeletonStatus::BadHierarchy));
     CHECK(!r.message.empty());
+
+    // THE ARM THAT DISCRIMINATES, and the arm above cannot: over two records and two slots a
+    // duplicate necessarily leaves slot 1 unclaimed, so step 9's hole check refuses that file with
+    // the SAME status and the duplicate check is never the reason it was refused. THREE records over
+    // TWO slots, claimed 0, 1, 0, has no hole at all -- every slot is claimed by somebody -- so the
+    // duplicate is the only violation left and deleting the check turns this file from BadHierarchy
+    // into a clean Ok.
+    const std::array<JointSpec, 3> duplicateNoHole = {JointSpec{COOKED_SKELETON_INVALID_INDEX, 0, 10},
+                                                      JointSpec{0, 1, 11}, JointSpec{0, 0, 12}};
+    CHECK(duplicateNoHole.size() == 3);  // literal record count
+    const CookedSkeletonParseResult d = parse(build(std::span<const JointSpec>(duplicateNoHole), 2));
+    CHECK((d.status == CookedSkeletonStatus::BadHierarchy));
+    CHECK(d.message.find("record 2") != std::string::npos);
+    CHECK(d.message.find("already claimed") != std::string::npos);
 }
 
 TEST_CASE("cooked skeleton: a palette slot claimed by nobody is refused (SK16)") {

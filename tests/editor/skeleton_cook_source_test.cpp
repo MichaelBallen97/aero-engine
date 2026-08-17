@@ -421,6 +421,14 @@ TEST_CASE("skeleton_cook_source: a second skin is selectable and the model's tot
     const CookedSkeletonParseResult parsed = parseCookedSkeleton(std::span<const std::byte>(cooked.bytes));
     REQUIRE((parsed.status == CookedSkeletonStatus::Ok));
     CHECK(parsed.skeleton.sourceSkinIndex == 1);
+    // ...and so do skin 1's JOINTS, which is a SECOND, independent use of the same parameter.
+    // cookImportedSkeleton writes `input.sourceSkinIndex = skinIndex` straight into the header and
+    // separately hands `skinIndex` to the adapter, so a forwarding slip on the adapter call cooks
+    // skin 0's rig under skin 1's number: the header, the warning and the status all still read
+    // exactly as the lines above expect, and the artifact says one thing while carrying another.
+    REQUIRE(parsed.skeleton.joints.size() == 2);
+    CHECK(parsed.skeleton.joints[0].sourceNodeLocalId == 20);
+    CHECK(parsed.skeleton.joints[1].sourceNodeLocalId == 30);
 }
 
 TEST_CASE("skeleton_cook_source: a skin listing one node twice is refused by the cook (KS12)") {
