@@ -43,8 +43,11 @@
 
 #ifdef AERO_PHASE3_SKINNING_ENABLED
 
+    #include <algorithm>  // std::min — the submesh clamp
     #include <array>
     #include <cstddef>
+    #include <cstdint>
+    #include <cstdlib>  // std::strtoul — argv[2]
     #include <span>
     #include <string_view>
     #include <vector>
@@ -112,6 +115,16 @@ int runSample(int argc, char** argv) {
     // argv[1] overrides where the two artifacts are read from; absent, the committed ones beside
     // this file are used. The names inside the directory never change.
     const std::string fixtureDir = argc > 1 ? std::string(argv[1]) : std::string(AERO_PHASE3_SKINNING_DIR);
+
+    // argv[2] picks WHICH submesh the two instances draw; absent, submesh 0, which is what the
+    // committed single-submesh arm rig wants. A real model needs it: this program draws ONE submesh
+    // per instance by design (a model is N instances, which task 3.1.5 owns), and a character
+    // exported with several materials splits into several submeshes whose ORDER is the exporter's,
+    // not the importer's — on the Mixamo rig the validation page's row 8 names, submesh 0 is a
+    // three-centimetre head detail and the body is submesh 6. Without this the row can only be run
+    // against a single-material model, which is a property of the exporter rather than of anything
+    // this task built. Out of range is clamped, with the real count logged beside it.
+    const unsigned long submeshArg = argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 0UL;
 
     platform::Context ctx;  // real driver (headless=false) — needed for GPU
     if (!ctx.valid()) {
@@ -213,12 +226,26 @@ int runSample(int argc, char** argv) {
     // --- the two instances: the SAME MeshHandle and the same submesh, differing only in their
     // palette. instances[0] keeps palette empty forever (D8's degradation arm); instances[1]
     // borrows the vector recomputed every frame below.
+    // Clamp against what the mesh actually holds rather than trusting the argument: an out-of-range
+    // submesh is a skipped instance and a latched WARN inside the renderer, which from out here
+    // looks exactly like a black window.
+    const std::uint32_t submeshCount = forward->meshSubmeshCount(mesh);
+    const std::uint32_t submesh =
+        submeshCount == 0 ? 0U : static_cast<std::uint32_t>(std::min<unsigned long>(submeshArg, submeshCount - 1));
+    if (submesh != submeshArg) {
+        AERO_LOG_WARN("phase-3-skinning: submesh {} was requested but the mesh holds {} — drawing {}", submeshArg,
+                      submeshCount, submesh);
+    }
+    AERO_LOG_INFO("phase-3-skinning: drawing submesh {} of {}", submesh, submeshCount);
+
     std::array<render::MeshInstance, 2> instances{};
     instances[0].mesh = mesh;
+    instances[0].submesh = submesh;
     instances[0].model = translation({-INSTANCE_OFFSET, 0.0F, 0.0F});
     instances[0].normalMatrix = normalMatrixOf(instances[0].model);
     instances[0].material = bindMaterial;
     instances[1].mesh = mesh;
+    instances[1].submesh = submesh;
     instances[1].model = translation({INSTANCE_OFFSET, 0.0F, 0.0F});
     instances[1].normalMatrix = normalMatrixOf(instances[1].model);
     instances[1].material = animatedMaterial;
