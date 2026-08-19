@@ -9,6 +9,8 @@
 #include <aero/assets/animation_cook.hpp>
 #include <aero/assets/cooked_animation.hpp>
 
+#include "cooked_animation_golden.hpp"
+
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -175,17 +177,75 @@ inline constexpr std::uint32_t MIXED_ANIMATION_INDEX = 2;
 
 [[nodiscard]] std::uint32_t bits(float value) { return std::bit_cast<std::uint32_t>(value); }
 
+// The offset of the first byte where a cook's output and a frozen golden disagree, or the golden's
+// size when they agree everywhere. Reported rather than a bare bool, so a red case names the field.
+[[nodiscard]] std::size_t firstDifference(const std::vector<std::byte>& bytes, std::span<const std::uint8_t> golden) {
+    const std::size_t shared = std::min(bytes.size(), golden.size());
+    for (std::size_t i = 0; i < shared; ++i) {
+        if (bytes[i] != static_cast<std::byte>(golden[i])) {
+            return i;
+        }
+    }
+    return shared;
+}
+
 // A one-key channel, the cheapest legal shape, for the ordering and duplicate cases.
 [[nodiscard]] std::vector<float> oneTime(float t) { return {t}; }
 [[nodiscard]] std::vector<Vec4> oneValue(float x) { return {Vec4{x, 0.0F, 0.0F, 0.0F}}; }
 
 }  // namespace
 
+TEST_CASE("animation cook: the minimal clip cooks to its frozen golden, byte for byte (KA1)") {
+    const MinimalClipData data;
+    const std::array<AnimationCookChannel, 1> channels = minimalChannels(data);
+    const AnimationCookResult r = cook(std::span<const AnimationCookChannel>(channels));
+    REQUIRE((r.status == AnimationCookStatus::Ok));
+    CHECK(r.message.empty());
+    CHECK(r.warnings.empty());
+    CHECK(r.bytes.size() == aero_test::COOKED_ANIMATION_GOLDEN_MINIMAL.size());
+    CHECK(firstDifference(r.bytes, aero_test::COOKED_ANIMATION_GOLDEN_MINIMAL) ==
+          aero_test::COOKED_ANIMATION_GOLDEN_MINIMAL.size());
+}
+
+TEST_CASE("animation cook: the mixed clip cooks to its frozen golden, out of emitted order (KA2)") {
+    // The three channels are supplied slot 0 = (7, Scale), slot 1 = (3, Rotation), slot 2 =
+    // (7, Translation) -- neither the emitted order nor the order a node-only sort produces. The
+    // byte equality is therefore the order-independence proof and the golden at once.
+    const MixedClipData data;
+    const std::array<AnimationCookChannel, 3> channels = mixedChannels(data);
+    const AnimationCookResult r =
+        cook(std::span<const AnimationCookChannel>(channels), MIXED_GUID, MIXED_ANIMATION_INDEX);
+    REQUIRE((r.status == AnimationCookStatus::Ok));
+    CHECK(r.message.empty());
+    CHECK(r.bytes.size() == aero_test::COOKED_ANIMATION_GOLDEN_MIXED.size());
+    CHECK(firstDifference(r.bytes, aero_test::COOKED_ANIMATION_GOLDEN_MIXED) ==
+          aero_test::COOKED_ANIMATION_GOLDEN_MIXED.size());
+}
+
+TEST_CASE("animation cook: all six permutations of the mixed clip cook to identical bytes (KA3)") {
+    const MixedClipData data;
+    const std::array<AnimationCookChannel, 3> channels = mixedChannels(data);
+    std::array<std::size_t, 3> order = {0, 1, 2};
+    std::size_t permutations = 0;
+    do {
+        const std::array<AnimationCookChannel, 3> shuffled = {channels[order[0]], channels[order[1]],
+                                                              channels[order[2]]};
+        const AnimationCookResult r =
+            cook(std::span<const AnimationCookChannel>(shuffled), MIXED_GUID, MIXED_ANIMATION_INDEX);
+        REQUIRE((r.status == AnimationCookStatus::Ok));
+        CHECK(firstDifference(r.bytes, aero_test::COOKED_ANIMATION_GOLDEN_MIXED) ==
+              aero_test::COOKED_ANIMATION_GOLDEN_MIXED.size());
+        ++permutations;
+    } while (std::next_permutation(order.begin(), order.end()));
+    CHECK(permutations == 6);  // 3! -- a literal, never order.size() factorial computed here
+}
+
 TEST_CASE("animation cook: the same node with two paths emits in PATH order, not input order (KA4)") {
-    // Supplied Scale first. A sort that drops `path` from the key leaves these two in input order,
-    // which is Scale before Translation -- and Translation = 0 < Scale = 2, so the correct order is
-    // the other one. This is the property the mixed golden's bytes also carry, pinned here on the
-    // PARSED RECORDS so it is not hostage to one array.
+    // Supplied Scale first, and Translation = 0 < Scale = 2, so the correct emitted order is the
+    // other one. A sort key that drops `path` cannot produce it: the two collide on one key, which
+    // both loses the ordering and makes the pair look like the duplicate a (node, path) collision
+    // would be. This is the property the mixed golden's bytes also carry, pinned here on the PARSED
+    // RECORDS so it is not hostage to one array.
     ClipBuilder clip;
     clip.add(7, CookedAnimationPath::Scale, CookedAnimationInterpolation::Linear, oneTime(1.0F), oneValue(9.0F));
     clip.add(7, CookedAnimationPath::Translation, CookedAnimationInterpolation::Linear, oneTime(2.0F), oneValue(8.0F));

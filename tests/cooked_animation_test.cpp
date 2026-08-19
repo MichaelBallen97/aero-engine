@@ -8,6 +8,8 @@
 // against those same tables before being frozen.
 #include <aero/assets/cooked_animation.hpp>
 
+#include "cooked_animation_golden.hpp"
+
 #include <doctest/doctest.h>
 
 #include <array>
@@ -200,6 +202,12 @@ struct HeaderSpec {
     return parseCookedAnimation(std::span<const std::byte>(b));
 }
 
+// A frozen golden, read as the bytes it is. The arrays have static storage, so the span the parse
+// result retains outlives every case here.
+[[nodiscard]] CookedAnimationParseResult parseGolden(std::span<const std::uint8_t> golden) {
+    return parseCookedAnimation(std::as_bytes(golden));
+}
+
 [[nodiscard]] bool mentions(const std::string& message, std::string_view needle) {
     return message.find(needle) != std::string::npos;
 }
@@ -212,6 +220,118 @@ struct HeaderSpec {
 }
 
 }  // namespace
+
+TEST_CASE("cooked animation: the frozen minimal golden parses Ok, header word for header word (AN1)") {
+    const CookedAnimationParseResult r = parseGolden(aero_test::COOKED_ANIMATION_GOLDEN_MINIMAL);
+    REQUIRE((r.status == CookedAnimationStatus::Ok));
+    CHECK(r.message.empty());
+    CHECK(r.animation.formatVersion == 1);
+    CHECK(r.animation.cookerVersion == 1);
+    CHECK(!r.animation.sourceGuid.valid());
+    CHECK(r.animation.sourceAnimationIndex == 0);
+    CHECK(r.animation.durationSeconds == doctest::Approx(0.5F));
+    CHECK(r.animation.keyCount == 2);
+    CHECK(r.animation.valueCount == 2);
+    CHECK(r.animation.timesDataOffset == 112);
+    CHECK(r.animation.valuesDataOffset == 128);
+    CHECK(r.animation.bytes.size() == 160);
+    CHECK(r.animation.channels.size() == 1);
+    // The padding site is eight bytes wide here and every byte of it is zero -- read off the golden
+    // rather than off the parser, which merely refuses a non-zero one.
+    for (std::size_t at = 120; at < 128; ++at) {
+        CHECK(aero_test::COOKED_ANIMATION_GOLDEN_MINIMAL[at] == 0);
+    }
+}
+
+TEST_CASE("cooked animation: the minimal golden's one record and both regions, exactly (AN2)") {
+    const CookedAnimationParseResult r = parseGolden(aero_test::COOKED_ANIMATION_GOLDEN_MINIMAL);
+    REQUIRE((r.status == CookedAnimationStatus::Ok));
+    REQUIRE(r.animation.channels.size() == 1);
+    const engine::assets::CookedAnimationChannel& channel = r.animation.channels[0];
+    CHECK(channel.targetNodeLocalId == 5);
+    CHECK((channel.path == CookedAnimationPath::Rotation));
+    CHECK((channel.interpolation == CookedAnimationInterpolation::Linear));
+    CHECK(channel.keyCount == 2);
+    CHECK(channel.firstKey == 0);
+    CHECK(channel.firstValue == 0);
+    CHECK(channel.valueCount == 2);
+
+    const std::span<const std::byte> times = channelTimeBytes(r.animation, 0);
+    REQUIRE(times.size() == 8);
+    CHECK(bits(animationKeyTime(times, 0)) == bits(0.0F));
+    CHECK(bits(animationKeyTime(times, 1)) == bits(0.5F));
+
+    const std::span<const std::byte> values = channelValueBytes(r.animation, 0);
+    REQUIRE(values.size() == 32);
+    const engine::Vec4 first = animationKeyValue(values, 0);
+    CHECK(bits(first.x) == bits(0.0F));
+    CHECK(bits(first.y) == bits(0.0F));
+    CHECK(bits(first.z) == bits(0.0F));
+    CHECK(bits(first.w) == bits(1.0F));
+    const engine::Vec4 second = animationKeyValue(values, 1);
+    CHECK(bits(second.x) == bits(0.0F));
+    CHECK(bits(second.y) == bits(0.0F));
+    CHECK(bits(second.z) == bits(1.0F));  // 180 degrees about Z
+    CHECK(bits(second.w) == bits(0.0F));
+}
+
+TEST_CASE("cooked animation: the frozen mixed golden, all three records in emitted order (AN3)") {
+    const CookedAnimationParseResult r = parseGolden(aero_test::COOKED_ANIMATION_GOLDEN_MIXED);
+    REQUIRE((r.status == CookedAnimationStatus::Ok));
+    CHECK(r.message.empty());
+    CHECK(r.animation.formatVersion == 1);
+    CHECK(r.animation.cookerVersion == 1);
+    CHECK(r.animation.sourceGuid.hi == 0x0123456789ABCDEFULL);
+    CHECK(r.animation.sourceGuid.lo == 0xFEDCBA9876543210ULL);
+    CHECK(r.animation.sourceAnimationIndex == 2);
+    CHECK(r.animation.durationSeconds == doctest::Approx(2.0F));
+    CHECK(r.animation.keyCount == 7);
+    CHECK(r.animation.valueCount == 11);
+    CHECK(r.animation.timesDataOffset == 176);
+    CHECK(r.animation.valuesDataOffset == 208);
+    CHECK(r.animation.bytes.size() == 384);
+    REQUIRE(r.animation.channels.size() == 3);
+
+    // Emitted ascending by (targetNodeLocalId, path), which for the two node-7 channels means
+    // Translation (0) before Scale (2) -- the property a node-only sort key cannot produce.
+    CHECK(r.animation.channels[0].targetNodeLocalId == 3);
+    CHECK((r.animation.channels[0].path == CookedAnimationPath::Rotation));
+    CHECK((r.animation.channels[0].interpolation == CookedAnimationInterpolation::Linear));
+    CHECK(r.animation.channels[0].keyCount == 3);
+    CHECK(r.animation.channels[0].valueCount == 3);
+    CHECK(r.animation.channels[1].targetNodeLocalId == 7);
+    CHECK((r.animation.channels[1].path == CookedAnimationPath::Translation));
+    CHECK((r.animation.channels[1].interpolation == CookedAnimationInterpolation::Step));
+    CHECK(r.animation.channels[1].keyCount == 2);
+    CHECK(r.animation.channels[1].valueCount == 2);
+    CHECK(r.animation.channels[2].targetNodeLocalId == 7);
+    CHECK((r.animation.channels[2].path == CookedAnimationPath::Scale));
+    CHECK((r.animation.channels[2].interpolation == CookedAnimationInterpolation::CubicSpline));
+    CHECK(r.animation.channels[2].keyCount == 2);
+    CHECK(r.animation.channels[2].valueCount == 6);
+
+    // Both running sums, which diverge from each other only at the cubic channel.
+    CHECK(r.animation.channels[0].firstKey == 0);
+    CHECK(r.animation.channels[1].firstKey == 3);
+    CHECK(r.animation.channels[2].firstKey == 5);
+    CHECK(r.animation.channels[0].firstValue == 0);
+    CHECK(r.animation.channels[1].firstValue == 3);
+    CHECK(r.animation.channels[2].firstValue == 5);
+
+    // w is ZERO on both Translation values, though the cook was handed 7 and -8.
+    const std::span<const std::byte> translation = channelValueBytes(r.animation, 1);
+    REQUIRE(translation.size() == 32);
+    CHECK(animationKeyValue(translation, 0).x == doctest::Approx(1.0F));
+    CHECK(bits(animationKeyValue(translation, 0).w) == bits(0.0F));
+    CHECK(animationKeyValue(translation, 1).x == doctest::Approx(4.0F));
+    CHECK(bits(animationKeyValue(translation, 1).w) == bits(0.0F));
+    // The Rotation channel's w is NOT zeroed -- the anti-vacuity twin, in the same array.
+    CHECK(animationKeyValue(channelValueBytes(r.animation, 0), 0).w == doctest::Approx(1.0F));
+    // The four-byte padding site, zero in the golden itself.
+    for (std::size_t at = 204; at < 208; ++at) {
+        CHECK(aero_test::COOKED_ANIMATION_GOLDEN_MIXED[at] == 0);
+    }
+}
 
 TEST_CASE("cooked animation: buffers shorter than a whole file are refused at every boundary (AN4)") {
     const std::vector<std::byte> whole = buildOne();
