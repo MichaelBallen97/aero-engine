@@ -1,7 +1,14 @@
 // engine/scene_render/src/asset_bindings.cpp -- task 3.1.5: the GUID -> renderer-handle table.
 // Every method is one std::lower_bound over a sorted vector, comparing on `.first` with
-// Guid::operator<. There is no second lookup shape anywhere in this file, which is what makes S17
-// (lower_bound -> upper_bound) a single-edit seed with a single witness.
+// Guid::operator<. There is no second lookup shape anywhere in this file.
+//
+// Measured at task 3.1.5's sabotage pass, correcting what this comment used to claim: substituting
+// std::upper_bound is NOT a one-token edit and does NOT have a single witness. ByGuid is the
+// PARTITIONING form -- it takes (entry, guid) -- while upper_bound invokes comp(value, *it) with the
+// arguments reversed, so the literal substitution is a hard compile error inside <bits/stl_algo.h>
+// rather than a behaviour change. Forced through with a reversed lambda it reddens 18 cases across
+// AB* and BR*, not one. The comparator's shape is therefore load-bearing: it makes the wrong lookup
+// unspellable, which is a stronger guarantee than any test in this file provides.
 
 #include <aero/scene_render/asset_bindings.hpp>
 
