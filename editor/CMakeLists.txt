@@ -131,6 +131,7 @@ add_library(aero_editor_core STATIC
     src/material_preview.cpp     # task 3.4.2 -- the only new GPU TU: target, renderer, texture cache
     src/skeleton_cook_source.cpp # task 3.5.1 -- the ImportedModel -> skeleton cook adapter; PURE
     src/asset_drag.cpp           # task 3.1.5 -- the drag payload + the drop routing matrix; PURE, no ImGui
+    src/instantiate_plan.cpp     # task 3.1.5 -- the ImportedModel -> entity-subtree planner; PURE
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
