@@ -40,6 +40,9 @@ void writeJson(JsonWriter& w, const Quat& v) {
 
 void writeJson(JsonWriter& w, const std::string& v) { w.value(v); }  // -> value(std::string_view)
 
+// Task 3.1.5 (D3). formatGuid is the ONE spelling: 32 lowercase hex digits, hi first, nil as 32 '0's.
+void writeJson(JsonWriter& w, const Guid& v) { w.value(formatGuid(v)); }  // -> value(std::string_view)
+
 // ---- task 1.2.2: the read half (D10) ---------------------------------------------------------
 
 bool readJson(const JsonValue& v, bool& out) {
@@ -124,6 +127,24 @@ bool readJson(const JsonValue& v, std::string& out) {
         return false;  // includes Null: a string field has no NaN analog (D3)
     }
     out.assign(s->data(), s->size());
+    return true;
+}
+
+// Task 3.1.5 (D3). Any case via parseGuid: EXACTLY 32 hex digits and nothing else. `out` is written
+// ONLY after the parse succeeds -- writing then rolling back is the same bug, one statement apart, and
+// the local-then-assign shape below makes it unrepresentable. A `null` is a BAD field here, like a
+// string and unlike a float: nil already has its own spelling (32 zeros), so `null` would be a second
+// one.
+bool readJson(const JsonValue& v, Guid& out) {
+    const std::optional<std::string_view> text = v.asString();
+    if (!text) {
+        return false;  // not a string (includes Null) -> bad field
+    }
+    const std::optional<Guid> parsed = parseGuid(*text);
+    if (!parsed) {
+        return false;  // malformed -> bad field, `out` UNTOUCHED
+    }
+    out = *parsed;
     return true;
 }
 

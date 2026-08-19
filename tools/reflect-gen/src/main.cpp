@@ -302,7 +302,11 @@ CXChildVisitResult visitCursor(CXCursor cursor, CXCursor /*parent*/, CXClientDat
 }
 
 // ---- task 1.1.2: reflection model (spec D9) -------------------------------------------------------
-enum class FieldCategory : std::uint8_t { Primitive, Vec3, Quat, String, Unsupported };
+// Task 3.1.5 (D3): Guid is inserted BEFORE Unsupported, not appended after it. Unsupported is the
+// fall-through and reads as the terminal state in every switch; keeping it last is worth more than
+// append-only discipline on an enum nothing persists (categoryTag maps it to text, and the emitters
+// only ever compare against Unsupported).
+enum class FieldCategory : std::uint8_t { Primitive, Vec3, Quat, String, Guid, Unsupported };
 
 struct Field {
     std::string name;
@@ -378,6 +382,15 @@ FieldCategory classifyField(CXType fieldType) {
     if (spelling == "engine::Quat") {
         return FieldCategory::Quat;
     }
+    // Task 3.1.5 (D3): engine::Guid joins the subset. EXACT, NEVER A PREFIX -- the file's own law,
+    // stated at length above the std::string arm below. Unlike std::string, engine::Guid has exactly
+    // ONE spelling on all three hosts: a plain struct at namespace scope, no template parameters, no
+    // inline-namespace ambiguity and no preferred-name alias for a PrintingPolicy to substitute. So
+    // the fourth-spelling escalation the std::string arm carries is not needed here, and must not be
+    // added pre-emptively.
+    if (spelling == "engine::Guid") {
+        return FieldCategory::Guid;
+    }
     // Task 2.2.2 (D3; plan decision O3, 2026-07-26). std::string, however THIS host's libclang prints
     // it. Verified against clang 18's default PrintingPolicy (UsePreferredNames=1,
     // SuppressInlineNamespace=1, SuppressDefaultTemplateArgs=1) plus a live libclang probe:
@@ -417,6 +430,8 @@ std::string_view categoryTag(FieldCategory category) {
             return "quat";
         case FieldCategory::String:
             return "string";
+        case FieldCategory::Guid:
+            return "guid";
         case FieldCategory::Unsupported:
             return "unsupported";
     }
@@ -717,7 +732,7 @@ void emitComponents(const std::vector<Component>& components) {
             if (field.category == FieldCategory::Unsupported) {  // lenient: warn, never fail (D7)
                 std::cerr << "aero_reflect_gen: warning: " << component.qualifiedName << '.' << field.name << " : "
                           << field.typeName
-                          << " is not in the reflectable subset (primitives + Vec3/Quat/std::string)\n";
+                          << " is not in the reflectable subset (primitives + Vec3/Quat/Guid/std::string)\n";
             }
         }
     }
@@ -812,7 +827,7 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
             if (field.category == FieldCategory::Unsupported) {
                 out << "    // skipped: " << field.name << " (" << field.typeName << " — unsupported)\n";
                 std::cerr << "aero_reflect_gen: warning: " << qn << '.' << field.name << " : " << field.typeName
-                          << " is not in the reflectable subset (primitives + Vec3/Quat/std::string)\n";
+                          << " is not in the reflectable subset (primitives + Vec3/Quat/Guid/std::string)\n";
             }
         }
     }
@@ -874,7 +889,7 @@ void emitJson(const std::vector<Component>& components, const std::string& input
                 out << "    // skipped: " << field.name << " (" << field.typeName << " — unsupported)\n";
                 std::cerr << "aero_reflect_gen: warning: " << qualifiedName << '.' << field.name << " : "
                           << field.typeName
-                          << " is not in the reflectable subset (primitives + Vec3/Quat/std::string)\n";
+                          << " is not in the reflectable subset (primitives + Vec3/Quat/Guid/std::string)\n";
             }
         }
         out << "    writer.endObject();\n";

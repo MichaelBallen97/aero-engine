@@ -4,6 +4,7 @@
 // Standalone single-TU doctest (own DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN, no shared test_main.cpp),
 // sibling of aero_reflect_meta_test but WITHOUT EnTT — serialization is meta-independent (D4).
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <aero/core/guid.hpp>  // task 3.1.5 — GD1-GD5
 #include <aero/core/math.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
@@ -14,6 +15,7 @@
 #include <aero/scene/transform.hpp>
 
 #include "component_codegen.hpp"
+#include "component_guid.hpp"  // task 3.1.5
 #include "component_limits.hpp"
 #include "component_multi.hpp"
 #include "component_tag.hpp"
@@ -23,11 +25,16 @@
 #include <doctest/doctest.h>
 
 #include <bit>
+#include <cctype>  // task 3.1.5 — std::toupper, in GD4's tolerant-read arm
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
 #include <limits>
+// <ostream> is required by MSVC, not by libc++ (the 0.4.1 trap): doctest stringifies a failing
+// CHECK involving a std::string_view through operator<<, and MSVC's overload needs a COMPLETE
+// std::ostream. Omitting it builds clean on macOS/Linux and fails only on the Windows lane.
+#include <ostream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -41,7 +48,8 @@ void aeroWriteJson(engine::JsonWriter&, const Tag&);
 void aeroWriteJson(engine::JsonWriter&, const Player&);
 namespace engine::demo {
 void aeroWriteJson(engine::JsonWriter&, const Light&);
-void aeroWriteJson(engine::JsonWriter&, const Labelled&);  // task 2.2.2
+void aeroWriteJson(engine::JsonWriter&, const Labelled&);     // task 2.2.2
+void aeroWriteJson(engine::JsonWriter&, const Referencing&);  // task 3.1.5
 }  // namespace engine::demo
 namespace engine {
 void aeroWriteJson(engine::JsonWriter&, const Transform&);
@@ -57,7 +65,8 @@ bool aeroReadJson(const engine::JsonValue&, Tag&);
 bool aeroReadJson(const engine::JsonValue&, Player&);
 namespace engine::demo {
 bool aeroReadJson(const engine::JsonValue&, Light&);
-bool aeroReadJson(const engine::JsonValue&, Labelled&);  // task 2.2.2
+bool aeroReadJson(const engine::JsonValue&, Labelled&);     // task 2.2.2
+bool aeroReadJson(const engine::JsonValue&, Referencing&);  // task 3.1.5
 }  // namespace engine::demo
 namespace engine {
 bool aeroReadJson(const engine::JsonValue&, Transform&);
@@ -1187,4 +1196,103 @@ TEST_CASE(
     CHECK_FALSE(aeroReadJson(*parsed.value, value));  // false: label failed
     CHECK(value.label == "sentinel");                 // untouched -- no NaN analog for a string (D3)
     CHECK(value.slot == 3);                           // best-effort: every OTHER field still applied
+}
+
+// ---- task 3.1.5: engine::demo::Referencing -- the Guid category through GENERATED code (GD1-GD5) ---
+//
+// Neither emitter gained a branch for Guid: emitJson writes the same uniform
+// `writeJson(writer, value.asset)` / `readField(json, ..., value.asset)` lines it writes for a float,
+// and C++ overload resolution routes them to D2's pair. These five cases are the runtime proof of
+// exactly that -- the process-boundary shape is pinned separately by reflect-gen.guid_json.
+
+namespace {
+
+// The canonical text of the guid used below, as a LITERAL. GD3 pins the writer against it, because a
+// round trip through parseGuid (which accepts any case) cannot see an uppercasing writer.
+constexpr std::string_view REFERENCED_GUID_TEXT = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+constexpr engine::Guid REFERENCED_GUID{0xA1B2C3D4E5F60718ULL, 0x293A4B5C6D7E8F90ULL};
+
+}  // namespace
+
+TEST_CASE("GD1: a nil Guid field is EMITTED as 32 zeros -- nil is a value, never an omitted key") {
+    const engine::demo::Referencing original{};
+    CHECK_FALSE(original.asset.valid());
+
+    engine::JsonWriter w;
+    aeroWriteJson(w, original);
+    const std::string text = w.str();
+    // Raw literals, hoisted out of the CHECK below: an ESCAPED form is rewritten by clang-tidy's
+    // modernize-raw-string-literal (the Linux lint lane), and a raw form containing \" INSIDE a macro
+    // argument breaks MSVC's legacy preprocessor. Outside a macro, the raw form satisfies both.
+    const std::string expected = R"("asset": ")" + std::string(engine::GUID_TEXT_LENGTH, '0') + R"(")";
+    CHECK(text.find(expected) != std::string::npos);
+    CHECK(text.find("\"subIndex\"") != std::string::npos);  // the Guid did not displace the old subset
+    CHECK(text.find("\"tint\"") != std::string::npos);
+}
+
+TEST_CASE("GD2: a nil Guid payload READS back as nil, and the read succeeds") {
+    const std::string document = R"({"asset": "00000000000000000000000000000000", "subIndex": 5})";
+    const engine::JsonParseResult parsed = engine::parseJson(document);
+    REQUIRE(parsed.ok());
+
+    engine::demo::Referencing value{};
+    value.asset = REFERENCED_GUID;  // deliberately non-nil before the read
+    CHECK(aeroReadJson(*parsed.value, value));
+    CHECK_FALSE(value.asset.valid());
+    CHECK(value.asset == engine::Guid{});
+    CHECK(value.subIndex == 5);
+}
+
+TEST_CASE("GD3: a non-nil Guid field round-trips, and the emitted text is pinned to LOWERCASE hex") {
+    engine::demo::Referencing original{};
+    original.asset = REFERENCED_GUID;
+    original.subIndex = 3;
+    original.tint = {0.25F, 0.5F, 0.75F};
+
+    engine::JsonWriter w;
+    aeroWriteJson(w, original);
+    const std::string pinned = R"("asset": ")" + std::string(REFERENCED_GUID_TEXT) + R"(")";
+    CHECK(w.str().find(pinned) != std::string::npos);
+
+    engine::demo::Referencing restored{};
+    CHECK(roundTrip(original, restored));  // asserts the byte-equal fixpoint internally
+    CHECK(restored.asset == original.asset);
+    CHECK(restored.subIndex == original.subIndex);
+    CHECK(bitEqual(restored.tint.x, original.tint.x));
+}
+
+TEST_CASE("GD4: an UPPERCASE 32-hex payload reads equal to its lowercase twin (tolerant read)") {
+    std::string uppercase(REFERENCED_GUID_TEXT);
+    for (char& c : uppercase) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    CHECK(uppercase != std::string(REFERENCED_GUID_TEXT));  // the arm is not vacuous
+
+    const engine::JsonParseResult parsed = engine::parseJson(R"({"asset": ")" + uppercase + R"("})");
+    REQUIRE(parsed.ok());
+    engine::demo::Referencing value{};
+    CHECK(aeroReadJson(*parsed.value, value));
+    CHECK(value.asset == REFERENCED_GUID);
+
+    // and re-writing it emits the CANONICAL lowercase form, never the input's case
+    engine::JsonWriter w;
+    aeroWriteJson(w, value);
+    CHECK(w.str().find(std::string(REFERENCED_GUID_TEXT)) != std::string::npos);
+    CHECK(w.str().find(uppercase) == std::string::npos);
+}
+
+TEST_CASE("GD5: a malformed Guid field leaves it UNTOUCHED, and every other field still applies") {
+    // Three shapes, one per rejection reason: wrong kind, wrong length, wrong alphabet.
+    for (const std::string_view bad : {R"(7)", R"("abc")", R"("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")"}) {
+        CAPTURE(bad);
+        const engine::JsonParseResult parsed =
+            engine::parseJson(R"({"asset": )" + std::string(bad) + R"(, "subIndex": 9})");
+        REQUIRE(parsed.ok());
+
+        engine::demo::Referencing value{};
+        value.asset = REFERENCED_GUID;  // the distinctive prior value
+        CHECK_FALSE(aeroReadJson(*parsed.value, value));
+        CHECK(value.asset == REFERENCED_GUID);  // untouched -- never "helpfully" nilled
+        CHECK(value.subIndex == 9);             // best-effort: every OTHER field still applied
+    }
 }

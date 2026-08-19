@@ -29,15 +29,28 @@ no caller manages the marker.
 ## The reflectable subset — extend it only by exact match
 
 Field classification runs on the **canonical** type: an explicit **18-`CXTypeKind`
-whitelist** for primitives, plus `engine::Vec3`, `engine::Quat`, and `std::string`.
-Deliberately excluded: `long double`, `__int128`, `unsigned __int128` (no viable
-`serialize.hpp` overload — they used to generate non-compiling TUs), and enums.
+whitelist** for primitives, plus `engine::Vec3`, `engine::Quat`, `std::string` and —
+since task 3.1.5 — `engine::Guid`. Deliberately excluded: `long double`, `__int128`,
+`unsigned __int128` (no viable `serialize.hpp` overload — they used to generate
+non-compiling TUs), and enums.
 
 **Match canonical spellings exactly, never by prefix.** `std::string` is compared against
 three exact spellings (`std::string`, `std::basic_string<char>`, the fully-qualified
 default-allocator form) because a prefix match would also accept an allocator-customized
 `basic_string` that has no overload. A fourth unknown spelling then fails **loud and
 safe** — `[unsupported]`, one warning, exit 0 — never a miscompile.
+
+`engine::Guid` needs none of that: it is a plain struct at namespace scope with no
+template parameters, no inline-namespace ambiguity and no preferred-name alias, so it has
+exactly **one** spelling on all three hosts. Do not add a second one pre-emptively.
+
+**Neither emitter gains a branch when the subset grows.** `--emit-meta` writes the same
+`.data<&T::member>(...)` line and `--emit-json` the same
+`writeJson(writer, value.member)` / `readField(json, ..., value.member)` lines whatever
+the category is — C++ overload resolution routes them, so extending the subset is one
+`classifyField` arm, one `categoryTag` arm, and one `serialize.{hpp,cpp}` overload pair.
+The three "not in the reflectable subset" warning strings must be updated **together**;
+`git grep -c 'Vec3/Quat/Guid/std::string' -- tools/reflect-gen/src/main.cpp` reads **3**.
 
 Unsupported fields are lenient, not fatal: collected, tagged `[unsupported]`, warned on
 stderr, exit stays 0.

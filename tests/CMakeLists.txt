@@ -633,7 +633,9 @@ if(AERO_REFLECT_TOOLS)
         # task 2.2.2: field annotations (AERO_RANGE/AERO_COLOR) and the std::string category
         annotations_components annotations_meta annotations_malformed annotations_nonfinite
         annotations_misapplied annotations_unknown annotations_determinism
-        string_components string_meta string_json)
+        string_components string_meta string_json
+        # task 3.1.5: the engine::Guid category
+        guid_components guid_meta guid_json)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -662,6 +664,7 @@ if(AERO_REFLECT_TOOLS)
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp     # 1.3.3
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp      # 1.3.3
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp  # 1.4.1
+                reflect-gen/fixtures/component_guid.hpp  # task 3.1.5 -- the engine::Guid category
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"      # aero::core PUBLIC dir (D9)
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2 — parse: entity.hpp
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2 — parse: annotations.hpp
@@ -694,6 +697,7 @@ if(AERO_REFLECT_TOOLS)
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp      # 1.3.3
                 ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp  # 1.4.1
                 reflect-gen/fixtures/component_text.hpp     # task 2.2.2 -- the std::string category
+                reflect-gen/fixtures/component_guid.hpp     # task 3.1.5 -- the engine::Guid category
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2
