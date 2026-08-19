@@ -366,10 +366,10 @@ find_package(Threads REQUIRED)
 # this task (editor/CMakeLists.txt records the four criteria), so engine/render/include arrives here
 # transitively through aero::editor_core exactly as aero::assets' include root already does.
 # task 3.1.5 joins it with editor/asset_drag_test.cpp, editor/instantiate_plan_test.cpp,
-# editor/asset_commands_test.cpp and editor/material_from_import_test.cpp on exactly the same terms:
-# UNCONDITIONAL, tier-0, no link-line change, no new ctest entry, and reachable in BOTH reduced
-# configurations -- prove it with --list-test-cases, which must show DR1, PL1, IA1 and MF1 in all
-# three. asset_drag_test.cpp's DR17/DR18 source-text pins read AERO_EDITOR_SRC_DIR and
+# editor/asset_commands_test.cpp, editor/material_from_import_test.cpp and
+# editor/scene_asset_ledger_test.cpp on exactly the same terms: UNCONDITIONAL, tier-0, no link-line
+# change, no new ctest entry, and reachable in BOTH reduced configurations -- prove it with
+# --list-test-cases, which must show DR1, PL1, IA1, MF1 and LG1 in all three. asset_drag_test.cpp's DR17/DR18 source-text pins read AERO_EDITOR_SRC_DIR and
 # instantiate_plan_test.cpp's PL12 reads the three Structure-depth fixtures through
 # AERO_ASSET_FIXTURES_DIR -- both ALREADY defined on this target, neither redefined.
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
@@ -396,7 +396,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/asset_drag_test.cpp
                editor/instantiate_plan_test.cpp
                editor/asset_commands_test.cpp
-               editor/material_from_import_test.cpp)
+               editor/material_from_import_test.cpp
+               editor/scene_asset_ledger_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
