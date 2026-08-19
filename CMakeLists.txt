@@ -69,6 +69,7 @@ set(AERO_BUILTIN_COMPONENT_HEADERS
     ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp          # 1.3.3
     ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp           # 1.3.3 -- two components
     ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp   # 1.4.1
+    ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/animation_player.hpp  # 3.5.2
 )
 
 # Layer order = dependency order (docs/03). The golden rule is physical here:
