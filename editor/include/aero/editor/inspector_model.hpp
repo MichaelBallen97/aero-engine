@@ -58,4 +58,24 @@ struct InspectorModel {
 // not assume one constness across all five entry points.
 void buildInspectorModel(const World& world, Entity entity, InspectorModel& out);
 
+// ---- task 3.1.5: the Guid row, as a VALUE ---------------------------------------------------------
+class AssetDatabase;  // forward-declared: the row takes a POINTER, so this header needs no more of it
+                      // and every consumer of the inspector model keeps its old include weight
+
+// Everything a FieldKind::Guid row shows and everything it decides, computed OUTSIDE the draw walk so
+// a tier-0 case asserts exactly what the panel renders. Two decisions in one struct on purpose: a
+// panel holding its own copy of "is Clear enabled?" is a second answer to a one-line question, which
+// is the shape 3.4.1's "a mapping worth having twice is worth having once" rule deletes.
+//
+// The three states are docs/plans' section 0.23, verbatim:
+//   nil guid            -> "None",                            Clear DISABLED
+//   record found        -> "<leaf name>  (<kind label>)",     Clear enabled
+//   no database/record  -> "<first 8 hex>...  (missing)",     Clear enabled
+// The 8-hex prefix comes from formatGuid, never a hand-rolled hex printer.
+struct GuidFieldRow {
+    std::string text;
+    bool clearEnabled = false;  // the panel spells this BeginDisabled(!clearEnabled)
+};
+[[nodiscard]] GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database);
+
 }  // namespace engine::editor

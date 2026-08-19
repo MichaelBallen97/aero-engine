@@ -11,6 +11,12 @@
 // carries a range whose bounds exceed int64_t's own domain, so every write is below `rangeMin` --
 // both used to reach an UNDEFINED-BEHAVIOUR double->integer cast in the seam before doubleToClamped
 // closed it.
+// task 3.1.5 appends ONE field, `asset`: the reflectable subset's new engine::Guid category. It is
+// APPENDED, never inserted, so every positional assertion below index 11 keeps its meaning -- the
+// field-count REQUIREs move 12 -> 13 and nothing else does. It is what gives this binary a reflected
+// Guid field to read, write and refuse a wrong type on (IR6/IR7), without borrowing a real component
+// whose entt::meta registration is process-lifetime and shared with the AC-12 drift pin.
+#include <aero/core/guid.hpp>
 #include <aero/core/math.hpp>
 #include <aero/reflect/annotations.hpp>
 
@@ -35,4 +41,5 @@ struct AERO_COMPONENT InspectorProbe {
     // A range whose bounds exceed int64_t's own domain: every write's widened int64 falls below
     // rangeMin, which used to be cast unguarded regardless of magnitude (finding 2).
     std::int16_t hugeRange AERO_RANGE(1e300, 2e300) = 0;
+    engine::Guid asset;  // task 3.1.5's category; nil by default, which is a VALUE and not an absence
 };

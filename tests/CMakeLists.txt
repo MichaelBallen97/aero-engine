@@ -773,6 +773,12 @@ if(AERO_REFLECT_TOOLS)
     target_link_libraries(aero_editor_inspector_test PRIVATE
         doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core)
     target_include_directories(aero_editor_inspector_test PRIVATE editor/fixtures)
+    # task 3.1.5 (IR8): the inspector must never grow a drop target, and no runtime tier in this tree
+    # can drive an ImGui drag -- so the proof reads inspector_panel.cpp's own source text, the
+    # AERO_EDITOR_SRC_DIR precedent this target is the third to take (project_test.cpp's PU1 and
+    # imgui_layer_test.cpp's I30 are the first two).
+    target_compile_definitions(aero_editor_inspector_test PRIVATE
+        AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src")
     aero_reflect_generate(aero_editor_inspector_test
         HEADERS editor/fixtures/inspector_probe.hpp
                 editor/fixtures/inspector_tag.hpp  # review finding 6 -- the zero-field tag proof

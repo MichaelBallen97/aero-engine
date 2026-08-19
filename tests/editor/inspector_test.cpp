@@ -7,8 +7,11 @@
 // fixture. Tier-0 -- no GPU, no on-screen surface, no UI-layer bootstrap; must pass identically
 // with AERO_REQUIRE_GPU set or unset (it builds none of the platform/RHI/UI-shell machinery).
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <aero/core/guid.hpp>              // task 3.1.5: formatGuid, GuidGenerator
+#include <aero/editor/asset_database.hpp>  // task 3.1.5: the Guid row resolves against a real scan
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/inspector_model.hpp>
+#include <aero/editor/text_file.hpp>             // task 3.1.5: writeTextFileAtomic, for the scanned fixture
 #include <aero/scene/internal/world_access.hpp>  // registerComponent<T> -- the D18 proof fixture's seam
 #include <aero/scene/transform.hpp>
 
@@ -20,10 +23,15 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>  // task 3.1.5: the scanned-project fixture
+#include <fstream>     // task 3.1.5: IR8's source-text pin
 #include <limits>
+#include <memory>  // task 3.1.5: std::unique_ptr<ScannedAssets>
 #include <optional>
+#include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
 #include <string>
 #include <string_view>
+#include <system_error>  // task 3.1.5: std::error_code -- the non-throwing filesystem overloads
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -127,10 +135,12 @@ TEST_CASE("inspector: model lists present components in registration order, fiel
     const engine::editor::ComponentEntry& probeEntry = model.components[1];
     CHECK(probeEntry.name == "InspectorProbe");
     REQUIRE(probeEntry.hasFields);
-    REQUIRE(probeEntry.fields.size() == 12);
+    REQUIRE(probeEntry.fields.size() == 13);  // task 3.1.5 appended `asset`
 
-    const std::vector<std::string> expectedOrder{"speed", "tint", "label", "gear",  "tiny",         "enabled",
-                                                 "aim",   "mass", "tick",  "glyph", "clampedRange", "hugeRange"};
+    const std::vector<std::string> expectedOrder{"speed",        "tint",      "label", "gear", "tiny",
+                                                 "enabled",      "aim",       "mass",  "tick", "glyph",
+                                                 "clampedRange", "hugeRange", "asset"};
+    REQUIRE(expectedOrder.size() == probeEntry.fields.size());  // the list IS the declaration order
     for (std::size_t i = 0; i < expectedOrder.size(); ++i) {
         CHECK(probeEntry.fields[i].name == expectedOrder[i]);
     }
@@ -149,7 +159,7 @@ TEST_CASE("inspector: model over InspectorProbe -- every field's kind, range and
     buildInspectorModel(world, e, model);
     REQUIRE(model.components.size() == 1);
     const std::vector<engine::editor::FieldEntry>& fields = model.components[0].fields;
-    REQUIRE(fields.size() == 12);
+    REQUIRE(fields.size() == 13);  // task 3.1.5 appended `asset`
 
     const engine::editor::FieldEntry& speed = findField(fields, "speed");
     CHECK(speed.kind == FieldKind::Float);
@@ -482,7 +492,7 @@ TEST_CASE(
     InspectorModel model;
     buildInspectorModel(world, e, model);
     REQUIRE(model.components.size() == 1);
-    REQUIRE(model.components[0].fields.size() == 12);
+    REQUIRE(model.components[0].fields.size() == 13);
 
     model.components.reserve(64);
     model.components[0].fields.reserve(512);
@@ -495,7 +505,7 @@ TEST_CASE(
 
     buildInspectorModel(world, e, model);
     CHECK(model.components.size() == 1);
-    CHECK(model.components[0].fields.size() == 12);
+    CHECK(model.components[0].fields.size() == 13);
     CHECK(model.components.data() == componentsData);
     CHECK(model.components[0].fields.data() == fieldsData);
     CHECK(model.components.capacity() == componentCapacity);
@@ -530,4 +540,162 @@ TEST_CASE("inspector: AC-12 drift pin -- every registered built-in component has
     for (const engine::editor::ComponentEntry& entry : model.components) {
         CHECK(entry.hasFields);
     }
+}
+
+// ================================================================================================
+// task 3.1.5 (IR1-IR8) -- the Guid category: the row's three display states, the Clear decision, the
+// exact-type write, and the pin that says an inspector row is never a drop target.
+//
+// The row is asserted as a VALUE rather than as pixels, because guidFieldRow computes both of its
+// decisions outside the draw walk and the panel renders exactly what it returns. That is what lets a
+// tier-0 binary with no ImGui context test what a user sees.
+// ================================================================================================
+namespace {
+
+// A real, scanned project in the OS temp directory. This TU is tier-0 -- no GPU, no window, no ImGui
+// context -- which is a statement about DEVICES, not about the filesystem: AssetDatabase has no
+// setter, so a record carrying a real GUID can only come from a real scan. remove_all FIRST, the
+// project_files_test.cpp TempDir precedent, so a second ctest invocation cannot inherit the first's
+// tree.
+[[nodiscard]] std::string utf8Of(const std::filesystem::path& path) {
+    const std::u8string bytes = path.u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+struct ScannedAssets {
+    std::string projectRoot;
+    std::string assetsRoot;
+    engine::GuidGenerator generator{0x1A5EULL};
+    engine::editor::AssetDatabase database;
+};
+
+[[nodiscard]] std::unique_ptr<ScannedAssets> scanOneModel() {
+    static int counter = 0;
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / ("aero_inspector_guid_" + std::to_string(++counter));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir / "assets", ec);
+
+    auto scanned = std::make_unique<ScannedAssets>();
+    scanned->projectRoot = utf8Of(dir);
+    scanned->assetsRoot = utf8Of(dir / "assets");
+    REQUIRE(engine::editor::writeTextFileAtomic(scanned->assetsRoot + "/hero.glb", "glTF-not-really").empty());
+    const engine::editor::AssetScanReport report =
+        scanned->database.rescan(scanned->projectRoot, scanned->assetsRoot, scanned->generator);
+    REQUIRE(report.status == engine::editor::ScanStatus::Ok);
+    return scanned;
+}
+
+}  // namespace
+
+TEST_CASE("inspector: the Guid row's three display states and its Clear decision (task 3.1.5, IR1-IR5)") {
+    const std::unique_ptr<ScannedAssets> scanned = scanOneModel();
+    const std::optional<engine::Guid> known = scanned->database.guidForPath("hero.glb");
+    REQUIRE(known.has_value());
+    REQUIRE(known->valid());
+
+    // IR1 -- nil is "no reference", a legal ordinary value. IR5 -- and Clear is DISABLED for it,
+    // because clearing nothing would push an undo entry that changes no byte.
+    const engine::editor::GuidFieldRow none = engine::editor::guidFieldRow(engine::Guid{}, &scanned->database);
+    CHECK(none.text == "None");
+    CHECK_FALSE(none.clearEnabled);
+    // The nil row says the same thing with no database at all: absence of a reference is not a
+    // question the database is asked.
+    CHECK(engine::editor::guidFieldRow(engine::Guid{}, nullptr).text == "None");
+    CHECK_FALSE(engine::editor::guidFieldRow(engine::Guid{}, nullptr).clearEnabled);
+
+    // IR2 -- a guid this project knows: the leaf name and the kind label, never the path and never
+    // the guid. classifyAssetKind puts a .glb in Model.
+    const engine::editor::GuidFieldRow resolved = engine::editor::guidFieldRow(*known, &scanned->database);
+    CHECK(resolved.text == "hero.glb  (Model)");
+    CHECK(resolved.clearEnabled);
+
+    // IR3 -- a guid the project does NOT know. The 8-hex prefix comes from formatGuid, so it is the
+    // same spelling every other surface in the tree uses, and the reference stays CLEARABLE: a
+    // dangling reference is the one a user most wants to remove.
+    const engine::Guid stranger{0xFEEDFACECAFEBEEFULL, 0x0123456789ABCDEFULL};
+    REQUIRE(scanned->database.findByGuid(stranger) == nullptr);
+    const engine::editor::GuidFieldRow missing = engine::editor::guidFieldRow(stranger, &scanned->database);
+    CHECK(missing.text == engine::formatGuid(stranger).substr(0, 8) + "...  (missing)");
+    CHECK(missing.clearEnabled);
+
+    // IR4 -- no database at all (a -DAERO_REFLECT_TOOLS=OFF shell, or a frame before the reconcile
+    // has run) renders the SAME row as a missing record, deliberately: from the user's seat both mean
+    // "this project cannot tell you what that is", and a second sentence would be a distinction
+    // nobody can act on.
+    const engine::editor::GuidFieldRow noDatabase = engine::editor::guidFieldRow(*known, nullptr);
+    CHECK(noDatabase.text == engine::formatGuid(*known).substr(0, 8) + "...  (missing)");
+    CHECK(noDatabase.clearEnabled);
+    CHECK(noDatabase.text == engine::editor::guidFieldRow(*known, nullptr).text);
+}
+
+TEST_CASE("inspector: a Guid field reads, writes and REFUSES a wrong type (task 3.1.5, IR7, seed S36)") {
+    World world;
+    aero_reflect_register_all_aero_editor_inspector_test();
+    const ComponentTypeId probeId = registerProbe(world);
+    REQUIRE(probeId.valid());
+    const Entity e = world.create();
+    world.addRaw(probeId, e, nullptr);
+
+    // The model classifies it by TYPE, with no name special-casing anywhere: `asset` is the 13th
+    // field in declaration order and comes back as its own kind rather than as a missing row.
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    const engine::editor::FieldEntry& asset = findField(model.components[0].fields, "asset");
+    CHECK(asset.kind == FieldKind::Guid);
+    CHECK_FALSE(asset.hasRange);  // a Guid has no range and AERO_RANGE cannot be written on one
+    REQUIRE(std::holds_alternative<engine::Guid>(asset.value));
+    CHECK_FALSE(std::get<engine::Guid>(asset.value).valid());  // nil by default, and nil is a VALUE
+
+    const engine::Guid written{0x0011223344556677ULL, 0x8899AABBCCDDEEFFULL};
+    REQUIRE(writeComponentField(world, e, probeId, "asset", FieldValue{written}));
+    {
+        const std::optional<FieldValue> readBack = readComponentField(world, e, probeId, "asset");
+        REQUIRE(readBack.has_value());
+        REQUIRE(std::holds_alternative<engine::Guid>(*readBack));
+        CHECK((std::get<engine::Guid>(*readBack) == written));
+    }
+
+    // S36: the seed is `member.set(handle, value)` on the RAW variant, which lets EnTT convert. Every
+    // one of these is a genuine kind mismatch and must leave the field byte-identical -- a refusal
+    // that half-wrote would be worse than a crash, because it looks like a successful edit.
+    CHECK_FALSE(writeComponentField(world, e, probeId, "asset", FieldValue{3.5}));
+    CHECK_FALSE(writeComponentField(world, e, probeId, "asset", FieldValue{std::int64_t{7}}));
+    CHECK_FALSE(writeComponentField(world, e, probeId, "asset", FieldValue{std::uint64_t{7}}));
+    CHECK_FALSE(writeComponentField(world, e, probeId, "asset", FieldValue{true}));
+    CHECK_FALSE(writeComponentField(world, e, probeId, "asset", FieldValue{std::string{"deadbeef"}}));
+    CHECK_FALSE(writeComponentField(world, e, probeId, "asset", FieldValue{engine::Vec3{}}));
+    {
+        const std::optional<FieldValue> untouched = readComponentField(world, e, probeId, "asset");
+        REQUIRE(untouched.has_value());
+        REQUIRE(std::holds_alternative<engine::Guid>(*untouched));
+        CHECK((std::get<engine::Guid>(*untouched) == written));
+    }
+
+    // And the converse: a Guid input into a field that is NOT a Guid is refused just as hard, so the
+    // new alternative cannot become a wildcard on the way in.
+    CHECK_FALSE(writeComponentField(world, e, probeId, "mass", FieldValue{written}));
+    CHECK_FALSE(writeComponentField(world, e, probeId, "label", FieldValue{written}));
+    CHECK_FALSE(writeComponentField(world, e, probeId, "tint", FieldValue{written}));
+}
+
+TEST_CASE("inspector: no inspector row is a drop target (task 3.1.5, IR8, seed S35's twin)") {
+    // D14, and the only tier that can state it: assignment happens on the Hierarchy row, in the
+    // viewport and on a material slot -- never on an inspector field. A drop target here would be a
+    // fourth assignment surface with its own accept rules, and no runtime tier in this tree can drive
+    // an ImGui drag, so the pin is the panel's own source text.
+    std::ifstream file(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp", std::ios::binary);
+    REQUIRE(file.is_open());
+    std::string line;
+    std::size_t scanned = 0;
+    while (std::getline(file, line)) {
+        ++scanned;
+        const std::size_t comment = line.find("//");
+        const std::string code = comment == std::string::npos ? line : line.substr(0, comment);
+        CHECK(code.find("BeginDragDropTarget") == std::string::npos);
+        CHECK(code.find("AcceptDragDropPayload") == std::string::npos);
+    }
+    CHECK(scanned > 100);  // the scan really traversed the file, rather than passing on an empty read
 }

@@ -29,6 +29,12 @@ public:
     [[nodiscard]] DockSlot defaultDockSlot() const noexcept override { return DockSlot::Right; }
     void onDraw(PanelContext& context) override;
 
+    // task 3.1.5: a reconciled POINTER, never a reference member -- MaterialPanel's exact shape and
+    // 3.1.1's D13/INV-4 rule: EditorApp is movable, so a reference would bind to a pre-move address.
+    // EditorApp sets it every tick, from the same reconcile statement that already sets the Material
+    // panel's. NULL is a legal state and the Guid row has a sentence for it.
+    void setDatabase(const AssetDatabase* db) noexcept { database = db; }
+
 private:
     enum class ActionKind : std::uint8_t { None = 0, AddComponent, RemoveComponent };
     struct PendingAction {
@@ -65,6 +71,7 @@ private:
     StringEditCache stringCache;
     std::string labelScratch;
     std::string shortNameScratch;
+    const AssetDatabase* database = nullptr;  // task 3.1.5, reconciled -- see setDatabase above
 };
 
 }  // namespace engine::editor

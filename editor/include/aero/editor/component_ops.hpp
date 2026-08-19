@@ -13,6 +13,7 @@
 // D8 clamp note). The real check strips comments first, the same way the boundary scripts do
 // (nl -ba -w1 -s: <file> | sed -E 's|//.*||'), and THAT output is empty: no line of actual code in
 // either public header ever names an entt:: type.
+#include <aero/core/guid.hpp>  // engine::Guid -- task 3.1.5's one new category
 #include <aero/core/math.hpp>  // engine::Vec3, engine::Quat
 #include <aero/scene/entity.hpp>
 #include <aero/scene/world.hpp>  // engine::ComponentTypeId (a value type -- needs the definition)
@@ -28,9 +29,15 @@ namespace engine::editor {
 // The WIDE transport for one reflected field value crossing the 2.4.2 command seam. Integrals widen to
 // i64/u64 by signedness and floats to double: lossless on the way out, CLAMPED-then-narrowed on the way
 // back in (D8). std::string is carried by value -- a command must own its before/after payload.
-using FieldValue = std::variant<bool, std::int64_t, std::uint64_t, double, Vec3, Quat, std::string>;
+//
+// task 3.1.5: Guid is APPENDED LAST to both, never inserted, so every existing std::get<>/
+// std::holds_alternative<> and every FieldKind value keeps its meaning AND its number -- FieldKind is
+// switched on exhaustively with no `default:` anywhere, so an inserted enumerator would renumber a
+// serialized-nothing but would silently re-map every positional read of the variant. A Guid carries no
+// range, no clamp and no widening: it goes in and comes out as itself.
+using FieldValue = std::variant<bool, std::int64_t, std::uint64_t, double, Vec3, Quat, std::string, Guid>;
 
-enum class FieldKind : std::uint8_t { Bool, Int, UInt, Float, Vec3, Quat, String };
+enum class FieldKind : std::uint8_t { Bool, Int, UInt, Float, Vec3, Quat, String, Guid };
 
 // ---- CONSTNESS IS DELIBERATELY NOT UNIFORM ACROSS THIS SEAM (plan decision O1, 2026-07-26) --------
 // These four take World& because the WRITE path is meta_type::from_void(void*) + meta_data::set, which
