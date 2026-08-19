@@ -138,8 +138,14 @@ add_test(NAME aero_tests COMMAND aero_tests)
 add_executable(aero_editor_imgui_test
     editor/imgui_layer_test.cpp
     vulkan_stack_pin.cpp)
+# task 3.1.5 (SL1-SL10): aero::scene_render joins the link line so this TU can include
+# editor/src/scene_asset_loader.hpp, whose ModelLoadResult names scene_render::MeshBinding. The ARCHIVE
+# was already here -- aero::scene_render is PRIVATE on aero_editor_core, which on a STATIC library
+# propagates as $<LINK_ONLY:...> -- so what this entry actually adds is engine/scene_render/include on
+# the compile line. NOT a boundary probe (R12's one-aero::-entry rule governs those, and this target
+# already links five), and the aero_tests precedent at :94 is the same entry for the same reason.
 target_link_libraries(aero_editor_imgui_test PRIVATE
-    doctest::doctest aero::editor_core aero::rhi aero::platform aero::core ${CMAKE_DL_LIBS})
+    doctest::doctest aero::editor_core aero::rhi aero::platform aero::core aero::scene_render ${CMAKE_DL_LIBS})
 target_include_directories(aero_editor_imgui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # tests/ for rhi_test_support.hpp
 # code-review finding 4 (I30): the panel's own Refresh-button flag cannot be driven through a real
 # frame here (this target is ImGui-free at source and cannot synthesize a widget click -- the
@@ -162,9 +168,16 @@ target_compile_definitions(aero_editor_imgui_test PRIVATE
 # block, because aero_editor_imgui_test is not defined until :121. AERO_EDITOR_SHADERS itself is
 # PRIVATE to aero_editor_core (editor/CMakeLists.txt), so no test TU can see it -- this definition is
 # how the arm is selected here. No add_dependencies(aero_shaders) is needed: aero_editor_core already
-# carries it, and no AERO_SHADERS_DIR either, since nothing in this TU loads a shader itself.
+# carries it.
+#
+# task 3.1.5: AERO_SHADERS_DIR joins it, because the SL* loader cases DO load a shader themselves --
+# SceneAssetLoader takes a render::ForwardRenderer per call, and building one needs the cooked
+# scene.{vert,frag} the same way scene_render_bindings_test.cpp's own tier-1 block does. INVARIANT: it
+# must equal aero_add_shaders' OUTPUT_DIR, exactly as the aero_tests definition at :125 records.
 if(AERO_SHADER_TOOLS)
-    target_compile_definitions(aero_editor_imgui_test PRIVATE AERO_SHADER_TOOLS_ENABLED=1)
+    target_compile_definitions(aero_editor_imgui_test PRIVATE
+        AERO_SHADER_TOOLS_ENABLED=1
+        AERO_SHADERS_DIR="${CMAKE_BINARY_DIR}/shaders")
 endif()
 
 add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)

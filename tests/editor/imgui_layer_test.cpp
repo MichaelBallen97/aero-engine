@@ -46,6 +46,10 @@
 #include <aero/scene/scene.hpp>
 #include <aero/scene/world.hpp>
 
+// task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
+// blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
+// scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
+#include "../../editor/src/scene_asset_loader.hpp"
 #include "rhi_test_support.hpp"
 
 #include <SDL3/SDL_filesystem.h>  // task 2.3.3 I5: SDL_GetBasePath(), matching imgui_layer.cpp:38
@@ -59,7 +63,8 @@
 #include <fstream>
 #include <memory>  // task 2.4.1: std::make_unique<TransformCommand>
 #include <optional>
-#include <span>  // task 3.2.4, I78: std::as_bytes over the fingerprint's own text
+#include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
+#include <span>     // task 3.2.4, I78: std::as_bytes over the fingerprint's own text
 #include <sstream>
 #include <string>
 #include <string_view>   // I30: AERO_EDITOR_SRC_DIR's literal-concatenation target
@@ -8303,3 +8308,388 @@ TEST_CASE("editor: New Material refuses a directory it could not enumerate IN FU
         CHECK(line.find("listing.status == ScanStatus::Ok") == std::string::npos);
     }
 }
+
+// ================================================================================================
+// task 3.1.5 (SL1-SL10) -- the scene-asset loader, end to end against a real device.
+//
+// COMPILED ONLY WHERE THE SHADER TOOLCHAIN BUILT THE ARTIFACTS ForwardRenderer::create LOADS. That is
+// scene_render_bindings_test.cpp's own tier-1 posture and it is NOT the preview's: the tools-OFF arm
+// of I88-I92 asserts a real, different claim (targeting, editing and Apply all work with no picture),
+// whereas SceneAssetLoader takes a render::ForwardRenderer BY REFERENCE on every entry point and a
+// build with no cooked shaders can construct none -- there is no second contract to state.
+//
+// NO WINDOW: a RenderTarget supplies both formats, exactly as BR21/BR22 do. These cases never build an
+// EditorApp -- the tick wiring is step 16's, and asserting the loader through it would test two things
+// at once.
+// ================================================================================================
+#if AERO_SHADER_TOOLS_ENABLED
+
+    #include <aero/core/vfs.hpp>
+    #include <aero/render/render.hpp>
+
+namespace {
+
+// TWO meshes, ONE material, positions-only. Both primitives share one attribute mask, so the cook
+// groups them into ONE section with TWO submeshes carrying sourceMeshIndex 0 and 1 -- the shape SL2
+// and SL10 need. Mesh A's box is (0,0,0)..(1,1,0) and mesh B's is (0,0,0)..(2,2,0), deliberately
+// different so a fold that ignored sourceMeshIndex would produce one box and redden SL10. Only mesh
+// A's primitive names the material, so mesh B's submesh carries COOKED_INVALID_MATERIAL (SL4).
+//
+// The buffer is 84 bytes: positions A at 0, positions B at 36, indices A at 72, indices B at 78 --
+// every offset a multiple of its own component size, as glTF requires.
+constexpr std::string_view SL_TWO_MESH_GLTF_TEXT =
+    R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],)"
+    R"("nodes":[{"name":"A","mesh":0},{"name":"B","mesh":1}],)"
+    R"("meshes":[{"name":"MeshA","primitives":[{"attributes":{"POSITION":0},"indices":2,"mode":4,"material":0}]},)"
+    R"({"name":"MeshB","primitives":[{"attributes":{"POSITION":1},"indices":3,"mode":4}]}],)"
+    R"("materials":[{"name":"Painted","pbrMetallicRoughness":{"baseColorFactor":[0.5,0.25,0.125,1.0],)"
+    R"("baseColorTexture":{"index":0},"metallicFactor":0.25,"roughnessFactor":0.75}}],)"
+    R"("textures":[{"source":0}],"images":[{"uri":"wood.png"}],)"
+    R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},)"
+    R"({"bufferView":1,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[2,2,0]},)"
+    R"({"bufferView":2,"componentType":5123,"count":3,"type":"SCALAR"},)"
+    R"({"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"}],)"
+    R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36,"target":34962},)"
+    R"({"buffer":0,"byteOffset":36,"byteLength":36,"target":34962},)"
+    R"({"buffer":0,"byteOffset":72,"byteLength":6,"target":34963},)"
+    R"({"buffer":0,"byteOffset":78,"byteLength":6,"target":34963}],)"
+    R"("buffers":[{"byteLength":84,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAA)"
+    R"(AAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAABAAIAAAABAAIA"}]})";
+
+// The loader's whole world, built once per case: a real project with a scanned AssetDatabase beside
+// it. Never removed proactively -- the OS temp directory is the OS's to reclaim, exactly as
+// uniqueProjectLocation's own note records.
+struct LoaderProject {
+    std::string root;
+    std::string assetsRoot;
+    engine::GuidGenerator generator{0x51AD5EEDULL};
+    engine::editor::AssetDatabase database;
+
+    [[nodiscard]] const engine::editor::AssetRecord& record(std::string_view relativePath) const {
+        const engine::editor::AssetRecord* const found = database.findByPath(relativePath);
+        REQUIRE(found != nullptr);
+        return *found;
+    }
+};
+
+[[nodiscard]] std::unique_ptr<LoaderProject> makeLoaderProject() {
+    auto project = std::make_unique<LoaderProject>();
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    project->root = created.root;
+    project->assetsRoot = created.root + "/assets";
+    return project;
+}
+
+void scanLoaderProject(LoaderProject& project) {
+    const engine::editor::AssetScanReport report =
+        project.database.rescan(project.root, project.assetsRoot, project.generator);
+    REQUIRE(report.status == engine::editor::ScanStatus::Ok);
+}
+
+}  // namespace
+
+TEST_CASE("editor: the loader takes a model from disk to a GPU mesh (task 3.1.5, SL1/SL2/SL3/SL4/SL10)") {
+    // ONE case for five of the ten, because they are five assertions about ONE load and splitting them
+    // would pay for five imports, five cooks and five uploads to observe one result. SL5's ASan arm is
+    // its own case for the opposite reason: what it proves is a lifetime, and a case that also asserted
+    // something else would leave "which half aborted" ambiguous.
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::render::RenderTarget> target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    std::optional<engine::render::ForwardRenderer> renderer = engine::render::ForwardRenderer::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(renderer.has_value());
+
+    const std::unique_ptr<LoaderProject> project = makeLoaderProject();
+    REQUIRE(engine::editor::writeTextFileAtomic(project->assetsRoot + "/two.gltf", SL_TWO_MESH_GLTF_TEXT).empty());
+    REQUIRE(writeBinaryFixture(project->assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    scanLoaderProject(*project);
+
+    engine::editor::SceneAssetLoader loader(*device);
+    CHECK(loader.importCount() == 0);
+    CHECK(loader.meshUploadCount() == 0);
+    const engine::editor::SceneAssetLoader::ModelLoadResult loaded =
+        loader.loadModel(project->record("two.gltf"), project->assetsRoot, project->root, project->database, *renderer);
+
+    // SL1 -- end to end, a valid MeshHandle.
+    INFO("loader message: " << loaded.message);
+    REQUIRE(loaded.ok);
+    CHECK(loaded.message.empty());
+    REQUIRE(loaded.handles.mesh.valid());
+    // TWO importModel calls, and that is the two-pass driver rather than a repeat: glTF answers TRUE to
+    // modelImporterNeedsExternalBuffers, so pass 1 runs at Structure depth to learn the URI set even
+    // for a document whose buffers are all data: URIs. ONE createMesh, counted at the CALL rather than
+    // at success, so a refusal reads as an upload that produced nothing.
+    CHECK(loader.importCount() == 2);
+    CHECK(loader.meshUploadCount() == 1);
+
+    // SL3 -- the submesh count the registry recorded equals the cooked table's.
+    CHECK(renderer->meshSubmeshCount(loaded.handles.mesh) == 2U);
+    REQUIRE(loaded.binding.submeshes.size() == 2);
+    CHECK((loaded.binding.mesh == loaded.handles.mesh));
+
+    // SL2 -- the binding's sourceMeshIndex values match the cooked table, in cooked submesh order.
+    CHECK(loaded.binding.submeshes[0].submesh == 0U);
+    CHECK(loaded.binding.submeshes[1].submesh == 1U);
+    CHECK(loaded.binding.submeshes[0].sourceMeshIndex == 0U);
+    CHECK(loaded.binding.submeshes[1].sourceMeshIndex == 1U);
+
+    // SL4 -- mesh A's primitive names material 0 and resolves; mesh B's names none, so its submesh
+    // carries COOKED_INVALID_MATERIAL and yields an INVALID handle. That is the renderer-default path,
+    // not an error, and nothing about it is logged.
+    REQUIRE(loaded.handles.materials.size() == 1);
+    REQUIRE(loaded.handles.materialStates.size() == loaded.handles.materials.size());
+    CHECK(loaded.handles.materials[0].valid());
+    CHECK((loaded.binding.submeshes[0].material == loaded.handles.materials[0]));
+    CHECK_FALSE(loaded.binding.submeshes[1].material.valid());
+
+    // The one bound slot became ONE texture request, in the material's own colour space -- baseColor is
+    // slot 0, which materialSlotIsSrgb answers sRGB for. No slot texture is bound yet: default texels
+    // show until the ledger dresses them, one directive per service pass (the 3.4.1 doctrine).
+    REQUIRE(loaded.textureRequests.size() == 1);
+    CHECK(loaded.textureRequests[0].materialIndex == 0);
+    CHECK(loaded.textureRequests[0].slot == 0);
+    CHECK(loaded.textureRequests[0].srgb);
+    CHECK((loaded.textureRequests[0].guid == *project->database.guidForPath("wood.png")));
+    CHECK_FALSE(loaded.handles.materialStates[0].slots.baseColor.texture.valid());
+
+    // SL10 -- bounds folded per sourceMeshIndex, each the union of that mesh's cooked submesh boxes.
+    // Mesh-LOCAL and node-independent: no node transform enters this, which is what makes it an
+    // entity-local box.
+    REQUIRE(loaded.handles.bounds.size() == 2);
+    const auto boxOf = [&loaded](std::uint32_t meshIndex) -> engine::editor::Aabb {
+        for (const std::pair<std::uint32_t, engine::editor::Aabb>& entry : loaded.handles.bounds) {
+            if (entry.first == meshIndex) {
+                return entry.second;
+            }
+        }
+        return engine::editor::Aabb::empty();
+    };
+    const engine::editor::Aabb first = boxOf(0);
+    const engine::editor::Aabb second = boxOf(1);
+    REQUIRE(first.valid());
+    REQUIRE(second.valid());
+    CHECK(first.max.x == doctest::Approx(1.0F));
+    CHECK(first.max.y == doctest::Approx(1.0F));
+    CHECK(second.max.x == doctest::Approx(2.0F));
+    CHECK(second.max.y == doctest::Approx(2.0F));
+    CHECK(first.min.x == doctest::Approx(0.0F));
+    CHECK(second.min.y == doctest::Approx(0.0F));
+
+    renderer->destroyMesh(loaded.handles.mesh);
+    for (const engine::render::MaterialHandle material : loaded.handles.materials) {
+        renderer->destroyMaterial(material);
+    }
+}
+
+TEST_CASE("editor: the parse buffer outlives createMesh (task 3.1.5, SL5, seed S22)") {
+    // THE RETAINED-SPAN CONTRACT (docs/09 section 9), and ASAN IS THE ORACLE -- not this case's own
+    // CHECKs. CookedMesh::bytes is a span into the MeshCookResult's vector, and createMesh reads
+    // through it; a seed that clears or scopes that vector before the upload is a heap-use-after-free
+    // inside createMesh, which the Debug lanes abort on and which no CHECK anywhere could see. What
+    // this case contributes is a load that REACHES createMesh with real bulk data behind it, then a
+    // read of the registry afterwards so the handle is genuinely usable rather than merely non-zero.
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::render::RenderTarget> target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    std::optional<engine::render::ForwardRenderer> renderer = engine::render::ForwardRenderer::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(renderer.has_value());
+
+    const std::unique_ptr<LoaderProject> project = makeLoaderProject();
+    REQUIRE(engine::editor::writeTextFileAtomic(project->assetsRoot + "/two.gltf", SL_TWO_MESH_GLTF_TEXT).empty());
+    scanLoaderProject(*project);
+
+    engine::editor::SceneAssetLoader loader(*device);
+    const engine::editor::SceneAssetLoader::ModelLoadResult loaded =
+        loader.loadModel(project->record("two.gltf"), project->assetsRoot, project->root, project->database, *renderer);
+    INFO("loader message: " << loaded.message);
+    REQUIRE(loaded.ok);
+    REQUIRE(loaded.handles.mesh.valid());
+    CHECK(renderer->meshSubmeshCount(loaded.handles.mesh) == 2U);
+    renderer->destroyMesh(loaded.handles.mesh);
+    for (const engine::render::MaterialHandle material : loaded.handles.materials) {
+        renderer->destroyMaterial(material);
+    }
+}
+
+TEST_CASE("editor: an .aeromat loads and a slot texture rebinds into it (task 3.1.5, SL6/SL7)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::render::RenderTarget> target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    std::optional<engine::render::ForwardRenderer> renderer = engine::render::ForwardRenderer::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(renderer.has_value());
+
+    const std::unique_ptr<LoaderProject> project = makeLoaderProject();
+    REQUIRE(engine::editor::writeTextFileAtomic(project->assetsRoot + "/one.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(writeBinaryFixture(project->assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(project->assetsRoot + "/broken.png", CORRUPT_PNG_BYTES).empty());
+    scanLoaderProject(*project);
+
+    engine::editor::SceneAssetLoader loader(*device);
+
+    // SL6 -- the short twin: read, parse, createMaterial. The canonical fixture binds no slot, so it
+    // asks for no texture at all.
+    engine::editor::SceneAssetLoader::MaterialLoadResult material =
+        loader.loadMaterial(project->record("one.aeromat"), project->assetsRoot, *renderer);
+    INFO("material message: " << material.message);
+    REQUIRE(material.ok);
+    CHECK(material.message.empty());
+    REQUIRE(material.material.valid());
+    CHECK(material.textureRequests.empty());
+    CHECK(material.state.params.metallicFactor == doctest::Approx(0.25F));
+    CHECK(material.state.params.roughnessFactor == doctest::Approx(0.75F));
+
+    // SL7 -- one slot texture through the SHARED decode -> cook -> parse -> upload chain, then the
+    // rebind. rebindSlot writes the arrived handle into the ledger's own copy of the slots and calls
+    // updateMaterial; the copy is what makes a later sibling slot's rebind keep this one.
+    const engine::editor::SceneAssetLoader::TextureLoadResult texture =
+        loader.loadSlotTexture(project->record("wood.png"), project->assetsRoot, /*srgb=*/true);
+    INFO("texture message: " << texture.message);
+    REQUIRE(texture.ok);
+    REQUIRE(texture.texture.valid());
+    CHECK(loader.textureFailureCount() == 0);
+    loader.rebindSlot(*renderer, material.material, material.state.params, material.state.slots, /*slot=*/0,
+                      texture.texture);
+    CHECK((material.state.slots.baseColor.texture == texture.texture));
+    CHECK(renderer->updateMaterial(material.material, material.state.params, material.state.slots));
+
+    // A BROKEN image fails ONCE and stays failed -- the ThumbnailLedger stickiness rule, applied to
+    // this cache. The proof is not the count: it is that REPLACING the bytes on disk with a real PNG
+    // does not change the answer, because the RECORD -- and therefore the key -- has not moved. A
+    // re-decode would succeed here and redden the second REQUIRE.
+    const engine::editor::SceneAssetLoader::TextureLoadResult failed =
+        loader.loadSlotTexture(project->record("broken.png"), project->assetsRoot, /*srgb=*/true);
+    CHECK_FALSE(failed.ok);
+    CHECK_FALSE(failed.message.empty());
+    CHECK(loader.textureFailureCount() == 1);
+    REQUIRE(
+        writeBinaryFixture(project->assetsRoot + "/broken.png", TINY_PNG_GREEN.data(), TINY_PNG_GREEN.size()).empty());
+    const engine::editor::SceneAssetLoader::TextureLoadResult again =
+        loader.loadSlotTexture(project->record("broken.png"), project->assetsRoot, /*srgb=*/true);
+    CHECK_FALSE(again.ok);
+    CHECK(again.message == failed.message);
+    CHECK(loader.textureFailureCount() == 1);
+
+    device->destroyTexture(texture.texture);
+    renderer->destroyMaterial(material.material);
+}
+
+TEST_CASE("editor: an unconverted .blend refuses without spawning anything (task 3.1.5, SL8, AC-24)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::render::RenderTarget> target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    std::optional<engine::render::ForwardRenderer> renderer = engine::render::ForwardRenderer::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(renderer.has_value());
+
+    const std::unique_ptr<LoaderProject> project = makeLoaderProject();
+    REQUIRE(engine::editor::writeTextFileAtomic(project->assetsRoot + "/scene.blend", "BLENDER-v420RENDH").empty());
+    scanLoaderProject(*project);
+
+    engine::editor::SceneAssetLoader loader(*device);
+    const engine::editor::SceneAssetLoader::ModelLoadResult loaded = loader.loadModel(
+        project->record("scene.blend"), project->assetsRoot, project->root, project->database, *renderer);
+    CHECK_FALSE(loaded.ok);
+    CHECK(loaded.message == std::string(engine::editor::BLEND_UNCONVERTED_MESSAGE));
+    // NOTHING was imported and NOTHING was uploaded: the arm returns before either.
+    CHECK(loader.importCount() == 0);
+    CHECK(loader.meshUploadCount() == 0);
+    // The cache-hit read on its own, at the same record: the same miss, and the same sentence.
+    const engine::editor::BlendArtifactResult artifact =
+        engine::editor::readBlendCacheArtifact(project->record("scene.blend"), project->root);
+    CHECK_FALSE(artifact.ok);
+    CHECK(artifact.bytes.empty());
+    CHECK(artifact.message == std::string(engine::editor::BLEND_UNCONVERTED_MESSAGE));
+
+    // AC-24's mechanical half, and the only tier that can see it: no runtime assertion can prove a
+    // process was NOT spawned by code that was never reached, so this reads the TU's own source text.
+    // A second BlenderService anywhere in this file would make a cache-hit evaluation cost a process.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/scene_asset_loader.cpp");
+    for (const std::string& line : code) {
+        CHECK(line.find("BlenderService") == std::string::npos);
+        CHECK(line.find("SDL_Process") == std::string::npos);
+    }
+}
+
+TEST_CASE("editor: a model with no drawable geometry is refused, not half-loaded (task 3.1.5, SL9)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::render::RenderTarget> target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    std::optional<engine::render::ForwardRenderer> renderer = engine::render::ForwardRenderer::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(renderer.has_value());
+
+    const std::unique_ptr<LoaderProject> project = makeLoaderProject();
+    // A LEGAL glTF document carrying no mesh at all. It imports Ok, cooks to the valid zero-primitive
+    // container docs/09 section 9 defines, parses Ok -- and createMesh refuses it, because there is
+    // nothing to create a buffer for and a zero-size createBuffer is itself an rhi validation failure.
+    REQUIRE(engine::editor::writeTextFileAtomic(project->assetsRoot + "/empty.gltf", MINIMAL_GLTF_TEXT).empty());
+    scanLoaderProject(*project);
+
+    engine::editor::SceneAssetLoader loader(*device);
+    const engine::editor::SceneAssetLoader::ModelLoadResult loaded = loader.loadModel(
+        project->record("empty.gltf"), project->assetsRoot, project->root, project->database, *renderer);
+    CHECK_FALSE(loaded.ok);
+    CHECK(loaded.message == "the GPU refused this mesh (see the Console for the reason)");
+    CHECK_FALSE(loaded.handles.mesh.valid());
+    // The attempt is counted at the CALL, so a refusal is visible as an upload that produced nothing
+    // rather than as an upload that never happened. Two imports for the same reason as SL1's.
+    CHECK(loader.importCount() == 2);
+    CHECK(loader.meshUploadCount() == 1);
+    // NOTHING was half-installed: no material, no binding, no bounds.
+    CHECK(loaded.handles.materials.empty());
+    CHECK(loaded.binding.submeshes.empty());
+    CHECK(loaded.handles.bounds.empty());
+    CHECK(loaded.textureRequests.empty());
+}
+
+#endif  // AERO_SHADER_TOOLS_ENABLED
