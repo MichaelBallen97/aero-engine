@@ -51,6 +51,7 @@ add_executable(aero_tests
     camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
     scene_render_test.cpp # task 1.4.1 — buildRenderView (tier-0) + gated SceneRenderer GPU draw-smoke
+    asset_bindings_test.cpp # task 3.1.5 — AssetBindingTable: sorted-vector set/find/remove, nil refusal
     render_target_test.cpp # task 2.2.3 — tier-0 sizing policy + GPU-gated RenderTarget lifecycle
     render_material_test.cpp # task 3.4.1 — tier-0 generator/format invariants + GPU-gated registry & bridge
     render_skinning_test.cpp # task 3.5.1 — tier-0 pose/palette/repack invariants + GPU-gated mesh registry & skinned draw
