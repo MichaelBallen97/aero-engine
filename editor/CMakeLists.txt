@@ -132,6 +132,7 @@ add_library(aero_editor_core STATIC
     src/skeleton_cook_source.cpp # task 3.5.1 -- the ImportedModel -> skeleton cook adapter; PURE
     src/asset_drag.cpp           # task 3.1.5 -- the drag payload + the drop routing matrix; PURE, no ImGui
     src/instantiate_plan.cpp     # task 3.1.5 -- the ImportedModel -> entity-subtree planner; PURE
+    src/asset_commands.cpp       # task 3.1.5 -- the sixth structural command: one undoable drop
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
