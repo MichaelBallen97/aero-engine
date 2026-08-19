@@ -1323,6 +1323,16 @@ void EditorApp::pushMaterialAssign(Entity entity, Guid material) {
         AERO_LOG_WARN("assets: this entity can no longer take a material");
         return;
     }
+    // ...and findComponentType is NOT sufficient on its own, which the comment above used to assume.
+    // MeshRenderer is a hand-registered built-in, so the World resolves it by NAME even in a
+    // -DAERO_REFLECT_TOOLS=OFF build where no generated entt::meta exists at all; without this second
+    // guard the drain reaches readComponentField and logs an ERROR from the seam in a configuration
+    // where the correct behaviour is simply to do nothing. Measured: the reflect-off lane reddened
+    // DP6 with exactly that ERROR before this line existed.
+    if (!componentFieldsAreReflected(sceneWorld, meshRendererId)) {
+        AERO_LOG_WARN("assets: this entity can no longer take a material");
+        return;
+    }
     const std::optional<FieldValue> before = readComponentField(sceneWorld, entity, meshRendererId, "material");
     if (!before.has_value()) {
         // The entity lost its MeshRenderer between the peek and this drain, or the component type is

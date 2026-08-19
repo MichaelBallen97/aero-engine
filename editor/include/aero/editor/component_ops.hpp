@@ -54,6 +54,20 @@ bool addComponent(World& world, Entity entity, ComponentTypeId id);     // defau
                                                                         // REFUSES a present type (D10)
 bool removeComponent(World& world, Entity entity, ComponentTypeId id);  // silent false when absent
 
+// Answers "can this component's fields be reached through the reflection seam at all?" -- the guard a
+// caller needs BEFORE readComponentField, in a -DAERO_REFLECT_TOOLS=OFF build.
+//
+// There are TWO registries and they do not agree. The World's own component table is hand-written and
+// always present (engine/scene/src/transform.cpp registers the five built-ins), so findComponentType
+// resolves engine::MeshRenderer BY NAME even when no generated entt::meta exists anywhere. A caller
+// that guards only on ComponentTypeId::valid() therefore sails past and reaches readComponentField,
+// which logs an AERO_LOG_ERROR from the seam -- in the one configuration where nothing is wrong. This
+// predicate asks the meta registry directly, exactly as buildInspectorModel's `hasFields` does.
+//
+// const World&: this is the honest minimum (see the constness note above) -- it reads a type name and
+// resolves a meta type, and touches no entity.
+[[nodiscard]] bool componentFieldsAreReflected(const World& world, ComponentTypeId id);
+
 // World& (not const): see the constness note above. The read itself mutates nothing -- the signature
 // pairs the write path, it is not a semantic. Every caller holds a World&.
 [[nodiscard]] std::optional<FieldValue> readComponentField(World& world, Entity entity, ComponentTypeId id,

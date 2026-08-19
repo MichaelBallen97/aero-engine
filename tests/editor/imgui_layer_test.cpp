@@ -8868,6 +8868,14 @@ TEST_CASE("editor: a material drop assigns only where a MeshRenderer is (task 3.
 
     // DP6 -- accepted on a row WITH a MeshRenderer: one SetFieldCommand, and undo restores the field.
     // No new command type; it rides the Guid arm the field seam gained at step 15.
+    //
+    // BOTH ARMS ASSERT, neither skips (the AC-32 shape from task 3.4.2, applied to the OTHER gate).
+    // The assignment goes through SetFieldCommand, which reaches the field via entt::meta -- so with
+    // -DAERO_REFLECT_TOOLS=OFF there is no meta for engine::MeshRenderer and the drop CANNOT land.
+    // That is the correct behaviour there, not a defect: the whole inspector cannot edit any field in
+    // that configuration either. What matters is that it degrades to "nothing happens" QUIETLY, with
+    // no command pushed and no ERROR from the seam -- which is what componentFieldsAreReflected buys,
+    // and this arm is its only witness anywhere.
     const engine::MeshRenderer* renderer = app->world().get<engine::MeshRenderer>(withMesh);
     REQUIRE(renderer != nullptr);
     CHECK_FALSE(renderer->material.valid());
@@ -8875,6 +8883,7 @@ TEST_CASE("editor: a material drop assigns only where a MeshRenderer is (task 3.
     REQUIRE(app->tick());
     renderer = app->world().get<engine::MeshRenderer>(withMesh);
     REQUIRE(renderer != nullptr);
+    #if AERO_REFLECT_TOOLS_ENABLED
     CHECK((renderer->material == *material));
     CHECK(app->commands().canUndo());
     app->requestUndo();
@@ -8882,6 +8891,11 @@ TEST_CASE("editor: a material drop assigns only where a MeshRenderer is (task 3.
     renderer = app->world().get<engine::MeshRenderer>(withMesh);
     REQUIRE(renderer != nullptr);
     CHECK_FALSE(renderer->material.valid());
+    #else
+    // No meta: the field is untouched and NOTHING was pushed -- the drop is inert, not half-applied.
+    CHECK_FALSE(renderer->material.valid());
+    CHECK(app->commands().canUndo() == couldUndoBefore);
+    #endif
 
     app->requestQuit();
     CHECK(app->tick() == false);

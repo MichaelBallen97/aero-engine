@@ -167,6 +167,16 @@ bool addComponent(World& world, Entity entity, ComponentTypeId id) {
 
 bool removeComponent(World& world, Entity entity, ComponentTypeId id) { return world.removeRaw(id, entity); }
 
+bool componentFieldsAreReflected(const World& world, ComponentTypeId id) {
+    // Deliberately silent: this is the question a caller asks INSTEAD of tripping readComponentField's
+    // ERROR, so answering it must not log the very line it exists to avoid.
+    const std::string_view typeName = world.componentTypeName(id);
+    if (typeName.empty()) {
+        return false;
+    }
+    return static_cast<bool>(resolveComponentMeta(typeName));
+}
+
 std::optional<FieldValue> readComponentField(World& world, Entity entity, ComponentTypeId id, std::string_view field) {
     const std::string_view typeName = world.componentTypeName(id);
     if (typeName.empty()) {

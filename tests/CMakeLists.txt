@@ -180,6 +180,16 @@ if(AERO_SHADER_TOOLS)
         AERO_SHADERS_DIR="${CMAKE_BINARY_DIR}/shaders")
 endif()
 
+# task 3.1.5 (DP6): the SAME shape, for the OTHER gate. A material drop assigns through
+# SetFieldCommand, which rides the reflection seam -- so with -DAERO_REFLECT_TOOLS=OFF there is no
+# generated entt::meta and the assignment cannot land, while every refusal arm (DP5/DP7) must behave
+# identically. Both arms ASSERT and neither skips, for the reason recorded above at :163-167.
+# This target is deliberately NOT inside an if(AERO_REFLECT_TOOLS) block -- the editor is built in
+# every configuration -- so the arm has to be selected by a definition, exactly like the shader one.
+if(AERO_REFLECT_TOOLS)
+    target_compile_definitions(aero_editor_imgui_test PRIVATE AERO_REFLECT_TOOLS_ENABLED=1)
+endif()
+
 add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
 
 # ---------------------------------------------------------------------------------------------
