@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -19,21 +20,19 @@ namespace {
 
 [[nodiscard]] bool allFinite(Vec2 v) noexcept { return std::isfinite(v.x) && std::isfinite(v.y); }
 
-// Corner i of [-h, h]^3 in the SAME bit order scene_bounds.cpp's contribute() uses (F3b): bit 0 is X,
-// bit 1 is Y, bit 2 is Z. BOX_EDGES is derived from exactly this assignment, so the two files agree
-// BY CONSTRUCTION rather than by coincidence.
-[[nodiscard]] Vec3 localCorner(std::size_t i, float h) noexcept {
-    return Vec3{(i & 1U) != 0U ? h : -h, (i & 2U) != 0U ? h : -h, (i & 4U) != 0U ? h : -h};
-}
-
 // One entity's oriented box: 8 corners to CLIP space, then 12 edges, each clipped to
 // w > CLIP_W_EPSILON IN CLIP SPACE (D14) and only THEN divided and mapped to viewport points.
 // Clipping per EDGE rather than rejecting whole CORNERS is what stops edges popping out of existence
 // as the camera approaches -- very visible, since 2.3.1's camera can fly straight into a selection.
-void appendBoxEdges(const Mat4& mvp, Vec2 viewportSizePoints, OverlayRole role, std::vector<OverlaySegment>& out) {
+//
+// The corners come from scene_bounds.hpp's aabbCorner (task 3.1.5), which DELETED this file's own copy
+// of the bit-order enumeration: BOX_EDGES is derived from that one assignment, so the bounds walk, the
+// pick and the highlight agree by construction rather than by three matching comments.
+void appendBoxEdges(const Mat4& mvp, const Aabb& box, Vec2 viewportSizePoints, OverlayRole role,
+                    std::vector<OverlaySegment>& out) {
     std::array<Vec4, 8> clip{};
     for (std::size_t i = 0; i < clip.size(); ++i) {
-        clip[i] = mvp * toVec4(localCorner(i, LOCAL_MESH_HALF_EXTENT), 1.0F);
+        clip[i] = mvp * toVec4(aabbCorner(box, i), 1.0F);
     }
     for (const BoxEdge edge : BOX_EDGES) {
         Vec4 a = clip[edge.a];
@@ -74,7 +73,8 @@ void appendPointMarker(const Mat4& viewProj, Vec3 worldPoint, Vec2 viewportSizeP
 }  // namespace
 
 void buildSelectionOverlay(const World& world, std::span<const Entity> entities, Entity primary, const Mat4& viewProj,
-                           Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch) {
+                           Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch,
+                           const MeshBoundsLookup* lookup) {
     scratch.clear();  // CALLER-OWNED SCRATCH: cleared on entry, reused across frames (D6/AC-18)
     std::size_t drawn = 0;
     for (const Entity entity : entities) {
@@ -92,8 +92,14 @@ void buildSelectionOverlay(const World& world, std::span<const Entity> entities,
         const OverlayRole role = (entity == primary) ? OverlayRole::Primary : OverlayRole::Selected;
         const Mat4 model = worldMatrix(world, entity);  // silent identity when untransformed (F16/E3)
         if (world.has<MeshRenderer>(entity)) {          // silent for an unregistered type (F15)
-            appendBoxEdges(viewProj * model, viewportSizePoints, role, scratch);
-            continue;
+            // task 3.1.5: the SAME localBoundsFor the pick and the frame walk call (INV-D6). A nullopt
+            // -- an unresolved reference -- falls through to the marker below, the existing non-mesh
+            // path, reached by one more condition rather than by new code.
+            const std::optional<Aabb> local = localBoundsFor(*world.get<MeshRenderer>(entity), lookup);
+            if (local.has_value()) {
+                appendBoxEdges(viewProj * model, *local, viewportSizePoints, role, scratch);
+                continue;
+            }
         }
         // E5, deliberately asymmetric with pickEntity: a zero-scaled box collapses to a line or a
         // point on screen, which is finite, informative, and exactly what a user who typed scale = 0

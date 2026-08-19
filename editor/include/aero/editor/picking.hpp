@@ -85,6 +85,14 @@ inline constexpr float CLIP_W_EPSILON = 1.0e-4F;
 // inputs: engine::normalize ASSERTS on a zero-length vector, so normalizeOrZero is used instead.
 [[nodiscard]] Ray viewportRay(const EditorCamera& camera, Vec2 ndc, float aspect) noexcept;
 
+// Where a dropped asset lands, given the drop ray (task 3.1.5). A TOTAL function: every input yields a
+// FINITE point. It lives here rather than beside the drag payload because it is the fourth member of
+// the screen<->world family this header already owns, and putting it anywhere else would give the tree
+// a second place where a ray meets a plane.
+inline constexpr float DROP_FALLBACK_DISTANCE = 5.0F;  // world units along the ray
+inline constexpr float DROP_PLANE_EPSILON = 1.0e-6F;   // |dir.y| below this is "parallel to y = 0"
+[[nodiscard]] Vec3 dropPlacementPoint(const Ray& ray) noexcept;
+
 // Ray vs the axis-aligned box [-halfExtent, halfExtent]^3, IN THE SPACE OF THE ARGUMENTS.
 // `direction` is deliberately NOT required to be unit length: pass the LOCAL-space direction
 // UNNORMALISED and `outT` comes back in WORLD units (D2). That single omission is what makes hits
@@ -93,6 +101,16 @@ inline constexpr float CLIP_W_EPSILON = 1.0e-4F;
 // `outT` is left UNTOUCHED on a miss.
 [[nodiscard]] bool rayLocalBoxHit(Vec3 origin, Vec3 direction, float halfExtent, float& outT) noexcept;
 
+// Ray vs the axis-aligned box `box`, IN THE SPACE OF THE ARGUMENTS -- the min/max generalisation of the
+// half-extent overload above, and the one every real mesh uses. A ZERO-THICKNESS axis is LEGAL and is
+// the flat Plane primitive's own shape: the precondition is min <= max on all three axes, never
+// min < max -- i.e. exactly Aabb::valid(), which already exists and already means this. Entry hits only
+// (tMin > 0), outT untouched on a miss -- both semantics identical to the overload above.
+//
+// This one is the PRIMARY: the half-extent overload delegates to it, so there is ONE slab ladder in the
+// tree rather than two that can drift apart.
+[[nodiscard]] bool rayLocalBoxHit(Vec3 origin, Vec3 direction, const Aabb& box, float& outT) noexcept;
+
 // One click, in the units the pure functions want. Built by ViewportPanel::updatePick from ImGui
 // values; built by hand in a tier-0 test.
 struct PickRequest {
@@ -100,6 +118,10 @@ struct PickRequest {
     float aspect = 1.0F;        // width/height, derived from drawExtent in PIXELS -- UNITLESS (D18)
     Vec2 viewportSizePoints{};  // the image rect's size, POINTS -- for the screen-space radius (D5)
     float pointRadiusPoints = POINT_PICK_RADIUS_POINTS;
+    // task 3.1.5: the resolved local boxes of referenced meshes. A DEFAULTED MEMBER on an aggregate, so
+    // every existing PickRequest{...} designated initializer still compiles. Null means "primitives
+    // only", which is exactly what this walk saw before references existed.
+    const MeshBoundsLookup* meshBounds = nullptr;
 };
 
 struct PickResult {
