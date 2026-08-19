@@ -5,6 +5,7 @@
 // the four new headers below are purely additive, except D2's two-line RenderTarget friend
 // exception recorded in renderer.hpp itself (task 2.2.3).
 
+#include <aero/render/animation.hpp>         // task 3.5.2
 #include <aero/render/forward_renderer.hpp>  // task 1.4.1
 #include <aero/render/lighting.hpp>          // task 1.4.1
 #include <aero/render/material.hpp>          // task 3.4.1
