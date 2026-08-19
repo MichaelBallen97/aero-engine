@@ -118,8 +118,8 @@ SceneAssetLoader::ModelLoadResult SceneAssetLoader::loadModel(const AssetRecord&
     ImportedModel model;
 
     if (isBlendFileName(leaf)) {
-        // THE CACHE-HIT ARM ONLY (§D-9 step 2). A miss names Import Details and stops -- no probe, no
-        // spawn, no BlenderService.
+        // THE CACHE-HIT ARM ONLY (§D-9 step 2). A miss names Import Details and stops -- no probe and
+        // no spawn, and this pair constructs no conversion service of its own.
         //
         // DEVIATION FROM §D-9's STEP ORDER, and the reason is the format: the plan reads the asset's
         // own bytes at step 1 and forks at step 2, but this arm never looks at a .blend's bytes at
