@@ -5,8 +5,9 @@
 //
 // PURE: no disk, no <fstream>, no <filesystem>, no logging, no third party, no GPU, no per-OS macro,
 // AND ZERO FLOATING-POINT ARITHMETIC. Every time and every value component travels std::bit_cast bit
-// for bit through putF32. The SINGLE float operation anywhere in this file is the durationSeconds
-// fold, which is std::max(accumulator, lastTime) -- comparison-and-select, accumulator FIRST, in
+// for bit through putF32. The only float operations anywhere in this file are COMPARISONS -- the
+// strictly-increasing times check, and the durationSeconds fold, which is
+// std::max(accumulator, lastTime) -- comparison-and-select, accumulator FIRST, in
 // EMISSION order (docs/09 section 13.7, the mesh cook's model-box rule one format over). No hash
 // container anywhere: ordering and duplicate detection are sorted vectors, so no output can depend
 // on an iteration order.
