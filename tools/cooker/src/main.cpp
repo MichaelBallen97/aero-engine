@@ -15,6 +15,7 @@
 #include <aero/assets/mesh_cook.hpp>
 #include <aero/assets/texture_cook.hpp>
 #include <aero/core/guid.hpp>
+#include <aero/editor/animation_cook_source.hpp>
 #include <aero/editor/import_settings.hpp>
 #include <aero/editor/mesh_cook_source.hpp>
 #include <aero/editor/model_import.hpp>
@@ -62,18 +63,20 @@ enum class ExitCode : std::uint8_t { Success = 0, UsageError = 1, CookError = 2,
 //                       [--guid <32 hex>] [--format bc1|bc3|bc4|bc5|rgba8|auto] [--no-mips]
 //   aero_cooker skeleton --input <file> --output <file.aeroskel>
 //                        [--guid <32 hex>] [--skin <index>] [--scale <float>]
+//   aero_cooker animation --input <file> --output <file.aeroanim>
+//                         [--guid <32 hex>] [--clip <index>]
 //   aero_cooker --version
 //   aero_cooker --help
 //
-// SUBCOMMAND-SHAPED FROM DAY ONE, and tasks 3.3.2 and 3.5.1 each filled one in with no reshuffle of
-// the mesh path: --input, --output and --guid stay in the shared prefix and the flag loop splits only
-// on the subcommand-specific arms. Any token that is none of `mesh`, `texture` and `skeleton` is a
-// usage error naming it.
+// SUBCOMMAND-SHAPED FROM DAY ONE, and tasks 3.3.2, 3.5.1 and 3.5.2 each filled one in with no
+// reshuffle of the mesh path: --input, --output and --guid stay in the shared prefix and the flag loop
+// splits only on the subcommand-specific arms. Any token that is none of `mesh`, `texture`,
+// `skeleton` and `animation` is a usage error naming it.
 //
 // EVERY FLAG IS AT-MOST-ONCE. Unlike aero_shaderc --define, this grammar has no repeatable flag at
 // all, so the check is uniform: one `have<Flag>` bool each.
 void printUsage(std::ostream& out) {
-    out << "aero_cooker " << TOOL_VERSION << " -- source assets -> cooked .aeromesh / .ktx2 / .aeroskel\n"
+    out << "aero_cooker " << TOOL_VERSION << " -- source assets -> cooked engine artifacts\n"
         << "\n"
         << "Usage:\n"
         << "  aero_cooker mesh --input <file> --output <file.aeromesh>\n"
@@ -84,6 +87,8 @@ void printUsage(std::ostream& out) {
         << "                      [--guid <32 hex>] [--format bc1|bc3|bc4|bc5|rgba8|auto] [--no-mips]\n"
         << "  aero_cooker skeleton --input <file> --output <file.aeroskel>\n"
         << "                       [--guid <32 hex>] [--skin <index>] [--scale <float>]\n"
+        << "  aero_cooker animation --input <file> --output <file.aeroanim>\n"
+        << "                        [--guid <32 hex>] [--clip <index>]\n"
         << "  aero_cooker --version\n"
         << "  aero_cooker --help\n"
         << "\n"
@@ -91,10 +96,12 @@ void printUsage(std::ostream& out) {
         << "  mesh                   Cook one source model into one .aeromesh container.\n"
         << "  texture                Cook one source image into one KTX2 container.\n"
         << "  skeleton               Cook one skin of one source model into one .aeroskel container.\n"
+        << "  animation              Cook one clip of one source model into one .aeroanim container.\n"
         << "\n"
         << "Required (all subcommands):\n"
         << "  --input <file>         The source asset.\n"
-        << "                         mesh, skeleton: .gltf .glb .fbx .obj .mtl .dae .ply .stl\n"
+        << "                         mesh, skeleton, animation:\n"
+        << "                                         .gltf .glb .fbx .obj .mtl .dae .ply .stl\n"
         << "                         texture:        .png .jpg .jpeg .tga .bmp .gif .psd\n"
         << "  --output <file>        The artifact path. The directory must already exist.\n"
         << "\n"
@@ -123,6 +130,13 @@ void printUsage(std::ostream& out) {
         << "  --skin <index>         Which skin to cook, as a position in the model's skin list.\n"
         << "                         Default: 0. A model with more skins than the one cooked warns\n"
         << "                         naming the total.\n"
+        << "\n"
+        << "Optional (animation only):\n"
+        << "  --clip <index>         Which clip to cook, as a position in the model's animation list.\n"
+        << "                         Default: 0. A model with more clips than the one cooked warns\n"
+        << "                         naming the total. There is no --scale here: no importer applies\n"
+        << "                         the uniform scale to an animation channel, so the flag would\n"
+        << "                         change no byte of the output.\n"
         << "\n"
         << "Optional (texture only):\n"
         << "  --format <token>       bc1, bc3, bc4, bc5, rgba8 or auto. Default: auto, which answers\n"
@@ -190,6 +204,11 @@ void printVersion(std::ostream& out) { out << "aero_cooker " << TOOL_VERSION << 
 // refused because from_chars's unsigned overload does not accept one at all -- "-1" fails at the first
 // character, which is the answer we want and is stated here so a future reader does not "fix" it into
 // a signed parse followed by a range check.
+//
+// TWO CONSUMERS since task 3.5.2: --skin and --clip. Both are a POSITION in one of the model's own
+// lists and both want exactly these three refusals, so the second one reuses this parser rather than
+// growing a twin. The NAME is deliberately not generalized: renaming it across a file three tasks
+// have hardened would be a diff with no behaviour in it.
 [[nodiscard]] std::optional<std::uint32_t> parseSkinIndex(std::string_view text) {
     std::uint32_t value = 0;
     const char* const first = text.data();
@@ -201,7 +220,7 @@ void printVersion(std::ostream& out) { out << "aero_cooker " << TOOL_VERSION << 
     return value;
 }
 
-enum class Subcommand : std::uint8_t { Mesh, Texture, Skeleton };
+enum class Subcommand : std::uint8_t { Mesh, Texture, Skeleton, Animation };
 
 // The six accepted --format tokens, in the order the usage text and every diagnostic list them. `auto`
 // is deliberately IN the table rather than a special case at the parse site: it is a legal value of
@@ -220,6 +239,8 @@ struct Args {
     bool generateMips = true;          // --no-mips clears it
     // --- skeleton only ---
     std::uint32_t skinIndex = 0;  // --skin; a POSITION in the model's skin list, never a localId
+    // --- animation only ---
+    std::uint32_t clipIndex = 0;  // --clip; a POSITION in the model's animation list, never a localId
     bool wantHelp = false;
     bool wantVersion = false;
 };
@@ -244,7 +265,8 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     }
 
     if (argc < 2) {
-        std::cerr << "aero_cooker: error: no subcommand given (expected: mesh, texture or skeleton)\n";
+        std::cerr << "aero_cooker: error: no subcommand given (expected: mesh, texture, skeleton or "
+                     "animation)\n";
         return std::nullopt;
     }
     const std::string_view subcommand = argv[1];
@@ -254,9 +276,11 @@ std::optional<Args> parseArgs(int argc, char** argv) {
         args.subcommand = Subcommand::Texture;
     } else if (subcommand == "skeleton") {
         args.subcommand = Subcommand::Skeleton;
+    } else if (subcommand == "animation") {
+        args.subcommand = Subcommand::Animation;
     } else {
         std::cerr << "aero_cooker: error: unknown subcommand '" << subcommand
-                  << "' (expected: mesh, texture or skeleton)\n";
+                  << "' (expected: mesh, texture, skeleton or animation)\n";
         return std::nullopt;
     }
     // EXPLICIT PER-SUBCOMMAND PREDICATES, replacing task 3.3.2's single `isTexture` discriminator: with
@@ -266,6 +290,11 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     const bool isMesh = args.subcommand == Subcommand::Mesh;
     const bool isTexture = args.subcommand == Subcommand::Texture;
     const bool isSkeleton = args.subcommand == Subcommand::Skeleton;
+    const bool isAnimation = args.subcommand == Subcommand::Animation;
+    // NOT extended to animation at task 3.5.2, and that is a FINDING rather than a preference: all
+    // four importers apply ImportSettings::scale to root node translations, to mesh positions and to
+    // inverse-bind translation columns, and to no animation channel anywhere -- so --scale here would
+    // change no byte of the output. A flag that lies is worse than a flag that is absent.
     const bool takesScale = isMesh || isSkeleton;  // the importer's scale reaches node TRS as well as
                                                    // positions, so a skeleton cook honours it too
 
@@ -281,6 +310,7 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     bool haveFormat = false;
     bool haveNoMips = false;
     bool haveSkin = false;
+    bool haveClip = false;
 
     for (int i = 2; i < argc; ++i) {
         const std::string_view flag = argv[i];
@@ -387,6 +417,23 @@ std::optional<Args> parseArgs(int argc, char** argv) {
                 return std::nullopt;
             }
             args.skinIndex = *parsed;
+        } else if (isAnimation && flag == "--clip") {
+            if (!refuseRepeat(haveClip, flag)) {
+                return std::nullopt;
+            }
+            const char* value = needValue(flag);
+            if (value == nullptr) {
+                return std::nullopt;
+            }
+            // --skin's twin, through --skin's own parser: a POSITION in one of the model's lists,
+            // locale-independent, fully consumed, and a leading sign refused at the first character.
+            const std::optional<std::uint32_t> parsed = parseSkinIndex(value);
+            if (!parsed.has_value()) {
+                std::cerr << "aero_cooker: error: invalid --clip value '" << value
+                          << "' (expected one non-negative whole number)\n";
+                return std::nullopt;
+            }
+            args.clipIndex = *parsed;
         } else if (isTexture && flag == "--srgb") {
             if (!refuseRepeat(haveSrgb, flag)) {
                 return std::nullopt;
@@ -424,8 +471,8 @@ std::optional<Args> parseArgs(int argc, char** argv) {
         return std::nullopt;
     }
     if (!isTexture) {
-        return args;  // mesh and skeleton have no post-parse validation: every flag they take is
-                      // already fully decided at its own arm above
+        return args;  // mesh, skeleton and animation have no post-parse validation: every flag they
+                      // take is already fully decided at its own arm above
     }
 
     // ---- texture post-parse validation, in a FIXED order ------------------------------------------
@@ -635,6 +682,59 @@ void reportWarnings(std::string_view origin, const std::vector<std::string>& war
     return imported;
 }
 
+// ---- the animation subcommand (task 3.5.2) ------------------------------------------------------
+//
+// PLACED ABOVE runSkeleton, WHICH IS ITSELF ABOVE runTexture, and for the same reason runSkeleton's
+// own do-not-move note below gives: cooker.texture_nothing_written_on_failure pins a source-text
+// ordering inside the region between `ExitCode runTexture(...)` and `ExitCode runMain(...)`, and
+// that check requires `writeTextFileAtomic(args.outputPath` to occur EXACTLY ONCE in it. A fourth
+// subcommand written there would put a second, unrelated occurrence in that region and make
+// "before" ambiguous. This is the furthest point in the file from it. Do not move this function
+// below runTexture.
+//
+// ONE ARTIFACT PER INVOCATION, chosen by --clip, on the skeleton path's terms: a .aeroanim is one
+// clip, and cooking every clip of a multi-clip model in one run would need a naming rule for the
+// outputs that nothing in this pipeline has.
+ExitCode runAnimation(const Args& args) {
+    ExitCode failure = ExitCode::CookError;
+    const std::optional<ImportResult> imported = importModelForCook(args, failure);
+    if (!imported.has_value()) {
+        return failure;
+    }
+
+    // ---- 6. the cook -------------------------------------------------------------------------
+    // The adapter owns every refusal that is about the MODEL (an out-of-range clip index, a
+    // Structure-depth model) and every advisory (the multi-clip notice, a dropped channel); the cook
+    // owns the ones about the BYTES (a duplicate (node, path) pair, a non-monotonic time list, a
+    // count over its cap). Both arrive on one result, so the CLI needs no second implementation of
+    // either.
+    const engine::assets::AnimationCookResult cooked =
+        engine::editor::cookImportedAnimation(imported->model, args.clipIndex, args.guid);
+    // FIRST, so a refusal's warnings are not swallowed by the error path below.
+    reportWarnings("cook", cooked.warnings, cooked.warningTotal);
+    if (cooked.status == engine::assets::AnimationCookStatus::Invalid) {
+        std::cerr << "aero_cooker: error: " << cooked.message << '\n';
+        return ExitCode::CookError;
+    }
+    if (cooked.status == engine::assets::AnimationCookStatus::Truncated) {
+        // Truncated still exits 0: the artifact is COHERENT, merely smaller -- the mesh path's own
+        // reading of Truncated, and the importer's before it.
+        std::cerr << "aero_cooker: warning: cook truncated: " << cooked.message << '\n';
+    }
+
+    // ---- 7. the write. ONLY NOW is the output path touched -----------------------------------
+    // The same primitive, the same reason and the same refusal to create a directory as all three
+    // older subcommands: writeTextFileAtomic is binary on BOTH sides, so a text-mode write cannot
+    // turn a 0x0A inside a float into 0x0D 0x0A on exactly one lane.
+    const std::string_view artifact(reinterpret_cast<const char*>(cooked.bytes.data()), cooked.bytes.size());
+    const std::string writeError = engine::editor::writeTextFileAtomic(args.outputPath, artifact);
+    if (!writeError.empty()) {
+        std::cerr << "aero_cooker: error: cannot write '" << args.outputPath << "': " << writeError << '\n';
+        return ExitCode::IoError;
+    }
+    return ExitCode::Success;
+}
+
 // ---- the skeleton subcommand (task 3.5.1) -------------------------------------------------------
 //
 // PLACED ABOVE runTexture DELIBERATELY, and the reason is a test rather than taste:
@@ -798,14 +898,18 @@ ExitCode runMain(int argc, char** argv) {
         return ExitCode::Success;
     }
     const Args& args = *parsed;
-    // The subcommand split. Task 3.3.2 added the first branch and task 3.5.1 the second; the mesh
-    // path below is still the same sequence it was at 3.3.1, with steps 2-5 now living in
-    // importModelForCook so the skeleton path can share them rather than copy them.
+    // The subcommand split. Task 3.3.2 added the first branch, task 3.5.1 the second and task 3.5.2
+    // the third; the mesh path below is still the same sequence it was at 3.3.1, with steps 2-5 now
+    // living in importModelForCook so the skeleton and animation paths can share them rather than
+    // copy them.
     if (args.subcommand == Subcommand::Texture) {
         return runTexture(args);
     }
     if (args.subcommand == Subcommand::Skeleton) {
         return runSkeleton(args);
+    }
+    if (args.subcommand == Subcommand::Animation) {
+        return runAnimation(args);
     }
 
     // ---- 2-5. the name check, the capped read, Structure, the external budget, Full ----------

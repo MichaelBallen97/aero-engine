@@ -830,6 +830,21 @@ set(_aero_cooker_cases
     # -DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF, and 67 -> 68 with -DAERO_REFLECT_TOOLS=OFF
     # alone, the last two in build directories configured with -G Ninja.
     skeleton_golden_manifest
+    # task 3.5.2 -- the `animation` subcommand's nine arms. They drive the EXISTING
+    # tests/fixtures/assets/skinned.gltf, the tree's only multi-clip glTF (three animations, one per
+    # interpolation mode), so this task commits no new cooker fixture at all. Registered ungated like
+    # every name above them, so the triple moves by the SAME +9 in all three configurations -- a
+    # smaller move in a reduced configuration would mean this block had accidentally grown a gate,
+    # and no test could report that.
+    #
+    # MEASURED at this step's exit, never derived by addition: 144 -> 153 with tools ON, 55 -> 64 with
+    # -DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF, and 68 -> 77 with -DAERO_REFLECT_TOOLS=OFF
+    # alone, the last two in build directories configured FRESH with -G Ninja. The manifest's fourth
+    # arm is a later step's and takes each of those one higher.
+    animation_happy animation_unknown_flag animation_bad_clip
+    animation_no_animation animation_clip_out_of_range
+    animation_guid_written animation_determinism
+    animation_nothing_written_on_failure animation_output_dir_missing
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(
