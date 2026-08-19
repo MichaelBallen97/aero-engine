@@ -53,6 +53,24 @@ include(cmake/golden_rule.cmake)
 # docs/04 testing strategy: doctest suites run through ctest (test presets).
 enable_testing()
 
+# task 3.5.2 (D7): the built-in component headers, named ONCE. Four sites generate reflection
+# artifacts from this list -- engine/scene_serialize (the shipping JSON serializers), editor
+# (the inspector's entt::meta) and the two reflect-gen test targets -- and before this variable they
+# spelled it four times. Three of those four are silently optional: a component added to the editor's
+# list and not the serializer's is registered, inspectable, editable and NOT SAVED, with every test
+# green. In registerBuiltinComponents order (engine/scene/src/transform.cpp), which is also the order
+# every generated aggregator calls its per-header register function in.
+#
+# A component that should be REGISTERED but not SERIALIZED does not fork this variable in place --
+# it introduces a second, differently-named one, so no site ever silently means something other than
+# what it says.
+set(AERO_BUILTIN_COMPONENT_HEADERS
+    ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp       # 1.3.2
+    ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp          # 1.3.3
+    ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp           # 1.3.3 -- two components
+    ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp   # 1.4.1
+)
+
 # Layer order = dependency order (docs/03). The golden rule is physical here:
 # nothing under engine/ or runtime/ may ever reference editor/.
 #

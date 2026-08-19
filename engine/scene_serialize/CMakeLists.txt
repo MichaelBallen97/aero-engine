@@ -23,10 +23,7 @@ target_link_libraries(aero_scene_serialize
 # (light.hpp carries DirectionalLight + PointLight). Same INCLUDE_DIRS the json test uses
 # (tests/CMakeLists.txt) — the libclang PARSE side needs core/scene/reflect headers.
 aero_reflect_generate_json(aero_scene_serialize
-    HEADERS ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp
-            ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp
-            ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp
-            ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp
+    HEADERS ${AERO_BUILTIN_COMPONENT_HEADERS}   # task 3.5.2 (D7): named once, at root scope
     INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
                  "${CMAKE_SOURCE_DIR}/engine/scene/include"
                  "${CMAKE_SOURCE_DIR}/engine/reflect/include")

@@ -213,10 +213,7 @@ if(AERO_REFLECT_TOOLS)
     # set. The entt-using TUs compile UNCONDITIONALLY: with tools OFF nothing is registered, resolve
     # misses, and D12's degradation falls out with zero #if outside editor_reflection.cpp.
     aero_reflect_generate(aero_editor_core
-        HEADERS ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp
+        HEADERS ${AERO_BUILTIN_COMPONENT_HEADERS}   # task 3.5.2 (D7): named once, at root scope
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")

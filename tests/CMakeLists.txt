@@ -662,10 +662,7 @@ if(AERO_REFLECT_TOOLS)
     aero_reflect_generate(aero_reflect_meta_test
         HEADERS reflect-gen/fixtures/component_codegen.hpp
                 reflect-gen/fixtures/component_wiring.hpp
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp  # 1.3.2 — the REAL header
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp     # 1.3.3
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp      # 1.3.3
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp  # 1.4.1
+                ${AERO_BUILTIN_COMPONENT_HEADERS}   # task 3.5.2 (D7) -- the REAL headers, named once
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"      # aero::core PUBLIC dir (D9)
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2 — parse: entity.hpp
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2 — parse: annotations.hpp
@@ -693,10 +690,7 @@ if(AERO_REFLECT_TOOLS)
                 reflect-gen/fixtures/component_limits.hpp   # task 1.2.2 — the D12 numeric-edge fixture
                 reflect-gen/fixtures/component_tag.hpp      # task 1.2.2 review fix — a REAL generated
                                                              # zero-field aeroReadJson, proven end-to-end
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp  # 1.3.2 — the REAL header
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp     # 1.3.3
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp      # 1.3.3
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp  # 1.4.1
+                ${AERO_BUILTIN_COMPONENT_HEADERS}   # task 3.5.2 (D7) -- the REAL headers, named once
                 reflect-gen/fixtures/component_text.hpp     # task 2.2.2 -- the std::string category
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2
