@@ -33,6 +33,7 @@ add_executable(aero_tests
     cooked_skeleton_test.cpp # task 3.5.1 — the .aeroskel container v1: layout, parse, hostile input
     skeleton_cook_test.cpp   # task 3.5.1 — cookSkeleton: canonical order, refusals, byte-exactness
     cooked_animation_test.cpp # task 3.5.2 — the .aeroanim container v1: layout, parse, hostile input
+    animation_cook_test.cpp   # task 3.5.2 — cookAnimation: canonical order, refusals, byte-exactness
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
