@@ -126,7 +126,9 @@ static_assert(sizeof(engine::PointLight) == 5 * sizeof(float));
 static_assert(std::is_trivially_copyable_v<engine::MeshRenderer>);
 static_assert(std::is_standard_layout_v<engine::MeshRenderer>);
 static_assert(std::is_aggregate_v<engine::MeshRenderer>);
-static_assert(sizeof(engine::MeshRenderer) == 4 * sizeof(float));
+// task 3.1.5: 4 (primitive) + 12 (color) + 16 (mesh) + 4 (meshIndex) + 4 pad + 16 (material) = 56.
+static_assert(sizeof(engine::MeshRenderer) == 56);
+static_assert(alignof(engine::MeshRenderer) == 8);
 
 static_assert(std::is_same_v<decltype(engine::projectionMatrix(someCamera(), 1.0f)), engine::Mat4>);
 static_assert(std::is_same_v<decltype(engine::viewMatrix(constWorld(), NULL_ENTITY)), engine::Mat4>);

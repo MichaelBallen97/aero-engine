@@ -904,8 +904,10 @@ elseif(CASE STREQUAL "components_engine_light")
     endif()
 
 elseif(CASE STREQUAL "components_engine_mesh_renderer")
-    # Task 1.4.1: the REAL tool over the REAL engine::MeshRenderer header — one component, two
+    # Task 1.4.1: the REAL tool over the REAL engine::MeshRenderer header — one component, its
     # fields in declaration order, exactly one component, zero unsupported/warnings/errors.
+    # Task 3.1.5 moved the listing from two fields to FIVE: `mesh`/`meshIndex`/`material` are
+    # APPENDED, and declaration order is JSON payload order, so the order check spans all five.
     #
     # DEVIATION from the plan/spec's stated expectation: the tool prints the AS-WRITTEN type
     # spelling (clang_getTypeSpelling), not the canonical one — `std::uint32_t primitive` prints
@@ -920,11 +922,20 @@ elseif(CASE STREQUAL "components_engine_mesh_renderer")
     aero_expect_stdout_contains("${out}" "component engine::MeshRenderer")
     aero_expect_stdout_contains("${out}" "field primitive : std::uint32_t [primitive] [range 0:2]")  # task 2.2.2
     aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3] [color]")  # task 2.2.2
+    # task 3.1.5. The printed spelling is the AS-WRITTEN one, so `Guid` (as spelled inside namespace
+    # engine), never the canonical `engine::Guid` — the same rule std::uint32_t above already shows.
+    # Copied from the real tool's output, not derived.
+    aero_expect_stdout_contains("${out}" "field mesh : Guid [guid]")
+    aero_expect_stdout_contains("${out}" "field meshIndex : std::uint32_t [primitive]")
+    aero_expect_stdout_contains("${out}" "field material : Guid [guid]")
 
-    # declaration order: primitive -> color
+    # declaration order: primitive -> color -> mesh -> meshIndex -> material
     string(FIND "${out}" "field primitive" _p)
     string(FIND "${out}" "field color" _c)
-    if(NOT (_p LESS _c))
+    string(FIND "${out}" "field mesh :" _m)          # "field mesh :" — "field meshIndex" also starts "field mesh"
+    string(FIND "${out}" "field meshIndex" _mi)
+    string(FIND "${out}" "field material" _mat)
+    if(NOT (_p LESS _c AND _c LESS _m AND _m LESS _mi AND _mi LESS _mat))
         message(FATAL_ERROR "case 'components_engine_mesh_renderer': fields not in declaration order:\n${out}")
     endif()
 
