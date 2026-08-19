@@ -53,8 +53,11 @@ inline constexpr std::string_view BLEND_UNCONVERTED_MESSAGE =
 //
 // `expected.blenderVersion` IS LEFT EMPTY ON PURPOSE and provenanceMatches' conditional arm documents
 // why: comparing a version nothing probed would require probing, and a probe is a process. So this
-// function SPAWNS NOTHING, EVER -- AC-24's "no second BlenderService" is held by construction here,
-// and `git grep -c 'BlenderService ' -- editor/src` must not move for this task.
+// function SPAWNS NOTHING, EVER -- AC-24's "no second Blender service" is held by construction here.
+// The mechanical check is a grep for that service's type name over editor/src, whose count must not
+// move for this task; the name is therefore deliberately NOT spelled anywhere in this pair, because
+// that grep does not strip comments and a prose mention would turn it red for no violation (the
+// currentHostOs / platform-macro lesson, one subsystem over).
 struct BlendArtifactResult {
     bool ok = false;
     std::string message;       // "" iff ok; BLEND_UNCONVERTED_MESSAGE on every miss

@@ -43,6 +43,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>  // task 3.1.5: std::exchange -- the pending slot drop's one-frame life
 
 namespace engine::editor {
 
@@ -221,12 +222,23 @@ template <typename Enum, std::size_t N, typename LabelFn>
     return changed;
 }
 
+// task 3.1.5: the hierarchy panel's peek, one payload type over and one TU over -- the established
+// one-per-TU rule. It never decodes by hand: every byte goes to decodeAssetDragPayload.
+[[nodiscard]] std::optional<AssetDragPayload> peekAssetPayload() {
+    const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+    if (payload == nullptr || !payload->IsDataType(ASSET_PAYLOAD_TYPE)) {
+        return std::nullopt;
+    }
+    return decodeAssetDragPayload(payload->Data, payload->DataSize);
+}
+
 // ---- one texture slot (AC-20/AC-21/AC-22) --------------------------------------------------------
 // PushID/PopID are 1:1 across EVERY path through this function -- no continue, no break, no return
 // between them (an unbalanced id stack is an IM_ASSERT abort in the Debug ImGui build).
 [[nodiscard]] bool drawSlotSection(std::size_t index, MaterialDocument& form, const AssetDatabase* database,
                                    std::string& search, std::string& scratch, PreviewTextureState textureState,
-                                   std::string_view textureNotice) {
+                                   std::string_view textureNotice,
+                                   std::optional<MaterialSlotTextureDrop>& observedDrop) {
     bool changed = false;
     ImGui::PushID(static_cast<int>(index));
     scratch = std::string(materialSlotLabel(index));
@@ -314,6 +326,35 @@ template <typename Enum, std::size_t N, typename LabelFn>
                 }
             }
             ImGui::EndCombo();  // ASYMMETRIC: only because BeginCombo returned true
+        }
+        // task 3.1.5: the slot drop target, attached to the combo widget just submitted. End()
+        // restores g.LastItemData, so the combo is the last item in BOTH branches above and a plain
+        // BeginDragDropTarget() attaches correctly -- no imgui_internal.h is needed here.
+        //
+        // An UNTARGETED panel refuses at peek for free: the whole slot section is not drawn at all
+        // when the session has no document, so there is no target to accept on.
+        if (ImGui::BeginDragDropTarget()) {
+            if (const std::optional<AssetDragPayload> asset = peekAssetPayload(); asset.has_value()) {
+                const auto kind = static_cast<AssetKind>(asset->kind);
+                if (classifyAssetDrop(kind, DropSurface::MaterialSlot, /*targetHasMeshRenderer=*/false) ==
+                        DropAction::BindTextureSlot &&
+                    ImGui::AcceptDragDropPayload(ASSET_PAYLOAD_TYPE) != nullptr) {
+                    // EXACTLY the picker's own idiom above: a REBIND keeps the slot's sampler tokens,
+                    // a FRESH bind takes the format's defaults, which MaterialTextureSlot{} already
+                    // is. Then `changed = true` and the existing frame-copy -> pendingDocument ->
+                    // session.edit -> dirty -> Apply river does the rest. NO new write path and NO new
+                    // session surface: saveMaterialFile stays the ONE .aeromat writer (INV-D7).
+                    MaterialTextureSlot bound = slot.has_value() ? *slot : MaterialTextureSlot{};
+                    bound.guid = asset->guid;
+                    slot = bound;
+                    changed = true;
+                    // Reported so tick() sees the SAME thing for a real gesture as for the seam: the
+                    // drain's only job here is the vanished-guid refusal WARN, and a warning that
+                    // fired only for driven drops would be a warning nobody ever sees.
+                    observedDrop = MaterialSlotTextureDrop{.slot = index, .textureGuid = asset->guid};
+                }
+            }
+            ImGui::EndDragDropTarget();  // ONLY because BeginDragDropTarget returned true
         }
 
         ImGui::BeginDisabled(!slot.has_value());  // 1:1 with EndDisabled; nothing exits between them
@@ -429,6 +470,11 @@ void MaterialPanel::servicePreview(MaterialSession& session, const AssetDatabase
 void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/Project read (the
                                                          // ImportDetailsPanel "context is ignored"
                                                          // precedent)
+    // task 3.1.5: the seam's pending slot drop is consumed HERE, at the top, BEFORE any early return
+    // -- a one-frame life whatever path this draw takes. Consuming it at the fold point instead let a
+    // drop driven at an UNTARGETED panel survive until some later material was selected and then bind
+    // a slot nobody asked for, which is the one thing this channel must never do (found by DP12).
+    const std::optional<MaterialSlotTextureDrop> slotDrop = std::exchange(pendingSlotDrop, std::nullopt);
     if (sessionPtr == nullptr) {
         // The very first frame of a session's life: EditorApp::tick() reconciles BEFORE drawShellUi,
         // so in practice this is reached only with no panel registration at all -- but a null pointer
@@ -515,12 +561,23 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
     // the last one recorded (ImportDetailsPanel's own recorded shape).
     MaterialDocument form = *document;
     bool changed = drawScalarRows(form, nameDraft, nameEditing, labelScratch);
+    // task 3.1.5, the SEAM's own fold. requestSlotTextureDrop cannot write the frame copy -- there is
+    // no frame copy outside onDraw -- so it records here and the NEXT onDraw folds it in at exactly
+    // the point the picker would have written it, before the slot section runs. That is what makes a
+    // driven drop and a real one converge on the same `changed = true`.
+    if (slotDrop.has_value() && slotDrop->slot < SLOT_COUNT) {
+        std::optional<MaterialTextureSlot>& target = documentSlotAt(form, slotDrop->slot);
+        MaterialTextureSlot bound = target.has_value() ? *target : MaterialTextureSlot{};
+        bound.guid = slotDrop->textureGuid;
+        target = bound;
+        changed = true;
+    }
     ImGui::SeparatorText("Textures");
     for (std::size_t i = 0; i < SLOT_COUNT; ++i) {
         // The preview is READ here, never driven: slotTextureState/slotNotice are const reads of state
         // the service pass owns, exactly like nativeColorTexture below (INV-5).
         changed = drawSlotSection(i, form, databasePtr, slotSearch[i], labelScratch, preview.slotTextureState(i),
-                                  preview.slotNotice(i)) ||
+                                  preview.slotNotice(i), observedSlotDrop) ||
                   changed;
     }
     if (changed && !(form == *document)) {

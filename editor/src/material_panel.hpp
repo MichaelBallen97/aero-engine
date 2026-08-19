@@ -12,6 +12,7 @@
 // Every control writes into a per-frame COPY of the session document and, if that copy differs,
 // records it as ONE pending whole-document edit -- last-writer-wins, the house's pending-action
 // shape. The document is small, and one slot cannot half-apply the way a per-field channel can.
+#include <aero/editor/asset_drag.hpp>  // task 3.1.5: MaterialSlotTextureDrop
 #include <aero/editor/material_session.hpp>
 #include <aero/editor/panel.hpp>
 
@@ -81,6 +82,20 @@ public:
         return r;
     }
 
+    // ---- task 3.1.5: the slot texture drop ---------------------------------------------------------
+    // THE ONE ASYMMETRY among the three drop surfaces, and it is deliberate: this drop does not travel
+    // to tick() as an ACTION. The accept mutates the frame copy and rides the existing pendingDocument
+    // -> session.edit -> dirty -> Apply river, so nothing new writes an .aeromat. The seam records a
+    // pending slot drop that the panel's own NEXT onDraw folds into the frame copy; the taker exists
+    // ONLY so tick() can observe the request and log a vanished-guid refusal.
+    void requestSlotTextureDrop(std::size_t slot, Guid textureGuid) noexcept {
+        pendingSlotDrop = MaterialSlotTextureDrop{.slot = slot, .textureGuid = textureGuid};
+        observedSlotDrop = pendingSlotDrop;
+    }
+    [[nodiscard]] std::optional<MaterialSlotTextureDrop> takeAssetDropRequest() noexcept {
+        return std::exchange(observedSlotDrop, std::nullopt);
+    }
+
     // ---- the preview's service pass (task 3.4.2, D6/INV-5) ----------------------------------------
     // Called from EditorApp::tick()'s POST-DRAW SLOT and nowhere else -- the ViewportPanel::renderScene
     // mould, not a second path into a subsystem. It drains the session's documentChanged one-shot and
@@ -108,6 +123,10 @@ private:
     std::optional<MaterialDocument> pendingDocument;
     bool applyRequested = false;
     bool revertRequested = false;
+    // task 3.1.5. `pendingSlotDrop` is the SEAM's channel, folded into the frame copy by the next
+    // onDraw; `observedSlotDrop` is what tick() drains, written by BOTH the seam and a real accept.
+    std::optional<MaterialSlotTextureDrop> pendingSlotDrop;
+    std::optional<MaterialSlotTextureDrop> observedSlotDrop;
     // ---- UI-ONLY state, never model state --------------------------------------------------------
     // The name field's draft. InputText commits on deactivate-after-edit (AC-17), and on THAT frame
     // ImGui reports no per-frame change, so a form copy rebuilt from the session would already have

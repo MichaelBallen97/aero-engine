@@ -389,8 +389,10 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             // task 3.1.5 (D14/D-20). The row is chosen by KIND, never by component or field name --
             // the standing rule that keeps the inspector generic. NO InputText: a hand-typed guid is
             // not a workflow anybody needs and it would need parse-error UI. NO DROP TARGET EITHER:
-            // assignment happens on the Hierarchy row and in the viewport, which is why
-            // `git grep -n 'BeginDragDropTarget' -- editor/src/inspector_panel.cpp` must stay empty.
+            // assignment happens on the Hierarchy row and in the viewport, and IR8 pins that by
+            // scanning this file's own code for ImGui's drop-target entry points. Their names are
+            // deliberately not spelled here: that pin strips comments, but the plain grep a reader
+            // would reach for does not, and a prose mention would read as a violation.
             //
             // Both decisions -- the sentence and whether Clear is live -- come from ONE pure call, so
             // this panel holds no second copy of either and a tier-0 case asserts what is drawn here.

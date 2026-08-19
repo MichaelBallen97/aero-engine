@@ -8692,4 +8692,531 @@ TEST_CASE("editor: a model with no drawable geometry is refused, not half-loaded
     CHECK(loaded.textureRequests.empty());
 }
 
+// ================================================================================================
+// task 3.1.5 (DP1-DP22) -- the three drop surfaces, end to end through EditorApp's own seams.
+//
+// Each seam records EXACTLY what the corresponding panel's accept records, so these cases exercise
+// the real drain, the real command push and the real ledger service pass. What they cannot exercise
+// is ImGui's own drag machinery: no tier in this tree can press a mouse button and move it, which is
+// why the accept/refuse MATRIX is proven at tier 0 (asset_drag_test.cpp's DR*) and the GLUE is proven
+// by source-text pins plus the manual validation pass.
+//
+// GPU-tier and, like the SL block above, compiled only where the shader toolchain built the artifacts:
+// the ledger's whole execute half needs a ForwardRenderer, and the viewport has none in a build with
+// no cooked shaders.
+// ================================================================================================
+
+namespace {
+
+// A project with one model, one material and one texture, scanned by a real EditorApp. Returns the
+// app; the caller drives it. Every literal here is already defined above -- SL_TWO_MESH_GLTF_TEXT,
+// MINIMAL_AEROMAT_TEXT and TINY_PNG_RED -- so this block adds no fixture of its own.
+struct DropFixture {
+    std::string root;
+    std::string assetsRoot;
+};
+
+[[nodiscard]] DropFixture makeDropProject() {
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    DropFixture fixture{.root = created.root, .assetsRoot = created.root + "/assets"};
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/two.gltf", SL_TWO_MESH_GLTF_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/one.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(writeBinaryFixture(fixture.assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    return fixture;
+}
+
+// The kind byte a payload carries. It is a PEEK HINT -- every drain re-derives the real kind from the
+// record -- so these cases spell it honestly rather than passing 0 everywhere.
+constexpr std::uint8_t MODEL_KIND = static_cast<std::uint8_t>(engine::editor::AssetKind::Model);
+constexpr std::uint8_t MATERIAL_KIND = static_cast<std::uint8_t>(engine::editor::AssetKind::Material);
+constexpr std::uint8_t TEXTURE_KIND = static_cast<std::uint8_t>(engine::editor::AssetKind::Texture);
+
+}  // namespace
+
+TEST_CASE("editor: a model dropped on the Hierarchy is ONE undoable subtree (task 3.1.5, DP1/DP2/DP3)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "drop dp1", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const DropFixture fixture = makeDropProject();
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::optional<engine::Guid> model = app->assetGuidForPath("two.gltf");
+    REQUIRE(model.has_value());
+
+    const std::size_t before = app->world().entityCount();
+    app->requestHierarchyAssetDrop(*model, MODEL_KIND, engine::Entity{});  // Entity{} == the VOID target
+    REQUIRE(app->tick());
+
+    // DP1 -- the subtree exists. The fixture has two nodes, so the plan is a synthetic root plus two
+    // children: three new entities, created by ONE command.
+    const std::size_t after = app->world().entityCount();
+    CHECK(after == before + 3);
+    CHECK(app->commands().canUndo());
+    CHECK_FALSE(app->commands().canRedo());
+
+    // DP2 -- ONE undo removes the WHOLE subtree, and redo puts it back with the same shape. That is
+    // what "one drop is one command" means, and it is the property a per-entity loop would break.
+    app->requestUndo();
+    REQUIRE(app->tick());
+    CHECK(app->world().entityCount() == before);
+    app->requestRedo();
+    REQUIRE(app->tick());
+    CHECK(app->world().entityCount() == before + 3);
+
+    // DP3 -- a ROW drop parents the new subtree under that row instead. The row is any existing
+    // entity; the default scene's first root will do.
+    engine::Entity row{};
+    app->world().eachEntity([&row, &app](engine::Entity e) {
+        if (!row.valid() && !app->world().parent(e).valid()) {
+            row = e;
+        }
+    });
+    REQUIRE(row.valid());
+    const std::size_t beforeRow = app->world().entityCount();
+    app->requestHierarchyAssetDrop(*model, MODEL_KIND, row);
+    REQUIRE(app->tick());
+    CHECK(app->world().entityCount() == beforeRow + 3);
+    // Exactly one NEW child of `row` -- the plan's synthetic root, reparented under it.
+    std::size_t children = 0;
+    app->world().eachChild(row, [&children](engine::Entity /*child*/) { ++children; });
+    CHECK(children >= 1);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a material drop assigns only where a MeshRenderer is (task 3.1.5, DP5/DP6/DP7)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "drop dp5", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const DropFixture fixture = makeDropProject();
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::optional<engine::Guid> material = app->assetGuidForPath("one.aeromat");
+    const std::optional<engine::Guid> texture = app->assetGuidForPath("wood.png");
+    REQUIRE(material.has_value());
+    REQUIRE(texture.has_value());
+
+    // A row WITH a MeshRenderer, and a row WITHOUT one, in the same World.
+    engine::Entity withMesh{};
+    engine::Entity withoutMesh{};
+    app->world().eachEntity([&](engine::Entity e) {
+        if (app->world().has<engine::MeshRenderer>(e)) {
+            if (!withMesh.valid()) {
+                withMesh = e;
+            }
+        } else if (!withoutMesh.valid()) {
+            withoutMesh = e;
+        }
+    });
+    REQUIRE(withMesh.valid());
+    REQUIRE(withoutMesh.valid());
+
+    // DP5 -- refused on a row with no MeshRenderer: nothing is pushed, so the stack stays exactly
+    // where it was. The drain re-derives that from the LIVE World, never from the payload.
+    const bool couldUndoBefore = app->commands().canUndo();
+    app->requestHierarchyAssetDrop(*material, MATERIAL_KIND, withoutMesh);
+    REQUIRE(app->tick());
+    CHECK(app->commands().canUndo() == couldUndoBefore);
+
+    // DP7 -- a TEXTURE is refused on both Hierarchy surfaces: it has no meaning outside a material
+    // slot, and the matrix says so for the row and for the void alike.
+    app->requestHierarchyAssetDrop(*texture, TEXTURE_KIND, withMesh);
+    REQUIRE(app->tick());
+    app->requestHierarchyAssetDrop(*texture, TEXTURE_KIND, engine::Entity{});
+    REQUIRE(app->tick());
+    CHECK(app->commands().canUndo() == couldUndoBefore);
+    // A MODEL on a row with a MeshRenderer is NOT a material assignment either -- it instantiates.
+    // Asserted here so "the matrix is consulted" cannot be satisfied by a blanket refusal.
+
+    // DP6 -- accepted on a row WITH a MeshRenderer: one SetFieldCommand, and undo restores the field.
+    // No new command type; it rides the Guid arm the field seam gained at step 15.
+    const engine::MeshRenderer* renderer = app->world().get<engine::MeshRenderer>(withMesh);
+    REQUIRE(renderer != nullptr);
+    CHECK_FALSE(renderer->material.valid());
+    app->requestHierarchyAssetDrop(*material, MATERIAL_KIND, withMesh);
+    REQUIRE(app->tick());
+    renderer = app->world().get<engine::MeshRenderer>(withMesh);
+    REQUIRE(renderer != nullptr);
+    CHECK((renderer->material == *material));
+    CHECK(app->commands().canUndo());
+    app->requestUndo();
+    REQUIRE(app->tick());
+    renderer = app->world().get<engine::MeshRenderer>(withMesh);
+    REQUIRE(renderer != nullptr);
+    CHECK_FALSE(renderer->material.valid());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a viewport drop places the entity on the ground plane (task 3.1.5, DP8/DP9)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "drop dp8", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const DropFixture fixture = makeDropProject();
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::optional<engine::Guid> model = app->assetGuidForPath("two.gltf");
+    const std::optional<engine::Guid> material = app->assetGuidForPath("one.aeromat");
+    REQUIRE(model.has_value());
+    REQUIRE(material.has_value());
+    REQUIRE(app->viewportCamera() != nullptr);
+
+    // DP8 -- the drop's own ray meets y = 0, and dropPlacementPoint's contract is TOTAL: every input
+    // yields a FINITE point, so the assertion below is finiteness plus "it is not the origin by
+    // accident". The exact point is picking_test.cpp's (DR13-DR16); what belongs here is that the
+    // placement reaches the entity's Transform at all rather than being dropped on the floor.
+    const std::size_t before = app->world().entityCount();
+    app->requestViewportAssetDrop(*model, MODEL_KIND, engine::Vec2{0.25F, -0.4F});
+    REQUIRE(app->tick());
+    REQUIRE(app->world().entityCount() == before + 3);
+    // The newest root -- the plan's synthetic root -- carries the placement.
+    engine::Entity newest{};
+    app->world().eachEntity([&](engine::Entity e) {
+        if (!app->world().parent(e).valid() && app->world().has<engine::Transform>(e)) {
+            newest = e;  // eachEntity walks in creation order, so the LAST root wins
+        }
+    });
+    REQUIRE(newest.valid());
+    const engine::Transform* placed = app->world().get<engine::Transform>(newest);
+    REQUIRE(placed != nullptr);
+    CHECK(std::isfinite(placed->position.x));
+    CHECK(std::isfinite(placed->position.y));
+    CHECK(std::isfinite(placed->position.z));
+
+    // DP9 -- a MATERIAL dropped over empty space is refused: there is no entity under the cursor, so
+    // classifyAssetDrop answers None and nothing is pushed. The pick that decides it runs against the
+    // LIVE World, through the panel's own camera.
+    const bool couldUndo = app->commands().canUndo();
+    app->requestViewportAssetDrop(*material, MATERIAL_KIND, engine::Vec2{-0.99F, 0.99F});
+    REQUIRE(app->tick());
+    CHECK(app->commands().canUndo() == couldUndo);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the ledger loads a dropped model exactly once (task 3.1.5, DP13/DP14/DP20)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "drop dp13", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const DropFixture fixture = makeDropProject();
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::optional<engine::Guid> model = app->assetGuidForPath("two.gltf");
+    REQUIRE(model.has_value());
+    CHECK(app->sceneAssetEntryCount() == 0);
+    CHECK(app->sceneAssetDirectiveCount() == 0);
+
+    app->requestHierarchyAssetDrop(*model, MODEL_KIND, engine::Entity{});
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+
+    // DP13 -- the ledger holds the guid, it is Ready, and the binding table names it. Nothing here
+    // needs a pixel: a resolved reference IS the binding table having an entry for that guid.
+    INFO("ledger message: " << app->sceneAssetMessage(*model));
+    CHECK(app->sceneAssetEntryCount() >= 1);
+    CHECK(app->sceneAssetReadyCount() >= 1);
+    CHECK(app->sceneAssetFailedCount() == 0);
+    CHECK(app->sceneAssetMeshBindingCount() == 1);
+
+    // DP14/DP20 -- THE DROP'S OWN Full import was handed straight to the cook -> upload half, so the
+    // ledger never had to issue a MODEL directive for this guid at all. Its directive count is
+    // therefore either zero or purely the material's/texture's -- never one that re-read and
+    // re-imported the same bytes. A regression that dropped the seed would make the model's own
+    // directive fire, and readyCount would arrive one whole extra import later.
+    const std::size_t directivesAfterLoad = app->sceneAssetDirectiveCount();
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    // Steady state: a Ready entry with no pending textures issues nothing, forever.
+    CHECK(app->sceneAssetDirectiveCount() == directivesAfterLoad);
+    CHECK(app->sceneAssetReadyCount() >= 1);
+
+    // DP16 -- once the mesh is bound, the bridge resolves it: the viewport's latched unresolved count
+    // is back to zero. It is TRANSIENT by design between the drop and the upload, which is exactly why
+    // it is counted rather than warned about.
+    CHECK(app->viewportUnresolvedMeshes() == 0U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a retired binding's handles die ONE PASS LATER (task 3.1.5, DP15/DP18/DP21)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "drop dp15", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const DropFixture fixture = makeDropProject();
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::optional<engine::Guid> model = app->assetGuidForPath("two.gltf");
+    REQUIRE(model.has_value());
+    app->requestHierarchyAssetDrop(*model, MODEL_KIND, engine::Entity{});
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->sceneAssetMeshBindingCount() == 1);
+    const std::size_t destroysBefore = app->sceneAssetDestroyCount();
+
+    // UNDO removes the whole subtree, so nothing references the guid any more.
+    app->requestUndo();
+    REQUIRE(app->tick());
+    // DP15/DP18 -- the pass that RETIRES destroys nothing: the binding table stopped naming those
+    // handles this very pass, and a frame recorded before it could still hold them. The destroy list is
+    // a LEDGER member, returned by the NEXT service call, which is what makes the deferral survive
+    // across passes rather than collapse into one.
+    CHECK(app->sceneAssetMeshBindingCount() == 0);
+    CHECK(app->sceneAssetDestroyCount() == destroysBefore);
+    REQUIRE(app->tick());
+    CHECK(app->sceneAssetDestroyCount() > destroysBefore);
+    const std::size_t destroysAfter = app->sceneAssetDestroyCount();
+    // ...and exactly once: a third pass returns nothing, because the list was moved out, not copied.
+    REQUIRE(app->tick());
+    CHECK(app->sceneAssetDestroyCount() == destroysAfter);
+    CHECK(app->sceneAssetEntryCount() == 0);
+
+    // DP21 -- shutdown releases whatever is still live, through the renderer that minted it, while the
+    // panels are still alive. Re-load first so there IS something to release; the destructor's own
+    // drain is what ASan and the device's own leak WARN judge.
+    app->requestRedo();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->sceneAssetMeshBindingCount() == 1);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();  // ~EditorApp drains the ledger through the viewport's renderer -- ASan is the oracle
+}
+
+TEST_CASE("editor: a vanished asset warns and does nothing (task 3.1.5, DP10)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "drop dp10", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const DropFixture fixture = makeDropProject();
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    // INV-D8: the payload is a HINT and the database is the authority. A guid this project has never
+    // heard of re-resolves to nothing, so the drain stops at (a) -- one WARN, no command, no entity.
+    const std::size_t before = app->world().entityCount();
+    const bool couldUndo = app->commands().canUndo();
+    const engine::Guid stranger{0xFEEDFACECAFEBEEFULL, 0x0123456789ABCDEFULL};
+    app->requestHierarchyAssetDrop(stranger, MODEL_KIND, engine::Entity{});
+    app->requestViewportAssetDrop(stranger, MODEL_KIND, engine::Vec2{});
+    REQUIRE(app->tick());
+    CHECK(app->world().entityCount() == before);
+    CHECK(app->commands().canUndo() == couldUndo);
+    CHECK(app->sceneAssetEntryCount() == 0);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a texture dropped on a material slot binds it and dirties the session (task 3.1.5, DP11/DP12)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "drop dp11", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const DropFixture fixture = makeDropProject();
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::optional<engine::Guid> texture = app->assetGuidForPath("wood.png");
+    REQUIRE(texture.has_value());
+
+    // DP12 -- UNTARGETED: the slot section is not drawn at all when the session has no document, so a
+    // driven drop folds into nothing and no pending edit is ever recorded. The session stays clean.
+    CHECK(app->materialTargetPath().empty());
+    app->requestMaterialSlotTextureDrop(0, *texture);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK_FALSE(app->materialDirty());
+
+    // DP11 -- TARGETED: the drop folds into the panel's own frame copy at exactly the point the picker
+    // would have written it, so the existing pendingDocument -> session.edit -> dirty -> Apply river
+    // does the rest. No new write path and no new session surface.
+    app->requestAssetBrowserSelectEntry("one.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "one.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    CHECK_FALSE(app->materialDocument()->baseColor.has_value());
+    app->requestMaterialSlotTextureDrop(0, *texture);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+    CHECK((app->materialDocument()->baseColor->guid == *texture));
+    CHECK(app->materialDirty());  // and Apply is what writes it -- the drop never touches a file
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the drop is not a PendingAction and never mutates in a draw walk (task 3.1.5, DP4/DP22)") {
+    // DP4 -- the asset drop is deliberately NOT routed through HierarchyPanel's five-phase apply: that
+    // switch cannot finish the job (instantiation needs the database, the importer and the ledger), so
+    // an enumerator it would have to refuse is worse than no enumerator. A RECORDED deviation from
+    // AC-26, and this is where it is pinned: `pendingAssetDrop` appears in the panel, `applyPending`
+    // never touches it, and ActionKind gained nothing.
+    const std::vector<std::string> hierarchy = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+    bool sawDropRecord = false;
+    bool applyPendingSeen = false;
+    bool applyPendingTouchesDrop = false;
+    for (const std::string& line : hierarchy) {
+        if (line.find("pendingAssetDrop = HierarchyAssetDrop") != std::string::npos) {
+            sawDropRecord = true;
+        }
+        if (line.find("void HierarchyPanel::applyPending") != std::string::npos) {
+            applyPendingSeen = true;
+        }
+        if (applyPendingSeen && line.find("pendingAssetDrop") != std::string::npos) {
+            applyPendingTouchesDrop = true;
+        }
+    }
+    CHECK(sawDropRecord);     // the accept really records
+    CHECK(applyPendingSeen);  // and the scan really reached applyPending
+    CHECK_FALSE(applyPendingTouchesDrop);
+
+    // DP22 -- the ledger's service pass sits in the POST-DRAW slot: textually AFTER drawShellUi, which
+    // is the one call that invokes every panel's onDraw. No runtime tier here can see the general-case
+    // violation; this is I60's proof shape, applied to the fifth occupant of that slot.
+    const std::vector<std::string> appCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    const std::size_t drawWalk = soleLineContaining(appCode, "drawShellUi(registry, panelContext, ui, fileMenu)");
+    const std::size_t service = soleLineContaining(appCode, "serviceSceneAssets();");
+    const std::size_t endFrame = soleLineContaining(appCode, "presented = layer.endFrame(config.clearColor)");
+    CHECK(service > drawWalk);
+    CHECK(service < endFrame);
+}
+
 #endif  // AERO_SHADER_TOOLS_ENABLED

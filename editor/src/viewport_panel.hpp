@@ -5,15 +5,18 @@
 //                   before ImGuiLayer::endFrame(): records + submits the offscreen scene pass.
 // Never call renderScene() from inside a draw walk, and never touch ImGui inside it.
 #include <aero/core/vfs.hpp>
+#include <aero/editor/asset_drag.hpp>  // task 3.1.5: AssetDragPayload, ViewportAssetDrop
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/gizmo.hpp>  // task 2.3.3: GizmoMode, for the latched mode member
 #include <aero/editor/panel.hpp>
+#include <aero/editor/scene_bounds.hpp>       // task 3.1.5: MeshBoundsLookup, borrowed by the three consumers
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
 #include <aero/render/render_target.hpp>
 #include <aero/scene_render/scene_renderer.hpp>
 
 #include <cstdint>
 #include <optional>
+#include <utility>  // std::exchange -- the one-shot taker's own idiom
 #include <vector>
 
 namespace engine::rhi {
@@ -44,6 +47,44 @@ public:
     [[nodiscard]] EditorCamera& camera() noexcept;
     [[nodiscard]] const EditorCamera& camera() const noexcept;
 
+    // ---- task 3.1.5 ---------------------------------------------------------------------------
+    // The aspect the LAST drawn frame used, so tick() can build the same drop ray this panel would.
+    [[nodiscard]] float aspect() const noexcept { return lastAspect; }
+
+    // This panel's own ForwardRenderer and its binding table. NULL when the panel is Unavailable (the
+    // SceneRenderer is a std::optional and initialization is one-shot and latched). A MeshHandle and a
+    // MaterialHandle are PER-ForwardRenderer, so the scene-asset ledger MUST mint its handles on the
+    // renderer that draws them -- these two accessors are what make that possible without moving
+    // SceneRenderer ownership out of this panel.
+    [[nodiscard]] render::ForwardRenderer* sceneForwardRenderer() noexcept;
+    [[nodiscard]] scene_render::AssetBindingTable* sceneAssetBindings() noexcept;
+
+    // The MeshBoundsLookup the ledger publishes each service pass. BORROWED, never owned; valid until
+    // the next publish. Consumed by picking, by framing and by the highlight -- ALL THREE OR NONE
+    // (INV-D6), which is why it is one member read by one accessor rather than three parameters.
+    void setMeshBounds(const MeshBoundsLookup* lookup) noexcept { meshBounds = lookup; }
+
+    // The last scene pass's two unresolved counts, LATCHED inside SceneRenderer::render: buildRenderView
+    // runs there and its RenderView does not outlive that call. Zero when no scene pass has run.
+    [[nodiscard]] std::uint32_t lastUnresolvedMeshes() const noexcept;
+    [[nodiscard]] std::uint32_t lastUnresolvedMaterials() const noexcept;
+
+    // The entity under an NDC point, through THIS panel's camera, aspect, last image size and published
+    // mesh bounds. Public so the DRAIN asks the identical question the accept-time peek asked -- which
+    // is what makes the seam below and a real drop indistinguishable downstream, and is why no picked
+    // entity is carried across frames in a member.
+    [[nodiscard]] Entity pickAt(const World& world, Vec2 ndc) const;
+
+    // The drop one-shot, drained by tick(). The panel RECORDS and never acts: nothing here mutates the
+    // World or the Selection, which is what keeps AcceptDragDropPayload's frame semantics from
+    // mattering.
+    [[nodiscard]] std::optional<ViewportAssetDrop> takeAssetDropRequest() noexcept {
+        return std::exchange(pendingAssetDrop, std::nullopt);
+    }
+    void requestAssetDrop(AssetDragPayload payload, Vec2 ndc) noexcept {
+        pendingAssetDrop = ViewportAssetDrop{.payload = payload, .ndc = ndc};
+    }
+
 private:
     enum class Status : std::uint8_t { Uninitialized, Ready, Unavailable };
 
@@ -61,6 +102,10 @@ private:
     // precedent). updateGizmo is a member because it needs lastAspect, editorCamera and `gesture`.
     void updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered);
     void drawGizmoBar();  // takes nothing: everything it needs is a member (A13)
+
+    // task 3.1.5: the custom drop target's whole body, a member so the ImGui glue stays in one place.
+    // PEEK -> classify -> only then accept, so an illegal drop draws no highlight rect.
+    void acceptViewportAssetDrop(PanelContext& context, Vec2 imageOrigin, Vec2 avail);
 
     rhi::Device* device = nullptr;  // non-owning; outlives the panel (EditorApp owns both)
     VirtualFileSystem shaderVfs;    // mounted once at init (AERO_SHADERS_DIR, D-user-1)
@@ -93,6 +138,12 @@ private:
                                     // with whether a gizmo actually drew.
     bool gizmoWasUsing = false;     // previous frame's IsUsing(), for gizmoDragEdge (D22)
     bool gizmoWarnLatched = false;  // D12: one WARN per drag, not one per frame
+
+    // Task 3.1.5.
+    const MeshBoundsLookup* meshBounds = nullptr;       // published by EditorApp, borrowed, never owned
+    Vec2 lastImageSizePoints{};                         // the last drawn image rect's size, POINTS -- what
+                                                        // pickAt needs for the screen-space disc radius
+    std::optional<ViewportAssetDrop> pendingAssetDrop;  // drained by tick(), never here
 };
 
 }  // namespace engine::editor
