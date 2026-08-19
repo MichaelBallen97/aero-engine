@@ -16,7 +16,9 @@
 
 #include <aero/render/render.hpp>  // Frame, ForwardRenderer, RenderView, MeshInstance, PointLightData, rhi::Extent2D
 #include <aero/scene/world.hpp>    // World, Entity
+#include <aero/scene_render/asset_bindings.hpp>  // task 3.1.5 — AssetBindingTable, MeshBinding
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -56,8 +58,19 @@ struct RenderViewScratch {
 // informational either way, which is what a future Game view (Phase 4) will want. When null (the
 // default), behaviour is unchanged in EVERY observable respect, including the 0-camera early return
 // that skips the light walk.
+//
+// `bindings` (task 3.1.5): the resolution table for MeshRenderer::mesh / ::material. DEFAULTED AND
+// LAST, so every caller written before 3.1.5 -- both samples and every existing test -- compiles and
+// behaves IDENTICALLY (INV-D3). With `bindings == nullptr` the walk is byte-equivalent to the
+// pre-3.1.5 walk for every input: an entity whose `mesh` is NIL takes the primitive path statement for
+// statement, and an entity whose `mesh` is VALID emits nothing and adds one to
+// RenderView::unresolvedMeshes -- a state no pre-3.1.5 input can reach, since MeshRenderer had no
+// `mesh` field to fill. A null table and a missing entry are NOT errors: they are the ordinary
+// in-flight state between a drop and the editor ledger's upload, which is why they are COUNTED and
+// never warned.
 [[nodiscard]] render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi::Extent2D viewport,
-                                                 const render::CameraView* cameraOverride = nullptr);
+                                                 const render::CameraView* cameraOverride = nullptr,
+                                                 const AssetBindingTable* bindings = nullptr);
 
 // Room for future knobs (ambient override, max lights, ...); v0 uses defaults.
 struct SceneRendererConfig {};
@@ -88,11 +101,34 @@ public:
     // both moot — while the directional and point-light WARNs are UNAFFECTED.
     void render(World& world, render::Frame& frame, const render::CameraView* cameraOverride = nullptr);
 
+    // ---- task 3.1.5 -----------------------------------------------------------------------------
+    // The owned ForwardRenderer. A MeshHandle and a MaterialHandle are PER-ForwardRenderer, so
+    // whoever fills `bindings()` MUST mint its handles on THIS renderer -- that is the whole reason
+    // this accessor exists, and it is what lets the editor's ledger own the upload without owning the
+    // SceneRenderer.
+    [[nodiscard]] render::ForwardRenderer& renderer() noexcept;
+    [[nodiscard]] const render::ForwardRenderer& renderer() const noexcept;
+    // The resolution table render() threads into buildRenderView. Filled from outside; never cleared
+    // here.
+    [[nodiscard]] AssetBindingTable& bindings() noexcept;
+    [[nodiscard]] const AssetBindingTable& bindings() const noexcept;
+    // The two diagnostics of the LAST render(), LATCHED -- buildRenderView's RenderView does not
+    // outlive that call. Zero until the first render(). Deliberately NOT WARNed: see render()'s own
+    // comment and RenderView's.
+    [[nodiscard]] std::uint32_t lastUnresolvedMeshes() const noexcept;
+    [[nodiscard]] std::uint32_t lastUnresolvedMaterials() const noexcept;
+
 private:
     explicit SceneRenderer(render::ForwardRenderer&& fwd) noexcept;  // private — create() move-constructs
 
     render::ForwardRenderer forward;
     RenderViewScratch scratch;
+    // The member names differ from the accessor names on purpose -- the house rule for an
+    // accessor/member collision (AssetDatabase::records()/recordList, RenderTarget::depthFormat()/
+    // depthFormatValue), never a trailing underscore.
+    AssetBindingTable bindingTable;
+    std::uint32_t lastUnresolvedMeshesValue = 0;
+    std::uint32_t lastUnresolvedMaterialsValue = 0;
     bool noCameraWarned = false;
     bool multiCameraWarned = false;
     bool multiDirWarned = false;
