@@ -395,7 +395,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/skeleton_cook_source_test.cpp
                editor/asset_drag_test.cpp
                editor/instantiate_plan_test.cpp
-               editor/asset_commands_test.cpp)
+               editor/asset_commands_test.cpp
+               editor/material_from_import_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

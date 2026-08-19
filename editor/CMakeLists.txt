@@ -133,6 +133,7 @@ add_library(aero_editor_core STATIC
     src/asset_drag.cpp           # task 3.1.5 -- the drag payload + the drop routing matrix; PURE, no ImGui
     src/instantiate_plan.cpp     # task 3.1.5 -- the ImportedModel -> entity-subtree planner; PURE
     src/asset_commands.cpp       # task 3.1.5 -- the sixth structural command: one undoable drop
+    src/material_from_import.cpp # task 3.1.5 -- ImportedMaterial -> MaterialDocument; PURE
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
