@@ -52,6 +52,7 @@ add_executable(aero_tests
     transform_test.cpp    # task 1.3.2 — engine::Transform, the World-owned forest, world matrices
     camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
+    animation_player_test.cpp # task 3.5.2 — engine::AnimationPlayer: layout, defaults, the clock's six steps
     scene_render_test.cpp # task 1.4.1 — buildRenderView (tier-0) + gated SceneRenderer GPU draw-smoke
     render_target_test.cpp # task 2.2.3 — tier-0 sizing policy + GPU-gated RenderTarget lifecycle
     render_material_test.cpp # task 3.4.1 — tier-0 generator/format invariants + GPU-gated registry & bridge
