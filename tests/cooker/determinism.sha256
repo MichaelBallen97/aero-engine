@@ -1,23 +1,23 @@
 # tests/cooker/determinism.sha256 -- THE FROZEN COOK-DETERMINISM MANIFEST (task 3.3.3).
 #
-# SHA-256 of the artifact each of fifteen fixed aero_cooker invocations produces. The invocations
+# SHA-256 of the artifact each of eighteen fixed aero_cooker invocations produces. The invocations
 # live in tests/cooker/run_case.cmake's `golden_manifest` (6, mesh), `texture_golden_manifest`
-# (8, texture) and `skeleton_golden_manifest` (1, skeleton) arms; those three ctest cases check
-# every line of this file in every build configuration on every lane, and
-# .github/workflows/ci.yml's `cook-determinism` job checks the same lines a second time with
-# coreutils sha256sum and byte-compares the three lanes' copies.
+# (8, texture), `skeleton_golden_manifest` (1, skeleton) and `animation_golden_manifest`
+# (3, animation) arms; those four ctest cases check every line of this file in every build
+# configuration on every lane, and .github/workflows/ci.yml's `cook-determinism` job checks the
+# same lines a second time with coreutils sha256sum and byte-compares the three lanes' copies.
 #
 # THIS FILE IS FROZEN. A changed line means THE SAME INPUT NOW COOKS TO DIFFERENT BYTES -- which is,
 # verbatim, docs/09-file-formats.md section 9.11's definition of a cookerVersion bump. So a
 # regeneration travels IN THE SAME COMMIT as the cook change and the matching
-# COOKED_MESH_COOKER_VERSION / COOKED_TEXTURE_COOKER_VERSION / COOKED_SKELETON_COOKER_VERSION bump,
-# with the pull request saying why.
+# COOKED_MESH_COOKER_VERSION / COOKED_TEXTURE_COOKER_VERSION / COOKED_SKELETON_COOKER_VERSION /
+# COOKED_ANIMATION_COOKER_VERSION bump, with the pull request saying why.
 # NEVER EDIT A HASH TO GREEN A RED RUN.
 #
 # To regenerate, when and only when the change is deliberate:
 #   1. cmake --build --preset <host>-release
 #   2. ctest --preset <host>-release \
-#        -R 'cooker\.(golden_manifest|texture_golden_manifest|skeleton_golden_manifest)'
+#        -R 'cooker\.(golden|texture_golden|skeleton_golden|animation_golden)_manifest'
 #   3. each failing case prints its new `<sha256>  <name>` lines verbatim, one per line; paste them
 #      in, re-run, and confirm green in BOTH the debug and the release preset.
 #
@@ -52,3 +52,7 @@ cdb981a8562a3438ee63395b5a13c31c22291b5c8b2a382f39cb8697fe6cda09  texture-rgba8x
 f032aed271f649147ed7c823cd22af086b366b6dd532246d8f9bf1e0ca047cb1  texture-rgb5x3-linear-bc1.ktx2
 
 7b3ecbd99f1d4add64efb69c73cf502f572de8cdbd377aba439027eb57e29273  skeleton-skinned.aeroskel
+
+ff90de29178dfc3829aed414375a8cc37269177d490d21031fc08d39ebc8191a  animation-skinned-step.aeroanim
+4915885311f0a9320f08d55198c1d967ea6b35af24e172664db6d80ec4acce2c  animation-skinned-linear.aeroanim
+98bd92fd343830f9fbb81a6d1db0322b2517ce4e2ff6ebc7086a2997da37ec29  animation-skinned-cubic.aeroanim

@@ -795,11 +795,11 @@ set(_aero_cooker_cases
     # bootstrap's option hash). Both names are present in both reduced configurations, which is the
     # proof that this block is still ungated.
     #
-    # These two -- three since task 3.5.1 added skeleton_golden_manifest below -- cook the whole
-    # 15-artifact matrix through the real binary and compare against tests/cooker/determinism.sha256.
-    # Their WORK_DIRs are what ci.yml's `build` legs upload and its `cook-determinism` job downloads
-    # -- if any of them is renamed, THREE places change together: this list, the upload step's three
-    # paths, and the job's directory expectations.
+    # These two -- four since task 3.5.1 added skeleton_golden_manifest and task 3.5.2
+    # animation_golden_manifest below -- cook the whole 18-artifact matrix through the real binary and
+    # compare against tests/cooker/determinism.sha256. Their WORK_DIRs are what ci.yml's `build` legs
+    # upload and its `cook-determinism` job downloads -- if any of them is renamed, THREE places change
+    # together: this list, the upload step's four paths, and the job's directory expectations.
     golden_manifest texture_golden_manifest
     # task 3.5.1 -- the skeleton subcommand. Ten more names, on the same terms: ungated, so ctest -N
     # moves in ALL THREE configurations again. MEASURED at the tip of this branch, never derived by
@@ -841,6 +841,17 @@ set(_aero_cooker_cases
     animation_no_animation animation_clip_out_of_range
     animation_guid_written animation_determinism
     animation_nothing_written_on_failure animation_output_dir_missing
+    # task 3.5.2 -- the manifest's FOURTH arm, and the tenth name this task adds. A separate arm
+    # rather than three more tuples on an existing one for the same structural reason 3.5.1 recorded:
+    # aero_manifest_tuple reads the arm-level SUBCOMMAND, and the per-kind orphan check stays sound
+    # only while one arm claims each name prefix. It cooks one tuple per glTF interpolation mode from
+    # tests/fixtures/assets/skinned.gltf, so tests/cooker/determinism.sha256 goes 15 -> 18 lines and
+    # every literal pinning it moves at once. MEASURED at this step's exit, never derived by addition:
+    # 153 -> 154 with tools ON. Ungated like every name above it, so the two reduced configurations
+    # move by the SAME +1 -- 64 -> 65 and 77 -> 78, re-measured at the task's full gate in build
+    # directories configured FRESH with -G Ninja. A smaller move in either of them would mean this
+    # block had accidentally grown a gate, and no test could report that.
+    animation_golden_manifest
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(

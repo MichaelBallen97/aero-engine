@@ -294,17 +294,20 @@ Genuinely asymmetric, and measured rather than assumed — this is the part that
 
 ## Tests
 
-`tests/cooker/run_case.cmake` drives the real binary through 49 `cooker.*` ctest entries — 24 for
-`mesh`, 15 for `texture` and 10 for `skeleton` — argv in, exit code plus files out. Three of them,
-`cooker.golden_manifest`, `cooker.texture_golden_manifest` and `cooker.skeleton_golden_manifest`,
-cook a fixed fifteen-artifact matrix
+`tests/cooker/run_case.cmake` drives the real binary through 59 `cooker.*` ctest entries — 24 for
+`mesh`, 15 for `texture`, 10 for `skeleton` and 10 for `animation` — argv in, exit code plus files
+out. Four of them, `cooker.golden_manifest`, `cooker.texture_golden_manifest`,
+`cooker.skeleton_golden_manifest` and `cooker.animation_golden_manifest`, cook a fixed
+eighteen-artifact matrix
 and compare every byte against the frozen `tests/cooker/determinism.sha256` (task 3.3.3). A CLI's honest test is its process
 boundary, so there is no doctest translation unit for the tool and no tool code links into
 `aero_tests`; the pure halves it is built from (`cookMesh`, `parseCookedMesh`, `meshCookPrimitives`,
 `cookTexture`, `parseCookedTexture`, `decodeImageRgba8`, `chooseTextureFormat`, `cookSkeleton`,
-`parseCookedSkeleton`, `skeletonCookJoints`) are covered there and
+`parseCookedSkeleton`, `skeletonCookJoints`, `cookAnimation`, `parseCookedAnimation`,
+`animationCookChannels`) are covered there and
 in `aero_editor_shell_test` instead. The cases are registered with **no gate flag**, so they run in
 every build configuration. The mesh and skeleton inputs are listed in
 `tests/cooker/fixtures/README.md`; the two
 texture inputs are the committed `tests/fixtures/assets/texture-rgb-5x3.png` and
-`texture-rgba-8x8.png`, shared with the editor suite.
+`texture-rgba-8x8.png`, and the animation input is `tests/fixtures/assets/skinned.gltf`, all three
+shared with the editor suite.

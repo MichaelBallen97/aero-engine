@@ -208,10 +208,10 @@ function(aero_read_manifest out_names out_hashes)
         list(APPEND hashes "${hash}")
     endforeach()
     list(LENGTH names count)
-    # A LITERAL 15, never a count derived from the file it is checking: a guard computed from its own
-    # subject cannot see a line deleted. All three cases assert it, so a deletion reddens them at once.
-    if(NOT count EQUAL 15)
-        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 15")
+    # A LITERAL 18, never a count derived from the file it is checking: a guard computed from its own
+    # subject cannot see a line deleted. All four cases assert it, so a deletion reddens them at once.
+    if(NOT count EQUAL 18)
+        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 18")
     endif()
     set(${out_names} "${names}" PARENT_SCOPE)
     set(${out_hashes} "${hashes}" PARENT_SCOPE)
@@ -1044,23 +1044,23 @@ elseif(CASE STREQUAL "no_skins_gltf")
 
 # --- task 3.3.3: the frozen cook-determinism manifest ---------------------------------------------
 #
-# Three cases, one shape (task 3.5.1 added the third). Each cooks its tuples ONCE through the real
-# binary and requires the artifact's SHA-256 to equal the line tests/cooker/determinism.sha256 records
-# for that name. Because the cooker takes no gate flag, all three register in all three build
-# configurations, and because CI runs ctest in Debug and Release on three lanes, the manifest is
-# checked NINE times per push: all nine green means every lane and both configurations equal the
-# manifest, therefore they equal each other.
+# Four cases, one shape (task 3.5.1 added the third, task 3.5.2 the fourth). Each cooks its tuples
+# ONCE through the real binary and requires the artifact's SHA-256 to equal the line
+# tests/cooker/determinism.sha256 records for that name. Because the cooker takes no gate flag, all
+# four register in all three build configurations, and because CI runs ctest in Debug and Release on
+# three lanes, the manifest is checked TWELVE times per push: all twelve green means every lane and
+# both configurations equal the manifest, therefore they equal each other.
 #
-# A THIRD ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
+# A FOURTH ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
 # arm-level SUBCOMMAND, and the KIND_PREFIX orphan check below ("every manifest line of THIS case's
 # kind was actually cooked") stays sound only while every line's prefix is claimed by exactly one arm.
 #
 # The artifacts land in ${WORK_DIR}/artifacts/ and the CI job uploads exactly that directory. The
 # perturbed re-cook lands in ${WORK_DIR}/perturbed/ so it cannot enter the upload set, which is
-# fifteen files across the three cases and nothing else.
+# eighteen files across the four cases and nothing else.
 
 elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest"
-       OR CASE STREQUAL "skeleton_golden_manifest")
+       OR CASE STREQUAL "skeleton_golden_manifest" OR CASE STREQUAL "animation_golden_manifest")
     set(ASSETS "${SOURCE_DIR}/tests/fixtures/assets")
     set(ARTIFACTS "${WORK_DIR}/artifacts")
     file(MAKE_DIRECTORY "${ARTIFACTS}")
@@ -1167,7 +1167,7 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # Partial edge blocks -- the clamp-never-zero-fill path, NPOT, linear.
         aero_manifest_tuple(texture-rgb5x3-linear-bc1.ktx2
             --input "${ASSETS}/texture-rgb-5x3.png" --linear --format bc1)
-    else()
+    elseif(CASE STREQUAL "skeleton_golden_manifest")
         set(SUBCOMMAND skeleton)
         set(KIND_PREFIX "skeleton-")
         set(TUPLE_COUNT 1)              # LITERAL, beside the one call it counts
@@ -1180,6 +1180,29 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # single-lane check, since our own parser reads them back in the order our writer wrote them.
         aero_manifest_tuple(skeleton-skinned.aeroskel
             --input "${FIXTURES}/skinned-quad.gltf" --guid "${TEST_GUID}")
+    else()
+        set(SUBCOMMAND animation)
+        set(KIND_PREFIX "animation-")
+        set(TUPLE_COUNT 3)              # LITERAL, beside the three calls it counts
+        # task 3.5.2 -- the .aeroanim format anchored cross-lane, cross-configuration and cross-time
+        # from the day it ships, rather than after the first divergence. ONE TUPLE PER INTERPOLATION
+        # MODE, because the three modes are three different value layouts and three different emit
+        # paths: the input is tests/fixtures/assets/skinned.gltf, the tree's only multi-clip glTF,
+        # which already carries exactly one clip per mode -- so this arm commits no new fixture.
+        # None of that file's four nodes carries a `matrix`, so every line here is independent of
+        # import-time matrix decomposition by construction.
+        #
+        # The clip sampler is deliberately NOT in this matrix: it is float math over libm (sin, acos,
+        # sqrt), and libm is three different implementations across these three lanes.
+        aero_manifest_tuple(animation-skinned-step.aeroanim
+            --input "${ASSETS}/skinned.gltf" --clip 0)
+        aero_manifest_tuple(animation-skinned-linear.aeroanim
+            --input "${ASSETS}/skinned.gltf" --clip 1)
+        # The cubic tuple carries a REAL --guid, the skeleton posture: the header's hi/lo emit order
+        # is then pinned across lanes too, since our own parser reads those two u64s back in the
+        # order our own writer wrote them and no single-lane check can see them swapped.
+        aero_manifest_tuple(animation-skinned-cubic.aeroanim
+            --input "${ASSETS}/skinned.gltf" --clip 2 --guid "${TEST_GUID}")
     endif()
 
     # --- the mismatch report ------------------------------------------------------------------------
