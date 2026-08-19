@@ -259,18 +259,28 @@ the producer. The **normative** specification is `docs/09-file-formats.md` secti
   parser, the two frozen goldens, and the determinism manifest's `skeleton_golden_manifest` arm. Keep
   all three.
 
-## The named, unowned gap
+## The node-hierarchy gap, decided at 3.1.5
 
 **v1 stores no node hierarchy**, so a consumer that instantiates a cooked mesh puts every submesh at
 the origin. **The cook must not "solve" this by baking node transforms into vertices**: `ImportedMesh`
 is shared across nodes by construction (3.2.2's helper-node decision), so baking would force per-node
-mesh copies and change the canonical model's shape for one format. A cooked model/prefab container
-carrying the node tree is the right answer and belongs to whoever owns instantiation — task 3.1.5 is
-the first task that will hit it. This is a **decision waiting to be taken**, not a scope boundary.
+mesh copies and change the canonical model's shape for one format.
 
-**Two of the things section 9.0 lists as unstored now have a home elsewhere and are no longer part of
-this gap**: skeletons and inverse bind matrices live in `docs/09` section 12's sibling container
-(`.aeroskel`) as of task 3.5.1. **The node tree does not**, and nothing above changes for it — it is
-still unowned, still not the cook's to bake, and still 3.1.5's first.
+**Task 3.1.5 took the decision, and it is not "add a container".** The editor materializes an
+imported model's node tree into **scene entities** at drop time — one entity per source node, TRS
+copied verbatim, `MeshRenderer` naming `(assetGuid, meshIndex)` — so placement lives in the **scene
+file** rather than in a cooked container, and nothing is baked into vertices. That is why nothing in
+`engine/assets` moved for it: the gap was never the cook's to close.
 
-Full history: `docs/10-engineering-log.md`, tasks 3.3.1, 3.3.2 and 3.5.1's entries under Phase 3.
+**The residual, narrower and with an owner.** A cooked model/prefab container carrying the node tree
+is still the right answer for a consumer that has **no importer** — a script's runtime `spawn()`, a
+`.pak` loading a prefab with no editor present — and it belongs to task 4.4.4 (prefab-lite) /
+Phase 5's pak. Until then, the only way a node tree reaches a scene is through the editor's
+instantiation planner.
+
+**Two of the things section 9.0 lists as unstored have a home elsewhere and were never part of this
+gap**: skeletons and inverse bind matrices live in `docs/09` section 12's sibling container
+(`.aeroskel`) as of task 3.5.1.
+
+Full history: `docs/10-engineering-log.md`, tasks 3.3.1, 3.3.2, 3.5.1 and 3.1.5's entries under
+Phase 3.

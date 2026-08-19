@@ -888,9 +888,11 @@ axis-aligned box per submesh and one for the model, plus each submesh's source c
 material index. **What it does not store:** node hierarchy, materials, images, skeletons and inverse
 bind matrices — which, since task 3.5.1, live in section 12's sibling container (`.aeroskel`) — and
 animation. A consumer that instantiates a cooked mesh with no hierarchy therefore puts
-every submesh at the origin. **That gap is named, not owned** — a cooked model/prefab container
-carrying the node tree is the right answer and belongs to whoever owns instantiation; task 3.1.5 is
-the first task that will hit it.
+every submesh at the origin. **That gap was decided at task 3.1.5**: the editor materializes an
+imported model's node tree into scene entities at drop time, so placement lives in the scene file
+rather than in a cooked container, and nothing is baked into vertices. A cooked model/prefab
+container carrying the node tree remains the named residual for a consumer **without** an importer —
+a script's runtime `spawn()` — and belongs to task 4.4.4 (prefab-lite) / Phase 5's pak.
 
 The container is **platform-independent**: there is no platform field and no `--platform` flag. That
 changes for textures at task 3.3.2, where BCn/ASTC/ETC2 diverge.

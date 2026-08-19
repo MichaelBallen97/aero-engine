@@ -8320,3 +8320,535 @@ the skinned pipeline under **WARP and lavapipe** on every push, which is V2's cr
 the one place the tree's first `uint4` vertex attribute and first two-UBO vertex stage could have
 diverged. What the lanes do **not** cover is everything a validation pass is for — the picture. The
 four-phase platform-validation debt grows by one more task.
+
+---
+
+### Task 3.1.5 — Drag-into-scene (Epic 3.1) — CLOSES Epic 3.1
+
+**Branch:** `feat/3.1.5-drag-into-scene`, cut from `main @ 089164b`. **Eighteen green commits** — one
+per build step, one correcting a source comment the sabotage pass measured false (`32b2d1f`), and one
+closing the reduced-configuration finding below (`78450e0`) — plus this documentation commit.
+**Complete in code; the sixteen-row macOS validation pass has NOT been run yet**
+(`editor/validation/3.1.5-drag-into-scene.md`, written before the pass as always). Every count in the
+mechanical-gate section below was measured at `32b2d1f`; `78450e0` adds no test case and no ctest
+entry — it adds an `#else` arm inside an existing one — so none of them moves.
+
+This is the task where an asset stops being a row in a browser. Everything upstream of it existed —
+GUIDs and `.meta` since 3.1.1, an import cache since 3.1.2, a browser since 3.1.3, five importers and
+one canonical `ImportedModel` across Epic 3.2, `.aeromesh`/`.ktx2` cooks in Epic 3.3, materials in
+Epic 3.4, and a working `createMesh`/draw path from 3.5.1 — and **nothing in a scene file could name
+any of it**. `MeshRenderer` carried a `uint32 primitive` and a colour, and that was the whole
+vocabulary a scene had for geometry.
+
+Sized **S** in the phase plan and landed at **L**, which is recorded in `docs/tasks/phase-3.md` in the
+3.1.2/3.1.3 style rather than left as a surprise. The referencing field could not land alone: it needs
+a wire form (so the **reflectable subset grows by `engine::Guid`** — the first growth since 2.2.2's
+`std::string`), a resolution layer (so `engine/scene_render` gains a **binding table** and three
+emission arms), something to resolve *to* (so the editor gains a **scene-asset ledger** and its
+loader), a way to get from a source file to a subtree (an **instantiation planner**), a way to make
+that one undoable act (the tree's **sixth structural command**, and the first that creates more than
+one entity), and real bounds — because a referenced mesh picked and framed against
+`LOCAL_MESH_HALF_EXTENT` is 2.3.1's knowingly-wrong constant finally becoming visibly wrong.
+
+**It also closes the node-hierarchy gap `docs/09` §9.0 has carried since 3.3.1, and the answer is not
+a container.** The editor materializes an imported model's node tree into **scene entities** at drop
+time, so placement lives in the scene file and nothing is baked into vertices. The residual — a cooked
+model/prefab container for a consumer with **no importer**, i.e. a script's runtime `spawn()` — is
+narrower, and now has an owner: **4.4.4 (prefab-lite) / Phase 5's pak**. `docs/09` §9.0 and
+`.claude/rules/cooked-assets.md` both say so now, and `engine/assets` is **byte-identical** this task,
+which is the point: the gap was never the cook's to close.
+
+#### What shipped, layer by layer
+
+**`tools/reflect-gen` + `engine/reflect` — the subset grows by exactly one type.** `classifyField`
+gains an **exact** `engine::Guid` arm (never a prefix — the file's own law), `categoryTag` gains
+`"guid"`, and the `FieldCategory` enumerator is inserted **before** `Unsupported` so the fall-through
+stays terminal in every switch. Unlike `std::string`, `engine::Guid` has exactly **one** spelling on
+all three hosts — a plain struct at namespace scope, no template parameters, no inline-namespace
+ambiguity, no preferred-name alias for a `PrintingPolicy` to substitute — so the fourth-spelling
+escalation the string arm carries is deliberately **not** added. **Neither emitter gains a branch**:
+`--emit-meta` writes the same `.data<&T::member>` line and `--emit-json` the same
+`writeJson(writer, value.member)` / `readField(...)` lines it already writes for a `float`, because
+C++ overload resolution routes them. The entire runtime cost is **one `serialize.{hpp,cpp}` overload
+pair**. The wire form is the canonical **32-lowercase-hex** string `formatGuid` produces — the same
+spelling a `.meta` and an `.aeromat` carry — and **nil is a value, not an omission**: this layer emits
+one key per supported field unconditionally (`docs/09` §2.3), so nil writes 32 zeros and reads back
+legally. That is a deliberate divergence from §11.1's *"a present slot must not be nil"*, where
+absence has its own spelling. A failed parse leaves the target **untouched** rather than nilling it,
+and the read overload is declared **above** `readField` because ADL for `engine::Guid` searches
+`engine`, not `engine::reflect`.
+
+**`engine/scene` — three appended fields, and four bytes of padding stated rather than removed.**
+`MeshRenderer` gains `Guid mesh`, `std::uint32_t meshIndex` and `Guid material`, **appended** after
+`primitive` and `color`, because declaration order **is** the JSON payload order and the inspector row
+order. A nil `mesh` means "draw `primitive`", byte for byte as before; a valid one names the cooked
+model an asset GUID identifies, with `meshIndex` selecting **which** mesh of it — the **position** in
+`ImportedModel::meshes`, the same number `CookedSubmesh::sourceMeshIndex` records, never a `localId`.
+A nil `material` leaves each submesh with the material its own source assigned; a valid one overrides
+**every** submesh of the entity, because per-submesh overrides need a reflectable array the subset does
+not have. `sizeof` goes 16 → **56**; packing to 52 would put `meshIndex` **before** `color` in
+declaration order, which is on-disk key order for every scene in the tree, and four bytes per
+`MeshRenderer` does not buy that. **The stated fragility is stated on the header**: the reference
+survives re-imports of the same bytes and any edit preserving mesh **order**; a re-export that
+**reorders** meshes silently retargets it, and a `meshIndex` matching no cooked submesh draws
+**nothing** and is counted, never the wrong-but-plausible thing.
+
+**`engine/scene_render` — the one place a GUID becomes a handle.** `asset_bindings.{hpp,cpp}` is the
+subsystem's second source file. It lives here for exactly `buildRenderView`'s reason: this is the only
+code in the tree that sees both `engine::scene`'s vocabulary (`Guid`, through `aero::core`) and
+`engine::render`'s (`MeshHandle`, `MaterialHandle`). `render/` is deliberately scene-and-identity-free,
+so a `Guid` map inside `ForwardRenderer` would be the wrong layer. Storage is two **sorted vectors**
+keyed by `Guid::operator<`, never a hash container: `std::unordered_map`'s move constructor is not
+`noexcept` on MSVC's STL (3.1.2's R9 / `C2607`), and this table becomes a member of `SceneRenderer`,
+whose moves are `noexcept = default` — which under P1286R2 **terminates at run time** rather than
+deleting the move. Two `is_nothrow_move_*` `static_assert`s turn that terminate into a compile error,
+the shape `entity_ops.hpp` already applies to `CommandStack`. Nothing here hashes a `Guid`, so
+`guid.hpp`'s `std::hash` linkage note constrains the header not at all — a property of the
+sorted-vector choice, not a coincidence.
+
+`buildRenderView` gains a **fifth, defaulted, last** parameter, so every caller written before this
+task — both samples and every existing test — compiles and behaves identically. The emission walk
+becomes three arms: **arm 1** (nil `mesh`) is the pre-3.1.5 body statement for statement, with `model`
+and `normalMatrix` hoisted above the branch (a pure motion — both were computed unconditionally and
+neither reads the component); **arm 2** (a reference with nothing to resolve it) emits nothing and
+counts one `unresolvedMeshes`; **arm 3** emits **one instance per matching submesh**, filtered by
+`sourceMeshIndex` — the D2 join key — so an entity referencing mesh 3 draws exactly the submeshes
+mesh 3 produced, and zero matches is a stale `meshIndex` counted the same way arm 2 is.
+`resolveMaterial` is its own function so the fixed order reads as one thing: a **resolving** override
+wins on every submesh; an **unresolved** override is counted and **falls through** to the submesh's
+own handle rather than blanking the draw; otherwise the submesh's own handle, which may legitimately
+be invalid and resolves to `defaultMaterial()` at draw. The material count fires once per **emitted
+submesh**, because "how many draws could not use the material they were asked for" is the number a
+reader wants — an entity-level count would understate a seven-submesh model sevenfold.
+
+`RenderView` gains `unresolvedMeshes`/`unresolvedMaterials`, **appended after `pointsTruncated`** —
+the entire `engine/render` diff for this task. **They are deliberately NOT latched WARNs**, unlike the
+three diagnostics beside them: unresolved is **transient by design**, since every frame between a drop
+and the ledger's upload legitimately counts nonzero, so a WARN would fire once per session on correct
+behaviour and teach readers to ignore the channel. The editor's ledger owns the user-facing message,
+because it is the only layer that can tell Loading from Failed.
+
+**`/editor` — seven new pairs, taking the count from sixteen to twenty-three.** Split by
+**dependency**, exactly as 3.4.2 split its four:
+
+- **`asset_drag.{hpp,cpp}` (pair 17, PUBLIC and PURE)** — the payload and the whole routing matrix.
+  The header names no ImGui type and the `.cpp` calls no ImGui function, so the accept/refuse matrix
+  is a tier-0 table test while the ImGui half stays four lines per site. `"AERO_ASSET"` is the tree's
+  **second** payload type; the first is the Hierarchy's own `"AERO_ENTITY"`, untouched, and the two
+  type strings differ so `IsDataType` refuses each other's payloads structurally.
+  `decodeAssetDragPayload` is **the only reader of an `ImGuiPayload::Data` in this tree** — `memcpy`
+  into a local, never a cast, refusing null data, any size that is not exactly 24, and a nil guid.
+  `classifyAssetDrop` is a `switch (kind)` containing a `switch (surface)`, **both without
+  `default:`**, so a new `AssetKind` or `DropSurface` is a `-Wswitch` error rather than a silent
+  `None`.
+- **`instantiate_plan.{hpp,cpp}` (pair 18, PUBLIC and PURE)** — `ImportedModel` → a flat,
+  parents-before-children slot list. **The fifth named consumer of the `localId` rule, and the one
+  that has to hold both numbers at once** (below).
+- **`asset_commands.{hpp,cpp}` (pair 19, PUBLIC)** — `InstantiateAssetCommand`, the sixth structural
+  command and the first that creates more than one entity.
+- **`scene_asset_ledger.{hpp,cpp}` (pair 20, PUBLIC and PURE)** — the decision core: what to load,
+  retire and destroy, executing none of it.
+- **`material_from_import.{hpp,cpp}` (pair 21, PUBLIC and PURE)** — `ImportedMaterial` →
+  `MaterialDocument`, the lossless direction `material_format.hpp` predicted in its own header.
+- **`scene_asset_loader.{hpp,cpp}` (pair 22, SRC-PRIVATE)** — executes one directive; it names a
+  `ForwardRenderer` and a `scene_render::MeshBinding`, and a public editor header may name neither.
+- **`texture_load.{hpp,cpp}` (pair 23, SRC-PRIVATE)** — the decode → cook → parse → upload chain,
+  **extracted** from `MaterialPreview::loadOneTexture` verbatim because the ledger became its second
+  consumer, and 3.4.1's recorded rule is that a mapping worth having twice is worth having once. Zero
+  test edits: every existing preview case passes untouched, which is the proof it is an extraction.
+
+Two pure helpers were **promoted** rather than copied, each in its own commit with zero behaviour
+change: `captureAndDestroy`/`restoreState` moved from `entity_commands.cpp`'s anonymous namespace onto
+`entity_commands.hpp` (renamed `captureAndDestroySubtrees`/`restoreStructuralState`, since the bare
+names are too generic for a public header), and `blendExportSettingsFingerprint` moved into
+`blender_tool.{hpp,cpp}` beside the `ExportProvenance` field whose value it is, with `assignImageGuids`
+declared as a free function on `model_import_session.hpp`. **Two copies of a cache-validity rule is how
+a cache silently stops invalidating**, and a source-text pin could not see the divergence either,
+because a future `ImportSettings` field enters `writeMetaText` automatically.
+
+**The bounds change is where `LOCAL_MESH_HALF_EXTENT` dies, and all three of its consumers move in one
+commit** — because `picking.hpp`'s own header note demands the pick box, the frame box and the
+highlight box never disagree, and a half-migrated state **is** that disagreement.
+`primitiveLocalBounds` reads each built-in's exact box off the render catalog rather than approximating
+it with one number, and **the plane goes flat** — `{-0.5, 0, -0.5}..{0.5, 0, 0.5}`, verified against
+`appendQuad(center = 0, u = +X, v = -Z)` — retiring 2.3.2's knowingly-fat plane pick box exactly as its
+own note said it would. `aabbCorner` becomes the **one** corner enumeration and `selection_overlay.cpp`'s
+duplicate is deleted, so `BOX_EDGES` is derived from the single function both the bounds walk and the
+highlight call. `localBoundsFor` is the **one** place a `MeshRenderer` becomes a local box, and a
+`nullopt` — loading, failed, missing, or a stale `meshIndex` — makes all three consumers fall to the
+**non-mesh class they already implement**, so **no new fallback code exists anywhere**.
+`rayLocalBoxHit` gains an `Aabb` overload, **added and never replacing**: the half-extent form keeps its
+published cases and its stricter precondition and now delegates, so there is one slab ladder in the
+tree. The `MeshBoundsLookup` is threaded as a **defaulted, trailing** parameter through `entityBounds`,
+`selectionBounds`, `sceneBounds` and `buildSelectionOverlay`, and as a defaulted member on the
+`PickRequest` aggregate.
+
+**The subtle part, and what the whole change rests on: the pick's mesh arm used to end in an
+unconditional `return`.** With references it must **not** return on a `nullopt`, or an entity is
+unclickable for the whole of its load. `PK9` is that case, and it is the one line where "no new
+fallback code" could have quietly become "one entity class nobody can select".
+
+**The ImGui glue, and the peek rule.** ImGui draws the drop highlight as a **side effect** of
+`AcceptDragDropPayload`, so calling it and *then* deciding is a visible promise the editor immediately
+breaks. Every target therefore peeks with `GetDragDropPayload()`, decodes, runs `classifyAssetDrop`,
+and only then accepts. The viewport's target is **`BeginDragDropTargetCustom`**, because
+`ImGui::Image` submits its item with **id 0** and `BeginDragDropTarget()` cannot attach to it; the
+custom form takes a rect and an explicit id, consults **no item state at all**, and `IM_ASSERT`s a
+non-zero id — so the `!= 0` guard turns a would-be Debug abort into "the target does not exist this
+frame". While any payload is live the viewport is a **drop target, not an input surface**: `hovered` is
+suppressed for the camera gesture, the pick and the `F`-focus guard, and the pick arm is disarmed, so a
+drop can never also orbit.
+
+**The ledger's ordering invariant is one line and it is the whole of the GPU half.**
+`SceneAssetLedger::service()` returns the **previous** pass's destroy list **first**, before any step of
+this pass can add to it, so a whole service pass separates "the binding table stopped naming this
+handle" from "the GPU object dies". That is why `pendingDestroy` is a **member** and not a local, and
+why the deferral cannot be reconstructed from the retire list — rebuilding it there destroys this
+pass's retirements this pass, the same defect in a different hat. The caller's order is **destroy
+first, retire second, execute third**. `LG9` and `LG10` are deliberately **one sequence case** with
+explicit pass boundaries and an asserted-**empty** pass-N destroy list: two independent cases both pass
+under the very defect they exist to catch.
+
+Two shapes the spec left open were settled and documented in place: a guid whose record has **vanished**
+gets no entry at all (re-inserting it would undo the retire in the same call and burn the one-directive
+budget forever on something no executor can load), and a slot texture's outcome is reported against the
+**entry that asked for it**, since a texture never gets an entry of its own.
+
+**The loader owns no GPU object, and that is the design.** Every handle it mints is handed straight to
+the caller and adopted by the ledger entry, so it can be destroyed at any point in `EditorApp`'s
+teardown without reaching a renderer or a device that is already gone. Its texture cache is
+**negative**, which is a **recorded deviation from §0.21**: §0.21 describes a refcounted cache of live
+handles, but §D-8's ledger — already built — *adopts* every reported texture into the owning entry and
+releases it on the deferred list, so serving one handle to two directives (two materials of one model
+naming the same image in the same colour space is ordinary) would give that handle **two owners and one
+premature destroy**, with a live material still sampling it. A **success** is therefore never shared —
+it uploads once per directive, exactly the cost 3.4.1's ORM-atlas rule already accepts — and only a
+**failure** is remembered, which is the half that matters: a broken image costs one decode per key per
+session instead of one per service pass.
+
+**Two tick occupancies, both extensions.** The reconcile block gains its **seventh** occupant (the drop
+drain), placed at the **end** — after everything that can retarget the material session and before the
+draw walk, so a texture drop is judged against this frame's session and an entity created by a model
+drop appears in the Hierarchy in the frame the drop landed. F9's rule gets an **eighth** application:
+every one-shot is drained as its own statement, unconditionally, before it is inspected. The post-draw
+slot gains its **fifth** occupant, `serviceSceneAssets()`, appended after the material preview because
+the ledger touches no ImGui-sampled texture — so unlike 3.4.2's colour target it needs **no draw-walk
+exception at all**, and the destroy ordering above is what makes that true rather than merely intended.
+
+#### Six amendments and corrections, each recorded rather than smoothed over
+
+**1 — §0.17 amends the spec's D5, and `S37` exists so the amendment has a witness.** The spec's refusal
+predicate for "this import produced nothing to plan" was `nodes.empty() && !meshes.empty()`. Measured
+through the real importers rather than argued: at `ImportDepth::Structure`, `cube.obj`, `cube.ply` and
+`cube.stl` each produce **zero nodes AND zero meshes**, so that predicate would **never fire for any of
+the three formats it was written for**. The predicate is `nodes.empty()` alone. `hierarchy.gltf` and
+`cube.dae` at the same depth both produce nodes and both plan successfully — the discriminating half.
+Seeding the spec's wording reddens `PL12` on all three formats.
+
+**2 — the plan's `S2` witness attribution is wrong, and the reason is the same blindness it diagnosed
+one paragraph earlier.** `S2` uppercases `writeJson(Guid)`'s output. The plan named *"`G2` and the
+phase-1 sample fixpoint"*. **The phase-1 fixpoint is structurally incapable of witnessing it**: all six
+guid values in `samples/phase-1-scene/scene.json` are **nil**, `formatGuid(Guid{})` is 32 `'0'`
+characters, and `std::toupper('0') == '0'` — the identical blindness the plan correctly diagnosed for
+`SJ1`. The witnesses that actually redden are **`SJ3`** (pinned against the literal lowercase text),
+**`G2`**, **`G4`** and **`GD3`**. `G2` works only because `full.scene.json`'s second `MeshRenderer`
+payload carries a **non-nil** guid pair — and `S34`, which reverts that hand edit, proved that line
+load-bearing by reddening `G2` and `G4` on its own.
+
+**3 — `S17`'s literal edit does not compile, and the truth is better than the seed.** The seed was
+`std::lower_bound` → `std::upper_bound` in `findMesh`. `ByGuid` is the **partitioning** comparator,
+taking `(entry, guid)`; `upper_bound` invokes `comp(value, *it)` with the arguments **reversed**, so
+the literal substitution is a hard `static_assert` failure inside the STL, not a behaviour change.
+Forced through with a reversed lambda it reddens **18** cases across `AB*` and `BR*`, not one. The
+source comment claiming *"a single-edit seed with a single witness"* was corrected in commit `32b2d1f`:
+**the comparator's shape makes the wrong lookup unspellable**, which is a stronger guarantee than any
+test in that file provides.
+
+**4 — §0.20's padding claim is false for this type, and cannot be fixed by one character.** §0.20 said
+value-initialising `AssetDragPayload` zeroes its seven tail padding bytes. Probed directly on Apple
+clang at `-O0` against a poisoned stack slot: it does not. `[dcl.init]` value-init means
+zero-initialise-then-default-initialise **only where the default constructor is non-trivial**, and
+compilers elide the whole-object zeroing when the constructor writes every member — which is exactly
+this case, because `engine::Guid` carries `hi = 0`/`lo = 0` NSDMIs and therefore makes
+`AssetDragPayload` **not** trivially default constructible. A trivially-default-constructible twin
+comes back all-zero; this type comes back with seven garbage tail bytes, and removing the `kind = 0`
+initialiser does not help. **Nothing reads those bytes** — the decode `memcpy`s the whole object and
+reads `guid` and `kind` only, which `DR14` pins by decoding a junk-padding buffer and a zero-padding
+buffer to the same value. The payload is `memset` at the **single** `SetDragDropPayload` call site, so
+the 24 transmitted bytes are deterministic, and the header records the measurement so nobody re-derives
+it.
+
+**5 — the plan's §V.4 `S29` grep form is broken, and so was the first correction. This is the `I96`
+failure mode caught in the act, while writing this very task's pins.** The plan's form greps for
+`->Data`. **`->Data` is a prefix of `->DataSize`**, and `hierarchy_panel.cpp:50` has legitimately read
+`->DataSize` since 2.2.1 — so the plan's form is **non-empty on a correct tree** and cries wolf. The
+first correction, a `(^|[^a-zA-Z0-9_])->Data…` form, is **worse: it matches nothing at all**, because
+`payload->Data` never has a non-identifier character before the `->`; it reported "empty" even on the
+**seeded** tree, which is a pin that certifies the invariant it is blind to. The working shell form is
+`git grep -nE -- '->Data([^a-zA-Z0-9_]|$)'`, verified non-vacuous in **both** directions, and the
+in-tree pin (`DR18`) is a token-boundary predicate with an allow-list of the two legal shapes that
+**self-tests both halves before it scans** — it must accept the cast `S29` seeds and stay green on a
+legal second `decodeAssetDragPayload` call.
+
+**6 — four smaller corrections, listed so none of them reads later as an oversight.**
+**AC-19's RootOrder wording would double-insert**: `RootOrder::reconcile()` already appends a new root,
+and `CreateEntityCommand::redo` does not `insert`, so the first redo inserts **nothing**; `rootSlots` is
+captured in `undo` and restored ascending by later redos. **AC-26's `ActionKind` is deliberately not
+extended** for the Hierarchy's drop — that panel's `applyPending` cannot finish the job (instantiation
+needs the `AssetDatabase`, the importer and the ledger, none of which a panel has), and appending an
+enumerator `applyPending` must then refuse to handle is worse than not appending one; the drop is a
+plain one-shot `tick()` drains. **`tests/scene_boundary_probe.cpp:129`'s
+`sizeof(MeshRenderer) == 4 * sizeof(float)` had to move to 56**, though the plan said the probe would
+not change — a component whose size is asserted in a boundary probe cannot gain a field silently, which
+is the probe working. **The plan's `BlenderService` grep is mis-scoped**: it scans `editor/src`, where
+the type name legitimately appears in the implementation TU and in comments, so it can never count
+owners. The invariant it means to check is that the type has exactly **one** member declaration, at
+`model_import_session.hpp:156`, and that is unchanged — the scene-asset loader's `.blend` arm evaluates
+a cache **hit** and **spawns nothing, ever**.
+
+#### V1–V5 — the five VERIFY-AT-IMPLEMENTATION items
+
+**V1 — does `BeginDragDropTargetCustom` work over an id-0 `ImGui::Image`? Retired at plan time**, by
+reading the pinned ImGui tree on this disk rather than by trying it: `imgui.cpp:15769-15791` consults
+**no item state at all**. It needs `g.DragDropActive`, this window to be the hovered dock-tree root,
+the mouse inside the rect, and a **non-zero** id, which it `IM_ASSERT`s. So the id-0 `Image` is
+irrelevant, and **the R2 fallback (an invisible `Button` behind the image) was never needed** — it is
+recorded and not applied.
+
+**V2 — does an `ImportDepth::Structure` pass always produce nodes? Retired by measurement**, and the
+answer was no for three formats. See amendment 1; `PL12` is the measurement, driven through the real
+importers.
+
+**V3 and V4 remain open**, and they are the validation pass's: whether a real OS drag begins from a
+grid tile and a list row with the right preview text, and whether the viewport's custom target accepts
+where the image is drawn. Neither can be answered without a real mouse.
+
+**V5 — does the flat plane need an epsilon in the slab ladder? Retired at plan time** by reading the
+existing code: `rayLocalBoxHit`'s ladder already handles a zero-thickness axis correctly — a ray
+crossing it gets `t1 == t2` and a ray inside it takes the parallel-and-inside branch — so **no epsilon
+is added anywhere**. The only change is the precondition, from `halfExtent > 0` to `box.valid()`
+(`min <= max`, never `min < max`).
+
+#### The sabotage matrix — 37 seeds, all run, in two halves
+
+The spec declared 36; **`S37` was added by the plan** because §0.17's amendment created a predicate no
+existing seed touched. Every seed followed the ritual: apply → assert it landed with `git diff` →
+rebuild → run → record → revert → **rebuild again**.
+
+The matrix ran in **two halves**, and it is worth saying so because the halves have different
+strengths. **Nineteen ran during implementation, while the code was fresh** (`S5`–`S12`, `S22`–`S29`,
+`S35`–`S37`) — each inside the step that built the thing it attacks, which is why several of them
+found test defects rather than code defects and got them fixed in the same commit. **Nineteen ran as a
+single independent pass afterwards** (`S1`–`S4`, `S13`–`S21`, `S30`–`S34`, plus `S33b`), against code
+whose shape was not fresh in mind, which is the half that caught `S17`'s comment being wrong.
+
+**Not one seed reddened nothing.** 3.4.2 closed two genuine gaps structurally and 3.5.1 closed three,
+so the expectation going in was that this task would have some; it has none. The two things that came
+closest were caught the other way round — by a test staying green under a seed it was written for
+(`MF15`, below) and by reading a source comment (`S17`, above).
+
+| # | The seed | What went red |
+|---|---|---|
+| S1 | delete `classifyField`'s `engine::Guid` arm | 4 ctest cases (`reflect-gen.guid_components`, `guid_meta`, `guid_json`, `components_engine_mesh_renderer`) + `GD1`–`GD6`, `IR6`/`IR7`, and 6 `scene_serialize`/`scene_golden` cases |
+| S2 | uppercase `writeJson(Guid)`'s output | `SJ3`, `GD3`, `GD4`, `G2`, `G4` — **not** the phase-1 fixpoint (all-nil), see amendment 2 |
+| S3 | nil the target on a failed `readJson(Guid)` | `SJ10`, `GD5` |
+| S4 | accept a 31-char guid string by padding | `SJ4`, `SJ10` |
+| S5 | index `nodes[localId]` in the child walk | `PL6` — **as an ASan abort**, the fixture's ids being past `nodes.size()` |
+| S6 | resolve `meshIndex` through the localId map | all three of `PL7`'s literal-pinned rows |
+| S7 | drop the synthetic root slot | `PL1`, `PL3` |
+| S8 | emit identity TRS for every node | `PL5` |
+| S9 | delete the depth cap | `PL14` — and `PL13` **still terminated**, which is why cycle detection is worklist exhaustion and not the cap |
+| S10 | remove `redo`'s `rootEntity.valid()` early-out | `IA7`, on seven assertions |
+| S11 | skip the `rootSlots` capture | `IA6` **and four cases of the pre-existing structural battery** — one implementation, one seed, two witnesses |
+| S12 | delete the selection set in `redo` | `IA8` |
+| S13 | delete the `sourceMeshIndex` filter | `BR6`, `BR7`, `BR16`, `BR22` |
+| S14 | return the submesh handle before the override | `BR10`, `BR11`, `BR14`, `BR22` |
+| S15 | drop `++unresolvedMaterials` on the fall-through | `BR11`, `BR14` |
+| S16 | delete both `++unresolvedMeshes` | `BR3`, `BR4`, `BR6`, `BR16`, `BR17`–`BR20`, `BR22` (9 cases) |
+| S17 | `lower_bound` → `upper_bound` in `findMesh` | **does not compile**; forced through with a reversed lambda, **18** cases across `AB*` and `BR*` — see amendment 3 |
+| S18 | issue directives for `Failed` entries too | `LG5`, `LG6`, `LG8` |
+| S19 | skip the `hash != loadedHash` comparison | `LG14`, `LG9+LG10` |
+| S20 | return `pendingDestroy` **after** the retire steps | `LG9+LG10`, `LG15`, `LG17`, `LG24` |
+| S21 | return two directives per service | `LG3`, `LG6` |
+| S22 | clear `cooked.bytes` between the parse and `createMesh` | **ASan `SIGABRT`** in the loader's `SL1/SL2/SL3/SL4/SL10` case, which reaches `createMesh` first; the plan named `SL5`, which is the same defect one case later |
+| S23 | always push an invalid `MaterialHandle` into the binding | the loader case's `SL4` assertion — **and validation row 5**, where a wrong-looking model is actually seen |
+| S24 | hard-code `srgb = false` in the emitted request | `MF19` |
+| S25 | bind an embedded image's slot with a nil guid | `MF8`, `MF15`, `MF17` (the last because `validateMaterial` rejects a nil-guid slot outright) |
+| S26 | swap `metallicFactor` and `roughnessFactor` | `MF2` — and **`MF1` stayed green exactly as predicted**, both defaults being 1.0, which is why `MF2` uses 0.25/0.75 |
+| S27 | swap `ClampToEdge` and `MirroredRepeat` | `MF4`, `MF11`, `MF18` |
+| S28 | make Texture + Viewport return `BindTextureSlot` | exactly one row of `DR7`'s 28-row table |
+| S29 | cast `p->Data` instead of decoding it | `DR18`, the source-text pin — see amendment 5 |
+| S30 | collapse `dropPlacementPoint` to one arm | `PK12` |
+| S31 | return the primitive box on the reference arm | `PK8`, `LB6`, `LB8`, `LB11`, `LB12`, `VP2` |
+| S32 | use `primitiveLocalBounds` in the overlay | `VP2`, `VP3` |
+| S33 | give the plane a cube box | `LB3`, `LB10`, `VP4` |
+| S33b | require `min < max` instead of `box.valid()` | `PK6`, `PK7`, `PK11` |
+| S34 | revert `full.scene.json`'s hand edit | `G2`, `G4` — red by construction, and run anyway to prove the golden is load-bearing |
+| S35 | make Clear write the field directly instead of pushing a command | the AC-24 gate grep and `IR6` |
+| S36 | let EnTT convert on the Guid write arm | `IR7`, `IR6`, and `field_command`'s every-`FieldKind` case |
+| S37 | restore the spec's `nodes.empty() && !meshes.empty()` | `PL12`, on **all three** of `.obj`/`.ply`/`.stl` — see amendment 1 |
+
+#### The five declared-unwitnessable seeds
+
+No tier in this tree can perform an OS mouse drag, and ImGui's payload delivery is gesture-driven. Five
+defects therefore have **no automated witness anywhere in this project**: **N1** (the
+`BeginDragDropSource` glue misplaced or absent, so a real drag never starts), **N2** (a highlight drawn
+for a drop that will be refused), **N3** (the viewport target's rect or id wrong, so drops pass through
+to nothing), **N4** (the drag preview text absent or garbled), and **N5** (pick/camera suppression
+broken, so a drop also orbits). Their only coverage is validation **rows 3, 4, 9 and 10**, and the page
+names each seed beside its row so the pass is executed knowing what it alone proves. **Until that pass
+runs, those rows are these seeds' coverage in principle rather than in fact** — exactly as 3.5.1's
+entry says it for `S33`–`S36`.
+
+#### Two defects found by reading and by tests rather than by seeding
+
+**1 — `MaterialPanel` consumed its pending slot drop at the fold point, so a drop on an untargeted
+panel survived indefinitely.** The panel folds a pending texture drop into its per-frame document copy;
+that fold sits below the early returns that handle "no session", "no target" and "target vanished". A
+drop recorded while the panel had no target therefore stayed pending across every subsequent frame and
+**bound a slot on whatever material was selected next** — a silent, undoable-only-by-luck edit to a
+file nothing was ever dropped onto. Fixed by consuming with `std::exchange` at the **top** of
+`onDraw`, before every early return. The general rule now lives in `.claude/rules/editor.md`: a
+one-shot a panel folds into a frame copy is consumed at the top or it is not consumed at all.
+
+**2 — `MF15`'s first draft stayed GREEN under `S25`, and it is the `SN8` failure mode one epic later.**
+The case exists to prove all four omission arms of the material materializer refuse a slot. Its first
+draft engaged all five slots with an **out-of-range image index**, so it exercised **omission arm 1
+five times** and left the embedded, refused and unresolved arms with `MF8`/`MF9`/`MF10` as their only
+cover. Seeding `S25` on the **embedded** arm left that draft green. `MF15` now drives all four arms,
+one per slot, and reddens. **A case that repeats one arm N times is not a case with N arms**, and the
+only way to find out is to seed each arm.
+
+Two more measurements the cases forced, both recorded in the tests rather than in a comment:
+`CommandStack::push` **destroys the command it was handed when it returns false**, so a raw pointer
+held across the call dangles — `IA9`'s first draft did exactly that and ASan caught a
+heap-use-after-free inside `createdRoot()`; and `World::each`'s **entity** order is EnTT's view order
+and is **not** creation order, so every multi-entity binding case identifies its instances by a
+distinguishing field (within one entity the submesh order **is** specified and is asserted
+positionally).
+
+#### One reduced-configuration finding (`78450e0`), which is 3.4.2's lesson repeating on the other gate
+
+A material drop assigns through `SetFieldCommand`, which reaches the field via `entt::meta`. With
+**`-DAERO_REFLECT_TOOLS=OFF`** there is no generated meta for `engine::MeshRenderer` at all, so the
+assignment **cannot** land — which is correct behaviour (the whole inspector cannot edit any field in
+that configuration either), but the drain reached `readComponentField` and logged an `AERO_LOG_ERROR`
+**from the reflection seam**, in the one configuration where nothing is wrong. The cause is that
+**there are two registries and they do not agree**: the `World`'s own component table is hand-written
+and always present, so `findComponentType` resolves `engine::MeshRenderer` **by name** even with no
+meta anywhere, and a caller guarding only on `ComponentTypeId::valid()` sails straight past.
+`componentFieldsAreReflected` asks the meta registry directly — the predicate
+`buildInspectorModel`'s own `hasFields` already uses — and the drop degrades to "nothing happens,
+quietly". **Both arms of the test assert and neither skips** (the AC-32 shape from 3.4.2, applied to
+the other gate): with reflect tools on, the field is set and undo restores it; with them off, the field
+is untouched and nothing was pushed. It is selected by a compile definition rather than by a
+`if(AERO_REFLECT_TOOLS)` block around the target, because the editor is built in **every**
+configuration.
+
+#### The mechanical gate
+
+`AERO_REQUIRE_GPU=1 ctest` **147/147 on both macOS presets**. Six architecture guards exit 0;
+`.github/scripts/` is **byte-identical** to `main` and the guard count stays six.
+
+**`ctest -N` reads 147 / 55 / 68** — tools ON, then `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`,
+then `-DAERO_REFLECT_TOOLS=OFF` alone. **The asymmetry is +3 / +0 / +0, and that is D19's prediction
+being met rather than a missed registration**: the three new entries are the gated `reflect-gen.*`
+cases (`guid_components`, `guid_meta`, `guid_json`), which live inside `if(AERO_REFLECT_TOOLS)` and are
+therefore **absent by design** from both reduced configurations. Every other new test rides an existing
+binary, and `aero_tests`, `aero_editor_shell_test` and `aero_editor_imgui_test` each register with
+ctest as a **single** entry — so this task's **190** new doctest cases move the triple not at all. A
+**smaller** move in a reduced configuration would have been the alarm; a flat one is the confirmation.
+
+**Doctest, and this task measures SEVEN binaries where every previous entry measured five.** The
+tracked total has always read five because `aero_reflect_meta_test` and `aero_reflect_json_test` both
+sit inside `if(AERO_REFLECT_TOOLS)` blocks and are absent from the reduced configurations — but they
+are real binaries with real cases, and this is the first task to add cases to them since 1.2.2. They
+are tracked from here on.
+
+| Binary | Before | After | What moved |
+|---|---|---|---|
+| `aero_tests` | 776 | **822** | `SJ1`–`SJ10`, `AB1`–`AB14`, `BR1`–`BR22` across two new TUs |
+| `aero_editor_shell_test` | 1594 | **1709** | `DR1`–`DR18`, `PL1`–`PL21`, `IA1`–`IA15`, `MF1`–`MF20`, `LG1`–`LG24`, `PK`/`LB`/`VP` growth, across five new TUs |
+| `aero_editor_imgui_test` | 124 | **137** | the drop, loader and ledger integration cases (`SL*`, `DP*`) |
+| `aero_scene_serialize_test` | 23 | **27** | the four §2.3 tolerance rows on the three new keys |
+| `aero_editor_inspector_test` | 22 | **26** | the Guid field row, `IR6`/`IR7` |
+| `aero_reflect_meta_test` | 4 | **7** | `GD6`–`GD8` — **first tracked here** |
+| `aero_reflect_json_test` | 23 | **28** | `GD1`–`GD5` — **first tracked here** |
+
+Guards: `check-math-boundary.sh` scans **363 → 387** tracked C-family files (+24 = 14 `editor`, 2
+`engine/scene_render`, 7 test TUs and 1 `reflect-gen` fixture), re-measured **after `git add`** because
+`git ls-files` sees only tracked files. `check-project-no-delete.sh` Check A reads 6 files and Check B
+**65 → 72** tracked `editor/src/*.cpp`, with `PERMITTED_DELETERS` unchanged at 2 members and **none of
+the seven new TUs in it** — which is what makes a future destructive call in any of them a hard CI
+failure. **No guard script changed.**
+
+Inventory: `aero_editor_core` sources **64 → 71**, tracked `editor/src/*.cpp` **65 → 72**, tracked
+`editor/src/*.hpp` **21 → 23**, public `editor/include/aero/editor/*.hpp` **44 → 49**, editor pairs
+**sixteen → twenty-three**. The per-OS branch count over first-party editor code is **unmoved at three
+lines in one file** (3.2.4's `currentHostOs()`).
+
+**A note on reading any shared-`/tmp` evidence from this branch: a parallel session in another worktree
+contends on the test binaries** and reddens roughly 10–14 `blender_service` cases (`BS5`, `BS7`,
+`BS17`, `BS19`, `BS24`, `BS27`, `BS29`, `BS30`, `BS35`, `BS38`, `BS40`, `BS43`, `BS47`, `BS49`) that
+pass **1709/1709 in isolation**. Those cases spawn a real process and write to shared temporary paths.
+A red `blender_service` block with a green everything-else is contention, not a regression — but
+confirm it by re-running the binary alone rather than assuming it.
+
+#### What was deliberately left out, each with its owner
+
+- **No `.aeromat` is written when a model is dropped.** Imported materials are materialized **in
+  memory**, through the normative `MaterialDocument` type. "Extract materials to disk" is a named,
+  **unowned** residual.
+- **Embedded-texture slots are omitted with one warning per slot**, naming extraction as the
+  workaround — `ImportedImage` carries no bytes by design.
+- **A dropped model has no link back to its source.** Re-importing updates nothing already
+  instantiated; prefab semantics are **4.4.4's**.
+- **A `.blend` that has never been converted on this machine refuses the drop**, with a message naming
+  Import Details as the conversion path. Converting on drop would mean a second Blender service, and
+  AC-24's "no second spawn" is held **by construction**: the loader's `.blend` arm evaluates a cache
+  **hit** and spawns nothing, ever.
+- **No per-submesh material overrides** — that needs a reflectable array, which the subset does not
+  have. `material` is a whole-entity override.
+- **No drop target on an inspector Guid field.** A generic widget cannot know which asset kind a field
+  wants; the kind-aware drop routes are the assignment surface, and the `AERO_ASSET(kind)` annotation
+  is named for **3.5.2**.
+- **No thumbnail of an instantiated model, no eviction policy on the ledger**, and no readback.
+
+#### Named handoffs
+
+- **3.5.2 (animation clips)** is the immediate next task and inherits everything 3.5.1 wrote down for
+  it — `render::JointPose` as the sampler's output type, `sourceNodeLocalId` as the clip → joint
+  binding key, `.aeroanim` reserved by name in `docs/09` §13 — **plus** a scene that can now name an
+  asset, which is what an `AnimationPlayer` component needs. The `AERO_ASSET(kind)` annotation for
+  kind-aware inspector drop targets is 3.5.2's if it wants it.
+- **4.4.4 (prefab-lite) / Phase 5's pak** owns the narrowed node-hierarchy residual: a cooked
+  model/prefab container for a consumer with **no importer**.
+- **Sub-asset identity beyond an index** (3.2.1's D13) stays open with the same trigger it always had:
+  the reference is `(guid, position)`, and a re-export that reorders meshes silently retargets it. A
+  content-hash encoding is reachable and belongs to whoever needs cross-reorder stability — **4.4.4**
+  is the obvious place.
+- **`reflect-gen`'s next growth** (`Vec4`, enums, optional-wrapped nested structs) belongs to the
+  **component** tasks that need it, never to a panel — 3.4.2's D1 reason is unchanged, and `Guid`
+  landing here is the pattern: one `classifyField` arm, one `categoryTag` arm, one `serialize` overload
+  pair, and **no emitter branch**.
+- **Ledger eviction and a `Library/cooked/` store**: nothing is evicted today, and every dropped model
+  stays resident for the session. Validation rows 12–13 are the **only numbers anyone will have** when
+  that is picked up, which is why both carry their measurement blanks in bold.
+- **Per-triangle picking** is still unowned; this task's box pass is written to be its broadphase, and
+  `PickResult::distance` is kept on a point hit for exactly that reason.
+- **`model_import_session.cpp`'s `sourceHashUsable`** is still a duplicate of `assetContentHashUsable`
+  and should be collapsed by whoever next edits that file — carried forward from 3.4.2, untouched here.
+
+#### Still open
+
+**The sixteen-row macOS validation pass has not been run.** The page exists and was written before the
+pass, as always. Rows **5** and **11–13** carry their measurement blanks in bold so a blank tick is
+impossible, and rows **3, 4, 9 and 10** are `N1`–`N5`'s only coverage anywhere. Two rows need content
+that is deliberately **not** committed: an authored `.aeromat` and an unconverted `.blend` (row 9), and
+a **Mixamo-class textured FBX** (rows 12–13) that must be downloaded locally.
+
+Windows and Linux ship **Pending**, and this task adds one more to platform-validation debt spanning
+four phases. Unlike 3.5.1, CI does **not** cover this task's sharpest half: the three lanes compile and
+run every tier-0 and GPU case here, but **no lane performs a mouse gesture**, so `N1`–`N5` are as
+uncovered on Windows and Linux as they are on macOS until a pass runs. **3.4.2's `S26` remains the one
+seed uncovered by any pass anywhere**, and it cannot be covered from macOS.
