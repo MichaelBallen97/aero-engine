@@ -58,6 +58,15 @@ TEST_CASE("animation player: a paused player's time is untouched by any delta (P
     advanceAnimationPlayer(p, -1000.0F, DURATION);
     CHECK(p.time == 0.375F);
     CHECK_FALSE(p.playing);
+
+    // Both deltas above are WHOLE MULTIPLES of DURATION, so a clock that advanced a paused player
+    // would fmod straight back to 0.375 and this case could not see it at all. These two are not
+    // multiples, and they are what makes the pause guard observable.
+    advanceAnimationPlayer(p, 0.75F, DURATION);
+    CHECK(p.time == 0.375F);
+    advanceAnimationPlayer(p, -0.75F, DURATION);
+    CHECK(p.time == 0.375F);
+    CHECK_FALSE(p.playing);
 }
 
 TEST_CASE("animation player: zero, negative and NaN durations all reset time to zero (PL3)") {
