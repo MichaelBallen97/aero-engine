@@ -8320,3 +8320,679 @@ the skinned pipeline under **WARP and lavapipe** on every push, which is V2's cr
 the one place the tree's first `uint4` vertex attribute and first two-UBO vertex stage could have
 diverged. What the lanes do **not** cover is everything a validation pass is for — the picture. The
 four-phase platform-validation debt grows by one more task.
+
+---
+
+### Task 3.5.2 — Clip playback (Epic 3.5)
+
+**Branch:** `feat/3.5.2-clip-playback`, cut from `main @ 089164b`. **Thirteen green commits** — one per
+build step plus one closing the sabotage matrix's gap — tip `fa3b018`, plus this documentation commit.
+**Complete in code; the twelve-row macOS validation pass has NOT been run yet**
+(`editor/validation/3.5.2-clip-playback.md`, written before the pass as always).
+
+A rigged model moves. 3.5.1 built everything between the importers and the GPU — a container for a
+rig, a mesh registry, a matrix palette, a skinned vertex stage — and left exactly one thing missing:
+**there was no motion anywhere in the tree**. The import layer had carried complete channel data since
+3.2.1 and `ImportedAnimation` had been parsed, warned about and displayed in Import Details for five
+tasks, but nothing could cook a clip, nothing could read one back, nothing could evaluate one at a
+time, and no scene component had ever held a playback clock. This task builds that whole span, and it
+does it with **no dependency of any kind and no link line moved anywhere**.
+
+Four firsts, each setting a precedent:
+
+- the **first `.aeroanim`** — the tree's **third** first-party binary format, and the second designed
+  as a *sibling* of an existing container rather than as a region inside one, so `.aeromesh` and
+  `.aeroskel` are **byte-untouched**: no `formatVersion` bump, no golden churn, not one existing
+  manifest line moved;
+- the **first evaluator anywhere in `engine/render`** — before this, the render layer computed poses
+  (`bindPose`, `computeJointPalette`) but never *sampled* anything over time;
+- the **sixth reflected built-in component**, and the **first with a `bool` field**, so
+  `full.scene.json` carries the first `true`/`false` any committed scene golden has ever held;
+- the **first sample to build a real `World`** and drive its picture from data living in an ECS
+  component.
+
+#### What shipped, layer by layer
+
+**`engine/assets` — two new pairs, taking the subsystem from seven to nine.**
+`cooked_animation.{hpp,cpp}` is the format and its hostile-input parser: an 80-byte header, 32-byte
+packed channel records at offset 80, a `f32` times region, a 16-byte-stride values region, and **the
+format's single padding site** between the two. `animation_cook.{hpp,cpp}` is the producer, on the
+skeleton cook's terms member for member — the *editor adapter* owns model semantics, the *cook* owns
+canonicalization and the emit. The subsystem's link line does not move and still names **no vcpkg
+package at all**. `docs/09` gains a normative **§13**, and **Reserved renumbers §13 → §14**.
+
+**The layout's one interesting arithmetic property, and it is what makes the padding site single.**
+80 and 32 are both multiples of 16, so the channel table both starts and ends 16-aligned for every
+legal `channelCount` and needs no padding after it, ever. The times region is 4 bytes per key, so the
+**only** place alignment can be lost is at its end — `pad ∈ {0, 12, 8, 4}` for `keyCount % 4 ∈ {0, 1,
+2, 3}`. That formula lives in exactly one function (`cookedAnimationTimesPadding`), as does the cubic
+multiplier (`cookedAnimationValuesPerKey`), so the writer, the parser, the sampler and the caps cannot
+disagree about either — and `AN24` pins **both against literals**, never against the formula applied
+to itself. `MAX_COOKED_ANIMATION_BYTES` (104 131 164, ~99.3 MiB) is **derived** from the three count
+caps plus the two record sizes rather than written as a fifth literal.
+
+**The parser is EXACT on both region offsets and on the padding site**, and that is the one place this
+format is stricter than its two siblings. It is a deliberate decision rather than an accident, and
+§13.9 states it normatively: the format has exactly one legal layout and both counts are capped before
+the arithmetic runs, so the expected offsets are computable and total — and **equality is the only
+check that can see a mispositioned padding site at all**, while also subsuming "unaligned" and
+"wrongly sized". Four separate comparisons with four distinct messages, because `BadRange` cannot tell
+them apart by status and `AN17`/`AN18`/`AN19` need to.
+
+**The cook does zero floating-point arithmetic, with one stated exception**, and the exception is the
+`durationSeconds` fold: `std::max`, **accumulator first**, in **emission** order, from `0.0f`.
+Emission order is not negotiable — the result is written into the *header*, so an input-order fold
+would make a shuffled input produce different header bytes, the identical trap the mesh cook's model
+box already records. From `0.0f` rather than `−inf` so a clip with only negative times yields duration
+0 rather than a negative duration a playback clock would then have to defend against. Everything else
+— every time, every value component — travels `std::bit_cast` bit for bit through `putF32`. **INV-T4
+does not extend here**, for the third time: that invariant is about the *texture* files, and clip keys
+and values **are** float data moved bit for bit rather than computed.
+
+**The channel order is total, and a duplicate is a refusal rather than a tie.** Channels ascend by
+`(targetNodeLocalId, path)`, packed into one sortable `u64` and sorted as a plain vector — never a
+hash container. A duplicate `(node, path)` pair is a **cook refusal**, because glTF §3.6.1 makes it a
+MUST NOT and the ambiguity is *which* motion is the truth; Assimp's name-based target resolution
+(*"two same-named nodes make the first match win"*) is the one reachable route to producing one.
+The sort runs **before** the caps, so a shuffled input can never produce a different file.
+
+**`/editor` — one new pair, the seventeenth.** `animation_cook_source.{hpp,cpp}` is the
+`ImportedModel` → cook adapter, pure to `skeleton_cook_source`'s standard (no disk, no UI, no SDL, no
+`<filesystem>`, no logging — warnings are **returned**, never printed). Its result type is **owning and
+contains no span**, deliberately: the rejected shape (spans stored inside the result, pointing at the
+result's own vectors) dangles on any copy *and* dangles during construction the moment the outer vector
+reallocates, and this tree has shipped a dangling-view defect twice. The one place a span into the
+adapter's storage is formed is a separate function, so its lifetime is visible in one place rather than
+in a struct invariant.
+
+**It is the FIFTH consumer of the `localId` rule and the FIRST that must NOT convert**, which is the
+single easiest thing in this task to get wrong. Every previous consumer resolves a `localId` through a
+`localId → position` map before indexing `ImportedModel::nodes`; this adapter **indexes nothing**.
+`ImportedAnimationChannel::targetNode` is a node `localId` — a position for glTF, a raw ufbx `typed_id`
+for FBX, a walk-assigned id for Assimp — and it goes into the file as `targetNodeLocalId` **verbatim**,
+because `.aeroskel`'s `sourceNodeLocalId` is the same kind of value and the two must be comparable at
+bind time. Mapping it would make every FBX clip bind to the wrong joints, silently. `AS9` is the case
+that reddens if anyone "fixes" it, and **it is hand-built precisely because glTF cannot see the
+difference** — its `localId` and its position always coincide. `.claude/rules/editor.md` now carries
+the inversion beside the four consumers that do convert.
+
+**`engine/render` — one new pair.** `animation.{hpp,cpp}` is `bindAnimation` + `sampleAnimation`, and
+`assets::CookedAnimation` **is** the runtime clip — no mirror struct, the same posture 3.5.1 took
+toward `CookedSkeleton`, riding the `PUBLIC aero::assets` edge 3.4.1 added so the header adds no link
+line. **`bindAnimation` REPORTS, it never refuses**: a channel targeting a node the skeleton does not
+hold is a *normal* outcome (glTF clips routinely animate camera and mesh nodes alongside joints) and a
+`sourceGuid` mismatch is almost always a mistake and never *provably* one — two cooks of the same
+asset agree, and a deliberate cross-rig bind is exactly what retargeting is, which v1 neither supports
+nor forbids. The caller decides what to do with the four numbers. The bind is a **linear scan per
+channel**, deliberately: bounded by 4096 × 1024 comparisons in the worst legal case, **once, at load**.
+A sorted index would be an allocation, and requiring the format to store records sorted by
+`sourceNodeLocalId` would fight §12.4's parents-before-children order, which `computeJointPalette`'s
+single forward pass depends on.
+
+**`sampleAnimation` writes only the T, R or S member each bound channel drives, member-wise, and
+touches nothing else** — the caller pre-fills the pose with `bindPose()`. **That contract is the entire
+reason `docs/09` §12.3 stores bind locals as TRS rather than as baked global matrices**, and this task
+is where 3.5.1's prediction is discharged rather than merely restated. All three glTF interpolation
+modes are implemented to the letter: `Step` returns `value(k)`, `Linear` lerps translation and scale
+and **slerps** rotation, and `CubicSpline` is the Hermite basis with **tangents scaled by the segment
+duration**, reading key *k*'s property value at `3k + 1`. Every sampled rotation goes through
+`normalizeOrIdentity`, which is load-bearing rather than belt-and-braces: GLM's `slerp` falls back to
+an unnormalized componentwise `mix` near-parallel and divides by `sin(angle)` in its general branch, so
+a stored non-unit quaternion comes back non-unit.
+
+**`engine/scene` — one new pair, and the sixth built-in.** `animation_player.{hpp,cpp}` is
+`engine::AnimationPlayer` (`time`, `speed`, `loop`, `playing`; `sizeof` **12**) plus
+`advanceAnimationPlayer`, a free function beside the component with one extrinsic parameter — the
+`projectionMatrix(Camera, aspect)` / `viewMatrix(World, Entity)` / `localMatrix(Transform)` shape, with
+three precedents in that directory. `durationSeconds` is extrinsic because it belongs to the **clip**,
+which nothing in a scene can name until 3.1.5.
+
+**The clock's six steps are the contract, in order**: a paused player's time is untouched (so
+pause/resume is exact); `!(duration > 0)` sets time to 0 in **one** predicate covering zero, negative
+and NaN; `time += speed * dt`; a non-finite result resets to 0, so an infinite or NaN `dt` or `speed`
+cannot poison the component; `loop` wraps with `fmod` and then `+= duration` if negative, because
+`fmod` is **exact** in IEEE-754 so a huge `dt` costs one call rather than an unbounded subtract loop
+and reverse playback wraps to the **end** rather than sticking at zero; `!loop` clamps into
+`[0, duration]` and holds. **`playing` is never cleared by the clock and there is no `finished`
+flag** — a `finished` bool is derived state in a serialized component, and auto-clearing `playing`
+makes "paused at the end" and "stopped" indistinguishable on reload. Animation events are the feature
+that actually wants this, and they belong to the v2 graph.
+
+**The split between the two layers is stated so nobody has to infer it**: `engine/scene` owns *what
+time is it*, `engine/render` owns *what pose is that*. `sampleAnimation` takes a bare `float` and
+neither knows nor cares whether the caller looped.
+
+**`AnimationPlayer` carries NO clip reference, and that is a decision rather than an omission.** The
+spelling of a scene → asset reference is 3.1.5's by its own task text and by four consecutive
+handoffs; a clip reference *alone* cannot produce a picture, because playing a clip needs a mesh, a
+skeleton **and** a clip and a scene entity can name none of the three. Adding one here would only
+pre-empt that decision with a spelling 3.1.5 would then have to reconcile. **The reversal is one
+appended field after `playing`**, and `docs/09` §2.3's missing-key rule ("silent, the target field is
+left untouched") keeps every scene file written before then loading. `docs/tasks/phase-3.md` carries
+the amendment note.
+
+**`AERO_BUILTIN_COMPONENT_HEADERS` — the built-in component headers, named once.** Four sites generate
+reflection artifacts from that list (`engine/scene_serialize`'s shipping JSON serializers, the editor's
+`entt::meta`, and the two `reflect-gen` test targets), and before this variable they spelled it four
+times. **Three of those four are silently optional**: a component added to the editor's list and not
+the serializer's is registered, inspectable, editable and **not saved**, with every test green. It
+lands at root scope in its **own commit, before the component exists**, so the two changes are
+separately bisectable and each seed is reachable. Its comment carries the rule for the next person: a
+component that should be **registered** but not **serialized** does not fork the variable in place — it
+introduces a second, differently-named one, so no site ever silently means something other than what it
+says.
+
+**The site the variable does not reach**, and it is exactly the site D7 exists to protect one layer
+down: `engine/scene_serialize/src/scene_serialize.cpp` holds a **hand-written dispatch table**. The
+CMake `HEADERS` list decides which generated `aeroReadJson`/`aeroWriteJson` are *compiled into* the
+library; that table decides which are *dispatched to*. Both had to move (§R.6 below).
+
+**`tools/cooker` — the fourth subcommand.** `aero_cooker animation --input … --output ….aeroanim
+[--guid …] [--clip <index>]`, with `--clip` parsed through the existing `parseSkinIndex` (locale-
+independent, fully consumed, a leading sign refused) rather than a second parser, and `runAnimation`
+placed **above `runSkeleton`** — the furthest point from the region
+`cooker.texture_nothing_written_on_failure` pins in source text. Both subcommand-error message literals
+now name all four subcommands, and their `run_case.cmake` arms move with them. Ten new ungated `cooker.*`
+ctest cases, the last of which is the manifest's fourth arm.
+
+**The determinism manifest grows 15 → 18 lines / 30 → 36 cross-lane comparisons**, with **all 15
+existing hashes byte-identical** and `ktx validate`'s 8 unchanged. The fourth arm is
+`animation_golden_manifest` — **three tuples, one per interpolation mode**, driven from
+`tests/fixtures/assets/skinned.gltf`, which already existed, so **no new fixture lands anywhere**. A
+fourth *arm* rather than a wider tuple table, for the structural reason 3.5.1 recorded:
+`aero_manifest_tuple` reads the arm-level `SUBCOMMAND`, and the `KIND_PREFIX` orphan check stays sound
+only while exactly one arm claims each prefix. **All four statements in the manifest's own header were
+checked and updated** — the artifact count, the arm list, the cooker-version list, and the regeneration
+`ctest -R` regex, which would otherwise have **silently skipped the new arm**, exactly as 3.5.1's
+amendment warned.
+
+**`samples/phase-3-animation/` — the deliverable made visible.** Three copies of one registered mesh,
+side by side, differing in exactly two fields (`MeshInstance::palette` and their material): the left
+copy is drawn with an **empty palette** and never moves (the bind-pose reference), the centre copy
+plays the clip at `speed = 1` looping, and the right copy plays it at `speed = 0.25` and does not
+loop, freezing after eight seconds. **The sample builds a real `World`**: each copy is an entity with a
+`Transform`, the two driven copies also carry an `engine::AnimationPlayer`, and every frame the loop
+calls `advanceAnimationPlayer` on the component and reads `time` back **out of the World** to hand to
+`sampleAnimation`. It does not call `buildRenderView` — nothing in a scene can name a mesh — but the
+clock, the looping and the two speeds all live in ECS data, which is what makes the component's
+participation real rather than notional.
+
+`wave.gltf` is authored here from `arm.gltf`'s recipe plus a clip, and the three cooked artifacts
+(`wave.aeromesh` **7216 B**, `wave.aeroskel` **704 B**, `wave.aeroanim` **1152 B**) share **one pinned
+GUID**, `352a0000000000000000000000000001`, because `sourceGuid` means *"the asset these bytes came
+from"* and these are three cooks of one source. `wave.aeroanim`'s 1152 bytes are
+`80 + 32×5 + 4×37 + 12 + 16×47` exactly — the header, five channel records, 37 keys, the single padding
+site and 47 values. **All three were verified to re-cook byte-identically from a clean temp
+directory**, which is 3.3.3's guarantee being *spent* rather than re-proven; they are deliberately
+**not** in the frozen manifest.
+
+The clip drives all three glTF paths through all three modes, chosen so each is visually unmistakable:
+`LINEAR` rotation on `J1`–`J3` (the wave), `STEP` scale on `J4` (a hard pop, and **no interpolating
+sampler can produce a pop**), and `CUBICSPLINE` translation on `J0` (a bob with visible ease-in and
+ease-out, and **no linear sampler can produce a curve**).
+
+#### The twelve §0 decisions, each with its reason
+
+1. **`cooked_animation.hpp` includes `<aero/assets/cooked_mesh.hpp>`** — the **third** application of
+   one reconciliation, with the identical one-line comment `cooked_texture.hpp:24` has carried since
+   3.3.2 and `cooked_skeleton.hpp:20` since 3.5.1. Duplicating the eight primitives is the rejected
+   alternative; the eight-places rule wins. Unlike 3.5.1 this was **not** an amendment — the task's own
+   AC anticipated it.
+2. **`scene_serialize.cpp` is modified and AC-49's byte-identity list narrows** to
+   `engine/scene_serialize/include/` (§R.6).
+3. **`full.scene.json` is regenerated by hand, and the new component lands on entity id 4** (`"prop"`,
+   parent 3, previously carrying `Transform` alone) — chosen so the fixture's other five pinned
+   properties do not move. Values are non-default and exercise **both** bool states, so the fixture
+   proves round-tripping rather than defaulting. The regeneration ritual is the fixture's own: hand-edit,
+   then let `G2` prove it by loading, saving through the real writer and comparing bytes.
+4. **`AERO_BUILTIN_COMPONENT_HEADERS` lands in its own commit, before the component exists**, with the
+   generated-file list captured before and after in all three build configurations and required to be
+   identical.
+5. **The D16 inspector case lands immediately after the AC-12 drift pin** in
+   `tests/editor/inspector_test.cpp`, because that case is placed last on purpose (registration is
+   process-lifetime and permanent) and all eleven `entt::meta_reset()` calls in that TU come before it.
+   The new case **asserts the four fields**, never merely that a lookup did not crash.
+6. **Case-ID and cooker-case allocation fixed up front** so no step re-derives it: `AN1`–`AN24`,
+   `KA1`–`KA22`, `CL1`–`CL25`, `PL1`–`PL12`, `AS1`–`AS14`, `G11`/`G12`, one unnumbered inspector case,
+   and ten `cooker.animation_*` names.
+7. **The two byte goldens' composition fixed up front** (§R.9), including the same-node arrangement that
+   makes S11 witnessable at all.
+8. **`locate()`'s exact shape**, including the NaN predicate and the `u` clamp (§R.10, §R.11).
+9. **The manifest becomes a FOUR-way arm**, not a wider tuple table, and the animation arms get their
+   own top-level `SKINNED_ANIM` constant because `ASSETS` is scoped inside the manifest arm.
+10. **Two `is*` predicates validate the enum codes and `cookedAnimationValuesPerKey` is THE cubic
+    multiplier.** Both enums have fixed underlying types, so every `u16` is a value of the type — the
+    `CookedTextureFormat` lesson, recorded in the cooked-assets rule: **both halves validate, and the
+    cook's half is not optional.**
+11. **The parser enforces exact region offsets with four distinguishable messages**, written into
+    `docs/09` §13.9/§13.10 so it is a stated rule rather than an implementation accident.
+12. **No Tracy zone lands anywhere in this task**, and that is recorded as a decision rather than an
+    oversight: `advanceAnimationPlayer` is a handful of float operations called once per player per
+    frame, and a zone would cost more than the function and flood a capture with per-entity scopes;
+    `sampleAnimation` lives in `engine/render`'s pure layer, which carries none either. **The first
+    task that wants clip-sampler timings is adding the first one, not restoring a lost one.**
+
+#### The six reconciliations against the spec's own text
+
+Every one was read out of the live tree while planning, and every one is recorded rather than smoothed
+over.
+
+1. **`engine/scene_serialize/src/scene_serialize.cpp` is NOT byte-identical, and the spec said it was**
+   (§R.6). That file holds a hand-written five-entry dispatch table — `BUILTIN_COMPONENT_NAMES`,
+   `BUILTINS`, `findBuiltin` — that `saveWorld` walks and `loadScene` resolves through. A sixth
+   component added to the CMake header list and not to that table is registered, inspectable, editable
+   and **not saved**, with every test green: the exact silent failure `AERO_BUILTIN_COMPONENT_HEADERS`
+   exists to prevent, one layer below where it looks for it. **AC-49 is amended**: the byte-identical
+   path is `engine/scene_serialize/include/` alone, which genuinely does not move because
+   `scene_serialize.hpp` declares `builtinComponentNames()` as a span and carries no count. **The seed
+   set grew by one, S45**, which is the only reason that failure has a witness at all.
+2. **`.github/workflows/ci.yml` is NOT byte-identical, and the spec contradicts itself about it**
+   (§R.7). D1's heading claims `.github/` is byte-identical while AC-46 requires the `cook-determinism`
+   job's printed total to move 30 → 36, which *is* a `ci.yml` edit. AC-49 has it right and lists only
+   `.github/scripts/`. Every literal was enumerated by reading the file rather than recalling it —
+   thirteen sites including the upload-layout comment, the fourth `path:`, six `-ne` guards and their
+   messages, two step names and the printed total — and all of them landed in one commit. **`ktx
+   validate`'s 8 is untouched**: its glob is `*.ktx2` and no `.aeroanim` matches it.
+3. **The five-built-in assumption lives in far more places than the spec guessed, and two goldens force
+   a fixture regeneration** (§R.8) — and the plan's own enumeration was itself incomplete; see the
+   corrected attributions below. `G8`'s own comment prescribes the response verbatim: *"A sixth built-in
+   reddens exactly here, by design (E12). The correct response is to regenerate `full.scene.json` … not
+   to relax the assertion."* And `G5`'s comment claiming a sixth built-in *"reddens G8, not this"* is
+   **stale** — `G5` both `REQUIRE`s `builtins.size() == 5` and loops over `builtinComponentNames()`
+   asserting each appears in the fixture, so it reddens **twice**. The comment is right about intent and
+   wrong about fact; **forward-only, it stays exactly as it is**, and the finding lives here instead.
+4. **The mixed golden as the spec described it cannot witness seed S11** (§R.9). AC-47 asked for three
+   channels *on three different nodes*; S11 drops `path` from the sort key. With three distinct nodes
+   the emitted order is **identical either way**, so the seed reddens nothing — the 3.4.2 `ME24` lesson
+   (a mapping compared against itself) in a new costume. **Two of the three channels now share a node**,
+   supplied in an order whose node-only sort disagrees with the correct one, and `KA4` pins the same-node
+   tie independently so the property has two witnesses rather than one.
+5. **§6.4's non-finite-`t_c` claim is wrong as written** (§R.10). The spec said a non-finite `t_c`
+   "lands on `value(0)`". Traced through: `k` does end at 0, but `u = (NaN − t[0]) / t_d` is **NaN** and
+   every interpolator then produces NaN. The low clamp is therefore written as **`!(tc > t[0])`**, which
+   is true for `tc <= t[0]` **and** for NaN in one comparison — D14's own one-predicate-covers-three
+   style. `CL23` is the witness and **S46** the new seed.
+6. **`u` needs a clamp the spec did not name** (§R.11). The parser deliberately does not check monotonic
+   times, so a hand-built file can present `t[k] > t[k+1]`, which would push `u` outside `[0, 1]` and
+   turn every interpolator into an **extrapolator** — a shape glTF does not define, and one that can
+   drive a `CUBICSPLINE` Hermite arbitrarily far. **The clamp shipped.** What did *not* survive
+   implementation is its stated justification; see S47 below.
+
+#### D13 — the `ImportSettings::scale` finding, named and unowned
+
+`aero_cooker animation` deliberately offers **no `--scale` flag**, and that is a finding rather than a
+preference. All four importers apply `ImportSettings::scale` in exactly **three** places — root node
+translations, mesh positions and inverse-bind translation columns — and to **no animation channel
+anywhere**. Offering the flag on this subcommand would therefore change **no byte** of the output, and
+a flag that lies is worse than a flag that is absent. `takesScale` was not extended; `--scale` falls
+through to the unknown-flag arm, which names it.
+
+**The deeper gap, recorded here rather than fixed:** the scale scheme is **already incoherent for a
+multi-joint skinned hierarchy at `scale ≠ 1`**, and animation is not what makes it so. A joint's global
+transform is the product of its ancestors' **bind locals**, and those are *unscaled*; only the root
+translation and the inverse-bind translation column are scaled. So a scaled skinned rig is
+self-inconsistent before any clip is involved, and making `--scale` work for clips alone would make the
+flag *look* correct while the rig stayed wrong — which is strictly worse than not offering it.
+
+**Named, unowned, with its trigger: the first task that needs `scale ≠ 1` on a skinned model.** The
+honest fix is upstream, in how the importers apply scale to a skinned hierarchy, not downstream in a
+cooker flag. `docs/09` §13.0 states the consequence normatively (clip values are in the importer's own
+output units) so no consumer infers otherwise, and `tools/cooker/README.md` carries the CLI half.
+
+#### What the import layer can and cannot produce
+
+Re-read rather than recalled, and it changes how one test should be interpreted:
+
+- **glTF** fills all three interpolation modes, skips a `weights` channel with a warning, skips a
+  missing or out-of-range target node, enforces strictly-increasing times and **skips rather than
+  sorts**, enforces `values.count == times.count × (cubic ? 3 : 1)` and **skips rather than partially
+  reads**. At `ImportDepth::Structure` a channel is recorded with **empty** times and values.
+- **FBX** bakes and marks **every** channel `Linear`; `targetNode` is the raw ufbx `typed_id`. Its
+  append helpers return early on zero keys and push only non-empty channels, so a `Structure`-depth clip
+  is a shell with **zero channels** — a shape difference from glTF that the adapter's refusal has to
+  cover both ways.
+- **Assimp** marks every channel `Linear` and resolves targets **by name**, where *"two same-named nodes
+  make the first match win"* — the one reachable route to two channels sharing a `(node, path)` pair,
+  which is exactly why the cook refuses duplicates rather than breaking the tie.
+- **OBJ** has no animation by format.
+
+**A zero-key channel cannot come out of a Full-depth import from any backend**: glTF's
+`validateAccessor` returns `false` for `accessor.count == 0` long before `times.back()` runs, and FBX's
+helpers return early. The only routes are a **`Structure`-depth** model — which the adapter refuses by
+name — or a hand-built `ImportedModel`. So the cook's zero-key **drop** path is **test-reachable and
+production-unreachable**, and this is written down so `KA7` is never read as live cover.
+
+#### The sabotage matrix — 47 seeds, one genuine gap, closed structurally
+
+Protocol per seed: apply → `git diff` (assert the seed **landed** — an empty diff is a false pass, and
+BSD `sed`/`perl` have produced silent ones in this tree) → run the named suite → record → revert →
+`git status` clean → **rebuild** before any clean-baseline measurement. **Eighteen** seeds ran at their
+own build step while the code was fresh; the remaining **twenty-nine** ran as one pass afterwards,
+against a `154/154` baseline.
+
+| # | The landed diff | Reddened | Note |
+|---|---|---|---|
+| S1 | parser accepts `formatVersion` 2 | `AN6` | as predicted |
+| S2 | parser derives `totalBytes` instead of comparing | `AN10` | as predicted |
+| S3 | magic compared over seven bytes | `AN5` | as predicted |
+| S4 | a channel's `reserved0` refusal deleted | `AN8` | as predicted |
+| S5 | the padding-site zero loop made unreachable | `AN9` | as predicted |
+| S6 | interpolation guard also accepts raw code 3 | `AN15` | as predicted |
+| S7 | per-channel `valueCount` refusal made dead | `AN16` | as predicted |
+| S8 | key-slice subtraction accepts one past the region | `AN20` | as predicted |
+| S9 | `channelCount == 0` refusal deleted | `AN12` | as predicted |
+| S10 | `channelTimeBytes` returns the whole buffer out of range | `AN21` | as predicted |
+| S11 | sort key drops the path bits | `KA2 KA3 KA4 KA7 KA9 KA19` | superset of the predicted `KA2`+`KA4` |
+| S12 | the sort removed (emit in input order) | `KA2 KA3 KA4 KA15 KA19` | superset |
+| S13 | duplicate-`(node, path)` sweep made dead | `KA8` | as predicted (message pinned) |
+| S14 | strictly-increasing-times check made dead | `KA10` | as predicted |
+| S15 | `w` written verbatim on Translation/Scale | `KA2 KA3 KA14` | superset |
+| **S16a** | duration fold walks input order | **NOTHING** | **plan wording wrong** — a provable no-op |
+| **S16b** | duration fold accumulator `0.0f` → `−inf` | `KA15 KA20` | the corrected seed |
+| S17 | adapter maps `targetNode` through a localId→position table | `AS9 AS10 AS11 AS12` | superset |
+| S18 | both Structure-depth refusals made dead | `AS7 AS14` | superset |
+| S19 | out-of-range message prints `animations.size() + 1` | `AS5 AS6` | superset |
+| S20 | `--clip` parsed but never forwarded | `cooker.animation_clip_out_of_range`, `cooker.animation_golden_manifest` | the plan's "three manifest arms" are three tuples inside **one** ctest case |
+| S21 | `bindAnimation` matches on record index | `CL2 CL4 CL5 CL6 CL20 CL24` | superset of `CL6` |
+| S22 | `boundChannels` reported as the channel count | `CL2` | as predicted |
+| **S23** | the leading clamp dropped | **`CL23`** | **not `CL7`** — see below |
+| S24 | the trailing clamp dropped | `CL8 CL10 CL23` | superset |
+| S25 | the search becomes `lower_bound`-shaped | `CL9 CL10` | as predicted |
+| S26 | `Step` returns `value(k+1)` | `CL9 CL10 CL19` | superset |
+| S27 | `Linear` rotation lerps instead of slerping | `CL13` | the 179° arm |
+| S28 | slerp's short-path negation removed | `CL14` | measured: midpoint `−0.382683` vs `+0.382683`, the long way round |
+| S29 | cubic reads `values[3k]` instead of `values[3k+1]` | `CL7 CL8 CL9 CL15 CL16 CL17` | **all four** cubic read sites |
+| S30 | cubic tangents not scaled by `t_d` | `CL15` | as predicted |
+| S31 | rotation normalization dropped | `CL18 CL19` | as predicted |
+| S32 | sampler writes a whole `JointPose` | `CL20` | as predicted |
+| **S33** | the INVALID-index test alone removed | **NOTHING** | **a behavioural no-op as written**; the stronger form reddens `CL21 CL22` under ASan |
+| S34 | `fmod` → one conditional subtract | `PL5` | as predicted |
+| S35 | reverse-wrap `+= duration` deleted | `PL5 PL6` | superset |
+| S36 | clamps when `loop` and wraps when `!loop` | `PL9` | as predicted |
+| **S37** | the `!playing` guard deleted | **NOTHING (859/859)** | **THE ONE GENUINE GAP** — closed below |
+| S38 | `!(duration > 0)` → `!(duration >= 0)` | `PL3` | as predicted |
+| **S39** | the header dropped from `AERO_BUILTIN_COMPONENT_HEADERS` | **a LINK failure** | the plan predicted a **compile** failure |
+| S40 | manifest count literal 18 → 15 **and** `TUPLE_COUNT` 3 → 2 | all four manifest cases (0/4) | as predicted |
+| **S40b** | `TUPLE_COUNT` 3 → 2 **alone** | `cooker.animation_golden_manifest` (3/4) | **added beyond the plan** — proves the second literal is witnessed on its own rather than masked by the first |
+| **S41a** | `runAnimation` moved below `runSkeleton` | **NOTHING** | **plan wording wrong** — that is still above the pinned region |
+| **S41b** | `runAnimation` moved below `runTexture`, **into** the region | `cooker.texture_nothing_written_on_failure` | the corrected seed |
+| S42 | the sample samples at a fixed time | **green, by design** | validation **row 4** |
+| S43 | the sample applies `speed` to `dt` twice | **green, by design** | validation **row 6** |
+| S44 | the sample gives the non-looping instance `loop = true` | **green, by design** | validation **row 7** |
+| **S45** | `BUILTINS` left at 5 while the header stays in the variable | **seven** cases (`aero_scene_serialize_test` 18/25) | the plan predicted four |
+| S46 | low clamp written `tc <= t[0]` instead of `!(tc > t[0])` | `CL23` | as predicted |
+| **S47** | `u` not clamped into `[0, 1]` | **NOTHING** | **structurally unwitnessable** — the clamp is unreachable, not merely untriggered |
+
+**The one genuine gap, and it is a lesson about arithmetic in a test rather than about the code.**
+`S37` deletes the clock's `if (!player.playing) return;` guard, and **the entire 859-case suite stayed
+green**. The reason: `PL2` advanced a paused player by `±1000.0` against a `DURATION` of `2.0` — and
+1000 is a **whole multiple** of 2, so the seeded clock's `fmod` brought the time straight back to the
+bit-identical `0.375` the case asserts. A paused player that silently runs was indistinguishable from
+one that does not, for that one input. **Closed structurally by adding a non-multiple pair (`±0.75`) to
+`PL2`**, which is a stronger case rather than a second one, and **re-seeded and independently
+re-verified: `PL2` reddens alone (93/94).** Committed as `fa3b018`. The generalizable form: **a "no
+change" assertion whose delta is a whole multiple of the modulus proves nothing about the modulus.**
+
+**Two plan wordings were wrong, and both seeds were re-run in corrected form rather than recorded as
+passes.** `S16a` (fold in input order) is a **provable** no-op — `std::max` from `0.0f` over the same
+finite multiset is order-independent — so the real seed is `S16b`, the accumulator. And `S41a` does not
+violate the pin at all: the pinned region opens at `ExitCode runTexture(`, so *below `runSkeleton`* is
+still **above** the region; the real seed is `S41b`, moving the block **into** it.
+
+**`S40b` was added beyond the plan** because the manifest arm carries **two** independent literals (the
+file-level count and the arm's `TUPLE_COUNT`) and seeding both together cannot show that the second one
+is witnessed at all.
+
+#### Every corrected witness attribution
+
+Six of the plan's own attributions were wrong, plus eight that were narrower than reality. All are
+recorded rather than smoothed over.
+
+1. **`S23`'s witness is `CL23`, not `CL7`.** With the `u` clamp present, dropping the **low** clamp is a
+   no-op for every *finite* `tc < t[0]`: the search returns `lo = 0`, `u < 0`, and the clamp pulls it to
+   0, giving `value(0)` — the same answer. **The low clamp's only observable role is NaN**, which then
+   falls through to `!(NaN < t[n-1])` and takes the *trailing* clamp to `value(n-1)`. So the two clamps
+   are more entangled than the plan modelled, and only the NaN arm can separate them.
+2. **`S47` is structurally unwitnessable, and the `u` clamp is UNREACHABLE rather than merely
+   untriggered.** §R.11 justified it by *"non-monotonic times turn every interpolator into an
+   extrapolator"*. `locate()`'s own search refutes that: the two clamps establish
+   `t[0] < tc < t[n-1]` on entry, and the loop preserves `times[lo] <= tc` and `times[hi] > tc` at every
+   step, so at exit `0 <= tc − times[lo] < times[hi] − times[lo] == td` and therefore **`u ∈ [0, 1)` for
+   any times array, monotonic or not** — with `td > 0` following from `times[lo] <= tc < times[hi]`.
+   Verified by seeding: reddens nothing in the whole suite. **The clamp SHIPS anyway** — one
+   instruction, and it becomes load-bearing the moment the control flow changes — but its comment now
+   states the *invariant* rather than repeating an unreachable justification. `CL25` still ships and
+   still pins hand-computed convex combinations across a broken time order; it is simply not S47's
+   witness.
+3. **`S33` is a behavioural no-op as the plan writes it.** The guard is
+   `joint == COOKED_SKELETON_INVALID_INDEX || joint >= pose.size()`. `INVALID` is `0xFFFFFFFF` and
+   `pose.size()` can never reach 2³²−1, so **the second disjunct subsumes the first** and removing only
+   the INVALID test changes nothing. The stronger seed — removing the **whole** guard — reddens `CL21`
+   and `CL22` under ASan, and that is the form that ran.
+4. **`S39` is a LINK failure, not a compile failure.** The mechanism is exactly as the plan named it,
+   but `engine/scene_serialize/src/builtin_serializers.hpp` **declares** the generated
+   `aeroReadJson`/`aeroWriteJson`, so the call compiles and only the *definition* is missing:
+   `Undefined symbols: engine::aeroReadJson(engine::JsonValue const&, engine::AnimationPlayer&)`,
+   failing the link of `aero_scene_serialize_test`, `aero_sample_phase1_scene` and every other consumer.
+   Still a hard build failure and still a stronger witness than any test case.
+5. **`S45` reddens WIDER than predicted: seven cases, not four.** Predicted `G5`, `G2`, `G11`, `G12`;
+   actually also `scene_serialize: dispatch/registration parity (AC-3/D8)`, `G4` (second-cycle
+   convergence) and `G8` (registry order pinned). `aero_scene_serialize_test` reads 18/25.
+6. **§R.8 is materially incomplete: NINE literal sites named, EIGHTEEN exist, in FIVE test files rather
+   than four.** The nine it missed were all found by grep before editing:
+   `tests/scene_test.cpp:630,:634` (`== 6`), `:642,:674` (`== 7`), `:687` (`== 8`), and
+   **`tests/transform_test.cpp:93,:123,:124,:144`** (`== 5`, four `World`-seeding cases) — **a file §R.8
+   does not mention at all**. All are in `aero_tests`, so the "four test binaries" claim survives; "nine
+   literals" does not. Counting the four fixture-driven tallies §R.8 *did* enumerate, **22 numeric
+   literals moved**, plus two added pins (`componentTypeAt(5)`, `builtins[5]`). **The generalizable
+   form: a component-count literal is not confined to the tests that are about components** — a test
+   that merely seeds a `World` and counts types carries one too.
+7. **Eight seeds reddened supersets of their predicted witness** — `S11`, `S12`, `S15`, `S17`, `S18`,
+   `S19`, `S24`, `S26`, `S29`, `S35` — recorded above case by case. A superset is not a failure of the
+   prediction, but it is worth recording, because the plan's per-seed attribution is the thing a future
+   reader trusts when deciding whether a case is load-bearing.
+8. **Two test-design assertions in `§T.3` were wrong and were corrected in the case rather than in the
+   prose.** `CL23` asked for `value(0)` from NaN, `−inf` **and** `+inf`; `+inf` is greater than every key,
+   takes the *trailing* clamp and lands on `value(n−1)` — which is correct, and is what any large finite
+   time gives. Implemented as NaN/`−inf` → key 0, `+inf` → key n−1. And **`CL9` cannot claim bit-identity
+   for a sampled ROTATION**: exact-timestamp bit-identity holds for `Step`, for `Linear` translation and
+   scale and for cubic, and **cannot** hold for a rotation, which passes through slerp's division by
+   `sin(angle)` and `normalizeOrIdentity`'s division by a square root. Three channels are pinned
+   bit-exactly through `std::bit_cast`; the rotation channel uses `approxEquals`, with the reason in the
+   case.
+
+#### The three declared sample-only seeds
+
+**S42, S43 and S44 reddened nothing in the whole 154-entry suite, exactly as designed.** They live in a
+`samples/` `main.cpp`, which no test binary links, and this tree has no pixel tests and no readback
+path. Each was applied, the **full** suite observed green, recorded and reverted. **Validation rows 4, 6
+and 7 are their only coverage anywhere in this project**, and the page names each seed beside its row so
+the pass is executed knowing what it alone proves. **A green run under any of the three is never read as
+proof.**
+
+**The class is smaller than 3.5.1's, and the reason matters:** this task writes **no shader**, so the
+usual shader-only blind spot does not exist at all. What is left is the sample's own composition — and,
+unlike 3.5.1, **CI covers none of it and needs to cover none of it**, because no new pipeline, no new
+vertex format and no new GPU-tier case is being exercised.
+
+#### Three recorded deviations
+
+1. **`CL5`'s mismatched-span arms are behind `#if defined(NDEBUG)`.** §D-4 makes
+   `out.size() == clip.channels.size()` a **debug assert** (`bindPose`'s posture) while §T.3's `CL5` asks
+   for shorter- and longer-span calls. Both cannot hold in a Debug build: the assert aborts before the
+   clamp runs. **The assert is normative code and was kept**; the two mismatched arms are gated on
+   `NDEBUG` and run on `macos-release` and all three CI Release lanes, while the exact-size arm runs
+   everywhere. `CL22` needed no gate — `pose` is guarded at **runtime**, not asserted. (§D-4's prose says
+   *"both spans debug-asserted"*; its own code snippet asserts only `binding`, and **the snippet is what
+   shipped**.)
+2. **`engine/scene_serialize/src/builtin_serializers.hpp` is modified, and no §F entry names it.** §0.2
+   describes the whole diff as living in `scene_serialize.cpp`. In the real tree the component headers
+   and the generated function declarations live in that **src-private header**, which
+   `scene_serialize.cpp` includes — `scene_serialize.cpp` includes no component header directly. The
+   include and the two forward declarations went there, matching the file's existing shape. **This is
+   what makes S39 a link rather than a compile failure.** `engine/scene_serialize/include/` remains
+   byte-identical to `main`, so **AC-49 as amended holds**.
+3. **`.github/workflows/ci.yml` is not byte-identical** (§R.7's D1-vs-AC-46 contradiction, resolved in
+   favour of AC-46 and AC-49). `.github/scripts/` **is** byte-identical, and the guard scripts did not
+   change.
+
+#### Two things handled in place, and one environment hazard that is not this task's
+
+- **The cooker usage banner ran to 118 of its 120 columns** once `.aeroanim` was added to the tool's
+  first line. Shortened to a non-enumerating string (93 columns). The extension list in that banner had
+  already been edited twice for the same reason, which is the argument for not enumerating there again.
+- **`animation_cook.hpp` claimed the duration fold was the file's single float operation.** The
+  monotonic-times check is a float **comparison** too. Corrected to *"the only float operations are
+  COMPARISONS"*; **zero floating-point arithmetic** is unchanged and still literally true.
+- **Not this task's file, and deliberately not fixed here:** `tests/editor/blender_service_test.cpp`'s
+  `TempDir` builds `$TMPDIR/aero_blender_service_test_<counter>` from a **process-agnostic** counter, so
+  two concurrent checkouts running `aero_editor_shell_test` create and `remove_all` each other's live
+  fixtures — 7 to 20 `BS*` cases fail spuriously and non-reproducibly. The workaround used throughout
+  this task was a private `TMPDIR`. The fixture name wants a PID; that is 3.2.4's file and it belongs to
+  whoever next edits it.
+
+#### The sample, and three things authoring it taught
+
+1. **Validation row 7 has an INHERENT observability limit, and the README names it.** Row 5 demands a
+   *seamless* loop, which forces the clip's last pose to equal its first — so the frozen right instance
+   holds **the clip's start pose**. "Held at the end" and "snapped back to `t = 0`" are therefore **the
+   same picture, by construction**, and no clip that loops seamlessly can separate them. Row 7 is still a
+   valid `S44` witness — S44 turns "frozen" into "still cycling", which is unambiguous, and the held pose
+   is visibly **not** the left copy's bind pose since the rotations at `t = 0` are non-zero — but the row
+   **must not** be written as "holds its final pose rather than its first". Carried onto the validation
+   page verbatim.
+2. **The `STEP` channel's key times are 0, 0.4, 0.8, 1.2, 1.6 — not the 0.5 s grid the plan's prose
+   implies.** With a `STEP` key at `t = 2.0` the loop wrap itself carries a scale pop, which contradicts
+   row 5's "no visible snap". Ending the track early and back at scale 1 lets glTF's trailing clamp hold
+   1 across the seam, so the four pops all sit **inside** the cycle on an even beat.
+3. **`wave.gltf` reproduces `arm.gltf`'s recipe byte-identically, and two recipe details were not
+   written down anywhere.** The regenerated `POSITION` / `NORMAL` / `JOINTS_0` / `WEIGHTS_0` / indices /
+   `INVERSE_BIND_MATRICES` buffer views are byte-identical to `samples/phase-3-skinning/arm.gltf`'s.
+   Getting there needed two facts no document stated: the weight blend is computed in **chain-index
+   space** (`t = y/0.4 − floor(y/0.4)`), and `J0`'s inverse-bind translation is `+0.0`, **never `−0.0`**.
+   Both are now in the README's provenance table. `samples/phase-3-skinning/` is **byte-untouched across
+   the whole branch** (0 files in the diff).
+
+#### The mechanical gate
+
+`AERO_REQUIRE_GPU=1 ctest` **154/154 on both macOS presets**. Both reduced configurations built fresh
+with `-G Ninja`. Six architecture guards exit 0; clang-format and clang-tidy clean **by exit code**; all
+four manifest cases green against the 18-line manifest with the **fifteen pre-existing hashes
+byte-identical** and `ktx validate`'s 8 unchanged.
+
+**`ctest -N` reads 154 / 65 / 78 — +10 in ALL THREE configurations, identically.** That lockstep is
+itself an assertion rather than a coincidence: `aero_cooker` **takes no gate flag**, so its cases are
+registered everywhere, and a *smaller* move in a reduced configuration would mean the new cooker block
+had accidentally grown one. Every other new test rides an existing binary, and `aero_tests`,
+`aero_editor_shell_test` and `aero_editor_imgui_test` each register as a **single** ctest entry — so
+this task's **100 new doctest cases** move that triple not at all. Read the two kinds of move
+differently, as 3.1.5 records: a `cooker.*` addition must be identical in all three, and a
+`reflect-gen.*` addition must be tools-ON only.
+
+Doctest, from each binary's own `filters:` line: **859 / 1608 / 124 / 25 / 23**.
+
+| Binary | Before | After | What moved |
+|---|---|---|---|
+| `aero_tests` | 776 | **859** | +83: `AN1`–`AN24`, `KA1`–`KA22`, `CL1`–`CL25` and `PL1`–`PL12` across four new TUs |
+| `aero_editor_shell_test` | 1594 | **1608** | +14: the new `tests/editor/animation_cook_source_test.cpp` (`AS1`–`AS14`) |
+| `aero_editor_imgui_test` | 124 | **124** | **unmoved** — no editor UI in this task, as predicted |
+| `aero_scene_serialize_test` | 23 | **25** | +2: `G11` and `G12`, the sixth built-in's round trip and its dispatch |
+| `aero_editor_inspector_test` | 22 | **23** | +1: the D16 case, asserting all four reflected fields |
+
+`aero_reflect_meta_test` (4) and `aero_reflect_json_test` (23) are **unmoved**: the two test targets
+consume `AERO_BUILTIN_COMPONENT_HEADERS` rather than a new fixture, so their generated artifacts change
+content without changing case count — which is exactly Step 7's exit criterion (the generated file
+**list** captured before and after in all three build configurations, and required to be identical).
+
+Guards: `check-math-boundary.sh` scans **363 → 380** (+17 tracked C-family files: 4 `engine/assets`,
+2 `engine/render`, 2 `engine/scene`, 2 `editor`, 6 `tests` and 1 sample `main.cpp`; `.gltf`,
+`.aeromesh`, `.aeroskel` and `.aeroanim` are not C-family), re-measured **after `git add`** because
+`git ls-files` sees only tracked files. `check-project-no-delete.sh` Check A reads 6 files and Check B
+**65 → 66**, both memberships unchanged — `animation_cook_source.cpp` is in **neither** list, which is
+what makes a future destructive call there a hard CI failure. **No guard script changed;
+`.github/scripts/` is byte-identical to `main`.**
+
+Inventory: `aero_editor_core` sources **64 → 65**, tracked `editor/src/*.cpp` **65 → 66**, tracked
+`editor/src/*.hpp` **unmoved at 21** (the new pair's header is public), editor pairs **sixteen →
+seventeen**, `engine/assets` pairs **seven → nine**. The per-OS branch count over first-party editor
+code is **unmoved at three lines in one file** (3.2.4's `currentHostOs()`), and
+`git grep -nE '_WIN32|__APPLE__|__linux__' -- engine/assets engine/render engine/scene tools/cooker`
+still reads **zero lines**.
+
+**Byte-identical to `main`:** `engine/rhi`, `engine/scene_render`, `engine/reflect`, `engine/platform`,
+`engine/core`, **`engine/scene_serialize/include`**, `shaders/`, `runtime/`, `vcpkg.json`, `cmake/`,
+`.github/scripts/`, `tests/cooker/fixtures/`, `tests/fixtures/assets/`,
+`tests/fixtures/scenes/{empty,edge}.scene.json`, **`samples/phase-3-skinning/`**,
+`samples/phase-3-materials/`, and the **seven** pre-3.5.2 `engine/assets` pairs. `engine/render`'s four
+pre-existing public headers, both src-private packers and `forward_renderer.{hpp,cpp}` are
+byte-identical too — **this task adds no draw path**. `engine/scene`'s five existing headers,
+`world.cpp` and `camera.cpp` are byte-identical; `transform.cpp` moves by exactly **two lines**.
+
+**No link line moves anywhere and no dependency of any kind lands.** `animation.hpp` naming
+`assets::CookedAnimation` rides `aero_render`'s existing `PUBLIC aero::assets` (3.4.1's edge);
+`animation_player.hpp` includes `<aero/reflect/annotations.hpp>` only, which `transform.hpp` already
+forces PUBLIC on `aero_scene`; the adapter rides `aero_editor_core`'s group; the subcommand rides
+`aero_cooker`'s. `git grep -n 'find_package' -- engine/assets/` still returns **only the two comment
+lines stating the prohibition** — read, never counted.
+
+**One known-stale comment deliberately NOT swept, forward-only:**
+`engine/scene_serialize/CMakeLists.txt`'s comment above the generate call still reads *"for the 5
+built-ins … 4 headers → 5 components"*, now stale (six components from five headers, since
+`light.hpp` carries two). Left exactly as found, on this task's own precedent and because Step 9's file
+list does not include that file.
+
+#### What was deliberately left out, each with its owner
+
+- **`AnimationPlayer` carries no clip reference**, and no `World`-wide `advanceAnimationPlayers(World&,
+  dt)` sweep exists — both are correct and trivial the moment an entity can name a clip. **3.1.5**
+  unblocks them.
+- **No animation events, no `finished` observable, no auto-stop at the end.** All three want the same
+  machinery, and it is **the v2 animation graph's**.
+- **No blend trees, state machines, transitions, cross-fade or additive layers** — the epic's own goal
+  line says the graph editor is v2.
+- **No monotonic-playback cursor cache.** The per-channel key search is a binary search over that
+  channel's slice; a cursor needs per-**instance** mutable state, which is the animation-instance type
+  v2's graph work introduces. Whoever profiles a clip-heavy scene owns it.
+- **No retargeting, and therefore no joint names in `.aeroskel`** — v2; §12.11's reversal condition
+  already states the price.
+- **No morph targets and no `AnimationPath::Weights` code** (§13.6). Adding one later is **additive**;
+  shipping a code nothing produces is a lie no `switch` can catch. The importers already skip `weights`
+  channels with a warning. Owner: the first task with a morph consumer.
+- **No clip compression, quantization, sparse key storage or per-path value packing.** All four are one
+  `formatVersion` bump and travel as a **bundle, never alone** (§13.11). The uniform 16-byte stride's
+  documented 25 % cost on the two three-component paths is the reversal condition's evidence.
+- **No multi-clip container and no clip names** — the `.pak` work (§13.11).
+- **No editor UI at all**: no clip panel, no timeline, no scrubber, no cook-on-import. The
+  `AnimationPlayer` inspector control **is** the reflection spine doing its job, and a bespoke panel
+  would be a regression against ADR-004.
+
+#### Named handoffs
+
+- **3.1.5 (drag-into-scene)** keeps everything the last three tasks handed it and is now additionally
+  handed **a working sampler and a component waiting for its clip field**. When scene → asset references
+  land, `AnimationPlayer` gains its clip reference as **one appended field after `playing`**, in that
+  task's chosen spelling, and every scene file written before then still loads.
+- **`ImportSettings::scale` coherence on skinned hierarchies** — **unowned**, with its trigger and its
+  evidence recorded above (D13). The honest fix is upstream in the importers, not in a cooker flag.
+- **A Tracy zone on the sampler or the clock** — the first task that wants clip timings is **adding the
+  first one**, not restoring a lost one (§0.12).
+- **Reflect-gen subset growth (`Vec4`, enums, `Guid`, optional-wrapped nested structs)** — the first
+  **component** that cannot be spelled without one. `AnimationPlayer` deliberately uses no enum: v1 has
+  exactly two looping behaviours (wrap, or clamp-and-hold), which a `bool` spells completely, and
+  growing the subset is a task rather than a field.
+- **A second, differently-named built-in-header variable** — the first component that should be
+  **registered** but not **serialized**. Never a fork of `AERO_BUILTIN_COMPONENT_HEADERS` in place.
+- **The `blender_service_test` `TempDir` PID** — 3.2.4's file, whoever next edits it.
+
+#### Still open
+
+**The twelve-row macOS validation pass has not been run.** The page exists and was written before the
+pass, as always. Until it runs, **rows 4, 6 and 7 are the only coverage the three declared sample-only
+seeds (S42–S44) have anywhere — in principle rather than in fact**, and the page names each row's seed
+beside it. Row 12 needs a locally-downloaded rigged and animated model that is deliberately **not**
+committed, driven through the sample's `argv[1]` override.
+
+Windows and Linux ship **Pending**. Unlike 3.5.1, **CI covers none of this task's picture and none of it
+needs covering**: there is no new shader, no new pipeline and no new GPU-tier case, so the remaining
+cross-platform risk is the sample's composition alone — and the sample is the one thing no lane runs.
+The four-phase Windows/Linux platform-validation debt grows by one more task.

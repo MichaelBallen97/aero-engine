@@ -187,6 +187,8 @@ Subtasks:
 - Clip sampling (interpolation), looping, speed
 - `AnimationPlayer` component (reflected) + inspector control
 
+*(Amendment, as built at task 3.5.2: the reflected `AnimationPlayer` carries playback state — `time`, `speed`, `loop`, `playing` — and **no clip reference**. The spelling of a scene → asset reference is task 3.1.5's by its own task text and by four consecutive handoffs; a clip reference alone cannot produce a picture, since playing a clip needs a mesh, a skeleton **and** a clip and a scene entity can name none of the three, so adding one here would only pre-empt that decision with a spelling 3.1.5 would have to reconcile. The reversal is one appended field after `playing`, and `docs/09` §2.3's missing-key rule keeps every earlier scene file loading. The "+ inspector control" half of the second subtask is satisfied by the reflection spine: all four fields are `float`/`bool`, both inside reflect-gen's whitelist and both already rendered by the registry-driven inspector, so a bespoke panel would be a regression against ADR-004 rather than an addition. The rationale lives in `docs/10-engineering-log.md`'s 3.5.2 entry; this file stays a task index.)*
+
 ---
 
 ## Epic 3.6 — Rendering essentials · render

@@ -885,7 +885,8 @@ outright (9.11 says why).
 axis-aligned box per submesh and one for the model, plus each submesh's source coordinates and
 material index. **What it does not store:** node hierarchy, materials, images, skeletons and inverse
 bind matrices — which, since task 3.5.1, live in section 12's sibling container (`.aeroskel`) — and
-animation. A consumer that instantiates a cooked mesh with no hierarchy therefore puts
+animation, which, since task 3.5.2, lives in section 13's sibling container (`.aeroanim`). A consumer
+that instantiates a cooked mesh with no hierarchy therefore puts
 every submesh at the origin. **That gap is named, not owned** — a cooked model/prefab container
 carrying the node tree is the right answer and belongs to whoever owns instantiation; task 3.1.5 is
 the first task that will hit it.
@@ -1908,7 +1909,7 @@ reference 2D textures.
   does not exist. It is a version-bump candidate the day a second one does.
 - **No texture paths.** Only GUIDs — the resolution step belongs to whoever owns the loaded set (the
   asset database in the editor, the pak in the runtime).
-- **No cooked or binary form.** Section 13's bullet names the owner.
+- **No cooked or binary form.** Section 14's bullet names the owner.
 
 ### 11.6 Versioning
 
@@ -2213,23 +2214,419 @@ edit.
   of one source asset legitimately share a `sourceGuid`, which is what ties an `.aeromesh` and an
   `.aeroskel` together without either file naming the other.
 - **No clip or animation data of any kind** — no channels, no keyframes, no sampler, no clip list.
-  Section 13 reserves cooked animation clips (`.aeroanim`) for task 3.5.2, which references this
-  format's joints by `sourceNodeLocalId` and carries its own version field.
+  Section 13 specifies cooked animation clips (`.aeroanim`), which reference this format's joints by
+  `sourceNodeLocalId` and carry their own version field.
 - **No placement, no scene node, no instancing metadata.** Which entity wears this rig, and how many
   do, is scene data. That is the same line section 9.0's named node-hierarchy gap sits on.
 
 ---
 
-## 13. Reserved for future formats
+## 13. Cooked animation clip container v1 (`.aeroanim`)
+
+> Enforced in code by `engine/assets` (`cooked_animation.{hpp,cpp}` = the format and its parser,
+> `animation_cook.{hpp,cpp}` = the producer, task 3.5.2); the doctest batteries in
+> `tests/cooked_animation_test.cpp` and `tests/animation_cook_test.cpp` are its machine-checkable
+> form, and `tests/cooked_animation_golden.hpp` holds two byte-level goldens. Produced by
+> `aero_cooker animation`.
+
+### 13.0 Scope
+
+**One clip's motion, and nothing else.** A `.aeroanim` stores a flat list of animation channels: each
+one names a source node, one of the three glTF TRS properties, one of the three glTF interpolation
+modes, and a slice of keyframe times and values. It is a **sibling** of section 12's `.aeroskel` and
+section 9's `.aeromesh`, not a region inside either — a clip is a property of a *motion*, a rig is a
+property of a *skin*, and one rig has many clips. Neither file names the other.
+
+**The binding to a skeleton is the consumer's**, resolved through section 12.3's
+`sourceNodeLocalId`: a channel's `targetNodeLocalId` and a joint record's `sourceNodeLocalId` are the
+same kind of value, so a consumer matches them at load and gets a per-channel joint index. Nothing in
+this format knows which rig it drives, and a channel that matches no record is a **normal** outcome —
+glTF clips routinely animate camera and mesh nodes alongside joints.
+
+**What it does not carry is 13.11's list**, and two omissions are worth stating up front. This format
+carries **no rig, no mesh, no material and no placement** — it is motion, not a scene. And it carries
+**no clip name**: the file name is the identity for a one-clip file, exactly as section 12.11 states
+for joint names.
+
+**Values are in the importer's own output units.** `ImportSettings::scale` is applied by all four
+importers in exactly three places — root node translations, mesh positions and inverse-bind
+translation columns — and to **no animation channel anywhere**, so a translation channel's keys are
+unscaled whatever the import scale was. That is a **recorded, unowned gap**, not a property to rely
+on: the full finding, including why the scale scheme is already incoherent for a multi-joint skinned
+hierarchy at `scale ≠ 1`, lives in `docs/10-engineering-log.md`'s 3.5.2 entry, and `aero_cooker
+animation` deliberately offers no `--scale` flag rather than offering one that would change no byte.
+
+**One deliberate asymmetry with 9.2, inherited from 12.0 and enforced at parse rather than by
+convention: a `.aeroanim` is NEVER EMPTY.** `channelCount`, `keyCount`, `valueCount` and every
+channel's own `keyCount` are all ≥ 1, and a buffer declaring zero of any of them is refused. Section
+9.2's empty mesh file is legal because a model whose every primitive was dropped is still an asset
+that must have an artifact; the animation cook is per-**clip**, so a clip whose every channel was
+dropped produces **no artifact at all** and a CLI error. A clip with nothing left is not a degenerate
+animation; it is the absence of one.
+
+### 13.1 Conventions
+
+**Section 9.1 applies by reference and unchanged**: little-endian declared rather than native, formed
+and read exclusively through the same eight `constexpr` primitives whose endianness is a
+`static_assert`; IEEE-754 binary32 floats moved bit for bit through `std::bit_cast`; counts are `u32`
+and byte totals are `u64`; `sizeof` is never taken of an on-disk record.
+
+Two things are restated here rather than inherited:
+
+- **There is exactly ONE padding site in the whole format**, and it sits between the times region and
+  the values region. It is zero-filled, **0 to 12 bytes** wide, and present **iff**
+  `keyCount % 4 != 0`. Its width is `cookedAnimationTimesPadding(keyCount)`, a function that exists in
+  exactly one place so the writer and the parser cannot disagree about it, and **the parser checks
+  the site rather than re-deriving around it** — the `.ktx2` `mipPadding` shape (10.4): one site,
+  stated, and verified. The header is 80 bytes and a channel record is 32, both multiples of 16, so
+  the channel table both starts and ends 16-aligned and no other gap exists anywhere.
+- **The two `COOKED_ANIMATION_*_BYTES` constants (80 / 32) are the only sizes**, the same rule
+  section 9.1 states for its four and 12.1 for its two.
+
+The cook performs **zero floating-point arithmetic**, with one stated exception: the `durationSeconds`
+fold (13.7).
+
+### 13.2 The header — 80 bytes at offset 0
+
+| Offset | Size | Type | Field | Meaning |
+|---|---|---|---|---|
+| 0 | 8 | `char[8]` | `magic` | `AEROANIM`, ASCII, **no NUL terminator**; compared over all eight bytes |
+| 8 | 4 | `u32` | `formatVersion` | must equal `1`; a different value is refused |
+| 12 | 4 | `u32` | `cookerVersion` | the producing cooker's version. **Informational** — never gates a parse |
+| 16 | 8 | `u64` | `sourceGuid.hi` | the source asset's GUID, high half first |
+| 24 | 8 | `u64` | `sourceGuid.lo` | the low half. The nil GUID (both zero) is legal |
+| 32 | 4 | `u32` | `reservedFlags` | **must be 0** — a non-zero value is a refusal (13.9) |
+| 36 | 4 | `u32` | `channelCount` | channel records. **≥ 1**, ≤ `MAX_COOKED_ANIMATION_CHANNELS` |
+| 40 | 4 | `u32` | `keyCount` | the **times region's** size in keys. **≥ 1**, ≤ `MAX_COOKED_ANIMATION_KEYS` |
+| 44 | 4 | `u32` | `valueCount` | the **values region's** size in 16-byte values. **≥ 1**, ≤ `MAX_COOKED_ANIMATION_VALUES` |
+| 48 | 4 | `u32` | `sourceAnimationIndex` | the **position** in `ImportedModel::animations` — see below |
+| 52 | 4 | `f32` | `durationSeconds` | the largest last-key time across the channels (13.7) |
+| 56 | 8 | `u64` | `timesDataOffset` | **stored**, and must equal `80 + 32 × channelCount`; a multiple of 16 |
+| 64 | 8 | `u64` | `valuesDataOffset` | **stored**, and must equal `timesDataOffset + 4 × keyCount + padding`; a multiple of 16 |
+| 72 | 8 | `u64` | `totalBytes` | must equal the buffer's own size **and** `valuesDataOffset + 16 × valueCount` |
+
+**`sourceAnimationIndex` is the POSITION in `ImportedModel::animations`, never a `localId`** — the
+same discipline section 9.5 states for `sourceMeshIndex` and 12.2 for `sourceSkinIndex`, a third table
+over. One invocation cooks one clip, chosen by that position, so a three-clip model produces three
+artifacts and a warning naming the total.
+
+**`durationSeconds` is the largest last-key time**, folded with `std::max` from `0.0f` in **emission**
+order (13.7). It is bit-for-bit what the importer computes for `ImportedAnimation::duration`, and it
+is the one number in this file that is not simply copied.
+
+**Both region offsets are STORED rather than derived**, and the reason is the `indexDataOffset`
+precedent one format over: every other region in this file states its own position, so deriving one
+would be the odd case out. They are then *checked* against the format's own arithmetic (13.9), which
+is what makes the field meaningful rather than decorative.
+
+**`totalBytes` is stored and compared, never derived**, against the buffer's own size *and* against
+`valuesDataOffset + 16 × valueCount`. A file whose header and body disagree is exactly the file these
+two checks exist to refuse.
+
+### 13.3 Channel records — 32 bytes each, packed at offset 80
+
+`channelCount` records, packed, starting immediately after the header. Record *i* begins at
+`80 + 32 × i`.
+
+| Offset | Size | Type | Field | Meaning |
+|---|---|---|---|---|
+| 0 | 4 | `u32` | `targetNodeLocalId` | the source node's `localId`, matched by the consumer against section 12.3's `sourceNodeLocalId`. **Never a joint index and never a position** |
+| 4 | 2 | `u16` | `path` | 13.6's `CookedAnimationPath` code; an unknown code is a **refusal** |
+| 6 | 2 | `u16` | `interpolation` | 13.6's `CookedAnimationInterpolation` code; an unknown code is a **refusal** |
+| 8 | 4 | `u32` | `keyCount` | this channel's keys. **≥ 1** |
+| 12 | 4 | `u32` | `firstKey` | this channel's first key, as an index **in keys** into the times region |
+| 16 | 4 | `u32` | `firstValue` | this channel's first value, as an index **in values** into the values region |
+| 20 | 4 | `u32` | `valueCount` | must equal `keyCount × ` the mode's values-per-key (13.5) |
+| 24 | 8 | `u64` | `reserved0` | **must be 0** |
+
+**`targetNodeLocalId` is written through unconverted, and that is load-bearing.** It is a position for
+glTF, a raw ufbx `typed_id` for FBX and a walk-assigned id for Assimp — the same value
+`.aeroskel` stores as `sourceNodeLocalId`. Mapping it to a position on the way in would make every FBX
+clip bind to the wrong joints, silently.
+
+**`firstKey` and `firstValue` are STORED rather than derived, and both are validated** — the same
+discipline section 9.5 applies to `firstIndex`. The consequence is stated rather than left implicit:
+**a writer that shares one key slice between two channels, or overlaps two slices, is legal input to
+this reader**, even though v1's writer never emits one. The header's `keyCount` is therefore the
+**region's** size and **not necessarily the sum of the channels' key counts**; no cross-channel total
+is checked, and none should be. That is 13.9's asymmetry, deliberately.
+
+Each channel's slices are validated by **subtraction against the region's own count**, never by an
+addition that can wrap: `firstKey ≤ keyCount` and `keyCount − firstKey ≥ channel.keyCount`, and the
+`firstValue` twin against `valueCount`.
+
+### 13.4 The times region
+
+`keyCount` IEEE-754 binary32 values, 4 bytes each, packed, beginning at `timesDataOffset`. A channel's
+own times are the `channel.keyCount` entries starting at `channel.firstKey`.
+
+Times are **clip-local seconds**. Within a channel the cook requires them to be **strictly
+increasing** and refuses anything else; the **parser deliberately does not re-check that** (13.10),
+so a hand-built or hostile file may present a non-monotonic slice.
+
+The region ends at `timesDataOffset + 4 × keyCount`, and the format's single padding site (13.1) runs
+from there to `valuesDataOffset`.
+
+### 13.5 The values region
+
+`valueCount` values, **16 bytes each**, packed, beginning at `valuesDataOffset`. Each value is four
+binary32 components in `x, y, z, w` order. A channel's own values are the `channel.valueCount` entries
+starting at `channel.firstValue`.
+
+**What the four components mean, per path:**
+
+| `path` | Components | `w` |
+|---|---|---|
+| `Translation` | `x, y, z` | **always 0**, whatever the caller supplied |
+| `Rotation` | `x, y, z, w` — glTF's accessor order, which is also `engine::Quat`'s member order | the quaternion's real part |
+| `Scale` | `x, y, z` | **always 0**, whatever the caller supplied |
+
+Writing a stored constant for the two three-component paths is a **selection, not arithmetic**: it
+keeps the bytes a function of the motion rather than of whatever scratch the caller happened to pass.
+
+**Values per key, by interpolation mode:**
+
+| `interpolation` | Values per key | Per-keyframe order |
+|---|---|---|
+| `Linear` | 1 | the property value |
+| `Step` | 1 | the property value |
+| `CubicSpline` | **3** | `inTangent`, `value`, `outTangent` — glTF section 3.6.1's order |
+
+So for a `CubicSpline` channel, key *k*'s **property value** is at `firstValue + 3k + 1`, its in-tangent
+at `3k` and its out-tangent at `3k + 2`. That multiplier exists in exactly one place in the code
+(`cookedAnimationValuesPerKey`), shared by the writer, the parser, the sampler and the caps, so the
+four cannot disagree.
+
+**The uniform 16-byte stride is a stated trade with a stated reversal condition.** It costs a
+documented **25 %** on the two three-component paths, and it buys a values region that is 16-aligned by
+construction with no per-channel arithmetic, a `firstValue` that is an index rather than a computed
+byte offset, and a cook that is a pure copy. A v2 that packs by path is a `formatVersion` bump and
+belongs to whoever first measures clip size as a problem — not to whoever first notices the waste.
+
+### 13.6 The frozen enums
+
+Both are `u16` on the wire. **The width is the format's, not a size choice.**
+
+| `path` code | Meaning |
+|---|---|
+| 0 | `Translation` |
+| 1 | `Rotation` |
+| 2 | `Scale` |
+
+| `interpolation` code | Meaning |
+|---|---|
+| 0 | `Linear` |
+| 1 | `Step` |
+| 2 | `CubicSpline` |
+
+**Both tables are deliberately independent of the editor enums they mirror** (`editor::AnimationPath`
+and `editor::AnimationInterpolation`), which live in a layer `engine/assets` may never include. The
+correspondence is asserted in the **editor** test tier, the one place both are visible — the section
+9.6 `CookedVertexSemantic` precedent. **An unknown code is a parse refusal, never a
+reinterpretation**, and because both enums have a fixed underlying type every `u16` is a value of the
+type, so **both halves validate**: the cook checks the code it was handed, not only the parser.
+
+**There is deliberately no `Weights` code**, and adding one later is additive rather than breaking
+(a new code is a `formatVersion` bump by 13.9's own rule, and shipping a code nothing produces is a
+lie no `switch` can catch — 3.2.1's D12, one layer down). Morph-target weights are 13.11's list.
+
+### 13.7 Ordering and determinism (normative)
+
+**Channels are emitted in ascending `(targetNodeLocalId, path)` order**, with the path ordered by
+13.6's code (`Translation` < `Rotation` < `Scale`). The key is **total**, so the same channels supplied
+in any input permutation cook to identical bytes.
+
+**A duplicate `(targetNodeLocalId, path)` pair is a cook REFUSAL**, not a tie to be broken: glTF
+section 3.6.1 makes it a MUST NOT, and the ambiguity is *which* motion is the truth. The producer
+reaches the order with a sort over a vector of packed `u64` keys — never a hash container — so there
+is no iteration order for the output to depend on.
+
+Section 9.10's structural closures all apply:
+
+1. **No struct `memcpy`, no `reinterpret_cast` of a record pointer, no packed-struct pragma.**
+2. **No hash container anywhere in `engine/assets`.**
+3. **Every reserved field and the whole padding site are zero without a single explicit store**,
+   because the output buffer is allocated value-initialized.
+4. **No timestamp, path, hostname, user name or build id.** The only provenance is `cookerVersion` (a
+   compile-time constant) and the caller-supplied `sourceGuid`.
+5. **Zero floating-point ARITHMETIC**, with exactly one stated exception. Every time and every value
+   component travels `std::bit_cast` bit for bit from its input to its `putF32`; validation, ordering
+   and canonicalization are integer work end to end. The exception is `durationSeconds`, which is
+   `std::max` **accumulator-first**, in **emission** order, from `0.0f`. Emission order rather than
+   input order because the result is written into the **header**, and an input-order fold would make a
+   shuffled input produce different header bytes — the identical trap section 9.10 records for the
+   model box. From `0.0f` rather than `−inf` so a clip with only negative times yields duration 0
+   rather than a negative duration a playback clock would have to defend against.
+6. **The sort runs BEFORE the caps.** The rule exists so a shuffled input can never produce a
+   different file, and keeping that order makes it true by construction rather than by argument.
+
+**Section 12.6's upstream limit applies verbatim**: a glTF node spelling `matrix` instead of TRS is
+decomposed at import, and decomposition is real float math whose cross-lane bit-identity this project
+has never had to prove. **All three committed manifest arms use TRS-form fixtures**, so the manifest's
+animation lines are independent of decomposition by construction.
+
+Determinism *across platforms* is asserted by the two committed byte goldens, the cook's own
+round-trip cases on all three CI lanes, and the frozen manifest `tests/cooker/determinism.sha256`,
+whose `animation_golden_manifest` case checks its three lines in every build configuration on every
+lane and whose `cook-determinism` CI job re-checks them against the three lanes' actually-produced
+artifacts.
+
+**SAMPLING IS NOT PART OF THIS CONTRACT.** `engine/render`'s `sampleAnimation` uses `sin`, `acos` and
+`sqrt` through `slerp` and a normalization; libm differs between three C libraries, so **no cross-lane
+claim is made about a sampled pose, and a sampled pose must never enter the determinism manifest.**
+The bytes on disk are deterministic; what a renderer computes from them is not, and that boundary is
+deliberate.
+
+### 13.8 Caps
+
+| Cap | Value | Why |
+|---|---|---|
+| `MAX_COOKED_ANIMATION_CHANNELS` | **4096** | one channel per path per joint at 12.5's 1024-record cap is 3072; the headroom is for channels targeting non-joint nodes, which glTF clips routinely carry |
+| `MAX_COOKED_ANIMATION_KEYS` | **2 000 000** | mirrors the importer's own `MAX_ANIMATION_KEYS_PER_MODEL`, so this cook is never narrower than the importer that feeds it |
+| `MAX_COOKED_ANIMATION_VALUES` | **6 000 000** | the key cap times **the** cubic multiplier, `static_assert`ed rather than written as a second literal |
+| `MAX_COOKED_ANIMATION_BYTES` | **104 131 164** (~99.3 MiB) | **derived** from the three above plus the two record sizes, so it cannot drift |
+
+**All are enforced by the writer AND the parser, and nothing is allocated before the header's three
+counts have passed them** — the same rule sections 9.9 and 12.5 state. The value cap is tested before
+the key cap, deliberately: a value total is at most three times a key total, so testing keys first
+would make the value arm unreachable from any input, and an unreachable cap is one nothing can prove
+is wired up at all.
+
+### 13.9 The writer/reader asymmetry
+
+The **writer** emits exactly one canonical arrangement: 13.7's channel order, `w` forced to 0 on
+Translation and Scale, contiguous non-overlapping key and value slices in channel order, every
+reserved field and the whole padding site zero.
+
+The **reader** is more permissive on everything that is not a correctness property. It accepts any
+channel order, **shared or overlapping key and value slices**, any `sourceAnimationIndex`, any GUID
+including the nil one, any `cookerVersion`, and a `durationSeconds` that disagrees with the largest
+last-key time. That is deliberate, so a future writer that arranges a legal file differently is not
+locked out of a format whose meaningful content it reproduced exactly.
+
+**It is exact, however, on the two region offsets and the padding site**, and that is the one place
+this format is stricter than its two siblings. The format has exactly **one** legal layout, both
+counts are capped before the arithmetic runs, so the expected offsets are computable and total — and
+**equality is the only check that can see a mispositioned padding site at all**. It subsumes
+"unaligned" and "wrongly sized" as well. This is compatible with the permissiveness above, which is
+about `firstKey`/`firstValue` sharing and about fields the reader does not police; it was never about
+where a region begins.
+
+**Reserved space is a BREAKING extension point, not an additive one.** A non-zero `reservedFlags` or
+record `reserved0`, or a non-zero byte anywhere in the padding site, is a **parse refusal** —
+deliberately — so **occupying a reserved field requires a `formatVersion` bump**, not merely a
+`cookerVersion` one, because every v1 reader will refuse the whole file. Adding a `path` or
+`interpolation` code is the same, for the same reason. Section 12.7's two corollaries apply verbatim:
+a new channel-record field is a `formatVersion` bump even where it fits, and appending a whole new
+region past `totalBytes` is impossible because `totalBytes` must equal the buffer's own size.
+
+**Like `.aeromesh` and `.aeroskel`, and unlike `.ktx2`, this format has no external validator.**
+Nothing outside this repository can tell us a `.aeroanim` is well-formed, and our own parser compares
+against the same constants our own writer emits — the self-confirmation trap section 10.12 records
+for the DFD tables. Three things keep it honest instead, and they are the three to preserve: **the
+hostile-input parser** (13.10), **the two frozen byte goldens** verified field by field against
+*these* tables (13.12), and **the manifest's three arms**, one per interpolation mode.
+
+### 13.10 Error catalog
+
+`parseCookedAnimation` never throws, never reads a file and never logs. It returns one of nine
+statuses with a human-readable message; the message is empty **iff** the status is `Ok`, and it names
+the offending channel index wherever there is one.
+
+| Status | Cause |
+|---|---|
+| `Ok` | the buffer is a valid v1 container |
+| `TooSmall` | fewer than 80 bytes — shorter than the header |
+| `BadMagic` | the first eight bytes are not `AEROANIM` |
+| `UnsupportedVersion` | `formatVersion` is not 1 |
+| `ReservedNotZero` | `reservedFlags`, a record's `reserved0`, or **any byte of the padding site**, is non-zero |
+| `SizeMismatch` | `totalBytes` does not equal the buffer's own size, or does not equal `valuesDataOffset + 16 × valueCount` |
+| `CapExceeded` | `channelCount`, `keyCount` or `valueCount` is over 13.8's cap |
+| `BadTable` | `channelCount`, `keyCount`, `valueCount` or a channel's `keyCount` is 0; an unknown `path` or `interpolation` code; or `valueCount != keyCount ×` the mode's values-per-key |
+| `BadRange` | a region offset, the padding site's position, or a channel's key or value slice reaching outside its region |
+
+**`BadRange` distinguishes four offset defects by MESSAGE rather than by status**, and the wording is
+load-bearing rather than cosmetic, because all four are one question — *is this this format's single
+legal layout?*: the times region offset is not 16-aligned; the times region does not begin immediately
+after the channel table; the values region offset is not 16-aligned; and the gap between the two
+regions is not this format's single padding site.
+
+**Two deliberate NON-checks, each stated here rather than discovered later:**
+
+1. **A channel's times being strictly increasing is not re-checked at parse.** It is O(`keyCount`) on
+   up to two million entries on every load, and the cook already refuses it. The consequence is
+   bounded: the sampler's search is over a slice whose length the parser validated, so the worst
+   outcome of a non-monotonic file is **an arbitrary in-range key — a wrong picture, never a read out
+   of bounds**. Unlike section 9's index residual, that argument is **airtight here and stays
+   airtight**: nothing uploads keys or times to a GPU, and nothing ever will. (Section 9's equivalent
+   sentence went false at task 3.5.1, the moment `createMesh` began uploading the index region
+   verbatim; this one has no such consumer by construction.) The sampler additionally clamps its
+   interpolation parameter into `[0, 1]`, so a non-monotonic slice cannot turn an interpolator into
+   an extrapolator.
+2. **`w == 0` on Translation and Scale values is not re-checked at parse**, for the same O(n) reason.
+   Nothing reads it.
+
+The trigger for tightening the first is the same Phase 5 opt-in `parse…Strict` the mesh residual
+names — chosen by the caller, never forced on every load.
+
+### 13.11 What this format deliberately does not carry
+
+- **No clip name.** Section 12.11's rule verbatim: the file name is the identity for a one-clip file,
+  and a string table would be this format's only variable-length region beyond its two bulk ones.
+  **Reversal condition:** a multi-clip container, which is `.pak` work.
+- **No skeleton, mesh or material reference of any kind.** The clip does not know which rig it drives;
+  **the binding is the consumer's**, resolved through 12.3's `sourceNodeLocalId`. Two cooks of one
+  source asset legitimately share a `sourceGuid`, which is what ties an `.aeromesh`, an `.aeroskel`
+  and a `.aeroanim` together without any of the three naming the others.
+- **No morph-target weights**, and therefore no `Weights` path code (13.6). The importers already skip
+  a `weights` channel with a warning; the first task with a morph consumer adds the code, and adding
+  one is additive rather than a repair.
+- **No events, markers, or looping metadata.** **Looping is playback state and it lives on
+  `engine::AnimationPlayer`**, together with speed, the current time and whether the clip is playing.
+  A `loop` flag in the file would be a second owner for a question two entities playing the same clip
+  can legitimately answer differently. Animation *events* belong to the v2 animation graph.
+- **No compression, quantization, sparse key storage or per-path value packing.** All four are one
+  `formatVersion` bump and they travel as a **bundle, never alone** — the same posture section 9's
+  `UShort4` note takes one format over.
+
+### 13.12 Golden fixtures
+
+Two byte-level goldens live in `tests/cooked_animation_golden.hpp` as annotated in-source arrays:
+
+- **`COOKED_ANIMATION_GOLDEN_MINIMAL`, 160 bytes** — one `Linear` `Rotation` channel on node 5, two
+  keys and two values, a nil GUID and `sourceAnimationIndex` 0. `timesDataOffset` 112, 8 bytes of
+  times, **8 bytes of padding**, `valuesDataOffset` 128, 32 bytes of values. It is the smallest legal
+  file that still exercises a padding site.
+- **`COOKED_ANIMATION_GOLDEN_MIXED`, 384 bytes** — three channels, a real GUID in both header halves
+  and `sourceAnimationIndex` 2, so the header's hi/lo emit order and the index field both have a
+  witness. `timesDataOffset` 176, 28 bytes of times over 7 keys, **4 bytes of padding**,
+  `valuesDataOffset` 208, 176 bytes of values over 11 values.
+
+**The mixed golden's composition is part of the fixture's contract, not an incidental choice.** Two of
+its three channels target the **same node** with different paths, and they are supplied to the cook in
+an order that is neither the input order nor a node-only sort's order. So the array is simultaneously
+the order-independence proof *and* **the only artifact that can see the `path` half of the sort key
+disappear** — with three distinct nodes, dropping `path` from the key produces the identical emitted
+order and the defect is invisible.
+
+**They are frozen, and the way they were made is part of the rule.** Each was produced by a real cook
+and then verified **field by field against this section's own tables** — header word by header word,
+record by record, both regions, the padding site and every reserved field — *before* being frozen.
+They are not "the bytes the code happens to produce today". A change to any layout rule, offset,
+ordering rule or padding rule fails them by construction; if a golden has to change, the **format**
+changed, and that is a `formatVersion` decision, not a test edit.
+
+---
+
+## 14. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
   applies unchanged. Section appends here. Still unowned: the `.pak` container itself and cooked
-  scenes. The cooked **mesh** container is section 9, the cooked **texture** container is section 10
-  and the cooked **skeleton** container is section 12.
+  scenes. The cooked **mesh** container is section 9, the cooked **texture** container is section 10,
+  the cooked **skeleton** container is section 12 and the cooked **animation** container is section 13.
 - **Cooked / binary materials** — the pak-rev cooker work, together with cooked scenes. Until then
   every consumer, editor and runtime alike, reads `.aeromat` through `engine/reflect`'s parser, and a
   binary material would be a second reader with no second producer. Task 3.4.1 recorded the decision;
   the trigger is the `.pak` container itself.
-- **Cooked animation clips (`.aeroanim`)** — task 3.5.2, referencing section 12's skeletons by
-  `sourceNodeLocalId`; own version field. The seam already exists on both sides: `render::JointPose`
-  is the sampler's output type and section 12.3's `sourceNodeLocalId` is the binding key.
+- **Cooked animation clips (`.aeroanim`)** — **section 13** since task 3.5.2, referencing section
+  12's skeletons by `sourceNodeLocalId` and carrying its own version field.
