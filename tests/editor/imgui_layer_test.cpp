@@ -8868,6 +8868,11 @@ TEST_CASE("editor: two material drops on one entity are two undo steps (task 3.1
 
     const engine::MeshRenderer* renderer = app->world().get<engine::MeshRenderer>(withMesh);
     REQUIRE(renderer != nullptr);
+    // BOTH ARMS ASSERT, neither skips -- DP6's reasoning, and this case needs it for the same reason:
+    // the assignment rides SetFieldCommand through the reflection seam, so with -DAERO_REFLECT_TOOLS=OFF
+    // there is no entt::meta for engine::MeshRenderer and no drop can land at all. Undo depth is not a
+    // meaningful question there, because nothing was ever pushed.
+    #if AERO_REFLECT_TOOLS_ENABLED
     CHECK((renderer->material == *materialB));
 
     // ONE undo must land on A, not on nil. That is the whole finding: a merged pair skips A.
@@ -8884,6 +8889,12 @@ TEST_CASE("editor: two material drops on one entity are two undo steps (task 3.1
     renderer = app->world().get<engine::MeshRenderer>(withMesh);
     REQUIRE(renderer != nullptr);
     CHECK_FALSE(renderer->material.valid());
+    #else
+    // No meta: BOTH drops are inert. The field never moved and nothing entered the history, which is
+    // the same quiet degradation componentFieldsAreReflected buys for the single-drop case.
+    CHECK_FALSE(renderer->material.valid());
+    CHECK_FALSE(app->commands().canUndo());
+    #endif
 
     app->requestQuit();
     CHECK(app->tick() == false);
