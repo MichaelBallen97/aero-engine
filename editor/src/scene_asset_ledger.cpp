@@ -219,10 +219,19 @@ LedgerServiceOutput SceneAssetLedger::service(const LedgerServiceInput& input) {
         }
         // The facts' hash is captured AT ISSUE TIME, so a report that fails still knows WHICH bytes
         // failed -- which is what lets step 3 clear the failure once the bytes change.
-        if (const LedgerAssetFacts* facts = findFacts(input.referenced, entry.guid); facts != nullptr) {
-            entry.loadedHash = facts->hash;
-            entry.loadedHashUsable = facts->hashUsable;
+        const LedgerAssetFacts* const facts = findFacts(input.referenced, entry.guid);
+        // ...and an entry whose record has VANISHED is skipped, for the reason step 5 states above:
+        // the loader can do nothing with a guid the database cannot resolve, so issuing for it burns
+        // the whole one-per-pass budget and starves every asset that CAN load. Step 5 refuses to
+        // INSERT such an entry, but an entry inserted while the record existed and orphaned later is
+        // only re-examined by step 3 when it is Ready or Failed -- an Absent one would otherwise be
+        // picked forever, climbing loadAttempts() while readyCount() never moves. Found by the
+        // code-review round.
+        if (facts == nullptr || !facts->recordPresent) {
+            continue;
         }
+        entry.loadedHash = facts->hash;
+        entry.loadedHashUsable = facts->hashUsable;
         out.directive = LedgerDirective{.guid = entry.guid, .assetClass = entry.assetClass};
         ++entry.attempts;
         ++attemptTotal;
@@ -234,10 +243,24 @@ LedgerServiceOutput SceneAssetLedger::service(const LedgerServiceInput& input) {
 }
 
 void SceneAssetLedger::reportLoaded(Guid guid, ContentHash hash, const LedgerHandles& handles,
-                                    std::span<const TextureRequest> textureRequests) {
+                                    std::span<const TextureRequest> textureRequests, LedgerAssetClass assetClass) {
     Entry* entry = findMutableEntry(guid);
     if (entry == nullptr) {
-        return;  // the entry retired between the directive and the report; the caller destroys its own
+        // ADOPT, never discard. This used to `return`, on the theory that a missing entry meant the
+        // entry had retired between the directive and the report and "the caller destroys its own" --
+        // which no caller ever did. The reachable case is the opposite one: the drop path reports from
+        // tick()'s reconcile block, which runs BEFORE serviceSceneAssets inserts entries, so on the tick
+        // a drop lands there is no entry yet. The live MeshHandle and every MaterialHandle went on the
+        // floor -- never adopted, never deferred, never destroyed -- while the binding table already
+        // named them, and the ledger then re-imported, re-cooked and re-uploaded the same bytes on the
+        // next pass. Reachable wherever the drop performs a Full import: .blend always, plus the
+        // NoNodes fallback for .obj/.ply/.stl. A .gltf takes the Structure path and never gets here,
+        // which is exactly why the .gltf-based drop cases could not see it. Found by the code-review
+        // round. The adopted entry is referenced by the entity the drop just created, so step 4 keeps
+        // it and step 5 finds it already present.
+        const auto at = std::lower_bound(entries.begin(), entries.end(), guid,
+                                         [](const Entry& e, Guid g) noexcept { return e.guid < g; });
+        entry = &*entries.insert(at, Entry{.guid = guid, .assetClass = assetClass, .state = LedgerState::Absent});
     }
     // A re-report over live handles would strand the old ones. They go onto the DEFERRED list, never
     // destroyed here -- this class destroys nothing, ever.

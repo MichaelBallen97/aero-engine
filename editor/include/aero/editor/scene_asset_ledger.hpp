@@ -150,8 +150,13 @@ public:
     // caller with no slots to dress calls the three-argument form unchanged. Each request becomes one
     // pending texture directive, ordered by (materialIndex, slot) so "slot order" is a property of the
     // storage rather than of the loop that reads it.
+    // ADOPTS the handles. If no entry exists for `guid` yet, one is INSERTED with `assetClass` rather
+    // than the report being dropped -- the drop path reports from the reconcile block, before
+    // serviceSceneAssets has inserted anything, and discarding there stranded live GPU handles and
+    // forced a second import of the same bytes (the code-review round).
     void reportLoaded(Guid guid, ContentHash hash, const LedgerHandles& handles,
-                      std::span<const TextureRequest> textureRequests = {});
+                      std::span<const TextureRequest> textureRequests = {},
+                      LedgerAssetClass assetClass = LedgerAssetClass::Model);
     void reportFailed(Guid guid, std::string message);
 
     // The texture half of "issue, then learn the outcome". A slot texture never gets its own ENTRY --

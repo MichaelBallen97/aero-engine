@@ -552,3 +552,63 @@ TEST_CASE("LG24: the destroy deferral survives resetForProjectSwap -- nothing is
     CHECK(after.retire.empty());
     CHECK(ledger.entryCount() == 0);
 }
+
+// ---- the code-review round -----------------------------------------------------------------------
+
+TEST_CASE("LG25: reportLoaded ADOPTS a guid with no entry yet, instead of dropping the handles") {
+    // The drop path reports from tick()'s reconcile block, which runs BEFORE serviceSceneAssets has
+    // inserted anything -- so on the tick a drop lands there is no entry for the guid. This used to
+    // early-return, stranding a live MeshHandle and every MaterialHandle: never adopted, never
+    // deferred, never destroyed, while the binding table already named them, and the ledger then
+    // re-imported the same bytes on the next pass. Reachable for .blend/.obj/.ply/.stl, where the drop
+    // performs a Full import; a .gltf takes the Structure path and never reaches it, which is why the
+    // .gltf-based drop cases were blind.
+    SceneAssetLedger ledger;
+    REQUIRE(ledger.entryCount() == 0);
+
+    ledger.reportLoaded(guidOf(1), hashOf(11), LedgerHandles{.mesh = meshHandle(7)});
+
+    REQUIRE(ledger.entryCount() == 1);
+    CHECK((ledger.stateOf(guidOf(1)) == LedgerState::Ready));
+
+    // ...and the adopted entry is a REAL one: a later pass that references the same guid issues NO
+    // directive for it, which is the half that proves the second import is gone.
+    const std::vector<LedgerAssetFacts> referenced{modelFacts(1, 11)};
+    const LedgerServiceOutput out = ledger.service(inputOf(referenced, 1));
+    CHECK_FALSE(out.directive.has_value());
+    CHECK(ledger.loadAttempts() == 0);  // nothing was ever issued for it
+
+    // The handles are genuinely held: retiring the entry hands them back for destruction.
+    const LedgerServiceOutput retired = ledger.service(inputOf({}, 2));
+    CHECK(retired.destroy.empty());  // deferred, never in the retiring pass
+    const LedgerServiceOutput next = ledger.service(inputOf({}, 3));
+    CHECK(destroyListNames(next.destroy, meshHandle(7)));
+}
+
+TEST_CASE("LG26: an Absent entry whose record vanished never starves the one-per-pass budget") {
+    // Step 5 refuses to INSERT an entry for a guid with no record, and says why: the loader can do
+    // nothing with a guid the database cannot resolve, so issuing for it burns the whole budget. Step
+    // 6b had no such guard, and step 3 re-examines only Ready and Failed -- so an entry inserted while
+    // the record existed and orphaned afterwards was picked forever, climbing loadAttempts() while
+    // readyCount() never moved and every other asset waited.
+    SceneAssetLedger ledger;
+    // Two models referenced; guid 1 sorts first, so it takes the pass. Neither is reported.
+    std::vector<LedgerAssetFacts> referenced{modelFacts(1), modelFacts(2)};
+    const LedgerServiceOutput first = ledger.service(inputOf(referenced, 1));
+    REQUIRE(first.directive.has_value());
+    REQUIRE(first.directive->guid == guidOf(1));
+    REQUIRE(ledger.entryCount() == 2);
+
+    // guid 1's asset is deleted from disk. Its entry is still Absent, so step 3 never looks at it.
+    referenced[0].recordPresent = false;
+
+    // The budget must move ON to guid 2 rather than re-picking the orphan forever.
+    const LedgerServiceOutput second = ledger.service(inputOf(referenced, 2));
+    REQUIRE(second.directive.has_value());
+    CHECK(second.directive->guid == guidOf(2));
+
+    // And it stays moved on: a third pass does not fall back to the orphan either.
+    ledger.reportLoaded(guidOf(2), hashOf(1), LedgerHandles{.mesh = meshHandle(8)});
+    const LedgerServiceOutput third = ledger.service(inputOf(referenced, 3));
+    CHECK_FALSE(third.directive.has_value());
+}

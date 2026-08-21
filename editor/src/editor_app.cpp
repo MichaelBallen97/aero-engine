@@ -327,6 +327,12 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // renderer is NOT stored: it is passed per call, because it belongs to the ViewportPanel and may
     // not exist yet.
     app.sceneAssetLoader = std::make_unique<SceneAssetLoader>(device);
+    // ...and the SAME device is what the service pass destroys retired TEXTURES through. The code-review
+    // round found this line missing: the member kept its nullptr initialiser, so destroyRetired's third
+    // branch was dead and every texture the ledger adopted through reportSlotTexture survived every
+    // retire, reload, Apply nudge and project swap, reaching ~Device as a leak WARN. Nothing observed it
+    // because sceneAssetDestroyCount() counts entries HANDED to destroyRetired, not handles released.
+    app.sceneAssetDevice = &device;
     // task 3.1.1: a real seed, before the project-open block below -- so the FIRST tick()'s scan (the
     // reconcile block, triggered by AssetDatabase::root() starting empty) already draws real GUIDs
     // rather than the placeholder seed-0 generator's pinned sequence. Nothing scans in create() itself
@@ -1341,9 +1347,18 @@ void EditorApp::pushMaterialAssign(Entity entity, Guid material) {
         return;
     }
     CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
+    // A drop is a DISCRETE one-shot gesture, never a continuous one, so the chain is broken on BOTH
+    // sides of the push -- the inspector's own Guid row already does exactly this (inspector_panel.cpp's
+    // gateForLastItem arms). Without it, SetFieldCommand::mergeWith accepts the next drop on the same
+    // entity and field, overwrites `afterValue` and KEEPS `beforeValue`, so dropping material A then
+    // material B on one entity collapses to a single history entry reading nil -> B: one undo jumps
+    // past A entirely and A is unreachable. Found by the code-review round; DP5-DP7 dropped only once
+    // per entity, so nothing exercised it.
+    commandStack.breakMergeChain();  // BEFORE the push
     (void)commandStack.push(
         cmd, std::make_unique<SetFieldCommand>(entity, meshRendererId, "material", std::string(MESH_RENDERER_TYPE_NAME),
                                                *before, FieldValue{material}));
+    commandStack.breakMergeChain();  // AFTER the push
 }
 
 void EditorApp::instantiateModelDrop(const AssetRecord& record, Entity parent, const Transform& placement) {
@@ -1462,12 +1477,21 @@ void EditorApp::loadModelIntoScene(const AssetRecord& record, const ImportedMode
     if (!loaded.ok) {
         AERO_LOG_WARN("assets: '{}' could not be loaded -- {}", record.relativePath, loaded.message);
         sceneAssetLedger.reportFailed(record.guid, loaded.message);
+        // reportFailed retires whatever this entry already held onto the deferred destroy list, so the
+        // binding must stop naming those handles here -- a guid reaches out.retire only when its entry
+        // is UNREFERENCED, and a referenced Failed entry is deliberately kept, so nothing downstream
+        // would ever unbind it. Without this the table names a destroyed MeshHandle from the next frame
+        // on: the draw latches one stale-handle WARN, the entity renders nothing, and unresolvedMeshes
+        // UNDER-reports, because the binding still exists so the counting arm is never taken. Reachable
+        // when an already-Ready model's bytes change and the reload then fails. The code-review round.
+        bindings->removeMesh(record.guid);
         return;
     }
     // The ledger ADOPTS the handles, folds the bounds into its own lookup and registers one pending
     // texture directive per bound slot. The binding table is the caller's to install: the ledger is
     // pure and has never heard of it.
-    sceneAssetLedger.reportLoaded(record.guid, record.contentHash, loaded.handles, loaded.textureRequests);
+    sceneAssetLedger.reportLoaded(record.guid, record.contentHash, loaded.handles, loaded.textureRequests,
+                                  LedgerAssetClass::Model);
     bindings->setMesh(record.guid, loaded.binding);
 }
 
@@ -1487,12 +1511,14 @@ void EditorApp::loadMaterialIntoScene(const AssetRecord& record) {
     if (!loaded.ok) {
         AERO_LOG_WARN("assets: '{}' could not be loaded -- {}", record.relativePath, loaded.message);
         sceneAssetLedger.reportFailed(record.guid, loaded.message);
+        bindings->removeMaterial(record.guid);  // the model arm's reasoning, one asset class over
         return;
     }
     LedgerHandles handles;
     handles.materials.push_back(loaded.material);
     handles.materialStates.push_back(loaded.state);
-    sceneAssetLedger.reportLoaded(record.guid, record.contentHash, handles, loaded.textureRequests);
+    sceneAssetLedger.reportLoaded(record.guid, record.contentHash, handles, loaded.textureRequests,
+                                  LedgerAssetClass::Material);
     bindings->setMaterial(record.guid, loaded.material);
 }
 
