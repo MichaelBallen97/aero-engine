@@ -8885,15 +8885,52 @@ itself an assertion rather than a coincidence: `aero_cooker` **takes no gate fla
 registered everywhere, and a *smaller* move in a reduced configuration would mean the new cooker block
 had accidentally grown one. Every other new test rides an existing binary, and `aero_tests`,
 `aero_editor_shell_test` and `aero_editor_imgui_test` each register as a **single** ctest entry — so
-this task's **100 new doctest cases** move that triple not at all. Read the two kinds of move
+this task's **101 new doctest cases** move that triple not at all. Read the two kinds of move
 differently, as 3.1.5 records: a `cooker.*` addition must be identical in all three, and a
 `reflect-gen.*` addition must be tools-ON only.
 
-Doctest, from each binary's own `filters:` line: **859 / 1608 / 124 / 25 / 23**.
+### 3.5.2 — the code-review round: one gap, non-blocking, closed
+
+**`locate()` sanitized `u` and then forwarded the RAW segment duration, and `hermite` multiplies both
+of its tangent terms by it.** Two shapes reach that multiplication, and neither is caught by the
+`td > 0.0F` ternary that guards the division:
+
+- **an OVERFLOWING segment.** `-3.0e38` and `3.0e38` are both legal binary32 and strictly increasing,
+  so `cookAnimation` writes them bit for bit and `parseCookedAnimation` accepts them — but their
+  difference is `6.0e38`, past `FLT_MAX`, and becomes `+inf`.
+- **a NaN time**, which §13.10 states the parser deliberately does not police.
+
+**The reason it hid is the interesting part: `u` survived both on its own.** `NaN > 0.0F` is false, so
+the ternary forces `u = 0`; and `finite / inf` is `0`. A reader checking the interpolation parameter
+finds it correct in both cases. But `inf * 0.0F` and `NaN * 0.0F` are **both NaN**, so a `CubicSpline`
+channel returned a NaN pose — and `normalizeOrIdentity` does not catch that either, because
+`lenSq <= epsilon * epsilon` is **false** for NaN, so it takes the divide branch and propagates. The
+NaN then reached `computeJointPalette` and the GPU. Memory safety was never affected: every read index
+stays inside the `valueCount × 16` slice `channelValueBytes` returns, so this was a wrong-picture
+defect throughout.
+
+It contradicted three sentences this tree had already written down — `animation.cpp`'s own *"TOTAL for
+every float value there is"*, the exit-invariant comment inside `locate` (false when `t[hi]` is NaN,
+because both search comparisons fail and `hi` moves without establishing `t[hi] > tc`), and §13.10's
+promise that a non-monotonic file costs *"a wrong picture, never a read out of bounds"*.
+
+**Closed with one predicate**, `const bool usable = td > 0.0F && std::isfinite(td);`, forwarding zero
+for both `u` and `td` otherwise. Zero is the honest substitute: it degrades the segment to a hold at
+`value(k)`, which is what every other unusable-segment path in that function already does. For a
+post-cook file both guards are inert and the arithmetic is bit-for-bit unchanged.
+
+**`CL26` is the witness, and it was written FIRST**: six arms — overflow, NaN and infinity across all
+three interpolation modes — sampling inside the segment as well as at and past its ends, since the
+clamped ends never reach `hermite` at all. On the parent commit it fails with **21 red assertions
+reading `nan`**; with the guard it passes 91/91. The lesson generalises: **a guard that protects one
+derived value does not protect the other value derived from the same input**, and the safe-looking one
+is where the reader stops.
+
+Doctest, from each binary's own `filters:` line: **860 / 1608 / 124 / 25 / 23**.
 
 | Binary | Before | After | What moved |
 |---|---|---|---|
-| `aero_tests` | 776 | **859** | +83: `AN1`–`AN24`, `KA1`–`KA22`, `CL1`–`CL25` and `PL1`–`PL12` across four new TUs |
+| `aero_tests` | 776 | **860** | +84: `AN1`–`AN24`, `KA1`–`KA22`, `CL1`–`CL26` and `PL1`–`PL12` across four new TUs |
 | `aero_editor_shell_test` | 1594 | **1608** | +14: the new `tests/editor/animation_cook_source_test.cpp` (`AS1`–`AS14`) |
 | `aero_editor_imgui_test` | 124 | **124** | **unmoved** — no editor UI in this task, as predicted |
 | `aero_scene_serialize_test` | 23 | **25** | +2: `G11` and `G12`, the sixth built-in's round trip and its dispatch |
