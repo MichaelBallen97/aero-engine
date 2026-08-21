@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -68,8 +69,23 @@ struct Segment {
     // denominator by construction. It stays because the invariant is a property of this function's
     // control flow, and the next person to touch that control flow should not have to re-derive it
     // before an interpolator can become an extrapolator.
-    const float u = td > 0.0F ? std::clamp((tc - t0) / td, 0.0F, 1.0F) : 0.0F;
-    return Segment{lo, lo + 1, u, td};
+    //
+    // NOT FINITE is the third shape, and neither sentence above catches it. A hostile clip can hold a
+    // NaN time (section 13.10's stated non-check), and two PERFECTLY LEGAL finite times can be far
+    // enough apart that t1 - t0 overflows binary32 to +inf -- the cook writes both bit for bit,
+    // because strictly-increasing is all it checks. u survives both on its own (`NaN > 0` is false,
+    // and finite/inf is 0), which is exactly what makes this worth a named guard: the defect would
+    // hide behind a correct-looking u. hermite multiplies its two tangent terms BY td, and inf * 0
+    // and NaN * 0 are both NaN, so a cubic channel would return a NaN pose -- which
+    // normalizeOrIdentity does not catch either, since `lenSq <= epsilon * epsilon` is FALSE for NaN
+    // and it divides. That pose reaches computeJointPalette and the GPU.
+    //
+    // Zero is the honest substitute for an unusable duration: it degrades the segment to a hold at
+    // value(k), which is what every other unusable-segment path in this function already does. For a
+    // post-cook file both guards are inert and the arithmetic is bit-for-bit what it was.
+    const bool usable = td > 0.0F && std::isfinite(td);
+    const float u = usable ? std::clamp((tc - t0) / td, 0.0F, 1.0F) : 0.0F;
+    return Segment{lo, lo + 1, u, usable ? td : 0.0F};
 }
 
 // The per-keyframe [inTangent, value, outTangent] layout, spelled ONCE. THE + 1 IS THE WHOLE TRAP: a

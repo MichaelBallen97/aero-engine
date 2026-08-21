@@ -1119,3 +1119,73 @@ TEST_CASE("clip sampler: bindPose -> sampleAnimation -> computeJointPalette, end
     CHECK(engine::approxEquals(palette[0].columns[3].y - bindPalette[0].columns[3].y, 4.0F, 1e-5F));
     CHECK(engine::approxEquals(palette[1].columns[3].y - bindPalette[1].columns[3].y, 4.0F, 1e-5F));
 }
+
+TEST_CASE("clip sampler: a NON-FINITE or OVERFLOWING segment duration cannot poison a pose (CL26)") {
+    // The two shapes locate's `td > 0` guard does NOT catch, and both reach hermite, which multiplies
+    // its two tangent terms BY td:
+    //
+    //   * an OVERFLOWING segment. -3.0e38 and 3.0e38 are both finite, both legal binary32, and
+    //     strictly increasing -- so the cook writes them bit for bit and the parser accepts them --
+    //     but their difference is 6.0e38, which is past FLT_MAX and becomes +inf.
+    //   * a NaN time, which docs/09 section 13.10 states the parser deliberately does not police.
+    //
+    // In BOTH cases u is already safe (`NaN > 0` is false, and finite/inf is 0), which is exactly why
+    // this needs its own case: the bug hides behind a correct-looking u. inf * 0 and NaN * 0 are both
+    // NaN, so a cubic channel returns a NaN pose -- and normalizeOrIdentity does not catch that
+    // either, because `lenSq <= epsilon * epsilon` is FALSE for NaN, so it divides and propagates.
+    // A NaN pose reaches computeJointPalette and the GPU.
+    //
+    // The contract this pins is animation.cpp's own: TOTAL for every float value there is.
+    constexpr float QUIET_NAN = std::numeric_limits<float>::quiet_NaN();
+    constexpr float POS_INF = std::numeric_limits<float>::infinity();
+
+    struct Arm {
+        const char* what;
+        CookedAnimationInterpolation mode;
+        std::array<float, 2> times;
+    };
+    constexpr std::size_t ARM_COUNT = 6;
+    constexpr std::array<Arm, ARM_COUNT> ARMS = {
+        Arm{"overflow/linear", LINEAR, {-3.0e38F, 3.0e38F}}, Arm{"overflow/step", STEP, {-3.0e38F, 3.0e38F}},
+        Arm{"overflow/cubic", CUBIC, {-3.0e38F, 3.0e38F}},   Arm{"nan/linear", LINEAR, {0.0F, QUIET_NAN}},
+        Arm{"nan/cubic", CUBIC, {0.0F, QUIET_NAN}},          Arm{"inf/cubic", CUBIC, {0.0F, POS_INF}},
+    };
+    REQUIRE(ARMS.size() == ARM_COUNT);  // literal row count, never TABLE.size() against itself
+
+    for (const Arm& arm : ARMS) {
+        const std::string_view what{arm.what};
+        CAPTURE(what);
+        const bool cubic = arm.mode == CUBIC;
+        // A cubic channel stores [inTangent, value, outTangent] per key; the tangents are deliberately
+        // LOUD here, so a surviving td multiplies something that cannot be mistaken for zero.
+        std::vector<Vec4> values;
+        if (cubic) {
+            values = {v4(9, 9, 9), v4(1, 0, 0), v4(7, 7, 7), v4(8, 8, 8), v4(2, 0, 0), v4(6, 6, 6)};
+        } else {
+            values = {v4(1, 0, 0), v4(2, 0, 0)};
+        }
+        const std::array<ChannelData, 1> channels = {
+            ChannelData{0, TRANSLATION, arm.mode, {arm.times[0], arm.times[1]}, values}};
+        const Clip clip = makeClip(channels);
+        const std::array<std::uint32_t, 1> ids = {0};
+        const CookedSkeleton skeleton = makeSkeleton(ids);
+        std::array<std::uint32_t, 1> binding{};
+        REQUIRE(bindAnimation(clip.animation(), skeleton, binding).boundChannels == 1);
+
+        // Sample INSIDE the segment as well as at and past its ends: the interior is where a surviving
+        // td does its damage, because the clamped ends never reach hermite at all.
+        constexpr std::array<float, 4> WHENS = {-1.0e38F, 0.0F, 1.0F, 1.0e38F};
+        REQUIRE(WHENS.size() == 4);
+        for (const float when : WHENS) {
+            CAPTURE(when);
+            std::array<JointPose, 1> pose{};
+            bindPose(skeleton, pose);
+            sampleAnimation(clip.animation(), binding, when, pose);
+            CHECK(allFinite(pose[0].translation));
+            // And the value is still one of the two stored keys or between them -- a hold, never a
+            // number the file never carried.
+            CHECK(pose[0].translation.x >= 1.0F);
+            CHECK(pose[0].translation.x <= 2.0F);
+        }
+    }
+}
