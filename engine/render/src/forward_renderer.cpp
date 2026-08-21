@@ -16,9 +16,11 @@
 #include "primitives.hpp"
 #include "skinning_pack.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <type_traits>
 #include <utility>
@@ -47,6 +49,30 @@ static_assert(std::is_trivially_copyable_v<GpuPerObject>);
 [[nodiscard]] std::size_t clampPrimitiveIndex(PrimitiveId primitive) {
     const auto index = static_cast<std::size_t>(primitive);
     return index < static_cast<std::size_t>(PrimitiveId::Count) ? index : static_cast<std::size_t>(PrimitiveId::Cube);
+}
+
+// task 3.6.1 -- the local box of a built-in primitive, FOLDED over the vertices
+// make{Cube,Sphere,Plane}() actually returned. There is deliberately no constant table to compare
+// this against: primitives.cpp IS the single source for what each shape is, so a second copy of 0.5
+// anywhere in this file would be a second truth that can drift out of step with it silently.
+//
+// std::min/std::max take the ACCUMULATOR FIRST (the expandBox rule in engine/assets/src/
+// mesh_cook.cpp): the two argument orders return different zeros for the pair (-0.0f, +0.0f), and
+// this box is compared for equality. A geometry with no vertices would leave the inverted sentinel,
+// which Aabb::valid() rejects and draw() then culls -- unreachable here, since all three primitives
+// are non-empty by construction, and the safe answer if that ever changes.
+[[nodiscard]] Aabb foldPrimitiveBounds(std::span<const MeshVertex> vertices) {
+    constexpr float INFINITY_F = std::numeric_limits<float>::infinity();
+    Aabb box{Vec3{INFINITY_F, INFINITY_F, INFINITY_F}, Vec3{-INFINITY_F, -INFINITY_F, -INFINITY_F}};
+    for (const MeshVertex& vertex : vertices) {
+        box.min.x = std::min(box.min.x, vertex.position.x);
+        box.min.y = std::min(box.min.y, vertex.position.y);
+        box.min.z = std::min(box.min.z, vertex.position.z);
+        box.max.x = std::max(box.max.x, vertex.position.x);
+        box.max.y = std::max(box.max.y, vertex.position.y);
+        box.max.z = std::max(box.max.z, vertex.position.z);
+    }
+    return box;
 }
 
 // Full-field SamplerDesc equality — rhi::SamplerDesc has no operator== (it is a plain descriptor
@@ -459,7 +485,8 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
         const rhi::BufferHandle ibuf = device.createBuffer({.usage = rhi::BufferUsage::Index, .size = ibytes});
         // Recorded BEFORE the success check, so a failed upload still leaves both buffers owned by
         // `renderer` and released by its destructor on the early return below.
-        renderer.primitives[i] = {vbuf, ibuf, static_cast<std::uint32_t>(geometry.indices.size())};
+        renderer.primitives[i] = {vbuf, ibuf, static_cast<std::uint32_t>(geometry.indices.size()),
+                                  foldPrimitiveBounds(geometry.vertices)};
         const bool uploadedVertices =
             vbuf.valid() && device.uploadBuffer(vbuf, 0, std::as_bytes(std::span{geometry.vertices}));
         const bool uploadedIndices =
@@ -639,7 +666,11 @@ MeshHandle ForwardRenderer::createMesh(const assets::CookedMesh& mesh) {
         entry.submeshes.push_back({.sectionIndex = submesh.sectionIndex,
                                    .firstIndex = submesh.firstIndex,
                                    .indexCount = submesh.indexCount,
-                                   .materialIndex = submesh.materialIndex});
+                                   .materialIndex = submesh.materialIndex,
+                                   // task 3.6.1 -- the file's own per-submesh box, verbatim. Never
+                                   // the model box: a submesh at the far end of a model would then
+                                   // claim the whole model's extent and never cull.
+                                   .bounds = toAabb(submesh.bounds)});
     }
 
     const std::span<const std::byte> indices = assets::indexBytes(mesh);
@@ -722,6 +753,29 @@ void ForwardRenderer::bindMaterialTextures(rhi::RenderPassHandle pass, const Mat
     // ONE call for all five (AC-26): slot order is declaration order, the shaderc contract, so t0..t4
     // and s0..s4 land in D7's binding order by construction.
     device->bindFragmentSamplers(pass, 0, bindings);
+}
+
+// task 3.6.1 -- SILENT by contract, on every path. A nullopt means "cannot prove anything about
+// this instance", never an error report: the arms in draw() below own the latched WARNs for the
+// cases that produce one, and a line here would either duplicate a warning that is about to fire or
+// invent one for a case that is not a problem. The resolution order MIRRORS the draw loop's, so the
+// two can never disagree about which instance is which.
+std::optional<Aabb> ForwardRenderer::instanceBounds(const MeshInstance& instance) const {
+    if (!instance.mesh.valid()) {
+        return primitives[clampPrimitiveIndex(instance.primitive)].bounds;  // ARM 1's mesh
+    }
+    const MeshEntry* const entry = meshes.get(instance.mesh);
+    if (entry == nullptr) {
+        return std::nullopt;  // stale -- ARM 2's WARN is still owed and must not be consumed here
+    }
+    if (instance.submesh >= entry->submeshes.size()) {
+        return std::nullopt;  // out of range -- likewise ARM 2's
+    }
+    const MeshSubmeshDraw& submesh = entry->submeshes[instance.submesh];
+    if (submesh.sectionIndex >= entry->sections.size()) {
+        return std::nullopt;  // the silent section guard's twin
+    }
+    return submesh.bounds;
 }
 
 void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
