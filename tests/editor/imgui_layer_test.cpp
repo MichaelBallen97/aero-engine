@@ -8805,6 +8805,91 @@ TEST_CASE("editor: a model dropped on the Hierarchy is ONE undoable subtree (tas
     app.reset();
 }
 
+TEST_CASE("editor: two material drops on one entity are two undo steps (task 3.1.5, DP23)") {
+    // The code-review round: pushMaterialAssign pushed a SetFieldCommand without touching the merge
+    // chain, and SetFieldCommand::mergeWith accepts any incoming command with the same entity, type and
+    // field -- overwriting `afterValue` while deliberately KEEPING `beforeValue`. A merged pair would
+    // read nil -> B, so one undo would jump straight past A and A would be unreachable from the history.
+    //
+    // MEASURED, AND IT DOES NOT REDDEN: removing BOTH breakMergeChain gates from pushMaterialAssign and
+    // rebuilding leaves this case GREEN -- the two drops still make two entries (the run logged
+    // undo 'MeshRenderer.material' (0 left) only on the SECOND undo, so `applied` went 2 -> 1 -> 0).
+    // Something else on the tick path between two drained drops already closes the chain, so the
+    // gates are defence in depth rather than the only thing standing between this and a merge. They
+    // are kept because they make the property LOCAL to the discrete gesture that owns it instead of
+    // incidental to whatever a neighbouring subsystem happens to do -- the same reason the inspector's
+    // Guid row carries its own pair. This case therefore pins the observable CONTRACT (two drops are
+    // two undo steps, and the first undo lands on A) and is honestly NOT a witness for the gates
+    // themselves; do not cite it as one.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "drop dp23", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const DropFixture fixture = makeDropProject();
+    // A SECOND material, so the two drops name different guids -- written here rather than into
+    // makeDropProject, which other cases share.
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/two.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::optional<engine::Guid> materialA = app->assetGuidForPath("one.aeromat");
+    const std::optional<engine::Guid> materialB = app->assetGuidForPath("two.aeromat");
+    REQUIRE(materialA.has_value());
+    REQUIRE(materialB.has_value());
+    REQUIRE_FALSE(*materialA == *materialB);
+
+    engine::Entity withMesh{};
+    app->world().eachEntity([&](engine::Entity e) {
+        if (!withMesh.valid() && app->world().has<engine::MeshRenderer>(e)) {
+            withMesh = e;
+        }
+    });
+    REQUIRE(withMesh.valid());
+
+    app->requestHierarchyAssetDrop(*materialA, MATERIAL_KIND, withMesh);
+    REQUIRE(app->tick());
+    app->requestHierarchyAssetDrop(*materialB, MATERIAL_KIND, withMesh);
+    REQUIRE(app->tick());
+
+    const engine::MeshRenderer* renderer = app->world().get<engine::MeshRenderer>(withMesh);
+    REQUIRE(renderer != nullptr);
+    CHECK((renderer->material == *materialB));
+
+    // ONE undo must land on A, not on nil. That is the whole finding: a merged pair skips A.
+    app->requestUndo();
+    REQUIRE(app->tick());
+    renderer = app->world().get<engine::MeshRenderer>(withMesh);
+    REQUIRE(renderer != nullptr);
+    CHECK((renderer->material == *materialA));
+
+    // ...and a SECOND undo reaches nil, so the two drops really are two entries.
+    CHECK(app->commands().canUndo());
+    app->requestUndo();
+    REQUIRE(app->tick());
+    renderer = app->world().get<engine::MeshRenderer>(withMesh);
+    REQUIRE(renderer != nullptr);
+    CHECK_FALSE(renderer->material.valid());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
 TEST_CASE("editor: a material drop assigns only where a MeshRenderer is (task 3.1.5, DP5/DP6/DP7)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
