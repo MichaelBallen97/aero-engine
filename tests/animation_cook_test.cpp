@@ -668,11 +668,26 @@ TEST_CASE("animation cook: cook -> parse round trips every field, in canonical o
 }
 
 TEST_CASE("animation cook: bits travel through the cook unchanged, values do not (KA20)") {
-    constexpr std::uint32_t SIGNALLING = 0x7FA00000U;
-    const auto snan = std::bit_cast<float>(SIGNALLING);
+    // A QUIET NaN carrying a distinctive payload, and deliberately NOT a signalling one.
+    //
+    // The claim under test is the cook's: it COPIES values rather than computing on them, so a bit
+    // pattern that is not equal to itself still arrives intact and is not canonicalized. A quiet NaN
+    // with a 0xDEAD payload proves exactly that -- a cook that recomputed or normalized anything
+    // would not preserve the payload.
+    //
+    // A SIGNALLING NaN cannot carry that claim here, and the reason is a language one rather than a
+    // cook one: C++ does not guarantee that an sNaN survives being stored in a float lvalue, and this
+    // value is stored into a Vec4 member and then copied into a std::vector before the cook ever sees
+    // it. MSVC quiets it on the way (0x7FA00000 arrives as 0x7FE00000) while Clang and GCC do not, so
+    // asserting it here tests the compiler, not this subsystem. The primitives ARE tested against
+    // both sNaN patterns, at the level where it is meaningful and portable, because putF32 receives
+    // the bit_cast result DIRECTLY as an argument and no float lvalue is involved -- see CM8 in
+    // tests/cooked_mesh_test.cpp. Do not "restore" the signalling pattern here.
+    constexpr std::uint32_t QUIET_PAYLOAD = 0x7FC0DEADU;
+    const auto qnan = std::bit_cast<float>(QUIET_PAYLOAD);
     ClipBuilder clip;
     clip.add(1, CookedAnimationPath::Rotation, CookedAnimationInterpolation::Linear, {-0.0F},
-             {Vec4{snan, -0.0F, snan, -0.0F}});
+             {Vec4{qnan, -0.0F, qnan, -0.0F}});
     const AnimationCookResult r = cook(clip.channels());
     REQUIRE((r.status == AnimationCookStatus::Ok));
     const CookedAnimationParseResult p = parse(r.bytes);
@@ -680,9 +695,9 @@ TEST_CASE("animation cook: bits travel through the cook unchanged, values do not
 
     CHECK(bits(animationKeyTime(channelTimeBytes(p.animation, 0), 0)) == bits(-0.0F));
     const Vec4 value = animationKeyValue(channelValueBytes(p.animation, 0), 0);
-    CHECK(bits(value.x) == SIGNALLING);
+    CHECK(bits(value.x) == QUIET_PAYLOAD);
     CHECK(bits(value.y) == bits(-0.0F));
-    CHECK(bits(value.z) == SIGNALLING);
+    CHECK(bits(value.z) == QUIET_PAYLOAD);
     CHECK(bits(value.w) == bits(-0.0F));
     // The DURATION is folded from 0.0f, and std::max(0.0f, -0.0f) returns the accumulator -- so the
     // header carries a positive zero while the times region carries the negative one it was given.
