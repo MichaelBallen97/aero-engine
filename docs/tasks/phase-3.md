@@ -54,13 +54,16 @@ deferred — see `docs/10-engineering-log.md`'s 3.1.4 entry for the reasoning an
 would reverse it.
 
 ### 3.1.5 Drag-into-scene · P1 · S · depends: 3.1.3, 3.2.1
+_(Sized up from S to L: the referencing field could not land alone. It also grows the reflectable
+subset by `engine::Guid` (reflect-gen, `serialize.{hpp,cpp}` and the wire form in docs/09 §2.3), adds
+the GUID → renderer-handle binding table and its resolution pass in `engine/scene_render`, closes the
+node-hierarchy gap 3.3.1 named but did not own (an instantiation planner, not a container), retires
+2.3.1's knowingly-wrong `LOCAL_MESH_HALF_EXTENT` with real per-mesh bounds threaded through picking,
+framing and the highlight, and needs a whole scene-asset ledger plus its loader before a dropped model
+can reach a GPU at all.)_
 **Goal:** drag an asset tile from the browser into the Hierarchy/Viewport to create a referencing
-entity — excised from 3.1.3 (D2) because nothing in `engine::scene` can point at an asset until
-3.2.1 lands. **3.2.1 is complete in code on its own feature branch** (`ImportedModel`, the
-`AssetDatabase`/import-cache dependency graph, the Import Details panel) **but not yet merged to
-`main`**, so this task starts in earnest once that merge lands — 3.2.1 itself touches no
-`engine::scene` file by design (`engine::MeshRenderer` still has no asset-referencing field;
-`git grep -ln 'Guid' -- engine/scene/` is still empty), so adding that field remains 3.1.5's own job.
+entity — excised from 3.1.3 (D2) because nothing in `engine::scene` could point at an asset until
+3.2.1 landed. Adding that field is this task's own job.
 **Deliverable:** a dropped mesh/texture asset creates or updates an entity that actually references it.
 Subtasks:
 - `BeginDragDropSource`/`AcceptDragDropPayload` wiring on an asset tile

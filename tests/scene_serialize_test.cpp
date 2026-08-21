@@ -4,6 +4,7 @@
 // Tier-0 throughout: no GPU, no reflect-gen at test time, no randomness, no files besides the one
 // committed samples/phase-1-scene/scene.json test 9 reads.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <aero/core/guid.hpp>  // task 3.1.5 — MeshRenderer's two Guid fields
 #include <aero/core/math.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
@@ -26,6 +27,9 @@
 #include <cstdint>
 #include <fstream>
 #include <optional>
+// <ostream> is required by MSVC, not by libc++ (the 0.4.1 trap): doctest stringifies a failing CHECK
+// involving a std::string_view through operator<<, and MSVC's overload needs a COMPLETE std::ostream.
+#include <ostream>
 #include <span>
 #include <sstream>
 #include <string>
@@ -234,6 +238,187 @@ TEST_CASE("scene_serialize: bad payload best-effort (AC-1)") {
     REQUIRE(t != nullptr);
     CHECK(t->position == Vec3{0.0F, 0.0F, 0.0F});  // left at default (the bad field)
     CHECK(t->scale == Vec3{2.0F, 2.0F, 2.0F});     // the good field still applied
+}
+
+// ---- task 3.1.5: docs/09 §2.3's tolerance table, on MeshRenderer's three new keys ------------------
+//
+// The three keys are APPENDED, so every scene written before this task omits all three. §2.3's
+// missing-key rule makes that silent, not degraded; and a malformed Guid is an ordinary bad field --
+// warned, counted, left at its prior value, with every other field still applied.
+
+namespace {
+
+// The canonical text of the two guids below, as LITERALS -- so a writer that ever stopped emitting
+// lowercase would redden here as well as in the byte-pinned goldens.
+constexpr std::string_view MESH_GUID_TEXT = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+constexpr std::string_view MATERIAL_GUID_TEXT = "0fedcba987654321fedcba9876543210";
+constexpr Guid MESH_GUID{0xA1B2C3D4E5F60718ULL, 0x293A4B5C6D7E8F90ULL};
+constexpr Guid MATERIAL_GUID{0x0FEDCBA987654321ULL, 0xFEDCBA9876543210ULL};
+
+}  // namespace
+
+TEST_CASE("scene_serialize: a PRE-3.1.5 MeshRenderer payload loads with all three new keys at defaults") {
+    // Byte-for-byte what every scene in this tree looked like before task 3.1.5: no mesh, no
+    // meshIndex, no material. §2.3's missing-key rule is SILENT -- not a warning, not a failure.
+    constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::MeshRenderer": {
+          "primitive": 2,
+          "color": {"x": 0.5, "y": 0.5, "z": 0.55}
+        }
+      }
+    }
+  ]
+}
+)";
+    World world;
+    const SceneLoadResult result = loadSceneText(world, TEXT);
+    REQUIRE(!result.error.has_value());
+    CHECK(result.report.componentsAttached == 1);
+    CHECK(result.report.componentsSkipped == 0);
+    CHECK(result.report.componentsFailed == 0);  // SILENT: a missing key is schema evolution, not an error
+
+    const std::vector<Entity> entities = collectEntities(world);
+    REQUIRE(entities.size() == 1);
+    const MeshRenderer* mr = world.get<MeshRenderer>(entities[0]);
+    REQUIRE(mr != nullptr);
+    CHECK(mr->primitive == 2);                    // the old fields still read
+    CHECK(mr->color == Vec3{0.5F, 0.5F, 0.55F});  //
+    CHECK_FALSE(mr->mesh.valid());                // nil => draw `primitive`, exactly as before 3.1.5
+    CHECK(mr->meshIndex == 0);
+    CHECK_FALSE(mr->material.valid());
+}
+
+TEST_CASE("scene_serialize: a NUMERIC mesh value is a bad field -- mesh stays nil, every other field applies") {
+    constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::MeshRenderer": {
+          "primitive": 1,
+          "color": {"x": 0.25, "y": 0.5, "z": 0.75},
+          "mesh": 7,
+          "meshIndex": 4,
+          "material": "0fedcba987654321fedcba9876543210"
+        }
+      }
+    }
+  ]
+}
+)";
+    World world;
+    const SceneLoadResult result = loadSceneText(world, TEXT);
+    REQUIRE(!result.error.has_value());
+    CHECK(result.report.componentsAttached == 1);
+    CHECK(result.report.componentsFailed == 1);  // the WARN's observable
+
+    const std::vector<Entity> entities = collectEntities(world);
+    REQUIRE(entities.size() == 1);
+    const MeshRenderer* mr = world.get<MeshRenderer>(entities[0]);
+    REQUIRE(mr != nullptr);
+    CHECK_FALSE(mr->mesh.valid());  // left at its prior value -- never "helpfully" anything else
+    CHECK(mr->primitive == 1);      // best-effort: every OTHER field still applied,
+    CHECK(mr->color == Vec3{0.25F, 0.5F, 0.75F});
+    CHECK(mr->meshIndex == 4);             // including the two that come AFTER the bad one
+    CHECK(mr->material == MATERIAL_GUID);  //
+}
+
+TEST_CASE("scene_serialize: a 32-character NON-HEX mesh value behaves identically to a numeric one") {
+    // Exactly GUID_TEXT_LENGTH characters, so only the alphabet is wrong -- the arm a length check
+    // alone would let through.
+    constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::MeshRenderer": {
+          "primitive": 1,
+          "color": {"x": 0.25, "y": 0.5, "z": 0.75},
+          "mesh": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+          "meshIndex": 4,
+          "material": "0fedcba987654321fedcba9876543210"
+        }
+      }
+    }
+  ]
+}
+)";
+    World world;
+    const SceneLoadResult result = loadSceneText(world, TEXT);
+    REQUIRE(!result.error.has_value());
+    CHECK(result.report.componentsAttached == 1);
+    CHECK(result.report.componentsFailed == 1);
+
+    const std::vector<Entity> entities = collectEntities(world);
+    REQUIRE(entities.size() == 1);
+    const MeshRenderer* mr = world.get<MeshRenderer>(entities[0]);
+    REQUIRE(mr != nullptr);
+    CHECK_FALSE(mr->mesh.valid());
+    CHECK(mr->primitive == 1);
+    CHECK(mr->meshIndex == 4);
+    CHECK(mr->material == MATERIAL_GUID);
+}
+
+TEST_CASE("scene_serialize: a VALID non-nil mesh reference round-trips, lowercase, byte for byte") {
+    // The two guids appear here as LITERALS and are cross-checked against MESH_GUID/MATERIAL_GUID
+    // below, so a formatGuid/parseGuid disagreement about the text form reddens rather than cancelling
+    // itself out.
+    constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::MeshRenderer": {
+          "primitive": 0,
+          "color": {"x": 1, "y": 1, "z": 1},
+          "mesh": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          "meshIndex": 3,
+          "material": "0fedcba987654321fedcba9876543210"
+        }
+      }
+    }
+  ]
+}
+)";
+    CHECK(TEXT.find(MESH_GUID_TEXT) != std::string_view::npos);      // the literals above and the
+    CHECK(TEXT.find(MATERIAL_GUID_TEXT) != std::string_view::npos);  // constants below are the same text
+
+    World world;
+    const SceneLoadResult result = loadSceneText(world, TEXT);
+    REQUIRE(!result.error.has_value());
+    CHECK(result.report.componentsFailed == 0);
+
+    const std::vector<Entity> entities = collectEntities(world);
+    REQUIRE(entities.size() == 1);
+    const MeshRenderer* mr = world.get<MeshRenderer>(entities[0]);
+    REQUIRE(mr != nullptr);
+    CHECK(*mr ==
+          MeshRenderer{
+              .primitive = 0, .color = Vec3::one(), .mesh = MESH_GUID, .meshIndex = 3, .material = MATERIAL_GUID});
+
+    // Save: the canonical spelling is lowercase, and both guids survive distinct.
+    const std::string saved = saveWorldText(world);
+    CHECK(saved.find(std::string(MESH_GUID_TEXT)) != std::string::npos);
+    CHECK(saved.find(std::string(MATERIAL_GUID_TEXT)) != std::string::npos);
+
+    // Re-load the saved text: the component is bit-identical, and re-saving is a fixpoint.
+    World reloaded;
+    const SceneLoadResult second = loadSceneText(reloaded, saved);
+    REQUIRE(!second.error.has_value());
+    const std::vector<Entity> reloadedEntities = collectEntities(reloaded);
+    REQUIRE(reloadedEntities.size() == 1);
+    const MeshRenderer* back = reloaded.get<MeshRenderer>(reloadedEntities[0]);
+    REQUIRE(back != nullptr);
+    CHECK(*back == *mr);
+    CHECK(saveWorldText(reloaded) == saved);
 }
 
 TEST_CASE("scene_serialize: parent + forward reference (AC-1)") {

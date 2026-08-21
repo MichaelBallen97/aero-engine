@@ -1,6 +1,9 @@
 #include <aero/core/log.hpp>
+#include <aero/editor/asset_database.hpp>  // task 3.1.5: the Guid row resolves a reference to a record
+#include <aero/editor/asset_view.hpp>      // classifyAssetKind, assetKindLabel
 #include <aero/editor/inspector_model.hpp>
-#include <aero/reflect/annotations.hpp>  // engine::reflect::FieldUiMeta
+#include <aero/editor/project_files.hpp>  // leafOf
+#include <aero/reflect/annotations.hpp>   // engine::reflect::FieldUiMeta
 
 #include "meta_utils.hpp"
 
@@ -59,6 +62,11 @@ DispatchedValue readEntryValue(const entt::meta_data& data, entt::meta_any& hand
     }
     if (info == entt::type_id<std::string>()) {
         return {.matched = true, .kind = FieldKind::String, .value = FieldValue{value.cast<std::string>()}};
+    }
+    // task 3.1.5, above the arithmetic fall-through for component_ops.cpp's own reason: a Guid is none
+    // of the 20, and an unmatched field is a row the inspector never draws.
+    if (info == entt::type_id<Guid>()) {
+        return {.matched = true, .kind = FieldKind::Guid, .value = FieldValue{value.cast<Guid>()}};
     }
 
     DispatchedValue out;
@@ -142,6 +150,26 @@ void buildInspectorModel(const World& world, Entity entity, InspectorModel& out)
         }
     }
     out.components.resize(writeIndex);  // drop any stale tail; never shrinks capacity
+}
+
+GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database) {
+    if (!value.valid()) {
+        // A NIL GUID IS "no reference", which is a legal, ordinary value -- not a broken one. Clear is
+        // disabled because clearing nothing would push an undo entry that changes no byte.
+        return {.text = "None", .clearEnabled = false};
+    }
+    const AssetRecord* const record = database != nullptr ? database->findByGuid(value) : nullptr;
+    if (record == nullptr) {
+        // NO DATABASE AND NO RECORD ARE ONE ROW, deliberately: from the user's seat both mean "this
+        // project cannot tell you what that is", and inventing a second sentence for a state only a
+        // -DAERO_REFLECT_TOOLS=OFF build or a mid-scan frame can reach would be a distinction nobody
+        // can act on. The reference is still CLEARABLE -- a dangling reference is exactly the one a
+        // user most wants to remove.
+        return {.text = formatGuid(value).substr(0, 8) + "...  (missing)", .clearEnabled = true};
+    }
+    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+    return {.text = std::string(leafOf(record->relativePath)) + "  (" + std::string(assetKindLabel(kind)) + ")",
+            .clearEnabled = true};
 }
 
 }  // namespace engine::editor

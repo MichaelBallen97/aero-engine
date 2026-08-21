@@ -25,35 +25,6 @@ namespace engine::editor {
 
 namespace {
 
-// NIT 11 (code review): ImportedImage::guid's own doc comment promises "nil unless relativePath names
-// a known asset", but nothing assigned it -- importModel() itself MUST stay pure (bytes in, value out,
-// no database access), so the assignment happens HERE, the one place that holds both a fresh
-// ImportResult and a `const AssetDatabase&` at the same time. Applied to `resultValue.model.images`
-// after EVERY import call that can leave it non-empty (never after a FAILED import, whose `model` is
-// contractually empty already, so there is nothing to walk).
-void assignImageGuids(std::vector<ImportedImage>& images, const AssetDatabase& database) {
-    for (ImportedImage& image : images) {
-        if (image.relativePath.empty()) {
-            continue;  // unresolved or embedded (D14) -- guid stays nil, exactly as documented
-        }
-        if (const std::optional<Guid> guid = database.guidForPath(image.relativePath); guid.has_value()) {
-            image.guid = *guid;
-        }
-    }
-}
-
-// task 3.2.4 (§A-20 j): the settings fingerprint recorded in, and compared against, the provenance
-// record. A PURE function of ImportSettings ALONE -- a nil Guid and writeMetaText's DEFAULT identity
-// parameters, so neither the asset's own GUID nor its importer name leaks into the value. Reusing
-// writeMetaText's serializer is the whole point: a future ImportSettings field enters the fingerprint
-// automatically, which is the only reason the fingerprint exists at all (3.2.1 applies `scale` during
-// IMPORT, and what is cached here is the GLB, so strictly nothing today needs it -- it is here so a
-// future Blender-SIDE option cannot be added without the invalidation already in place).
-[[nodiscard]] std::string fingerprintOf(const ImportSettings& settings) {
-    const std::string text = writeMetaText(Guid{}, settings);
-    return formatContentHash(hashBytes(std::as_bytes(std::span<const char>(text))));
-}
-
 // task 3.2.4: the record's contentHash is MEANINGFUL only under 3.1.3's ThumbnailKey rule, applied
 // verbatim one subsystem over. An unhashed record has no cache key, exactly as an unhashed record has
 // no thumbnail key -- so the artifact is treated as stale and NO provenance is written after the run.
@@ -75,6 +46,20 @@ void addSessionWarning(ImportResult& result, std::string text) {
 }
 
 }  // namespace
+
+// PROMOTED out of the anonymous namespace above at task 3.1.5 (§D-9 step 4). The body is unchanged;
+// only its linkage and its declaration site moved, so the scene-asset loader can give the images of
+// its OWN imports the same guids rather than restating the walk.
+void assignImageGuids(std::vector<ImportedImage>& images, const AssetDatabase& database) {
+    for (ImportedImage& image : images) {
+        if (image.relativePath.empty()) {
+            continue;  // unresolved or embedded (D14) -- guid stays nil, exactly as documented
+        }
+        if (const std::optional<Guid> guid = database.guidForPath(image.relativePath); guid.has_value()) {
+            image.guid = *guid;
+        }
+    }
+}
 
 void ModelImportSession::setTarget(std::string relativePath, std::uint64_t databaseGeneration) {
     // E18: the SAME target and the SAME generation is a no-op -- idempotent by construction, so a
@@ -341,7 +326,7 @@ void ModelImportSession::serviceBlend(std::string_view assetsRootUtf8, const Ass
     // have not probed would require probing, and a probe is a process.
     expected.blenderVersion = blenderService.versionString();
     expected.scriptVersion = BLENDER_SCRIPT_VERSION;
-    expected.settingsFingerprint = fingerprintOf(pending);
+    expected.settingsFingerprint = blendExportSettingsFingerprint(pending);
 
     // Read <guid>.glb and import it. AC-44/§A-2b, and this is the single most important paragraph in
     // the whole arm.

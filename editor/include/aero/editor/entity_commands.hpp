@@ -32,14 +32,27 @@ inline constexpr std::string_view DUPLICATE_ENTITIES_COMMAND_LABEL = "Duplicate"
 inline constexpr std::string_view REPARENT_COMMAND_LABEL = "Reparent";
 inline constexpr std::string_view RENAME_COMMAND_LABEL = "Rename";
 
+// Capture `roots`' subtrees AND their root display slots, then destroy them. Returns false -- having
+// changed NOTHING -- when the capture comes out empty. PROMOTED from entity_commands.cpp's anonymous
+// namespace at task 3.1.5: InstantiateAssetCommand is the sixth structural command and needs the exact
+// same two operations, and a second copy of "capture BEFORE destroy" is the S11 defect waiting to be
+// re-introduced.
+[[nodiscard]] bool captureAndDestroySubtrees(CommandContext& context, std::span<const Entity> roots,
+                                             StructuralUndoState& out);
+// The exact inverse, in the order that makes it invisible: World state, then root display order, then
+// the selection. `selection` is what to INSTALL -- the created set on a redo, the pre-command set on an
+// undo.
+[[nodiscard]] bool restoreStructuralState(CommandContext& context, const StructuralUndoState& state,
+                                          std::span<const Entity> selection);
+
 class CreateEntityCommand final : public Command {
 public:
     // `selectionBefore` is COPIED here, at construction -- which is before push() applies anything,
     // since D5 means the panel has not written yet. It must NOT be a span: redo() mutates the very
     // Selection the caller's span points into (A20).
     CreateEntityCommand(Entity parent, std::string_view name, std::span<const Entity> selectionBefore);
-    bool redo(CommandContext& context) override;  // 1st: createEntity; later: restoreState (D21)
-    bool undo(CommandContext& context) override;  // captureAndDestroy + restore the old selection
+    bool redo(CommandContext& context) override;  // 1st: createEntity; later: restoreStructuralState (D21)
+    bool undo(CommandContext& context) override;  // captureAndDestroySubtrees + restore the old selection
     [[nodiscard]] std::string_view label() const noexcept override;
     [[nodiscard]] Entity created() const noexcept;  // Entity{} until the first redo
 
@@ -54,8 +67,8 @@ private:
 class DeleteEntitiesCommand final : public Command {
 public:
     DeleteEntitiesCommand(std::span<const Entity> targets, std::span<const Entity> selectionBefore);
-    bool redo(CommandContext& context) override;  // captureAndDestroy(targets)
-    bool undo(CommandContext& context) override;  // restoreState(selectionBefore)
+    bool redo(CommandContext& context) override;  // captureAndDestroySubtrees(targets)
+    bool undo(CommandContext& context) override;  // restoreStructuralState(selectionBefore)
     [[nodiscard]] std::string_view label() const noexcept override;
 
 private:
@@ -67,9 +80,9 @@ private:
 class DuplicateEntitiesCommand final : public Command {
 public:
     DuplicateEntitiesCommand(std::span<const Entity> sources, std::span<const Entity> selectionBefore);
-    // `sources` -> createdEntities (1st redo); later redos restoreState(createdEntities) (D21)
+    // `sources` -> createdEntities (1st redo); later redos restoreStructuralState(createdEntities) (D21)
     bool redo(CommandContext& context) override;
-    bool undo(CommandContext& context) override;  // captureAndDestroy(createdEntities)
+    bool undo(CommandContext& context) override;  // captureAndDestroySubtrees(createdEntities)
     [[nodiscard]] std::string_view label() const noexcept override;
 
 private:

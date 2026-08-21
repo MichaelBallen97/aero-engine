@@ -12,8 +12,22 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 namespace engine::editor {
+
+// NIT 11 (3.2.1's code review): ImportedImage::guid's own doc comment promises "nil unless
+// relativePath names a known asset", but importModel() itself MUST stay pure (bytes in, value out, no
+// database access), so the assignment happens here -- wherever a caller holds both a fresh
+// ImportResult and a `const AssetDatabase&` at the same time. Applied after EVERY import call that
+// can leave `images` non-empty (never after a FAILED import, whose `model` is contractually empty
+// already, so there is nothing to walk).
+//
+// PROMOTED out of this TU's anonymous namespace at task 3.1.5 (§D-9 step 4): the scene-asset loader
+// runs its own imports and owes its images the same guids, and this header already names
+// AssetDatabase, so promotion drags nothing new anywhere. A second copy would be a second answer to
+// "which asset is this image?".
+void assignImageGuids(std::vector<ImportedImage>& images, const AssetDatabase& database);
 
 enum class SessionState : std::uint8_t {
     Idle = 0,       // nothing selected

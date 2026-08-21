@@ -1,8 +1,10 @@
 // tests/editor/selection_overlay_test.cpp — task 2.3.2: the selection turned into screen-space
 // segments. Tier-0 and UNGATED. EIGHTH TU of aero_editor_shell_test (no
 // DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN here -- shell_test.cpp supplies main()).
+#include <aero/core/guid.hpp>
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/picking.hpp>
+#include <aero/editor/scene_bounds.hpp>
 #include <aero/editor/selection_overlay.hpp>
 #include <aero/scene/scene.hpp>
 
@@ -14,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <ostream>
 #include <vector>
 
 using engine::Entity;
@@ -25,15 +28,20 @@ using engine::Vec2;
 using engine::Vec3;
 using engine::Vec4;
 using engine::World;
+using engine::editor::aabbCorner;
 using engine::editor::BOX_EDGES;
 using engine::editor::BoxEdge;
 using engine::editor::buildSelectionOverlay;
 using engine::editor::CLIP_W_EPSILON;
 using engine::editor::clipSegmentToNearPlane;
 using engine::editor::EditorCamera;
+using engine::editor::entityBounds;
 using engine::editor::MAX_HIGHLIGHTED_ENTITIES;
+using engine::editor::MeshBoundsKey;
+using engine::editor::MeshBoundsLookup;
 using engine::editor::OverlayRole;
 using engine::editor::OverlaySegment;
+using engine::editor::primitiveLocalBounds;
 
 namespace {
 
@@ -516,4 +524,164 @@ TEST_CASE("selection_overlay: scratch is cleared on entry and reused when warm (
     const std::size_t warmCapacity = scratch.capacity();
     buildSelectionOverlay(w, one, a, viewProj, VIEWPORT_POINTS, scratch);
     CHECK(scratch.capacity() == warmCapacity);  // warm: an identical second call does not grow
+}
+
+// ================================================================================================
+// task 3.1.5 (VP1-VP4): the highlight resolves its box through the SAME localBoundsFor the frame walk
+// and the pick use (INV-D6), and an unresolved reference draws the non-mesh marker.
+// ================================================================================================
+
+namespace {
+[[nodiscard]] engine::Guid overlayMeshGuid(std::uint64_t ordinal) { return engine::Guid{ordinal, 0xDEEDULL}; }
+
+// The 8 projected corners of `box` under `model`, computed with aabbCorner and projectToViewport --
+// the same two functions the overlay uses, from the OTHER side. A case comparing these against the
+// overlay's own endpoints proves the overlay drew THAT box and no other.
+[[nodiscard]] std::vector<Vec2> projectedCornersOf(const Mat4& viewProj, const Mat4& model,
+                                                   const engine::editor::Aabb& box) {
+    std::vector<Vec2> out;
+    for (std::size_t i = 0; i < 8; ++i) {
+        Vec2 point{};
+        REQUIRE(engine::editor::projectToViewport(viewProj, engine::transformPoint(model, aabbCorner(box, i)),
+                                                  VIEWPORT_POINTS, point));
+        out.push_back(point);
+    }
+    return out;
+}
+
+[[nodiscard]] bool containsPoint(const std::vector<Vec2>& haystack, Vec2 needle) {
+    return std::any_of(haystack.begin(), haystack.end(), [needle](Vec2 candidate) {
+        return std::abs(candidate.x - needle.x) < EPS && std::abs(candidate.y - needle.y) < EPS;
+    });
+}
+}  // namespace
+
+TEST_CASE("selection_overlay: a PRIMITIVE's highlight draws exactly the bounds walk's box (VP1)") {
+    const EditorCamera camera = testCamera();
+    const Mat4 viewProj = testViewProj(camera);
+    World w;
+    const Entity e = makeMesh(w, Vec3{0.5F, 0.0F, 0.0F}, Quat::identity(), Vec3{2.0F, 1.0F, 1.0F});
+    const std::array<Entity, 1> selected{e};
+
+    std::vector<OverlaySegment> segments;
+    buildSelectionOverlay(w, selected, e, viewProj, VIEWPORT_POINTS, segments);
+    REQUIRE(segments.size() == 12);
+
+    const engine::editor::Aabb local = primitiveLocalBounds(0);
+    const std::vector<Vec2> corners = projectedCornersOf(viewProj, engine::worldMatrix(w, e), local);
+    for (const Vec2 endpoint : endpointsOf(segments)) {
+        CHECK(containsPoint(corners, endpoint));
+    }
+    // ...and the WORLD box the frame walk builds is the same eight points' extent -- both halves of
+    // INV-D6 asserted against one another rather than each against its own implementation.
+    const engine::editor::Aabb framed = entityBounds(w, e, /*includeDescendants=*/false);
+    engine::editor::Aabb rebuilt = engine::editor::Aabb::empty();
+    for (std::size_t i = 0; i < 8; ++i) {
+        rebuilt.expand(engine::transformPoint(engine::worldMatrix(w, e), aabbCorner(local, i)));
+    }
+    CHECK(engine::approxEquals(framed.min, rebuilt.min));
+    CHECK(engine::approxEquals(framed.max, rebuilt.max));
+}
+
+TEST_CASE("selection_overlay: a RESOLVED reference's highlight draws the referenced box (VP2)") {
+    // S32's witness: an overlay that used primitiveLocalBounds for a reference entity draws a unit
+    // cube here instead of the 3 x 1 x 2 box the lookup published.
+    const EditorCamera camera = testCamera();
+    const Mat4 viewProj = testViewProj(camera);
+    World w;
+    const Entity e = w.create();
+    REQUIRE(w.add<Transform>(e, Transform{.position = Vec3::zero()}) != nullptr);
+    REQUIRE(w.add<MeshRenderer>(e, MeshRenderer{.mesh = overlayMeshGuid(1), .meshIndex = 0}) != nullptr);
+    const std::array<Entity, 1> selected{e};
+
+    const engine::editor::Aabb local{Vec3{-3.0F, -1.0F, -2.0F}, Vec3{3.0F, 1.0F, 2.0F}};
+    MeshBoundsLookup lookup;
+    lookup.set(MeshBoundsKey{overlayMeshGuid(1), 0}, local);
+
+    std::vector<OverlaySegment> segments;
+    buildSelectionOverlay(w, selected, e, viewProj, VIEWPORT_POINTS, segments, &lookup);
+    REQUIRE(segments.size() == 12);
+    CHECK(allFinite(segments));
+
+    const std::vector<Vec2> corners = projectedCornersOf(viewProj, engine::worldMatrix(w, e), local);
+    for (const Vec2 endpoint : endpointsOf(segments)) {
+        CHECK(containsPoint(corners, endpoint));
+    }
+    // The control: the CUBE's corners are a strictly narrower cloud, so a box drawn from
+    // primitiveLocalBounds cannot satisfy the loop above.
+    const std::vector<Vec2> cubeCorners =
+        projectedCornersOf(viewProj, engine::worldMatrix(w, e), primitiveLocalBounds(0));
+    CHECK_FALSE(containsPoint(cubeCorners, corners[0]));
+
+    // And the frame walk agrees, entity for entity.
+    const engine::editor::Aabb framed = entityBounds(w, e, false, &lookup);
+    CHECK(engine::approxEquals(framed.min, local.min));
+    CHECK(engine::approxEquals(framed.max, local.max));
+}
+
+TEST_CASE("selection_overlay: an UNRESOLVED reference draws the DIAMOND, not a box (VP3)") {
+    const EditorCamera camera = testCamera();
+    const Mat4 viewProj = testViewProj(camera);
+    World w;
+    const Entity e = w.create();
+    REQUIRE(w.add<Transform>(e, Transform{.position = Vec3{1.0F, 0.0F, 0.0F}}) != nullptr);
+    REQUIRE(w.add<MeshRenderer>(e, MeshRenderer{.mesh = overlayMeshGuid(1), .meshIndex = 0}) != nullptr);
+    const std::array<Entity, 1> selected{e};
+    std::vector<OverlaySegment> segments;
+
+    SUBCASE("no lookup published yet") {
+        buildSelectionOverlay(w, selected, e, viewProj, VIEWPORT_POINTS, segments);
+        CHECK(segments.size() == 4);  // the 4-segment marker, never the 12-edge box
+        CHECK(allFinite(segments));
+    }
+    SUBCASE("a lookup that does not hold this key") {
+        MeshBoundsLookup lookup;
+        lookup.set(MeshBoundsKey{overlayMeshGuid(2), 0},
+                   engine::editor::Aabb{Vec3{-1.0F, -1.0F, -1.0F}, Vec3{1.0F, 1.0F, 1.0F}});
+        buildSelectionOverlay(w, selected, e, viewProj, VIEWPORT_POINTS, segments, &lookup);
+        CHECK(segments.size() == 4);
+    }
+    SUBCASE("the marker is a CLOSED diamond around the entity's projected origin") {
+        buildSelectionOverlay(w, selected, e, viewProj, VIEWPORT_POINTS, segments);
+        REQUIRE(segments.size() == 4);
+        Vec2 origin{};
+        REQUIRE(engine::editor::projectToViewport(viewProj, Vec3{1.0F, 0.0F, 0.0F}, VIEWPORT_POINTS, origin));
+        for (const OverlaySegment& s : segments) {
+            CHECK(std::abs(engine::length(s.a - origin) - engine::editor::POINT_MARKER_HALF_POINTS) < EPS);
+        }
+        CHECK(segments[3].b == segments[0].a);  // closed
+    }
+    SUBCASE("once resolved, the SAME entity draws 12 edges") {
+        MeshBoundsLookup lookup;
+        lookup.set(MeshBoundsKey{overlayMeshGuid(1), 0},
+                   engine::editor::Aabb{Vec3{-1.0F, -1.0F, -1.0F}, Vec3{1.0F, 1.0F, 1.0F}});
+        buildSelectionOverlay(w, selected, e, viewProj, VIEWPORT_POINTS, segments, &lookup);
+        CHECK(segments.size() == 12);
+    }
+}
+
+TEST_CASE("selection_overlay: the FLAT plane still draws 12 edges, 4 of them degenerate (VP4)") {
+    // A zero-thickness box has 12 edges like any other; the four Y edges collapse to points on screen.
+    // They must still be EMITTED (so the edge count is a constant a reader can rely on) and FINITE (so
+    // ImDrawList never sees a NaN).
+    const EditorCamera camera = testCamera();
+    const Mat4 viewProj = testViewProj(camera);
+    World w;
+    const Entity e = w.create();
+    REQUIRE(w.add<Transform>(e, Transform{.position = Vec3::zero()}) != nullptr);
+    REQUIRE(w.add<MeshRenderer>(e, MeshRenderer{.primitive = 2}) != nullptr);
+    const std::array<Entity, 1> selected{e};
+
+    std::vector<OverlaySegment> segments;
+    buildSelectionOverlay(w, selected, e, viewProj, VIEWPORT_POINTS, segments);
+    REQUIRE(segments.size() == 12);
+    CHECK(allFinite(segments));
+
+    std::size_t degenerate = 0;
+    for (const OverlaySegment& s : segments) {
+        if (engine::length(s.a - s.b) < EPS) {
+            ++degenerate;
+        }
+    }
+    CHECK(degenerate == 4);  // the four Y edges of a zero-thickness box, and only those
 }

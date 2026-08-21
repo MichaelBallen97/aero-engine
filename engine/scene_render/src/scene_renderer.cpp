@@ -13,6 +13,7 @@
 #include <aero/scene_render/scene_renderer.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <utility>
 
 namespace engine::scene_render {
@@ -48,10 +49,34 @@ void warnOnce(bool& latch, const char* message) {
     }
 }
 
+// task 3.1.5 — which material an emitted submesh draws with. The D7 order, and THE ORDER IS THE
+// SPECIFICATION:
+//   1. an entity-level override that RESOLVES wins, on every submesh;
+//   2. an override that does NOT resolve is COUNTED and falls through — it does not silently become
+//      the submesh's own material without a trace, and it does not blank the draw;
+//   3. otherwise the submesh's own bound handle, which may legitimately be INVALID (the source
+//      assigned no material) and resolves to ForwardRenderer::defaultMaterial() at draw time,
+//      3.4.1's contract.
+// The count fires ONCE PER EMITTED SUBMESH, not once per entity: it answers "how many draws could not
+// use the material they were asked for", which is the number a diagnostic reader wants — an
+// entity-level count would understate a seven-submesh model by a factor of seven.
+[[nodiscard]] render::MaterialHandle resolveMaterial(const MeshRenderer& meshRenderer, const MeshBindingSubmesh& sub,
+                                                     const AssetBindingTable* bindings, render::RenderView& view) {
+    if (meshRenderer.material.valid()) {
+        const render::MaterialHandle overrideHandle =
+            bindings != nullptr ? bindings->findMaterial(meshRenderer.material) : render::MaterialHandle{};
+        if (overrideHandle.valid()) {
+            return overrideHandle;
+        }
+        ++view.unresolvedMaterials;
+    }
+    return sub.material;
+}
+
 }  // namespace
 
 render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi::Extent2D viewport,
-                                   const render::CameraView* cameraOverride) {
+                                   const render::CameraView* cameraOverride, const AssetBindingTable* bindings) {
     AERO_PROFILE_ZONE;
     scratch.instances.clear();
     scratch.points.clear();
@@ -64,12 +89,58 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
     // a future Phase 4 Game view will want it).
     world.each<Transform, MeshRenderer>([&](Entity e, Transform& /*transform*/, MeshRenderer& meshRenderer) {
         const Mat4 model = worldMatrix(world, e);
-        render::MeshInstance instance;
-        instance.primitive = clampPrimitive(meshRenderer.primitive);
-        instance.model = model;
-        instance.normalMatrix = embed(transpose(inverse(toMat3(model))));  // correct normals under non-uniform scale
-        instance.color = meshRenderer.color;
-        scratch.instances.push_back(instance);  // mvp filled below, once the camera is known
+        // Hoisted above the branch, which is a PURE motion: both were computed unconditionally in the
+        // pre-3.1.5 body too, and neither reads meshRenderer.
+        const Mat4 normalMatrix = embed(transpose(inverse(toMat3(model))));  // correct normals under non-uniform scale
+
+        // --- arm 1: no reference. TODAY'S PATH, BYTE FOR BYTE. Not "the fallback" — the primitive
+        // path is what every pre-3.1.5 scene, both samples and every existing test exercise, and it
+        // must stay observationally identical, which is INV-D3's first half.
+        if (!meshRenderer.mesh.valid()) {
+            render::MeshInstance instance;
+            instance.primitive = clampPrimitive(meshRenderer.primitive);
+            instance.model = model;
+            instance.normalMatrix = normalMatrix;
+            instance.color = meshRenderer.color;
+            scratch.instances.push_back(instance);  // mvp filled below, once the camera is known
+            return;
+        }
+
+        // --- arm 2: a reference with nothing to resolve it. ZERO instances, one count. `bindings ==
+        // nullptr` is the sample/runtime/test case and is NOT an error; a missing entry is the
+        // ordinary in-flight state between a drop and the ledger's upload.
+        const MeshBinding* binding = bindings != nullptr ? bindings->findMesh(meshRenderer.mesh) : nullptr;
+        if (binding == nullptr) {
+            ++view.unresolvedMeshes;
+            return;
+        }
+
+        // --- arm 3: resolved. ONE INSTANCE PER MATCHING SUBMESH. The filter is by sourceMeshIndex,
+        // which is the D2 join key: one cooked container holds every mesh of the model, so an entity
+        // referencing mesh 3 draws exactly the submeshes mesh 3 produced. Zero matches is a STALE
+        // meshIndex and counts as unresolved — same observable as arm 2, different cause, and the
+        // editor's ledger is where the cause is nameable.
+        std::uint32_t emitted = 0;
+        for (const MeshBindingSubmesh& sub : binding->submeshes) {
+            if (sub.sourceMeshIndex != meshRenderer.meshIndex) {
+                continue;
+            }
+            render::MeshInstance instance;
+            instance.primitive = clampPrimitive(meshRenderer.primitive);  // IGNORED while `mesh` is valid; set
+                                                                          // anyway so the struct never carries
+                                                                          // a stale value
+            instance.mesh = binding->mesh;
+            instance.submesh = sub.submesh;
+            instance.model = model;
+            instance.normalMatrix = normalMatrix;
+            instance.color = meshRenderer.color;
+            instance.material = resolveMaterial(meshRenderer, sub, bindings, view);
+            scratch.instances.push_back(instance);  // mvp filled below, once the camera is known
+            ++emitted;
+        }
+        if (emitted == 0) {
+            ++view.unresolvedMeshes;
+        }
     });
 
     // --- camera: lowest entity index wins (D5) ---
@@ -154,9 +225,16 @@ std::optional<SceneRenderer> SceneRenderer::create(rhi::Device& device, const Vi
     return SceneRenderer{std::move(*fwd)};
 }
 
+render::ForwardRenderer& SceneRenderer::renderer() noexcept { return forward; }
+const render::ForwardRenderer& SceneRenderer::renderer() const noexcept { return forward; }
+AssetBindingTable& SceneRenderer::bindings() noexcept { return bindingTable; }
+const AssetBindingTable& SceneRenderer::bindings() const noexcept { return bindingTable; }
+std::uint32_t SceneRenderer::lastUnresolvedMeshes() const noexcept { return lastUnresolvedMeshesValue; }
+std::uint32_t SceneRenderer::lastUnresolvedMaterials() const noexcept { return lastUnresolvedMaterialsValue; }
+
 void SceneRenderer::render(World& world, render::Frame& frame, const render::CameraView* cameraOverride) {
     AERO_PROFILE_ZONE;
-    const render::RenderView view = buildRenderView(world, scratch, frame.extent(), cameraOverride);
+    const render::RenderView view = buildRenderView(world, scratch, frame.extent(), cameraOverride, &bindingTable);
     if (cameraOverride == nullptr) {  // D3: an override suppresses the two CAMERA WARNs, nothing else
         if (view.cameraCount == 0) {
             warnOnce(noCameraWarned, "SceneRenderer: no Camera in world; nothing rendered");
@@ -170,6 +248,14 @@ void SceneRenderer::render(World& world, render::Frame& frame, const render::Cam
     if (view.pointsTruncated) {
         warnOnce(pointTruncWarned, "SceneRenderer: >MAX_POINT_LIGHTS PointLights; extras dropped");
     }
+    // task 3.1.5 (D7): the two new diagnostics are LATCHED, not WARNed. Unresolved is transient BY
+    // DESIGN — every frame between a drop and the ledger's upload legitimately counts nonzero — so a
+    // latched WARN would fire once per session on correct behaviour and teach readers to ignore the
+    // whole channel. The editor's scene-asset ledger owns the user-facing message; it is the only
+    // layer that knows Loading from Failed. These two members exist because a RenderView does not
+    // outlive this call.
+    lastUnresolvedMeshesValue = view.unresolvedMeshes;
+    lastUnresolvedMaterialsValue = view.unresolvedMaterials;
     forward.draw(frame, view);  // no-ops when !view.hasCamera
 }
 

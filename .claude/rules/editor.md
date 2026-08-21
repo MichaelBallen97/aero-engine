@@ -825,6 +825,15 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   only here. Mapping the target through a `localId -> position` table would make every FBX clip bind
   to the wrong joints, silently, and `AS9` is the case that reddens if anyone does -- it is hand-built
   precisely because glTF, whose `localId` and position coincide, cannot see the difference.
+
+  **`instantiate_plan.cpp` (task 3.1.5) is the SIXTH named consumer, and it is the one that has to
+  hold BOTH numbers at once.** Its BFS reads `ImportedModel::roots` and `ImportedNode::children`, so
+  every link crosses one sorted `localId -> position` map built once per call -- while
+  `ImportedNode::meshIndex` is **already a position** (into `ImportedModel::meshes`, the same number
+  `CookedSubmesh::sourceMeshIndex` records) and is stored **verbatim**. Resolving `meshIndex` through
+  that map is seed `S6`: it works for glTF, where the two coincide, and picks the wrong mesh for FBX --
+  the exact shape of the bug the map exists to prevent, wearing the map as a disguise. **The rule is
+  "resolve links, never positions", and the two are one field apart.**
 - **Every platform-dependent ufbx default is set EXPLICITLY.** `path_separator` above all: its default
   is `'\'` on Windows and `'/'` everywhere else, inside a function whose output three CI lanes must
   agree about byte for byte in tests comparing `relativePath` against literals.
@@ -1342,5 +1351,112 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   `if(AERO_SHADER_TOOLS)` block, and both arms **assert** — a skip would leave AC-32 untested in the one
   configuration that can test it.
 
+## Drag-into-scene (task 3.1.5)
+
+- **`"AERO_ASSET"` is the tree's SECOND payload type, and the two can never cross-fire.** The first is
+  the Hierarchy's own `"AERO_ENTITY"` reparent payload (`hierarchy_panel.cpp`), untouched by this task:
+  the type strings differ, so `ImGuiPayload::IsDataType` refuses each other's payloads structurally
+  rather than by a check somebody has to remember to write. A third payload type inherits that
+  property only if it is likewise a distinct string.
+- **`AssetDragPayload` is 24 bytes and is DECODED, never cast.** ImGui's payload buffer is `alignas(1)`
+  and, at 24 bytes, is the **heap** buffer rather than the inline 16-byte one; the Debug lanes run
+  UBSan. `decodeAssetDragPayload(data, sizeBytes)` is the **only** reader of an `ImGuiPayload::Data` in
+  this tree -- it `memcpy`s into a local and refuses null data, a size that is not exactly
+  `sizeof(AssetDragPayload)`, and a nil guid (a nil guid in a payload is a corrupt payload, never a
+  "none" value). It takes the raw pointer and size so the public header names no ImGui type.
+- **Value-initialisation does NOT zero this struct's padding, and the fix belongs at the ONE
+  `SetDragDropPayload` call site.** Measured on Apple clang against a poisoned stack slot: `engine::Guid`
+  carries `hi`/`lo` NSDMIs, which makes `AssetDragPayload` **not** trivially default constructible, so
+  `[dcl.init]` value-init runs the constructor and the compiler elides the whole-object zeroing -- seven
+  tail bytes come back indeterminate. Nothing reads them (the decode reads `guid` and `kind` only), so
+  this is a determinism property, not a correctness one; the source `memcpy`s into an explicitly zeroed
+  buffer at the single call site. **Do not "fix" it with `{}` at the declaration -- that was measured
+  and does not work for this type.**
+- **THE PEEK RULE: `classifyAssetDrop` runs BEFORE `AcceptDragDropPayload`, at every target, always.**
+  ImGui draws the drop highlight as a side effect of `AcceptDragDropPayload`, so calling it and then
+  deciding is a **visible promise the editor then breaks**. `GetDragDropPayload()` is the peek;
+  `AcceptDragDropPayload` is the commitment. The whole accept/refuse matrix is one total pure function
+  so the decision is a tier-0 table test and the ImGui half stays four lines per site:
+
+  | kind \ surface | HierarchyRow | HierarchyVoid | Viewport | MaterialSlot |
+  |---|---|---|---|---|
+  | Model | Instantiate | Instantiate | Instantiate | None |
+  | Material | Assign **iff** the target has a `MeshRenderer` | None | Assign **iff** the hit has one | None |
+  | Texture | None | None | None | BindTextureSlot |
+  | Folder / Audio / Text / Unknown | None | None | None | None |
+
+  It is a `switch (kind)` around a `switch (surface)`, **both without `default:`**, so a new `AssetKind`
+  or a new `DropSurface` is a `-Wswitch` error rather than a silent `None`. `targetHasMeshRenderer` is
+  recomputed from the **live** `World` at the accept site and is false for every surface with no target
+  entity -- never remembered, never taken from the payload.
+- **The SOURCE side refuses too, and that is where an illegal payload stops existing.** One helper,
+  three call sites (grid tile, list row, and the list row's caption); it starts no drag for a folder, a
+  non-draggable kind, or a path with no record / no valid guid. Note `.mtl` classifies `Unknown` and
+  therefore starts **no** drag even though it is importable.
+- **The viewport's drop target is `BeginDragDropTargetCustom`, and the reason is `ImGui::Image`.** That
+  widget submits its item with **id 0**, so `BeginDragDropTarget()` cannot attach to it. The custom form
+  takes a rect and an **explicit** id, consults **no item state at all** (verified in the pinned
+  `imgui.cpp`), and `IM_ASSERT`s a non-zero id -- so the `!= 0` guard turns a would-be Debug abort into
+  "the target does not exist this frame". While any payload is live the viewport is a **drop target,
+  not an input surface**: `hovered` is suppressed for the camera gesture, the pick and the `F`-focus
+  guard, and the pick arm is disarmed, so a drop never also orbits.
+- **THE LEDGER'S DEFERRED DESTROY IS ONE LINE AND IT IS THE WHOLE GPU HALF OF THE DESIGN.**
+  `SceneAssetLedger::service()` returns the **previous** pass's destroy list **first**, before any step
+  of this pass can add to it. A whole service pass therefore separates "the binding table stopped naming
+  this handle" from "the GPU object dies", so nothing recorded in frame N can still name a handle
+  destroyed in pass N+1. That is why `pendingDestroy` is a **member** and not a local, and why the
+  deferral **cannot** be reconstructed from the retire list -- rebuilding it there destroys this pass's
+  retirements this pass, which is the same defect in a different hat. The caller's order is **destroy
+  first, retire second, execute third**. A test for this must be **one sequence case**: two independent
+  cases both pass under the very defect they exist to catch.
+- **The ledger is pure and executes nothing.** Facts in (five plain values per referenced guid), a
+  directive out; the src-private loader executes exactly one directive per pass and **owns no GPU
+  object** -- every handle it mints is handed to the caller and adopted by the ledger entry, so the
+  loader can be destroyed at any point in teardown. Its texture cache is **negative on purpose**: a
+  success is never shared, because two materials of one model naming the same image in the same colour
+  space would give one handle two owners and one premature destroy; only a **failure** is remembered,
+  which is the half that matters (one decode per key per session, the `ThumbnailLedger` stickiness rule).
+- **The reconcile block is now the SEVENTH occupant and the post-draw slot the FIFTH** -- superseding the
+  sextuple/quadruple counts recorded at 3.4.2. Reconcile: 2.6.1's panel root, 3.1.1's database, 3.1.3's
+  report, 3.1.4's watcher, 3.2.1's import session, 3.4.2's material session, **3.1.5's drop drain**,
+  which sits at the **end** of the block -- after everything that can retarget the material session and
+  before the draw walk, so a texture drop is judged against this frame's session and an entity created by
+  a model drop appears in the Hierarchy in the frame the drop landed. Post-draw: `renderScene`,
+  `serviceThumbnails`, the import session, the material preview, **`serviceSceneAssets()`**, appended
+  last because the ledger touches no ImGui-sampled texture. **Extend; never twin.** F9's rule gets an
+  eighth application: every one-shot is drained as its **own** statement, unconditionally, before it is
+  inspected.
+- **Every GPU create and every GPU destroy this feature performs happens in that post-draw slot**, and
+  unlike the material preview there is **no draw-walk exception** -- no texture it creates is ever handed
+  to ImGui, so the 3.4.2 "reallocate where the handle is read" carve-out does not apply here. The destroy
+  ordering above is what makes that true.
+- **A pending drop must be consumed at the TOP of `onDraw`, before every early return.** The Material
+  panel folded its pending slot drop at the fold point, so a drop on an **untargeted** panel survived
+  indefinitely and bound a slot on whatever material was selected next. `std::exchange` at the top is the
+  shape; the same trap exists for any future one-shot a panel folds into a frame copy.
+- **A source-text pin over `->Data` must match the WHOLE token.** `->Data` is a prefix of `->DataSize`,
+  and `hierarchy_panel.cpp` has legitimately read `->DataSize` since 2.2.1, so a substring form
+  false-positives on a **correct** tree -- and the POSIX-ERE `\b` form degrades to a literal on
+  BSD/macOS. The working shell form is `git grep -nE -- '->Data([^a-zA-Z0-9_]|$)'`; the in-tree pin is a
+  token-boundary predicate with an allow-list of the two legal shapes (hand the pointer to the decoder,
+  or the one legacy `memcpy`). **Verify a pin in BOTH directions**: seed the cast and watch it redden,
+  then seed a legal second decode call and watch it stay green.
+- **A drop is ONE undoable command**, the tree's sixth structural command and the first that creates more
+  than one entity -- which is why `captureAndDestroySubtrees` / `restoreStructuralState` were **promoted**
+  onto `entity_commands.hpp` rather than copied. `ActionKind` is deliberately **not** extended for the
+  Hierarchy's drop: that panel's `applyPending` cannot finish the job (instantiation needs the database,
+  the importer and the ledger), and appending an enumerator `applyPending` must then refuse to handle is
+  worse than not appending one.
+- **The pick box, the frame box and the highlight box are ONE box, produced by `localBoundsFor`.** A
+  `nullopt` -- loading, failed or missing -- is treated by every consumer exactly as an entity with **no**
+  `MeshRenderer` already was: a point for bounds, the screen-space disc for picking, the diamond for the
+  overlay. **No new fallback code exists anywhere**, and `MeshBoundsLookup` is threaded as a **defaulted,
+  last** parameter on all four bounds entry points so every pre-existing caller compiles and behaves
+  identically. `LOCAL_MESH_HALF_EXTENT` is **gone**; 2.3.2's deliberately fat plane box went with it, and
+  the flat plane needs **no epsilon** -- only a precondition of `box.valid()` (`min <= max`, never
+  `min < max`).
+- **`aabbCorner` is the single corner enumeration.** `BOX_EDGES` is derived from it, so the bounds walk,
+  the pick and the highlight cannot drift; this task deleted the overlay's own second copy.
+
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
-3.1.3, 3.1.4, 3.2.1, 3.2.2, 3.2.3, 3.2.4, 3.2.5 and 3.4.2's entries under Phase 3.
+3.1.3, 3.1.4, 3.1.5, 3.2.1, 3.2.2, 3.2.3, 3.2.4, 3.2.5 and 3.4.2's entries under Phase 3.

@@ -7,6 +7,7 @@
 // insufficient during local de-risking: entt::meta_reset() is declared in <entt/meta/factory.hpp>, not
 // resolve.hpp/meta.hpp -- so this TU consolidates to the umbrella header per the plan's documented
 // fallback (spec §3.6). The assertions below are unaffected either way.
+#include <aero/core/guid.hpp>            // engine::Guid (task 3.1.5)
 #include <aero/reflect/annotations.hpp>  // engine::reflect::FieldUiMeta (task 2.2.2)
 #include <aero/scene/camera.hpp>
 #include <aero/scene/light.hpp>
@@ -14,10 +15,14 @@
 #include <aero/scene/transform.hpp>
 
 #include "component_codegen.hpp"
+#include "component_guid.hpp"  // task 3.1.5
 #include "component_wiring.hpp"
 
 #include <entt/entt.hpp>
 
+// <ostream> is required by MSVC, not by libc++ (the 0.4.1 trap): doctest stringifies a failing CHECK
+// involving a std::string_view through operator<<, and MSVC's overload needs a COMPLETE std::ostream.
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -50,6 +55,11 @@ void aero_reflect_register_light();
 // mesh_renderer.hpp (task 1.4.1). Same frozen snake_case cross-boundary contract (task 2.2.2).
 // NOLINTNEXTLINE(readability-identifier-naming)
 void aero_reflect_register_mesh_renderer();
+
+// Forward-declared here; DEFINED by the GENERATED component_guid.meta.gen.cpp (task 3.1.5, the
+// engine::Guid category). Same frozen snake_case cross-boundary contract as the declarations above.
+// NOLINTNEXTLINE(readability-identifier-naming)
+void aero_reflect_register_component_guid();
 
 // Forward-declared here; DEFINED by the GENERATED aero_reflect_meta_test.aggregator.gen.cpp (task
 // 1.1.4, D4) that calls every per-header register function (both above) in HEADERS-list order.
@@ -203,4 +213,87 @@ TEST_CASE("the generated aggregator registers every header's components in one c
     CHECK(static_cast<bool>(transform.data("scale"_hs)));
 
     entt::meta_reset();  // per-case hygiene, matching the 1.1.3 case
+}
+
+// ---- task 3.1.5: the engine::Guid category through GENERATED entt::meta (GD6-GD8) ------------------
+//
+// emitMeta gained NO branch for Guid: it writes the same `.data<&T::member>("member"_hs, "member")`
+// line it writes for a float. These three cases are the runtime proof of exactly that -- the emitted
+// TEXT is pinned separately by reflect-gen.guid_meta.
+
+TEST_CASE("GD6: the Guid member is REGISTERED, beside the primitive and the Vec3, in declaration order") {
+    using namespace entt::literals;
+    aero_reflect_register_component_guid();
+
+    auto byType = entt::resolve<engine::demo::Referencing>();
+    REQUIRE(static_cast<bool>(byType));
+    CHECK(static_cast<bool>(entt::resolve("engine::demo::Referencing"_hs)));
+
+    CHECK(static_cast<bool>(byType.data("asset"_hs)));
+    CHECK(static_cast<bool>(byType.data("subIndex"_hs)));  // the Guid did not displace the old subset
+    CHECK(static_cast<bool>(byType.data("tint"_hs)));
+
+    std::vector<std::string> names;
+    for (auto&& d : byType.data()) {
+        names.emplace_back(d.second.name());
+    }
+    CHECK(names == std::vector<std::string>{"asset", "subIndex", "tint"});
+
+    // No AERO_RANGE/AERO_COLOR anywhere in the fixture, so no member carries a FieldUiMeta (D6's
+    // sparsity). A Guid field never carries one, since neither annotation applies to it.
+    const engine::reflect::FieldUiMeta* assetMeta = byType.data("asset"_hs).custom();
+    CHECK(assetMeta == nullptr);
+
+    entt::meta_reset();
+}
+
+TEST_CASE("GD7: a Guid member READS back through entt::meta as an exact engine::Guid") {
+    using namespace entt::literals;
+    aero_reflect_register_component_guid();
+
+    auto byType = entt::resolve<engine::demo::Referencing>();
+    REQUIRE(static_cast<bool>(byType));
+    const entt::meta_data member = byType.data("asset"_hs);
+    REQUIRE(static_cast<bool>(member));
+    // The EXACT concrete type, which is what an inspector dispatches on -- never an allow_cast.
+    CHECK(member.type().info() == entt::type_id<engine::Guid>());
+
+    engine::demo::Referencing value{};
+    value.asset = engine::Guid{0xA1B2C3D4E5F60718ULL, 0x293A4B5C6D7E8F90ULL};
+    entt::meta_any handle = byType.from_void(&value);
+    const entt::meta_any read = member.get(handle);
+    REQUIRE(static_cast<bool>(read));
+    CHECK(read.cast<engine::Guid>() == value.asset);
+
+    // a nil Guid reads back as nil rather than as "no value" -- nil is a value here
+    engine::demo::Referencing defaulted{};
+    entt::meta_any defaultedHandle = byType.from_void(&defaulted);
+    CHECK(member.get(defaultedHandle).cast<engine::Guid>() == engine::Guid{});
+
+    entt::meta_reset();
+}
+
+TEST_CASE("GD8: a Guid member is WRITABLE through entt::meta, to an exact engine::Guid") {
+    using namespace entt::literals;
+    aero_reflect_register_component_guid();
+
+    auto byType = entt::resolve<engine::demo::Referencing>();
+    REQUIRE(static_cast<bool>(byType));
+    const entt::meta_data member = byType.data("asset"_hs);
+    REQUIRE(static_cast<bool>(member));
+
+    engine::demo::Referencing value{};
+    entt::meta_any handle = byType.from_void(&value);
+
+    const engine::Guid written{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+    CHECK(member.set(handle, written));
+    CHECK(value.asset == written);  // the write landed in the real object
+    CHECK(value.subIndex == 0);     // and touched nothing else
+    CHECK(value.tint == engine::Vec3::one());
+
+    // clearing it back to nil is an ordinary write, not a special case
+    CHECK(member.set(handle, engine::Guid{}));
+    CHECK_FALSE(value.asset.valid());
+
+    entt::meta_reset();
 }

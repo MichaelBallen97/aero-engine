@@ -3,8 +3,15 @@
 #include <aero/core/log.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/time.hpp>
-#include <aero/editor/asset_actions.hpp>  // task 3.1.3: deleteOrphanMeta/OrphanDeleteResult -- the
-                                          // reconcile block's third one-shot drain
+#include <aero/editor/asset_actions.hpp>         // task 3.1.3: deleteOrphanMeta/OrphanDeleteResult -- the
+#include <aero/editor/asset_commands.hpp>        // task 3.1.5: InstantiateAssetCommand -- one drop, one command
+#include <aero/editor/component_commands.hpp>    // task 3.1.5: SetFieldCommand -- the material assignment
+#include <aero/editor/component_ops.hpp>         // task 3.1.5: readComponentField, for the assignment's before
+#include <aero/editor/instantiate_plan.hpp>      // task 3.1.5: buildInstantiatePlan + its refusal enum
+#include <aero/editor/material_from_import.hpp>  // task 3.1.5: reached through the loader; named for clarity
+#include <aero/editor/picking.hpp>               // task 3.1.5: viewportRay + dropPlacementPoint
+#include <aero/editor/text_file.hpp>             // task 3.1.5: readFileBytes, for the drop's own import
+                                                 // reconcile block's third one-shot drain
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>
@@ -19,6 +26,7 @@
                                                      // (the first is imgui_layer.cpp) -- no new
                                                      // accessor is added.
 #include <aero/platform/window.hpp>                  // task 2.5.1: window->setTitle() (F14)
+#include <aero/rhi/device.hpp>                       // task 3.1.5: destroyTexture on a retired handle
 
 #include "asset_browser_panel.hpp"
 #include "console_panel.hpp"
@@ -33,12 +41,20 @@
 #include "material_panel.hpp"  // task 3.4.2 -- MaterialPanel's definition, the ImportDetailsPanel
                                // precedent one panel over
 #include "project_settings_panel.hpp"
+#include "scene_asset_loader.hpp"  // task 3.1.5 -- the loader's definition, so the unique_ptr member
+                                   // below can be created and destroyed in this TU
 #include "shell_ui.hpp"
 #include "viewport_panel.hpp"
 
 #include <chrono>
+// std::sort / std::unique, for the referenced-guid set. INCLUDED EXPLICITLY because libc++ and
+// libstdc++ both supply <algorithm> transitively here and MSVC's STL does not -- the Windows lane
+// failed C2039 'sort': is not a member of 'std' on this exact line, and only after a Chocolatey
+// outage stopped masking it by killing the job before it compiled anything.
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -57,6 +73,34 @@
 namespace engine::editor {
 
 namespace {
+
+// task 3.1.5: the registered name of the component a material assignment writes into. ONE spelling,
+// used by the id lookup and by the command's own label, so the two can never disagree.
+constexpr std::string_view MESH_RENDERER_TYPE_NAME = "engine::MeshRenderer";
+
+// task 3.1.5: the leaf name with its LAST extension removed -- what the instantiation plan names the
+// synthetic root. A leaf with no dot, or a leading-dot name, keeps its whole leaf: a hidden file's
+// name is not an extension.
+[[nodiscard]] std::string_view assetStem(std::string_view relativePath) {
+    const std::string_view leaf = leafOf(relativePath);
+    const std::size_t dot = leaf.rfind('.');
+    return (dot == std::string_view::npos || dot == 0) ? leaf : leaf.substr(0, dot);
+}
+
+// task 3.1.5: ONE retired handle, released. At most one of the three is valid per entry, so this is
+// three ifs and no dispatch. Meshes and materials go back to the ForwardRenderer that minted them --
+// a MeshHandle is per-renderer -- and a texture belongs to the device.
+void destroyRetired(render::ForwardRenderer* renderer, rhi::Device* device, const LedgerDestroy& entry) {
+    if (renderer != nullptr && entry.mesh.valid()) {
+        renderer->destroyMesh(entry.mesh);
+    }
+    if (renderer != nullptr && entry.material.valid()) {
+        renderer->destroyMaterial(entry.material);
+    }
+    if (device != nullptr && entry.texture.valid()) {
+        device->destroyTexture(entry.texture);
+    }
+}
 
 // task 2.5.1: the dialog's parent window and setTitle()'s target both need the SDL_Window* the
 // platform layer hides. This is the SECOND consumer of NativeWindowAccessor (imgui_layer.cpp is the
@@ -238,7 +282,19 @@ EditorApp::EditorApp(ImGuiLayer layer, platform::Context& ctx, EditorAppConfig c
 // task 2.5.1: defined HERE, out-of-line, where DialogChannel is a complete type -- forced by
 // std::shared_ptr<DialogChannel>'s deleter needing completeness wherever it could run, including this
 // destructor and both moves (the scene_snapshot.hpp precedent, 2.4.2 §A13, applied one layer up).
-EditorApp::~EditorApp() = default;
+EditorApp::~EditorApp() {
+    // task 3.1.5 (§0.26): shutdown ordering is solved EXPLICITLY here, not by declaration order. The
+    // ledger cannot release a handle -- it holds no renderer and no device by design -- so the drain
+    // must run while `registry` still owns the ViewportPanel that minted every MeshHandle. Member
+    // destruction has not started yet at this point, so every panel is alive.
+    //
+    // `sceneAssetLoader` is the LIVE-APP signal: a defaulted move leaves the source's unique_ptr null,
+    // exactly as it leaves dialogChannel's shared_ptr empty, so a moved-from app -- whose panel
+    // pointers dangle -- takes no branch here.
+    if (sceneAssetLoader) {
+        releaseSceneAssets();
+    }
+}
 EditorApp::EditorApp(EditorApp&&) noexcept = default;
 EditorApp& EditorApp::operator=(EditorApp&&) noexcept = default;
 
@@ -271,6 +327,17 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     EditorApp app(std::move(*layer), ctx, config);
     app.window = &window;                                   // task 2.5.1, F14/A19
     app.dialogChannel = std::make_shared<DialogChannel>();  // never null on a LIVE app
+    // task 3.1.5: the loader holds the device and nothing else that outlives a call -- no GPU object,
+    // by design (§0.26), which is what makes its position in the teardown order a non-question. The
+    // renderer is NOT stored: it is passed per call, because it belongs to the ViewportPanel and may
+    // not exist yet.
+    app.sceneAssetLoader = std::make_unique<SceneAssetLoader>(device);
+    // ...and the SAME device is what the service pass destroys retired TEXTURES through. The code-review
+    // round found this line missing: the member kept its nullptr initialiser, so destroyRetired's third
+    // branch was dead and every texture the ledger adopted through reportSlotTexture survived every
+    // retire, reload, Apply nudge and project swap, reaching ~Device as a leak WARN. Nothing observed it
+    // because sceneAssetDestroyCount() counts entries HANDED to destroyRetired, not handles released.
+    app.sceneAssetDevice = &device;
     // task 3.1.1: a real seed, before the project-open block below -- so the FIRST tick()'s scan (the
     // reconcile block, triggered by AssetDatabase::root() starting empty) already draws real GUIDs
     // rather than the placeholder seed-0 generator's pinned sequence. Nothing scans in create() itself
@@ -326,8 +393,12 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     }
 
     if (config.registerDefaultPanels) {
-        app.registry.emplace<HierarchyPanel>();                           // task 2.2.1 -- was a PlaceholderPanel
-        app.registry.emplace<InspectorPanel>();                           // task 2.2.2 -- was a PlaceholderPanel
+        // task 3.1.5: both return values are now KEPT. The Hierarchy's is drained every tick for its
+        // asset-drop one-shot; the Inspector's is reconciled with the database beside the Material
+        // panel's. Both are non-owning and address-stable (the registry holds unique_ptrs), exactly
+        // like viewportPanel below.
+        app.hierarchyPanel = app.registry.emplace<HierarchyPanel>();      // task 2.2.1 -- was a PlaceholderPanel
+        app.inspectorPanel = app.registry.emplace<InspectorPanel>();      // task 2.2.2 -- was a PlaceholderPanel
         app.viewportPanel = app.registry.emplace<ViewportPanel>(device);  // task 2.2.3 -- was a PlaceholderPanel
         // task 2.2.5 -- was a PlaceholderPanel. logScope is engaged exactly when this branch runs (both
         // guards read the same const config field), but the has_value() test is NOT defensive
@@ -568,6 +639,9 @@ bool EditorApp::tick() {
         }
         if (assetsRootChanged) {
             materialSession.resetForProjectSwap();  // task 3.4.2 -- see the capture above
+            // task 3.1.5 (§0.26): the SAME swap point, and it runs while the viewport panel is alive --
+            // the renderer that minted a MeshHandle is the only thing that can release it.
+            releaseSceneAssets();
         }
         if (assetsRootChanged || refresh || reimport) {
             // task 3.1.2: rescan now takes the project root and the assets root as two SEPARATE
@@ -796,6 +870,63 @@ bool EditorApp::tick() {
             materialPanel->setSession(&materialSession);
             materialPanel->setDatabase(&assetDatabase);
         }
+        // task 3.1.5: ONE line beside the Material panel's, not a new occupant. The Inspector's Guid
+        // row resolves a reference to a record; a null pointer is a legal state it has a sentence for.
+        if (inspectorPanel != nullptr) {
+            inspectorPanel->setDatabase(&assetDatabase);
+        }
+
+        // task 3.1.5 (D12/§0.7): the SEVENTH occupant of this block -- 2.6.1's panel root, 3.1.1's
+        // database, 3.1.3's report, 3.1.4's watcher, 3.2.1's import session, 3.4.2's material session,
+        // and now the drop drain. EXTEND, NEVER TWIN. It sits at the END of the block, AFTER everything
+        // that can retarget the material session and BEFORE the draw walk -- so a texture drop's effect
+        // is judged against this frame's session, and an entity created by a model drop appears in the
+        // Hierarchy in the same frame the drop landed.
+        //
+        // F9's rule, an EIGHTH application: every one-shot is drained as its OWN statement,
+        // unconditionally, BEFORE it is inspected. A `panelX || editorX` expression would short-circuit
+        // past a drain and strand the request until the next frame.
+        std::optional<HierarchyAssetDrop> panelHierarchyDrop;
+        std::optional<ViewportAssetDrop> panelViewportDrop;
+        std::optional<MaterialSlotTextureDrop> panelSlotDrop;
+        if (hierarchyPanel != nullptr) {
+            panelHierarchyDrop = hierarchyPanel->takeAssetDropRequest();
+        }
+        if (viewportPanel != nullptr) {
+            panelViewportDrop = viewportPanel->takeAssetDropRequest();
+        }
+        if (materialPanel != nullptr) {
+            panelSlotDrop = materialPanel->takeAssetDropRequest();
+        }
+        // Copied rather than moved: both structs are trivially copyable, so a move is a copy with a
+        // misleading name (performance-move-const-arg is --warnings-as-errors on the Linux lane). The
+        // reset is what drains, and it is its own statement either way.
+        const std::optional<HierarchyAssetDrop> seamHierarchyDrop = requestedHierarchyDrop;
+        requestedHierarchyDrop.reset();
+        const std::optional<ViewportAssetDrop> seamViewportDrop = requestedViewportDrop;
+        requestedViewportDrop.reset();
+        // The PANEL's record first, then the seam's: one pending slot, last writer wins, and the seam is
+        // what a test drives, so it must be able to override what a widget happened to record (the
+        // 3.4.2 rule). Surface order Hierarchy -> Viewport -> Material throughout.
+        if (panelHierarchyDrop.has_value()) {
+            applyHierarchyDrop(*panelHierarchyDrop);
+        }
+        if (seamHierarchyDrop.has_value()) {
+            applyHierarchyDrop(*seamHierarchyDrop);
+        }
+        if (panelViewportDrop.has_value()) {
+            applyViewportDrop(*panelViewportDrop);
+        }
+        if (seamViewportDrop.has_value()) {
+            applyViewportDrop(*seamViewportDrop);
+        }
+        // The Material surface has NO EditorApp-side seam local, and that is §0.4's stated asymmetry
+        // rather than an omission: requestMaterialSlotTextureDrop forwards STRAIGHT to the panel,
+        // because the seam must reach the panel's own frame copy and no one-shot held here can. So the
+        // one drain below sees a driven drop and a real one identically.
+        if (panelSlotDrop.has_value()) {
+            applySlotDrop(*panelSlotDrop);
+        }
     }
     if (window != nullptr) {
         std::string title = session.windowTitle(!commandStack.isClean(), project.name());
@@ -886,6 +1017,20 @@ bool EditorApp::tick() {
     if (materialPanel != nullptr) {
         materialPanel->servicePreview(materialSession, assetDatabase, assetDatabase.root(), frameClock.deltaSeconds());
     }
+    // task 3.1.5 (D8/D12): the FIFTH occupant of this slot -- renderScene, serviceThumbnails, the
+    // import session, the material preview, and now the scene-asset ledger. OUTSIDE the ImGui draw walk
+    // and BEFORE endFrame. EVERY GPU create and EVERY GPU destroy this task performs happens here.
+    //
+    // NEVER CALL THIS FROM onDraw(). No texture created here is ever handed to ImGui, so this has no
+    // draw-walk exception of the kind the material preview's colour target needs -- but the destroy
+    // ordering inside it is what makes that true, and it is not optional: out.destroy holds handles the
+    // binding table stopped naming ONE SERVICE PASS AGO, so nothing this frame or the last can have
+    // recorded them. Destroy FIRST, retire SECOND, execute THIRD.
+    //
+    // It runs AFTER the preview rather than before it, for the preview's own reason inverted: an
+    // unbounded model import between the draw walk and the preview's frame would buy nothing, and the
+    // ledger touches no ImGui-sampled texture, so appending after it is safe.
+    serviceSceneAssets();
     presented = layer.endFrame(config.clearColor);
     if (fileFlow.quitConfirmed) {
         // File > Exit / Ctrl+Q / the window [X] -- all AFTER the guard said yes (task 2.5.1 D1). This
@@ -1070,6 +1215,461 @@ std::uint32_t EditorApp::materialPreviewTextureWidth() const noexcept {
 }
 std::uint32_t EditorApp::materialPreviewTextureHeight() const noexcept {
     return materialPanel != nullptr ? materialPanel->previewTextureHeight() : 0;
+}
+
+// ---- task 3.1.5: the three request hooks (the EIGHTH application of the request shape) ------------
+// Each records EXACTLY what the corresponding panel's accept records. The first two land in an
+// EditorApp one-shot the next tick's reconcile drains; the third forwards STRAIGHT to the panel,
+// because the Material drop rides that panel's own per-frame document copy and nothing held here can
+// reach it (§0.4's stated asymmetry).
+void EditorApp::requestHierarchyAssetDrop(Guid guid, std::uint8_t kind, Entity targetRow) {
+    requestedHierarchyDrop =
+        HierarchyAssetDrop{.payload = AssetDragPayload{.guid = guid, .kind = kind}, .targetRow = targetRow};
+}
+void EditorApp::requestViewportAssetDrop(Guid guid, std::uint8_t kind, Vec2 ndc) {
+    requestedViewportDrop = ViewportAssetDrop{.payload = AssetDragPayload{.guid = guid, .kind = kind}, .ndc = ndc};
+}
+void EditorApp::requestMaterialSlotTextureDrop(std::size_t slot, Guid textureGuid) {
+    if (materialPanel != nullptr) {
+        materialPanel->requestSlotTextureDrop(slot, textureGuid);
+    }
+}
+
+// ---- task 3.1.5: the ledger, as numbers -----------------------------------------------------------
+std::size_t EditorApp::sceneAssetEntryCount() const noexcept { return sceneAssetLedger.entryCount(); }
+std::size_t EditorApp::sceneAssetReadyCount() const noexcept { return sceneAssetLedger.readyCount(); }
+std::size_t EditorApp::sceneAssetFailedCount() const noexcept { return sceneAssetLedger.failedCount(); }
+std::size_t EditorApp::sceneAssetLoadAttempts() const noexcept { return sceneAssetLedger.loadAttempts(); }
+std::size_t EditorApp::sceneAssetDirectiveCount() const noexcept { return sceneAssetDirectives; }
+std::size_t EditorApp::sceneAssetDestroyCount() const noexcept { return sceneAssetDestroys; }
+std::size_t EditorApp::sceneAssetMeshBindingCount() const noexcept {
+    const scene_render::AssetBindingTable* const table =
+        viewportPanel != nullptr ? viewportPanel->sceneAssetBindings() : nullptr;
+    return table != nullptr ? table->meshCount() : 0;
+}
+std::size_t EditorApp::sceneAssetMaterialBindingCount() const noexcept {
+    const scene_render::AssetBindingTable* const table =
+        viewportPanel != nullptr ? viewportPanel->sceneAssetBindings() : nullptr;
+    return table != nullptr ? table->materialCount() : 0;
+}
+std::string_view EditorApp::sceneAssetMessage(Guid guid) const noexcept { return sceneAssetLedger.messageOf(guid); }
+std::uint32_t EditorApp::viewportUnresolvedMeshes() const noexcept {
+    return viewportPanel != nullptr ? viewportPanel->lastUnresolvedMeshes() : 0U;
+}
+std::uint32_t EditorApp::viewportUnresolvedMaterials() const noexcept {
+    return viewportPanel != nullptr ? viewportPanel->lastUnresolvedMaterials() : 0U;
+}
+
+// ---- task 3.1.5: the three drop drains ------------------------------------------------------------
+// Every one of them RE-RESOLVES the guid against the live database (INV-D8) and RE-DERIVES the action
+// from the live World. The payload's `kind` byte was a peek hint and is never authoritative: a record
+// can vanish, or gain a MeshRenderer, between the accept and this drain.
+void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
+    const AssetRecord* const record = assetDatabase.findByGuid(drop.payload.guid);
+    if (record == nullptr) {
+        AERO_LOG_WARN("assets: the dropped asset is no longer in this project");
+        return;
+    }
+    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+    const bool hasMesh = drop.targetRow.valid() && sceneWorld.has<MeshRenderer>(drop.targetRow);
+    const DropSurface surface = drop.targetRow.valid() ? DropSurface::HierarchyRow : DropSurface::HierarchyVoid;
+    switch (classifyAssetDrop(kind, surface, hasMesh)) {
+        case DropAction::InstantiateModel:
+            instantiateModelDrop(*record, drop.targetRow, Transform{});  // LOCAL identity under the row
+            break;
+        case DropAction::AssignMaterial:
+            pushMaterialAssign(drop.targetRow, record->guid);
+            break;
+        case DropAction::BindTextureSlot:
+        case DropAction::None:
+            break;  // a refusal that reached the drain is a STALE refusal, not an illegal one: peek
+                    // already blocked the illegal ones, so this logs nothing beyond the null above
+    }
+}
+
+void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
+    const AssetRecord* const record = assetDatabase.findByGuid(drop.payload.guid);
+    if (record == nullptr) {
+        AERO_LOG_WARN("assets: the dropped asset is no longer in this project");
+        return;
+    }
+    if (viewportPanel == nullptr) {
+        return;  // no viewport, no camera, no placement -- and no way this drop was ever offered
+    }
+    const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+    const Entity target = viewportPanel->pickAt(sceneWorld, drop.ndc);
+    const bool hasMesh = target.valid() && sceneWorld.has<MeshRenderer>(target);
+    switch (classifyAssetDrop(kind, DropSurface::Viewport, hasMesh)) {
+        case DropAction::InstantiateModel: {
+            // Placement is resolved HERE, not at accept time, so the entity lands where the camera is
+            // NOW rather than where it was a frame ago. dropPlacementPoint is total: every ray yields
+            // a finite point, including the parallel, behind-the-eye and unbuildable cases.
+            const Ray ray = viewportRay(viewportPanel->camera(), drop.ndc, viewportPanel->aspect());
+            instantiateModelDrop(*record, Entity{}, Transform{.position = dropPlacementPoint(ray)});
+            break;
+        }
+        case DropAction::AssignMaterial:
+            pushMaterialAssign(target, record->guid);
+            break;
+        case DropAction::BindTextureSlot:
+        case DropAction::None:
+            break;
+    }
+}
+
+void EditorApp::applySlotDrop(const MaterialSlotTextureDrop& drop) {
+    // The panel has ALREADY folded this into its own document copy -- that is §0.4's asymmetry. This
+    // drain exists for exactly one thing: saying so when the guid vanished between the accept and now.
+    if (assetDatabase.findByGuid(drop.textureGuid) == nullptr) {
+        AERO_LOG_WARN("assets: the dropped asset is no longer in this project");
+    }
+}
+
+void EditorApp::pushMaterialAssign(Entity entity, Guid material) {
+    // findComponentType, never componentTypeId<T>(): an id looked up BY NAME is invalid rather than
+    // merely unregistered in a -DAERO_REFLECT_TOOLS=OFF build, which is the one configuration where
+    // this whole path must degrade quietly instead of logging an ERROR from the seam.
+    const ComponentTypeId meshRendererId = sceneWorld.findComponentType(MESH_RENDERER_TYPE_NAME);
+    if (!entity.valid() || !meshRendererId.valid()) {
+        AERO_LOG_WARN("assets: this entity can no longer take a material");
+        return;
+    }
+    // ...and findComponentType is NOT sufficient on its own, which the comment above used to assume.
+    // MeshRenderer is a hand-registered built-in, so the World resolves it by NAME even in a
+    // -DAERO_REFLECT_TOOLS=OFF build where no generated entt::meta exists at all; without this second
+    // guard the drain reaches readComponentField and logs an ERROR from the seam in a configuration
+    // where the correct behaviour is simply to do nothing. Measured: the reflect-off lane reddened
+    // DP6 with exactly that ERROR before this line existed.
+    if (!componentFieldsAreReflected(sceneWorld, meshRendererId)) {
+        AERO_LOG_WARN("assets: this entity can no longer take a material");
+        return;
+    }
+    const std::optional<FieldValue> before = readComponentField(sceneWorld, entity, meshRendererId, "material");
+    if (!before.has_value()) {
+        // The entity lost its MeshRenderer between the peek and this drain, or the component type is
+        // not registered (a -DAERO_REFLECT_TOOLS=OFF build). Nothing is pushed and nothing is written.
+        AERO_LOG_WARN("assets: this entity can no longer take a material");
+        return;
+    }
+    CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
+    // A drop is a DISCRETE one-shot gesture, never a continuous one, so the chain is broken on BOTH
+    // sides of the push -- the inspector's own Guid row already does exactly this (inspector_panel.cpp's
+    // gateForLastItem arms). Without it, SetFieldCommand::mergeWith accepts the next drop on the same
+    // entity and field, overwrites `afterValue` and KEEPS `beforeValue`, so dropping material A then
+    // material B on one entity collapses to a single history entry reading nil -> B: one undo jumps
+    // past A entirely and A is unreachable. Found by the code-review round; DP5-DP7 dropped only once
+    // per entity, so nothing exercised it.
+    commandStack.breakMergeChain();  // BEFORE the push
+    (void)commandStack.push(
+        cmd, std::make_unique<SetFieldCommand>(entity, meshRendererId, "material", std::string(MESH_RENDERER_TYPE_NAME),
+                                               *before, FieldValue{material}));
+    commandStack.breakMergeChain();  // AFTER the push
+}
+
+void EditorApp::instantiateModelDrop(const AssetRecord& record, Entity parent, const Transform& placement) {
+    const std::string_view leaf = leafOf(record.relativePath);
+    ImportedModel fullModel;
+    bool haveFull = false;
+    InstantiatePlan plan;
+
+    if (isBlendFileName(leaf)) {
+        // The cache-HIT arm, shared with the loader rather than restated: two copies of a
+        // cache-validity rule is how a cache silently stops invalidating. A miss names Import Details.
+        const BlendArtifactResult artifact = readBlendCacheArtifact(record, assetDatabase.projectRoot());
+        if (!artifact.ok) {
+            AERO_LOG_WARN("assets: {}", artifact.message);
+            return;
+        }
+        const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(artifact.bytes.data()),  // NOLINT
+                                               artifact.bytes.size());
+        ImportResult imported = importModel(artifact.artifactLeaf, /*assetRelativeDir=*/"", bytes,
+                                            record.importSettings, ImportDepth::Full, {});
+        if (imported.status != ImportStatus::Ok && imported.status != ImportStatus::Truncated) {
+            AERO_LOG_WARN("assets: this model could not be imported -- {}", imported.message);
+            return;
+        }
+        assignImageGuids(imported.model.images, assetDatabase);
+        fullModel = std::move(imported.model);
+        haveFull = true;
+        plan = buildInstantiatePlan(fullModel, assetStem(record.relativePath), record.guid);
+    } else {
+        const std::string modelPath = std::string(assetDatabase.root()) + '/' + record.relativePath;
+        const FileBytesResult modelBytes = readFileBytes(modelPath, MAX_MODEL_FILE_BYTES);
+        if (!modelBytes.bytes.has_value()) {
+            AERO_LOG_WARN(
+                "assets: this model could not be read -- {}",
+                modelBytes.refusedByCap ? "it is larger than this importer's 256 MiB limit" : modelBytes.error);
+            return;
+        }
+        const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(modelBytes.bytes->data()),  // NOLINT
+                                               modelBytes.bytes->size());
+        const std::string dir = parentOf(record.relativePath);
+        // PASS 1 -- Structure. Cheap, and enough to plan a node tree for every importer that reports
+        // one at this depth.
+        ImportResult structure = importModel(leaf, dir, bytes, record.importSettings, ImportDepth::Structure, {});
+        if (structure.status != ImportStatus::Ok && structure.status != ImportStatus::Truncated) {
+            AERO_LOG_WARN("assets: this model could not be imported -- {}", structure.message);
+            return;
+        }
+        plan = buildInstantiatePlan(structure.model, assetStem(record.relativePath), record.guid);
+        // THE TWO-ARM FALLBACK (D5 as amended by §0.17). ONLY NoNodes retries: .obj, .stl and .ply
+        // report no hierarchy at Structure depth by design, so their node tree exists only at Full. A
+        // Cycle or a TooDeep will not be fixed by re-reading up to 256 MiB at a different depth.
+        if (!plan.ok && plan.refusal == InstantiatePlanRefusal::NoNodes) {
+            std::vector<ExternalBuffer> externals;
+            if (modelImporterNeedsExternalBuffers(leaf)) {
+                std::uint64_t total = 0;
+                for (const std::string& rel : structure.externalUris) {
+                    FileBytesResult buffer =
+                        readFileBytes(std::string(assetDatabase.root()) + '/' + rel, MAX_EXTERNAL_BYTES_PER_MODEL);
+                    if (!buffer.bytes.has_value()) {
+                        continue;  // an unreadable buffer becomes MissingBuffer in pass 2
+                    }
+                    if (buffer.bytes->size() > MAX_EXTERNAL_BYTES_PER_MODEL - total) {
+                        break;  // over budget: plan from what we have rather than from a partial Full
+                    }
+                    total += buffer.bytes->size();
+                    externals.push_back(ExternalBuffer{rel, std::move(*buffer.bytes)});
+                }
+            }
+            ImportResult full = importModel(leaf, dir, bytes, record.importSettings, ImportDepth::Full, externals);
+            if (full.status == ImportStatus::Ok || full.status == ImportStatus::Truncated) {
+                assignImageGuids(full.model.images, assetDatabase);
+                fullModel = std::move(full.model);
+                haveFull = true;
+                plan = buildInstantiatePlan(fullModel, assetStem(record.relativePath), record.guid);
+            }
+        }
+    }
+
+    if (!plan.ok) {
+        AERO_LOG_WARN("assets: this model cannot be added to the scene -- {}", plan.error);
+        return;  // NOTHING is created
+    }
+    for (const std::string& warning : plan.warnings) {
+        AERO_LOG_WARN("assets: {}", warning);
+    }
+    CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
+    (void)commandStack.push(
+        cmd, std::make_unique<InstantiateAssetCommand>(std::move(plan), parent, placement, sceneSelection.entities()));
+    // The drop already paid for a Full import, so hand it straight to the cook -> upload half rather
+    // than letting the ledger re-import the same bytes next service pass. If the viewport renderer is
+    // unavailable, skip silently: the ledger issues an ordinary directive later.
+    if (haveFull) {
+        loadModelIntoScene(record, &fullModel);
+    }
+}
+
+// ---- task 3.1.5: executing ONE directive ----------------------------------------------------------
+// Both of these run ONLY from tick()'s post-draw slot -- from serviceSceneAssets, or from the drop
+// drain in the reconcile block, which is also outside every draw walk. Every GPU create this task
+// performs is inside one of them.
+void EditorApp::loadModelIntoScene(const AssetRecord& record, const ImportedModel* preImported) {
+    render::ForwardRenderer* const renderer =
+        viewportPanel != nullptr ? viewportPanel->sceneForwardRenderer() : nullptr;
+    scene_render::AssetBindingTable* const bindings =
+        viewportPanel != nullptr ? viewportPanel->sceneAssetBindings() : nullptr;
+    if (renderer == nullptr || bindings == nullptr || !sceneAssetLoader) {
+        return;  // no renderer yet: the ledger simply issues the directive again on a later pass
+    }
+    const SceneAssetLoader::ModelLoadResult loaded =
+        preImported != nullptr ? sceneAssetLoader->loadFromImportedModel(*preImported, record, *renderer)
+                               : sceneAssetLoader->loadModel(record, assetDatabase.root(), assetDatabase.projectRoot(),
+                                                             assetDatabase, *renderer);
+    for (const std::string& warning : loaded.warnings) {
+        AERO_LOG_WARN("assets: {}", warning);
+    }
+    if (!loaded.ok) {
+        AERO_LOG_WARN("assets: '{}' could not be loaded -- {}", record.relativePath, loaded.message);
+        sceneAssetLedger.reportFailed(record.guid, loaded.message);
+        // reportFailed retires whatever this entry already held onto the deferred destroy list, so the
+        // binding must stop naming those handles here -- a guid reaches out.retire only when its entry
+        // is UNREFERENCED, and a referenced Failed entry is deliberately kept, so nothing downstream
+        // would ever unbind it. Without this the table names a destroyed MeshHandle from the next frame
+        // on: the draw latches one stale-handle WARN, the entity renders nothing, and unresolvedMeshes
+        // UNDER-reports, because the binding still exists so the counting arm is never taken. Reachable
+        // when an already-Ready model's bytes change and the reload then fails. The code-review round.
+        bindings->removeMesh(record.guid);
+        return;
+    }
+    // The ledger ADOPTS the handles, folds the bounds into its own lookup and registers one pending
+    // texture directive per bound slot. The binding table is the caller's to install: the ledger is
+    // pure and has never heard of it.
+    sceneAssetLedger.reportLoaded(record.guid, record.contentHash, loaded.handles, loaded.textureRequests,
+                                  LedgerAssetClass::Model);
+    bindings->setMesh(record.guid, loaded.binding);
+}
+
+void EditorApp::loadMaterialIntoScene(const AssetRecord& record) {
+    render::ForwardRenderer* const renderer =
+        viewportPanel != nullptr ? viewportPanel->sceneForwardRenderer() : nullptr;
+    scene_render::AssetBindingTable* const bindings =
+        viewportPanel != nullptr ? viewportPanel->sceneAssetBindings() : nullptr;
+    if (renderer == nullptr || bindings == nullptr || !sceneAssetLoader) {
+        return;
+    }
+    const SceneAssetLoader::MaterialLoadResult loaded =
+        sceneAssetLoader->loadMaterial(record, assetDatabase.root(), *renderer);
+    for (const std::string& warning : loaded.warnings) {
+        AERO_LOG_WARN("assets: {}", warning);
+    }
+    if (!loaded.ok) {
+        AERO_LOG_WARN("assets: '{}' could not be loaded -- {}", record.relativePath, loaded.message);
+        sceneAssetLedger.reportFailed(record.guid, loaded.message);
+        bindings->removeMaterial(record.guid);  // the model arm's reasoning, one asset class over
+        return;
+    }
+    LedgerHandles handles;
+    handles.materials.push_back(loaded.material);
+    handles.materialStates.push_back(loaded.state);
+    sceneAssetLedger.reportLoaded(record.guid, record.contentHash, handles, loaded.textureRequests,
+                                  LedgerAssetClass::Material);
+    bindings->setMaterial(record.guid, loaded.material);
+}
+
+void EditorApp::serviceSceneAssets() {
+    scene_render::AssetBindingTable* const bindings =
+        viewportPanel != nullptr ? viewportPanel->sceneAssetBindings() : nullptr;
+    render::ForwardRenderer* const renderer =
+        viewportPanel != nullptr ? viewportPanel->sceneForwardRenderer() : nullptr;
+
+    // 1. THE REFERENCED SET, from the World. One deduplicated, sorted vector, classified against the
+    //    database by the record's own path: a guid that is neither a material nor an importable model
+    //    is not loadable and gets no entry at all, which is what stops a retargeted texture guid from
+    //    ever entering the ledger.
+    std::vector<Guid> referencedGuids;
+    sceneWorld.each<MeshRenderer>([&referencedGuids](Entity /*entity*/, MeshRenderer& renderer) {
+        if (renderer.mesh.valid()) {
+            referencedGuids.push_back(renderer.mesh);
+        }
+        if (renderer.material.valid()) {
+            referencedGuids.push_back(renderer.material);
+        }
+    });
+    std::sort(referencedGuids.begin(), referencedGuids.end());
+    referencedGuids.erase(std::unique(referencedGuids.begin(), referencedGuids.end()), referencedGuids.end());
+    std::vector<LedgerAssetFacts> referenced;
+    referenced.reserve(referencedGuids.size());
+    for (const Guid guid : referencedGuids) {
+        const AssetRecord* const record = assetDatabase.findByGuid(guid);
+        if (record == nullptr) {
+            // Present but RECORDLESS: the entry must still exist so the ledger can retire whatever it
+            // is holding for that guid. recordPresent = false is exactly that signal.
+            referenced.push_back(LedgerAssetFacts{.guid = guid});
+            continue;
+        }
+        const bool material = isMaterialFileName(record->relativePath);
+        if (!material && !isImportableModelName(leafOf(record->relativePath)) &&
+            !isBlendFileName(leafOf(record->relativePath))) {
+            continue;  // not loadable at all -- skipped WITHOUT an entry
+        }
+        referenced.push_back(LedgerAssetFacts{.guid = guid,
+                                              .isMaterial = material,
+                                              .recordPresent = true,
+                                              .hashUsable = assetContentHashUsable(*record),
+                                              .hash = record->contentHash});
+    }
+
+    // 2. THE APPLY NUDGE: an .aeromat written this session is stale in the ledger the instant it lands,
+    //    and no generation bump reports that on its own -- the file's bytes changed, the database's
+    //    view of them has not been rescanned yet.
+    std::vector<Guid> nudged;
+    if (materialSession.writeCount() != lastMaterialWriteCount) {
+        lastMaterialWriteCount = materialSession.writeCount();
+        if (const AssetRecord* const target = assetDatabase.findByPath(materialSession.targetPath());
+            target != nullptr && target->guid.valid()) {
+            nudged.push_back(target->guid);
+        }
+    }
+
+    // 3. ONE service call: facts in, a directive plus a retire list plus a destroy list out.
+    const LedgerServiceOutput out = sceneAssetLedger.service(
+        LedgerServiceInput{.referenced = referenced, .generation = assetDatabase.generation(), .nudged = nudged});
+
+    // 4. DESTROY FIRST. These handles were retired ONE PASS AGO: the table stopped naming them a whole
+    //    service pass back, so no recorded frame can still hold them. Destroying THIS pass's
+    //    retirements immediately is seed S20, and the deferral is the ledger's, not a local's.
+    for (const LedgerDestroy& entry : out.destroy) {
+        destroyRetired(renderer, sceneAssetDevice, entry);
+        ++sceneAssetDestroys;
+    }
+    // 5. RETIRE SECOND. The handles these bindings named go onto the ledger's NEXT pass's destroy list.
+    if (bindings != nullptr) {
+        for (const Guid guid : out.retire) {
+            bindings->removeMesh(guid);
+            bindings->removeMaterial(guid);
+        }
+    }
+    // 6. EXECUTE THIRD, at most one directive per pass.
+    // Bound to a NAMED LOCAL before the has_value() test and the dereference alike:
+    // bugprone-unchecked-optional-access is --warnings-as-errors on the Linux Debug lane and does not
+    // track a test made through a member access expression -- material_preview.cpp records the same
+    // trap one std::array subscript over.
+    const std::optional<LedgerDirective>& pending = out.directive;
+    if (pending.has_value()) {
+        ++sceneAssetDirectives;
+        const LedgerDirective directive = *pending;
+        switch (directive.assetClass) {
+            case LedgerAssetClass::Model: {
+                if (const AssetRecord* const record = assetDatabase.findByGuid(directive.guid); record != nullptr) {
+                    loadModelIntoScene(*record, nullptr);
+                }
+                break;
+            }
+            case LedgerAssetClass::Material: {
+                if (const AssetRecord* const record = assetDatabase.findByGuid(directive.guid); record != nullptr) {
+                    loadMaterialIntoScene(*record);
+                }
+                break;
+            }
+            case LedgerAssetClass::Texture: {
+                const AssetRecord* const record = assetDatabase.findByGuid(directive.guid);
+                rhi::TextureHandle texture{};
+                if (record != nullptr && sceneAssetLoader) {
+                    const SceneAssetLoader::TextureLoadResult loaded =
+                        sceneAssetLoader->loadSlotTexture(*record, assetDatabase.root(), directive.srgb);
+                    if (!loaded.ok) {
+                        AERO_LOG_WARN("assets: a material slot texture could not be loaded -- {}", loaded.message);
+                    }
+                    texture = loaded.texture;
+                }
+                // Reported EITHER WAY: the pending slot is cleared whether or not the upload succeeded,
+                // so a broken image costs one attempt per session rather than one per pass.
+                const LedgerSlotBinding binding = sceneAssetLedger.reportSlotTexture(directive, texture);
+                if (binding.state != nullptr && renderer != nullptr && sceneAssetLoader) {
+                    sceneAssetLoader->rebindSlot(*renderer, binding.material, binding.state->params,
+                                                 binding.state->slots, directive.slot, texture);
+                }
+                break;
+            }
+        }
+    }
+    // 7. PUBLISH the bounds lookup. A pointer to the LEDGER's own member: both are EditorApp members,
+    //    so the ledger outlives the panel and EditorApp owns the ordering.
+    if (viewportPanel != nullptr) {
+        viewportPanel->setMeshBounds(&sceneAssetLedger.boundsLookup());
+    }
+}
+
+void EditorApp::releaseSceneAssets() {
+    // ONE call, so a caller cannot half-reset: the ledger moves every live handle onto its destroy
+    // list -- including anything already deferred -- and ends empty. Runs while the panels are STILL
+    // ALIVE, on a project swap and at shutdown alike, because the renderer that minted a MeshHandle is
+    // the only thing that can release it.
+    render::ForwardRenderer* const renderer =
+        viewportPanel != nullptr ? viewportPanel->sceneForwardRenderer() : nullptr;
+    for (const LedgerDestroy& entry : sceneAssetLedger.resetForProjectSwap()) {
+        destroyRetired(renderer, sceneAssetDevice, entry);
+        ++sceneAssetDestroys;
+    }
+    if (scene_render::AssetBindingTable* const bindings =
+            viewportPanel != nullptr ? viewportPanel->sceneAssetBindings() : nullptr;
+        bindings != nullptr) {
+        bindings->clear();
+    }
+    if (viewportPanel != nullptr) {
+        viewportPanel->setMeshBounds(&sceneAssetLedger.boundsLookup());
+    }
 }
 
 void EditorApp::requestQuit() noexcept { running = false; }

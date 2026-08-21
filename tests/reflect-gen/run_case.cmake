@@ -34,6 +34,7 @@ set(LIGHT_HPP "${SCENE_INCLUDE}/aero/scene/light.hpp")    # task 1.3.3
 set(MESH_RENDERER_HPP "${SCENE_INCLUDE}/aero/scene/mesh_renderer.hpp")  # task 1.4.1
 set(ANNOTATIONS_HPP "${FIXTURES_DIR}/component_annotations.hpp")  # task 2.2.2
 set(TEXT_HPP "${FIXTURES_DIR}/component_text.hpp")                # task 2.2.2
+set(GUID_HPP "${FIXTURES_DIR}/component_guid.hpp")                # task 3.1.5
 
 # Runs aero_reflect_gen once. Spec D8/C.6: ASAN_OPTIONS scoped to this one process --
 # detect_leaks=0 only (libclang leaks by design at process exit: global initializers, the CXIndex
@@ -903,8 +904,10 @@ elseif(CASE STREQUAL "components_engine_light")
     endif()
 
 elseif(CASE STREQUAL "components_engine_mesh_renderer")
-    # Task 1.4.1: the REAL tool over the REAL engine::MeshRenderer header — one component, two
+    # Task 1.4.1: the REAL tool over the REAL engine::MeshRenderer header — one component, its
     # fields in declaration order, exactly one component, zero unsupported/warnings/errors.
+    # Task 3.1.5 moved the listing from two fields to FIVE: `mesh`/`meshIndex`/`material` are
+    # APPENDED, and declaration order is JSON payload order, so the order check spans all five.
     #
     # DEVIATION from the plan/spec's stated expectation: the tool prints the AS-WRITTEN type
     # spelling (clang_getTypeSpelling), not the canonical one — `std::uint32_t primitive` prints
@@ -919,11 +922,20 @@ elseif(CASE STREQUAL "components_engine_mesh_renderer")
     aero_expect_stdout_contains("${out}" "component engine::MeshRenderer")
     aero_expect_stdout_contains("${out}" "field primitive : std::uint32_t [primitive] [range 0:2]")  # task 2.2.2
     aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3] [color]")  # task 2.2.2
+    # task 3.1.5. The printed spelling is the AS-WRITTEN one, so `Guid` (as spelled inside namespace
+    # engine), never the canonical `engine::Guid` — the same rule std::uint32_t above already shows.
+    # Copied from the real tool's output, not derived.
+    aero_expect_stdout_contains("${out}" "field mesh : Guid [guid]")
+    aero_expect_stdout_contains("${out}" "field meshIndex : std::uint32_t [primitive]")
+    aero_expect_stdout_contains("${out}" "field material : Guid [guid]")
 
-    # declaration order: primitive -> color
+    # declaration order: primitive -> color -> mesh -> meshIndex -> material
     string(FIND "${out}" "field primitive" _p)
     string(FIND "${out}" "field color" _c)
-    if(NOT (_p LESS _c))
+    string(FIND "${out}" "field mesh :" _m)          # "field mesh :" — "field meshIndex" also starts "field mesh"
+    string(FIND "${out}" "field meshIndex" _mi)
+    string(FIND "${out}" "field material" _mat)
+    if(NOT (_p LESS _c AND _c LESS _m AND _m LESS _mi AND _mi LESS _mat))
         message(FATAL_ERROR "case 'components_engine_mesh_renderer': fields not in declaration order:\n${out}")
     endif()
 
@@ -1083,6 +1095,64 @@ elseif(CASE STREQUAL "string_json")
     string(FIND "${out}" "// skipped: label" _idx_skip)
     if(NOT _idx_skip EQUAL -1)
         message(FATAL_ERROR "case 'string_json': std::string must not be skipped, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "guid_components")
+    # task 3.1.5 (D3): engine::Guid joins the reflectable subset. Unlike std::string there is exactly
+    # ONE canonical spelling on all three hosts -- Guid is a plain struct in namespace engine with no
+    # template parameters and no inline namespace -- so no fourth-spelling escalation can exist here
+    # and the match in classifyField is a single exact string.
+    #
+    # The extra -I "${REFLECT_INCLUDE}" (which the string trio does not need) is for the fixture's own
+    # #include <aero/reflect/annotations.hpp>; component_text.hpp uses the tests-local aero_reflect.hpp
+    # shim instead, and the new fixture deliberately uses the REAL engine vocabulary header.
+    aero_run_tool(ARGS --components "${GUID_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "field asset : engine::Guid [guid]")
+    # the new category COEXISTS with the old ones -- it must not swallow the primitive or the Vec3
+    aero_expect_stdout_contains("${out}" "field subIndex : std::uint32_t [primitive]")
+    aero_expect_stdout_contains("${out}" "field tint : engine::Vec3 [vec3]")
+    string(FIND "${out}" "[unsupported]" _idx_unsupported)
+    if(NOT _idx_unsupported EQUAL -1)
+        message(FATAL_ERROR "case 'guid_components': engine::Guid must classify [guid], not "
+                            "[unsupported], got:\n${out}")
+    endif()
+    string(FIND "${err}" "aero_reflect_gen: warning:" _idx_warn)
+    if(NOT _idx_warn EQUAL -1)
+        message(FATAL_ERROR "case 'guid_components': expected a warning-free parse, got:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "guid_meta")
+    # Sibling of string_meta: the Guid member reaches the .data chain, and an annotation-free component
+    # still includes NO annotations.hpp (D6) -- a Guid field carries no AERO_RANGE/AERO_COLOR, so it
+    # gets no .custom<FieldUiMeta> either.
+    aero_run_tool(ARGS --emit-meta "${GUID_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" ".data<&engine::demo::Referencing::asset>(\"asset\"_hs, \"asset\")")
+    string(FIND "${out}" "aero/reflect/annotations.hpp" _idx_include)
+    if(NOT _idx_include EQUAL -1)
+        message(FATAL_ERROR "case 'guid_meta': an annotation-free component must include no "
+                            "annotations.hpp (D6), got:\n${out}")
+    endif()
+    string(FIND "${out}" ".custom<" _idx_custom)
+    if(NOT _idx_custom EQUAL -1)
+        message(FATAL_ERROR "case 'guid_meta': a Guid field carries no annotation, so no .custom<> "
+                            "may be emitted, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "guid_json")
+    aero_run_tool(ARGS --emit-json "${GUID_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "writer.key(\"asset\");  engine::reflect::writeJson(writer, value.asset);")
+    aero_expect_stdout_contains("${out}"
+        "ok = engine::reflect::readField(json, \"engine::demo::Referencing\", \"asset\", value.asset) && ok;")
+    aero_expect_stdout_contains("${out}" "warnUnknownKeys(json, \"engine::demo::Referencing\", {\"asset\"")
+    string(FIND "${out}" "// skipped: asset" _idx_skip)
+    if(NOT _idx_skip EQUAL -1)
+        message(FATAL_ERROR "case 'guid_json': engine::Guid must not be skipped, got:\n${out}")
     endif()
 
 else()

@@ -2,9 +2,11 @@
 // entt::meta (InspectorProbe). Second TU of aero_editor_inspector_test, whose only OTHER TU
 // (inspector_test.cpp) defines DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN -- this TU must NOT (A7). GATED on
 // AERO_REFLECT_TOOLS by the target itself. Tier-0: no GPU, no window, no ImGui context.
+#include <aero/core/guid.hpp>  // task 3.1.5: the eighth FieldValue alternative
 #include <aero/core/log.hpp>
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/component_commands.hpp>
+#include <aero/editor/component_ops.hpp>  // task 3.1.5: writeComponentField, for IR6's setup
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/selection.hpp>
@@ -18,6 +20,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>  // task 3.1.5: IR6 reads the field back through readComponentField
+#include <ostream>   // MSVC alone needs the complete type to stringify a string_view inside a CHECK
 #include <string>
 #include <string_view>
 #include <utility>
@@ -178,6 +182,69 @@ TEST_CASE("field_command: every FieldKind writes `after` on redo, `before` on un
         auto before = readComponentField(world, e, probeId, "label");
         REQUIRE(before.has_value());
         CHECK(std::get<std::string>(*before) == "Alpha");
+    }
+
+    SUBCASE("Guid") {
+        // task 3.1.5. This case's title says EVERY FieldKind, so the eighth arrives here rather than
+        // in a case of its own: SetFieldCommand needed no change at all for it (it carries
+        // FieldValue by value, and a Guid is trivially copyable), and that is exactly what this
+        // subcase proves.
+        const engine::Guid beforeG{0x0011223344556677ULL, 0x8899AABBCCDDEEFFULL};
+        const engine::Guid afterG{0xFEEDFACECAFEBEEFULL, 0x0123456789ABCDEFULL};
+        SetFieldCommand cmd{e, probeId, "asset", "InspectorProbe", FieldValue{beforeG}, FieldValue{afterG}};
+        CHECK(cmd.redo(ctx));
+        auto after = readComponentField(world, e, probeId, "asset");
+        REQUIRE(after.has_value());
+        CHECK((std::get<engine::Guid>(*after) == afterG));
+        CHECK(cmd.undo(ctx));
+        auto before = readComponentField(world, e, probeId, "asset");
+        REQUIRE(before.has_value());
+        CHECK((std::get<engine::Guid>(*before) == beforeG));
+    }
+}
+
+TEST_CASE("field_command: Clear on a Guid row is one undoable entry (task 3.1.5, IR6)") {
+    // What the inspector's Clear button pushes, through the REAL stack rather than by calling redo()
+    // by hand: CommandStack::push APPLIES (2.4.1's D5), so the write below happens inside the
+    // command and nowhere else. Undo must restore the exact prior guid -- a Clear that could not be
+    // undone would be the one destructive edit in a panel where everything else is reversible.
+    World world;
+    aero_reflect_register_all_aero_editor_inspector_test();
+    const ComponentTypeId probeId = registerProbe(world);
+    REQUIRE(probeId.valid());
+    const Entity e = world.create();
+    world.addRaw(probeId, e, nullptr);
+    Selection selection;
+    RootOrder roots;
+    CommandContext ctx{world, selection, roots};
+    CommandStack stack;
+
+    const engine::Guid bound{0x00A1B2C3D4E5F607ULL, 0x1122334455667788ULL};
+    REQUIRE(engine::editor::writeComponentField(world, e, probeId, "asset", FieldValue{bound}));
+
+    const std::optional<FieldValue> beforeValue = readComponentField(world, e, probeId, "asset");
+    REQUIRE(beforeValue.has_value());
+    CHECK(stack.push(ctx, std::make_unique<SetFieldCommand>(e, probeId, "asset", "InspectorProbe", *beforeValue,
+                                                            FieldValue{engine::Guid{}})));
+    {
+        const std::optional<FieldValue> cleared = readComponentField(world, e, probeId, "asset");
+        REQUIRE(cleared.has_value());
+        REQUIRE(std::holds_alternative<engine::Guid>(*cleared));
+        CHECK_FALSE(std::get<engine::Guid>(*cleared).valid());
+    }
+    CHECK(stack.undo(ctx));
+    {
+        const std::optional<FieldValue> restored = readComponentField(world, e, probeId, "asset");
+        REQUIRE(restored.has_value());
+        REQUIRE(std::holds_alternative<engine::Guid>(*restored));
+        CHECK((std::get<engine::Guid>(*restored) == bound));
+    }
+    // And forward again, so the entry is a real two-way history entry rather than a one-shot.
+    CHECK(stack.redo(ctx));
+    {
+        const std::optional<FieldValue> againCleared = readComponentField(world, e, probeId, "asset");
+        REQUIRE(againCleared.has_value());
+        CHECK_FALSE(std::get<engine::Guid>(*againCleared).valid());
     }
 }
 

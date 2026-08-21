@@ -96,6 +96,12 @@ std::optional<FieldValue> readMemberValue(const entt::meta_data& member, entt::m
     if (info == entt::type_id<std::string>()) {
         return FieldValue{value.cast<std::string>()};
     }
+    // task 3.1.5. It sits HERE, beside the other three exact-type arms and ABOVE the arithmetic
+    // fall-through, because a Guid is none of the 20 arithmetic types: falling through would return
+    // nullopt, which the inspector renders as a MISSING ROW rather than as an error.
+    if (info == entt::type_id<Guid>()) {
+        return FieldValue{value.cast<Guid>()};
+    }
 
     std::optional<FieldValue> result;
     ArithmeticReader reader{value, result};
@@ -131,6 +137,15 @@ bool writeMemberValue(const engine::reflect::FieldUiMeta* uiMeta, const entt::me
         }
         return member.set(handle, std::get<std::string>(value));
     }
+    // task 3.1.5. THE EXACT CONCRETE TYPE, never allow_cast and never the raw variant: `member.set(
+    // handle, value)` would let EnTT convert, which is C6's whole rule and is seed S36. No range
+    // clamp either -- a Guid has none, and AERO_RANGE cannot be written on one.
+    if (info == entt::type_id<Guid>()) {
+        if (!std::holds_alternative<Guid>(value)) {
+            return false;
+        }
+        return member.set(handle, std::get<Guid>(value));
+    }
 
     ArithmeticWriter writer{member, handle, value, hasRange, rangeMin, rangeMax};
     const bool dispatched = dispatchArithmetic(info, ArithmeticTypes{}, writer);
@@ -151,6 +166,16 @@ bool addComponent(World& world, Entity entity, ComponentTypeId id) {
 }
 
 bool removeComponent(World& world, Entity entity, ComponentTypeId id) { return world.removeRaw(id, entity); }
+
+bool componentFieldsAreReflected(const World& world, ComponentTypeId id) {
+    // Deliberately silent: this is the question a caller asks INSTEAD of tripping readComponentField's
+    // ERROR, so answering it must not log the very line it exists to avoid.
+    const std::string_view typeName = world.componentTypeName(id);
+    if (typeName.empty()) {
+        return false;
+    }
+    return static_cast<bool>(resolveComponentMeta(typeName));
+}
 
 std::optional<FieldValue> readComponentField(World& world, Entity entity, ComponentTypeId id, std::string_view field) {
     const std::string_view typeName = world.componentTypeName(id);

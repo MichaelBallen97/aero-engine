@@ -85,11 +85,13 @@ The member **value** is the payload object `aeroWriteJson` emits for that compon
 supported field, in declaration order, with unsupported fields simply absent. This document defines
 the payload shape **by reference** to the generated serializers (tasks 1.2.1/1.2.2) — it does not
 restate field-level shapes. Field kinds reachable through the generated serializers are the
-reflectable subset — JSON numbers for primitives, `{x,y,z}`/`{x,y,z,w}` for `Vec3`/`Quat`, and
+reflectable subset — JSON numbers for primitives, `{x,y,z}`/`{x,y,z,w}` for `Vec3`/`Quat`,
 **from task 2.2.2 a JSON string for `std::string`**, escaped by the writer's rules with non-UTF-8
-bytes passed through; purely additive to scene v1 (envelope unchanged, every existing scene byte
-still reads and re-emits identically). The field-level tolerance policy those generated readers
-apply, restated here for convenience:
+bytes passed through, and from task 3.1.5 a 32-hex-digit string for `engine::Guid` (lowercase on
+write, any case on read, nil legal as 32 zeros — the component layer emits one key per supported
+field unconditionally, so nil is this field's none state rather than an omission); purely additive
+to scene v1 (envelope unchanged, every existing scene byte still reads and re-emits identically).
+The field-level tolerance policy those generated readers apply, restated here for convenience:
 
 | Field condition (at load) | Behavior |
 |---|---|
@@ -886,10 +888,12 @@ axis-aligned box per submesh and one for the model, plus each submesh's source c
 material index. **What it does not store:** node hierarchy, materials, images, skeletons and inverse
 bind matrices — which, since task 3.5.1, live in section 12's sibling container (`.aeroskel`) — and
 animation, which, since task 3.5.2, lives in section 13's sibling container (`.aeroanim`). A consumer
-that instantiates a cooked mesh with no hierarchy therefore puts
-every submesh at the origin. **That gap is named, not owned** — a cooked model/prefab container
-carrying the node tree is the right answer and belongs to whoever owns instantiation; task 3.1.5 is
-the first task that will hit it.
+that instantiates a cooked mesh with no hierarchy therefore puts every submesh at the origin.
+**That gap was decided at task 3.1.5**: the editor materializes an imported model's node tree into
+scene entities at drop time, so placement lives in the scene file rather than in a cooked container,
+and nothing is baked into vertices. A cooked model/prefab container carrying the node tree remains
+the named residual for a consumer **without** an importer — a script's runtime `spawn()` — and
+belongs to task 4.4.4 (prefab-lite) / Phase 5's pak.
 
 The container is **platform-independent**: there is no platform field and no `--platform` flag. That
 changes for textures at task 3.3.2, where BCn/ASTC/ETC2 diverge.

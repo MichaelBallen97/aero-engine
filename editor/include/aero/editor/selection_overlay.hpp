@@ -54,8 +54,10 @@ inline constexpr std::size_t MAX_HIGHLIGHTED_ENTITIES = 256;
 inline constexpr float POINT_MARKER_HALF_POINTS = 6.0F;
 
 // The 12 edges of the local box, as index pairs into the 8-corner enumeration this file SHARES with
-// editor/src/scene_bounds.cpp (F3b): corner i is {(i&1)?+H:-H, (i&2)?+H:-H, (i&4)?+H:-H}, so bit 0 is
-// X, bit 1 is Y and bit 2 is Z. Two corners are adjacent iff they differ in EXACTLY ONE bit, which
+// scene_bounds.hpp's aabbCorner (F3b): corner i takes max on an axis when that axis's bit is set, so
+// bit 0 is X, bit 1 is Y and bit 2 is Z. Task 3.1.5 deleted this file's own second copy of that
+// enumeration -- there is now exactly ONE function producing a corner, and the bounds walk, the pick
+// and the highlight can no longer drift. Two corners are adjacent iff they differ in EXACTLY ONE bit, which
 // makes the table DERIVED rather than transcribed: the edges are (i, i^1) for the four i with bit 0
 // clear, (i, i^2) for the four with bit 1 clear, and (i, i^4) for the four with bit 2 clear.
 // PUBLIC so that derivation is testable at all -- the same call D15 makes for the cap above.
@@ -82,8 +84,9 @@ inline constexpr std::array<BoxEdge, 12> BOX_EDGES{{
 // reused across frames, never allocating once warm.
 //
 // Per entity, in SELECTION order, capped at MAX_HIGHLIGHTED_ENTITIES:
-//   * WITH a MeshRenderer  -> the 12 edges of [-H,H]^3 through worldMatrix(e)          (D7)
-//   * WITHOUT one          -> a 4-segment screen-space diamond at its world origin     (D5/D8)
+//   * WITH a MeshRenderer whose local box RESOLVES -> that box's 12 edges through worldMatrix(e) (D7)
+//   * WITHOUT one, or with an UNRESOLVED reference -> a 4-segment screen-space diamond at its world
+//     origin (D5/D8) -- the same non-mesh path, reached by one more condition, never by new code
 //   * dead / null / behind the eye / non-finite -> NOTHING, silently                   (E2/E4/E7)
 //
 // D7: the entity's OWN oriented box, never its subtree's AABB. Selecting a parent draws the parent's
@@ -97,7 +100,11 @@ inline constexpr std::array<BoxEdge, 12> BOX_EDGES{{
 // job, done by the Hierarchy at the top of ITS onDraw (F34). Dead handles are skipped here instead.
 // Takes a span + a primary handle rather than a const Selection& so a tier-0 test can drive it from a
 // plain array, and so it cannot even be TEMPTED to mutate the selection.
+//
+// `lookup` (task 3.1.5) is DEFAULTED AND LAST, like entityBounds'/selectionBounds'/sceneBounds': a null
+// lookup resolves only primitives, which is exactly what this builder saw before references existed.
 void buildSelectionOverlay(const World& world, std::span<const Entity> entities, Entity primary, const Mat4& viewProj,
-                           Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch);
+                           Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch,
+                           const MeshBoundsLookup* lookup = nullptr);
 
 }  // namespace engine::editor

@@ -4,6 +4,7 @@
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/selection.hpp>
+#include <aero/scene/mesh_renderer.hpp>  // task 3.1.5: the row arm asks the LIVE World, never the payload
 #include <aero/scene/world.hpp>
 
 #include "text_input.hpp"
@@ -14,6 +15,7 @@
 #include <cstring>  // std::memcpy -- the payload read (C6: the ImGui payload is alignas(1))
 #include <imgui.h>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -52,6 +54,16 @@ constexpr const char* ENTITY_PAYLOAD_TYPE = "AERO_ENTITY";  // <= 32 chars (ImGu
     }
     std::memcpy(&out, payload->Data, sizeof(Entity));
     return true;
+}
+
+// task 3.1.5: the SAME shape, one payload type over. It PEEKS and it does not decode by hand -- every
+// byte goes to decodeAssetDragPayload, which is the tree's only reader of ImGuiPayload::Data.
+[[nodiscard]] std::optional<AssetDragPayload> peekAssetPayload() {
+    const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+    if (payload == nullptr || !payload->IsDataType(ASSET_PAYLOAD_TYPE)) {
+        return std::nullopt;
+    }
+    return decodeAssetDragPayload(payload->Data, payload->DataSize);
 }
 
 }  // namespace
@@ -198,6 +210,21 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
             if (dropLegal(world, moved, entity) && ImGui::AcceptDragDropPayload(ENTITY_PAYLOAD_TYPE) != nullptr) {
                 pending = PendingAction{.kind = ActionKind::Reparent, .target = dragged, .second = entity};
             }
+        } else if (const std::optional<AssetDragPayload> asset = peekAssetPayload(); asset.has_value()) {
+            // task 3.1.5: a SECOND ARM inside the existing target, never a second target. The two
+            // payload types cannot cross-fire: peekDraggedEntity's IsDataType("AERO_ENTITY") and
+            // peekAssetPayload's IsDataType("AERO_ASSET") are mutually exclusive by construction.
+            //
+            // REFUSED AT PEEK: classifyAssetDrop runs BEFORE AcceptDragDropPayload, so ImGui draws no
+            // highlight rect for a drop this row will not take. The panel RECORDS and does not act --
+            // instantiation needs the database, the importer and the ledger, none of which this panel
+            // has, so the drop is its own one-shot drained by tick() rather than a PendingAction.
+            const auto kind = static_cast<AssetKind>(asset->kind);
+            const bool hasMesh = world.has<MeshRenderer>(entity);
+            if (classifyAssetDrop(kind, DropSurface::HierarchyRow, hasMesh) != DropAction::None &&
+                ImGui::AcceptDragDropPayload(ASSET_PAYLOAD_TYPE) != nullptr) {
+                pendingAssetDrop = HierarchyAssetDrop{.payload = *asset, .targetRow = entity};
+            }
         }
         ImGui::EndDragDropTarget();  // ONLY when BeginDragDropTarget returned true (F18)
     }
@@ -321,6 +348,16 @@ void HierarchyPanel::drawVoidTarget(PanelContext& context) {
             if (dropLegal(context.world, moved, Entity{}) &&
                 ImGui::AcceptDragDropPayload(ENTITY_PAYLOAD_TYPE) != nullptr) {
                 pending = PendingAction{.kind = ActionKind::Reparent, .target = dragged, .second = Entity{}};
+            }
+        } else if (const std::optional<AssetDragPayload> asset = peekAssetPayload(); asset.has_value()) {
+            // task 3.1.5: the row arm's exact shape, with the VOID surface -- so a material dropped on
+            // empty space is refused (there is no entity to assign it to) while a model instantiates
+            // at the scene root. targetHasMeshRenderer is FALSE here because there is no target.
+            const auto kind = static_cast<AssetKind>(asset->kind);
+            if (classifyAssetDrop(kind, DropSurface::HierarchyVoid, /*targetHasMeshRenderer=*/false) !=
+                    DropAction::None &&
+                ImGui::AcceptDragDropPayload(ASSET_PAYLOAD_TYPE) != nullptr) {
+                pendingAssetDrop = HierarchyAssetDrop{.payload = *asset, .targetRow = Entity{}};
             }
         }
         ImGui::EndDragDropTarget();

@@ -36,11 +36,17 @@
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1 -- a VALUE member (importSession), held
                                                  // to the same `noexcept = default` move requirement
                                                  // as assetDatabase and assetWatcher
+#include <aero/editor/asset_drag.hpp>            // task 3.1.5 -- the three drop-request structs, held by
+                                                 // value in the one-shots below. PUBLIC and PURE.
 #include <aero/editor/panel_registry.hpp>
-#include <aero/editor/scene_session.hpp>  // task 2.5.1: VALUE members SceneSession/FileFlow need the
-                                          // definition, the command_stack.hpp precedent above.
+#include <aero/editor/scene_asset_ledger.hpp>  // task 3.1.5 -- a VALUE member (sceneAssetLedger) needs
+                                               // the definition, the asset_database.hpp precedent. It
+                                               // is PURE: no GPU call, no disk, no ImGui.
+#include <aero/editor/scene_session.hpp>       // task 2.5.1: VALUE members SceneSession/FileFlow need the
+                                               // definition, the command_stack.hpp precedent above.
 #include <aero/editor/selection.hpp>
 #include <aero/rhi/types.hpp>
+#include <aero/scene/transform.hpp>  // task 3.1.5: instantiateModelDrop's root placement, by reference
 #include <aero/scene/world.hpp>
 
 #include <cstddef>
@@ -77,6 +83,14 @@ class ImportDetailsPanel;  // task 3.2.1: src-private (editor/src/import_details
                            // precedent, a fourth application.
 class MaterialPanel;       // task 3.4.2: src-private (editor/src/material_panel.hpp). Only the NAME is
                            // needed here -- the same precedent, a fifth application.
+class HierarchyPanel;      // task 3.1.5: src-private. The drop drain needs its one-shot taker, so the
+                           // non-owning pointer joins the four above -- a sixth application.
+class InspectorPanel;      // task 3.1.5: src-private. setDatabase(&assetDatabase) is reconciled beside
+                           // the Material panel's, so this pointer joins them too -- a seventh.
+class SceneAssetLoader;    // task 3.1.5: src-private (editor/src/scene_asset_loader.hpp). Held through
+                           // a unique_ptr, which is legal with an INCOMPLETE type here because
+                           // ~EditorApp is defined OUT OF LINE in editor_app.cpp, where the definition
+                           // is in scope. The same reason DialogChannel above can be a shared_ptr.
 
 struct EditorAppConfig {
     rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
@@ -436,6 +450,34 @@ public:
     // the preview's own target, so it is also S25's runtime half -- a tabbed-away panel must not move
     // it. materialPreviewBlendDrawnOpaque() surfaces the renderer's own latched WARN, which is AC-30's
     // only mechanical half (a picture is the rest).
+    // ---- task 3.1.5 request hooks (the EIGHTH application of the requestAssetBrowserSelectEntry
+    // shape). Each records EXACTLY what the corresponding panel's drop records, and each is drained by
+    // the next tick()'s reconcile block. `kind` is static_cast<std::uint8_t>(AssetKind) so AssetKind
+    // stays out of this header's surface, exactly as modelImportState() keeps SessionState out.
+    void requestHierarchyAssetDrop(Guid guid, std::uint8_t kind, Entity targetRow);  // Entity{} == the void
+    void requestViewportAssetDrop(Guid guid, std::uint8_t kind, Vec2 ndc);
+    void requestMaterialSlotTextureDrop(std::size_t slot, Guid textureGuid);
+
+    // ---- task 3.1.5 black-box accessors: the scene-asset ledger, as numbers ------------------------
+    [[nodiscard]] std::size_t sceneAssetEntryCount() const noexcept;   // ledger entries, any state
+    [[nodiscard]] std::size_t sceneAssetReadyCount() const noexcept;   // state == Ready
+    [[nodiscard]] std::size_t sceneAssetFailedCount() const noexcept;  // state == Failed (STICKY)
+    // The 3.1.3 loadAttempts shape: a count climbing while Ready stays 0 is the retry loop stickiness
+    // forbids, and without it "sticky" is asserted rather than assertable.
+    [[nodiscard]] std::size_t sceneAssetLoadAttempts() const noexcept;
+    [[nodiscard]] std::size_t sceneAssetDirectiveCount() const noexcept;  // directives EXECUTED, lifetime
+    // The ONLY observable that makes the deferred-destroy ordering visible at the GPU tier at all.
+    [[nodiscard]] std::size_t sceneAssetDestroyCount() const noexcept;  // GPU handles released, lifetime
+    [[nodiscard]] std::size_t sceneAssetMeshBindingCount() const noexcept;
+    [[nodiscard]] std::size_t sceneAssetMaterialBindingCount() const noexcept;
+    [[nodiscard]] std::string_view sceneAssetMessage(Guid guid) const noexcept;  // "" unless Failed
+    // The bridge's two counts, from the LAST buildRenderView the viewport ran. Zero when no scene pass
+    // has run this session. These are what make "the drop is resolved" assertable without a pixel --
+    // LATCHED, not live, because buildRenderView runs inside SceneRenderer::render and its RenderView
+    // does not outlive that call.
+    [[nodiscard]] std::uint32_t viewportUnresolvedMeshes() const noexcept;
+    [[nodiscard]] std::uint32_t viewportUnresolvedMaterials() const noexcept;
+
     [[nodiscard]] bool materialPreviewAvailable() const noexcept;
     [[nodiscard]] std::size_t materialPreviewFrameCount() const noexcept;
     [[nodiscard]] bool materialPreviewBlendDrawnOpaque() const noexcept;
@@ -477,6 +519,35 @@ private:
     // deleted). The bytes go through material_session.cpp's saveMaterialFile, the ONE .aeromat write
     // path (D12), so this adds no writeTextFileAtomic call site at all.
     [[nodiscard]] bool createMaterialAsset(std::string_view directoryRel);
+
+    // ---- task 3.1.5: the drop drains and the ledger's service pass --------------------------------
+    // The three drains run in tick()'s RECONCILE block, in surface order, AFTER the material session
+    // has been reconciled to this frame's selection and BEFORE the draw walk -- so an entity created
+    // by a drop is visible in the Hierarchy in the same frame the drop landed. Each re-resolves the
+    // guid against the LIVE database (INV-D8) and recomputes the action from the LIVE World; neither
+    // is ever trusted from the payload.
+    void applyHierarchyDrop(const HierarchyAssetDrop& drop);
+    void applyViewportDrop(const ViewportAssetDrop& drop);
+    void applySlotDrop(const MaterialSlotTextureDrop& drop);
+    // The import -> plan -> command sequence. `placement` is the ROOT entity's local Transform, so the
+    // same plan serves a viewport drop (a world point) and a Hierarchy drop (local identity).
+    void instantiateModelDrop(const AssetRecord& record, Entity parent, const Transform& placement);
+    // A material assignment is a SetFieldCommand on MeshRenderer's "material" field -- no new command
+    // type, and undo comes free.
+    void pushMaterialAssign(Entity entity, Guid material);
+    // Executes ONE model load for `record` and installs everything it produced: the ledger report, the
+    // binding-table entry and the bounds. `preImported` is the DROP's own Full import when it has one,
+    // so a dropped model does not import twice in one gesture (once to plan, once to load); null means
+    // "read and import here", which is the ledger directive's own path. ONE function, so those two
+    // callers can never disagree about what installing a model means.
+    void loadModelIntoScene(const AssetRecord& record, const ImportedModel* preImported);
+    void loadMaterialIntoScene(const AssetRecord& record);
+    // The ledger's service pass: the FIFTH occupant of tick()'s post-draw slot. EVERY GPU create and
+    // EVERY GPU destroy this task performs happens inside it. NEVER CALL IT FROM onDraw().
+    void serviceSceneAssets();
+    // Releases every handle the ledger still holds, through the viewport's own renderer, and clears
+    // the binding table. Called on a project swap and at shutdown, BOTH while the panels are alive.
+    void releaseSceneAssets();
 
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
@@ -594,6 +665,31 @@ private:
     std::optional<MaterialDocument> requestedMaterialDocument;
     bool requestedMaterialApply = false;
     bool requestedMaterialRevert = false;
+
+    // ---- task 3.1.5 -------------------------------------------------------------------------------
+    // Declared AFTER assetDatabase and BEFORE the panel pointers, per §0.26. The ledger is PURE -- no
+    // GPU, no disk -- so it is safe to destroy at any point; the loader owns no GPU object either, by
+    // design, which is what makes the teardown ordering a non-question rather than a hazard. The
+    // handles the ledger still holds at shutdown are released EXPLICITLY, through the viewport's own
+    // renderer, while that panel is still alive.
+    SceneAssetLedger sceneAssetLedger;
+    std::unique_ptr<SceneAssetLoader> sceneAssetLoader;  // created in create(); never null on a live app
+    // Captured in create(); the caller's contract already requires it to outlive the app. It is what
+    // the service pass destroys retired TEXTURES through -- meshes and materials go back to the
+    // ForwardRenderer that minted them, and a texture belongs to the device.
+    rhi::Device* sceneAssetDevice = nullptr;
+    HierarchyPanel* hierarchyPanel = nullptr;  // non-owning; owned by `registry`
+    InspectorPanel* inspectorPanel = nullptr;  // non-owning; owned by `registry`
+    std::size_t lastMaterialWriteCount = 0;    // the Apply-nudge edge detector
+    std::size_t sceneAssetDirectives = 0;      // directives EXECUTED, lifetime
+    std::size_t sceneAssetDestroys = 0;        // GPU handles released, lifetime
+    // The three drop one-shots, all consumed by the next tick()'s reconcile block, each drained as its
+    // OWN statement before it is inspected (F9).
+    // TWO, not three: requestMaterialSlotTextureDrop forwards straight to the Material panel, because
+    // the seam must reach that panel's own per-frame document copy and nothing held here can. §0.4
+    // states that asymmetry; this is where it shows.
+    std::optional<HierarchyAssetDrop> requestedHierarchyDrop;
+    std::optional<ViewportAssetDrop> requestedViewportDrop;
 };
 
 }  // namespace engine::editor

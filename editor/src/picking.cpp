@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace engine::editor {
@@ -122,29 +123,71 @@ Ray viewportRay(const EditorCamera& camera, Vec2 ndc, float aspect) noexcept {
     return Ray{.origin = camera.position(), .direction = normalizeOrZero(direction)};
 }
 
+Vec3 dropPlacementPoint(const Ray& ray) noexcept {
+    // FOUR ARMS, AND THE ORDER IS THE SPECIFICATION. Every one returns a finite Vec3 for every ray
+    // viewportRay can build -- its direction is either exactly zero or a normalised finite vector and
+    // its origin is the camera's clamped position -- because an infinite Transform::position would
+    // poison worldMatrix, then bounds, then focusOn: the exact NaN-into-the-pose failure
+    // Aabb::valid()'s finiteness half exists to stop.
+    const Vec3 fallback = ray.origin + (ray.direction * DROP_FALLBACK_DISTANCE);
+    if (lengthSquared(ray.direction) <= 0.0F) {
+        return ray.origin;  // arm 1: viewportRay's documented unbuildable zero. Nothing better exists.
+    }
+    if (std::abs(ray.direction.y) < DROP_PLANE_EPSILON) {
+        return fallback;  // arm 2: parallel to the ground plane -- it is never met
+    }
+    const float t = -ray.origin.y / ray.direction.y;
+    if (!(t > 0.0F)) {
+        return fallback;  // arm 3: the negated `>` also rejects a NaN t; the plane is behind the eye
+    }
+    const Vec3 point = ray.origin + (ray.direction * t);
+    // arm 4: a camera 1e30 units up with a nearly-horizontal ray gives a FINITE t and an INFINITE
+    // point, so this re-check is load-bearing rather than belt-and-braces.
+    return allFinite(point) ? point : fallback;
+}
+
 bool rayLocalBoxHit(Vec3 origin, Vec3 direction, float halfExtent, float& outT) noexcept {
-    if (!allFinite(origin) || !allFinite(direction) || !(halfExtent > 0.0F)) {
+    // The half-extent form is now a THIN WRAPPER, so there is exactly one slab ladder in the tree. Its
+    // own precondition survives verbatim -- `halfExtent > 0` is STRICTER than Aabb::valid() and rejects
+    // a zero/negative/NaN extent before a box is built, which is what its published cases assert.
+    if (!std::isfinite(halfExtent) || !(halfExtent > 0.0F)) {
+        return false;
+    }
+    return rayLocalBoxHit(origin, direction,
+                          Aabb{Vec3{-halfExtent, -halfExtent, -halfExtent}, Vec3{halfExtent, halfExtent, halfExtent}},
+                          outT);
+}
+
+bool rayLocalBoxHit(Vec3 origin, Vec3 direction, const Aabb& box, float& outT) noexcept {
+    // Aabb::valid() IS the precondition, restated nowhere: every component finite and min <= max on all
+    // three axes. min == max on an axis is LEGAL and is the flat Plane primitive's own shape (task
+    // 3.1.5); a strict min < max here makes every plane in every scene unclickable.
+    if (!allFinite(origin) || !allFinite(direction) || !box.valid()) {
         return false;
     }
     // The max/min ladder rather than early returns, so an infinite 1/d (a ray parallel to a slab)
     // behaves correctly under IEEE -- and the explicit |d| < DIR_EPSILON branch, rather than relying
     // on 1/0 == inf, is what keeps the 0 * inf -> NaN path from ever being entered when the origin
-    // sits exactly on a slab plane. That matters today for the Plane primitive (F19/D13) and will
-    // still matter when 3.1.x gives it a zero-thickness box.
+    // sits exactly on a slab plane. That mattered for the fat Plane box (F19/D13) and matters MORE now
+    // that the plane's box really is zero-thickness: NO EPSILON is added anywhere, because the ladder
+    // already handles a zero-width slab -- a ray crossing it gets t1 == t2 and a ray inside it (o
+    // exactly on both planes at once) takes the parallel-and-inside branch.
     float tMin = -INF;
     float tMax = INF;
     for (int axis = 0; axis < 3; ++axis) {
         const float o = axisValue(origin, axis);
         const float d = axisValue(direction, axis);
+        const float lo = axisValue(box.min, axis);
+        const float hi = axisValue(box.max, axis);
         if (std::abs(d) < DIR_EPSILON) {
-            if (o < -halfExtent || o > halfExtent) {
+            if (o < lo || o > hi) {
                 return false;  // parallel to this slab and OUTSIDE it
             }
             continue;  // parallel and inside: this axis constrains nothing
         }
         const float inv = 1.0F / d;
-        float t1 = (-halfExtent - o) * inv;
-        float t2 = (halfExtent - o) * inv;
+        float t1 = (lo - o) * inv;
+        float t2 = (hi - o) * inv;
         if (t1 > t2) {
             std::swap(t1, t2);
         }
@@ -188,28 +231,38 @@ PickResult pickEntity(const World& world, const EditorCamera& camera, const Pick
         }
         const Mat4 model = worldMatrix(world, e);  // silent identity when untransformed (F16/E3)
         if (world.has<MeshRenderer>(e)) {          // silent for an unregistered type (F15)
-            const float det = determinant(model);
-            if (!std::isfinite(det) || std::abs(det) < DETERMINANT_EPSILON) {
-                return;  // E5 zero scale / E4 poisoned Transform: not pickable
-            }
-            const Mat4 inverseModel = inverse(model);
-            float t = 0.0F;
-            // D2: the local direction is deliberately NOT normalised, so the t that comes back is in
-            // WORLD units and hits from entities with wildly different scales are comparable.
-            if (!rayLocalBoxHit(transformPoint(inverseModel, ray.origin),
-                                transformDirection(inverseModel, ray.direction), LOCAL_MESH_HALF_EXTENT, t)) {
+            // task 3.1.5: ONE function decides the local box, shared with the frame walk and the
+            // highlight (INV-D6). nullopt means the entity has a reference the editor cannot resolve
+            // yet, and it FALLS THROUGH to the point/disc candidate below rather than returning --
+            // otherwise an entity stays unclickable for the whole of its load, which is AC-34.
+            const std::optional<Aabb> local = localBoundsFor(*world.get<MeshRenderer>(e), request.meshBounds);
+            if (local.has_value()) {
+                const float det = determinant(model);
+                if (!std::isfinite(det) || std::abs(det) < DETERMINANT_EPSILON) {
+                    return;  // E5 zero scale / E4 poisoned Transform: not pickable
+                }
+                const Mat4 inverseModel = inverse(model);
+                float t = 0.0F;
+                // D2: the local direction is deliberately NOT normalised, so the t that comes back is
+                // in WORLD units and hits from entities with wildly different scales are comparable.
+                if (!rayLocalBoxHit(transformPoint(inverseModel, ray.origin),
+                                    transformDirection(inverseModel, ray.direction), *local, t)) {
+                    return;
+                }
+                // D16's tie-break, spelled `!(t > best)` rather than `t == best`: equivalent for the
+                // finite values that reach here, and it keeps a float equality comparison out of the
+                // tree.
+                if (!mesh.hit() || t < mesh.distance || (!(t > mesh.distance) && e.index < mesh.entity.index)) {
+                    mesh = PickResult{.entity = e, .distance = t, .isPoint = false};
+                }
                 return;
             }
-            // D16's tie-break, spelled `!(t > best)` rather than `t == best`: equivalent for the
-            // finite values that reach here, and it keeps a float equality comparison out of the tree.
-            if (!mesh.hit() || t < mesh.distance || (!(t > mesh.distance) && e.index < mesh.entity.index)) {
-                mesh = PickResult{.entity = e, .distance = t, .isPoint = false};
-            }
-            return;
         }
-        // D5: the non-mesh candidate. entityBounds(..., false).center() IS the world translation for
-        // an entity with no MeshRenderer (F3) -- one convention, stated in one place, shared with
-        // 2.3.1's focus walk.
+        // D5: the non-mesh candidate, reached by an entity with no MeshRenderer and -- since task
+        // 3.1.5 -- by one whose reference has not resolved yet. entityBounds(..., false).center() IS
+        // the world translation for both (F3): with no lookup passed, contribute() takes the same
+        // POINT branch localBoundsFor's nullopt just took here, so the two agree by construction and
+        // nothing new is written for the unresolved case.
         const Aabb bounds = entityBounds(world, e, /*includeDescendants=*/false);
         if (!bounds.valid()) {
             return;

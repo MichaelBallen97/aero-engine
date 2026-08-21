@@ -6,6 +6,7 @@
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
 #include <aero/editor/asset_cache.hpp>  // ASSET_CACHE_DIR_NAME -- the ONE spelling of "Library" (3.1.2)
+#include <aero/editor/asset_meta.hpp>   // writeMetaText -- blendExportSettingsFingerprint's serializer
 #include <aero/editor/blender_tool.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
@@ -16,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -586,6 +588,16 @@ bool provenanceMatches(const ExportProvenance& actual, const ExportProvenance& e
     // sourcePath, blenderPath, guid and artifactBytes are INFORMATIONAL and are deliberately not
     // compared (E24, seed S9): moving a .blend together with its sidecar must not invalidate.
     return true;
+}
+
+std::string blendExportSettingsFingerprint(const ImportSettings& settings) {
+    // MOVED VERBATIM from model_import_session.cpp's anonymous-namespace copy at task 3.1.5 (§0.9),
+    // whose old name is deliberately not spelled anywhere under editor/src: that step's gate greps for
+    // it, and a prose mention would turn it red for a reason that is not a violation. It stays a pure
+    // string function -- no disk, no SDL, no logging -- so this file's INV-B10/INV-B14 posture is
+    // unchanged.
+    const std::string text = writeMetaText(Guid{}, settings);
+    return formatContentHash(hashBytes(std::as_bytes(std::span<const char>(text))));
 }
 
 std::optional<ExportStatus> parseExportStatus(std::string_view text) {

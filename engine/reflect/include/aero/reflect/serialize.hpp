@@ -1,4 +1,5 @@
 #pragma once
+#include <aero/core/guid.hpp>  // engine::Guid (task 3.1.5) -- aero_reflect already links PUBLIC aero::core
 #include <aero/core/math.hpp>  // engine::Vec3, engine::Quat
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/json_writer.hpp>
@@ -24,6 +25,13 @@ void writeJson(JsonWriter& w, const Quat& v);  // {"x":..,"y":..,"z":..,"w":..}
 // JsonValue DOM overload -- JsonValue has NO implicit ctor from std::string (static factories only) --
 // nor with the integral template, which excludes non-integral types.
 void writeJson(JsonWriter& w, const std::string& v);
+// Task 3.1.5 (D3): engine::Guid joins the reflectable subset. The wire form is the canonical
+// 32-lowercase-hex string formatGuid produces -- the SAME spelling a .meta and an .aeromat carry, so a
+// GUID reads identically wherever it appears. NIL IS A VALUE, NOT AN OMISSION: this layer emits one key
+// per supported field unconditionally (docs/09 §2.3), so nil writes 32 zeros and reads back legally.
+// That is a deliberate divergence from §11.1's "a present slot must not be nil", where absence has its
+// own spelling and nil is a contradiction.
+void writeJson(JsonWriter& w, const Guid& v);
 
 // Every integral type EXCEPT bool -> a JSON number. Widen by signedness so to_chars never sees a character type
 // (portability, F2) and bool never binds here (it has its own exact overload).
@@ -51,10 +59,11 @@ void writeJson(JsonWriter& w, const JsonValue& v);
 
 // ---- task 1.2.2: the read half (spec §3.8, D10) ---------------------------------------------------
 //
-// DECLARATION ORDER IS LOAD-BEARING (N2, proven): every readJson overload -- the five leaves AND the
-// constrained integral template below -- must be declared BEFORE readField. ADL for engine::Vec3
-// searches namespace engine, not engine::reflect; fundamental types have no associated namespace at
-// all -- so the leaves must be visible at readField's definition point by ORDINARY lookup, not ADL.
+// DECLARATION ORDER IS LOAD-BEARING (N2, proven): every readJson overload -- the six leaves (five at
+// 1.2.2, plus engine::Guid at 3.1.5) AND the constrained integral template below -- must be declared
+// BEFORE readField. ADL for engine::Vec3 and engine::Guid searches namespace engine, not
+// engine::reflect; fundamental types have no associated namespace at all -- so the leaves must be
+// visible at readField's definition point by ORDINARY lookup, not ADL.
 // Getting this wrong is a hard compile error ("no matching function for call to 'readJson'"), never a
 // silent misbehaviour.
 
@@ -67,6 +76,11 @@ bool readJson(const JsonValue& v, Quat& out);    // Object with x,y,z,w (each vi
 // false (readField then warns), never a sentinel. Missing key stays "silently untouched + true" -- that
 // policy lives in readField, not here.
 bool readJson(const JsonValue& v, std::string& out);
+// Task 3.1.5 (D3). Any case via parseGuid: EXACTLY 32 hex digits and nothing else. A non-string, a
+// wrong length, a dashed form or a non-hex character all return false -- readField then WARNs and
+// leaves the target UNTOUCHED. Never "helpfully" nils the field: a value that failed to parse says
+// nothing about what the field should become.
+bool readJson(const JsonValue& v, Guid& out);
 
 // Every integral type EXCEPT bool, the exact mirror of the write-side widening template: parse via
 // asI64/asU64 by signedness, then range-check against std::numeric_limits<T>.

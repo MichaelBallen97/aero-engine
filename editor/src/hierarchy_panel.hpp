@@ -13,13 +13,16 @@
 // eachChild's cursor -- world.hpp:157-163 -- and unbalance TreeNodeEx/TreePop) is impossible by
 // construction. EVERY walk here is an explicit stack, never a recursive function: misc-no-recursion
 // is --warnings-as-errors in CI (D13/I7).
+#include <aero/editor/asset_drag.hpp>  // task 3.1.5 -- AssetDragPayload, HierarchyAssetDrop
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel.hpp>
 #include <aero/editor/tree_walk.hpp>
 #include <aero/scene/entity.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <utility>  // std::exchange -- the one-shot taker's own idiom
 #include <vector>
 
 namespace engine::editor {
@@ -31,6 +34,21 @@ public:
     [[nodiscard]] const char* id() const noexcept override { return "Hierarchy"; }
     [[nodiscard]] DockSlot defaultDockSlot() const noexcept override { return DockSlot::Left; }
     void onDraw(PanelContext& context) override;
+
+    // ---- task 3.1.5: the asset drop, a ONE-SHOT that tick() drains ---------------------------------
+    // NOT a PendingAction and ActionKind is NOT extended -- a DEVIATION from AC-26, recorded: this
+    // panel's applyPending cannot finish the job (instantiation needs the AssetDatabase, the importer
+    // and the scene-asset ledger, none of which a panel has), so routing it through the five-phase
+    // apply would create a second, half-capable path. Appending an enumerator that applyPending must
+    // then refuse to handle is worse than not appending one.
+    [[nodiscard]] std::optional<HierarchyAssetDrop> takeAssetDropRequest() noexcept {
+        return std::exchange(pendingAssetDrop, std::nullopt);
+    }
+    // The SEAM: it writes the SAME member the accept writes, so a test and a real gesture are
+    // indistinguishable downstream (the requestAssetBrowserSelectEntry shape).
+    void requestAssetDrop(AssetDragPayload payload, Entity targetRow) noexcept {
+        pendingAssetDrop = HierarchyAssetDrop{.payload = payload, .targetRow = targetRow};
+    }
 
 private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.
@@ -87,6 +105,7 @@ private:
     std::vector<Entity> revealPath;
     bool renameFocusPending = false;
     PendingAction pending{};
+    std::optional<HierarchyAssetDrop> pendingAssetDrop;  // task 3.1.5 -- drained by tick(), never here
 };
 
 }  // namespace engine::editor

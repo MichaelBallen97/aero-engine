@@ -1,6 +1,7 @@
 // editor/src/entity_commands.cpp -- task 2.4.2: the five structural entity commands, wrapping
-// entity_ops. Two file-local helpers carry the hard part: create/delete/duplicate share ONE
-// implementation (D21's three orientations of one mechanism).
+// entity_ops. Two helpers carry the hard part: create/delete/duplicate share ONE implementation
+// (D21's three orientations of one mechanism). Task 3.1.5 PROMOTED both out of this file's anonymous
+// namespace onto entity_commands.hpp, so the sixth structural command can call the same two.
 #include <aero/core/log.hpp>
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
@@ -15,13 +16,11 @@
 
 namespace engine::editor {
 
-namespace {
-
 // Capture `roots`' subtrees AND their root display slots, then destroy them. Returns false --
 // having changed NOTHING -- when the capture comes out empty, which is exactly "every target is
 // already gone" (AC-23/A28). The selection is pruned AFTERWARDS, never before: prune() must not see
 // a handle the destroy has not taken yet.
-bool captureAndDestroy(CommandContext& ctx, std::span<const Entity> roots, StructuralUndoState& out) {
+bool captureAndDestroySubtrees(CommandContext& ctx, std::span<const Entity> roots, StructuralUndoState& out) {
     if (!out.subtree.capture(ctx.world, roots)) {
         return false;
     }
@@ -42,7 +41,7 @@ bool captureAndDestroy(CommandContext& ctx, std::span<const Entity> roots, Struc
 // The exact inverse, in the order that makes it invisible: World state first (identities, payloads,
 // links, sibling order), then the root display order, then the selection. `selection` is what to
 // INSTALL -- the created set on a redo, the pre-command set on an undo (A27).
-bool restoreState(CommandContext& ctx, const StructuralUndoState& state, std::span<const Entity> selection) {
+bool restoreStructuralState(CommandContext& ctx, const StructuralUndoState& state, std::span<const Entity> selection) {
     if (!state.subtree.restore(ctx.world)) {
         return false;
     }
@@ -67,8 +66,6 @@ bool restoreState(CommandContext& ctx, const StructuralUndoState& state, std::sp
     return true;
 }
 
-}  // namespace
-
 // ---- CreateEntityCommand ------------------------------------------------------------------------
 
 CreateEntityCommand::CreateEntityCommand(Entity parent, std::string_view name, std::span<const Entity> selBefore)
@@ -85,14 +82,14 @@ bool CreateEntityCommand::redo(CommandContext& context) {
     }
     // Every LATER redo restores the snapshot ITS OWN undo took (D21) -- calling createEntity twice
     // would silently re-point the identity every cycle (S16).
-    return restoreState(context, state, std::span<const Entity>{&createdEntity, 1});
+    return restoreStructuralState(context, state, std::span<const Entity>{&createdEntity, 1});
 }
 
 bool CreateEntityCommand::undo(CommandContext& context) {
     if (!createdEntity.valid()) {
         return false;
     }
-    if (!captureAndDestroy(context, std::span<const Entity>{&createdEntity, 1}, state)) {
+    if (!captureAndDestroySubtrees(context, std::span<const Entity>{&createdEntity, 1}, state)) {
         return false;
     }
     context.selection.setAll(selectionBefore);
@@ -108,9 +105,11 @@ Entity CreateEntityCommand::created() const noexcept { return createdEntity; }
 DeleteEntitiesCommand::DeleteEntitiesCommand(std::span<const Entity> targetsIn, std::span<const Entity> selBefore)
     : targets(targetsIn.begin(), targetsIn.end()), selectionBefore(selBefore.begin(), selBefore.end()) {}
 
-bool DeleteEntitiesCommand::redo(CommandContext& context) { return captureAndDestroy(context, targets, state); }
+bool DeleteEntitiesCommand::redo(CommandContext& context) { return captureAndDestroySubtrees(context, targets, state); }
 
-bool DeleteEntitiesCommand::undo(CommandContext& context) { return restoreState(context, state, selectionBefore); }
+bool DeleteEntitiesCommand::undo(CommandContext& context) {
+    return restoreStructuralState(context, state, selectionBefore);
+}
 
 std::string_view DeleteEntitiesCommand::label() const noexcept { return DELETE_ENTITIES_COMMAND_LABEL; }
 
@@ -130,14 +129,14 @@ bool DuplicateEntitiesCommand::redo(CommandContext& context) {
     }
     // Every LATER redo restores the ORIGINAL copies' handles (D21/E12) -- calling duplicateEntities
     // twice would mint different handles every cycle.
-    return restoreState(context, state, createdEntities);
+    return restoreStructuralState(context, state, createdEntities);
 }
 
 bool DuplicateEntitiesCommand::undo(CommandContext& context) {
     if (createdEntities.empty()) {
         return false;
     }
-    if (!captureAndDestroy(context, createdEntities, state)) {
+    if (!captureAndDestroySubtrees(context, createdEntities, state)) {
         return false;
     }
     context.selection.setAll(selectionBefore);

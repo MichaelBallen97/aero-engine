@@ -8,8 +8,10 @@
 //
 // Blender is an external PROCESS, never a library: no header, no archive, no vcpkg entry, ever
 // (ADR-003 and the GPL boundary in docs/01-tech-stack.md). Nothing in this tree parses a .blend.
-#include <aero/core/content_hash.hpp>  // ExportProvenance::sourceHash
-#include <aero/core/guid.hpp>          // ExportProvenance::guid
+#include <aero/core/content_hash.hpp>       // ExportProvenance::sourceHash
+#include <aero/core/guid.hpp>               // ExportProvenance::guid
+#include <aero/editor/import_settings.hpp>  // blendExportSettingsFingerprint -- the deliberately
+                                            // dependency-free header, so nothing else arrives with it
 
 #include <cstddef>
 #include <cstdint>
@@ -184,6 +186,18 @@ struct ExportProvenance {
 // sourcePath, blenderPath, guid and artifactBytes are INFORMATIONAL and are NEVER compared -- 3.1.2
 // D11's "keyed by GUID, never by path", so moving the .blend with its sidecar does not invalidate (E24).
 [[nodiscard]] bool provenanceMatches(const ExportProvenance& actual, const ExportProvenance& expected) noexcept;
+
+// The value ExportProvenance::settingsFingerprint carries: a pure function of ImportSettings ALONE
+// (writeMetaText with a nil Guid and default identity, hashed), so neither the asset's GUID nor its
+// importer name leaks into it. Moved here from model_import_session.cpp at task 3.1.5 because the
+// scene-asset ledger needs the SAME value to evaluate a cache hit, and two copies of a cache-validity
+// rule is how a cache silently stops invalidating.
+//
+// Reusing writeMetaText's serializer is the whole point: a future ImportSettings field enters the
+// fingerprint automatically, which is the only reason the fingerprint exists at all (3.2.1 applies
+// `scale` during IMPORT, and what is cached is the GLB, so strictly nothing today needs it -- it is
+// here so a future Blender-SIDE option cannot be added without the invalidation already in place).
+[[nodiscard]] std::string blendExportSettingsFingerprint(const ImportSettings& settings);
 
 // <projectRoot>/Library/BlenderExports/<guid>.json AS WRITTEN BY THE SCRIPT -- the run's status
 // report. It shares the provenance record's PATH deliberately: on success the provenance record

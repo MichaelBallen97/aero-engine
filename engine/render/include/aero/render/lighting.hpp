@@ -54,6 +54,13 @@ struct RenderView {
     std::uint32_t cameraCount = 0;
     std::uint32_t directionalCount = 0;
     bool pointsTruncated = false;
+    // task 3.1.5: how many referencing MeshRenderers this view could NOT resolve. Both are TRANSIENT
+    // BY DESIGN — every frame between a drop and the ledger's upload legitimately counts nonzero —
+    // which is why SceneRenderer::render deliberately does NOT turn them into latched WARNs, unlike
+    // the three above. The editor's scene-asset ledger owns the user-facing message, because it is the
+    // only layer that can tell Loading from Failed.
+    std::uint32_t unresolvedMeshes = 0;
+    std::uint32_t unresolvedMaterials = 0;
 };
 
 }  // namespace engine::render

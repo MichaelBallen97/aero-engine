@@ -3,6 +3,7 @@
 // gate, the D3 identity/hierarchy rules, the D11 error catalog, the D6 tolerance policy, the D7
 // canonical form and both round-trip guarantees, the D9 DOM re-emitter, and D8's validateScene.
 // Byte-pinned fixtures are the executable twins of docs/09's worked examples.
+#include <aero/core/guid.hpp>  // task 3.1.5 — the SJ block's engine::Guid overload pair
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/json_writer.hpp>
@@ -12,6 +13,7 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <cctype>  // task 3.1.5 — std::toupper, in SJ3's any-case-on-read arm
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -791,4 +793,174 @@ TEST_CASE("determinism: repeated parse/write and repeated error text") {
     const engine::SceneDocument c1 = parseOk(manyUnknownKeys);
     const engine::SceneDocument c2 = parseOk(manyUnknownKeys);
     CHECK(engine::writeSceneText(c1) == engine::writeSceneText(c2));
+}
+
+// ---- task 3.1.5 (D2): the engine::Guid JSON overload pair (SJ1-SJ10) -------------------------------
+//
+// The wire form is the canonical 32-lowercase-hex string formatGuid produces -- the SAME spelling a
+// .meta and an .aeromat carry, so a GUID reads identically wherever it appears. NIL IS A VALUE, NOT AN
+// OMISSION: the component layer emits one key per supported field unconditionally (docs/09 §2.3), so
+// nil writes 32 zeros and reads back legally.
+
+namespace {
+
+// A distinctive non-nil guid, and its canonical text. Both halves differ from each other so a writer
+// that emitted one half twice would redden.
+constexpr engine::Guid SAMPLE_GUID{0xA1B2C3D4E5F60718ULL, 0x293A4B5C6D7E8F90ULL};
+constexpr std::string_view SAMPLE_GUID_TEXT = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+// The distinctive prior value every failing arm must leave alone (SJ10).
+constexpr engine::Guid SENTINEL_GUID{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+
+// Emit a bare JSON string token holding `text` -- what a Guid payload looks like on the wire.
+std::string jsonStringToken(std::string_view text) { return std::string("\"") + std::string(text) + "\""; }
+
+}  // namespace
+
+TEST_CASE("SJ1: a nil Guid writes 32 lowercase zeros -- nil is a value, never an omission") {
+    engine::JsonWriter w;
+    engine::reflect::writeJson(w, engine::Guid{});
+    CHECK(w.str() == jsonStringToken(std::string(engine::GUID_TEXT_LENGTH, '0')));
+}
+
+TEST_CASE("SJ2: a non-nil Guid round-trips write -> parse -> read exactly") {
+    engine::JsonWriter w;
+    engine::reflect::writeJson(w, SAMPLE_GUID);
+    const engine::JsonParseResult parsed = engine::parseJson(w.str());
+    REQUIRE(parsed.ok());
+    engine::Guid out = SENTINEL_GUID;
+    CHECK(engine::reflect::readJson(*parsed.value, out));
+    CHECK(out == SAMPLE_GUID);
+
+    // and the nil round trip, which is legal rather than an error
+    engine::JsonWriter wn;
+    engine::reflect::writeJson(wn, engine::Guid{});
+    const engine::JsonParseResult parsedNil = engine::parseJson(wn.str());
+    REQUIRE(parsedNil.ok());
+    engine::Guid nilOut = SENTINEL_GUID;
+    CHECK(engine::reflect::readJson(*parsedNil.value, nilOut));
+    CHECK(nilOut == engine::Guid{});
+    CHECK_FALSE(nilOut.valid());
+}
+
+// The literal pin. A round trip through parseGuid CANNOT see an uppercasing writer, because parseGuid
+// accepts any case -- and neither can the nil case, since std::toupper('0') == '0'. Only a comparison
+// against the literal lowercase spelling reddens that defect, so this case must never be relaxed into
+// a round trip.
+TEST_CASE("SJ3: the write side is pinned against the LITERAL lowercase text; the uppercase twin reads equal") {
+    engine::JsonWriter w;
+    engine::reflect::writeJson(w, SAMPLE_GUID);
+    CHECK(w.str() == jsonStringToken(SAMPLE_GUID_TEXT));
+
+    std::string uppercase(SAMPLE_GUID_TEXT);
+    for (char& c : uppercase) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    CHECK(uppercase != std::string(SAMPLE_GUID_TEXT));  // the arm is not vacuous
+
+    const engine::JsonParseResult parsedUpper = engine::parseJson(jsonStringToken(uppercase));
+    REQUIRE(parsedUpper.ok());
+    engine::Guid fromUpper = SENTINEL_GUID;
+    CHECK(engine::reflect::readJson(*parsedUpper.value, fromUpper));
+
+    const engine::JsonParseResult parsedLower = engine::parseJson(jsonStringToken(SAMPLE_GUID_TEXT));
+    REQUIRE(parsedLower.ok());
+    engine::Guid fromLower = SENTINEL_GUID;
+    CHECK(engine::reflect::readJson(*parsedLower.value, fromLower));
+
+    CHECK(fromUpper == fromLower);  // any case on read
+    CHECK(fromUpper == SAMPLE_GUID);
+}
+
+TEST_CASE("SJ4: a 31-digit string is rejected -- exactly 32, never a padded short form") {
+    const std::string shortText(31, 'a');
+    const engine::JsonParseResult parsed = engine::parseJson(jsonStringToken(shortText));
+    REQUIRE(parsed.ok());
+    engine::Guid out = SENTINEL_GUID;
+    CHECK_FALSE(engine::reflect::readJson(*parsed.value, out));
+}
+
+TEST_CASE("SJ5: a 33-digit string is rejected -- exactly 32, never a truncated long form") {
+    const std::string longText(33, 'a');
+    const engine::JsonParseResult parsed = engine::parseJson(jsonStringToken(longText));
+    REQUIRE(parsed.ok());
+    engine::Guid out = SENTINEL_GUID;
+    CHECK_FALSE(engine::reflect::readJson(*parsed.value, out));
+}
+
+TEST_CASE("SJ6: a dashed RFC-4122-shaped UUID is rejected, never silently normalized") {
+    const std::string dashed = "a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90";
+    CHECK(dashed.size() == 36);
+    const engine::JsonParseResult parsed = engine::parseJson(jsonStringToken(dashed));
+    REQUIRE(parsed.ok());
+    engine::Guid out = SENTINEL_GUID;
+    CHECK_FALSE(engine::reflect::readJson(*parsed.value, out));
+}
+
+TEST_CASE("SJ7: a 32-character string carrying a non-hex character is rejected") {
+    std::string text(SAMPLE_GUID_TEXT);
+    text[17] = 'z';  // still exactly 32 characters -- only the alphabet is wrong
+    CHECK(text.size() == engine::GUID_TEXT_LENGTH);
+    const engine::JsonParseResult parsed = engine::parseJson(jsonStringToken(text));
+    REQUIRE(parsed.ok());
+    engine::Guid out = SENTINEL_GUID;
+    CHECK_FALSE(engine::reflect::readJson(*parsed.value, out));
+}
+
+TEST_CASE("SJ8: a JSON number is rejected -- a Guid is a string on the wire, not an integer") {
+    const engine::JsonParseResult parsed = engine::parseJson("7");
+    REQUIRE(parsed.ok());
+    engine::Guid out = SENTINEL_GUID;
+    CHECK_FALSE(engine::reflect::readJson(*parsed.value, out));
+}
+
+TEST_CASE("SJ9: a JSON null is rejected -- a Guid has no NaN analog, and nil has its own spelling") {
+    const engine::JsonParseResult parsed = engine::parseJson("null");
+    REQUIRE(parsed.ok());
+    engine::Guid out = SENTINEL_GUID;
+    CHECK_FALSE(engine::reflect::readJson(*parsed.value, out));
+}
+
+// The S3 witness: never "helpfully" nil the field on a failed parse. A value that failed to parse says
+// nothing about what the field should become, so out keeps its prior value on EVERY failing arm.
+TEST_CASE("SJ10: every failing arm leaves out at its PRIOR value, not at nil") {
+    const std::string uuidLike = "a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90";
+    std::string nonHex(SAMPLE_GUID_TEXT);
+    nonHex[0] = 'g';
+    const std::vector<std::string> badDocuments{
+        jsonStringToken(std::string(31, 'a')),                  // too short
+        jsonStringToken(std::string(33, 'a')),                  // too long
+        jsonStringToken(uuidLike),                              // dashed
+        jsonStringToken(nonHex),                                // non-hex
+        jsonStringToken(""),                                    // empty
+        jsonStringToken("0x00000000000000000000000000000000"),  // 0x prefix
+        jsonStringToken(" a1b2c3d4e5f60718293a4b5c6d7e8f90"),   // leading space
+        "7",                                                    // number
+        "null",                                                 // null
+        "true",                                                 // bool
+        "[]",                                                   // array
+        "{}",                                                   // object
+    };
+    for (const std::string& document : badDocuments) {
+        CAPTURE(document);
+        const engine::JsonParseResult parsed = engine::parseJson(document);
+        REQUIRE(parsed.ok());
+        engine::Guid out = SENTINEL_GUID;
+        CHECK_FALSE(engine::reflect::readJson(*parsed.value, out));
+        CHECK(out == SENTINEL_GUID);  // untouched
+
+        // readField warns and returns false, and it too leaves the target alone.
+        const engine::JsonValue field =
+            engine::JsonValue::object({engine::JsonMember{.key = "asset", .value = *parsed.value}});
+        engine::Guid viaField = SENTINEL_GUID;
+        CHECK_FALSE(engine::reflect::readField(field, "engine::demo::Referencing", "asset", viaField));
+        CHECK(viaField == SENTINEL_GUID);
+    }
+
+    // A MISSING key is not a failure at all: readField returns true and leaves the default (D9).
+    const engine::JsonParseResult empty = engine::parseJson("{}");
+    REQUIRE(empty.ok());
+    engine::Guid missing = SENTINEL_GUID;
+    CHECK(engine::reflect::readField(*empty.value, "engine::demo::Referencing", "asset", missing));
+    CHECK(missing == SENTINEL_GUID);
 }

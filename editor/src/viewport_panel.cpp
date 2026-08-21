@@ -10,6 +10,7 @@
 #include <aero/core/math.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/vfs.hpp>
+#include <aero/editor/asset_drag.hpp>  // task 3.1.5: the payload, the decode and the routing matrix
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/gizmo.hpp>
 #include <aero/editor/picking.hpp>
@@ -18,12 +19,15 @@
 #include <aero/editor/transform_command.hpp>
 #include <aero/editor/transform_ops.hpp>
 #include <aero/rhi/internal/native_device.hpp>
+#include <aero/scene/mesh_renderer.hpp>  // task 3.1.5: the Material arm asks the LIVE World
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <imgui.h>
+#include <imgui_internal.h>  // task 3.1.5: ImRect + BeginDragDropTargetCustom (shell_ui.cpp's precedent)
 #include <memory>
+#include <optional>
 #include <utility>
 
 // <ImGuizmo.h> deliberately follows <imgui.h> and lives in its own trailing include block: it does
@@ -119,6 +123,62 @@ PanelOptions ViewportPanel::options() const noexcept {
 EditorCamera& ViewportPanel::camera() noexcept { return editorCamera; }
 const EditorCamera& ViewportPanel::camera() const noexcept { return editorCamera; }
 
+// ---- task 3.1.5 ----------------------------------------------------------------------------------
+render::ForwardRenderer* ViewportPanel::sceneForwardRenderer() noexcept {
+    return sceneRenderer ? &sceneRenderer->renderer() : nullptr;
+}
+
+scene_render::AssetBindingTable* ViewportPanel::sceneAssetBindings() noexcept {
+    return sceneRenderer ? &sceneRenderer->bindings() : nullptr;
+}
+
+std::uint32_t ViewportPanel::lastUnresolvedMeshes() const noexcept {
+    return sceneRenderer ? sceneRenderer->lastUnresolvedMeshes() : 0U;
+}
+
+std::uint32_t ViewportPanel::lastUnresolvedMaterials() const noexcept {
+    return sceneRenderer ? sceneRenderer->lastUnresolvedMaterials() : 0U;
+}
+
+Entity ViewportPanel::pickAt(const World& world, Vec2 ndc) const {
+    // ONE pick, THIS panel's state, no ImGui: the accept-time peek and tick()'s drain both come here,
+    // so a drop that was offered and a drop that is applied can never disagree about which entity was
+    // under the cursor. `lastImageSizePoints` is the last DRAWN image rect; a panel that has never
+    // drawn has a zero size, which pickEntity handles as any degenerate viewport (no point hit).
+    const PickRequest request{
+        .ndc = ndc, .aspect = lastAspect, .viewportSizePoints = lastImageSizePoints, .meshBounds = meshBounds};
+    return pickEntity(world, editorCamera, request).entity;
+}
+
+void ViewportPanel::acceptViewportAssetDrop(PanelContext& context, Vec2 imageOrigin, Vec2 avail) {
+    const ImGuiPayload* const payload = ImGui::GetDragDropPayload();  // PEEK -- no accept yet
+    if (payload == nullptr || !payload->IsDataType(ASSET_PAYLOAD_TYPE)) {
+        return;
+    }
+    const std::optional<AssetDragPayload> asset = decodeAssetDragPayload(payload->Data, payload->DataSize);
+    if (!asset.has_value()) {
+        return;
+    }
+    const ImGuiIO& io = ImGui::GetIO();
+    const Vec2 ndc = viewportNdc(Vec2{io.MousePos.x, io.MousePos.y}, imageOrigin, avail);
+    const auto kind = static_cast<AssetKind>(asset->kind);
+    // A Material payload needs to know whether the entity UNDER THE CURSOR has a MeshRenderer, so the
+    // peek runs a real pick, at the hover position, this frame. One pick per frame during a drag; this
+    // panel already pays one per click.
+    bool targetHasMesh = false;
+    if (kind == AssetKind::Material) {
+        const Entity hit = pickAt(context.world, ndc);
+        targetHasMesh = hit.valid() && context.world.has<MeshRenderer>(hit);
+    }
+    if (classifyAssetDrop(kind, DropSurface::Viewport, targetHasMesh) == DropAction::None) {
+        return;  // REFUSED AT PEEK: AcceptDragDropPayload is never called, so ImGui draws no highlight
+    }
+    if (ImGui::AcceptDragDropPayload(ASSET_PAYLOAD_TYPE) != nullptr) {
+        // RECORD ONLY. Placement is resolved in tick(), from the same camera state the command sees.
+        pendingAssetDrop = ViewportAssetDrop{.payload = *asset, .ndc = ndc};
+    }
+}
+
 void ViewportPanel::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent) {
     if (status != Status::Uninitialized) {
         return;
@@ -211,8 +271,35 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // regardless of id) but SetItemKeyOwner does NOT (it returns false for id 0) -- the wheel is
     // claimed by ImGuiWindowFlags_NoScrollWithMouse in options() instead. See plan C1.
     const bool hovered = ImGui::IsItemHovered();
+    lastImageSizePoints = Vec2{avail.x, avail.y};  // task 3.1.5: what pickAt needs, latched here
+
+    // --- 8b-drop (task 3.1.5). BEFORE the gesture block, so a live payload suppresses the very
+    // inputs computed just below it. While ANY drag payload is live the viewport is a DROP TARGET,
+    // not an input surface -- the Hierarchy's own signal, applied here. Suppressing `hovered` for
+    // the gesture, the pick and the F-focus guard is enough AND is the minimum: the drop target
+    // itself tests the mouse against a RECT, not IsItemHovered, so it is unaffected.
+    const bool dragActive = ImGui::GetDragDropPayload() != nullptr;
+    const bool inputHovered = hovered && !dragActive;
+    if (dragActive) {
+        // A press that began on the image, dragged out to the browser and released would otherwise
+        // leave the arm latched into the next frame.
+        pickArmed = false;
+        // ImGui::Image submits its item with id 0, so BeginDragDropTarget() cannot attach to it (the
+        // SetItemKeyOwner note one floor up says why id 0 is special). BeginDragDropTargetCustom
+        // takes the rect and an EXPLICIT id and consults no item state at all -- it needs
+        // g.DragDropActive, this window to be the hovered dock-tree root, the mouse inside `bb`, and
+        // a NON-ZERO id, which it IM_ASSERTs. The != 0 guard costs one comparison and turns a
+        // would-be Debug-lane abort into "the target does not exist this frame".
+        const ImRect imageRect(imageOrigin, ImVec2(imageOrigin.x + avail.x, imageOrigin.y + avail.y));
+        const ImGuiID dropId = ImGui::GetID("##aero_asset_drop");
+        if (dropId != 0 && ImGui::BeginDragDropTargetCustom(imageRect, dropId)) {
+            acceptViewportAssetDrop(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y});
+            ImGui::EndDragDropTarget();  // ONLY because BeginDragDropTargetCustom returned true
+        }
+    }
+
     const CameraGestureInput gestureInput{
-        .hovered = hovered,
+        .hovered = inputHovered,
         .leftDown = ImGui::IsMouseDown(ImGuiMouseButton_Left),
         .rightDown = ImGui::IsMouseDown(ImGuiMouseButton_Right),
         .middleDown = ImGui::IsMouseDown(ImGuiMouseButton_Middle),
@@ -266,7 +353,7 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // frame of lag (D11). Writing context.selection HERE is the HierarchyPanel::applyPending shape
     // (F32): the Image item is submitted and closed, no ImGui tree is open, and no eachChild walk is
     // in flight, which is what .claude/rules/editor.md's "not during a draw walk" actually protects.
-    updatePick(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y}, hovered);
+    updatePick(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y}, inputHovered);
 
     // D7: F is gated on HOVER, not on focus. This is a REASONED DEVIATION from the chord rule in
     // .claude/rules/editor.md, not an oversight: that rule exists so a focused InputText cannot
@@ -275,7 +362,7 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // the camera would require clicking the viewport first, which no 3D application demands. ImGui
     // has NO "route to hovered" flag, so Shortcut() cannot express it. io.WantTextInput preserves the
     // rule's real intent (AC-15); repeat=false frames once per press, not every frame.
-    if (hovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+    if (inputHovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
         focusSelection(context);
     }
 
@@ -299,8 +386,12 @@ void ViewportPanel::onDraw(PanelContext& context) {
 }
 
 void ViewportPanel::focusSelection(PanelContext& context) {
-    const Aabb bounds = context.selection.empty() ? sceneBounds(context.world)
-                                                  : selectionBounds(context.world, context.selection.entities());
+    // task 3.1.5: `meshBounds` reaches ALL THREE consumers -- this one, updatePick's PickRequest and
+    // drawSelectionOverlay's buildSelectionOverlay -- or none of them (INV-D6). The pick box, the
+    // frame box and the highlight box are the same box, structurally rather than by review.
+    const Aabb bounds = context.selection.empty()
+                            ? sceneBounds(context.world, meshBounds)
+                            : selectionBounds(context.world, context.selection.entities(), meshBounds);
     if (bounds.valid()) {
         editorCamera.focusOn(bounds, lastAspect);
     } else {
@@ -357,8 +448,10 @@ void ViewportPanel::updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 ava
         return;
     }
 
-    const PickRequest request{
-        .ndc = viewportNdc(pos, imageOrigin, avail), .aspect = lastAspect, .viewportSizePoints = avail};
+    const PickRequest request{.ndc = viewportNdc(pos, imageOrigin, avail),
+                              .aspect = lastAspect,
+                              .viewportSizePoints = avail,
+                              .meshBounds = meshBounds};  // task 3.1.5 -- one of INV-D6's three
     const PickResult result = pickEntity(context.world, editorCamera, request);
     // F30: io.KeyCtrl ALONE is ALREADY "Ctrl on Windows/Linux, Cmd on macOS". Writing
     // `io.KeyCtrl || io.KeySuper` would ALSO fire on physical Ctrl on macOS -- identical to :171.
@@ -595,7 +688,7 @@ void ViewportPanel::drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin
     // between) -- so the box lands on the pixels it belongs to, never one frame behind them.
     const Mat4 viewProj = editorCamera.projectionMatrix(lastAspect) * editorCamera.viewMatrix();
     buildSelectionOverlay(context.world, context.selection.entities(), context.selection.primary(), viewProj, avail,
-                          overlayScratch);
+                          overlayScratch, meshBounds);  // task 3.1.5 -- the third of INV-D6's three
     if (overlayScratch.empty()) {
         return;  // E1: no PushClipRect at all, so there is no pair left unbalanced
     }

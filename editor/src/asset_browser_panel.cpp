@@ -16,6 +16,7 @@
 #include <aero/core/guid.hpp>
 #include <aero/editor/asset_cache.hpp>  // task 3.1.2: ImportChange, importChangeLabel() -- used directly below
 #include <aero/editor/asset_database.hpp>
+#include <aero/editor/asset_drag.hpp>  // task 3.1.5: the payload, its type string and the draggable rule
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_watcher.hpp>  // task 3.1.4 -- WatchStatus, read through the reconciled pointer
 #include <aero/editor/panel_context.hpp>
@@ -27,6 +28,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>  // task 3.1.5: std::memset over the payload's tail padding
 #include <imgui.h>
 #include <optional>
 #include <string>
@@ -500,6 +502,10 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
                                 record(ActionKind::SelectEntry, hit.relativePath);
                             }
                         }
+                        // task 3.1.5: IMMEDIATELY after the Selectable, before anything reads
+                        // g.LastItemData. UNCONDITIONAL here -- searchAssets never matches a folder
+                        // (the browser's own recorded fact), so every hit is a file.
+                        beginAssetDragSource(hit.relativePath, hit.relativePath.c_str());
                         ImGui::SameLine(0.0F, 0.0F);
                         ImGui::TextUnformatted(hit.relativePath.c_str());
                         ImGui::PopID();  // no continue/break/return between Push and Pop
@@ -604,6 +610,12 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
                             record(ActionKind::SelectEntry, rel);
                         }
                     }
+                    // task 3.1.5: same position as the search row above. GUARDED -- this list does
+                    // show folders, and the helper's own kind test would refuse one anyway; checking
+                    // the cheap thing here keeps findByPath off the per-directory path.
+                    if (!entry.isDirectory) {
+                        beginAssetDragSource(rel, entry.name.c_str());
+                    }
                     ImGui::SameLine(0.0F, 0.0F);
                     ImGui::TextUnformatted(entry.name.c_str());
                     ImGui::PopID();  // no continue/break/return between Push and Pop
@@ -622,6 +634,40 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
         }
     }
     ImGui::EndChild();  // UNCONDITIONAL -- F9
+}
+
+// ---- task 3.1.5 (§0.11/§D-21): the ONE drag source, three call sites -------------------------------
+void AssetBrowserPanel::beginAssetDragSource(const std::string& relativePath, const char* previewText) {
+    // REFUSAL AT THE SOURCE, in this order. The cheap kind test runs before findByPath so a directory
+    // never reaches the database at all, and a payload that would be refused at every target is never
+    // created in the first place.
+    const AssetKind kind = classifyAssetKind(leafOf(relativePath), /*isDirectory=*/false);
+    if (!assetKindIsDraggable(kind)) {
+        return;  // Folder/Audio/Text/Unknown -- and .mtl, which is importable but Unknown-kinded
+    }
+    if (databasePtr == nullptr) {
+        return;
+    }
+    const AssetRecord* const record = databasePtr->findByPath(relativePath);
+    if (record == nullptr || !record->guid.valid()) {
+        return;  // not scanned yet, or an Invalid-state record: a nil guid is not a droppable identity
+    }
+    if (!ImGui::BeginDragDropSource()) {
+        return;  // NOT a drag this frame. EndDragDropSource is owed ONLY when this returned true.
+    }
+    AssetDragPayload payload{};
+    // Guid's hi/lo NSDMIs make AssetDragPayload non-trivially-default-constructible, so value-init
+    // runs a constructor instead of zeroing the whole object and the SEVEN tail padding bytes stay
+    // indeterminate (measured -- asset_drag.hpp records it). SetDragDropPayload memcpy's all 24, so
+    // this is the ONE call site where zeroing them belongs, exactly as that header says. Nothing reads
+    // them today; this makes the transmitted bytes deterministic for anyone who later hashes or
+    // compares a payload.
+    std::memset(&payload, 0, sizeof payload);
+    payload.guid = record->guid;
+    payload.kind = static_cast<std::uint8_t>(kind);
+    ImGui::SetDragDropPayload(ASSET_PAYLOAD_TYPE, &payload, sizeof(payload));  // ImGui COPIES (heap, >16B)
+    ImGui::TextUnformatted(previewText);  // the house preview: label text, no thumbnail
+    ImGui::EndDragDropSource();
 }
 
 // ---- phase 4 (grid): task 3.1.3, Step 6 -----------------------------------------------------------
@@ -647,6 +693,13 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
         } else {
             record(ActionKind::SelectEntry, rel);
         }
+    }
+
+    // task 3.1.5: BEFORE the draw-list capture, and that ordering is load-bearing --
+    // BeginDragDropSource pushes a TOOLTIP WINDOW, so capturing this window's draw list afterwards
+    // would be a question worth asking. Placing the helper first removes the question entirely.
+    if (!entry.isDirectory) {
+        beginAssetDragSource(rel, entry.name.c_str());
     }
 
     ImDrawList* const drawList = ImGui::GetWindowDrawList();

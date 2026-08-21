@@ -8,9 +8,11 @@
 //
 // Case 11's LogFixture follows scene_bounds_test.cpp's case-12b idiom -- declared FIRST in its case
 // so it destructs LAST, after the LogSinkScope.
+#include <aero/core/guid.hpp>
 #include <aero/core/log.hpp>
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/picking.hpp>
+#include <aero/editor/scene_bounds.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/scene/scene.hpp>
 
@@ -19,12 +21,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <ostream>
 #include <vector>
 
 using engine::Entity;
+using engine::Guid;
 using engine::Mat4;
 using engine::MeshRenderer;
 using engine::Quat;
@@ -33,9 +38,12 @@ using engine::Vec2;
 using engine::Vec3;
 using engine::Vec4;
 using engine::World;
+using engine::editor::Aabb;
 using engine::editor::applyPickAction;
 using engine::editor::CLIP_W_EPSILON;
 using engine::editor::EditorCamera;
+using engine::editor::MeshBoundsKey;
+using engine::editor::MeshBoundsLookup;
 using engine::editor::PickAction;
 using engine::editor::pickEntity;
 using engine::editor::PickRequest;
@@ -286,6 +294,89 @@ TEST_CASE("picking: rayLocalBoxHit totality against hostile inputs (AC-7)") {
     CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, -0.5F, t));
     CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, QUIET_NAN, t));
     CHECK(t == 12345.0F);
+}
+
+// ---- task 3.1.5: the Aabb overload (PK1-PK7) ----------------------------------------------------
+// The min/max generalisation, and the one every real mesh uses. Its whole reason for existing is that
+// a ZERO-THICKNESS axis is LEGAL -- the flat Plane primitive's own shape -- so the precondition is
+// min <= max, never min < max. Written BEFORE the overload existed, which is what retires V5's
+// "unproven on a degenerate box" note: PK6 and PK7 are the degenerate cases, and they were the first
+// thing typed.
+
+TEST_CASE("picking: the Aabb overload's slab battery (PK1-PK5)") {
+    const Aabb box{Vec3{-0.5F, -0.5F, -0.5F}, Vec3{0.5F, 0.5F, 0.5F}};
+
+    SUBCASE("PK1 axis-aligned entry hit") {
+        float t = 0.0F;
+        CHECK(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, box, t));
+        CHECK(std::abs(t - 9.5F) < EPS);
+    }
+    SUBCASE("PK2 aimed away is a miss, outT untouched") {
+        float t = 12345.0F;
+        CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, 1.0F}, box, t));
+        CHECK(t == 12345.0F);
+    }
+    SUBCASE("PK3 entry hits ONLY -- an origin inside the box is a miss") {
+        float t = 0.0F;
+        CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 0.0F}, Vec3{0.0F, 0.0F, -1.0F}, box, t));
+        CHECK_FALSE(rayLocalBoxHit(Vec3{0.25F, 0.25F, 0.25F}, engine::normalize(Vec3{1.0F, 1.0F, 1.0F}), box, t));
+    }
+    SUBCASE("PK4 parallel and OUTSIDE a slab") {
+        float t = 0.0F;
+        CHECK_FALSE(rayLocalBoxHit(Vec3{2.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, box, t));
+    }
+    SUBCASE("PK5 parallel and INSIDE a slab constrains nothing") {
+        float t = 0.0F;
+        CHECK(rayLocalBoxHit(Vec3{0.25F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, box, t));
+        CHECK(std::abs(t - 9.5F) < EPS);
+    }
+}
+
+TEST_CASE("picking: a ZERO-THICKNESS axis is legal and hittable from above (PK6, retiring V5)") {
+    // The flat Plane primitive's own box. A precondition of min < max instead of min <= max rejects
+    // this box outright and makes every plane in every scene unclickable -- which is S33b.
+    const Aabb flat{Vec3{-0.5F, 0.0F, -0.5F}, Vec3{0.5F, 0.0F, 0.5F}};
+    CHECK(flat.valid());
+
+    SUBCASE("straight down onto the middle") {
+        float t = 0.0F;
+        CHECK(rayLocalBoxHit(Vec3{0.0F, 4.0F, 0.0F}, Vec3{0.0F, -1.0F, 0.0F}, flat, t));
+        CHECK(std::abs(t - 4.0F) < EPS);
+    }
+    SUBCASE("straight up from below") {
+        float t = 0.0F;
+        CHECK(rayLocalBoxHit(Vec3{0.1F, -3.0F, -0.2F}, Vec3{0.0F, 1.0F, 0.0F}, flat, t));
+        CHECK(std::abs(t - 3.0F) < EPS);
+    }
+    SUBCASE("obliquely from above, landing inside") {
+        float t = 0.0F;
+        CHECK(rayLocalBoxHit(Vec3{-0.4F, 1.0F, 0.0F}, engine::normalize(Vec3{0.4F, -1.0F, 0.0F}), flat, t));
+    }
+    SUBCASE("down, but OUTSIDE the quad") {
+        float t = 12345.0F;
+        CHECK_FALSE(rayLocalBoxHit(Vec3{3.0F, 4.0F, 0.0F}, Vec3{0.0F, -1.0F, 0.0F}, flat, t));
+        CHECK(t == 12345.0F);
+    }
+}
+
+TEST_CASE("picking: a ray exactly EDGE-ON to the flat plane is total (PK7)") {
+    const Aabb flat{Vec3{-0.5F, 0.0F, -0.5F}, Vec3{0.5F, 0.0F, 0.5F}};
+    float t = 0.0F;
+
+    SUBCASE("in the plane's own y, aimed along -Z: parallel to the zero-thickness slab AND inside it") {
+        // The 0 * inf -> NaN path the |d| < DIR_EPSILON branch exists to keep out. y == 0 is exactly on
+        // both slab planes at once, which is the input a strict min < max ladder cannot express at all.
+        CHECK(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, flat, t));
+        CHECK(std::abs(t - 9.5F) < EPS);
+    }
+    SUBCASE("edge-on but OFFSET in y: parallel and outside") {
+        float miss = 12345.0F;
+        CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.25F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, flat, miss));
+        CHECK(miss == 12345.0F);
+    }
+    SUBCASE("an origin ON the quad is an origin INSIDE the box -- a miss, not a hit at 0") {
+        CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 0.0F}, Vec3{0.0F, 0.0F, -1.0F}, flat, t));
+    }
 }
 
 // The case above drives rayLocalBoxHit with RAY-level arguments only. AC-7's other two clauses -- a
@@ -748,5 +839,197 @@ TEST_CASE("picking: applyPickAction is the one place a PickAction becomes a Sele
         CHECK(selection.primary() == primaryBefore);
         const std::vector<Entity> entitiesAfter(selection.entities().begin(), selection.entities().end());
         CHECK(entitiesAfter == entitiesBefore);
+    }
+}
+
+// ================================================================================================
+// task 3.1.5 (PK8-PK12): the reference pick arm, the invalid-box refusal, the two overloads agreeing,
+// and the drop placement helper.
+// ================================================================================================
+
+namespace {
+[[nodiscard]] Guid pickMeshGuid(std::uint64_t ordinal) { return Guid{ordinal, 0xC0FFEEULL}; }
+
+// An entity holding a REFERENCE rather than a primitive selector.
+[[nodiscard]] Entity makeReferenced(World& world, Vec3 position, Guid mesh, std::uint32_t meshIndex) {
+    const Entity e = world.create();
+    world.add<Transform>(e, Transform{.position = position});
+    world.add<MeshRenderer>(e, MeshRenderer{.mesh = mesh, .meshIndex = meshIndex});
+    return e;
+}
+}  // namespace
+
+TEST_CASE("picking: a LARGE mesh is picked where the old half-unit box missed (PK8)") {
+    // S31's witness: a localBoundsFor that answered primitiveLocalBounds(0) on the reference arm makes
+    // this click a miss. The click lands 3 units off the entity's origin, well outside [-0.5, 0.5]^3
+    // and well inside the referenced box.
+    const EditorCamera camera = testCamera();
+    constexpr float ASPECT = 4.0F / 3.0F;
+    World world;
+    const Entity e = makeReferenced(world, Vec3::zero(), pickMeshGuid(1), 0);
+
+    MeshBoundsLookup lookup;
+    lookup.set(MeshBoundsKey{pickMeshGuid(1), 0}, Aabb{Vec3{-4.0F, -4.0F, -1.0F}, Vec3{4.0F, 4.0F, 1.0F}});
+
+    const PickRequest request{.ndc = ndcOf(camera, ASPECT, Vec3{3.0F, 0.0F, 0.0F}),
+                              .aspect = ASPECT,
+                              .viewportSizePoints = VIEWPORT_POINTS,
+                              .meshBounds = &lookup};
+
+    SUBCASE("with the lookup published, the big box is hit") {
+        const PickResult result = pickEntity(world, camera, request);
+        REQUIRE(result.hit());
+        CHECK(result.entity == e);
+        CHECK_FALSE(result.isPoint);
+    }
+    SUBCASE("the SAME click against the cube's box would be a mesh miss") {
+        // The control: the identical entity as a PRIMITIVE, whose box really is [-0.5, 0.5]^3.
+        World primitiveWorld;
+        makeMesh(primitiveWorld, Vec3::zero());
+        const PickResult result = pickEntity(primitiveWorld, camera, request);
+        CHECK_FALSE(result.hit());
+    }
+}
+
+TEST_CASE("picking: an UNRESOLVED reference falls through to the screen disc (PK9)") {
+    // AC-34: an entity mid-load stays selectable. The mesh arm must NOT return unconditionally, or a
+    // dropped model is unclickable for the whole of its load and the user cannot undo it by selecting
+    // it.
+    const EditorCamera camera = testCamera();
+    constexpr float ASPECT = 4.0F / 3.0F;
+    World world;
+    const Entity loading = makeReferenced(world, Vec3::zero(), pickMeshGuid(1), 0);
+
+    const PickRequest request{
+        .ndc = ndcOf(camera, ASPECT, Vec3::zero()), .aspect = ASPECT, .viewportSizePoints = VIEWPORT_POINTS};
+
+    SUBCASE("no lookup at all") {
+        const PickResult result = pickEntity(world, camera, request);
+        REQUIRE(result.hit());
+        CHECK(result.entity == loading);
+        CHECK(result.isPoint);  // the DISC, exactly as a light is picked
+    }
+    SUBCASE("a lookup that does not hold this guid") {
+        MeshBoundsLookup lookup;
+        lookup.set(MeshBoundsKey{pickMeshGuid(9), 0}, Aabb{Vec3{-1.0F, -1.0F, -1.0F}, Vec3{1.0F, 1.0F, 1.0F}});
+        PickRequest withLookup = request;
+        withLookup.meshBounds = &lookup;
+        const PickResult result = pickEntity(world, camera, withLookup);
+        REQUIRE(result.hit());
+        CHECK(result.entity == loading);
+        CHECK(result.isPoint);
+    }
+    SUBCASE("...and a click well outside the disc still misses, so the disc is a DISC") {
+        const PickRequest far{.ndc = offsetNdcByPoints(request.ndc, Vec2{120.0F, 0.0F}, VIEWPORT_POINTS),
+                              .aspect = ASPECT,
+                              .viewportSizePoints = VIEWPORT_POINTS};
+        CHECK_FALSE(pickEntity(world, camera, far).hit());
+    }
+    SUBCASE("once the box IS published, the same entity is picked as a MESH") {
+        MeshBoundsLookup lookup;
+        lookup.set(MeshBoundsKey{pickMeshGuid(1), 0}, Aabb{Vec3{-1.0F, -1.0F, -1.0F}, Vec3{1.0F, 1.0F, 1.0F}});
+        PickRequest withLookup = request;
+        withLookup.meshBounds = &lookup;
+        const PickResult result = pickEntity(world, camera, withLookup);
+        REQUIRE(result.hit());
+        CHECK(result.entity == loading);
+        CHECK_FALSE(result.isPoint);
+    }
+}
+
+TEST_CASE("picking: an INVALID box is a miss and leaves outT untouched (PK10)") {
+    float t = 12345.0F;
+    SUBCASE("min > max on one axis") {
+        const Aabb inverted{Vec3{1.0F, -0.5F, -0.5F}, Vec3{-1.0F, 0.5F, 0.5F}};
+        CHECK_FALSE(inverted.valid());
+        CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, inverted, t));
+    }
+    SUBCASE("Aabb::empty()'s inverted sentinel") {
+        CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, Aabb::empty(), t));
+    }
+    SUBCASE("a non-finite corner") {
+        const Aabb infinite{Vec3{-INF_F, -0.5F, -0.5F}, Vec3{0.5F, 0.5F, 0.5F}};
+        CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, infinite, t));
+        const Aabb nanBox{Vec3{QUIET_NAN, -0.5F, -0.5F}, Vec3{0.5F, 0.5F, 0.5F}};
+        CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, nanBox, t));
+    }
+    CHECK(t == 12345.0F);
+}
+
+TEST_CASE("picking: the half-extent overload DELEGATES to the Aabb one, answer for answer (PK11)") {
+    // The half-extent overload's own published battery above is UNMOVED -- that is the first half of
+    // AC-32. This is the second: the two forms cannot drift, because there is only one slab ladder.
+    const std::array<Vec3, 6> origins{Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -10.0F}, Vec3{0.0F, 0.0F, 0.0F},
+                                      Vec3{2.0F, 0.0F, 10.0F}, Vec3{0.25F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, 0.5F}};
+    const std::array<Vec3, 3> directions{Vec3{0.0F, 0.0F, -1.0F}, Vec3{0.0F, 0.0F, 1.0F},
+                                         engine::normalize(Vec3{1.0F, 1.0F, 1.0F})};
+    for (const float h : {0.5F, 1.0F, 3.0F}) {
+        const Aabb box{Vec3{-h, -h, -h}, Vec3{h, h, h}};
+        for (const Vec3 origin : origins) {
+            for (const Vec3 direction : directions) {
+                float viaExtent = -1.0F;
+                float viaBox = -2.0F;
+                const bool hitExtent = rayLocalBoxHit(origin, direction, h, viaExtent);
+                const bool hitBox = rayLocalBoxHit(origin, direction, box, viaBox);
+                CHECK(hitExtent == hitBox);
+                if (hitExtent) {
+                    CHECK(viaExtent == viaBox);
+                }
+            }
+        }
+    }
+    // ...and the half-extent form keeps its STRICTER precondition: h <= 0 is refused before a box
+    // exists, where the Aabb form would happily accept the point box {0,0,0}..{0,0,0}.
+    float t = 0.0F;
+    CHECK_FALSE(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, 0.0F, t));
+    CHECK(rayLocalBoxHit(Vec3{0.0F, 0.0F, 10.0F}, Vec3{0.0F, 0.0F, -1.0F}, Aabb{Vec3::zero(), Vec3::zero()}, t));
+}
+
+TEST_CASE("picking: dropPlacementPoint's four arms, and it is TOTAL (PK12)") {
+    using engine::editor::DROP_FALLBACK_DISTANCE;
+    using engine::editor::dropPlacementPoint;
+
+    SUBCASE("arm 4: a downward ray meets y = 0 at the expected point") {
+        const Ray ray{.origin = Vec3{2.0F, 10.0F, -3.0F}, .direction = engine::normalize(Vec3{0.0F, -1.0F, 0.0F})};
+        const Vec3 point = dropPlacementPoint(ray);
+        CHECK(std::abs(point.y) < EPS);
+        CHECK(std::abs(point.x - 2.0F) < EPS);
+        CHECK(std::abs(point.z - (-3.0F)) < EPS);
+    }
+    SUBCASE("arm 2: PARALLEL to the ground plane -> the fixed fallback distance") {
+        const Ray ray{.origin = Vec3{0.0F, 5.0F, 0.0F}, .direction = Vec3{0.0F, 0.0F, -1.0F}};
+        const Vec3 point = dropPlacementPoint(ray);
+        CHECK(std::abs(point.y - 5.0F) < EPS);  // still at the eye's height -- the plane is never met
+        CHECK(std::abs(point.z - (-DROP_FALLBACK_DISTANCE)) < EPS);
+    }
+    SUBCASE("arm 3: the plane is BEHIND the eye -> the same fallback, never a negative t") {
+        // Looking UP from above the plane: t = -10/+1 = -10, which arm 3 rejects. A body that returned
+        // origin + dir * t unconditionally (S30) lands 10 units BEHIND the camera, under the floor.
+        const Ray ray{.origin = Vec3{0.0F, 10.0F, 0.0F}, .direction = Vec3{0.0F, 1.0F, 0.0F}};
+        const Vec3 point = dropPlacementPoint(ray);
+        CHECK(std::abs(point.y - (10.0F + DROP_FALLBACK_DISTANCE)) < EPS);
+        CHECK(point.y > ray.origin.y);  // IN FRONT of the eye, which the rejected t is not
+    }
+    SUBCASE("arm 1: an unbuildable (zero) direction -> the ray origin") {
+        const Ray ray{.origin = Vec3{7.0F, 8.0F, 9.0F}, .direction = Vec3::zero()};
+        CHECK(dropPlacementPoint(ray) == Vec3{7.0F, 8.0F, 9.0F});
+    }
+    SUBCASE("arm 4's finiteness re-check: a finite t can still produce an infinite point") {
+        const Ray ray{.origin = Vec3{0.0F, 1.0e30F, 0.0F}, .direction = engine::normalize(Vec3{1.0F, -1.0e-20F, 0.0F})};
+        const Vec3 point = dropPlacementPoint(ray);
+        CHECK(std::isfinite(point.x));
+        CHECK(std::isfinite(point.y));
+        CHECK(std::isfinite(point.z));
+    }
+    SUBCASE("every result is FINITE, including from the four NDC corners of a real viewport") {
+        const EditorCamera camera = testCamera();
+        constexpr float ASPECT = 4.0F / 3.0F;
+        for (const Vec2 ndc :
+             {Vec2{-1.0F, -1.0F}, Vec2{1.0F, -1.0F}, Vec2{-1.0F, 1.0F}, Vec2{1.0F, 1.0F}, Vec2{0.0F, 0.0F}}) {
+            const Vec3 point = dropPlacementPoint(viewportRay(camera, ndc, ASPECT));
+            CHECK(std::isfinite(point.x));
+            CHECK(std::isfinite(point.y));
+            CHECK(std::isfinite(point.z));
+        }
     }
 }

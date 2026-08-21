@@ -3,7 +3,10 @@
 # never depend on scene) stays intact. No find_package, no boundary guard: this target wraps no
 # third-party type and links no vcpkg package directly (0.5.1/1.2.1 precedent) — the boundary rule is
 # satisfied by construction.
-add_library(aero_scene_render STATIC src/scene_renderer.cpp)
+add_library(aero_scene_render STATIC
+    src/scene_renderer.cpp
+    src/asset_bindings.cpp  # task 3.1.5 — the asset GUID -> renderer handle table
+)
 add_library(aero::scene_render ALIAS aero_scene_render)
 
 target_include_directories(aero_scene_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

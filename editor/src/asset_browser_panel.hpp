@@ -263,6 +263,13 @@ private:
     // caption so a project-wide result stays identifiable outside its own directory.
     void drawTile(const FileEntry& entry, const std::string& rel, float tileW, float tileH, float tileEdge, float pad,
                   bool isSearchHit);
+    // task 3.1.5 (§0.11/§D-21): attaches the AERO_ASSET drag source to the item JUST SUBMITTED. Call
+    // IMMEDIATELY after the Selectable and BEFORE anything that reads g.LastItemData or the window
+    // draw list. Starts no drag at all for a folder, a non-draggable kind, or a path with no database
+    // record / no valid guid -- the SOURCE-side twin of the peek rule (D11): refusal happens here, so
+    // an illegal payload never exists. ONE helper, THREE call sites; it is 1:1 Begin/End internally
+    // and contains no return between the pair.
+    void beginAssetDragSource(const std::string& relativePath, const char* previewText);
     void drawIssues();    // phase 4b -- task 3.1.3, Step 9 (D11)
     void drawFooter();    // phase 5
     void applyPending();  // the ONE mutating switch

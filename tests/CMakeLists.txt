@@ -54,6 +54,8 @@ add_executable(aero_tests
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
     animation_player_test.cpp # task 3.5.2 — engine::AnimationPlayer: layout, defaults, the clock's six steps
     scene_render_test.cpp # task 1.4.1 — buildRenderView (tier-0) + gated SceneRenderer GPU draw-smoke
+    asset_bindings_test.cpp # task 3.1.5 — AssetBindingTable: sorted-vector set/find/remove, nil refusal
+    scene_render_bindings_test.cpp # task 3.1.5 — buildRenderView's three emission arms + the null-table equivalence
     render_target_test.cpp # task 2.2.3 — tier-0 sizing policy + GPU-gated RenderTarget lifecycle
     render_material_test.cpp # task 3.4.1 — tier-0 generator/format invariants + GPU-gated registry & bridge
     render_skinning_test.cpp # task 3.5.1 — tier-0 pose/palette/repack invariants + GPU-gated mesh registry & skinned draw
@@ -140,8 +142,14 @@ add_test(NAME aero_tests COMMAND aero_tests)
 add_executable(aero_editor_imgui_test
     editor/imgui_layer_test.cpp
     vulkan_stack_pin.cpp)
+# task 3.1.5 (SL1-SL10): aero::scene_render joins the link line so this TU can include
+# editor/src/scene_asset_loader.hpp, whose ModelLoadResult names scene_render::MeshBinding. The ARCHIVE
+# was already here -- aero::scene_render is PRIVATE on aero_editor_core, which on a STATIC library
+# propagates as $<LINK_ONLY:...> -- so what this entry actually adds is engine/scene_render/include on
+# the compile line. NOT a boundary probe (R12's one-aero::-entry rule governs those, and this target
+# already links five), and the aero_tests precedent at :94 is the same entry for the same reason.
 target_link_libraries(aero_editor_imgui_test PRIVATE
-    doctest::doctest aero::editor_core aero::rhi aero::platform aero::core ${CMAKE_DL_LIBS})
+    doctest::doctest aero::editor_core aero::rhi aero::platform aero::core aero::scene_render ${CMAKE_DL_LIBS})
 target_include_directories(aero_editor_imgui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # tests/ for rhi_test_support.hpp
 # code-review finding 4 (I30): the panel's own Refresh-button flag cannot be driven through a real
 # frame here (this target is ImGui-free at source and cannot synthesize a widget click -- the
@@ -164,9 +172,26 @@ target_compile_definitions(aero_editor_imgui_test PRIVATE
 # block, because aero_editor_imgui_test is not defined until :121. AERO_EDITOR_SHADERS itself is
 # PRIVATE to aero_editor_core (editor/CMakeLists.txt), so no test TU can see it -- this definition is
 # how the arm is selected here. No add_dependencies(aero_shaders) is needed: aero_editor_core already
-# carries it, and no AERO_SHADERS_DIR either, since nothing in this TU loads a shader itself.
+# carries it.
+#
+# task 3.1.5: AERO_SHADERS_DIR joins it, because the SL* loader cases DO load a shader themselves --
+# SceneAssetLoader takes a render::ForwardRenderer per call, and building one needs the cooked
+# scene.{vert,frag} the same way scene_render_bindings_test.cpp's own tier-1 block does. INVARIANT: it
+# must equal aero_add_shaders' OUTPUT_DIR, exactly as the aero_tests definition at :125 records.
 if(AERO_SHADER_TOOLS)
-    target_compile_definitions(aero_editor_imgui_test PRIVATE AERO_SHADER_TOOLS_ENABLED=1)
+    target_compile_definitions(aero_editor_imgui_test PRIVATE
+        AERO_SHADER_TOOLS_ENABLED=1
+        AERO_SHADERS_DIR="${CMAKE_BINARY_DIR}/shaders")
+endif()
+
+# task 3.1.5 (DP6): the SAME shape, for the OTHER gate. A material drop assigns through
+# SetFieldCommand, which rides the reflection seam -- so with -DAERO_REFLECT_TOOLS=OFF there is no
+# generated entt::meta and the assignment cannot land, while every refusal arm (DP5/DP7) must behave
+# identically. Both arms ASSERT and neither skips, for the reason recorded above at :163-167.
+# This target is deliberately NOT inside an if(AERO_REFLECT_TOOLS) block -- the editor is built in
+# every configuration -- so the arm has to be selected by a definition, exactly like the shader one.
+if(AERO_REFLECT_TOOLS)
+    target_compile_definitions(aero_editor_imgui_test PRIVATE AERO_REFLECT_TOOLS_ENABLED=1)
 endif()
 
 add_test(NAME aero_editor_imgui_test COMMAND aero_editor_imgui_test)
@@ -367,6 +392,13 @@ find_package(Threads REQUIRED)
 # render::MaterialParams and rhi::SamplerDesc: aero::render joined aero_editor_core's PUBLIC group at
 # this task (editor/CMakeLists.txt records the four criteria), so engine/render/include arrives here
 # transitively through aero::editor_core exactly as aero::assets' include root already does.
+# task 3.1.5 joins it with editor/asset_drag_test.cpp, editor/instantiate_plan_test.cpp,
+# editor/asset_commands_test.cpp, editor/material_from_import_test.cpp and
+# editor/scene_asset_ledger_test.cpp on exactly the same terms: UNCONDITIONAL, tier-0, no link-line
+# change, no new ctest entry, and reachable in BOTH reduced configurations -- prove it with
+# --list-test-cases, which must show DR1, PL1, IA1, MF1 and LG1 in all three. asset_drag_test.cpp's DR17/DR18 source-text pins read AERO_EDITOR_SRC_DIR and
+# instantiate_plan_test.cpp's PL12 reads the three Structure-depth fixtures through
+# AERO_ASSET_FIXTURES_DIR -- both ALREADY defined on this target, neither redefined.
 add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_test.cpp
                editor/project_files_test.cpp editor/console_model_test.cpp
                editor/editor_camera_test.cpp editor/scene_bounds_test.cpp
@@ -388,7 +420,12 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/texture_cook_source_test.cpp
                editor/material_edit_test.cpp
                editor/skeleton_cook_source_test.cpp
-               editor/animation_cook_source_test.cpp)
+               editor/animation_cook_source_test.cpp
+               editor/asset_drag_test.cpp
+               editor/instantiate_plan_test.cpp
+               editor/asset_commands_test.cpp
+               editor/material_from_import_test.cpp
+               editor/scene_asset_ledger_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -638,7 +675,9 @@ if(AERO_REFLECT_TOOLS)
         # task 2.2.2: field annotations (AERO_RANGE/AERO_COLOR) and the std::string category
         annotations_components annotations_meta annotations_malformed annotations_nonfinite
         annotations_misapplied annotations_unknown annotations_determinism
-        string_components string_meta string_json)
+        string_components string_meta string_json
+        # task 3.1.5: the engine::Guid category
+        guid_components guid_meta guid_json)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -664,6 +703,7 @@ if(AERO_REFLECT_TOOLS)
         HEADERS reflect-gen/fixtures/component_codegen.hpp
                 reflect-gen/fixtures/component_wiring.hpp
                 ${AERO_BUILTIN_COMPONENT_HEADERS}   # task 3.5.2 (D7) -- the REAL headers, named once
+                reflect-gen/fixtures/component_guid.hpp  # task 3.1.5 -- the engine::Guid category
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"      # aero::core PUBLIC dir (D9)
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2 — parse: entity.hpp
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2 — parse: annotations.hpp
@@ -693,6 +733,7 @@ if(AERO_REFLECT_TOOLS)
                                                              # zero-field aeroReadJson, proven end-to-end
                 ${AERO_BUILTIN_COMPONENT_HEADERS}   # task 3.5.2 (D7) -- the REAL headers, named once
                 reflect-gen/fixtures/component_text.hpp     # task 2.2.2 -- the std::string category
+                reflect-gen/fixtures/component_guid.hpp     # task 3.1.5 -- the engine::Guid category
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2
@@ -741,6 +782,12 @@ if(AERO_REFLECT_TOOLS)
     target_link_libraries(aero_editor_inspector_test PRIVATE
         doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core)
     target_include_directories(aero_editor_inspector_test PRIVATE editor/fixtures)
+    # task 3.1.5 (IR8): the inspector must never grow a drop target, and no runtime tier in this tree
+    # can drive an ImGui drag -- so the proof reads inspector_panel.cpp's own source text, the
+    # AERO_EDITOR_SRC_DIR precedent this target is the third to take (project_test.cpp's PU1 and
+    # imgui_layer_test.cpp's I30 are the first two).
+    target_compile_definitions(aero_editor_inspector_test PRIVATE
+        AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src")
     aero_reflect_generate(aero_editor_inspector_test
         HEADERS editor/fixtures/inspector_probe.hpp
                 editor/fixtures/inspector_tag.hpp  # review finding 6 -- the zero-field tag proof
