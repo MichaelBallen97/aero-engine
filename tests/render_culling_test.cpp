@@ -557,6 +557,59 @@ TEST_CASE("render culling: signedDistance's sign convention, and the plane SLOT 
     CHECK(f.planes.size() == 6);
 }
 
+TEST_CASE("render culling: the extraction survives a WIDE depth range (FC25)") {
+    // THE DEFECT THIS EXISTS FOR, found by the code-review round: the normalisation guard used to
+    // refuse any row shorter than EPSILON -- a NORMALISED-vector tolerance applied to RAW projection
+    // coefficients. perspectiveRH_ZO's far row is exactly
+    //   (0, 0, zNear/(zFar - zNear), (zFar * zNear)/(zFar - zNear))
+    // whose length SHRINKS as the depth ratio grows, so past a ratio of roughly 1e5 a PERFECTLY VALID
+    // camera produced an invalid frustum: draw() then disabled culling for the whole view and latched
+    // a WARN blaming a projection that was fine. Reachable, not theoretical -- EditorCamera's
+    // MIN_NEAR_PLANE is 1e-3 against a DEFAULT_FAR of 1000 (a ratio of 1e6), and engine::Camera's
+    // nearPlane/farPlane carry no AERO_RANGE at all, so the inspector can ask for any of these.
+    //
+    // The far plane's d loses accuracy as the ratio grows and that is INHERENT, not a defect: the far
+    // row is -1 - m[2][2] with m[2][2] ~ -1, so it is a catastrophic cancellation. Every tolerance
+    // below was MEASURED against this extraction, never guessed, and the measured error sits beside
+    // each row. (At a ratio of 1e7 -- 0.001/10000 -- roughly one significant digit survives and d is
+    // ~16 % off. Nothing in this tree can ask for that, so it is documented rather than asserted.)
+    struct Range {
+        float zNear;
+        float zFar;
+        float relTolerance;
+    };
+    // The three rows marked TRIPPED are the ones the old EPSILON guard rejected outright; the other
+    // three passed it and are here as accuracy cover across the range.
+    constexpr std::array<Range, 6> RANGES{Range{0.1F, 100.0F, 0.01F},      // ratio 1e3, measured 0.0001%
+                                          Range{0.1F, 1000.0F, 0.01F},     // ratio 1e4, measured 0.0066%
+                                          Range{1.0F, 100000.0F, 0.01F},   // ratio 1e5, measured 0.135%
+                                          Range{0.1F, 20000.0F, 0.01F},    // ratio 2e5, measured 0.135%, TRIPPED
+                                          Range{0.001F, 1000.0F, 0.06F},   // ratio 1e6, measured 4.86%, TRIPPED
+                                          Range{0.01F, 10000.0F, 0.06F}};  // ratio 1e6, measured 4.86%, TRIPPED
+
+    for (const Range& r : RANGES) {
+        const Frustum view = extractFrustum(engine::perspective(engine::radians(60.0F), 1.0F, r.zNear, r.zFar));
+        // The core of the fix, and the one assertion here that carries no tolerance at all.
+        CHECK(view.valid());
+
+        const Plane& farPlane = view.plane(FrustumPlane::Far);
+        CHECK(engine::approxEquals(farPlane.normal, Vec3{0.0F, 0.0F, 1.0F}, 1.0e-4F));
+        CHECK(std::abs(farPlane.d - r.zFar) / r.zFar <= r.relTolerance);
+
+        // The near plane is unaffected by the depth ratio -- its d is m[3][2] / |m[2][2]|, which is
+        // -zNear with no cancellation anywhere. A wide range must not disturb it.
+        const Plane& nearPlane = view.plane(FrustumPlane::Near);
+        CHECK(engine::approxEquals(nearPlane.normal, Vec3{0.0F, 0.0F, -1.0F}, 1.0e-4F));
+        CHECK(std::abs(nearPlane.d + r.zNear) <= 1.0e-4F * std::max(1.0F, r.zNear));
+
+        // ...and the frustum still DISCRIMINATES at every range: a box mid-volume is visible, one
+        // well past the far plane is not. A frustum that merely reports valid() but tests nothing
+        // would pass every assertion above.
+        CHECK(isVisible(view, boxAt(Vec3{0.0F, 0.0F, -(r.zNear + r.zFar) * 0.5F}, 1.0F)));
+        CHECK_FALSE(isVisible(view, boxAt(Vec3{0.0F, 0.0F, -r.zFar * 2.0F}, 1.0F)));
+    }
+}
+
 // ================================================================================================
 // Tier 1 -- a real Device, no window. The cull inside ForwardRenderer::draw.
 //
@@ -1014,6 +1067,30 @@ TEST_CASE("render culling: a degenerate projection draws EVERYTHING and warns on
     CHECK(forward->lastFrameDrawn() == 7);
     CHECK(forward->lastFrameCulled() == 0);
     CHECK(forward->hasWarnedDegenerateFrustum());
+}
+
+TEST_CASE("render culling: a WIDE depth range still culls, and never latches the WARN (CD11)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    // zFar/zNear == 2e5. Under the old EPSILON normalisation guard the far row's raw length is
+    // 5.0e-6, the whole frustum came back invalid, and draw() disabled culling for the view and
+    // latched the degenerate WARN -- on a camera that is perfectly well formed. All three assertions
+    // below redden under that guard: drawn 2, culled 0, latch true.
+    const Vec3 eye{0.0F, 1.5F, 3.0F};
+    const engine::render::CameraView camera{engine::lookAt(eye, Vec3{}, Vec3{0.0F, 1.0F, 0.0F}),
+                                            engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 20000.0F), eye};
+    const Mat4 viewProj = camera.proj * camera.view;
+    const std::array<MeshInstance, 2> instances{primitiveInstance(PrimitiveId::Cube, Mat4::identity(), viewProj),
+                                                primitiveInstance(PrimitiveId::Cube, OFFSCREEN, viewProj)};
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = instances;
+    drawOnce(*target, *forward, view);
+
+    CHECK(forward->lastFrameDrawn() == 1);
+    CHECK(forward->lastFrameCulled() == 1);
+    CHECK_FALSE(forward->hasWarnedDegenerateFrustum());
 }
 
     #undef AERO_CULL_TIER1_PREAMBLE

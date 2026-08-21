@@ -62,11 +62,24 @@ Frustum extractFrustum(const Mat4& viewProj) noexcept {
     // Normalise BOTH halves by the same |n|: dividing the normal alone leaves d in the raw matrix's
     // units, which shifts every plane's position by ~1 per mille for a typical projection -- small
     // enough to look right and wrong everywhere.
+    //
+    // THE GUARD REJECTS GENUINE DEGENERACY ONLY -- a zero-length row, or one carrying inf/NaN -- and
+    // deliberately NOT a merely SHORT one. These are RAW projection-matrix coefficients, not
+    // normalised vectors, so a normalised-vector tolerance like EPSILON does not belong here:
+    // perspectiveRH_ZO's far row is exactly (0, 0, zNear/(zFar - zNear), (zFar*zNear)/(zFar - zNear)),
+    // whose length SHRINKS as the depth ratio grows. An EPSILON test therefore rejects a PERFECTLY
+    // VALID camera past a ratio of roughly 1e5 -- EditorCamera's own MIN_NEAR_PLANE of 1e-3 against
+    // its DEFAULT_FAR of 1000 is 1e6, and engine::Camera's near/far planes carry no AERO_RANGE at
+    // all -- and draw() would then disable culling for the WHOLE view while warning about a
+    // projection that is fine. Dividing by a small finite k is safe: |n| == k, so every component of
+    // n / k is bounded by 1 and the result has length 1 by construction; and if raw.w / k overflows,
+    // Frustum::valid()'s d-finiteness check catches it, which is exactly what that check is for.
     const auto normalisedPlane = [](const Vec4& raw) noexcept -> Plane {
         const Vec3 n = xyz(raw);
         const float k = std::sqrt(lengthSquared(n));
-        if (k <= EPSILON) {
-            return Plane{};  // degenerate; Frustum::valid() reports it. NaN k falls through below.
+        if (k == 0.0F || !std::isfinite(k)) {
+            return Plane{};  // Frustum::valid() reports it -- and !isfinite CATCHES a NaN row, which
+                             // the old ordered comparison against EPSILON silently let through
         }
         return Plane{n / k, raw.w / k};
     };

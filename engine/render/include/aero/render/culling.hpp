@@ -68,8 +68,12 @@ struct Frustum {
 //   left = r3 + r0   right = r3 - r0   bottom = r3 + r1   top = r3 - r1
 //   NEAR = r2 ALONE  (the r3 + r2 form is the GL [-w,w] convention this engine has never used)
 //   far  = r3 - r2
-// Planes normalised with the same epsilon rule normalizeOrZero uses; a degenerate or non-finite
-// input yields a frustum whose valid() is false.
+// Every plane is normalised. The only rows refused are GENUINELY degenerate ones -- zero-length, or
+// carrying inf/NaN -- never merely SHORT ones: these are raw projection coefficients, and the far
+// row's length is zNear/(zFar - zNear), which shrinks with the depth ratio. Applying a
+// normalised-vector tolerance here rejects valid wide-range cameras (recorded in docs/10's 3.6.1
+// entry). Frustum::valid()'s own EPSILON length test is a different question and is correct, because
+// it runs on normals this function has already normalised.
 [[nodiscard]] Frustum extractFrustum(const Mat4& viewProj) noexcept;
 
 // Arvo: worldCenter = transformPoint(model, c); worldHalfExtent = |A| * e (componentwise absolute
