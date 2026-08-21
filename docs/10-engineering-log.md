@@ -8325,9 +8325,10 @@ four-phase platform-validation debt grows by one more task.
 
 ### Task 3.1.5 — Drag-into-scene (Epic 3.1) — CLOSES Epic 3.1
 
-**Branch:** `feat/3.1.5-drag-into-scene`, cut from `main @ 089164b`. **Eighteen green commits** — one
-per build step, one correcting a source comment the sabotage pass measured false (`32b2d1f`), and one
-closing the reduced-configuration finding below (`78450e0`) — plus this documentation commit.
+**Branch:** `feat/3.1.5-drag-into-scene`, cut from `main @ 089164b`. **Twenty-three green commits** —
+one per build step, two correcting source comments that measurement proved false (`32b2d1f`,
+`39e16e6`), one closing the reduced-configuration finding below (`78450e0`), this documentation
+commit, and three closing the code-review round (`573d30d`, `94570a3`, `31395ee`).
 **Complete in code; the sixteen-row macOS validation pass has NOT been run yet**
 (`editor/validation/3.1.5-drag-into-scene.md`, written before the pass as always). Every count in the
 mechanical-gate section below was measured at `32b2d1f`; `78450e0` adds no test case and no ctest
@@ -8793,6 +8794,52 @@ contends on the test binaries** and reddens roughly 10–14 `blender_service` ca
 pass **1709/1709 in isolation**. Those cases spawn a real process and write to shared temporary paths.
 A red `blender_service` block with a green everything-else is contention, not a regression — but
 confirm it by re-running the binary alone rather than assuming it.
+
+#### The code-review round — five findings, two blocking, all closed
+
+Every one was reasoned from source and then confirmed against the tree before anything was changed.
+None was reachable by the 37-seed matrix, and none would have been caught by the four green
+configurations — which is the point worth carrying forward: **each is a place where a counter or a test
+observed the INTENTION rather than the EFFECT.**
+
+1. **`sceneAssetDevice` was never assigned** (blocking). Declared `= nullptr`, read at both
+   `destroyRetired` call sites, assigned nowhere — three grep hits in the whole tree. The texture
+   branch was therefore dead code, and every slot texture the ledger adopted survived every retire,
+   reload, Apply nudge and project swap, reaching `~Device` as a leak WARN. What hid it:
+   `sceneAssetDestroyCount()` counts entries **handed to** `destroyRetired`, not handles released, so
+   the existing cases reported a healthy destroy count while nothing was freed.
+2. **A dropped model was imported, cooked and uploaded twice** (blocking). The drop drain runs in the
+   reconcile block, before `serviceSceneAssets` inserts entries, so `reportLoaded` found no entry and
+   early-returned; the live `MeshHandle` and every `MaterialHandle` went on the floor — never adopted,
+   never deferred, never destroyed — while the binding table already named them, and the ledger then
+   re-imported the same bytes. `reportLoaded` now **adopts-or-inserts**. Reachable for `.blend`,
+   `.obj`, `.ply` and `.stl`; a `.gltf` takes the Structure path, which is exactly why the
+   `.gltf`-based drop cases were blind to it, and it contradicted the loader's own comment.
+3. **A failed reload left the binding table naming destroyed handles.** A guid reaches `out.retire`
+   only when its entry is unreferenced, and a referenced `Failed` entry is deliberately kept, so
+   nothing unbound it. The entity drew nothing while `unresolvedMeshes` **under**-reported, because the
+   binding still existed so the counting arm was never taken. Both load paths now unbind on failure.
+4. **Two material drops on one entity could merge into a single undo entry**, making the first material
+   unreachable. The chain is now broken on both sides of the push, as the inspector's Guid row already
+   did. **Measured and recorded honestly: `DP23` does NOT redden when both gates are removed** — the
+   two drops still make two entries, so something else on the tick path already closes the chain
+   between two drained drops. The gates stay because they make the property local to the gesture that
+   owns it rather than incidental to a neighbour; the case pins the observable contract, and its own
+   comment says plainly that it is not their witness.
+5. **The one-per-pass budget could be starved forever** by an `Absent` entry whose record vanished.
+   Step 5 refuses to insert one and says why; step 6b had no such guard, and step 3 re-examines only
+   `Ready` and `Failed`. The same `recordPresent` rule now applies in both.
+
+`LG25` and `LG26` cover 2 and 5 and were **proven by seeding each defect back** with the signature
+intact: `LG25` reads `entryCount()` 0 instead of 1, `LG26` fails two assertions. A first attempt at that
+proof was itself broken and is worth recording — stashing only the `.cpp` while the header carried the
+new signature made the build **fail to compile**, and doctest duly printed `0 test cases … SUCCESS`. A
+green that ran nothing is the most convincing false green there is.
+
+**The reduced configuration then caught the fix round committing the very mistake the fix round had
+just closed**: `DP23` asserted a material assignment unconditionally, which cannot land with
+`-DAERO_REFLECT_TOOLS=OFF`, so reflect-off came back 67/68 — one case over from where `DP6` had the
+identical defect. Both arms now assert and neither skips.
 
 #### What was deliberately left out, each with its owner
 
