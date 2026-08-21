@@ -61,6 +61,16 @@ struct RenderView {
     // only layer that can tell Loading from Failed.
     std::uint32_t unresolvedMeshes = 0;
     std::uint32_t unresolvedMaterials = 0;
+
+    // task 3.6.1: per-instance frustum culling in draw(). ON by default -- every existing caller was
+    // verified consistent before the default was chosen (16 draw call sites; docs/10 records the
+    // survey). THE CONTRACT THIS RESTS ON: for every instance, mvp == (camera.proj * camera.view) *
+    // model, with camera from THIS view -- the shader reads mvp, the cull reads model, and a caller
+    // that sets one without the other gets a wrong cull rather than a wrong picture, which is
+    // harder to see. cullingEnabled = false is the escape hatch for a caller that cannot honour it
+    // (and the phase-3-culling sample's --no-cull A/B). An opted-out view pays NOTHING: no frustum
+    // is extracted and no box is resolved.
+    bool cullingEnabled = true;
 };
 
 }  // namespace engine::render

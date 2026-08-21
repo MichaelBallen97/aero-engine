@@ -150,6 +150,27 @@ public:
     // instances must produce N binds, and a skipped rebind shows up as a smaller number.
     [[nodiscard]] std::size_t pipelineBindCount() const noexcept;
 
+    // --- diagnostics (task 3.6.1) ---------------------------------------------------------------
+    // Culling counters, PER-FRAME: both reset at the top of every draw() -- including a draw() that
+    // early-returns on !view.hasCamera, so a no-camera frame reads 0/0. THEY NEED NOT SUM TO
+    // view.instances.size(): an instance skipped by the stale-handle arm, the submesh-range arm, the
+    // section guard or the over-cap arm was not culled and did not draw, so it lands in NEITHER
+    // bucket. lastFrameDrawn counts issued drawIndexed calls and nothing else -- it is incremented
+    // at the two drawIndexed sites and nowhere else, which is what makes that gap true by
+    // construction rather than by bookkeeping that could drift.
+    [[nodiscard]] std::size_t lastFrameDrawn() const noexcept;
+    [[nodiscard]] std::size_t lastFrameCulled() const noexcept;
+    // How many times the material-change block ran (fragment uniform push + five-texture bind),
+    // renderer lifetime. Added for the same reason pipelineBindCount was in 3.5.1: that block
+    // executing for a CULLED instance is otherwise unobservable, and it is exactly what culling
+    // ahead of material resolution saves. Pipeline binds cannot see the difference -- they happen
+    // INSIDE the draw arms, downstream of both candidate cull placements -- so counting them proves
+    // culling reduces rebinds without proving the cull sits where it was designed to sit.
+    [[nodiscard]] std::size_t materialBindCount() const noexcept;
+    // The degenerate-projection latch fired at least once: a viewProj that yields no usable frustum
+    // disables culling FOR THAT DRAW and warns, rather than culling to black.
+    [[nodiscard]] bool hasWarnedDegenerateFrustum() const noexcept;
+
 private:
     struct PrimitiveMesh {
         rhi::BufferHandle vbuf;
@@ -265,12 +286,16 @@ private:
     std::array<Vec4, 3ULL * MAX_SKINNING_JOINTS> paletteScratch{};
     std::size_t skinnedDraws = 0;
     std::size_t pipelineBinds = 0;         // every bindGraphicsPipeline draw() issues, renderer lifetime
+    std::size_t lastDrawn = 0;             // task 3.6.1 -- PER-FRAME; reset at the top of draw()
+    std::size_t lastCulled = 0;            // task 3.6.1 -- PER-FRAME; reset at the top of draw()
+    std::size_t materialBinds = 0;         // task 3.6.1 -- material-change blocks run, renderer lifetime
     bool warnedBlendOnce = false;          // D9's latch: once per renderer lifetime, never per frame
     bool warnedDroppedAttributes = false;  // task 3.5.1 — TexCoord1/Color0 dropped at repack, latched once
     bool warnedStaleMesh = false;          // an instance named a MeshHandle the registry no longer holds
     bool warnedSubmeshRange = false;       // an instance's submesh index is past the mesh's table
     bool warnedSkinningCap = false;        // a palette longer than MAX_SKINNING_JOINTS was refused
     bool warnedStrayPalette = false;       // a palette on a mesh section that carries no skin stream
+    bool warnedDegenerateFrustum = false;  // task 3.6.1 -- a viewProj with no usable frustum, latched once
 };
 
 }  // namespace engine::render

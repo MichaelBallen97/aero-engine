@@ -736,6 +736,14 @@ std::size_t ForwardRenderer::pipelineBindCount() const noexcept { return pipelin
 
 bool ForwardRenderer::hasWarnedSkinningCap() const noexcept { return warnedSkinningCap; }
 
+std::size_t ForwardRenderer::lastFrameDrawn() const noexcept { return lastDrawn; }
+
+std::size_t ForwardRenderer::lastFrameCulled() const noexcept { return lastCulled; }
+
+std::size_t ForwardRenderer::materialBindCount() const noexcept { return materialBinds; }
+
+bool ForwardRenderer::hasWarnedDegenerateFrustum() const noexcept { return warnedDegenerateFrustum; }
+
 void ForwardRenderer::bindMaterialTextures(rhi::RenderPassHandle pass, const MaterialSlot& slot) {
     // A-4: resolution to the built-in defaults happens at BIND time, and "which default belongs to
     // slot k" is answered by material.hpp's defaultTextureKindForSlot — the same function whose answer
@@ -780,6 +788,10 @@ std::optional<Aabb> ForwardRenderer::instanceBounds(const MeshInstance& instance
 
 void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     AERO_PROFILE_ZONE;
+    // task 3.6.1 -- BEFORE the early return, deliberately: a no-camera frame drew nothing and culled
+    // nothing, and must read 0/0 rather than the previous frame's numbers.
+    lastDrawn = 0;
+    lastCulled = 0;
     if (!view.hasCamera) {
         return;  // D5 0-camera: the frame's own clear still shows
     }
@@ -792,6 +804,27 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
 
     const detail::GpuLightBlock lights = detail::packLights(view);
     device->pushFragmentUniforms(cmd, 0, std::as_bytes(std::span{&lights, 1}));
+
+    // task 3.6.1 -- the frustum, ONCE per call, from proj * view. NEVER from an instance's mvp: a
+    // mirrored instance's negative determinant flips every half-space, so a per-instance extraction
+    // culls exactly the geometry that is on screen.
+    Frustum frustum{};
+    bool culling = view.cullingEnabled;
+    if (culling) {
+        frustum = extractFrustum(view.camera.proj * view.camera.view);
+        if (!frustum.valid()) {
+            // Disable LOUDLY and once. Culling to black on a degenerate projection is the one
+            // failure mode this feature must never have, and a silent fallback would hide the real
+            // problem (a camera with zNear == zFar, a zero aspect, a collapsed view matrix).
+            if (!warnedDegenerateFrustum) {
+                AERO_LOG_WARN(
+                    "ForwardRenderer::draw: degenerate projection -- frustum culling disabled for this "
+                    "view; this warning latches once per renderer");
+                warnedDegenerateFrustum = true;
+            }
+            culling = false;
+        }
+    }
 
     // Which of the FOUR pipelines is bound is now a function of TWO booleans, so it moved out of the
     // material-change block and into the per-instance path — the (skinned, cullNone) pair is compared
@@ -818,15 +851,34 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     // The state cache is three variables, and the loop is correct under ANY instance order because
     // every draw's state is a pure function of its RESOLVED material — cheap under the common order
     // (materials arrive grouped) and never wrong under an adversarial one. No sorting happens here;
-    // 3.6.1/Phase 8 own draw ordering.
+    // Phase 8 owns draw ordering (culling -- task 3.6.1 -- deliberately took none of it; docs/10's
+    // 3.6.1 entry records the re-scope).
     MaterialHandle lastMaterial{};
     bool firstMaterial = true;
     bool doubleSided = false;  // the resolved material's, carried across instances with the cache
 
     for (const MeshInstance& instance : view.instances) {
+        // task 3.6.1, in order: skinned instances are EXEMPT (their vertices move under a palette
+        // this renderer never sees, so the cooked bind-pose box is not a bound on where they end up
+        // -- the predicate is `has a palette`, not `is a skinned mesh`, and it costs no lookup) ->
+        // silent bounds resolution -> an invalid box is culled -> the six-plane test.
+        //
+        // BEFORE material resolution, so a culled instance pushes no material block, binds no
+        // texture and flips no pipeline. A nullopt falls through UNDECIDED and UNCOUNTED to the arms
+        // below, whose latched WARNs it never consumes.
+        if (culling && instance.palette.empty()) {
+            if (const std::optional<Aabb> local = instanceBounds(instance)) {
+                if (!local->valid() || !isVisible(frustum, transformAabb(instance.model, *local))) {
+                    ++lastCulled;
+                    continue;
+                }
+            }
+        }
+
         const MaterialHandle resolved =
             materials.contains(instance.material) ? instance.material : defaultMaterialHandle;
         if (firstMaterial || resolved != lastMaterial) {
+            ++materialBinds;  // task 3.6.1 -- the only observable that can see the cull's PLACEMENT
             // Never null: `resolved` is either a handle contains() just proved live, or the built-in
             // default, which destroyMaterial refuses to remove. The comment is the argument; a dead
             // runtime arm here would be untestable by construction (A-6's posture).
@@ -856,6 +908,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
             device->bindVertexBuffer(pass, 0, mesh.vbuf);
             device->bindIndexBuffer(pass, mesh.ibuf, rhi::IndexType::Uint16);
             device->drawIndexed(pass, mesh.indexCount);
+            ++lastDrawn;
             continue;
         }
 
@@ -940,7 +993,14 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
         }
         device->bindIndexBuffer(pass, entry->indexBuffer, entry->indexType);
         device->drawIndexed(pass, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
+        ++lastDrawn;
     }
+
+    // task 3.6.1 -- the first two production Tracy plots in the tree. Compiled to ((void)0) unless
+    // AERO_ENABLE_PROFILING is on, which is the *-release presets only. The NAMES are the contract:
+    // a capture years from now finds them recorded in docs/10's 3.6.1 entry.
+    AERO_PROFILE_PLOT("render.drawn", static_cast<double>(lastDrawn));
+    AERO_PROFILE_PLOT("render.culled", static_cast<double>(lastCulled));
 }
 
 }  // namespace engine::render

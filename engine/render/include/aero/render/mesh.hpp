@@ -55,8 +55,11 @@ struct MeshInstance {
     // the bind pose the vertices are authored in, and is therefore the right picture rather than a
     // fallback (render::computeJointPalette fills one; MAX_SKINNING_JOINTS bounds its length).
     std::span<const Mat4> palette{};
-    Mat4 mvp;           // clip = proj * view * model
-    Mat4 model;         // world-space position source (point-light distance)
+    Mat4 mvp;  // clip = proj * view * model
+    // world-space position source (point-light distance) AND the culling transform (task 3.6.1):
+    // must satisfy mvp == viewProj * model for the view this instance is drawn in, where viewProj is
+    // camera.proj * camera.view of THAT view (RenderView::cullingEnabled carries the full contract).
+    Mat4 model;
     Mat4 normalMatrix;  // transpose(inverse(toMat3(model))) embedded in a Mat4 (upper-left 3x3 used)
     Vec3 color = Vec3::one();
     // task 3.4.1: which registered material to draw with. DEFAULT-INVALID, which resolves to
