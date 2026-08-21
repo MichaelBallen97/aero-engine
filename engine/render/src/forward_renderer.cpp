@@ -792,7 +792,18 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     // nothing, and must read 0/0 rather than the previous frame's numbers.
     lastDrawn = 0;
     lastCulled = 0;
+    // task 3.6.1 (AC-23) -- ONE definition of the two plot names, called on EVERY exit including the
+    // no-camera one. The counters reset above the early return precisely so a camera-less frame reads
+    // 0/0; a plot that skipped that frame would hold the PREVIOUS frame's value while the accessors
+    // correctly read zero, so the two diagnostics would disagree about the same frame. A Release
+    // session that loses its camera (delete the camera entity, New Scene) is exactly that case.
+    // These compile to ((void)0) unless AERO_ENABLE_PROFILING is on, i.e. the *-release presets.
+    const auto plotCounters = [this]() {
+        AERO_PROFILE_PLOT("render.drawn", static_cast<double>(lastDrawn));
+        AERO_PROFILE_PLOT("render.culled", static_cast<double>(lastCulled));
+    };
     if (!view.hasCamera) {
+        plotCounters();
         return;  // D5 0-camera: the frame's own clear still shows
     }
     const rhi::RenderPassHandle pass = frame.pass();
@@ -1005,11 +1016,9 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
         ++lastDrawn;
     }
 
-    // task 3.6.1 -- the first two production Tracy plots in the tree. Compiled to ((void)0) unless
-    // AERO_ENABLE_PROFILING is on, which is the *-release presets only. The NAMES are the contract:
+    // task 3.6.1 -- the first two production Tracy plots in the tree. The NAMES are the contract:
     // a capture years from now finds them recorded in docs/10's 3.6.1 entry.
-    AERO_PROFILE_PLOT("render.drawn", static_cast<double>(lastDrawn));
-    AERO_PROFILE_PLOT("render.culled", static_cast<double>(lastCulled));
+    plotCounters();
 }
 
 }  // namespace engine::render

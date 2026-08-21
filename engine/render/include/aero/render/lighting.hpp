@@ -70,6 +70,13 @@ struct RenderView {
     // harder to see. cullingEnabled = false is the escape hatch for a caller that cannot honour it
     // (and the phase-3-culling sample's --no-cull A/B). An opted-out view pays NOTHING: no frustum
     // is extracted and no box is resolved.
+    //
+    // AND THE TRAP THAT FOLLOWS FROM THE DEFAULTS: hasCamera defaults true and CameraView's view/proj
+    // default to IDENTITY, so a hand-built view that fills every instance's mvp but never assigns
+    // `camera` culls against extractFrustum(identity) -- the box [-1,1]x[-1,1]x[0,1] in WORLD units,
+    // whose six planes are unit-length and finite, so valid() is TRUE and no WARN fires. Everything
+    // beyond about one world unit from the origin then vanishes silently. Assign `camera`, or set
+    // cullingEnabled = false.
     bool cullingEnabled = true;
 };
 

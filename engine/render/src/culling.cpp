@@ -77,9 +77,14 @@ Frustum extractFrustum(const Mat4& viewProj) noexcept {
     const auto normalisedPlane = [](const Vec4& raw) noexcept -> Plane {
         const Vec3 n = xyz(raw);
         const float k = std::sqrt(lengthSquared(n));
+        // The !isfinite half has NO automated witness and that is recorded rather than hidden:
+        // seeding it away leaves the whole tier green, because a NaN or infinite row divided through
+        // yields a NaN normal that Frustum::valid() rejects anyway. It ships because extractFrustum
+        // is PUBLIC and its result is inspectable WITHOUT calling valid() -- a caller reading
+        // plane(Far) directly gets the defined degenerate sentinel rather than a NaN-filled plane
+        // whose signedDistance poisons every arithmetic it touches.
         if (k == 0.0F || !std::isfinite(k)) {
-            return Plane{};  // Frustum::valid() reports it -- and !isfinite CATCHES a NaN row, which
-                             // the old ordered comparison against EPSILON silently let through
+            return Plane{};  // Frustum::valid() reports it
         }
         return Plane{n / k, raw.w / k};
     };
