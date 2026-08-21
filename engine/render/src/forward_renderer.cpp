@@ -16,9 +16,11 @@
 #include "primitives.hpp"
 #include "skinning_pack.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <type_traits>
 #include <utility>
@@ -47,6 +49,30 @@ static_assert(std::is_trivially_copyable_v<GpuPerObject>);
 [[nodiscard]] std::size_t clampPrimitiveIndex(PrimitiveId primitive) {
     const auto index = static_cast<std::size_t>(primitive);
     return index < static_cast<std::size_t>(PrimitiveId::Count) ? index : static_cast<std::size_t>(PrimitiveId::Cube);
+}
+
+// task 3.6.1 -- the local box of a built-in primitive, FOLDED over the vertices
+// make{Cube,Sphere,Plane}() actually returned. There is deliberately no constant table to compare
+// this against: primitives.cpp IS the single source for what each shape is, so a second copy of 0.5
+// anywhere in this file would be a second truth that can drift out of step with it silently.
+//
+// std::min/std::max take the ACCUMULATOR FIRST (the expandBox rule in engine/assets/src/
+// mesh_cook.cpp): the two argument orders return different zeros for the pair (-0.0f, +0.0f), and
+// this box is compared for equality. A geometry with no vertices would leave the inverted sentinel,
+// which Aabb::valid() rejects and draw() then culls -- unreachable here, since all three primitives
+// are non-empty by construction, and the safe answer if that ever changes.
+[[nodiscard]] Aabb foldPrimitiveBounds(std::span<const MeshVertex> vertices) {
+    constexpr float INFINITY_F = std::numeric_limits<float>::infinity();
+    Aabb box{Vec3{INFINITY_F, INFINITY_F, INFINITY_F}, Vec3{-INFINITY_F, -INFINITY_F, -INFINITY_F}};
+    for (const MeshVertex& vertex : vertices) {
+        box.min.x = std::min(box.min.x, vertex.position.x);
+        box.min.y = std::min(box.min.y, vertex.position.y);
+        box.min.z = std::min(box.min.z, vertex.position.z);
+        box.max.x = std::max(box.max.x, vertex.position.x);
+        box.max.y = std::max(box.max.y, vertex.position.y);
+        box.max.z = std::max(box.max.z, vertex.position.z);
+    }
+    return box;
 }
 
 // Full-field SamplerDesc equality — rhi::SamplerDesc has no operator== (it is a plain descriptor
@@ -459,7 +485,8 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
         const rhi::BufferHandle ibuf = device.createBuffer({.usage = rhi::BufferUsage::Index, .size = ibytes});
         // Recorded BEFORE the success check, so a failed upload still leaves both buffers owned by
         // `renderer` and released by its destructor on the early return below.
-        renderer.primitives[i] = {vbuf, ibuf, static_cast<std::uint32_t>(geometry.indices.size())};
+        renderer.primitives[i] = {vbuf, ibuf, static_cast<std::uint32_t>(geometry.indices.size()),
+                                  foldPrimitiveBounds(geometry.vertices)};
         const bool uploadedVertices =
             vbuf.valid() && device.uploadBuffer(vbuf, 0, std::as_bytes(std::span{geometry.vertices}));
         const bool uploadedIndices =
@@ -639,7 +666,11 @@ MeshHandle ForwardRenderer::createMesh(const assets::CookedMesh& mesh) {
         entry.submeshes.push_back({.sectionIndex = submesh.sectionIndex,
                                    .firstIndex = submesh.firstIndex,
                                    .indexCount = submesh.indexCount,
-                                   .materialIndex = submesh.materialIndex});
+                                   .materialIndex = submesh.materialIndex,
+                                   // task 3.6.1 -- the file's own per-submesh box, verbatim. Never
+                                   // the model box: a submesh at the far end of a model would then
+                                   // claim the whole model's extent and never cull.
+                                   .bounds = toAabb(submesh.bounds)});
     }
 
     const std::span<const std::byte> indices = assets::indexBytes(mesh);
@@ -705,6 +736,14 @@ std::size_t ForwardRenderer::pipelineBindCount() const noexcept { return pipelin
 
 bool ForwardRenderer::hasWarnedSkinningCap() const noexcept { return warnedSkinningCap; }
 
+std::size_t ForwardRenderer::lastFrameDrawn() const noexcept { return lastDrawn; }
+
+std::size_t ForwardRenderer::lastFrameCulled() const noexcept { return lastCulled; }
+
+std::size_t ForwardRenderer::materialBindCount() const noexcept { return materialBinds; }
+
+bool ForwardRenderer::hasWarnedDegenerateFrustum() const noexcept { return warnedDegenerateFrustum; }
+
 void ForwardRenderer::bindMaterialTextures(rhi::RenderPassHandle pass, const MaterialSlot& slot) {
     // A-4: resolution to the built-in defaults happens at BIND time, and "which default belongs to
     // slot k" is answered by material.hpp's defaultTextureKindForSlot — the same function whose answer
@@ -724,9 +763,47 @@ void ForwardRenderer::bindMaterialTextures(rhi::RenderPassHandle pass, const Mat
     device->bindFragmentSamplers(pass, 0, bindings);
 }
 
+// task 3.6.1 -- SILENT by contract, on every path. A nullopt means "cannot prove anything about
+// this instance", never an error report: the arms in draw() below own the latched WARNs for the
+// cases that produce one, and a line here would either duplicate a warning that is about to fire or
+// invent one for a case that is not a problem. The resolution order MIRRORS the draw loop's, so the
+// two can never disagree about which instance is which.
+std::optional<Aabb> ForwardRenderer::instanceBounds(const MeshInstance& instance) const {
+    if (!instance.mesh.valid()) {
+        return primitives[clampPrimitiveIndex(instance.primitive)].bounds;  // ARM 1's mesh
+    }
+    const MeshEntry* const entry = meshes.get(instance.mesh);
+    if (entry == nullptr) {
+        return std::nullopt;  // stale -- ARM 2's WARN is still owed and must not be consumed here
+    }
+    if (instance.submesh >= entry->submeshes.size()) {
+        return std::nullopt;  // out of range -- likewise ARM 2's
+    }
+    const MeshSubmeshDraw& submesh = entry->submeshes[instance.submesh];
+    if (submesh.sectionIndex >= entry->sections.size()) {
+        return std::nullopt;  // the silent section guard's twin
+    }
+    return submesh.bounds;
+}
+
 void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     AERO_PROFILE_ZONE;
+    // task 3.6.1 -- BEFORE the early return, deliberately: a no-camera frame drew nothing and culled
+    // nothing, and must read 0/0 rather than the previous frame's numbers.
+    lastDrawn = 0;
+    lastCulled = 0;
+    // task 3.6.1 (AC-23) -- ONE definition of the two plot names, called on EVERY exit including the
+    // no-camera one. The counters reset above the early return precisely so a camera-less frame reads
+    // 0/0; a plot that skipped that frame would hold the PREVIOUS frame's value while the accessors
+    // correctly read zero, so the two diagnostics would disagree about the same frame. A Release
+    // session that loses its camera (delete the camera entity, New Scene) is exactly that case.
+    // These compile to ((void)0) unless AERO_ENABLE_PROFILING is on, i.e. the *-release presets.
+    const auto plotCounters = [this]() {
+        AERO_PROFILE_PLOT("render.drawn", static_cast<double>(lastDrawn));
+        AERO_PROFILE_PLOT("render.culled", static_cast<double>(lastCulled));
+    };
     if (!view.hasCamera) {
+        plotCounters();
         return;  // D5 0-camera: the frame's own clear still shows
     }
     const rhi::RenderPassHandle pass = frame.pass();
@@ -738,6 +815,31 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
 
     const detail::GpuLightBlock lights = detail::packLights(view);
     device->pushFragmentUniforms(cmd, 0, std::as_bytes(std::span{&lights, 1}));
+
+    // task 3.6.1 -- the frustum, ONCE per call, from proj * view: it is a per-VIEW quantity, and
+    // extracting it per instance would pay a transpose plus six normalisations per instance to
+    // answer the same question. The obvious extra justification -- that a mirrored instance's
+    // negative determinant flips every half-space -- is FALSE, and was measured: Gribb-Hartmann
+    // holds in whatever space the matrix maps FROM, so a local-space form agrees with this one on
+    // every mirrored fixture. What a per-instance extraction does not survive is being HALF applied
+    // (extracting from mvp while still testing the WORLD box applies the model transform twice).
+    Frustum frustum{};
+    bool culling = view.cullingEnabled;
+    if (culling) {
+        frustum = extractFrustum(view.camera.proj * view.camera.view);
+        if (!frustum.valid()) {
+            // Disable LOUDLY and once. Culling to black on a degenerate projection is the one
+            // failure mode this feature must never have, and a silent fallback would hide the real
+            // problem (a camera with zNear == zFar, a zero aspect, a collapsed view matrix).
+            if (!warnedDegenerateFrustum) {
+                AERO_LOG_WARN(
+                    "ForwardRenderer::draw: degenerate projection -- frustum culling disabled for this "
+                    "view; this warning latches once per renderer");
+                warnedDegenerateFrustum = true;
+            }
+            culling = false;
+        }
+    }
 
     // Which of the FOUR pipelines is bound is now a function of TWO booleans, so it moved out of the
     // material-change block and into the per-instance path — the (skinned, cullNone) pair is compared
@@ -764,15 +866,39 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     // The state cache is three variables, and the loop is correct under ANY instance order because
     // every draw's state is a pure function of its RESOLVED material — cheap under the common order
     // (materials arrive grouped) and never wrong under an adversarial one. No sorting happens here;
-    // 3.6.1/Phase 8 own draw ordering.
+    // Phase 8 owns draw ordering (culling -- task 3.6.1 -- deliberately took none of it; docs/10's
+    // 3.6.1 entry records the re-scope).
     MaterialHandle lastMaterial{};
     bool firstMaterial = true;
     bool doubleSided = false;  // the resolved material's, carried across instances with the cache
 
     for (const MeshInstance& instance : view.instances) {
+        // task 3.6.1, in order: skinned instances are EXEMPT (their vertices move under a palette
+        // this renderer never sees, so the cooked bind-pose box is not a bound on where they end up
+        // -- the predicate is `has a palette`, not `is a skinned mesh`, and it costs no lookup) ->
+        // silent bounds resolution -> an invalid box is culled -> the six-plane test.
+        //
+        // BEFORE material resolution, so a culled instance pushes no material block, binds no
+        // texture and flips no pipeline. A nullopt falls through UNDECIDED and UNCOUNTED to the arms
+        // below, whose latched WARNs it never consumes.
+        if (culling && instance.palette.empty()) {
+            if (const std::optional<Aabb> local = instanceBounds(instance)) {
+                // An INVALID local box -- the cook's inverted sentinel, reachable from a hand-built
+                // or corrupt file -- propagates through transformAabb and comes back out of
+                // isVisible as false, so there is deliberately no second `!local->valid()` test
+                // here. A duplicate decision could only ever disagree with isVisible's, and seeding
+                // one proved nothing in this suite could tell the two apart.
+                if (!isVisible(frustum, transformAabb(instance.model, *local))) {
+                    ++lastCulled;
+                    continue;
+                }
+            }
+        }
+
         const MaterialHandle resolved =
             materials.contains(instance.material) ? instance.material : defaultMaterialHandle;
         if (firstMaterial || resolved != lastMaterial) {
+            ++materialBinds;  // task 3.6.1 -- the only observable that can see the cull's PLACEMENT
             // Never null: `resolved` is either a handle contains() just proved live, or the built-in
             // default, which destroyMaterial refuses to remove. The comment is the argument; a dead
             // runtime arm here would be untestable by construction (A-6's posture).
@@ -802,6 +928,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
             device->bindVertexBuffer(pass, 0, mesh.vbuf);
             device->bindIndexBuffer(pass, mesh.ibuf, rhi::IndexType::Uint16);
             device->drawIndexed(pass, mesh.indexCount);
+            ++lastDrawn;
             continue;
         }
 
@@ -886,7 +1013,12 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
         }
         device->bindIndexBuffer(pass, entry->indexBuffer, entry->indexType);
         device->drawIndexed(pass, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
+        ++lastDrawn;
     }
+
+    // task 3.6.1 -- the first two production Tracy plots in the tree. The NAMES are the contract:
+    // a capture years from now finds them recorded in docs/10's 3.6.1 entry.
+    plotCounters();
 }
 
 }  // namespace engine::render

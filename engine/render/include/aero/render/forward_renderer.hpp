@@ -24,6 +24,7 @@
 
 #include <aero/assets/cooked_mesh.hpp>  // task 3.5.1 — createMesh's parameter (the 3.4.1 assets edge)
 #include <aero/core/slot_map.hpp>
+#include <aero/render/culling.hpp>  // task 3.6.1 -- Aabb (the registry's per-mesh bounds)
 #include <aero/render/lighting.hpp>
 #include <aero/render/material.hpp>
 #include <aero/render/mesh.hpp>
@@ -149,11 +150,36 @@ public:
     // instances must produce N binds, and a skipped rebind shows up as a smaller number.
     [[nodiscard]] std::size_t pipelineBindCount() const noexcept;
 
+    // --- diagnostics (task 3.6.1) ---------------------------------------------------------------
+    // Culling counters, PER-FRAME: both reset at the top of every draw() -- including a draw() that
+    // early-returns on !view.hasCamera, so a no-camera frame reads 0/0. THEY NEED NOT SUM TO
+    // view.instances.size(): an instance skipped by the stale-handle arm, the submesh-range arm, the
+    // section guard or the over-cap arm was not culled and did not draw, so it lands in NEITHER
+    // bucket. lastFrameDrawn counts issued drawIndexed calls and nothing else -- it is incremented
+    // at the two drawIndexed sites and nowhere else, which is what makes that gap true by
+    // construction rather than by bookkeeping that could drift.
+    [[nodiscard]] std::size_t lastFrameDrawn() const noexcept;
+    [[nodiscard]] std::size_t lastFrameCulled() const noexcept;
+    // How many times the material-change block ran (fragment uniform push + five-texture bind),
+    // renderer lifetime. Added for the same reason pipelineBindCount was in 3.5.1: that block
+    // executing for a CULLED instance is otherwise unobservable, and it is exactly what culling
+    // ahead of material resolution saves. Pipeline binds cannot see the difference -- they happen
+    // INSIDE the draw arms, downstream of both candidate cull placements -- so counting them proves
+    // culling reduces rebinds without proving the cull sits where it was designed to sit.
+    [[nodiscard]] std::size_t materialBindCount() const noexcept;
+    // The degenerate-projection latch fired at least once: a viewProj that yields no usable frustum
+    // disables culling FOR THAT DRAW and warns, rather than culling to black.
+    [[nodiscard]] bool hasWarnedDegenerateFrustum() const noexcept;
+
 private:
     struct PrimitiveMesh {
         rhi::BufferHandle vbuf;
         rhi::BufferHandle ibuf;
         std::uint32_t indexCount = 0;
+        // task 3.6.1 -- FOLDED in create() over the vertices make{Cube,Sphere,Plane}() actually
+        // returned, never a table: there is no second copy of 0.5 to drift out of step with
+        // primitives.cpp, which IS the single source for what each primitive's shape is.
+        Aabb bounds{};
     };
 
     // One registered material: the caller's params and slots VERBATIM — invalid texture handles and
@@ -182,6 +208,11 @@ private:
         // CALLER's job (3.4.1's posture: a material is registered by whoever loaded the .aeromat),
         // so the registry stores the number and never interprets it.
         std::uint32_t materialIndex = 0;
+        // task 3.6.1 -- CookedSubmesh::bounds via toAabb, VERBATIM (the materialIndex posture): the
+        // registry stores the file's numbers and never re-folds them. May be the inverted empty
+        // sentinel from a hand-built or corrupt file -- instanceBounds returns it as-is and draw()
+        // culls it, which is the right answer for a submesh with no geometry.
+        Aabb bounds{};
     };
     struct MeshEntry {
         rhi::BufferHandle vertexBuffer;  // stream 0 — 48-byte MeshVertex, every section concatenated
@@ -215,6 +246,11 @@ private:
     // One bindFragmentSamplers call for all five slots (task 3.4.1), resolving every invalid texture
     // handle to its built-in default at BIND time. Called on material change only, from draw().
     void bindMaterialTextures(rhi::RenderPassHandle pass, const MaterialSlot& slot);
+    // task 3.6.1 -- the instance's LOCAL-space box, or nullopt for "cannot prove anything about
+    // this instance". SILENT on every path: a nullopt is not an error report, and the arms below
+    // own the latched WARNs for the cases that produce one. Mirrors the draw loop's own resolution
+    // order, so the two can never disagree about which instance is which.
+    [[nodiscard]] std::optional<Aabb> instanceBounds(const MeshInstance& instance) const;
 
     rhi::Device* device = nullptr;                   // non-owning; outlives the ForwardRenderer (contract)
     rhi::GraphicsPipelineHandle pipeline{};          // CullMode::Back — the engine convention
@@ -250,12 +286,16 @@ private:
     std::array<Vec4, 3ULL * MAX_SKINNING_JOINTS> paletteScratch{};
     std::size_t skinnedDraws = 0;
     std::size_t pipelineBinds = 0;         // every bindGraphicsPipeline draw() issues, renderer lifetime
+    std::size_t lastDrawn = 0;             // task 3.6.1 -- PER-FRAME; reset at the top of draw()
+    std::size_t lastCulled = 0;            // task 3.6.1 -- PER-FRAME; reset at the top of draw()
+    std::size_t materialBinds = 0;         // task 3.6.1 -- material-change blocks run, renderer lifetime
     bool warnedBlendOnce = false;          // D9's latch: once per renderer lifetime, never per frame
     bool warnedDroppedAttributes = false;  // task 3.5.1 — TexCoord1/Color0 dropped at repack, latched once
     bool warnedStaleMesh = false;          // an instance named a MeshHandle the registry no longer holds
     bool warnedSubmeshRange = false;       // an instance's submesh index is past the mesh's table
     bool warnedSkinningCap = false;        // a palette longer than MAX_SKINNING_JOINTS was refused
     bool warnedStrayPalette = false;       // a palette on a mesh section that carries no skin stream
+    bool warnedDegenerateFrustum = false;  // task 3.6.1 -- a viewProj with no usable frustum, latched once
 };
 
 }  // namespace engine::render

@@ -9612,3 +9612,446 @@ four phases. Unlike 3.5.1, CI does **not** cover this task's sharpest half: the 
 run every tier-0 and GPU case here, but **no lane performs a mouse gesture**, so `N1`–`N5` are as
 uncovered on Windows and Linux as they are on macOS until a pass runs. **3.4.2's `S26` remains the one
 seed uncovered by any pass anywhere**, and it cannot be covered from macOS.
+
+---
+
+### Task 3.6.1 — Frustum culling (Epic 3.6) — OPENS Epic 3.6
+
+**Branch:** `feat/3.6.1-frustum-culling`, cut from `main @ 521c8a4`. **Eleven green commits** — one
+per build step (`9f6a471` the vocabulary, `648ce61` the FC tier, `75c0cbc` the registry bounds,
+`fcf3090` the cull in `draw()`, `c37c5ee` the CD tier, `bafa5ea` the sample), one closing the sabotage
+matrix's single genuine gap (`9a22000`), one documentation commit (`61e0090`), two closing the
+code-review round (`bcadb8d` the blocking guard fix, `40e71ef` the two smaller ones), and this one
+recording that round. Counted with `git rev-list --count`, not by adding up steps. **Complete in code; the ten-row macOS
+validation pass has NOT been run yet** (`editor/validation/3.6.1-frustum-culling.md`, written before
+the pass as always).
+
+Before this, `ForwardRenderer::draw` issued a `drawIndexed` for **every** instance in the view, and
+nothing anywhere in `engine/` knew what a bounding box was. The cooked format has carried
+`CookedBounds` per submesh **and** per model since 3.3.1 — written, validated, round-tripped, and read
+by **nothing**: `git grep '\.bounds' -- engine/ --` outside `engine/assets` and its own tests returned
+zero lines for three epics. This task is that field's first consumer, and the whole of it is one new
+pure pair plus about forty lines inside the draw loop.
+
+#### What shipped
+
+**`engine/render/culling.{hpp,cpp}` — the vocabulary, and it is PURE.** `Aabb` (two `Vec3` corners,
+`valid()`/`center()`/`halfExtent()`), `Plane` (normal + `d`, with the sign convention stated once at
+the top of the header: **inside ⟺ `dot(n, p) + d >= 0`**), `FrustumPlane` (a fixed six-slot order, so
+tests **name** planes and never count them), `Frustum`, `extractFrustum`, `transformAabb`, `isVisible`
+and `toAabb`. No rhi type, no `Device`, no `Frame`, no logging, no allocation, no static mutable
+state — every function is callable from a tier-0 case with no GPU, which is why 24 of the 34 new cases
+run in **every** configuration including `-DAERO_SHADER_TOOLS=OFF`.
+
+**The near plane is `r2` ALONE, and that is the single load-bearing line of the extraction.**
+Gribb-Hartmann is usually written for GL's `-w <= z <= w` clip volume, where near is `r3 + r2`. This
+engine has never used that volume: ADR-005 and SDL_GPU put clip Z in `[0, 1]`, so the near condition is
+`z >= 0`, which is `r2` by itself. The difference is not subtle in effect and is nearly invisible in a
+picture: for `perspective(60°, 1, 0.1, 100)` the correct normalised near plane is `n = (0,0,-1)`,
+`d = -0.1`; the GL form gives `d ≈ -0.05002` — the near plane at **half** its distance, quietly
+clipping geometry in front of the camera. `FC5` pins `d == -0.1` to `1e-4`, and seed `C1` reddens it
+with a measured margin of 0.0499.
+
+**Normalisation divides `d` too, and the test that proves it is a five-micron box.** `k = |n|` divides
+both halves. Dividing only the normal leaves `d` in the raw matrix's units, which for this projection
+shifts the near plane by **one part in a thousand** — `d` becomes `-0.1001001` instead of `-0.1`. Seed
+`C7` reddens `FC5` by a margin of 1.0009855e-4 against a 1e-4 epsilon, which is a **0.98 % margin** and
+too thin to rely on alone; `FC7`'s battery therefore carries a box centred at `z = -0.10005` with a
+half-extent of `1e-5`, which flips from inside to outside under exactly that shift. The tight epsilon
+and the boundary box are two independent witnesses for the same seed, on purpose.
+
+**`transformAabb` is Arvo in world space, and the absolute value is what makes a mirror work.**
+`worldCenter = transformPoint(model, c)`, `worldHalfExtent = |A| · e` over the componentwise-absolute
+3×3. Conservative under rotation (the AABB around the OBB — `FC20` pins `(√2, 1, √2)` for a 45° Y
+turn), exact under translation and axis-aligned scale, and **correct under mirror and shear**. Drop the
+`std::abs` and a mirrored box comes out with a negative half-extent, so `min` ends up above `max`, the
+box is **invalid**, and `isVisible` reads that as "nothing to draw" — an on-screen mirrored object
+disappears. `FC21` asserts the mirrored result equals the reflection of the original corners *and* that
+it is still `valid()`; `C11` reddens it.
+
+**Bounds are FOLDED for the primitives and COPIED for cooked meshes, and neither is ever restated.**
+`create()` folds each built-in primitive's box over the vertices `make{Cube,Sphere,Plane}()` actually
+returned, accumulator-first `std::min`/`std::max` (the `mesh_cook.cpp` `expandBox` rule — the two
+argument orders return different zeros for `(-0.0f, +0.0f)`). `createMesh` copies
+`CookedSubmesh::bounds` through `toAabb`, **verbatim**, on the `materialIndex` posture: the registry
+stores the file's numbers and never re-derives them. There is deliberately **no constant table** of
+primitive extents anywhere in `forward_renderer.{hpp,cpp}` — `primitives.cpp` is the single source for
+what each shape *is*, and a second copy of `0.5` would be a second truth that can drift.
+
+**The cull sits BEFORE material resolution, and one accessor exists solely to prove it.** In order:
+skinned instances are exempt (the predicate is `!instance.palette.empty()` — *has a palette*, not *is a
+skinned mesh* — so it costs no registry lookup), then a **silent** bounds resolution, then the
+six-plane test. Ahead of material resolution means a culled instance pushes no fragment-uniform block,
+binds no texture and flips no pipeline.
+
+**`instanceBounds` is silent on every path, and `nullopt` means "cannot prove anything".** It mirrors
+the draw loop's own resolution order — primitive, stale handle, out-of-range submesh, out-of-range
+section — and returns `nullopt` for the three failure arms. It never logs: the arms below own the
+latched WARNs for exactly those cases, and a line here would either duplicate a warning about to fire
+or invent one for a case that is not a problem. A `nullopt` instance falls through **undecided and
+uncounted** into ARM 2/3/4, whose diagnostics it never consumes.
+
+**`lastFrameDrawn` and `lastFrameCulled` are per-frame, reset BEFORE the early return, and NEED NOT
+SUM.** A `!hasCamera` frame reads `0/0` rather than the previous frame's numbers, which is what `CD5`
+pins as **one sequence** (a populated draw followed by a blank one — two independent cases both pass
+under the very defect). `++lastDrawn` lives at the **two `drawIndexed` sites and nowhere else**, which
+makes the documented non-sum true by construction for all four residents of the gap: the stale-handle
+arm, the submesh-range arm, the silent section guard and the over-cap skinning arm. `CD3` asserts
+`drawn + culled == 2` over a three-instance view, and both plausible wrong answers are 2 in the other
+direction (`C23` returns a default `Aabb{}` for a stale handle → `culled == 2`; `C27` counts at the
+cull's keep-decision → `drawn == 2`).
+
+**The two Tracy plots are the first production plots in the tree: `render.drawn` and `render.culled`,
+emitted after the loop.** The names are recorded here because a capture years from now will find them
+nowhere else. They compile to `((void)0)` unless `AERO_ENABLE_PROFILING` is on, i.e. the `*-release`
+presets only.
+
+**A degenerate projection disables culling LOUDLY and once, never culls to black.** `zNear == zFar`, a
+zero aspect or a collapsed view matrix all yield a frustum whose `valid()` is false; `draw()` warns
+once per renderer lifetime and draws everything. `hasWarnedDegenerateFrustum()` exists because the
+latch is otherwise unobservable — the 3.4.1 `hasWarnedBlendOpaque` / 3.5.1 `hasWarnedSkinningCap`
+posture, applied on arrival rather than at review time.
+
+**`samples/phase-3-culling`** is an N×N×N grid (default 10, argv override clamped to `[2, 32]`) seen
+from a **fixed** eye whose look direction yaws a full turn every 12 s, printing yaw, drawn/culled and
+the `draw()` call's wall time every frame. `--no-cull` runs the identical grid with
+`cullingEnabled = false`. A **red mirrored cube** with a **green** unmirrored twin (both on a
+`doubleSided` material, so a winding flip cannot fake a disappearance) and a **blue palette-marked**
+instance at the far corner are the only non-grey instances; at yaw ≈ 180° the line reads `drawn 1` and
+the blue one is what is left. It commits no asset and links no `aero::assets`.
+
+#### The four amendments this task made to its own specification
+
+1. **AC-5 — `Frustum::valid()` checks `d` finiteness too.** A `viewProj` with an infinite translation
+   column yields six **finite** normals with **infinite** `d`. Every `s = dot(n, c) + d` is then ±inf
+   or NaN, `s + r < 0` is false for NaN, and the draw degrades to all-visible **silently**, skipping
+   the WARN that exists to report exactly that. Six extra compares make the whole reachable class
+   loud. `FC16` carries the finite-normal/infinite-`d` arm.
+2. **AC-21 — two accessors beyond the specified pair.** `materialBindCount()` because the cull's
+   *placement* is otherwise unobservable (below), and `hasWarnedDegenerateFrustum()` because AC-20's
+   latch is. Both follow the standing posture line for line: *they report; they never change
+   behaviour.*
+3. **AC-10 — the include list narrows.** `<algorithm>` was specified for `culling.cpp` and is not used
+   there (the only `std::min`/`std::max` are in `forward_renderer.cpp`'s fold); an unused include is
+   an IWYU lie. `culling.cpp` includes its own header, `<cmath>` and `<cstddef>`.
+4. **AC-32 — "measured culling wall time" ships as draw-record wall time.** The cull runs *inside*
+   `draw()` and the API surface exposes no timing. Adding a timing accessor would be renderer surface
+   with one consumer and a `steady_clock` read in the hot path. The sample times the `draw()` call and
+   the **`--no-cull` A/B is what isolates the cull term**; the README says so in those words.
+
+#### Three plan-time corrections, and one of them was wrong in the other direction
+
+**The finiteness half of `Aabb::valid()` does NOT catch the cook's inverted sentinel.** The spec said
+it did. It does not: the sentinel has `min.x = +inf > max.x = -inf`, so the **ordering** half already
+rejects it — as it rejects any NaN corner, since `NaN <= x` is false in both directions. What the
+finiteness half **uniquely** catches is a box that is *ordered but infinite* (`min = {-inf, 0, 0}`,
+`max = {+inf, 1, 1}`), which passes `min <= max` and whose `center()` is `inf - inf = NaN`. `FC1`
+carries that exact arm, and measurement confirms it: under seed `C14` the sentinel and NaN arms stay
+**green** and only the ordered-infinite arm reddens.
+
+**`pipelineBindCount()` is structurally blind to the cull's placement, and `materialBindCount()` was
+added at plan time rather than at review time.** `bindPipelineFor` is called *inside* the draw arms,
+downstream of **both** candidate cull placements, so a culled instance binds no pipeline under either
+and the counter is a pure function of the drawn set. What moving the cull below the material block
+actually changes is the **material-change block executing for culled instances** — a fragment-uniform
+push plus a five-texture bind per instance, which is precisely the cost the placement exists to save.
+`CD6` keeps the spec's inequality (`pipelineBinds` on `<` off — true, and worth having) **and** asserts
+the exact material-bind deltas: **1 with culling on, 8 with it off**, over eight alternating instances.
+Seed `C25` reddens `CD6` alone. This is 3.5.1's `pipelineBindCount` lesson caught one stage earlier.
+
+**And the correction that went the other way: the plan claimed a mirrored on-screen instance witnesses
+a per-instance frustum extraction. It does not, and neither does anything else, because the
+"defect" is not one.** Measured two ways — a standalone probe linking the real `culling.cpp` over 30
+model matrices including 10 mirrored ones, and seed `C29b` against the whole 34-case tier — the pure
+local-space form (`extractFrustum(instance.mvp)` tested against the **local** box) gives **bit-identical
+worst-plane margins** to the shipped world-space form on every fixture, mirrors included. The reason is
+mechanical: Gribb-Hartmann's derivation holds in whatever space the matrix maps **from**, and a
+negative determinant does not change that; the local-space test is in fact *tighter* (the exact box in
+local space rather than the conservative AABB around the OBB in world space). **The design still
+stands, on the cost argument alone** — the frustum is a per-**view** quantity, and extracting it per
+instance pays a transpose plus six normalisations per instance to answer the same question. **Two
+source comments stating the false mirror rationale were corrected** (`culling.hpp`'s `transformAabb`
+note and `draw()`'s own), because a wrong justification in the code is worse than none.
+
+**What a per-instance extraction genuinely does not survive is being HALF applied**: extracting from
+`mvp` while still testing the **world** box applies the model transform twice. That is seed `C29`, it
+is the form a developer would actually write by accident, and `CD1` witnesses it through a cube 60
+units down the view axis (worst-plane slack **+5.8 correct, −10.0 seeded** — pushed to 120 units and
+past the far plane). The mirrored instance stays in `CD1` as an end-to-end correctness assertion for
+`transformAabb`'s absolute value, and the case comment says exactly that rather than claiming more.
+
+#### The sabotage matrix: 30 seeds, 35 runs, one genuine gap
+
+Every one of the 26 automated seeds reddened, most of them on the named witness. The full record, per
+seed, with the exact red case ids, is in the branch's own history; what is worth keeping:
+
+- **`C16b` was a real coverage gap, and it is closed structurally.** `draw()`'s cull condition read
+  `!local->valid() || !isVisible(...)`. Deleting the first disjunct left the **entire 34-case tier
+  green** — because `transformAabb` propagates an invalid box unchanged and `isVisible` already returns
+  false for one, so the two clauses can never disagree and no fixture can tell them apart. The
+  duplicate decision is **deleted**; `isVisible` owns it alone. Re-seeding `C16` (make `isVisible`
+  return true for an invalid box) now reddens **`FC14` and `CD9`**, which is what the plan's own witness
+  table always claimed and could not previously deliver.
+- **`C19` is closed both ways, and the second way was a surprise.** A hard-coded `[-0.5, 0.5]³` table
+  cannot be written without reintroducing a `0.5` literal into `forward_renderer.{cpp,hpp}`, where the
+  guard grep is empty on a correct tree and non-empty on the seeded one (proven in **both** directions).
+  But the seed also reddens **`CD7`**, because the **plane** primitive is flat in Y and a naive unit box
+  lies about it — which is exactly the fixture `CD7` exists for. The grep's scope had to be corrected:
+  the plan's version included `culling.cpp`, whose two `0.5F` literals are `center()`/`halfExtent()`'s
+  arithmetic midpoint and make the guard non-empty on a **correct** tree.
+- **`C22`, `C28` and `C30` are the declared class, and they were measured rather than assumed.** Each
+  was applied, built and run: all three redden **nothing** in the whole tier. `C22` (a log line on
+  `instanceBounds`' `nullopt` path) has no observable at all — there is no log sink by decision and the
+  stale-mesh latch has no accessor; its witness is **validation rows 1 and 3**, the console-clean
+  expectation. `C28` (extracting the frustum even when `cullingEnabled` is false) is timing-only →
+  **row 5**. `C30` (the two plot names swapped) compiles to `((void)0)` in every test build →
+  **row 7**, a Release Tracy capture.
+
+**Four witness attributions in the plan were wrong and are corrected here rather than smoothed over:**
+`C6` (the inside test flipped) reddens **`FC8`** and eleven others but **not `FC9` or `FC24`** — a box
+far outside is still rejected by the *other* five planes under the flipped predicate, so `FC9`'s
+`CHECK_FALSE` stays green, and `FC24` never calls `isVisible` at all. `C18` reddens **`FC15` alone, not
+`CD10`**: with a zero projection every plane is `Plane{}`, so `s + r == 0` and the loop passes anyway —
+`FC15` is a witness only because its degenerate frustums carry a **negative** `d`, which is why it is
+built that way and why an all-zero frustum is deliberately not used there. `C16`'s CD half only
+existed after the structural closure above. And `FC9` as specified (six arms against the hand-built box
+frustum) is **blind to `C3`/`C4`**, because that frustum is symmetric under a left/right or bottom/top
+swap; `FC9` therefore carries a second half against the **real extracted** frustum, asserting that
+exactly one named plane rejects each point.
+
+#### Things the plan predicted wrong, found by building
+
+- **`engine::perspective` asserts its own preconditions** (`aspect > 0`, `zNear > 0`,
+  `zFar > zNear`; `glm_backend.cpp`). The plan's `FC16` called it with `zNear == zFar` and with
+  `aspect == 0` to get a degenerate matrix — which **aborts a Debug build** rather than producing one.
+  Both arms are now **hand-built column literals** carrying exactly what GLM's formulas yield (`+inf`
+  in `[2][2]`, `-inf` in `[3][2]`; `+inf` in `[0][0]`), which is strictly better than an
+  `#if defined(NDEBUG)` gate: it runs in the configuration CI sanitizes.
+- **`CD7`'s worked position was computed for a different camera.** At the `makeCamera` eye of
+  `(0, 1.5, 3)`, the plan's `y = 3.29` culls the cube *and* the plane. The band where the flat plane
+  box misses the Top plane while a cube's `he.y = 0.5` clears it is `y ∈ (2.01, 2.51)`; the fixture sits
+  at **`y = 2.25`**, measured, with slack **−0.239 / +0.260**. Every CD fixture position in this file
+  was chosen by measuring the worst-plane margin against the real extraction, and each case names its
+  slack in a comment.
+- **`forward_renderer.cpp` needed `<algorithm>` as well as `<limits>`** for the fold's
+  `std::min`/`std::max` — the 3.1.5 lesson applied preventively rather than after a Windows lane.
+  `<optional>` was **already** present in `forward_renderer.hpp` (since `create()` returns one), so the
+  plan's addition of it was a no-op.
+- **Two `modernize-use-std-numbers` findings** in the new test TU: a spelled `1.7320508F` and a
+  `std::sqrt(2.0F)` are both rejected outright by clang-tidy under `--warnings-as-errors='*'`, exactly
+  as `constants.hpp` warns about `PI`. Both use `<numbers>` now.
+- **ASan caught a dangling reference written into the first draft of `FC5`/`FC6`**:
+  `const Plane& p = extractFrustum(...).plane(...)` binds to a reference *into* a temporary, and
+  lifetime extension does not reach through a member function returning a reference. It aborted on the
+  first run. Worth writing down because the shape is easy to repeat and reads as harmless.
+- **The `--no-cull` A/B measurement was nearly falsified by the SHELL, not the sample.** A first pass
+  reported `22 --no-cull` running with culling **ON**; the cause was zsh not word-splitting an unquoted
+  `$args`, so the program received one argument `"22 --no-cull"` and `strtol` took the 22. The sample's
+  parser is order-independent and correct, verified with `--no-cull 22` as well. This is the recorded
+  "verify the seed landed" family: a measurement that looks like a defect must be traced to the thing
+  under test before it is believed.
+
+#### The re-scope this task took, and the sentence it deliberately did not sweep
+
+`forward_renderer.cpp`'s draw-loop comment used to read *"No sorting happens here; 3.6.1/Phase 8 own
+draw ordering."* Culling took **none** of draw ordering: the loop order is still the caller's, and
+sorting (by material, by pipeline, front-to-back) remains Phase 8's. The comment now says so.
+`docs/10-engineering-log.md:7243` carries the same 3.4.1-era attribution and is **left exactly as it
+is** — the forward-only rule; this paragraph is the record.
+
+#### Mechanical gate
+
+**157/157 on both macOS presets** with `AERO_REQUIRE_GPU=1` (Debug 235 s, Release 60 s). Both reduced
+configurations rebuilt **fresh with `-G Ninja`**: `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF`
+→ **65/65**, and `-DAERO_REFLECT_TOOLS=OFF` alone → **78/78**. Each of those runs built and ran
+`aero_tests`, `aero_editor_shell_test` and `aero_editor_imgui_test` plus `aero_cooker` through its
+ctest arms — and **not** `aero_scene_serialize_test` / `aero_editor_inspector_test` /
+`aero_reflect_meta_test` / `aero_reflect_json_test`, all four of which sit inside
+`if(AERO_REFLECT_TOOLS)`; the plan's binary list named the first two and was wrong. **A reduced
+configuration also needs `-DCMAKE_TOOLCHAIN_FILE=…/vcpkg/scripts/buildsystems/vcpkg.cmake` explicitly**
+— the presets supply it through their `base` preset, and without it the configure dies at
+`find_package(spdlog)`.
+
+`ctest -N` reads **157 / 65 / 78 — unmoved in all three**, which is the prediction being met rather
+than a missed registration: the new file rides `aero_tests`, which is a single ctest entry, and the
+sample registers no test. The growth reads only in doctest: `aero_tests` **906 → 942** (+36: `FC1`–
+`FC25` and `CD1`–`CD11`, the last two of which the code-review round added), with
+`aero_editor_shell_test` 1725, `aero_editor_imgui_test` 138, `aero_scene_serialize_test` 29,
+`aero_editor_inspector_test` 27, `aero_reflect_meta_test` 7 and `aero_reflect_json_test` 28 all
+**unmoved**. In the tools-off configuration the culling filter lists **25** — the FC tier present, the
+CD tier absent by its `AERO_SHADER_TOOLS_ENABLED` gate — and the sample's stub main logs and
+returns 1.
+
+Six guards exit 0. `check-math-boundary.sh` scans **404 → 408** (+4 tracked C-family files:
+`culling.hpp`, `culling.cpp`, `render_culling_test.cpp`, `samples/phase-3-culling/main.cpp`);
+`check-project-no-delete.sh`'s Check B stays at **73**, and `.github/scripts/` is byte-identical.
+clang-format and clang-tidy are clean **by exit code** over all nine changed `.cpp`/`.hpp` files.
+
+**Byte-identity:** the whole diff is **16 tracked files** — six created
+(`engine/render/{include/aero/render/culling.hpp, src/culling.cpp}`, `tests/render_culling_test.cpp`,
+`samples/phase-3-culling/{main.cpp, CMakeLists.txt, README.md}`) and ten modified, of which two are
+these docs. `engine/core`, `engine/platform`, `engine/rhi`, `engine/reflect`, `engine/scene`,
+`engine/scene_render`, `engine/scene_serialize`, `engine/assets`, `/editor`, `/tools`, `shaders/`,
+`runtime/`, `vcpkg.json`, `cmake/`, `.github/`, `docs/09-file-formats.md`, `docs/tasks/phase-3.md`,
+every existing sample, every existing test file and every golden are **byte-identical**.
+`tests/cooker/determinism.sha256` is untouched at **18 hash lines / 36 cross-lane comparisons**.
+`engine/render/CMakeLists.txt` gains **one source line** and its `target_link_libraries` block is
+byte-identical — **no link line moves anywhere and no dependency of any kind lands** (`toAabb` naming
+`assets::CookedBounds` rides `aero_render`'s existing `PUBLIC aero::assets` edge from 3.4.1).
+
+#### The numbers the sample produced (macOS, Release, this machine)
+
+Evidence for the validation page rather than a gate. Four sessions, ~16 s each, median over the frames
+within ±1.5° of each yaw:
+
+| grid | yaw ≈ 0° | yaw ≈ 90° | yaw ≈ 180° |
+|---|---|---|---|
+| N=10 (1000), culling on | drawn 670, record 0.336 ms | drawn 49, record 0.075 ms | drawn 1, record 0.061 ms |
+| N=10, `--no-cull` | drawn 1000, record 0.414 ms | drawn 1000, record 0.627 ms | drawn 1000, record 0.507 ms |
+| N=22 (10648), culling on | drawn 7151, record 2.835 ms | drawn 396, record 0.745 ms | drawn 1, record 0.495 ms |
+| N=22, `--no-cull` | drawn 10648, record 3.330 ms | drawn 10648, record 3.281 ms | drawn 10648, record 3.269 ms |
+
+Whole-run record median: **0.164 ms vs 0.563 ms** at N=10 and **1.275 ms vs 3.329 ms** at N=22 — a
+**71 %** and **62 %** reduction in CPU record time. The shape is the interesting part: at yaw 0 most of
+the grid is on screen and the two modes are close (2.835 vs 3.330 ms), while at 90° and 180° culling is
+4.4× and 6.6× cheaper. **`drawn 1` at yaw 180° in both grids is the palette-exempt instance**, which is
+validation row 8's witness confirmed end to end.
+
+#### The code-review round: three gaps, one blocking, all three closed
+
+**GAP 1 (BLOCKING) — the normalisation guard applied a NORMALISED-vector tolerance to RAW extraction
+coefficients, and a perfectly valid camera silently turned the whole feature off.** The guard read
+`if (k <= EPSILON) return Plane{};`. `EPSILON` is `1e-5`, the tolerance `normalizeOrZero` spends on an
+already-unit vector. Gribb-Hartmann coefficients are in the projection matrix's own units, and
+`perspectiveRH_ZO`'s **far** row is exactly
+
+```
+far = r3 - r2 = (0, 0, zNear/(zFar - zNear), (zFar * zNear)/(zFar - zNear))
+```
+
+whose length is `zNear/(zFar - zNear)` and therefore **shrinks as the depth ratio grows**. Past a ratio
+of roughly `1e5` the guard rejects the far row, `Frustum::valid()` goes false, and `draw()` disables
+culling **for the entire view** while latching a WARN that blames a projection which is fine. Only the
+far plane is affected — L/R/B/T raw normals always have `|n| >= 1` and Near's is `~1` — which is
+exactly why nothing saw it. **Measured**, with the raw far length beside each range:
+
+| zNear / zFar | ratio | raw far \|n\| | old guard | far `d` after the fix | error |
+|---|---|---|---|---|---|
+| 0.1 / 100 | 1e3 | 1.001e-3 | passes | 100.0001 | 0.0001 % |
+| 0.1 / 1000 | 1e4 | 1.00017e-4 | passes | 999.934 | 0.0066 % |
+| 0.1 / 9000 | 9e4 | 1.10865e-5 | passes | 9020.11 | 0.223 % |
+| 1 / 100000 | 1e5 | 1.00136e-5 | passes | 99865.4 | 0.135 % |
+| **0.1 / 20000** | 2e5 | 5.00679e-6 | **TRIPS** | 19972.98 | 0.135 % |
+| **0.001 / 1000** | 1e6 | 9.53674e-7 | **TRIPS** | 1048.577 | 4.86 % |
+| **0.01 / 10000** | 1e6 | 9.53674e-7 | **TRIPS** | 10485.77 | 4.86 % |
+
+**This is reachable, not theoretical.** `EditorCamera::MIN_NEAR_PLANE` is `1.0e-3F`
+(`editor_camera.hpp:114`) against a `DEFAULT_FAR` of `1000.0F` (`:92`) — a ratio of **1e6**. And
+`engine::Camera::nearPlane`/`farPlane` carry **no `AERO_RANGE` at all**, deliberately
+(`camera.hpp:36-38`: *"min > 0 cannot be expressed by a two-sided bound"*), so the inspector can ask
+for any far plane at all. A user lowering the near plane to inspect close geometry, or raising the far
+plane for an outdoor scene, would have silently lost culling entirely — the exact failure class this
+task exists to avoid.
+
+**The fix makes the guard mean "genuinely degenerate" rather than "short":**
+`if (k == 0.0F || !std::isfinite(k))`. Dividing by a small finite `k` is safe by construction —
+`|n| == k`, so every component of `n / k` is bounded by 1 and the result has unit length — and if
+`raw.w / k` overflows, §0.2's `d`-finiteness check in `Frustum::valid()` catches it, which is precisely
+what that check is for.
+
+**The sentence that licensed the bug is the spec's own.** AC-5/AC-6 say the extraction must reject a
+plane *"whose normal has length below `EPSILON`"*. That is **wrong for raw extraction coefficients**
+and right only for normalised ones — so `Frustum::valid()`'s own `lengthSquared > EPSILON * EPSILON`
+test is correct and stays, because it runs on normals `extractFrustum` has already normalised. The two
+length tests look identical and are asking different questions; the header now says so at both sites.
+
+**Two new arms, and both were proven non-vacuous by re-seeding the old guard.** `FC25` sweeps six depth
+ranges asserting `valid()` (the core of the fix, and the one assertion here carrying no tolerance at
+all), the far normal, the far `d` to a **per-row measured relative tolerance**, the near plane's `d`
+(unaffected — it is `m[3][2] / |m[2][2]|`, which is `-zNear` with no cancellation), and that the
+frustum still **discriminates** at every range. `CD11` draws two instances under `0.1 / 20000` and
+asserts drawn 1 / culled 1 / **latch false**. Restoring the old guard reddens **exactly `FC25` and
+`CD11`** and nothing else.
+
+**One correction to the review's own prescription, found by measuring:** a single `~1e-2` relative
+tolerance does **not** cover the wide ranges the review also named. The far `d` degrades with the depth
+ratio because `far = -1 - m[2][2]` with `m[2][2] ~ -1` is a catastrophic cancellation — inherent, not a
+defect — and at a ratio of `1e6` the measured error is **4.86 %**, not under 1 %. `FC25` therefore
+carries a per-row tolerance (`0.01` up to a ratio of `2e5`, `0.06` at `1e6`) with the measured figure
+beside each row. At a ratio of `1e7` (`0.001 / 10000`) roughly one significant digit survives and `d`
+is ~16 % off; nothing in this tree can ask for that, so it is documented rather than asserted.
+
+**And one clause of the fix has NO automated witness, recorded rather than hidden.** Seeding away the
+`!std::isfinite(k)` half — keeping only `k == 0.0F` — leaves the **whole tier green**, because a NaN or
+infinite row divided through yields a NaN normal that `Frustum::valid()` rejects anyway, so the
+observable is identical. It ships regardless, and the comment now states the real reason instead of
+the behavioural one: `extractFrustum` is **public**, its result is inspectable **without** calling
+`valid()`, and a caller reading `plane(Far)` directly gets the defined degenerate sentinel rather than
+a NaN-filled plane whose `signedDistance` poisons every arithmetic it touches. This is 3.5.2's `S47`
+treatment applied on arrival — the clause ships, the comment states the invariant, and the log records
+that seeding it reddens nothing. **The review's claim that the new form is "strictly better on NaN" is
+true of the local predicate and false of the observable**, and the distinction is the point.
+
+**GAP 2 (non-blocking) — the two plots were skipped on the `!hasCamera` early return.** AC-23 says
+*"once per call"*. The counters reset **above** the early return precisely so a camera-less frame reads
+`0/0` — but the plots sat after the loop, so that frame emitted no sample and Tracy held the previous
+frame's values. The two diagnostics then disagreed about the same frame: a Release session that loses
+its camera (delete the camera entity, New Scene) showed `render.drawn` frozen at its last non-zero
+value while `lastFrameDrawn()` correctly read 0. Closed with a `plotCounters` lambda defined once at
+the top of `draw()` and called on **both** exits — which also keeps the two plot names at **one** site,
+so seed `C30` stays a single-site seed. Not test-visible by construction: `AERO_PROFILE_PLOT` is
+`((void)0)` in every test build, which is `C30`'s whole reason for being declared.
+
+**GAP 3 (non-blocking, documentation-only) — an unassigned `camera` is a VALID unit-cube frustum, not
+"no frustum".** `RenderView::hasCamera` defaults **true**, `CameraView::view`/`proj` default to
+**identity**, and `cullingEnabled` now defaults true — so a hand-built view that fills every
+`instances[].mvp` correctly but never assigns `view.camera` culls against `extractFrustum(identity)`,
+the box `[-1,1] x [-1,1] x [0,1]` in **world** units. All six of those normals are unit-length and
+finite, so `Frustum::valid()` is **true and no WARN fires**, and everything beyond about one world unit
+from the origin vanishes silently. No current caller does this — all 16 pre-existing sites plus the two
+new ones assign `view.camera` — so it is a trap rather than a live defect, and it is closed with one
+sentence in the `cullingEnabled` contract comment. The `hasCamera` default is deliberately **not**
+changed: that is a wider blast radius than this task should take.
+
+#### Named handoffs
+
+- **3.6.2 (shadows)** inherits the whole vocabulary and is the **promotion trigger** for `Aabb`: a
+  second engine layer needing these types is what moves `editor::Aabb` down beside them. `Plane` is
+  normalised precisely so `signedDistance` is a true distance, which shadow-frustum fitting wants.
+- **Sorting — by material, by pipeline, front-to-back — is Phase 8's**, unchanged. Culling deliberately
+  took none of it.
+- **Occlusion culling, a BVH or any spatial index, and OBB (rather than AABB) tests** are Phase 8's and
+  **unowned**. Today's cull is a linear pass with a per-instance box test; the sample's N=22 numbers are
+  the only measurement anyone will have when that is picked up.
+- **Animated bounds** are **unowned** with a stated trigger: a skinned instance is exempt because its
+  vertices move under a palette this renderer never sees, so its bind-pose box bounds nothing. The
+  honest fix is a per-frame skinned bound (from the palette, or a conservative rig-space box in
+  `.aeroskel`), and it belongs to the animation-graph era — `.aeroskel` carries **no** bounds at any
+  level today.
+- **A debug visualisation of the frustum and the boxes** is **unowned**; nothing in the editor draws
+  wireframes yet.
+- **Per-view culling results are not cached or shared.** Two views of the same scene each pay a full
+  pass. That is correct for now (the editor has one viewport) and is the first thing to look at if a
+  second viewport or a shadow cascade arrives.
+- **The `--no-cull` escape hatch has exactly one production consumer today (the sample).** Every
+  existing call site was verified consistent with `mvp == viewProj * model` before the default was set
+  to on: **16 draw call sites** across `scene_renderer.cpp`, `material_preview.cpp`, three samples and
+  eleven test sites. A future caller that cannot honour that contract sets `cullingEnabled = false`
+  rather than being silently mis-culled.
+
+#### Still open
+
+**The ten-row macOS validation pass has not been run.** The page exists and was written before the
+pass. Rows **4, 5 and 10** carry their measurement blanks in bold; the §V.8 session logs above are the
+evidence those rows will cite. **Rows 1 and 3 are seed `C22`'s only coverage anywhere, row 5 is
+`C28`'s, and row 7 is `C30`'s** — all three redden nothing automated, by construction, and the page
+names each seed beside its row. Row 6 is the mirrored pair's on-hardware confirmation (automated by
+`CD1`'s validity assertion); row 9 needs a temporary two-line local edit to the sample to build a
+degenerate camera, reverted afterwards.
+
+Windows and Linux ship **Pending**, and this task adds one more to platform-validation debt spanning
+four phases. Unlike 3.5.2, CI **does** cover a real part of it: all three lanes run `CD1`–`CD11` with
+`AERO_REQUIRE_GPU=1`, so the counters, the exemptions, the placement and the degenerate latch execute
+under Metal, **WARP** and **lavapipe** on every push. The cull itself is pure CPU IEEE arithmetic and
+cannot diverge by lane. What no lane can see is the **picture** — and specifically the three declared
+seeds above.
