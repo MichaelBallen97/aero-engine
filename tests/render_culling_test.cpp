@@ -556,3 +556,466 @@ TEST_CASE("render culling: signedDistance's sign convention, and the plane SLOT 
     CHECK(f.plane(FrustumPlane::Far).d == 6.0F);
     CHECK(f.planes.size() == 6);
 }
+
+// ================================================================================================
+// Tier 1 -- a real Device, no window. The cull inside ForwardRenderer::draw.
+//
+// Gated on AERO_SHADER_TOOLS_ENABLED for the reason render_skinning_test.cpp's own tier-1 block is:
+// a ForwardRenderer loads its shaders from build/<preset>/shaders, which only exists when the
+// shader toolchain is built. The FC battery above runs in every configuration.
+//
+// EVERY fixture position below was MEASURED against the real extraction rather than derived by
+// hand, and each case names the worst-plane slack it sits on, so a reader can see it is not a
+// coincidence one lane could lose.
+// ================================================================================================
+
+#if AERO_SHADER_TOOLS_ENABLED
+
+    #include <aero/assets/mesh_cook.hpp>
+    #include <aero/core/vfs.hpp>
+    #include <aero/platform/platform.hpp>
+    #include <aero/render/render.hpp>
+    #include <aero/rhi/rhi.hpp>
+
+    #include "rhi_test_support.hpp"
+
+    #include <cstdint>
+    #include <memory>
+    #include <optional>
+    #include <span>
+    #include <utility>
+    #include <vector>
+
+using engine::render::MeshInstance;
+using engine::render::PrimitiveId;
+
+namespace {
+
+// A ForwardRenderer needs a colour and a depth format, which a RenderTarget supplies without a
+// window (the render_material_test.cpp / render_skinning_test.cpp pattern).
+[[nodiscard]] std::optional<engine::render::ForwardRenderer> makeForwardRenderer(
+    engine::rhi::Device& device, const engine::render::RenderTarget& target) {
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    return engine::render::ForwardRenderer::create(
+        device, vfs, {.colorFormat = target.colorFormat(), .depthFormat = target.depthFormat()});
+}
+
+// The same camera render_skinning_test.cpp's SN battery uses, with eyePosition set to the SAME point
+// the view matrix was built from.
+[[nodiscard]] engine::render::CameraView makeCamera() {
+    const Vec3 eye{0.0F, 1.5F, 3.0F};
+    return {engine::lookAt(eye, Vec3{}, Vec3{0.0F, 1.0F, 0.0F}),
+            engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 100.0F), eye};
+}
+
+// One built-in primitive instance with model/normalMatrix/mvp set CONSISTENTLY -- mvp == viewProj *
+// model, which is the contract RenderView::cullingEnabled documents and the whole reason the cull
+// may read `model` while the shader reads `mvp`.
+[[nodiscard]] MeshInstance primitiveInstance(PrimitiveId primitive, const Mat4& model, const Mat4& viewProj) {
+    MeshInstance instance;
+    instance.primitive = primitive;
+    instance.model = model;
+    instance.normalMatrix = Mat4::identity();
+    instance.mvp = viewProj * model;
+    return instance;
+}
+
+// Behind the eye for makeCamera(): worst-plane slack -40.8, so nothing rounds it back on screen.
+constexpr Mat4 OFFSCREEN = engine::translation(Vec3{0.0F, 0.0F, 50.0F});
+// On screen, far down the view axis: slack +5.8. Its role is spelled out in CD1.
+constexpr Mat4 DISTANT_ON_SCREEN = engine::translation(Vec3{0.0F, 0.0F, -60.0F});
+// A mirror about X. The cube's box is symmetric, so the WORLD box is unchanged -- what this fixture
+// asserts is that transformAabb's abs keeps it VALID rather than inside out.
+constexpr Mat4 MIRROR_X = engine::scaling(Vec3{-1.0F, 1.0F, 1.0F});
+
+// The seven-instance view CD1/CD4/CD5 share.
+[[nodiscard]] std::vector<MeshInstance> cullMixView(const Mat4& viewProj) {
+    return {primitiveInstance(PrimitiveId::Cube, Mat4::identity(), viewProj),
+            primitiveInstance(PrimitiveId::Sphere, Mat4::identity(), viewProj),
+            primitiveInstance(PrimitiveId::Plane, Mat4::identity(), viewProj),
+            primitiveInstance(PrimitiveId::Cube, MIRROR_X, viewProj),
+            primitiveInstance(PrimitiveId::Cube, DISTANT_ON_SCREEN, viewProj),
+            primitiveInstance(PrimitiveId::Cube, OFFSCREEN, viewProj),
+            primitiveInstance(PrimitiveId::Sphere, OFFSCREEN, viewProj)};
+}
+
+// A triangle whose box is (-0.5,-0.5,0)..(0.5,0.5,0): on screen at the origin with slack +1.95, and
+// culled at OFFSCREEN with slack -41.2.
+constexpr std::array<Vec3, 3> TRI_AT_ORIGIN{Vec3{-0.5F, -0.5F, 0.0F}, Vec3{0.5F, -0.5F, 0.0F}, Vec3{0.0F, 0.5F, 0.0F}};
+// The same triangle pushed to x ~ 100: off screen on its OWN box (slack -84.4), while the MODEL box
+// spanning both triangles is on screen (+1.95). That gap is what CD8 turns into an assertion.
+constexpr std::array<Vec3, 3> TRI_FAR_OUT{Vec3{99.5F, -0.5F, 0.0F}, Vec3{100.5F, -0.5F, 0.0F},
+                                          Vec3{100.0F, 0.5F, 0.0F}};
+constexpr std::array<std::uint32_t, 3> TRI_INDICES{0, 1, 2};
+
+[[nodiscard]] engine::assets::MeshCookPrimitive triangleAt(std::span<const Vec3> positions,
+                                                           std::uint32_t primitiveIndex) {
+    engine::assets::MeshCookPrimitive primitive;
+    primitive.sourceMeshIndex = 0;
+    primitive.sourcePrimitiveIndex = primitiveIndex;
+    primitive.positions = positions;
+    primitive.indices = TRI_INDICES;
+    return primitive;
+}
+
+// Cooked IN MEMORY: 3.3.3 makes the cook deterministic cross-lane, so this is as stable as a golden
+// and commits no fixture. The returned bytes must OUTLIVE every CookedMesh parsed from them.
+[[nodiscard]] std::vector<std::byte> cookTriangles(std::span<const engine::assets::MeshCookPrimitive> primitives) {
+    engine::assets::MeshCookResult result = engine::assets::cookMesh({.sourceGuid = {}, .primitives = primitives});
+    REQUIRE(result.status == engine::assets::MeshCookStatus::Ok);
+    REQUIRE_FALSE(result.bytes.empty());
+    return std::move(result.bytes);
+}
+
+// A registered-mesh instance, with mvp consistent with model.
+[[nodiscard]] MeshInstance meshInstance(engine::render::MeshHandle mesh, std::uint32_t submesh, const Mat4& model,
+                                        const Mat4& viewProj) {
+    MeshInstance instance;
+    instance.mesh = mesh;
+    instance.submesh = submesh;
+    instance.model = model;
+    instance.normalMatrix = Mat4::identity();
+    instance.mvp = viewProj * model;
+    return instance;
+}
+
+}  // namespace
+
+    // The tier-1 preamble, written out per case exactly as render_skinning_test.cpp does it:
+    // AERO_SKIP_OR_FAIL returns from the enclosing function, so it cannot live in a helper.
+    #define AERO_CULL_TIER1_PREAMBLE()                                         \
+        const engine::platform::Context ctx{{.headless = false}};              \
+        if (!ctx.valid()) {                                                    \
+            AERO_SKIP_OR_FAIL("no real video driver available");               \
+        }                                                                      \
+        auto device = engine::rhi::Device::create();                           \
+        if (!device.has_value()) {                                             \
+            AERO_SKIP_OR_FAIL("no GPU device available");                      \
+        }                                                                      \
+        auto target = engine::render::RenderTarget::create(*device, {64, 64}); \
+        REQUIRE(target.has_value());                                           \
+        auto forward = makeForwardRenderer(*device, *target);                  \
+        REQUIRE(forward.has_value())
+
+namespace {
+
+// Records one view into one frame. Every CD case draws through this, so "the counters are read
+// AFTER endFrame" is stated once rather than seven times.
+void drawOnce(engine::render::RenderTarget& target, engine::render::ForwardRenderer& forward,
+              const engine::render::RenderView& view) {
+    std::optional<engine::render::Frame> open = target.beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(open.has_value());
+    forward.draw(*open, view);
+    CHECK(target.endFrame(std::move(*open)));
+}
+
+}  // namespace
+
+TEST_CASE("render culling: off-screen instances are counted culled, on-screen ones drawn (CD1)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const engine::render::CameraView camera = makeCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    const std::vector<MeshInstance> instances = cullMixView(viewProj);
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
+    view.instances = instances;
+
+    drawOnce(*target, *forward, view);
+    // Five on screen (three at the origin, the mirrored cube, the distant one), two behind the eye.
+    CHECK(forward->lastFrameDrawn() == 5);
+    CHECK(forward->lastFrameCulled() == 2);
+    CHECK(forward->lastFrameDrawn() + forward->lastFrameCulled() == instances.size());
+
+    // PER-FRAME, not cumulative: an identical second draw reads the same numbers, not double.
+    drawOnce(*target, *forward, view);
+    CHECK(forward->lastFrameDrawn() == 5);
+    CHECK(forward->lastFrameCulled() == 2);
+
+    // THE MIRRORED INSTANCE is a correctness assertion, not a placement one: with the abs dropped
+    // from transformAabb its world box goes inside out, Aabb::valid() rejects it and the cull reads
+    // that as "nothing to draw", so an on-screen mirrored object disappears. It is NOT a witness for
+    // extracting the frustum per instance -- measured: extraction from a negative-determinant mvp
+    // yields the SAME half-spaces in that instance's own space, so the local-space form agrees with
+    // this one on every mirrored fixture. DISTANT_ON_SCREEN is the witness for that: extracting from
+    // mvp while still testing the WORLD box applies the model transform twice, which pushes a cube
+    // 60 units out to 120 and past the far plane (slack +5.8 correct, -10.0 seeded).
+}
+
+TEST_CASE("render culling: an instance carrying a PALETTE is exempt from the cull (CD2)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const engine::render::CameraView camera = makeCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    // A one-entry identity palette. ARM 1 (the built-in primitive path) ignores a palette entirely,
+    // so this witnesses the `!palette.empty()` PREDICATE and nothing about skinning: an instance
+    // whose vertices may move under a palette this renderer never sees has no bind-pose box that
+    // bounds where it ends up, so it is never culled.
+    const std::array<Mat4, 1> palette{Mat4::identity()};
+
+    MeshInstance exempt = primitiveInstance(PrimitiveId::Cube, OFFSCREEN, viewProj);
+    exempt.palette = palette;
+    const std::array<MeshInstance, 2> instances{exempt, primitiveInstance(PrimitiveId::Cube, OFFSCREEN, viewProj)};
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = instances;
+    drawOnce(*target, *forward, view);
+
+    CHECK(forward->lastFrameDrawn() == 1);    // the exempt one, off screen and drawn anyway
+    CHECK(forward->lastFrameCulled() == 1);   // its palette-free twin, same position
+    CHECK(forward->skinnedDrawCount() == 0);  // no registered mesh, so no skinned ARM was taken
+}
+
+TEST_CASE("render culling: drawn + culled need NOT sum -- a skipped instance is in neither (CD3)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const std::vector<std::byte> bytes = cookTriangles(std::array{triangleAt(TRI_AT_ORIGIN, 0)});
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    const engine::render::MeshHandle live = forward->createMesh(parse.mesh);
+    REQUIRE(live.valid());
+    const engine::render::MeshHandle stale = forward->createMesh(parse.mesh);
+    REQUIRE(stale.valid());
+    forward->destroyMesh(stale);
+
+    const engine::render::CameraView camera = makeCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    const std::array<MeshInstance, 3> instances{
+        meshInstance(live, 0, Mat4::identity(), viewProj),  // on screen, slack +1.95
+        meshInstance(live, 0, OFFSCREEN, viewProj),         // off screen, slack -41.2
+        meshInstance(stale, 0, OFFSCREEN, viewProj)};       // resolves to NOTHING -- neither bucket
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = instances;
+    drawOnce(*target, *forward, view);
+
+    CHECK(forward->lastFrameDrawn() == 1);
+    CHECK(forward->lastFrameCulled() == 1);
+    // THE DOCUMENTED NON-SUM. A stale handle cannot be culled, because nothing is known about where
+    // it is: returning a default Aabb{} instead of "cannot prove anything" would put a point box at
+    // the instance's origin and cull it (slack -41.5 here), silently consuming the stale-handle WARN
+    // the arm below owes. Counting at the cull's keep-decision instead of at drawIndexed would count
+    // it as DRAWN. Both wrong answers are 2, and this is the assertion that says so.
+    CHECK(forward->lastFrameDrawn() + forward->lastFrameCulled() == 2);
+    CHECK(instances.size() == 3);
+}
+
+TEST_CASE("render culling: cullingEnabled = false draws everything and culls nothing (CD4)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const engine::render::CameraView camera = makeCamera();
+    const std::vector<MeshInstance> instances = cullMixView(camera.proj * camera.view);
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = instances;
+    view.cullingEnabled = false;
+    drawOnce(*target, *forward, view);
+
+    CHECK(forward->lastFrameDrawn() == 7);
+    CHECK(forward->lastFrameCulled() == 0);
+    CHECK(forward->lastFrameDrawn() == instances.size());
+}
+
+TEST_CASE("render culling: a no-camera frame resets both counters to zero (CD5)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const engine::render::CameraView camera = makeCamera();
+    const std::vector<MeshInstance> instances = cullMixView(camera.proj * camera.view);
+
+    engine::render::RenderView populated;
+    populated.camera = camera;
+    populated.instances = instances;
+    drawOnce(*target, *forward, populated);
+    REQUIRE(forward->lastFrameDrawn() == 5);
+    REQUIRE(forward->lastFrameCulled() == 2);
+
+    // ONE sequence, not two independent cases: the reset has to happen BEFORE the !hasCamera early
+    // return, and only a draw that follows a populated one can tell the difference.
+    engine::render::RenderView blank;
+    blank.hasCamera = false;
+    blank.instances = instances;
+    drawOnce(*target, *forward, blank);
+    CHECK(forward->lastFrameDrawn() == 0);
+    CHECK(forward->lastFrameCulled() == 0);
+}
+
+TEST_CASE("render culling: a culled instance pushes no material block (CD6)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const engine::render::MaterialHandle opaque =
+        forward->createMaterial({.baseColorFactor = engine::Vec4{1.0F, 1.0F, 1.0F, 1.0F}, .doubleSided = false}, {});
+    const engine::render::MaterialHandle twoSided =
+        forward->createMaterial({.baseColorFactor = engine::Vec4{1.0F, 0.0F, 0.0F, 1.0F}, .doubleSided = true}, {});
+    REQUIRE(opaque.valid());
+    REQUIRE(twoSided.valid());
+
+    const engine::render::CameraView camera = makeCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    // Eight instances alternating material, with EVERY two-sided one off screen: with the cull ahead
+    // of material resolution the loop sees four identical on-screen instances in a row.
+    std::vector<MeshInstance> instances;
+    for (int i = 0; i < 8; ++i) {
+        const bool offScreen = (i % 2) == 1;
+        MeshInstance instance =
+            primitiveInstance(PrimitiveId::Cube, offScreen ? OFFSCREEN : Mat4::identity(), viewProj);
+        instance.material = offScreen ? twoSided : opaque;
+        instances.push_back(instance);
+    }
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = instances;
+
+    const std::size_t materialBefore = forward->materialBindCount();
+    const std::size_t pipelineBefore = forward->pipelineBindCount();
+    drawOnce(*target, *forward, view);
+    const std::size_t materialWithCulling = forward->materialBindCount() - materialBefore;
+    const std::size_t pipelineWithCulling = forward->pipelineBindCount() - pipelineBefore;
+
+    view.cullingEnabled = false;
+    const std::size_t materialMid = forward->materialBindCount();
+    const std::size_t pipelineMid = forward->pipelineBindCount();
+    drawOnce(*target, *forward, view);
+    const std::size_t materialWithout = forward->materialBindCount() - materialMid;
+    const std::size_t pipelineWithout = forward->pipelineBindCount() - pipelineMid;
+
+    // THE PLACEMENT ASSERTION. Pipeline binds happen INSIDE the draw arms, downstream of both
+    // candidate cull placements, so they cannot see whether the cull sits before or after material
+    // resolution -- the material-block count is the only observable that can, which is the whole
+    // reason materialBindCount() exists.
+    CHECK(materialWithCulling == 1);
+    CHECK(materialWithout == 8);
+    CHECK(pipelineWithCulling == 0);
+    CHECK(pipelineWithout == 7);
+    // ...and the spec's own inequality, which is true and worth keeping: culling really does reduce
+    // rebinds for an alternating view, because culling-off draws the alternating instances.
+    CHECK(pipelineWithCulling < pipelineWithout);
+    CHECK(materialWithCulling < materialWithout);
+}
+
+TEST_CASE("render culling: the primitive boxes are FOLDED, so the flat plane culls where a cube does not (CD7)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const engine::render::CameraView camera = makeCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    // MEASURED: at (0, 2.25, -5) the plane's flat box misses the Top plane by 0.239 while the cube's
+    // half-extent of 0.5 in Y clears it by 0.260. A hard-coded [-0.5, 0.5]^3 table for all three
+    // primitives -- or a fold that reads the wrong geometry for the plane slot -- makes the plane
+    // visible here, and nothing else in this suite can tell the difference.
+    const Mat4 justAboveTop = engine::translation(Vec3{0.0F, 2.25F, -5.0F});
+    const std::array<MeshInstance, 1> planeOnly{primitiveInstance(PrimitiveId::Plane, justAboveTop, viewProj)};
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = planeOnly;
+    drawOnce(*target, *forward, view);
+    CHECK(forward->lastFrameDrawn() == 0);
+    CHECK(forward->lastFrameCulled() == 1);
+
+    const std::array<MeshInstance, 1> cubeOnly{primitiveInstance(PrimitiveId::Cube, justAboveTop, viewProj)};
+    view.instances = cubeOnly;
+    drawOnce(*target, *forward, view);
+    CHECK(forward->lastFrameDrawn() == 1);
+    CHECK(forward->lastFrameCulled() == 0);
+}
+
+TEST_CASE("render culling: each submesh culls on its OWN box, never the model's (CD8)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    // Two primitives with the same attribute mask cook into ONE section with TWO submeshes. A is at
+    // the origin (slack +1.95), B is at x ~ 100 (slack -84.4), and the MODEL box spanning both is on
+    // screen (+1.95) -- so copying the model box into every submesh makes B undulling forever.
+    const std::array<engine::assets::MeshCookPrimitive, 2> primitives{triangleAt(TRI_AT_ORIGIN, 0),
+                                                                      triangleAt(TRI_FAR_OUT, 1)};
+    const std::vector<std::byte> bytes = cookTriangles(primitives);
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    REQUIRE(parse.mesh.submeshes.size() == 2);
+    const engine::render::MeshHandle mesh = forward->createMesh(parse.mesh);
+    REQUIRE(mesh.valid());
+    REQUIRE(forward->meshSubmeshCount(mesh) == 2);
+
+    const engine::render::CameraView camera = makeCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    const std::array<MeshInstance, 1> farSubmesh{meshInstance(mesh, 1, Mat4::identity(), viewProj)};
+    view.instances = farSubmesh;
+    drawOnce(*target, *forward, view);
+    CHECK(forward->lastFrameDrawn() == 0);
+    CHECK(forward->lastFrameCulled() == 1);
+
+    const std::array<MeshInstance, 1> nearSubmesh{meshInstance(mesh, 0, Mat4::identity(), viewProj)};
+    view.instances = nearSubmesh;
+    drawOnce(*target, *forward, view);
+    CHECK(forward->lastFrameDrawn() == 1);
+    CHECK(forward->lastFrameCulled() == 0);
+}
+
+TEST_CASE("render culling: a submesh carrying the empty sentinel is culled (CD9)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const std::vector<std::byte> bytes = cookTriangles(std::array{triangleAt(TRI_AT_ORIGIN, 0)});
+    engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    REQUIRE(parse.mesh.submeshes.size() == 1);
+    // PRODUCTION-UNREACHABLE THROUGH THE COOK, TEST-REACHABLE BY CONSTRUCTION -- and it must never be
+    // read as live cover for the cook. mesh_cook.cpp drops a primitive with no positions whole, and a
+    // file with no submeshes stores a POINT BOX at the origin rather than this sentinel; what can
+    // carry it is a hand-built or corrupt .aeromesh, which parseCookedMesh does not validate bounds
+    // for. So the box is edited in memory, exactly as such a file would present it.
+    parse.mesh.submeshes[0].bounds.min = Vec3{INF, INF, INF};
+    parse.mesh.submeshes[0].bounds.max = Vec3{-INF, -INF, -INF};
+
+    const engine::render::MeshHandle mesh = forward->createMesh(parse.mesh);
+    REQUIRE(mesh.valid());
+
+    const engine::render::CameraView camera = makeCamera();
+    const std::array<MeshInstance, 1> instances{meshInstance(mesh, 0, Mat4::identity(), camera.proj * camera.view)};
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = instances;
+    drawOnce(*target, *forward, view);
+
+    CHECK(forward->lastFrameDrawn() == 0);
+    CHECK(forward->lastFrameCulled() == 1);
+}
+
+TEST_CASE("render culling: a degenerate projection draws EVERYTHING and warns once (CD10)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    CHECK_FALSE(forward->hasWarnedDegenerateFrustum());
+
+    engine::render::CameraView camera = makeCamera();
+    camera.proj = Mat4::zero();  // every extracted plane collapses; Frustum::valid() is false
+    const std::vector<MeshInstance> instances = cullMixView(camera.proj * camera.view);
+
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = instances;
+    drawOnce(*target, *forward, view);
+
+    // ALL of them, including the two that would be culled under a usable frustum. Culling to black
+    // on a degenerate projection is the one failure mode this feature must never have.
+    CHECK(forward->lastFrameDrawn() == 7);
+    CHECK(forward->lastFrameCulled() == 0);
+    CHECK(forward->hasWarnedDegenerateFrustum());
+
+    // LATCHED: the second degenerate draw behaves identically and does not un-latch.
+    drawOnce(*target, *forward, view);
+    CHECK(forward->lastFrameDrawn() == 7);
+    CHECK(forward->lastFrameCulled() == 0);
+    CHECK(forward->hasWarnedDegenerateFrustum());
+}
+
+    #undef AERO_CULL_TIER1_PREAMBLE
+
+#endif  // AERO_SHADER_TOOLS_ENABLED
