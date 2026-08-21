@@ -47,6 +47,11 @@
 #include "viewport_panel.hpp"
 
 #include <chrono>
+// std::sort / std::unique, for the referenced-guid set. INCLUDED EXPLICITLY because libc++ and
+// libstdc++ both supply <algorithm> transitively here and MSVC's STL does not -- the Windows lane
+// failed C2039 'sort': is not a member of 'std' on this exact line, and only after a Chocolatey
+// outage stopped masking it by killing the job before it compiled anything.
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <memory>
