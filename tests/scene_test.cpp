@@ -627,11 +627,11 @@ TEST_CASE("scene: registration table") {
     CHECK(w.registered(id));
     CHECK(w.componentTypeName(id) == std::string_view{"test::Position"});
     CHECK(w.findComponentType("test::Position") == id);
-    CHECK(w.componentTypeCount() == 6);  // 6: 5 builtins (incl. MeshRenderer, 1.4.1) + Position
+    CHECK(w.componentTypeCount() == 7);  // 7: 6 builtins (incl. AnimationPlayer, 3.5.2) + Position
 
     const ComponentTypeId again = registerComponent<Position>(w, "test::Position");
     CHECK(again == id);
-    CHECK(w.componentTypeCount() == 6);  // still 6 — re-registration is idempotent
+    CHECK(w.componentTypeCount() == 7);  // still 7 — re-registration is idempotent
 
     const Entity e = w.create();
     REQUIRE(w.add<Position>(e) != nullptr);
@@ -639,7 +639,7 @@ TEST_CASE("scene: registration table") {
     CHECK(w.componentCount<Position>() == 1);  // storage untouched by re-registration
 
     const ComponentTypeId velId = registerComponent<Velocity>(w, "test::Velocity");
-    CHECK(w.componentTypeCount() == 7);  // 5 builtins + Position + Velocity
+    CHECK(w.componentTypeCount() == 8);  // 6 builtins + Position + Velocity
     CHECK(w.findComponentType("test::Position") == id);
     CHECK(w.findComponentType("test::Velocity") == velId);
 
@@ -671,7 +671,7 @@ TEST_CASE("scene: registration table") {
     const ComponentTypeId velRenamed = registerComponent<Velocity>(w, "test::Position");
     CHECK(velRenamed == velId);
     CHECK(w.componentTypeName(velId) == std::string_view{"test::Velocity"});
-    CHECK(w.componentTypeCount() == 7);  // unchanged by the existing-id WARN branch
+    CHECK(w.componentTypeCount() == 8);  // unchanged by the existing-id WARN branch
     CHECK(w.findComponentType("test::Position") == id);
     CHECK(w.findComponentType("test::Velocity") == velId);
 
@@ -684,7 +684,7 @@ TEST_CASE("scene: registration table") {
     CHECK(bigId == componentTypeId<Big>());
     CHECK(!(bigId == id));
     CHECK(w.registered(bigId));
-    CHECK(w.componentTypeCount() == 8);  // + Big, appended under a duplicate name
+    CHECK(w.componentTypeCount() == 9);  // + Big, appended under a duplicate name
     CHECK(w.componentTypeName(bigId) == std::string_view{"test::Position"});
     CHECK(w.findComponentType("test::Position") == id);
     CHECK(w.findComponentType("test::Velocity") == velId);
@@ -878,10 +878,11 @@ TEST_CASE("scene: names at scale, with no cross-talk (2.2.1 AC-1)") {
 
 TEST_CASE("scene: names do not enter the component-type registry (2.2.1 AC-6/I8)") {
     World w;
-    CHECK(w.componentTypeCount() == 5);  // Transform, Camera, DirectionalLight, PointLight, MeshRenderer
+    CHECK(w.componentTypeCount() == 6);  // Transform, Camera, DirectionalLight, PointLight,
+                                         // MeshRenderer, AnimationPlayer
     const Entity e = w.create();
     REQUIRE(w.setName(e, "named"));
-    CHECK(w.componentTypeCount() == 5);  // unchanged -- D1/F12
+    CHECK(w.componentTypeCount() == 6);  // unchanged -- D1/F12
     CHECK(!w.findComponentType("engine::EntityName").valid());
     CHECK(!w.findComponentType("EntityName").valid());
 }
@@ -891,14 +892,15 @@ TEST_CASE("scene: names do not enter the component-type registry (2.2.1 AC-6/I8)
 TEST_CASE("scene: componentTypeAt walks the registration table in order (2.2.1 AC-3)") {
     const World w = makeWorld();
     const std::size_t count = w.componentTypeCount();
-    REQUIRE(count > 5);  // 5 builtins + makeWorld's fixtures
+    REQUIRE(count > 6);  // 6 builtins + makeWorld's fixtures
 
-    // The first five are the built-ins, in registerBuiltinComponents order.
+    // The first six are the built-ins, in registerBuiltinComponents order.
     CHECK(w.componentTypeName(w.componentTypeAt(0)) == std::string_view{"engine::Transform"});
     CHECK(w.componentTypeName(w.componentTypeAt(1)) == std::string_view{"engine::Camera"});
     CHECK(w.componentTypeName(w.componentTypeAt(2)) == std::string_view{"engine::DirectionalLight"});
     CHECK(w.componentTypeName(w.componentTypeAt(3)) == std::string_view{"engine::PointLight"});
     CHECK(w.componentTypeName(w.componentTypeAt(4)) == std::string_view{"engine::MeshRenderer"});
+    CHECK(w.componentTypeName(w.componentTypeAt(5)) == std::string_view{"engine::AnimationPlayer"});
 
     // Every index round-trips name -> id, and every id is distinct.
     std::vector<ComponentTypeId> seen;

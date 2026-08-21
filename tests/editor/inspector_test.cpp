@@ -102,7 +102,7 @@ TEST_CASE("inspector: model lists present components in registration order, fiel
     aero_reflect_register_all_aero_editor_inspector_test();
     const ComponentTypeId probeId = registerProbe(world);
     REQUIRE(probeId.valid());
-    CHECK(world.componentTypeCount() == 6);  // 5 built-ins + InspectorProbe
+    CHECK(world.componentTypeCount() == 7);  // 6 built-ins + InspectorProbe
 
     const Entity e = world.create();
     world.add<engine::Transform>(e, engine::Transform{});
@@ -518,7 +518,7 @@ TEST_CASE("inspector: AC-12 drift pin -- every registered built-in component has
     World world;
     const Entity e = world.create();
     const std::size_t count = world.componentTypeCount();
-    REQUIRE(count == 5);  // the 5 built-ins -- no InspectorProbe registered on THIS World
+    REQUIRE(count == 6);  // the 6 built-ins -- no InspectorProbe registered on THIS World
     for (std::size_t i = 0; i < count; ++i) {
         const ComponentTypeId id = world.componentTypeAt(i);
         world.addRaw(id, e, nullptr);
@@ -529,5 +529,58 @@ TEST_CASE("inspector: AC-12 drift pin -- every registered built-in component has
     CHECK(model.components.size() == count);
     for (const engine::editor::ComponentEntry& entry : model.components) {
         CHECK(entry.hasFields);
+    }
+}
+
+// D16's claim made machine-checkable, and placed immediately after the drift pin for the reason that
+// case's own comment gives: registerEditorReflection's registration is process-lifetime and
+// permanent, so a case appended AFTER it inherits a fully registered meta context by construction
+// (every entt::meta_reset() in this TU is above the drift pin, and there is none below it).
+//
+// engine::AnimationPlayer (task 3.5.2) is the SIXTH built-in and the first with a bool field. It gets
+// no bespoke inspector code -- the four fields the panel draws are the reflection spine doing its job
+// -- so this case asserts the four FIELDS rather than merely that a lookup did not crash. A case that
+// silently resolves nothing is exactly the vacuous green this check exists to avoid.
+TEST_CASE("inspector: engine::AnimationPlayer reflects four fields, in declaration order (3.5.2/D16)") {
+    engine::editor::registerEditorReflection();
+
+    World world;
+    const ComponentTypeId id = world.findComponentType("engine::AnimationPlayer");
+    REQUIRE(id.valid());
+
+    const Entity e = world.create();
+    REQUIRE(world.addRaw(id, e, nullptr) != nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    const engine::editor::ComponentEntry& entry = model.components[0];
+    CHECK(entry.name == "engine::AnimationPlayer");
+    CHECK(entry.typeId == id);
+    CHECK(entry.hasFields);
+
+    REQUIRE(entry.fields.size() == 4);
+    CHECK(entry.fields[0].name == "time");
+    CHECK(entry.fields[1].name == "speed");
+    CHECK(entry.fields[2].name == "loop");
+    CHECK(entry.fields[3].name == "playing");
+    CHECK((entry.fields[0].kind == FieldKind::Float));
+    CHECK((entry.fields[1].kind == FieldKind::Float));
+    CHECK((entry.fields[2].kind == FieldKind::Bool));
+    CHECK((entry.fields[3].kind == FieldKind::Bool));
+
+    // The defaults come through as VALUES, not just as kinds -- speed's 1.0 is what proves the model
+    // read the component rather than a default-constructed FieldValue.
+    CHECK(std::get<double>(entry.fields[0].value) == doctest::Approx(0.0));
+    CHECK(std::get<double>(entry.fields[1].value) == doctest::Approx(1.0));
+    CHECK(std::get<bool>(entry.fields[2].value));
+    CHECK(std::get<bool>(entry.fields[3].value));
+
+    // No AERO_RANGE on any of them (the camera near/far rule): an invented speed bound would show up
+    // here as a range the panel would then clamp to.
+    for (const engine::editor::FieldEntry& field : entry.fields) {
+        INFO(field.name);
+        CHECK_FALSE(field.hasRange);
+        CHECK_FALSE(field.color);
     }
 }

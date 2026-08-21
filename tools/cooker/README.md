@@ -16,8 +16,16 @@ bind-local TRS, an inverse bind matrix and its palette slot. It reads the same m
 subcommand does, through the same import prelude, and writes a sibling artifact rather than a region
 inside the `.aeromesh`: a skeleton is the *deformation rig*, and `.aeromesh` v1 did not move for it.
 
-This document is the permanent home of the frozen contracts these tasks promise (3.3.1, 3.3.2 and
-3.5.1). The normative specification of the containers themselves is `docs/09-file-formats.md`; this
+**Task 3.5.2 added its fourth**: `aero_cooker animation` turns one *clip* of one source model into one
+`.aeroanim` container — a flat channel table, each record naming a target node, a path (translation,
+rotation or scale) and an interpolation mode, over two bulk regions of keyframe times and values. It
+is a sibling of `.aeroskel` on exactly the terms `.aeroskel` is a sibling of `.aeromesh`: a clip is a
+property of a *motion*, a rig is a property of a *skin*, and one rig has many clips — so neither file
+names the other, and the binding between them is the consumer's, resolved through the node id both
+formats carry.
+
+This document is the permanent home of the frozen contracts these tasks promise (3.3.1, 3.3.2, 3.5.1
+and 3.5.2). The normative specification of the containers themselves is `docs/09-file-formats.md`; this
 file specifies the *tool*.
 
 ## Why it links the editor
@@ -43,7 +51,7 @@ none of them, opens no window and creates no GPU device. If that ever bites, the
 importer translation units into their own ImGui-free target, a self-contained refactor that changes no
 consumer. It is not this task's change.
 
-## The five frozen contracts
+## The six frozen contracts
 
 ### 1. The mesh grammar
 
@@ -153,7 +161,39 @@ aero_cooker skeleton --input <file> --output <file.aeroskel>
   on the order the source happened to list its joints in. The palette slot is what carries the source's
   own binding order, and it is stored per record.
 
-### 4. The artifact rule
+### 4. The animation grammar
+
+```
+aero_cooker animation --input <file> --output <file.aeroanim>
+                      [--guid <32 hex>] [--clip <index>]
+```
+
+- **The input is a MODEL**, exactly as for `mesh` and `skeleton`: the same extensions, the same shared
+  prelude — name-decides-before-read, capped read, Structure pass, external-buffer budget, Full
+  import — and then the imported model's *animation* list instead of its meshes or its skins.
+- **`--clip <index>` is `--skin`'s twin**: a POSITION in the model's animation list, parsed by the same
+  locale-independent non-negative integer parser and defaulting to `0`. A leading sign, a trailing
+  character, an empty value and a value past 2³²−1 are each a usage error naming the flag; an index the
+  model does not have is an *import or cook* error (exit `2`) whose message reports how many animations
+  the model actually declares — `0 animation(s)` for a model with none.
+- **One clip per invocation**, for the same reason one skin per invocation: cooking every clip in one
+  run would need a naming rule for the outputs *and* a way to record which rig each clip drives, and
+  that pairing is instancing metadata. A model with more clips than the one cooked emits one warning
+  naming the total, so the omission is never silent.
+- **`--scale` is deliberately NOT offered, and that is a finding rather than a preference.** All four
+  importers apply `ImportSettings::scale` in exactly three places — root node translations, mesh
+  positions, and inverse-bind translation columns — and to **no animation channel anywhere**. Offering
+  the flag here would therefore change no byte of the output, and a flag that lies is worse than a flag
+  that is absent. The deeper issue, recorded in `docs/10-engineering-log.md` rather than fixed here, is
+  that the scale scheme is already incoherent for a multi-joint skinned hierarchy at `scale != 1`,
+  because a joint's global transform is the product of *unscaled* bind locals; making the flag work for
+  clips alone would make it *look* correct while the rig stayed wrong.
+- **A `.aeroanim` is never empty.** A channel with no keys is dropped with a warning and the cook still
+  produces a file; a clip with *every* channel dropped produces no artifact at all and exit `2`, because
+  a clip with nothing left is the absence of animation rather than a degenerate animation.
+- `--guid` behaves exactly as it does for the other three subcommands.
+
+### 5. The artifact rule
 
 **Nothing is written unless the whole cook succeeded.** The output file is opened only after `cookMesh`,
 `cookTexture` or `cookSkeleton` has returned with a complete byte vector, so a failing input leaves
@@ -176,7 +216,7 @@ Both exist because the same bytes must fall out of clang on arm64, MSVC and GCC.
 inherits them for free: every TRS component and every inverse-bind cell is *bit-copied* from the
 importer's own float, never computed.
 
-### 5. The extension tables
+### 6. The extension tables
 
 `mesh` and `skeleton` (one table — they take the same inputs and refuse them identically):
 
@@ -215,6 +255,7 @@ Genuinely asymmetric, and measured rather than assumed — this is the part that
 | `--no-animations` | **None**, for every backend. Neither container stores animation. |
 | `--no-skins` | **Real for all three skinning-capable backends since task 3.5.1**: `gltf_import.cpp`'s `JOINTS_0`/`WEIGHTS_0` reads are gated with the skin table, exactly as the FBX and Assimp backends already gated both halves, so the cooked mesh carries no `Joints0` and no `Weights0` section and is strictly smaller. `--no-skins` therefore produces a genuinely unskinned artifact rather than a fully skinned one with the table suppressed. This row said "**None for the glTF path**" until 3.5.1, and it was true when it was written. |
 | `--skin <index>` | **Real, and it is the whole of what a `skeleton` invocation cooks.** It selects which of the model's skins becomes the artifact; nothing else in the file depends on it except the `sourceSkinIndex` field that records the choice. Mesh output is unaffected — the flag does not exist for `mesh`. |
+| `--clip <index>` | **Real, and it is the whole of what an `animation` invocation cooks.** It selects which of the model's animations becomes the artifact; nothing else in the file depends on it except the `sourceAnimationIndex` field that records the choice. Mesh, texture and skeleton output are unaffected — the flag does not exist for them. |
 | `--srgb` / `--linear` | **Real, and in three places at once.** It selects the `vkFormat`, the descriptor's `transferFunction`, and whether the mip filter averages in linear light. All three are derived from the one format enumerator, so they cannot disagree. |
 | `--format <token>` | **Real.** It selects the `vkFormat`, the descriptor, the bytes per block, the level alignment and therefore almost every offset in the file. |
 | `--no-mips` | **Real.** `levelCount` becomes 1 and the file is strictly smaller; level 0's bytes are unchanged. |
@@ -253,17 +294,20 @@ Genuinely asymmetric, and measured rather than assumed — this is the part that
 
 ## Tests
 
-`tests/cooker/run_case.cmake` drives the real binary through 49 `cooker.*` ctest entries — 24 for
-`mesh`, 15 for `texture` and 10 for `skeleton` — argv in, exit code plus files out. Three of them,
-`cooker.golden_manifest`, `cooker.texture_golden_manifest` and `cooker.skeleton_golden_manifest`,
-cook a fixed fifteen-artifact matrix
+`tests/cooker/run_case.cmake` drives the real binary through 59 `cooker.*` ctest entries — 24 for
+`mesh`, 15 for `texture`, 10 for `skeleton` and 10 for `animation` — argv in, exit code plus files
+out. Four of them, `cooker.golden_manifest`, `cooker.texture_golden_manifest`,
+`cooker.skeleton_golden_manifest` and `cooker.animation_golden_manifest`, cook a fixed
+eighteen-artifact matrix
 and compare every byte against the frozen `tests/cooker/determinism.sha256` (task 3.3.3). A CLI's honest test is its process
 boundary, so there is no doctest translation unit for the tool and no tool code links into
 `aero_tests`; the pure halves it is built from (`cookMesh`, `parseCookedMesh`, `meshCookPrimitives`,
 `cookTexture`, `parseCookedTexture`, `decodeImageRgba8`, `chooseTextureFormat`, `cookSkeleton`,
-`parseCookedSkeleton`, `skeletonCookJoints`) are covered there and
+`parseCookedSkeleton`, `skeletonCookJoints`, `cookAnimation`, `parseCookedAnimation`,
+`animationCookChannels`) are covered there and
 in `aero_editor_shell_test` instead. The cases are registered with **no gate flag**, so they run in
 every build configuration. The mesh and skeleton inputs are listed in
 `tests/cooker/fixtures/README.md`; the two
 texture inputs are the committed `tests/fixtures/assets/texture-rgb-5x3.png` and
-`texture-rgba-8x8.png`, shared with the editor suite.
+`texture-rgba-8x8.png`, and the animation input is `tests/fixtures/assets/skinned.gltf`, all three
+shared with the editor suite.

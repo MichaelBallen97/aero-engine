@@ -32,6 +32,8 @@ add_executable(aero_tests
     texture_cook_test.cpp   # task 3.3.2 — cookTexture: levels, polyphase filter, gamma, caps
     cooked_skeleton_test.cpp # task 3.5.1 — the .aeroskel container v1: layout, parse, hostile input
     skeleton_cook_test.cpp   # task 3.5.1 — cookSkeleton: canonical order, refusals, byte-exactness
+    cooked_animation_test.cpp # task 3.5.2 — the .aeroanim container v1: layout, parse, hostile input
+    animation_cook_test.cpp   # task 3.5.2 — cookAnimation: canonical order, refusals, byte-exactness
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -50,10 +52,12 @@ add_executable(aero_tests
     transform_test.cpp    # task 1.3.2 — engine::Transform, the World-owned forest, world matrices
     camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
+    animation_player_test.cpp # task 3.5.2 — engine::AnimationPlayer: layout, defaults, the clock's six steps
     scene_render_test.cpp # task 1.4.1 — buildRenderView (tier-0) + gated SceneRenderer GPU draw-smoke
     render_target_test.cpp # task 2.2.3 — tier-0 sizing policy + GPU-gated RenderTarget lifecycle
     render_material_test.cpp # task 3.4.1 — tier-0 generator/format invariants + GPU-gated registry & bridge
     render_skinning_test.cpp # task 3.5.1 — tier-0 pose/palette/repack invariants + GPU-gated mesh registry & skinned draw
+    render_animation_test.cpp # task 3.5.2 — tier-0 clip sampler: bind, the three interpolation modes, both clamps
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
@@ -383,7 +387,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/mesh_cook_source_test.cpp
                editor/texture_cook_source_test.cpp
                editor/material_edit_test.cpp
-               editor/skeleton_cook_source_test.cpp)
+               editor/skeleton_cook_source_test.cpp
+               editor/animation_cook_source_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -658,10 +663,7 @@ if(AERO_REFLECT_TOOLS)
     aero_reflect_generate(aero_reflect_meta_test
         HEADERS reflect-gen/fixtures/component_codegen.hpp
                 reflect-gen/fixtures/component_wiring.hpp
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp  # 1.3.2 — the REAL header
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp     # 1.3.3
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp      # 1.3.3
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp  # 1.4.1
+                ${AERO_BUILTIN_COMPONENT_HEADERS}   # task 3.5.2 (D7) -- the REAL headers, named once
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"      # aero::core PUBLIC dir (D9)
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2 — parse: entity.hpp
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2 — parse: annotations.hpp
@@ -689,10 +691,7 @@ if(AERO_REFLECT_TOOLS)
                 reflect-gen/fixtures/component_limits.hpp   # task 1.2.2 — the D12 numeric-edge fixture
                 reflect-gen/fixtures/component_tag.hpp      # task 1.2.2 review fix — a REAL generated
                                                              # zero-field aeroReadJson, proven end-to-end
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp  # 1.3.2 — the REAL header
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp     # 1.3.3
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp      # 1.3.3
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp  # 1.4.1
+                ${AERO_BUILTIN_COMPONENT_HEADERS}   # task 3.5.2 (D7) -- the REAL headers, named once
                 reflect-gen/fixtures/component_text.hpp     # task 2.2.2 -- the std::string category
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2
@@ -796,11 +795,11 @@ set(_aero_cooker_cases
     # bootstrap's option hash). Both names are present in both reduced configurations, which is the
     # proof that this block is still ungated.
     #
-    # These two -- three since task 3.5.1 added skeleton_golden_manifest below -- cook the whole
-    # 15-artifact matrix through the real binary and compare against tests/cooker/determinism.sha256.
-    # Their WORK_DIRs are what ci.yml's `build` legs upload and its `cook-determinism` job downloads
-    # -- if any of them is renamed, THREE places change together: this list, the upload step's three
-    # paths, and the job's directory expectations.
+    # These two -- four since task 3.5.1 added skeleton_golden_manifest and task 3.5.2
+    # animation_golden_manifest below -- cook the whole 18-artifact matrix through the real binary and
+    # compare against tests/cooker/determinism.sha256. Their WORK_DIRs are what ci.yml's `build` legs
+    # upload and its `cook-determinism` job downloads -- if any of them is renamed, THREE places change
+    # together: this list, the upload step's four paths, and the job's directory expectations.
     golden_manifest texture_golden_manifest
     # task 3.5.1 -- the skeleton subcommand. Ten more names, on the same terms: ungated, so ctest -N
     # moves in ALL THREE configurations again. MEASURED at the tip of this branch, never derived by
@@ -827,6 +826,32 @@ set(_aero_cooker_cases
     # -DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF, and 67 -> 68 with -DAERO_REFLECT_TOOLS=OFF
     # alone, the last two in build directories configured with -G Ninja.
     skeleton_golden_manifest
+    # task 3.5.2 -- the `animation` subcommand's nine arms. They drive the EXISTING
+    # tests/fixtures/assets/skinned.gltf, the tree's only multi-clip glTF (three animations, one per
+    # interpolation mode), so this task commits no new cooker fixture at all. Registered ungated like
+    # every name above them, so the triple moves by the SAME +9 in all three configurations -- a
+    # smaller move in a reduced configuration would mean this block had accidentally grown a gate,
+    # and no test could report that.
+    #
+    # MEASURED at this step's exit, never derived by addition: 144 -> 153 with tools ON, 55 -> 64 with
+    # -DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF, and 68 -> 77 with -DAERO_REFLECT_TOOLS=OFF
+    # alone, the last two in build directories configured FRESH with -G Ninja. The manifest's fourth
+    # arm is a later step's and takes each of those one higher.
+    animation_happy animation_unknown_flag animation_bad_clip
+    animation_no_animation animation_clip_out_of_range
+    animation_guid_written animation_determinism
+    animation_nothing_written_on_failure animation_output_dir_missing
+    # task 3.5.2 -- the manifest's FOURTH arm, and the tenth name this task adds. A separate arm
+    # rather than three more tuples on an existing one for the same structural reason 3.5.1 recorded:
+    # aero_manifest_tuple reads the arm-level SUBCOMMAND, and the per-kind orphan check stays sound
+    # only while one arm claims each name prefix. It cooks one tuple per glTF interpolation mode from
+    # tests/fixtures/assets/skinned.gltf, so tests/cooker/determinism.sha256 goes 15 -> 18 lines and
+    # every literal pinning it moves at once. MEASURED at this step's exit, never derived by addition:
+    # 153 -> 154 with tools ON. Ungated like every name above it, so the two reduced configurations
+    # move by the SAME +1 -- 64 -> 65 and 77 -> 78, re-measured at the task's full gate in build
+    # directories configured FRESH with -G Ninja. A smaller move in either of them would mean this
+    # block had accidentally grown a gate, and no test could report that.
+    animation_golden_manifest
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(
