@@ -11,6 +11,7 @@ add_library(aero_render STATIC
     src/render_target.cpp     # task 2.2.3 -- the offscreen sibling of Renderer
     src/texture_upload.cpp    # task 3.4.1 -- the cooked-texture (.ktx2) -> GPU bridge
     src/skinning.cpp          # task 3.5.1 -- joint poses, the matrix palette, the palette row packer
+    src/animation.cpp         # task 3.5.2 -- the clip sampler: bind once, sample per frame
 )
 add_library(aero::render ALIAS aero_render)
 

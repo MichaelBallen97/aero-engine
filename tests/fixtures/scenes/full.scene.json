@@ -123,6 +123,12 @@
             "y": 0.5,
             "z": 0.5
           }
+        },
+        "engine::AnimationPlayer": {
+          "time": 0.75,
+          "speed": 2,
+          "loop": false,
+          "playing": true
         }
       }
     },

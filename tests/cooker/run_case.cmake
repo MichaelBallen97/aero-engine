@@ -208,10 +208,10 @@ function(aero_read_manifest out_names out_hashes)
         list(APPEND hashes "${hash}")
     endforeach()
     list(LENGTH names count)
-    # A LITERAL 15, never a count derived from the file it is checking: a guard computed from its own
-    # subject cannot see a line deleted. All three cases assert it, so a deletion reddens them at once.
-    if(NOT count EQUAL 15)
-        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 15")
+    # A LITERAL 18, never a count derived from the file it is checking: a guard computed from its own
+    # subject cannot see a line deleted. All four cases assert it, so a deletion reddens them at once.
+    if(NOT count EQUAL 18)
+        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 18")
     endif()
     set(${out_names} "${names}" PARENT_SCOPE)
     set(${out_hashes} "${hashes}" PARENT_SCOPE)
@@ -328,6 +328,25 @@ set(SKELOUT "${WORK_DIR}/out.aeroskel")
 set(SKELETON_MAGIC_HEX "4145524f534b454c")   # "AEROSKEL"
 set(SKINNED_QUAD_SKELETON_BYTES 448)
 
+# task 3.5.2: the animation subcommand. Its input is the tree's ONLY multi-clip glTF -- three
+# animations, one per interpolation mode, four joint nodes and no meshes -- and it is the SAME file
+# aero_editor_shell_test's AS battery drives, so the animation arms commit no new fixture at all.
+# ASSETS is scoped inside the manifest arm below, which is why this needs its own top-level constant
+# beside SKINNED_QUAD rather than borrowing that one.
+#
+# The .aeroanim header puts formatVersion at byte 8 and the source GUID at byte 16 -- the SAME two
+# offsets .aeromesh and .aeroskel use, by that format's own design, so OFFSET_FORMAT_VERSION and
+# OFFSET_SOURCE_GUID above are REUSED here rather than restated under new names; a disagreement
+# between the three layouts would be a real defect in one of them.
+#
+# Clip 0 is a 3-key STEP translation on ONE node, so its size is the format's whole arithmetic in one
+# number: 80 header + 32 x 1 channel record = 112 times offset, + 12 B of times, + 4 B at the format's
+# single padding site = 128 values offset, + 3 x 16 B of values = 176.
+set(SKINNED_ANIM "${SOURCE_DIR}/tests/fixtures/assets/skinned.gltf")
+set(ANIMOUT "${WORK_DIR}/out.aeroanim")
+set(ANIMATION_MAGIC_HEX "4145524f414e494d")   # "AEROANIM"
+set(SKINNED_ANIM_CLIP0_BYTES 176)
+
 # --- the case table -------------------------------------------------------------------------------
 
 if(CASE STREQUAL "help")
@@ -339,6 +358,8 @@ if(CASE STREQUAL "help")
     # --help is a subcommand they will not use, and the texture_help arm already makes the same
     # assertion for the second one.
     aero_expect_contains("${out}" "aero_cooker skeleton --input" "the usage text")
+    # task 3.5.2: the fourth subcommand's own usage line, on exactly the same terms.
+    aero_expect_contains("${out}" "aero_cooker animation --input" "the usage text")
     # stdout is reserved for --help/--version; diagnostics go to stderr only, so this one is silent.
     if(NOT err STREQUAL "")
         message(FATAL_ERROR "case '${CASE}': --help wrote to stderr: ${err}")
@@ -353,11 +374,11 @@ elseif(CASE STREQUAL "no_subcommand")
     aero_run_tool(ARGS --input "${ANY_INPUT}" --output "${OUT}" OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 1)
     aero_expect_non_empty("${err}" "stderr")
-    # task 3.3.2 changed this literal from "(expected: mesh)" and task 3.5.1 changed it again from
-    # "(expected: mesh or texture)". Asserted, so the next subcommand added cannot leave the message
-    # naming a subset of what the tool actually accepts -- which is exactly what this literal caught
-    # both times.
-    aero_expect_contains("${err}" "expected: mesh, texture or skeleton" "stderr")
+    # task 3.3.2 changed this literal from "(expected: mesh)", task 3.5.1 changed it again from
+    # "(expected: mesh or texture)", and task 3.5.2 a third time from "(expected: mesh, texture or
+    # skeleton)". Asserted, so the next subcommand added cannot leave the message naming a subset of
+    # what the tool actually accepts -- which is exactly what this literal caught all three times.
+    aero_expect_contains("${err}" "expected: mesh, texture, skeleton or animation" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_subcommand")
@@ -366,11 +387,11 @@ elseif(CASE STREQUAL "unknown_subcommand")
     # subcommand landed. Worse, it would have kept passing -- `texture --input x --output y` with no
     # colour-space flag is still exit 1 with "texture" in the message -- so the case would have gone
     # on looking green while asserting something that no longer existed. A genuinely unknown token,
-    # and the message that names every real one -- three of them since task 3.5.1.
+    # and the message that names every real one -- four of them since task 3.5.2.
     aero_run_tool(ARGS sound --input "${ANY_INPUT}" --output "${OUT}" OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 1)
     aero_expect_contains("${err}" "unknown subcommand 'sound'" "stderr")
-    aero_expect_contains("${err}" "expected: mesh, texture or skeleton" "stderr")
+    aero_expect_contains("${err}" "expected: mesh, texture, skeleton or animation" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_flag")
@@ -891,6 +912,119 @@ elseif(CASE STREQUAL "skeleton_output_dir_missing")
     aero_expect_no_files("${WORK_DIR}/nope")
     aero_verify_no_files_in("${WORK_DIR}")
 
+elseif(CASE STREQUAL "animation_happy")
+    # skinned.gltf's clip 0 is StepAnim: a 3-key STEP translation on one node, plus a `weights`
+    # channel the IMPORTER drops before the cook ever sees it. So the surviving channel count is 1 and
+    # the size is the format's whole arithmetic in one number -- see SKINNED_ANIM_CLIP0_BYTES above.
+    aero_run_tool(ARGS animation --input "${SKINNED_ANIM}" --output "${ANIMOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 0)
+    # aero_expect_magic is AEROMESH-specific by construction, so the third container kind asserts its
+    # own magic through the generic hex helper, exactly as the skeleton arm does.
+    aero_expect_hex_at("${ANIMOUT}" 0 8 "${ANIMATION_MAGIC_HEX}")
+    aero_expect_size("${ANIMOUT}" "${SKINNED_ANIM_CLIP0_BYTES}")
+    aero_expect_hex_at("${ANIMOUT}" "${OFFSET_FORMAT_VERSION}" 4 "01000000")
+    # The multi-clip advisory names the TOTAL, so cooking one clip of three can never look like
+    # cooking the only clip there was.
+    aero_expect_contains("${err}" "3 animations" "stderr")
+
+elseif(CASE STREQUAL "animation_unknown_flag")
+    # Flags that are real elsewhere, never invented ones: --scale and --skin belong to other
+    # subcommands and --no-animations is a mesh import flag, so each is genuinely unknown under
+    # `animation` and must fall through to the arm that NAMES it. An invented token would prove only
+    # that the fallback exists, which the unknown_flag case already proves. --scale is the pointed one
+    # -- it is refused rather than silently accepted-and-ignored, which is the whole of D13.
+    foreach(badflag "--scale;2" "--skin;0" "--no-animations")
+        list(GET badflag 0 flagname)
+        aero_run_tool(ARGS animation --input "${SKINNED_ANIM}" --output "${ANIMOUT}" ${badflag}
+            OUT_RESULT result OUT_STDERR err)
+        aero_expect_exit("${result}" 1)
+        aero_expect_contains("${err}" "${flagname}" "stderr")
+    endforeach()
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "animation_bad_clip")
+    # --clip is --skin's twin and inherits its parse verbatim: not a number; a trailing character the
+    # parse does not consume; and a leading sign, which std::from_chars's UNSIGNED overload refuses at
+    # the first character rather than wrapping -1 into 4294967295.
+    foreach(bad abc 1x -1)
+        aero_run_tool(ARGS animation --input "${SKINNED_ANIM}" --output "${ANIMOUT}" --clip "${bad}"
+            OUT_RESULT result OUT_STDERR err)
+        aero_expect_exit("${result}" 1)
+        aero_expect_contains("${err}" "--clip" "stderr")
+    endforeach()
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "animation_no_animation")
+    # triangle.gltf declares no animations at all, and the refusal names what EXISTS -- "0 animation(s)"
+    # is the honest answer rather than a special case. Exit 2, not 1: the model imported perfectly well
+    # and what failed is the cook. A .aeroanim is never empty, so there is no artifact to write.
+    aero_run_tool(ARGS animation --input "${ANY_INPUT}" --output "${ANIMOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_contains("${err}" "has 0 animation" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "animation_clip_out_of_range")
+    # The SAME refusal three clips higher, and this arm carries more weight than its twin on the
+    # skeleton side: it is the CLI witness that --clip is actually FORWARDED. A --clip parsed and then
+    # never passed to the cook cooks clip 0 every time, which turns this case's exit 2 into exit 0.
+    # The zero case above cannot show that -- a message printing a hard-coded 0 would satisfy it.
+    aero_run_tool(ARGS animation --input "${SKINNED_ANIM}" --output "${ANIMOUT}" --clip 3
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_contains("${err}" "has 3 animation" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "animation_guid_written")
+    # hi = 0x0123456789abcdef, lo = 0xfedcba9876543210, each stored little-endian, so the sixteen
+    # bytes read back-to-front per half. Every one of them is non-zero, which is what makes this a
+    # statement about byte ORDER and not merely about presence. The offset is REUSED from the two
+    # older containers rather than restated: this format puts its source GUID exactly where they do.
+    aero_run_tool(ARGS animation --input "${SKINNED_ANIM}" --output "${ANIMOUT}"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result)
+    aero_expect_exit("${result}" 0)
+    aero_expect_hex_at("${ANIMOUT}" "${OFFSET_SOURCE_GUID}" 16 "efcdab89674523011032547698badcfe")
+
+elseif(CASE STREQUAL "animation_determinism")
+    # Two processes, two directories, one byte sequence. As with all three older containers no
+    # timestamp, no path, no hostname and no build id reaches the artifact -- and, as with the
+    # skeleton container, no floating point is COMPUTED anywhere: every time and every value component
+    # is bit-copied from the importer's own float through putF32.
+    set(dir1 "${WORK_DIR}/run1")
+    set(dir2 "${WORK_DIR}/run2")
+    file(MAKE_DIRECTORY "${dir1}")
+    file(MAKE_DIRECTORY "${dir2}")
+    aero_run_tool(ARGS animation --input "${SKINNED_ANIM}" --output "${dir1}/out.aeroanim"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result1)
+    aero_expect_exit("${result1}" 0)
+    aero_run_tool(ARGS animation --input "${SKINNED_ANIM}" --output "${dir2}/out.aeroanim"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result2)
+    aero_expect_exit("${result2}" 0)
+    aero_expect_identical("${dir1}/out.aeroanim" "${dir2}/out.aeroanim")
+
+elseif(CASE STREQUAL "animation_nothing_written_on_failure")
+    # The output path is opened only after cookAnimation returned a complete byte vector, so a model
+    # with no animation leaves the working directory EMPTY -- of the artifact and of the .aero-tmp file
+    # writeTextFileAtomic would have created on its way to it. The input imports perfectly and it is
+    # the COOK that refuses, which is what separates this arm from animation_output_dir_missing.
+    aero_run_tool(ARGS animation --input "${ANY_INPUT}" --output "${ANIMOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+    aero_expect_no_files("${ANIMOUT}" "${ANIMOUT}.aero-tmp")
+
+elseif(CASE STREQUAL "animation_output_dir_missing")
+    # The tool creates NO directory, for any subcommand: a build-time tool that invents them is how a
+    # typo becomes a mystery tree.
+    aero_run_tool(ARGS animation --input "${SKINNED_ANIM}" --output "${WORK_DIR}/nope/out.aeroanim"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 3)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_expect_no_files("${WORK_DIR}/nope")
+    aero_verify_no_files_in("${WORK_DIR}")
+
 elseif(CASE STREQUAL "no_skins_gltf")
     # THE ARTIFACT-LEVEL WITNESS for the flag whose README row this task had to rewrite: until the
     # glTF importer's JOINTS_0/WEIGHTS_0 reads were gated on importSkins, --no-skins changed NOTHING
@@ -910,23 +1044,23 @@ elseif(CASE STREQUAL "no_skins_gltf")
 
 # --- task 3.3.3: the frozen cook-determinism manifest ---------------------------------------------
 #
-# Three cases, one shape (task 3.5.1 added the third). Each cooks its tuples ONCE through the real
-# binary and requires the artifact's SHA-256 to equal the line tests/cooker/determinism.sha256 records
-# for that name. Because the cooker takes no gate flag, all three register in all three build
-# configurations, and because CI runs ctest in Debug and Release on three lanes, the manifest is
-# checked NINE times per push: all nine green means every lane and both configurations equal the
-# manifest, therefore they equal each other.
+# Four cases, one shape (task 3.5.1 added the third, task 3.5.2 the fourth). Each cooks its tuples
+# ONCE through the real binary and requires the artifact's SHA-256 to equal the line
+# tests/cooker/determinism.sha256 records for that name. Because the cooker takes no gate flag, all
+# four register in all three build configurations, and because CI runs ctest in Debug and Release on
+# three lanes, the manifest is checked TWELVE times per push: all twelve green means every lane and
+# both configurations equal the manifest, therefore they equal each other.
 #
-# A THIRD ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
+# A FOURTH ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
 # arm-level SUBCOMMAND, and the KIND_PREFIX orphan check below ("every manifest line of THIS case's
 # kind was actually cooked") stays sound only while every line's prefix is claimed by exactly one arm.
 #
 # The artifacts land in ${WORK_DIR}/artifacts/ and the CI job uploads exactly that directory. The
 # perturbed re-cook lands in ${WORK_DIR}/perturbed/ so it cannot enter the upload set, which is
-# fifteen files across the three cases and nothing else.
+# eighteen files across the four cases and nothing else.
 
 elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest"
-       OR CASE STREQUAL "skeleton_golden_manifest")
+       OR CASE STREQUAL "skeleton_golden_manifest" OR CASE STREQUAL "animation_golden_manifest")
     set(ASSETS "${SOURCE_DIR}/tests/fixtures/assets")
     set(ARTIFACTS "${WORK_DIR}/artifacts")
     file(MAKE_DIRECTORY "${ARTIFACTS}")
@@ -1033,7 +1167,7 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # Partial edge blocks -- the clamp-never-zero-fill path, NPOT, linear.
         aero_manifest_tuple(texture-rgb5x3-linear-bc1.ktx2
             --input "${ASSETS}/texture-rgb-5x3.png" --linear --format bc1)
-    else()
+    elseif(CASE STREQUAL "skeleton_golden_manifest")
         set(SUBCOMMAND skeleton)
         set(KIND_PREFIX "skeleton-")
         set(TUPLE_COUNT 1)              # LITERAL, beside the one call it counts
@@ -1046,6 +1180,29 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # single-lane check, since our own parser reads them back in the order our writer wrote them.
         aero_manifest_tuple(skeleton-skinned.aeroskel
             --input "${FIXTURES}/skinned-quad.gltf" --guid "${TEST_GUID}")
+    else()
+        set(SUBCOMMAND animation)
+        set(KIND_PREFIX "animation-")
+        set(TUPLE_COUNT 3)              # LITERAL, beside the three calls it counts
+        # task 3.5.2 -- the .aeroanim format anchored cross-lane, cross-configuration and cross-time
+        # from the day it ships, rather than after the first divergence. ONE TUPLE PER INTERPOLATION
+        # MODE, because the three modes are three different value layouts and three different emit
+        # paths: the input is tests/fixtures/assets/skinned.gltf, the tree's only multi-clip glTF,
+        # which already carries exactly one clip per mode -- so this arm commits no new fixture.
+        # None of that file's four nodes carries a `matrix`, so every line here is independent of
+        # import-time matrix decomposition by construction.
+        #
+        # The clip sampler is deliberately NOT in this matrix: it is float math over libm (sin, acos,
+        # sqrt), and libm is three different implementations across these three lanes.
+        aero_manifest_tuple(animation-skinned-step.aeroanim
+            --input "${ASSETS}/skinned.gltf" --clip 0)
+        aero_manifest_tuple(animation-skinned-linear.aeroanim
+            --input "${ASSETS}/skinned.gltf" --clip 1)
+        # The cubic tuple carries a REAL --guid, the skeleton posture: the header's hi/lo emit order
+        # is then pinned across lanes too, since our own parser reads those two u64s back in the
+        # order our own writer wrote them and no single-lane check can see them swapped.
+        aero_manifest_tuple(animation-skinned-cubic.aeroanim
+            --input "${ASSETS}/skinned.gltf" --clip 2 --guid "${TEST_GUID}")
     endif()
 
     # --- the mismatch report ------------------------------------------------------------------------

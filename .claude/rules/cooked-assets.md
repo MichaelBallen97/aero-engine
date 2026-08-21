@@ -37,9 +37,11 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
   must be no iteration order for the output to depend on, and MSVC's node-based containers are not
   nothrow-movable (3.1.2's R9, measured in CI as `C2607`). Grouping is a sorted vector.
 - **`tests/cooker/determinism.sha256` is FROZEN, and a red `cooker.golden_manifest` /
-  `cooker.texture_golden_manifest` is `docs/09` section 9.11's `cookerVersion` sentence firing** — the
+  `cooker.texture_golden_manifest` / `cooker.animation_golden_manifest` is `docs/09` section 9.11's
+  `cookerVersion` sentence firing** — the
   same input now cooks to different bytes. Regenerate **in the same commit** as the cook change and the
-  matching `COOKED_MESH_COOKER_VERSION` / `COOKED_TEXTURE_COOKER_VERSION` bump, with the PR saying why;
+  matching `COOKED_MESH_COOKER_VERSION` / `COOKED_TEXTURE_COOKER_VERSION` /
+  `COOKED_ANIMATION_COOKER_VERSION` bump, with the PR saying why;
   the procedure is in the manifest's own header and the failing case prints every replacement line
   verbatim. **Never edit a hash to green a red run.** A vcpkg baseline bump that reds it is the tripwire
   WORKING, not flake — root-cause first, and never per-lane manifests. Lookup is by name and two names
@@ -111,6 +113,16 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
   means running Blender, which is the editor's job (task 3.2.4).
 - **Nothing is written unless the whole cook succeeded** — no partial artifact, no stale one, and not
   even the `.aero-tmp` the atomic write would have created.
+- **`aero_cooker` has FOUR subcommands since task 3.5.2** — `mesh`, `texture`, `skeleton` and
+  `animation` — and both subcommand-error message literals name all four, together with the
+  `run_case.cmake` arms that pin them. **`animation` deliberately does NOT offer `--scale`, and that
+  is a finding rather than a preference**: all four importers apply `ImportSettings::scale` in exactly
+  three places — root node translations, mesh positions and inverse-bind translation columns — and to
+  **no animation channel anywhere**, so the flag would change no byte of the output, and a flag that
+  lies is worse than one that is absent. The deeper gap it exposed (the scale scheme is already
+  incoherent for a multi-joint skinned hierarchy at `scale != 1`, because a joint's global transform
+  is a product of *unscaled* bind locals) is **named and unowned** in `docs/10`'s 3.5.2 entry — do not
+  "fix" it by adding the flag here.
 - **`aero_cooker` takes no gate flag**, unlike `reflect-gen` and `shaderc`, so its ctest cases are
   registered in every configuration and `ctest -N` moves in all three. A future gate would silently
   shrink the reduced configurations' coverage with no test able to report it.
@@ -259,6 +271,77 @@ the producer. The **normative** specification is `docs/09-file-formats.md` secti
   parser, the two frozen goldens, and the determinism manifest's `skeleton_golden_manifest` arm. Keep
   all three.
 
+## Animation clips (task 3.5.2) — the third first-party binary format
+
+`engine/assets` also holds the **cooked animation clip container v1** (`.aeroanim`):
+`cooked_animation.{hpp,cpp}` is the format and its hostile-input parser, `animation_cook.{hpp,cpp}` is
+the producer. The **normative** specification is `docs/09-file-formats.md` section 13. It is a
+**sibling** of both `.aeroskel` and `.aeromesh`, never a region inside either — which is why the whole
+task shipped with both of them byte-untouched: **no `formatVersion` bump, no golden churn, and not one
+existing manifest line moved.**
+
+- **A `.aeroanim` is NEVER EMPTY** — section 12.0's asymmetry inherited a second time, **at parse**,
+  not by convention. `channelCount`, `keyCount`, `valueCount` and every channel's own `keyCount` are
+  all `>= 1`. The cook is per-**clip**, so a clip whose every channel was dropped produces no artifact
+  at all and a CLI error. A clip with nothing left is the absence of animation, not a degenerate
+  animation. Do not "relax" this to match the mesh container.
+- **There is EXACTLY ONE padding site in the whole format, and it is CHECKED rather than assumed.** It
+  sits between the times region and the values region, is 0-12 bytes wide, and is present iff
+  `keyCount % 4 != 0`. **The padding formula and the cubic multiplier each live in exactly one
+  function** (`cookedAnimationTimesPadding`, `cookedAnimationValuesPerKey`), so the writer, the parser,
+  the sampler and the caps cannot disagree about either — and a test pins **both against literals**,
+  never against the formula applied to itself.
+- **The parser is EXACT on both region offsets and on the padding site**, unlike its permissiveness
+  everywhere else, and the reason is not strictness for its own sake: equality is the only check that
+  can see a **mispositioned** padding site at all, and it subsumes "unaligned" and "wrongly sized".
+  Four separate comparisons with four distinct messages, because `BadRange` cannot tell them apart by
+  status.
+- **ZERO FLOATING-POINT ARITHMETIC in the cook — bit-copy only**, with one stated exception: the
+  `durationSeconds` fold, which is comparison-and-select (`std::max`, **accumulator first**, in
+  **emission** order, from `0.0f`). Emission order is not negotiable — the result is written into the
+  header, so an input-order fold would make a shuffled input produce different header bytes, the
+  identical trap the mesh cook's model box records. **INV-T4 does NOT extend here**: that invariant is
+  *"the texture files carry no floating point"*, and clip times and values **are** float data, moved
+  bit for bit rather than computed. Do not "fix" `putF32`/`getF32` out of these files.
+- **The eight byte primitives come from `cooked_mesh.hpp`** — the third application of one
+  reconciliation. `cooked_animation.hpp` opens with the identical line `cooked_texture.hpp:24` has
+  carried since 3.3.2 and `cooked_skeleton.hpp:20` since 3.5.1. The eight-places rule wins over any
+  core-and-standard-library-only reading of an include list, exactly as it did twice before.
+- **The two accessors return BYTE spans and must keep doing so.** `channelTimeBytes` and
+  `channelValueBytes` hand back `std::span<const std::byte>`, never `std::span<const float>` or
+  `std::span<const Vec4>`: a typed span over a file's region needs a `reinterpret_cast`, which is a
+  strict-aliasing violation and — on the 16-byte values region — an **under-aligned `Vec4`**.
+  `.aeromesh`'s two accessors return byte spans for exactly this reason, and `reinterpret_cast` is one
+  of the greps this subsystem must keep returning prose only.
+- **`targetNodeLocalId` is a node `localId`, written through UNCONVERTED**, and it is the one place in
+  this tree where the `localId` rule runs backwards (`.claude/rules/editor.md`). It must equal section
+  12.3's `sourceNodeLocalId` for the binding to resolve; mapping it to a position in
+  `ImportedModel::nodes` would make every FBX clip bind to the wrong joints, **silently**, and `AS9` is
+  the case that reddens if anyone "fixes" it.
+- **The parser deliberately does not validate that a channel's times are strictly increasing — and,
+  unlike the mesh container's index residual, that argument is AIRTIGHT here.** Nothing uploads keys or
+  times to a GPU and nothing ever will, so the worst outcome of a non-monotonic file is an arbitrary
+  in-range key: a wrong picture, provably never a read. (The sampler additionally clamps its
+  interpolation parameter into `[0, 1]`, so a hostile file cannot turn an interpolator into an
+  extrapolator either.) Trigger for tightening: the same Phase 5 opt-in `parse...Strict` the mesh
+  residual names. The `w == 0` check on Translation and Scale values is the second stated non-check,
+  for the same O(n) reason.
+- **The renderer's sampler is NOT deterministic across lanes and must never enter the manifest.**
+  `render::sampleAnimation` reaches `sin`, `acos` and `sqrt` through `slerp` and a normalization, and
+  libm differs between three C libraries. `docs/09` section 13.7 says so **normatively**: the bytes on
+  disk are deterministic, what a renderer computes from them is not, and that boundary is deliberate.
+- **The two byte goldens in `tests/cooked_animation_golden.hpp` are FROZEN**, on the skeleton goldens'
+  terms: each was produced by a real cook and then verified **field by field against `docs/09` section
+  13's own tables** before being frozen. If a golden has to change, the format changed — a
+  `formatVersion` decision, not a test edit. **The MIXED golden's same-node composition is
+  load-bearing rather than decorative**: two of its three channels target the same node with different
+  paths, so it is simultaneously the order-independence proof and the only artifact anywhere that can
+  see the `path` half of the sort key disappear. With three distinct nodes that defect is invisible.
+- **The manifest's fourth arm is `animation_golden_manifest` — three tuples, one per interpolation
+  mode**, driven from `tests/fixtures/assets/skinned.gltf`, which already existed. Its `KIND_PREFIX` is
+  `animation-`, and the per-kind orphan check stays sound **only while exactly one arm claims each
+  prefix**: a fourth arm rather than a wider tuple table, for the reason 3.5.1 recorded.
+
 ## The node-hierarchy gap, decided at 3.1.5
 
 **v1 stores no node hierarchy**, so a consumer that instantiates a cooked mesh puts every submesh at
@@ -280,7 +363,7 @@ instantiation planner.
 
 **Two of the things section 9.0 lists as unstored have a home elsewhere and were never part of this
 gap**: skeletons and inverse bind matrices live in `docs/09` section 12's sibling container
-(`.aeroskel`) as of task 3.5.1.
+(`.aeroskel`) as of task 3.5.1, and animation lives in section 13's (`.aeroanim`) as of task 3.5.2.
 
-Full history: `docs/10-engineering-log.md`, tasks 3.3.1, 3.3.2, 3.5.1 and 3.1.5's entries under
-Phase 3.
+Full history: `docs/10-engineering-log.md`, tasks 3.3.1, 3.3.2, 3.5.1, 3.5.2 and 3.1.5's entries
+under Phase 3.

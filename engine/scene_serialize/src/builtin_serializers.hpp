@@ -7,6 +7,7 @@
 // from scene_serialize.cpp regardless of which `using`/namespace context calls them.
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/json_writer.hpp>
+#include <aero/scene/animation_player.hpp>
 #include <aero/scene/camera.hpp>
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
@@ -23,4 +24,6 @@ void aeroWriteJson(engine::JsonWriter&, const PointLight&);
 bool aeroReadJson(const engine::JsonValue&, PointLight&);
 void aeroWriteJson(engine::JsonWriter&, const MeshRenderer&);
 bool aeroReadJson(const engine::JsonValue&, MeshRenderer&);
+void aeroWriteJson(engine::JsonWriter&, const AnimationPlayer&);  // task 3.5.2
+bool aeroReadJson(const engine::JsonValue&, AnimationPlayer&);
 }  // namespace engine

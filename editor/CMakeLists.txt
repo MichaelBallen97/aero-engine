@@ -130,6 +130,7 @@ add_library(aero_editor_core STATIC
     src/material_panel.cpp       # task 3.4.2 -- the only new ImGui TU
     src/material_preview.cpp     # task 3.4.2 -- the only new GPU TU: target, renderer, texture cache
     src/skeleton_cook_source.cpp # task 3.5.1 -- the ImportedModel -> skeleton cook adapter; PURE
+    src/animation_cook_source.cpp # task 3.5.2 -- the ImportedModel -> animation cook adapter; PURE
     src/asset_drag.cpp           # task 3.1.5 -- the drag payload + the drop routing matrix; PURE, no ImGui
     src/instantiate_plan.cpp     # task 3.1.5 -- the ImportedModel -> entity-subtree planner; PURE
     src/asset_commands.cpp       # task 3.1.5 -- the sixth structural command: one undoable drop
@@ -219,10 +220,7 @@ if(AERO_REFLECT_TOOLS)
     # set. The entt-using TUs compile UNCONDITIONALLY: with tools OFF nothing is registered, resolve
     # misses, and D12's degradation falls out with zero #if outside editor_reflection.cpp.
     aero_reflect_generate(aero_editor_core
-        HEADERS ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/transform.hpp
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/camera.hpp
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp
-                ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp
+        HEADERS ${AERO_BUILTIN_COMPONENT_HEADERS}   # task 3.5.2 (D7): named once, at root scope
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")

@@ -816,7 +816,17 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   closure, and every one of those resolutions goes through one `localId -> position` **sorted vector**
   built once per call (a sorted vector rather than a hash container, because the adapter's output
   order must not depend on an iteration order) -- never `nodes[localId]`.
-  **`instantiate_plan.cpp` (task 3.1.5) is the FIFTH named consumer, and it is the one that has to
+  **`animation_cook_source.cpp` (task 3.5.2) is the FIFTH named consumer of this rule and the FIRST
+  that must NOT convert.** It reads `ImportedAnimationChannel::targetNode` and writes it into the
+  cooked clip **verbatim**, as `.aeroanim`'s `targetNodeLocalId`, because `.aeroskel`'s
+  `sourceNodeLocalId` (`docs/09` section 12.3) is the same kind of value and the two must be
+  comparable at bind time. Everything above still holds for anyone who **indexes**
+  `ImportedModel::nodes`; this adapter indexes nothing, which is why the inversion is safe here and
+  only here. Mapping the target through a `localId -> position` table would make every FBX clip bind
+  to the wrong joints, silently, and `AS9` is the case that reddens if anyone does -- it is hand-built
+  precisely because glTF, whose `localId` and position coincide, cannot see the difference.
+
+  **`instantiate_plan.cpp` (task 3.1.5) is the SIXTH named consumer, and it is the one that has to
   hold BOTH numbers at once.** Its BFS reads `ImportedModel::roots` and `ImportedNode::children`, so
   every link crosses one sorted `localId -> position` map built once per call -- while
   `ImportedNode::meshIndex` is **already a position** (into `ImportedModel::meshes`, the same number

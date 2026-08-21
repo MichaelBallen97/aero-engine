@@ -9,6 +9,7 @@
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/scene_format.hpp>
+#include <aero/scene/animation_player.hpp>
 #include <aero/scene/camera.hpp>
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
@@ -611,7 +612,7 @@ TEST_CASE("scene_serialize: the committed samples/phase-1-scene/scene.json (AC-6
 TEST_CASE("scene_serialize: dispatch/registration parity (AC-3/D8)") {
     const World world;
     const std::span<const std::string_view> names = builtinComponentNames();
-    CHECK(names.size() == 5);
+    CHECK(names.size() == 6);
     CHECK(names.size() == world.componentTypeCount());
     for (const std::string_view name : names) {
         CHECK(world.findComponentType(name).valid());
@@ -710,7 +711,7 @@ TEST_CASE("scene_golden: full.scene.json is a byte-exact fixpoint (G2/AC-1/AC-2/
     World world;
     const SceneLoadReport report = loadScene(world, doc);
     CHECK(report.entitiesCreated == 8);
-    CHECK(report.componentsAttached == 10);
+    CHECK(report.componentsAttached == 11);
     CHECK(report.componentsSkipped == 0);  // non-zero here means the fixture named a type this build
     CHECK(report.componentsFailed == 0);   // cannot resolve -- i.e. the fixture degraded (E2)
 
@@ -841,16 +842,16 @@ TEST_CASE("scene_golden: full.scene.json still contains everything it is for (G5
     CHECK(emptyName == 1);        // id 5, the bare entity -- emits exactly `{ "id": 5 }`
     CHECK(emptyComponents == 2);  // id 5, and id 7 (a name-and-parent-only record)
     CHECK(forwardParent == 1);    // id 7 -> 8, the only forward reference in the tree's fixtures
-    CHECK(twoComponents == 4);    // ids 1, 2, 3, 6
+    CHECK(twoComponents == 5);    // ids 1, 2, 3, 4, 6
     CHECK(grandParented == 1);    // id 4 -> 3 -> 2, the three-level chain
     CHECK(namedProp == 2);        // duplicate names are legal, unvalidated and preserved (E4)
-    CHECK(totalComponents == 10);
+    CHECK(totalComponents == 11);
 
     // All five built-in type names appear somewhere in the file. A sixth built-in arriving later
     // reddens G8, not this -- deliberately: this asks "did the fixture lose one?", G8 asks "did the
     // registry change?".
     const std::span<const std::string_view> builtins = builtinComponentNames();
-    REQUIRE(builtins.size() == 5);
+    REQUIRE(builtins.size() == 6);
     for (const std::string_view name : builtins) {
         INFO(std::string{name});
         CHECK(std::find(typeNames.begin(), typeNames.end(), std::string{name}) != typeNames.end());
@@ -1028,12 +1029,13 @@ TEST_CASE("scene_golden: registry order is pinned, and the fixture obeys it (G8/
     // order must be a SUBSEQUENCE of the registry order. A writer that sorted alphabetically, or a
     // BUILTINS table reordered, breaks one or both halves.
     const std::span<const std::string_view> builtins = builtinComponentNames();
-    REQUIRE(builtins.size() == 5);
+    REQUIRE(builtins.size() == 6);
     CHECK(builtins[0] == "engine::Transform");
     CHECK(builtins[1] == "engine::Camera");
     CHECK(builtins[2] == "engine::DirectionalLight");
     CHECK(builtins[3] == "engine::PointLight");
     CHECK(builtins[4] == "engine::MeshRenderer");
+    CHECK(builtins[5] == "engine::AnimationPlayer");
     // A sixth built-in reddens exactly here, by design (E12). The correct response is to regenerate
     // full.scene.json to exercise the new type and update this list in the SAME pull request -- not
     // to relax the assertion.
@@ -1059,7 +1061,7 @@ TEST_CASE("scene_golden: registry order is pinned, and the fixture obeys it (G8/
         }
     }
     CHECK_MESSAGE(offenders.empty(), offenders);
-    CHECK(seen == 10);  // ANTI-VACUITY: the loop above must actually have inspected ten components
+    CHECK(seen == 11);  // ANTI-VACUITY: the loop above must actually have inspected eleven components
 }
 
 TEST_CASE("scene_golden: the committed sample scene is still canonical (G9/AC-13/D9)") {
@@ -1144,4 +1146,84 @@ TEST_CASE("scene_golden: deleting one entity reorders and renumbers the whole fi
     const std::string again = saveWorldText(reloaded);
     INFO(scene_golden::describeMismatch(reordered, again));
     CHECK(again == reordered);
+}
+
+TEST_CASE("scene_serialize: AnimationPlayer round-trips all four fields (G11/AC-40)") {
+    // The SIXTH built-in, through the real saveWorldText/loadSceneText pair rather than through the
+    // generated serializer alone: a component that reads and writes perfectly but is missing from
+    // BUILTINS passes every reflect-gen case and fails exactly here.
+    World world;
+    const Entity e = world.create();
+    world.add<AnimationPlayer>(e, AnimationPlayer{.time = 1.25F, .speed = -0.5F, .loop = false, .playing = false});
+
+    const std::string text = saveWorldText(world);
+    // All four keys are emitted -- a bool that silently vanished would still round-trip through a
+    // reader that leaves missing keys untouched, so the BYTES are asserted too.
+    CHECK(text.find("\"engine::AnimationPlayer\"") != std::string::npos);
+    CHECK(text.find("\"time\": 1.25") != std::string::npos);
+    CHECK(text.find("\"speed\": -0.5") != std::string::npos);
+    CHECK(text.find("\"loop\": false") != std::string::npos);
+    CHECK(text.find("\"playing\": false") != std::string::npos);
+
+    World reloaded;
+    const SceneLoadResult result = loadSceneText(reloaded, text);
+    REQUIRE_FALSE(result.error.has_value());
+    CHECK(result.report.componentsAttached == 1);
+    CHECK(result.report.componentsSkipped == 0);
+    CHECK(result.report.componentsFailed == 0);
+
+    const std::vector<Entity> entities = collectEntities(reloaded);
+    REQUIRE(entities.size() == 1);
+    const AnimationPlayer* player = reloaded.get<AnimationPlayer>(entities[0]);
+    REQUIRE(player != nullptr);
+    CHECK(player->time == 1.25F);
+    CHECK(player->speed == -0.5F);
+    CHECK_FALSE(player->loop);
+    CHECK_FALSE(player->playing);
+    CHECK(*player == AnimationPlayer{.time = 1.25F, .speed = -0.5F, .loop = false, .playing = false});
+
+    // Canonical fixpoint: the re-save of the reload is byte-identical to the first save.
+    CHECK(saveWorldText(reloaded) == text);
+}
+
+TEST_CASE("scene_serialize: a missing key defaults and an extra key is ignored (G12/2.3)") {
+    // docs/09 section 2.3's two evolution rules, exercised on the first built-in that HAS a bool --
+    // which is also what the D5 reversal (appending a clip reference here later) depends on.
+    constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::AnimationPlayer": {
+          "time": 0.5,
+          "speed": 3,
+          "playing": false,
+          "clip": "not-a-field-yet"
+        }
+      }
+    }
+  ]
+}
+)";
+    World world;
+    const SceneLoadResult result = loadSceneText(world, TEXT);
+    REQUIRE_FALSE(result.error.has_value());
+    CHECK(result.report.componentsAttached == 1);
+    CHECK(result.report.componentsSkipped == 0);
+    CHECK(result.report.componentsFailed == 0);  // an unknown key WARNs; it is never a failed field
+
+    const std::vector<Entity> entities = collectEntities(world);
+    REQUIRE(entities.size() == 1);
+    const AnimationPlayer* player = world.get<AnimationPlayer>(entities[0]);
+    REQUIRE(player != nullptr);
+    CHECK(player->time == 0.5F);
+    CHECK(player->speed == 3.0F);
+    CHECK(player->loop);  // MISSING from the payload -> left at its default, silently
+    CHECK_FALSE(player->playing);
+
+    // The extra key is dropped rather than carried: a re-save names the four fields and nothing else.
+    const std::string resaved = saveWorldText(world);
+    CHECK(resaved.find("\"clip\"") == std::string::npos);
+    CHECK(resaved.find("\"loop\": true") != std::string::npos);
 }

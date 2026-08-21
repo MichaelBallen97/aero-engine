@@ -30,6 +30,8 @@ add_library(aero_assets STATIC
     src/texture_cook.cpp     # task 3.3.2 -- cookTexture: mip chain, gamma tables, block loop, assembly
     src/cooked_skeleton.cpp  # task 3.5.1 -- the .aeroskel container v1: the hostile-input parser
     src/skeleton_cook.cpp    # task 3.5.1 -- cookSkeleton: closure canonicalization, ordering, emit
+    src/cooked_animation.cpp # task 3.5.2 -- the .aeroanim container v1: the hostile-input parser
+    src/animation_cook.cpp   # task 3.5.2 -- cookAnimation: triage, canonical order, the one padding site
 )
 add_library(aero::assets ALIAS aero_assets)
 
