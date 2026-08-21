@@ -75,8 +75,9 @@ struct Frustum {
 // Arvo: worldCenter = transformPoint(model, c); worldHalfExtent = |A| * e (componentwise absolute
 // value of the 3x3 block). Conservative under rotation (the AABB around the OBB); exact under
 // translation and axis-aligned scale; CORRECT under mirror (negative determinant) and shear — the
-// abs discards the sign by construction, which is why the per-instance local-space test was
-// rejected. An invalid input yields an invalid output (the predicate propagates; no NaN corners).
+// abs discards the sign by construction, and WITHOUT it a mirrored box comes out INSIDE OUT (min
+// above max), which isVisible then reads as "nothing to draw", so an on-screen mirrored object
+// disappears. An invalid input yields an invalid output (the predicate propagates; no NaN corners).
 [[nodiscard]] Aabb transformAabb(const Mat4& model, const Aabb& local) noexcept;
 
 // Rejection on the first plane with s + r < 0, where s = signedDistance(plane, center) and

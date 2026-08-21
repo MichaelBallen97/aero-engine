@@ -805,9 +805,13 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     const detail::GpuLightBlock lights = detail::packLights(view);
     device->pushFragmentUniforms(cmd, 0, std::as_bytes(std::span{&lights, 1}));
 
-    // task 3.6.1 -- the frustum, ONCE per call, from proj * view. NEVER from an instance's mvp: a
-    // mirrored instance's negative determinant flips every half-space, so a per-instance extraction
-    // culls exactly the geometry that is on screen.
+    // task 3.6.1 -- the frustum, ONCE per call, from proj * view: it is a per-VIEW quantity, and
+    // extracting it per instance would pay a transpose plus six normalisations per instance to
+    // answer the same question. The obvious extra justification -- that a mirrored instance's
+    // negative determinant flips every half-space -- is FALSE, and was measured: Gribb-Hartmann
+    // holds in whatever space the matrix maps FROM, so a local-space form agrees with this one on
+    // every mirrored fixture. What a per-instance extraction does not survive is being HALF applied
+    // (extracting from mvp while still testing the WORLD box applies the model transform twice).
     Frustum frustum{};
     bool culling = view.cullingEnabled;
     if (culling) {
@@ -868,7 +872,12 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
         // below, whose latched WARNs it never consumes.
         if (culling && instance.palette.empty()) {
             if (const std::optional<Aabb> local = instanceBounds(instance)) {
-                if (!local->valid() || !isVisible(frustum, transformAabb(instance.model, *local))) {
+                // An INVALID local box -- the cook's inverted sentinel, reachable from a hand-built
+                // or corrupt file -- propagates through transformAabb and comes back out of
+                // isVisible as false, so there is deliberately no second `!local->valid()` test
+                // here. A duplicate decision could only ever disagree with isVisible's, and seeding
+                // one proved nothing in this suite could tell the two apart.
+                if (!isVisible(frustum, transformAabb(instance.model, *local))) {
                     ++lastCulled;
                     continue;
                 }
