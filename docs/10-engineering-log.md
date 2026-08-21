@@ -9617,10 +9617,12 @@ seed uncovered by any pass anywhere**, and it cannot be covered from macOS.
 
 ### Task 3.6.1 — Frustum culling (Epic 3.6) — OPENS Epic 3.6
 
-**Branch:** `feat/3.6.1-frustum-culling`, cut from `main @ 521c8a4`. **Eight green commits** — one per
-build step (`9f6a471` the vocabulary, `648ce61` the FC tier, `75c0cbc` the registry bounds, `fcf3090`
-the cull in `draw()`, `c37c5ee` the CD tier, `bafa5ea` the sample), one closing the sabotage matrix's
-single genuine gap (`9a22000`), and this documentation commit. **Complete in code; the ten-row macOS
+**Branch:** `feat/3.6.1-frustum-culling`, cut from `main @ 521c8a4`. **Eleven green commits** — one
+per build step (`9f6a471` the vocabulary, `648ce61` the FC tier, `75c0cbc` the registry bounds,
+`fcf3090` the cull in `draw()`, `c37c5ee` the CD tier, `bafa5ea` the sample), one closing the sabotage
+matrix's single genuine gap (`9a22000`), one documentation commit (`61e0090`), two closing the
+code-review round (`bcadb8d` the blocking guard fix, `40e71ef` the two smaller ones), and this one
+recording that round. Counted with `git rev-list --count`, not by adding up steps. **Complete in code; the ten-row macOS
 validation pass has NOT been run yet** (`editor/validation/3.6.1-frustum-culling.md`, written before
 the pass as always).
 
@@ -9872,12 +9874,13 @@ configuration also needs `-DCMAKE_TOOLCHAIN_FILE=…/vcpkg/scripts/buildsystems/
 
 `ctest -N` reads **157 / 65 / 78 — unmoved in all three**, which is the prediction being met rather
 than a missed registration: the new file rides `aero_tests`, which is a single ctest entry, and the
-sample registers no test. The growth reads only in doctest: `aero_tests` **906 → 940** (+34: `FC1`–
-`FC24` and `CD1`–`CD10`), with `aero_editor_shell_test` 1725, `aero_editor_imgui_test` 138,
-`aero_scene_serialize_test` 29, `aero_editor_inspector_test` 27, `aero_reflect_meta_test` 7 and
-`aero_reflect_json_test` 28 all **unmoved**. In the tools-off configuration the culling filter lists
-**24** — the FC tier present, the CD tier absent by its `AERO_SHADER_TOOLS_ENABLED` gate — and the
-sample's stub main logs and returns 1.
+sample registers no test. The growth reads only in doctest: `aero_tests` **906 → 942** (+36: `FC1`–
+`FC25` and `CD1`–`CD11`, the last two of which the code-review round added), with
+`aero_editor_shell_test` 1725, `aero_editor_imgui_test` 138, `aero_scene_serialize_test` 29,
+`aero_editor_inspector_test` 27, `aero_reflect_meta_test` 7 and `aero_reflect_json_test` 28 all
+**unmoved**. In the tools-off configuration the culling filter lists **25** — the FC tier present, the
+CD tier absent by its `AERO_SHADER_TOOLS_ENABLED` gate — and the sample's stub main logs and
+returns 1.
 
 Six guards exit 0. `check-math-boundary.sh` scans **404 → 408** (+4 tracked C-family files:
 `culling.hpp`, `culling.cpp`, `render_culling_test.cpp`, `samples/phase-3-culling/main.cpp`);
@@ -9913,6 +9916,102 @@ Whole-run record median: **0.164 ms vs 0.563 ms** at N=10 and **1.275 ms vs 3.32
 the grid is on screen and the two modes are close (2.835 vs 3.330 ms), while at 90° and 180° culling is
 4.4× and 6.6× cheaper. **`drawn 1` at yaw 180° in both grids is the palette-exempt instance**, which is
 validation row 8's witness confirmed end to end.
+
+#### The code-review round: three gaps, one blocking, all three closed
+
+**GAP 1 (BLOCKING) — the normalisation guard applied a NORMALISED-vector tolerance to RAW extraction
+coefficients, and a perfectly valid camera silently turned the whole feature off.** The guard read
+`if (k <= EPSILON) return Plane{};`. `EPSILON` is `1e-5`, the tolerance `normalizeOrZero` spends on an
+already-unit vector. Gribb-Hartmann coefficients are in the projection matrix's own units, and
+`perspectiveRH_ZO`'s **far** row is exactly
+
+```
+far = r3 - r2 = (0, 0, zNear/(zFar - zNear), (zFar * zNear)/(zFar - zNear))
+```
+
+whose length is `zNear/(zFar - zNear)` and therefore **shrinks as the depth ratio grows**. Past a ratio
+of roughly `1e5` the guard rejects the far row, `Frustum::valid()` goes false, and `draw()` disables
+culling **for the entire view** while latching a WARN that blames a projection which is fine. Only the
+far plane is affected — L/R/B/T raw normals always have `|n| >= 1` and Near's is `~1` — which is
+exactly why nothing saw it. **Measured**, with the raw far length beside each range:
+
+| zNear / zFar | ratio | raw far \|n\| | old guard | far `d` after the fix | error |
+|---|---|---|---|---|---|
+| 0.1 / 100 | 1e3 | 1.001e-3 | passes | 100.0001 | 0.0001 % |
+| 0.1 / 1000 | 1e4 | 1.00017e-4 | passes | 999.934 | 0.0066 % |
+| 0.1 / 9000 | 9e4 | 1.10865e-5 | passes | 9020.11 | 0.223 % |
+| 1 / 100000 | 1e5 | 1.00136e-5 | passes | 99865.4 | 0.135 % |
+| **0.1 / 20000** | 2e5 | 5.00679e-6 | **TRIPS** | 19972.98 | 0.135 % |
+| **0.001 / 1000** | 1e6 | 9.53674e-7 | **TRIPS** | 1048.577 | 4.86 % |
+| **0.01 / 10000** | 1e6 | 9.53674e-7 | **TRIPS** | 10485.77 | 4.86 % |
+
+**This is reachable, not theoretical.** `EditorCamera::MIN_NEAR_PLANE` is `1.0e-3F`
+(`editor_camera.hpp:114`) against a `DEFAULT_FAR` of `1000.0F` (`:92`) — a ratio of **1e6**. And
+`engine::Camera::nearPlane`/`farPlane` carry **no `AERO_RANGE` at all**, deliberately
+(`camera.hpp:36-38`: *"min > 0 cannot be expressed by a two-sided bound"*), so the inspector can ask
+for any far plane at all. A user lowering the near plane to inspect close geometry, or raising the far
+plane for an outdoor scene, would have silently lost culling entirely — the exact failure class this
+task exists to avoid.
+
+**The fix makes the guard mean "genuinely degenerate" rather than "short":**
+`if (k == 0.0F || !std::isfinite(k))`. Dividing by a small finite `k` is safe by construction —
+`|n| == k`, so every component of `n / k` is bounded by 1 and the result has unit length — and if
+`raw.w / k` overflows, §0.2's `d`-finiteness check in `Frustum::valid()` catches it, which is precisely
+what that check is for.
+
+**The sentence that licensed the bug is the spec's own.** AC-5/AC-6 say the extraction must reject a
+plane *"whose normal has length below `EPSILON`"*. That is **wrong for raw extraction coefficients**
+and right only for normalised ones — so `Frustum::valid()`'s own `lengthSquared > EPSILON * EPSILON`
+test is correct and stays, because it runs on normals `extractFrustum` has already normalised. The two
+length tests look identical and are asking different questions; the header now says so at both sites.
+
+**Two new arms, and both were proven non-vacuous by re-seeding the old guard.** `FC25` sweeps six depth
+ranges asserting `valid()` (the core of the fix, and the one assertion here carrying no tolerance at
+all), the far normal, the far `d` to a **per-row measured relative tolerance**, the near plane's `d`
+(unaffected — it is `m[3][2] / |m[2][2]|`, which is `-zNear` with no cancellation), and that the
+frustum still **discriminates** at every range. `CD11` draws two instances under `0.1 / 20000` and
+asserts drawn 1 / culled 1 / **latch false**. Restoring the old guard reddens **exactly `FC25` and
+`CD11`** and nothing else.
+
+**One correction to the review's own prescription, found by measuring:** a single `~1e-2` relative
+tolerance does **not** cover the wide ranges the review also named. The far `d` degrades with the depth
+ratio because `far = -1 - m[2][2]` with `m[2][2] ~ -1` is a catastrophic cancellation — inherent, not a
+defect — and at a ratio of `1e6` the measured error is **4.86 %**, not under 1 %. `FC25` therefore
+carries a per-row tolerance (`0.01` up to a ratio of `2e5`, `0.06` at `1e6`) with the measured figure
+beside each row. At a ratio of `1e7` (`0.001 / 10000`) roughly one significant digit survives and `d`
+is ~16 % off; nothing in this tree can ask for that, so it is documented rather than asserted.
+
+**And one clause of the fix has NO automated witness, recorded rather than hidden.** Seeding away the
+`!std::isfinite(k)` half — keeping only `k == 0.0F` — leaves the **whole tier green**, because a NaN or
+infinite row divided through yields a NaN normal that `Frustum::valid()` rejects anyway, so the
+observable is identical. It ships regardless, and the comment now states the real reason instead of
+the behavioural one: `extractFrustum` is **public**, its result is inspectable **without** calling
+`valid()`, and a caller reading `plane(Far)` directly gets the defined degenerate sentinel rather than
+a NaN-filled plane whose `signedDistance` poisons every arithmetic it touches. This is 3.5.2's `S47`
+treatment applied on arrival — the clause ships, the comment states the invariant, and the log records
+that seeding it reddens nothing. **The review's claim that the new form is "strictly better on NaN" is
+true of the local predicate and false of the observable**, and the distinction is the point.
+
+**GAP 2 (non-blocking) — the two plots were skipped on the `!hasCamera` early return.** AC-23 says
+*"once per call"*. The counters reset **above** the early return precisely so a camera-less frame reads
+`0/0` — but the plots sat after the loop, so that frame emitted no sample and Tracy held the previous
+frame's values. The two diagnostics then disagreed about the same frame: a Release session that loses
+its camera (delete the camera entity, New Scene) showed `render.drawn` frozen at its last non-zero
+value while `lastFrameDrawn()` correctly read 0. Closed with a `plotCounters` lambda defined once at
+the top of `draw()` and called on **both** exits — which also keeps the two plot names at **one** site,
+so seed `C30` stays a single-site seed. Not test-visible by construction: `AERO_PROFILE_PLOT` is
+`((void)0)` in every test build, which is `C30`'s whole reason for being declared.
+
+**GAP 3 (non-blocking, documentation-only) — an unassigned `camera` is a VALID unit-cube frustum, not
+"no frustum".** `RenderView::hasCamera` defaults **true**, `CameraView::view`/`proj` default to
+**identity**, and `cullingEnabled` now defaults true — so a hand-built view that fills every
+`instances[].mvp` correctly but never assigns `view.camera` culls against `extractFrustum(identity)`,
+the box `[-1,1] x [-1,1] x [0,1]` in **world** units. All six of those normals are unit-length and
+finite, so `Frustum::valid()` is **true and no WARN fires**, and everything beyond about one world unit
+from the origin vanishes silently. No current caller does this — all 16 pre-existing sites plus the two
+new ones assign `view.camera` — so it is a trap rather than a live defect, and it is closed with one
+sentence in the `cullingEnabled` contract comment. The `hasCamera` default is deliberately **not**
+changed: that is a wider blast radius than this task should take.
 
 #### Named handoffs
 
@@ -9951,7 +10050,7 @@ names each seed beside its row. Row 6 is the mirrored pair's on-hardware confirm
 degenerate camera, reverted afterwards.
 
 Windows and Linux ship **Pending**, and this task adds one more to platform-validation debt spanning
-four phases. Unlike 3.5.2, CI **does** cover a real part of it: all three lanes run `CD1`–`CD10` with
+four phases. Unlike 3.5.2, CI **does** cover a real part of it: all three lanes run `CD1`–`CD11` with
 `AERO_REQUIRE_GPU=1`, so the counters, the exemptions, the placement and the degenerate latch execute
 under Metal, **WARP** and **lavapipe** on every push. The cull itself is pure CPU IEEE arithmetic and
 cannot diverge by lane. What no lane can see is the **picture** — and specifically the three declared
