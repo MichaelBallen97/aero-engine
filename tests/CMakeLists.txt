@@ -946,6 +946,30 @@ set(_aero_cooker_cases
     audio_bad_extension audio_output_dir_missing
     audio_nothing_written_on_failure audio_guid_written
     audio_determinism audio_all_four_formats
+    # task 3.7.1 -- the manifest's FIFTH arm, plus the one case in this whole list that asserts NO
+    # expected value at all. audio_golden_manifest is a separate arm rather than two more tuples on
+    # an existing one for the same structural reason 3.5.1 and 3.5.2 recorded: aero_manifest_tuple
+    # reads the arm-level SUBCOMMAND, and the per-kind orphan check stays sound only while exactly
+    # one arm claims each name prefix. It cooks audio-tone-wav.aerowave and
+    # audio-tone-flac.aerowave, so tests/cooker/determinism.sha256 goes 18 -> 20 lines and every
+    # literal pinning it moves at once -- including ci.yml's four `-ne 18` sites, its `-ne 36`, its
+    # upload paths and the manifest header's own regeneration regex.
+    #
+    # audio_lossy_digests is the OTHER kind. It cooks tone.mp3 and tone.ogg, asserts exit 0 and a
+    # non-empty artifact and NOTHING ELSE, and PRINTS each SHA-256 so three CI logs from one push
+    # measure whether the lossy decoders agree across lanes. It must NEVER assert a digest, and its
+    # own comment in run_case.cmake carries that prohibition and the reason: agreement today at one
+    # vcpkg baseline and three pinned compilers is a fact, not a contract. It uploads nothing -- it
+    # writes straight into WORK_DIR rather than an `artifacts/` subdirectory -- so the manifest arm's
+    # "this directory IS the CI upload set" count and the job's exact-count check are untouched.
+    #
+    # MEASURED at this step's exit, never derived by addition: 166 -> 168 with tools ON, 74 -> 76
+    # with -DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF, and 87 -> 89 with
+    # -DAERO_REFLECT_TOOLS=OFF alone, the last two read from build directories configured with
+    # -G Ninja. Ungated like every name above them, so the two reduced configurations move by the
+    # SAME +2 -- a smaller move in either would mean this block had accidentally grown a gate, and
+    # no test could report that.
+    audio_golden_manifest audio_lossy_digests
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(

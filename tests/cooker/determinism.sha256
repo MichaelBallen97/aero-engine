@@ -1,39 +1,64 @@
 # tests/cooker/determinism.sha256 -- THE FROZEN COOK-DETERMINISM MANIFEST (task 3.3.3).
 #
-# SHA-256 of the artifact each of eighteen fixed aero_cooker invocations produces. The invocations
+# SHA-256 of the artifact each of twenty fixed aero_cooker invocations produces. The invocations
 # live in tests/cooker/run_case.cmake's `golden_manifest` (6, mesh), `texture_golden_manifest`
-# (8, texture), `skeleton_golden_manifest` (1, skeleton) and `animation_golden_manifest`
-# (3, animation) arms; those four ctest cases check every line of this file in every build
-# configuration on every lane, and .github/workflows/ci.yml's `cook-determinism` job checks the
-# same lines a second time with coreutils sha256sum and byte-compares the three lanes' copies.
+# (8, texture), `skeleton_golden_manifest` (1, skeleton), `animation_golden_manifest`
+# (3, animation) and `audio_golden_manifest` (2, audio) arms; those five ctest cases check every
+# line of this file in every build configuration on every lane, and .github/workflows/ci.yml's
+# `cook-determinism` job checks the same lines a second time with coreutils sha256sum and
+# byte-compares the three lanes' copies.
 #
 # THIS FILE IS FROZEN. A changed line means THE SAME INPUT NOW COOKS TO DIFFERENT BYTES -- which is,
 # verbatim, docs/09-file-formats.md section 9.11's definition of a cookerVersion bump. So a
 # regeneration travels IN THE SAME COMMIT as the cook change and the matching
 # COOKED_MESH_COOKER_VERSION / COOKED_TEXTURE_COOKER_VERSION / COOKED_SKELETON_COOKER_VERSION /
-# COOKED_ANIMATION_COOKER_VERSION bump, with the pull request saying why.
+# COOKED_ANIMATION_COOKER_VERSION / COOKED_AUDIO_COOKER_VERSION bump, with the pull request saying
+# why.
 # NEVER EDIT A HASH TO GREEN A RED RUN.
 #
 # To regenerate, when and only when the change is deliberate:
 #   1. cmake --build --preset <host>-release
 #   2. ctest --preset <host>-release \
-#        -R 'cooker\.(golden|texture_golden|skeleton_golden|animation_golden)_manifest'
+#        -R 'cooker\.(golden|texture_golden|skeleton_golden|animation_golden|audio_golden)_manifest'
+#      THAT REGEX IS PART OF THE RITUAL: leaving an arm out of it SILENTLY SKIPS that arm's lines
+#      during a regeneration, which is exactly the trap task 3.5.1 recorded when the fourth arm
+#      landed. `ctest -N` with the same -R must list FIVE cases.
 #   3. each failing case prints its new `<sha256>  <name>` lines verbatim, one per line; paste them
 #      in, re-run, and confirm green in BOTH the debug and the release preset.
 #
-# Two names share one hash on purpose: mesh-triangle and mesh-external cook to the same 272 bytes,
-# because external.gltf carries the same geometry as triangle.gltf and where a buffer came from
-# never reaches the file. Lookup is by NAME; do not add a distinct-hash check.
+# TWO PAIRS OF NAMES SHARE ONE HASH ON PURPOSE, and the second pair is stronger evidence than the
+# first. mesh-triangle and mesh-external cook to the same 272 bytes because external.gltf carries the
+# same geometry as triangle.gltf and where a buffer came from never reaches the file. audio-tone-wav
+# and audio-tone-flac cook to the same 16064 bytes because dr_wav and dr_flac -- two different
+# decoders reading two different containers -- recover the same 8000 s16 frames from tone.wav and the
+# flac encoded from it; that equality is the single strongest line in this file, since a backend wired
+# to the wrong decoder or a transposed sample would break it and no single-decoder arm could see it.
+# Lookup is by NAME; do not add a distinct-hash check.
 #
-# THE TWO HALVES ARE NOT ANCHORED EQUALLY, AND THE ASYMMETRY IS REAL. mesh-triangle's line is
-# independently derivable: it equals the SHA-256 of COOKED_GOLDEN_TRIANGLE's 272 bytes in
-# tests/cooked_mesh_golden.hpp, a golden frozen by task 3.3.1 with no cooker involved, so at least one
-# mesh line cannot be self-confirming. NO TEXTURE LINE HAS AN EQUIVALENT TIE -- the four texture byte
-# goldens pin the cook layer on in-memory inputs, not this file's CLI path, so the eight texture hashes
-# are anchored only by having been generated once and frozen. What keeps them honest is external:
-# ci.yml's cook-determinism job runs Khronos ktx validate over every cooked .ktx2 on every push, and
-# that is the one check our own code cannot self-confirm (our parser compares the descriptor against
-# the same tables our writer emits). Read a red texture line with that in mind.
+# THE HALVES ARE NOT ANCHORED EQUALLY, AND THE ASYMMETRY IS REAL. There are three kinds of anchor
+# in this file and it is worth knowing which one a red line is carrying.
+#
+# (1) mesh-triangle's line is independently derivable: it equals the SHA-256 of
+# COOKED_GOLDEN_TRIANGLE's 272 bytes in tests/cooked_mesh_golden.hpp, a golden frozen by task 3.3.1
+# with no cooker involved, so at least one mesh line cannot be self-confirming.
+#
+# (2) NO TEXTURE LINE HAS AN EQUIVALENT TIE -- the four texture byte goldens pin the cook layer on
+# in-memory inputs, not this file's CLI path, so the eight texture hashes are anchored only by having
+# been generated once and frozen. What keeps them honest is external: ci.yml's cook-determinism job
+# runs Khronos ktx validate over every cooked .ktx2 on every push, and that is the one check our own
+# code cannot self-confirm (our parser compares the descriptor against the same tables our writer
+# emits). Read a red texture line with that in mind.
+#
+# (3) The two audio lines (task 3.7.1) carry a THIRD, different tie, and it is worth stating exactly
+# rather than overclaiming. Their BULK REGION is externally anchored: tests/fixtures/audio's
+# tone.s16le.pcm is ffmpeg's OWN decode of tone.wav -- raw interleaved s16 LE produced by libavcodec
+# and by nothing of ours -- and aero_tests' AK17 and the editor suite's AD10/AD11 assert that our
+# decode and our cook reproduce those bytes exactly. That anchors the DECODE, which is the half no
+# tool of ours can self-confirm; the 64-byte header and therefore these two frozen hashes are still
+# anchored only by having been generated once. Neither audio line is derivable the way
+# mesh-triangle's is.
+#
+# The skeleton and animation lines carry no external tie of any kind.
 
 906f245857049a8267e73319f8e46a80ece2d294ec59c27d63e1b0fc4f9c5288  mesh-triangle.aeromesh
 156db3030083614d97e29e847412ee98dd60ee9c9b2ad638e30109e18f475d1d  mesh-asymmetric.aeromesh
@@ -56,3 +81,6 @@ f032aed271f649147ed7c823cd22af086b366b6dd532246d8f9bf1e0ca047cb1  texture-rgb5x3
 ff90de29178dfc3829aed414375a8cc37269177d490d21031fc08d39ebc8191a  animation-skinned-step.aeroanim
 4915885311f0a9320f08d55198c1d967ea6b35af24e172664db6d80ec4acce2c  animation-skinned-linear.aeroanim
 98bd92fd343830f9fbb81a6d1db0322b2517ce4e2ff6ebc7086a2997da37ec29  animation-skinned-cubic.aeroanim
+
+f6ba2b2b0585c8e2325fb003af8dd4439d9ef4350e2697806762cc9293dbb40d  audio-tone-wav.aerowave
+f6ba2b2b0585c8e2325fb003af8dd4439d9ef4350e2697806762cc9293dbb40d  audio-tone-flac.aerowave

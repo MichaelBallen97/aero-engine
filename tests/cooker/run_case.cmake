@@ -208,10 +208,10 @@ function(aero_read_manifest out_names out_hashes)
         list(APPEND hashes "${hash}")
     endforeach()
     list(LENGTH names count)
-    # A LITERAL 18, never a count derived from the file it is checking: a guard computed from its own
-    # subject cannot see a line deleted. All four cases assert it, so a deletion reddens them at once.
-    if(NOT count EQUAL 18)
-        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 18")
+    # A LITERAL 20, never a count derived from the file it is checking: a guard computed from its own
+    # subject cannot see a line deleted. All five cases assert it, so a deletion reddens them at once.
+    if(NOT count EQUAL 20)
+        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 20")
     endif()
     set(${out_names} "${names}" PARENT_SCOPE)
     set(${out_hashes} "${hashes}" PARENT_SCOPE)
@@ -1213,7 +1213,8 @@ elseif(CASE STREQUAL "no_skins_gltf")
 # eighteen files across the four cases and nothing else.
 
 elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest"
-       OR CASE STREQUAL "skeleton_golden_manifest" OR CASE STREQUAL "animation_golden_manifest")
+       OR CASE STREQUAL "skeleton_golden_manifest" OR CASE STREQUAL "animation_golden_manifest"
+       OR CASE STREQUAL "audio_golden_manifest")
     set(ASSETS "${SOURCE_DIR}/tests/fixtures/assets")
     set(ARTIFACTS "${WORK_DIR}/artifacts")
     file(MAKE_DIRECTORY "${ARTIFACTS}")
@@ -1333,7 +1334,7 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # single-lane check, since our own parser reads them back in the order our writer wrote them.
         aero_manifest_tuple(skeleton-skinned.aeroskel
             --input "${FIXTURES}/skinned-quad.gltf" --guid "${TEST_GUID}")
-    else()
+    elseif(CASE STREQUAL "animation_golden_manifest")
         set(SUBCOMMAND animation)
         set(KIND_PREFIX "animation-")
         set(TUPLE_COUNT 3)              # LITERAL, beside the three calls it counts
@@ -1356,6 +1357,30 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # order our own writer wrote them and no single-lane check can see them swapped.
         aero_manifest_tuple(animation-skinned-cubic.aeroanim
             --input "${ASSETS}/skinned.gltf" --clip 2 --guid "${TEST_GUID}")
+    else()
+        set(SUBCOMMAND audio)
+        set(KIND_PREFIX "audio-")
+        set(TUPLE_COUNT 2)              # LITERAL, beside the two calls it counts
+        # task 3.7.1 -- the .aerowave format anchored cross-lane, cross-configuration and cross-time
+        # from the day it ships, rather than after the first divergence. TWO TUPLES AND EXACTLY TWO.
+        # wav and flac are INTEGER decoders (dr_wav copies a 16-bit source; dr_flac shifts), so their
+        # bytes are a cross-lane CONTRACT -- and the two must agree with each other as well, since
+        # both fixtures carry the same 8000-frame signal, which is what makes a wrong backend or a
+        # transposed sample visible here and not only in a single-decoder arm.
+        #
+        # mp3 and ogg are ABSENT AND MUST STAY ABSENT. Both run floating-point transforms -- an IMDCT
+        # and an inverse MDCT -- through code paths that differ by SIMD availability and by FMA
+        # contraction policy, so NO CROSS-LANE CLAIM IS MADE ABOUT EITHER and NEITHER MAY EVER ENTER
+        # THIS MANIFEST. docs/09 section 14.7 says so normatively, exactly as section 13.7 does for
+        # the animation SAMPLER. cooker.audio_lossy_digests MEASURES them instead, and prints.
+        #
+        # Both tuples carry a REAL --guid, the skeleton/animation posture: the header's hi/lo emit
+        # order is then pinned across lanes too, since our own parser reads those two u64s back in
+        # the order our own writer wrote them and no single-lane check can see them swapped.
+        aero_manifest_tuple(audio-tone-wav.aerowave
+            --input "${AUDIO_FIXTURES}/tone.wav" --guid "${TEST_GUID}")
+        aero_manifest_tuple(audio-tone-flac.aerowave
+            --input "${AUDIO_FIXTURES}/tone.flac" --guid "${TEST_GUID}")
     endif()
 
     # --- the mismatch report ------------------------------------------------------------------------
@@ -1449,6 +1474,52 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
     if(NOT _producedCount EQUAL TUPLE_COUNT)
         message(FATAL_ERROR "case '${CASE}': ${ARTIFACTS} holds ${_producedCount} files, expected "
                             "${TUPLE_COUNT} -- this directory IS the CI upload set")
+    endif()
+
+elseif(CASE STREQUAL "audio_lossy_digests")
+    # THE MEASUREMENT THIS PROJECT REFUSES TO FREEZE (task 3.7.1). mp3 (dr_mp3) and ogg (stb_vorbis)
+    # both run floating-point transforms whose code paths differ by SIMD availability and by FMA
+    # contraction policy, so NO CROSS-LANE CLAIM IS MADE about either and neither format appears in
+    # tests/cooker/determinism.sha256. This case cooks both, asserts EXIT 0 AND A NON-EMPTY ARTIFACT
+    # AND NOTHING ELSE, and PRINTS each SHA-256 in the manifest's own `<sha256>  <name>` format, so
+    # three CI logs from one push answer "do the lossy decoders agree across lanes?" with numbers.
+    #
+    # IT MUST NEVER ASSERT A DIGEST VALUE, AND THIS COMMENT IS THE PROHIBITION. A future contributor
+    # cannot "finish" this arm by pasting the printed hashes in: agreement today, at ONE vcpkg
+    # baseline and THREE pinned compilers, is a FACT, not a CONTRACT. Freezing it would turn the next
+    # toolchain bump into a red tripwire pointing at the wrong thing, and
+    # .claude/rules/cooked-assets.md says a red manifest means "the same input now cooks to different
+    # bytes" -- a sentence that must stay true of every line in that file.
+    #
+    # It is deliberately NOT part of the manifest disjunction above, so nothing about it can be
+    # mistaken for a frozen expectation, and it writes straight into WORK_DIR rather than into an
+    # `artifacts/` subdirectory, so the manifest arm's "this directory IS the CI upload set" count is
+    # untouched and the cook-determinism job's exact-count check cannot be confused by it.
+    set(LOSSY_RUNS 0)
+    foreach(pair "tone.mp3;audio-tone-mp3.aerowave" "tone.ogg;audio-tone-ogg.aerowave")
+        list(GET pair 0 src)
+        list(GET pair 1 name)
+        aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/${src}" --output "${WORK_DIR}/${name}"
+            --guid 0123456789abcdeffedcba9876543210
+            OUT_RESULT result OUT_STDERR err)
+        aero_expect_exit("${result}" 0)
+        aero_expect_files("${WORK_DIR}/${name}")
+        file(SIZE "${WORK_DIR}/${name}" bytes)
+        if(bytes LESS_EQUAL 64)
+            message(FATAL_ERROR "case '${CASE}': '${name}' is ${bytes} bytes -- header only, so the "
+                                "decode produced no samples at all")
+        endif()
+        # message(NOTICE) prints its argument BYTE FOR BYTE with no prefix and no wrapping, the
+        # manifest arm's own recorded reason for using it: FATAL_ERROR and WARNING hard-wrap at ~76
+        # columns, which would break an 87-character `<sha256>  <name>` line across two lines.
+        file(SHA256 "${WORK_DIR}/${name}" digest)
+        message(NOTICE "${digest}  ${name}")
+        math(EXPR LOSSY_RUNS "${LOSSY_RUNS} + 1")
+    endforeach()
+    # The LITERAL count, beside the loop it counts: a foreach over a mis-typed list runs zero times
+    # and prints nothing, which would look exactly like a pass.
+    if(NOT LOSSY_RUNS EQUAL 2)
+        message(FATAL_ERROR "case '${CASE}': ${LOSSY_RUNS} digests printed, expected exactly 2")
     endif()
 
 else()

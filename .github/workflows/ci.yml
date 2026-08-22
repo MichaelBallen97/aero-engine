@@ -348,9 +348,14 @@ jobs:
         # lanes' copies against each other with both sides physically present -- the one thing no
         # ctest case can do, however many lanes it runs on.
         #
-        # THE FOUR PATHS ARE THE SINGLE COUPLING POINT between this step and that job. If any
+        # THE FIVE PATHS ARE THE SINGLE COUPLING POINT between this step and that job. If any
         # manifest case is renamed or its output layout moves, three places change together: the case
-        # names in tests/CMakeLists.txt, these four paths, and the job's directory expectations.
+        # names in tests/CMakeLists.txt, these five paths, and the job's directory expectations.
+        #
+        # cooker.audio_lossy_digests (task 3.7.1) is deliberately NOT here and must never be added: it
+        # asserts no digest at all, it writes into its WORK_DIR rather than an artifacts/ subdirectory,
+        # and mp3/ogg bytes are not a cross-lane claim this project makes. It PRINTS its two SHA-256s
+        # to the Release test log on all three lanes instead, which is the measurement, not a contract.
         #
         # `artifacts/` is a SUBDIRECTORY on purpose. Each case's WORK_DIR also holds its perturbed
         # re-cook and the alternate working directory that re-cook runs from; uploading the WORK_DIRs
@@ -363,8 +368,9 @@ jobs:
         #     texture_golden_manifest/artifacts/   8 .ktx2 files
         #     skeleton_golden_manifest/artifacts/  1 .aeroskel file
         #     animation_golden_manifest/artifacts/ 3 .aeroanim files
+        #     audio_golden_manifest/artifacts/     2 .aerowave files
         # Release rather than Debug for one reason only: Release tests run last, so this is the tree
-        # just exercised. Both configurations are already manifest-checked by the four ctest cases,
+        # just exercised. Both configurations are already manifest-checked by the five ctest cases,
         # so nothing rides on the choice.
         uses: actions/upload-artifact@v4
         with:
@@ -374,16 +380,17 @@ jobs:
             build/${{ matrix.preset }}-release/tests/cooker/texture_golden_manifest/artifacts/
             build/${{ matrix.preset }}-release/tests/cooker/skeleton_golden_manifest/artifacts/
             build/${{ matrix.preset }}-release/tests/cooker/animation_golden_manifest/artifacts/
+            build/${{ matrix.preset }}-release/tests/cooker/audio_golden_manifest/artifacts/
           retention-days: 7            # the consuming job runs minutes later; a week covers a re-run
           if-no-files-found: error     # an empty upload is a broken contract, not a quiet skip
 
   # Cross-lane cook determinism (task 3.3.3). Three things no ctest case can provide, and nothing else:
   #
-  #   1. THE THREE LANES' ACTUALLY-PRODUCED BYTES, COMPARED WITH BOTH SIDES PRESENT. The four manifest
+  #   1. THE THREE LANES' ACTUALLY-PRODUCED BYTES, COMPARED WITH BOTH SIDES PRESENT. The five manifest
   #      cases already prove every lane and both configurations equal the frozen expectation, and
   #      therefore each other -- but that is a transitive argument, and this is the one place in the
   #      project where "macOS == Windows == Linux, byte for byte" is a single green check somebody can
-  #      point at. 18 names x 2 lane pairs = 36 comparisons, all required.
+  #      point at. 20 names x 2 lane pairs = 40 comparisons, all required.
   #   2. A SECOND, FOREIGN IMPLEMENTATION OF THE FROZEN EXPECTATION. coreutils sha256sum, not CMake's
   #      file(SHA256), so a defect in our own hashing or manifest parsing cannot self-confirm.
   #   3. CONTINUOUS EXTERNAL CONFORMANCE. A pinned Khronos ktx validate over every cooked .ktx2. The
@@ -426,7 +433,7 @@ jobs:
           name: cook-determinism-windows
           path: cooked/windows
 
-      - name: Set equality — each lane holds exactly the manifest's eighteen artifacts
+      - name: Set equality — each lane holds exactly the manifest's twenty artifacts
         shell: bash
         run: |
           set -euo pipefail
@@ -435,16 +442,16 @@ jobs:
           # --strict. The name field starts at column 67 (64 hex + two spaces).
           names="$(grep -vE '^#|^$' tests/cooker/determinism.sha256 | cut -c67-)"
           count="$(printf '%s\n' "$names" | wc -l | tr -d ' ')"
-          if [ "$count" -ne 18 ]; then
-            echo "::error file=tests/cooker/determinism.sha256::the manifest lists $count artifacts, expected exactly 18"
+          if [ "$count" -ne 20 ]; then
+            echo "::error file=tests/cooker/determinism.sha256::the manifest lists $count artifacts, expected exactly 20"
             exit 1
           fi
           for lane in linux macos windows; do
             # The exact count comes FIRST: a future case writing an extra file into a manifest
             # WORK_DIR is invisible to a name-driven loop, and this is where it surfaces.
             found="$(find "cooked/$lane" -type f | wc -l | tr -d ' ')"
-            if [ "$found" -ne 18 ]; then
-              echo "::error::lane $lane uploaded $found files, expected exactly 18"
+            if [ "$found" -ne 20 ]; then
+              echo "::error::lane $lane uploaded $found files, expected exactly 20"
               find "cooked/$lane" -type f | sort
               exit 1
             fi
@@ -458,14 +465,14 @@ jobs:
               cp "$matches" "flat/$lane/$name"
             done <<< "$names"
             flat="$(find "flat/$lane" -type f | wc -l | tr -d ' ')"
-            if [ "$flat" -ne 18 ]; then
-              echo "::error::flattening lane $lane produced $flat files, expected 18"
+            if [ "$flat" -ne 20 ]; then
+              echo "::error::flattening lane $lane produced $flat files, expected 20"
               exit 1
             fi
           done
-          echo "three lanes, eighteen artifacts each, flattened for comparison."
+          echo "three lanes, twenty artifacts each, flattened for comparison."
 
-      - name: Cross-lane byte comparison — 36 cmp runs, all required
+      - name: Cross-lane byte comparison — 40 cmp runs, all required
         shell: bash
         run: |
           set -euo pipefail
@@ -484,23 +491,23 @@ jobs:
               comparisons=$((comparisons + 1))
             done
           done < <(grep -vE '^#|^$' tests/cooker/determinism.sha256 | cut -c67-)
-          if [ "$comparisons" -ne 36 ]; then
-            echo "::error::$comparisons byte comparisons ran, expected exactly 36 (18 artifacts x 2 lane pairs)"
+          if [ "$comparisons" -ne 40 ]; then
+            echo "::error::$comparisons byte comparisons ran, expected exactly 40 (20 artifacts x 2 lane pairs)"
             exit 1
           fi
-          echo "36 byte comparisons agreed: macOS == Windows == Linux, byte for byte."
+          echo "40 byte comparisons agreed: macOS == Windows == Linux, byte for byte."
 
       - name: The frozen manifest, re-checked by a second implementation
         shell: bash
         run: |
           set -euo pipefail
-          # coreutils sha256sum rather than CMake's file(SHA256), on purpose: the four ctest cases and
+          # coreutils sha256sum rather than CMake's file(SHA256), on purpose: the five ctest cases and
           # this step are then two independent readings of the same expectation, and a defect in one
           # cannot confirm itself. --strict makes a malformed line a failure rather than a warning.
           grep -vE '^#|^$' tests/cooker/determinism.sha256 > "$RUNNER_TEMP/manifest.lines"
           lines="$(wc -l < "$RUNNER_TEMP/manifest.lines" | tr -d ' ')"
-          if [ "$lines" -ne 18 ]; then
-            echo "::error::the filtered manifest holds $lines lines, expected 18"
+          if [ "$lines" -ne 20 ]; then
+            echo "::error::the filtered manifest holds $lines lines, expected 20"
             exit 1
           fi
           ( cd flat/linux && sha256sum -c --strict "$RUNNER_TEMP/manifest.lines" )
