@@ -160,6 +160,21 @@ scene_render::AssetBindingTable* ViewportPanel::sceneAssetBindings() noexcept {
 // ---- task 3.6.3 ----------------------------------------------------------------------------------
 const render::PostProcess* ViewportPanel::postProcess() const noexcept { return post ? &*post : nullptr; }
 
+// THE ARM-TIME DECISION, and it is a GEOMETRIC test on purpose -- see the header for the regression
+// this replaces. Reads the rect the LAST DRAWN FRAME recorded (step 9b), which is what makes it
+// answerable at step 8b, before this frame's strip has been submitted.
+//
+// An EMPTY rect owns nothing: that is the first frame, and any frame that returned before step 9b.
+// The negated `>` is the file's own NaN-safe idiom (a non-finite extent takes the "owns nothing"
+// branch), and the half-open `< max` matches the FIRE step's own image-rect test one screen below.
+bool ViewportPanel::overlayOwnsPress(Vec2 pressPoints) const noexcept {
+    if (!(overlayRowBottomRight.x > overlayRowTopLeft.x) || !(overlayRowBottomRight.y > overlayRowTopLeft.y)) {
+        return false;
+    }
+    return pressPoints.x >= overlayRowTopLeft.x && pressPoints.x < overlayRowBottomRight.x &&
+           pressPoints.y >= overlayRowTopLeft.y && pressPoints.y < overlayRowBottomRight.y;
+}
+
 const render::RenderTarget* ViewportPanel::outputTarget() const noexcept { return target ? &*target : nullptr; }
 
 std::uint32_t ViewportPanel::lastUnresolvedMeshes() const noexcept {
@@ -447,32 +462,24 @@ void ViewportPanel::onDraw(PanelContext& context) {
     if (gesture.gesture == CameraGesture::Fly) {
         ImGui::TextColored(OVERLAY_COLOR, "fly %.1f u/s", static_cast<double>(editorCamera.flySpeed()));
     }
+    // Step 9b: RECORD THE INTERACTIVE STRIP'S RECT, in the same screen-space POINTS io.MousePos uses,
+    // so updatePick's ARM step can refuse a press the strip owns. `rowStart` is captured BEFORE the
+    // gizmo bar and `GetItemRectMax()` AFTER the view options, whose exposure slider is the row's
+    // last and rightmost item -- so the pair spans the whole interactive row.
+    //
+    // ONLY THE INTERACTIVE ROW. The size readout and the fly line above it are TextColored, which
+    // submits nothing clickable, so a press there has always fallen through to the scene pick and
+    // still does -- this records what it is about, not the whole overlay.
+    const ImVec2 rowStart = ImGui::GetCursorScreenPos();
     drawGizmoBar();  // task 2.3.3: T / R / S | Local/World, submitted AFTER Manipulate (A8)
     // drawGizmoBar() leaves the cursor at the START of the next line (its last submitted item, the
     // Local/World button, is not followed by a SameLine()), so the SameLine goes HERE, before the
     // call, to keep the two on one row.
     ImGui::SameLine();
     drawViewOptions();  // task 3.6.3 -- OUTSIDE drawGizmoBar's BeginDisabled(!gizmoHasTarget) scope
-
-    // Step 9b (task 3.6.3): DISARM A PICK THE OVERLAY JUST CONSUMED, and it has to be here, after the
-    // whole strip has been submitted.
-    //
-    // The overlay row is drawn OVER the image and AFTER updatePick has already run (step 8b), so on
-    // the press frame ImGui's ActiveId is still 0 when updatePick asks -- the widget has not been
-    // submitted yet. The press therefore ARMS a scene pick; the release then lands inside the image
-    // rect (the strip sits at imageOrigin + OVERLAY_INSET) and inside PICK_CLICK_SLOP_POINTS, and the
-    // selection changes or clears while the user was only choosing a tone curve. By the time control
-    // reaches HERE the widget HAS been submitted and has taken the click, so IsAnyItemActive() is the
-    // exact question, one frame earlier than any hover test could answer it.
-    //
-    // It covers the gizmo bar's buttons too, which have had this defect since 2.3.3 -- this task
-    // widened the strip and added the first DRAG widget to it, which is what made it worth fixing at
-    // the shared cause rather than per widget. Nothing else in this window can be active while the
-    // image is hovered: ImGui::Image submits with id 0 and never becomes Active (F28), and an item
-    // active in ANOTHER window blocks this one's hover, so the arm could not have been set.
-    if (ImGui::IsAnyItemActive()) {
-        pickArmed = false;
-    }
+    const ImVec2 rowEnd = ImGui::GetItemRectMax();
+    overlayRowTopLeft = Vec2{rowStart.x, rowStart.y};
+    overlayRowBottomRight = Vec2{rowEnd.x, rowEnd.y};
 
     // Step 10: record the request, LAST, after everything succeeded.
     renderRequested = true;
@@ -501,10 +508,21 @@ void ViewportPanel::updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 ava
     // entry -- NOT a direct ImGuizmo::IsOver() call, which reads stale gContext state on any frame
     // where no Manipulate ran (F8/D10). This corrects the spelling 2.3.2's D20 seam comment
     // proposed; the intent is unchanged.
+    //
+    // ...AND NOT A PRESS THE OVERLAY STRIP OWNS. That last term is a RECT TEST rather than a question
+    // to ImGui, and the difference is a shipped regression: the first attempt disarmed on
+    // ImGui::IsAnyItemActive(), which CANNOT tell "a widget took this click" from "the user clicked
+    // the window background". Verified in the pinned tree rather than reasoned about --
+    // imgui.cpp:5522 "Click on empty space to focus window and start moving" reaches
+    // StartMouseMovingWindow at :5534, which does SetActiveID(window->MoveId, window) at :5389, and
+    // IsAnyItemActive() is `g.ActiveId != 0` at :6617. ImGui::Image submits with id 0, so a click on
+    // the viewport image IS window empty space, ActiveId becomes the window's MoveId, and the guard
+    // fired on exactly the frames a pick was being attempted -- disabling scene picking outright.
+    const Vec2 pressPos{io.MousePos.x, io.MousePos.y};
     if (hovered && !gizmoActive && gesture.gesture == CameraGesture::None &&
-        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !overlayOwnsPress(pressPos)) {
         pickArmed = true;
-        pickPressPos = Vec2{io.MousePos.x, io.MousePos.y};
+        pickPressPos = pressPos;
     }
     if (!pickArmed) {
         return;

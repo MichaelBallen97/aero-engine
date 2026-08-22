@@ -64,6 +64,7 @@
 #include <filesystem>
 #include <format>  // task 3.2.2, I65: truncatedFbxText()'s programmatic 257-node fixture
 #include <fstream>
+#include <limits>  // task 3.6.3 regression, I107: a NaN press must be owned by nothing
 #include <memory>  // task 2.4.1: std::make_unique<TransformCommand>
 #include <optional>
 #include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
@@ -8608,23 +8609,135 @@ TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 
         }
     }
 
-    SUBCASE("(d) a click the overlay strip consumed cannot also arm a scene pick") {
-        // NO TIER IN THIS TREE CAN CLICK, so this is the only mechanical cover for a defect that is
-        // otherwise a silent selection change: the overlay row is submitted AFTER updatePick has run,
-        // so on the press frame ImGui's ActiveId is still 0 and the press arms a pick; the release
-        // then lands inside the image rect and inside the click slop, and the scene selection changes
-        // while the user was only choosing a tone curve. The disarm has to sit AFTER the whole strip
-        // is submitted -- that is the entire content of the fix, and this pin is what says so.
-        const std::size_t optionsCallAt = soleLineContaining(viewportCode, "drawViewOptions();");
-        const std::size_t disarmAt = soleLineContaining(viewportCode, "ImGui::IsAnyItemActive()");
-        CHECK(optionsCallAt < disarmAt);
-        // ...and it disarms rather than merely asking. The next two lines must clear the arm.
-        bool clearsArm = false;
-        for (std::size_t i = disarmAt; i < viewportCode.size() && i <= disarmAt + 2U; ++i) {
-            clearsArm = clearsArm || viewportCode[i].find("pickArmed = false") != std::string::npos;
+    SUBCASE("(d) the overlay's claim on a click is a RECT TEST, and ImGui's ActiveId is not consulted") {
+        // REWRITTEN AFTER THE FIRST VERSION PASSED ON BROKEN CODE. It pinned that a disarm line
+        // existed and sat after drawViewOptions() -- the INTENTION -- and the disarm it was pinning
+        // was ImGui::IsAnyItemActive(), which DISABLED SCENE PICKING ENTIRELY and shipped. A pin that
+        // passes on defective code is worse than no pin, so this one encodes the MECHANISM instead.
+        //
+        // ImGui sets ActiveId to the WINDOW'S MoveId on a click in window empty space
+        // (imgui.cpp:5522 -> StartMouseMovingWindow :5534 -> SetActiveID(window->MoveId, window)
+        // :5389; IsAnyItemActive() is `g.ActiveId != 0` at :6617), and ImGui::Image submits with
+        // id 0 -- so a click on the viewport image IS window empty space, and that guard was true on
+        // exactly the frames a pick was being attempted. THE SHIPPED DEFECT MUST REDDEN HERE.
+        //
+        // viewportCode is COMMENT-STRIPPED, so the prose above the fix that explains the regression
+        // does not satisfy this and does not violate it either.
+        for (const std::string& line : viewportCode) {
+            CHECK(line.find("IsAnyItemActive") == std::string::npos);
         }
-        CHECK(clearsArm);
+
+        // The decision is a named member asking a RECT, and the arm condition consults it.
+        const std::size_t decisionAt = soleLineContaining(viewportCode, "bool ViewportPanel::overlayOwnsPress(");
+        const std::size_t armAt = soleLineContaining(viewportCode, "!overlayOwnsPress(pressPos)");
+        CHECK(decisionAt != armAt);
+        // ...and the arm term sits in the SAME condition as the fresh-press test, not in a later
+        // statement that could run after the arm was already set.
+        bool armsOnClick = false;
+        for (std::size_t i = armAt > 2U ? armAt - 2U : 0U; i <= armAt; ++i) {
+            armsOnClick =
+                armsOnClick || viewportCode[i].find("IsMouseClicked(ImGuiMouseButton_Left)") != std::string::npos;
+        }
+        CHECK(armsOnClick);
+
+        // The rect is RECORDED where the strip is drawn, after the whole interactive row.
+        const std::size_t optionsCallAt = soleLineContaining(viewportCode, "drawViewOptions();");
+        const std::size_t recordAt = soleLineContaining(viewportCode, "overlayRowBottomRight = Vec2{");
+        CHECK(optionsCallAt < recordAt);
     }
+}
+
+TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3 regression, I107)") {
+    // THE CASE THAT WOULD HAVE CAUGHT THE SHIPPED REGRESSION, and the reason it can is that it asks
+    // about the EFFECT -- would a press at this point arm a scene pick? -- rather than about the
+    // presence of a guard. The first fix disarmed on ImGui::IsAnyItemActive(), which is true for a
+    // click anywhere on the viewport image (ImGui::Image submits with id 0, so such a click is window
+    // empty space and ImGui makes the WINDOW'S MoveId active), and scene picking stopped working
+    // entirely while I106(d) stayed green.
+    //
+    // WHAT THIS CANNOT DO, stated plainly: no tier in this tree can synthesise a mouse click, so it
+    // cannot press the button and read the Selection afterwards. What it CAN do is drive REAL frames,
+    // so the strip is really drawn and its rect really recorded, and then ask the panel the SAME
+    // question updatePick's ARM step asks, at real coordinates derived from the real image rect. That
+    // covers everything except the OS event. The remaining half is validation row 2b.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "tonemap i107", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // the viewport initialises on its FIRST DRAW
+    REQUIRE(app->tick());  // ...and records the strip's rect at step 9b
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::Vec2 rowMin = viewport->overlayRowMin();
+    const engine::Vec2 rowMax = viewport->overlayRowMax();
+
+    // ANTI-VACUITY, and it is the half that matters most: an EMPTY rect owns nothing, so every
+    // "does not own" assertion below would pass on a panel that never recorded anything -- which is
+    // exactly the silent way this fix could rot. The rect must be REAL.
+    CHECK(rowMax.x > rowMin.x);
+    CHECK(rowMax.y > rowMin.y);
+    CHECK(rowMax.x - rowMin.x >= 40.0F);  // T R S Local + a combo + a slider is never this narrow
+    CHECK(rowMax.y - rowMin.y >= 8.0F);
+
+    // (1) THE STRIP OWNS ITS OWN CLICKS. Its centre, and a point just inside each corner.
+    const engine::Vec2 centre{(rowMin.x + rowMax.x) * 0.5F, (rowMin.y + rowMax.y) * 0.5F};
+    CHECK(viewport->overlayOwnsPress(centre));
+    CHECK(viewport->overlayOwnsPress(rowMin));  // half-open at min: the top-left corner IS inside
+    CHECK(viewport->overlayOwnsPress(engine::Vec2{rowMax.x - 1.0F, rowMax.y - 1.0F}));
+
+    // (2) AND NOTHING ELSE -- the half the shipped regression got wrong. A press below the strip, to
+    // its right, and above it must all fall through to the scene pick. `rowMax` itself is OUTSIDE:
+    // the test is half-open at max, matching the FIRE step's own image-rect test.
+    CHECK_FALSE(viewport->overlayOwnsPress(rowMax));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMax.y + 200.0F}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMax.x + 200.0F, centre.y}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMin.y - 200.0F}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMin.x - 200.0F, centre.y}));
+
+    // (3) THE ORDINARY PICK, which is what actually broke. The viewport is CENTER-docked in a 900x600
+    // window, so a point well below and right of the strip is inside the image and is exactly where a
+    // user clicks empty space to clear a selection. Under the shipped guard this press was refused;
+    // it must be admitted.
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMin.x + 300.0F, rowMin.y + 300.0F}));
+
+    // (4) TOTAL and NaN-safe: a non-finite press is owned by nothing rather than crashing or
+    // answering true (the negated `>` idiom this file's step 1 already uses).
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{nan, nan}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, nan}));
+#else
+    // -DAERO_SHADER_TOOLS=OFF: the viewport latches Unavailable and onDraw returns at step 4, so
+    // step 9b never runs and the rect stays EMPTY. Asserted rather than skipped (the 3.4.2 near-miss
+    // rule): an empty rect must own NOTHING, so picking degrades to its pre-overlay behaviour rather
+    // than to "every press is refused".
+    CHECK(viewport->overlayRowMin() == engine::Vec2{});
+    CHECK(viewport->overlayRowMax() == engine::Vec2{});
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{10.0F, 10.0F}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{}));
+#endif
 }
 
 // ================================================================================================
