@@ -834,3 +834,533 @@ TEST_CASE("render shadow: the ortho volume's edge sits on a world-fixed texel la
     CHECK((maxResidueX - minResidueX) > 0.25F * reference.texelWorldSize);
     CHECK(maxResidueX > 0.0F);
 }
+
+// ================================================================================================
+// Tier 1 — a real Device, no window. Gated on AERO_SHADER_TOOLS_ENABLED for the reason
+// render_culling_test.cpp's own tier-1 block is: a ForwardRenderer loads its shaders from
+// build/<preset>/shaders, which only exists when the shader toolchain is built. The SF battery
+// above runs in every configuration, because shadow.{hpp,cpp} is pure.
+// ================================================================================================
+
+#if AERO_SHADER_TOOLS_ENABLED
+
+    #include <aero/assets/mesh_cook.hpp>
+    #include <aero/core/vfs.hpp>
+    #include <aero/platform/platform.hpp>
+    #include <aero/render/render.hpp>
+    #include <aero/rhi/rhi.hpp>
+
+    #include "../engine/render/src/material_pack.hpp"
+    #include "rhi_test_support.hpp"
+
+    #include <memory>
+    #include <utility>
+    #include <vector>
+
+using engine::render::MeshInstance;
+using engine::render::PrimitiveId;
+using engine::render::ShadowView;
+
+namespace {
+
+// The shadow map's resolution is a create()-time decision, so unlike the CD battery this one needs a
+// PARAMETERISED renderer factory.
+[[nodiscard]] std::optional<engine::render::ForwardRenderer> makeForwardRenderer(
+    engine::rhi::Device& device, const engine::render::RenderTarget& target, std::uint32_t shadowResolution) {
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    return engine::render::ForwardRenderer::create(device, vfs,
+                                                   {.colorFormat = target.colorFormat(),
+                                                    .depthFormat = target.depthFormat(),
+                                                    .shadowMapResolution = shadowResolution});
+}
+
+// A camera looking at the origin from above and behind, and a sun coming from up and to the left.
+[[nodiscard]] engine::render::CameraView smCamera() {
+    const Vec3 eye{0.0F, 4.0F, 8.0F};
+    return {engine::lookAt(eye, Vec3{}, Vec3{0.0F, 1.0F, 0.0F}),
+            engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 100.0F), eye};
+}
+
+[[nodiscard]] engine::render::RenderView smView(const engine::render::CameraView& camera,
+                                                std::span<const MeshInstance> instances) {
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = instances;
+    view.directional = {.direction = engine::normalize(Vec3{-0.4F, -0.8F, -0.45F}),
+                        .color = Vec3::one(),
+                        .intensity = 2.0F,
+                        .castsShadows = true,
+                        .shadowBias = 0.0015F,
+                        .shadowNormalBias = 0.02F,
+                        .shadowDistance = 40.0F};
+    return view;
+}
+
+[[nodiscard]] MeshInstance primitiveInstance(PrimitiveId primitive, const Mat4& model, const Mat4& viewProj) {
+    MeshInstance instance;
+    instance.primitive = primitive;
+    instance.model = model;
+    instance.normalMatrix = Mat4::identity();
+    instance.mvp = viewProj * model;
+    return instance;
+}
+
+}  // namespace
+
+    #define AERO_SHADOW_TIER1_PREAMBLE(RES)                                    \
+        const engine::platform::Context ctx{{.headless = false}};              \
+        if (!ctx.valid()) {                                                    \
+            AERO_SKIP_OR_FAIL("no real video driver available");               \
+        }                                                                      \
+        auto device = engine::rhi::Device::create();                           \
+        if (!device.has_value()) {                                             \
+            AERO_SKIP_OR_FAIL("no GPU device available");                      \
+        }                                                                      \
+        auto target = engine::render::RenderTarget::create(*device, {64, 64}); \
+        REQUIRE(target.has_value());                                           \
+        auto forward = makeForwardRenderer(*device, *target, (RES));           \
+        REQUIRE(forward.has_value())
+
+TEST_CASE("render shadow: create() allocates a shadow map and reports its resolution (SM1)") {
+    AERO_SHADOW_TIER1_PREAMBLE(1024);
+    CHECK(forward->shadowMapResolution() == 1024);
+    CHECK(forward->shadowPassCount() == 0);  // nothing has been recorded yet
+    CHECK(forward->lastFrameShadowDrawn() == 0);
+    CHECK(forward->lastFrameShadowCulled() == 0);
+    CHECK_FALSE(forward->hasWarnedShadowFit());
+    // The 3.4.1 observable must NOT have moved: the comparison sampler is renderer-owned and
+    // deliberately outside samplerCache, so a material-facing count is unaffected by shadows.
+    CHECK(forward->samplerCacheSize() == 1);
+}
+
+TEST_CASE("render shadow: resolution 0 means OFF and is exact (SM2)") {
+    AERO_SHADOW_TIER1_PREAMBLE(0);
+    // 0 is never rounded and never clamped to 256 -- it means shadows off. The renderer still holds a
+    // 1x1 DEPTH texture as the bind placeholder, because SPIRV-Cross emits depth2d<float> for the
+    // comparison slot and binding an RGBA8 default there is a Metal type mismatch. Nothing exposes
+    // the texture handle, so what this case can assert is the CONSEQUENCE: a draw still records
+    // cleanly with slot 5 bound (SM13 proves that end to end) and renderShadowMap opts out.
+    CHECK(forward->shadowMapResolution() == 0);
+    const std::array<MeshInstance, 1> instances{
+        primitiveInstance(PrimitiveId::Cube, Mat4::identity(), Mat4::identity())};
+    const ShadowView shadow = forward->renderShadowMap(smView(smCamera(), instances));
+    CHECK_FALSE(shadow.valid);
+    CHECK(forward->shadowPassCount() == 0);
+    CHECK_FALSE(forward->hasWarnedShadowFit());  // a DISABLED map is not a FAILED fit
+}
+
+TEST_CASE("render shadow: a non-power-of-two resolution rounds up then clamps (SM3)") {
+    // One case rather than five, because the four arms share a fifty-line preamble and the FIFTH arm
+    // -- the exact one -- only means something beside the other four.
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+
+    struct Arm {
+        std::uint32_t requested;
+        std::uint32_t allocated;
+    };
+    // Hand-worked from the policy (round UP to the next power of two, THEN clamp into [256, 8192]):
+    //   300   -> 512    (the next power of two, already in range)
+    //   3000  -> 4096
+    //   100   -> 128    -> clamped UP to 256
+    //   20000 -> 8192   (the round stops at MAX, and the clamp agrees)
+    //   2048  -> 2048   (exact: no WARN at all)
+    constexpr std::array<Arm, 5> ARMS{{{300, 512}, {3000, 4096}, {100, 256}, {20000, 8192}, {2048, 2048}}};
+    for (const Arm arm : ARMS) {
+        INFO("requested ", arm.requested);
+        auto renderer = makeForwardRenderer(*device, *target, arm.requested);
+        REQUIRE(renderer.has_value());
+        CHECK(renderer->shadowMapResolution() == arm.allocated);
+    }
+    // ...and the exact arm's real assertion is that it is NOT clamped to something else: 2048 is both
+    // a power of two and in range, so requested == allocated and the WARN cannot fire.
+    auto exact = makeForwardRenderer(*device, *target, 2048);
+    REQUIRE(exact.has_value());
+    CHECK(exact->shadowMapResolution() == 2048);
+    CHECK(exact->shadowMapResolution() != 4096);
+}
+
+TEST_CASE("render shadow: every opt-out returns an invalid view and acquires no command buffer (SM4)") {
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    const engine::render::CameraView camera = smCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    const std::array<MeshInstance, 1> instances{primitiveInstance(PrimitiveId::Cube, Mat4::identity(), viewProj)};
+
+    // 1. no camera
+    engine::render::RenderView noCamera = smView(camera, instances);
+    noCamera.hasCamera = false;
+    CHECK_FALSE(forward->renderShadowMap(noCamera).valid);
+    // 2. the view opted out
+    engine::render::RenderView off = smView(camera, instances);
+    off.shadowsEnabled = false;
+    CHECK_FALSE(forward->renderShadowMap(off).valid);
+    // 3. the light does not cast
+    engine::render::RenderView noCast = smView(camera, instances);
+    noCast.directional.castsShadows = false;
+    CHECK_FALSE(forward->renderShadowMap(noCast).valid);
+    // 4. there is no directional light at all (intensity 0 is the sentinel, lighting.hpp's D6)
+    engine::render::RenderView dark = smView(camera, instances);
+    dark.directional.intensity = 0.0F;
+    CHECK_FALSE(forward->renderShadowMap(dark).valid);
+
+    // NOTHING WAS ACQUIRED AND NOTHING SUBMITTED, which is the half no other observable can see: the
+    // counter increments at the ACQUISITION, so a version that acquired a command buffer and then
+    // early-returned would read 4 here (and would leak four SDL command buffers into ~Device).
+    CHECK(forward->shadowPassCount() == 0);
+    CHECK(forward->lastFrameShadowDrawn() == 0);
+    CHECK(forward->lastFrameShadowCulled() == 0);
+    CHECK_FALSE(forward->hasWarnedShadowFit());  // none of the four is a FAILED fit
+
+    // 5. an INVALID FIT is the fifth condition, and it is the one that DOES warn.
+    engine::render::RenderView broken = smView(camera, instances);
+    broken.directional.direction = Vec3{};  // zero-length sun
+    CHECK_FALSE(forward->renderShadowMap(broken).valid);
+    CHECK(forward->hasWarnedShadowFit());
+    CHECK(forward->shadowPassCount() == 0);  // still nothing acquired: the fit runs BEFORE the acquire
+
+    // 6. the positive control -- the same view with a real sun DOES acquire exactly one.
+    CHECK(forward->renderShadowMap(smView(camera, instances)).valid);
+    CHECK(forward->shadowPassCount() == 1);
+}
+
+TEST_CASE("render shadow: the returned ShadowView carries the light matrix, the texel step and both biases (SM5)") {
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    const engine::render::CameraView camera = smCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    const std::array<MeshInstance, 1> instances{primitiveInstance(PrimitiveId::Cube, Mat4::identity(), viewProj)};
+    engine::render::RenderView view = smView(camera, instances);
+    // Values chosen MUTUALLY DISTINCT, so a swapped pair cannot land on the value expected.
+    view.directional.shadowBias = 0.0037F;
+    view.directional.shadowNormalBias = 0.041F;
+
+    const ShadowView shadow = forward->renderShadowMap(view);
+    REQUIRE(shadow.valid);
+    CHECK(shadow.constantBias == 0.0037F);
+    CHECK(shadow.normalBias == 0.041F);
+    // texelSize is 1 / RESOLUTION -- a UV step -- and NOT the fit's world texel size. The two are
+    // different quantities with similar names, and 1/512 is nowhere near the world value here.
+    CHECK(shadow.texelSize == 1.0F / 512.0F);
+    // The matrix is the fit's, not the identity: the sphere centre lands at the map's centre.
+    CHECK_FALSE(shadow.lightViewProj == Mat4::identity());
+    // ...and a second call with the SAME view returns a bit-identical matrix, which is what makes
+    // "no cached state" observable: nothing accumulated between the two.
+    const ShadowView again = forward->renderShadowMap(view);
+    REQUIRE(again.valid);
+    CHECK(again.lightViewProj == shadow.lightViewProj);
+    CHECK(forward->shadowPassCount() == 2);
+}
+
+TEST_CASE("render shadow: the light block mirrors ShadowView, and an invalid one disables in the shader (SM6)") {
+    // The one arm of the shadow path that is pure and could have lived at tier 0 -- it is here
+    // because it needs a real ShadowView, which needs a renderer.
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    const engine::render::CameraView camera = smCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    const std::array<MeshInstance, 1> instances{primitiveInstance(PrimitiveId::Cube, Mat4::identity(), viewProj)};
+    engine::render::RenderView view = smView(camera, instances);
+    view.directional.shadowBias = 0.0037F;
+    view.directional.shadowNormalBias = 0.041F;
+
+    view.shadow = forward->renderShadowMap(view);
+    REQUIRE(view.shadow.valid);
+    const engine::render::detail::GpuLightBlock lit = engine::render::detail::packLights(view);
+    CHECK(lit.lightViewProj == view.shadow.lightViewProj);
+    CHECK(lit.shadowParams.x == view.shadow.texelSize);
+    CHECK(lit.shadowParams.y == 0.0037F);
+    CHECK(lit.shadowParams.z == 0.041F);
+    CHECK(lit.shadowParams.w == 1.0F);
+
+    // The DEFAULT view -- a caller who never called renderShadowMap -- writes an identity matrix and
+    // w == 0, which is the ONLY thing that turns shadowing off in the shader.
+    view.shadow = ShadowView{};
+    const engine::render::detail::GpuLightBlock unlit = engine::render::detail::packLights(view);
+    CHECK(unlit.lightViewProj == Mat4::identity());
+    CHECK(unlit.shadowParams == Vec4{});
+    CHECK(unlit.shadowParams.w == 0.0F);
+    // ...and nothing ahead of the tail moved, which is what "appended" means.
+    CHECK(unlit.eyePosition == lit.eyePosition);
+    CHECK(unlit.ambient == lit.ambient);
+}
+
+TEST_CASE("render shadow: every caster inside the light frustum is drawn into the map (SM7)") {
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    const engine::render::CameraView camera = smCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    const std::array<MeshInstance, 3> instances{
+        primitiveInstance(PrimitiveId::Cube, Mat4::identity(), viewProj),
+        primitiveInstance(PrimitiveId::Sphere, engine::translation(Vec3{1.5F, 0.0F, 0.0F}), viewProj),
+        primitiveInstance(PrimitiveId::Plane, engine::translation(Vec3{0.0F, -1.0F, 0.0F}), viewProj)};
+
+    REQUIRE(forward->renderShadowMap(smView(camera, instances)).valid);
+    CHECK(forward->lastFrameShadowDrawn() == 3);
+    CHECK(forward->lastFrameShadowCulled() == 0);
+    CHECK(forward->shadowPassCount() == 1);
+    // PER-FRAME, not cumulative: an identical second call reads the same numbers, not double.
+    REQUIRE(forward->renderShadowMap(smView(camera, instances)).valid);
+    CHECK(forward->lastFrameShadowDrawn() == 3);
+    CHECK(forward->lastFrameShadowCulled() == 0);
+    CHECK(forward->shadowPassCount() == 2);
+}
+
+TEST_CASE("render shadow: a caster outside the LIGHT frustum is culled, and cullingEnabled is not consulted (SM8)") {
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    const engine::render::CameraView camera = smCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    // The fit follows the CAMERA's frustum slice, so "outside the light frustum" here means far
+    // outside the camera's reach as well -- 500 units up the +X axis, which is many times the fit
+    // radius for this 40-unit shadowDistance.
+    constexpr Mat4 FAR_AWAY = engine::translation(Vec3{500.0F, 0.0F, 0.0F});
+    const std::array<MeshInstance, 3> instances{primitiveInstance(PrimitiveId::Cube, Mat4::identity(), viewProj),
+                                                primitiveInstance(PrimitiveId::Cube, FAR_AWAY, viewProj),
+                                                primitiveInstance(PrimitiveId::Sphere, FAR_AWAY, viewProj)};
+
+    engine::render::RenderView view = smView(camera, instances);
+    REQUIRE(forward->renderShadowMap(view).valid);
+    CHECK(forward->lastFrameShadowDrawn() == 1);
+    CHECK(forward->lastFrameShadowCulled() == 2);
+
+    // THE POINT OF THE CASE (D8): RenderView::cullingEnabled is the CAMERA cull's escape hatch and
+    // carries a contract about mvp == viewProj * model. The light cull is unconditional, because an
+    // instance outside the light frustum writes to no texel BY DEFINITION. An opted-out view must
+    // still cull here.
+    view.cullingEnabled = false;
+    REQUIRE(forward->renderShadowMap(view).valid);
+    CHECK(forward->lastFrameShadowDrawn() == 1);
+    CHECK(forward->lastFrameShadowCulled() == 2);
+}
+
+TEST_CASE("render shadow: an instance carrying a PALETTE is exempt from the light cull (SM9)") {
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    const engine::render::CameraView camera = smCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    constexpr Mat4 FAR_AWAY = engine::translation(Vec3{500.0F, 0.0F, 0.0F});
+    // A one-entry identity palette. The built-in primitive path IGNORES a palette entirely, so this
+    // witnesses the `!palette.empty()` PREDICATE and nothing about skinning -- exactly as 3.6.1's
+    // CD2 does for the camera cull. An instance whose vertices may move under a matrix this renderer
+    // never sees has no bind-pose box that bounds where it ends up.
+    const std::array<Mat4, 1> palette{Mat4::identity()};
+    MeshInstance exempt = primitiveInstance(PrimitiveId::Cube, FAR_AWAY, viewProj);
+    exempt.palette = palette;
+    const MeshInstance twin = primitiveInstance(PrimitiveId::Cube, FAR_AWAY, viewProj);
+    const MeshInstance onScreen = primitiveInstance(PrimitiveId::Cube, Mat4::identity(), viewProj);
+    const std::array<MeshInstance, 3> instances{exempt, twin, onScreen};
+
+    REQUIRE(forward->renderShadowMap(smView(camera, instances)).valid);
+    CHECK(forward->lastFrameShadowDrawn() == 2);   // the exempt one (far outside, drawn anyway) + onScreen
+    CHECK(forward->lastFrameShadowCulled() == 1);  // its palette-free twin, same position
+
+    // ...and it also contributed NOTHING to the CASTER UNION, which is what keeps a skinned
+    // instance's bind-pose box from dragging the light eye back. The control is the SAME view with
+    // the exempt instance removed -- so the union (and therefore casterBack, and therefore the depth
+    // range) is identical by construction, and any difference in the matrix is the exempt instance
+    // having been folded in. The twin stays in BOTH sides deliberately: it is what makes the union
+    // non-trivial, so this is not two identical trivial fits agreeing.
+    const std::array<MeshInstance, 2> control{twin, onScreen};
+    const ShadowView withExempt = forward->renderShadowMap(smView(camera, instances));
+    const ShadowView withoutIt = forward->renderShadowMap(smView(camera, control));
+    REQUIRE(withExempt.valid);
+    REQUIRE(withoutIt.valid);
+    CHECK(withExempt.lightViewProj == withoutIt.lightViewProj);
+}
+
+TEST_CASE("render shadow: a shadowless call resets both counters to zero (SM10)") {
+    // ONE sequence, deliberately. The reset has to happen BEFORE the six early returns, and only a
+    // call that FOLLOWS a populated one can tell the difference -- two independent cases both pass
+    // under the very defect this exists to catch, which is 3.6.1's CD5 lesson verbatim.
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    const engine::render::CameraView camera = smCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    constexpr Mat4 FAR_AWAY = engine::translation(Vec3{500.0F, 0.0F, 0.0F});
+    const std::array<MeshInstance, 2> instances{primitiveInstance(PrimitiveId::Cube, Mat4::identity(), viewProj),
+                                                primitiveInstance(PrimitiveId::Cube, FAR_AWAY, viewProj)};
+
+    REQUIRE(forward->renderShadowMap(smView(camera, instances)).valid);
+    REQUIRE(forward->lastFrameShadowDrawn() == 1);
+    REQUIRE(forward->lastFrameShadowCulled() == 1);
+
+    engine::render::RenderView disabled = smView(camera, instances);
+    disabled.directional.castsShadows = false;
+    CHECK_FALSE(forward->renderShadowMap(disabled).valid);
+    CHECK(forward->lastFrameShadowDrawn() == 0);
+    CHECK(forward->lastFrameShadowCulled() == 0);
+
+    // ...and again through the INVALID-FIT exit, which is a different early return in a different
+    // place: a reset placed after the opt-out block but before the fit would pass the arm above and
+    // fail this one.
+    REQUIRE(forward->renderShadowMap(smView(camera, instances)).valid);
+    REQUIRE(forward->lastFrameShadowDrawn() == 1);
+    engine::render::RenderView broken = smView(camera, instances);
+    broken.directional.shadowDistance = -1.0F;
+    CHECK_FALSE(forward->renderShadowMap(broken).valid);
+    CHECK(forward->lastFrameShadowDrawn() == 0);
+    CHECK(forward->lastFrameShadowCulled() == 0);
+}
+
+TEST_CASE("render shadow: hasWarnedShadowFit latches across repeated invalid fits (SM11)") {
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    const engine::render::CameraView camera = smCamera();
+    const std::array<MeshInstance, 1> instances{
+        primitiveInstance(PrimitiveId::Cube, Mat4::identity(), camera.proj * camera.view)};
+    engine::render::RenderView broken = smView(camera, instances);
+    broken.directional.direction = Vec3{};
+
+    CHECK_FALSE(forward->hasWarnedShadowFit());
+    for (int i = 0; i < 5; ++i) {
+        CHECK_FALSE(forward->renderShadowMap(broken).valid);
+        CHECK(forward->hasWarnedShadowFit());
+    }
+    // A GOOD frame afterwards does NOT clear it -- it is a renderer-lifetime latch, not a per-frame
+    // flag, and a version that reset it would flood the log at 60 Hz on an alternating scene.
+    CHECK(forward->renderShadowMap(smView(camera, instances)).valid);
+    CHECK(forward->hasWarnedShadowFit());
+}
+
+TEST_CASE("render shadow: a Mask material casts a solid silhouette rather than being skipped (SM12)") {
+    // D13: a depth-only pass has no UVs, no material bind and cannot discard, so an alpha-masked
+    // material casts its FULL silhouette. That is the behaviour, and it is what this asserts. The
+    // "warns exactly once" half rides the warnOnce idiom every sibling latch here uses and has no
+    // accessor by decision (the plan's section 0.8 records the limit rather than adding a sixth
+    // observable whose only consumer would be this line).
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    const engine::render::MaterialHandle masked =
+        forward->createMaterial({.baseColorFactor = Vec4{1.0F, 1.0F, 1.0F, 1.0F},
+                                 .alpha = engine::render::MaterialAlpha::Mask,
+                                 .alphaCutoff = 0.5F},
+                                {});
+    REQUIRE(masked.valid());
+    const engine::render::CameraView camera = smCamera();
+    MeshInstance instance = primitiveInstance(PrimitiveId::Cube, Mat4::identity(), camera.proj * camera.view);
+    instance.material = masked;
+    const std::array<MeshInstance, 1> instances{instance};
+
+    REQUIRE(forward->renderShadowMap(smView(camera, instances)).valid);
+    CHECK(forward->lastFrameShadowDrawn() == 1);  // DRAWN, not skipped
+    CHECK(forward->lastFrameShadowCulled() == 0);
+    // A second pass still draws it -- the latch changes the LOG, never the picture.
+    REQUIRE(forward->renderShadowMap(smView(camera, instances)).valid);
+    CHECK(forward->lastFrameShadowDrawn() == 1);
+    // ...and the MAIN loop's own Blend latch is untouched by any of this: Mask is not Blend.
+    CHECK_FALSE(forward->hasWarnedBlendOpaque());
+}
+
+TEST_CASE("render shadow: renderShadowMap then draw records cleanly with the shadow slot bound (SM13)") {
+    // THE integration case: a depth-only pass on its own command buffer, submitted, then a colour
+    // pass on the frame's command buffer that SAMPLES the result -- the first time in this project's
+    // history that one submission's depth output is read by a later one. No pixel assertions (this
+    // suite records draws without asserting their output, the tree's own posture); the assertion is
+    // that both passes record and submit with no backend validation error, which on Metal means the
+    // depth2d<float> binding at slot 5 was type-correct.
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    const engine::render::CameraView camera = smCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    const std::array<MeshInstance, 3> instances{
+        primitiveInstance(PrimitiveId::Cube, engine::translation(Vec3{0.0F, 1.0F, 0.0F}), viewProj),
+        primitiveInstance(PrimitiveId::Sphere, engine::translation(Vec3{2.0F, 1.0F, 0.0F}), viewProj),
+        primitiveInstance(PrimitiveId::Plane, engine::scaling(Vec3{10.0F, 1.0F, 10.0F}), viewProj)};
+
+    engine::render::RenderView view = smView(camera, instances);
+    view.shadow = forward->renderShadowMap(view);
+    REQUIRE(view.shadow.valid);
+    CHECK(forward->shadowPassCount() == 1);
+
+    std::optional<engine::render::Frame> open = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(open.has_value());
+    forward->draw(*open, view);
+    CHECK(target->endFrame(std::move(*open)));
+    CHECK(forward->lastFrameDrawn() == 3);
+    CHECK(forward->lastFrameShadowDrawn() == 3);
+
+    // ...and the SAME sequence with shadows off, which is the arm that proves slot 5 is bound
+    // unconditionally: with shadowsEnabled false nothing is recorded into the map, but the fragment
+    // stage still declares six samplers and the draw must still record.
+    engine::render::RenderView unshadowed = smView(camera, instances);
+    unshadowed.shadowsEnabled = false;
+    unshadowed.shadow = forward->renderShadowMap(unshadowed);
+    CHECK_FALSE(unshadowed.shadow.valid);
+    std::optional<engine::render::Frame> second = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(second.has_value());
+    forward->draw(*second, unshadowed);
+    CHECK(target->endFrame(std::move(*second)));
+    CHECK(forward->lastFrameDrawn() == 3);
+}
+
+TEST_CASE("render shadow: the shared resolver drops the same instances from both loops (SM14)") {
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    // A cooked triangle at the origin, registered twice so one handle can be made STALE -- the
+    // render_culling_test.cpp CD3 shape, cooked IN MEMORY (3.3.3 makes the cook deterministic
+    // cross-lane, so this is as stable as a golden and commits no fixture).
+    constexpr std::array<Vec3, 3> TRI{Vec3{-0.5F, -0.5F, 0.0F}, Vec3{0.5F, -0.5F, 0.0F}, Vec3{0.0F, 0.5F, 0.0F}};
+    constexpr std::array<std::uint32_t, 3> TRI_INDICES{0, 1, 2};
+    engine::assets::MeshCookPrimitive primitive;
+    primitive.positions = TRI;
+    primitive.indices = TRI_INDICES;
+    const std::array<engine::assets::MeshCookPrimitive, 1> primitives{primitive};
+    engine::assets::MeshCookResult cooked = engine::assets::cookMesh({.sourceGuid = {}, .primitives = primitives});
+    REQUIRE(cooked.status == engine::assets::MeshCookStatus::Ok);
+    const std::vector<std::byte> bytes = std::move(cooked.bytes);  // MUST outlive the CookedMesh
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    const engine::render::MeshHandle live = forward->createMesh(parse.mesh);
+    REQUIRE(live.valid());
+    const engine::render::MeshHandle stale = forward->createMesh(parse.mesh);
+    REQUIRE(stale.valid());
+    forward->destroyMesh(stale);
+
+    const engine::render::CameraView camera = smCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    const auto meshInstance = [&](engine::render::MeshHandle mesh, std::uint32_t submesh) {
+        MeshInstance instance;
+        instance.mesh = mesh;
+        instance.submesh = submesh;
+        instance.model = Mat4::identity();
+        instance.normalMatrix = Mat4::identity();
+        instance.mvp = viewProj;
+        return instance;
+    };
+    // An over-cap palette: MAX_SKINNING_JOINTS + 1 entries. The section carries no skin stream, so
+    // this ALSO exercises the stray-palette arm -- which WARNs and does NOT skip -- and therefore
+    // proves the resolver kept the two apart.
+    const std::vector<Mat4> overCap(engine::render::MAX_SKINNING_JOINTS + 1, Mat4::identity());
+    MeshInstance capped = meshInstance(live, 0);
+    capped.palette = overCap;
+    const std::array<MeshInstance, 4> instances{meshInstance(live, 0),   // draws
+                                                meshInstance(stale, 0),  // ARM 2a: neither bucket
+                                                meshInstance(live, 7),   // ARM 2b: neither bucket
+                                                capped};                 // stray palette: DRAWS
+
+    // The SHADOW pass first, deliberately: if the resolver logged, this is where a diagnostic would
+    // be consumed before draw() could own it.
+    REQUIRE(forward->renderShadowMap(smView(camera, instances)).valid);
+    // Two drawn (the plain one and the stray-palette one, which is not skipped), two dropped by the
+    // resolver into NEITHER bucket. THE DOCUMENTED NON-SUM.
+    CHECK(forward->lastFrameShadowDrawn() == 2);
+    CHECK(forward->lastFrameShadowCulled() == 0);
+    CHECK(forward->lastFrameShadowDrawn() + forward->lastFrameShadowCulled() == 2);
+    CHECK(instances.size() == 4);
+    // The shadow pass fired NONE of draw()'s latches.
+    CHECK_FALSE(forward->hasWarnedSkinningCap());
+
+    engine::render::RenderView view = smView(camera, instances);
+    view.shadow = forward->renderShadowMap(view);
+    std::optional<engine::render::Frame> open = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(open.has_value());
+    forward->draw(*open, view);
+    CHECK(target->endFrame(std::move(*open)));
+    // draw() reaches the SAME two, and its own latch fires there -- unaffected by the shadow pass
+    // having run twice already.
+    CHECK(forward->lastFrameDrawn() == 2);
+    CHECK(forward->lastFrameCulled() == 0);
+}
+
+    #undef AERO_SHADOW_TIER1_PREAMBLE
+
+#endif  // AERO_SHADER_TOOLS_ENABLED
