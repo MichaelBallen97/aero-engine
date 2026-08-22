@@ -35,6 +35,7 @@ add_executable(aero_tests
     cooked_animation_test.cpp # task 3.5.2 — the .aeroanim container v1: layout, parse, hostile input
     animation_cook_test.cpp   # task 3.5.2 — cookAnimation: canonical order, refusals, byte-exactness
     cooked_audio_test.cpp     # task 3.7.1 — the .aerowave container v1: layout, parse, hostile input
+    audio_cook_test.cpp       # task 3.7.1 — cookAudio: refusals, byte-exactness, the ffmpeg anchor
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -108,6 +109,15 @@ target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::
 # comment-stripped source-text gate, the AERO_EDITOR_SRC_DIR / I73 / MS41 / AI34 shape one layer down.
 # UNGATED on purpose: both reduced configurations build this TU and must run this case too.
 target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/assets/src")
+
+# task 3.7.1: audio_cook_test.cpp's AK17/AK18 read tests/fixtures/audio/tone.s16le.pcm -- ffmpeg's OWN
+# decode of tone.wav, raw interleaved s16 LE with no container, committed so no lane ever needs ffmpeg.
+# It is the cook half of the external anchor (docs/09 section 14): the artifact's sample region must be
+# byte-identical to bytes libavcodec produced and nothing of ours did.
+# A PATH, NOT A FLAG -- the AERO_PROJECT_FIXTURES_DIR / AERO_MATERIAL_FIXTURES_DIR rule: a missing
+# fixture is a REQUIRE failure rather than a silent skip. UNGATED, like AERO_ASSETS_SRC_DIR above:
+# both reduced configurations build this TU and must run these cases too.
+target_compile_definitions(aero_tests PRIVATE AERO_AUDIO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/audio")
 
 # task 3.5.1, added by the code-review round: the SOURCE tree's shader directory, for
 # render_skinning_test.cpp's JP14 -- the comment-stripped source-text pin tying
