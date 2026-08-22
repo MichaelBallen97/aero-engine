@@ -872,15 +872,22 @@ changes **nothing** on static geometry at either elevation, because the pipeline
 working as designed — so **the row asked for the wrong evidence and was corrected, not the code**.
 (2) **`--elevation` freezes the sun but NOT the rig**, whose 3 s cycle contaminates any A/B that does
 not exclude its columns; an initial row-6 reading showed a textbook striping signature that was
-entirely the rig at a different pose. **Row 8 also PASSES and EVERY measurement blank on the page is now filled**, with its premise
-corrected too: the shadow edge's stair-step **shrinks** as the map coarsens (1.62 → 1.18 px from 2048
-to 256) because the 3×3 hardware PCF filters it away, while the **penumbra** grows almost exactly with
-texel size (**7 / 15 / 27 / 51 px**, i.e. 1.00× / 2.14× / 3.86× / 7.29×). **This renderer degrades as
-BLUR, not as blocks** — so a soft shadow here means under-resolved, and the fix is a smaller
-`shadowDistance` or a larger map, never a tighter fit (A6's crawl). **11 of 12 rows pass; row 12 alone
-is open** (consoles clean, picture-unchanged A/B and inspector rows not taken). Rows 1–5, 7 and 9–12
-were measured at `6046c9e`; row 6's SH26 arms and row 8's sweep after 3.6.3 (PR #86) merged, each
-comparison with both arms on the same build. **Row 1's gate as first written could never return 0**: the sample's own
+entirely the rig at a different pose. **Row 8 also PASSES and row 12 CLOSES the page: ✅ PASS on ALL 12 ROWS with every measurement blank
+filled.** Row 8's premise was corrected too — the shadow edge's stair-step **shrinks** as the map
+coarsens (1.62 → 1.18 px from 2048 to 256) because the 3×3 hardware PCF filters it away, while the
+**penumbra** grows almost exactly with texel size (**7 / 15 / 27 / 51 px**). **This renderer degrades
+as BLUR, not blocks** — so a soft shadow here means under-resolved, and the fix is a smaller
+`shadowDistance` or a larger map, never a tighter fit (A6's crawl). **Row 12's A/B found the page's own
+reasoning wrong**: run in a dedicated worktree at `64df342` vs `3ffaadf` (19 TUs rebuilt, isolating
+3.6.2 from 3.6.3), with each sample's noise floor measured first by capturing one build twice. Four
+samples sit **below their own noise floor** — unchanged. **`phase-1-scene` is static (noise 0.0000) and
+genuinely changed: 1640 px darkened, 0 brightened, in a bounded 214 × 38 box — a shadow appearing** —
+because it draws through **`SceneRenderer::render`**, which calls `renderShadowMap`. That is A3(iii)
+working as designed, and it refutes the row's sentence that no sample calls it. **The structural grep
+that sentence rested on observed the INTENTION; the A/B observed the EFFECT** — the code-review round's
+own through-line, one more time. **Three page expectations were wrong and were corrected in their rows
+rather than worked around** (row 6's acne, row 8's blockiness, row 12's opt-out claim); in every case
+the code was right. **Row 1's gate as first written could never return 0**: the sample's own
 closing line contains the path `editor/validation/…`, so it matched the word it was grepping for; the
 page now excludes that line and carries an independent log-level cross-check beside it.** The renderer
 learns that light is occluded. Until now every lit surface received the full directional term
