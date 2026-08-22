@@ -699,9 +699,17 @@ blanks filled** (2026-08-22): both console gates 0 over 2088 frames, `shadow dra
 every elevation, and the depth pass costing **0.083 ms** median against a `draw` that is **unchanged at
 0.025 ms** either way — so the shadow lookup adds no measurable cost to the main pass at six casters,
 and `--no-shadows` measures `renderShadowMap` at **0.000 ms**, confirming the early-out by measurement.
-**Rows 2–9, 11 and 12 remain PENDING and every one is judged by eye** — they are the only coverage
-seeds SH22–SH28 have anywhere, because `engine/rhi` exposes no texture readback and nothing in this
-tree can inspect a texel. **Row 1's gate as first written could never return 0**: the sample's own
+**Row 11 also PASSES with its blanks filled**: a zero-length light direction latches the fit WARN
+**exactly once across 2196 frames** and `castsShadows = false` fires it **0 times across 2197** — and
+both arms report `shadow drawn 0 / culled 0` every frame, which confirms **AC-33's counter reset
+before the early return on hardware** rather than by argument. **Rows 8 and 12 are partly measured**:
+all three shadow resolutions allocate exactly as requested with `texelWorldSize` **0.0420 / 0.1678 /
+0.3356**, matching the plan's predicted table exactly, and the cost is **flat across a 64× texel
+change** (0.112 → 0.121 ms), so at six casters the depth pass is per-draw bound rather than fill
+bound; all five existing samples run with **0 unexpected console lines and 0 non-`[info]` lines**.
+**Rows 2–7 and 9 remain OPEN and every one is judged by eye** — they carry the whole of seeds
+SH22–SH28, because `engine/rhi` exposes no texture readback and nothing in this tree can inspect a
+texel. **Row 1's gate as first written could never return 0**: the sample's own
 closing line contains the path `editor/validation/…`, so it matched the word it was grepping for; the
 page now excludes that line and carries an independent log-level cross-check beside it.** The renderer
 learns that light is occluded. Until now every lit surface received the full directional term
