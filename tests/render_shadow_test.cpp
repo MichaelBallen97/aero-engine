@@ -1406,6 +1406,22 @@ TEST_CASE("render shadow: a pipeline with neither a colour target nor a depth ta
     const std::array<engine::rhi::VertexAttribute, 1> attrs{
         {{.location = 0, .bufferSlot = 0, .format = engine::rhi::VertexFormat::Float3, .offset = 0}}};
 
+    // PROBED, never hard-coded, over the same three-format order createShadowResources uses.
+    // device.hpp: drivers guarantee one of D24Unorm/D32Float, never both -- and SDL's
+    // "Format is not supported for depth targets on this device!" is an SDL_assert_release, active
+    // in EVERY configuration, so a hard-coded format on a device that lacks it would ABORT the whole
+    // binary and lose every remaining case rather than reddening this one.
+    engine::rhi::TextureFormat depthFormat = engine::rhi::TextureFormat::Invalid;
+    for (const engine::rhi::TextureFormat candidate :
+         {engine::rhi::TextureFormat::D32Float, engine::rhi::TextureFormat::D24Unorm,
+          engine::rhi::TextureFormat::D16Unorm}) {
+        if (device->supportsTextureFormat(candidate, engine::rhi::TextureUsage::DepthStencilTarget)) {
+            depthFormat = candidate;
+            break;
+        }
+    }
+    REQUIRE((depthFormat != engine::rhi::TextureFormat::Invalid));  // double parens: the toString ADL trap
+
     // THE POSITIVE CONTROL FIRST, so the refusal below is not passing for the wrong reason: the SAME
     // desc WITH a depth format is the depth-only shape the widening exists for, and it must succeed.
     engine::rhi::GraphicsPipelineDesc desc{.vertexShader = vs,
@@ -1413,7 +1429,7 @@ TEST_CASE("render shadow: a pipeline with neither a colour target nor a depth ta
                                            .vertexBuffers = std::span{&layout, 1},
                                            .vertexAttributes = attrs,
                                            .colorTargets = {},
-                                           .depthStencilFormat = engine::rhi::TextureFormat::D32Float};
+                                           .depthStencilFormat = depthFormat};
     const engine::rhi::GraphicsPipelineHandle depthOnly = device->createGraphicsPipeline(desc);
     CHECK(depthOnly.valid());
     if (depthOnly.valid()) {
