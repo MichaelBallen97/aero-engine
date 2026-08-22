@@ -2,7 +2,17 @@
 // over engine math types. Nothing here allocates, logs, recurses, touches a GPU or holds static
 // mutable state, and there is no profiling include either (the culling.cpp / animation.cpp absence:
 // this is a handful of float operations and a Tracy zone would cost more than the work it measured).
-// Every entry point is TOTAL -- NaN, +-inf and an out-of-range enum each yield a defined answer.
+// TOTALITY, STATED EXACTLY, because "total" and "finite" are not the same claim and an earlier
+// version of this line conflated them. sanitizeTonemapParams and tonemapOperatorLabel are total in
+// the strong sense: NaN, +-inf and an out-of-range enum each yield a defined, in-range answer.
+// linearToSrgbEncode, applyTonemapCurve and tonemapAndEncode are total in the weak sense -- no UB, no
+// trap, a defined answer for every input -- and FINITE for every FINITE input and for +-inf, but they
+// PROPAGATE a NaN input rather than mapping it. That is deliberate and it is not a gap in the guards:
+// min/max/clamp are all specified in terms of `<`, which is false in both directions for NaN, so each
+// returns its NaN operand on every standard library. Mapping NaN here would make this function a
+// DIFFERENT function from shaders/tonemap.frag.hlsl, which cannot follow -- HLSL's min/max with NaN
+// are implementation-defined -- and TM29 exists precisely to keep the two the same. TM9 pins both
+// halves; tonemap.hpp's property 3 states the contract.
 
 #include <aero/render/tonemap.hpp>
 

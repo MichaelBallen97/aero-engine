@@ -10116,12 +10116,12 @@ seeds above.
 ### Task 3.6.3 — Tonemap/gamma pass (Epic 3.6)
 
 **Branch:** `feat/3.6.3-tonemap-gamma-pass`, cut from `main @ 64df342` — the spec's own stated branch
-point, with no drift. **Ten green commits** — one per build step (`8d127ed` the vocabulary,
+point, with no drift. **Eleven green commits** — one per build step (`8d127ed` the vocabulary,
 `d354744` the shader pair + the TM tier, `d36cbc5` `PostProcess` + the packer, `449d641` the PP tier,
 `f7885bf` the editor wiring, `ea79ad8` the sample), one closing the sabotage matrix's three genuine
 gaps (`46fac21`), one relocating the four editor cases out of the wrong preprocessor block (`3c00640`,
-found by the gate — see below), one documentation commit (`3bfae15`) and one closing the code-review
-round. Counted with `git rev-list --count`, not by adding up steps. **Complete in code; the twelve-row macOS validation
+found by the gate — see below), one documentation commit (`3bfae15`) and TWO closing code-review
+rounds. Counted with `git rev-list --count`, not by adding up steps. **Complete in code; the twelve-row macOS validation
 pass is PENDING** (`editor/validation/3.6.3-tonemap-gamma.md`, written before the pass as always).
 
 Sized **S** in the roadmap and landed **M**, and that was recorded in the spec before implementation
@@ -10334,9 +10334,13 @@ twins recorded inside their parents' rows; `T30` ran as two arms.
 * **`T23` — a dropped frame still draws, so the whole tier stays green.** `~Frame` force-ends and
   submits a dropped frame with one WARN, so the picture survives; 19 of those WARNs were emitted and
   no assertion moved, because nothing here reads a log sink. Closed by asserting, in `PP10`, that
-  `endScene` **forwards** its `RenderTarget`'s answer: a moved-from pass has no `RenderTarget`, so it
-  must return **false**, and that is the ONE arm reachable in this tree where the forward's answer
-  differs from an unconditional `true`. Re-seeded: `PP10` reddens alone.
+  `endScene` **forwards** its `RenderTarget`'s answer. **THE FIRST CLOSURE WAS TOO WEAK AND THE
+  SECOND REVIEW ROUND CAUGHT IT** — see that section below: asserting only that a *moved-from* pass
+  returns `false` pins the `scene &&` null-guard and nothing more, so the minimal seed
+  `return scene.has_value();` left all 42 cases green. The arm that bites hands a **LIVE** pass an
+  **already-consumed** frame, which `RenderTarget::endFrame` rejects — an implementation that never
+  forwards answers `true` and reddens. Re-seeded both ways: `PP10` reddens alone under the minimal
+  seed and under the original one.
 * **`T25` — a leaked GPU shader is invisible to every tier here.** `~Device` **releases** a leaked
   shader and merely WARNs about it, so ASan sees no process leak and nothing asserts. Measured: the
   seed produced `~Device releasing 1 leaked shader(s)` while the tier stayed green. Closed **both
@@ -10398,7 +10402,84 @@ across four arms / 36 cross-lane comparisons**.
 **A note on that manifest count**: `wc -l` reads **58**, because the file's frozen header is 40 lines
 of prose. The 18 is `grep -cvE '^[[:space:]]*(#|$)'`.
 
-#### The code-review round: three findings, none blocking, all closed
+#### The SECOND code-review round: five findings, none blocking, all closed
+
+An independent round over the finished branch found five, and one of them is the most instructive
+defect in the task.
+
+**1. `post->resize()`'s `false` was discarded, and the comment justifying that was wrong in three
+ways at once.** Both editor consumers called `post->resize(pixels);` bare, on the theory that a
+not-renderable scene target would make `resolve()` log once and the picture fall back to the clear
+colour. **`resolve()` cannot be reached on that path.** `ViewportPanel::renderScene` returns at its
+own `if (!sceneFrame)`, which is *above* `target->beginFrame`, `post->resolve` and `target->endFrame`;
+`MaterialPreview::renderFrame` has the same shape. So: (a) the one latched diagnostic designed for a
+not-renderable pass is **dead**; (b) `RenderTarget::resize` zeroes its allocation extent **before**
+`allocate()` can fail, so `want != allocExtent` on every subsequent frame, `allocate()` re-runs and
+re-emits its `AERO_LOG_ERROR` **once per frame, forever**, with the editor's `err` counter climbing —
+which is precisely the unlatched-per-frame-diagnostic class this task's own design forbids and that
+3.5.1's review closed for the stale-handle WARN; and (c) the failure is **asymmetric by size** — the
+`RGBA16Float` pair is 8 B/texel and the `RGBA8` output 4 B/texel, so under memory pressure at a large
+viewport the output can still succeed, **reallocating the very texture ImGui is about to sample**,
+which nothing then renders into. The picture is not "the clear colour", it is **undefined content**.
+Closed by capturing both results and latching on either, with the panel naming which of the two
+failed; the two calls stay on adjacent lines, so the 1:1 invariant and `I106(c)` are untouched. The
+false comment is replaced in both files with what the code actually does.
+
+**2. The `T23` closure did not bite.** `PP10`'s arm asserted `endScene` returns `false` on a
+**moved-from** pass, and claimed that pinned the *forward*. It pinned only the `scene &&` null-guard:
+seed `bool PostProcess::endScene(Frame f) { sceneEnded = true; return scene.has_value(); }` and the
+moved-from pass still answers `false`, `cycleOnce`'s `CHECK` still answers `true`, and **all 42 cases
+stay green under exactly the defect the arm exists to catch**. Closed by adding a second arm that
+hands a **LIVE** pass an **already-consumed** frame: `RenderTarget::endFrame` rejects a moved-from or
+already-ended frame, so only a real forward can answer `false`. Both arms are kept and each says what
+it pins. **Measured, not argued** — under the minimal seed the new arm reddens and the old one does
+not, which is the whole finding in one line.
+
+**3. AC-17's UI half was unwitnessed.** `I105` drives only the `requestTonemapParams` seam, so
+deleting `tonemapParamsValue = render::sanitizeTonemapParams(edited);` from `drawViewOptions` left it
+green while `I106(b)` looked only for `BeginDisabled`/`PushID`/`PopID`. That is not academic: ImGui
+permits a **Ctrl+Click-typed** value past a slider's `v_min`/`v_max` without
+`ImGuiSliderFlags_AlwaysClamp`, and no tier here can perform that click — so a typed `1e30` or `nan`
+would reach `packTonemapFragment` and the uniform **unsanitized, breaking INV-3**. Closed with one
+`CHECK` for `sanitizeTonemapParams(` inside the body `I106(b)` already walks line by line; proven by
+deleting the line and watching it redden.
+
+**4. A totality claim the code did not honour — AC-4 IS AMENDED.** `tonemap.cpp`'s header said *"Every
+entry point is TOTAL -- NaN, +-inf and an out-of-range enum each yield a defined answer"*, and AC-4
+required `tonemapAndEncode` to be finite for every input. **It is not**:
+`tonemapAndEncode(NaN)` returns NaN, because `min`/`max`/`clamp` are all specified in terms of `<`,
+which is false in both directions for NaN, so each returns its NaN operand, and `std::pow(NaN, y)` is
+NaN. `TM9` tested only `±inf`, `65504` and `1e30`. The header's NaN non-check was scoped to *"NaN in
+the HDR buffer"* — the **shader** — and did not cover this CPU function.
+
+**The decision is (b): narrow the claim, not the behaviour, and AC-4 is amended to "finite for every
+FINITE input and for ±inf; a NaN channel propagates."** Making the CPU function NaN-total would make
+it a **different function** from `shaders/tonemap.frag.hlsl`, which cannot follow — HLSL's `min`/`max`
+with NaN are implementation-defined — and `TM29` exists precisely to keep the two the same. So the
+propagation is deliberate, it is portable rather than accidental, and `TM9` now **asserts it** in its
+own subcase rather than leaving a header that promises one thing and a function that does another.
+The header states the caller's obligation explicitly: **narrowing the result to an integer requires a
+finiteness guard first**, because `std::lround` of a NaN is unspecified and may raise `FE_INVALID`.
+`samples/phase-3-tonemap` is that caller, and its two `std::lround` sites are now one guarded helper —
+the guard can never fire on this sample's inputs, and it is there so the UB is unreachable **by
+construction** rather than by an argument about which values reach it.
+
+**5. A real UX defect this task widened, fixed at the shared cause.** The new combo and exposure
+slider are submitted **over** the viewport image and **after** `updatePick` has already run, so on the
+press frame ImGui's `ActiveId` is still 0 when `updatePick` asks — the widget has not been submitted
+yet. The press therefore **arms a scene pick**; the release lands inside the image rect (the strip
+sits at `imageOrigin + OVERLAY_INSET`) and inside `PICK_CLICK_SLOP_POINTS`, so `pickEntity` fires and
+**the scene selection changes or clears while the user was only choosing a tone curve**. The
+mechanism is inherited from `drawGizmoBar()`'s buttons (2.3.3) and is therefore not new in kind — but
+this task widened the strip and added its **first drag widget**, which is what made it worth fixing at
+the shared cause rather than per widget. Closed with one guard at the end of `onDraw`, after the whole
+strip has been submitted, where `ImGui::IsAnyItemActive()` is the exact question one frame earlier
+than any hover test could answer it: if an item took the click, the arm is cleared. It covers the
+gizmo bar too. **No tier in this tree can click**, so `I106(d)` — the disarm exists, sits after
+`drawViewOptions()`, and clears the arm — is its only mechanical cover, and validation row 2 gains a
+behavioural step for it.
+
+#### The FIRST code-review round: three findings, none blocking, all closed
 
 The eleven-point checklist passed on every point — `resolveCount()` sits at the `draw` site and
 nowhere else, the three latches are each set once and cleared only by `beginScene`'s own

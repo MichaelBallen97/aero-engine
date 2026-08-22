@@ -117,14 +117,24 @@ bool MaterialPreview::prepareFrame(rhi::Extent2D pixels) {
     // Reallocating the HDR target here is NOT the ordering violation the note above is about: that
     // rule is about ImGui's CONSUMPTION, and ImGui never sees this texture -- only `target`'s, whose
     // resize is the line below and must stay there.
-    post->resize(pixels);
-    if (!target->resize(pixels)) {
-        // A real allocation failure. allocate() has ALREADY destroyed the previous pair, so returning
-        // false here is not merely a message: it is what stops the panel binding a texture that ceased
-        // to exist inside this very call. Latched, like the viewport's -- retrying every frame would
-        // spend the whole frame budget failing.
+    //
+    // BOTH RESULTS ARE CHECKED AND EITHER FAILURE LATCHES, for the reason spelled out at
+    // ViewportPanel::onDraw's step 5: discarding the HDR target's answer leaves renderFrame returning
+    // at its own `if (!frame)` -- ABOVE the resolve -- so PostProcess's not-renderable WARN never
+    // fires, RenderTarget::resize re-runs its failed allocate() and re-emits its ERROR once per frame
+    // forever, and the 4 B/texel output target can still succeed where the 8 B/texel HDR pair failed,
+    // handing ImGui a texture nothing rendered into.
+    //
+    // A real allocation failure on EITHER target. allocate() has ALREADY destroyed the previous pair,
+    // so returning false here is not merely a message: it is what stops the panel binding a texture
+    // that ceased to exist inside this very call. Latched, like the viewport's -- retrying every frame
+    // would spend the whole frame budget failing.
+    const bool sceneResized = post->resize(pixels);
+    const bool outputResized = target->resize(pixels);
+    if (!sceneResized || !outputResized) {
         status = Status::Unavailable;
-        reason = "Preview unavailable -- render target allocation failed.";
+        reason = sceneResized ? "Preview unavailable -- render target allocation failed."
+                              : "Preview unavailable -- HDR scene target allocation failed.";
         return false;
     }
     imageHandle = target->colorTexture();

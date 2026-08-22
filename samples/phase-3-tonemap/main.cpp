@@ -132,17 +132,29 @@ struct Options {
     return options;
 }
 
-// The 8-bit reading a correct chain produces for one linear value under one operator. std::lround,
-// never static_cast<int>(x + 0.5F) -- clang-tidy's bugprone-incorrect-roundings is about exactly
-// that, and the argument is safe to cast only because tonemapAndEncode saturates first.
+// THE ONE PLACE THIS SAMPLE NARROWS A FLOAT TO AN INTEGER, so the guard lives here rather than at two
+// call sites. std::lround, never static_cast<int>(x + 0.5F) -- clang-tidy's bugprone-incorrect-roundings
+// is about exactly that. The isfinite check is what makes the narrowing safe BY CONSTRUCTION rather
+// than by an argument about the inputs: the transfer chain deliberately PROPAGATES a NaN channel
+// (tonemap.hpp property 3), and std::lround of a NaN is unspecified and may raise FE_INVALID. Every
+// value fed in below is finite -- the eleven patch constants and a sanitized exposure -- so this never
+// fires; it is here so the day one of them stops being finite is a printed 0 and not undefined
+// behaviour. std::clamp is NOT the guard: clamp(NaN, 0, 1) returns NaN.
+[[nodiscard]] long to8Bit(float encoded) {
+    if (!std::isfinite(encoded)) {
+        return 0;
+    }
+    return std::lround(255.0F * std::clamp(encoded, 0.0F, 1.0F));
+}
+
+// The 8-bit reading a correct chain produces for one linear value under one operator.
 [[nodiscard]] long expectedByte(float linear, float exposure, render::TonemapOperator op) {
-    const Vec3 encoded = render::tonemapAndEncode(Vec3{linear, linear, linear}, {exposure, op});
-    return std::lround(255.0F * encoded.x);
+    return to8Bit(render::tonemapAndEncode(Vec3{linear, linear, linear}, {exposure, op}).x);
 }
 
 // What --raw produces: the unorm target clamps the raw linear value and nothing encodes it. This is
 // the pre-3.6.3 behaviour of every sample in this tree, spelled out so the A/B has a printed side.
-[[nodiscard]] long expectedRawByte(float linear) { return std::lround(255.0F * std::clamp(linear, 0.0F, 1.0F)); }
+[[nodiscard]] long expectedRawByte(float linear) { return to8Bit(linear); }
 
 void printExpectedTable(const Options& options) {
     AERO_LOG_INFO("phase-3-tonemap: expected 8-bit output per patch (exposure {:.3f})",

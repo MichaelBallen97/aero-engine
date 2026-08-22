@@ -289,15 +289,24 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // Reallocating the HDR target inside the draw walk is safe and is NOT the I96 violation it
     // resembles: I96 is about ordering against ImGui's CONSUMPTION, and ImGui never sees this
     // texture -- only `target`'s, whose resize is the line below and must stay there.
-    // The return is DELIBERATELY DISCARDED: a scene-target allocation failure leaves the pass not
-    // renderable and resolve() then logs once and records nothing, so the picture goes to the clear
-    // colour rather than to an unavailable message. Latching Unavailable on it would kill the panel
-    // for the session over a transient allocation, which is strictly worse than a dark viewport that
-    // recovers on the next successful resize.
-    post->resize(pixels);
-    if (!target->resize(pixels)) {
+    //
+    // BOTH RESULTS ARE CHECKED AND EITHER FAILURE LATCHES. An earlier draft discarded the HDR
+    // target's, on the theory that resolve() would then log once and the picture would fall back to
+    // the clear colour. THAT IS FALSE, and it is false in three ways at once. renderScene returns at
+    // its own `if (!sceneFrame)` -- ABOVE target->beginFrame, post->resolve and target->endFrame --
+    // so the one latched diagnostic designed for a not-renderable pass is unreachable on this path.
+    // RenderTarget::resize zeroes its allocation extent before allocate() can fail, so every
+    // subsequent frame re-runs allocate() and re-emits its ERROR: once per frame, forever, with the
+    // editor's err counter climbing. And target->resize (4 B/texel) can still SUCCEED where the
+    // RGBA16Float pair (8 B/texel) failed, reallocating the very texture ImGui is about to sample --
+    // which nothing then renders into, so ImGui::Image below would sample UNDEFINED CONTENT rather
+    // than a clear colour. Latching is what the output target has always done here; the HDR one gets
+    // the same treatment, and the panel says which of the two failed.
+    const bool sceneResized = post->resize(pixels);
+    const bool outputResized = target->resize(pixels);
+    if (!sceneResized || !outputResized) {
         status = Status::Unavailable;
-        unavailableReason = "render target allocation failed";
+        unavailableReason = sceneResized ? "render target allocation failed" : "HDR scene target allocation failed";
         drawUnavailableMessage(unavailableReason);
         return;
     }
@@ -444,6 +453,26 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // call, to keep the two on one row.
     ImGui::SameLine();
     drawViewOptions();  // task 3.6.3 -- OUTSIDE drawGizmoBar's BeginDisabled(!gizmoHasTarget) scope
+
+    // Step 9b (task 3.6.3): DISARM A PICK THE OVERLAY JUST CONSUMED, and it has to be here, after the
+    // whole strip has been submitted.
+    //
+    // The overlay row is drawn OVER the image and AFTER updatePick has already run (step 8b), so on
+    // the press frame ImGui's ActiveId is still 0 when updatePick asks -- the widget has not been
+    // submitted yet. The press therefore ARMS a scene pick; the release then lands inside the image
+    // rect (the strip sits at imageOrigin + OVERLAY_INSET) and inside PICK_CLICK_SLOP_POINTS, and the
+    // selection changes or clears while the user was only choosing a tone curve. By the time control
+    // reaches HERE the widget HAS been submitted and has taken the click, so IsAnyItemActive() is the
+    // exact question, one frame earlier than any hover test could answer it.
+    //
+    // It covers the gizmo bar's buttons too, which have had this defect since 2.3.3 -- this task
+    // widened the strip and added the first DRAG widget to it, which is what made it worth fixing at
+    // the shared cause rather than per widget. Nothing else in this window can be active while the
+    // image is hovered: ImGui::Image submits with id 0 and never becomes Active (F28), and an item
+    // active in ANOTHER window blocks this one's hover, so the arm could not have been set.
+    if (ImGui::IsAnyItemActive()) {
+        pickArmed = false;
+    }
 
     // Step 10: record the request, LAST, after everything succeeded.
     renderRequested = true;

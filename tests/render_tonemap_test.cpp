@@ -271,7 +271,7 @@ TEST_CASE("render tonemap: the OETF's two arms meet at the ENCODE threshold, nev
     CHECK(std::abs(linearToSrgbEncode(SRGB_ENCODE_THRESHOLD) - linearArm) <= 1.0e-6F);
 }
 
-TEST_CASE("render tonemap: the encode is exact at 0 and 1, and the chain is finite for every input (TM9)") {
+TEST_CASE("render tonemap: the encode's endpoints, and what the chain does with every input (TM9)") {
     CHECK(linearToSrgbEncode(0.0F) == 0.0F);  // 12.92 * 0 -- exact, and the only exact endpoint
     // f(1) is NOT exactly 1.0 in fp32, and that is arithmetic rather than a defect: 1.055F - 0.055F
     // rounds to 0.99999994, one ULP below one. Measured, not assumed. What is asserted instead is the
@@ -280,15 +280,39 @@ TEST_CASE("render tonemap: the encode is exact at 0 and 1, and the chain is fini
     CHECK(linearToSrgbEncode(1.0F) <= 1.0F);
     CHECK(std::abs(linearToSrgbEncode(1.0F) - 1.0F) <= 1.0e-6F);
 
-    for (const auto op : {TonemapOperator::None, TonemapOperator::Reinhard, TonemapOperator::AcesApprox}) {
-        CAPTURE(static_cast<int>(op));
-        for (const float v : {POS_INF, NEG_INF, TONEMAP_MAX_INPUT, 1.0e30F}) {
-            CAPTURE(v);
-            const Vec3 out = tonemapAndEncode(grey(v), TonemapParams{1.0F, op});
-            CHECK(std::isfinite(out.x));
-            CHECK(std::isfinite(out.y));
-            CHECK(std::isfinite(out.z));
+    SUBCASE("FINITE for every finite input and for both infinities") {
+        for (const auto op : {TonemapOperator::None, TonemapOperator::Reinhard, TonemapOperator::AcesApprox}) {
+            CAPTURE(static_cast<int>(op));
+            for (const float v : {POS_INF, NEG_INF, TONEMAP_MAX_INPUT, 1.0e30F, 0.0F, 0.18F, 1.0F}) {
+                CAPTURE(v);
+                const Vec3 out = tonemapAndEncode(grey(v), TonemapParams{1.0F, op});
+                CHECK(std::isfinite(out.x));
+                CHECK(std::isfinite(out.y));
+                CHECK(std::isfinite(out.z));
+            }
         }
+    }
+    SUBCASE("a NaN channel PROPAGATES, deliberately, and that is the documented contract") {
+        // NOT an oversight and NOT a missing guard. min/max/clamp are specified in terms of `<`,
+        // which is false in both directions for NaN, so each returns its NaN operand on every
+        // standard library, and std::pow(NaN, y) is NaN -- so this outcome is portable rather than
+        // accidental. Mapping NaN here would make this function a DIFFERENT function from
+        // shaders/tonemap.frag.hlsl, which cannot follow (HLSL's min/max with NaN are
+        // implementation-defined), and TM29 exists precisely to keep the two the same.
+        //
+        // ASSERTED RATHER THAN LEFT UNTESTED, because the alternative is a header that promises
+        // totality and a function that does something else. A caller narrowing this to an integer
+        // must guard first: std::lround of a NaN is unspecified and may raise FE_INVALID.
+        for (const auto op : {TonemapOperator::None, TonemapOperator::Reinhard, TonemapOperator::AcesApprox}) {
+            CAPTURE(static_cast<int>(op));
+            const Vec3 out = tonemapAndEncode(grey(QNAN), TonemapParams{1.0F, op});
+            CHECK(std::isnan(out.x));
+            CHECK(std::isnan(out.y));
+            CHECK(std::isnan(out.z));
+        }
+        // ...while the UNIFORM is still never NaN, which is the half this layer promises
+        // unconditionally and the half INV-3 actually rests on.
+        CHECK_FALSE(std::isnan(sanitizeTonemapParams({QNAN, TonemapOperator::AcesApprox}).exposure));
     }
 }
 
@@ -944,16 +968,36 @@ TEST_CASE("render tonemap: a moved-from pass refuses without moving resolveCount
     CHECK(post->resolveCount() == 0);
     CHECK(out->endFrame(std::move(*outFrame)));
 
-    // ADDED BY THE SABOTAGE PASS. endScene FORWARDS its RenderTarget's answer, and a moved-from pass
-    // has no RenderTarget -- so this is the ONE arm reachable in this tree where that answer differs
-    // from an unconditional `true`. Without it, an endScene that dropped the frame instead of
-    // submitting it left the ENTIRE 42-case tier green: ~Frame force-ends and submits a dropped frame
-    // (with one WARN), so the picture survives and nothing here reads a log sink. Measured, then
-    // closed. The one "Frame dropped without endFrame" WARN below is the documented cost of handing a
-    // frame to a pass that cannot consume it, not a defect.
+    // A moved-from pass also refuses to RESIZE. That is the ONE reachable `false` from
+    // PostProcess::resize in this tree -- a real allocation failure is not injectable from any tier
+    // here -- and it is what makes the editor's "either resize failing latches Unavailable" a check
+    // against something that can actually be false rather than against a constant.
+    CHECK_FALSE(post->resize({64, 64}));  // NOLINT(bugprone-use-after-move) -- deliberate
+    CHECK(moved.resize({256, 192}));
+
+    // endScene FORWARDS its RenderTarget's answer, and there are TWO independent ways for that answer
+    // to be false. Both are asserted, because they pin different halves and the first ALONE DOES NOT
+    // BITE -- measured by re-seeding, not assumed.
+    //
+    //  (a) NO RenderTarget AT ALL, on a moved-from pass. This pins the `scene &&` null-guard and
+    //      nothing else: an endScene written `return scene.has_value();` still reads false here.
+    //  (b) A LIVE pass handed an ALREADY-CONSUMED frame. RenderTarget::endFrame rejects a moved-from
+    //      / already-ended frame (false + one ERROR), so ONLY an implementation that genuinely
+    //      forwards can answer false -- `return scene.has_value();` and `(void)frame; return true;`
+    //      both read true and redden here. This is the arm the T23 closure actually rests on.
+    //
+    // Neither arm leaves a "Frame dropped without endFrame" WARN behind: (a)'s frame is consumed by
+    // the parameter and destroyed as a moved-from Frame, whose `live` flag is already false.
     std::optional<engine::render::Frame> orphan = out->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
     REQUIRE(orphan.has_value());
-    CHECK_FALSE(post->endScene(std::move(*orphan)));
+    CHECK_FALSE(post->endScene(std::move(*orphan)));  // (a)
+
+    std::optional<engine::render::Frame> spent = out->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(spent.has_value());
+    CHECK(out->endFrame(std::move(*spent)));  // consumed here; *spent is now moved-from
+    // NOLINTNEXTLINE(bugprone-use-after-move) -- deliberate: a spent frame is exactly the input whose
+    // rejection only a real forward can report.
+    CHECK_FALSE(moved.endScene(std::move(*spent)));  // (b)
 
     // Move-assign OVER a live pass, then destroy: a defaulted move would double-free the pipeline and
     // the sampler here, and ASan on the Debug lanes is what sees it.

@@ -25,12 +25,20 @@
 //     DO NOT "FIX" IT. If a validation pass judges the default too dark, the fix is the default
 //     EXPOSURE, recorded as an amendment -- never a silent constant edit.
 //
-//  3. NaN in the HDR buffer is a DECLARED NON-CHECK, the way docs/09 section 13.10 declares its own.
-//     min/max with NaN are implementation-defined in HLSL, so a "fix" here would be a claim the
-//     hardware does not honour. A NaN pixel is an upstream defect (3.5.2's code-review round found
-//     and closed the one known producer) and this chain propagates it visibly rather than hiding it.
-//     sanitizeTonemapParams DOES guarantee the UNIFORM is never NaN, which is the half this layer
-//     can actually promise.
+//  3. NaN IS A DECLARED NON-CHECK ON BOTH SIDES, the way docs/09 section 13.10 declares its own, and
+//     the C++ side is named here explicitly because it is easy to read the shader-only wording this
+//     note used to carry as a promise that the CPU function is different. IT IS NOT.
+//     tonemapAndEncode(NaN) RETURNS NaN: min/max/clamp are specified in terms of `<`, which is false
+//     in both directions for NaN, so each returns its NaN operand, and std::pow(NaN, y) is NaN. That
+//     is portable rather than accidental, and it is deliberate -- HLSL's min/max with NaN are
+//     implementation-defined, so a CPU-side NaN mapping would make this function a DIFFERENT function
+//     from the one shaders/tonemap.frag.hlsl transcribes, which is exactly what TM29 exists to
+//     prevent. A NaN pixel is an upstream defect (3.5.2's code-review round found and closed the one
+//     known producer) and this chain propagates it visibly rather than hiding it.
+//     WHAT IS PROMISED: a FINITE output for every FINITE input and for +-inf, on every operator; and
+//     sanitizeTonemapParams guarantees the UNIFORM is never NaN, which is the half this layer can
+//     promise unconditionally. A CALLER THAT NARROWS THE RESULT TO AN INTEGER MUST GUARD FIRST --
+//     std::lround of a NaN is unspecified and may raise FE_INVALID (samples/phase-3-tonemap does).
 
 #include <aero/core/math.hpp>
 
@@ -108,6 +116,7 @@ struct TonemapParams {
 //   x * exposure  ->  min(TONEMAP_MAX_INPUT)  ->  max(0)  ->  curve  ->  saturate  ->  OETF
 // `params` must ALREADY BE SANITIZED (sanitizeTonemapParams); passing an unsanitized value is a
 // caller bug, and TM27 pins that the contract is the caller's rather than this function's.
+// FINITE for every FINITE `linearHdr` and for +-inf; PROPAGATES a NaN channel (property 3).
 [[nodiscard]] Vec3 tonemapAndEncode(Vec3 linearHdr, const TonemapParams& sanitized) noexcept;
 
 }  // namespace engine::render

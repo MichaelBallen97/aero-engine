@@ -8561,14 +8561,23 @@ TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 
         bool opensDisabled = false;
         bool pushesId = false;
         bool popsId = false;
+        bool sanitizes = false;
         for (std::size_t i = bodyStart; i <= bodyEnd; ++i) {
             opensDisabled = opensDisabled || viewportCode[i].find("BeginDisabled") != std::string::npos;
             pushesId = pushesId || viewportCode[i].find("ImGui::PushID(") != std::string::npos;
             popsId = popsId || viewportCode[i].find("ImGui::PopID(") != std::string::npos;
+            sanitizes = sanitizes || viewportCode[i].find("sanitizeTonemapParams(") != std::string::npos;
         }
         CHECK_FALSE(opensDisabled);
         CHECK(pushesId);  // 1:1 with the pop below -- the editor rules' balance requirement
         CHECK(popsId);
+        // THE UI HALF OF THE CLAMP, which I105 CANNOT see: I105 drives requestTonemapParams, so
+        // deleting the sanitize from this body alone leaves it green. That matters because ImGui
+        // permits a Ctrl+Click-TYPED value past a slider's v_min/v_max unless
+        // ImGuiSliderFlags_AlwaysClamp is set, and no tier in this tree can perform that click -- so a
+        // typed 1e30 or nan would reach packTonemapFragment and the uniform unsanitized. This body is
+        // the only place that can stop it, and this is the only thing that watches this body.
+        CHECK(sanitizes);
     }
 
     SUBCASE("(c) both consumers resize the HDR target on the line IMMEDIATELY above the output's") {
@@ -8579,7 +8588,42 @@ TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 
             const std::size_t postAt = soleLineContaining(*code, "post->resize(");
             const std::size_t targetAt = soleLineContaining(*code, "target->resize(");
             CHECK(postAt + 1U == targetAt);
+
+            // ...AND BOTH ANSWERS ARE CONSUMED, with a latch behind them. A bare `post->resize(pixels);`
+            // discards the one signal that says the HDR pair could not be allocated, and the
+            // consequences are not "a dark viewport": the scene pass then returns above the resolve, so
+            // PostProcess's latched not-renderable WARN never fires; RenderTarget::resize zeroes its
+            // allocation extent before allocate() can fail, so allocate() re-runs and re-emits its
+            // ERROR once per frame forever; and the 4 B/texel output target can still succeed where the
+            // 8 B/texel HDR pair failed, leaving ImGui sampling a texture nothing rendered into. Only
+            // the editor can latch on it, and only this pin watches that it does.
+            CHECK((*code)[postAt].find("= post->resize(") != std::string::npos);
+            CHECK((*code)[targetAt].find("= target->resize(") != std::string::npos);
+            bool latchesNearby = false;
+            for (std::size_t i = targetAt; i < (*code).size() && i <= targetAt + 6U; ++i) {
+                latchesNearby = latchesNearby || (*code)[i].find("Status::Unavailable") != std::string::npos;
+            }
+            CAPTURE(postAt);
+            CHECK(latchesNearby);
         }
+    }
+
+    SUBCASE("(d) a click the overlay strip consumed cannot also arm a scene pick") {
+        // NO TIER IN THIS TREE CAN CLICK, so this is the only mechanical cover for a defect that is
+        // otherwise a silent selection change: the overlay row is submitted AFTER updatePick has run,
+        // so on the press frame ImGui's ActiveId is still 0 and the press arms a pick; the release
+        // then lands inside the image rect and inside the click slop, and the scene selection changes
+        // while the user was only choosing a tone curve. The disarm has to sit AFTER the whole strip
+        // is submitted -- that is the entire content of the fix, and this pin is what says so.
+        const std::size_t optionsCallAt = soleLineContaining(viewportCode, "drawViewOptions();");
+        const std::size_t disarmAt = soleLineContaining(viewportCode, "ImGui::IsAnyItemActive()");
+        CHECK(optionsCallAt < disarmAt);
+        // ...and it disarms rather than merely asking. The next two lines must clear the arm.
+        bool clearsArm = false;
+        for (std::size_t i = disarmAt; i < viewportCode.size() && i <= disarmAt + 2U; ++i) {
+            clearsArm = clearsArm || viewportCode[i].find("pickArmed = false") != std::string::npos;
+        }
+        CHECK(clearsArm);
     }
 }
 
