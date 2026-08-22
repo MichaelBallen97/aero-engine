@@ -36,6 +36,7 @@ add_executable(aero_tests
     animation_cook_test.cpp   # task 3.5.2 — cookAnimation: canonical order, refusals, byte-exactness
     cooked_audio_test.cpp     # task 3.7.1 — the .aerowave container v1: layout, parse, hostile input
     audio_cook_test.cpp       # task 3.7.1 — cookAudio: refusals, byte-exactness, the ffmpeg anchor
+    audio_clip_test.cpp       # task 3.7.1 — engine::audio::AudioClip + loadAudioClip through the VFS
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -100,7 +101,7 @@ add_executable(aero_tests
 # task 3.3.1: aero::assets joins this line for cooked_mesh_test.cpp and mesh_cook_test.cpp. aero::rhi
 # is ALREADY here, which is what makes CM47's CookedVertexFormat <-> rhi::VertexFormat correspondence
 # assertable in this target at all -- assets deliberately does not link rhi, and never will.
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::audio aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
 
 # task 3.3.1, added by the sabotage round: cooked_mesh_test.cpp's CM50 asserts a STRUCTURAL property of
 # the parser -- that nothing is reserved before the four header counts have been checked against their
@@ -117,6 +118,8 @@ target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURC
 # A PATH, NOT A FLAG -- the AERO_PROJECT_FIXTURES_DIR / AERO_MATERIAL_FIXTURES_DIR rule: a missing
 # fixture is a REQUIRE failure rather than a silent skip. UNGATED, like AERO_ASSETS_SRC_DIR above:
 # both reduced configurations build this TU and must run these cases too.
+# audio_clip_test.cpp's AC13 reaches the SAME directory for tone.aerowave -- the loader golden,
+# cooked once by the real aero_cooker binary and frozen -- so one definition serves both TUs.
 target_compile_definitions(aero_tests PRIVATE AERO_AUDIO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/audio")
 
 # task 3.5.1, added by the code-review round: the SOURCE tree's shader directory, for

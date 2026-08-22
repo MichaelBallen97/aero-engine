@@ -25,10 +25,35 @@ ffmpeg -i tone.wav -c:a vorbis -strict -2 -q:a 5 -ac 2 tone.ogg   # -ac 2 is FOR
 ffmpeg -i tone.wav -f s16le -acodec pcm_s16le tone.s16le.pcm
 ```
 
-`tone.aerowave` is **not here yet**. It is the loader golden, cooked once by the real `aero_cooker`
-binary and then frozen, and that binary does not exist until later in this task. It arrives with the
-CLI, and its exact invocation and pinned GUID are recorded here on the day it lands. Its size is
-already derivable: `64 + 2 x 1 x 8000` = **16064** bytes.
+## `tone.aerowave` — the loader golden, cooked once and FROZEN
+
+`tone.aerowave` is not an ffmpeg product. It is the artifact `audio::loadAudioClip` reads end to end,
+cooked **once** by the real `aero_cooker` binary on 2026-08-23 and frozen from that moment:
+
+```bash
+# run from THIS directory, against a Release build of the cooker
+../../../build/macos-release/tools/cooker/aero_cooker audio \
+    --input tone.wav --output tone.aerowave \
+    --guid 0123456789abcdeffedcba9876543210
+wc -c tone.aerowave        # -> exactly 16064  ==  64 + 2 x 1 x 8000
+```
+
+The GUID is the tree's **standard test GUID** — the same all-nonzero value `run_case.cmake`'s
+`TEST_GUID` uses. Every one of its sixteen bytes is non-zero, which is what makes an assertion against
+it a statement about byte **order** rather than merely about presence: it lands in the artifact as
+`efcdab89674523011032547698badcfe` at offset 16, hi then lo, each little-endian.
+
+**FROZEN means frozen.** If this file ever has to change, the format changed, and that is a
+`formatVersion` decision recorded in `docs/09-file-formats.md` section 14 — never a fixture edit made
+to green a red run. Its sample region is byte-identical to `tone.s16le.pcm`, verified at the moment it
+was cooked:
+
+```bash
+tail -c 16000 tone.aerowave | cmp - tone.s16le.pcm    # -> identical
+```
+
+so the same external anchor that ties the decode also ties this artifact's bulk region, and the only
+bytes in it that no third party has ever seen are the 64 header bytes.
 
 ## Why the source is 1.0 s, and not the 0.25 s it was first cut at
 
@@ -59,6 +84,7 @@ decode to the same 8000-frame signal and every number in the task comes off one 
 | `tone.mp3` | 10413 | mp3 | 8000 | 1 | 1.000000 s | 8000 frames | 3113 |
 | `tone.ogg` | 4968 | vorbis | 8000 | **2** | 1.000000 s | **8000 frames** | 2340 |
 | `tone.s16le.pcm` | **16000** | — (raw) | 8000 | 1 | — | — | 3276 |
+| `tone.aerowave` | **16064** | — (cooked) | 8000 | 1 | 1.000000 s | — | 3276 |
 
 SHA-256:
 
@@ -68,6 +94,7 @@ bfcd8acace1c26a8cc1051ac369eccd5e12c3842dccf6112f78491e395dec52b  tone.flac
 b60068eaa1cac8cdae3fbdca65fa82cd067b9c092a5e82f0581a5d07bb2788a6  tone.mp3
 650127c34da6076f8cad3b43aec85f28e33c7004b1907c027b8525ce09b8b9d5  tone.ogg
 5dcb67dd71c9135f51d224ca7a703e149eabc6c79f4380a95bc846a2d6d402bf  tone.s16le.pcm
+f6ba2b2b0585c8e2325fb003af8dd4439d9ef4350e2697806762cc9293dbb40d  tone.aerowave
 ```
 
 **`tone.s16le.pcm` is exactly 16000 bytes** — 8000 frames × 1 channel × 2 B — which is the number
