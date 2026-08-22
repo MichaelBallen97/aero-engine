@@ -690,8 +690,13 @@ TEST_CASE("render shadow: a caster behind the sphere moves the EYE, not the near
 }
 
 TEST_CASE("render shadow: an invalid or in-front caster box contributes nothing (SF26)") {
-    // The invalid sentinel's center() and halfExtent() are BOTH NaN (inf - inf), so an unguarded
-    // computation makes casterBack NaN and poisons the entire fit. The guard is Aabb::valid().
+    // THE FIXTURE THAT ACTUALLY WITNESSES THE GUARD IS THE SECOND ONE, and the reason is measured
+    // rather than assumed. The INF sentinel's center() is NaN and its halfExtent() is -inf, so an
+    // UNGUARDED computation reaches std::max(0.0F, NaN) -- which returns 0.0F, because std::max is
+    // `a < b ? b : a` and `0 < NaN` is false. The NaN is LAUNDERED, so deleting Aabb::valid()
+    // changes nothing for this box. An inverted but FINITE box is the one that separates them: its
+    // halfExtent is negative and its arithmetic stays finite, so an unguarded fit extends the depth
+    // range by a real amount.
     const ShadowFit sentinel = referenceFit();
     REQUIRE(sentinel.valid);
     const auto zFarOf = [](const ShadowFit& f) {
@@ -711,6 +716,23 @@ TEST_CASE("render shadow: an invalid or in-front caster box contributes nothing 
     CHECK(front.lightView == sentinel.lightView);
     CHECK(front.lightProj == sentinel.lightProj);
     CHECK(front.texelWorldSize == sentinel.texelWorldSize);
+
+    // AN INVERTED BUT FINITE BOX -- invalid by valid()'s ORDERING half alone, with no infinity to be
+    // laundered. Hand-computed for the unguarded path, so the numbers say what the guard is worth:
+    //   center (1, 19, -1), halfExtent (-1, -1, -1)   <- NEGATIVE, which is what `invalid` means here
+    //   the sphere's far-face plane is { (0,1,0), -8 }; signedDistance = 19 - 8 = 11
+    //   support = |0|*(-1) + |1|*(-1) + |0|*(-1) = -1
+    //   casterBack (unguarded) = max(0, 11 - 1) = 10, so zFar would become 2r + 10 + 1 = 23
+    // WITH the guard it is 0 and zFar stays 13. Deleting Aabb::valid() reddens HERE and nowhere
+    // else in this battery.
+    constexpr Aabb INVERTED{Vec3{2.0F, 20.0F, 0.0F}, Vec3{0.0F, 18.0F, -2.0F}};
+    CHECK_FALSE(INVERTED.valid());
+    const ShadowFit inverted =
+        fitDirectionalShadow(orthoCamera(), SUN_DOWN, REF_SHADOW_DISTANCE, REF_RESOLUTION, INVERTED);
+    REQUIRE(inverted.valid);
+    CHECK(std::abs(zFarOf(inverted) - 13.0F) <= 1.0e-3F);  // NOT 23: the box contributed nothing
+    CHECK(inverted.lightView == sentinel.lightView);
+    CHECK(inverted.lightProj == sentinel.lightProj);
 }
 
 TEST_CASE("render shadow: the ortho extent does not move as the camera yaws (SF27)") {
