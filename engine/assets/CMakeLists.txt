@@ -32,6 +32,7 @@ add_library(aero_assets STATIC
     src/skeleton_cook.cpp    # task 3.5.1 -- cookSkeleton: closure canonicalization, ordering, emit
     src/cooked_animation.cpp # task 3.5.2 -- the .aeroanim container v1: the hostile-input parser
     src/animation_cook.cpp   # task 3.5.2 -- cookAnimation: triage, canonical order, the one padding site
+    src/cooked_audio.cpp     # task 3.7.1 -- the .aerowave container v1: the hostile-input parser
 )
 add_library(aero::assets ALIAS aero_assets)
 
