@@ -10115,12 +10115,13 @@ seeds above.
 
 ### Task 3.6.2 — Directional shadow map (Epic 3.6)
 
-**Branch:** `feat/3.6.2-directional-shadow-map`, cut from `main @ 64df342`. **Ten green commits** —
-one per build step (`68cf739` the rhi widening, `4b63c22` the fit, `d905c87` the `SF` tier, `ef9521f`
-the three depth shaders, `dc796d7` the shadow view *and* `renderShadowMap`, `c6c442a` the `SM` tier,
-`922eb42` the sample, `2d0789a` `DirectionalLight`), two closing the sabotage matrix's two genuine
-gaps (`729ee6c`, `5cda972`), and this documentation commit. Counted with `git rev-list --count`, never
-by adding up steps. **Complete in code; the twelve-row macOS validation pass has NOT been run.**
+**Branch:** `feat/3.6.2-directional-shadow-map`, cut from `main @ 64df342`. **Sixteen green
+commits** — one per build step (`68cf739` the rhi widening, `4b63c22` the fit, `d905c87` the `SF`
+tier, `ef9521f` the three depth shaders, `dc796d7` the shadow view *and* `renderShadowMap`, `c6c442a`
+the `SM` tier, `922eb42` the sample, `2d0789a` `DirectionalLight`), two closing the sabotage matrix's
+two genuine gaps (`729ee6c`, `5cda972`), one documentation commit (`10eb3e7`), four closing the
+code-review round (`ce8f98d`, `10d758b`, `b605fc4`, `35c4cba`), and this one recording that round.
+Counted with `git rev-list --count`, never by adding up steps. **Complete in code; the twelve-row macOS validation pass has NOT been run.**
 
 Before this, every lit surface received the full directional term regardless of what stood between it
 and the sun. Nothing computed a light-space transform, no depth texture in the tree carried `Sampler`
@@ -10342,13 +10343,16 @@ and `wc -l` is the wrong one). clang-format and clang-tidy clean **by exit code*
 
 #### The diff, and what did not move
 
-**34 tracked files** (9 created, 25 modified). **The plan's inventory was short by one and the
-compiler found it, not a grep**: `tests/scene_boundary_probe.cpp` carries a **third**
-`sizeof(DirectionalLight) == 4 * sizeof(float)` assertion, where the plan's §R.7 said the assertion
-lived in two places.
+**35 tracked files** (9 created, 26 modified). **The plan's inventory was short by TWO, and neither
+was found by reading it.** The compiler found the first — `tests/scene_boundary_probe.cpp` carries a
+**third** `sizeof(DirectionalLight) == 4 * sizeof(float)` assertion where §R.7 said two — and the
+code-review round found the second: `editor/src/material_preview.cpp`, which neither the spec nor the
+plan mentions at all. **`/editor` is therefore NOT byte-identical**, and the diff is exactly that one
+file: `MaterialPreview` inherited the new `shadowMapResolution = 2048` default and would have
+allocated ~16.8 MB of dead VRAM per editor session for a renderer that never calls `renderShadowMap`.
 
 `engine/core`, `engine/assets`, `engine/platform`, `engine/reflect`, `engine/scene_serialize`,
-`/editor`, `/tools`, `runtime/`, `vcpkg.json`, `cmake/`, `.github/`, `docs/09-file-formats.md`,
+`/tools`, `runtime/`, `vcpkg.json`, `cmake/`, `.github/`, `docs/09-file-formats.md`,
 `docs/tasks/phase-3.md`, `tests/cooker/determinism.sha256`, the root `CMakeLists.txt`, every other
 sample, `engine/rhi`'s five other public headers and both other sources, `engine/render`'s
 `culling.cpp` / `animation.*` / `material.hpp` / `texture_upload.*` / `render_target.*` / `renderer.*`
@@ -10372,3 +10376,83 @@ if a row fails, the fix is in the code, never in the row. CI covers this task's 
 cross-platform half unusually well: `SM1`–`SM15` build two depth-only pipelines, open a depth-only
 pass, allocate a sampleable depth texture and bind a comparison sampler under **Metal, WARP and
 lavapipe** on every push, and all four of those are firsts. What no lane can see is the picture.
+
+#### 3.6.2 — the code-review round: eight findings, three blocking, all closed
+
+**The three blocking ones share a shape: each is a place where a failure, a cost or an abort was
+*unrepresentable in the observable* rather than absent.**
+
+**1 — `renderShadowMap` ignored both GPU failure paths.** `acquireCommandBuffer()` and
+`beginRenderPass()` were never checked, `++shadowPasses` fired before any validity test, and the
+function returned a **valid** `ShadowView` either way. Three silent consequences: `shadowPassCount()`
+reported an acquisition that did not happen — **defeating the exact "never acquired versus acquired
+and leaked" distinction the fifth accessor was added for**; an invalid pass made every bind, push and
+draw in the caster loop log its own **unlatched** `AERO_LOG_ERROR`, thousands of lines per frame on a
+1000-instance scene; and `draw()` then sampled a depth map nothing had written this frame, with no
+diagnostic at all. Every sibling already bailed this way (`renderer.cpp:139`, `render_target.cpp:241`
+and `:253`). Both are checked now, both bail with `plotShadow()` and an invalid `ShadowView` — which
+is what keeps `draw()` from shading against a stale map — `beginRenderPass`'s failure **cancels** the
+command buffer, and `++shadowPasses` moved below the acquire's check so the counter means *acquired*.
+
+**2 — the editor allocated a 2048² shadow map it never used.** `MaterialPreview` constructed its
+`ForwardRenderer` with `.colorFormat`/`.depthFormat` only, so it silently inherited the new
+`shadowMapResolution = 2048` default: ~16.8 MB of dead VRAM, a comparison sampler, three extra shader
+loads and two extra pipeline compiles **per editor session**, for a renderer that never calls
+`renderShadowMap` (`git grep renderShadowMap -- editor` is empty). **Neither the spec nor the plan
+mentions `material_preview` at all** — this was unconsidered blast radius, not a recorded decision,
+and it is the reason `/editor` is not byte-identical this task. `shadowMapResolution = 0` is exact-off
+by D16 and shrinks the placeholder to 1×1. **The general form is worth keeping: a defaulted field
+appended to a widely-constructed config struct is a cost every existing caller silently starts
+paying**, and the ones that do not need it are exactly the ones nobody thinks to check.
+
+**3 — `SM15` could abort the whole test binary.** It hard-coded `.depthStencilFormat = D32Float`, and
+`device.hpp` states drivers guarantee **one of** D24Unorm/D32Float, never both. On a device without
+D32Float, SDL's *"Format is not supported for depth targets on this device!"* is an
+`SDL_assert_release` — **active in every build configuration** — so `aero_tests` would abort and lose
+every remaining case rather than one case reddening. It probes `supportsTextureFormat` over the same
+three-format order `SW1` and `createShadowResources` already use. Latent on today's three lanes; a
+hard abort on the first device that differs.
+
+**4 — AC-5's two "corrected" prose claims were false as written.** They read *"empty IFF
+depthStencilFormat != Invalid"* — a **biconditional**, asserting that a pipeline **with** a depth
+format may not declare a colour target. That is exactly backwards, and it forbids what all four lit
+pipelines and `RenderTarget::beginFrame` actually do. Only the forward direction is true, and only the
+forward direction is enforced. Both now read **"empty ONLY IF …"**, and §D-5 of the plan is corrected
+at source. **The irony is the point**: AC-5 exists solely to make these two sentences true, and this
+entry's own §R.10 argues that a false sentence on a public header outlives an acceptance criterion.
+
+**5 — a half-handled member list, and a DELIBERATE SCOPE ADDITION.** The move constructor, move-assign
+and `reset()` still omitted 3.6.1's `lastDrawn`, `lastCulled`, `materialBinds` and
+`warnedDegenerateFrustum`, while all eleven 3.6.2 members added directly beneath them were handled. A
+moved-to renderer read `hasWarnedDegenerateFrustum() == false`, so the once-per-renderer WARN could
+fire a **second** time from the same logical renderer. **This is a pre-existing 3.6.1 defect, and
+fixing it here is a scope addition taken deliberately rather than a silent expansion** — this branch
+rewrites all three functions anyway, and a member list that handles its newest eleven while skipping
+its previous four is precisely the silent-drift class this project keeps recording. Recorded as such.
+
+**6 — the header claimed one `drawIndexed` site; there are two.** `forward_renderer.hpp:221` said
+`++shadowDrawn` lives at *"the single drawIndexed site"* — the primitive arm and the mesh arm are two,
+and D-22 says so. **The code was right and the sentence was wrong**, which is the dangerous direction:
+that sentence is the whole argument for why the two counters need not sum, so a maintainer who greps,
+finds two and "corrects" the code to match would silently stop counting every primitive caster.
+
+**7 — `renderShadowMap`'s success return was a positional aggregate init**, which is the exact
+silent-default class this branch fixed at the `buildRenderView` bridge and elevated to a recorded
+lesson. A sixth `ShadowView` field appended later would compile clean at its default with `SM5` green.
+Designated now, at the one production site. **Finding the same class twice in one branch is the
+argument for making it a habit rather than a fix.**
+
+**8 — `CLAUDE.md` recorded the commit count from the step list rather than from the tree.** It said
+"(ten commits)" twice while the branch carried eleven, because the two sabotage-closure commits landed
+after the list was written. Re-derived with `git rev-list --count` at the moment of writing, exactly as
+the test totals are — **the count is fifteen**.
+
+**Re-measured after the fixes, not carried forward** — findings 1, 3 and 5 change code that tests
+exercise and finding 2 changes an **editor** TU, so `aero_editor_imgui_test` was in the blast radius
+and was re-read rather than assumed unmoved. **157/157 on both macOS presets** (Debug 258.6 s, Release
+62.1 s); both reduced configurations rebuilt fresh with `-G Ninja` → **65/65** and **78/78**; `ctest
+-N` **157 / 65 / 78 — still unmoved in all three**; doctest **986 / 1725 / 138 / 29 / 27 / 7 / 28 —
+every binary unchanged**, including `aero_editor_imgui_test` at 138; the shadow filter **43** tools-on
+and **28** tools-off; six guards exit 0 with math-boundary **412** and project-no-delete **6 / 73**;
+the determinism manifest untouched at **18 hash lines**; clang-format and clang-tidy clean by exit
+code.
