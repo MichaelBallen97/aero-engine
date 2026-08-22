@@ -11,6 +11,7 @@
 #include <aero/render/lighting.hpp>          // task 1.4.1
 #include <aero/render/material.hpp>          // task 3.4.1
 #include <aero/render/mesh.hpp>              // task 1.4.1
+#include <aero/render/post_process.hpp>      // task 3.6.3
 #include <aero/render/render_target.hpp>     // task 2.2.3
 #include <aero/render/renderer.hpp>
 #include <aero/render/skinning.hpp>        // task 3.5.1

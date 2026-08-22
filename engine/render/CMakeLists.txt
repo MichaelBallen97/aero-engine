@@ -14,6 +14,7 @@ add_library(aero_render STATIC
     src/animation.cpp         # task 3.5.2 -- the clip sampler: bind once, sample per frame
     src/culling.cpp           # task 3.6.1 -- Aabb/Plane/Frustum, the [0,1] extraction, the six-plane test
     src/tonemap.cpp           # task 3.6.3 -- the transfer chain: exposure, curve, sRGB OETF
+    src/post_process.cpp      # task 3.6.3 -- the owned HDR target and the fullscreen resolve
 )
 add_library(aero::render ALIAS aero_render)
 

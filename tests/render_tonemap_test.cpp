@@ -30,6 +30,8 @@
 #include <aero/core/math.hpp>
 #include <aero/render/render.hpp>
 
+#include "../engine/render/src/tonemap_pack.hpp"
+
 #include <doctest/doctest.h>
 
 #include <algorithm>  // std::clamp -- MSVC's STL supplies none of <algorithm> transitively
@@ -45,7 +47,9 @@
 #include <ostream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
+using engine::Vec2;
 using engine::Vec3;
 using engine::render::ACES_A;
 using engine::render::ACES_B;
@@ -68,6 +72,7 @@ using engine::render::tonemapAndEncode;
 using engine::render::TonemapOperator;
 using engine::render::tonemapOperatorLabel;
 using engine::render::TonemapParams;
+using engine::render::tonemapSourceUvMax;
 
 namespace {
 
@@ -423,6 +428,144 @@ TEST_CASE("render tonemap: the ACES fit's origin slope is ACES_B/ACES_E, NOT one
     const float analytic = ACES_B / ACES_E;
     CHECK(std::abs(slope - analytic) <= 0.01F * analytic);
     CHECK(slope < 0.5F);  // emphatically not an identity slope
+}
+
+// ================================================================================================
+// TM21-TM24 -- the source sub-rect rule, and TM25-TM27 -- the two uniform packers.
+// ================================================================================================
+
+TEST_CASE("render tonemap: equal draw and texture extents give a full [0,1] sub-rect (TM21)") {
+    const Vec2 uv = tonemapSourceUvMax({256, 192}, {256, 192});
+    CHECK(uv.x == 1.0F);
+    CHECK(uv.y == 1.0F);
+}
+
+TEST_CASE("render tonemap: an over-allocated target's sub-rect is draw/texture per axis (TM22)") {
+    // 200/256 == 150/192 == 0.78125, exactly representable in binary -- so this is an equality, not
+    // an approximation, and it is a LITERAL rather than the same division the code performs.
+    const Vec2 uv = tonemapSourceUvMax({200, 150}, {256, 192});
+    CHECK(uv.x == 0.78125F);
+    CHECK(uv.y == 0.78125F);
+}
+
+TEST_CASE("render tonemap: a zero texture extent gives 1.0, never a division by zero (TM23)") {
+    // A not-renderable target. Nothing is drawn from it anyway, so 1.0 is the only answer that is
+    // not a division by zero.
+    const Vec2 both = tonemapSourceUvMax({200, 150}, {0, 0});
+    CHECK(both.x == 1.0F);
+    CHECK(both.y == 1.0F);
+    // Per axis, independently -- a shared early return would make these two indistinguishable.
+    const Vec2 widthOnly = tonemapSourceUvMax({200, 150}, {0, 192});
+    CHECK(widthOnly.x == 1.0F);
+    CHECK(widthOnly.y == 0.78125F);
+    const Vec2 heightOnly = tonemapSourceUvMax({200, 150}, {256, 0});
+    CHECK(heightOnly.x == 0.78125F);
+    CHECK(heightOnly.y == 1.0F);
+}
+
+TEST_CASE("render tonemap: a draw extent larger than its allocation clamps per axis (TM24)") {
+    // INV-1 violated. It cannot happen under the adjacent-resize rule, and if it ever does, sampling
+    // past 1.0 would read the unrendered margin -- so the min() handles it rather than asserting it.
+    const Vec2 both = tonemapSourceUvMax({300, 300}, {256, 192});
+    CHECK(both.x == 1.0F);
+    CHECK(both.y == 1.0F);
+    // The two axes clamp INDEPENDENTLY: one over, one under.
+    const Vec2 mixed = tonemapSourceUvMax({300, 150}, {256, 192});
+    CHECK(mixed.x == 1.0F);
+    CHECK(mixed.y == 0.78125F);
+}
+
+TEST_CASE("render tonemap: the vertex block is {uvScale.x, uvScale.y, 0, 0} (TM25)") {
+    const auto block = engine::render::detail::packTonemapVertex(engine::Vec2{0.75F, 0.5F});
+    CHECK(block.size() == engine::render::detail::TONEMAP_VERTEX_UNIFORM_BYTES);
+    CHECK(block.size() == 16);
+
+    float first = 0.0F;
+    float second = 0.0F;
+    std::memcpy(&first, block.data() + 0, sizeof(float));
+    std::memcpy(&second, block.data() + 4, sizeof(float));
+    CHECK(first == 0.75F);
+    CHECK(second == 0.5F);
+
+    // Every padding byte ZERO, not merely "whatever the compiler left". SDL copies the block verbatim
+    // into its uniform ring, and an indeterminate tail byte is a value that differs between runs on
+    // the same machine.
+    for (std::size_t i = 8; i < block.size(); ++i) {
+        CAPTURE(i);
+        CHECK(block[i] == std::byte{0});
+    }
+}
+
+TEST_CASE("render tonemap: the fragment block is {exposure, raw curve, 0, 0} (TM26)") {
+    const auto block = engine::render::detail::packTonemapFragment({2.0F, TonemapOperator::Reinhard});
+    CHECK(block.size() == engine::render::detail::TONEMAP_FRAGMENT_UNIFORM_BYTES);
+    CHECK(block.size() == 16);
+
+    float exposure = 0.0F;
+    std::uint32_t curve = 0;
+    std::memcpy(&exposure, block.data() + 0, sizeof(float));
+    std::memcpy(&curve, block.data() + 4, sizeof(std::uint32_t));
+    CHECK(exposure == 2.0F);
+    // Decoded as a uint32, against the LITERAL the HLSL compares against -- not against a cast of the
+    // same enum the packer wrote.
+    CHECK(curve == 1);
+
+    for (std::size_t i = 8; i < block.size(); ++i) {
+        CAPTURE(i);
+        CHECK(block[i] == std::byte{0});
+    }
+
+    // The whole enum round-trips as the raw integer the fragment stage's chained ternary reads.
+    const auto packCurve = [](TonemapOperator op) {
+        const auto bytes = engine::render::detail::packTonemapFragment({1.0F, op});
+        std::uint32_t raw = 0;
+        std::memcpy(&raw, bytes.data() + 4, sizeof(std::uint32_t));
+        return raw;
+    };
+    CHECK(packCurve(TonemapOperator::None) == 0);
+    CHECK(packCurve(TonemapOperator::Reinhard) == 1);
+    CHECK(packCurve(TonemapOperator::AcesApprox) == 2);
+}
+
+TEST_CASE("render tonemap: the packer does NOT sanitize -- the caller's contract, pinned (TM27)") {
+    // PostProcess::resolve is the one production caller and it sanitizes BEFORE either pack (INV-3).
+    // This case exists so that contract is explicit rather than assumed: a packer that silently
+    // clamped would hide an unsanitized call site instead of letting resolve's own step be the thing
+    // that guarantees it.
+    const auto block = engine::render::detail::packTonemapFragment({1000.0F, TonemapOperator::None});
+    float exposure = 0.0F;
+    std::memcpy(&exposure, block.data() + 0, sizeof(float));
+    CHECK(exposure == 1000.0F);  // the RAW value, not MAX_EXPOSURE
+    CHECK(exposure != MAX_EXPOSURE);
+    CHECK(std::isfinite(exposure));
+
+    // ...and resolve's own step is what turns that into a safe uniform.
+    const auto sane =
+        engine::render::detail::packTonemapFragment(sanitizeTonemapParams({1000.0F, TonemapOperator::None}));
+    float clamped = 0.0F;
+    std::memcpy(&clamped, sane.data() + 0, sizeof(float));
+    CHECK(clamped == MAX_EXPOSURE);
+}
+
+TEST_CASE("render tonemap: the umbrella header alone names this task's public surface (TM28)") {
+    // THIS TU INCLUDES <aero/render/render.hpp> AND NEITHER NARROW HEADER (see the file-top note), so
+    // the post_process.hpp arm of this claim is a genuine COMPILE failure if that umbrella line is
+    // deleted. The tonemap.hpp arm is NOT -- tonemap_pack.hpp includes it directly -- and is covered
+    // by a one-line grep over render.hpp instead. Recorded as a PARTIAL pin rather than claimed as a
+    // full one.
+    static_assert(std::is_default_constructible_v<engine::render::TonemapParams>);
+    static_assert(std::is_default_constructible_v<engine::render::PostProcessConfig>);
+    static_assert(std::is_enum_v<engine::render::TonemapOperator>);
+    // DOUBLE PARENTHESES on both format comparisons, and they are not stylistic: engine::rhi carries
+    // a toString(TextureFormat) on a public header, doctest's DOCTEST_STRINGIFY expands to an
+    // UNQUALIFIED toString(...) that ADL finds there, and the decomposer then tries
+    // std::string_view + const char* -- a hard compile error on EVERY lane, reported inside doctest.h.
+    // The extra parentheses stop the decomposition. This is the render_target_test.cpp idiom, and it
+    // is exactly why this task's own label function is named tonemapOperatorLabel.
+    CHECK((engine::render::PostProcessConfig{}.sceneColorFormat == engine::rhi::TextureFormat::RGBA16Float));
+    CHECK((engine::render::PostProcessConfig{}.outputColorFormat == engine::rhi::TextureFormat::Invalid));
+    CHECK(engine::render::PostProcessConfig{}.sceneDepth);
+    CHECK(engine::render::tonemapSourceUvMax({1, 1}, {1, 1}).x == 1.0F);
 }
 
 // ================================================================================================
