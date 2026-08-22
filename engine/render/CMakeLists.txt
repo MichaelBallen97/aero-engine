@@ -13,6 +13,7 @@ add_library(aero_render STATIC
     src/skinning.cpp          # task 3.5.1 -- joint poses, the matrix palette, the palette row packer
     src/animation.cpp         # task 3.5.2 -- the clip sampler: bind once, sample per frame
     src/culling.cpp           # task 3.6.1 -- Aabb/Plane/Frustum, the [0,1] extraction, the six-plane test
+    src/tonemap.cpp           # task 3.6.3 -- the transfer chain: exposure, curve, sRGB OETF
 )
 add_library(aero::render ALIAS aero_render)
 

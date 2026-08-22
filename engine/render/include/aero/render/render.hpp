@@ -15,3 +15,4 @@
 #include <aero/render/renderer.hpp>
 #include <aero/render/skinning.hpp>        // task 3.5.1
 #include <aero/render/texture_upload.hpp>  // task 3.4.1
+#include <aero/render/tonemap.hpp>         // task 3.6.3
