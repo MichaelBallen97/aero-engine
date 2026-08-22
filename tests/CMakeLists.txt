@@ -34,6 +34,9 @@ add_executable(aero_tests
     skeleton_cook_test.cpp   # task 3.5.1 — cookSkeleton: canonical order, refusals, byte-exactness
     cooked_animation_test.cpp # task 3.5.2 — the .aeroanim container v1: layout, parse, hostile input
     animation_cook_test.cpp   # task 3.5.2 — cookAnimation: canonical order, refusals, byte-exactness
+    cooked_audio_test.cpp     # task 3.7.1 — the .aerowave container v1: layout, parse, hostile input
+    audio_cook_test.cpp       # task 3.7.1 — cookAudio: refusals, byte-exactness, the ffmpeg anchor
+    audio_clip_test.cpp       # task 3.7.1 — engine::audio::AudioClip + loadAudioClip through the VFS
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -98,7 +101,7 @@ add_executable(aero_tests
 # task 3.3.1: aero::assets joins this line for cooked_mesh_test.cpp and mesh_cook_test.cpp. aero::rhi
 # is ALREADY here, which is what makes CM47's CookedVertexFormat <-> rhi::VertexFormat correspondence
 # assertable in this target at all -- assets deliberately does not link rhi, and never will.
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::audio aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
 
 # task 3.3.1, added by the sabotage round: cooked_mesh_test.cpp's CM50 asserts a STRUCTURAL property of
 # the parser -- that nothing is reserved before the four header counts have been checked against their
@@ -107,6 +110,17 @@ target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::
 # comment-stripped source-text gate, the AERO_EDITOR_SRC_DIR / I73 / MS41 / AI34 shape one layer down.
 # UNGATED on purpose: both reduced configurations build this TU and must run this case too.
 target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/assets/src")
+
+# task 3.7.1: audio_cook_test.cpp's AK17/AK18 read tests/fixtures/audio/tone.s16le.pcm -- ffmpeg's OWN
+# decode of tone.wav, raw interleaved s16 LE with no container, committed so no lane ever needs ffmpeg.
+# It is the cook half of the external anchor (docs/09 section 14): the artifact's sample region must be
+# byte-identical to bytes libavcodec produced and nothing of ours did.
+# A PATH, NOT A FLAG -- the AERO_PROJECT_FIXTURES_DIR / AERO_MATERIAL_FIXTURES_DIR rule: a missing
+# fixture is a REQUIRE failure rather than a silent skip. UNGATED, like AERO_ASSETS_SRC_DIR above:
+# both reduced configurations build this TU and must run these cases too.
+# audio_clip_test.cpp's AC13 reaches the SAME directory for tone.aerowave -- the loader golden,
+# cooked once by the real aero_cooker binary and frozen -- so one definition serves both TUs.
+target_compile_definitions(aero_tests PRIVATE AERO_AUDIO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/audio")
 
 # task 3.5.1, added by the code-review round: the SOURCE tree's shader directory, for
 # render_skinning_test.cpp's JP14 -- the comment-stripped source-text pin tying
@@ -431,7 +445,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/instantiate_plan_test.cpp
                editor/asset_commands_test.cpp
                editor/material_from_import_test.cpp
-               editor/scene_asset_ledger_test.cpp)
+               editor/scene_asset_ledger_test.cpp
+               editor/audio_decode_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -462,7 +477,14 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # silently skip. canonical.aeromat is writeMaterialText's OWN output for a fully-specified
     # document (the fixpoint anchor ME40 compares against); the four reject-*.aeromat files are the
     # hostile inputs validation row 11 re-checks by hand.
-    AERO_MATERIAL_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/materials")
+    AERO_MATERIAL_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/materials"
+    # task 3.7.1: the five committed audio fixtures reach the UNGATED editor/audio_decode_test.cpp.
+    # Same rule as the three definitions above (2.5.2's D8, fourth application): A PATH, NOT A FLAG --
+    # a missing definition is a COMPILE error and a missing fixture file is a REQUIRE failure, so
+    # neither can silently skip. AD10/AD11 are the DECODER half of the external anchor (dr_wav and
+    # dr_flac against libavcodec's own decode, tone.s16le.pcm); the COOK half is aero_tests' AK17,
+    # which cannot live here and vice versa -- aero_tests does not link aero::editor_core.
+    AERO_AUDIO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/audio")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,
@@ -905,6 +927,49 @@ set(_aero_cooker_cases
     # directories configured FRESH with -G Ninja. A smaller move in either of them would mean this
     # block had accidentally grown a gate, and no test could report that.
     animation_golden_manifest
+    # task 3.7.1 -- the `audio` subcommand's nine arms. They drive the five committed fixtures under
+    # tests/fixtures/audio/ (four encodings plus ffmpeg's own decode), so no lane and no other machine
+    # ever needs ffmpeg. Registered ungated like every name above them, so the triple moves by the
+    # SAME +9 in all three configurations -- a smaller move in a reduced configuration would mean this
+    # block had accidentally grown a gate, and no test could report that.
+    #
+    # MEASURED at this step's exit, never derived by addition: 157 -> 166 with tools ON, 65 -> 74 with
+    # -DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF, and 78 -> 87 with -DAERO_REFLECT_TOOLS=OFF
+    # alone, the last two read from build directories configured with -G Ninja. The cooker block
+    # itself reads 68 in all three, which is the lockstep this comment exists to make checkable.
+    #
+    # audio_determinism is driven from tone.wav ALONE, deliberately: tone.mp3 and tone.ogg are decoded
+    # by floating-point transforms whose code paths differ by SIMD availability and FMA contraction
+    # policy, so no cross-lane byte claim is made about either anywhere and neither may ever enter the
+    # frozen manifest.
+    audio_happy audio_unknown_flag audio_missing_input
+    audio_bad_extension audio_output_dir_missing
+    audio_nothing_written_on_failure audio_guid_written
+    audio_determinism audio_all_four_formats
+    # task 3.7.1 -- the manifest's FIFTH arm, plus the one case in this whole list that asserts NO
+    # expected value at all. audio_golden_manifest is a separate arm rather than two more tuples on
+    # an existing one for the same structural reason 3.5.1 and 3.5.2 recorded: aero_manifest_tuple
+    # reads the arm-level SUBCOMMAND, and the per-kind orphan check stays sound only while exactly
+    # one arm claims each name prefix. It cooks audio-tone-wav.aerowave and
+    # audio-tone-flac.aerowave, so tests/cooker/determinism.sha256 goes 18 -> 20 lines and every
+    # literal pinning it moves at once -- including ci.yml's four `-ne 18` sites, its `-ne 36`, its
+    # upload paths and the manifest header's own regeneration regex.
+    #
+    # audio_lossy_digests is the OTHER kind. It cooks tone.mp3 and tone.ogg, asserts exit 0 and a
+    # non-empty artifact and NOTHING ELSE, and PRINTS each SHA-256 so three CI logs from one push
+    # measure whether the lossy decoders agree across lanes. It must NEVER assert a digest, and its
+    # own comment in run_case.cmake carries that prohibition and the reason: agreement today at one
+    # vcpkg baseline and three pinned compilers is a fact, not a contract. It uploads nothing -- it
+    # writes straight into WORK_DIR rather than an `artifacts/` subdirectory -- so the manifest arm's
+    # "this directory IS the CI upload set" count and the job's exact-count check are untouched.
+    #
+    # MEASURED at this step's exit, never derived by addition: 166 -> 168 with tools ON, 74 -> 76
+    # with -DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF, and 87 -> 89 with
+    # -DAERO_REFLECT_TOOLS=OFF alone, the last two read from build directories configured with
+    # -G Ninja. Ungated like every name above them, so the two reduced configurations move by the
+    # SAME +2 -- a smaller move in either would mean this block had accidentally grown a gate, and
+    # no test could report that.
+    audio_golden_manifest audio_lossy_digests
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(
