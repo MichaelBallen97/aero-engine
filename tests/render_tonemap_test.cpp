@@ -633,3 +633,349 @@ TEST_CASE("render tonemap: the HLSL transcribes tonemap.hpp, pinned as source te
         CHECK(contains(vert, "float2(-1.0, 1.0)"));
     }
 }
+
+// ================================================================================================
+// Tier 1 -- a real Device, no window. PostProcess's cycle, both latches, the refusal asymmetry.
+//
+// Gated on AERO_SHADER_TOOLS_ENABLED for the reason render_culling_test.cpp's and
+// render_skinning_test.cpp's own tier-1 blocks are: a PostProcess loads its two shaders from
+// build/<preset>/shaders, which only exists when the shader toolchain is built. The whole TM battery
+// above runs in every configuration.
+// ================================================================================================
+
+#if AERO_SHADER_TOOLS_ENABLED
+
+    #include <aero/core/vfs.hpp>
+    #include <aero/platform/platform.hpp>
+    #include <aero/rhi/rhi.hpp>
+
+    #include "rhi_test_support.hpp"
+
+    #include <memory>
+    #include <utility>
+
+namespace {
+
+// A DirectoryBackend that admits exactly one shader's artifacts. PP4 needs the arm where ONE of the
+// two loads succeeds and the other does not, because an EMPTY VFS leaves both handles invalid and
+// destroying an invalid handle is a documented no-op -- so an empty mount cannot see a create() that
+// forgot to destroy the shader it DID make. This is the difference between a real leak witness and a
+// decorative one (seed T25).
+class SingleShaderBackend final : public engine::FileSystemBackend {
+public:
+    SingleShaderBackend(std::string_view rootDirectory, std::string_view allowedPrefix)
+        : inner(rootDirectory), prefix(allowedPrefix) {}
+
+    [[nodiscard]] bool exists(std::string_view relPath) const override {
+        return admits(relPath) && inner.exists(relPath);
+    }
+    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        return admits(relPath) ? inner.fileSize(relPath) : std::nullopt;
+    }
+    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
+        return admits(relPath) ? inner.readFile(relPath) : std::nullopt;
+    }
+
+private:
+    [[nodiscard]] bool admits(std::string_view relPath) const { return relPath.starts_with(prefix); }
+
+    engine::DirectoryBackend inner;
+    std::string prefix;
+};
+
+// beginScene -> [draw] -> endScene (submits A) -> out.beginFrame -> resolve -> out.endFrame (B).
+// A is submitted BEFORE B is acquired, so the queue-ordering guarantee applies with no interleaving
+// at all -- which is why no explicit barrier is needed and none is available.
+void cycleOnce(engine::render::PostProcess& post, engine::render::RenderTarget& out, const TonemapParams& params) {
+    std::optional<engine::render::Frame> sceneFrame = post.beginScene({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(sceneFrame.has_value());
+    CHECK(post.endScene(std::move(*sceneFrame)));
+    std::optional<engine::render::Frame> outFrame = out.beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(outFrame.has_value());
+    post.resolve(*outFrame, params);
+    CHECK(out.endFrame(std::move(*outFrame)));
+}
+
+}  // namespace
+
+    // The tier-1 preamble, written out per case exactly as render_culling_test.cpp does it:
+    // AERO_SKIP_OR_FAIL returns from the enclosing function, so it cannot live in a helper.
+    #define AERO_TONEMAP_TIER1_PREAMBLE()                                                                  \
+        const engine::platform::Context ctx{{.headless = false}};                                          \
+        if (!ctx.valid()) {                                                                                \
+            AERO_SKIP_OR_FAIL("no real video driver available");                                           \
+        }                                                                                                  \
+        auto device = engine::rhi::Device::create();                                                       \
+        if (!device.has_value()) {                                                                         \
+            AERO_SKIP_OR_FAIL("no GPU device available");                                                  \
+        }                                                                                                  \
+        engine::VirtualFileSystem vfs;                                                                     \
+        vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));                           \
+        auto out = engine::render::RenderTarget::create(                                                   \
+            *device, {256, 192}, {.colorFormat = engine::rhi::TextureFormat::RGBA8Unorm, .depth = false}); \
+        REQUIRE(out.has_value())
+
+TEST_CASE("render tonemap: a created pass owns an RGBA16Float scene target with depth (PP1)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    auto post = engine::render::PostProcess::create(*device, vfs, {256, 192},
+                                                    {.outputColorFormat = out->colorFormat(), .quantum = 1});
+    REQUIRE(post.has_value());
+
+    // THE HDR-NESS OF THE INTERMEDIATE HAS EXACTLY ONE AUTOMATED WITNESS, and this is it. Losing it
+    // would silently restore the clipping this whole task exists to remove, with every other case
+    // still green.
+    CHECK((post->sceneColorFormat() == engine::rhi::TextureFormat::RGBA16Float));
+    CHECK((post->sceneDepthFormat() != engine::rhi::TextureFormat::Invalid));
+    CHECK((post->sceneDrawExtent() == engine::rhi::Extent2D{256, 192}));
+    CHECK((post->sceneTextureExtent() == engine::rhi::Extent2D{256, 192}));  // quantum 1 => equal
+    CHECK(post->resolveCount() == 0);
+    CHECK_FALSE(post->hasWarnedExtentMismatch());
+    CHECK_FALSE(post->hasWarnedResolveBeforeEndScene());
+}
+
+TEST_CASE("render tonemap: create refuses an Invalid or depth outputColorFormat (PP2)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    CHECK_FALSE(engine::render::PostProcess::create(*device, vfs, {256, 192},
+                                                    {.outputColorFormat = engine::rhi::TextureFormat::Invalid})
+                    .has_value());
+    CHECK_FALSE(engine::render::PostProcess::create(*device, vfs, {256, 192},
+                                                    {.outputColorFormat = engine::rhi::TextureFormat::D32Float})
+                    .has_value());
+}
+
+TEST_CASE("render tonemap: create refuses a depth sceneColorFormat, through RenderTarget (PP3)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    // RenderTarget::create's OWN refusal, reached THROUGH this config rather than duplicated here --
+    // which is the point: PostProcess adds no second copy of a policy that already exists.
+    CHECK_FALSE(engine::render::PostProcess::create(
+                    *device, vfs, {256, 192},
+                    {.outputColorFormat = out->colorFormat(), .sceneColorFormat = engine::rhi::TextureFormat::D32Float})
+                    .has_value());
+}
+
+TEST_CASE("render tonemap: create refuses a missing shader and leaks nothing (PP4)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    SUBCASE("neither shader resolves") {
+        const engine::VirtualFileSystem emptyVfs;  // nothing mounted at all
+        CHECK_FALSE(engine::render::PostProcess::create(*device, emptyVfs, {256, 192},
+                                                        {.outputColorFormat = out->colorFormat()})
+                        .has_value());
+    }
+    SUBCASE("ONLY the vertex shader resolves -- the arm that can see a leak") {
+        // With both handles invalid the destroys are no-ops, so the empty-VFS arm above cannot
+        // witness a create() that forgot to release the shader it DID create. Here `vs` is a real GPU
+        // object and `fs` is not: skipping either destroy leaves a live shader at ~Device, which logs
+        // a leak WARN and is what ASan sees on the Debug lanes.
+        engine::VirtualFileSystem partialVfs;
+        partialVfs.mount(std::make_unique<SingleShaderBackend>(AERO_SHADERS_DIR, "fullscreen.vert"));
+        CHECK(partialVfs.exists("res://fullscreen.vert.json"));
+        CHECK_FALSE(partialVfs.exists("res://tonemap.frag.json"));
+        CHECK_FALSE(engine::render::PostProcess::create(*device, partialVfs, {256, 192},
+                                                        {.outputColorFormat = out->colorFormat()})
+                        .has_value());
+    }
+}
+
+TEST_CASE("render tonemap: a ForwardRenderer builds against the pass's scene formats (PP5)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    auto post =
+        engine::render::PostProcess::create(*device, vfs, {256, 192}, {.outputColorFormat = out->colorFormat()});
+    REQUIRE(post.has_value());
+
+    // The seam is REAL, not asserted. This is also the case that fails outright if sceneDepth were
+    // ever defaulted false: ForwardRendererConfig rejects an Invalid depthFormat.
+    auto forward = engine::render::ForwardRenderer::create(
+        *device, vfs, {.colorFormat = post->sceneColorFormat(), .depthFormat = post->sceneDepthFormat()});
+    CHECK(forward.has_value());
+}
+
+TEST_CASE("render tonemap: one clean cycle resolves once and latches nothing (PP6)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    auto post =
+        engine::render::PostProcess::create(*device, vfs, {256, 192}, {.outputColorFormat = out->colorFormat()});
+    REQUIRE(post.has_value());
+
+    cycleOnce(*post, *out, TonemapParams{});
+    CHECK(post->resolveCount() == 1);
+    CHECK_FALSE(post->hasWarnedExtentMismatch());
+    CHECK_FALSE(post->hasWarnedResolveBeforeEndScene());
+}
+
+TEST_CASE("render tonemap: a mismatched extent still DRAWS and latches its warning (PP7)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    auto post =
+        engine::render::PostProcess::create(*device, vfs, {256, 192}, {.outputColorFormat = out->colorFormat()});
+    REQUIRE(post.has_value());
+
+    // ONE SEQUENCE CASE, deliberately. The "still draws" half and the "latches" half both have to
+    // hold in the SAME run: two independent cases each pass under a defect that breaks the other.
+    CHECK(post->resize({128, 96}));
+    CHECK((post->sceneDrawExtent() == engine::rhi::Extent2D{128, 96}));
+    cycleOnce(*post, *out, TonemapParams{});  // out is still 256x192
+    CHECK(post->resolveCount() == 1);
+    CHECK(post->hasWarnedExtentMismatch());
+}
+
+TEST_CASE("render tonemap: a resolve before endScene still DRAWS and latches its warning (PP8)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    auto post =
+        engine::render::PostProcess::create(*device, vfs, {256, 192}, {.outputColorFormat = out->colorFormat()});
+    REQUIRE(post.has_value());
+
+    // The violation is DRIVEN, not merely asserted absent: a latch that can never fire satisfies
+    // "did not fire", which is exactly why PP6's negative assertions are not enough on their own.
+    std::optional<engine::render::Frame> sceneFrame = post->beginScene({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(sceneFrame.has_value());
+    std::optional<engine::render::Frame> outFrame = out->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(outFrame.has_value());
+    post->resolve(*outFrame, TonemapParams{});
+    CHECK(out->endFrame(std::move(*outFrame)));
+    CHECK(post->endScene(std::move(*sceneFrame)));  // close the stray scene frame
+
+    CHECK(post->resolveCount() == 1);  // it DREW -- refusing would have been the wrong answer
+    CHECK(post->hasWarnedResolveBeforeEndScene());
+    CHECK_FALSE(post->hasWarnedExtentMismatch());
+
+    // A correct cycle afterwards still draws, and the latch stays latched rather than resetting.
+    cycleOnce(*post, *out, TonemapParams{});
+    CHECK(post->resolveCount() == 2);
+    CHECK(post->hasWarnedResolveBeforeEndScene());
+}
+
+TEST_CASE("render tonemap: resize propagates the quantum and the max extent (PP9)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    auto post = engine::render::PostProcess::create(
+        *device, vfs, {100, 100}, {.outputColorFormat = out->colorFormat(), .quantum = 64, .maxExtent = 512});
+    REQUIRE(post.has_value());
+
+    CHECK(post->resize({100, 100}));
+    CHECK((post->sceneDrawExtent() == engine::rhi::Extent2D{100, 100}));
+    CHECK((post->sceneTextureExtent() == engine::rhi::Extent2D{128, 128}));
+    // ...and the sub-rect rule reads exactly that pair, which is the whole reason the pass owns the
+    // target rather than handing a texture handle out.
+    const Vec2 uv = tonemapSourceUvMax(post->sceneDrawExtent(), post->sceneTextureExtent());
+    CHECK(uv.x == 100.0F / 128.0F);
+    CHECK(uv.y == 100.0F / 128.0F);
+
+    CHECK(post->resize({900, 900}));
+    CHECK((post->sceneDrawExtent() == engine::rhi::Extent2D{512, 512}));
+}
+
+TEST_CASE("render tonemap: a moved-from pass refuses without moving resolveCount (PP10)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    auto post =
+        engine::render::PostProcess::create(*device, vfs, {256, 192}, {.outputColorFormat = out->colorFormat()});
+    REQUIRE(post.has_value());
+
+    engine::render::PostProcess moved{std::move(*post)};
+    cycleOnce(moved, *out, TonemapParams{});
+    CHECK(moved.resolveCount() == 1);
+
+    // THE ASYMMETRY: every other refusal still draws. A not-renderable pass is the one that does not,
+    // and resolveCount() UNMOVED is the whole observable -- there is deliberately no third accessor.
+    std::optional<engine::render::Frame> outFrame = out->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(outFrame.has_value());
+    post->resolve(*outFrame, TonemapParams{});  // NOLINT(bugprone-use-after-move) -- deliberate
+    CHECK(post->resolveCount() == 0);
+    CHECK(out->endFrame(std::move(*outFrame)));
+
+    // Move-assign OVER a live pass, then destroy: a defaulted move would double-free the pipeline and
+    // the sampler here, and ASan on the Debug lanes is what sees it.
+    auto second =
+        engine::render::PostProcess::create(*device, vfs, {128, 128}, {.outputColorFormat = out->colorFormat()});
+    REQUIRE(second.has_value());
+    *second = std::move(moved);
+    CHECK(second->resolveCount() == 1);
+    CHECK((second->sceneDrawExtent() == engine::rhi::Extent2D{256, 192}));
+}
+
+TEST_CASE("render tonemap: two passes live on one device, each resolving its own output (PP11)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    // The editor's real shape: the viewport panel and the material preview each own a PostProcess and
+    // each resolve into their own target, in the same frame, on the same device.
+    auto secondOut = engine::render::RenderTarget::create(
+        *device, {128, 128}, {.colorFormat = engine::rhi::TextureFormat::RGBA8Unorm, .depth = false});
+    REQUIRE(secondOut.has_value());
+
+    auto first =
+        engine::render::PostProcess::create(*device, vfs, {256, 192}, {.outputColorFormat = out->colorFormat()});
+    REQUIRE(first.has_value());
+    auto second =
+        engine::render::PostProcess::create(*device, vfs, {128, 128}, {.outputColorFormat = secondOut->colorFormat()});
+    REQUIRE(second.has_value());
+
+    cycleOnce(*first, *out, TonemapParams{1.0F, TonemapOperator::AcesApprox});
+    cycleOnce(*second, *secondOut, TonemapParams{2.0F, TonemapOperator::Reinhard});
+
+    CHECK(first->resolveCount() == 1);
+    CHECK(second->resolveCount() == 1);
+    CHECK_FALSE(first->hasWarnedExtentMismatch());
+    CHECK_FALSE(second->hasWarnedExtentMismatch());
+    CHECK_FALSE(first->hasWarnedResolveBeforeEndScene());
+    CHECK_FALSE(second->hasWarnedResolveBeforeEndScene());
+}
+
+TEST_CASE("render tonemap: both output-depth arms record cleanly (PP12)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    SUBCASE("(a) a depth-FREE output, the two editor consumers' shape") {
+        auto post = engine::render::PostProcess::create(
+            *device, vfs, {256, 192},
+            {.outputColorFormat = out->colorFormat(), .outputDepthFormat = out->depthFormat()});
+        REQUIRE(post.has_value());
+        CHECK((out->depthFormat() == engine::rhi::TextureFormat::Invalid));
+        cycleOnce(*post, *out, TonemapParams{});
+        CHECK(post->resolveCount() == 1);
+    }
+    SUBCASE("(b) a depth-CARRYING output -- the arm the SAMPLE uses in production") {
+        // RendererConfig{.depth = true} gives the swapchain frame a depth attachment, so this is not
+        // a hypothetical branch: it is the one both editor consumers do NOT exercise and the sample
+        // does, and it is the whole reason PostProcessConfig::outputDepthFormat exists.
+        auto depthOut = engine::render::RenderTarget::create(
+            *device, {256, 192}, {.colorFormat = engine::rhi::TextureFormat::RGBA8Unorm, .depth = true});
+        REQUIRE(depthOut.has_value());
+        CHECK((depthOut->depthFormat() != engine::rhi::TextureFormat::Invalid));
+
+        auto post = engine::render::PostProcess::create(
+            *device, vfs, {256, 192},
+            {.outputColorFormat = depthOut->colorFormat(), .outputDepthFormat = depthOut->depthFormat()});
+        REQUIRE(post.has_value());
+        cycleOnce(*post, *depthOut, TonemapParams{});
+        CHECK(post->resolveCount() == 1);
+        CHECK_FALSE(post->hasWarnedExtentMismatch());
+    }
+}
+
+TEST_CASE("render tonemap: ten consecutive resizes with adjacent updates latch nothing (PP13)") {
+    AERO_TONEMAP_TIER1_PREAMBLE();
+
+    auto post =
+        engine::render::PostProcess::create(*device, vfs, {200, 150}, {.outputColorFormat = out->colorFormat()});
+    REQUIRE(post.has_value());
+
+    // The editor's continuous-resize case, and the one that would catch an off-by-one in the
+    // ADJACENCY rule -- both targets are resized from the SAME value on adjacent lines, which is what
+    // makes the 1:1 blit true by construction rather than by two call sites that could drift.
+    for (std::uint32_t i = 0; i < 10; ++i) {
+        const engine::rhi::Extent2D pixels{200 + i, 150 + i};
+        CHECK(post->resize(pixels));
+        CHECK(out->resize(pixels));
+        cycleOnce(*post, *out, TonemapParams{});
+    }
+    CHECK(post->resolveCount() == 10);
+    CHECK_FALSE(post->hasWarnedExtentMismatch());
+    CHECK_FALSE(post->hasWarnedResolveBeforeEndScene());
+}
+
+#endif  // AERO_SHADER_TOOLS_ENABLED
