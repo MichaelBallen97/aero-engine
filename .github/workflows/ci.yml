@@ -343,6 +343,37 @@ jobs:
           AERO_REQUIRE_GPU: ${{ matrix.require_gpu }}   # a missing GPU is a FAILURE, not a skip (spec D7)
         run: ${{ matrix.ctest_launcher }} ctest --preset ${{ matrix.preset }}-release
 
+      - name: Print the mp3/ogg cook digests (task 3.7.1, D12)
+        shell: bash
+        # THE ONE MEASUREMENT IN THIS WORKFLOW THAT IS NOT A CHECK. cooker.audio_lossy_digests cooks
+        # tone.mp3 and tone.ogg and PRINTS each SHA-256 in the manifest's own `<sha256>  <name>`
+        # format, so three lanes' logs from ONE run answer "do the lossy decoders agree across
+        # lanes?" with numbers. The case asserts exit 0, a non-empty artifact and a literal run count
+        # of 2, and NEVER a digest value -- so this step fails for a broken audio path and CANNOT
+        # fail for a digest that moved.
+        #
+        # IT NEEDS ITS OWN STEP BECAUSE THE CASE PASSES. ctest keeps a passing test's output to
+        # itself, so the two lines the case prints are invisible in the step above and the
+        # measurement D12 rests on could not be read off any lane at all -- which is exactly what the
+        # first run showed. `-V` is what makes them appear, prefixed by ctest with the test's own
+        # number, so the log line reads `165: <sha256>  audio-tone-mp3.aerowave`. Grep the log for
+        # `.aerowave` or for the step name above.
+        #
+        # The filter is ANCHORED and a rename cannot make this step go quiet: measured, `ctest -R`
+        # over a name that matches nothing exits 8 with `No tests were found!!!`, so the step reddens
+        # rather than passing while measuring nothing.
+        #
+        # Release, matching the upload step below: the FROZEN wav/flac contract is compared across
+        # lanes from this configuration, so the UNFROZEN mp3/ogg reading is taken from the same one.
+        # Measured on macOS, both configurations print identical digests -- so the choice moves no
+        # number here, but the configuration is part of the reading and is named for that reason.
+        #
+        # WHATEVER THE THREE LOGS SAY, mp3 AND ogg NEVER ENTER tests/cooker/determinism.sha256.
+        # Agreement today, at ONE vcpkg baseline and THREE pinned compilers, is a FACT, not a
+        # CONTRACT, and .claude/rules/cooked-assets.md says a red manifest means "the same input now
+        # cooks to different bytes" -- a sentence that has to stay true of every line in that file.
+        run: ${{ matrix.ctest_launcher }} ctest --preset ${{ matrix.preset }}-release -R '^cooker\.audio_lossy_digests$' -V
+
       - name: Upload the cooked artifacts for the cook-determinism job
         # task 3.3.3. Consumed by the `cook-determinism` job below, which byte-compares the three
         # lanes' copies against each other with both sides physically present -- the one thing no
