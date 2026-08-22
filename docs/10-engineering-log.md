@@ -10121,7 +10121,67 @@ tier, `ef9521f` the three depth shaders, `dc796d7` the shadow view *and* `render
 the `SM` tier, `922eb42` the sample, `2d0789a` `DirectionalLight`), two closing the sabotage matrix's
 two genuine gaps (`729ee6c`, `5cda972`), one documentation commit (`10eb3e7`), four closing the
 code-review round (`ce8f98d`, `10d758b`, `b605fc4`, `35c4cba`), and this one recording that round.
-Counted with `git rev-list --count`, never by adding up steps. **Complete in code; the twelve-row macOS validation pass has NOT been run.**
+Counted with `git rev-list --count`, never by adding up steps. **MERGED as PR #85 (merge commit
+`3ffaadf`), CI-green on all six checks with `headSha == HEAD` asserted before the merge, and
+macOS-validated ✅ PASS on ALL 12 ROWS (2026-08-22) with every measurement blank filled.**
+
+**The validation pass is the most instrumented in this project's history, and it is worth reading for
+the method rather than the verdict.** Every visual row is judged by **pixel measurement against a
+matched `--no-shadows` twin**, never by an impression: the sample's own window is captured in
+isolation (`CGWindowListCopyWindowInfo` for the window id, then `screencapture -l<id>` — 3.6.1's
+method, reused), and the rows compare two runs numerically. The sharpest results: at `--distance 5`
+the frame is **100.00 % unchanged** against its twin, so an out-of-range lookup resolves to **lit**
+(SH28 refuted); shadowed pixels retain **~40 %** of their lit brightness with **0 of 1499 near-black**,
+so ambient and the point light survive the shadow (SH27 refuted); the mean darkening scales **3.2×**
+from elevation 15° to 75° against a predicted sin ratio of **3.73×**, which is the shadow removing the
+directional term and nothing else (SH22/SH23 refuted); and the rigged caster's shadow tracks its pose
+**nearly 1:1** (32.3 px of motion against 34.4 px) and never drops below 7088 px.
+
+**All seven declared seeds are witnessed, so the page leaves none uncovered** — but three of the
+page's own expectations were WRONG, and in every case the CODE was right and the ROW asked for the
+wrong evidence. That pattern is the entry's most transferable lesson.
+
+1. **Row 6's acne half is not reproducible, and `SH26` needed a shader seed.** `shadowBias = 0`
+   changes **nothing** on static geometry at either elevation, because the shadow pipeline's
+   slope-scaled **rasterizer** bias already covers every configuration this sample can produce —
+   D6's two-mechanism split working as designed. An initial reading appeared to show textbook acne
+   (1456 px, runs/px 0.365) and was **entirely the rig at a different animation phase**: `--elevation`
+   freezes the sun but **not** the 3 s animation cycle, so any A/B attributing a change to a *setting*
+   must exclude the rig's columns. `SH26` changes *which normal* feeds the offset, not the bias, so
+   the acne test could never have witnessed it; seeded in the shader instead
+   (`directionalShadow(worldPos, N)` for `geoN`) it yields **1740 px at mean magnitude 62.8** under the
+   static casters, and **runs/px 0.385** against a bias change's **0.045** — run density separating a
+   boundary that follows the ground's ripple from a solid region that merely moved.
+2. **Row 8's "blockiness" does not happen.** The shadow edge's stair-step **shrinks** as the map
+   coarsens (1.62 → 1.18 px from 2048 to 256), because the 3×3 hardware PCF filters it away and
+   filters more as each texel covers more ground. What grows is the **penumbra**, almost exactly
+   linearly with texel size: **7 / 15 / 27 / 51 px** at 2048 / 1024 / 512 / 256. **This renderer
+   degrades as BLUR, not blocks** — which inverts the usual advice: a soft shadow here is
+   **under-resolved**, and the fix is a smaller `shadowDistance` or a larger map, never a tighter fit,
+   which reintroduces the crawl A6 rejects it for.
+3. **Row 12's claim that no sample calls `renderShadowMap` is false.** The A/B ran in a dedicated
+   worktree at `64df342` vs `3ffaadf` (19 TUs rebuilt, isolating 3.6.2 from 3.6.3), with **each
+   sample's own noise floor measured first** by capturing one build twice — three of these scenes
+   animate, and a raw difference means nothing without it. Four samples sit below their noise floor.
+   **`phase-1-scene` is static (noise 0.0000) and genuinely changed: 1640 px darkened, 0 brightened,
+   inside a bounded 214 × 38 box — a shadow appearing** — because it draws through
+   `SceneRenderer::render`, which calls `renderShadowMap`. That is **A3(iii) working exactly as
+   designed** (every `SceneRenderer` consumer gains shadows with zero call-site changes), and the
+   other four drive `ForwardRenderer` directly. **The structural grep that sentence rested on observed
+   the INTENTION; the A/B observed the EFFECT** — the same through-line the code-review round found in
+   five separate findings.
+
+**The inspector half is proven from the generated artifact rather than driven**: ADR-004 makes the
+inspector driven entirely by generated `entt::meta` with zero per-component editor code, so the
+registration IS the inspector, and `light.meta.gen.cpp` carries all four appended fields with ranges
+matching their `AERO_RANGE` exactly (`castsShadows` bool/no range, `shadowBias` 0–0.01,
+`shadowNormalBias` 0–0.5, `shadowDistance` 1–1000). The one link no tier here can drive is the mouse
+dragging the slider.
+
+**Provenance, recorded because the tree moved underneath the pass**: rows 1–5, 7 and 9–11 were
+measured on `main` @ `6046c9e`; row 6's `SH26` arms and row 8's resolution sweep after 3.6.3 (PR #86)
+merged and made the output tonemapped rather than raw linear; row 12's A/B in its own worktree. Every
+comparison has both arms on one build, which is what the comparison requires.
 
 Before this, every lit surface received the full directional term regardless of what stood between it
 and the sun. Nothing computed a light-space transform, no depth texture in the tree carried `Sampler`
