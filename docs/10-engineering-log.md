@@ -11042,3 +11042,105 @@ hash lines** (3.6.2 did not move it either); clang-format and clang-tidy clean b
 `engine/rhi`, `engine/scene`, `shaders/scene.frag.hlsl` and `samples/phase-3-shadows` are **not in
 it** — every one of those arrives through the merge, from 3.6.2, and the distinction is the whole
 point of asserting against the merge-base rather than against `main`.
+
+---
+
+### 3.6.3 follow-up — the Finding-5 guard was a REGRESSION, and it shipped
+
+**Branch:** `fix/viewport-pick-overlay-rect`, cut from `main @ 5f9c246`. **One commit.** Found by the
+macOS validation pass, on `main`, after 3.6.3 merged.
+
+**What broke.** 3.6.3's second code-review round closed a real defect — clicking the viewport's
+overlay strip (the tone-curve combo, the exposure slider, or `T`/`R`/`S`/`Local`) also armed a scene
+pick, so the selection changed or cleared while the user was only choosing a tone curve. The fix
+disarmed the pick at the end of `onDraw`, after the whole strip had been submitted:
+
+```cpp
+if (ImGui::IsAnyItemActive()) { pickArmed = false; }
+```
+
+**It disabled scene picking in the viewport ENTIRELY.** Clicking empty space no longer cleared the
+selection; clicking an object no longer selected one. Measured three ways during the pass: an A/B
+against a pre-3.6.3 build of `8636009` in a second worktree (same gesture, selection cleared there and
+did not on `main`); causation isolated by neutralising **only** that line to
+`if (false && ImGui::IsAnyItemActive())` and watching the identical gesture clear the selection again;
+and then the mechanism read out of the pinned ImGui source.
+
+**The mechanism, from `vcpkg/buildtrees/imgui/src/.8-docking-de5f460872.clean/imgui.cpp`, verified
+line by line rather than reasoned about.** `:5522` — *"Click on empty space to focus window and start
+moving"* — fires on any `MouseClicked[0]` over a hovered window and calls `StartMouseMovingWindow` at
+`:5534`, which does `SetActiveID(window->MoveId, window)` at `:5389`; `IsAnyItemActive()` is
+`g.ActiveId != 0` at `:6617`. **`ImGui::Image` submits with id 0**, so a click on the viewport image
+IS window empty space to ImGui, `ActiveId` becomes the window's `MoveId`, and the guard was true on
+**exactly the frames a scene pick was being attempted**.
+
+**THE REASONING THAT LICENSED IT IS THE THING THAT WAS WRONG.** The guard's own comment said *"Nothing
+else in this window can be active while the image is hovered: ImGui::Image submits with id 0 and never
+becomes Active (F28)"*. That sentence is **true about the Image and irrelevant** — it is the WINDOW'S
+`MoveId` that goes active, not the item. `F28` was cited as support and says nothing about `MoveId`.
+The general form: **an ImGui global that answers a broader question than the one you are asking is not
+a guard, it is a coincidence waiting to be wrong** — `IsAnyItemActive()` cannot distinguish "a widget
+took this click" from "the user clicked the window background", and the whole fix depended on it
+being able to.
+
+**And `I106(d)` PASSED ON THE DEFECTIVE CODE.** It pinned that a disarm line existed, sat after
+`drawViewOptions()`, and cleared the arm — the **intention** — while the **effect** was that picking
+was dead. That is this project's recurring failure mode, recorded at 3.1.5 ("a counter observed the
+INTENTION rather than the EFFECT"), at 3.5.1 (`SN8`), at 3.6.1 (`pipelineBindCount`) and now again;
+what is new is that this time the pin was written *in the same round as the defect*, so nothing
+independent ever looked at it.
+
+#### The fix: a rect, not a global
+
+The overlay's claim on a click is now a **deterministic geometric test**. `onDraw`'s step 9b records
+the INTERACTIVE row's screen rect while drawing it — `GetCursorScreenPos()` before `drawGizmoBar()`,
+`GetItemRectMax()` after `drawViewOptions()`, whose exposure slider is the row's last and rightmost
+item — and `updatePick`'s ARM step refuses to arm a press inside it, through a named member
+`ViewportPanel::overlayOwnsPress(Vec2)`.
+
+Three properties worth keeping:
+
+* **Only the INTERACTIVE row is claimed.** The size readout and the fly line above it are
+  `TextColored`, which submits nothing clickable, so a press there has always fallen through to the
+  scene pick and still does. The recorded rect is about what the strip *does*, not where it is.
+* **The rect is ONE FRAME OLD by construction, and that is sound rather than tolerated.** The strip is
+  submitted at step 9b, after `updatePick` runs at step 8b, so the press frame necessarily reads the
+  previous frame's rect. The strip's origin is `imageOrigin + OVERLAY_INSET` and its extent is fixed
+  by the widgets on it, so it only moves when the dock does — and this sidesteps entirely the ordering
+  problem the broken guard was invented to work around.
+* **An EMPTY rect owns nothing.** That is the first frame, any frame that returned before step 9b, and
+  the whole `-DAERO_SHADER_TOOLS=OFF` configuration — where picking degrades to its pre-overlay
+  behaviour rather than to "every press is refused". The predicate is NaN-safe by the negated-`>`
+  idiom this file already uses, and half-open at `max`, matching the FIRE step's own image-rect test.
+
+The defect the original fix was closing is **still closed**, and still at the shared cause: the rect
+covers the gizmo bar's buttons too, which have had this since 2.3.3. A revert was never on the table.
+
+#### The tests, and what they honestly cannot do
+
+**`I107` is new and observes the EFFECT.** It drives REAL frames through `EditorApp::tick()`, so the
+strip is really drawn and its rect really recorded, then asks the panel the SAME question
+`updatePick`'s ARM step asks, at coordinates derived from the real rect: the strip owns its centre and
+its corners; it does **not** own `rowMax` itself, a point below it, right of it, above it, or the
+ordinary empty-space press 300 points down-and-right — the one the regression refused. It carries an
+**anti-vacuity block first**: the rect must be non-degenerate and at least 40 x 8 points, because an
+empty rect makes every "does not own" assertion pass on a panel that recorded nothing, which is
+exactly how this fix could rot silently. Both configurations assert; the tools-OFF arm pins that an
+empty rect owns nothing.
+
+**What no tier here can do is press a mouse button**, so "the selection actually cleared" remains
+**validation-only** — row 2b covers both halves and now says so explicitly. `I107` covers everything
+between the press coordinate and the arm decision; the OS event and the Selection are the pass's.
+
+**`I106(d)` is REPLACED rather than patched**, because a pin that passes on broken code is worse than
+no pin. It now encodes the mechanism: the comment-stripped source must contain **no `IsAnyItemActive`
+anywhere**, the decision must be a named `overlayOwnsPress` member, the arm condition must consult it
+in the same condition as the fresh-press test, and the rect must be recorded after the interactive
+row. The prose above the fix explains the regression and mentions `IsAnyItemActive` — comment
+stripping is what keeps that from satisfying or violating the pin.
+
+**Three seeds, all run, all reddening.** (A) **the shipped guard restored verbatim** reddens `I106(d)`
+on both the `IsAnyItemActive` scan and the missing arm term — *the defect that shipped now fails a
+test*; (B) the arm condition dropping the rect term reddens `I106(d)`; (C) the rect never being
+recorded reddens `I107`'s anti-vacuity block and five ownership assertions, plus `I106(d)`. Seed A is
+the one that matters: it is the exact code that was on `main`.

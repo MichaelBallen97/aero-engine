@@ -81,6 +81,32 @@ public:
     // NULL when the panel is Unavailable.
     [[nodiscard]] const render::PostProcess* postProcess() const noexcept;
 
+    // ---- the overlay strip's claim on a click -----------------------------------------------------
+    // Does the interactive overlay row own a press at `pressPoints` (screen-space POINTS, the space
+    // io.MousePos is in)? updatePick's ARM step asks exactly this, and so can a test -- which is the
+    // whole reason it is a named member rather than two lines inline.
+    //
+    // WHY A RECT AND NOT AN ImGui QUESTION. The first attempt at this disarmed the pick on
+    // ImGui::IsAnyItemActive() after the strip was submitted, reasoning that if a widget had taken
+    // the click then ActiveId would be non-zero. IT SHIPPED AND IT DISABLED SCENE PICKING ENTIRELY.
+    // ImGui sets ActiveId to the WINDOW'S MoveId on a click in window empty space (imgui.cpp:5522 ->
+    // StartMouseMovingWindow at :5534 -> SetActiveID(window->MoveId, window) at :5389, with
+    // IsAnyItemActive() being `g.ActiveId != 0` at :6617), and because ImGui::Image submits with
+    // id 0, a click on the viewport image IS window empty space. So the guard was true on precisely
+    // the frames a pick was being attempted. The old comment's "ImGui::Image never becomes Active"
+    // was correct about the ITEM and irrelevant: it is the window's MoveId that goes active.
+    //
+    // A rect is deterministic and answers the question actually being asked -- "is this press on the
+    // strip" -- rather than a global that conflates a widget with the window background.
+    [[nodiscard]] bool overlayOwnsPress(Vec2 pressPoints) const noexcept;
+
+    // The rect that decision reads, as the LAST DRAWN FRAME recorded it. Exposed so a test can check
+    // it is a REAL, non-degenerate rect inside the image rather than trusting that it was recorded --
+    // an empty rect would make overlayOwnsPress() answer false for everything and silently restore
+    // the defect this pair exists to fix.
+    [[nodiscard]] Vec2 overlayRowMin() const noexcept { return overlayRowTopLeft; }
+    [[nodiscard]] Vec2 overlayRowMax() const noexcept { return overlayRowBottomRight; }
+
     // The ImGui-visible OUTPUT target, as a READ-ONLY seam beside postProcess(). It exists so
     // "nothing depth-tests into this target any more" is an assertable RUNTIME fact rather than a
     // source-text claim -- depthFormat() reads Invalid here and a real depth format on the scene
@@ -179,6 +205,14 @@ private:
                                     // with whether a gizmo actually drew.
     bool gizmoWasUsing = false;     // previous frame's IsUsing(), for gizmoDragEdge (D22)
     bool gizmoWarnLatched = false;  // D12: one WARN per drag, not one per frame
+
+    // The interactive overlay row's screen rect in POINTS, written at onDraw's step 9b and read by
+    // overlayOwnsPress() on the NEXT frame's step 8b. ONE FRAME OLD BY CONSTRUCTION, and that is
+    // sound rather than tolerated: the strip's origin is imageOrigin + OVERLAY_INSET and its extent
+    // is fixed by the widgets on it, so it only moves when the dock does. Empty until the first
+    // frame that reaches step 9b, and an empty rect owns nothing.
+    Vec2 overlayRowTopLeft{};
+    Vec2 overlayRowBottomRight{};
 
     // Task 3.1.5.
     const MeshBoundsLookup* meshBounds = nullptr;       // published by EditorApp, borrowed, never owned
