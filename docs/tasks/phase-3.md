@@ -214,6 +214,12 @@ Subtasks:
 - Bias/peter-panning controls exposed on the Light component
 
 ### 3.6.3 Tonemap/gamma pass · P1 · S · depends: 3.4.1
+_(Sized up from S to M, recorded in the spec before implementation rather than discovered mid-task.
+The engine half really is S — two pairs, two shaders, no rhi change, no format, no dependency — but a
+post pass is only worth anything if the things a person actually looks at go through it, so the
+editor's viewport and the material preview are wired too. That is small per site and touches four
+editor files, `material_panel`'s service signature and `editor_app`'s tick, and it brings the ImGui
+texture-lifetime rule back into play.)_
 **Goal:** stop outputting raw linear values; seed the Phase 8 post stack.
 **Deliverable:** fullscreen tonemap (Reinhard or ACES-approx) + gamma-correct output.
 Subtasks:
