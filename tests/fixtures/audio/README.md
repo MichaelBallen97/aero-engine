@@ -6,14 +6,14 @@ takes for its cooked `.ktx2` files, one step further: here the external tool pro
 as well as the inputs.
 
 - **Tool:** ffmpeg 8.1.2, `/opt/homebrew/bin/ffmpeg` (Homebrew).
-- **Date:** 2026-08-22.
+- **Date:** 2026-08-23.
 - Every command below was run from this directory.
 
 ## The commands
 
 ```bash
-# 1. the source signal -> the wav fixture (16-bit, mono, 8 kHz, 0.25 s = 2000 frames)
-ffmpeg -f lavfi -i "sine=frequency=440:sample_rate=8000:duration=0.25" \
+# 1. the source signal -> the wav fixture (16-bit, mono, 8 kHz, 1.0 s = 8000 frames)
+ffmpeg -f lavfi -i "sine=frequency=440:sample_rate=8000:duration=1.0" \
        -af "volume=0.8" -c:a pcm_s16le -ac 1 tone.wav
 
 # 2. the three other encodings, all FROM tone.wav so every one carries the same signal
@@ -27,34 +27,55 @@ ffmpeg -i tone.wav -f s16le -acodec pcm_s16le tone.s16le.pcm
 
 `tone.aerowave` is **not here yet**. It is the loader golden, cooked once by the real `aero_cooker`
 binary and then frozen, and that binary does not exist until later in this task. It arrives with the
-CLI, and its exact invocation and pinned GUID are recorded here on the day it lands.
+CLI, and its exact invocation and pinned GUID are recorded here on the day it lands. Its size is
+already derivable: `64 + 2 x 1 x 8000` = **16064** bytes.
+
+## Why the source is 1.0 s, and not the 0.25 s it was first cut at
+
+The first cut of this set used a 0.25 s source, and **the ogg silently lost roughly half the signal**:
+2000 frames is shorter than Vorbis's 2048-sample long block, so the encoder emitted a single packet
+and the file decoded back to **1024** frames. That is a real property of a short, low-rate source
+rather than a damaged file, but it reads as a decoder defect to anyone opening the test later, and it
+would have forced every ogg assertion in the task onto numbers that agree with no other fixture.
+
+All four candidate lengths were measured before choosing:
+
+| Source duration | wav frames | ogg frames after round trip |
+|---|---|---|
+| 0.25 s | 2000 | **1024** (loses 976, ~49 %) |
+| 0.50 s | 4000 | 4096 (+96) |
+| **1.00 s** | **8000** | **8000 — EXACT** |
+| 2.00 s | 16000 | 16000 (exact) |
+
+**1.0 s is the shortest length at which the Vorbis round trip is frame-exact**, so all four encodings
+decode to the same 8000-frame signal and every number in the task comes off one arithmetic.
 
 ## What was measured, rather than assumed
 
 | File | Bytes | Codec | Rate | Ch | Duration | ffmpeg's own decode | Peak \|sample\| |
 |---|---|---|---|---|---|---|---|
-| `tone.wav` | 4078 | pcm_s16le | 8000 | 1 | 0.250000 s | 2000 frames | 3276 |
-| `tone.flac` | 9281 | flac | 8000 | 1 | 0.250000 s | 2000 frames | 3276 |
-| `tone.mp3` | 4653 | mp3 | 8000 | 1 | 0.250000 s | 2000 frames | 3113 |
-| `tone.ogg` | 4161 | vorbis | 8000 | **2** | 0.256000 s | **1024 frames** | 2341 |
-| `tone.s16le.pcm` | **4000** | — (raw) | 8000 | 1 | — | — | 3276 |
+| `tone.wav` | 16078 | pcm_s16le | 8000 | 1 | 1.000000 s | 8000 frames | 3276 |
+| `tone.flac` | 12098 | flac | 8000 | 1 | 1.000000 s | 8000 frames | 3276 |
+| `tone.mp3` | 10413 | mp3 | 8000 | 1 | 1.000000 s | 8000 frames | 3113 |
+| `tone.ogg` | 4968 | vorbis | 8000 | **2** | 1.000000 s | **8000 frames** | 2340 |
+| `tone.s16le.pcm` | **16000** | — (raw) | 8000 | 1 | — | — | 3276 |
 
 SHA-256:
 
 ```
-ff06e9695769ee8d865d2a2746e508fe3a1f7b24a2a7afb278fed41967640aa8  tone.wav
-987122a5a42e9717b2e2432c5135dd66c6511af0f8bfc31564201258981b7411  tone.flac
-157c5e2f8cb000c98b51e60ca0ac34b5e1f10baed7305e245e07a9a5b8be2155  tone.mp3
-6130072d5a65b1ea4d5e002dd9d242eea2f189a9867a546b155b03d822d22433  tone.ogg
-716a5886e71ebf9b86eb8991bfe41a6abd1aab915d527a41807a93e41c877c68  tone.s16le.pcm
+e29cde9ba09ca2ed1c925fcf1145a75dd8e3622b8ab3a3a53d50a5ea5d469aa7  tone.wav
+bfcd8acace1c26a8cc1051ac369eccd5e12c3842dccf6112f78491e395dec52b  tone.flac
+b60068eaa1cac8cdae3fbdca65fa82cd067b9c092a5e82f0581a5d07bb2788a6  tone.mp3
+650127c34da6076f8cad3b43aec85f28e33c7004b1907c027b8525ce09b8b9d5  tone.ogg
+5dcb67dd71c9135f51d224ca7a703e149eabc6c79f4380a95bc846a2d6d402bf  tone.s16le.pcm
 ```
 
-**`tone.s16le.pcm` is exactly 4000 bytes** — 2000 frames × 1 channel × 2 B — which is the number every
-derived size in this task rests on, including `tone.aerowave`'s 4064 (a 64-byte header plus the same
-4000 bytes of samples). It was verified with `wc -c` before anything downstream was written, because a
-`sine` filter that emitted 2001 frames on some other ffmpeg build would poison every size in the task.
-If it is ever regenerated and comes out a different length, **record the measured frame count and
-re-derive from it — never trim the file by hand.**
+**`tone.s16le.pcm` is exactly 16000 bytes** — 8000 frames × 1 channel × 2 B — which is the number
+every derived size in this task rests on, including `tone.aerowave`'s 16064 (a 64-byte header plus the
+same 16000 bytes of samples). It was verified with `wc -c` before anything downstream was written,
+because a `sine` filter that emitted 8001 frames on some other ffmpeg build would poison every size in
+the task. If it is ever regenerated and comes out a different length, **record the measured frame
+count and re-derive from it — never trim the file by hand.**
 
 ## The two properties that make these fixtures load-bearing
 
@@ -63,7 +84,9 @@ asserts it. Verified here with ffmpeg on both sides:
 
 ```bash
 ffmpeg -i tone.flac -f s16le -acodec pcm_s16le /tmp/flac-decode.pcm
-cmp /tmp/flac-decode.pcm tone.s16le.pcm     # → identical, 4000 bytes
+cmp /tmp/flac-decode.pcm tone.s16le.pcm     # -> identical, 16000 bytes
+ffmpeg -i tone.wav  -f s16le -acodec pcm_s16le /tmp/wav-decode.pcm
+cmp /tmp/wav-decode.pcm  tone.s16le.pcm     # -> identical, 16000 bytes
 ```
 
 That is genuine cross-implementation agreement — dr_wav and dr_flac against libavcodec — and this
@@ -78,42 +101,47 @@ within tolerance and a peak amplitude in the right neighbourhood — **never a d
 
 **The mp3 frame-count tolerance, stated rather than discovered.** MP3 carries encoder delay and
 padding, so a decoder's frame count legitimately differs from the source's by up to one or two
-granules. The test asserts `|decoded − 2000| <= 4608` (four granules). ffmpeg's own decode of
-`tone.mp3` reads exactly 2000 frames here, because it honours the LAME/Xing gapless header; dr_mp3
-does not necessarily, which is what the tolerance is for.
+granules. The test asserts `|decoded − 8000| <= 4608` (four granules). At the 1.0 s length that is
+genuine, meaningful slack — **±58 % of the signal** — where at the earlier 0.25 s length the same
+four-granule window was ±230 % of a 2000-frame clip and could not have failed for any decode short of
+a total refusal. ffmpeg's own decode of `tone.mp3` reads exactly 8000 frames here, because it honours
+the LAME/Xing gapless header; dr_mp3 does not necessarily, which is what the tolerance is for.
 
 ## Two things ffmpeg would not do, recorded rather than worked around
 
 **(a) The ogg fixture cannot be mono.** This ffmpeg build carries only the *native, experimental*
 Vorbis encoder (`vorbis`, flagged `X`); it is not built against `libvorbis`, and there is no `oggenc`
-on this machine. The native encoder refuses anything but stereo:
+on this machine. The native encoder refuses anything but stereo, re-confirmed after the regeneration:
 
 ```
-[vorbis @ …] Current FFmpeg Vorbis encoder only supports 2 channels.
+[vorbis @ ...] Current FFmpeg Vorbis encoder only supports 2 channels.
 ```
 
 So `tone.ogg` alone carries `-ac 2`, and it is the one fixture here that is **not** mono. Both of its
 channels hold the same signal, since the source is mono.
 
-**(b) At 2000 frames the ogg loses roughly half the signal.** 2000 frames is shorter than Vorbis's
-2048-sample long block, so the encoder emits a **single** packet and the file decodes to **1024**
-frames rather than 2000 (`ffprobe -count_frames` reads `nb_read_frames=1`, and the stream's own
-`duration_ts` is 2048). This is a property of the short, low-rate source, not of the file being
-damaged: the identical command on a 1.0 s / 8000-frame source round-trips to exactly 8000 frames.
+**That is an upside rather than a limitation, and it is the only one of its kind in this set.** A
+1-channel fixture cannot witness a channel-major interleaving defect at all — with one channel,
+frame-major and channel-major are the same byte order — so `tone.ogg` is the only committed source
+here whose decode can see one. The tests that pin interleaving order do so on hand-built multi-channel
+data as well, but the ogg arm is the only place a *real decoder's* channel order is observed.
 
-`tone.ogg` is still a valid Vorbis stream and is still the right fixture for proving the stb_vorbis
-backend decodes one — but **its frame count and channel count are its own, not the source's**, and any
-test or validation row that compares an ogg reading against 2000 frames or 1 channel is comparing
-against the wrong numbers. The measured values are in the table above.
+**(b) The ogg's channel count is its own, not the source's.** Any test or validation row that compares
+an ogg reading against **1** channel is comparing against the wrong number: the ogg arm asserts
+**2 channels and 8000 frames**. Its frame count now matches the other three exactly; only the channel
+count differs.
 
-If a mono, full-length ogg is ever wanted, it needs an encoder this machine does not have — an ffmpeg
-built with `--enable-libvorbis`, or `oggenc` from vorbis-tools — or a longer source signal, which
-would move `tone.s16le.pcm` off 4000 bytes and every size derived from it.
+If a mono ogg is ever wanted, it needs an encoder this machine does not have — an ffmpeg built with
+`--enable-libvorbis`, or `oggenc` from vorbis-tools.
 
 ## The signal
 
-440 Hz sine, 8 kHz, mono, 0.25 s, at `volume=0.8`. **The measured peak is 3276, not the ~26214 that
+440 Hz sine, 8 kHz, mono, 1.0 s, at `volume=0.8`. **The measured peak is 3276, not the ~26214 that
 "80 % of full scale" would suggest**: ffmpeg's lavfi `sine` source emits at amplitude **0.125**
 (4095/32767, measured by generating the same signal with no `volume` filter), so `volume=0.8` lands at
 0.100 of full scale, about −20 dBFS. Any "peak amplitude in the right neighbourhood" assertion belongs
 against **3276**, and against the per-format peaks in the table for the two lossy encodings.
+
+The anchor's first four samples are `0, 1110, 2088, 2820` and its last four are
+`-3218, -2820, -2089, -1110`, measured from `tone.s16le.pcm` itself — a first-and-last-sample
+assertion can be written against those literals.
