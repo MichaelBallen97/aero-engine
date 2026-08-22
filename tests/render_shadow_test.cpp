@@ -871,6 +871,7 @@ TEST_CASE("render shadow: the ortho volume's edge sits on a world-fixed texel la
     #include <aero/platform/platform.hpp>
     #include <aero/render/render.hpp>
     #include <aero/rhi/rhi.hpp>
+    #include <aero/rhi/shader_loader.hpp>  // SM15 -- rhi.hpp deliberately does not re-export it
 
     #include "../engine/render/src/material_pack.hpp"
     #include "rhi_test_support.hpp"
@@ -1381,6 +1382,54 @@ TEST_CASE("render shadow: the shared resolver drops the same instances from both
     // having run twice already.
     CHECK(forward->lastFrameDrawn() == 2);
     CHECK(forward->lastFrameCulled() == 0);
+}
+
+TEST_CASE("render shadow: a pipeline with neither a colour target nor a depth target is refused (SM15)") {
+    // SH29's ONLY witness, and it has to live here rather than beside rhi_device_test.cpp's other
+    // structural-refusal cases. That file deliberately has no shader artifacts, so its handles are
+    // never valid and createGraphicsPipeline returns an invalid handle for BOTH reasons -- the
+    // structural refusal and the later shader-handle refusal -- which cannot discriminate.
+    //
+    // With REAL shaders it discriminates cleanly, and the reason is SDL's own validation: the only
+    // "no targets at all" refusal in SDL_gpu.c is inside the enable_alpha_to_coverage branch (:1084),
+    // which this engine never sets. So nothing downstream refuses this shape, and deleting our own
+    // `iff` arm makes it SUCCEED.
+    AERO_SHADOW_TIER1_PREAMBLE(512);
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    const engine::rhi::ShaderHandle vs = engine::rhi::loadShader(*device, vfs, "res://shadow.vert");
+    const engine::rhi::ShaderHandle fs = engine::rhi::loadShader(*device, vfs, "res://shadow.frag");
+    REQUIRE(vs.valid());
+    REQUIRE(fs.valid());
+
+    const engine::rhi::VertexBufferLayout layout{.slot = 0, .pitch = sizeof(engine::render::MeshVertex)};
+    const std::array<engine::rhi::VertexAttribute, 1> attrs{
+        {{.location = 0, .bufferSlot = 0, .format = engine::rhi::VertexFormat::Float3, .offset = 0}}};
+
+    // THE POSITIVE CONTROL FIRST, so the refusal below is not passing for the wrong reason: the SAME
+    // desc WITH a depth format is the depth-only shape the widening exists for, and it must succeed.
+    engine::rhi::GraphicsPipelineDesc desc{.vertexShader = vs,
+                                           .fragmentShader = fs,
+                                           .vertexBuffers = std::span{&layout, 1},
+                                           .vertexAttributes = attrs,
+                                           .colorTargets = {},
+                                           .depthStencilFormat = engine::rhi::TextureFormat::D32Float};
+    const engine::rhi::GraphicsPipelineHandle depthOnly = device->createGraphicsPipeline(desc);
+    CHECK(depthOnly.valid());
+    if (depthOnly.valid()) {
+        device->destroyGraphicsPipeline(depthOnly);
+    }
+
+    // ...and NEITHER target is still refused, by US. Nothing downstream would refuse it.
+    desc.depthStencilFormat = engine::rhi::TextureFormat::Invalid;
+    const engine::rhi::GraphicsPipelineHandle neither = device->createGraphicsPipeline(desc);
+    CHECK_FALSE(neither.valid());
+    if (neither.valid()) {
+        device->destroyGraphicsPipeline(neither);  // never reached with the guard in place
+    }
+
+    device->destroyShader(vs);
+    device->destroyShader(fs);
 }
 
     #undef AERO_SHADOW_TIER1_PREAMBLE
