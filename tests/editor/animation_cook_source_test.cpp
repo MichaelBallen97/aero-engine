@@ -356,7 +356,14 @@ TEST_CASE("animation_cook_source: a Structure-depth model is refused by name, in
 
         const AnimationSourceResult source = animationCookChannels(model, 0);
         CHECK_FALSE(source.ok);
+        // BOTH causes must be named, and the reason is a real file rather than a style preference.
+        // This shape does NOT imply Structure depth: a Mixamo rig download whose only action spans a
+        // single frame imports at FULL depth and still lands here, because ufbx's bake flags every
+        // node constant and fbx_import.cpp appends nothing for a property nobody animated. Neither
+        // ImportedModel nor ImportResult carries the depth, so naming only one cause sends the reader
+        // to the wrong place -- which is exactly what the earlier message did.
         CHECK(source.error.find("Structure depth") != std::string::npos);
+        CHECK(source.error.find("nothing in it is animated") != std::string::npos);
     }
     SUBCASE("the real thing: skinned.gltf imported at Structure depth") {
         const std::string doc = readFixture(std::string(AERO_ASSET_FIXTURES_DIR) + "/skinned.gltf");

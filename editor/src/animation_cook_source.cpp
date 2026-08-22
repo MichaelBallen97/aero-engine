@@ -80,18 +80,27 @@ AnimationSourceResult animationCookChannels(const ImportedModel& model, std::uin
             out, std::format("the model has {} animations; cooking clip {} only", model.animations.size(), clipIndex));
     }
 
-    // 3. the Structure-depth refusal, covering BOTH backends' shapes -- they differ, and a predicate
-    //    that saw only one would let the other through. glTF records a Structure-depth channel with
-    //    EMPTY times and values; FBX and Assimp push a channel only when it carries keys, so their
-    //    Structure-depth clip is a shell with NO CHANNELS AT ALL. Neither shape can arise from a
-    //    Full-depth import -- validateAccessor refuses a zero-count accessor and the FBX/Assimp
-    //    helpers return early on an empty key list -- so this predicate is Structure's observable
-    //    signature and the message says so by name. Cooking either would produce nothing rather than
-    //    failing, which is the outcome a refusal exists to prevent.
+    // 3. the empty-clip refusal, covering BOTH backends' shapes -- they differ, and a predicate that
+    //    saw only one would let the other through. glTF records a Structure-depth channel with EMPTY
+    //    times and values; FBX and Assimp push a channel only when it carries keys, so their
+    //    Structure-depth clip is a shell with NO CHANNELS AT ALL. Cooking either would produce
+    //    nothing rather than failing, which is the outcome a refusal exists to prevent.
+    //
+    //    THE MESSAGE NAMES BOTH CAUSES BECAUSE THIS FUNCTION CANNOT TELL THEM APART. An earlier
+    //    version asserted Structure depth outright, on the reasoning that a no-channel clip cannot
+    //    arise from a Full-depth import. A real file disproved it: a Mixamo rig download whose only
+    //    action spans a SINGLE FRAME imports at Full depth and still yields zero channels, because
+    //    ufbx's bake flags every node constant_translation/constant_rotation/constant_scale and
+    //    fbx_import.cpp correctly appends nothing for a property nobody animated. Neither
+    //    ImportedModel nor ImportResult records the depth it was imported at, so this function has
+    //    no way to distinguish "nothing is animated" from "imported at Structure depth" -- and a
+    //    message that picks one sends the reader to the wrong place. It states what it observes and
+    //    names both causes; the caller knows which import it asked for.
     if (clip.channels.empty()) {
         return fail(
-            std::format("clip {} carries no channels: this model was imported at Structure depth, "
-                        "and a clip needs a Full import",
+            std::format("clip {} carries no channels: either nothing in it is animated (every "
+                        "property constant), or the model was imported at Structure depth and a "
+                        "clip needs a Full import",
                         clipIndex));
     }
     bool anyKeys = false;
