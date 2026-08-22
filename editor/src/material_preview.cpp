@@ -141,8 +141,14 @@ void MaterialPreview::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExte
         reason = "Preview unavailable -- render target creation failed.";
         return;
     }
+    // shadowMapResolution 0 is EXACT and means OFF (task 3.6.2's D16), and this renderer never calls
+    // renderShadowMap: a material preview lights a single sphere with no caster and no receiver. At
+    // the 2048 default it would allocate ~16.8 MB of dead VRAM, a comparison sampler, three extra
+    // shader loads and two extra pipeline compiles per editor session, for a map nothing ever writes
+    // or samples. 0 shrinks the bind placeholder to 1x1, which slot 5 still needs.
     renderer = render::ForwardRenderer::create(
-        *device, shaderVfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+        *device, shaderVfs,
+        {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat(), .shadowMapResolution = 0});
     if (!renderer) {
         target.reset();  // created above and now unusable: released HERE, in the service pass (INV-5)
         status = Status::Unavailable;
