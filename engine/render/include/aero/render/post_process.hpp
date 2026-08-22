@@ -87,7 +87,8 @@ struct PostProcessConfig {
     // Extension-less res:// VFS paths, resolved through the caller-supplied VirtualFileSystem.
     // READ ONLY INSIDE create() and never after -- the stored copy's views are never dereferenced
     // again, which is stated rather than worked around, because a string_view member that outlives
-    // its backing string is a recorded editor-side trap.
+    // its backing string is a recorded editor-side trap. VERIFIED, not assumed: `cfg` is written by
+    // the constructor's member-init list and read by nothing at all in post_process.cpp.
     std::string_view vertexShaderPath = "res://fullscreen.vert";
     std::string_view fragmentShaderPath = "res://tonemap.frag";
 };

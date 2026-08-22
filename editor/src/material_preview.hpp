@@ -182,8 +182,11 @@ private:
     // explicitly rather than relying on it: the texture cache and the material are released first, then
     // the renderer, then the target -- all before ~Device (AC-31's clean-shutdown clause).
     // task 3.6.3: `post` OWNS the HDR scene target the ForwardRenderer draws into; `target` below stays
-    // the ImGui-visible OUTPUT and is now DEPTH-FREE. Declared BEFORE `target` so the reverse-order
-    // default teardown matches the destructor's explicit sequence, which spells it out anyway.
+    // the ImGui-visible OUTPUT and is now DEPTH-FREE. ITS POSITION IN THIS LIST DOES NOT DECIDE ITS
+    // TEARDOWN: the destructor resets textures -> material -> renderer -> post -> target explicitly,
+    // so every optional here is already empty by the time implicit member destruction runs. Stated
+    // that way rather than as "declaration order is reverse teardown order", which is false for this
+    // member -- reverse declaration order would release `target` BEFORE `post`.
     std::optional<render::PostProcess> post;
     std::optional<render::RenderTarget> target;
     std::optional<render::ForwardRenderer> renderer;

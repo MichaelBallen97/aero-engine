@@ -787,7 +787,23 @@ TEST_CASE("render tonemap: create refuses a missing shader and leaks nothing (PP
         // which no assertion reads. Measured during the sabotage pass -- deleting the release left
         // the entire tier green while ~Device reported "releasing 1 leaked shader(s)". The
         // setLogCallback seam is scene_render_test.cpp's own, used here for the same reason.
+        // THE DETACH IS RAII, and that is not fussiness. The callback captures `&warnings`, a local,
+        // and log.hpp is explicit that clearing the callback does not guarantee its captured state may
+        // be destroyed. There is no REQUIRE between the install and the detach TODAY -- but a REQUIRE
+        // added here later would return from the case with the callback still installed and `warnings`
+        // already destroyed, which is a use-after-free on the next line anything logs. A guard makes
+        // that unwritable rather than merely absent.
+        struct LogCallbackGuard {
+            ~LogCallbackGuard() { engine::setLogCallback({}); }
+            LogCallbackGuard() = default;
+            LogCallbackGuard(const LogCallbackGuard&) = delete;
+            LogCallbackGuard& operator=(const LogCallbackGuard&) = delete;
+            LogCallbackGuard(LogCallbackGuard&&) = delete;
+            LogCallbackGuard& operator=(LogCallbackGuard&&) = delete;
+        };
+
         std::vector<std::string> warnings;
+        const LogCallbackGuard detachOnExit;
         engine::setLogCallback([&warnings](const engine::LogRecord& record) {
             if (record.level >= engine::LogLevel::Warn) {
                 warnings.emplace_back(record.message);
@@ -806,7 +822,7 @@ TEST_CASE("render tonemap: create refuses a missing shader and leaks nothing (PP
         // The target holds a Device* and must die FIRST; then ~Device is what would report a leak.
         out.reset();
         device.reset();
-        engine::setLogCallback({});
+        engine::setLogCallback({});  // detach BEFORE reading `warnings`; the guard above is the backstop
 
         const bool leaked = std::any_of(warnings.begin(), warnings.end(), [](const std::string& line) {
             return line.find("leaked shader") != std::string::npos;

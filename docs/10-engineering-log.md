@@ -10116,11 +10116,12 @@ seeds above.
 ### Task 3.6.3 — Tonemap/gamma pass (Epic 3.6)
 
 **Branch:** `feat/3.6.3-tonemap-gamma-pass`, cut from `main @ 64df342` — the spec's own stated branch
-point, with no drift. **Nine green commits** — one per build step (`8d127ed` the vocabulary,
+point, with no drift. **Ten green commits** — one per build step (`8d127ed` the vocabulary,
 `d354744` the shader pair + the TM tier, `d36cbc5` `PostProcess` + the packer, `449d641` the PP tier,
 `f7885bf` the editor wiring, `ea79ad8` the sample), one closing the sabotage matrix's three genuine
-gaps (`46fac21`), this documentation commit, and the code-review round's. Counted with
-`git rev-list --count`, not by adding up steps. **Complete in code; the twelve-row macOS validation
+gaps (`46fac21`), one relocating the four editor cases out of the wrong preprocessor block (`3c00640`,
+found by the gate — see below), one documentation commit (`3bfae15`) and one closing the code-review
+round. Counted with `git rev-list --count`, not by adding up steps. **Complete in code; the twelve-row macOS validation
 pass is PENDING** (`editor/validation/3.6.3-tonemap-gamma.md`, written before the pass as always).
 
 Sized **S** in the roadmap and landed **M**, and that was recorded in the spec before implementation
@@ -10137,7 +10138,8 @@ the way the subtask asks: a fullscreen pass scaffold.
 #### What shipped
 
 Two `engine/render` pairs plus one src-private packer, two shaders, one sample, and a two-line wiring
-change in each of the editor's two GPU consumers. **24 tracked files** in the whole diff.
+change in each of the editor's two GPU consumers. **26 tracked files** in the whole diff — 24 of code,
+assets and build files, plus the two documentation files this entry lives in.
 
 * **`engine/render/tonemap.{hpp,cpp}`** — PUBLIC and **PURE**: no rhi type, no allocation, no logging,
   no I/O, nothing that can throw. The `culling.hpp` posture, and the layer's third pure module after
@@ -10395,6 +10397,35 @@ across four arms / 36 cross-lane comparisons**.
 
 **A note on that manifest count**: `wc -l` reads **58**, because the file's frozen header is 40 lines
 of prose. The 18 is `grep -cvE '^[[:space:]]*(#|$)'`.
+
+#### The code-review round: three findings, none blocking, all closed
+
+The eleven-point checklist passed on every point — `resolveCount()` sits at the `draw` site and
+nowhere else, the three latches are each set once and cleared only by `beginScene`'s own
+`sceneEnded`, `create()` releases everything on all five failure arms, `sanitizeTonemapParams` runs
+before BOTH packs on the only path into `resolve`, the two `resize` calls are adjacent in both
+consumers, `drawViewOptions` has **no `return` between its `PushID` and its `PopID`** and its
+`BeginCombo`/`EndCombo` pair is correctly asymmetric, the label helper returns string LITERALS,
+there is no `toString(TonemapOperator)`, every new TU that touches `<algorithm>`'s contents includes
+it, the new doctest TU includes `<ostream>`, and `engine/scene_render` is genuinely untouched.
+
+Reading the diff found three things the checklist does not ask about:
+
+1. **A comment that claimed something FALSE.** `material_preview.hpp` said `post` is declared before
+   `target` "so the reverse-order default teardown matches the destructor's explicit sequence".
+   Reverse declaration order would release `target` **before** `post`, which is the opposite of the
+   destructor's `renderer → post → target`. The behaviour is correct — the destructor resets every
+   optional explicitly, so implicit member destruction runs on empty ones — but the stated *reason*
+   was wrong, and a wrong reason is what a later edit reasons from. Restated.
+2. **A latent use-after-free in `PP4`'s own log capture.** The callback captures `&warnings`, a local,
+   and `log.hpp` is explicit that clearing the callback does not guarantee its captured state may be
+   destroyed. There is no `REQUIRE` between the install and the detach *today*, so the case is safe as
+   written — but one added there later would return with the callback installed and `warnings`
+   already destroyed. Closed with an RAII guard, which makes it unwritable rather than merely absent.
+3. **A precision gap on `PostProcessConfig`'s two `string_view` members.** The header claimed they are
+   read only inside `create()`; that is now stated as **verified** — `cfg` is written by the
+   constructor's member-init list and read by nothing at all in `post_process.cpp`, which is the
+   difference between a promise and a fact.
 
 #### One editor case landed in the wrong preprocessor block, and it is worth writing down
 
