@@ -611,7 +611,17 @@ TEST_CASE("render tonemap: the HLSL transcribes tonemap.hpp, pinned as source te
         CHECK(countOf(frag, "linearToSrgbEncode") >= 2);
     }
     SUBCASE("the curve arms are in the order the enum's values demand") {
-        CHECK(occursAfter(frag, "uCurve == 1", "tonemapReinhard"));
+        // STRENGTHENED BY THE SABOTAGE PASS. The obvious form -- "tonemapReinhard occurs somewhere
+        // after `uCurve == 1`" -- is satisfied by a SWAPPED chain, because the reinhard call moved
+        // into the SECOND arm is still textually after the first comparison. Measured: seeding the
+        // swap reddened one clause, not two. The discriminating form pins the reinhard call to the
+        // span BETWEEN the two comparisons, which a swap cannot satisfy.
+        const std::size_t arm1 = frag.find("uCurve == 1");
+        const std::size_t arm2 = frag.find("uCurve == 2");
+        REQUIRE(arm1 != std::string::npos);
+        REQUIRE(arm2 != std::string::npos);
+        REQUIRE(arm1 < arm2);
+        CHECK(frag.find("tonemapReinhard", arm1) < arm2);
         CHECK(occursAfter(frag, "uCurve == 2", "tonemapAcesApprox"));
     }
     SUBCASE("the fragment stage writes a LITERAL alpha, never the sampled one") {
@@ -645,6 +655,7 @@ TEST_CASE("render tonemap: the HLSL transcribes tonemap.hpp, pinned as source te
 
 #if AERO_SHADER_TOOLS_ENABLED
 
+    #include <aero/core/log.hpp>
     #include <aero/core/vfs.hpp>
     #include <aero/platform/platform.hpp>
     #include <aero/rhi/rhi.hpp>
@@ -653,6 +664,7 @@ TEST_CASE("render tonemap: the HLSL transcribes tonemap.hpp, pinned as source te
 
     #include <memory>
     #include <utility>
+    #include <vector>
 
 namespace {
 
@@ -766,17 +778,44 @@ TEST_CASE("render tonemap: create refuses a missing shader and leaks nothing (PP
                         .has_value());
     }
     SUBCASE("ONLY the vertex shader resolves -- the arm that can see a leak") {
-        // With both handles invalid the destroys are no-ops, so the empty-VFS arm above cannot
-        // witness a create() that forgot to release the shader it DID create. Here `vs` is a real GPU
-        // object and `fs` is not: skipping either destroy leaves a live shader at ~Device, which logs
-        // a leak WARN and is what ASan sees on the Debug lanes.
-        engine::VirtualFileSystem partialVfs;
-        partialVfs.mount(std::make_unique<SingleShaderBackend>(AERO_SHADERS_DIR, "fullscreen.vert"));
-        CHECK(partialVfs.exists("res://fullscreen.vert.json"));
-        CHECK_FALSE(partialVfs.exists("res://tonemap.frag.json"));
-        CHECK_FALSE(engine::render::PostProcess::create(*device, partialVfs, {256, 192},
-                                                        {.outputColorFormat = out->colorFormat()})
-                        .has_value());
+        // With both handles invalid the release is a no-op either way, so the empty-VFS arm above
+        // CANNOT witness a create() that forgot to release the shader it DID create. Here `vs` is a
+        // real GPU object and `fs` is not.
+        //
+        // AND THE LEAK IS CAPTURED FROM THE LOG, because nothing else in this tree can see it:
+        // ~Device RELEASES a leaked shader (so ASan sees no process leak) and merely WARNs about it,
+        // which no assertion reads. Measured during the sabotage pass -- deleting the release left
+        // the entire tier green while ~Device reported "releasing 1 leaked shader(s)". The
+        // setLogCallback seam is scene_render_test.cpp's own, used here for the same reason.
+        std::vector<std::string> warnings;
+        engine::setLogCallback([&warnings](const engine::LogRecord& record) {
+            if (record.level >= engine::LogLevel::Warn) {
+                warnings.emplace_back(record.message);
+            }
+        });
+
+        {
+            engine::VirtualFileSystem partialVfs;
+            partialVfs.mount(std::make_unique<SingleShaderBackend>(AERO_SHADERS_DIR, "fullscreen.vert"));
+            CHECK(partialVfs.exists("res://fullscreen.vert.json"));
+            CHECK_FALSE(partialVfs.exists("res://tonemap.frag.json"));
+            CHECK_FALSE(engine::render::PostProcess::create(*device, partialVfs, {256, 192},
+                                                            {.outputColorFormat = out->colorFormat()})
+                            .has_value());
+        }
+        // The target holds a Device* and must die FIRST; then ~Device is what would report a leak.
+        out.reset();
+        device.reset();
+        engine::setLogCallback({});
+
+        const bool leaked = std::any_of(warnings.begin(), warnings.end(), [](const std::string& line) {
+            return line.find("leaked shader") != std::string::npos;
+        });
+        CHECK_FALSE(leaked);
+        // ANTI-VACUITY: the capture is live at all. ~Device is silent on a clean teardown, so this
+        // asserts the CALLBACK ran rather than that a particular line appeared -- the refused
+        // create() above logs its own ERROR through the same sink.
+        CHECK_FALSE(warnings.empty());
     }
 }
 
@@ -888,6 +927,17 @@ TEST_CASE("render tonemap: a moved-from pass refuses without moving resolveCount
     post->resolve(*outFrame, TonemapParams{});  // NOLINT(bugprone-use-after-move) -- deliberate
     CHECK(post->resolveCount() == 0);
     CHECK(out->endFrame(std::move(*outFrame)));
+
+    // ADDED BY THE SABOTAGE PASS. endScene FORWARDS its RenderTarget's answer, and a moved-from pass
+    // has no RenderTarget -- so this is the ONE arm reachable in this tree where that answer differs
+    // from an unconditional `true`. Without it, an endScene that dropped the frame instead of
+    // submitting it left the ENTIRE 42-case tier green: ~Frame force-ends and submits a dropped frame
+    // (with one WARN), so the picture survives and nothing here reads a log sink. Measured, then
+    // closed. The one "Frame dropped without endFrame" WARN below is the documented cost of handing a
+    // frame to a pass that cannot consume it, not a defect.
+    std::optional<engine::render::Frame> orphan = out->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(orphan.has_value());
+    CHECK_FALSE(post->endScene(std::move(*orphan)));
 
     // Move-assign OVER a live pass, then destroy: a defaulted move would double-free the pipeline and
     // the sampler here, and ASan on the Debug lanes is what sees it.

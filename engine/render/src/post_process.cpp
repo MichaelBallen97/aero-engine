@@ -16,6 +16,41 @@
 #include <utility>
 
 namespace engine::render {
+namespace {
+
+// A SCOPE-OWNED shader handle, and the reason it exists is a sabotage finding rather than taste.
+// create() has four exits between loading a shader and no longer needing it, and a destroy written
+// at each of them is four chances to forget one. NOTHING IN THIS TREE CAN WITNESS A LEAKED SHADER
+// on its own: ~Device logs a WARN and releases it, so ASan sees no process leak and no assertion
+// moves. Measured -- deleting the two explicit destroys left the whole 42-case tier GREEN while
+// ~Device reported "releasing 1 leaked shader(s)". So the closure is STRUCTURAL: with ownership
+// here, forgetting a destroy is UNSPELLABLE rather than merely untested. PP4's log-capture arm is
+// the witness that the release still happens.
+//
+// The valid() guard also keeps a failed load quiet: destroying an invalid handle is a documented
+// no-op, but the backend logs an ERROR for it, and a failure path that reports its own cause should
+// not also report a non-problem.
+class ScopedShader {
+public:
+    ScopedShader(rhi::Device& owner, rhi::ShaderHandle shader) noexcept : device(&owner), handle(shader) {}
+    ~ScopedShader() {
+        if (device != nullptr && handle.valid()) {
+            device->destroyShader(handle);
+        }
+    }
+    ScopedShader(const ScopedShader&) = delete;
+    ScopedShader& operator=(const ScopedShader&) = delete;
+    ScopedShader(ScopedShader&&) = delete;
+    ScopedShader& operator=(ScopedShader&&) = delete;
+
+    [[nodiscard]] rhi::ShaderHandle get() const noexcept { return handle; }
+
+private:
+    rhi::Device* device;
+    rhi::ShaderHandle handle;
+};
+
+}  // namespace
 
 Vec2 tonemapSourceUvMax(rhi::Extent2D drawExtent, rhi::Extent2D textureExtent) noexcept {
     const auto axis = [](std::uint32_t draw, std::uint32_t texture) {
@@ -52,16 +87,18 @@ std::optional<PostProcess> PostProcess::create(rhi::Device& device, const Virtua
         return std::nullopt;
     }
 
-    // 3. The two shaders. loadShader returns an INVALID handle + its own ERROR on any failure.
-    const rhi::ShaderHandle vs = rhi::loadShader(device, shaderVfs, config.vertexShaderPath);
-    const rhi::ShaderHandle fs = rhi::loadShader(device, shaderVfs, config.fragmentShaderPath);
-    if (!vs.valid() || !fs.valid()) {
-        device.destroyShader(vs);  // both destroys are unconditional: destroying an invalid handle
-        device.destroyShader(fs);  // is a documented no-op, and this is the shape that cannot leak
+    // 3. The two shaders. loadShader returns an INVALID handle + its own ERROR on any failure. Both
+    //    are SCOPE-OWNED (see ScopedShader above): there is no destroy line on any exit from here,
+    //    which is what makes "forgot to release the shader that DID load" unspellable rather than
+    //    merely untested. They stay alive until the end of this function, which is well past the
+    //    pipeline creation that needs them.
+    const ScopedShader vs{device, rhi::loadShader(device, shaderVfs, config.vertexShaderPath)};
+    const ScopedShader fs{device, rhi::loadShader(device, shaderVfs, config.fragmentShaderPath)};
+    if (!vs.get().valid() || !fs.get().valid()) {
         AERO_LOG_ERROR(
             "render::PostProcess::create - shader load failed (are res://fullscreen.vert / "
             "res://tonemap.frag cooked?)");
-        return std::nullopt;  // `scene` releases itself on the way out (RAII)
+        return std::nullopt;  // `scene` and both shaders release themselves on the way out (RAII)
     }
 
     // 4. The pipeline. Every field that matters is written even where it equals its default, because
@@ -73,8 +110,8 @@ std::optional<PostProcess> PostProcess::create(rhi::Device& device, const Virtua
         .blend = {.enableBlend = false, .writeMask = rhi::ColorWriteMask::All},  // D5: blending off
     };
     const rhi::GraphicsPipelineDesc pipelineDesc{
-        .vertexShader = vs,
-        .fragmentShader = fs,
+        .vertexShader = vs.get(),
+        .fragmentShader = fs.get(),
         .vertexBuffers = {},     // zero vertex buffers -- SV_VertexID does the work
         .vertexAttributes = {},  //   "
         .primitiveType = rhi::PrimitiveType::TriangleList,
@@ -95,10 +132,8 @@ std::optional<PostProcess> PostProcess::create(rhi::Device& device, const Virtua
         .depthStencilFormat = config.outputDepthFormat,
     };
     const rhi::GraphicsPipelineHandle pipeline = device.createGraphicsPipeline(pipelineDesc);
-    // Shaders may be destroyed the moment the pipeline exists -- and MUST be, on every path from
-    // here, or a failure leaks two shader objects.
-    device.destroyShader(vs);
-    device.destroyShader(fs);
+    // Shaders may be destroyed the moment the pipeline exists; ScopedShader does it at the end of
+    // this function, which is the same thing one statement later and cannot be forgotten.
     if (!pipeline.valid()) {
         AERO_LOG_ERROR("render::PostProcess::create - fullscreen pipeline creation failed");
         return std::nullopt;
