@@ -11144,3 +11144,422 @@ on both the `IsAnyItemActive` scan and the missing arm term — *the defect that
 test*; (B) the arm condition dropping the rect term reddens `I106(d)`; (C) the rect never being
 recorded reddens `I107`'s anti-vacuity block and five ownership assertions, plus `I106(d)`. Seed A is
 the one that matters: it is the exact code that was on `main`.
+
+---
+
+### Task 3.7.1 — Audio clip assets (Epic 3.7) — OPENS Epic 3.7
+
+**Branch:** `feat/3.7.1-audio-clip-assets`, cut from `main @ 03290bc` — the plan's stated branch
+point, with no drift and no sibling task in flight, so this branch never merged `origin/main` and
+every whole-tree count on it is a single-tree reading. **Ten green commits**, counted with
+`git rev-list --count` rather than by adding up steps: nine per build step
+(`4e3aa0b` the fixture set and its external anchor, `88c437a` the `MA_NO_DECODING` drop and the
+editor's miniaudio include line, `7549cb2` the fixture regeneration at 1.0 s, `df00690` the
+`.aerowave` container, `8bc6bc2` `cookAudio`, `63f515a` the four-format decode, `fe76e8a` the cooker's
+fifth subcommand, `890f6f3` `engine/audio` and `loadAudioClip`, `96766aa` the manifest's fifth arm and
+the lossy-digest case) plus one closing a CI finding (`73421c9`, the stb_vorbis LSan suppression).
+**Complete in code; the eleven-row macOS validation pass is PENDING**
+(`editor/validation/3.7.1-audio-clip-assets.md`, written before the pass as always).
+
+Since task 0.3.3 this engine could **open** an audio device and write silence into it, and it had
+never been able to say what a sound *is*. `engine/audio/` held one file — `.gitkeep`, dated 13 July
+2026 — and `engine/CMakeLists.txt` had no `add_subdirectory(audio)` line, so there was no `aero_audio`
+target and no `aero::audio` alias. The editor had classified `.wav`/`.mp3`/`.ogg`/`.flac` as
+`AssetKind::Audio` since 3.1.3, so those files already got GUIDs, `.meta` sidecars, import-cache
+entries and hot-reload coverage — but **nothing decoded one, nothing cooked one, no container held one
+and no runtime type could be handed one**. This task builds that whole missing column on the terms
+Epic 3.3 built the texture column on.
+
+**It makes no sound.** Playback, components and spatialization are 3.7.2; this task exists to give
+3.7.2 a clip to play.
+
+#### What shipped
+
+* **`engine/assets/cooked_audio.{hpp,cpp}` + `audio_cook.{hpp,cpp}`** — the tree's **fourth
+  first-party binary format**, `.aerowave` / `AEROWAVE`, normative as `docs/09` **section 14**
+  (Reserved renumbers **14 → 15**, so **15 is the current Reserved section**). The simplest of the
+  four by a wide margin: a 64-byte header and one bulk region, no record table, no code tables and
+  **zero padding sites**.
+* **`editor/audio_decode.{hpp,cpp}` + `audio_cook_source.{hpp,cpp}`** — the decode, all four formats.
+  miniaudio's dr_wav/dr_flac/dr_mp3 for three, `stb_vorbis` for ogg. `audio_decode.cpp` is the
+  **only** `<miniaudio.h>` TU outside `engine/platform/src/` and the **only** `<stb_vorbis.c>` TU
+  anywhere in the tree, both verified by grep at the gate.
+* **`tools/cooker`** — a **fifth** subcommand, `audio`. Both subcommand-error literals, `printUsage`,
+  the README's frozen contract and the `run_case.cmake` arms all name five.
+* **`engine/audio/` OPENS** and its `.gitkeep` is gone — `clip.{hpp,cpp}` holding `AudioClip` and
+  `loadAudioClip`, the one piece the texture column did not need: a runtime resource and a VFS loader.
+* **`tests/fixtures/audio/`** — one source signal, four encodings, two goldens, all committed, so no
+  CI lane and no other machine ever needs ffmpeg.
+
+**No dependency of any kind lands.** `vcpkg.json` and the `/vcpkg` submodule pin are byte-identical;
+miniaudio and `stb` were both already present, and Blender-style external tooling is not involved.
+**No link line moves on any existing shipping target**: `aero_editor_core` gains an *include
+directory*, never a link, because it already links `aero::platform` PUBLIC and that archive already
+carries the one `MINIAUDIO_IMPLEMENTATION` unit. The one link-line change in the whole branch is
+`aero::audio` joining **`aero_tests`**, a test target, and it is recorded as such rather than glossed.
+
+#### The four reconciliations against HEAD, and what each corrected
+
+The spec was written at `main @ f41a775` and one docs-only commit separated it from the branch point,
+so every code-level fact in it was re-verified against the same tree it had read. Four were wrong.
+
+**1. `stb_vorbis_decode_memory` is NOT compiled out by `STB_VORBIS_NO_STDIO`.** The spec's F7 said it
+was, and R9 answered *"No — it is compiled out."* Read out of the pinned source (stb_vorbis v1.22),
+the two-condition `#if` at `:257` guards **`stb_vorbis_decode_filename`** — the *filename* one, which
+genuinely is stdio. `stb_vorbis_decode_memory` at `:261` sits under `:260`'s **single**
+`!defined(STB_VORBIS_NO_INTEGER_CONVERSION)`, which this task does not define. **The function is
+available.** The decision not to use it is unchanged and rests on its own merits — it `malloc`s the
+whole decode with no cap the caller can impose — but **the enforcement changes shape entirely**: a
+prohibition that a preprocessor guard was assumed to make true became a **grep**, `AD18`'s clause 4,
+which also pins `stb_vorbis_decode_filename` away and (clause 5) asserts the pull API is present, so
+the prohibition cannot pass on a file that decodes nothing at all.
+
+**2. `.github/workflows/ci.yml` cannot be byte-identical**, and this is 3.5.2's contradiction
+repeated. The spec listed `.github/workflows/` under byte-identical, D22 said *"no `.github/`
+change"*, and AC-21 asserted it — **all three unsatisfiable together with the fifth manifest arm**.
+The manifest's totals are literals in **four** files, not one, and `ci.yml` holds five of them plus
+three prose sentences. **AC-21 is amended**: `ci.yml` moves `18 → 20` at four sites, `36 → 40` at two,
+four upload paths to five, and three prose sentences. `.github/scripts/` is byte-identical apart from
+`check-platform-boundary.sh`.
+
+**3. The miniaudio-confinement claim lives in FIVE places, not one.** The spec's F13 said the guard
+needed *"one prose fix"* and AC-20 said *"one prose sentence … and no logic"*. Reading the live
+script: two `#` comment blocks (`:5-7`, `:56-59`) and **three printed strings** (`:167` stderr,
+`:172` the `::error` annotation, `:178` the OK banner). **AC-20 is amended**: the two `#` comments are
+amended to say the confinement is *within `engine/`* and to name `editor/src/audio_decode.cpp` as the
+editor-side home; **the three printed strings stay byte-identical, deliberately**, because they are
+advice handed to somebody who has just tripped a guard whose scan set is `engine/*/include/*`, and for
+that reader the sentence stays exactly true. Editing them would also change the guard's **output**,
+which is the one thing the "no logic change" clause is protecting. **Verified at the gate the strong
+way**: `main`'s copy of the script and the branch's copy were both run **against the same tree**, and
+their output is byte-identical — a stronger assertion than the plan's `git stash` form, which would
+have varied the tree as well as the script.
+
+**4. The `unknown_subcommand` arm's token is `sound`, and `audio` does not collide with it.** That arm
+was rewritten at 3.3.2 because its old token was `texture`, which became a real subcommand and **would
+have kept passing** while asserting something that no longer existed. Had this task been named `sound`
+the same trap would have fired a second time. The token **stays `sound`**; only the two expected-message
+literals moved.
+
+**Three further structural edits the spec did not mention** were needed in `tests/cooker/run_case.cmake`:
+the manifest-arm disjunction, the `KIND_PREFIX` chain's terminal `else()` (which meant *animation* and
+had to become an explicit `elseif` with `audio` taking the new `else()`), and the literal `18` inside
+`aero_read_manifest` — which carries its own comment saying it is *"A LITERAL 18, never a count
+derived from the file it is checking"*, and is therefore exactly the kind of site a fifth arm silently
+invalidates.
+
+#### The fixture set, and the 1.0 s decision
+
+The first cut used a **0.25 s** source, and **the ogg silently lost roughly half the signal**: 2000
+frames is shorter than Vorbis's 2048-sample long block, so the encoder emitted a single packet and the
+file decoded back to **1024 frames — 976 lost, about 49 %**. That is a real property of a short,
+low-rate source rather than a damaged file, but it reads as a decoder defect to anyone opening the test
+later, and it would have forced every ogg assertion in the task onto numbers that agree with no other
+fixture. **All four candidate lengths were measured before choosing:**
+
+| Source duration | wav frames | ogg frames after round trip |
+|---|---|---|
+| 0.25 s | 2000 | **1024** (loses 976, ~49 %) |
+| 0.50 s | 4000 | 4096 (+96) |
+| **1.00 s** | **8000** | **8000 — EXACT** |
+| 2.00 s | 16000 | 16000 (exact) |
+
+**1.0 s is the shortest length at which the Vorbis round trip is frame-exact**, so all four encodings
+decode to the same 8000-frame signal and every number in the task comes off one arithmetic. The
+fixtures were regenerated at that length in their own commit (`7549cb2`) rather than the numbers being
+worked around.
+
+**Mono ogg is impossible with this toolchain, and it turned out to be an upside.** The available
+ffmpeg carries only the *native, experimental* Vorbis encoder — it is not built against `libvorbis`,
+and there is no `oggenc`, `flac` or `sox` on this machine — and that encoder refuses anything but
+stereo (`Current FFmpeg Vorbis encoder only supports 2 channels.`). So `tone.ogg` alone carries
+`-ac 2` and is the one fixture in the set that is not mono. **That makes it the only committed source
+whose decode can witness a channel-order defect at all**: with one channel, frame-major and
+channel-major are the same byte order, so a 1-channel fixture cannot see an interleaving defect even
+in principle. Any test or validation row comparing an ogg reading against **1** channel is comparing
+against the wrong number — the ogg arm is **2 channels and 8000 frames**.
+
+**The measured mp3 frame-count delta is ZERO.** The tolerance the tests assert is
+`|decoded − 8000| <= 4608` (four granules), stated up front as documented slack for MP3's encoder
+delay and padding. Measured on the branch by cooking each fixture with the real Release binary and
+reading `frameCount` at header offset 40:
+
+| Fixture | rate | channels | frames | delta vs 8000 | artifact bytes | `64 + 2·ch·fr` holds |
+|---|---|---|---|---|---|---|
+| `tone.wav` | 8000 | 1 | 8000 | **+0** | 16064 | ✅ |
+| `tone.flac` | 8000 | 1 | 8000 | **+0** | 16064 | ✅ |
+| `tone.mp3` | 8000 | 1 | **8000** | **+0** | 16064 | ✅ |
+| `tone.ogg` | 8000 | **2** | 8000 | **+0** | 32064 | ✅ |
+
+**dr_mp3 reproduced ffmpeg's 8000 exactly.** The fixture README hedged that ffmpeg honours the
+LAME/Xing gapless header while *"dr_mp3 does not necessarily"*; on this input it does, or its delay
+and padding cancel. **The tolerance is therefore untested slack rather than slack being consumed** —
+worth knowing, because a future fixture change that starts consuming it is a signal rather than noise,
+and because ±4608 at 8000 frames is ±58 % of the signal, where at the abandoned 0.25 s length the same
+four-granule window was ±230 % of a 2000-frame clip and could not have failed for any decode short of
+a total refusal.
+
+#### The external anchor, and why it is different from the other three formats
+
+`.aerowave` is first-party, so no third-party validator will ever open one — but **its sample region
+is not first-party at all**: raw interleaved s16 LE is the most widely implemented byte layout in
+audio. `tests/fixtures/audio/tone.s16le.pcm` is **ffmpeg's own decode** of the wav fixture, exactly
+16 000 bytes, committed; `AD10`/`AD11` assert that the wav decode's and the flac decode's samples are
+byte-identical to it, and the cook half asserts the same of the artifacts' sample regions.
+
+That is **dr_wav and dr_flac checked against libavcodec** — genuine cross-implementation agreement
+that this project's own parser cannot fake, because nothing of ours produced the anchor. It is the
+answer to the sharpest sentence 3.3.3 recorded about the mesh half of its manifest: *"no texture line
+has an equivalent tie."* **If it ever reddens, that is a FINDING and the anchor is doing its job** —
+`dr_wav` or `dr_flac` has changed behaviour. **The resolution is to understand the difference and
+record it, never to regenerate the golden from our own output.**
+
+#### Determinism: claimed for wav and flac, normatively refused for mp3 and ogg
+
+`docs/09` **section 14.7** states it as normatively as section 13.7 states its own refusal. The cook is
+deterministic on every input — integer-only, no timestamp, no path, no hostname, no build id. What is
+not claimable is the **decode**: dr_wav and dr_flac are integer decoders and enter the frozen manifest;
+dr_mp3 and stb_vorbis run floating-point transforms whose code paths differ by SIMD availability and
+FMA contraction policy, and **neither may ever enter it**.
+
+**The refusal is MEASURED rather than asserted.** `cooker.audio_lossy_digests` prints both digests to
+stdout on every lane on every push, and asserts exit 0, a non-empty artifact and a literal run count of
+2 — enough that a broken audio path reddens it — while **never asserting a digest value**, so nobody
+can "finish" it by pasting the hashes in.
+
+**The three-lane reading: _______ (macOS) / _______ (Windows) / _______ (Linux) for mp3, and
+_______ / _______ / _______ for ogg** — filled from `cooker.audio_lossy_digests`' output in one CI
+run's three test logs at close-out. **Whatever it says, the two formats stay out of the frozen
+manifest**, because agreement today at one vcpkg baseline and three pinned compilers is a *fact*, not
+a *contract*, and `.claude/rules/cooked-assets.md` says a red manifest means "the same input now cooks
+to different bytes" — a sentence that has to stay true.
+
+#### The sabotage matrix — 34 seeds, run to completion, no gap found
+
+Every seed either reddened at least one case or failed to compile. **A19, A23 and A28 were flagged
+expected-declared BEFORE the matrix ran**, so their results are confirmations rather than discoveries,
+and validation rows 6 and 7 are their only coverage anywhere.
+
+**Four seeds are BUILD FAILURES rather than test failures, which is a stronger witness than any case**,
+and each was re-read from its own build log rather than remembered:
+
+| Seed | What it does | Diagnostic (read from the seed's own build log) |
+|---|---|---|
+| `A1` | `COOKED_AUDIO_HEADER_BYTES` **64 → 48** | `cooked_audio.hpp:111` — `static assertion failed due to requirement 'H_TOTAL_BYTES + 8 == COOKED_AUDIO_HEADER_BYTES'`. **The plan predicted this one would COMPILE** — see the corrections below |
+| `A1b` | the same constant, re-seeded past the header's own assertion | `cooked_audio_test.cpp:58` — `static assertion failed due to requirement 'COOKED_AUDIO_HEADER_BYTES == 64'`, the tests' own build-time pin on the on-disk size |
+| `A14b` | the derived sample cap replaced by a **wrong** literal (`57600001`) | `cooked_audio.hpp:82` — `'MAX_COOKED_AUDIO_SAMPLES == 2ULL * MAX_COOKED_AUDIO_FRAMES': the sample cap is STEREO AT THE FULL LENGTH, never a second literal` |
+| `A20` | a `frameCount` field added to `AudioCookInput` | `audio_cook_test.cpp:82` and `audio_clip_test.cpp:161` — `no matching function for call to 'cookAudio'` |
+
+**The plan predicted two build failures (A14 and A20) and there are four.** The two extra are `A1` and
+its re-seed, and both are the header-size constant being protected in a second place the plan did not
+account for. `A14b` is the sample-cap tripwire working — **but only in its drifted form**, which is
+itself a correction and is recorded below.
+
+**The three declared seeds, and why each is declared:**
+
+* **`A19`** — `audio_cook.cpp`, moving the cap checks **below** the buffer resize. Behaviourally
+  identical: same status, same message, same empty `bytes`. What changes is the **peak allocation
+  during a refusal**, and this tier has no allocation-failure injection and no way to measure RSS.
+  **Validation row 6** is its only coverage: a 20-minute wav refused, with the peak recorded on
+  correct code and, once during the matrix, on the seeded build, so the row proves a *difference*
+  rather than reporting a number. With the check below the resize the peak additionally carries a
+  ~115 MB output buffer that is never written.
+* **`A23`** — `audio_cook.cpp`, dropping the **zero-initialisation** of the output buffer. The writer
+  covers all 64 header bytes and all `2 × sampleCount` sample bytes, so on today's format there may
+  be **no observable byte at all**; the `0xCD`-fill variant was run to make any gap visible and
+  reddened nothing either. **It is DECLARED, not "closed", and the zero-init stays**: it is defence
+  for a field a *future* version adds and forgets to write, which is exactly the class of defect no
+  current test can have an arm for. **Do not delete a defence because a seed could not see it.**
+* **`A28`** — `audio_decode.cpp`, removing the **in-loop** cap check while keeping the
+  pre-allocation one. Unreachable from any committed fixture, because every fixture's self-reported
+  length is honest, so the pre-allocation check refuses first and the loop is never entered with a
+  lie. Seeing it needs a **lying-length** source — an mp3 with no Xing header whose real length
+  exceeds the cap, or a crafted ogg with a false granule position — and neither is affordable to
+  commit at cap scale (28.8 M frames is ~55 MB of PCM). **Validation row 7** is its only coverage.
+
+**Rows 6 and 6 respectively for `A19` and `A23` is not a typo**: both are about *what the refusal
+costs* rather than *what it returns*, so one peak-RSS row covers both. `A28` is row 7, which is about
+a refusal staying clean rather than cheap.
+
+**This task ran no shader, GPU or sample seeds, because it has none of those things** — it writes no
+shader, opens no device, renders no pixel and ships no sample. **The declared class is three seeds,
+the smallest since 3.6.1** (3.5.1 declared four, 3.5.2 three, 3.6.1 three, 3.6.3 nine), and every one
+of the three is about a *cost* or an *unallocatable input*, never about an output nobody can see.
+
+**No seed was run against `engine/platform/src/miniaudio_impl.c`, deliberately.** Removing a different
+trim would either break the build or change nothing observable, and the one line this task touches is
+proven by the fact that the decode works at all: with `MA_NO_DECODING` restored, **`AD6`–`AD9` all
+fail to LINK.** That is the same information at a lower cost than a seeded run.
+
+**Two witness attributions in the plan were wrong, and both were re-established by measurement at the
+gate rather than by memory.**
+
+**1. `A1` was predicted to COMPILE and does not.** The plan's row moves `COOKED_AUDIO_HEADER_BYTES`
+64 → 48 and reasons that *"a `static_assert` [will] survive — 48 % 16 == 0 — which is why `CA2` pins
+the literal rather than the divisibility."* That accounts for the alignment assertion and misses a
+second one: `cooked_audio.hpp:111`'s `static_assert(H_TOTAL_BYTES + 8 == COOKED_AUDIO_HEADER_BYTES)`,
+which is `56 + 8 == 48` and fails. The seed's own build log is unambiguous —
+`error: static assertion failed due to requirement 'H_TOTAL_BYTES + 8 == COOKED_AUDIO_HEADER_BYTES'`.
+**So A1 is a build failure, which is a stronger result than the seven cases it was predicted to
+redden**, and the header-size constant is protected by the `detail` offset table as well as by `CA2`.
+
+**2. `A14` as the plan wrote it does NOT fail to build**, and the header's own comment overstates the
+same thing. The plan calls replacing the derived `MAX_COOKED_AUDIO_SAMPLES` with *"its own literal
+`57600000`"* **"A BUILD FAILURE — the `static_assert` fires."** It does not fire, because the assertion
+compares the constant against `2ULL * MAX_COOKED_AUDIO_FRAMES` and the correct literal satisfies it:
+`57600000 == 2 × 28800000`. Verified in isolation with a five-line probe — the correct literal is
+`-fsyntax-only` clean and only a **wrong** one (`57600001`) fires the assertion, which is exactly what
+the seeded build logs show (the correct-literal and wrong-literal arms built and failed respectively).
+
+**The correction that matters is what the assertion actually is: a DRIFT tripwire, not a
+literal-substitution tripwire.** It cannot see the substitution; it sees the substituted literal going
+**stale relative to `MAX_COOKED_AUDIO_FRAMES`**, which is the failure mode worth catching and the one
+the constant exists to prevent. The header's comment — *"a tautology today and a TRIPWIRE the moment
+someone replaces the definition with a literal"* — should be read as *the moment the two drift*.
+`CA4`, which pins the derived cap's value, is what witnesses the substitution itself, and the plan's
+own row already anticipated that by asking to *"check that `CA4` would have caught it had the assert
+been deleted."*
+
+**The remaining per-seed attribution corrections are a marked blank rather than a reconstruction.**
+The matrix ran to completion and its 40 build logs survive, but the per-seed *test* results were not
+written down at the time, and which case reddened for which seed cannot be recovered from a build log
+— a build log records that a seeded tree compiled, not what it then failed. Recording them from the
+matrix's own record is **the one outstanding item in this entry**, on the same footing as the digest
+reading above, and on the standard the last four tasks set (3.5.1 corrected six attributions, 3.6.1
+four, 3.5.2 three, 3.6.3 nine — every one recorded rather than smoothed over).
+
+#### The Linux LSan finding — stb_vorbis leaks on its own error path
+
+**macOS, Windows, lint and the vcpkg-baseline job all passed `96766aa`; Linux failed, and it was never
+flake.** 167 of 168 tests passed; `aero_editor_shell_test` reported
+`test cases: 1743 | 1743 passed | 0 failed` and `assertions: 301543 | 301543 passed | 0 failed |
+Status: SUCCESS!`, and **LeakSanitizer then fired at teardown** with 632 B in 1 allocation
+(run `32584140126`, job `97057871012`):
+
+```
+#1 setup_temp_malloc      stb_vorbis.c:977
+#2 start_decoder          stb_vorbis.c:3740
+#3 stb_vorbis_open_memory stb_vorbis.c:5112
+#4 decodeWithStbVorbis    editor/src/audio_decode.cpp:199
+#6 DOCTEST_ANON_FUNC_30   tests/editor/audio_decode_test.cpp:312     ← AD14, the truncated .ogg
+```
+
+**The defect is upstream**, and the reading was verified against the pinned source rather than taken
+on trust. At `:3739-3742`:
+
+```c
+if (c->sparse)  lengths = (uint8 *) setup_temp_malloc(f, c->entries);
+else            lengths = c->codeword_lengths = (uint8 *) setup_malloc(f, c->entries);
+```
+
+In the **sparse** arm `lengths` is a **local and nothing else**; only the non-sparse arm also parks it
+on the codebook, where `vorbis_deinit` could reach it. With `alloc_buffer == NULL` — which is what we
+pass, and correctly — `setup_temp_malloc` (`:969-978`) is a plain `malloc` rather than a bump
+allocation. The two matching `setup_temp_free` calls are at `:3780` and `:3840`, both on the success
+path, and `start_decoder` has **four error returns between the allocation and the first of them**
+(`:3752`, `:3753`, `:3765`, `:3778`), so a stream rejected mid-codebook orphans the buffer. 632 B is
+`(entries + 7) & ~7` for a codebook of 625–632 entries.
+
+**Nothing of ours can close it.** `stb_vorbis_open_memory` returns `nullptr` on that path, so
+`decodeWithStbVorbis`'s `unique_ptr` guard is **never constructed** — there is no handle to own. Our
+refusal is correct.
+
+**Closed with one frame-scoped `tests/lsan.supp` entry, `leak:start_decoder`**, following 3.2.5's
+assimp precedent exactly: evidence-gated, never pre-seeded, one commented entry per observed frame,
+with the mechanism, the evidence and the bound written down. **Never module-wide** — `leak:stb_vorbis`
+would blind LSan to a first-party leak allocated anywhere inside the library, the same reason
+`leak:SDL` is refused in that file's header; this entry cannot create that blind spot because nothing
+of ours allocates inside `start_decoder` (it is handed a byte span and a null allocator and calls back
+into no code of ours). **The port is not patched** — this tree does not patch third-party sources —
+and **the fixture stays exactly as it is: `AD14` is the coverage, not the bug.** Passing a
+`stb_vorbis_alloc` arena was rejected explicitly: sizing it is guesswork, and too small a buffer
+refuses legitimate input, which trades a bounded 632-byte error-path leak for a correctness
+regression.
+
+`.github/workflows/ci.yml` needed **no change** — the Debug ctest step has pointed `LSAN_OPTIONS` at
+`tests/lsan.supp` on Linux since 0.4.2, verified rather than assumed. The same run's own
+`Suppressions used:` table proves the wiring is live: the two assimp entries fired at 15 records /
+2240 B and 2 records / 2464 B. **Nothing else in the Linux log needs attention** — zero UBSan
+diagnostics, zero warnings, one LSan block, one leak record.
+
+**The general lesson: a leak in a third-party error path is invisible on two of the three lanes.**
+LSan runs on the Linux Debug lane alone, so macOS and Windows passing the same commit says nothing
+about it, and **no local run on this machine can see it at all**. That is the second time this tree
+has learned it (3.2.5 was the first) and the first time a *decoder* rather than an *importer* was the
+source.
+
+#### Traps found
+
+* **`git grep -- $F` is SILENTLY VACUOUS under zsh.** A pathspec list held in a shell variable does
+  **not** word-split in zsh, so `git grep -n 'float' -- $F` searches one bogus pathspec, matches
+  nothing, exits 1, and a `&& … || echo "none (ok)"` idiom reports a **clean result on a dirty tree**.
+  Caught at the gate while running AC-3's own "read, do not count" grep, which came back empty when
+  the plan predicted matches — the prediction is what exposed it. The working forms are `${=F}` or
+  naming the paths literally, and the check that a grep is non-vacuous is to run it in **both**
+  directions. This is the same species as 3.1.5's `->Data` grep and the POSIX `\b` degradation: **a
+  guard command that cannot fail is worse than no guard command.**
+* **`editor/CMakeLists.txt` may not name a not-yet-existing `src/*.cpp` even in a COMMENT.** `AI2`/`AI3`
+  (`tests/editor/assimp_import_test.cpp`) derive the editor's TU list by scanning that file's **raw
+  text** for `src/*.cpp` tokens — comments included — and then `REQUIRE` every name they find to be a
+  readable file. A prose mention of a source that does not exist yet turns them red for a reason that
+  is not a violation. The assimp block above it already records the same trap for its feature token;
+  this is the second occurrence, and the file now carries a paragraph saying so.
+* **`AD4` is a TAUTOLOGY BY CONSTRUCTION and cannot fail.** It asserts
+  `isCookableAudioName(n) == (audioSourceFormatForName(n) != Unknown)` — and the implementation
+  *composes* the first from the second, so the two sides are the same expression evaluated twice. It
+  is not useless (it documents the intended relationship, and it would catch a future implementation
+  that stopped composing them), but **it is not a witness for the extension table**: `AD5`, which pins
+  the four accepted extensions against literals, is the real pin. Recorded rather than deleted,
+  because deleting it would remove the statement of intent, and rewriting it to duplicate `AD5` would
+  put the same literals in two places.
+* **A `.wav` file literally named `.wav`** — a name that is only an extension — resolves to `Wav`, not
+  `Unknown`, because `rawExtensionOf(".wav")` finds the dot at index 0 and returns `"wav"`. The spec
+  listed it under the `Unknown` cases; that reading is wrong for the helper this file copies from
+  `texture_cook_source.cpp`. **The test asserts what the helper does** and says why: a file named
+  `.wav` is a legitimate hidden file on POSIX, and refusing it would be a behaviour change with no
+  reason behind it.
+
+#### Costs accepted, named rather than hidden
+
+**Removing `MA_NO_DECODING` puts dr_wav, dr_flac and dr_mp3 into every binary that links
+`aero_platform`**, which at Phase 5 includes the runtime. The expectation is that `--gc-sections` /
+`/OPT:REF` strip them, since nothing in the runtime calls a decoder — **and that expectation is
+UNVERIFIED.** `#define MA_API static` is the recorded escape hatch. **Owner: Phase 5's packager.**
+This matters because a runtime that *can* decode an mp3 is a runtime that can be *handed* one, and
+ADR-008 says it is handed a `.pak` of cooked artifacts; the decode living in `/editor` for all four
+formats is what keeps that true at the source level, and the archive contents are the half that is
+still open.
+
+#### Named handoffs, each with an owner and a trigger
+
+| Handoff | Owner | Trigger / note |
+|---|---|---|
+| Play/stop/volume/pitch, `AudioSource`/`AudioListener`, spatialization | **3.7.2** | the epic's DoD; this task exists to give it a clip |
+| What a **positioned stereo** source means (downmix? refuse? pan through?) | **3.7.2** | the cook deliberately does not decide it |
+| The `engine/audio` public-header boundary guard | **3.7.3** | the link line makes it green *today* by construction; a guard proves it **stays** green, which is a different job |
+| `samples/phase-3-audio` | **3.7.2** | Phase 3's gate word is *audible*, and nothing here can produce a sound |
+| Streaming / partial residency for long music | **unowned** | trigger: the first clip that will not fit — the 10-minute / 115 MB cap hit in anger |
+| Loop points (`smpl`, `LOOPSTART`/`LOOPLENGTH`) | **unowned** | trigger: the first looping API that could honour them. A `formatVersion` bump, **never alone** |
+| f32 or compressed in-container sample formats | **unowned** | a `formatVersion` bump; **bundle with loop points** |
+| An importer identity for non-model assets | **unowned, shared with textures since 3.3.2** | closing it means widening `modelImporterIdentity` across eight call sites in five files, for a mechanism nothing yet consumes |
+| An audio readout or waveform thumbnail in the editor | **unowned** | this task adds **no editor UI at all**; the natural home is beside 3.7.2's components |
+| Editor-side cook-on-import (a `.aerowave` in `Library/`) | **unowned, shared with textures** | `aero_cooker` is the only producer, exactly as for `.ktx2` |
+| Buses, mixers, effects | **6.4.1 / 6.4.2** | ADR-006's own layering |
+| The runtime's decoder dead-weight, and the `MA_API static` escape hatch | **Phase 5 packager** | see "Costs accepted" above; the strip expectation is unverified |
+
+#### Build and dependency impact
+
+`engine/CMakeLists.txt` gains **one line**, `add_subdirectory(audio)`, placed **after**
+`add_subdirectory(assets)` so the `aero::assets` alias exists. `engine/assets/CMakeLists.txt` gains
+two source lines with its `target_link_libraries` block byte-identical. `editor/CMakeLists.txt` gains
+one `find_path`, one `SYSTEM PRIVATE` include directory and two source lines, and **no link line**.
+`tools/cooker/CMakeLists.txt` is byte-identical.
+
+`aero_audio` links `aero::core` + `aero::assets` **PUBLIC** and `aero::profiling` **PRIVATE** and
+**no vcpkg package at all**, which makes it the **second** target in this tree whose `PRIVATE` links
+are a genuine compile-time boundary rather than convention-plus-grep (R12: a `PRIVATE` vcpkg link
+cannot enforce a header boundary, because vcpkg installs every port into one shared per-triplet
+`include/` root that lands on the compile line of any target linking any vcpkg package). A stray
+`#include <miniaudio.h>` in `engine/audio` is a **hard compile error**, not a guard finding.
+`engine/audio/CMakeLists.txt` carries that warning in its own header, because **3.7.3 is going to be
+asked to guard exactly this and 3.7.2 is the task that can most easily void it.**

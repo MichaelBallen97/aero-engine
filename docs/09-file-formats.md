@@ -2622,15 +2622,289 @@ changed, and that is a `formatVersion` decision, not a test edit.
 
 ---
 
-## 14. Reserved for future formats
+## 14. Cooked audio clip container v1 (`.aerowave`)
+
+> Enforced in code by `engine/assets` (`cooked_audio.{hpp,cpp}` = the format and its parser,
+> `audio_cook.{hpp,cpp}` = the producer, task 3.7.1); the doctest batteries in
+> `tests/cooked_audio_test.cpp` and `tests/audio_cook_test.cpp` are its machine-checkable form, and
+> `tests/audio_clip_test.cpp` proves the loader end to end. Produced by `aero_cooker audio`; consumed
+> by `engine::audio::loadAudioClip`.
+
+### 14.0 Scope
+
+**One sound's samples, and nothing else.** A `.aerowave` stores a 64-byte header and one bulk region
+of signed 16-bit little-endian interleaved PCM. It is a **sibling** of section 9's `.aeromesh`,
+section 12's `.aeroskel` and section 13's `.aeroanim`, not a region inside any of them, and it is the
+simplest of the four by a wide margin: no record table, no code tables, no second bulk region.
+
+**`formatVersion == 1` MEANS signed 16-bit interleaved PCM.** There is no format code in the header,
+no `--format` flag on the cooker and no AUTO rule, for the same reason there is no `MeshCookSettings`
+and no `TextureCookSettings`: a one-value enum is a shape that invites a second value, and the second
+would arrive without the cross-lane byte anchor the first one has (14.10). **Adding f32 later is a
+`formatVersion` bump**, and that is the honest cost of the choice rather than an oversight.
+
+**A 24-bit or 32-bit-float source is quantized to s16, and that is the format's declared precision,
+not a defect.** The cook emits **no warning** for it. A warning that fires on the correct, intended
+behaviour of the only sample format v1 has is noise, and the field it would occupy exists for
+something that is actually wrong.
+
+**"Wave" names the SIGNAL, not the WAV file format. A `.aerowave` is NOT a RIFF file** — it shares no
+byte with one, carries no `RIFF`/`WAVE`/`fmt `/`data` chunk and cannot be opened by anything that
+reads WAV. The name is the same shortening `.aeromesh` and `.aeroanim` use, and this is the one
+confusion it can cause, so it is stated rather than left to be discovered.
+
+**The file carries no duration and no source index**, and both omissions are decisions.
+
+- **No `durationSeconds`.** Unlike section 13.2's, an audio clip's duration is *exactly*
+  `frameCount / sampleRate`. Storing it would create a field that can disagree with its own inputs in
+  a file a hostile or hand-edited producer controls, and the parser would then have to decide which
+  one wins. It is derived by one function instead (14.4).
+- **No `sourceAudioIndex`.** Sections 9.5, 12.2 and 13.2 all carry a position into an
+  `ImportedModel` sub-array because one model file yields many meshes, skins or clips. An audio
+  source file is **one** sound; there is no array to index into, so there is no field.
+
+**One deliberate asymmetry with 9.2, inherited from 12.0 and 13.0 and enforced at parse rather than by
+convention: a `.aerowave` is NEVER EMPTY.** `sampleRate` ≥ 8000, `channels` ≥ 1 and `frameCount` ≥ 1,
+and a buffer declaring less of any of them is refused. Section 9.2's empty mesh file is legal because
+a model whose every primitive was dropped is still an asset that must have an artifact; the audio cook
+is per-**file**, so a source that decodes to zero frames produces **no artifact at all** and a CLI
+error. A clip with no samples is not a degenerate sound; it is the absence of one.
+
+### 14.1 The header — 64 bytes at offset 0
+
+| Offset | Size | Type | Field | Meaning |
+|---|---|---|---|---|
+| 0 | 8 | `char[8]` | `magic` | `AEROWAVE`, ASCII, **no NUL terminator**; compared over all eight bytes |
+| 8 | 4 | `u32` | `formatVersion` | must equal `1`; a different value is refused |
+| 12 | 4 | `u32` | `cookerVersion` | the producing cooker's version. **Informational** — never gates a parse (14.6) |
+| 16 | 8 | `u64` | `sourceGuid.hi` | the source asset's GUID, high half first — the same offset sections 9, 12 and 13 use |
+| 24 | 8 | `u64` | `sourceGuid.lo` | the low half. The nil GUID (both zero) is legal and deterministic |
+| 32 | 4 | `u32` | `sampleRate` | frames per second. **∈ [8000, 384000], inclusive at both ends** |
+| 36 | 4 | `u32` | `channels` | interleaved channel count. **≥ 1**, ≤ `MAX_COOKED_AUDIO_CHANNELS` |
+| 40 | 4 | `u32` | `frameCount` | frames, **not** samples. **≥ 1**, ≤ `MAX_COOKED_AUDIO_FRAMES` |
+| 44 | 4 | `u32` | `reservedFlags` | **must be 0** — a non-zero value is a refusal (14.5) |
+| 48 | 8 | `u64` | `sampleDataOffset` | **stored**, and must equal `64` **exactly** in v1 (14.5) |
+| 56 | 8 | `u64` | `totalBytes` | must equal the buffer's own size **and** `64 + 2 × channels × frameCount` |
+
+**`COOKED_AUDIO_HEADER_BYTES` (64) is the only size.** `sizeof` is never taken of an on-disk record
+anywhere in this subsystem, because a struct's size is a compiler's opinion and a format's is not.
+The offsets above are mirrored **once** in code, in `cooked_audio.hpp`'s public `detail` namespace,
+because this format's writer and its parser are two translation units and an anonymous namespace
+cannot be shared across them; a second copy of these eleven numbers is exactly the disguise a
+swapped-offset defect wears.
+
+**64 is a multiple of 16**, so the sample region starts 16-aligned and is therefore trivially
+2-aligned for an `s16`. **That does not license a typed span over it** — every read goes through
+`getU16`, for the reason section 13.5 states: a file's region carries no alignment guarantee this
+program's types satisfy, and a typed span would need a `reinterpret_cast`.
+
+**The caps, and where each number comes from.** All five are enforced by **both** the writer and the
+parser, and the writer checks them **before** it sizes its buffer, so an over-long input costs no
+allocation.
+
+| Constant | Value | Where it comes from |
+|---|---|---|
+| `MIN_COOKED_AUDIO_SAMPLE_RATE` | 8000 | miniaudio's own `ma_standard_sample_rate_min` (`ma_standard_sample_rate_8000`) |
+| `MAX_COOKED_AUDIO_SAMPLE_RATE` | 384000 | miniaudio's own `ma_standard_sample_rate_max` |
+| `MAX_COOKED_AUDIO_CHANNELS` | 8 | 7.1 surround, the widest layout this engine will place |
+| `MAX_COOKED_AUDIO_FRAMES` | 28 800 000 | 10 minutes at 48 kHz |
+| `MAX_COOKED_AUDIO_SAMPLES` | 57 600 000 | **derived**, `2 × MAX_COOKED_AUDIO_FRAMES` — stereo at the full length |
+| `MAX_COOKED_AUDIO_BYTES` | 115 200 064 | **derived**, `64 + 2 × MAX_COOKED_AUDIO_SAMPLES` (~109.9 MiB) |
+
+**The two rate bounds are miniaudio's, taken rather than invented**, so a file this engine refuses is
+a file no device this engine can open would have accepted anyway.
+
+**The SAMPLE cap is the binding one for multi-channel, by construction and on purpose.** 8-channel
+audio caps at 7 200 000 frames — 2 min 30 s at 48 kHz — rather than at 28 800 000, because the thing
+worth bounding is **resident bytes**, not seconds. A consumer reading only `MAX_COOKED_AUDIO_FRAMES`
+will predict the wrong refusal for anything above stereo.
+
+### 14.2 The sample region
+
+One bulk region, starting at `sampleDataOffset` (= 64) and running to the end of the file. Its length
+is `2 × channels × frameCount` bytes, exactly, with nothing after it.
+
+**Frame-major interleaving is NORMATIVE: frame *f*, channel *c* is at sample index
+`f × channels + c`.** Each sample is a signed 16-bit little-endian integer. **There is no planar
+layout and no flag that could select one** — a second layout would need a producer, a consumer and a
+byte anchor, and v1 has one of each for one layout.
+
+**Channel order is the source's**, unexamined and unreordered. There is no channel-map field in the
+header, and the decoders are given no channel map (`ma_decoder`'s `pChannelMap` is left empty, its
+documented default), so no remap can occur anywhere in the pipeline. What a 4- or 8-channel clip's
+channels *mean* is a playback question, not a container question, and it belongs to whichever task
+first places a multi-channel source in a world.
+
+### 14.3 Conventions, and the zero-padding contract
+
+Section 9.1's conventions apply **by reference and unchanged**: little-endian throughout, every field
+assembled and read through the eight `put*`/`get*` primitives in `cooked_mesh.hpp`, whose endianness
+is a `static_assert`, into a zero-initialized output buffer. Two restatements matter here.
+
+**THERE ARE ZERO PADDING SITES IN THIS FORMAT, and that is a contract rather than an accident.**
+Section 13.1 spends a paragraph on `.aeroanim`'s single padding site because that format has two bulk
+regions. This one has **one bulk region and it is last**, so `totalBytes == 64 + 2 × channels ×
+frameCount` **exactly**, with no rounding term anywhere. There is no padding function to write, no
+padding byte to zero and no padding site for a parser to check. A future region added after the
+samples would introduce the first one, and that is a `formatVersion` bump (14.6).
+
+**The cook performs zero floating-point arithmetic — with no exception**, unlike section 13.7's
+`durationSeconds` fold. The decoders emit `s16`; the cook validates integers and calls `putU16`.
+That is a **stronger** property than `.aeromesh` or `.aeroanim` have, both of which move float data
+bit for bit, and it is closer to INV-T4's texture rule. **The claim's scope is
+`cooked_audio.{hpp,cpp}` and `audio_cook.{hpp,cpp}`**, which is exactly the scope that is true —
+`engine/assets` as a whole contains floating point and always did (`mesh_cook.cpp` includes
+`<cmath>`, because mesh vertex data *is* float data). The one float-returning function in the
+container's own header is `cookedAudioDurationSeconds`, a **reader-side** convenience that never
+touches a byte.
+
+### 14.4 Duration
+
+**Derived, never stored, by exactly one function**: `cookedAudioDurationSeconds(sampleRate,
+frameCount)` returns `frameCount / sampleRate` as a `float`. It is spelled once for the container, the
+cook, the loader and every future consumer, so no two callers can disagree.
+
+It is **total**: a zero `sampleRate` — which `parseCookedAudio` refuses and this function does not —
+answers `0.0f` rather than dividing.
+
+### 14.5 The writer/reader asymmetry
+
+The parser is **exact** on `sampleDataOffset` and on **both** `totalBytes` identities, unlike its
+permissiveness elsewhere, for section 13.9's stated reason: this format has exactly one legal layout,
+and equality is the only check that can see a mispositioned region at all.
+
+- `sampleDataOffset` must be **exactly 64**. Anything else is `BadRange`, including a larger value
+  that would still leave room.
+- `totalBytes` must equal the buffer's own size **and** `64 + 2 × channels × frameCount`. These are
+  two independent identities and both are checked: a buffer can agree with a self-consistent header
+  that describes the wrong number of frames, and a header can describe the right number of frames in
+  a truncated buffer. Either alone is `SizeMismatch`.
+- `reservedFlags` is a **refusal**, never an ignore. Occupying it is a `formatVersion` bump (14.6).
+
+Everything is read to the importer's hostile-input standard, because at Phase 5 this reads bytes out
+of a `.pak` that may have been shipped, patched, truncated by a failed download, or crafted:
+**every range check is a subtraction against the known-good size, never an addition that can wrap**,
+and nothing is reserved before the header's counts have passed their caps. Nothing is reserved here at
+all, in fact — the region is a span, never a copy, which is the whole promise of this format and, at
+up to 115 MB, the promise that matters most in this subsystem.
+
+### 14.6 Versioning and evolution
+
+Section 9.11's rules apply by reference.
+
+- **`formatVersion` gates a parse; `cookerVersion` never does.** `cookerVersion` means *"the same
+  input now cooks to different bytes"* and nothing else — it is what turns a red determinism-manifest
+  case into a decision rather than a mystery.
+- **Occupying `reservedFlags` is a `formatVersion` bump**, because the parser refuses non-zero. That
+  is deliberate: a v1 reader handed a v1 file with a flag set would otherwise silently ignore
+  something a producer thought it had said.
+- **An f32 or compressed sample format is a `formatVersion` bump. So are loop points. Bundle them;
+  never ship either alone.** A version bump costs a golden regeneration and a manifest churn, and
+  spending that twice for two changes that were both foreseeable is the avoidable half of the cost.
+- **Adding a second bulk region introduces this format's first padding site** (14.3), and the
+  alignment rule and its parser check both have to arrive with it.
+
+### 14.7 Determinism (normative)
+
+**The cook is deterministic on every input.** It is integer-only, and it contains no timestamp, no
+path, no hostname and no build id. Given the same `AudioCookInput` it emits the same bytes on every
+platform, in every configuration, at every point in time.
+
+**What is not claimable is the DECODE.**
+
+- **wav and flac are decoded by integer decoders (dr_wav, dr_flac) and ARE claimed cross-lane.** Both
+  enter `tests/cooker/determinism.sha256`, and the cross-lane comparison in CI covers them.
+- **mp3 and ogg run floating-point transforms** — dr_mp3's IMDCT and stb_vorbis's — **through code
+  paths that differ by SIMD availability and by FMA contraction policy. NO CROSS-LANE CLAIM IS MADE
+  ABOUT EITHER, AND NEITHER MAY EVER ENTER THE MANIFEST.**
+
+This is a direct application of section 13.7 and it is as normative as that one. The refusal is
+**measured rather than asserted**: `cooker.audio_lossy_digests` prints both digests to stdout on every
+lane on every push, and the three-lane reading is recorded in `docs/10-engineering-log.md`. **Whatever
+that reading says, the two formats stay out of the frozen manifest** — agreement today, at one vcpkg
+baseline and three pinned compilers, is a *fact*, not a *contract*, and
+`.claude/rules/cooked-assets.md` says a red manifest means "the same input now cooks to different
+bytes", a sentence that has to stay true. That case must never assert a digest value, so that nobody
+can "finish" it by pasting the hashes in.
+
+### 14.8 Error catalog
+
+`CookedAudioStatus`, nine values, and the condition each one names.
+
+| Status | Condition |
+|---|---|
+| `Ok` | parsed; `message` is empty and `audio` is meaningful |
+| `TooSmall` | the buffer is shorter than the 64-byte header |
+| `BadMagic` | the first eight bytes are not `AEROWAVE` — including a one-byte difference in the last byte |
+| `UnsupportedVersion` | `formatVersion != 1` |
+| `ReservedNotZero` | `reservedFlags != 0` — a refusal, never an ignore (14.5) |
+| `SizeMismatch` | `totalBytes` disagrees with the buffer's size, **or** with `64 + 2 × channels × frameCount` |
+| `CapExceeded` | `channels`, `frameCount` or the derived sample count is over its cap (14.1) |
+| `BadTable` | a zero `channels` or `frameCount`, or a `sampleRate` outside `[8000, 384000]` |
+| `BadRange` | `sampleDataOffset` is not exactly 64 |
+
+**Every refusal message names the offending value AND its bound** wherever there is one, and
+`message` is empty **iff** the status is `Ok`. The label function is `cookedAudioStatusLabel` and its
+`switch` has **no `default:`**, so a future enumerator is a `-Wswitch` failure on the Linux lane
+rather than a silent fallthrough.
+
+### 14.9 What this format deliberately does not carry
+
+- **No loop points.** WAV's `smpl` chunk and Vorbis's `LOOPSTART`/`LOOPLENGTH` comments both exist,
+  both are readable, and both are **ignored**. Reading them means claiming to support them, and there
+  is no looping API yet to honour them with. A `formatVersion` bump when there is (14.6).
+- **No clip name.** The file name is the identity, section 12.11's rule a second time.
+- **No resample, downmix, normalize, gain, DC removal, fade or silence trim — and no setting for any
+  of them.** The cook moves the decoder's samples; it does not process them.
+- **No f32 and no compression** (14.0, 14.6).
+- **No cue points, markers, regions, BPM or key.**
+- **No metadata of any kind** — no artist, title, comment or copyright field. The `.meta` sidecar is
+  where an asset's editor-side metadata lives, and it is not this file.
+- **No channel map** (14.2), and **no duration or source index** (14.0).
+
+### 14.10 Golden fixtures, and the external anchor
+
+`tests/fixtures/audio/` holds one source signal, four encodings and two goldens, all committed, so no
+CI lane and no other machine needs ffmpeg. `tests/fixtures/audio/README.md` records the exact
+commands, every measured number and the SHA-256 of each file.
+
+- **`tone.aerowave`** — 16 064 bytes, `64 + 2 × 1 × 8000`. Cooked once by the real `aero_cooker`
+  binary and **frozen**. It is what `engine::audio::loadAudioClip` is proven against end to end.
+- **`tone.s16le.pcm`** — 16 000 bytes, ffmpeg's own decode of `tone.wav`, raw interleaved s16 LE with
+  no container. **THE EXTERNAL ANCHOR.**
+
+**The anchor is the thing that makes this format different from the other three.** `.aerowave` is
+first-party, so no third-party validator will ever open one — but **its sample region is not
+first-party at all**: raw interleaved s16 LE is the most widely implemented byte layout in audio. The
+wav cook's and the flac cook's sample regions are asserted **byte-identical** to ffmpeg's decode, so
+`dr_wav` and `dr_flac` are checked against `libavcodec` rather than against this project's own parser.
+That is genuine cross-implementation agreement, and it is the answer to the sharpest sentence task
+3.3.3 recorded about `.aeromesh` — *"no texture line has an equivalent tie."*
+
+**If it ever reddens, that is a FINDING and the anchor is doing its job**: `dr_wav` or `dr_flac` has
+changed behaviour. The resolution is to understand the difference and record it — **never to
+regenerate the golden from our own output.**
+
+**`tone.mp3` and `tone.ogg` have no byte golden, by design** (14.7). Their tests assert sample rate,
+channel count, a frame count within a stated tolerance and a peak amplitude in the right
+neighbourhood — never a digest. **`tone.ogg` is the one fixture here that is not mono**: the
+available encoder refuses anything but stereo, which turns out to be the set's only source whose
+decode can witness a channel-order defect at all, since with one channel frame-major and channel-major
+are the same byte order.
+
+## 15. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
   applies unchanged. Section appends here. Still unowned: the `.pak` container itself and cooked
   scenes. The cooked **mesh** container is section 9, the cooked **texture** container is section 10,
-  the cooked **skeleton** container is section 12 and the cooked **animation** container is section 13.
+  the cooked **skeleton** container is section 12, the cooked **animation** container is section 13
+  and the cooked **audio** container is section 14.
 - **Cooked / binary materials** — the pak-rev cooker work, together with cooked scenes. Until then
   every consumer, editor and runtime alike, reads `.aeromat` through `engine/reflect`'s parser, and a
   binary material would be a second reader with no second producer. Task 3.4.1 recorded the decision;
   the trigger is the `.pak` container itself.
 - **Cooked animation clips (`.aeroanim`)** — **section 13** since task 3.5.2, referencing section
   12's skeletons by `sourceNodeLocalId` and carrying its own version field.
+- **Cooked audio clips (`.aerowave`)** — **section 14** since task 3.7.1, the tree's fourth
+  first-party binary format, carrying its own version field. It is the only one of the four whose
+  bulk region has an external byte anchor (14.10).
