@@ -872,9 +872,15 @@ changes **nothing** on static geometry at either elevation, because the pipeline
 working as designed — so **the row asked for the wrong evidence and was corrected, not the code**.
 (2) **`--elevation` freezes the sun but NOT the rig**, whose 3 s cycle contaminates any A/B that does
 not exclude its columns; an initial row-6 reading showed a textbook striping signature that was
-entirely the rig at a different pose. **Rows 8 and 12 remain partly measured** (a blockiness judgment;
-the picture-unchanged A/B and the inspector rows). Measurements through row 12 were taken at
-`6046c9e`; row 6's two SH26 arms were captured after 3.6.3 (PR #86) merged, both on the same build. **Row 1's gate as first written could never return 0**: the sample's own
+entirely the rig at a different pose. **Row 8 also PASSES and EVERY measurement blank on the page is now filled**, with its premise
+corrected too: the shadow edge's stair-step **shrinks** as the map coarsens (1.62 → 1.18 px from 2048
+to 256) because the 3×3 hardware PCF filters it away, while the **penumbra** grows almost exactly with
+texel size (**7 / 15 / 27 / 51 px**, i.e. 1.00× / 2.14× / 3.86× / 7.29×). **This renderer degrades as
+BLUR, not as blocks** — so a soft shadow here means under-resolved, and the fix is a smaller
+`shadowDistance` or a larger map, never a tighter fit (A6's crawl). **11 of 12 rows pass; row 12 alone
+is open** (consoles clean, picture-unchanged A/B and inspector rows not taken). Rows 1–5, 7 and 9–12
+were measured at `6046c9e`; row 6's SH26 arms and row 8's sweep after 3.6.3 (PR #86) merged, each
+comparison with both arms on the same build. **Row 1's gate as first written could never return 0**: the sample's own
 closing line contains the path `editor/validation/…`, so it matched the word it was grepping for; the
 page now excludes that line and carries an independent log-level cross-check beside it.** The renderer
 learns that light is occluded. Until now every lit surface received the full directional term
