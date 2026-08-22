@@ -9042,8 +9042,9 @@ The four-phase Windows/Linux platform-validation debt grows by one more task.
 one per build step, two correcting source comments that measurement proved false (`32b2d1f`,
 `39e16e6`), one closing the reduced-configuration finding below (`78450e0`), this documentation
 commit, and three closing the code-review round (`573d30d`, `94570a3`, `31395ee`).
-**Complete in code; the sixteen-row macOS validation pass has NOT been run yet**
-(`editor/validation/3.1.5-drag-into-scene.md`, written before the pass as always). Every count in the
+**Complete in code, and the sixteen-row macOS validation pass RAN on 2026-08-21: ✅ PASS on ALL
+16 ROWS with every measurement blank filled** (`editor/validation/3.1.5-drag-into-scene.md`, written
+before the pass as always; recorded at `521c8a4`). Every count in the
 mechanical-gate section below was measured at `32b2d1f`; `78450e0` adds no test case and no ctest
 entry — it adds an `#else` arm inside an existing one — so none of them moves.
 
@@ -9622,9 +9623,11 @@ per build step (`9f6a471` the vocabulary, `648ce61` the FC tier, `75c0cbc` the r
 `fcf3090` the cull in `draw()`, `c37c5ee` the CD tier, `bafa5ea` the sample), one closing the sabotage
 matrix's single genuine gap (`9a22000`), one documentation commit (`61e0090`), two closing the
 code-review round (`bcadb8d` the blocking guard fix, `40e71ef` the two smaller ones), and this one
-recording that round. Counted with `git rev-list --count`, not by adding up steps. **Complete in code; the ten-row macOS
-validation pass has NOT been run yet** (`editor/validation/3.6.1-frustum-culling.md`, written before
-the pass as always).
+recording that round. Counted with `git rev-list --count`, not by adding up steps. **Complete in code, and the ten-row macOS
+validation pass RAN on 2026-08-22: ✅ PASS on ALL 10 ROWS with every measurement blank filled**
+(`editor/validation/3.6.1-frustum-culling.md`, written before the pass as always). All three declared
+seeds are witnessed, and the pass found one gap in the page itself — see the validation section at the
+end of this entry.
 
 Before this, `ForwardRenderer::draw` issued a `drawIndexed` for **every** instance in the view, and
 nothing anywhere in `engine/` knew what a bounding box was. The cooked format has carried
@@ -10041,13 +10044,65 @@ changed: that is a wider blast radius than this task should take.
 
 #### Still open
 
-**The ten-row macOS validation pass has not been run.** The page exists and was written before the
-pass. Rows **4, 5 and 10** carry their measurement blanks in bold; the §V.8 session logs above are the
-evidence those rows will cite. **Rows 1 and 3 are seed `C22`'s only coverage anywhere, row 5 is
-`C28`'s, and row 7 is `C30`'s** — all three redden nothing automated, by construction, and the page
-names each seed beside its row. Row 6 is the mirrored pair's on-hardware confirmation (automated by
-`CD1`'s validity assertion); row 9 needs a temporary two-line local edit to the sample to build a
-degenerate camera, reverted afterwards.
+**The ten-row macOS validation pass RAN on 2026-08-22 and PASSES ALL TEN ROWS**, with every
+measurement blank filled. Rows **4, 5 and 10** carried the blanks; **all three declared seeds are now
+witnessed** — `C22` by two clean consoles, `C28` by the timing A/B, and `C30` by a real
+`tracy-capture` session. Row 9 used the prescribed temporary `Z_FAR = Z_NEAR` edit, reverted and
+rebuilt afterwards, and the reverted binary was re-run to confirm the WARN count returned to 0.
+
+**The method matters, because it is reusable and it is stronger than an eye.** Screen Recording was
+granted mid-pass, so the sample's **own window** could be captured in isolation — enumerate windows
+with `CGWindowListCopyWindowInfo` (which needs that same permission to return titles and owners), match
+`owner=aero_sample_phase3_culling`, then `screencapture -l<id>`. That retires the standing note that a
+sample window "cannot be isolated"; the fullscreen grab was never the only option. Each capture's
+wall-clock stamp is matched against the sample's own log timestamps, which pins every frame to an exact
+yaw. The visual rows were then judged by **counting marker-coloured pixels frame by frame** and by
+**differencing two runs at matched yaw**, producing numbers rather than impressions:
+
+* **Culling removes nothing visible (rows 2 and 5), proven rather than watched.** 18 matched-yaw A/B
+  pairs, **nine byte-identical** (mean absolute difference `0.000`, max `0`), overall mean
+  **0.096/255** — while the culled run drew as few as **1** instance against `--no-cull`'s **1000**.
+  The only non-zero pairs are those whose yaw differed by 0.5°, i.e. sub-frame jitter between two
+  separate processes. A cull that removed a contributing pixel could not produce this.
+* **The mirror behaves exactly like its twin (row 6).** Red peaks at **4072 px at yaw 284°**, green at
+  **4073 px at yaw 76°**; `284 = 360 − 76` exactly, and the peak areas agree to **one pixel**. The red
+  cube's area tapers monotonically `4072 → 336 → 73 → 0` as it leaves the edge, so it never drops out
+  while on screen.
+* **The Tracy labels are correct (row 7).** `tracy-capture` **0.13.1** — the exact pinned version, so
+  the protocol matches; Homebrew happens to ship it — captured a live 14.08 s session (6182 zones), and
+  `tracy-csvexport -u -p` read the plot data instead of judging a picture. Both series present,
+  `drawn + culled == 1000` at **every** sample, and facing away reads `drawn 1 / culled 999` against
+  `drawn 669 / culled 331` facing in. The swapped-label seed would read `drawn 999` on an empty screen.
+
+**A gap in the validation page itself was found and is recorded on the page.** **Row 6 is not
+performable at the default grid.** At `N=10` the mirrored pair sits at world `(-9, -9, 9)` and
+`(-7, -9, 9)`, whose closest approach to the view axis over the entire sweep is **48.0°** and **53.4°
+below** it, against a vertical half-FOV of **30°** — so they are **never inside the frustum at any
+yaw**, and 58 captured frames across multiple full cycles contain zero red or green pixels. The row
+runs at **`N=2`**, where the pair is large and unoccluded, and the green twin (yaw ~65–115°) and the
+red mirror (yaw ~245–335°) sit on **opposite sides of the sweep** — judging half a cycle shows one and
+not the other, which is geometry rather than a culling defect. The Preparation section now says so, and
+the Windows and Linux runs need it.
+
+**Two corrections made during the pass, recorded rather than smoothed over.** (1) A first frustum-
+visibility calculation computed depth as `-dot(v, f)`, which accepts points **behind** the camera and
+rejects those in front — it inverted every result and would have reported the palette instance as
+never-visible and produced a false "the per-instance tint is broken" finding. Caught and redone; the
+tint was then **verified working** at `N=2`, where green and blue render as thousands of unmistakable
+pixels. (2) Row 4's stress/180° cell is **bimodal at ±2°** (25 frames, half ≈0.60 ms and half
+≈1.3–2.0 ms), so the median lands on the artifact **1.256 ms**; the stable ±10° figure is **0.627 ms**
+and ±30° agrees at 0.639. The page records the ±10° numbers and says why. **Counts are unaffected** —
+they are deterministic in yaw and identical in both windows.
+
+**One clarification the row's own wording invites getting wrong.** At θ ≈ 180° the screen is **empty**
+even though the line reads `drawn 1`. The palette-exempt instance is *submitted* but still outside the
+frustum, so the GPU clips it. **Exemption means "not removed by our test", never "forced visible"** —
+the count is the falsifiable half and the empty picture is correct.
+
+*(What remains unautomatable and was confirmed as such: `osascript` cannot send keystrokes without
+Accessibility, which is still denied, so the sample cannot be asked to quit gracefully and row 9's
+closing line — `hasWarnedDegenerateFrustum()`'s "FIRED at least once" — was not captured. The
+once-only WARN is the same fact and `CD10` asserts the accessor directly.)*
 
 Windows and Linux ship **Pending**, and this task adds one more to platform-validation debt spanning
 four phases. Unlike 3.5.2, CI **does** cover a real part of it: all three lanes run `CD1`–`CD11` with

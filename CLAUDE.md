@@ -416,7 +416,7 @@ cycling is unambiguous, and the held pose is visibly not the bind pose) but it m
 
 **3.1.5 — Drag-into-scene: Epic 3.1 CLOSES with it. MERGED as PR #81 (merge commit `5a1bc69`,
 twenty-seven commits, all six checks green with `headSha == HEAD` asserted before the merge)
-and PENDING its sixteen-row macOS validation pass. It is NOT merged.** This is where an asset stops
+and macOS-validated ✅ PASS on ALL 16 ROWS (2026-08-21).** This is where an asset stops
 being a row in a browser. Everything upstream existed — GUIDs, an import cache, a browser, five
 importers, two cooks, materials, and 3.5.1's working `createMesh`/draw path — and **nothing in a scene
 file could name any of it**. Sized **S** in the phase plan and landed at **L**, recorded as such in
