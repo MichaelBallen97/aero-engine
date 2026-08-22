@@ -75,9 +75,14 @@ inline constexpr std::uint32_t MAX_COOKED_AUDIO_FRAMES = 28800000;  // 10 minute
 // audio caps at 7 200 000 frames (2 min 30 s at 48 kHz) rather than at 28 800 000, because the thing
 // worth bounding is RESIDENT BYTES, not seconds.
 //
-// The static_assert below is an expression against the same expression DELIBERATELY: it is a
-// tautology today and a TRIPWIRE the moment someone replaces the definition with a literal. A
-// static_assert failure is a build failure, which is a stronger witness than any test.
+// The static_assert below is an expression against the same expression DELIBERATELY -- and MEASURED,
+// by task 3.7.1's sabotage matrix (seed A14), it is a DRIFT tripwire rather than a
+// literal-substitution one. Replacing the definition with the CORRECT literal 57600000 compiles
+// clean, because 57600000 == 2 * 28800000. What fires the assertion is that literal going STALE the
+// day MAX_COOKED_AUDIO_FRAMES moves and the second number does not -- which is the failure mode worth
+// catching, and the one this expression exists to prevent. A static_assert failure is a build
+// failure, which is a stronger witness than any test; with the assertion deleted as well, a wrong
+// literal is caught at run time by CA3, CA4 and CA24.
 inline constexpr std::uint64_t MAX_COOKED_AUDIO_SAMPLES = 2ULL * MAX_COOKED_AUDIO_FRAMES;
 static_assert(MAX_COOKED_AUDIO_SAMPLES == 2ULL * MAX_COOKED_AUDIO_FRAMES,
               "the sample cap is STEREO AT THE FULL LENGTH, never a second literal");

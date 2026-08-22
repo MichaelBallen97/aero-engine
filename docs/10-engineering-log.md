@@ -11322,17 +11322,42 @@ not claimable is the **decode**: dr_wav and dr_flac are integer decoders and ent
 dr_mp3 and stb_vorbis run floating-point transforms whose code paths differ by SIMD availability and
 FMA contraction policy, and **neither may ever enter it**.
 
-**The refusal is MEASURED rather than asserted.** `cooker.audio_lossy_digests` prints both digests to
-stdout on every lane on every push, and asserts exit 0, a non-empty artifact and a literal run count of
-2 — enough that a broken audio path reddens it — while **never asserting a digest value**, so nobody
-can "finish" it by pasting the hashes in.
+**The refusal is MEASURED rather than asserted.** `cooker.audio_lossy_digests` cooks both lossy
+fixtures on every lane on every push and PRINTS each SHA-256, while asserting exit 0, a non-empty
+artifact and a literal run count of 2 — enough that a broken audio path reddens it — and **never
+asserting a digest value**, so nobody can "finish" it by pasting the hashes in. It prints through
+`message(NOTICE)`, which CMake writes to **stderr** and not to stdout — measured with a two-line
+probe rather than remembered, because a reader piping a CI log through `2>/dev/null` would see
+nothing at all.
 
-**The three-lane reading: _______ (macOS) / _______ (Windows) / _______ (Linux) for mp3, and
-_______ / _______ / _______ for ogg** — filled from `cooker.audio_lossy_digests`' output in one CI
-run's three test logs at close-out. **Whatever it says, the two formats stay out of the frozen
-manifest**, because agreement today at one vcpkg baseline and three pinned compilers is a *fact*, not
-a *contract*, and `.claude/rules/cooked-assets.md` says a red manifest means "the same input now cooks
-to different bytes" — a sentence that has to stay true.
+**The measurement did not work as built, and the branch's own CI logs are what showed it.** The case
+prints, and **ctest keeps a passing test's output to itself** — so the Linux job log carried
+`Test #165: cooker.audio_lossy_digests ... Passed 0.11 sec` and **zero** 64-hex lines, macOS and
+Windows the same. D12's whole mechanism is *three CI logs from one run, then answer the question with
+numbers*, and not one of the three logs held a number, so AC-35's reading could not be discharged at
+all. **Closed additively by one step per lane** (`d992e7d`), placed after the Release ctest step and
+re-running that one case with `-V` so its output reaches the log. Four properties make it safe to
+keep: it is a plain invocation with **no pipe**, so the case's exit code propagates and a broken
+audio path still reddens the step; it can **never** fail for a digest *value*, because the case
+asserts no hash; the filter is **anchored**, and a rename exits 8 with `No tests were found!!!`
+rather than passing while measuring nothing (measured); and it adds **no job**, so the six check
+names `gh pr checks` reads are unmoved. `-V` prefixes every line with the test's own number, so the
+log reads `165: <sha256>  audio-tone-mp3.aerowave`. **The general form is worth carrying: a case that
+prints for a person to read needs something that makes the print readable — a passing test is silent
+by default, which is exactly the state a measurement must not be left in.**
+
+**The three-lane reading, mp3:**
+`ba4aad02a9000f4ea2b13e464cda3b743d925af436a1ae1fb1dac3740d5f331c` (macOS) / **_______** (Windows) /
+**_______** (Linux). **And ogg:**
+`ee8b6cf0ccc5427f35780d31beee3eb478ab7254623297bddd73071e1353f1c0` (macOS) / **_______** (Windows) /
+**_______** (Linux). The macOS pair is measured on the Release preset and is **byte-identical in
+Debug**, so on this lane the configuration moves no number — which is why the CI step takes Release,
+matching the configuration the frozen wav/flac contract is compared from, rather than for a reason
+about the digits. The four remaining blanks are filled from the first CI run carrying the new step.
+**Whatever they say, the two formats stay out of the frozen manifest**, because agreement today at
+one vcpkg baseline and three pinned compilers is a *fact*, not a *contract*, and
+`.claude/rules/cooked-assets.md` says a red manifest means "the same input now cooks to different
+bytes" — a sentence that has to stay true.
 
 #### The sabotage matrix — 34 seeds, run to completion, no gap found
 
@@ -11391,8 +11416,11 @@ trim would either break the build or change nothing observable, and the one line
 proven by the fact that the decode works at all: with `MA_NO_DECODING` restored, **`AD6`–`AD9` all
 fail to LINK.** That is the same information at a lower cost than a seeded run.
 
-**Two witness attributions in the plan were wrong, and both were re-established by measurement at the
-gate rather than by memory.**
+**ELEVEN witness attributions in the plan were wrong, and every one was re-established by measurement
+rather than by memory.** The first two are the sharpest, because both are about a *build* outcome the
+plan got backwards; the other nine are all the same species — **a case the plan named as a seed's
+witness that the seed does not move at all**, which is the failure mode a matrix exists to find and
+the one that quietly inflates how covered a task looks.
 
 **1. `A1` was predicted to COMPILE and does not.** The plan's row moves `COOKED_AUDIO_HEADER_BYTES`
 64 → 48 and reasons that *"a `static_assert` [will] survive — 48 % 16 == 0 — which is why `CA2` pins
@@ -11414,19 +11442,113 @@ the seeded build logs show (the correct-literal and wrong-literal arms built and
 **The correction that matters is what the assertion actually is: a DRIFT tripwire, not a
 literal-substitution tripwire.** It cannot see the substitution; it sees the substituted literal going
 **stale relative to `MAX_COOKED_AUDIO_FRAMES`**, which is the failure mode worth catching and the one
-the constant exists to prevent. The header's comment — *"a tautology today and a TRIPWIRE the moment
-someone replaces the definition with a literal"* — should be read as *the moment the two drift*.
-`CA4`, which pins the derived cap's value, is what witnesses the substitution itself, and the plan's
-own row already anticipated that by asking to *"check that `CA4` would have caught it had the assert
-been deleted."*
+the constant exists to prevent. **`cooked_audio.hpp`'s own comment overstated it in exactly the same
+way** — *"a tautology today and a TRIPWIRE the moment someone replaces the definition with a
+literal"* — and **that comment was corrected rather than left for the next reader to re-derive**: it
+now records the measured behaviour, that the correct literal compiles clean and that what fires the
+assertion is the literal drifting from `MAX_COOKED_AUDIO_FRAMES`. **The runtime net is also wider
+than the plan said**: with the assertion deleted as well (`A14c`), a wrong literal reddens **`CA3`,
+`CA4` and `CA24`** — the plan named `CA4` alone, missing `CA3`'s five-cap literal row
+(`MAX_COOKED_AUDIO_SAMPLES == 57600000`) and `CA24`'s third arm, which asserts the sample cap's value
+inside a refusal message.
 
-**The remaining per-seed attribution corrections are a marked blank rather than a reconstruction.**
-The matrix ran to completion and its 40 build logs survive, but the per-seed *test* results were not
-written down at the time, and which case reddened for which seed cannot be recovered from a build log
-— a build log records that a seeded tree compiled, not what it then failed. Recording them from the
-matrix's own record is **the one outstanding item in this entry**, on the same footing as the digest
-reading above, and on the standard the last four tasks set (3.5.1 corrected six attributions, 3.6.1
-four, 3.5.2 three, 3.6.3 nine — every one recorded rather than smoothed over).
+**3. `A2` names the wrong file, and `CA1` is not a witness.** The plan's row edits `cooked_audio.cpp`
+to write `AEROWAVF`. That file only **parses** — the magic is written by `audio_cook.cpp:103-104`,
+and `cooked_audio.cpp:97-98` merely compares against it — so the seed as written has to be applied to
+the cook. `CA1` pins the `COOKED_AUDIO_MAGIC` **constant**, which the seed does not touch, so it
+stays green whichever file is edited. The real witnesses are **`AK2`** (the byte compare against the
+hand-built golden) and **`AK3`** (the round trip, which answers `BadMagic`), with
+`cooker.audio_happy`'s magic-hex read at the process tier.
+
+**4. `A6` and `A12`: `AK18` is not a witness for either.** It asserts `bytes.size()`,
+`stats.frameCount` and `stats.durationSeconds` — three values the cook computes from its **inputs**,
+none of which is moved by a wrong `totalBytes` **field** on disk (`A6`) or by one sample written four
+bytes wide instead of two (`A12`, which overwrites its neighbour without changing the vector's
+length). `AK2` and `AK3` are `A6`'s witnesses; `AK2`, `AK15` and `AK17` are `A12`'s.
+
+**5. `A8` also reddens `CA24`.** Its first two arms are 64-byte **header-only** buffers whose
+`totalBytes` field reads 64 — matching `bytes.size()` exactly — so what refuses them is the
+*derived* identity `totalBytes == 64 + 2·ch·fr`, which is precisely the check `A8` deletes; without
+it both parse **`Ok`**. `CA17` correctly stays green, because both of its arms keep `totalBytes`
+consistent with `channels × frames` and move the buffer instead, so the plan's independence
+requirement between the two identities holds as stated.
+
+**6. `A11`: neither `CA10` nor `AK3` can witness it.** `CA10` builds **and** reads with the test TU's
+own literal offsets (`AT_MAGIC`, `AT_SAMPLE_RATE`, …, transcribed from `detail::H_*` rather than
+referencing it) and never touches `detail::H_*` at all — it is the **reference the writer is compared
+against**, not a witness. And `AK3` stays green because the offsets live in **one shared `detail`
+copy**: swapping `H_SAMPLE_RATE` and `H_CHANNELS` moves the writer and the parser *together*, so the
+round trip is self-consistent. The plan's predicted *"1 ch at 8000 becomes 8000 ch at 1 →
+`CapExceeded`"* assumed a **one-sided** swap, which is exactly what the single-copy design makes
+unspellable — the design defeating its own seed is the reason the copy is single. The real witnesses
+are **`CA11`** (the real parser over `CA10`'s literal-offset buffer), **`AK2`**, **`AC13`** (the
+committed `tone.aerowave`, written by the real binary at the correct offsets) and the two cooker arms
+that read offsets 32 and 36 as hex.
+
+**7. `A13`: `AK17` is not a witness.** The ffmpeg anchor is **mono**, and with one channel frame-major
+and channel-major are the *same byte order*, so a channel-major interleave is invisible to it. Only
+**`AK14`** (8 channels) and **`AC4`** (2 channels) can see it — which is exactly why both were written
+with more than one channel, and it is the same property that made `tone.ogg`'s forced stereo an upside
+rather than an inconvenience.
+
+**8. `A21` does redden `AK9`**, which the plan doubted. `AK9`'s refusal list contains
+`cookSamples(8000, 2, seven)` — seven samples over two channels, the non-divisible input — and the
+loop asserts `status == Refused` **per element**, so dropping the `samples.size() % channels` refusal
+reddens it there. `AK7` is still the case that asserts the *message*, and that remains the reason the
+truncating fallback cannot pass unnoticed.
+
+**9. `A25`: `AD9` is not a witness.** `A25` forces `ma_decoder_config_init`'s sample rate to 48000,
+which is on the **miniaudio** path; `AD9` decodes `tone.ogg` through **stb_vorbis**, an entirely
+separate backend the seed does not touch, so it stays green. `AD6`, `AD7`, `AD8`, `AD10`, `AD11` and
+`AD18`'s clause 2 redden as predicted, and **`AD14` reddens too** — a resampled 8 kHz → 48 kHz decode
+of a truncated fixture produces roughly six times the frames, breaking its
+`samples.size() / channels <= FIXTURE_FRAMES` bound. The two backends failing independently is the
+same fact `AD9`'s own comment already records for `A26`.
+
+**10. `A32`: `AD3` and `AD4` are not witnesses, and `AD4` cannot fail at all.** `AD3`'s Unknown list
+is `a.aiff`, `a.wave`, `wav`, `""`, `a.` and `a.wav.txt`, plus a seventh assertion pinning `.wav` as
+legitimately **`Wav`** — **`.flac` is nowhere in it**, so removing the flac row from the table leaves
+it green. **`AD4` is a TAUTOLOGY BY CONSTRUCTION**: it asserts
+`isCookableAudioName(n) == (audioSourceFormatForName(n) != Unknown)` while the implementation
+*composes* the first from the second, so both sides are the same expression evaluated twice and the
+case holds under **any** table — it can say nothing whatever about the table's contents. **A test
+that cannot fail is worse than no test, because it reads as coverage**: it occupies a line in the
+suite, it appears in every count, and a reader scanning for "is the extension table pinned?" stops at
+it. It is kept rather than deleted, because it documents the intended relationship and would catch a
+future implementation that stopped composing them — but it is recorded here as **not a witness**, and
+**`AD5`**, which pins `isCookableAudioName("music.flac")` and the `"FLAC"` label against literals, is
+the pin that bites. `AD1` and `cooker.audio_all_four_formats`' flac arm redden as predicted.
+
+**11. `A33`'s witness is the PAIR, and it was measured in both directions.** Deleting the `exists()`
+call reddens **`AC6`** — all three of its arms — and leaves **`AC7` green**, because both of `AC7`'s
+shapes still end in `Unreadable` either way. The mirror seed, mapping both `nullopt` answers to
+`NotFound`, reddens **`AC7`** — both arms — and leaves **`AC6` green**. **Neither case alone
+witnesses the `exists()` call**: `AC6` pins the `exists()`-false side onto `NotFound` and `AC7` pins
+the `exists()`-true side onto `Unreadable`, and only the two together say the loader asks. The
+finding is recorded in `AC7`'s own comment as well, so the next person to edit either case sees why
+its twin exists.
+
+**`A19`, `A23` and `A28` reddened nothing across the whole 168-test suite, which is a confirmation
+rather than a discovery** — all three were flagged expected-declared *before* the matrix ran, and that
+flag is the whole difference between a confirmation and a gap: the same green run means one thing when
+it was predicted and something else entirely when it was not. Their only coverage anywhere is the
+validation rows named above.
+
+**`A29` and `A30` were not spellable as written, and their verdict comes from one lane.** Both ask for
+a decoder handle to escape an error path — and **both handles are already scope-owned**, so seeding a
+leak means undoing the structural fix rather than introducing a defect into the shipped shape. With
+the ownership removed by hand, **macOS reports `detect_leaks is not supported on this platform`**, so
+the local run cannot answer at all and the verdict rests on the **Linux Debug lane**, the only tier
+where LSan runs. **And the irony is worth writing down: that lane then found a REAL leak of exactly
+this class** — 632 B on an error path — **in `stb_vorbis` rather than in our code**, through the very
+case (`AD14`) the two seeds were aimed at. The seeds could not be spelled; the tier they were written
+for found the defect anyway, upstream.
+
+**No gap was found.** Every seed that is not `A19`, `A23` or `A28` either reddened at least one case
+or failed to compile, so **no structural closure was needed anywhere in this matrix** — the first task
+since 3.1.5 with nothing to close, and the eleven corrections above are what the matrix bought instead
+(3.5.1 corrected six attributions, 3.6.1 four, 3.5.2 three, 3.6.3 nine; every one recorded rather than
+smoothed over).
 
 #### The Linux LSan finding — stb_vorbis leaks on its own error path
 
