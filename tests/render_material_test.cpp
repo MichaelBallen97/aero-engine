@@ -403,7 +403,7 @@ TEST_CASE("render material: which built-in default each slot falls back to, and 
           engine::render::defaultTextureTexelForKind(MaterialDefaultTextureKind::WhiteLinear).texel);
 }
 
-TEST_CASE("render material: packLights mirrors the whole view into the 320-byte Lights block (PB13)") {
+TEST_CASE("render material: packLights mirrors the whole view into the 400-byte Lights block (PB13)") {
     // The light block is the second thing a file-local packer hid, and its 3.4.1 addition is the one
     // that matters: eyePosition is the GGX view vector's ORIGIN. Zero it and the image is still lit,
     // the frame still submits, every registry and bridge case still passes — only the specular
@@ -434,8 +434,8 @@ TEST_CASE("render material: packLights mirrors the whole view into the 320-byte 
     view.points = POINT_LIGHTS;
 
     // The size the HLSL cbuffer declares, as a literal beside the static_assert rather than instead of
-    // it: 16 (ambient + count) + 32 (dir) + 8*32 (points) + 16 (eye + pad).
-    CHECK(sizeof(engine::render::detail::GpuLightBlock) == 320);
+    // it: 16 (ambient + count) + 32 (dir) + 8*32 (points) + 16 (eye + pad) + 64 (float4x4) + 16 (float4).
+    CHECK(sizeof(engine::render::detail::GpuLightBlock) == 400);  // 320 + 64 (float4x4) + 16 (float4)
 
     const engine::render::detail::GpuLightBlock block = engine::render::detail::packLights(view);
     CHECK(block.eyePosition == eye);  // THE field; zeroing it reddens here and nowhere else
@@ -464,6 +464,12 @@ TEST_CASE("render material: packLights mirrors the whole view into the 320-byte 
     CHECK(block.points[3].intensity == 0.0F);
     CHECK(block.points[3].range == 0.0F);
     CHECK(block.pad0 == 0.0F);
+
+    // task 3.6.2 — the appended tail on a view with NO ShadowView, which is what every pre-3.6.2
+    // caller produces. An identity matrix and w == 0 is what the shader reads as "shade unshadowed",
+    // so a packer that dropped the `valid` guard would put a stale or garbage matrix here.
+    CHECK(block.lightViewProj == engine::Mat4::identity());
+    CHECK(block.shadowParams == Vec4{});
 
     // The clamp: MAX_POINT_LIGHTS is the array's size, so a view carrying more (assembled by hand, as
     // the sample does — buildRenderView is not the only producer) must truncate rather than overrun.
@@ -825,7 +831,7 @@ TEST_CASE("render material: a five-slot draw pushes BOTH fragment uniform blocks
     // D11's VERIFY, the runtime half. The cooked sidecars say the fragment stage declares five
     // samplers and TWO uniform buffers (recorded before any visual judgment); this case is what
     // proves HLSL register b1 reaches pushFragmentUniforms(cmd, 1, ...) on a real device. The two
-    // blocks are deliberately SIZE-DISTINGUISHABLE — Lights is 320 bytes and MaterialParams is 48 —
+    // blocks are deliberately SIZE-DISTINGUISHABLE — Lights is 400 bytes and MaterialParams is 48 —
     // so a slot-crossed push is a size mismatch the backend surfaces, not a plausible picture.
     // No pixel assertions: this suite records draws without asserting their output (the task's own
     // posture), so the assertion is that recording and submission complete.

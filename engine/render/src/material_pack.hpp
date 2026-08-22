@@ -4,7 +4,8 @@
 // include.
 //
 // The CPU mirrors of the TWO `space3` cbuffers in shaders/scene.frag.hlsl, and the two functions that
-// fill them: `cbuffer Lights : register(b0, space3)` (320 bytes, pushed once per view) and
+// fill them: `cbuffer Lights : register(b0, space3)` (400 bytes since task 3.6.2, pushed once per
+// view) and
 // `cbuffer MaterialParams : register(b1, space3)` (48 bytes, pushed on material change). Both live in
 // a header rather than forward_renderer.cpp's anonymous namespace for exactly one reason: A FILE-LOCAL
 // PACKER IS UNFALSIFIABLE. The "Opaque pushes cutoff 0.0" rule (AC-39) and the view vector's origin
@@ -54,9 +55,21 @@ struct GpuLightBlock {
     // offset and the growth is invisible to anything that does not read the tail.
     Vec3 eyePosition;
     float pad0 = 0.0F;
+    // task 3.6.2 — the per-VIEW shadow data, APPENDED after eyePosition exactly as eyePosition was
+    // appended after `points` at 3.4.1: every pre-3.6.2 field keeps its offset, so the growth is
+    // invisible to anything that does not read the tail.
+    Mat4 lightViewProj;  // shadowViewProj(fit); identity when the view carries no valid ShadowView
+    Vec4 shadowParams;   // x texelSize (1/resolution), y constantBias, z normalBias, w enabled?1:0
 };
-static_assert(sizeof(GpuLightBlock) == 16 + 32 + (32 * 8) + 16);  // 320 (was 304)
+static_assert(sizeof(GpuLightBlock) == 16 + 32 + (32 * 8) + 16 + 64 + 16);  // 400 (was 320)
 static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
+// task 3.6.2 (INV-5) -- the layout is PINNED, not merely SIZED. Swapping the two appended fields
+// keeps sizeof at 400 and keeps every earlier field's offset, so nothing that reads the block could
+// tell -- while the HLSL would then disagree with the C++ silently, which is exactly the class this
+// header's own opening rule warns about ("a mismatch here neither fails to compile nor fails to
+// submit"). These two lines are the closure.
+static_assert(offsetof(GpuLightBlock, lightViewProj) == 320);
+static_assert(offsetof(GpuLightBlock, shadowParams) == 384);
 
 // THE one place a RenderView becomes the bytes b0 receives. Zero-initialized first, so the unused tail
 // of `points` is deterministic rather than whatever the stack held, and the point count is CLAMPED
@@ -72,6 +85,15 @@ static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
     }
     block.pointCount = static_cast<std::uint32_t>(count);
     block.eyePosition = view.camera.eyePosition;  // task 3.4.1 — the BRDF's view vector origin
+    // task 3.6.2 (D5) — straight off the VIEW, never off a renderer member. An unassigned or
+    // invalid ShadowView writes an identity matrix and w == 0, which the shader reads as "shade
+    // unshadowed" through its ONE branch; there is no #if, no second variant and no branch on a
+    // texture handle. A caller who never calls renderShadowMap lands here, and that is a legitimate
+    // opt-out rather than a defect, so nothing warns.
+    block.lightViewProj = view.shadow.valid ? view.shadow.lightViewProj : Mat4::identity();
+    block.shadowParams = view.shadow.valid
+                             ? Vec4{view.shadow.texelSize, view.shadow.constantBias, view.shadow.normalBias, 1.0F}
+                             : Vec4{};
     return block;
 }
 

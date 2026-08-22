@@ -163,7 +163,11 @@
             "y": 0.96,
             "z": 0.9
           },
-          "intensity": 0.9
+          "intensity": 0.9,
+          "castsShadows": true,
+          "shadowBias": 0.0015,
+          "shadowNormalBias": 0.02,
+          "shadowDistance": 50
         }
       }
     },

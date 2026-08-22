@@ -175,7 +175,7 @@ struct GraphicsPipelineDesc {
     RasterizerState rasterizer = {};
     SampleCount sampleCount = SampleCount::One;  // must match the targets rendered into
     DepthStencilState depthStencil = {};
-    std::span<const ColorTargetDesc> colorTargets;              // required: >= 1 in v0
+    std::span<const ColorTargetDesc> colorTargets;              // 0..MAX; empty ONLY IF depthStencilFormat != Invalid
     TextureFormat depthStencilFormat = TextureFormat::Invalid;  // Invalid = no depth attachment
 };
 
@@ -201,7 +201,7 @@ struct DepthStencilAttachment {
 };
 
 struct RenderPassDesc {
-    std::span<const ColorAttachment> colorAttachments;        // >= 1 in v0
+    std::span<const ColorAttachment> colorAttachments;        // 0..MAX; empty ONLY IF depthStencil has a value
     std::optional<DepthStencilAttachment> depthStencil = {};  // nullopt = no depth this pass
 };
 

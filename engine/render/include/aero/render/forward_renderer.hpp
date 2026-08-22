@@ -65,6 +65,23 @@ struct ForwardRendererConfig {
     // shader fails create() loudly, exactly as a missing static one always has.
     std::string_view skinnedVertexShaderPath = "res://scene_skinned.vert";
     std::string_view fragmentShaderPath = "res://scene.frag";
+    // task 3.6.2 — the depth pass. APPENDED and DEFAULTED, so every existing caller (both editor
+    // owners, four samples, every test) compiles and behaves identically, exactly as 3.5.1's
+    // skinnedVertexShaderPath did one epic ago.
+    //
+    // shadowMapResolution: 0 means SHADOWS OFF and is exact -- it is never rounded and never
+    // clamped. Any other value is rounded UP to the next power of two and then clamped to
+    // [256, 8192], with ONE warning naming the requested and the allocated value, because a bad
+    // number is a configuration typo and refusing to start a renderer over one is a worse answer
+    // than starting with something sane. shadowMapResolution() reports what was ALLOCATED.
+    //
+    // A missing shadow shader FAILS create() loudly, exactly as a missing skinned vertex shader has
+    // since 3.5.1: all three ship in shaders/CMakeLists.txt, so a missing one means a broken build,
+    // not a configuration the engine should paper over.
+    std::uint32_t shadowMapResolution = 2048;
+    std::string_view shadowVertexShaderPath = "res://shadow.vert";
+    std::string_view shadowSkinnedVertexShaderPath = "res://shadow_skinned.vert";
+    std::string_view shadowFragmentShaderPath = "res://shadow.frag";
 };
 
 // Move-only RAII; owns the lit pipeline and a procedural primitive-mesh catalog (cube/sphere/plane).
@@ -86,6 +103,31 @@ public:
     // drawIndexed against that instance's primitive mesh. No-ops (records nothing) when
     // !view.hasCamera (D5) — the frame's own clear still shows.
     void draw(Frame& frame, const RenderView& view);
+
+    // task 3.6.2 — the depth pass. Records every caster into the renderer-owned shadow map on its
+    // OWN command buffer and submits it, then returns the light-space transform draw() needs.
+    //
+    //     view.shadow = forward.renderShadowMap(view);
+    //     forward.draw(frame, view);
+    //
+    // IT TAKES NO Frame AND TOUCHES NONE. `Frame` carries an already-open render pass and SDL
+    // refuses a second pass on a command buffer that has one open, so the depth pass cannot be
+    // recorded into the frame the caller hands draw(). This is RenderTarget::endFrame's own pattern:
+    // command buffers submitted earlier on the queue order before later ones, so the map is written
+    // by this submission and sampled by the frame's, with no explicit barrier (SDL's per-container
+    // state tracking performs the depth-write -> shader-read transition on bind).
+    //
+    // CALLING IT INSIDE AN OPEN FRAME IS LEGAL and is what SceneRenderer::render does -- the two
+    // passes are on different command buffers and SDL's pass-in-progress guard is per command
+    // buffer. The cost is that the depth pass is recorded AFTER Renderer::beginFrame's vsync block
+    // rather than before it. A caller that wants it off the critical path calls this BEFORE
+    // beginFrame; nothing in the returned value depends on the frame.
+    //
+    // Returns ShadowView{} (valid == false) -- submitting nothing and acquiring NO command buffer --
+    // when the view has no camera, when shadowsEnabled is false, when the light does not cast, when
+    // its intensity is 0, when shadowMapResolution() is 0, or when the fit is invalid. Only the last
+    // of those warns, and it latches.
+    [[nodiscard]] ShadowView renderShadowMap(const RenderView& view);
 
     // --- materials (task 3.4.1) -----------------------------------------------------------------
     // Registry semantics: generational handles, so a stale one is a logged no-op (update returns
@@ -171,6 +213,31 @@ public:
     // disables culling FOR THAT DRAW and warns, rather than culling to black.
     [[nodiscard]] bool hasWarnedDegenerateFrustum() const noexcept;
 
+    // --- diagnostics (task 3.6.2) ---------------------------------------------------------------
+    // The same posture as 3.6.1's pair, and the same two rules. PER-FRAME: both reset at the TOP of
+    // every renderShadowMap, INCLUDING one that early-returns, so a shadowless frame reads 0/0
+    // rather than the previous frame's numbers. AND THEY NEED NOT SUM to view.instances.size(): an
+    // instance dropped by the shared resolver was neither drawn nor culled, so it lands in NEITHER
+    // bucket. ++shadowDrawn lives at the TWO drawIndexed sites -- the primitive arm and the mesh
+    // arm -- and nowhere else, which makes that gap true by construction rather than by bookkeeping
+    // that could drift. The count is two, not one: a maintainer who greps, finds two and "corrects"
+    // the code to match a "single site" claim would silently stop counting every primitive caster.
+    [[nodiscard]] std::size_t lastFrameShadowDrawn() const noexcept;
+    [[nodiscard]] std::size_t lastFrameShadowCulled() const noexcept;
+    // The fit failed at least once. Latched: an invalid fit is a real problem (a degenerate camera,
+    // a zero-length sun) and must be loud, but it is also persistent, so an unlatched line would be
+    // a 60 Hz flood. A DISABLED light is not a failed fit and does not warn.
+    [[nodiscard]] bool hasWarnedShadowFit() const noexcept;
+    // What was ALLOCATED, not what was requested: a caller who asked for 3000 and got 4096 must be
+    // able to see that without reading the log, and the PCF step in the fragment block is 1 / this.
+    // 0 means shadows are off (and a 1x1 depth placeholder is bound, so slot 5 is never unbound).
+    [[nodiscard]] std::uint32_t shadowMapResolution() const noexcept;
+    // How many command buffers this renderer has ACQUIRED for a depth pass, renderer lifetime.
+    // Counted at the ACQUISITION rather than at the submit, deliberately: the contract
+    // renderShadowMap makes is that it acquires NOTHING on an early return, and a counter that moved
+    // only at submit could not tell "never acquired" from "acquired and leaked".
+    [[nodiscard]] std::size_t shadowPassCount() const noexcept;
+
 private:
     struct PrimitiveMesh {
         rhi::BufferHandle vbuf;
@@ -252,6 +319,38 @@ private:
     // order, so the two can never disagree about which instance is which.
     [[nodiscard]] std::optional<Aabb> instanceBounds(const MeshInstance& instance) const;
 
+    // task 3.6.2 (D9) -- draw()'s four resolution arms, factored so the depth pass reaches the same
+    // decisions rather than carrying a copy that could drift.
+    enum class InstanceDrawStatus : std::uint8_t {
+        Primitive,     // ARM 1 -- no registered mesh; draw the built-in `primitive`
+        Mesh,          // the registered path resolved; entry/submesh/section are non-null
+        StaleMesh,     // ARM 2a -- draw() owns warnedStaleMesh
+        SubmeshRange,  // ARM 2b -- draw() owns warnedSubmeshRange
+        SectionRange,  // ARM 2c -- SILENT in draw() too; the guard is unreachable through createMesh
+        SkinningCap,   // ARM 4  -- draw() owns warnedSkinningCap
+    };
+
+    struct ResolvedInstanceDraw {
+        InstanceDrawStatus status = InstanceDrawStatus::StaleMesh;
+        const MeshEntry* entry = nullptr;          // non-null iff status == Mesh
+        const MeshSubmeshDraw* submesh = nullptr;  // non-null iff status == Mesh
+        const MeshSectionDraw* section = nullptr;  // non-null iff status == Mesh
+        bool skinned = false;                      // section->hasSkin && !instance.palette.empty()
+        bool strayPalette = false;                 // a palette on a section with NO skin stream -- a WARN that does
+                                                   // NOT skip; draw() owns warnedStrayPalette and the shadow pass
+                                                   // deliberately ignores it (one owner per diagnostic)
+    };
+
+    // SILENT on every path -- "silent" means DOES NOT LOG. Returning a reason is not logging, and it
+    // is what lets draw() keep every latched WARN it has always owned while the shadow loop reaches
+    // the same four decisions without firing anything twice. instanceBounds' own posture, one layer
+    // up.
+    [[nodiscard]] ResolvedInstanceDraw resolveInstanceDraw(const MeshInstance& instance) const;
+
+    // task 3.6.2 -- the depth pass's texture, sampler and two pipelines. Called by create() after the
+    // renderer exists, so a half-built set unwinds through the destructor with no bookkeeping.
+    [[nodiscard]] bool createShadowResources(const VirtualFileSystem& shaderVfs, const ForwardRendererConfig& config);
+
     rhi::Device* device = nullptr;                   // non-owning; outlives the ForwardRenderer (contract)
     rhi::GraphicsPipelineHandle pipeline{};          // CullMode::Back — the engine convention
     rhi::GraphicsPipelineHandle pipelineCullNone{};  // the doubleSided twin, same two shaders
@@ -296,6 +395,20 @@ private:
     bool warnedSkinningCap = false;        // a palette longer than MAX_SKINNING_JOINTS was refused
     bool warnedStrayPalette = false;       // a palette on a mesh section that carries no skin stream
     bool warnedDegenerateFrustum = false;  // task 3.6.1 -- a viewProj with no usable frustum, latched once
+    // task 3.6.2 — the depth pass's own resources. The texture ALWAYS exists (a 1x1 depth
+    // placeholder when shadowResolution == 0), because SPIRV-Cross emits depth2d<float> for the
+    // comparison slot and binding an RGBA8 default there is a Metal type mismatch.
+    rhi::TextureHandle shadowTexture{};
+    rhi::SamplerHandle shadowSampler{};  // renderer-owned; NOT in samplerCache (enableCompare)
+    rhi::GraphicsPipelineHandle shadowPipeline{};
+    rhi::GraphicsPipelineHandle shadowPipelineSkinned{};
+    rhi::TextureFormat shadowFormat = rhi::TextureFormat::Invalid;
+    std::uint32_t shadowResolution = 0;   // the CLAMPED value; 0 == off
+    std::size_t lastShadowDrawn = 0;      // PER-FRAME; reset at the top of renderShadowMap
+    std::size_t lastShadowCulled = 0;     // PER-FRAME; reset at the top of renderShadowMap
+    std::size_t shadowPasses = 0;         // command buffers acquired for a depth pass, lifetime
+    bool warnedShadowFit = false;         // the fit failed at least once, latched
+    bool warnedShadowMaskCaster = false;  // a Mask/Blend material cast an opaque silhouette (D13)
 };
 
 }  // namespace engine::render

@@ -9,8 +9,9 @@
 //
 // NORMALISATION: extractFrustum normalises every plane. The boolean visibility test does NOT
 // require it — s and r scale by the same positive factor, so sign(s + r) is invariant — it exists
-// so signedDistance is a true distance (3.6.2's shadow fitting wants that) and so the six planes'
-// coefficients stay within one order of magnitude of each other.
+// so signedDistance is a true distance (task 3.6.2's shadow fit measures the caster extension with
+// it, in world units) and so the six planes' coefficients stay within one order of magnitude of
+// each other.
 
 #include <aero/assets/cooked_mesh.hpp>  // assets::CookedBounds — the ONE assets:: name here
 #include <aero/core/math.hpp>

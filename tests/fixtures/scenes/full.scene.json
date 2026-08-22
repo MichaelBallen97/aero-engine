@@ -145,7 +145,11 @@
             "y": 0.96,
             "z": 0.9
           },
-          "intensity": 0.9
+          "intensity": 0.9,
+          "castsShadows": false,
+          "shadowBias": 0.003,
+          "shadowNormalBias": 0.05,
+          "shadowDistance": 25
         },
         "engine::PointLight": {
           "color": {
