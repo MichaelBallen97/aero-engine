@@ -190,10 +190,9 @@ void MaterialPreview::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExte
     // the 2048 default it would allocate ~16.8 MB of dead VRAM, a comparison sampler, three extra
     // shader loads and two extra pipeline compiles per editor session, for a map nothing ever writes
     // or samples. 0 shrinks the bind placeholder to 1x1, which slot 5 still needs.
-    renderer = render::ForwardRenderer::create(*device, shaderVfs,
-                                               {.colorFormat = post->sceneColorFormat(),
-                                                .depthFormat = post->sceneDepthFormat(),
-                                                .shadowMapResolution = 0});
+    renderer = render::ForwardRenderer::create(
+        *device, shaderVfs,
+        {.colorFormat = post->sceneColorFormat(), .depthFormat = post->sceneDepthFormat(), .shadowMapResolution = 0});
     if (!renderer) {
         target.reset();  // created above and now unusable: released HERE, in the service pass (INV-5)
         post.reset();

@@ -10462,12 +10462,15 @@ code.
 ### Task 3.6.3 — Tonemap/gamma pass (Epic 3.6)
 
 **Branch:** `feat/3.6.3-tonemap-gamma-pass`, cut from `main @ 64df342` — the spec's own stated branch
-point, with no drift. **Eleven green commits** — one per build step (`8d127ed` the vocabulary,
+point, with no drift. **Twelve own green commits plus one merge commit**, the merge being
+`origin/main` @ `3ffaadf` (3.6.2, PR #85) taken in after it landed first — see the merge section at
+the end of this entry. Of the twelve: six per build step (`8d127ed` the vocabulary,
 `d354744` the shader pair + the TM tier, `d36cbc5` `PostProcess` + the packer, `449d641` the PP tier,
 `f7885bf` the editor wiring, `ea79ad8` the sample), one closing the sabotage matrix's three genuine
 gaps (`46fac21`), one relocating the four editor cases out of the wrong preprocessor block (`3c00640`,
 found by the gate — see below), one documentation commit (`3bfae15`) and TWO closing code-review
-rounds. Counted with `git rev-list --count`, not by adding up steps. **Complete in code; the twelve-row macOS validation
+rounds, and one turning the shadow map off in the sample once 3.6.2's defaulted
+`shadowMapResolution` arrived. Counted with `git rev-list --count`, not by adding up steps. **Complete in code; the twelve-row macOS validation
 pass is PENDING** (`editor/validation/3.6.3-tonemap-gamma.md`, written before the pass as always).
 
 Sized **S** in the roadmap and landed **M**, and that was recorded in the spec before implementation
@@ -10729,18 +10732,28 @@ reflect-gated binaries (`aero_scene_serialize_test`, `aero_editor_inspector_test
 corrects the plan's §V.2 list). **The imgui binary is the one that matters this task**: it carries
 `I105`'s tools-OFF arm, the only place the degradation path is tested at all.
 
-**`ctest -N` reads 157 / 65 / 78 — unmoved in all three**, because the new test file rides
-`aero_tests` (one ctest entry), the sample registers no test, and this task adds no `cooker.*` and no
-`reflect-gen.*` case. The growth reads only in doctest: `aero_tests` **942 → 984** (+42: `TM1`–`TM29`
-tier-0 and `PP1`–`PP13` behind `AERO_SHADER_TOOLS_ENABLED`, one new TU) and `aero_editor_imgui_test`
-**138 → 142** (+4), with `aero_editor_shell_test` **1725**, `aero_scene_serialize_test` **29**,
-`aero_editor_inspector_test` **27**, `aero_reflect_meta_test` **7** and `aero_reflect_json_test` **28**
-all unmoved. In a tools-off build the tonemap filter lists **29**, the PP tier absent by its gate.
+**ALL OF THE FOLLOWING ARE MERGED-TREE READINGS**, taken after this branch merged `origin/main` @
+`3ffaadf` (3.6.2, PR #85). The pre-merge figures on this page's first draft — `aero_tests` 942 → 984
+and math-boundary 408 → 415 — went stale the instant that merge landed, and they are corrected here
+rather than left to be read as current. **This is 3.1.5's lesson applied a second time, and the
+correction is the point**: adding one task's delta to another task's baseline is exactly the
+arithmetic that produces a confident wrong number, so every figure below was re-read from the tree.
 
-Six guards exit 0; `check-math-boundary.sh`'s scanned count moves **408 → 415** (+7: `tonemap.hpp`,
-`tonemap.cpp`, `post_process.hpp`, `post_process.cpp`, `tonemap_pack.hpp`, `render_tonemap_test.cpp`
-and `samples/phase-3-tonemap/main.cpp`), and `check-project-no-delete.sh`'s Check B stays at **73**,
-because this task adds **no** `editor/src/*.cpp`. Both re-measured **after `git add`**; neither script
+**`ctest -N` reads 157 / 65 / 78 — unmoved in all three**, and it was unmoved by 3.6.2 as well: the
+new test files ride `aero_tests` and `rhi_device_test` (each one ctest entry), the samples register no
+test, and neither task adds a `cooker.*` or a `reflect-gen.*` case. The growth reads only in doctest.
+**`aero_tests` 942 → 986 (3.6.2) → 1028 (3.6.3, +42: `TM1`–`TM29` tier-0 and `PP1`–`PP13` behind
+`AERO_SHADER_TOOLS_ENABLED`, one new TU)**, and `aero_editor_imgui_test` **138 → 142** (+4, this task
+alone), with `aero_editor_shell_test` **1725**, `aero_scene_serialize_test` **29**,
+`aero_editor_inspector_test` **27**, `aero_reflect_meta_test` **7** and `aero_reflect_json_test` **28**
+all unmoved by both. Per filter, tools-on / tools-off: tonemap **42 / 29**, shadow **43 / 28**, each
+one's GPU tier absent by its own gate; `aero_editor_imgui_test` reads **142 / 128**.
+
+Six guards exit 0; `check-math-boundary.sh`'s scanned count moves **408 → 412 (3.6.2) → 419 (3.6.3,
++7: `tonemap.hpp`, `tonemap.cpp`, `post_process.hpp`, `post_process.cpp`, `tonemap_pack.hpp`,
+`render_tonemap_test.cpp` and `samples/phase-3-tonemap/main.cpp` — the two `.hlsl` files are not
+C-family)**, and `check-project-no-delete.sh` stays at **6 / 73**, because neither task adds an
+`editor/src/*.cpp`. Both re-measured **after `git add`**; neither script
 changes and `.github/scripts/` is byte-identical. clang-format and clang-tidy clean **by exit code**
 over all sixteen changed `.cpp`/`.hpp` files. The determinism manifest is untouched at **18 hash lines
 across four arms / 36 cross-lane comparisons**.
@@ -10898,3 +10911,74 @@ viewport's depth takes it from `post->sceneDepthFormat()` instead.
 * **MSAA on the HDR target → unowned**: `RenderTargetConfig` carries no `sampleCount`.
 * **Tonemapping the thumbnail store and the asset-browser previews → out of scope, permanently.**
   Those are UI images decoded from files, not scene renders, and they are already correct.
+
+#### Taking 3.6.2 in: the merge, and the one risk nobody predicted
+
+3.6.2 (directional shadow map) merged as **PR #85** while this branch was in flight, moving `main`
+`64df342` → **`3ffaadf`**. It was taken in with a **MERGE, not a rebase** — 3.1.5's recorded pattern
+for exactly this situation, and the reason is arithmetic: one conflict resolution instead of twelve.
+
+**Seven conflicts. Four were pure unions** — `engine/render/CMakeLists.txt` (`src/shadow.cpp` beside
+`src/tonemap.cpp` and `src/post_process.cpp`, with the `target_link_libraries` block still untouched
+by this branch), `shaders/CMakeLists.txt`, `samples/CMakeLists.txt` and `tests/CMakeLists.txt`. That
+last one is always a union: **keep every task's test files**.
+
+**`editor/src/material_preview.cpp` was the one real code conflict, and BOTH SIDES WERE
+LOAD-BEARING.** 3.6.2 changed the `ForwardRenderer::create` call to pass `.shadowMapResolution = 0`,
+because a preview has no caster and no receiver and the new 2048 default would allocate ~16.8 MB of
+dead VRAM per editor session. But its version reads the formats from `target->`, which on this branch
+is **depth-free** — and `ForwardRendererConfig` **refuses an `Invalid` depthFormat outright**, so
+taking that side verbatim would have broken the preview at `create()`. The merged call takes the
+formats from `post->` and 3.6.2's shadow field unchanged. **Neither intent survives alone.**
+
+**One factual correction inside 3.6.2's own text, and it is recorded rather than done quietly.** Its
+Phase 3 row still read *"COMPLETE IN CODE … NOT pushed, NOT reviewed"* — its own docs-only commit had
+already superseded that in the Next-task row and missed this one. The merged state block propagates
+3.6.2's **own** updated wording rather than inventing any, because a state block that calls a merged
+task unpushed is a worse outcome than the forward-only rule it would otherwise protect. Nothing else
+of 3.6.2's prose is touched, and its `docs/10` entry is kept verbatim and placed **first**.
+
+**THE RISK: 3.6.2 changed `shaders/scene.frag.hlsl` by 55 lines, and `samples/phase-3-tonemap`'s
+entire measurement basis is that shader reducing exactly to `lit = emissive`.** Re-derived statement
+by statement against the new shader. **IT SURVIVES, and for two independent reasons** — which is
+worth stating, because one reason alone would be a coincidence waiting to break:
+
+1. **The shadow term multiplies ONLY the directional contribution.** The diff is
+   `shadeOneLight(uDir.color * uDir.intensity, …) * directionalShadow(worldPos, geoN)`. `uAmbient`,
+   the point-light loop and `lit += emissive` are **textually untouched**. The sample sets
+   `directional.intensity = 0`, so `shadeOneLight` receives `{0,0,0}` and returns exactly `{0,0,0}` —
+   every internal guard (`max(dot(N,V), 1e-4)`, `max(…, 1e-6)`) keeps the BRDF finite, and a finite
+   value times zero is zero. Any finite shadow factor therefore leaves the term at zero.
+2. **The shadow factor is exactly 1.0 here anyway.** `directionalShadow` returns `1.0` from its first
+   branch whenever `uShadowParams.w == 0`, and `material_pack.hpp` writes `w = 0` for any `RenderView`
+   whose `ShadowView` is invalid — the **default**, and this sample never calls `renderShadowMap`.
+
+**And the shader still ends `return float4(lit, 1.0); // raw linear`** — 3.6.2 added no encode, which
+is what this whole pass depends on. So the printed table and validation rows 5–7 stand unchanged.
+
+**What the merge cost the sample, and one decision taken because of it.** 3.6.2 appended
+`shadowMapResolution` to `ForwardRendererConfig` with a default of **2048**, so every existing caller
+silently started paying for a shadow map — 3.6.2's own recorded general form, *"a defaulted field
+appended to a widely-constructed config struct is a cost every existing caller silently starts
+paying"*. `samples/phase-3-tonemap` sets it to **0**, on the same reasoning 3.6.2 applied to
+`MaterialPreview`, and with one extra reason specific to this sample: **its whole job is to print a
+measurable memory figure**, and leaving ~16.8 MB of unused VRAM behind a line that reads
+`hdr 1280x720 RGBA16Float 7.03 MB` would make the sample's own claim misleading. Validation row 8 asks
+a reader to record that number.
+
+**Every whole-tree count on this page was re-derived from the MERGED tree**, never carried forward and
+never derived by addition — 3.1.5's lesson applied a second time. The merged gate: **157/157 on both
+macOS presets**, **65/65** and **78/78** on both reduced configurations rebuilt fresh with `-G Ninja`
+(each having built and run `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test` and
+`aero_cooker`); `ctest -N` **157 / 65 / 78 — unmoved by BOTH tasks**, because 3.6.2's cases ride
+`aero_tests` and `rhi_device_test` and 3.6.3's ride `aero_tests` and `aero_editor_imgui_test`, each a
+single ctest entry; doctest **1028 / 1725 / 142 / 29 / 27 / 7 / 28**; six guards exit 0 with
+math-boundary **419** and project-no-delete **6 / 73**; the determinism manifest untouched at **18
+hash lines** (3.6.2 did not move it either); clang-format and clang-tidy clean by exit code.
+
+**This branch's OWN diff is unchanged at 26 files**, asserted against the NEW merge-base
+(`git diff --name-only $(git merge-base origin/main HEAD)...HEAD`). `forward_renderer.{hpp,cpp}`,
+`lighting.hpp`, `material_pack.hpp`, `culling.hpp`, `shadow.{hpp,cpp}`, all of `engine/scene_render`,
+`engine/rhi`, `engine/scene`, `shaders/scene.frag.hlsl` and `samples/phase-3-shadows` are **not in
+it** — every one of those arrives through the merge, from 3.6.2, and the distinction is the whole
+point of asserting against the merge-base rather than against `main`.
