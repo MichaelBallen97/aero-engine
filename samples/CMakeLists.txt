@@ -10,6 +10,7 @@ add_subdirectory(phase-3-materials)  # task 3.4.1 — materials + cooked texture
 add_subdirectory(phase-3-skinning)   # task 3.5.1 — a bind-pose twin beside a waving twin
 add_subdirectory(phase-3-animation)  # task 3.5.2 — a bind-pose reference, a playing copy, a frozen one
 add_subdirectory(phase-3-culling)    # task 3.6.1 — the culling A/B rig
+add_subdirectory(phase-3-shadows)    # task 3.6.2 — the directional shadow A/B rig
 add_subdirectory(phase-3-tonemap)    # task 3.6.3 — the tonemap/gamma A/B rig
 # phase-2-editor-scene is DATA, not a sample app, and is deliberately NOT add_subdirectory'd: it is an
 # Aero project (project.json + assets/ + scenes/) authored through the editor, with no main.cpp and no

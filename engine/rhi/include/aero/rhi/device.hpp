@@ -198,8 +198,10 @@ public:
     // --- render pass recording (D8) --------------------------------------------------------------
 
     // Open a render pass on `cmd`. Exactly ONE pass may be open per command buffer at a time
-    // (nesting/overlap: invalid handle + log). All attachments must share sampleCount and extent;
-    // >= 1 color attachment in v0. A default full-target viewport & scissor are set by the backend.
+    // (nesting/overlap: invalid handle + log). All attachments must share sampleCount and extent.
+    // Zero color attachments is legal IFF there is a depth attachment (a depth-only pass, task
+    // 3.6.2); with neither, the call is refused. A default full-target viewport & scissor are set by
+    // the backend -- for a depth-only pass, from the depth target's dimensions.
     [[nodiscard]] RenderPassHandle beginRenderPass(CommandBufferHandle cmd, const RenderPassDesc& desc);
 
     // Close the pass and invalidate its handle. Required before submit; if a pass is still open at

@@ -27,6 +27,14 @@ struct DirectionalLightData {
     Vec3 direction;
     Vec3 color = Vec3::one();
     float intensity = 0.0F;
+    // task 3.6.2 -- mirrored field for field from engine::DirectionalLight by buildRenderView,
+    // defaults included. APPENDED, so every pre-3.6.2 designated initialiser compiles unchanged --
+    // but note that scene_renderer.cpp's own assignment was POSITIONAL and had to become designated,
+    // because appending to a positional brace-init leaves the new fields silently at their defaults.
+    bool castsShadows = true;
+    float shadowBias = 0.0015F;
+    float shadowNormalBias = 0.02F;
+    float shadowDistance = 50.0F;
 };
 
 // A resolved point light.
@@ -40,6 +48,23 @@ struct PointLightData {
 // The flat bundle ForwardRenderer::draw() consumes — a render-queue snapshot with zero scene types
 // (D2). instances/points are BORROWED spans (typically into a scene_render::RenderViewScratch) valid
 // only while the backing storage lives and is not re-used (see buildRenderView's own contract).
+// What ForwardRenderer::renderShadowMap RETURNS and draw() reads. There is deliberately NO
+// ForwardRenderer member holding any of this (D5): a cached light matrix is STALE BY DEFAULT -- a
+// caller who draws twice, draws a different view, or skips the shadow pass on one frame gets last
+// frame's light-space transform applied to this frame's geometry, and every automated observable
+// stays green while it does. Putting it on the view makes that whole class unrepresentable rather
+// than tested for, and it costs 84 bytes on a struct that is already built per frame.
+//
+// A default-constructed ShadowView (valid == false) means "shade unshadowed", SILENTLY. A caller who
+// never calls renderShadowMap gets exactly that, and it is a legitimate opt-out, not a defect.
+struct ShadowView {
+    Mat4 lightViewProj{};
+    float texelSize = 0.0F;     // 1 / resolution -- the PCF UV step, NOT the world texel size
+    float constantBias = 0.0F;  // DirectionalLight::shadowBias, verbatim
+    float normalBias = 0.0F;    // DirectionalLight::shadowNormalBias, verbatim (world units)
+    bool valid = false;
+};
+
 struct RenderView {
     CameraView camera;
     DirectionalLightData directional;        // intensity 0 == "no directional"
@@ -78,6 +103,20 @@ struct RenderView {
     // beyond about one world unit from the origin then vanishes silently. Assign `camera`, or set
     // cullingEnabled = false.
     bool cullingEnabled = true;
+
+    // task 3.6.2: the shadow pair, appended LAST so cullingEnabled and every field before it keep
+    // their position and meaning.
+    //
+    // shadowsEnabled is the sample's A/B and an opted-out view pays NOTHING: renderShadowMap
+    // returns before it acquires a command buffer, before it walks the instances and before it fits.
+    // It is deliberately NOT the same flag as cullingEnabled -- that one carries a contract about
+    // mvp == (proj * view) * model, which has nothing to do with the light, and the shadow pass
+    // composes lightViewProj * model itself and never reads mvp.
+    //
+    // `shadow` is ASSIGNED by the caller from renderShadowMap's return value, immediately before
+    // draw(). The default (valid == false) shades unshadowed and warns about nothing.
+    bool shadowsEnabled = true;
+    ShadowView shadow{};
 };
 
 }  // namespace engine::render

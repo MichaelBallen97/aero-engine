@@ -21,7 +21,7 @@ TEST_CASE("light: layout") {
     static_assert(std::is_trivially_copyable_v<DirectionalLight>);
     static_assert(std::is_standard_layout_v<DirectionalLight>);
     static_assert(std::is_aggregate_v<DirectionalLight>);
-    static_assert(sizeof(DirectionalLight) == 4 * sizeof(float));
+    static_assert(sizeof(DirectionalLight) == 8 * sizeof(float));  // 12 + 4 + 1 + 3 pad + 4 + 4 + 4
 
     static_assert(std::is_trivially_copyable_v<PointLight>);
     static_assert(std::is_standard_layout_v<PointLight>);
@@ -33,7 +33,16 @@ TEST_CASE("light: default values") {
     const DirectionalLight dir{};
     CHECK(dir.color == Vec3::one());
     CHECK(dir.intensity == 1.0F);
+    // task 3.6.2 — the four appended shadow controls.
+    CHECK(dir.castsShadows);  // true: a light casts unless told otherwise
+    CHECK(dir.shadowBias == 0.0015F);
+    CHECK(dir.shadowNormalBias == 0.02F);
+    CHECK(dir.shadowDistance == 50.0F);
     CHECK(DirectionalLight{} == DirectionalLight{});
+    // The defaulted operator== still sees every field, which is what makes a scene diff meaningful.
+    DirectionalLight moved{};
+    moved.shadowDistance = 25.0F;
+    CHECK_FALSE(DirectionalLight{} == moved);
 
     const PointLight point{};
     CHECK(point.color == Vec3::one());

@@ -12,6 +12,9 @@ aero_add_shaders(aero_shaders
         scene.vert.hlsl      # task 1.4.1
         scene.frag.hlsl      # task 1.4.1
         scene_skinned.vert.hlsl  # task 3.5.1 -- the skinned twin; shares scene.frag.hlsl unchanged
+        shadow.vert.hlsl         # task 3.6.2 -- the depth-only pass, static
+        shadow_skinned.vert.hlsl # task 3.6.2 -- the depth-only pass, rigged
+        shadow.frag.hlsl         # task 3.6.2 -- void main(); SDL requires a non-NULL fragment stage
         fullscreen.vert.hlsl     # task 3.6.3 -- the fullscreen pass scaffold (zero vertex buffers)
         tonemap.frag.hlsl        # task 3.6.3 -- exposure, tone curve, sRGB OETF
 )

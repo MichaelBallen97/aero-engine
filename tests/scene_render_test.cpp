@@ -89,7 +89,15 @@ TEST_CASE("scene_render: directional light direction resolves from the entity's 
     const Entity e = w.create();
     const Quat rotateXBy90 = engine::fromAxisAngle(Vec3::unitX(), engine::radians(90.0F));
     REQUIRE(w.add<Transform>(e, Transform{Vec3::zero(), rotateXBy90, Vec3::one()}) != nullptr);
-    REQUIRE(w.add<DirectionalLight>(e, DirectionalLight{Vec3{0.5F, 0.6F, 0.7F}, 2.5F}) != nullptr);
+    // task 3.6.2: NON-DEFAULT on all four, because the bridge's assignment is a brace-init and a
+    // version that appended without naming the new fields would leave them at their DEFAULTS and
+    // still compile. With defaults on both sides this case could not tell the difference.
+    REQUIRE(w.add<DirectionalLight>(e, DirectionalLight{.color = Vec3{0.5F, 0.6F, 0.7F},
+                                                        .intensity = 2.5F,
+                                                        .castsShadows = false,
+                                                        .shadowBias = 0.004F,
+                                                        .shadowNormalBias = 0.07F,
+                                                        .shadowDistance = 33.0F}) != nullptr);
 
     const RenderView view = buildRenderView(w, scratch, VIEWPORT);
     CHECK(view.directionalCount == 1);
@@ -100,6 +108,12 @@ TEST_CASE("scene_render: directional light direction resolves from the entity's 
     CHECK(engine::approxEquals(view.directional.direction, expectedDirection));
     CHECK(view.directional.color == Vec3{0.5F, 0.6F, 0.7F});
     CHECK(view.directional.intensity == 2.5F);
+    // THE ONLY WITNESS ANYWHERE that buildRenderView mirrors the four shadow fields: the SF/SM
+    // batteries live in a different TU and never call buildRenderView.
+    CHECK_FALSE(view.directional.castsShadows);
+    CHECK(view.directional.shadowBias == 0.004F);
+    CHECK(view.directional.shadowNormalBias == 0.07F);
+    CHECK(view.directional.shadowDistance == 33.0F);
 }
 
 TEST_CASE("scene_render: multiple DirectionalLights -> lowest entity index wins (D6)") {

@@ -461,6 +461,73 @@ TEST_CASE("rhi device: T1-7 the E8/D5 rejection battery — GraphicsPipelineDesc
     }
 }
 
+TEST_CASE("rhi device: neither a colour target nor a depth target is refused (SW1)") {
+    // Task 3.6.2's widening keeps an `iff`, and this is the half of it no other case can see. A
+    // DEPTH-ONLY pipeline (zero colour targets, a real depthStencilFormat) is now legal; one with
+    // NEITHER must still be refused, and refused HERE rather than by SDL, whose own guard for it is
+    // an SDL_assert_release -- an ABORT, not a NULL.
+    //
+    // Structure is validated BEFORE handle liveness (C-6), so never-valid shader handles are enough
+    // and this needs no shader artifacts at all.
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto dev = Device::create();
+    if (!dev.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+
+    SUBCASE("createGraphicsPipeline: no colour target and no depth format") {
+        GraphicsPipelineDesc desc;
+        desc.colorTargets = {};
+        desc.depthStencilFormat = TextureFormat::Invalid;
+        CHECK_FALSE(dev->createGraphicsPipeline(desc).valid());
+        // ...and the same desc WITH a depth format gets past the structural arm and fails later, on
+        // the never-valid shader handles. Both return an invalid handle, so this line alone cannot
+        // discriminate -- what brackets the `iff` from the other side is the render tier's SM1, which
+        // builds two REAL depth-only pipelines on a real device and succeeds.
+        desc.depthStencilFormat = TextureFormat::D32Float;
+        CHECK_FALSE(dev->createGraphicsPipeline(desc).valid());
+    }
+
+    SUBCASE("beginRenderPass: no colour attachment and no depth attachment") {
+        // The pass half, and unlike the pipeline half it IS distinguishable: with a real depth
+        // attachment the very same shape returns a VALID handle, which is what makes the refusal
+        // below a statement about "neither" rather than about "empty colour".
+        const CommandBufferHandle neither = dev->acquireCommandBuffer();
+        REQUIRE(neither.valid());
+        CHECK_FALSE(dev->beginRenderPass(neither, {}).valid());
+        dev->cancel(neither);
+
+        TextureFormat depthFormat = TextureFormat::Invalid;
+        for (const TextureFormat candidate :
+             {TextureFormat::D32Float, TextureFormat::D24Unorm, TextureFormat::D16Unorm}) {
+            if (dev->supportsTextureFormat(candidate, TextureUsage::DepthStencilTarget)) {
+                depthFormat = candidate;
+                break;
+            }
+        }
+        // Double parentheses: engine::rhi::toString(TextureFormat) is found by ADL and beats
+        // doctest's own stringifier, whose decomposer then tries std::string_view + const char*.
+        // The standing trap (.claude/rules/ci-portability.md); rhi_format_test.cpp's own fix.
+        REQUIRE((depthFormat != TextureFormat::Invalid));
+        const TextureHandle depth = dev->createTexture(
+            {.format = depthFormat, .usage = TextureUsage::DepthStencilTarget, .width = 8, .height = 8});
+        REQUIRE(depth.valid());
+        const CommandBufferHandle cmd = dev->acquireCommandBuffer();
+        REQUIRE(cmd.valid());
+        const DepthStencilAttachment attachment{.texture = depth};
+        const RenderPassHandle pass = dev->beginRenderPass(cmd, {.depthStencil = attachment});
+        CHECK(pass.valid());  // a DEPTH-ONLY pass: this is what the widening exists for
+        if (pass.valid()) {
+            dev->endRenderPass(pass);
+        }
+        dev->cancel(cmd);
+        dev->destroyTexture(depth);
+    }
+}
+
 TEST_CASE("rhi device: T1-8 upload happy paths and rejections (AC-7)") {
     const engine::platform::Context ctx{{.headless = false}};
     if (!ctx.valid()) {

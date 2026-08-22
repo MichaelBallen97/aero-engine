@@ -26,6 +26,24 @@ namespace engine {
 struct AERO_COMPONENT DirectionalLight {
     Vec3 color AERO_COLOR = Vec3::one();  // linear RGB; may exceed 1 (HDR); not clamped (plain data)
     float intensity = 1.0f;
+    // Task 3.6.2 — shadow controls, APPENDED, never inserted: declaration order is JSON key order
+    // AND inspector row order (the 3.1.5 MeshRenderer precedent). docs/09 section 2.3's missing-key
+    // rule is silent, so every scene file authored before this task still loads with these defaults.
+    //
+    // Bias splits in two because a RasterizerState cannot be a runtime knob: it is baked into an
+    // immutable pipeline at create(), so the shadow pipelines' slope-scaled bias (which defeats acne
+    // on GRAZING surfaces) is fixed, and these two defeat the other two artefacts. shadowBias is a
+    // constant offset in the depth comparison, for acne on FLAT surfaces facing the light;
+    // shadowNormalBias is a world-unit offset along the GEOMETRIC normal applied before the
+    // light-space transform, for peter-panning.
+    //
+    // shadowDistance is per-LIGHT rather than per-renderer because it is the sun's own reach, and
+    // because a scene with two directional lights (legal, and WARNed about at the bridge) would
+    // otherwise have to share one.
+    bool castsShadows = true;
+    float shadowBias AERO_RANGE(0.0f, 0.01f) = 0.0015f;
+    float shadowNormalBias AERO_RANGE(0.0f, 0.5f) = 0.02f;
+    float shadowDistance AERO_RANGE(1.0f, 1000.0f) = 50.0f;
 
     bool operator==(const DirectionalLight&) const = default;
 };
@@ -33,7 +51,7 @@ struct AERO_COMPONENT DirectionalLight {
 static_assert(std::is_trivially_copyable_v<DirectionalLight>);
 static_assert(std::is_standard_layout_v<DirectionalLight>);
 static_assert(std::is_aggregate_v<DirectionalLight>);
-static_assert(sizeof(DirectionalLight) == 4 * sizeof(float));  // 12 + 4, no padding
+static_assert(sizeof(DirectionalLight) == 8 * sizeof(float));  // 12 + 4 + 1 + 3 pad + 4 + 4 + 4
 
 // A point light radiating from the entity's world position (task 1.4.1) out to `range`. The
 // falloff curve is the renderer's business (1.4.1); this component carries only the cutoff radius.

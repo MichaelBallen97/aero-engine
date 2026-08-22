@@ -1094,9 +1094,25 @@ bool validateDesc(const ShaderDesc& desc, ShaderFormat deviceFormat) {
 }
 
 bool validatePipelineStructure(const GraphicsPipelineDesc& desc) {
-    if (desc.colorTargets.empty() || desc.colorTargets.size() > MAX_COLOR_ATTACHMENTS) {
-        AERO_LOG_ERROR("rhi: createGraphicsPipeline: colorTargets.size() ({}) must be in [1,{}]",
+    // task 3.6.2 -- a DEPTH-ONLY pipeline (zero colour targets) is legal IFF the pipeline has a
+    // depth target. This is a WIDENING: every input legal before is legal after, with the identical
+    // outcome, and the upper bound is untouched. The `iff` half is NEW validation rather than
+    // relaxed validation -- a pipeline with NEITHER a colour target nor a depth target is still
+    // refused, and refused HERE, by us, because SDL's own guard for it is an SDL_assert_release,
+    // which ABORTS rather than returning NULL (SDL_gpu.c:1084, inside the alpha-to-coverage branch,
+    // which this engine never sets). Verified against the pinned SDL 3.4.12 tree: :1046 guards the
+    // descriptions pointer only when num_color_targets > 0, and :1050's validation loop simply does
+    // not execute.
+    if (desc.colorTargets.size() > MAX_COLOR_ATTACHMENTS) {
+        AERO_LOG_ERROR("rhi: createGraphicsPipeline: colorTargets.size() ({}) must be in [0,{}]",
                        desc.colorTargets.size(), MAX_COLOR_ATTACHMENTS);
+        return false;
+    }
+    if (desc.colorTargets.empty() && desc.depthStencilFormat == TextureFormat::Invalid) {
+        AERO_LOG_ERROR(
+            "rhi: createGraphicsPipeline: colorTargets is empty AND depthStencilFormat is Invalid — a "
+            "pipeline must render into something; zero colour targets is legal only for a depth-only "
+            "pipeline");
         return false;
     }
     for (const ColorTargetDesc& target : desc.colorTargets) {
@@ -1414,7 +1430,8 @@ GraphicsPipelineHandle Device::createGraphicsPipeline(const GraphicsPipelineDesc
     createInfo.depth_stencil_state.padding1 = 0;
     createInfo.depth_stencil_state.padding2 = 0;
     createInfo.depth_stencil_state.padding3 = 0;
-    createInfo.target_info.color_target_descriptions = colorTargets.data();
+    createInfo.target_info.color_target_descriptions =
+        desc.colorTargets.empty() ? nullptr : colorTargets.data();  // task 3.6.2, as in beginRenderPass
     createInfo.target_info.num_color_targets = static_cast<Uint32>(desc.colorTargets.size());
     createInfo.target_info.depth_stencil_format = toSdl(desc.depthStencilFormat);
     // SDL's separate bool is collapsed into the engine's Invalid sentinel (§3.4).
@@ -1894,9 +1911,22 @@ RenderPassHandle Device::beginRenderPass(CommandBufferHandle cmd, const RenderPa
         AERO_LOG_ERROR("rhi: Device::beginRenderPass: a render pass is already open on this command buffer (E4)");
         return {};
     }
-    if (desc.colorAttachments.empty() || desc.colorAttachments.size() > MAX_COLOR_ATTACHMENTS) {
-        AERO_LOG_ERROR("rhi: Device::beginRenderPass: colorAttachments.size() ({}) must be in [1,{}]",
+    // task 3.6.2 -- the pass half of the same widening. SDL_BeginGPURenderPass' only null guard is
+    // CHECK_PARAM(color_target_infos == NULL && num_color_targets > 0) (SDL_gpu.c:1788), so
+    // num_color_targets == 0 with a NULL array is legal, and all three backends handle it: Metal's
+    // colour loop is bounded by numColorTargets and its default-viewport derivation folds the DEPTH
+    // target's dimensions in (SDL_gpu_metal.m:2285/:2324/:2365); Vulkan minimises framebuffer
+    // width/height from the depth branch before setting renderArea; D3D12 passes numColorTargets
+    // straight to OMSetRenderTargets.
+    if (desc.colorAttachments.size() > MAX_COLOR_ATTACHMENTS) {
+        AERO_LOG_ERROR("rhi: Device::beginRenderPass: colorAttachments.size() ({}) must be in [0,{}]",
                        desc.colorAttachments.size(), MAX_COLOR_ATTACHMENTS);
+        return {};
+    }
+    if (desc.colorAttachments.empty() && !desc.depthStencil.has_value()) {
+        AERO_LOG_ERROR(
+            "rhi: Device::beginRenderPass: colorAttachments is empty AND there is no depth attachment — a "
+            "pass must write to something; zero colour attachments is legal only for a depth-only pass");
         return {};
     }
 
@@ -1914,8 +1944,19 @@ RenderPassHandle Device::beginRenderPass(CommandBufferHandle cmd, const RenderPa
         }
         colorSlots[i] = slot;
     }
-    const Extent2D firstExtent = colorSlots[0]->extent;
-    const SampleCount firstSamples = colorSlots[0]->sampleCount;
+    // task 3.6.2 -- `colorSlots` is a zero-initialised array, so with no colour attachment
+    // colorSlots[0] is NULLPTR and reading it here is UB. A depth-only pass takes its extent and
+    // sample count from the DEPTH attachment instead, and the depth-vs-colour match below is then
+    // vacuous by construction rather than compared against garbage. Relaxing only the predicate
+    // above would have turned a validated refusal into a crash, which is the opposite of what the
+    // widening is for.
+    const bool hasColor = !desc.colorAttachments.empty();
+    Extent2D firstExtent{};
+    SampleCount firstSamples = SampleCount::One;
+    if (hasColor) {
+        firstExtent = colorSlots[0]->extent;
+        firstSamples = colorSlots[0]->sampleCount;
+    }
     for (std::size_t i = 1; i < desc.colorAttachments.size(); ++i) {
         if (colorSlots[i]->extent != firstExtent) {
             AERO_LOG_ERROR("rhi: Device::beginRenderPass: color attachments have mismatched extents");
@@ -1938,12 +1979,12 @@ RenderPassHandle Device::beginRenderPass(CommandBufferHandle cmd, const RenderPa
             AERO_LOG_ERROR("rhi: Device::beginRenderPass: the depth attachment lacks DepthStencilTarget usage");
             return {};
         }
-        if (depthSlot->extent != firstExtent) {
+        if (hasColor && depthSlot->extent != firstExtent) {
             AERO_LOG_ERROR(
                 "rhi: Device::beginRenderPass: the depth attachment's extent does not match the color targets");
             return {};
         }
-        if (depthSlot->sampleCount != firstSamples) {
+        if (hasColor && depthSlot->sampleCount != firstSamples) {
             AERO_LOG_ERROR(
                 "rhi: Device::beginRenderPass: the depth attachment's sample count does not match the color "
                 "targets");
@@ -1992,8 +2033,12 @@ RenderPassHandle Device::beginRenderPass(CommandBufferHandle cmd, const RenderPa
         depthInfoPtr = &depthInfo;
     }
 
-    SDL_GPURenderPass* const pass = SDL_BeginGPURenderPass(
-        cmdSlot->cmd, colorInfos.data(), static_cast<Uint32>(desc.colorAttachments.size()), depthInfoPtr);
+    // task 3.6.2 -- NULLPTR, not a pointer into an unused array. colorInfos is a fixed std::array and
+    // its data() is never null, so without this SDL would receive a non-null pointer with count 0 --
+    // legal by SDL_gpu.c:1788's guard, but the contract this engine states is the stricter one.
+    SDL_GPURenderPass* const pass =
+        SDL_BeginGPURenderPass(cmdSlot->cmd, desc.colorAttachments.empty() ? nullptr : colorInfos.data(),
+                               static_cast<Uint32>(desc.colorAttachments.size()), depthInfoPtr);
     if (pass == nullptr) {
         AERO_LOG_ERROR("rhi: Device::beginRenderPass: SDL_BeginGPURenderPass failed: {}", SDL_GetError());
         return {};

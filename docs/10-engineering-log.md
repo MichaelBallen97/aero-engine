@@ -10113,6 +10113,352 @@ seeds above.
 
 ---
 
+### Task 3.6.2 — Directional shadow map (Epic 3.6)
+
+**Branch:** `feat/3.6.2-directional-shadow-map`, cut from `main @ 64df342`. **Sixteen green
+commits** — one per build step (`68cf739` the rhi widening, `4b63c22` the fit, `d905c87` the `SF`
+tier, `ef9521f` the three depth shaders, `dc796d7` the shadow view *and* `renderShadowMap`, `c6c442a`
+the `SM` tier, `922eb42` the sample, `2d0789a` `DirectionalLight`), two closing the sabotage matrix's
+two genuine gaps (`729ee6c`, `5cda972`), one documentation commit (`10eb3e7`), four closing the
+code-review round (`ce8f98d`, `10d758b`, `b605fc4`, `35c4cba`), and this one recording that round.
+Counted with `git rev-list --count`, never by adding up steps. **Complete in code; the twelve-row macOS validation pass has NOT been run.**
+
+Before this, every lit surface received the full directional term regardless of what stood between it
+and the sun. Nothing computed a light-space transform, no depth texture in the tree carried `Sampler`
+usage, no shader declared a `SamplerComparisonState`, and the RHI **actively refused** to open a
+render pass without a colour attachment.
+
+#### What shipped
+
+One new PURE pair — `engine/render/shadow.{hpp,cpp}`, the layer's **third** pure module and the
+**second** naming no rhi type at all — holding the light basis, the camera-frustum corner
+unprojection, the rotation-invariant bounding sphere, the world-anchored texel snap and the
+orthographic fit. `ForwardRenderer::renderShadowMap` records every caster into a renderer-owned depth
+texture **on its own command buffer**, submits it, and returns a `ShadowView` the caller assigns onto
+the render view; `draw()` binds the map at slot 5 **once** and the PBR fragment stage looks each
+surface up with a hardware comparison sampler and a 3×3 PCF kernel, multiplying **only** the
+directional term. Two depth-only pipelines (static and skinned), three new shaders, four appended
+`DirectionalLight` fields, and `samples/phase-3-shadows`.
+
+#### The defect that cost a step, and the rule that outlives it (INV-8)
+
+**The plan's texel snap was a no-op, and worse than inert.** It snapped
+`transformPoint(lightView, sphere.center)` — and that quantity is identically `(0, 0, -k)` **for every
+input**, because `lookAt` puts its target on the light's own axis by construction. There was nothing
+camera-dependent in it to quantise. `std::floor` then turned the sign of the ±2e-6 rounding noise into
+a discrete **one-full-texel jump**, so the lattice hopped between two positions frame to frame.
+**Measured over a 360-step yaw sweep at 2048**: a fixed world point's sub-texel position spanned
+**0.997 texels** — the shadow edge crawling exactly as much as with no snap at all — against **0.022**
+for the corrected form, and the volume's min edge sat up to **0.4975 texels** off the world lattice
+against **1.83e-4** after.
+
+The corrected form quantises the centre's position on the light's **lateral axes** (`dot(s, c)` and
+`dot(u, c)`, read from the basis rows) by flooring the ortho's **min corner** onto a world lattice and
+shifting the bounds by the residue. **The sign is subtract**, and it works because `s` and `u` are both
+perpendicular to the light direction and `eye == centre − dir·k`, so `dot(s, eye) == dot(s, centre)`
+exactly. Width stays exactly `2r`, so `texelWorldSize == 2r / resolution` is untouched. The accepted
+price, stated rather than discovered later: up to one texel of the sphere's `+x`/`+y` side falls
+outside the volume — 0.05 % of the width at 2048, against a bound that already circumscribes by
+20–35 %.
+
+**Why a 28-case battery missed it, and the rule that follows.** The plan's own worked reference
+recorded `cLight = (0, 0, -7)` and called it *"already on the 0.75 grid"*. That is not a coincidence of
+the fixture; it is an **identity**, and describing it as a coincidence is what made it look like
+evidence. `SF28`'s primary assertion — *"the recovered ortho centre is a whole texel multiple"* —
+**passes under the defect**, because `0` and `−1 texel` are both whole multiples. Hence **INV-8**: *a
+"the value is quantised" assertion is satisfied by a value that is always zero, so every quantisation
+claim needs a companion that fails when the quantity is CONSTANT.* The reference fixture was moved off
+the origin for the same reason — its residues are now `0.5` and `0.25`, non-zero **by design**, because
+a fixture with zero residues makes every snap assertion vacuous. `SF28` is now three parts: the
+primary, a sub-texel bound, and a two-part non-vacuity half (the volume must genuinely travel, and the
+residue must genuinely vary). **That shape is what to copy for any future quantisation claim here.**
+
+#### The RHI change, and the thing it nearly hid
+
+Two validation predicates widen so zero colour targets is legal, each keeping an `iff`: a pipeline or
+a pass with **neither** a colour target nor a depth target is still refused **here, by us**, because
+SDL's own guard for that shape is an `SDL_assert_release` that aborts. Recorded per the 0.4.1 D18
+amendment protocol, with the pinned SDL 3.4.12 tree as the verification source
+(`vcpkg/buildtrees/sdl3/src/ase-3.4.12-441a9855e8.clean`): `SDL_gpu.c:1788` (`num_color_targets == 0`
+with a NULL array is legal), `:1046`/`:1050` (the colour-target loop does not execute), `:1041` (a
+fragment shader is unconditionally required), and `:1084` — **the only `< 1` refusal, inside the
+alpha-to-coverage branch this engine never sets**, which is the line that makes `SM15` work.
+
+**Relaxing the predicate alone would have turned a validated refusal into a crash.**
+`beginRenderPass` dereferences `colorSlots[0]` to derive the pass extent and sample count, and that
+array is zero-initialised — so with an empty colour list the pointer is `nullptr`. The derivation is
+now guarded and the two depth-vs-colour match checks are conditional. **Anyone widening a validation
+predicate in this tree should read that sentence first.** `device.hpp` also gains one corrected
+comment (*">= 1 color attachment in v0"* became false), which is an amendment to the task's own AC-6:
+a false sentence on a public header outlives an acceptance criterion.
+
+#### Two more classes worth carrying
+
+**The positional brace-init.** `buildRenderView`'s directional assignment was a *positional*
+three-value brace-init, so appending four fields to `DirectionalLightData` left it compiling with the
+new fields silently at their **defaults** — a shadow toggle that never reflects the light, with every
+test green. It is a designated initialiser now, and the general rule is that **a mirror assignment
+should name every field, so a future append is a compile error rather than a silent one.**
+
+**A plan that extracts a helper into an existing function must check the surrounding scope for the
+name it chooses.** §D-19 and §D-22 both introduced `const ResolvedInstanceDraw resolved` into
+`draw()`'s per-instance loop, which already carries a live `MaterialHandle resolved`. The collision is
+invisible in a code block read on its own and unmissable in the function; the new binding is
+`resolvedDraw`, and the pre-existing one was deliberately left alone because AC-36 requires that code
+be observably unchanged.
+
+#### Steps 5 and 6 are ONE commit, and it was measured rather than assumed
+
+The plan's Step 5 anticipated that six declared fragment samplers with nothing binding slot 5 might
+redden the GPU tier, and directed squashing the two steps if so. It does not merely redden: SDL's
+`Missing fragment sampler binding!` assertion (`SDL_gpu.c:550`) **HANGS** `aero_tests` on Metal.
+Splitting them would have put a hanging commit on the branch.
+
+#### The skinned depth stage declares all six inputs and reads three
+
+**SPIRV-Cross numbers MSL `[[attribute(n)]]` by DECLARATION ORDER, not by the HLSL semantic index.**
+A stage declaring only `TEXCOORD0/4/5` gets `attribute(0)/(1)/(2)`, so the shared six-entry attribute
+table — which describes location 1 as the `Float3` normal — hands Metal a `Float3` where the shader
+wants a `uint4`: *"Vertex attribute in_var_TEXCOORD4(1) of type uint4 cannot be read using
+MTLAttributeFormatFloat3"*, a hard pipeline-creation failure. Declaring the full stream keeps the
+indices aligned; DXC still strips the three unused inputs, but the SPIR-V retains the original
+`Location` decorations, so the cooked MSL reads `attribute(0)`, `(4)`, `(5)`. **The static depth VS is
+fine only because index 0 coincides** — that is luck, not design, and a future depth stage reading a
+non-contiguous subset inherits this.
+
+#### The sabotage matrix — 32 runs across 30 seeds, TWO genuine gaps, both closed and re-proven
+
+`SH8` is three arms (`SH8a` no snap, `SH8b` the sign flip, `SH8c` the original defect kept as a named
+regression seed), and **all three redden the same quintet** `SF21`/`SF22`/`SF23`/`SF24`/`SF28` — which
+is the strongest evidence that the corrected battery sees every form of the defect, including the one
+that is invisible by eye. `SH11`/`SH12` **abort a Debug build** at `ortho`'s own assert (exit 134) and
+were re-run against `macos-release`, where `NDEBUG` removes it.
+
+**Gap 1 — `SH14` (delete `casterBoundsWorld.valid()`) reddened nothing, and the reason is arithmetic
+rather than coverage.** The invalid sentinel's `center()` is NaN and its `halfExtent()` is `-inf`, so
+the unguarded path reaches `std::max(0.0F, NaN)` — **which returns `0.0F`**, because `std::max` is
+`a < b ? b : a` and `0 < NaN` is false. The NaN is **laundered**, and the sentinel is the one invalid
+box that cannot witness the guard at all. `SF26`'s own comment asserted the opposite and is corrected.
+The closure is the **fixture**, not a new case: an inverted but **finite** box is invalid by the
+ordering half alone, with no infinity to launder, and its negative half-extent makes the unguarded fit
+extend the depth range by a real amount — `casterBack` 10 instead of 0, `zFar` 23 instead of 13.
+Re-seeded: `SH14` now reddens `SF26` alone.
+
+**Gap 2 — `SH29` (delete the pipeline half of the `iff`) reddened nothing**, which the plan flagged
+honestly in advance: `createGraphicsPipeline` returns an invalid handle for **both** the structural
+refusal and the later shader-handle refusal, so with never-valid shaders `SW1` cannot discriminate.
+The discriminator needs **real shaders**, so `SM15` lives in the GPU-gated shadow tier rather than
+beside `rhi_device_test.cpp`'s other structural-refusal cases — that file deliberately has no shader
+artifacts. It discriminates because of `SDL_gpu.c:1084`: nothing downstream refuses the shape, so
+deleting our arm makes it **succeed**. `SM15` carries the depth-only positive control immediately
+above the refusal. Re-seeded: `SH29` now reddens `SM15` alone. **This is why `aero_tests` lands at 986
+rather than the plan's predicted 985.**
+
+**Three witness attributions in the plan were wrong and are recorded rather than smoothed over.**
+`SH6` reddens `SF11`/`SF27` **only** — `SF10` stays green, because the light-space box's half-diagonal
+for the orthographic fixture is also exactly 6, which the plan predicted correctly and is worth
+restating. `SH11` does **not** redden `SF24`: a near/far swap leaves the sphere centre at the midpoint
+of the inverted range, so `ndc.z == 0.5` survives — `SF21` and `SF23` are what catch it. And `SH19`
+reddens `SM14` alone, not `SM7`/`SM9` as predicted.
+
+**`SH30` is closed structurally and cannot even be written**: swapping the two appended
+`GpuLightBlock` fields fails to compile at both `offsetof` assertions by name.
+
+#### The declared class — five seeds with no automated witness anywhere
+
+**`SH24`–`SH28` were each APPLIED, BUILT and RUN** to prove "reddens nothing" rather than assert it,
+with the shader recompile confirmed in the build log for the four that touch `scene.frag.hlsl` (so the
+green is not vacuous; `SH24` is a C++ sampler change and correctly triggers none). **`SH22` and `SH23`
+join the class in their second half** — `SM13` proves the pass still records, but only a picture can
+see that the map's contents are gone or inverted.
+
+| Seed | The defect | Its ONLY witness |
+|---|---|---|
+| `SH24` | the comparison sampler's `compareOp` is `Greater` | validation **rows 2 and 9** |
+| `SH25` | the shadow UV's y is not flipped | validation **row 3** |
+| `SH26` | the normal offset uses the mapped `N`, not `geoN` | validation **row 6** |
+| `SH27` | the shadow factor multiplies the whole accumulator | validation **row 5** |
+| `SH28` | the out-of-range lookup returns `0.0` | validation **row 4** |
+| `SH22`/`SH23` | `DontCare` store / `clearDepth 0` | validation **row 2** |
+
+**`SH26` is a NO-OP without a real normal map** on the receiver — with the built-in 1×1 flat default,
+`nxy == (0, 0)` leaves `N` bit-identical to `geoN`. That is why `samples/phase-3-shadows` gives the
+ground plane a procedural ripple, and why row 6 could not otherwise exist.
+
+#### Diagnostics, and one stated limit
+
+**Five** accessors, not the spec's four: `shadowPassCount()` was added because `SH17`'s witness needs a
+"nothing was acquired" observable that did not exist, and it is counted at the **acquisition** rather
+than at the submit — a counter that moved only at submit could not tell "never acquired" from
+"acquired and leaked". There is deliberately **no sixth** accessor for the masked-caster latch:
+`SM12` asserts the **behaviour** (a `Mask` material's caster is drawn, not skipped) and the "exactly
+once" half rides the `warnOnce` idiom, proven by reading. Recorded so `SM12` is never read as covering
+more than it does. **`render.shadowDrawn` is the tree's third production Tracy plot** beside 3.6.1's
+two; **the name is the contract**.
+
+#### Two guards with no automated witness, recorded rather than claimed
+
+The zero-radius refusal in `fitDirectionalShadow` has none — reaching it needs eight coincident
+corners, which needs a singular `proj * view`, which step 1 already refuses. It ships on 3.6.1's
+`!std::isfinite(k)` precedent: `engine::ortho` **asserts**, so the alternative is an `abort()`
+reachable from a hand-built `CameraView` in the configuration CI sanitizes.
+
+#### D17 restated, since `culling.hpp` never carried it
+
+The `Aabb` promotion trigger fires when a layer that is **not** `engine/render` needs these types —
+Phase 6's `physics` is the first real candidate, `scene` a possible second. 3.6.2 is a second
+**consumer** inside `engine/render`, not a second layer, so it did **not** fire. `culling.cpp` is
+byte-identical and `culling.hpp` changes by one comment (its normalisation note, discharged: this fit
+is the use it predicted).
+
+#### Two plan-command corrections, so the next task does not rediscover them
+
+**A reduced configuration needs `-DCMAKE_TOOLCHAIN_FILE=…/vcpkg/scripts/buildsystems/vcpkg.cmake`
+explicitly** — the presets supply it through `base`, and without it the configure dies at
+`find_package(spdlog)`. (3.6.1 recorded this; the plan did not carry it forward.) And **§V.2's binary
+list is wrong**: a reduced configuration builds and runs `aero_tests`, `aero_editor_shell_test`,
+`aero_editor_imgui_test` and `aero_cooker` — **not** `aero_scene_serialize_test` or
+`aero_editor_inspector_test`, both of which sit inside `if(AERO_REFLECT_TOOLS)`.
+
+#### The numbers, every one measured on this tree
+
+**157/157 on both macOS presets** with `AERO_REQUIRE_GPU=1` (Debug 239.8 s, Release 60.7 s). Both
+reduced configurations rebuilt **fresh with `-G Ninja`**: `-DAERO_REFLECT_TOOLS=OFF
+-DAERO_SHADER_TOOLS=OFF` → **65/65**, `-DAERO_REFLECT_TOOLS=OFF` alone → **78/78**. `ctest -N` reads
+**157 / 65 / 78 — unmoved in all three**, which is the prediction being met: the new TU rides
+`aero_tests` (one entry), the sample registers no test, and no `cooker.*` or `reflect-gen.*` case is
+added.
+
+Doctest, seven binaries: **986 / 1725 / 138 / 29 / 27 / 7 / 28**. `aero_tests` moves **942 → 986**
+(+44: `SF1`–`SF28` tier-0, `SM1`–`SM15` GPU-gated, and `SW1` in the rhi battery); every other binary is
+**unmoved**. In the tools-off configuration the shadow filter lists **28** — the `SF` tier present, the
+`SM` tier absent by its gate — and **43** with tools on.
+
+`check-math-boundary.sh` **408 → 412** (+4 tracked C-family files: `shadow.hpp`, `shadow.cpp`,
+`render_shadow_test.cpp`, `samples/phase-3-shadows/main.cpp`; the three `.hlsl` files, the sample's
+`CMakeLists.txt` and its `README.md` are not C-family), re-measured **after `git add`**.
+`check-project-no-delete.sh` **6 / 73 — unmoved**. Six guards exit 0; `.github/` byte-identical. The
+determinism manifest is **untouched at 18 hash lines** (58 file lines — the two are different numbers,
+and `wc -l` is the wrong one). clang-format and clang-tidy clean **by exit code**.
+
+#### The diff, and what did not move
+
+**35 tracked files** (9 created, 26 modified). **The plan's inventory was short by TWO, and neither
+was found by reading it.** The compiler found the first — `tests/scene_boundary_probe.cpp` carries a
+**third** `sizeof(DirectionalLight) == 4 * sizeof(float)` assertion where §R.7 said two — and the
+code-review round found the second: `editor/src/material_preview.cpp`, which neither the spec nor the
+plan mentions at all. **`/editor` is therefore NOT byte-identical**, and the diff is exactly that one
+file: `MaterialPreview` inherited the new `shadowMapResolution = 2048` default and would have
+allocated ~16.8 MB of dead VRAM per editor session for a renderer that never calls `renderShadowMap`.
+
+`engine/core`, `engine/assets`, `engine/platform`, `engine/reflect`, `engine/scene_serialize`,
+`/tools`, `runtime/`, `vcpkg.json`, `cmake/`, `.github/`, `docs/09-file-formats.md`,
+`docs/tasks/phase-3.md`, `tests/cooker/determinism.sha256`, the root `CMakeLists.txt`, every other
+sample, `engine/rhi`'s five other public headers and both other sources, `engine/render`'s
+`culling.cpp` / `animation.*` / `material.hpp` / `texture_upload.*` / `render_target.*` / `renderer.*`
+/ `primitives.*` / `skinning.*` / `mesh.hpp` / `src/skinning_pack.hpp` / `src/mesh_pack.hpp` /
+`src/primitives.hpp`, and **`shaders/scene.vert.hlsl` and `shaders/scene_skinned.vert.hlsl`** are all
+byte-identical. **No link line moves on any existing target and no dependency of any kind lands** —
+`samples/phase-3-shadows` names `aero::assets` on its own new line, which is a deviation from the
+spec's D18 parenthetical recorded here: the skinned depth pipeline is reachable only through a
+registered cooked mesh, and the rig is cooked **in memory**, so D18's actual protection ("reads no
+cooked artifact, commits no fixture") holds in full.
+
+**`samples/phase-2-editor-scene/scenes/Untitled.scene.json` is deliberately NOT re-emitted** — it is
+the Phase 2 gate's provenance artifact, it still loads under `docs/09` §2.3's missing-key rule, and
+re-emitting it would replace an editor-authored file with a programmatically written one.
+
+#### Validation
+
+**PENDING.** The twelve-row macOS page is written before the pass, as always. **Seven seeds redden
+nothing in the whole 43-case shadow tier** and each names the row that is its only coverage anywhere —
+if a row fails, the fix is in the code, never in the row. CI covers this task's sharpest
+cross-platform half unusually well: `SM1`–`SM15` build two depth-only pipelines, open a depth-only
+pass, allocate a sampleable depth texture and bind a comparison sampler under **Metal, WARP and
+lavapipe** on every push, and all four of those are firsts. What no lane can see is the picture.
+
+#### 3.6.2 — the code-review round: eight findings, three blocking, all closed
+
+**The three blocking ones share a shape: each is a place where a failure, a cost or an abort was
+*unrepresentable in the observable* rather than absent.**
+
+**1 — `renderShadowMap` ignored both GPU failure paths.** `acquireCommandBuffer()` and
+`beginRenderPass()` were never checked, `++shadowPasses` fired before any validity test, and the
+function returned a **valid** `ShadowView` either way. Three silent consequences: `shadowPassCount()`
+reported an acquisition that did not happen — **defeating the exact "never acquired versus acquired
+and leaked" distinction the fifth accessor was added for**; an invalid pass made every bind, push and
+draw in the caster loop log its own **unlatched** `AERO_LOG_ERROR`, thousands of lines per frame on a
+1000-instance scene; and `draw()` then sampled a depth map nothing had written this frame, with no
+diagnostic at all. Every sibling already bailed this way (`renderer.cpp:139`, `render_target.cpp:241`
+and `:253`). Both are checked now, both bail with `plotShadow()` and an invalid `ShadowView` — which
+is what keeps `draw()` from shading against a stale map — `beginRenderPass`'s failure **cancels** the
+command buffer, and `++shadowPasses` moved below the acquire's check so the counter means *acquired*.
+
+**2 — the editor allocated a 2048² shadow map it never used.** `MaterialPreview` constructed its
+`ForwardRenderer` with `.colorFormat`/`.depthFormat` only, so it silently inherited the new
+`shadowMapResolution = 2048` default: ~16.8 MB of dead VRAM, a comparison sampler, three extra shader
+loads and two extra pipeline compiles **per editor session**, for a renderer that never calls
+`renderShadowMap` (`git grep renderShadowMap -- editor` is empty). **Neither the spec nor the plan
+mentions `material_preview` at all** — this was unconsidered blast radius, not a recorded decision,
+and it is the reason `/editor` is not byte-identical this task. `shadowMapResolution = 0` is exact-off
+by D16 and shrinks the placeholder to 1×1. **The general form is worth keeping: a defaulted field
+appended to a widely-constructed config struct is a cost every existing caller silently starts
+paying**, and the ones that do not need it are exactly the ones nobody thinks to check.
+
+**3 — `SM15` could abort the whole test binary.** It hard-coded `.depthStencilFormat = D32Float`, and
+`device.hpp` states drivers guarantee **one of** D24Unorm/D32Float, never both. On a device without
+D32Float, SDL's *"Format is not supported for depth targets on this device!"* is an
+`SDL_assert_release` — **active in every build configuration** — so `aero_tests` would abort and lose
+every remaining case rather than one case reddening. It probes `supportsTextureFormat` over the same
+three-format order `SW1` and `createShadowResources` already use. Latent on today's three lanes; a
+hard abort on the first device that differs.
+
+**4 — AC-5's two "corrected" prose claims were false as written.** They read *"empty IFF
+depthStencilFormat != Invalid"* — a **biconditional**, asserting that a pipeline **with** a depth
+format may not declare a colour target. That is exactly backwards, and it forbids what all four lit
+pipelines and `RenderTarget::beginFrame` actually do. Only the forward direction is true, and only the
+forward direction is enforced. Both now read **"empty ONLY IF …"**, and §D-5 of the plan is corrected
+at source. **The irony is the point**: AC-5 exists solely to make these two sentences true, and this
+entry's own §R.10 argues that a false sentence on a public header outlives an acceptance criterion.
+
+**5 — a half-handled member list, and a DELIBERATE SCOPE ADDITION.** The move constructor, move-assign
+and `reset()` still omitted 3.6.1's `lastDrawn`, `lastCulled`, `materialBinds` and
+`warnedDegenerateFrustum`, while all eleven 3.6.2 members added directly beneath them were handled. A
+moved-to renderer read `hasWarnedDegenerateFrustum() == false`, so the once-per-renderer WARN could
+fire a **second** time from the same logical renderer. **This is a pre-existing 3.6.1 defect, and
+fixing it here is a scope addition taken deliberately rather than a silent expansion** — this branch
+rewrites all three functions anyway, and a member list that handles its newest eleven while skipping
+its previous four is precisely the silent-drift class this project keeps recording. Recorded as such.
+
+**6 — the header claimed one `drawIndexed` site; there are two.** `forward_renderer.hpp:221` said
+`++shadowDrawn` lives at *"the single drawIndexed site"* — the primitive arm and the mesh arm are two,
+and D-22 says so. **The code was right and the sentence was wrong**, which is the dangerous direction:
+that sentence is the whole argument for why the two counters need not sum, so a maintainer who greps,
+finds two and "corrects" the code to match would silently stop counting every primitive caster.
+
+**7 — `renderShadowMap`'s success return was a positional aggregate init**, which is the exact
+silent-default class this branch fixed at the `buildRenderView` bridge and elevated to a recorded
+lesson. A sixth `ShadowView` field appended later would compile clean at its default with `SM5` green.
+Designated now, at the one production site. **Finding the same class twice in one branch is the
+argument for making it a habit rather than a fix.**
+
+**8 — `CLAUDE.md` recorded the commit count from the step list rather than from the tree.** It said
+"(ten commits)" twice while the branch carried eleven, because the two sabotage-closure commits landed
+after the list was written. Re-derived with `git rev-list --count` at the moment of writing, exactly as
+the test totals are — **the count is fifteen**.
+
+**Re-measured after the fixes, not carried forward** — findings 1, 3 and 5 change code that tests
+exercise and finding 2 changes an **editor** TU, so `aero_editor_imgui_test` was in the blast radius
+and was re-read rather than assumed unmoved. **157/157 on both macOS presets** (Debug 258.6 s, Release
+62.1 s); both reduced configurations rebuilt fresh with `-G Ninja` → **65/65** and **78/78**; `ctest
+-N` **157 / 65 / 78 — still unmoved in all three**; doctest **986 / 1725 / 138 / 29 / 27 / 7 / 28 —
+every binary unchanged**, including `aero_editor_imgui_test` at 138; the shadow filter **43** tools-on
+and **28** tools-off; six guards exit 0 with math-boundary **412** and project-no-delete **6 / 73**;
+the determinism manifest untouched at **18 hash lines**; clang-format and clang-tidy clean by exit
+code.
+
+---
+
 ### Task 3.6.3 — Tonemap/gamma pass (Epic 3.6)
 
 **Branch:** `feat/3.6.3-tonemap-gamma-pass`, cut from `main @ 64df342` — the spec's own stated branch

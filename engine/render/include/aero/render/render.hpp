@@ -14,6 +14,7 @@
 #include <aero/render/post_process.hpp>      // task 3.6.3
 #include <aero/render/render_target.hpp>     // task 2.2.3
 #include <aero/render/renderer.hpp>
+#include <aero/render/shadow.hpp>          // task 3.6.2
 #include <aero/render/skinning.hpp>        // task 3.5.1
 #include <aero/render/texture_upload.hpp>  // task 3.4.1
 #include <aero/render/tonemap.hpp>         // task 3.6.3

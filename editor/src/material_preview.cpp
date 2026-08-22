@@ -179,8 +179,21 @@ void MaterialPreview::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExte
         return;
     }
     // task 3.6.3: built against the HDR target's formats, NOT this preview's output target's.
-    renderer = render::ForwardRenderer::create(
-        *device, shaderVfs, {.colorFormat = post->sceneColorFormat(), .depthFormat = post->sceneDepthFormat()});
+    // THE TWO HALVES OF THIS CALL COME FROM DIFFERENT TASKS AND BOTH ARE LOAD-BEARING. 3.6.2's side
+    // of the merge read `target->depthFormat()`, which on this branch is now Invalid -- the output
+    // target is `.depth = false`, because the only thing drawn into it is a depth-off fullscreen
+    // triangle -- and ForwardRendererConfig REFUSES an Invalid depthFormat outright. So the formats
+    // must come from `post`, and 3.6.2's shadow field rides along unchanged.
+    //
+    // shadowMapResolution 0 is EXACT and means OFF (task 3.6.2's D16), and this renderer never calls
+    // renderShadowMap: a material preview lights a single sphere with no caster and no receiver. At
+    // the 2048 default it would allocate ~16.8 MB of dead VRAM, a comparison sampler, three extra
+    // shader loads and two extra pipeline compiles per editor session, for a map nothing ever writes
+    // or samples. 0 shrinks the bind placeholder to 1x1, which slot 5 still needs.
+    renderer = render::ForwardRenderer::create(*device, shaderVfs,
+                                               {.colorFormat = post->sceneColorFormat(),
+                                                .depthFormat = post->sceneDepthFormat(),
+                                                .shadowMapResolution = 0});
     if (!renderer) {
         target.reset();  // created above and now unusable: released HERE, in the service pass (INV-5)
         post.reset();
