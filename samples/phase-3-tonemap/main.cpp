@@ -239,8 +239,15 @@ int runSample(int argc, char** argv) {
 
     const rhi::TextureFormat sceneColor = post ? post->sceneColorFormat() : renderer->colorFormat();
     const rhi::TextureFormat sceneDepth = post ? post->sceneDepthFormat() : renderer->depthFormat();
-    std::optional<render::ForwardRenderer> forward =
-        render::ForwardRenderer::create(*device, vfs, {.colorFormat = sceneColor, .depthFormat = sceneDepth});
+    // shadowMapResolution 0 is EXACT and means OFF (task 3.6.2's D16), and this sample never calls
+    // renderShadowMap: ROW A is emissive-only with the directional light at intensity 0, and ROW B is
+    // five spheres with no caster and no receiver. At the 2048 default it would allocate ~16.8 MB of
+    // dead VRAM plus a comparison sampler, three shader loads and two pipeline compiles for a map
+    // nothing writes or samples -- and this sample's whole job is to print a MEASURABLE memory figure,
+    // so 16.8 MB it never uses would make its own per-frame line misleading. The 1x1 placeholder slot
+    // 5 still needs is what 0 leaves behind.
+    std::optional<render::ForwardRenderer> forward = render::ForwardRenderer::create(
+        *device, vfs, {.colorFormat = sceneColor, .depthFormat = sceneDepth, .shadowMapResolution = 0});
     if (!forward) {
         AERO_LOG_CRITICAL("forward renderer creation failed");
         return 1;
