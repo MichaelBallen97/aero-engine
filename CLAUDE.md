@@ -852,9 +852,25 @@ all three shadow resolutions allocate exactly as requested with `texelWorldSize`
 0.3356**, matching the plan's predicted table exactly, and the cost is **flat across a 64× texel
 change** (0.112 → 0.121 ms), so at six casters the depth pass is per-draw bound rather than fill
 bound; all five existing samples run with **0 unexpected console lines and 0 non-`[info]` lines**.
-**Rows 2–7 and 9 remain OPEN and every one is judged by eye** — they carry the whole of seeds
-SH22–SH28, because `engine/rhi` exposes no texture readback and nothing in this tree can inspect a
-texel. **Row 1's gate as first written could never return 0**: the sample's own
+**Rows 2, 3, 4, 5, 7 and 9 also PASS — 9 of 12 in all — and every one is judged by PIXEL
+MEASUREMENT against a matched `--no-shadows` twin rather than by eye**, capturing the sample's own
+window in isolation (`CGWindowListCopyWindowInfo` + `screencapture -l<id>`, 3.6.1's method reused).
+**Six of the seven declared seeds are witnessed.** The sharpest numbers: at `--distance 5` the frame
+is **100.00 % unchanged** against the twin, so an out-of-range lookup resolves to **lit** (SH28
+refuted); shadowed pixels retain **~40 %** of their lit brightness with **0 of 1499 near-black**, so
+ambient and the point light survive (SH27 refuted); and mean darkening scales **3.2×** from elev 15 to
+75 against a predicted sin ratio of **3.73×**, the shadow removing the directional term and nothing
+else (SH22/SH23 refuted). The rig's shadow tracks its pose **nearly 1:1** (32.3 px against 34.4 px)
+and never drops below 7088 px. **Two findings are recorded rather than smoothed over.** (1) **Row 6's
+acne half is NOT reproducible**: `shadowBias = 0` changes **nothing** on static geometry at either
+elevation, because the shadow pipeline's slope-scaled **rasterizer** bias already covers every
+configuration this sample produces — D6's two-mechanism split working as designed. Its peter-panning
+half IS confirmed (620 px at the green cube's base). **So SH26 has no witness anywhere**: the row asked
+for the wrong evidence, and the fix belongs in the row rather than the code. (2) **`--elevation`
+freezes the sun but NOT the rig**, whose 3 s cycle contaminates any A/B that does not exclude its
+columns — an initial row-6 reading showed a textbook striping signature that was entirely the rig at a
+different pose. **All measurements were taken on `main` @ `6046c9e`, before 3.6.3 (PR #86) merged and
+made the output tonemapped rather than raw linear.** **Row 1's gate as first written could never return 0**: the sample's own
 closing line contains the path `editor/validation/…`, so it matched the word it was grepping for; the
 page now excludes that line and carries an independent log-level cross-check beside it.** The renderer
 learns that light is occluded. Until now every lit surface received the full directional term
