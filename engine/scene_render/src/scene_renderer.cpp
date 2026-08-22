@@ -192,8 +192,18 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
         ++view.directionalCount;
         if (!dirEntity.valid() || le.index < dirEntity.index) {
             dirEntity = le;
-            view.directional = {normalize(transformDirection(worldMatrix(world, le), {0.0F, 0.0F, -1.0F})), dl.color,
-                                dl.intensity};
+            // task 3.6.2: DESIGNATED, not positional. The old form was a three-value brace-init, and
+            // appending four fields to DirectionalLightData would have left it compiling while the
+            // four new ones silently took their DEFAULTS -- a shadow toggle that never reflects the
+            // light, with every test green. Naming every field makes a future append a compile
+            // error here instead of a silent one.
+            view.directional = {.direction = normalize(transformDirection(worldMatrix(world, le), {0.0F, 0.0F, -1.0F})),
+                                .color = dl.color,
+                                .intensity = dl.intensity,
+                                .castsShadows = dl.castsShadows,
+                                .shadowBias = dl.shadowBias,
+                                .shadowNormalBias = dl.shadowNormalBias,
+                                .shadowDistance = dl.shadowDistance};
         }
     });
     world.each<PointLight>([&](Entity le, PointLight& pl) {
@@ -234,7 +244,10 @@ std::uint32_t SceneRenderer::lastUnresolvedMaterials() const noexcept { return l
 
 void SceneRenderer::render(World& world, render::Frame& frame, const render::CameraView* cameraOverride) {
     AERO_PROFILE_ZONE;
-    const render::RenderView view = buildRenderView(world, scratch, frame.extent(), cameraOverride, &bindingTable);
+    // task 3.6.2 (D5/AC-51): NOT const -- view.shadow is assigned from renderShadowMap below. That
+    // is the ONE channel between the two ForwardRenderer calls, and it is why there is no renderer
+    // member holding a light matrix.
+    render::RenderView view = buildRenderView(world, scratch, frame.extent(), cameraOverride, &bindingTable);
     if (cameraOverride == nullptr) {  // D3: an override suppresses the two CAMERA WARNs, nothing else
         if (view.cameraCount == 0) {
             warnOnce(noCameraWarned, "SceneRenderer: no Camera in world; nothing rendered");
@@ -256,6 +269,12 @@ void SceneRenderer::render(World& world, render::Frame& frame, const render::Cam
     // outlive this call.
     lastUnresolvedMeshesValue = view.unresolvedMeshes;
     lastUnresolvedMaterialsValue = view.unresolvedMaterials;
+    // task 3.6.2: the depth pass records onto its OWN command buffer and submits it, so it orders
+    // BEFORE the frame's -- which is what lets draw() sample the map with no explicit barrier
+    // (render_target.hpp's own note states the same guarantee for its colour texture). It is legal
+    // inside the caller's open frame because the two passes are on different command buffers and
+    // SDL's pass-in-progress guard is per command buffer.
+    view.shadow = forward.renderShadowMap(view);
     forward.draw(frame, view);  // no-ops when !view.hasCamera
 }
 

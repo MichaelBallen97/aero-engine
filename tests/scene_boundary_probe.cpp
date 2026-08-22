@@ -116,7 +116,7 @@ static_assert(sizeof(engine::Camera) == 3 * sizeof(float));
 static_assert(std::is_trivially_copyable_v<engine::DirectionalLight>);
 static_assert(std::is_standard_layout_v<engine::DirectionalLight>);
 static_assert(std::is_aggregate_v<engine::DirectionalLight>);
-static_assert(sizeof(engine::DirectionalLight) == 4 * sizeof(float));
+static_assert(sizeof(engine::DirectionalLight) == 8 * sizeof(float));  // task 3.6.2: + four shadow controls
 static_assert(std::is_trivially_copyable_v<engine::PointLight>);
 static_assert(std::is_standard_layout_v<engine::PointLight>);
 static_assert(std::is_aggregate_v<engine::PointLight>);
