@@ -33,6 +33,7 @@
 #include <aero/render/forward_renderer.hpp>
 #include <aero/render/material.hpp>
 #include <aero/render/mesh.hpp>
+#include <aero/render/post_process.hpp>  // task 3.6.3: the owned HDR target + the fullscreen resolve
 #include <aero/render/render_target.hpp>
 #include <aero/rhi/handles.hpp>
 #include <aero/rhi/types.hpp>
@@ -104,8 +105,11 @@ public:
     // `document` is the SESSION copy (null when untargeted or unparseable); `documentChanged` is the
     // session's drained one-shot. Renders only on frames the panel actually drew, so a tabbed-away
     // Material panel costs one early return.
+    // task 3.6.3: `tonemap` is APPENDED LAST, so no existing argument moves. It comes from the
+    // VIEWPORT, which owns the UI that mutates it, so the viewport and the preview can never grade the
+    // same material differently.
     void service(const MaterialDocument* document, bool documentChanged, const AssetDatabase* database,
-                 std::string_view assetsRootAbs, float deltaSeconds);
+                 std::string_view assetsRootAbs, float deltaSeconds, const render::TonemapParams& tonemap);
 
     // ---- reads -------------------------------------------------------------------------------------
     [[nodiscard]] bool available() const noexcept;                 // status == Ready
@@ -160,7 +164,7 @@ private:
 
     void ensureInitialized(rhi::Extent2D firstExtent);  // ONE attempt, latched (A-9)
     void pushMaterial(const MaterialDocument& document);
-    void renderFrame(float deltaSeconds);
+    void renderFrame(float deltaSeconds, const render::TonemapParams& tonemap);
     // Recomputes the five desired keys from the document + the database, creating a Loading entry for
     // each key not already cached. Returns true when the desired set MOVED, which is what tells
     // service() to re-push. A null document clears every slot, so untargeting orphans the whole cache.
@@ -177,6 +181,10 @@ private:
     // DECLARATION ORDER IS THE REVERSE OF THE TEARDOWN ORDER, and the destructor spells that order out
     // explicitly rather than relying on it: the texture cache and the material are released first, then
     // the renderer, then the target -- all before ~Device (AC-31's clean-shutdown clause).
+    // task 3.6.3: `post` OWNS the HDR scene target the ForwardRenderer draws into; `target` below stays
+    // the ImGui-visible OUTPUT and is now DEPTH-FREE. Declared BEFORE `target` so the reverse-order
+    // default teardown matches the destructor's explicit sequence, which spells it out anyway.
+    std::optional<render::PostProcess> post;
     std::optional<render::RenderTarget> target;
     std::optional<render::ForwardRenderer> renderer;
     render::MaterialHandle material{};  // created on first push, then updated in place

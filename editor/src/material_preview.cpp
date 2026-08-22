@@ -84,6 +84,7 @@ MaterialPreview::~MaterialPreview() {
     }
     material = render::MaterialHandle{};
     renderer.reset();
+    post.reset();  // task 3.6.3: after the renderer, before the target -- it owns the HDR pair
     target.reset();
 }
 
@@ -103,11 +104,20 @@ bool MaterialPreview::prepareFrame(rhi::Extent2D pixels) {
 
     requestedExtent = pixels;
     drewLastFrame = true;
-    if (status != Status::Ready || !target) {
+    if (status != Status::Ready || !target || !post) {
         // Nothing is allocated yet (creation is lazy and happens in the service pass, A-9) or the
         // status has latched. Either way there is no texture to hand out and no resize to apply.
+        // task 3.6.3: `post` is created inside ensureInitialized BEFORE `target`, so the two are
+        // engaged together or neither is -- but this guard must name both, or `prepareFrame`
+        // dereferences an empty optional on the first drawn frame.
         return false;
     }
+    // task 3.6.3: THE TWO RESIZES ARE ADJACENT and driven by the SAME `pixels`, which is what makes
+    // the resolve's 1:1 blit true BY CONSTRUCTION rather than by two call sites that could drift.
+    // Reallocating the HDR target here is NOT the ordering violation the note above is about: that
+    // rule is about ImGui's CONSUMPTION, and ImGui never sees this texture -- only `target`'s, whose
+    // resize is the line below and must stay there.
+    post->resize(pixels);
     if (!target->resize(pixels)) {
         // A real allocation failure. allocate() has ALREADY destroyed the previous pair, so returning
         // false here is not merely a message: it is what stops the panel binding a texture that ceased
@@ -131,20 +141,39 @@ void MaterialPreview::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExte
     }
 #if defined(AERO_EDITOR_SHADERS)
     shaderVfs.mount(std::make_unique<DirectoryBackend>(AERO_SHADERS_DIR));
+    // task 3.6.3: `post` FIRST -- it owns the HDR target the ForwardRenderer is then built against, so
+    // the two are engaged together or neither is (which is what prepareFrame's `|| !post` rests on).
+    post = render::PostProcess::create(*device, shaderVfs, firstExtent,
+                                       {.outputColorFormat = rhi::TextureFormat::RGBA8Unorm,
+                                        .outputDepthFormat = rhi::TextureFormat::Invalid,
+                                        .quantum = PREVIEW_EXTENT_QUANTUM,
+                                        .maxExtent = PREVIEW_MAX_EXTENT});
+    if (!post) {
+        status = Status::Unavailable;
+        reason =
+            "Preview unavailable -- post-process creation failed (are res://fullscreen.vert / res://tonemap.frag "
+            "cooked?).";
+        return;
+    }
+    // task 3.6.3: `.depth = false` -- the scene's depth lives on the HDR target inside `post`, and the
+    // only thing drawn into this one is a depth-off fullscreen triangle.
     target = render::RenderTarget::create(*device, firstExtent,
                                           {.colorFormat = rhi::TextureFormat::RGBA8Unorm,
-                                           .depth = true,
+                                           .depth = false,
                                            .quantum = PREVIEW_EXTENT_QUANTUM,
                                            .maxExtent = PREVIEW_MAX_EXTENT});
     if (!target) {
+        post.reset();
         status = Status::Unavailable;
         reason = "Preview unavailable -- render target creation failed.";
         return;
     }
+    // task 3.6.3: built against the HDR target's formats, NOT this preview's output target's.
     renderer = render::ForwardRenderer::create(
-        *device, shaderVfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+        *device, shaderVfs, {.colorFormat = post->sceneColorFormat(), .depthFormat = post->sceneDepthFormat()});
     if (!renderer) {
         target.reset();  // created above and now unusable: released HERE, in the service pass (INV-5)
+        post.reset();
         status = Status::Unavailable;
         reason = "Preview unavailable -- renderer creation failed (are res://scene.vert/.frag cooked?).";
         return;
@@ -331,15 +360,16 @@ void MaterialPreview::pushMaterial(const MaterialDocument& document) {
     (void)renderer->updateMaterial(material, params, slots);
 }
 
-void MaterialPreview::renderFrame(float deltaSeconds) {
+void MaterialPreview::renderFrame(float deltaSeconds, const render::TonemapParams& tonemap) {
     AERO_PROFILE_ZONE;
-    if (!target || !renderer) {
+    if (!target || !renderer || !post) {
         return;  // defensive, for pushMaterial's reason exactly
     }
-    // NO resize() HERE, DELIBERATELY. The allocation was settled by prepareFrame, inside the draw walk,
-    // before the handle ImGui is about to bind was read -- see prepareFrame's own note for why calling
-    // it from this pass is a use-after-free on Vulkan and D3D12 and invisible on Metal.
-    std::optional<render::Frame> frame = target->beginFrame(PREVIEW_CLEAR_COLOR);
+    // NO resize() HERE, DELIBERATELY -- and that now covers BOTH targets (task 3.6.3). The allocation
+    // was settled by prepareFrame, inside the draw walk, before the handle ImGui is about to bind was
+    // read -- see prepareFrame's own note for why calling it from this pass is a use-after-free on
+    // Vulkan and D3D12 and invisible on Metal.
+    std::optional<render::Frame> frame = post->beginScene(PREVIEW_CLEAR_COLOR);
     if (!frame) {
         return;  // a transient command-buffer miss; the next service pass tries again
     }
@@ -375,13 +405,23 @@ void MaterialPreview::renderFrame(float deltaSeconds) {
     view.instances = instances;  // BORROWED: `instances` is a member and outlives this call (F6)
 
     renderer->draw(*frame, view);
-    if (target->endFrame(std::move(*frame))) {
+    post->endScene(std::move(*frame));  // submits command buffer A
+
+    std::optional<render::Frame> outFrame = target->beginFrame(PREVIEW_CLEAR_COLOR);
+    if (!outFrame) {
+        return;
+    }
+    post->resolve(*outFrame, tonemap);
+    // ++frames MOVED to the OUTPUT target's endFrame (task 3.6.3): frameCount() means "frames the
+    // panel could show", and a scene pass that resolved into nothing is not one.
+    if (target->endFrame(std::move(*outFrame))) {
         ++frames;
     }
 }
 
 void MaterialPreview::service(const MaterialDocument* document, bool documentChanged, const AssetDatabase* database,
-                              std::string_view assetsRootAbs, float deltaSeconds) {
+                              std::string_view assetsRootAbs, float deltaSeconds,
+                              const render::TonemapParams& tonemap) {
     // Consumed UNCONDITIONALLY and FIRST, before any early return -- ViewportPanel::renderScene's E2/S6
     // rule: a latch left set by a frame that returned early makes a hidden panel render one stale frame.
     const bool drew = std::exchange(drewLastFrame, false);
@@ -396,7 +436,9 @@ void MaterialPreview::service(const MaterialDocument* document, bool documentCha
     if (drew && document != nullptr) {
         ensureInitialized(requestedExtent);
     }
-    if (status != Status::Ready || !target || !renderer) {
+    // task 3.6.3: `|| !post` -- creation is lazy, so this guard runs before ensureInitialized has
+    // engaged anything on early frames, and every access below must be a CHECKED optional access.
+    if (status != Status::Ready || !target || !renderer || !post) {
         return;
     }
     // 1. the desired slot set, then the document -> MaterialParams push (D-4 step 1). rebuildSlots
@@ -419,7 +461,7 @@ void MaterialPreview::service(const MaterialDocument* document, bool documentCha
     if (!drew || document == nullptr || !material.valid()) {
         return;
     }
-    renderFrame(deltaSeconds);
+    renderFrame(deltaSeconds, tonemap);
 }
 
 bool MaterialPreview::available() const noexcept { return status == Status::Ready; }

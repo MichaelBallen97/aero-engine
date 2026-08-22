@@ -100,8 +100,10 @@ public:
     // Called from EditorApp::tick()'s POST-DRAW SLOT and nowhere else -- the ViewportPanel::renderScene
     // mould, not a second path into a subsystem. It drains the session's documentChanged one-shot and
     // forwards; every GPU create, destroy and submit happens inside MaterialPreview::service.
+    // task 3.6.3: `tonemap` is APPENDED LAST, so no existing argument moves. It is forwarded verbatim
+    // to MaterialPreview::service; this panel neither owns nor edits it -- the VIEWPORT does.
     void servicePreview(MaterialSession& session, const AssetDatabase& database, std::string_view assetsRootAbs,
-                        float deltaSeconds);
+                        float deltaSeconds, const render::TonemapParams& tonemap);
 
     // Black-box reads for EditorApp's accessors (the modelImportState() family's shape).
     [[nodiscard]] bool previewAvailable() const noexcept { return preview.available(); }
