@@ -347,6 +347,21 @@ set(ANIMOUT "${WORK_DIR}/out.aeroanim")
 set(ANIMATION_MAGIC_HEX "4145524f414e494d")   # "AEROANIM"
 set(SKINNED_ANIM_CLIP0_BYTES 176)
 
+# task 3.7.1: the audio subcommand and its own fixture set. The .aerowave header puts formatVersion at
+# byte 8 and the source GUID at byte 16 -- the SAME two offsets .aeromesh, .aeroskel and .aeroanim use,
+# by that format's own design, so OFFSET_FORMAT_VERSION and OFFSET_SOURCE_GUID above are REUSED here
+# rather than restated under new names; a disagreement between the four layouts would be a real defect
+# in one of them.
+#
+# tone.wav is 1.0 s, 8 kHz, MONO, 16-bit -- 8000 frames -- so the artifact's size is the format's whole
+# arithmetic in one number: 64 header + 2 x 1 x 8000 samples = 16064, with NO padding site anywhere in
+# this format. The source is 1.0 s rather than something shorter because that is the shortest length at
+# which the Vorbis round trip is frame-exact; the reason is recorded in tests/fixtures/audio/README.md.
+set(AUDIO_FIXTURES "${SOURCE_DIR}/tests/fixtures/audio")
+set(AUDIOOUT "${WORK_DIR}/out.aerowave")
+set(AUDIO_MAGIC_HEX "4145524f57415645")   # "AEROWAVE"
+set(TONE_WAV_ARTIFACT_BYTES 16064)
+
 # --- the case table -------------------------------------------------------------------------------
 
 if(CASE STREQUAL "help")
@@ -375,10 +390,11 @@ elseif(CASE STREQUAL "no_subcommand")
     aero_expect_exit("${result}" 1)
     aero_expect_non_empty("${err}" "stderr")
     # task 3.3.2 changed this literal from "(expected: mesh)", task 3.5.1 changed it again from
-    # "(expected: mesh or texture)", and task 3.5.2 a third time from "(expected: mesh, texture or
-    # skeleton)". Asserted, so the next subcommand added cannot leave the message naming a subset of
-    # what the tool actually accepts -- which is exactly what this literal caught all three times.
-    aero_expect_contains("${err}" "expected: mesh, texture, skeleton or animation" "stderr")
+    # "(expected: mesh or texture)", task 3.5.2 a third time from "(expected: mesh, texture or
+    # skeleton)" and task 3.7.1 a fourth. Asserted, so the next subcommand added cannot leave the
+    # message naming a subset of what the tool actually accepts -- which is exactly what this literal
+    # caught all four times.
+    aero_expect_contains("${err}" "expected: mesh, texture, skeleton, animation or audio" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_subcommand")
@@ -387,11 +403,16 @@ elseif(CASE STREQUAL "unknown_subcommand")
     # subcommand landed. Worse, it would have kept passing -- `texture --input x --output y` with no
     # colour-space flag is still exit 1 with "texture" in the message -- so the case would have gone
     # on looking green while asserting something that no longer existed. A genuinely unknown token,
-    # and the message that names every real one -- four of them since task 3.5.2.
+    # and the message that names every real one -- five of them since task 3.7.1.
+    #
+    # THE TOKEN STAYS `sound`, AND TASK 3.7.1 IS THE NEAR-MISS THAT MAKES THAT WORTH SAYING: had that
+    # task's subcommand been named `sound` rather than `audio`, this arm would have gone on looking
+    # green while testing a subcommand that exists -- the exact trap 3.3.2 rewrote it to escape. Do
+    # not "helpfully" change the token to match the newest subcommand.
     aero_run_tool(ARGS sound --input "${ANY_INPUT}" --output "${OUT}" OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 1)
     aero_expect_contains("${err}" "unknown subcommand 'sound'" "stderr")
-    aero_expect_contains("${err}" "expected: mesh, texture, skeleton or animation" "stderr")
+    aero_expect_contains("${err}" "expected: mesh, texture, skeleton, animation or audio" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_flag")
@@ -1024,6 +1045,138 @@ elseif(CASE STREQUAL "animation_output_dir_missing")
     aero_expect_non_empty("${err}" "stderr")
     aero_expect_no_files("${WORK_DIR}/nope")
     aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "audio_happy")
+    # tone.wav is 1.0 s, 8 kHz, mono, 16-bit. The artifact's size is the format's whole arithmetic in
+    # one number (see TONE_WAV_ARTIFACT_BYTES above), and the three header fields read below are the
+    # ones a wrong offset or a wrong byte order would move.
+    aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${AUDIOOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 0)
+    # aero_expect_magic is AEROMESH-specific by construction, so the fourth container kind asserts its
+    # own magic through the generic hex helper, exactly as the skeleton and animation arms do.
+    aero_expect_hex_at("${AUDIOOUT}" 0 8 "${AUDIO_MAGIC_HEX}")
+    aero_expect_size("${AUDIOOUT}" "${TONE_WAV_ARTIFACT_BYTES}")
+    aero_expect_hex_at("${AUDIOOUT}" "${OFFSET_FORMAT_VERSION}" 4 "01000000")
+    aero_expect_hex_at("${AUDIOOUT}" 32 4 "401f0000")   # sampleRate 8000, little-endian
+    aero_expect_hex_at("${AUDIOOUT}" 36 4 "01000000")   # channels 1
+    aero_expect_hex_at("${AUDIOOUT}" 40 4 "401f0000")   # frameCount 8000
+
+elseif(CASE STREQUAL "audio_unknown_flag")
+    # Flags that are REAL ELSEWHERE, never invented ones: --scale belongs to mesh and skeleton, --skin
+    # to skeleton and --format to texture, so each is genuinely unknown under `audio` and must fall
+    # through to the arm that NAMES it. An invented token would prove only that the fallback exists,
+    # which the unknown_flag case already proves. This is also the arm that pins D21: `audio` takes no
+    # subcommand-specific flag at all, so there is nothing here to silently accept and ignore.
+    foreach(badflag "--scale;2" "--skin;0" "--format;bc1")
+        list(GET badflag 0 flagname)
+        aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${AUDIOOUT}" ${badflag}
+            OUT_RESULT result OUT_STDERR err)
+        aero_expect_exit("${result}" 1)
+        aero_expect_contains("${err}" "${flagname}" "stderr")
+    endforeach()
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "audio_missing_input")
+    aero_run_tool(ARGS audio --output "${AUDIOOUT}" OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 1)
+    aero_expect_contains("${err}" "--input is required" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "audio_bad_extension")
+    # A REAL .gltf under `audio`. The name decides before a byte is read, so this costs no read at
+    # all, and the message names the four claimed extensions rather than saying "unsupported".
+    aero_run_tool(ARGS audio --input "${ANY_INPUT}" --output "${AUDIOOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_contains("${err}" ".wav .flac .mp3 .ogg" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "audio_output_dir_missing")
+    # The tool creates NO directory, for any subcommand: a build-time tool that invents them is how a
+    # typo becomes a mystery tree.
+    aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${WORK_DIR}/nope/out.aerowave"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 3)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_expect_no_files("${WORK_DIR}/nope")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "audio_nothing_written_on_failure")
+    # A file NAMED .wav whose bytes are ASCII garbage: the name check passes, the read succeeds, and
+    # the DECODE refuses -- so the output path is never opened and the working directory is left empty
+    # of the artifact and of the .aero-tmp file writeTextFileAtomic would have created on its way to
+    # it. BEHAVIOURAL ONLY, matching the skeleton and animation arms rather than the texture one: this
+    # path's refusal is reachable end to end through the CLI, so no source-text pin is needed and none
+    # should be added.
+    set(broken "${WORK_DIR}/broken.wav")
+    file(WRITE "${broken}" "this is not a RIFF file, it is a sentence")
+    aero_run_tool(ARGS audio --input "${broken}" --output "${AUDIOOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_expect_no_files("${AUDIOOUT}" "${AUDIOOUT}.aero-tmp")
+
+elseif(CASE STREQUAL "audio_guid_written")
+    # hi then lo, each little-endian, EVERY BYTE NON-ZERO -- so this is a statement about byte ORDER
+    # and not merely about presence, and it is the same assertion the mesh, skeleton and animation
+    # guid arms make at the same offset, which is what keeps the four layouts honest about it.
+    aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${AUDIOOUT}"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result)
+    aero_expect_exit("${result}" 0)
+    aero_expect_hex_at("${AUDIOOUT}" "${OFFSET_SOURCE_GUID}" 16 "efcdab89674523011032547698badcfe")
+
+elseif(CASE STREQUAL "audio_determinism")
+    # Two processes, two directories, one byte sequence. As with all three older containers no
+    # timestamp, no path, no hostname and no build id reaches the artifact -- and here NO FLOATING
+    # POINT is touched at all, in either the decode's output or the cook's arithmetic: dr_wav emits
+    # s16 and the cook validates integers and calls putU16. That is a stronger property than the mesh
+    # and animation containers have, both of which bit-copy real float data.
+    #
+    # DELIBERATELY DRIVEN FROM tone.wav AND NOT FROM tone.mp3 OR tone.ogg: those two are decoded by
+    # floating-point transforms whose code paths differ by SIMD availability and FMA contraction
+    # policy, so no cross-lane byte claim is made about them anywhere and neither may ever enter the
+    # frozen manifest.
+    set(dir1 "${WORK_DIR}/run1")
+    set(dir2 "${WORK_DIR}/run2")
+    file(MAKE_DIRECTORY "${dir1}")
+    file(MAKE_DIRECTORY "${dir2}")
+    aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${dir1}/out.aerowave"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result1)
+    aero_expect_exit("${result1}" 0)
+    aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${dir2}/out.aerowave"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result2)
+    aero_expect_exit("${result2}" 0)
+    aero_expect_identical("${dir1}/out.aerowave" "${dir2}/out.aerowave")
+
+elseif(CASE STREQUAL "audio_all_four_formats")
+    # THE ARM THAT WOULD CATCH A BACKEND WIRED TO THE WRONG FORMAT, at the process tier. Its strongest
+    # single line is the last one: tone.wav and tone.flac decode through two DIFFERENT decoders in two
+    # DIFFERENT containers and must produce byte-identical artifacts, which is the CLI-tier echo of
+    # AD10/AD11's agreement with libavcodec.
+    #
+    # tone.mp3 and tone.ogg are asserted only to succeed and to be larger than a bare header: both are
+    # lossy, so their bytes are not a contract. tone.ogg is additionally STEREO -- this ffmpeg build's
+    # native Vorbis encoder refuses mono -- so its artifact is legitimately about twice the size of the
+    # other three and is deliberately not compared against them.
+    set(wavOut "${WORK_DIR}/wav.aerowave")
+    set(flacOut "${WORK_DIR}/flac.aerowave")
+    set(mp3Out "${WORK_DIR}/mp3.aerowave")
+    set(oggOut "${WORK_DIR}/ogg.aerowave")
+    foreach(pair "tone.wav;${wavOut}" "tone.flac;${flacOut}" "tone.mp3;${mp3Out}" "tone.ogg;${oggOut}")
+        list(GET pair 0 sourceName)
+        list(GET pair 1 outPath)
+        aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/${sourceName}" --output "${outPath}"
+            --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result OUT_STDERR err)
+        aero_expect_exit("${result}" 0)
+        aero_expect_hex_at("${outPath}" 0 8 "${AUDIO_MAGIC_HEX}")
+        file(SIZE "${outPath}" outSize)
+        if(NOT outSize GREATER 64)
+            message(FATAL_ERROR "case '${CASE}': '${outPath}' is ${outSize} bytes, which is the bare header")
+        endif()
+    endforeach()
+    aero_expect_size("${wavOut}" "${TONE_WAV_ARTIFACT_BYTES}")
+    aero_expect_identical("${wavOut}" "${flacOut}")
 
 elseif(CASE STREQUAL "no_skins_gltf")
     # THE ARTIFACT-LEVEL WITNESS for the flag whose README row this task had to rewrite: until the

@@ -924,6 +924,25 @@ set(_aero_cooker_cases
     # directories configured FRESH with -G Ninja. A smaller move in either of them would mean this
     # block had accidentally grown a gate, and no test could report that.
     animation_golden_manifest
+    # task 3.7.1 -- the `audio` subcommand's nine arms. They drive the five committed fixtures under
+    # tests/fixtures/audio/ (four encodings plus ffmpeg's own decode), so no lane and no other machine
+    # ever needs ffmpeg. Registered ungated like every name above them, so the triple moves by the
+    # SAME +9 in all three configurations -- a smaller move in a reduced configuration would mean this
+    # block had accidentally grown a gate, and no test could report that.
+    #
+    # MEASURED at this step's exit, never derived by addition: 157 -> 166 with tools ON, 65 -> 74 with
+    # -DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF, and 78 -> 87 with -DAERO_REFLECT_TOOLS=OFF
+    # alone, the last two read from build directories configured with -G Ninja. The cooker block
+    # itself reads 68 in all three, which is the lockstep this comment exists to make checkable.
+    #
+    # audio_determinism is driven from tone.wav ALONE, deliberately: tone.mp3 and tone.ogg are decoded
+    # by floating-point transforms whose code paths differ by SIMD availability and FMA contraction
+    # policy, so no cross-lane byte claim is made about either anywhere and neither may ever enter the
+    # frozen manifest.
+    audio_happy audio_unknown_flag audio_missing_input
+    audio_bad_extension audio_output_dir_missing
+    audio_nothing_written_on_failure audio_guid_written
+    audio_determinism audio_all_four_formats
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(
