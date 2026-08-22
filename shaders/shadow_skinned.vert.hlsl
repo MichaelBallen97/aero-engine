@@ -8,8 +8,18 @@
 // like a bias bug and is not. 85 is measured, not guessed (skinning.hpp records the pinned SDL
 // lines): SDL's Vulkan backend binds every push-uniform descriptor with a fixed 4096-byte range,
 // so a larger block would be silently invisible on Vulkan and fine on D3D12/Metal.
+// ALL SIX INPUTS ARE DECLARED, and the three this stage never reads are load-bearing rather than
+// sloppy. SPIRV-Cross numbers MSL [[attribute(n)]] by DECLARATION ORDER, not by the HLSL semantic
+// index -- so a stage declaring only TEXCOORD0/4/5 gets attribute(0)/(1)/(2), and the shared
+// six-entry attribute table (which describes location 1 as the Float3 normal) would then hand Metal
+// a Float3 where the shader wants a uint4. That is a hard pipeline-creation failure, not a silent
+// one. Declaring the full stream keeps the indices aligned with scene_skinned.vert.hlsl's, which is
+// what makes "the same vertex buffers bind unchanged for the depth pass and the main pass" true.
 struct VsInput {
     float3 position : TEXCOORD0;
+    float3 normal   : TEXCOORD1;  // declared, never read -- see above
+    float4 tangent  : TEXCOORD2;  // declared, never read
+    float2 uv       : TEXCOORD3;  // declared, never read
     uint4  joints   : TEXCOORD4;  // palette slots, one per influence
     float4 weights  : TEXCOORD5;  // matching blend weights; the importers normalize, nothing here does
 };

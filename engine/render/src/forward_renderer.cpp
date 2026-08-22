@@ -8,6 +8,7 @@
 #include <aero/core/profiler.hpp>
 #include <aero/core/vfs.hpp>
 #include <aero/render/forward_renderer.hpp>
+#include <aero/render/shadow.hpp>
 #include <aero/rhi/device.hpp>
 #include <aero/rhi/shader_loader.hpp>
 
@@ -108,6 +109,33 @@ static_assert(std::is_trivially_copyable_v<GpuPerObject>);
 // unlit surface that no automated case in this tree could otherwise see.
 constexpr MeshVertex ABSENT_ATTRIBUTE_DEFAULTS{
     .position = Vec3{}, .normal = Vec3{0.0F, 0.0F, 1.0F}, .tangent = Vec4{1.0F, 0.0F, 0.0F, 1.0F}, .uv = Vec2{}};
+
+// task 3.6.2 — the shadow map's size policy (D16). 0 is EXACT and means off. Any other value is
+// rounded UP to the next power of two and then clamped into [MIN, MAX], with one WARN naming both
+// numbers whenever the two differ: a bad number is a configuration typo, and refusing to start a
+// renderer over one is a worse answer than starting with something sane. MAX is well inside
+// rhi::MAX_TEXTURE_DIMENSION_2D (16384).
+constexpr std::uint32_t MIN_SHADOW_MAP_RESOLUTION = 256;
+constexpr std::uint32_t MAX_SHADOW_MAP_RESOLUTION = 8192;
+
+// The shadow pipelines' FIXED rasterizer bias (D6's table, row 1): what defeats acne on GRAZING
+// surfaces, where depth changes fast across a texel. Baked into an immutable pipeline at create(),
+// so this pair is deliberately NOT runtime-tunable -- DirectionalLight::shadowBias and
+// shadowNormalBias are the runtime knobs, and they defeat the other two artefacts. The units are
+// backend-defined (for a FLOAT depth target, scaled by 2^(exponent of the primitive's maximum z)),
+// so these are the numbers to raise if a validation pass shows acne that survives shadowBias
+// tuning -- one commit, no API movement.
+constexpr float SHADOW_DEPTH_BIAS_CONSTANT = 2.0F;
+constexpr float SHADOW_DEPTH_BIAS_SLOPE = 2.5F;
+
+// Total by construction: the loop cannot overflow, because it stops at MAX. 0 never reaches here.
+[[nodiscard]] std::uint32_t roundUpPowerOfTwo(std::uint32_t value) noexcept {
+    std::uint32_t power = 1;
+    while (power < value && power < MAX_SHADOW_MAP_RESOLUTION) {
+        power <<= 1U;
+    }
+    return power;
+}
 
 }  // namespace
 
@@ -246,7 +274,18 @@ ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
       warnedStaleMesh(other.warnedStaleMesh),
       warnedSubmeshRange(other.warnedSubmeshRange),
       warnedSkinningCap(other.warnedSkinningCap),
-      warnedStrayPalette(other.warnedStrayPalette) {
+      warnedStrayPalette(other.warnedStrayPalette),
+      shadowTexture(other.shadowTexture),
+      shadowSampler(other.shadowSampler),
+      shadowPipeline(other.shadowPipeline),
+      shadowPipelineSkinned(other.shadowPipelineSkinned),
+      shadowFormat(other.shadowFormat),
+      shadowResolution(other.shadowResolution),
+      lastShadowDrawn(other.lastShadowDrawn),
+      lastShadowCulled(other.lastShadowCulled),
+      shadowPasses(other.shadowPasses),
+      warnedShadowFit(other.warnedShadowFit),
+      warnedShadowMaskCaster(other.warnedShadowMaskCaster) {
     other.reset();
 }
 
@@ -274,6 +313,17 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         warnedSubmeshRange = other.warnedSubmeshRange;
         warnedSkinningCap = other.warnedSkinningCap;
         warnedStrayPalette = other.warnedStrayPalette;
+        shadowTexture = other.shadowTexture;
+        shadowSampler = other.shadowSampler;
+        shadowPipeline = other.shadowPipeline;
+        shadowPipelineSkinned = other.shadowPipelineSkinned;
+        shadowFormat = other.shadowFormat;
+        shadowResolution = other.shadowResolution;
+        lastShadowDrawn = other.lastShadowDrawn;
+        lastShadowCulled = other.lastShadowCulled;
+        shadowPasses = other.shadowPasses;
+        warnedShadowFit = other.warnedShadowFit;
+        warnedShadowMaskCaster = other.warnedShadowMaskCaster;
         other.reset();
     }
     return *this;
@@ -306,6 +356,17 @@ void ForwardRenderer::reset() noexcept {
     warnedSubmeshRange = false;
     warnedSkinningCap = false;
     warnedStrayPalette = false;
+    shadowTexture = {};
+    shadowSampler = {};
+    shadowPipeline = {};
+    shadowPipelineSkinned = {};
+    shadowFormat = rhi::TextureFormat::Invalid;
+    shadowResolution = 0;
+    lastShadowDrawn = 0;
+    lastShadowCulled = 0;
+    shadowPasses = 0;
+    warnedShadowFit = false;
+    warnedShadowMaskCaster = false;
 }
 
 void ForwardRenderer::destroyAll() noexcept {
@@ -350,6 +411,20 @@ void ForwardRenderer::destroyAll() noexcept {
         if (entry.second.valid()) {
             device->destroySampler(entry.second);
         }
+    }
+    // task 3.6.2 — the depth pass's own resources. Released here and nowhere else, so create()'s
+    // failure path, the destructor and move-assign all go through one list.
+    if (shadowPipeline.valid()) {
+        device->destroyGraphicsPipeline(shadowPipeline);
+    }
+    if (shadowPipelineSkinned.valid()) {
+        device->destroyGraphicsPipeline(shadowPipelineSkinned);
+    }
+    if (shadowSampler.valid()) {
+        device->destroySampler(shadowSampler);  // NOT in samplerCache, so it is not released above
+    }
+    if (shadowTexture.valid()) {
+        device->destroyTexture(shadowTexture);
     }
     reset();
 }
@@ -500,6 +575,13 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
     if (!renderer.createDefaults()) {
         return std::nullopt;
     }
+    // task 3.6.2 — the depth pass's texture, sampler and two pipelines. Placed AFTER the renderer
+    // exists on purpose: from here on the renderer OWNS everything created and its destructor IS the
+    // failure path, so a half-built shadow set unwinds with no bookkeeping (the same reason
+    // createDefaults sits here).
+    if (!renderer.createShadowResources(shaderVfs, config)) {
+        return std::nullopt;
+    }
     // Never fails: a material owns no GPU resource of its own, and createDefaults has already proven
     // the default SamplerDesc resolves, which is the only device call this can make.
     renderer.defaultMaterialHandle = renderer.createMaterial(DEFAULT_MATERIAL_PARAMS, {});
@@ -529,6 +611,149 @@ bool ForwardRenderer::createDefaults() {
     // where there is still something to say about it.
     if (!resolveSampler(rhi::SamplerDesc{}).valid()) {
         AERO_LOG_ERROR("ForwardRenderer::create: the default sampler could not be created");
+        return false;
+    }
+    return true;
+}
+
+bool ForwardRenderer::createShadowResources(const VirtualFileSystem& shaderVfs, const ForwardRendererConfig& config) {
+    // --- the resolution policy (AC-20). 0 is EXACT: it means off, and is never rounded or clamped.
+    if (config.shadowMapResolution != 0) {
+        const std::uint32_t allocated = std::clamp(roundUpPowerOfTwo(config.shadowMapResolution),
+                                                   MIN_SHADOW_MAP_RESOLUTION, MAX_SHADOW_MAP_RESOLUTION);
+        if (allocated != config.shadowMapResolution) {
+            AERO_LOG_WARN(
+                "ForwardRenderer::create: shadowMapResolution {} is not a power of two in [{}, {}] — "
+                "allocating {} instead; shadowMapResolution() reports what was allocated",
+                config.shadowMapResolution, MIN_SHADOW_MAP_RESOLUTION, MAX_SHADOW_MAP_RESOLUTION, allocated);
+        }
+        shadowResolution = allocated;
+    }
+
+    // --- the texture. It ALWAYS exists (D7): SPIRV-Cross emits depth2d<float> for the comparison
+    // slot, so binding one of the three RGBA8 defaults there is a Metal TYPE MISMATCH, and the
+    // alternative -- a second fragment shader variant without the slot -- doubles the shader count,
+    // the pipeline count and the pipeline-selection logic to save four bytes. With shadows off this
+    // is a 1x1 depth texture, cleared once and never drawn into.
+    const std::uint32_t extent = shadowResolution == 0 ? 1U : shadowResolution;
+    // The auto-pick order RendererConfig::depth and RenderTargetConfig::depth already use, applied a
+    // third time -- but with BOTH bits requested, because this one is sampled as well as written.
+    // Drivers guarantee one of D24Unorm/D32Float, never both (device.hpp).
+    for (const rhi::TextureFormat candidate :
+         {rhi::TextureFormat::D32Float, rhi::TextureFormat::D24Unorm, rhi::TextureFormat::D16Unorm}) {
+        if (device->supportsTextureFormat(candidate,
+                                          rhi::TextureUsage::Sampler | rhi::TextureUsage::DepthStencilTarget)) {
+            shadowFormat = candidate;
+            break;
+        }
+    }
+    if (shadowFormat == rhi::TextureFormat::Invalid) {
+        AERO_LOG_ERROR("ForwardRenderer::create: no depth format supports Sampler|DepthStencilTarget on this device");
+        return false;
+    }
+    shadowTexture = device->createTexture({.format = shadowFormat,
+                                           .usage = rhi::TextureUsage::Sampler | rhi::TextureUsage::DepthStencilTarget,
+                                           .width = extent,
+                                           .height = extent});
+    if (!shadowTexture.valid()) {
+        AERO_LOG_ERROR("ForwardRenderer::create: the shadow map texture could not be created ({}x{})", extent, extent);
+        return false;
+    }
+
+    // --- the comparison sampler (AC-22). Linear min/mag is what makes SampleCmpLevelZero perform a
+    // bilinear-weighted 2x2 comparison PER TAP, so the shader's 3x3 kernel is effectively
+    // 6x6-weighted. CompareOp::Less is correct under ADR-005's 0 = near: "closer than the stored
+    // depth wins", the same convention the main depth state uses. ClampToEdge on all three axes,
+    // maxLod 0, mipmapMode Nearest -- the map has one level and must never be filtered across one.
+    // NOT resolved through samplerCache, deliberately: it is renderer-lifetime and singular, and
+    // putting it there would move samplerCacheSize(), a 3.4.1 observable with existing assertions,
+    // for reasons that have nothing to do with materials.
+    shadowSampler = device->createSampler({.minFilter = rhi::Filter::Linear,
+                                           .magFilter = rhi::Filter::Linear,
+                                           .mipmapMode = rhi::MipmapMode::Nearest,
+                                           .addressU = rhi::AddressMode::ClampToEdge,
+                                           .addressV = rhi::AddressMode::ClampToEdge,
+                                           .addressW = rhi::AddressMode::ClampToEdge,
+                                           .maxLod = 0.0F,
+                                           .enableCompare = true,
+                                           .compareOp = rhi::CompareOp::Less});
+    if (!shadowSampler.valid()) {
+        AERO_LOG_ERROR("ForwardRenderer::create: the shadow comparison sampler could not be created");
+        return false;
+    }
+
+    // --- three shader loads, TWO pipelines. A missing one fails create() loudly, exactly as a
+    // missing skinned vertex shader has since 3.5.1: all three ship in shaders/CMakeLists.txt.
+    const rhi::ShaderHandle vs = rhi::loadShader(*device, shaderVfs, config.shadowVertexShaderPath);
+    const rhi::ShaderHandle vsSkinned = rhi::loadShader(*device, shaderVfs, config.shadowSkinnedVertexShaderPath);
+    const rhi::ShaderHandle fs = rhi::loadShader(*device, shaderVfs, config.shadowFragmentShaderPath);
+    const bool loaded = vs.valid() && vsSkinned.valid() && fs.valid();
+    if (loaded) {
+        // The SAME streams the main pipelines describe -- a 48-byte stream 0 at slot 0 and, for the
+        // skinned one, a 32-byte stream 1 at slot 1 -- so the same buffers bind unchanged and the
+        // depth loop needs no second binding path. A layout may describe attributes the shader does
+        // not consume (legal on all three backends); the reverse is a pipeline-creation failure,
+        // which is why the depth VS reads only location 0 and the layout still declares 0..3.
+        const rhi::VertexBufferLayout vbLayout{.slot = 0, .pitch = sizeof(MeshVertex)};
+        const std::array<rhi::VertexAttribute, 4> attrs{{
+            {.location = 0, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 0},
+            {.location = 1, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 12},
+            {.location = 2, .bufferSlot = 0, .format = rhi::VertexFormat::Float4, .offset = 24},
+            {.location = 3, .bufferSlot = 0, .format = rhi::VertexFormat::Float2, .offset = 40},
+        }};
+        const rhi::GraphicsPipelineDesc shadowDesc{
+            .vertexShader = vs,
+            .fragmentShader = fs,
+            .vertexBuffers = std::span{&vbLayout, 1},
+            .vertexAttributes = attrs,
+            // CullMode::None, and therefore TWO pipelines rather than four (D12): a depth-only pass
+            // performs no shading, so which face wins is decided by the depth test alone.
+            // CullMode::Back would double the count to track doubleSided; CullMode::Front (the
+            // classic back-face trick) makes OPEN geometry -- a ground plane, a sheet, a leaf --
+            // cast nothing at all. enableDepthClip stays at its default TRUE: depth clamp is
+            // available on all three backends, but it is a rasterizer feature whose absence on a
+            // future device turns pipeline creation into a hard failure for the whole renderer, and
+            // the CPU near-plane extension solves the same problem portably.
+            .rasterizer = {.cullMode = rhi::CullMode::None,
+                           .enableDepthBias = true,
+                           .depthBiasConstant = SHADOW_DEPTH_BIAS_CONSTANT,
+                           .depthBiasSlope = SHADOW_DEPTH_BIAS_SLOPE},
+            .depthStencil = {.enableDepthTest = true, .enableDepthWrite = true, .compareOp = rhi::CompareOp::Less},
+            // DELIBERATELY EMPTY -- this is what the rhi widening exists for.
+            .colorTargets = {},
+            .depthStencilFormat = shadowFormat,
+        };
+        shadowPipeline = device->createGraphicsPipeline(shadowDesc);
+
+        const std::array<rhi::VertexBufferLayout, 2> skinnedLayouts{{
+            {.slot = 0, .pitch = sizeof(MeshVertex)},
+            {.slot = 1, .pitch = sizeof(detail::SkinVertex)},
+        }};
+        const std::array<rhi::VertexAttribute, 6> skinnedAttrs{{
+            {.location = 0, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 0},
+            {.location = 1, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 12},
+            {.location = 2, .bufferSlot = 0, .format = rhi::VertexFormat::Float4, .offset = 24},
+            {.location = 3, .bufferSlot = 0, .format = rhi::VertexFormat::Float2, .offset = 40},
+            {.location = 4, .bufferSlot = 1, .format = rhi::VertexFormat::Uint4, .offset = 0},
+            {.location = 5, .bufferSlot = 1, .format = rhi::VertexFormat::Float4, .offset = 16},
+        }};
+        rhi::GraphicsPipelineDesc shadowSkinnedDesc = shadowDesc;
+        shadowSkinnedDesc.vertexShader = vsSkinned;
+        shadowSkinnedDesc.vertexBuffers = skinnedLayouts;
+        shadowSkinnedDesc.vertexAttributes = skinnedAttrs;
+        shadowPipelineSkinned = device->createGraphicsPipeline(shadowSkinnedDesc);
+    }
+    for (const rhi::ShaderHandle handle : {vs, vsSkinned, fs}) {
+        if (handle.valid()) {
+            device->destroyShader(handle);  // safe after pipeline creation (device.hpp)
+        }
+    }
+    if (!loaded) {
+        AERO_LOG_ERROR("ForwardRenderer::create: shadow shader load failed");
+        return false;
+    }
+    if (!shadowPipeline.valid() || !shadowPipelineSkinned.valid()) {
+        AERO_LOG_ERROR("ForwardRenderer::create: shadow pipeline creation failed");
         return false;
     }
     return true;
@@ -786,6 +1011,60 @@ std::optional<Aabb> ForwardRenderer::instanceBounds(const MeshInstance& instance
     return submesh.bounds;
 }
 
+// task 3.6.2 (D9) — THE single implementation of draw()'s four resolution arms, called by BOTH
+// loops. Copying them into the shadow pass is the failure mode 3.4.1 named and deleted a table for:
+// a copy drifts silently, and a fix applied to one loop and not the other produces a mesh that draws
+// but casts no shadow, or worse, one that casts a shadow from a buffer the main loop correctly
+// refused to read.
+//
+// SILENT ON EVERY PATH -- and "silent" means DOES NOT LOG. Returning a STATUS is not logging, and it
+// is what lets draw() keep every latched WARN it has always owned while the shadow loop reaches the
+// same four decisions without firing a diagnostic twice per frame for the same instance. A WARN that
+// fired from whichever loop happened to run first would be a WARN whose message could not say where
+// it came from. instanceBounds' own posture, one layer up.
+//
+// The resolution ORDER mirrors draw()'s exactly, which is what makes AC-36 provable by reading as
+// well as by running: mesh validity -> registry lookup -> submesh range -> section range -> the
+// skinned decision (and its stray-palette FLAG, which warns without skipping) -> the palette cap.
+ForwardRenderer::ResolvedInstanceDraw ForwardRenderer::resolveInstanceDraw(const MeshInstance& instance) const {
+    ResolvedInstanceDraw resolved;
+    if (!instance.mesh.valid()) {
+        resolved.status = InstanceDrawStatus::Primitive;
+        return resolved;
+    }
+    const MeshEntry* const entry = meshes.get(instance.mesh);
+    if (entry == nullptr) {
+        resolved.status = InstanceDrawStatus::StaleMesh;
+        return resolved;
+    }
+    if (instance.submesh >= entry->submeshes.size()) {
+        resolved.status = InstanceDrawStatus::SubmeshRange;
+        return resolved;
+    }
+    const MeshSubmeshDraw& submesh = entry->submeshes[instance.submesh];
+    if (submesh.sectionIndex >= entry->sections.size()) {
+        resolved.status = InstanceDrawStatus::SectionRange;
+        return resolved;
+    }
+    const MeshSectionDraw& section = entry->sections[submesh.sectionIndex];
+    // A palette on a section with no skin stream is IGNORED and WARNED about -- it does not skip --
+    // so it is a flag on a successful result rather than a rejection status. Folding it into one
+    // would change which instances draw, which AC-36 forbids.
+    resolved.skinned = section.hasSkin && !instance.palette.empty();
+    resolved.strayPalette = !section.hasSkin && !instance.palette.empty();
+    // The cap is nested inside `skinned`, exactly as ARM 4 is today: a palette on a section with no
+    // skin stream never reaches it.
+    if (resolved.skinned && instance.palette.size() > MAX_SKINNING_JOINTS) {
+        resolved.status = InstanceDrawStatus::SkinningCap;
+        return resolved;
+    }
+    resolved.status = InstanceDrawStatus::Mesh;
+    resolved.entry = entry;
+    resolved.submesh = &submesh;
+    resolved.section = &section;
+    return resolved;
+}
+
 void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     AERO_PROFILE_ZONE;
     // task 3.6.1 -- BEFORE the early return, deliberately: a no-camera frame drew nothing and culled
@@ -810,6 +1089,14 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     const rhi::CommandBufferHandle cmd = frame.commandBuffer();
 
     device->bindGraphicsPipeline(pass, pipeline);  // cull-back, static: the reset state
+    // task 3.6.2 (D7) — slot 5, ONCE. Fragment sampler bindings persist for the life of a pass, so
+    // one bind is enough and the shadow map is never re-bound per material; bindMaterialTextures
+    // stays BYTE-IDENTICAL, binding slots 0..4 on material change. The texture is renderer-owned and
+    // ALWAYS valid (a 1x1 depth placeholder when shadows are off), so this is unconditional and
+    // slot 5 is never left unbound — which matters, because the fragment stage declares six samplers
+    // and a draw with an unbound one is backend-defined (on Metal it is an SDL assertion).
+    const std::array<rhi::TextureSamplerBinding, 1> shadowBinding{{{shadowTexture, shadowSampler}}};
+    device->bindFragmentSamplers(pass, 5, shadowBinding);
     bool boundCullNone = false;
     bool boundSkinned = false;
 
@@ -919,9 +1206,13 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
 
         const GpuPerObject perObject{instance.mvp, instance.model, instance.normalMatrix, instance.color, 0.0F};
 
-        // --- D8's draw resolution, in order ---------------------------------------------------
+        // --- D8's draw resolution, in order, through the SHARED resolver (task 3.6.2 D9) --------
+        // The resolver is silent; every latched WARN below stays here and fires from here only, so
+        // the shadow pass reaching the same decisions cannot consume a diagnostic this loop owes.
+        const ResolvedInstanceDraw resolvedDraw = resolveInstanceDraw(instance);
+
         // ARM 1: no registered mesh -> the built-in primitive path, byte-identical to 1.4.1's.
-        if (!instance.mesh.valid()) {
+        if (resolvedDraw.status == InstanceDrawStatus::Primitive) {
             bindPipelineFor(false, doubleSided);
             device->pushVertexUniforms(cmd, 0, std::as_bytes(std::span{&perObject, 1}));
             const PrimitiveMesh& mesh = primitives[clampPrimitiveIndex(instance.primitive)];
@@ -934,8 +1225,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
 
         // ARM 2: a stale handle or an out-of-range submesh SKIPS the instance. Neither is a reason to
         // abandon the frame, and neither may become a read of a freed buffer.
-        const MeshEntry* const entry = meshes.get(instance.mesh);
-        if (entry == nullptr) {
+        if (resolvedDraw.status == InstanceDrawStatus::StaleMesh) {
             // LATCHED like every sibling arm below, and for the sharper reason: a stale MeshHandle in
             // a RenderView is PERSISTENT by nature — a deleted asset with live entity references
             // produces one every frame, forever, for every instance naming it — so an unlatched line
@@ -948,7 +1238,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
             }
             continue;
         }
-        if (instance.submesh >= entry->submeshes.size()) {
+        if (resolvedDraw.status == InstanceDrawStatus::SubmeshRange) {
             if (!warnedSubmeshRange) {
                 AERO_LOG_WARN(
                     "ForwardRenderer::draw: MeshInstance::submesh is past the mesh's submesh table — "
@@ -957,17 +1247,14 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
             }
             continue;
         }
-        const MeshSubmeshDraw& submesh = entry->submeshes[instance.submesh];
-        if (submesh.sectionIndex >= entry->sections.size()) {
+        if (resolvedDraw.status == InstanceDrawStatus::SectionRange) {
             continue;  // unreachable through createMesh (the parse validated it); never a read
         }
-        const MeshSectionDraw& section = entry->sections[submesh.sectionIndex];
 
         // ARM 3: no skin stream OR an empty palette -> the STATIC pipeline. An empty palette on a
         // skinned section IS the bind pose the vertices are authored in, so this degrades to exactly
         // the right picture at zero cost — no identity palette is substituted, and none is needed.
-        const bool skinned = section.hasSkin && !instance.palette.empty();
-        if (!section.hasSkin && !instance.palette.empty() && !warnedStrayPalette) {
+        if (resolvedDraw.strayPalette && !warnedStrayPalette) {
             AERO_LOG_WARN(
                 "ForwardRenderer::draw: a palette was supplied for a mesh section with no skin stream — "
                 "ignored; this warning latches once per renderer");
@@ -976,7 +1263,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
 
         // ARM 4: a palette past the measured cap SKIPS the instance rather than truncating it — a
         // truncated palette binds the tail's vertices to joint 0 and looks like a modelling defect.
-        if (skinned && instance.palette.size() > MAX_SKINNING_JOINTS) {
+        if (resolvedDraw.status == InstanceDrawStatus::SkinningCap) {
             if (!warnedSkinningCap) {
                 AERO_LOG_WARN(
                     "ForwardRenderer::draw: skinning palette of {} joints exceeds MAX_SKINNING_JOINTS ({}), "
@@ -989,6 +1276,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
             continue;
         }
 
+        const bool skinned = resolvedDraw.skinned;
         bindPipelineFor(skinned, doubleSided);
         device->pushVertexUniforms(cmd, 0, std::as_bytes(std::span{&perObject, 1}));
 
@@ -1007,12 +1295,12 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
         // section precedes a skinned one would need stream 1 zero-filled for every vertex or bound at
         // a negative offset. firstIndex is already absolute into the file's single index region, so
         // the index buffer binds once at offset 0.
-        device->bindVertexBuffer(pass, 0, entry->vertexBuffer, section.stream0ByteOffset);
+        device->bindVertexBuffer(pass, 0, resolvedDraw.entry->vertexBuffer, resolvedDraw.section->stream0ByteOffset);
         if (skinned) {
-            device->bindVertexBuffer(pass, 1, entry->skinBuffer, section.stream1ByteOffset);
+            device->bindVertexBuffer(pass, 1, resolvedDraw.entry->skinBuffer, resolvedDraw.section->stream1ByteOffset);
         }
-        device->bindIndexBuffer(pass, entry->indexBuffer, entry->indexType);
-        device->drawIndexed(pass, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
+        device->bindIndexBuffer(pass, resolvedDraw.entry->indexBuffer, resolvedDraw.entry->indexType);
+        device->drawIndexed(pass, resolvedDraw.submesh->indexCount, 1, resolvedDraw.submesh->firstIndex, 0, 0);
         ++lastDrawn;
     }
 
@@ -1020,5 +1308,202 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     // a capture years from now finds them recorded in docs/10's 3.6.1 entry.
     plotCounters();
 }
+
+ShadowView ForwardRenderer::renderShadowMap(const RenderView& view) {
+    AERO_PROFILE_ZONE;
+    // task 3.6.2 — BEFORE every early return, deliberately: a frame that drew no shadow must read
+    // 0/0 rather than the previous frame's numbers. 3.6.1's CD5 lesson applied verbatim, and the
+    // reason the reset cannot live below the guard.
+    lastShadowDrawn = 0;
+    lastShadowCulled = 0;
+    // ONE definition of the plot name, called on EVERY exit including the early ones. A plot that
+    // skipped an early-returning frame would hold the PREVIOUS frame's value while the accessor
+    // correctly read zero, so the two diagnostics would disagree about the same frame — exactly the
+    // defect 3.6.1's code-review round found and closed. Compiles to ((void)0) unless
+    // AERO_ENABLE_PROFILING is on, i.e. the *-release presets.
+    const auto plotShadow = [this]() { AERO_PROFILE_PLOT("render.shadowDrawn", static_cast<double>(lastShadowDrawn)); };
+
+    // The six opt-outs (AC-28). NONE of them warns: a view with no camera, a disabled sample flag, a
+    // light that does not cast, an absent light (intensity 0) and a renderer built with
+    // shadowMapResolution 0 are all legitimate, and a WARN would fire once per session on correct
+    // behaviour. Nothing is acquired and nothing is submitted here — shadowPassCount() is what says
+    // so, and it is counted at the acquisition below for exactly that reason.
+    if (!view.hasCamera || !view.shadowsEnabled || !view.directional.castsShadows ||
+        view.directional.intensity == 0.0F || shadowResolution == 0) {
+        plotShadow();
+        return {};
+    }
+
+    // PASS 1 over the instances: the caster world-bounds union, from the SAME silent resolution the
+    // draw uses (AC-31), so the near-plane extension sees real geometry rather than a guess.
+    //
+    // TWO PASSES, deliberately: the extension needs the union, the union needs every caster's world
+    // box, and the cull needs the fit — so the fit cannot be computed inside a single loop that also
+    // draws. The second pass costs one more traversal of a span already in cache; the alternative
+    // (fit from the camera alone, ignore casters) is the missing-shadow bug the extension exists to
+    // prevent.
+    //
+    // A SKINNED instance contributes NOTHING: its bind-pose box is not a bound on where a palette
+    // has moved its vertices (F13's honest gap). It is still DRAWN unconditionally below, so only
+    // its depth RANGE is at issue, never its inclusion.
+    constexpr float INFINITY_F = std::numeric_limits<float>::infinity();
+    Aabb casterUnion{Vec3{INFINITY_F, INFINITY_F, INFINITY_F}, Vec3{-INFINITY_F, -INFINITY_F, -INFINITY_F}};
+    for (const MeshInstance& instance : view.instances) {
+        if (!instance.palette.empty()) {
+            continue;
+        }
+        const std::optional<Aabb> local = instanceBounds(instance);
+        if (!local.has_value()) {
+            continue;  // "cannot prove anything about this instance" — never an error report
+        }
+        const Aabb world = transformAabb(instance.model, *local);
+        if (!world.valid()) {
+            continue;  // an inverted sentinel propagates; it must not poison the union with NaN
+        }
+        // std::min/std::max take the ACCUMULATOR FIRST (the expandBox rule in mesh_cook.cpp): the
+        // two argument orders return different zeros for the pair (-0.0f, +0.0f).
+        casterUnion.min.x = std::min(casterUnion.min.x, world.min.x);
+        casterUnion.min.y = std::min(casterUnion.min.y, world.min.y);
+        casterUnion.min.z = std::min(casterUnion.min.z, world.min.z);
+        casterUnion.max.x = std::max(casterUnion.max.x, world.max.x);
+        casterUnion.max.y = std::max(casterUnion.max.y, world.max.y);
+        casterUnion.max.z = std::max(casterUnion.max.z, world.max.z);
+    }
+
+    const ShadowFit fit = fitDirectionalShadow(view.camera, view.directional.direction, view.directional.shadowDistance,
+                                               shadowResolution, casterUnion);
+    if (!fit.valid) {
+        // An invalid FIT is different from a disabled light and DOES warn — once. A degenerate
+        // camera or a zero-length sun is a real problem, and it is also persistent, so an unlatched
+        // line would be a 60 Hz flood.
+        if (!warnedShadowFit) {
+            AERO_LOG_WARN(
+                "ForwardRenderer::renderShadowMap: the directional shadow fit is degenerate — no shadow "
+                "map this frame (a non-invertible camera, a zero-length light direction, or a "
+                "non-positive shadowDistance); this warning latches once per renderer");
+            warnedShadowFit = true;
+        }
+        plotShadow();
+        return {};
+    }
+
+    const Mat4 lightViewProj = shadowViewProj(fit);
+    // The LIGHT's frustum, in exactly the convention 3.6.1 pinned (ADR-005 clip, near = r2 alone).
+    // culling.{hpp,cpp} is BYTE-IDENTICAL this task; this is extractFrustum/transformAabb/isVisible
+    // used exactly as written.
+    const Frustum lightFrustum = extractFrustum(lightViewProj);
+
+    const rhi::CommandBufferHandle cmd = device->acquireCommandBuffer();
+    ++shadowPasses;  // counted at the ACQUISITION, and at exactly one site
+    const rhi::DepthStencilAttachment depthAttachment{.texture = shadowTexture,
+                                                      .depthLoadOp = rhi::LoadOp::Clear,
+                                                      // STORE, not DontCare: the whole point is that
+                                                      // a LATER command buffer samples it.
+                                                      .depthStoreOp = rhi::StoreOp::Store,
+                                                      .clearDepth = 1.0F};
+    // colorAttachments DELIBERATELY EMPTY — this is what the rhi widening exists for.
+    const rhi::RenderPassHandle pass = device->beginRenderPass(cmd, {.depthStencil = depthAttachment});
+    device->bindGraphicsPipeline(pass, shadowPipeline);
+    bool boundSkinned = false;
+
+    // PASS 2: the draw. Order per instance: cull -> resolve -> pipeline -> uniforms -> draw.
+    for (const MeshInstance& instance : view.instances) {
+        // THE LIGHT CULL, and it is NOT gated on view.cullingEnabled (D8). That flag is the CAMERA
+        // cull's escape hatch and its contract is a statement about mvp == viewProj * model, which
+        // has nothing to do with the light — this pass composes lightViewProj * model itself and
+        // never reads mvp. An instance outside the light frustum writes to no texel BY DEFINITION,
+        // so skipping it is correctness-neutral and free; conflating the two flags would make the
+        // sample's --no-cull silently double this pass's cost for no reason a reader could see.
+        //
+        // SKINNED INSTANCES ARE EXEMPT, exactly as they are in draw(), and for the identical reason:
+        // a bind-pose box is not a bound on vertices a palette has moved. The predicate is
+        // `has a palette`, not `is a skinned mesh`, so a skinned mesh drawn in bind pose is culled
+        // normally.
+        if (instance.palette.empty()) {
+            if (const std::optional<Aabb> local = instanceBounds(instance)) {
+                if (!isVisible(lightFrustum, transformAabb(instance.model, *local))) {
+                    ++lastShadowCulled;
+                    continue;
+                }
+            }
+        }
+
+        const ResolvedInstanceDraw resolvedDraw = resolveInstanceDraw(instance);
+        if (resolvedDraw.status != InstanceDrawStatus::Primitive && resolvedDraw.status != InstanceDrawStatus::Mesh) {
+            // Dropped by the shared resolver: neither drawn nor culled, so it lands in NEITHER
+            // counter. Silent here — draw() owns every one of these latches and fires them from
+            // there only, so a scene rendered through SceneRenderer::render still reports each
+            // exactly once.
+            continue;
+        }
+
+        // D13's latch: a Mask or Blend material casts a SOLID silhouette here, because a depth-only
+        // stage has no UVs, no material bind and cannot discard. Recorded rather than silently
+        // absent, so the gap is discoverable at the moment it matters. The lookup is skipped
+        // entirely once the latch has fired, so a scene that has already warned pays nothing.
+        if (!warnedShadowMaskCaster) {
+            const MaterialHandle material =
+                materials.contains(instance.material) ? instance.material : defaultMaterialHandle;
+            const MaterialSlot* const slot = materials.get(material);
+            if (slot != nullptr && slot->params.alpha != MaterialAlpha::Opaque) {
+                AERO_LOG_WARN(
+                    "ForwardRenderer::renderShadowMap: a Mask or Blend material is casting an OPAQUE "
+                    "silhouette — a depth-only pass has no UVs and cannot discard (8.2.1 owns alpha-tested "
+                    "casters); this warning latches once per renderer");
+                warnedShadowMaskCaster = true;
+            }
+        }
+
+        const Mat4 lightMvp = lightViewProj * instance.model;
+        device->pushVertexUniforms(cmd, 0, std::as_bytes(std::span{&lightMvp, 1}));
+
+        if (resolvedDraw.status == InstanceDrawStatus::Primitive) {
+            if (boundSkinned) {
+                device->bindGraphicsPipeline(pass, shadowPipeline);
+                boundSkinned = false;
+            }
+            const PrimitiveMesh& mesh = primitives[clampPrimitiveIndex(instance.primitive)];
+            device->bindVertexBuffer(pass, 0, mesh.vbuf);
+            device->bindIndexBuffer(pass, mesh.ibuf, rhi::IndexType::Uint16);
+            device->drawIndexed(pass, mesh.indexCount);
+            ++lastShadowDrawn;
+            continue;
+        }
+
+        if (resolvedDraw.skinned != boundSkinned) {
+            device->bindGraphicsPipeline(pass, resolvedDraw.skinned ? shadowPipelineSkinned : shadowPipeline);
+            boundSkinned = resolvedDraw.skinned;
+        }
+        if (resolvedDraw.skinned) {
+            // ALWAYS the full 4080-byte block from a ZEROED scratch, byte for byte what draw() pushes
+            // — the palette block is byte-identical between the two vertex shaders, which is what
+            // makes a cast silhouette unable to disagree with the drawn one.
+            paletteScratch.fill(Vec4{});
+            detail::packJointPaletteRows(instance.palette,
+                                         std::span{paletteScratch}.first(3 * instance.palette.size()));
+            device->pushVertexUniforms(cmd, 1, std::as_bytes(std::span{paletteScratch}));
+        }
+        device->bindVertexBuffer(pass, 0, resolvedDraw.entry->vertexBuffer, resolvedDraw.section->stream0ByteOffset);
+        if (resolvedDraw.skinned) {
+            device->bindVertexBuffer(pass, 1, resolvedDraw.entry->skinBuffer, resolvedDraw.section->stream1ByteOffset);
+        }
+        device->bindIndexBuffer(pass, resolvedDraw.entry->indexBuffer, resolvedDraw.entry->indexType);
+        device->drawIndexed(pass, resolvedDraw.submesh->indexCount, 1, resolvedDraw.submesh->firstIndex, 0, 0);
+        ++lastShadowDrawn;
+    }
+
+    device->endRenderPass(pass);
+    device->submit(cmd);  // ordered BEFORE the frame's command buffer, which is what lets draw()
+                          // sample the map with no explicit barrier
+    plotShadow();
+    return ShadowView{lightViewProj, 1.0F / static_cast<float>(shadowResolution), view.directional.shadowBias,
+                      view.directional.shadowNormalBias, true};
+}
+
+std::size_t ForwardRenderer::lastFrameShadowDrawn() const noexcept { return lastShadowDrawn; }
+std::size_t ForwardRenderer::lastFrameShadowCulled() const noexcept { return lastShadowCulled; }
+bool ForwardRenderer::hasWarnedShadowFit() const noexcept { return warnedShadowFit; }
+std::uint32_t ForwardRenderer::shadowMapResolution() const noexcept { return shadowResolution; }
+std::size_t ForwardRenderer::shadowPassCount() const noexcept { return shadowPasses; }
 
 }  // namespace engine::render
