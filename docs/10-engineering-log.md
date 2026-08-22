@@ -10110,3 +10110,333 @@ four phases. Unlike 3.5.2, CI **does** cover a real part of it: all three lanes 
 under Metal, **WARP** and **lavapipe** on every push. The cull itself is pure CPU IEEE arithmetic and
 cannot diverge by lane. What no lane can see is the **picture** — and specifically the three declared
 seeds above.
+
+---
+
+### Task 3.6.3 — Tonemap/gamma pass (Epic 3.6)
+
+**Branch:** `feat/3.6.3-tonemap-gamma-pass`, cut from `main @ 64df342` — the spec's own stated branch
+point, with no drift. **Nine green commits** — one per build step (`8d127ed` the vocabulary,
+`d354744` the shader pair + the TM tier, `d36cbc5` `PostProcess` + the packer, `449d641` the PP tier,
+`f7885bf` the editor wiring, `ea79ad8` the sample), one closing the sabotage matrix's three genuine
+gaps (`46fac21`), this documentation commit, and the code-review round's. Counted with
+`git rev-list --count`, not by adding up steps. **Complete in code; the twelve-row macOS validation
+pass is PENDING** (`editor/validation/3.6.3-tonemap-gamma.md`, written before the pass as always).
+
+Sized **S** in the roadmap and landed **M**, and that was recorded in the spec before implementation
+rather than discovered mid-task.
+
+`shaders/scene.frag.hlsl` has ended with `return float4(lit, 1.0); // raw linear; the unorm target
+clamps` since 3.4.1, and every target that line writes into is read as **sRGB-encoded** — SDL's own
+header says so (`SDL_gpu.h:1349`) for the `SDL_GPU_SWAPCHAINCOMPOSITION_SDR` this engine hardcodes at
+both of its call sites, with no composition knob on `SwapchainDesc` to change it. Nothing converted.
+So the picture has been uniformly too dark by roughly the difference between **46/255 and 118/255 at
+glTF's middle grey**, and that is a *provable* wrongness rather than a suspected one. This closes it
+the way the subtask asks: a fullscreen pass scaffold.
+
+#### What shipped
+
+Two `engine/render` pairs plus one src-private packer, two shaders, one sample, and a two-line wiring
+change in each of the editor's two GPU consumers. **24 tracked files** in the whole diff.
+
+* **`engine/render/tonemap.{hpp,cpp}`** — PUBLIC and **PURE**: no rhi type, no allocation, no logging,
+  no I/O, nothing that can throw. The `culling.hpp` posture, and the layer's third pure module after
+  `animation` and `culling`. It is the single definition of the transfer chain
+  (`x·exposure → min(65504) → max(0) → curve → saturate → sRGB OETF`), three operators with EXPLICIT
+  underlying values, and a **total** `sanitizeTonemapParams`.
+* **`engine/render/src/tonemap_pack.hpp`** — src-private, the two 16-byte uniform blocks and the enum
+  mirror's five `static_assert`s. `inline` definitions in the header, the `material_pack.hpp` form.
+* **`engine/render/post_process.{hpp,cpp}`** — PUBLIC. `PostProcess` OWNS an `RGBA16Float` scene
+  `RenderTarget` and resolves it through the tree's **first zero-vertex-buffer pipeline**.
+* **`shaders/fullscreen.vert.hlsl` + `shaders/tonemap.frag.hlsl`** — the tree's first fullscreen pair.
+  Sidecars verified before any visual judgment (the 3.4.1 space-law check): `fullscreen.vert.json`
+  reads `samplerCount 0 / uniformBufferCount 1`, `tonemap.frag.json` reads `1 / 1`.
+* **`samples/phase-3-tonemap/`** — the ninth sample, and the first whose correctness is a **number**.
+* **the editor** — `ViewportPanel` and `MaterialPreview`, same shape in both.
+
+**`forward_renderer.{hpp,cpp}`, `lighting.hpp` and all of `engine/scene_render` are byte-identical**,
+which is the point: the forward pass already wrote linear values and already built its pipelines from
+a caller-supplied format, so it simply gets a target that can hold them. `engine/core`,
+`engine/platform`, `engine/rhi`, `engine/assets`, `engine/reflect`, `engine/scene`,
+`engine/scene_serialize`, `tools/`, `runtime/`, `cmake/`, `.github/`, `vcpkg.json`,
+`docs/09-file-formats.md`, `docs/tasks/phase-3.md`, `tests/cooker/determinism.sha256`, all nine
+pre-existing sample directories and all seven pre-existing shaders are byte-identical too. **No rhi
+change, no on-disk format, no dependency, no link-line change** — `engine/render/CMakeLists.txt` gains
+two source lines and its `target_link_libraries` block is untouched. §14 is still `docs/09`'s Reserved
+section.
+
+#### The four rules that outlive the task
+
+1. **The OETF is UNCONDITIONAL, and `None` means no CURVE.** There is deliberately no `applyOetf`
+   flag, no `gammaEnabled` bool and no `linearOutput` mode anywhere — a flag that can be set wrong is
+   a way to ship the exact defect this task removes. `None` is an **isolation control**: it separates
+   "the curve looks wrong" from "the encode is missing". The only escape hatch lives at the **call
+   site** (`samples/phase-3-tonemap --raw`, which creates no `PostProcess` at all), never as a field
+   on the pass. **A third grep now joins the tree's "not literally zero, must be READ" list**: the
+   `applyOetf|gammaEnabled|linearOutput|skipEncode` scan matches two lines, both `//` comments in
+   `tonemap.hpp` stating the prohibition; filtering comment lines out takes it to zero.
+2. **The blit is 1:1 BY CONSTRUCTION**, because both targets are resized on **adjacent lines** from
+   the same value in both editor consumers. That is what makes `Filter::Nearest` provably exact — at
+   1:1, output pixel centre `(i+0.5)/W` maps to source UV `(i+0.5)/allocW`, which **is** a texel
+   centre — and the unrendered margin past `drawExtent` structurally unreachable rather than merely
+   unlikely. It is also why the resize lives in the draw walk beside `target`'s, which is **not** the
+   `I96` violation it resembles: `I96` is about ordering against ImGui's **consumption**, and ImGui
+   never sees the HDR texture.
+3. **The Narkowicz ACES fit is not near-identity in the shadows** — origin slope `ACES_B/ACES_E =
+   0.03/0.14 ≈ 0.2143`, so a linear 0.02 maps to ≈0.0105. `TM20` pins that against the literal, with
+   the measuring epsilon as part of the assertion (`1e-6` reads 0.21430, 0.007 % off; `1e-4` already
+   reads 0.21599, 0.8 % off, which would make a 1 % tolerance meaningless). **If a validation pass
+   judges the default too dark, the fix is the default EXPOSURE, recorded as an amendment — never a
+   silent constant edit.**
+4. **`renderer.hpp` stays byte-identical, and the mechanism is worth writing down**: `PostProcess`
+   never constructs a `Frame`, so it needs no `friend`. `beginScene`/`endScene` forward to the owned
+   `RenderTarget`, which returns and consumes them, and `resolve` reads only the three **public**
+   accessors `extent()`, `pass()` and `commandBuffer()`. That header's own comment forbids befriending
+   anything outside `engine::render`; nothing here tests it.
+
+#### The seven §R reconciliations, and the two that would have cost real time
+
+The plan re-verified every spec assertion against the live tree. Five were confirmations; two were
+corrections that would each have been a compile error or a crash discovered mid-step:
+
+1. **3.6.2 is being built concurrently against the same branch point**, so every byte-identity check
+   is written against `git merge-base main HEAD`, never the literal `main` — the assertion is about
+   this branch's own diff and survives a rebase. What 3.6.2 inherits is named below.
+2. **`rhi::SamplerDesc` has no `mipFilter`** — it is `mipmapMode`, of type `MipmapMode`, defaulting to
+   `Linear`. The design sets it to `Nearest` explicitly (inert at one mip level, but no line of that
+   desc should say something it does not mean).
+3. **The sRGB tables are `engine::assets::detail::`, one namespace deeper than the spec wrote them.**
+   `texture_cook.hpp` sanctions exactly one consumer — `aero_tests`, which is where `TM12` lives.
+4. **`MaterialPreview::ensureInitialized` runs in `service()`, not in `prepareFrame`**, so `post` does
+   not yet exist on early frames and **both** of that file's guards need a `|| !post` term — without
+   it `prepareFrame` dereferences an empty optional on the first drawn frame.
+5. `PostProcess` needs no `Frame` friendship (rule 4 above).
+6. **`drawGizmoBar()` leaves the cursor on a new line** (its last submitted item, the Local/World
+   button, is not followed by a `SameLine()`), so `ImGui::SameLine()` must **precede**
+   `drawViewOptions()`.
+7. The editor cases are `I103`–`I106`, continuing `imgui_layer_test.cpp`'s own sequence.
+
+#### Amendments to the plan, each measured rather than reasoned
+
+**The plan's §0.1 expected-output table is WRONG IN EIGHT OF ELEVEN ROWS, and the sample prints the
+measured values instead.** The sharpest correction is in a row the tests and the validation page pin:
+the plan derived `linearToSrgbEncode(0.21404) = 0.5000085` and therefore `round(255·…) = 128`. The
+true fp32 value is **0.4999987**, so `255 × that = 127.49968` and the reading is **127**. The
+headline pair is therefore **~55 (`--raw`) against ~127 (`--tonemap=none`)** at the patch that encodes
+to sRGB one half, and **~46 against ~118** at glTF's middle grey. Both anchor rows the tests actually
+pin (0.18 and 1.0) were already right. The other corrections: 0.01 reads `25/25/12` not `33/33/9`;
+0.05 reads `63/62/59` not `65/63/34`; 0.50 reads `188/156/206` not `188/145/199`; 2.0 reads `213/245`
+not `216/249`; 4.0 `231/252` not `233/254`; 8.0 `242/255` not `243/255`; 16.0 `248/255` not `249/255`.
+**The sample computes its table at startup from `render::tonemapAndEncode` itself**, so the numbers a
+pass compares against are the ones that build produces — which is exactly why the table is printed
+rather than documented.
+
+**Two more arithmetic claims were refuted by running them, and the cases were corrected rather than
+relaxed.** `linearToSrgbEncode(1.0F)` is **not** exactly 1.0 in fp32: `1.055F - 0.055F` rounds to
+**0.99999994**, one ULP below. `TM9` therefore asserts the error's **direction and magnitude**
+(`≤ 1.0F`, within `1e-6`) instead of an equality — an OETF that *overshot* would hand the 8-bit
+conversion a value outside the `[0,1]` domain the chain guarantees, and that is the property worth
+pinning. And **Reinhard's asymptote IS reachable in fp32**, because `1.0F + x == x` once `x ≥ 2²⁴`, so
+`f(1e30F)` is exactly 1.0; `TM14` pins the strict inequality at the HDR buffer's own ceiling
+(`65504/65505 = 0.99998474`) and only boundedness above it.
+
+**Two step-ordering corrections.** The plan puts all of `TM1`–`TM29` in step 2, but `TM21`–`TM28` name
+`tonemapSourceUvMax` and the packer, which step 3 creates — so step 2 ships `TM1`–`TM20` + `TM29`
+(21 cases) and step 3 adds the remaining eight. And the plan's `-G Ninja` reduced-configuration
+command omits the vcpkg toolchain file, which `CMakePresets.json` supplies through `toolchainFile`;
+without `-DCMAKE_TOOLCHAIN_FILE=<abs path>/vcpkg/scripts/buildsystems/vcpkg.cmake` the configure fails
+at `find_package(spdlog)`. **And a stale cache masks the fix**: once a build directory exists with a
+failed cache, a later `-DCMAKE_TOOLCHAIN_FILE` is ignored, so the directory must be removed again.
+
+**The plan's AC-2 grep cannot exit 1 on this tree, and the check is restated.**
+`git grep -nE 'toString\(' -- engine/render/` matches four pre-existing **qualified calls** to
+`engine::assets::toString` in `texture_upload.cpp` (a 3.4.1 file, byte-identical here) plus one prose
+comment in `culling.hpp`. What discharges AC-2 is a grep for a `toString` whose argument type is
+`TonemapOperator`, which exits 1, plus the confirmation that the five pre-existing matches are
+untouched by this branch.
+
+**And the trap fired for real, on a different type.** `CHECK(PostProcessConfig{}.sceneColorFormat ==
+rhi::TextureFormat::RGBA16Float)` is a **hard compile error on every lane**: `engine::rhi` carries a
+`toString(TextureFormat)` on a public header, doctest's `DOCTEST_STRINGIFY` expands to an unqualified
+`toString(...)` that ADL finds there, and the decomposer then tries `std::string_view + const char*`.
+The fix is `render_target_test.cpp`'s own idiom — **double parentheses**, `CHECK((a == b))` — and
+every `TextureFormat` comparison in this task's tests uses it. Comparisons of `TonemapOperator` need
+no such thing, which is itself a small proof that AC-2 holds.
+
+**One deviation by addition beyond the plan's two seams.** `ViewportPanel` gains
+`outputTarget() const` alongside `postProcess()`. Without it, "nothing depth-tests into the output
+target any more" is a source-text claim rather than a runtime fact: `I103` compares the two targets'
+depth formats — `Invalid` on the output, a real format on the scene target inside `post` — and the
+**contrast** is the assertion, because reading `Invalid` on both would mean the forward pass had lost
+its depth buffer.
+
+**`I96` is amended rather than weakened.** It asserted exactly one `->resize(` call site in
+`material_preview.cpp`; there are now two, and **both are in `prepareFrame`**, which is the per-site
+ownership check it actually enforces and which is unchanged. The count stays EXACT so a third site
+reddens, and `I106(c)` pins the adjacency the second one introduced.
+
+#### The sabotage matrix: 31 seeds, 38 seeded builds, three genuine gaps
+
+Every seed was applied, its `git diff` read, rebuilt, and run; every restore was followed by a rebuild
+before the next measurement (the 3.5.1 stale-binary trap). `T2b`, `T3b` and `T4b` are the shader-only
+twins recorded inside their parents' rows; `T30` ran as two arms.
+
+| Seed | Outcome | Notes |
+|---|---|---|
+| `T1` (drop the OETF call from the HLSL) | RED — `TM29` | the "appears at least twice" clause. The picture half is declared (rows 1, 5, 6). |
+| `T2` (encode threshold → decode threshold, C++) | RED — `TM8`, **`TM11`**, `TM12` | **`TM10` stays GREEN**, correcting the plan: 0.21404 is above 0.04045 and takes the power arm unchanged. `TM11` reddens because the swap makes the OETF **discontinuous** — the linear arm at 0.04045 gives 0.5226 while the power arm just above gives 0.2262 — which the plan did not predict. |
+| `T2b` (same, HLSL) | RED — `TM29` (8 assertions) | the `0.0031308` needle absent **and** the deliberately-absent `0.04045` needle present. **The second half is what makes TM29's non-vacuity clause load-bearing rather than decorative.** |
+| `T3` (piecewise → plain 2.2 power, C++) | RED — `TM8`, `TM10`, `TM12` (171 assertions) | as predicted. `TM9`'s endpoint survives, which is why `TM10` and `TM12` exist. |
+| `T3b` (same, HLSL) | RED — `TM29` | |
+| `T4` (invert the OETF exponent, C++) | RED — `TM8`, `TM10`, **`TM11`**, `TM12` | **`TM9` stays GREEN**, exactly as the plan flagged it might — `1^2.4 == 1` and the finiteness checks hold. The attribution is corrected: the real witnesses are `TM8`, `TM10`, `TM11` and `TM12`. |
+| `T4b` (same, HLSL) | RED — `TM29` | |
+| `T5` (swap Reinhard and ACES in `applyTonemapCurve`) | RED — `TM14`, **`TM15`**, `TM16`, **`TM17`**, **`TM20`** | the plan said `TM15`'s monotonicity would survive, and it does — but `TM15` also asserts **saturation at 1e6**, which Reinhard-in-the-ACES-arm cannot deliver. Three more witnesses than predicted. |
+| `T6` (swap the arms in the HLSL only) | RED — `TM29`, **one clause of two** | **a genuine gap, closed structurally.** See below. |
+| `T7` (`ACES_A` 2.51 → 2.15, C++) | RED — `TM15`, `TM16`, `TM17`, `TM18` | |
+| `T7b` (same, HLSL) | RED — `TM29` | the picture half is not separately declared: a subtly different highlight roll-off is not distinguishable by eye, and `TM29` is the whole honest cover. |
+| `T8` (delete the `max(0)`) | RED — `TM19`(b), **`TM9`** | written against the **ACES arm at −0.5F** exactly as the plan's corrected form specified (Reinhard's own pole saturates to 0 either way and cannot see the guard). `TM9` is an extra witness: `min(−inf, 65504)` is `−inf`, and `pow` of a negative base is NaN. |
+| `T9` (delete the `min(TONEMAP_MAX_INPUT)`) | RED — `TM9`, `TM19`(c) | |
+| `T10` weak (delete the chain's own `saturate1`) | **GREEN — a behavioural no-op** | subsumed: every `applyTonemapCurve` arm already saturates. |
+| `T10` strong (delete the `None` arm's too) | RED — **`TM13` only** | `TM19` stays green, correcting the plan. The chain-level `saturate1` ships as defence in depth over a property of *another* function, with the measurement written into the source. |
+| `T11` (delete the NaN arm from `sanitizeTonemapParams`) | RED — `TM5` | **and the open question is answered by measurement: libc++'s `std::clamp(NaN, lo, hi)` returns `NaN`, not `lo`** — both comparisons are false, so it returns `v`. INV-3 is broken outright by the seed, which is exactly why the explicit NaN arm exists rather than a bare clamp. |
+| `T12` (apply exposure AFTER the curve) | RED — `TM19`(a) | the inverted polarity confirmed: on correct code the two chains are **equal** (both reach the curve as 1.0) and the seed breaks the equality. |
+| `T13` (`tonemapSourceUvMax` returns `{1,1}`) | RED — `TM22`, **`TM23`**, `TM24`, **`PP9`** | `TM21` stays green by design. **`TM23` reddens** — its per-axis mixed arms (`{0,192}` → `{1.0, 0.78125}`) are broken by an unconditional `{1,1}`, which the plan said would stay green. |
+| `T14` (swap the two packer bodies) | RED — `TM25`, `TM26` | byte patterns against literals, not against the struct the packer wrote. |
+| `T15` (`Filter::Nearest` → `Linear`) | **GREEN — DECLARED**, row 4 | numerically identical under the 1:1 invariant; D6's own argument stated backwards. |
+| `T16` (`ClampToEdge` → `Repeat`) | **GREEN — DECLARED**, row 4 | `uvMax ≤ 1` by construction, so the address mode never fires. |
+| `T17` (`CullMode::None` → `Back`) | **GREEN — DECLARED**, rows 1 and 5 | **and the blackness is derivable**: the three NDC positions `(-1,1)`, `(3,1)`, `(-1,-3)` have negative signed area, i.e. clockwise in the Y-up NDC this engine pins, against a `FrontFace::CounterClockwise` pipeline — so `Back` culls the whole triangle. A `pipelineCullMode()` accessor was considered and **rejected**: a test asserting it equals `None` is a mapping compared against itself. |
+| `T18` (the NDC formula's vertical flip) | RED — `TM29` (both `float2` literals); **picture half DECLARED**, row 1 | the sample's asymmetric layout exists precisely for this. |
+| `T19` (delete the `sceneEnded` block) | RED — `PP8` | `PP6`'s "neither latch fired" stays green, which is why `PP8` **drives** the violation. |
+| `T20` (delete the extent comparison) | RED — `PP7` | `PP13` stays green — ten matched resolves with no latch is satisfied by a pass that cannot latch — and that asymmetry is why `PP7` is ONE sequence case. |
+| `T21` (`depthStencilFormat` always `Invalid`) | RED — **`PP12`(b) CRASHES (SIGABRT)** | the plan predicted this might join the declared class. It does not: Metal's debug layer **aborts** with *"the render pipeline's pixelFormat (MTLPixelFormatInvalid) does not match the framebuffer's pixelFormat (MTLPixelFormatDepth32Float)"*, and doctest reports a crashed case. The tree cannot READ a backend error, but it can be KILLED by one. |
+| `T22` (`sceneColorFormat` default → `RGBA8Unorm`) | RED — `PP1`, `TM28` | **`PP1` is the ONE automated witness anywhere that the intermediate is HDR.** `PP5` stays green — a `ForwardRenderer` builds fine against `RGBA8Unorm` — which is the point. |
+| `T23` (`endScene` drops the frame) | **GREEN → closed structurally, re-proven** | see below. |
+| `T24` (sampled alpha instead of literal 1.0) | RED — `TM29`'s alpha clause (both halves); **picture half DECLARED**, row 2 | **and the spec's "the viewport becomes translucent" claim is corrected**: the scene clear colour is `{0.06,0.06,0.07,1.0}` and `scene.frag.hlsl` writes `float4(lit, 1.0)`, so the HDR buffer's alpha is 1 everywhere and the seeded shader produces an IDENTICAL picture. It is **structurally inert on the current clear/shader pair**; its real risk arrives with the first pass that writes a non-1 alpha into the HDR buffer. |
+| `T25` (skip releasing the shader that DID load) | **GREEN → closed both ways, re-proven** | see below. |
+| `T26` (resize `target` but not `post`, viewport) | RED — `I104`, `I106`(c), **+4 log-count cases** | the four incidentals (`I5`, `I10`, `I6`, and the Console capture case) redden because the new extent-mismatch WARN moves counts they pin — collateral that strengthens the witness. |
+| `T27` (the same in `MaterialPreview`) | RED — `I106`(c), **`I96`** | the plan expected this might need a case strengthened or declaring; it does not. `I96`'s exact `resizeSites == 2` catches it too. **The behavioural half — a stretched preview sphere — still has no witness anywhere** and is row 3's. |
+| `T28` (drop the sanitize, BOTH sites) | RED — `I105` (3 assertions) | both sites seeded together, which is the honest form: seeding the panel alone and watching `I105` stay green would be a false gap report. |
+| `T29` (`editor_app.cpp` passes a default) | RED — `I106`(a) | no runtime tier can see two consumers diverge. Row 3 is the behavioural witness. |
+| `T30a` (delete `post_process.hpp` from `render.hpp`) | RED — **a COMPILE error** | stronger than any runtime case (3.5.1's `S29` precedent). The test TU includes the **umbrella only**, which is what makes this non-vacuous. |
+| `T30b` (delete `tonemap.hpp` from `render.hpp`) | **builds clean** — the grep is the witness | `tonemap_pack.hpp` includes `tonemap.hpp` directly, so `TM28` cannot see it. `git grep -c` over `render.hpp` reads 1 instead of 2. Recorded as a **partial** pin rather than claimed as a full one (the `I96` rule), and verified in **both** directions. |
+
+**The three gaps, and how each was closed.**
+
+* **`T6` — a source-text pin can be satisfied by the very swap it exists to catch.** The obvious form,
+  *"`tonemapReinhard` occurs somewhere after `uCurve == 1`"*, is **satisfied by a swapped chain**,
+  because the reinhard call moved into the *second* arm is still textually after the *first*
+  comparison. Measured: the swap reddened one clause, not two. The clause now pins that call to the
+  span **between** the two comparisons, which a swap cannot satisfy. Re-seeded: both clauses redden.
+  **The generalisable form: an "A occurs after B" text pin over a chain of arms proves nothing about
+  which arm A is in.**
+* **`T23` — a dropped frame still draws, so the whole tier stays green.** `~Frame` force-ends and
+  submits a dropped frame with one WARN, so the picture survives; 19 of those WARNs were emitted and
+  no assertion moved, because nothing here reads a log sink. Closed by asserting, in `PP10`, that
+  `endScene` **forwards** its `RenderTarget`'s answer: a moved-from pass has no `RenderTarget`, so it
+  must return **false**, and that is the ONE arm reachable in this tree where the forward's answer
+  differs from an unconditional `true`. Re-seeded: `PP10` reddens alone.
+* **`T25` — a leaked GPU shader is invisible to every tier here.** `~Device` **releases** a leaked
+  shader and merely WARNs about it, so ASan sees no process leak and nothing asserts. Measured: the
+  seed produced `~Device releasing 1 leaked shader(s)` while the tier stayed green. Closed **both
+  ways**. Structurally: the two shader handles are now **scope-owned** (`ScopedShader` in
+  `post_process.cpp`), so there is **no destroy line on any exit** from `create()` and forgetting one
+  is unspellable rather than merely untested — the 3.6.1 `C19` shape. It also silences the backend's
+  own *"stale or invalid handle"* ERROR on a failed load, because the guard skips invalid handles.
+  And with a witness: `PP4`'s single-shader arm captures the log across `~Device` through the
+  `setLogCallback` seam `scene_render_test.cpp` already uses, asserts no leak line, and carries an
+  anti-vacuity check that the capture ran at all. Re-seeded by emptying the RAII release: `PP4`
+  reddens alone.
+
+**`PP4`'s fixture is the difference between a real witness and a decorative one, and the plan called
+it in advance.** An EMPTY VFS leaves both shader handles invalid, and releasing an invalid handle is
+a no-op either way — so an empty mount **cannot** see a `create()` that forgot to release the shader
+it DID make. The discriminating fixture is a `FileSystemBackend` that admits only `fullscreen.vert`'s
+artifacts, giving one real GPU object and one invalid handle.
+
+#### The declared class: nine seeds with no automated witness anywhere
+
+`T1`, `T2b`, `T3b`, `T4b` (each's picture half), `T15`, `T16`, `T17`, `T18` (picture half) and `T24`
+(picture half). **This is the largest declared class in the project so far** — 3.5.1 declared four,
+3.5.2 three, 3.6.1 three — and the reason is the standing one: **nothing in this tree renders a
+pixel**, and this task's entire deliverable is a picture. Each is named on the validation page beside
+the row that is its only coverage, and rows 1, 2, 4, 5, 6 and 11 carry them.
+
+Two of the nine are predicted to look identical to correct code and that is written down rather than
+discovered during the pass: **`T24` is derivably inert** (alpha is 1 everywhere in the HDR buffer
+today), and **`T15`/`T16` are numerically identical under the 1:1 invariant** — so what row 4 actually
+witnesses is the pair `{filter, address mode}` failing *together*, which is why they share a row.
+
+#### The mechanical gate
+
+Both macOS presets **157/157** with `AERO_REQUIRE_GPU=1`. Both reduced configurations rebuilt **fresh
+with `-G Ninja`** — `-DAERO_REFLECT_TOOLS=OFF -DAERO_SHADER_TOOLS=OFF` **65/65**, and
+`-DAERO_REFLECT_TOOLS=OFF` alone **78/78** — each having built and run `aero_tests`,
+`aero_editor_shell_test`, **`aero_editor_imgui_test`** and `aero_cooker`, and **not** the four
+reflect-gated binaries (`aero_scene_serialize_test`, `aero_editor_inspector_test`,
+`aero_reflect_meta_test`, `aero_reflect_json_test` all live inside `if(AERO_REFLECT_TOOLS)`, which
+corrects the plan's §V.2 list). **The imgui binary is the one that matters this task**: it carries
+`I105`'s tools-OFF arm, the only place the degradation path is tested at all.
+
+**`ctest -N` reads 157 / 65 / 78 — unmoved in all three**, because the new test file rides
+`aero_tests` (one ctest entry), the sample registers no test, and this task adds no `cooker.*` and no
+`reflect-gen.*` case. The growth reads only in doctest: `aero_tests` **942 → 984** (+42: `TM1`–`TM29`
+tier-0 and `PP1`–`PP13` behind `AERO_SHADER_TOOLS_ENABLED`, one new TU) and `aero_editor_imgui_test`
+**138 → 142** (+4), with `aero_editor_shell_test` **1725**, `aero_scene_serialize_test` **29**,
+`aero_editor_inspector_test` **27**, `aero_reflect_meta_test` **7** and `aero_reflect_json_test` **28**
+all unmoved. In a tools-off build the tonemap filter lists **29**, the PP tier absent by its gate.
+
+Six guards exit 0; `check-math-boundary.sh`'s scanned count moves **408 → 415** (+7: `tonemap.hpp`,
+`tonemap.cpp`, `post_process.hpp`, `post_process.cpp`, `tonemap_pack.hpp`, `render_tonemap_test.cpp`
+and `samples/phase-3-tonemap/main.cpp`), and `check-project-no-delete.sh`'s Check B stays at **73**,
+because this task adds **no** `editor/src/*.cpp`. Both re-measured **after `git add`**; neither script
+changes and `.github/scripts/` is byte-identical. clang-format and clang-tidy clean **by exit code**
+over all sixteen changed `.cpp`/`.hpp` files. The determinism manifest is untouched at **18 hash lines
+across four arms / 36 cross-lane comparisons**.
+
+**A note on that manifest count**: `wc -l` reads **58**, because the file's frozen header is 40 lines
+of prose. The 18 is `grep -cvE '^[[:space:]]*(#|$)'`.
+
+#### One editor case landed in the wrong preprocessor block, and it is worth writing down
+
+The four new editor cases were first appended to the END of `imgui_layer_test.cpp` — which is inside
+3.1.5's file-level `#if AERO_SHADER_TOOLS_ENABLED` block, not outside it. Everything was green, and
+`I105`'s tools-OFF arm **never ran**: the tools-off `aero_editor_imgui_test` read 124 cases, exactly
+what it read before this task. The block was relocated above that gate, each case keeping its own
+per-case `#if`/`#else` arms, and the tools-off binary now reads **128**. **The measurement that caught
+it was counting the cases in the reduced configuration, not running the suite** — a suite that omits a
+case passes just as loudly as one that runs it.
+
+#### The concurrency note
+
+3.6.2 (directional shadow map) was planned and built **in parallel** against the same branch point, in
+a separate worktree. Neither side could see the other's changes. 3.6.3's byte-identity claim is about
+its **own diff** and survives a rebase, so it pays nothing structural if 3.6.2 lands first — only a
+re-measured baseline.
+
+**What 3.6.2 inherits, named so it is not discovered by a red check**: the editor's scene and preview
+targets are now **`RGBA16Float`** (any pipeline built from `RenderTarget::colorFormat()` in the editor
+picks that up automatically, because both consumers create their renderer from
+`post->sceneColorFormat()`), and **both output targets are depth-free** — a shadow pass wanting the
+viewport's depth takes it from `post->sceneDepthFormat()` instead.
+
+#### The handoffs, each with an owner
+
+* **Bloom, AA, DoF, colour grading, LUTs → 8.2.** `PostProcess` is the scaffold they land in.
+* **Auto-exposure → 8.2.** `TonemapParams::exposure` is already the injection point.
+* **HDR display output → unowned.** It needs `rhi::SwapchainDesc` to carry a composition
+  (`HDR_EXTENDED_LINEAR`), recorded per the 0.4.1 D18 amendment protocol;
+  `PostProcessConfig::outputColorFormat` is already the seam on this side.
+* **An sRGB swapchain → rejected, recorded.** The editor composites through ImGui, which would then
+  double-encode its own chrome; revisit only if that stops being true.
+* **Dithering the 8-bit quantisation → unowned**, triggered by visible banding on a validation page.
+  One `frac(sin(dot(...)))` line in the fragment stage.
+* **Exposure as a scene/camera property or a post-volume component → unowned**, triggered by the first
+  task that needs it to persist or to vary per camera. Today it is session state on `ViewportPanel`:
+  never written to `project.aero`, never to `imgui.ini`, never persisted anywhere.
+* **Retrofitting the four existing samples → unowned** (each needs its own re-validation, which is why
+  their READMEs keep their "raw linear" caveat byte-identical).
+* **`Filter::Linear` + a non-1:1 blit → unowned**, and the day it lands the unrendered margin becomes
+  real rather than structurally unreachable.
+* **MSAA on the HDR target → unowned**: `RenderTargetConfig` carries no `sampleCount`.
+* **Tonemapping the thumbnail store and the asset-browser previews → out of scope, permanently.**
+  Those are UI images decoded from files, not scene renders, and they are already correct.
