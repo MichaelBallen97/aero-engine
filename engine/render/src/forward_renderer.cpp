@@ -275,6 +275,14 @@ ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
       warnedSubmeshRange(other.warnedSubmeshRange),
       warnedSkinningCap(other.warnedSkinningCap),
       warnedStrayPalette(other.warnedStrayPalette),
+      // task 3.6.2 — 3.6.1's four were omitted here, in operator= and in reset() while every
+      // sibling latch was carried. A moved-to renderer read hasWarnedDegenerateFrustum() == false,
+      // so the once-per-renderer WARN fired a SECOND time from the same logical renderer. Carried
+      // now, so the member list has no half-handled tail.
+      lastDrawn(other.lastDrawn),
+      lastCulled(other.lastCulled),
+      materialBinds(other.materialBinds),
+      warnedDegenerateFrustum(other.warnedDegenerateFrustum),
       shadowTexture(other.shadowTexture),
       shadowSampler(other.shadowSampler),
       shadowPipeline(other.shadowPipeline),
@@ -313,6 +321,10 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         warnedSubmeshRange = other.warnedSubmeshRange;
         warnedSkinningCap = other.warnedSkinningCap;
         warnedStrayPalette = other.warnedStrayPalette;
+        lastDrawn = other.lastDrawn;  // task 3.6.2 — 3.6.1's four, see the move constructor
+        lastCulled = other.lastCulled;
+        materialBinds = other.materialBinds;
+        warnedDegenerateFrustum = other.warnedDegenerateFrustum;
         shadowTexture = other.shadowTexture;
         shadowSampler = other.shadowSampler;
         shadowPipeline = other.shadowPipeline;
@@ -356,6 +368,10 @@ void ForwardRenderer::reset() noexcept {
     warnedSubmeshRange = false;
     warnedSkinningCap = false;
     warnedStrayPalette = false;
+    lastDrawn = 0;  // task 3.6.2 — 3.6.1's four, see the move constructor
+    lastCulled = 0;
+    materialBinds = 0;
+    warnedDegenerateFrustum = false;
     shadowTexture = {};
     shadowSampler = {};
     shadowPipeline = {};
@@ -1394,7 +1410,17 @@ ShadowView ForwardRenderer::renderShadowMap(const RenderView& view) {
     const Frustum lightFrustum = extractFrustum(lightViewProj);
 
     const rhi::CommandBufferHandle cmd = device->acquireCommandBuffer();
-    ++shadowPasses;  // counted at the ACQUISITION, and at exactly one site
+    if (!cmd.valid()) {
+        // Every sibling bails the same way (renderer.cpp, render_target.cpp): there is nothing to
+        // record into and nothing to cancel. Returning an INVALID ShadowView is what keeps draw()
+        // from sampling a map this frame never wrote -- the alternative is a silent stale picture.
+        AERO_LOG_ERROR("ForwardRenderer::renderShadowMap — acquireCommandBuffer failed");
+        plotShadow();
+        return {};
+    }
+    // Counted BELOW the validity check and at exactly one site, so the counter means "acquired",
+    // not "tried to acquire" -- which is the whole distinction shadowPassCount() exists to make.
+    ++shadowPasses;
     const rhi::DepthStencilAttachment depthAttachment{.texture = shadowTexture,
                                                       .depthLoadOp = rhi::LoadOp::Clear,
                                                       // STORE, not DontCare: the whole point is that
@@ -1403,6 +1429,17 @@ ShadowView ForwardRenderer::renderShadowMap(const RenderView& view) {
                                                       .clearDepth = 1.0F};
     // colorAttachments DELIBERATELY EMPTY — this is what the rhi widening exists for.
     const rhi::RenderPassHandle pass = device->beginRenderPass(cmd, {.depthStencil = depthAttachment});
+    if (!pass.valid()) {
+        // WITHOUT this the loop below runs against an invalid pass and every bind, push and draw
+        // logs its own ERROR -- thousands of unlatched lines per frame on a real scene -- and the
+        // function still returns a VALID ShadowView, so draw() samples a map nothing wrote.
+        // `cancel` is legal here for the same reason it is in RenderTarget::beginFrame: nothing was
+        // acquired from a swapchain.
+        AERO_LOG_ERROR("ForwardRenderer::renderShadowMap — beginRenderPass failed");
+        device->cancel(cmd);
+        plotShadow();
+        return {};
+    }
     device->bindGraphicsPipeline(pass, shadowPipeline);
     bool boundSkinned = false;
 
@@ -1496,8 +1533,14 @@ ShadowView ForwardRenderer::renderShadowMap(const RenderView& view) {
     device->submit(cmd);  // ordered BEFORE the frame's command buffer, which is what lets draw()
                           // sample the map with no explicit barrier
     plotShadow();
-    return ShadowView{lightViewProj, 1.0F / static_cast<float>(shadowResolution), view.directional.shadowBias,
-                      view.directional.shadowNormalBias, true};
+    // DESIGNATED, not positional -- the same silent-default class this task fixed at the
+    // buildRenderView bridge. A sixth ShadowView field appended later would compile clean at its
+    // default here, with SM5 green, if these were positional.
+    return ShadowView{.lightViewProj = lightViewProj,
+                      .texelSize = 1.0F / static_cast<float>(shadowResolution),
+                      .constantBias = view.directional.shadowBias,
+                      .normalBias = view.directional.shadowNormalBias,
+                      .valid = true};
 }
 
 std::size_t ForwardRenderer::lastFrameShadowDrawn() const noexcept { return lastShadowDrawn; }

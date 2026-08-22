@@ -218,8 +218,10 @@ public:
     // every renderShadowMap, INCLUDING one that early-returns, so a shadowless frame reads 0/0
     // rather than the previous frame's numbers. AND THEY NEED NOT SUM to view.instances.size(): an
     // instance dropped by the shared resolver was neither drawn nor culled, so it lands in NEITHER
-    // bucket. ++shadowDrawn lives at the single drawIndexed site and nowhere else, which makes that
-    // gap true by construction rather than by bookkeeping that could drift.
+    // bucket. ++shadowDrawn lives at the TWO drawIndexed sites -- the primitive arm and the mesh
+    // arm -- and nowhere else, which makes that gap true by construction rather than by bookkeeping
+    // that could drift. The count is two, not one: a maintainer who greps, finds two and "corrects"
+    // the code to match a "single site" claim would silently stop counting every primitive caster.
     [[nodiscard]] std::size_t lastFrameShadowDrawn() const noexcept;
     [[nodiscard]] std::size_t lastFrameShadowCulled() const noexcept;
     // The fit failed at least once. Latched: an invalid fit is a real problem (a degenerate camera,
