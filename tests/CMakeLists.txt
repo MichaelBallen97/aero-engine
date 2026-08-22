@@ -442,7 +442,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/instantiate_plan_test.cpp
                editor/asset_commands_test.cpp
                editor/material_from_import_test.cpp
-               editor/scene_asset_ledger_test.cpp)
+               editor/scene_asset_ledger_test.cpp
+               editor/audio_decode_test.cpp)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -473,7 +474,14 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # silently skip. canonical.aeromat is writeMaterialText's OWN output for a fully-specified
     # document (the fixpoint anchor ME40 compares against); the four reject-*.aeromat files are the
     # hostile inputs validation row 11 re-checks by hand.
-    AERO_MATERIAL_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/materials")
+    AERO_MATERIAL_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/materials"
+    # task 3.7.1: the five committed audio fixtures reach the UNGATED editor/audio_decode_test.cpp.
+    # Same rule as the three definitions above (2.5.2's D8, fourth application): A PATH, NOT A FLAG --
+    # a missing definition is a COMPILE error and a missing fixture file is a REQUIRE failure, so
+    # neither can silently skip. AD10/AD11 are the DECODER half of the external anchor (dr_wav and
+    # dr_flac against libavcodec's own decode, tone.s16le.pcm); the COOK half is aero_tests' AK17,
+    # which cannot live here and vice versa -- aero_tests does not link aero::editor_core.
+    AERO_AUDIO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/audio")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,

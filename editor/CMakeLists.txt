@@ -140,6 +140,8 @@ add_library(aero_editor_core STATIC
     src/material_preview.cpp     # task 3.4.2 -- the only new GPU TU: target, renderer, texture cache
     src/skeleton_cook_source.cpp # task 3.5.1 -- the ImportedModel -> skeleton cook adapter; PURE
     src/animation_cook_source.cpp # task 3.5.2 -- the ImportedModel -> animation cook adapter; PURE
+    src/audio_cook_source.cpp    # task 3.7.1 -- the audio source-name predicates; PURE, no third party
+    src/audio_decode.cpp         # task 3.7.1 -- the ONLY stb_vorbis TU; the ONLY miniaudio TU outside engine/platform/src
     src/asset_drag.cpp           # task 3.1.5 -- the drag payload + the drop routing matrix; PURE, no ImGui
     src/instantiate_plan.cpp     # task 3.1.5 -- the ImportedModel -> entity-subtree planner; PURE
     src/asset_commands.cpp       # task 3.1.5 -- the sixth structural command: one undoable drop
