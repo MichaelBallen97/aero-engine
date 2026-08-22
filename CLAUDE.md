@@ -693,7 +693,17 @@ N=10 (1000 instances) and **62 %** at N=22 (10648).
 **3.6.2 — Directional shadow map: MERGED as PR #85 (merge commit `3ffaadf`, sixteen commits),
 CI-green on all six checks — the three platform lanes plus the vcpkg-baseline, lint and
 cook-determinism jobs — with `headSha == HEAD` asserted before the merge, its code-review round
-CLOSED (eight findings, three blocking, all fixed), and PENDING its twelve-row macOS pass.** The renderer
+CLOSED (eight findings, three blocking, all fixed). Its twelve-row page
+(`editor/validation/3.6.2-directional-shadow-map.md`) is WRITTEN and **rows 1 and 10 PASS with their
+blanks filled** (2026-08-22): both console gates 0 over 2088 frames, `shadow drawn 6 / culled 0` at
+every elevation, and the depth pass costing **0.083 ms** median against a `draw` that is **unchanged at
+0.025 ms** either way — so the shadow lookup adds no measurable cost to the main pass at six casters,
+and `--no-shadows` measures `renderShadowMap` at **0.000 ms**, confirming the early-out by measurement.
+**Rows 2–9, 11 and 12 remain PENDING and every one is judged by eye** — they are the only coverage
+seeds SH22–SH28 have anywhere, because `engine/rhi` exposes no texture readback and nothing in this
+tree can inspect a texel. **Row 1's gate as first written could never return 0**: the sample's own
+closing line contains the path `editor/validation/…`, so it matched the word it was grepping for; the
+page now excludes that line and carries an independent log-level cross-check beside it.** The renderer
 learns that light is occluded. Until now every lit surface received the full directional term
 regardless of what stood between it and the sun: nothing computed a light-space transform, no depth
 texture carried `Sampler` usage, no shader declared a `SamplerComparisonState`, and the RHI **actively
