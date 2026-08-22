@@ -61,6 +61,7 @@ add_executable(aero_tests
     render_skinning_test.cpp # task 3.5.1 — tier-0 pose/palette/repack invariants + GPU-gated mesh registry & skinned draw
     render_animation_test.cpp # task 3.5.2 — tier-0 clip sampler: bind, the three interpolation modes, both clamps
     render_culling_test.cpp # task 3.6.1 — tier-0 extraction/Arvo/six-plane invariants + GPU-gated cull counters
+    render_shadow_test.cpp # task 3.6.2 — tier-0 fit/sphere/snap literals + GPU-gated depth pass & counters
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
