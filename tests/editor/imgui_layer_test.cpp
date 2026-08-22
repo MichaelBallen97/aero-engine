@@ -50,6 +50,9 @@
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
 #include "../../editor/src/scene_asset_loader.hpp"
+#include "../../editor/src/viewport_panel.hpp"  // task 3.6.3: ViewportPanel's three test seams --
+                                                // postProcess(), tonemapParams(), requestTonemapParams().
+                                                // The scene_asset_loader.hpp precedent, one file over.
 #include "rhi_test_support.hpp"
 
 #include <SDL3/SDL_filesystem.h>  // task 2.3.3 I5: SDL_GetBasePath(), matching imgui_layer.cpp:38
@@ -7880,7 +7883,12 @@ TEST_CASE("editor: every preview GPU lifetime call sits where ImGui's ordering a
         CAPTURE(owner);
         CHECK(owner == "prepareFrame");
     }
-    CHECK(resizeSites == 1);
+    // TWO since task 3.6.3, and BOTH in prepareFrame: `post->resize(pixels)` sits on the line
+    // immediately above `target->resize(pixels)`, which is what makes the tonemap resolve's 1:1 blit
+    // true by construction rather than by two call sites that could drift. The per-site ownership
+    // CHECK above is the invariant and is unchanged -- this count is the anti-vacuity guard, and it
+    // stays EXACT so a third resize appearing anywhere reddens here. I106(c) pins the adjacency.
+    CHECK(resizeSites == 2);
 
     // The ImGui TU touches no GPU lifetime AT ALL beyond that one call, and the ORDER of its three
     // preview statements is the property this whole case is about: settle the allocation, THEN read the
@@ -8306,6 +8314,316 @@ TEST_CASE("editor: New Material refuses a directory it could not enumerate IN FU
         // The regressed shape this proof must reject, in either spelling.
         CHECK(line.find("listing.status != ScanStatus::Ok") == std::string::npos);
         CHECK(line.find("listing.status == ScanStatus::Ok") == std::string::npos);
+    }
+}
+
+// ---- task 3.6.3, the tonemap/gamma pass (I103-I106) -----------------------------------------------
+
+TEST_CASE("editor: the viewport draws through an HDR pass into a depth-free output (task 3.6.3, I103)") {
+    // The whole structural claim of this task's editor half, in one place: the SceneRenderer now draws
+    // into an RGBA16Float target that PostProcess owns, and the target ImGui samples has lost its depth
+    // attachment because the only thing recorded into it is a depth-off fullscreen triangle.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "tonemap i103", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // the viewport's ensureInitialized runs on its FIRST DRAW, not at create
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::render::PostProcess* const post = viewport->postProcess();
+    REQUIRE(post != nullptr);
+    // The HDR intermediate, and the depth the forward pass still needs -- on the SCENE target.
+    CHECK((post->sceneColorFormat() == engine::rhi::TextureFormat::RGBA16Float));
+    CHECK((post->sceneDepthFormat() != engine::rhi::TextureFormat::Invalid));
+    CHECK(post->sceneDrawExtent().width > 0);
+    CHECK(post->sceneDrawExtent().height > 0);
+    // ...and NOT on the output target, which nothing depth-tests into any more. The two targets'
+    // depth formats are the ONE pair a runtime tier can compare, and the contrast is the assertion:
+    // reading Invalid on both would mean the forward pass had lost its depth buffer.
+    const engine::render::RenderTarget* const output = viewport->outputTarget();
+    REQUIRE(output != nullptr);
+    CHECK((output->depthFormat() == engine::rhi::TextureFormat::Invalid));
+    CHECK((output->colorFormat() == engine::rhi::TextureFormat::RGBA8Unorm));
+    // Non-vacuity: a pass that exists but never resolved would satisfy every format assertion above.
+    CHECK(post->resolveCount() >= 1);
+    CHECK_FALSE(post->hasWarnedResolveBeforeEndScene());
+#else
+    // -DAERO_SHADER_TOOLS=OFF: the viewport latches Unavailable before anything is created, so the pass
+    // is not merely unproven here, it CANNOT exist. Asserted rather than skipped (the 3.4.2 near-miss
+    // rule) -- and tonemapParams() must STILL answer, which is I105's second arm.
+    CHECK(viewport->postProcess() == nullptr);
+#endif
+}
+
+TEST_CASE("editor: two viewport frames at different sizes resolve without a stretch (task 3.6.3, I104)") {
+    // ONE SEQUENCE CASE, deliberately. `hasWarnedExtentMismatch() == false` alone is satisfied by a pass
+    // that never resolved at all, and `resolveCount() == 2` alone is satisfied by a pass that resolved
+    // twice into the wrong extent. Both halves have to hold in the SAME run, which is what makes this
+    // the witness for the adjacency of the two resize calls.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "tonemap i104", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());
+    // A DIFFERENT window size between the two drawn frames: the dock's content region follows it, so
+    // both targets are asked for a new extent on the same line of onDraw's step 5.
+    window->setSize(480, 300);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::render::PostProcess* const post = viewport->postProcess();
+    REQUIRE(post != nullptr);
+    CHECK(post->resolveCount() >= 2);              // it DREW, more than once
+    CHECK_FALSE(post->hasWarnedExtentMismatch());  // ...at matching extents, every time
+    CHECK_FALSE(post->hasWarnedResolveBeforeEndScene());
+#else
+    CHECK(viewport->postProcess() == nullptr);
+#endif
+}
+
+TEST_CASE("editor: the viewport's tonemap params are sanitized on write and valid always (task 3.6.3, I105)") {
+    // No tier in this tree can move an ImGui slider, so requestTonemapParams is the seam that makes the
+    // clamp drivable at all -- and it calls the SAME sanitize the combo and the slider call, which is
+    // what makes it a real witness rather than a second policy. Seed T28 must therefore break BOTH
+    // sites to be honest about what this case sees.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "tonemap i105", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+    // BEFORE any frame at all: the member is default-constructed and already sanitized, which is what
+    // makes EditorApp::tick's forward safe on the very first tick.
+    CHECK(viewport->tonemapParams().exposure == 1.0F);
+    CHECK(viewport->tonemapParams().curve == engine::render::TonemapOperator::AcesApprox);
+
+    REQUIRE(app->tick());
+
+    // An out-of-range exposure comes back CLAMPED, not stored raw. A slider with a v_min still lets a
+    // Ctrl+Click type anything at all.
+    viewport->requestTonemapParams({1.0e9F, engine::render::TonemapOperator::Reinhard});
+    CHECK(viewport->tonemapParams().exposure == engine::render::MAX_EXPOSURE);
+    CHECK(viewport->tonemapParams().curve == engine::render::TonemapOperator::Reinhard);
+
+    viewport->requestTonemapParams({-4.0F, engine::render::TonemapOperator::None});
+    CHECK(viewport->tonemapParams().exposure == engine::render::MIN_EXPOSURE);
+    CHECK(viewport->tonemapParams().curve == engine::render::TonemapOperator::None);
+
+    // An out-of-range CURVE falls back to the default rather than reaching a uniform as a raw integer
+    // the fragment stage's chained ternary has no arm for.
+    viewport->requestTonemapParams({2.0F, static_cast<engine::render::TonemapOperator>(200)});
+    CHECK(viewport->tonemapParams().exposure == 2.0F);
+    CHECK(viewport->tonemapParams().curve == engine::render::TonemapOperator::AcesApprox);
+
+    // An in-range value survives BIT-IDENTICAL: sanitizing is a clamp, not a quantisation.
+    viewport->requestTonemapParams({0.25F, engine::render::TonemapOperator::Reinhard});
+    CHECK(viewport->tonemapParams().exposure == 0.25F);
+
+// BOTH ARMS ASSERT, including the -DAERO_SHADER_TOOLS=OFF one, because the degradation path is the
+// whole point: with no cooked shaders the viewport is Unavailable and has no PostProcess at all,
+// and the params must STILL be a valid sanitized value, since EditorApp::tick forwards them to the
+// preview unconditionally. A skip would leave that untested in the one configuration that can test
+// it.
+#if AERO_SHADER_TOOLS_ENABLED
+    CHECK(viewport->postProcess() != nullptr);
+#else
+    CHECK(viewport->postProcess() == nullptr);
+    CHECK(viewport->tonemapParams().exposure == 0.25F);  // unaffected by the panel being Unavailable
+#endif
+}
+
+TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 3.6.3, I106)") {
+    // A SOURCE-TEXT PIN, the I95/I96 shape, because none of the three has a runtime witness anywhere in
+    // this tree: nothing here reads a pixel, so two consumers grading differently is invisible; nothing
+    // here can move an ImGui widget, so a greyed-out control is invisible; and nothing here can observe
+    // one target resized without the other except through an extent latch that a matched pair never
+    // trips. Comment-stripped, so prose about any of the three cannot satisfy it.
+    const std::vector<std::string> appCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    const std::vector<std::string> viewportCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    const std::vector<std::string> previewCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_preview.cpp");
+
+    // ANTI-VACUITY, BOTH DIRECTIONS. The scan found real text, and a needle that must be ABSENT is
+    // absent -- without the second half a `find` that always succeeded would satisfy every clause here.
+    REQUIRE_FALSE(appCode.empty());
+    REQUIRE_FALSE(viewportCode.empty());
+    REQUIRE_FALSE(previewCode.empty());
+    const auto containsAnywhere = [](const std::vector<std::string>& code, std::string_view needle) {
+        return std::any_of(code.begin(), code.end(),
+                           [needle](const std::string& line) { return line.find(needle) != std::string::npos; });
+    };
+    CHECK_FALSE(containsAnywhere(viewportCode, "gammaEnabled"));
+    CHECK_FALSE(containsAnywhere(viewportCode, "applyOetf"));
+
+    SUBCASE("(a) EditorApp forwards the VIEWPORT's params into the preview") {
+        // The T29 witness. Passing a default here instead would make the preview grade with ACES/1.0
+        // while the viewport graded with whatever was chosen, and nothing at runtime could see it.
+        const std::size_t serviceAt = soleLineContaining(appCode, "servicePreview(");
+        bool forwardsViewportParams = false;
+        for (std::size_t i = serviceAt; i < appCode.size() && i < serviceAt + 4U; ++i) {
+            if (appCode[i].find("viewportPanel->tonemapParams()") != std::string::npos) {
+                forwardsViewportParams = true;
+            }
+        }
+        CHECK(forwardsViewportParams);
+    }
+
+    SUBCASE("(b) drawViewOptions is a SIBLING of drawGizmoBar and opens no disabled scope") {
+        // A PARTIAL PIN, and it is recorded as one. The property that actually matters -- "the call is
+        // outside drawGizmoBar's BeginDisabled scope" -- is not decidable from source text at the call
+        // site, because the scope lives inside another function. What IS decidable is that
+        // drawViewOptions is called AFTER drawGizmoBar rather than from inside it, and that its own
+        // body opens no BeginDisabled. Validation row 2 (the controls are live with nothing selected)
+        // is the real witness; claiming otherwise here would be a pin certifying what it is blind to.
+        const std::size_t barCallAt = soleLineContaining(viewportCode, "drawGizmoBar();");
+        const std::size_t optionsCallAt = soleLineContaining(viewportCode, "drawViewOptions();");
+        CHECK(barCallAt < optionsCallAt);
+
+        // The body: from `void ViewportPanel::drawViewOptions() {` to the next column-0 `}`.
+        const std::size_t bodyStart = soleLineContaining(viewportCode, "void ViewportPanel::drawViewOptions()");
+        std::size_t bodyEnd = viewportCode.size();
+        for (std::size_t i = bodyStart + 1U; i < viewportCode.size(); ++i) {
+            if (viewportCode[i].starts_with('}')) {
+                bodyEnd = i;
+                break;
+            }
+        }
+        REQUIRE(bodyEnd > bodyStart);
+        REQUIRE(bodyEnd < viewportCode.size());  // the body was actually delimited, not run off the end
+        bool opensDisabled = false;
+        bool pushesId = false;
+        bool popsId = false;
+        bool sanitizes = false;
+        for (std::size_t i = bodyStart; i <= bodyEnd; ++i) {
+            opensDisabled = opensDisabled || viewportCode[i].find("BeginDisabled") != std::string::npos;
+            pushesId = pushesId || viewportCode[i].find("ImGui::PushID(") != std::string::npos;
+            popsId = popsId || viewportCode[i].find("ImGui::PopID(") != std::string::npos;
+            sanitizes = sanitizes || viewportCode[i].find("sanitizeTonemapParams(") != std::string::npos;
+        }
+        CHECK_FALSE(opensDisabled);
+        CHECK(pushesId);  // 1:1 with the pop below -- the editor rules' balance requirement
+        CHECK(popsId);
+        // THE UI HALF OF THE CLAMP, which I105 CANNOT see: I105 drives requestTonemapParams, so
+        // deleting the sanitize from this body alone leaves it green. That matters because ImGui
+        // permits a Ctrl+Click-TYPED value past a slider's v_min/v_max unless
+        // ImGuiSliderFlags_AlwaysClamp is set, and no tier in this tree can perform that click -- so a
+        // typed 1e30 or nan would reach packTonemapFragment and the uniform unsanitized. This body is
+        // the only place that can stop it, and this is the only thing that watches this body.
+        CHECK(sanitizes);
+    }
+
+    SUBCASE("(c) both consumers resize the HDR target on the line IMMEDIATELY above the output's") {
+        // The T26/T27 adjacency seed. Two resizes driven by the same value on adjacent lines is what
+        // makes the resolve's 1:1 blit true BY CONSTRUCTION; two call sites a few statements apart
+        // would work today and drift the first time either is edited.
+        for (const std::vector<std::string>* code : {&viewportCode, &previewCode}) {
+            const std::size_t postAt = soleLineContaining(*code, "post->resize(");
+            const std::size_t targetAt = soleLineContaining(*code, "target->resize(");
+            CHECK(postAt + 1U == targetAt);
+
+            // ...AND BOTH ANSWERS ARE CONSUMED, with a latch behind them. A bare `post->resize(pixels);`
+            // discards the one signal that says the HDR pair could not be allocated, and the
+            // consequences are not "a dark viewport": the scene pass then returns above the resolve, so
+            // PostProcess's latched not-renderable WARN never fires; RenderTarget::resize zeroes its
+            // allocation extent before allocate() can fail, so allocate() re-runs and re-emits its
+            // ERROR once per frame forever; and the 4 B/texel output target can still succeed where the
+            // 8 B/texel HDR pair failed, leaving ImGui sampling a texture nothing rendered into. Only
+            // the editor can latch on it, and only this pin watches that it does.
+            CHECK((*code)[postAt].find("= post->resize(") != std::string::npos);
+            CHECK((*code)[targetAt].find("= target->resize(") != std::string::npos);
+            bool latchesNearby = false;
+            for (std::size_t i = targetAt; i < (*code).size() && i <= targetAt + 6U; ++i) {
+                latchesNearby = latchesNearby || (*code)[i].find("Status::Unavailable") != std::string::npos;
+            }
+            CAPTURE(postAt);
+            CHECK(latchesNearby);
+        }
+    }
+
+    SUBCASE("(d) a click the overlay strip consumed cannot also arm a scene pick") {
+        // NO TIER IN THIS TREE CAN CLICK, so this is the only mechanical cover for a defect that is
+        // otherwise a silent selection change: the overlay row is submitted AFTER updatePick has run,
+        // so on the press frame ImGui's ActiveId is still 0 and the press arms a pick; the release
+        // then lands inside the image rect and inside the click slop, and the scene selection changes
+        // while the user was only choosing a tone curve. The disarm has to sit AFTER the whole strip
+        // is submitted -- that is the entire content of the fix, and this pin is what says so.
+        const std::size_t optionsCallAt = soleLineContaining(viewportCode, "drawViewOptions();");
+        const std::size_t disarmAt = soleLineContaining(viewportCode, "ImGui::IsAnyItemActive()");
+        CHECK(optionsCallAt < disarmAt);
+        // ...and it disarms rather than merely asking. The next two lines must clear the arm.
+        bool clearsArm = false;
+        for (std::size_t i = disarmAt; i < viewportCode.size() && i <= disarmAt + 2U; ++i) {
+            clearsArm = clearsArm || viewportCode[i].find("pickArmed = false") != std::string::npos;
+        }
+        CHECK(clearsArm);
     }
 }
 

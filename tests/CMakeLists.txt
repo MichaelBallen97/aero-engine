@@ -62,6 +62,7 @@ add_executable(aero_tests
     render_animation_test.cpp # task 3.5.2 — tier-0 clip sampler: bind, the three interpolation modes, both clamps
     render_culling_test.cpp # task 3.6.1 — tier-0 extraction/Arvo/six-plane invariants + GPU-gated cull counters
     render_shadow_test.cpp # task 3.6.2 — tier-0 fit/sphere/snap literals + GPU-gated depth pass & counters
+    render_tonemap_test.cpp # task 3.6.3 — tier-0 transfer chain/packers/UV rule/shader pin + GPU-gated PostProcess
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
@@ -117,6 +118,9 @@ target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURC
 # loader reads) -- this one points at the SOURCE (the HLSL text). Do not merge or reuse them.
 # UNGATED on purpose, like AERO_ASSETS_SRC_DIR above: the HLSL source exists in the source tree
 # whether or not AERO_SHADER_TOOLS built it, and both reduced configurations must run this case.
+# task 3.6.3: render_tonemap_test.cpp's TM29 is the SECOND consumer, pinning tonemap.frag.hlsl's five
+# ACES constants, five OETF constants, curve-arm order and literal alpha, plus fullscreen.vert.hlsl's
+# NDC formula, against engine/render/tonemap.hpp. Same reasoning, same absence of any other witness.
 target_compile_definitions(aero_tests PRIVATE AERO_SHADERS_SRC_DIR="${CMAKE_SOURCE_DIR}/shaders")
 
 # Task 0.4.4: the shader-loading tests need the compiled artifacts (aero_add_shaders -> aero_shaders,

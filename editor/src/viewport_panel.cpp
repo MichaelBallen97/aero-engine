@@ -47,6 +47,31 @@ constexpr std::uint32_t VIEWPORT_EXTENT_QUANTUM = 64;
 constexpr rhi::Color VIEWPORT_CLEAR_COLOR{0.06F, 0.06F, 0.07F, 1.0F};
 constexpr ImVec4 OVERLAY_COLOR{0.7F, 0.7F, 0.75F, 0.8F};
 constexpr float OVERLAY_INSET = 4.0F;
+// task 3.6.3: the two view-option widget widths, chosen so the whole row (T R S Local + combo +
+// slider) fits a 640-point viewport. NOT load-bearing -- a wrap at a narrow dock width is a
+// cosmetic finding for the validation pass, not a correctness one.
+constexpr float OPTIONS_COMBO_WIDTH = 92.0F;
+constexpr float OPTIONS_SLIDER_WIDTH = 130.0F;
+
+// NUL-terminated, because ImGui needs NUL-terminated text and render::tonemapOperatorLabel
+// returns a std::string_view whose data() carries no such guarantee -- passing that straight to
+// ImGui is the classic read-past-the-end. A switch over string LITERALS is the whole fix; the
+// vocabulary is closed and tiny, so material_panel.cpp's copy-into-a-std::string scratch would be
+// more machinery than the problem. TM2 pins the three literals on the engine side and I106 pins
+// that the two agree.
+[[nodiscard]] const char* tonemapOperatorLabelCStr(render::TonemapOperator op) {
+    switch (op) {  // NO default: -- a fourth enumerator must be a -Wswitch error, never silent
+        case render::TonemapOperator::None:
+            return "None";
+        case render::TonemapOperator::Reinhard:
+            return "Reinhard";
+        case render::TonemapOperator::AcesApprox:
+            return "ACES";
+        case render::TonemapOperator::Count:
+            break;
+    }
+    return "Unknown";
+}
 
 // D6: colour lives HERE, never in the public header -- an ImU32 there would break the ImGui-free
 // rule, which is exactly why buildSelectionOverlay tags a ROLE and the panel maps role -> style.
@@ -132,6 +157,11 @@ scene_render::AssetBindingTable* ViewportPanel::sceneAssetBindings() noexcept {
     return sceneRenderer ? &sceneRenderer->bindings() : nullptr;
 }
 
+// ---- task 3.6.3 ----------------------------------------------------------------------------------
+const render::PostProcess* ViewportPanel::postProcess() const noexcept { return post ? &*post : nullptr; }
+
+const render::RenderTarget* ViewportPanel::outputTarget() const noexcept { return target ? &*target : nullptr; }
+
 std::uint32_t ViewportPanel::lastUnresolvedMeshes() const noexcept {
     return sceneRenderer ? sceneRenderer->lastUnresolvedMeshes() : 0U;
 }
@@ -188,18 +218,36 @@ void ViewportPanel::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent
     // -Wundef trap, and matching the existing precedent keeps both degradation paths grep-able.
 #if defined(AERO_EDITOR_SHADERS)
     shaderVfs.mount(std::make_unique<DirectoryBackend>(AERO_SHADERS_DIR));
+    // task 3.6.3: `post` FIRST -- it owns the HDR target the scene renderer is then built against, so
+    // the two are engaged together or neither is.
+    post = render::PostProcess::create(*device, shaderVfs, firstExtent,
+                                       {.outputColorFormat = rhi::TextureFormat::RGBA8Unorm,
+                                        .outputDepthFormat = rhi::TextureFormat::Invalid,
+                                        .quantum = VIEWPORT_EXTENT_QUANTUM});
+    if (!post) {
+        status = Status::Unavailable;
+        unavailableReason = "post-process creation failed (are res://fullscreen.vert / res://tonemap.frag cooked?)";
+        return;
+    }
+    // task 3.6.3: `.depth = false` -- nothing depth-tests into this target any more. The scene's depth
+    // lives on the HDR target inside `post`; the only thing drawn here is a depth-off fullscreen
+    // triangle.
     target = render::RenderTarget::create(
         *device, firstExtent,
-        {.colorFormat = rhi::TextureFormat::RGBA8Unorm, .depth = true, .quantum = VIEWPORT_EXTENT_QUANTUM});
+        {.colorFormat = rhi::TextureFormat::RGBA8Unorm, .depth = false, .quantum = VIEWPORT_EXTENT_QUANTUM});
     if (!target) {
+        post.reset();
         status = Status::Unavailable;
         unavailableReason = "render target creation failed";
         return;
     }
+    // task 3.6.3: built against the HDR target's formats, NOT this panel's output target's -- that is
+    // the seam, and PP5 asserts it is real rather than asserted.
     sceneRenderer =
-        scene_render::SceneRenderer::create(*device, shaderVfs, target->colorFormat(), target->depthFormat());
+        scene_render::SceneRenderer::create(*device, shaderVfs, post->sceneColorFormat(), post->sceneDepthFormat());
     if (!sceneRenderer) {
         target.reset();
+        post.reset();
         status = Status::Unavailable;
         unavailableReason = "scene renderer creation failed (are res://scene.vert/.frag cooked?)";
         return;
@@ -230,15 +278,35 @@ void ViewportPanel::onDraw(PanelContext& context) {
 
     // Step 4. The `!target` half is defensive (status == Ready is set only alongside a live target
     // in ensureInitialized) and is what lets every access below be a CHECKED optional access.
-    if (status != Status::Ready || !target) {
+    if (status != Status::Ready || !target || !post) {
         drawUnavailableMessage(unavailableReason != nullptr ? unavailableReason : "Viewport unavailable");
         return;
     }
 
     // Step 5.
-    if (!target->resize(pixels)) {
+    // task 3.6.3: THE TWO RESIZES ARE ADJACENT and driven by the SAME `pixels`, which is what makes
+    // the resolve's 1:1 blit true BY CONSTRUCTION rather than by two call sites that could drift.
+    // Reallocating the HDR target inside the draw walk is safe and is NOT the I96 violation it
+    // resembles: I96 is about ordering against ImGui's CONSUMPTION, and ImGui never sees this
+    // texture -- only `target`'s, whose resize is the line below and must stay there.
+    //
+    // BOTH RESULTS ARE CHECKED AND EITHER FAILURE LATCHES. An earlier draft discarded the HDR
+    // target's, on the theory that resolve() would then log once and the picture would fall back to
+    // the clear colour. THAT IS FALSE, and it is false in three ways at once. renderScene returns at
+    // its own `if (!sceneFrame)` -- ABOVE target->beginFrame, post->resolve and target->endFrame --
+    // so the one latched diagnostic designed for a not-renderable pass is unreachable on this path.
+    // RenderTarget::resize zeroes its allocation extent before allocate() can fail, so every
+    // subsequent frame re-runs allocate() and re-emits its ERROR: once per frame, forever, with the
+    // editor's err counter climbing. And target->resize (4 B/texel) can still SUCCEED where the
+    // RGBA16Float pair (8 B/texel) failed, reallocating the very texture ImGui is about to sample --
+    // which nothing then renders into, so ImGui::Image below would sample UNDEFINED CONTENT rather
+    // than a clear colour. Latching is what the output target has always done here; the HDR one gets
+    // the same treatment, and the panel says which of the two failed.
+    const bool sceneResized = post->resize(pixels);
+    const bool outputResized = target->resize(pixels);
+    if (!sceneResized || !outputResized) {
         status = Status::Unavailable;
-        unavailableReason = "render target allocation failed";
+        unavailableReason = sceneResized ? "render target allocation failed" : "HDR scene target allocation failed";
         drawUnavailableMessage(unavailableReason);
         return;
     }
@@ -380,6 +448,31 @@ void ViewportPanel::onDraw(PanelContext& context) {
         ImGui::TextColored(OVERLAY_COLOR, "fly %.1f u/s", static_cast<double>(editorCamera.flySpeed()));
     }
     drawGizmoBar();  // task 2.3.3: T / R / S | Local/World, submitted AFTER Manipulate (A8)
+    // drawGizmoBar() leaves the cursor at the START of the next line (its last submitted item, the
+    // Local/World button, is not followed by a SameLine()), so the SameLine goes HERE, before the
+    // call, to keep the two on one row.
+    ImGui::SameLine();
+    drawViewOptions();  // task 3.6.3 -- OUTSIDE drawGizmoBar's BeginDisabled(!gizmoHasTarget) scope
+
+    // Step 9b (task 3.6.3): DISARM A PICK THE OVERLAY JUST CONSUMED, and it has to be here, after the
+    // whole strip has been submitted.
+    //
+    // The overlay row is drawn OVER the image and AFTER updatePick has already run (step 8b), so on
+    // the press frame ImGui's ActiveId is still 0 when updatePick asks -- the widget has not been
+    // submitted yet. The press therefore ARMS a scene pick; the release then lands inside the image
+    // rect (the strip sits at imageOrigin + OVERLAY_INSET) and inside PICK_CLICK_SLOP_POINTS, and the
+    // selection changes or clears while the user was only choosing a tone curve. By the time control
+    // reaches HERE the widget HAS been submitted and has taken the click, so IsAnyItemActive() is the
+    // exact question, one frame earlier than any hover test could answer it.
+    //
+    // It covers the gizmo bar's buttons too, which have had this defect since 2.3.3 -- this task
+    // widened the strip and added the first DRAG widget to it, which is what made it worth fixing at
+    // the shared cause rather than per widget. Nothing else in this window can be active while the
+    // image is hovered: ImGui::Image submits with id 0 and never becomes Active (F28), and an item
+    // active in ANOTHER window blocks this one's hover, so the arm could not have been set.
+    if (ImGui::IsAnyItemActive()) {
+        pickArmed = false;
+    }
 
     // Step 10: record the request, LAST, after everything succeeded.
     renderRequested = true;
@@ -682,6 +775,51 @@ void ViewportPanel::drawGizmoBar() {
     ImGui::PopID();
 }
 
+void ViewportPanel::drawViewOptions() {
+    // NOT inside drawGizmoBar(): that function wraps its whole row in
+    // ImGui::BeginDisabled(!gizmoHasTarget), and tonemap controls that grey out because nothing is
+    // selected would be a defect. Called on the same LINE, in a different scope.
+    ImGui::PushID("viewoptions");  // 1:1 with PopID below -- INV-6
+
+    render::TonemapParams edited = tonemapParamsValue;
+    bool changed = false;
+
+    ImGui::SetNextItemWidth(OPTIONS_COMBO_WIDTH);
+    // ASYMMETRIC pair (like BeginMenu): EndCombo runs ONLY when BeginCombo returned true. Getting
+    // that backwards is an IM_ASSERT abort in the Debug build, not a visual glitch.
+    if (ImGui::BeginCombo("##tonemap", tonemapOperatorLabelCStr(edited.curve))) {
+        for (std::size_t i = 0; i < render::TONEMAP_OPERATOR_COUNT; ++i) {
+            const auto candidate = static_cast<render::TonemapOperator>(i);
+            const bool selected = candidate == edited.curve;
+            if (ImGui::Selectable(tonemapOperatorLabelCStr(candidate), selected)) {
+                edited.curve = candidate;
+                changed = true;
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(OPTIONS_SLIDER_WIDTH);
+    // THE ORDER OF THE `||` IS DELIBERATE: SliderFloat(...) || changed, never changed || Slider(...).
+    // The second form short-circuits and would SKIP SUBMITTING THE SLIDER ENTIRELY on any frame the
+    // combo changed -- and an ImGui item that is not submitted is an item that vanishes for a frame.
+    changed = ImGui::SliderFloat("Exposure", &edited.exposure, render::MIN_EXPOSURE, render::MAX_EXPOSURE, "%.3f",
+                                 ImGuiSliderFlags_Logarithmic) ||
+              changed;
+
+    if (changed) {
+        // 3.4.2's rule: clamping is done in C++, never by trusting the widget's own range. A slider
+        // with a v_min still lets a Ctrl+Click type anything at all, and no tier in this tree can
+        // perform that click -- so this call is the only thing standing between a typed value and a
+        // uniform.
+        tonemapParamsValue = render::sanitizeTonemapParams(edited);
+    }
+    ImGui::PopID();
+}
+
 void ViewportPanel::drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin, Vec2 avail) {
     // The SAME view-projection renderScene will submit this tick (INV-2/F7: lastAspect comes from
     // drawExtent, and renderScene derives the identical number from frame->extent() with no resize in
@@ -719,20 +857,23 @@ void ViewportPanel::renderScene(World& world) {
     const bool requested = std::exchange(renderRequested, false);
     // The `!target`/`!sceneRenderer` half is defensive, same reasoning as onDraw's step 4 — it is
     // what lets both accesses below be CHECKED optional accesses.
-    if (!requested || status != Status::Ready || !target || !sceneRenderer) {
+    if (!requested || status != Status::Ready || !target || !sceneRenderer || !post) {
         return;
     }
     // INV-3: no ImGui call, no World mutation -- and, from task 2.3.1, no CAMERA mutation either. The
     // camera is READ here and WRITTEN only in onDraw; moving the update here would work today and
     // break the moment 2.3.3 needs the view-projection during the draw walk.
     AERO_PROFILE_ZONE;
-    std::optional<render::Frame> frame = target->beginFrame(VIEWPORT_CLEAR_COLOR);
-    if (!frame) {
+    // task 3.6.3: the scene now draws into the HDR target `post` owns, and a fullscreen resolve turns
+    // that into the 8-bit texture ImGui samples. Command buffer A (the scene) is SUBMITTED before B
+    // (the resolve) is acquired, so the queue-ordering guarantee applies with no interleaving at all.
+    std::optional<render::Frame> sceneFrame = post->beginScene(VIEWPORT_CLEAR_COLOR);
+    if (!sceneFrame) {
         return;
     }
-    // frame->extent() is the DRAWN sub-rect (2.2.3's own S3 pins this), so it stays the correct
-    // aspect source even with quantum = 64.
-    const rhi::Extent2D extent = frame->extent();
+    // Still the DRAWN sub-rect, and still the correct aspect source with quantum = 64 -- unchanged
+    // semantics, one level down (2.2.3's own S3 rule, now reading the HDR target's frame).
+    const rhi::Extent2D extent = sceneFrame->extent();
     const float aspect =
         extent.height != 0 ? static_cast<float>(extent.width) / static_cast<float>(extent.height) : 1.0F;
     const render::CameraView cameraView{.view = editorCamera.viewMatrix(),
@@ -740,8 +881,15 @@ void ViewportPanel::renderScene(World& world) {
                                         .eyePosition = editorCamera.position()};
     // buildRenderView + latched WARNs (suppressed for the camera pair, D3) + ForwardRenderer::draw.
     // This is the ONE place in the tree that names render::CameraView, and it is src-private (D2).
-    sceneRenderer->render(world, *frame, &cameraView);
-    target->endFrame(std::move(*frame));
+    sceneRenderer->render(world, *sceneFrame, &cameraView);
+    post->endScene(std::move(*sceneFrame));  // submits command buffer A
+
+    std::optional<render::Frame> outFrame = target->beginFrame(VIEWPORT_CLEAR_COLOR);
+    if (!outFrame) {
+        return;
+    }
+    post->resolve(*outFrame, tonemapParamsValue);
+    target->endFrame(std::move(*outFrame));  // submits B, strictly after A
 }
 
 }  // namespace engine::editor

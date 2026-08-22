@@ -26,6 +26,7 @@
                                                      // (the first is imgui_layer.cpp) -- no new
                                                      // accessor is added.
 #include <aero/platform/window.hpp>                  // task 2.5.1: window->setTitle() (F14)
+#include <aero/render/tonemap.hpp>                   // task 3.6.3: render::TonemapParams{} -- the null-viewport arm
 #include <aero/rhi/device.hpp>                       // task 3.1.5: destroyTexture on a retired handle
 
 #include "asset_browser_panel.hpp"
@@ -1014,8 +1015,17 @@ bool EditorApp::tick() {
     // assetDatabase.root() rather than project.assetsRoot(), for the reconcile block's own reason: the
     // two are the same string by construction and the accessor returns a const reference, so nothing
     // binds a string_view to a by-value temporary.
+    //
+    // task 3.6.3: ONE new argument, and this call does NOT move. The params come from the VIEWPORT,
+    // which owns the UI that mutates them, so the viewport and the preview can never grade the same
+    // material differently. Nothing at runtime can see the two diverge -- I106's source-text pin is
+    // this line's only mechanical witness. The nullptr arm matters: viewportPanel is a Panel* looked up
+    // from the registry and is legally null in a test that registers only the Material panel, and
+    // render::TonemapParams{} is {1.0F, AcesApprox} -- already sanitized by construction.
     if (materialPanel != nullptr) {
-        materialPanel->servicePreview(materialSession, assetDatabase, assetDatabase.root(), frameClock.deltaSeconds());
+        materialPanel->servicePreview(
+            materialSession, assetDatabase, assetDatabase.root(), frameClock.deltaSeconds(),
+            viewportPanel != nullptr ? viewportPanel->tonemapParams() : render::TonemapParams{});
     }
     // task 3.1.5 (D8/D12): the FIFTH occupant of this slot -- renderScene, serviceThumbnails, the
     // import session, the material preview, and now the scene-asset ledger. OUTSIDE the ImGui draw walk

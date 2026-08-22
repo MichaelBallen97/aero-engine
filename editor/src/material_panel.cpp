@@ -460,11 +460,12 @@ void MaterialPanel::drawPreview() {
 }
 
 void MaterialPanel::servicePreview(MaterialSession& session, const AssetDatabase& database,
-                                   std::string_view assetsRootAbs, float deltaSeconds) {
+                                   std::string_view assetsRootAbs, float deltaSeconds,
+                                   const render::TonemapParams& tonemap) {
     // The one-shot is drained as its OWN statement, unconditionally, before it is inspected (F9's
     // ||-short-circuit rule, applied to a channel that crosses into the GPU layer).
     const bool documentChanged = session.takeDocumentChanged();
-    preview.service(session.document(), documentChanged, &database, assetsRootAbs, deltaSeconds);
+    preview.service(session.document(), documentChanged, &database, assetsRootAbs, deltaSeconds, tonemap);
 }
 
 void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/Project read (the

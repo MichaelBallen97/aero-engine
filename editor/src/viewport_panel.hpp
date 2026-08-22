@@ -11,6 +11,7 @@
 #include <aero/editor/panel.hpp>
 #include <aero/editor/scene_bounds.hpp>       // task 3.1.5: MeshBoundsLookup, borrowed by the three consumers
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
+#include <aero/render/post_process.hpp>       // task 3.6.3: the owned HDR target + the fullscreen resolve
 #include <aero/render/render_target.hpp>
 #include <aero/scene_render/scene_renderer.hpp>
 
@@ -59,6 +60,33 @@ public:
     [[nodiscard]] render::ForwardRenderer* sceneForwardRenderer() noexcept;
     [[nodiscard]] scene_render::AssetBindingTable* sceneAssetBindings() noexcept;
 
+    // ---- task 3.6.3 ---------------------------------------------------------------------------
+    // The tonemap settings this panel OWNS, because it owns the UI that mutates them. EditorApp::tick
+    // reads this and forwards it into the Material panel's preview, so the viewport and the preview
+    // can never grade the same material differently. Valid and SANITIZED even when the panel is
+    // Unavailable: the member is default-constructed ({1.0F, AcesApprox}) and no failure path touches
+    // it.
+    [[nodiscard]] const render::TonemapParams& tonemapParams() const noexcept { return tonemapParamsValue; }
+
+    // Records EXACTLY what drawViewOptions' combo and slider record: a candidate value, SANITIZED on
+    // store. It exists because no tier in this tree can move an ImGui slider, so the clamp would
+    // otherwise be undrivable -- the requestViewMode / requestSearchQuery / requestKindFilter /
+    // requestSelectEntry family's fifth application. It calls the SAME sanitize the UI does, which is
+    // what makes it a real witness rather than a second policy.
+    void requestTonemapParams(const render::TonemapParams& params) noexcept {
+        tonemapParamsValue = render::sanitizeTonemapParams(params);
+    }
+
+    // This panel's PostProcess, joining sceneForwardRenderer() / sceneAssetBindings() as a test seam.
+    // NULL when the panel is Unavailable.
+    [[nodiscard]] const render::PostProcess* postProcess() const noexcept;
+
+    // The ImGui-visible OUTPUT target, as a READ-ONLY seam beside postProcess(). It exists so
+    // "nothing depth-tests into this target any more" is an assertable RUNTIME fact rather than a
+    // source-text claim -- depthFormat() reads Invalid here and a real depth format on the scene
+    // target inside `post`, and no test can otherwise tell the two apart. NULL when Unavailable.
+    [[nodiscard]] const render::RenderTarget* outputTarget() const noexcept;
+
     // The MeshBoundsLookup the ledger publishes each service pass. BORROWED, never owned; valid until
     // the next publish. Consumed by picking, by framing and by the highlight -- ALL THREE OR NONE
     // (INV-D6), which is why it is one member read by one accessor rather than three parameters.
@@ -103,14 +131,27 @@ private:
     void updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered);
     void drawGizmoBar();  // takes nothing: everything it needs is a member (A13)
 
+    // task 3.6.3: the operator combo + the exposure slider. Called on the SAME LINE as
+    // drawGizmoBar() but OUTSIDE its BeginDisabled(!gizmoHasTarget) scope, so the tonemap
+    // controls stay live with nothing selected.
+    void drawViewOptions();
+
     // task 3.1.5: the custom drop target's whole body, a member so the ImGui glue stays in one place.
     // PEEK -> classify -> only then accept, so an illegal drop draws no highlight rect.
     void acceptViewportAssetDrop(PanelContext& context, Vec2 imageOrigin, Vec2 avail);
 
     rhi::Device* device = nullptr;  // non-owning; outlives the panel (EditorApp owns both)
     VirtualFileSystem shaderVfs;    // mounted once at init (AERO_SHADERS_DIR, D-user-1)
+    // task 3.6.3: `post` OWNS the HDR scene target the SceneRenderer draws into; `target` below stays
+    // the ImGui-visible OUTPUT and is now DEPTH-FREE, because the only thing drawn into it is a
+    // depth-off fullscreen triangle.
+    std::optional<render::PostProcess> post;
     std::optional<render::RenderTarget> target;
     std::optional<scene_render::SceneRenderer> sceneRenderer;
+    // task 3.6.3: session state -- never written to project.aero, never to imgui.ini, never persisted
+    // anywhere. Default-constructed and SANITIZED on every write, so it is valid even when the panel
+    // never initialises. Member/accessor names differ by the house collision rule.
+    render::TonemapParams tonemapParamsValue{};
     Status status = Status::Uninitialized;
     const char* unavailableReason = nullptr;  // string literal; shown in-panel when Unavailable
     bool renderRequested = false;             // set by onDraw, consumed by renderScene
