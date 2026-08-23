@@ -24,8 +24,9 @@ enum class AudioSourceFormat : std::uint8_t { Unknown = 0, Wav, Flac, Mp3, Ogg }
 // 256 MiB — the SAME number as model_import.hpp's MAX_MODEL_FILE_BYTES, and stated as such rather
 // than reached independently: a 16-bit wav is a byte-for-byte 1:1 source for a 115 MB PCM region, so
 // the tighter 64 MiB ceiling texture_cook_source.hpp uses would refuse a legal input here. The
-// DECODED size is bounded separately and per-axis by decodeAudioFile's own two caps, which is what
-// makes a generous file ceiling safe. Normative — docs/09 section 14.
+// DECODED size is bounded separately by decodeAudioFile's own three caps — one per axis plus the
+// PRODUCT, which is the only one of the three that bounds bytes — and that is what makes a generous
+// file ceiling safe. Normative — docs/09 section 14.
 inline constexpr std::uint64_t MAX_AUDIO_FILE_BYTES = 256ULL * 1024ULL * 1024ULL;
 
 // THE SIXTH extension table in this tree, and deliberately NOT derived from asset_view.cpp's

@@ -736,7 +736,8 @@ ExitCode runAudio(const Args& args) {
     // MAX_AUDIO_FILE_BYTES is 256 MiB, the same number as MAX_MODEL_FILE_BYTES rather than the
     // texture path's tighter 64 MiB: a 16-bit wav is a byte-for-byte 1:1 source for a 115 MB PCM
     // region, so a tighter ceiling would refuse a legal input. The DECODED size is bounded separately
-    // and per-axis by decodeAudioFile's own two caps, which is what makes a generous file ceiling safe.
+    // by decodeAudioFile's own three caps -- one per axis plus, crucially, the PRODUCT -- which is what
+    // makes a generous file ceiling safe.
     engine::editor::FileBytesResult source =
         engine::editor::readFileBytes(args.inputPath, engine::editor::MAX_AUDIO_FILE_BYTES);
     if (!source.bytes.has_value()) {
@@ -750,11 +751,17 @@ ExitCode runAudio(const Args& args) {
     }
 
     // ---- 3. the decode ------------------------------------------------------------------------
-    // The caps handed in are the COOK's own, so the decoder refuses exactly what the cook would have
-    // refused, one step earlier and without allocating the samples first.
-    const engine::editor::DecodedAudio decoded =
-        engine::editor::decodeAudioFile(leaf, asBytes(*source.bytes), engine::assets::MAX_COOKED_AUDIO_FRAMES,
-                                        engine::assets::MAX_COOKED_AUDIO_CHANNELS);
+    // The caps handed in are the COOK's own, so every bound that governs how many SAMPLES exist is
+    // applied one step earlier and without allocating them first: channels, frames and -- since the
+    // code-review round -- their PRODUCT, which is the only one of the three that bounds bytes.
+    // Deliberately NOT every refusal the cook can make: cookAudio additionally bounds the sample RATE
+    // (both ends) and refuses a sample count that is not a whole number of frames. The rate bounds
+    // nothing that gets allocated, so pushing them down would buy nothing and would put a second copy
+    // of that rule a layer away from its owner; the divisibility check cannot fail for this input at
+    // all, because decodeAudioFile emits whole frames by construction.
+    const engine::editor::DecodedAudio decoded = engine::editor::decodeAudioFile(
+        leaf, asBytes(*source.bytes), engine::assets::MAX_COOKED_AUDIO_FRAMES,
+        engine::assets::MAX_COOKED_AUDIO_CHANNELS, engine::assets::MAX_COOKED_AUDIO_SAMPLES);
     if (!decoded.error.empty()) {
         std::cerr << "aero_cooker: error: cannot decode '" << leaf << "': " << decoded.error << '\n';
         return ExitCode::CookError;

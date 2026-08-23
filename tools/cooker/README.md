@@ -217,14 +217,19 @@ aero_cooker audio --input <file> --output <file.aerowave>
   name-decides-before-read, capped read, decode, cook, write.
 - **The read cap is 256 MiB**, the same number as the model cap rather than the texture path's tighter
   64 MiB. A 16-bit `.wav` is a byte-for-byte 1:1 source for a 115 MB PCM region, so the tighter ceiling
-  would refuse a legal input; the *decoded* size is bounded separately and per-axis by the decoder's own
-  frame and channel caps, which is what makes a generous file ceiling safe.
-- **The decoder's caps are the cook's caps**, handed in rather than restated, so the decoder refuses
-  exactly what the cook would have refused — one step earlier, and without allocating the samples first.
-  Both are checked **twice**: once against the source's own length query, and again inside the read
-  loop, because a length query is an answer derived from the file's own claims. An `.mp3` with no Xing
-  header reports zero frames, and a truncated or crafted `.ogg` can report a granule position the pages
-  that follow do not support. A cap checked only against a self-reported length is not a cap.
+  would refuse a legal input; the *decoded* size is bounded separately by the decoder's own frame,
+  channel and **sample-product** caps, which is what makes a generous file ceiling safe.
+- **The decoder is handed the cook's own bounds on how many SAMPLES may exist** — frames, channels and
+  their product — rather than restating them, so each of those three refusals happens one step earlier
+  and without allocating the samples first. **The product is the one that bounds bytes**: per-axis caps
+  alone would accept 28 800 000 frames × 8 channels, four times the container's own byte cap, and the
+  cook would then refuse every one of them. This is deliberately *not* every refusal the cook can make
+  — `cookAudio` also bounds the sample **rate** at both ends and rejects a sample count that is not a
+  whole number of frames, and neither is pushed down: a rate bounds nothing that gets allocated, and the
+  decoder emits whole frames by construction. All three bounds are checked **twice**: once against the
+  source's own length query, and again inside the read loop, because a length query is an answer derived
+  from the file's own claims — a Wave64 `fact` chunk's sample count, for instance, is taken verbatim
+  with no file-size clamp on it at all. A cap checked only against a self-reported length is not a cap.
 - **A `.aerowave` is never empty.** A source that decodes to zero frames produces no artifact at all and
   exit `2`, because a clip with no samples is the absence of a sound rather than a degenerate one.
 - **The cook is integer-only, end to end.** The decoders emit s16 and the cook validates integers and

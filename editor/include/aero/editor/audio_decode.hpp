@@ -37,16 +37,30 @@ struct DecodedAudio {
 // backends hold theirs in a scope-owning guard rather than beside a naked call, which is what makes
 // those early returns safe.
 //
-// `maxFrames` and `maxChannels` are checked TWICE: once against the source's own length query, before
-// anything is reserved, and again inside the read loop. THE SECOND HALF IS THE ONE THAT MATTERS — both
-// length queries are answers derived from the file's own claims (an mp3 with no Xing header reports 0,
-// and a truncated or crafted ogg can report a granule position the pages that follow do not support),
-// so the loop stops at the cap regardless of what the header promised. A cap checked only against a
-// self-reported length is not a cap.
+// THREE BOUNDS, NOT TWO, AND THE THIRD IS THE PRODUCT. `maxFrames` and `maxChannels` bound one axis
+// each; `maxSamples` bounds `frames * channels`, which is the only one of the three that bounds the
+// BYTES this function allocates. Without it a caller passing the cook's own per-axis caps
+// (28 800 000 frames, 8 channels) would accept and buffer 230 400 000 s16 samples — ~440 MiB, four
+// times assets::MAX_COOKED_AUDIO_BYTES — and cookAudio would then refuse every one of them on its
+// sample cap, so the whole allocation was guaranteed waste. Reachable without crafting anything: a
+// legitimate 4-channel 48 kHz ten-minute FLAC is ~115 MB on disk, under the 256 MiB read cap, and
+// decodes to 230 MB.
 //
-// Callers pass assets::MAX_COOKED_AUDIO_FRAMES and assets::MAX_COOKED_AUDIO_CHANNELS — the bounds the
-// cook itself will apply.
+// All three are checked TWICE: once against the source's own length query, before anything is
+// reserved, and again inside the read loop. THE SECOND HALF IS THE ONE THAT MATTERS — a length query
+// is an answer derived from the file's own claims, and some of those claims are taken unclamped (a
+// Wave64 `fact` chunk's 8-byte sample count is used verbatim, miniaudio.h:81684-81685, while the
+// file-size clamp at :81646-81652 applies to the data chunk instead), so the loop stops at the cap
+// regardless of what the header promised. A cap checked only against a self-reported length is not a
+// cap. The pre-allocation half is what keeps an HONEST over-long file from costing an allocation.
+//
+// Callers pass assets::MAX_COOKED_AUDIO_FRAMES, assets::MAX_COOKED_AUDIO_CHANNELS and
+// assets::MAX_COOKED_AUDIO_SAMPLES — the three bounds the cook itself will apply to the same numbers.
+// The cook additionally bounds the SAMPLE RATE, which is deliberately not pushed down here: a rate
+// bounds nothing this function allocates, so refusing on it early would buy nothing and would put a
+// second copy of that rule one layer away from the one that owns it.
 [[nodiscard]] DecodedAudio decodeAudioFile(std::string_view fileName, std::span<const std::byte> fileBytes,
-                                           std::uint32_t maxFrames, std::uint32_t maxChannels);
+                                           std::uint32_t maxFrames, std::uint32_t maxChannels,
+                                           std::uint64_t maxSamples);
 
 }  // namespace engine::editor

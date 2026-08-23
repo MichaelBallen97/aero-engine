@@ -45,6 +45,10 @@ namespace {
 // numbers are the test's own.
 constexpr std::uint32_t GENEROUS_FRAMES = 28800000;
 constexpr std::uint32_t GENEROUS_CHANNELS = 8;
+// The PRODUCT bound, and the number that matters about it is that it is FOUR TIMES SMALLER than
+// GENEROUS_FRAMES * GENEROUS_CHANNELS (230 400 000). A decoder bounded on each axis alone accepts the
+// larger figure; AD19 is what proves this one bites where the other two do not.
+constexpr std::uint64_t GENEROUS_SAMPLES = 2ULL * 28800000ULL;
 
 // The 1.0 s / 8 kHz fixture set's own arithmetic. tone.wav, tone.flac and tone.mp3 are MONO;
 // tone.ogg is STEREO, because this ffmpeg build's native Vorbis encoder refuses anything else -- see
@@ -70,10 +74,11 @@ constexpr std::size_t MP3_FRAME_TOLERANCE = 4608;
 }
 
 [[nodiscard]] DecodedAudio decodeFixture(const std::string& fileName, std::uint32_t maxFrames = GENEROUS_FRAMES,
-                                         std::uint32_t maxChannels = GENEROUS_CHANNELS) {
+                                         std::uint32_t maxChannels = GENEROUS_CHANNELS,
+                                         std::uint64_t maxSamples = GENEROUS_SAMPLES) {
     const std::vector<std::byte> bytes = readAudioFixture(fileName);
     REQUIRE(!bytes.empty());
-    return decodeAudioFile(fileName, bytes, maxFrames, maxChannels);
+    return decodeAudioFile(fileName, bytes, maxFrames, maxChannels, maxSamples);
 }
 
 [[nodiscard]] std::int16_t peakOf(const std::vector<std::int16_t>& samples) {
@@ -274,11 +279,11 @@ TEST_CASE("AD11: dr_flac agrees with libavcodec byte for byte") {
     CHECK(identical);
 }
 
-// ---- Group 4: refusals and hostile input (AD12-AD17) ---------------------------------------------
+// ---- Group 4: refusals and hostile input (AD12-AD20) ---------------------------------------------
 
 TEST_CASE("AD12: an unclaimed name is refused, and the message names all four extensions") {
     const std::vector<std::byte> bytes = readAudioFixture("tone.wav");  // REAL bytes, wrong name
-    const DecodedAudio decoded = decodeAudioFile("a.aiff", bytes, GENEROUS_FRAMES, GENEROUS_CHANNELS);
+    const DecodedAudio decoded = decodeAudioFile("a.aiff", bytes, GENEROUS_FRAMES, GENEROUS_CHANNELS, GENEROUS_SAMPLES);
     CHECK(decoded.format == AudioSourceFormat::Unknown);
     CHECK(!decoded.error.empty());
     CHECK(decoded.samples.empty());
@@ -292,7 +297,7 @@ TEST_CASE("AD13: an empty byte span is refused before either backend opens") {
     const std::array<std::string_view, 4> names{"a.wav", "a.flac", "a.mp3", "a.ogg"};
     for (const std::string_view name : names) {
         const DecodedAudio decoded =
-            decodeAudioFile(name, std::span<const std::byte>(), GENEROUS_FRAMES, GENEROUS_CHANNELS);
+            decodeAudioFile(name, std::span<const std::byte>(), GENEROUS_FRAMES, GENEROUS_CHANNELS, GENEROUS_SAMPLES);
         CHECK(!decoded.error.empty());
         CHECK(decoded.samples.empty());
         CHECK(decoded.error.find("empty") != std::string::npos);
@@ -309,7 +314,8 @@ TEST_CASE("AD14: a truncated fixture refuses or shortens, never crashes and neve
         const std::vector<std::byte> full = readAudioFixture(std::string(name));
         REQUIRE(full.size() > 100);
         const std::span<const std::byte> truncated(full.data(), (full.size() * 40) / 100);
-        const DecodedAudio decoded = decodeAudioFile(name, truncated, GENEROUS_FRAMES, GENEROUS_CHANNELS);
+        const DecodedAudio decoded =
+            decodeAudioFile(name, truncated, GENEROUS_FRAMES, GENEROUS_CHANNELS, GENEROUS_SAMPLES);
         if (decoded.error.empty()) {
             // A shorter stream is a legitimate outcome for a truncated container.
             REQUIRE(decoded.channels > 0);
@@ -327,7 +333,8 @@ TEST_CASE("AD15: ASCII garbage under each claimed name is refused") {
     }
     const std::array<std::string_view, 4> names{"a.wav", "a.flac", "a.mp3", "a.ogg"};
     for (const std::string_view name : names) {
-        const DecodedAudio decoded = decodeAudioFile(name, garbage, GENEROUS_FRAMES, GENEROUS_CHANNELS);
+        const DecodedAudio decoded =
+            decodeAudioFile(name, garbage, GENEROUS_FRAMES, GENEROUS_CHANNELS, GENEROUS_SAMPLES);
         CHECK(!decoded.error.empty());
         CHECK(decoded.samples.empty());
     }
@@ -364,6 +371,75 @@ TEST_CASE("AD17: maxChannels == 0 is refused, naming the source's channel count 
         CHECK(capped.error.find(std::to_string(full.channels) + " channels") != std::string::npos);
         CHECK(capped.error.find("cap of 0") != std::string::npos);
     }
+}
+
+TEST_CASE("AD19: the PRODUCT is capped, before anything is allocated, where neither axis alone bites") {
+    // The code-review round's finding: bounding `frames` and `channels` independently and never their
+    // product lets a caller passing the cook's own per-axis caps accept 28 800 000 x 8 = 230 400 000
+    // s16 samples -- ~440 MiB, four times MAX_COOKED_AUDIO_BYTES -- which cookAudio then refuses on
+    // its sample cap, so the whole allocation was guaranteed waste.
+    //
+    // Both axes are left GENEROUS here, so neither per-axis check can fire; only the product can. And
+    // the assertion is on the MESSAGE, AD16's technique: the pre-allocation check is the only place
+    // the source's own frame count is knowable, so a message naming it is what distinguishes "refused
+    // before the reserve" from "refused inside the loop". A status-only arm cannot see the difference.
+    const std::array<std::string_view, 4> names{"tone.wav", "tone.flac", "tone.mp3", "tone.ogg"};
+    for (const std::string_view name : names) {
+        const DecodedAudio full = decodeFixture(std::string(name));
+        REQUIRE(full.error.empty());
+        REQUIRE(full.channels > 0);
+        const std::uint64_t frames = full.samples.size() / full.channels;
+        const std::uint64_t samples = full.samples.size();
+        REQUIRE(samples > 1);
+
+        // ANTI-VACUITY: the bound under test is strictly below the source's own sample count AND the
+        // per-axis product the two other caps would have permitted. Without the second half this case
+        // would still pass against a decoder that had no product check at all but a tighter frame cap.
+        const std::uint64_t tightSamples = samples - 1;
+        REQUIRE(tightSamples < static_cast<std::uint64_t>(GENEROUS_FRAMES) * GENEROUS_CHANNELS);
+        REQUIRE(frames <= GENEROUS_FRAMES);
+        REQUIRE(full.channels <= GENEROUS_CHANNELS);
+
+        const DecodedAudio capped = decodeFixture(std::string(name), GENEROUS_FRAMES, GENEROUS_CHANNELS, tightSamples);
+        CHECK(!capped.error.empty());
+        CHECK(capped.samples.empty());
+        MESSAGE(name << " product-capped message: " << capped.error);
+        // The message names the PRODUCT and the BOUND, plus both factors it was formed from.
+        CHECK(capped.error.find(std::to_string(samples) + " samples") != std::string::npos);
+        CHECK(capped.error.find("cap of " + std::to_string(tightSamples)) != std::string::npos);
+        CHECK(capped.error.find(std::to_string(full.channels) + " channels") != std::string::npos);
+        CHECK(capped.error.find(std::to_string(frames) + " frames") != std::string::npos);
+        // ...and it is the DECLARED form, so the refusal came before the reserve rather than from the
+        // loop, whose wording ("decodes to more than") names no source-derived count at all.
+        CHECK(capped.error.find("declares") != std::string::npos);
+        CHECK(capped.error.find("decodes to more than") == std::string::npos);
+
+        // The complement: the exact product is accepted, so the comparison is `>` and not `>=`. A cap
+        // that refused its own boundary would refuse a legal file at the container's stated maximum.
+        const DecodedAudio exact = decodeFixture(std::string(name), GENEROUS_FRAMES, GENEROUS_CHANNELS, samples);
+        CHECK(exact.error.empty());
+        CHECK(exact.samples.size() == samples);
+    }
+}
+
+TEST_CASE("AD20: the sample cap survives a channel count the frame cap cannot see") {
+    // tone.ogg is the STEREO fixture, which is what makes it the one that can separate the two caps
+    // by construction: at 8000 frames it carries 16 000 samples, so a frame cap of 8000 passes while
+    // a sample cap of 8000 does not. Against a MONO fixture the two numbers coincide and this arm
+    // could not tell a product check from a frame check at all.
+    const DecodedAudio stereo = decodeFixture("tone.ogg");
+    REQUIRE(stereo.error.empty());
+    REQUIRE(stereo.channels == 2);
+    const std::uint64_t frames = stereo.samples.size() / stereo.channels;
+
+    const DecodedAudio capped =
+        decodeFixture("tone.ogg", static_cast<std::uint32_t>(frames), GENEROUS_CHANNELS, frames);
+    CHECK(!capped.error.empty());
+    CHECK(capped.samples.empty());
+    CHECK(capped.error.find(std::to_string(frames * 2) + " samples") != std::string::npos);
+    // The FRAME cap it was handed is satisfied exactly, so nothing but the product could have refused.
+    CHECK(capped.error.find("over the cap of " + std::to_string(frames)) != std::string::npos);
+    CHECK(capped.error.find("frames, over the cap of") == std::string::npos);
 }
 
 // ---- Group 5: the source-text pin (AD18) ---------------------------------------------------------

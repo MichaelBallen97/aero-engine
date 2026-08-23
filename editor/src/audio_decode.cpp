@@ -50,16 +50,36 @@ constexpr std::uint32_t CHUNK_FRAMES = 4096;
     return out;
 }
 
-// Every read loop in this file shares these two shapes, so neither backend can hold half the rule.
+// Every read loop in this file shares these shapes, so neither backend can hold half the rule.
 //
 // THE CAP IS CHECKED TWICE AND THE SECOND CHECK IS THE ONE THAT MATTERS. The pre-allocation check
-// below trusts the source's own length query; this one trusts nothing. An mp3 with no Xing header
-// reports 0 frames, and a truncated or crafted ogg can report a granule position the pages that
-// follow do not support -- so the loop stops at the cap regardless of what the header promised. A cap
-// checked only against a self-reported length is not a cap.
+// below trusts the source's own length query; this one trusts nothing. A length query is an answer
+// derived from the file's own claims, and some of those claims are taken unclamped -- dr_wav uses a
+// Wave64 `fact` chunk's 8-byte sample count verbatim (miniaudio.h:81684-81685) while the file-size
+// clamp at :81646-81652 applies to the data chunk instead, so a crafted W64 can declare a length its
+// data neither supports nor is bounded by. The loop therefore stops at the cap regardless of what the
+// header promised. A cap checked only against a self-reported length is not a cap.
 [[nodiscard]] bool wouldExceedFrameCap(std::uint64_t decodedFrames, std::uint64_t incomingFrames,
                                        std::uint32_t maxFrames) noexcept {
     return decodedFrames + incomingFrames > maxFrames;
+}
+
+// THE PRODUCT, WHICH IS THE ONLY ONE OF THE THREE BOUNDS THAT BOUNDS BYTES. Saturating rather than
+// wrapping: `frames` comes from a length query that a hostile file controls, and a wrapped product
+// would report a SMALL number for a huge claim, which is the one arithmetic mistake that turns a cap
+// into a hole. `channels` is non-zero at every call site (both backends refuse zero first), so the
+// division is total.
+[[nodiscard]] std::uint64_t sampleCountOrSaturate(std::uint64_t frames, std::uint32_t channels) noexcept {
+    const auto wide = static_cast<std::uint64_t>(channels);
+    if (wide == 0 || frames > std::numeric_limits<std::uint64_t>::max() / wide) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return frames * wide;
+}
+
+[[nodiscard]] bool wouldExceedSampleCap(std::uint64_t frames, std::uint32_t channels,
+                                        std::uint64_t maxSamples) noexcept {
+    return sampleCountOrSaturate(frames, channels) > maxSamples;
 }
 
 // A refusal naming the bound, for the in-loop check, which cannot know the source's true length.
@@ -67,11 +87,25 @@ constexpr std::uint32_t CHUNK_FRAMES = 4096;
     return "the source decodes to more than " + std::to_string(maxFrames) + " frames, the cap this build reads";
 }
 
+[[nodiscard]] std::string sampleCapMessage(std::uint32_t channels, std::uint64_t maxSamples) {
+    return "the source decodes to more than " + std::to_string(maxSamples) + " samples at " + std::to_string(channels) +
+           " channels, the cap this build reads";
+}
+
 // A refusal naming BOTH the source's own count and the bound, for the pre-allocation check, which is
 // the only place the true length is knowable.
 [[nodiscard]] std::string declaredFrameCapMessage(std::uint64_t declaredFrames, std::uint32_t maxFrames) {
     return "the source declares " + std::to_string(declaredFrames) + " frames, over the cap of " +
            std::to_string(maxFrames);
+}
+
+// The PRODUCT form of the same, worded so a reader can tell which of the two pre-allocation checks
+// fired: this one names the multiplication, cookAudio's own sample-cap refusal's shape.
+[[nodiscard]] std::string declaredSampleCapMessage(std::uint64_t declaredFrames, std::uint32_t channels,
+                                                   std::uint64_t maxSamples) {
+    return "the source declares " + std::to_string(channels) + " channels x " + std::to_string(declaredFrames) +
+           " frames, which is " + std::to_string(sampleCountOrSaturate(declaredFrames, channels)) +
+           " samples, over the cap of " + std::to_string(maxSamples);
 }
 
 [[nodiscard]] std::string channelCapMessage(std::uint32_t channels, std::uint32_t maxChannels) {
@@ -106,7 +140,8 @@ private:
 // wav / flac / mp3. ONE code path for all three: the container is detected by miniaudio from the
 // bytes, and the file name only chose THIS path rather than the ogg one.
 [[nodiscard]] DecodedAudio decodeWithMiniaudio(AudioSourceFormat format, std::span<const std::byte> fileBytes,
-                                               std::uint32_t maxFrames, std::uint32_t maxChannels) {
+                                               std::uint32_t maxFrames, std::uint32_t maxChannels,
+                                               std::uint64_t maxSamples) {
     ma_decoder_config config = ma_decoder_config_init(ma_format_s16, 0, 0);
     // channels = 0 and sampleRate = 0 are miniaudio's DOCUMENTED "use the stream's internal value"
     // sentinels. Any other value silently engages ma_data_converter and makes this decode resample or
@@ -143,12 +178,20 @@ private:
     out.channels = channels;
 
     // The length query, and its answer is a CLAIM rather than a fact. A failure or a zero means
-    // "unknown" -- never "empty" -- so nothing is reserved and the loop decides. An mp3 with no Xing
-    // header is the real case.
+    // "unknown" -- never "empty" -- so nothing is reserved and the loop decides.
+    //
+    // NOTHING IS RESERVED UNTIL BOTH CLAIMS HAVE BEEN BOUNDED, and the ORDER is load-bearing: the
+    // frame cap runs first, so `declaredFrames <= maxFrames` holds by the time the product is formed
+    // and the saturating multiply below cannot be reached with the production caps. It saturates
+    // anyway, because this function's bounds are parameters and a future caller's are not this
+    // function's to assume.
     ma_uint64 declaredFrames = 0;
     if (ma_decoder_get_length_in_pcm_frames(guard.get(), &declaredFrames) == MA_SUCCESS && declaredFrames > 0) {
         if (declaredFrames > maxFrames) {
             return refuse(format, declaredFrameCapMessage(declaredFrames, maxFrames));
+        }
+        if (wouldExceedSampleCap(declaredFrames, channels, maxSamples)) {
+            return refuse(format, declaredSampleCapMessage(declaredFrames, channels, maxSamples));
         }
         out.samples.reserve(static_cast<std::size_t>(declaredFrames) * channels);
     }
@@ -163,6 +206,9 @@ private:
         }
         if (wouldExceedFrameCap(decodedFrames, framesRead, maxFrames)) {
             return refuse(format, frameCapMessage(maxFrames));
+        }
+        if (wouldExceedSampleCap(decodedFrames + framesRead, channels, maxSamples)) {
+            return refuse(format, sampleCapMessage(channels, maxSamples));
         }
         const std::size_t produced = static_cast<std::size_t>(framesRead) * channels;
         out.samples.insert(out.samples.end(), scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(produced));
@@ -182,7 +228,7 @@ private:
 // and is deliberately never called: it mallocs the whole decode with no cap this function could
 // impose.
 [[nodiscard]] DecodedAudio decodeWithStbVorbis(std::span<const std::byte> fileBytes, std::uint32_t maxFrames,
-                                               std::uint32_t maxChannels) {
+                                               std::uint32_t maxChannels, std::uint64_t maxSamples) {
     constexpr AudioSourceFormat FORMAT = AudioSourceFormat::Ogg;
 
     // The narrowing to stb's own `int` length must be provably safe from THIS function alone, not
@@ -220,11 +266,15 @@ private:
     out.channels = channels;
 
     // A CLAIM, not a fact: a truncated or crafted stream can report a granule position the pages that
-    // follow do not support. 0 means "unknown" and reserves nothing.
+    // follow do not support. 0 means "unknown" and reserves nothing. Both bounds are applied before
+    // the reserve, frame cap first, for the ordering reason the miniaudio arm's own note gives.
     const std::uint64_t declaredFrames = stb_vorbis_stream_length_in_samples(handle.get());
     if (declaredFrames > 0) {
         if (declaredFrames > maxFrames) {
             return refuse(FORMAT, declaredFrameCapMessage(declaredFrames, maxFrames));
+        }
+        if (wouldExceedSampleCap(declaredFrames, channels, maxSamples)) {
+            return refuse(FORMAT, declaredSampleCapMessage(declaredFrames, channels, maxSamples));
         }
         out.samples.reserve(static_cast<std::size_t>(declaredFrames) * channels);
     }
@@ -244,6 +294,9 @@ private:
         if (wouldExceedFrameCap(decodedFrames, produced, maxFrames)) {
             return refuse(FORMAT, frameCapMessage(maxFrames));
         }
+        if (wouldExceedSampleCap(decodedFrames + produced, channels, maxSamples)) {
+            return refuse(FORMAT, sampleCapMessage(channels, maxSamples));
+        }
         out.samples.insert(out.samples.end(), scratch.begin(),
                            scratch.begin() + static_cast<std::ptrdiff_t>(produced * channels));
         decodedFrames += produced;
@@ -258,7 +311,7 @@ private:
 }  // namespace
 
 DecodedAudio decodeAudioFile(std::string_view fileName, std::span<const std::byte> fileBytes, std::uint32_t maxFrames,
-                             std::uint32_t maxChannels) {
+                             std::uint32_t maxChannels, std::uint64_t maxSamples) {
     // BACKEND SELECTION IS BY FILE NAME, NEVER BY CONTENT SNIFFING, and it is one switch so a fifth
     // format lands in exactly one place. No `default:`, so a new AudioSourceFormat is a -Wswitch
     // failure on the Linux lane rather than a silent refusal.
@@ -273,12 +326,12 @@ DecodedAudio decodeAudioFile(std::string_view fileName, std::span<const std::byt
             if (fileBytes.empty()) {
                 return refuse(format, "the file is empty");
             }
-            return decodeWithMiniaudio(format, fileBytes, maxFrames, maxChannels);
+            return decodeWithMiniaudio(format, fileBytes, maxFrames, maxChannels, maxSamples);
         case AudioSourceFormat::Ogg:
             if (fileBytes.empty()) {
                 return refuse(format, "the file is empty");
             }
-            return decodeWithStbVorbis(fileBytes, maxFrames, maxChannels);
+            return decodeWithStbVorbis(fileBytes, maxFrames, maxChannels, maxSamples);
     }
     return refuse(AudioSourceFormat::Unknown,
                   "no audio decoder claims this file type (expected .wav, .flac, .mp3 or .ogg)");
