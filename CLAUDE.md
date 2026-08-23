@@ -41,7 +41,7 @@ gate green, the 30-seed matrix run to completion, a code-review round closed wit
 among its three, and all six CI checks green with `headSha == HEAD` asserted before the merge. Its
 ten-row macOS pass is ✅ **PASS on ALL 10 ROWS** with every blank filled. **3.6.2 (Directional shadow
 map) is MERGED as PR #85 (merge commit `3ffaadf`, sixteen commits)**, CI-green on all six checks with
-`headSha == HEAD` asserted before the merge, and PENDING its twelve-row macOS pass — so **two of Epic
+`headSha == HEAD` asserted before the merge, and macOS-validated ✅ **PASS on ALL 12 ROWS** — so **two of Epic
 3.6's three tasks are now merged**. **3.6.3 (Tonemap/gamma pass) is MERGED as PR #86 (merge commit `e179285`, twelve own commits plus one
 merge commit)**, CI-green on all six checks with `headSha == HEAD` asserted before the merge — so
 **EPIC 3.6 IS CLOSED IN CODE, all three tasks merged**. The two were built in parallel off the same
@@ -124,8 +124,8 @@ orphan-re-attachment deferral and a symlinked-directory duplicate-GUID defect. *
 v1 (PR #67 `aa914fb`, 35 seeds, 11 review findings incl. a GPU-texture use-after-free invisible on
 macOS because SDL frees synchronously on Vulkan/D3D12 and only defers on Metal, ✅ 16/16).
 **3.1.4** hot-reload watcher (PR #69 `ebc4da6`, 25 seeds, ✅ 10/10) — R1's per-sweep cost stayed
-unmeasured. **3.1.5** drag-into-scene (25 commits, 37 seeds, 5 review findings closed, macOS pass
-PENDING) — the epic's closer, detailed below. **3.2.1** glTF/fastgltf (PR #70 `f02ca65`, 32 seeds, 12 review findings, ✅ 12/12), the
+unmeasured. **3.1.5** drag-into-scene (twenty-seven commits, 37 seeds, 5 review findings closed, ✅ 16/16) — the
+epic's closer, detailed below. **3.2.1** glTF/fastgltf (PR #70 `f02ca65`, 32 seeds, 12 review findings, ✅ 12/12), the
 first PRODUCER for `AssetCacheEntry::dependencies`. **3.2.2** FBX/ufbx (PR #71 `c597a5b`, 35 seeds,
 ✅ 13/13) — the tree's FIRST vendored library (`editor/third_party/ufbx/`, byte-identical to upstream
 v0.23.0), a third hard-coded-importer-identity site, a BLOCKING ASan heap-buffer-overflow that shipped
