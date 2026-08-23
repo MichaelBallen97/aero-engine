@@ -29,6 +29,7 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 │  script/    quickjs-ng · bindings · hot reload            │
 │  assets/    AssetDatabase · import cache · loaders        │
 │  scene/     EnTT · transforms · cameras · lights          │
+│  scene_audio/ World -> audio bridge (sees both)           │
 │  render/    render graph · PBR · shadows · culling        │
 │  physics/   Jolt wrapper                                  │
 │  audio/     graph (public) → miniaudio (private)          │
@@ -59,6 +60,13 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
   /scene       EnTT world, transform hierarchy, cameras, lights
   /physics     Jolt wrapper
   /audio       graph (public) → miniaudio backend (private)
+               (opened at 3.7.1 with the runtime clip; 3.7.2 added the spatializer, the
+               lock-free mixer and AudioSystem. It links `aero::core`, `aero::assets` and
+               NO VCPKG PACKAGE AT ALL, which is what makes a stray `#include <miniaudio.h>`
+               there a hard compile error rather than a guard finding)
+  /scene_audio the World → audio bridge (task 3.7.2): the only code in the tree that sees
+               both `scene` and `audio`, sitting above both — the `scene_render` shape one
+               layer over
   /assets      AssetDatabase, import cache, loaders
                (opened at 3.3.1: the cooked-asset formats -- the `.aeromesh` container and its
                parser, plus the mesh cook. core-only: it links `aero::core` and `aero::profiling`
@@ -118,13 +126,19 @@ legal by construction rather than an exception carved for one task.
 - The **parent/child hierarchy is entity-level World state**, not component data — mirroring `docs/09`'s entity-level `parent` key, which any entity may carry with or without components. `setParent`/`parent`/`childCount`/`eachChild` enforce a **forest** (cycles rejected at the API), and `destroy()` destroys the **whole subtree**, which is what makes "a live entity's parent is always live" a structural invariant rather than a convention.
 - `worldMatrix(world, entity)` composes on demand, iteratively, up the parent chain (`world = M_root · … · M_parent · M_local`); an entity or ancestor without a `Transform` contributes identity. **No caching** — the deferral is recorded in `docs/08`.
 - The reflection claim is proven mechanically over the real header (a `--components` process case plus generated `entt::meta` and JSON artifacts compiled into the two gated test targets), while the engine itself compiles no generated code.
-- `engine::MeshRenderer` (task 1.4.1) is the 5th built-in — `{uint32 primitive; Vec3 color}`, the reflected "this entity draws a primitive mesh" component, registered alongside `Transform`/`Camera`/`DirectionalLight`/`PointLight`.
+- `engine::MeshRenderer` (task 1.4.1) is the 5th built-in — `{uint32 primitive; Vec3 color}`, the reflected "this entity draws a primitive mesh" component, registered alongside `Transform`/`Camera`/`DirectionalLight`/`PointLight`. `engine::AnimationPlayer` (3.5.2) is the 6th; `engine::AudioSource` and `engine::AudioListener` (3.7.2) are the **7th and 8th**, and like a directional light stores no direction, the listener stores neither position nor orientation — both come from the entity's `Transform`.
 
 ### Scene → render bridge (`scene_render`, task 1.4.1)
 
 `engine/scene_render` is a thin composition module that sits *above* both `scene` and `render` (the only code in the tree that sees both) — it turns a `World` into a `render::RenderView` and submits it each frame, which is what keeps `render` scene-free (it never depends on `scene`, upholding the layer rule) and `scene` GPU-free. Its pure half, `scene_render::buildRenderView(World&, RenderViewScratch&, rhi::Extent2D)`, walks the renderable entities (`each<Transform, MeshRenderer>`), resolves the lowest-index `Camera` and lights, and returns a flat `RenderView` — no GPU, tier-0 testable. Its facade, `scene_render::SceneRenderer`, owns a `render::ForwardRenderer` (the scene-free lit-primitive draw engine `render` gained in the same task) and drives `render(World&, Frame&)` once per frame. This is where the Phase-2 editor viewport and Phase-5 runtime will drive rendering.
 
 `engine::render::RenderTarget` (task 2.2.3) is the **offscreen** sibling of `render::Renderer` — it owns a sampleable colour texture (plus an auto-picked depth target) and drives the same `beginFrame → record → endFrame` cycle into it instead of a swapchain, so every `render::Frame` consumer works unchanged. It is what the editor viewport renders into, and what Phase 3 shadow maps and Phase 8 post-processing will reuse.
+
+### Scene → audio bridge (`scene_audio`, task 3.7.2)
+
+`engine/scene_audio` is the same shape as `scene_render`, one layer over: a thin composition module sitting *above* both `scene` and `audio` — the only code in the tree that sees both — which is what keeps `audio` scene-free and `scene` audio-free. Its pure half, `scene_audio::buildAudioView(World&, AudioViewScratch&)`, walks `each<Transform, AudioListener>` and `each<Transform, AudioSource>`, resolves the lowest-index listener into an orthonormal world-space basis (normalising `worldMatrix`'s columns, so a scaled listener entity behaves identically to an unscaled one) and every *playing* source into a world-space `audio::VoiceParams`, sanitised on the way in. It never touches an `AudioSystem`, never resolves a `Guid` and never logs — its whole output is data, which is what makes it tier-0 testable **with no `AudioSystem` in existence**. Its facade, `scene_audio::SceneAudio`, owns the entity↔voice bindings and the parameter coalescing that keeps a static scene at zero commands per frame, and owns **no** `AudioSystem`, so a caller can drive several worlds through one system.
+
+**Why it is a separate target rather than a function in `engine/audio`.** Folding the walk into `audio` would give `aero_audio` a `PUBLIC aero::scene`, so **every binary that links audio would drag EnTT in** — including the Phase 5 runtime, which per [ADR-008](./02-adrs.md#adr-008--per-project-language-choice-and-the-two-export-models) is handed a `.pak` and may reasonably want to play a sound without instantiating a `World` at all. Wiring it only in the sample was the other rejected shape: the *engine* would then ship no `World` → audio path, and the editor's future play mode and the runtime would each rewrite it. It links `PUBLIC aero::scene aero::audio` / `PRIVATE aero::profiling` and never `aero::scene_internal`, which carries `EnTT::EnTT` as an INTERFACE by design.
 
 ### Scene serialization bridge (`scene_serialize`, task 1.4.2)
 

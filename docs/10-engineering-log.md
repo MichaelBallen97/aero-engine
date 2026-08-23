@@ -12006,3 +12006,376 @@ matter more on this page than on any other in the directory.
 **Still open: the Windows and Linux rows**, which join the standing platform-validation debt: Phase
 0's gate, Phase 1's render rows, every one of the thirteen Phase 2 tasks, and every Phase 3 task,
 this one included.
+
+---
+
+### Task 3.7.2 — Playback API + components (Epic 3.7)
+
+**Branch:** `feat/3.7.2-playback-api-components`, cut from `main @ 0b28f98` — the plan's stated branch
+point, with no sibling task in flight, so this branch never merged `origin/main` and **every
+whole-tree count on it is a single-tree reading**. Twelve commits: one docs amendment first (`738a235`),
+nine build steps (`6bb5d6d` the platform seam, `4bc9ded` the spatializer, `80772ec`/`f7e5a6e`/`f570f6e`
+the mixer in three behavioural slices, `f658f5c` `AudioSystem`, `2d370bd` the component bundle,
+`b5d7008` the bridge, `1e42a63` the sample), then `77a7165` (the sabotage matrix's eight structural
+closures) and `e2da6f0` (the code-review round's seven findings). The count is re-derived with
+`git rev-list --count` against the tree rather than added up from the step list — 3.6.2's finding 8.
+
+Since 0.3.3 this engine could open a device and write silence into it; since 3.7.1 it could say what a
+sound *is*. **Nothing had ever turned one into a sample on an output buffer.** There was no voice, no
+mixer, no listener, no gain, no pan, no resampler, no component a scene could carry that named a sound,
+no way to tell `AudioDevice` to play something, no target that saw both a `World` and a clip, and no
+sample that made a noise. This task builds that whole column, across four layers.
+
+**Sized M in the roadmap and landed L**, recorded in `docs/tasks/phase-3.md` in the branch's **first**
+commit rather than at the end — an amendment written after the fact is written by someone who already
+knows the answer. "Positioned sound from a scene" is four layers, and a phase whose gate word is
+*audible* cannot be satisfied inside any one of them.
+
+#### What shipped, layer by layer
+
+**`engine/platform` — the realtime seam, two files and nothing else.** `AudioDeviceConfig` gains
+`AudioRenderFn render` and `void* renderUser`, **appended, never inserted**, both null-defaulted so
+`render == nullptr` reproduces 0.3.3's silent device byte for byte. The alias is spelled entirely in
+engine types (`std::span<float>`, two `std::uint32_t`), so `tests/platform_boundary_probe.cpp` — which
+links `aero::platform` **alone** and therefore cannot see miniaudio — asserts the whole surface with
+three `static_assert`s. The frame count is deliberately **not** a second parameter: it is
+`output.size() / channels`, because two spellings of one number are two things that can disagree. The
+callback is set at `open()` only and never mutated, so it is written before the device thread exists
+and read only on that thread, and **no synchronisation is needed at all** — said explicitly in the
+header, because the next reader will otherwise "fix" it by adding an atomic.
+
+**0.3.3's D10 comment is AMENDED IN PLACE**, per the 0.4.1 D18 protocol, naming the source that
+verified it. D10 said *"there is no back-pointer to the AudioDevice — a move of the owning object can
+never dangle this callback."* There is one now, and it points at the **heap-pinned `Impl`**, never at
+the `AudioDevice`: a move transfers the `unique_ptr`, the `Impl`'s address is unchanged, and `~Impl`
+runs `ma_device_uninit` in its **body** before any member is destroyed. Verified against the pinned
+miniaudio 0.11.25 header **as read on this machine**
+(`build/<preset>/vcpkg_installed/<triplet>/include/miniaudio.h`, `MA_VERSION_*` at `:3748-3750`):
+`ma_device_uninit`'s doc block at `:9009`, its definition at `:44104`, and the join itself at
+`:44131-44134` — *"Wake up the worker thread and wait for it to properly terminate"* followed by
+`ma_event_signal(&pDevice->wakeupEvent)` and `ma_thread_wait(&pDevice->thread)`; the data callback
+receives the `ma_device*` (`ma_device_data_proc` at `:6894`) from which `pUserData` (`struct ma_device`
+at `:7781`, the member at `:7790`) is reachable. **D9's heap-pinning is what makes this sound, and D9
+is one line above D10 in the original text — the two were always a pair.**
+
+**One structural correction the plan did not anticipate:** its pseudocode writes
+`static_cast<AudioDevice::Impl*>(device->pUserData)` from an anonymous-namespace free function, and
+`Impl` is **private**, so a non-member cannot name the type at all. The callback is a `static` member
+of `Impl` instead, which keeps `pUserData = impl.get()` exactly as the design requires.
+
+**`engine/audio` — three new pairs, and the link block untouched.** `spatial.{hpp,cpp}` is the
+`culling.cpp` mold: no rhi type, no device, no state, no allocation, no logging — a linear distance
+rolloff (exactly 1 at `minDistance`, exactly 0 at `maxDistance`, **no division at all** on the
+degenerate `maxD <= minD` arm) and a constant-power azimuth pan. `mixer.{hpp,cpp}` is the realtime
+side: a fixed `std::array` voice pool, a fixed published clip table, a 32.32 fixed-point cursor, linear
+interpolation, per-block gain ramps and a finiteness-guarded output clamp. `system.{hpp,cpp}` is the
+public surface over two SPSC rings. **`engine/audio/CMakeLists.txt` gains three source lines and its
+`target_link_libraries` block is byte-identical** — the no-`find_package` property that file spends a
+paragraph establishing, and which it names *this* task as the one most able to void, is intact and
+**proven live in both directions**: seeding `#include <miniaudio.h>` into `mixer.cpp` is
+`fatal error: 'miniaudio.h' file not found`, and the grep sees it.
+
+**`engine/scene` — the seventh and eighth built-ins.** `AudioSource` is 40 bytes (16 + 4×4 + 3×1 = 35,
+rounded by `Guid`'s 8-alignment) with the **five padding bytes stated rather than removed** — the
+`MeshRenderer` rule, same reasoning, same refusal: reordering to put the bools first packs to 40
+*anyway* and would change JSON key order and inspector row order, which declaration order **is**.
+`AudioListener` carries one real field and stores neither position nor orientation, the `light.hpp` D6
+rule unchanged. `playing` defaults **true** and is never cleared by anything but the author —
+`AnimationPlayer`'s contract verbatim — because it is also the *only* way a scene can make a sound
+before the script layer exists.
+
+**`engine/scene_audio` — the twelfth engine subsystem**, `PUBLIC aero::scene aero::audio` /
+`PRIVATE aero::profiling`, the `scene_render` shape one layer over. Folding the walk into
+`engine/audio` would give `aero_audio` a `PUBLIC aero::scene`, putting **EnTT on the link line of every
+binary that links audio** — including the Phase 5 runtime, which ADR-008 hands a `.pak` and which may
+reasonably want a sound with no `World` at all.
+
+**`samples/phase-3-audio` — the first noise this engine has ever made**, and the first sample in the
+tree with **no window, no `rhi::Device`, no shader and no `if(AERO_SHADER_TOOLS)` block at all**. The
+absence of that block is the point and its CMakeLists says so, because a reader who knows the other
+nine will look for it. Two committed fixtures, both mono 48 kHz 0.5 s at exactly **48 064 B**
+(`64 + 2 × 1 × 24000`, no padding term anywhere): 480 Hz is **exactly 100 samples per cycle**, so
+24 000 frames is **exactly 240 whole cycles** and the loop seam is continuous *by arithmetic* rather
+than by listening. **Neither enters the determinism manifest** — they are wav-sourced and therefore
+*eligible*, but the manifest is frozen at five arms and this task adds no cook path; a sample's own
+asset is not a cooker regression witness.
+
+#### The rules this task earned
+
+**1. `--dump-pcm` runs the SAME code path a speaker hears.** Both modes call the same
+`SceneAudio::update` and the same `AudioSystem::render`; they differ only in where the buffer goes.
+That is D18's payoff, and it is what makes the validation page's measurements evidence rather than
+analogy — never a parallel offline renderer that could drift.
+
+**2. The increment conversion reaches no libm function**, which is what makes the whole path bit-exact
+on every lane: one divide, one multiply and one convert, all IEEE-754-exact. Contrast
+`render::sampleAnimation`, which `docs/09` §13.7 excludes from the determinism contract *by name*
+precisely because it reaches `sin`/`acos`/`sqrt`.
+
+**3. The loop wrap is IN the frame loop, not after it.** The plan put `cursor %= (frameCount << 32)`
+after the frame loop. A 512-frame block routinely spans a 64-frame clip **eight times**, so a deferred
+wrap left every frame past the end reading silence and then **retired the looping voice**. Found by
+`MX8` failing during Step 5 and fixed there; re-seeding the deferred form reddens `MX8` alone. One
+modulo, only on the frames that actually wrap — a subtract loop is unbounded work on a realtime thread.
+
+**4. `std::clamp(NaN, lo, hi)` returns NaN on libc++**, so the pitch conversion did
+`static_cast<std::uint64_t>(NaN)` — **undefined behaviour**, which UBSan trapped with SIGABRT the first
+time `MX20` ran. `frameIncrement` now has an explicit finiteness arm, the same shape and for the same
+recorded reason as the output clamp. 3.6.3 measured that libc++ behaviour; this task is where it bit.
+
+**5. A `float` cursor is a reachable defect, and the type is now pinned.** fp32 has a 24-bit mantissa
+(2²⁴ = 16 777 216) while `MAX_COOKED_AUDIO_FRAMES` is **28 800 000**, so a float frame cursor loses
+sub-sample precision **inside the format's own legal range** — a file `aero_cooker audio` will happily
+produce.
+
+#### The sabotage matrix — 44 seeds, run to completion
+
+**Eight seeds reddened nothing on their first run. All eight were closed structurally and re-proven by
+re-seeding.** The through-line across all of them is worth more than the list: **in every case the test
+was written against the code's INTENTION and could never have failed**, because its fixture was too
+weak to distinguish the two implementations at all.
+
+| Gap | Why the case was blind | Closure | Re-seed |
+|---|---|---|---|
+| `A4` (float cursor) | `MX19` asserts fp32 arithmetic with **literals** and never reads the mixer's cursor | `static_assert(std::is_same_v<decltype(Voice::cursor), std::uint64_t>)` — the substitution is now **unspellable** | **build failure** |
+| `A7` (wrap when not looping) | `MX9`'s clip was **constant** at a **matched rate**, so `frac` was always 0 and clamp ≡ wrap *arithmetically* | fixture: a ramp at 44100→48000, asserting the seam sample against the clamp's answer and `!=` the wrap's | `MX9` alone |
+| `A16` (`normalize` for the listener axes) | `SP13` builds a `ListenerPose` **directly** and never enters `buildAudioView` — one layer apart; and **no fixture anywhere gave a listener a degenerate column** | `SA5` subcase with a zero-scale X column | Debug **aborts**, Release reddens `SA5` |
+| `A20` (`SetParams` non-droppable) | `SY8` flooded with `setMasterVolume` alone | `SY8` gains a `setParams` flood asserting the reserve still admits a `Stop` | `SY8` alone |
+| `A22` (retire ring at 32) | `SY11` retired **one** voice per cycle — the ring never held more than one entry, so **no capacity above 1 was observable** | `SY11` subcase: all 64 voices retiring in **one block** before a single `service()` | `SY11` alone |
+| `A24` (drop the generation check) | the **mixer's own** generation check covers `stop`/`setParams`; `isPlaying` is the only entry point without a counterpart, and `SY5` never asserted it after slot reuse | `SY5` asserts `isPlaying(stale) == false` **after** re-allocation | `SY5` alone |
+| `A27` (drop `service()`) | no case exhausted the slot pool through retriggers | new **`SA10b`**: 64 looping sources stopped in one frame and retriggered the next, with the test never calling `service()` itself | `SA10b` alone — and it witnesses `A28` too |
+| `A29` (restart a finished one-shot) | `SA16` pumped a **full** block, so a restarted 8-frame voice finished again before it was observed | observation window (4 frames) made **shorter than the clip** | `SA16` alone |
+| `A31` (compare by position only) | no case varied a **non-position** field with position fixed | `SA15` gains volume-only and `spatialize`-only arms plus a nothing-changed control | `SA15` alone |
+
+**Twelve predictions were corrected by measurement**, and two are worth carrying beyond this task.
+
+**`A4` — the seed the plan itself flagged as the one to watch, and it fired exactly as warned.**
+§F.1 said: *"if `A4` leaves `MX19` green, the case is the defect, not the prediction."* It did.
+`MX19` is a **derivation** test — it proves fp32 cannot count frames at that magnitude — and it reads
+literals, not the implementation. The closure makes the type substitution a compile failure, which
+§F.6 calls a stronger result than a red test.
+
+**`A42` — the sharpest, and it is 3.7.1's `A14` reframing one task later.** `SA1` was documented on
+**both sides** of the mirror as pinning `AudioSource::pitch`'s `AERO_RANGE(0.0f, 4.0f)` against
+`engine::audio::MAX_PITCH`. It does not: it pins `MAX_PITCH` and **nothing else**, because
+**no C++ expression can read an `AERO_RANGE` argument at all** — the annotation is consumed by
+reflect-gen, so the literal's only C++-visible form is the *generated meta*. Proven in both
+directions: seeding `MAX_PITCH` to `8.0F` **fails to build**; seeding the `AERO_RANGE` literal to
+`8.0f` builds clean, leaves `SA1` green, and reddens `tests/editor/inspector_test.cpp`'s `AudioSource`
+row alone. **The mirror is covered end to end, but by two different witnesses, and neither covers the
+other.** The false claim was corrected in both `audio_source.hpp` and `scene_audio_test.cpp` — a false
+sentence on a public header outlives an acceptance criterion.
+
+The other ten: **`A10` does not redden `SP7`** (`(x+1)·π/2` still lands on the unit circle, so constant
+power survives) and reddens six other cases instead; **`A14` reddens `SP10` alone** and `MX20` is
+**`A8`'s** witness, not its; **`A16`'s predicted witness is in the wrong layer**; **`A17` reddens
+`SP14`/`MX16`**, not `SP5`/`SA3`; **`A19` needed rewriting** — the first form deferred the allocation
+until after a successful push, which is a *different, still-correct* ordering rather than the defect;
+**`A26` is a behavioural no-op**, proven by a probe reading `is_move_constructible_v<AudioSystem> == 0`
+under *every* spelling, because non-movability is **overdetermined** by `AudioMixer`'s own deleted
+move, its `std::atomic` members and `AudioSystem`'s user-declared destructor (3.5.2's `S33` species —
+`SY1` is not vacuous, it would catch the composite change, but no one-line seed can trip it);
+**`A28` shares `A27`'s new witness**; **`A38`'s form was corrected**, since this task adds **one** plot
+rather than two, so the seed is a single-site rename; **`A39` reddens the golden battery too**, so
+§F.5's *"the golden battery is weaker than it looks"* worry does not apply here; and **`A25` and `A40`
+are build and link failures** as predicted, `A40` with the exact predicted missing symbol.
+
+**The declared class is THREE, as MEASURED, against a predicted two.**
+
+- **`A23`** (`relaxed` instead of `release` on the clip-count store) — **no coverage anywhere.** Not by
+  a test, not by a validation row, not by any lane: no lane runs TSan and ASan does not detect races.
+  Declared *before* the matrix ran, then applied, built and run anyway to confirm it.
+- **`A38`** (the plot's name literal) — **validation row 9 is its only coverage anywhere**, exactly as
+  3.6.1's `C30` was until a real `tracy-capture 0.13.1` session witnessed it.
+- **`A36`** (the device's null-render silence path) — **a correction that ADDS to the class.** The plan
+  predicted `DV1`; measured, `DV1` stays green and **nothing in this tree can witness it**, because
+  when `render` is null the output buffer belongs to miniaudio and no first-party code ever sees it.
+  `DV1`'s own comment now states what it is blind to, so it cannot be misread as covering it — the
+  `I96` rule: a case must not appear to certify an invariant it cannot see.
+
+#### The code-review round — seven findings, one blocking, all closed
+
+**The blocking one, and its through-line is the most portable thing in this entry: two places compared
+the same key by different rules, and the WEAKER comparison silently won.** `SceneAudio::update`'s
+step 4 matched a binding on **full `Entity` identity** (index *and* generation) while step 5 swept
+presence by **index alone**. A recycled entity index — destroy and create between updates, which EnTT
+does as a matter of course — then made the old binding look *present*: the sweep kept it, its voice was
+**never stopped**, and a **looping** one played forever with nothing able to name it, because every
+later `lower_bound` for that index returned the newer entry. `bindingCount()` over-reported, and each
+churn stranded one more voice until the 64-slot pool was gone and `rejectedPlays` climbed **with no
+cause visible anywhere**. `SA17` could not see it: it destroys and updates in the *same* frame, so the
+index is never reused *across* updates. **The fix is one shared `entityOrderLess` comparator over the
+whole handle — one rule, in one place — so the two cannot disagree again.** `SA17b` is the witness; it
+was written first and **confirmed to redden on the unfixed code** before the fix went in.
+
+The other six:
+
+1. **A dropped `SetParams` was PERMANENT.** `AudioSystem::setParams` discarded its push result and the
+   bridge advanced `lastPushed` unconditionally. D5 licenses droppability with *"the voice keeps its
+   previous parameters and the next frame corrects it"* — which holds **only while parameters keep
+   changing**. A source edited once and then left alone, at a moment when nothing drains the ring (a
+   stopped device, which validation row 11 arranges deliberately), kept the stale value **for life**,
+   with only `droppedCommands` moving. `setParams` now returns `bool` and the bridge **holds
+   `lastPushed` back** on a refused push, so the next frame still sees a difference. `SA20` asserts it
+   end to end through the rendered amplitude, not through a counter.
+2. **A false sentence on a public header.** `system.hpp` claimed the lifetime rule was written in three
+   places including `audio.hpp`'s umbrella comment; `audio.hpp`'s entire diff was three `#include`
+   lines. The sentence was **added** rather than the claim weakened — the rule now really is in three
+   places, with a worked example.
+3. **`ClipHandle::generation` was never validated.** `render()` gated on `voice.clip.index < published`
+   alone, and `Handle{}` is `{index 0, generation 0}`, so a **default-constructed** handle played
+   whatever was published at index 0. Unreachable through `AudioSystem::play`, but `AudioMixer` is a
+   **public** class and `applyCommand` is its documented audio-thread entry point. Guarded in
+   `render()` rather than in the `Start` arm, deliberately, so **all four** unusable-clip cases retire
+   by the same path — which is what `MX17`'s own title has always claimed and what keeps the retire
+   ring's accounting uniform. `MX17` gained the null-handle subcase it had always been missing.
+4. **`--seconds inf` was undefined behaviour.** `strtod("inf")` succeeds with `*end == '\0'`, and the
+   only guard was `seconds > 0.0F`, which infinity passes — so the dump loop reached
+   `static_cast<std::uint64_t>(inf * 48000.0F)`, an out-of-range float→integer conversion. **Invisible
+   because CI builds the sample and never runs it**; confirmed by running the seeded build and watching
+   UBSan trap it. (`nan` was already refused, since `nan > 0` is false.) `parseFloat` now requires
+   `std::isfinite`, and every refusal prints why and exits 1.
+5. **`FIXED_POINT_ONE`** was defined and never used — deleted.
+6. **`Binding::finished` was DELETED rather than kept.** It was written at three sites and **read
+   nowhere**: D11's no-restart behaviour is carried entirely by the `!isPlaying(...)` → `continue` arm,
+   so the flag documented an intent it did not carry. **A field that looks like state and is not is
+   worse than no field** — it invites the next reader to branch on it and to believe the branch means
+   something. Its absence is now a comment explaining the decision, and a future `finished` observable
+   arrives with its consumer or not at all.
+
+**One process finding from the round itself, learned twice in this task:** `git checkout -- <file>`
+reverts to **HEAD**, so seeding a file to prove a fix **also reverts the fix if the fix is not
+committed**. It ate the `A4` closure during the matrix and both bridge fixes during the review round.
+Both were caught by reading the pre-commit diff rather than by a test. **Commit the fix, then seed it.**
+
+#### Two recorded deviations from the spec's signatures
+
+**`AudioSystem::setParams` returns `bool` where §6.2 gives `void`** — finding 1 above; `void` → `bool`
+is source-compatible for any caller that ignores it, and it is deliberately **not** `[[nodiscard]]` for
+the same reason. **`SceneAudio::clear` takes an `audio::AudioSystem&`** where §6.2 gives
+`clear() noexcept`: the spec's own comment says it *"stops every bound voice"*, and `SceneAudio` owns no
+`AudioSystem`, so a parameterless `clear()` could only **forget** — and forgetting a looping voice's
+binding leaves it playing for the rest of the system's life with nothing left that can name it. The
+documented behaviour is the one worth having, so the signature is the one that can deliver it.
+
+#### Traps and corrections found while building
+
+**The `§G.8` `#if` gate is a "read, do not count" grep.** `git grep -c '#if'` over the four new test
+files returns `2/2/1/1`, not empty — **every match is the prohibition sentence itself** in a `//`
+comment. AC-31's substance holds: the line-anchored form
+(`git grep -nE '^[[:space:]]*#[[:space:]]*(if|ifdef|…)'`) returns nothing, verified **in both
+directions** by seeding a `#if 0` and watching it appear. This is the tree's fifth grep of that
+species, after `find_package`, the `tools/` process-spawn one, INV-A1's float grep and 3.6.3's
+`applyOetf`.
+
+**clang-tidy with a GENERIC macOS SDK reports a red tree that is actually clean.** Running it with
+`SDKROOT=$(xcrun --sdk macosx --show-sdk-path)` exits **1** with tens of thousands of errors, every one
+inside the system libc++ headers (`__builtin_clzg`, `__builtin_ctzg`, `__builtin_popcountg`
+undeclared), because the generic SDK resolves to a newer libc++ than LLVM 18's clang-tidy can parse.
+**The pinned `macosx15.4` SDK is required**; with it, clang-tidy exits 0 with zero project-code
+findings. Same species as this project's other guard traps — a command whose answer is wrong for a
+reason that has nothing to do with the tree.
+
+**The plan's `§B.3`/`§G.3` doctest command reads the wrong line.**
+`--list-test-cases | tail -2 | head -1` prints doctest's `===` separator, not the count; the usable
+form is `tail -1`. **`§B.5`'s manifest-comparison grep matches nothing** — there is no such line in
+`determinism.sha256`; the hash-line count and the cooker arm count are the usable figures.
+
+**`§A.5(c)`'s literal survey was wrong on one row and short by six.** `:593` is the phase-1 sample's
+**entity-name** count, not `builtinComponentNames()`, and it must stay 6. Component-count literals live
+in **five more files** the plan never names — `tests/scene_test.cpp` (7 sites),
+`tests/transform_test.cpp` (4), `tests/editor/hierarchy_test.cpp` (1), `tests/editor/inspector_test.cpp`
+(2, one of them the AC-12 drift pin) and a seventh in `scene_serialize_test.cpp` itself. Every one was
+found by a **red test**, not by a grep. This is 3.5.2's *"§R.8 undercounted its own survey"* repeating,
+and the generalisable form is unchanged: **a component-count literal is not confined to the tests that
+are about components.**
+
+**`tests/scene_format_test.cpp` cannot host the §2.3 tolerance rows** the plan assigned it: it is a TU
+of `aero_tests` and tests the format at the **DOM level** with no component knowledge, and reaching a
+generated serializer from it would need `aero::scene_serialize` on `aero_tests`' link line — a
+link-line change AC-5 forbids. The rows went beside `G12` in `scene_serialize_test.cpp`, where every
+row of that shape already lives, and **`scene_format_test.cpp` is byte-identical**.
+
+**`MX8`'s specified fixture cannot discriminate at all.** The plan asked for *"a clip whose last and
+first samples are EQUAL"*, on the theory that a clamping second index would then show a discontinuity.
+It cannot: with `s[N-1] == s[0]`, wrapping interpolates `s[N-1] → s[0]` and clamping interpolates
+`s[N-1] → s[N-1]`, and **those are the same number** — the two implementations are byte-identical on
+that fixture. `MX8` uses one whole period of a sine whose endpoints **differ** and asserts the seam
+sample against both closed-form answers. **`SP12`'s premise was false too**: `computeSpatialGains` does
+**not** normalise the listener's axes (§6.5 puts `normalizeOrZero` in `buildAudioView`, §6.6), so a raw
+×3 basis is not invariant; the case now applies the documented construction and asserts the
+un-normalised pair genuinely **differs**, so it is not vacuous.
+
+**`cos(π/2)` in fp32 is `-4.37e-8`, not 0** — measured. A hard-panned voice therefore carries a tiny
+**negative** gain on the opposite channel, at −160 dBFS. Left uncorrected: clamping it would deviate
+from §6.5's normative formula for nothing, and it is recorded in `SP8`'s comment so the next reader
+does not "fix" it.
+
+#### What this task deliberately did not do
+
+No editor audio of any kind — `/editor` is **byte-identical**, and both components appear in Add
+Component through 2.2.2's fully dynamic popup with **no editor source file touched**; play-mode gating
+is Phase 4's. No clip retirement (D7 — every handshake this task could ship deadlocks against a stopped
+device, since the audio thread is the only party that can acknowledge; `ClipHandle::generation` is
+always 1, so adding it later is purely additive). No voice stealing — `play()` past the cap refuses,
+counts and latches **one** WARN, because refusing predictably beats stealing unpredictably when nothing
+yet has a priority to steal by. No inverse or logarithmic rolloff (bundled with reflect-gen's enum
+support, **never alone**). No surround placement (it needs a channel map in `.aerowave` — a
+`formatVersion` bump). No HRTF, occlusion, reverb, Doppler, buses, mixers, effects or limiter. **No
+TSan lane** — `A23` is the evidence that one is worth proposing as its own task, and it was
+deliberately not bolted onto this one.
+
+**And nothing here has ever made a sound on any lane.** CI genuinely compiles and runs every `SP`,
+`MX`, `SY`, `SA` and `DV` case on all three lanes — the spatializer, the mixer, the system and the
+bridge **are** cross-lane covered — but CI opens the **null backend only**, so no lane produces audio.
+The twelve-row validation page
+(`editor/validation/3.7.2-playback-api-components.md`, written before the pass as always) is the only
+cover for the audible half, and **it has not been run**. One asymmetry sharpens it: **LSan runs on the
+Linux Debug lane alone**, so a green `SY20` on macOS proves the teardown is *clean*, not that a leak is
+*absent* — and unlike 3.7.1, whose leak lived in third-party code, **everything this task allocates is
+first-party**.
+
+#### The baseline, and the gate
+
+```
+BASELINE at main @ 0b28f98 / branch point, measured 2026-08-23:
+  ctest -N                       168 / 76 / 89
+  ctest --preset macos-debug     168 passed / 0 failed  (AERO_REQUIRE_GPU=1)
+  ctest --preset macos-release   168 passed / 0 failed  (AERO_REQUIRE_GPU=1)
+  doctest (7 binaries)           1088 / 1746 / 143 / 29 / 27 / 7 / 28
+  doctest tools-OFF (3 binaries) aero_tests 1021 / shell 1722 / imgui 129
+  math-boundary scanned          434      platform-boundary scanned  77
+  project-no-delete              A=6 / B=75
+  manifest                       20 hash lines ; cooker arms 70
+```
+
+**Every one matched spec F18** — nothing merged between the spec and the branch point, so F18's
+`[RE-VERIFY]` came back clean. That is the first time in this epic that the baseline moved nothing.
+
+Gate, re-measured on the tree at `e2da6f0` and never derived by addition:
+**168/168 on both macOS presets** with `AERO_REQUIRE_GPU=1` (Debug 331.55 s, Release 104.45 s); fresh
+`-G Ninja` reduced configurations **76/76** and **89/89**, each having **built and RUN** `aero_tests`,
+`aero_editor_shell_test`, `aero_editor_imgui_test` and `aero_cooker`; **`ctest -N` 168 / 76 / 89 —
+UNMOVED in all three**, which is the prediction being met rather than a missed registration (every new
+case rides an existing binary, the cooker is untouched, and the sample registers no test); doctest
+**1169 / 1746 / 143 / 34 / 29 / 7 / 28** against the baseline above — **`aero_tests` +81**
+(SP 14 · MX 22 · SY 20 · **SA 21** · DV 4, the SA figure being 18 as planned plus `SA10b` from the
+matrix and `SA17b`/`SA20` from the review round), `aero_scene_serialize_test` **+5**,
+`aero_editor_inspector_test` **+2**, the other four **+0** — and **the tools-OFF reading moves by the
+same delta**, with all five new filters listing identically in both configurations, which is what
+proves no case is gated; six guards exit 0 (math-boundary **434 → 449**, platform-boundary
+**77 → 83**, scene-boundary **77 → 83** — `scene_audio` joined both automatically, because both derive
+their subsystem set from the tree — rhi 144, golden-rule 146, project-no-delete **A=6 / B=75
+unmoved**); clang-format and clang-tidy clean **by exit code** over 30 changed C-family files and 20
+changed TUs; the determinism manifest **untouched at 20 hash lines**. The whole diff is **20 added /
+22 modified / 0 deleted**.
+
+**Byte-identical, verified as commands rather than asserted:** `/editor`, `docs/09-file-formats.md`,
+`vcpkg.json`, `cmake/`, `.github/` and the `/vcpkg` submodule pin, `tests/cooker/` and `tools/`,
+`engine/{core,assets,rhi,render,reflect,scene_render}` and `engine/scene_serialize/include`,
+`runtime/`, `shaders/`, `engine/audio/{clip.hpp,clip.cpp}`, every pre-existing sample,
+`tests/scene_format_test.cpp` and `tests/editor/scene_golden_test.cpp` — the last of these bought
+entirely by placing both components on **entity 8** of `full.scene.json`, the only placement that moves
+nothing but the two totals. **No dependency of any kind lands**, and **the only `target_link_libraries`
+change anywhere is `aero::scene_audio` joining `aero_tests`** — a **test** target, recorded as such
+rather than glossed.
