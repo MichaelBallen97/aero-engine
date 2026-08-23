@@ -193,7 +193,7 @@ private:
     // the end of a non-looping clip, in which case render() retires it -- at the block's end, never
     // mid-walk.
     bool mixVoice(Voice& voice, const AudioClip& clip, std::span<float> output, std::uint32_t channels,
-                  std::size_t frames) noexcept;
+                  std::size_t frames, std::uint32_t sampleRate) noexcept;
 };
 
 }  // namespace engine::audio

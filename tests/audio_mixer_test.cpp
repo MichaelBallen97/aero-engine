@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <ostream>
 #include <span>
@@ -386,4 +387,239 @@ TEST_CASE("MX22: a zero rate, zero channels or an empty span all write silence a
         CHECK(mixer.framesRendered() == 0U);
         CHECK(mixer.callbacksCompleted() == 1U);
     }
+}
+
+// ============================================================================================
+// Step 5: the 32.32 fixed-point cursor, linear interpolation, the loop seam and retirement.
+// ============================================================================================
+
+TEST_CASE("MX5: a 44100 -> 48000 resample reaches the closed-form fixed-point frame index EXACTLY") {
+    // Asserted through OBSERVABLE OUTPUT (which frame the mixer read) rather than by exposing the
+    // cursor: the clip is a ramp whose value IS its frame index, so the sample names the frame.
+    const ClipSource source(44100, 1, rampSamples(512, 1));
+    AudioMixer mixer;
+    REQUIRE(mixer.publishClip(0, source.get()));
+    mixer.applyCommand(startCommand(0, 1, 0, flatParams()));
+
+    constexpr std::size_t BLOCK = 64;
+    std::array<float, BLOCK> buffer{};
+    mixer.render(buffer, 1, 48000);
+
+    // The closed form, recomputed here in the SAME integer arithmetic the mixer uses -- one divide,
+    // one multiply, one convert, no libm.
+    const auto increment = static_cast<std::uint64_t>((44100.0 / 48000.0) * 1.0 * 4294967296.0);
+    std::uint64_t cursor = 0;
+    for (std::size_t f = 0; f < BLOCK; ++f) {
+        const auto index = static_cast<std::uint32_t>(cursor >> 32U);
+        const auto next = static_cast<std::uint32_t>(index + 1);
+        const float frac = static_cast<float>(cursor & 0xFFFFFFFFULL) * (1.0F / 4294967296.0F);
+        const float a = static_cast<float>(index * 10) * S16_SCALE;
+        const float b = static_cast<float>(next * 10) * S16_SCALE;
+        CHECK(buffer[f] == (a + ((b - a) * frac)));  // EXACT: no libm anywhere in this chain
+        cursor += increment;
+    }
+    // The last frame the block reached is strictly inside the clip and strictly below 64 -- a
+    // downsampling ratio, so fewer clip frames are consumed than output frames produced.
+    CHECK((cursor >> 32U) < BLOCK);
+}
+
+TEST_CASE("MX6: pitch 2 consumes twice the frames per block and pitch 0.5 consumes half") {
+    const ClipSource source(48000, 1, rampSamples(2048, 1));
+
+    // The clip is a ramp of 10 per frame, so the FIRST sample of the second block names the frame the
+    // cursor reached, which is exactly what "how many frames did this block consume" means.
+    auto firstSampleOfSecondBlock = [&source](float pitch) {
+        AudioMixer mixer;
+        REQUIRE(mixer.publishClip(0, source.get()));
+        VoiceParams params = flatParams();
+        params.pitch = pitch;
+        mixer.applyCommand(startCommand(0, 1, 0, params));
+        std::array<float, 32> block{};
+        mixer.render(block, 1, 48000);
+        mixer.render(block, 1, 48000);
+        return block[0];
+    };
+
+    CHECK(firstSampleOfSecondBlock(1.0F) == static_cast<float>(32 * 10) * S16_SCALE);
+    CHECK(firstSampleOfSecondBlock(2.0F) == static_cast<float>(64 * 10) * S16_SCALE);
+    CHECK(firstSampleOfSecondBlock(0.5F) == static_cast<float>(16 * 10) * S16_SCALE);
+}
+
+TEST_CASE("MX7: pitch 0 parks the voice ALIVE, and pitch out of range clamps at both ends") {
+    const ClipSource source(48000, 1, rampSamples(2048, 1));
+
+    SUBCASE("pitch 0 keeps the voice alive and emits the frame it is parked on") {
+        // Mirrors AnimationPlayer::speed == 0 being pause WITHOUT clearing `playing`.
+        AudioMixer mixer;
+        REQUIRE(mixer.publishClip(0, source.get()));
+        VoiceParams params = flatParams();
+        params.pitch = 0.0F;
+        mixer.applyCommand(startCommand(0, 1, 0, params));
+
+        std::array<float, 16> block{};
+        mixer.render(block, 1, 48000);
+        mixer.render(block, 1, 48000);
+        CHECK(mixer.activeVoices() == 1U);  // ALIVE, not retired
+        for (const float sample : block) {
+            CHECK(sample == 0.0F);  // frame 0 of the ramp is 0, and the cursor never moved
+        }
+    }
+
+    SUBCASE("a NEGATIVE pitch clamps to 0 and behaves identically to pitch 0") {
+        AudioMixer mixer;
+        REQUIRE(mixer.publishClip(0, source.get()));
+        VoiceParams params = flatParams();
+        params.pitch = -3.0F;
+        mixer.applyCommand(startCommand(0, 1, 0, params));
+
+        std::array<float, 16> block{};
+        mixer.render(block, 1, 48000);
+        mixer.render(block, 1, 48000);
+        CHECK(mixer.activeVoices() == 1U);
+        CHECK(block[0] == 0.0F);
+    }
+
+    SUBCASE("a pitch ABOVE MAX_PITCH clamps to MAX_PITCH") {
+        auto firstOfSecondBlock = [&source](float pitch) {
+            AudioMixer mixer;
+            REQUIRE(mixer.publishClip(0, source.get()));
+            VoiceParams params = flatParams();
+            params.pitch = pitch;
+            mixer.applyCommand(startCommand(0, 1, 0, params));
+            std::array<float, 32> block{};
+            mixer.render(block, 1, 48000);
+            mixer.render(block, 1, 48000);
+            return block[0];
+        };
+        CHECK(firstOfSecondBlock(100.0F) == firstOfSecondBlock(engine::audio::MAX_PITCH));
+        CHECK(firstOfSecondBlock(100.0F) == static_cast<float>(32 * 4 * 10) * S16_SCALE);
+    }
+}
+
+TEST_CASE("MX8: looping WRAPS the second index, so the seam interpolates INTO frame 0") {
+    // THE PLAN'S ORIGINAL FIXTURE CANNOT DISCRIMINATE AND THE CORRECTION IS RECORDED HERE. It asked
+    // for "a clip whose last and first samples are EQUAL", on the theory that a clamping
+    // implementation would then show a discontinuity. It cannot: with s[N-1] == s[0], wrapping
+    // interpolates s[N-1] -> s[0] and clamping interpolates s[N-1] -> s[N-1], and those are THE SAME
+    // NUMBER. The two implementations are byte-identical on that fixture.
+    //
+    // What actually separates them is the seam SAMPLE VALUE on a fixture whose endpoints DIFFER while
+    // the CYCLE is complete -- one whole period of a sine over N frames, where the ideal frame N is
+    // frame 0. This case computes the wrap's answer and the clamp's answer in closed form and asserts
+    // the output is the first and not the second. Witnessed by arithmetic, never by listening.
+    constexpr std::uint32_t FRAMES = 64;
+    std::vector<std::int16_t> samples(FRAMES);
+    for (std::uint32_t f = 0; f < FRAMES; ++f) {
+        const double phase = 2.0 * std::numbers::pi * static_cast<double>(f) / static_cast<double>(FRAMES);
+        samples[f] = static_cast<std::int16_t>(std::lround(20000.0 * std::sin(phase)));
+    }
+    REQUIRE(samples[FRAMES - 1] != samples[0]);  // the endpoints DIFFER -- that is the whole point
+
+    const ClipSource source(44100, 1, samples);
+    AudioMixer mixer;
+    REQUIRE(mixer.publishClip(0, source.get()));
+    VoiceParams params = flatParams();
+    params.loop = true;
+    mixer.applyCommand(startCommand(0, 1, 0, params));
+
+    std::array<float, 256> buffer{};
+    mixer.render(buffer, 1, 48000);
+
+    // Replicate the cursor in the same integer arithmetic the mixer uses, and find the first output
+    // frame that sits on the LAST clip frame with a NON-ZERO fraction -- the one frame whose value
+    // depends on which second index the implementation chose.
+    const auto increment = static_cast<std::uint64_t>((44100.0 / 48000.0) * 1.0 * 4294967296.0);
+    const std::uint64_t clipSpan = static_cast<std::uint64_t>(FRAMES) << 32U;
+    std::uint64_t cursor = 0;
+    std::size_t seamIndex = buffer.size();
+    float seamFrac = 0.0F;
+    for (std::size_t f = 0; f < buffer.size(); ++f) {
+        if ((cursor >> 32U) >= FRAMES) {
+            cursor %= clipSpan;
+        }
+        const auto index = static_cast<std::uint32_t>(cursor >> 32U);
+        const float frac = static_cast<float>(cursor & 0xFFFFFFFFULL) * (1.0F / 4294967296.0F);
+        if (index == FRAMES - 1 && frac > 0.0F) {
+            seamIndex = f;
+            seamFrac = frac;
+            break;
+        }
+        cursor += increment;
+    }
+    REQUIRE(seamIndex < buffer.size());
+
+    const float last = static_cast<float>(samples[FRAMES - 1]) * S16_SCALE;
+    const float first = static_cast<float>(samples[0]) * S16_SCALE;
+    const float wrapped = last + ((first - last) * seamFrac);  // the CORRECT answer
+    const float clamped = last + ((last - last) * seamFrac);   // what a CLAMPING second index gives
+
+    CHECK(buffer[seamIndex] == wrapped);  // exact: the same three float operations, in the same order
+    CHECK(buffer[seamIndex] != clamped);  // and provably NOT the clamp's answer
+    CHECK(mixer.activeVoices() == 1U);    // a LOOPING voice never retires, even after eight wraps
+    CHECK(mixer.framesRendered() == 256U);
+}
+
+TEST_CASE("MX9: a NON-looping clip clamps its second index, retires, and is EXACTLY 0 after the end") {
+    const ClipSource source(48000, 1, std::vector<std::int16_t>(8, 4000));
+    AudioMixer mixer;
+    REQUIRE(mixer.publishClip(0, source.get()));
+    mixer.applyCommand(startCommand(0, 1, 0, flatParams()));
+
+    std::array<float, 32> buffer{};
+    poison(buffer);
+    mixer.render(buffer, 1, 48000);
+
+    const float expected = 4000.0F * S16_SCALE;
+    for (std::size_t f = 0; f < 8; ++f) {
+        CHECK(buffer[f] == expected);  // the clamp keeps the last frame flat rather than wrapping to 0
+    }
+    for (std::size_t f = 8; f < buffer.size(); ++f) {
+        CHECK(buffer[f] == 0.0F);  // EXACTLY 0 after the end
+    }
+    CHECK(mixer.activeVoices() == 0U);  // retired at the block's end
+}
+
+TEST_CASE("MX10: a retired voice reaches the retire ring EXACTLY once, with ITS OWN generation") {
+    const ClipSource source(48000, 1, std::vector<std::int16_t>(4, 1000));
+    AudioMixer mixer;
+    REQUIRE(mixer.publishClip(0, source.get()));
+    mixer.applyCommand(startCommand(/*slot=*/5, /*generation=*/9, 0, flatParams()));
+
+    std::array<float, 16> buffer{};
+    mixer.render(buffer, 1, 48000);
+
+    std::uint32_t slot = 0;
+    std::uint32_t generation = 0;
+    REQUIRE(mixer.popRetired(slot, generation));
+    CHECK(slot == 5U);
+    CHECK(generation == 9U);  // ITS OWN generation, not the slot's current one
+
+    CHECK_FALSE(mixer.popRetired(slot, generation));  // exactly once
+    mixer.render(buffer, 1, 48000);
+    CHECK_FALSE(mixer.popRetired(slot, generation));  // and still exactly once after another block
+}
+
+TEST_CASE("MX19: a cursor at MAX_COOKED_AUDIO_FRAMES is exact in u64 and COLLAPSES through float") {
+    // THE ARM THAT JUSTIFIES THE TYPE, and it is easy to write vacuously. The assertion is not "a u64
+    // holds a big number". It is that two sub-sample positions one increment apart are
+    // DISTINGUISHABLE in 32.32 fixed point and INDISTINGUISHABLE once round-tripped through a float
+    // frame position -- because 28 800 000 > 2^24 == 16 777 216.
+    constexpr std::uint32_t MAX_FRAMES = engine::assets::MAX_COOKED_AUDIO_FRAMES;
+    CHECK(MAX_FRAMES > (1U << 24U));
+
+    const std::uint64_t c0 = static_cast<std::uint64_t>(MAX_FRAMES) << 32U;
+    const std::uint64_t c1 = c0 + 1;
+    CHECK(c0 != c1);
+    CHECK((c1 >> 32U) == MAX_FRAMES);  // one fixed-point tick does not move the frame index
+
+    // Two ADJACENT frame positions -- not sub-sample, whole frames -- already collapse in float.
+    const auto f0 = static_cast<float>(MAX_FRAMES);
+    const auto f1 = static_cast<float>(MAX_FRAMES + 1U);
+    CHECK(f0 == f1);  // a float frame cursor cannot even count frames at this magnitude
+
+    // And the u64 form can, which is the whole point.
+    CHECK((static_cast<std::uint64_t>(MAX_FRAMES) != static_cast<std::uint64_t>(MAX_FRAMES) + 1U));
+
+    // The worst legal cursor is comfortably inside u64: 28 800 000 * 2^32 ~= 1.24e17 against 1.8e19.
+    CHECK(c0 / 4294967296ULL == MAX_FRAMES);
 }

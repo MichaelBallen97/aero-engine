@@ -19,8 +19,41 @@ namespace {
 // would let a full-scale negative sample reach -1.0000305 and hit the output clamp.
 constexpr float S16_TO_FLOAT = 1.0F / 32768.0F;
 
-// 32.32 fixed point: the value of exactly one frame.
+// 32.32 FIXED POINT: the value of exactly one frame. A `float` cursor is a REACHABLE DEFECT rather
+// than a style preference (D15): a float has a 24-bit mantissa, so 2^24 == 16 777 216, while
+// MAX_COOKED_AUDIO_FRAMES is 28 800 000. A float frame cursor therefore loses sub-sample precision
+// INSIDE THE FORMAT'S OWN LEGAL RANGE -- not a theoretical concern, a file `aero_cooker audio` will
+// happily produce. MX19 is the arm that justifies the type.
 constexpr std::uint64_t FIXED_POINT_ONE = 1ULL << 32U;
+constexpr double FIXED_POINT_SCALE = 4294967296.0;                  // 2^32, as a double
+constexpr float FIXED_POINT_FRACTION_SCALE = 1.0F / 4294967296.0F;  // 2^-32, as a float
+constexpr std::uint64_t FIXED_POINT_FRACTION_MASK = 0xFFFFFFFFULL;
+
+// Computed ONCE PER BLOCK, so the per-sample cost is one u64 add.
+//
+// THE DOUBLE IS DELIBERATE AND IS WHY THIS IS BIT-EXACT ON EVERY LANE: the conversion is one divide,
+// one multiply and one convert, all IEEE-754-exact operations with NO libm call, so identical inputs
+// give identical increments everywhere. That is what licenses MX5's and SY18's exact assertions and
+// validation row 5's shasum. Contrast render::sampleAnimation, which docs/09 section 13.7 excludes
+// from the determinism contract by name precisely because it reaches sin/acos/sqrt.
+//
+// RANGE, DONE RATHER THAN ASSUMED: the worst legal increment is pitch 4 x (384000 / 8000) = 192, i.e.
+// 192 * 2^32 ~= 8.2e11, and the worst cursor is 28 800 000 * 2^32 ~= 1.24e17. Both are comfortably
+// inside u64's 1.8e19. MX18 asserts it rather than trusting this paragraph.
+[[nodiscard]] std::uint64_t frameIncrement(std::uint32_t clipRate, std::uint32_t outRate, float pitch) noexcept {
+    const auto ratio = static_cast<double>(clipRate) / static_cast<double>(outRate);
+    const auto clampedPitch = static_cast<double>(std::clamp(pitch, MIN_PITCH, MAX_PITCH));
+    return static_cast<std::uint64_t>(ratio * clampedPitch * FIXED_POINT_SCALE);
+}
+
+// The arithmetic MEAN over a clip's channels at one frame, in float.
+[[nodiscard]] float monoSample(const AudioClip& clip, std::uint32_t frame, std::uint32_t chans) noexcept {
+    float sum = 0.0F;
+    for (std::uint32_t c = 0; c < chans; ++c) {
+        sum += static_cast<float>(clip.frameSample(frame, c)) * S16_TO_FLOAT;
+    }
+    return sum / static_cast<float>(chans);
+}
 
 }  // namespace
 
@@ -153,7 +186,7 @@ void AudioMixer::render(std::span<float> output, std::uint32_t channels, std::ui
                     retire(slot, voice.generation);
                     continue;
                 }
-                if (!mixVoice(voice, *clip, output, channels, frames)) {
+                if (!mixVoice(voice, *clip, output, channels, frames, sampleRate)) {
                     voice.active = false;
                     retire(slot, voice.generation);
                 }
@@ -181,45 +214,65 @@ void AudioMixer::render(std::span<float> output, std::uint32_t channels, std::ui
 }
 
 bool AudioMixer::mixVoice(Voice& voice, const AudioClip& clip, std::span<float> output, std::uint32_t channels,
-                          std::size_t frames) noexcept {
+                          std::size_t frames, std::uint32_t sampleRate) noexcept {
     const std::uint32_t clipFrames = clip.frameCount();
     const std::uint32_t clipChannels = clip.channels();
     const float gain = voice.params.volume * masterVolume;
-    // Unity increment at this commit: the fixed-point rate/pitch conversion and the interpolation
-    // arrive with the resampler. The cursor is already 32.32 so that arrival changes only this line.
-    const std::uint64_t increment = FIXED_POINT_ONE;
+    const std::uint64_t increment = frameIncrement(clip.sampleRate(), sampleRate, voice.params.pitch);
+    const bool loop = voice.params.loop;
+    const std::uint64_t clipSpan = static_cast<std::uint64_t>(clipFrames) << 32U;
 
     bool alive = true;
     for (std::size_t f = 0; f < frames; ++f) {
-        const std::uint64_t frameIndex = voice.cursor >> 32U;
+        std::uint64_t frameIndex = voice.cursor >> 32U;
         if (frameIndex >= clipFrames) {
-            // Past the end of a non-looping clip: contribute EXACTLY 0 for the rest of the block and
-            // retire at the block's end, never mid-walk.
-            alive = false;
-            break;
+            if (!loop) {
+                // Past the end of a non-looping clip: contribute EXACTLY 0 for the rest of the block
+                // and retire at the block's END, never mid-walk.
+                alive = false;
+                break;
+            }
+            // THE WRAP IS IN THE FRAME LOOP, NOT AFTER IT. A block routinely spans the end of a short
+            // clip -- a 64-frame clip against a 512-frame block passes it eight times -- and a wrap
+            // deferred to the block's end would leave every frame past the end reading silence and
+            // then retiring the voice. ONE MODULO RATHER THAN A SUBTRACT LOOP: a huge increment
+            // (pitch 4 on an 8 kHz clip at 384 kHz output) can pass the end several times in a single
+            // step, and a loop that subtracts is UNBOUNDED WORK ON A REALTIME THREAD. The modulo runs
+            // only on the frames that actually wrap -- once per clip period in every ordinary case.
+            voice.cursor %= clipSpan;
+            frameIndex = voice.cursor >> 32U;
         }
         const auto index = static_cast<std::uint32_t>(frameIndex);
+        // THE SECOND INDEX HAS EXACTLY TWO RULES, and the loop one is the interesting half.
+        //   looping: i + 1 WRAPS to 0 at the last frame, so a clip cut at a whole number of cycles
+        //            loops with NO DISCONTINUITY AT ALL -- the property is witnessed by arithmetic
+        //            (MX8) rather than by listening.
+        //   not looping: i + 1 CLAMPS to frameCount - 1.
+        const std::uint32_t nextIndex = index + 1 < clipFrames ? index + 1 : (loop ? 0U : clipFrames - 1U);
+        const auto fracBits = static_cast<float>(voice.cursor & FIXED_POINT_FRACTION_MASK);
+        const float frac = fracBits * FIXED_POINT_FRACTION_SCALE;
+
         const std::size_t base = f * channels;
         if (clipChannels == channels) {
             // Straight through, per channel: a 2-channel clip's L and R stay L and R.
             for (std::uint32_t ch = 0; ch < channels; ++ch) {
-                const float sample = static_cast<float>(clip.frameSample(index, ch)) * S16_TO_FLOAT;
-                output[base + ch] += sample * gain;
+                const float a = static_cast<float>(clip.frameSample(index, ch)) * S16_TO_FLOAT;
+                const float b = static_cast<float>(clip.frameSample(nextIndex, ch)) * S16_TO_FLOAT;
+                output[base + ch] += (a + ((b - a) * frac)) * gain;
             }
         } else {
             // Channel-count mismatch: the arithmetic MEAN over the clip's channels, fanned out to
             // every output channel.
-            float sum = 0.0F;
-            for (std::uint32_t c = 0; c < clipChannels; ++c) {
-                sum += static_cast<float>(clip.frameSample(index, c)) * S16_TO_FLOAT;
-            }
-            const float mono = sum / static_cast<float>(clipChannels);
+            const float a = monoSample(clip, index, clipChannels);
+            const float b = monoSample(clip, nextIndex, clipChannels);
+            const float sample = a + ((b - a) * frac);
             for (std::uint32_t ch = 0; ch < channels; ++ch) {
-                output[base + ch] += mono * gain;
+                output[base + ch] += sample * gain;
             }
         }
         voice.cursor += increment;
     }
+
     return alive;
 }
 
