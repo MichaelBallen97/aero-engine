@@ -160,9 +160,15 @@ void printExpectedTable(const Options& options, std::uint32_t deviceRate, std::u
     std::printf("  loop                   %s\n", options.loop ? "on" : "OFF (--no-loop)");
     if (!options.dumpPath.empty()) {
         const auto totalFrames = static_cast<std::uint64_t>(options.seconds * static_cast<float>(deviceRate));
+        // The product is NAMED rather than cast inline, and the reason is a lane divergence rather
+        // than taste: std::uint64_t is `unsigned long` on Linux and `unsigned long long` on macOS, so
+        // casting the ARITHMETIC EXPRESSION straight into printf's %llu is a no-op here and a widening
+        // cast there -- which bugprone-misplaced-widening-cast rejects on the Linux lane alone. Cast a
+        // variable, never an expression, whenever the target type is spelled for a printf format.
+        const std::uint64_t dumpBytes = totalFrames * deviceChannels * 4U;
         std::printf("  dump size              %llu bytes = %.1f s x %u Hz x %u ch x 4\n",
-                    static_cast<unsigned long long>(totalFrames * deviceChannels * 4U),
-                    static_cast<double>(options.seconds), deviceRate, deviceChannels);
+                    static_cast<unsigned long long>(dumpBytes), static_cast<double>(options.seconds), deviceRate,
+                    deviceChannels);
     }
     std::printf("\n");
 }
