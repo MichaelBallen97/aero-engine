@@ -11347,24 +11347,48 @@ log reads `165: <sha256>  audio-tone-mp3.aerowave`. **The general form is worth 
 prints for a person to read needs something that makes the print readable — a passing test is silent
 by default, which is exactly the state a measurement must not be left in.**
 
-**The three-lane reading, mp3:**
-`ba4aad02a9000f4ea2b13e464cda3b743d925af436a1ae1fb1dac3740d5f331c` (macOS) / **_______** (Windows) /
-**_______** (Linux). **And ogg:**
-`ee8b6cf0ccc5427f35780d31beee3eb478ab7254623297bddd73071e1353f1c0` (macOS) / **_______** (Windows) /
-**_______** (Linux). The macOS pair is measured on the Release preset and is **byte-identical in
-Debug**, so on this lane the configuration moves no number — which is why the CI step takes Release,
-matching the configuration the frozen wav/flac contract is compared from, rather than for a reason
-about the digits. The four remaining blanks are filled from the first CI run carrying the new step.
+**THE THREE-LANE READING IS IN, from run `32589745260`, the first run in which
+`Cook determinism (cross-lane)` actually EXECUTED rather than skipped:**
+
+| Format | macOS | Windows | Linux |
+|---|---|---|---|
+| **mp3** | `ba4aad02a9000f4ea2b13e464cda3b743d925af436a1ae1fb1dac3740d5f331c` | `1c1ab8d25281fbb290ae1a9a30b889a99f465a2dd707ab300d2682878b3aafea` | `1c1ab8d25281fbb290ae1a9a30b889a99f465a2dd707ab300d2682878b3aafea` |
+| **ogg** | `ee8b6cf0ccc5427f35780d31beee3eb478ab7254623297bddd73071e1353f1c0` | `d854f0b10afa20a8736970fdc12261dec8191814666ca3021ee25385b89ef033` | `ec61e75ffda05982b369b7b7092f1ee500d1f310b2adea21eef180d0b8fcb8c0` |
+
+**mp3: Windows and Linux agree byte for byte and macOS differs. ogg: all three lanes differ from each
+other.** The macOS pair is measured on the Release preset and is **byte-identical in Debug**, so on
+that lane the configuration moves no number — which is why the CI step takes Release, matching the
+configuration the frozen wav/flac contract is compared from, rather than for a reason about the
+digits.
+
+**D12 IS NOT MERELY CAUTIOUS — IT IS VINDICATED BY MEASUREMENT, ON THE FIRST RUN THAT COULD HAVE
+TESTED IT.** Had mp3 and ogg been frozen into `determinism.sha256` beside wav and flac, the
+`cook-determinism` job would be **red right now**. The decision to keep them out rested on an
+argument about SIMD availability and FMA contraction policy; these numbers show the argument was
+correct rather than theoretical.
+
+**And the same run confirms the OTHER half, which is what makes the pair worth recording together.**
+`cook-determinism` **passed**, so the two new `audio-tone-wav` / `audio-tone-flac` lines — which share
+one hash — agreed byte for byte across macOS, Windows and Linux. One task, both halves, measured:
+**integer decoders agree cross-lane; floating-point decoders do not.**
+
+**The ogg being the worst of the two is the expected shape rather than a surprise** — three lanes,
+three results, from the decoder whose inverse-MDCT is the most float-intensive path of the four. That
+pattern is *consistent with* the stated mechanism; it is not an isolation of it, and no cause has been
+measured here.
+
 **Whatever they say, the two formats stay out of the frozen manifest**, because agreement today at
 one vcpkg baseline and three pinned compilers is a *fact*, not a *contract*, and
 `.claude/rules/cooked-assets.md` says a red manifest means "the same input now cooks to different
-bytes" — a sentence that has to stay true.
+bytes" — a sentence that has to stay true. That sentence now reads as understatement rather than
+caution.
 
 #### The sabotage matrix — 34 seeds, run to completion, no gap found
 
 Every seed either reddened at least one case or failed to compile. **A19, A23 and A28 were flagged
-expected-declared BEFORE the matrix ran**, so their results are confirmations rather than discoveries,
-and validation rows 6 and 7 are their only coverage anywhere.
+expected-declared BEFORE the matrix ran**, so their results are confirmations rather than discoveries.
+**Two of the three are still declared and validation row 6 is their only coverage anywhere; the
+third, A28, was closed by the code-review round** — see Gap 2 below.
 
 **Four seeds are BUILD FAILURES rather than test failures, which is a stronger witness than any case**,
 and each was re-read from its own build log rather than remembered:
@@ -11619,6 +11643,168 @@ LSan runs on the Linux Debug lane alone, so macOS and Windows passing the same c
 about it, and **no local run on this machine can see it at all**. That is the second time this tree
 has learned it (3.2.5 was the first) and the first time a *decoder* rather than an *importer* was the
 source.
+
+#### The code-review round — four findings, none blocking, all four closed
+
+**The round's through-line is that TWO OF THE FOUR ARE A CLAIM THE BRANCH ITSELF MADE FALSE**, which
+is a different failure mode from the "a counter observes the INTENTION rather than the EFFECT" line
+the last six tasks kept finding. Here the code was doing something specific and correct, and a
+sentence a few lines away — in a comment, a README paragraph or a normative rules file — described
+something else. Nothing tests a sentence, so nothing reddened.
+
+**GAP 1 (the most severe) — the decode was capped per-axis only, never on the product.**
+`decodeAudioFile` bounded `frames` and `channels` independently and never their product. Production
+callers pass `MAX_COOKED_AUDIO_FRAMES` (28 800 000) and `MAX_COOKED_AUDIO_CHANNELS` (8), so the
+decoder would accept and buffer up to **230 400 000 `int16_t` ≈ 440 MiB — four times
+`MAX_COOKED_AUDIO_BYTES` (115 200 064), the number `cooked_audio.hpp` itself calls the one worth
+bounding** — and `cookAudio` then refused every such input on its sample cap, so **the whole
+allocation was guaranteed waste**. Worse, the pre-allocation `reserve()` was driven purely by the
+file's own claim, three lines below a comment saying that claim is untrustworthy: the in-loop check
+protected the **cap**, and nothing protected the **allocation**.
+
+**Reachable without crafting anything**: a legitimate 4-channel 48 kHz ten-minute FLAC is ~115 MB on
+disk, under the 256 MiB read cap, and decodes to 230 MB before being refused. Crafted inputs reach it
+more cheaply — a few-hundred-byte ogg declaring 8 channels and a granulepos of 28 000 000 reserves
+~427 MiB and then decodes nothing.
+
+**Closed with a fifth parameter, `maxSamples`, checked in both places the per-axis caps already
+were.** Three details are worth carrying. (a) **The multiply SATURATES rather than wrapping** —
+`frames` comes from a length query a hostile file controls, and a wrapped product reports a SMALL
+number for a huge claim, which is the one arithmetic mistake that turns a cap into a hole. (b) **The
+ORDER is load-bearing and is stated in the source**: the frame cap runs first, so the product is
+formed from an already-bounded count and the saturating path is unreachable with the production caps
+— it ships anyway, because this function's bounds are parameters and a future caller's are not this
+function's to assume. (c) **The two pre-allocation refusals are worded so a test can tell them
+apart**, the `AD16` technique: the declared form names the source's own frame count, which is only
+knowable from the length query.
+
+**`AD19` and `AD20` are the new arms.** `AD19` leaves both axes generous so only the product can
+fire, asserts the MESSAGE rather than the status, and additionally pins that the **exact** product is
+accepted (`>` and not `>=`). `AD20` uses `tone.ogg`, the one fixture where a frame cap and a sample
+cap are different numbers. Seeding the two pre-allocation product checks away reddens `AD19` and
+`AD20` alone — 22 assertions.
+
+**And it made a stated invariant false in two places**, which is the half that matters beyond the
+allocation: `tools/cooker/src/main.cpp` and `tools/cooker/README.md` both said *"the decoder refuses
+exactly what the cook would have refused, one step earlier and without allocating the samples
+first."* **The cook refuses on five conditions and only two were pushed down.** Adding `maxSamples`
+takes it to three, and the sentence is still false as written, so **the sentence was fixed rather
+than left standing**: what is pushed down is every bound that governs how many SAMPLES exist, and the
+two that are not — the sample-RATE bounds and the divisibility check — are now named with their
+reasons (a rate bounds nothing that gets allocated; the decoder emits whole frames by construction,
+so the divisibility check cannot fail for this input at all).
+
+**GAP 2 — "an mp3 with no Xing header reports 0" is FALSE for the pinned miniaudio**, and the claim
+sat in five places: `audio_decode.cpp` twice, `audio_decode.hpp`, `tools/cooker/README.md` and this
+entry's own `A28` justification. Read out of the pinned source: `ma_dr_mp3_get_pcm_frame_count`
+(`:95477-95500`) returns a cached count **only** when a Xing/Info tag set `detectedMP3FrameCount`
+(`:94920`, `:94973-94974`); with no such tag it falls through to
+`ma_dr_mp3_get_mp3_and_pcm_frame_count` (`:95440-95475`), which **decodes the entire stream** to count
+it and seeks back. For a seekable memory stream it never returns 0 — it returns the **true** count.
+
+Three consequences, all now recorded at the sites that carried the claim. **A Xing-less mp3 is decoded
+TWICE** — a full counting scan, then the real decode; the scan allocates no PCM and is bounded by the
+caller's 256 MiB read cap, but it is **not** bounded by `maxFrames`, because it happens before the
+decoder can refuse anything. **Nothing in this tree tests that branch**, because
+`tests/fixtures/audio/tone.mp3` carries an `Info` tag and every arm takes the fast path. And **`A28`'s
+declared-seed justification named an example that cannot exist.**
+
+**Then the interesting part: the reviewer's proposed replacement fixture does not work either, and
+both directions were measured rather than argued.**
+
+| Seeded claim | What the decoder actually did |
+|---|---|
+| `tone.mp3`'s Info frame count 16 → **4** | decoded **1088** frames, not 8000 |
+| `tone.mp3`'s Info frame count 16 → **100000** | refused by the **pre-allocation** check, naming 57 598 784 frames |
+| hand-built Wave64, `fact` chunk = **10** over 8000 frames of data | decoded **10** frames |
+
+**`ma_dr_mp3_read_pcm_frames_raw` bounds its own reads by the same `totalPCMFrameCount` it reports**
+(the `break` at the padding boundary), and dr_wav does the same, so **within the miniaudio backend the
+in-loop check is structurally unreachable** — a low lie makes the decode SHORTER and a high lie is
+caught before the loop is entered. **stb_vorbis is the exception, and its own source says why**:
+`total_samples` is set lazily and read by `stb_vorbis_stream_length_in_samples` **alone**, never by
+the pull API's decode loop.
+
+**So the lie has to point DOWNWARD, which makes it cheap rather than the ~55 MB the old justification
+assumed.** `tests/fixtures/audio/tone-lying-length.ogg` is `tone.ogg` with its last page's granule
+position rewritten **8000 → 10** and that page's framing CRC recomputed: **six bytes differ**. It is
+generated by a script recorded verbatim in `tests/fixtures/audio/README.md` — integer arithmetic over
+`tone.ogg`'s own bytes — and **regeneration from that recorded script was verified byte-identical to
+the committed file**, extracted from the README itself rather than from a copy.
+
+Measured against it: at a generous cap it decodes **7168** frames against the **10** its header
+claims (7168 rather than 8000 because the *last* page is truncated to its own granule position, while
+every page before it decodes in full — which is exactly the overrun the in-loop check exists to
+stop). At `maxFrames = 100` both it and the honest `tone.ogg` are refused, and **only the wording says
+which check did it** — so `AD21` asserts the MESSAGES, never the statuses. **Seeding the in-loop frame
+cap away reddens `AD21` alone, 3 assertions, where the same seed previously left the whole 1745-case
+suite green; seeding the in-loop product cap away reddens `AD21`'s third block alone.**
+
+**`A28` is therefore a WITNESSED seed, not a declared one, and this task's declared class drops from
+three to two — the smallest in the project so far.** The generalizable form: **a "no affordable
+fixture" justification is a claim about a mechanism, and it deserves the same measurement any other
+claim gets.** This one was wrong twice over — about which backend could show the defect, and about
+what the fixture would cost.
+
+**GAP 3 — the `18 → 20` / `four → five` sweep missed two sites**, which is precisely the plan's own R8
+/ D13 risk and the second time this project has hit it (task 3.5.1 was the first).
+**`tools/cooker/README.md`'s Tests paragraph** is the frozen contract, so it mattered most: it claimed
+**68** `cooker.*` entries against a measured **70**, attributed **9** to audio where audio contributes
+**11** (nine subcommand arms plus `audio_golden_manifest` plus `audio_lossy_digests`), named **four**
+manifest cases where there are **five** — `cooker.audio_golden_manifest` appeared nowhere in that
+paragraph at all — and described the matrix as **eighteen** artifacts rather than twenty. The branch
+contradicted itself: `CLAUDE.md` already said 70.
+**`tests/cooker/run_case.cmake`'s manifest header** was byte-identical to `main` and sat directly
+above a five-way disjunction while reading *"Four cases, one shape"*, *"all four register in all three
+build configurations"*, *"checked TWELVE times per push"*, *"A FOURTH ARM RATHER THAN A WIDER TUPLE
+TABLE"* and *"eighteen files across the four cases and nothing else."*
+
+**Every number was RE-DERIVED rather than incremented, and the twelve is why that distinction is not
+pedantry: it is a PRODUCT.** It was 2 arms × 3 lanes × 2 configurations when task 3.3.3 wrote it, so
+incrementing it would have been wrong even if somebody had noticed the word. Five arms × three lanes
+× two configurations is **thirty arm runs per push**, which is **six complete checks of all twenty
+lines**. The header now carries a sentence saying its numbers are re-derived when an arm is added.
+The rest of the sweep was checked rather than assumed: `determinism.sha256`'s own header, its
+regeneration `-R` regex and `ci.yml`'s six literal sites all already read twenty and forty, and
+`main.cpp:583`'s *"eighteen arms"* is about the mesh prelude's regression harness rather than the
+manifest and is correct.
+
+**GAP 4 — a normative rules file stated an absolute this branch falsifies.**
+`.claude/rules/cooked-assets.md` gives *"the runtime must never link a decoder"* as the third of three
+independent reasons the decode lives in `/editor`. Dropping `MA_NO_DECODING` compiles dr_wav, dr_flac
+and dr_mp3 into `aero_platform`, whose archive reaches every binary linking it — **the Phase 5 runtime
+included**. `miniaudio_impl.c:30-37` records that honestly (D7's accepted cost, expected-zero after
+`--gc-sections` / `/OPT:REF`, **explicitly unverified**, `MA_API static` as the escape hatch, owner
+Phase 5's packager) — **but that comment is not auto-loaded, while the rules file is path-scoped and
+loads for anyone touching `engine/assets` or the cooker.** So the one place a future task is most
+likely to read the absolute was the one place the cost was not written down. Closed with one sentence
+naming the cost, its unverified status, its escape hatch and its owner, and pointing at the source
+comment for the full record. **The rule itself is unchanged and still correct about first-party
+SOURCE, which is what it was always about.**
+
+**One residual raised in the round and deliberately NOT fixed.** `tests/lsan.supp`'s
+`leak:start_decoder` names an **unqualified C static** — stb_vorbis is a C library with no namespace
+and the function has internal linkage — unlike the `Assimp::…`-qualified entries above it, **so it is
+not library-unique**: a future dependency carrying a same-named static frame would inherit the
+suppression silently, with nothing in LSan's output saying so. **LSan offers no narrower spelling**
+(it matches against function, file and module names and has no "this function in this translation
+unit" form), and both alternatives are worse — a module scope is exactly what that file refuses, and
+dropping the entry reddens the Linux Debug lane on an upstream defect this tree does not patch. It is
+**recorded in the suppression's own comment**, together with the tell (a leak that stops being
+reported without anyone having fixed it) and the answer (re-derive from a fresh report, never widen
+this one).
+
+**A FOURTH grep joins the tree's "not literally zero, must be READ" list.** AC-12's
+`git grep -n '#include <miniaudio.h>' -- engine editor tools tests runtime samples` returns **four**
+matches, three of them code — `editor/src/audio_decode.cpp:34`,
+`engine/platform/src/audio_device.cpp:11` and `engine/platform/src/miniaudio_impl.c:45` — and one
+**prose**, `engine/audio/CMakeLists.txt:11`, which spells the include inside the paragraph forbidding
+it. The other three on the list are `engine/assets`' `find_package` grep (two comment lines),
+`tools/`'s process-spawn grep ("libsdl-org fork", twice in `tools/shaderc/README.md`) and 3.6.3's
+`applyOetf|gammaEnabled|linearOutput|skipEncode` (two `//` lines in `tonemap.hpp`). This task adds two
+more of its own beyond that one — `engine/audio`'s `find_package` grep and AC-3's `float` grep — so
+the pattern is now routine enough to state as a rule: **a grep that enforces a prohibition will match
+the prose that states the prohibition, and the count is never the answer.**
 
 #### Traps found
 

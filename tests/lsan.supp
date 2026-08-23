@@ -110,10 +110,10 @@ leak:Assimp::STLImporter::LoadASCIIFile
 # of 625..632 entries.
 #
 # NOTHING OF OURS CAN CLOSE IT: stb_vorbis_open_memory returns nullptr on that path, so the
-# unique_ptr guard in decodeWithStbVorbis (editor/src/audio_decode.cpp:205) is never constructed —
+# unique_ptr guard in decodeWithStbVorbis (editor/src/audio_decode.cpp:267) is never constructed —
 # there is no handle to own. Our refusal is correct and the leak is upstream. The port is consumed
 # unmodified, since this tree does not patch third-party sources, so the fixture stays exactly as it
-# is: AD14 (tests/editor/audio_decode_test.cpp:303, the first 40 % of each of the four fixtures) is
+# is: AD14 (tests/editor/audio_decode_test.cpp:309, the first 40 % of each of the four fixtures) is
 # the COVERAGE, not the bug. Surfaced now because AD14 is the first thing on this lane to drive an
 # Ogg Vorbis header into its rejection path at all.
 #
@@ -128,4 +128,16 @@ leak:Assimp::STLImporter::LoadASCIIFile
 # the library has returned, in our own frames, which stay unsuppressed. A future error path in a
 # different stb_vorbis function that leaks the same way needs its OWN entry, gated on its own
 # observed CI evidence and naming its own frame — never a widened one.
+#
+# A LIMITATION OF THIS ENTRY, RECORDED RATHER THAN FIXED (task 3.7.1's code-review round). Unlike the
+# two Assimp:: entries above, `start_decoder` is an UNQUALIFIED C static — stb_vorbis is a C library
+# with no namespace and the function has internal linkage — so this token is NOT library-unique. A
+# future dependency carrying a same-named static frame would inherit this suppression silently, with
+# nothing in LSan's output saying so. There is no narrower spelling available: LSan matches
+# suppressions against function, file and module names and has no "this function in this translation
+# unit" form, and both alternatives are worse — a module scope (leak:stb_vorbis) is exactly what the
+# paragraph above refuses, and dropping the entry reddens the Linux Debug lane on an upstream defect
+# this tree does not patch. If a same-named frame ever does appear, the tell is a leak that stops
+# being reported without anyone having fixed it, and the answer is to re-derive the suppression from
+# a fresh LSan report rather than to widen this one.
 leak:start_decoder
