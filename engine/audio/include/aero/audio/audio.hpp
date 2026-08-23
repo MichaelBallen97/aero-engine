@@ -3,4 +3,5 @@
 // and <aero/rhi/rhi.hpp>. Include this to get the whole public surface; include the individual
 // headers when you want a narrower dependency.
 
-#include <aero/audio/clip.hpp>  // task 3.7.1
+#include <aero/audio/clip.hpp>     // task 3.7.1
+#include <aero/audio/spatial.hpp>  // task 3.7.2

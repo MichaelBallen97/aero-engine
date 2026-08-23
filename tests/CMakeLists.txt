@@ -37,6 +37,7 @@ add_executable(aero_tests
     cooked_audio_test.cpp     # task 3.7.1 — the .aerowave container v1: layout, parse, hostile input
     audio_cook_test.cpp       # task 3.7.1 — cookAudio: refusals, byte-exactness, the ffmpeg anchor
     audio_clip_test.cpp       # task 3.7.1 — engine::audio::AudioClip + loadAudioClip through the VFS
+    audio_spatial_test.cpp    # task 3.7.2 — the pure rolloff + constant-power pan (SP1-SP14)
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
