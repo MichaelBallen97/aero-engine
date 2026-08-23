@@ -180,6 +180,21 @@ private:
     // The length query, and its answer is a CLAIM rather than a fact. A failure or a zero means
     // "unknown" -- never "empty" -- so nothing is reserved and the loop decides.
     //
+    // THIS QUERY IS NOT FREE FOR MP3, AND THE COST IS STATED RATHER THAN DISCOVERED. An earlier
+    // version of this comment said an mp3 with no Xing header reports 0 frames. That is FALSE for the
+    // pinned miniaudio: ma_dr_mp3_get_pcm_frame_count (:95477-95500) returns a cached count only when
+    // a Xing/Info tag set detectedMP3FrameCount (:94920, :94973-94974); with no such tag it falls
+    // through to ma_dr_mp3_get_mp3_and_pcm_frame_count (:95440-95475), which DECODES THE ENTIRE
+    // STREAM to count it and seeks back. For a seekable memory stream it therefore never returns 0 --
+    // it returns the TRUE count.
+    //
+    // So a Xing-less mp3 is decoded TWICE: once to count, once for real. The counting pass allocates
+    // no PCM (it passes a null output buffer) and its cost is CPU time proportional to the file, and
+    // the file is already bounded by the caller's own read cap -- MAX_AUDIO_FILE_BYTES, 256 MiB at
+    // the cooker's call site -- so it is bounded, but it is NOT bounded by maxFrames: it happens
+    // before this function can refuse anything. Accepted, and the alternative (skipping the query for
+    // mp3) would trade a bounded second pass for an unreserved vector growing one chunk at a time.
+    //
     // NOTHING IS RESERVED UNTIL BOTH CLAIMS HAVE BEEN BOUNDED, and the ORDER is load-bearing: the
     // frame cap runs first, so `declaredFrames <= maxFrames` holds by the time the product is formed
     // and the saturating multiply below cannot be reached with the production caps. It saturates

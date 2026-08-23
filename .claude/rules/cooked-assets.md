@@ -400,11 +400,30 @@ it shipped with all three of the others byte-untouched.
   dependency by the placement invariant; and **the runtime must never link a decoder** — a runtime
   that can decode an mp3 is a runtime that can be handed one, and ADR-008 says it is handed a `.pak`
   of cooked artifacts. `engine/assets` is given samples, never a file.
-- **THE CAP IS CHECKED TWICE IN BOTH BACKENDS, and the second check is the one that matters.** Both
-  decoders can be *asked* their length before decoding, and both answers are derived from the file's
-  own claims. **A cap checked only against a self-reported length is not a cap** — so the in-loop
-  check is what actually bounds a lying header, and the pre-allocation check is what keeps an honest
+- **THE CAPS ARE CHECKED TWICE IN BOTH BACKENDS, and there are THREE of them, not two.** `maxFrames`
+  and `maxChannels` bound one axis each; **`maxSamples` bounds the product, and it is the only one of
+  the three that bounds BYTES.** Per-axis caps alone accept 28 800 000 frames × 8 channels — four
+  times `MAX_COOKED_AUDIO_BYTES` — which `cookAudio` then refuses, so the allocation was guaranteed
+  waste. Both decoders can be *asked* their length before decoding, and both answers are derived from
+  the file's own claims. **A cap checked only against a self-reported length is not a cap** — so the
+  in-loop check is what bounds a lying header, and the pre-allocation check is what keeps an honest
   over-long file from costing an allocation.
+- **WHICH HALF CAN FIRE DEPENDS ON THE BACKEND, and it was measured rather than reasoned about.** Both
+  miniaudio decoders bound their own reads by the same length they report, so inside that backend the
+  in-loop half is unreachable: a Wave64 whose `fact` chunk claims ten frames over eight thousand
+  frames of data decodes **ten**, and an `.mp3` whose Xing count is a low lie decodes **short**. The
+  `.ogg` path is the exception — stb_vorbis sets `total_samples` lazily and reads it only from
+  `stb_vorbis_stream_length_in_samples`, never from the pull API's decode loop — so a stream whose
+  final granule position understates its content genuinely overruns the claim.
+  `tests/fixtures/audio/tone-lying-length.ogg` is the committed witness and `AD21` is the case; the
+  generating script is recorded in that directory's `README.md` and reproduces it byte for byte.
+- **"An `.mp3` with no Xing header reports 0 frames" is FALSE, and this file used to imply it.**
+  `ma_dr_mp3_get_pcm_frame_count` caches a count only when a Xing/Info tag supplied one; without one
+  it falls through to a routine that **decodes the entire stream** to count it and seeks back, so it
+  returns the TRUE count and such a file is **decoded twice**. The counting pass allocates no PCM and
+  is bounded by the caller's read cap, but it is not bounded by `maxFrames`. Nothing in this tree
+  tests that branch, because `tests/fixtures/audio/tone.mp3` carries an `Info` tag and every arm takes
+  the fast path.
 - **`ditherMode` IS SET EXPLICITLY TO `ma_dither_mode_none` AND IS SOURCE-TEXT PINNED**, together with
   the exact `ma_decoder_config_init(ma_format_s16, 0, 0)` call whose two zeros are miniaudio's
   "keep the stream's own channel count and sample rate" sentinels — any other value there silently

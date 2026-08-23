@@ -11188,8 +11188,9 @@ Epic 3.3 built the texture column on.
   the README's frozen contract and the `run_case.cmake` arms all name five.
 * **`engine/audio/` OPENS** and its `.gitkeep` is gone — `clip.{hpp,cpp}` holding `AudioClip` and
   `loadAudioClip`, the one piece the texture column did not need: a runtime resource and a VFS loader.
-* **`tests/fixtures/audio/`** — one source signal, four encodings, two goldens, all committed, so no
-  CI lane and no other machine ever needs ffmpeg.
+* **`tests/fixtures/audio/`** — one source signal, four encodings, two goldens and (since the
+  code-review round) one deliberately corrupt derivative, all committed, so no CI lane and no other
+  machine ever needs ffmpeg.
 
 **No dependency of any kind lands.** `vcpkg.json` and the `/vcpkg` submodule pin are byte-identical;
 miniaudio and `stb` were both already present, and Blender-style external tooling is not involved.
@@ -11396,20 +11397,29 @@ itself a correction and is recorded below.
   for a field a *future* version adds and forgets to write, which is exactly the class of defect no
   current test can have an arm for. **Do not delete a defence because a seed could not see it.**
 * **`A28`** — `audio_decode.cpp`, removing the **in-loop** cap check while keeping the
-  pre-allocation one. Unreachable from any committed fixture, because every fixture's self-reported
-  length is honest, so the pre-allocation check refuses first and the loop is never entered with a
-  lie. Seeing it needs a **lying-length** source — an mp3 with no Xing header whose real length
-  exceeds the cap, or a crafted ogg with a false granule position — and neither is affordable to
-  commit at cap scale (28.8 M frames is ~55 MB of PCM). **Validation row 7** is its only coverage.
+  pre-allocation one. **DECLARED WHEN THE MATRIX RAN; NO LONGER DECLARED — the code-review round
+  built its witness, and the justification recorded here was wrong about the mechanism.** What was
+  written at matrix time: unreachable from any committed fixture, because every fixture's
+  self-reported length is honest, so the pre-allocation check refuses first and the loop is never
+  entered with a lie; seeing it needs a **lying-length** source, and the example named was *"an mp3
+  with no Xing header whose real length exceeds the cap"*. **That file cannot exist** — such an mp3
+  reports its TRUE length (see the review round's Gap 2 below) — and the other named candidate, a
+  crafted ogg with a false granule position, turns out to cost **six bytes** rather than the ~55 MB
+  the entry assumed, because the lie can point DOWNWARD. `tests/fixtures/audio/tone-lying-length.ogg`
+  is now committed and **`AD21` reddens alone under `A28`**: 3 assertions, where the seed previously
+  left the whole 1745-case suite green. **`A28` is a witnessed seed, not a declared one.**
 
 **Rows 6 and 6 respectively for `A19` and `A23` is not a typo**: both are about *what the refusal
-costs* rather than *what it returns*, so one peak-RSS row covers both. `A28` is row 7, which is about
-a refusal staying clean rather than cheap.
+costs* rather than *what it returns*, so one peak-RSS row covers both. Validation row 7 was written as
+`A28`'s only coverage and is no longer that — `AD21` is — but it keeps its own job, which is the ASan
+teardown check on a truncated stream, a thing no assertion in the `AD` tier makes.
 
 **This task ran no shader, GPU or sample seeds, because it has none of those things** — it writes no
-shader, opens no device, renders no pixel and ships no sample. **The declared class is three seeds,
-the smallest since 3.6.1** (3.5.1 declared four, 3.5.2 three, 3.6.1 three, 3.6.3 nine), and every one
-of the three is about a *cost* or an *unallocatable input*, never about an output nobody can see.
+shader, opens no device, renders no pixel and ships no sample. The declared class was three seeds when
+the matrix ran and **is TWO after the code-review round** — `A19` and `A23`, the smallest in the
+project so far (3.5.1 declared four, 3.5.2 three, 3.6.1 three, 3.6.3 nine) — and both survivors are
+about a *cost* rather than an output nobody can see. `A28`, the third, was closed by building the
+fixture its own justification had declared unaffordable; see the review round's Gap 2.
 
 **No seed was run against `engine/platform/src/miniaudio_impl.c`, deliberately.** Removing a different
 trim would either break the build or change nothing observable, and the one line this task touches is

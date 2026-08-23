@@ -47,12 +47,23 @@ struct DecodedAudio {
 // decodes to 230 MB.
 //
 // All three are checked TWICE: once against the source's own length query, before anything is
-// reserved, and again inside the read loop. THE SECOND HALF IS THE ONE THAT MATTERS — a length query
-// is an answer derived from the file's own claims, and some of those claims are taken unclamped (a
-// Wave64 `fact` chunk's 8-byte sample count is used verbatim, miniaudio.h:81684-81685, while the
-// file-size clamp at :81646-81652 applies to the data chunk instead), so the loop stops at the cap
-// regardless of what the header promised. A cap checked only against a self-reported length is not a
-// cap. The pre-allocation half is what keeps an HONEST over-long file from costing an allocation.
+// reserved, and again inside the read loop. A length query is an answer derived from the file's own
+// claims, so the loop stops at the cap regardless of what the header promised — a cap checked only
+// against a self-reported length is not a cap. The pre-allocation half is what keeps an HONEST
+// over-long file from costing an allocation.
+//
+// WHICH HALF CAN ACTUALLY FIRE DEPENDS ON THE BACKEND, and this is measured rather than assumed.
+// Both miniaudio decoders bound their own reads by the same length they report, so within that
+// backend the in-loop half is unreachable: a Wave64 `fact` chunk claiming ten frames over eight
+// thousand frames of data decodes ten, and an mp3 whose Xing count is a low lie decodes short. The
+// ogg path is the exception — stb_vorbis sets `total_samples` lazily and reads it from
+// `stb_vorbis_stream_length_in_samples` alone, never from the pull API's decode loop — so a stream
+// whose final granule position understates its own content really does overrun what it claimed.
+// `tests/fixtures/audio/tone-lying-length.ogg` is that stream, and `AD21` is the witness.
+//
+// The mp3 length query is also NOT FREE: with no Xing/Info tag dr_mp3 decodes the whole stream to
+// count it, so such a file is decoded twice. See `audio_decode.cpp`'s note at the query for the
+// citation and the accepted cost.
 //
 // Callers pass assets::MAX_COOKED_AUDIO_FRAMES, assets::MAX_COOKED_AUDIO_CHANNELS and
 // assets::MAX_COOKED_AUDIO_SAMPLES — the three bounds the cook itself will apply to the same numbers.

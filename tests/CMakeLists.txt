@@ -927,9 +927,11 @@ set(_aero_cooker_cases
     # directories configured FRESH with -G Ninja. A smaller move in either of them would mean this
     # block had accidentally grown a gate, and no test could report that.
     animation_golden_manifest
-    # task 3.7.1 -- the `audio` subcommand's nine arms. They drive the five committed fixtures under
+    # task 3.7.1 -- the `audio` subcommand's nine arms. They drive five of the committed fixtures under
     # tests/fixtures/audio/ (four encodings plus ffmpeg's own decode), so no lane and no other machine
-    # ever needs ffmpeg. Registered ungated like every name above them, so the triple moves by the
+    # ever needs ffmpeg. The directory also holds tone.aerowave (the loader golden, read by aero_tests)
+    # and tone-lying-length.ogg (a deliberately corrupt stream, read by aero_editor_shell_test's AD21);
+    # no cooker arm drives either, and nothing here globs the directory. Registered ungated like every name above them, so the triple moves by the
     # SAME +9 in all three configurations -- a smaller move in a reduced configuration would mean this
     # block had accidentally grown a gate, and no test could report that.
     #

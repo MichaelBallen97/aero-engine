@@ -228,8 +228,19 @@ aero_cooker audio --input <file> --output <file.aerowave>
   whole number of frames, and neither is pushed down: a rate bounds nothing that gets allocated, and the
   decoder emits whole frames by construction. All three bounds are checked **twice**: once against the
   source's own length query, and again inside the read loop, because a length query is an answer derived
-  from the file's own claims — a Wave64 `fact` chunk's sample count, for instance, is taken verbatim
-  with no file-size clamp on it at all. A cap checked only against a self-reported length is not a cap.
+  from the file's own claims. A cap checked only against a self-reported length is not a cap.
+- **Which of those two halves can fire depends on the backend, and it was measured.** Both miniaudio
+  decoders bound their own reads by the same length they report, so within that backend the pre-allocation
+  check always wins: a Wave64 whose `fact` chunk claims ten frames over eight thousand frames of data
+  decodes ten, and an `.mp3` whose Xing count is a low lie decodes short rather than long. **The `.ogg`
+  path is the exception** — stb_vorbis never consults its own stream length while decoding — so a stream
+  whose final granule position understates its content really does overrun the claim, and that is what
+  the in-loop check stops. `tests/fixtures/audio/tone-lying-length.ogg` is the committed witness.
+- **The `.mp3` length query costs a full extra decode when the file has no Xing/Info tag.** dr_mp3
+  caches a frame count only when such a tag supplied one; without it, it decodes the whole stream to
+  count it and seeks back, so the file is decoded twice. The counting pass allocates no PCM and is
+  bounded by the 256 MiB read cap, but it is **not** bounded by the frame cap — it happens before the
+  decoder can refuse anything. Accepted and stated rather than hidden.
 - **A `.aerowave` is never empty.** A source that decodes to zero frames produces no artifact at all and
   exit `2`, because a clip with no samples is the absence of a sound rather than a degenerate one.
 - **The cook is integer-only, end to end.** The decoders emit s16 and the cook validates integers and
@@ -378,7 +389,9 @@ every build configuration. The mesh and skeleton inputs are listed in
 `tests/cooker/fixtures/README.md`; the two
 texture inputs are the committed `tests/fixtures/assets/texture-rgb-5x3.png` and
 `texture-rgba-8x8.png`, and the animation input is `tests/fixtures/assets/skinned.gltf`, all three
-shared with the editor suite. The audio inputs are the five committed files under
-`tests/fixtures/audio/` — four encodings of one 1.0 s signal plus ffmpeg's own raw decode of it, which
-is the external anchor the wav and flac paths are checked against — documented in that directory's own
-`README.md`, including why the source is 1.0 s and why the `.ogg` alone is stereo.
+shared with the editor suite. The audio inputs are five of the committed files
+under `tests/fixtures/audio/` — four encodings of one 1.0 s signal plus ffmpeg's own raw decode of it,
+which is the external anchor the wav and flac paths are checked against — documented in that
+directory's own `README.md`, including why the source is 1.0 s and why the `.ogg` alone is stereo. The
+other two files there are read by the doctest suites rather than by this tool: `tone.aerowave`, the
+loader golden, and `tone-lying-length.ogg`, a deliberately corrupt stream.
