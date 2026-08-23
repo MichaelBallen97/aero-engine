@@ -399,7 +399,16 @@ it shipped with all three of the others byte-untouched.
   would be sufficient: ADR-003's asset flow puts importers editor-side; `stb` is an editor/tools-only
   dependency by the placement invariant; and **the runtime must never link a decoder** — a runtime
   that can decode an mp3 is a runtime that can be handed one, and ADR-008 says it is handed a `.pak`
-  of cooked artifacts. `engine/assets` is given samples, never a file.
+  of cooked artifacts. `engine/assets` is given samples, never a file. **That third reason is a rule
+  about first-party SOURCE, and as of task 3.7.1 it is not yet true of the ARCHIVE:** dropping
+  `MA_NO_DECODING` compiles dr_wav, dr_flac and dr_mp3 into `aero_platform`, which reaches every
+  binary that links it — including the Phase 5 runtime. Nothing on the engine side references
+  `ma_decoder_*`, so `--gc-sections` / `/OPT:REF` are *expected* to strip them and the released cost
+  is *expected* to be zero bytes; **that expectation is UNVERIFIED**, the recorded escape hatch is a
+  decode-only implementation unit compiled with `#define MA_API static`, and the **owner is Phase 5's
+  packager** (D7, recorded in full at `engine/platform/src/miniaudio_impl.c:30-37`). Read the
+  sentence above as the rule this project intends to hold and is not yet measuring — never as a
+  guarantee to build on.
 - **THE CAPS ARE CHECKED TWICE IN BOTH BACKENDS, and there are THREE of them, not two.** `maxFrames`
   and `maxChannels` bound one axis each; **`maxSamples` bounds the product, and it is the only one of
   the three that bounds BYTES.** Per-axis caps alone accept 28 800 000 frames × 8 channels — four
