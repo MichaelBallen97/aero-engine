@@ -12,6 +12,7 @@ add_subdirectory(phase-3-animation)  # task 3.5.2 — a bind-pose reference, a p
 add_subdirectory(phase-3-culling)    # task 3.6.1 — the culling A/B rig
 add_subdirectory(phase-3-shadows)    # task 3.6.2 — the directional shadow A/B rig
 add_subdirectory(phase-3-tonemap)    # task 3.6.3 — the tonemap/gamma A/B rig
+add_subdirectory(phase-3-audio)      # task 3.7.2 — an orbiting source, a beacon, and --dump-pcm
 # phase-2-editor-scene is DATA, not a sample app, and is deliberately NOT add_subdirectory'd: it is an
 # Aero project (project.json + assets/ + scenes/) authored through the editor, with no main.cpp and no
 # CMakeLists.txt of its own. The other three samples are compile-proofs of engine code; the Phase 2
