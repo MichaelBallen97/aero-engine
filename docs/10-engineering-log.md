@@ -11405,7 +11405,8 @@ its re-seed, and both are the header-size constant being protected in a second p
 account for. `A14b` is the sample-cap tripwire working — **but only in its drifted form**, which is
 itself a correction and is recorded below.
 
-**The three declared seeds, and why each is declared:**
+**The three seeds flagged declared before the matrix ran — and the code-review round later closed
+the third of them, so only two are still declared:**
 
 * **`A19`** — `audio_cook.cpp`, moving the cap checks **below** the buffer resize. Behaviourally
   identical: same status, same message, same empty `bytes`. What changes is the **peak allocation
