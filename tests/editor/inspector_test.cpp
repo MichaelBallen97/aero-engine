@@ -110,7 +110,7 @@ TEST_CASE("inspector: model lists present components in registration order, fiel
     aero_reflect_register_all_aero_editor_inspector_test();
     const ComponentTypeId probeId = registerProbe(world);
     REQUIRE(probeId.valid());
-    CHECK(world.componentTypeCount() == 7);  // 6 built-ins + InspectorProbe
+    CHECK(world.componentTypeCount() == 9);  // 8 built-ins (3.7.2) + InspectorProbe
 
     const Entity e = world.create();
     world.add<engine::Transform>(e, engine::Transform{});
@@ -528,7 +528,7 @@ TEST_CASE("inspector: AC-12 drift pin -- every registered built-in component has
     World world;
     const Entity e = world.create();
     const std::size_t count = world.componentTypeCount();
-    REQUIRE(count == 6);  // the 6 built-ins -- no InspectorProbe registered on THIS World
+    REQUIRE(count == 8);  // the 8 built-ins (3.7.2) -- no InspectorProbe registered on THIS World
     for (std::size_t i = 0; i < count; ++i) {
         const ComponentTypeId id = world.componentTypeAt(i);
         world.addRaw(id, e, nullptr);
@@ -751,4 +751,93 @@ TEST_CASE("inspector: engine::AnimationPlayer reflects four fields, in declarati
         CHECK_FALSE(field.hasRange);
         CHECK_FALSE(field.color);
     }
+}
+
+TEST_CASE("inspector: engine::AudioSource's eight reflected fields all resolve (task 3.7.2)") {
+    // ALL EIGHT FIELDS, never merely "a lookup did not crash" -- 3.5.2's D16 lesson stated as a rule.
+    // F9 verified inspector_panel.cpp already renders Bool, Float and Guid, so this component needs
+    // NO editor work and none may be added: /editor is byte-identical across this task.
+    World world;
+    const ComponentTypeId id = world.findComponentType("engine::AudioSource");
+    REQUIRE(id.valid());
+
+    const Entity e = world.create();
+    REQUIRE(world.addRaw(id, e, nullptr) != nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    const engine::editor::ComponentEntry& entry = model.components[0];
+    CHECK(entry.name == "engine::AudioSource");
+    CHECK(entry.typeId == id);
+    CHECK(entry.hasFields);
+
+    REQUIRE(entry.fields.size() == 8);
+    CHECK(entry.fields[0].name == "clip");  // declaration order IS inspector row order
+    CHECK(entry.fields[1].name == "volume");
+    CHECK(entry.fields[2].name == "pitch");
+    CHECK(entry.fields[3].name == "minDistance");
+    CHECK(entry.fields[4].name == "maxDistance");
+    CHECK(entry.fields[5].name == "loop");
+    CHECK(entry.fields[6].name == "playing");
+    CHECK(entry.fields[7].name == "spatialize");
+
+    CHECK((entry.fields[0].kind == FieldKind::Guid));
+    CHECK((entry.fields[1].kind == FieldKind::Float));
+    CHECK((entry.fields[2].kind == FieldKind::Float));
+    CHECK((entry.fields[3].kind == FieldKind::Float));
+    CHECK((entry.fields[4].kind == FieldKind::Float));
+    CHECK((entry.fields[5].kind == FieldKind::Bool));
+    CHECK((entry.fields[6].kind == FieldKind::Bool));
+    CHECK((entry.fields[7].kind == FieldKind::Bool));
+
+    // The defaults come through as VALUES, not just as kinds.
+    CHECK(std::get<double>(entry.fields[1].value) == doctest::Approx(1.0));
+    CHECK(std::get<double>(entry.fields[2].value) == doctest::Approx(1.0));
+    CHECK(std::get<double>(entry.fields[3].value) == doctest::Approx(1.0));
+    CHECK(std::get<double>(entry.fields[4].value) == doctest::Approx(50.0));
+    CHECK_FALSE(std::get<bool>(entry.fields[5].value));  // loop defaults FALSE
+    CHECK(std::get<bool>(entry.fields[6].value));        // playing defaults TRUE
+    CHECK(std::get<bool>(entry.fields[7].value));        // spatialize defaults TRUE
+
+    // The two AERO_RANGE bounds, and the four fields that deliberately carry none.
+    CHECK(entry.fields[1].hasRange);
+    CHECK(entry.fields[1].rangeMin == doctest::Approx(0.0));
+    CHECK(entry.fields[1].rangeMax == doctest::Approx(1.0));
+    CHECK(entry.fields[2].hasRange);
+    CHECK(entry.fields[2].rangeMin == doctest::Approx(0.0));
+    // 4.0 MIRRORS engine::audio::MAX_PITCH; SA1 is the static_assert that pins the two together.
+    CHECK(entry.fields[2].rangeMax == doctest::Approx(4.0));
+    CHECK_FALSE(entry.fields[3].hasRange);  // 1.3.3's D19: min > 0 is not a two-sided bound
+    CHECK_FALSE(entry.fields[4].hasRange);
+
+    for (const engine::editor::FieldEntry& field : entry.fields) {
+        INFO(field.name);
+        CHECK_FALSE(field.color);
+    }
+}
+
+TEST_CASE("inspector: engine::AudioListener's one reflected field resolves (task 3.7.2)") {
+    World world;
+    const ComponentTypeId id = world.findComponentType("engine::AudioListener");
+    REQUIRE(id.valid());
+
+    const Entity e = world.create();
+    REQUIRE(world.addRaw(id, e, nullptr) != nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    const engine::editor::ComponentEntry& entry = model.components[0];
+    CHECK(entry.name == "engine::AudioListener");
+    CHECK(entry.hasFields);
+
+    REQUIRE(entry.fields.size() == 1);
+    CHECK(entry.fields[0].name == "volume");
+    CHECK((entry.fields[0].kind == FieldKind::Float));
+    CHECK(std::get<double>(entry.fields[0].value) == doctest::Approx(1.0));
+    CHECK(entry.fields[0].hasRange);
+    CHECK(entry.fields[0].rangeMin == doctest::Approx(0.0));
+    CHECK(entry.fields[0].rangeMax == doctest::Approx(1.0));
+    CHECK_FALSE(entry.fields[0].color);
 }

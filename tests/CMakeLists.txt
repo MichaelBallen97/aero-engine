@@ -37,6 +37,10 @@ add_executable(aero_tests
     cooked_audio_test.cpp     # task 3.7.1 — the .aerowave container v1: layout, parse, hostile input
     audio_cook_test.cpp       # task 3.7.1 — cookAudio: refusals, byte-exactness, the ffmpeg anchor
     audio_clip_test.cpp       # task 3.7.1 — engine::audio::AudioClip + loadAudioClip through the VFS
+    audio_spatial_test.cpp    # task 3.7.2 — the pure rolloff + constant-power pan (SP1-SP14)
+    audio_mixer_test.cpp      # task 3.7.2 — the realtime mixer: pool, cursor, ramps, clamp (MX1-MX22)
+    audio_system_test.cpp     # task 3.7.2 — AudioSystem: rings, slots, back-pressure, stats (SY1-SY20)
+    scene_audio_test.cpp      # task 3.7.2 — the World -> audio bridge: view, reconcile, latches (SA1-SA18)
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -101,7 +105,7 @@ add_executable(aero_tests
 # task 3.3.1: aero::assets joins this line for cooked_mesh_test.cpp and mesh_cook_test.cpp. aero::rhi
 # is ALREADY here, which is what makes CM47's CookedVertexFormat <-> rhi::VertexFormat correspondence
 # assertable in this target at all -- assets deliberately does not link rhi, and never will.
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::audio aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::audio aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_audio aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
 
 # task 3.3.1, added by the sabotage round: cooked_mesh_test.cpp's CM50 asserts a STRUCTURAL property of
 # the parser -- that nothing is reserved before the four header counts have been checked against their

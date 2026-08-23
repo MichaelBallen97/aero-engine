@@ -70,6 +70,8 @@ set(AERO_BUILTIN_COMPONENT_HEADERS
     ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/light.hpp           # 1.3.3 -- two components
     ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/mesh_renderer.hpp   # 1.4.1
     ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/animation_player.hpp  # 3.5.2
+    ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/audio_source.hpp      # 3.7.2 -- 7th
+    ${CMAKE_SOURCE_DIR}/engine/scene/include/aero/scene/audio_listener.hpp    # 3.7.2 -- 8th
 )
 
 # Layer order = dependency order (docs/03). The golden rule is physical here:

@@ -7,6 +7,8 @@
 // deliberately NOT part of this umbrella and ships through a separate target, aero::scene_internal.
 
 #include <aero/scene/animation_player.hpp>  // task 3.5.2
+#include <aero/scene/audio_listener.hpp>    // task 3.7.2
+#include <aero/scene/audio_source.hpp>      // task 3.7.2
 #include <aero/scene/camera.hpp>            // task 1.3.3
 #include <aero/scene/component.hpp>
 #include <aero/scene/entity.hpp>

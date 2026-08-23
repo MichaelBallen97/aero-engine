@@ -188,6 +188,19 @@
             "y": 1,
             "z": 1
           }
+        },
+        "engine::AudioSource": {
+          "clip": "37200000000000000000000000000001",
+          "volume": 0.8,
+          "pitch": 1.25,
+          "minDistance": 2,
+          "maxDistance": 30,
+          "loop": true,
+          "playing": false,
+          "spatialize": true
+        },
+        "engine::AudioListener": {
+          "volume": 0.75
         }
       }
     }

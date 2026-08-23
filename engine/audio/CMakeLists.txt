@@ -22,7 +22,10 @@
 # handed one, and ADR-008 says it is handed a .pak of cooked artifacts. Every decode in this tree
 # lives in /editor.
 add_library(aero_audio STATIC
-    src/clip.cpp   # task 3.7.1 -- the .aerowave -> AudioClip load, through the VFS
+    src/clip.cpp     # task 3.7.1 -- the .aerowave -> AudioClip load, through the VFS
+    src/spatial.cpp  # task 3.7.2 -- the pure rolloff + constant-power pan
+    src/mixer.cpp    # task 3.7.2 -- the realtime voice pool, clip table and block render
+    src/system.cpp   # task 3.7.2 -- the public play/stop/volume/pitch surface over two SPSC rings
 )
 add_library(aero::audio ALIAS aero_audio)
 
