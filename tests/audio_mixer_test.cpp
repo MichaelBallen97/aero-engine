@@ -607,27 +607,67 @@ TEST_CASE("MX8: looping WRAPS the second index, so the seam interpolates INTO fr
     CHECK(mixer.framesRendered() == 2 * BLOCK);
 }
 
-TEST_CASE("MX9: a NON-looping clip clamps its second index, retires, and is EXACTLY 0 after the end") {
-    const ClipSource source(48000, 1, std::vector<std::int16_t>(8, 4000));
+TEST_CASE("MX9: a NON-looping clip CLAMPS its second index, retires, and is EXACTLY 0 after the end") {
+    // THE FIXTURE IS THE WITNESS AND IT HAD TO BE STRENGTHENED. Its first form used a CONSTANT clip
+    // at a MATCHED rate, and neither half of it could see the clamp: with every sample equal, the
+    // clamp's s[N-1] and a wrap's s[0] are THE SAME NUMBER, and with a matched rate and pitch 1 the
+    // fractional cursor is always 0 so the second index is never read at all. Seeding the non-looping
+    // arm to wrap left the whole suite GREEN. It now uses a RAMP (so the endpoints differ) at a
+    // NON-INTEGER rate ratio (so the seam frame is genuinely interpolated), and it asserts the
+    // clamp's answer against the wrap's explicitly.
+    constexpr std::uint32_t FRAMES = 8;
+    std::vector<std::int16_t> samples(FRAMES);
+    for (std::uint32_t f = 0; f < FRAMES; ++f) {
+        samples[f] = static_cast<std::int16_t>((f + 1) * 1000);  // 1000 .. 8000, endpoints DIFFER
+    }
+    const ClipSource source(44100, 1, samples);
     AudioMixer mixer;
     REQUIRE(mixer.publishClip(0, source.get()));
     mixer.applyCommand(startCommand(0, 1, 0, flatParams()));
 
-    std::array<float, 32> buffer{};
+    constexpr std::size_t BLOCK = 32;
+    std::array<float, BLOCK> buffer{};
     poison(buffer);
     mixer.render(buffer, 1, 48000);
 
-    // The voice retires inside this one block, so there is no warmed-up block to read: the ramp is
-    // ASSERTED here instead of being waited out. gain(f) == (f + 1) / 32 exactly, from a currentGain
-    // of 0 to a target of 1.
-    const float value = 4000.0F * S16_SCALE;
-    for (std::size_t f = 0; f < 8; ++f) {
-        const float t = static_cast<float>(f + 1) / 32.0F;
-        CHECK(buffer[f] == value * t);  // the clamp keeps the last frame flat rather than wrapping
+    // Replicate the cursor in the mixer's own integer arithmetic and predict every frame, with the
+    // gain ramp folded in -- the voice retires inside this one block, so there is no warmed-up block
+    // to read and the ramp is asserted here rather than waited out.
+    const auto increment = static_cast<std::uint64_t>((44100.0 / 48000.0) * 1.0 * 4294967296.0);
+    std::uint64_t cursor = 0;
+    std::size_t lastLive = 0;
+    float seamFrac = 0.0F;
+    for (std::size_t f = 0; f < BLOCK; ++f) {
+        const std::uint64_t index = cursor >> 32U;
+        if (index >= FRAMES) {
+            CHECK(buffer[f] == 0.0F);  // EXACTLY 0 after the end
+            continue;
+        }
+        const auto i = static_cast<std::uint32_t>(index);
+        const std::uint32_t next = i + 1 < FRAMES ? i + 1 : FRAMES - 1U;  // THE CLAMP
+        const float frac = static_cast<float>(cursor & 0xFFFFFFFFULL) * (1.0F / 4294967296.0F);
+        const float a = static_cast<float>(samples[i]) * S16_SCALE;
+        const float b = static_cast<float>(samples[next]) * S16_SCALE;
+        const float t = static_cast<float>(f + 1) / static_cast<float>(BLOCK);
+        CHECK(buffer[f] == ((a + ((b - a) * frac)) * t));
+        if (i == FRAMES - 1 && frac > 0.0F) {
+            lastLive = f;
+            seamFrac = frac;
+        }
+        cursor += increment;
     }
-    for (std::size_t f = 8; f < buffer.size(); ++f) {
-        CHECK(buffer[f] == 0.0F);  // EXACTLY 0 after the end
-    }
+
+    // THE DISCRIMINATING ASSERTION: on the clip's LAST frame with a non-zero fraction, the clamp's
+    // answer is s[N-1] flat and a WRAP would interpolate toward s[0]. They differ, and the output is
+    // the first.
+    REQUIRE(lastLive != 0);
+    REQUIRE(seamFrac > 0.0F);
+    const float last = static_cast<float>(samples[FRAMES - 1]) * S16_SCALE;
+    const float first = static_cast<float>(samples[0]) * S16_SCALE;
+    const float t = static_cast<float>(lastLive + 1) / static_cast<float>(BLOCK);
+    CHECK(buffer[lastLive] == last * t);                                    // the CLAMP's answer
+    CHECK(buffer[lastLive] != ((last + ((first - last) * seamFrac)) * t));  // and NOT a wrap's
+
     CHECK(mixer.activeVoices() == 0U);  // retired at the block's end
 }
 

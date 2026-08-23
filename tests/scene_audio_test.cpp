@@ -50,6 +50,7 @@ using engine::audio::AudioClip;
 using engine::audio::AudioSystem;
 using engine::audio::ClipHandle;
 using engine::audio::loadAudioClip;
+using engine::audio::MAX_VOICES;
 using engine::audio::VoiceHandle;
 using engine::scene_audio::AudioView;
 using engine::scene_audio::AudioViewScratch;
@@ -57,11 +58,16 @@ using engine::scene_audio::buildAudioView;
 using engine::scene_audio::SceneAudio;
 
 // ============================================================================================
-// SA1 lives here rather than in a TEST_CASE, deliberately: it is a static_assert, so drift between
-// engine::AudioSource::pitch's AERO_RANGE literal and engine::audio::MAX_PITCH is a COMPILE failure
-// rather than a test failure (R6). AERO_RANGE's arguments must be numeric LITERALS
-// (annotations.hpp), so the mirror cannot be written as a reference and this is what stands in for
-// one -- the 3.5.1 JP14 shape.
+// SA1 lives here rather than in a TEST_CASE, deliberately: it is a static_assert, so a change to
+// engine::audio::MAX_PITCH is a COMPILE failure rather than a test failure (R6).
+//
+// IT COVERS ONE SIDE OF THE MIRROR, NOT BOTH, AND THAT WAS MEASURED RATHER THAN ASSUMED. Seeding
+// MAX_PITCH to 8.0F fails to build, here. Seeding the AERO_RANGE LITERAL in audio_source.hpp to
+// 8.0f builds clean and leaves this assertion GREEN -- because no C++ expression can read an
+// AERO_RANGE argument, so this file cannot see it at all. That side is witnessed by
+// tests/editor/inspector_test.cpp's AudioSource row, which reads rangeMax off the GENERATED meta.
+// Together they close the loop; neither alone does. (3.7.1's A14 finding, one task later: a
+// static_assert that reads as a literal-substitution tripwire can be a one-directional drift one.)
 // ============================================================================================
 static_assert(engine::audio::MAX_PITCH == 4.0F, "AudioSource::pitch's AERO_RANGE upper bound is 4.0f");
 static_assert(engine::audio::MIN_PITCH == 0.0F, "AudioSource::pitch's AERO_RANGE lower bound is 0.0f");
@@ -227,30 +233,62 @@ TEST_CASE("SA4: two listeners -- the LOWEST entity index wins, and they are at D
     CHECK(view.listener.position.x == 1.0F);  // the LOWEST index, not the last visited
 }
 
-TEST_CASE("SA5: a SCALED AND ROTATED listener yields an ORTHONORMAL basis") {
-    World world;
-    const Entity e = world.create();
-    // A UNIT quaternion about a NORMALISED axis. Building one component-wise without normalising
-    // yields a non-orthogonal basis whose columns normalizeOrZero cannot rescue -- the axes come out
-    // unit-length and still not perpendicular, which is what this case would then be measuring.
-    const Vec3 axis = engine::normalizeOrZero(Vec3{0.3F, 1.0F, 0.5F});
-    const float halfAngle = 0.15F;
-    const float s = std::sin(halfAngle);
-    const Quat rotation{axis.x * s, axis.y * s, axis.z * s, std::cos(halfAngle)};
-    const Vec3 scale{3.0F, 7.0F, 0.25F};
-    world.add<Transform>(e, Transform{.position = Vec3{}, .rotation = rotation, .scale = scale});
-    world.add<AudioListener>(e, AudioListener{});
+TEST_CASE("SA5: a SCALED AND ROTATED listener yields an ORTHONORMAL basis, and a DEGENERATE one is safe") {
+    SUBCASE("scaled and rotated -- orthonormal") {
+        World world;
+        const Entity e = world.create();
+        // A UNIT quaternion about a NORMALISED axis. Building one component-wise without normalising
+        // yields a non-orthogonal basis whose columns normalizeOrZero cannot rescue -- the axes come
+        // out unit-length and still not perpendicular, which is what this case would then measure.
+        const Vec3 axis = engine::normalizeOrZero(Vec3{0.3F, 1.0F, 0.5F});
+        const float halfAngle = 0.15F;
+        const float s = std::sin(halfAngle);
+        const Quat rotation{axis.x * s, axis.y * s, axis.z * s, std::cos(halfAngle)};
+        const Vec3 scale{3.0F, 7.0F, 0.25F};
+        world.add<Transform>(e, Transform{.position = Vec3{}, .rotation = rotation, .scale = scale});
+        world.add<AudioListener>(e, AudioListener{});
 
-    AudioViewScratch scratch;
-    const AudioView view = buildAudioView(world, scratch);
-    REQUIRE(view.listener.valid);
+        AudioViewScratch scratch;
+        const AudioView view = buildAudioView(world, scratch);
+        REQUIRE(view.listener.valid);
 
-    CHECK(engine::length(view.listener.right) == doctest::Approx(1.0F).epsilon(1e-6));
-    CHECK(engine::length(view.listener.up) == doctest::Approx(1.0F).epsilon(1e-6));
-    CHECK(engine::length(view.listener.forward) == doctest::Approx(1.0F).epsilon(1e-6));
-    CHECK(engine::dot(view.listener.right, view.listener.up) == doctest::Approx(0.0F).epsilon(1e-6));
-    CHECK(engine::dot(view.listener.right, view.listener.forward) == doctest::Approx(0.0F).epsilon(1e-6));
-    CHECK(engine::dot(view.listener.up, view.listener.forward) == doctest::Approx(0.0F).epsilon(1e-6));
+        CHECK(engine::length(view.listener.right) == doctest::Approx(1.0F).epsilon(1e-6));
+        CHECK(engine::length(view.listener.up) == doctest::Approx(1.0F).epsilon(1e-6));
+        CHECK(engine::length(view.listener.forward) == doctest::Approx(1.0F).epsilon(1e-6));
+        CHECK(engine::dot(view.listener.right, view.listener.up) == doctest::Approx(0.0F).epsilon(1e-6));
+        CHECK(engine::dot(view.listener.right, view.listener.forward) == doctest::Approx(0.0F).epsilon(1e-6));
+        CHECK(engine::dot(view.listener.up, view.listener.forward) == doctest::Approx(0.0F).epsilon(1e-6));
+    }
+
+    SUBCASE("a ZERO-SCALE column yields a ZERO axis rather than a NaN") {
+        // THE normalizeOrZero ARM, AND THE ONLY FIXTURE IN THE TREE THAT REACHES IT. Nothing else
+        // gives a listener entity a degenerate column, so substituting normalize() for
+        // normalizeOrZero() in buildAudioView left the whole suite GREEN in BOTH configurations --
+        // measured, not assumed. normalize()'s contract is an assert-and-no-branch (vec3.hpp), so the
+        // substitution ABORTS a Debug build here and produces a NaN basis in Release; either is
+        // caught, and the abort is the stronger result.
+        //
+        // SP13 cannot witness this and never could: it constructs a ListenerPose with a zero `right`
+        // DIRECTLY and never enters buildAudioView at all. It is a spatializer case; this is a bridge
+        // one, and they are one layer apart.
+        World world;
+        const Entity e = world.create();
+        const Vec3 flat{0.0F, 1.0F, 1.0F};  // the X column is degenerate
+        world.add<Transform>(e, Transform{.position = Vec3{1.0F, 2.0F, 3.0F}, .scale = flat});
+        world.add<AudioListener>(e, AudioListener{});
+
+        AudioViewScratch scratch;
+        const AudioView view = buildAudioView(world, scratch);
+        REQUIRE(view.listener.valid);
+
+        CHECK(std::isfinite(view.listener.right.x));
+        CHECK(std::isfinite(view.listener.right.y));
+        CHECK(std::isfinite(view.listener.right.z));
+        CHECK(engine::lengthSquared(view.listener.right) == 0.0F);  // EXACTLY zero, never a NaN
+        CHECK(engine::length(view.listener.up) == doctest::Approx(1.0F).epsilon(1e-6));
+        CHECK(engine::length(view.listener.forward) == doctest::Approx(1.0F).epsilon(1e-6));
+        CHECK(std::isfinite(view.listener.position.x));
+    }
 }
 
 TEST_CASE("SA6: a source with playing == false is NOT EMITTED at all") {
@@ -397,6 +435,65 @@ TEST_CASE("SA10: a new playing source with a REGISTERED clip starts EXACTLY ONE 
     pumpBlocks(*system);
     CHECK(bridge.bindingCount() == 1U);
     CHECK(system->stats().activeVoices == 1U);
+}
+
+TEST_CASE("SA10b: a SATURATED retrigger needs the slots service() freed on the PREVIOUS block") {
+    // THE ARM THAT MAKES update()'s STEP ORDER OBSERVABLE, AND IT HAD TO BE ADDED. Every other case
+    // here plays a handful of voices and calls system->service() from the test itself, so neither
+    // dropping service() from update() nor moving it AFTER the reconcile changed anything -- the
+    // whole suite stayed GREEN under both, measured rather than assumed.
+    //
+    // The order is only observable when a slot freed on the PREVIOUS block is needed THIS frame, at a
+    // moment when the pool is otherwise fully committed. So: 64 looping sources, all stopped in one
+    // frame, all retriggered in the next. THE TEST NEVER CALLS system->service() ITSELF -- doing so
+    // would mask exactly the defect this exists to catch.
+    const std::unique_ptr<AudioSystem> system = AudioSystem::create();
+    REQUIRE(system != nullptr);
+    const Guid guid = guidOf(1);
+    REQUIRE(system->registerClip(makeClip(guid, /*frames=*/8192)).valid());
+
+    World world;
+    const Entity ear = world.create();
+    world.add<Transform>(ear, Transform{});
+    world.add<AudioListener>(ear, AudioListener{});
+
+    std::vector<Entity> sources;
+    for (std::uint32_t i = 0; i < MAX_VOICES; ++i) {
+        const Entity e = world.create();
+        world.add<Transform>(e, Transform{});
+        world.add<AudioSource>(e, AudioSource{.clip = guid, .loop = true});
+        sources.push_back(e);
+    }
+
+    SceneAudio bridge;
+    bridge.update(world, *system);
+    pumpBlocks(*system);
+    REQUIRE(bridge.bindingCount() == MAX_VOICES);
+    REQUIRE(system->stats().activeVoices == MAX_VOICES);
+    REQUIRE(system->stats().rejectedPlays == 0U);
+
+    for (int cycle = 0; cycle < 4; ++cycle) {
+        // Frame N: stop every one of them. The Stops reach the mixer on the block below and every
+        // voice retires onto the retire ring.
+        for (const Entity& e : sources) {
+            world.get<AudioSource>(e)->playing = false;
+        }
+        bridge.update(world, *system);
+        CHECK(bridge.bindingCount() == 0U);
+        pumpBlocks(*system, 2);
+        CHECK(system->stats().activeVoices == 0U);
+
+        // Frame N+1: retrigger all 64. Their slots are on the retire ring and NOWHERE ELSE, so this
+        // frame succeeds ONLY IF update() serviced BEFORE it reconciled.
+        for (const Entity& e : sources) {
+            world.get<AudioSource>(e)->playing = true;
+        }
+        bridge.update(world, *system);
+        pumpBlocks(*system);
+        CHECK(bridge.bindingCount() == MAX_VOICES);
+        CHECK(system->stats().activeVoices == MAX_VOICES);
+        CHECK(system->stats().rejectedPlays == 0U);
+    }
 }
 
 TEST_CASE("SA11: a nil and an unregistered clip are each COUNTED and emit NO LOG LINE") {
@@ -573,13 +670,38 @@ TEST_CASE("SA15: a MOVED source pushes EXACTLY ONE SetParams per frame") {
 
     // TWO commands this time -- the SetListener and exactly one SetParams.
     CHECK(afterMove == baseline - 2);
+
+    // A NON-POSITION FIELD MUST PUSH TOO, AND THESE ARMS HAD TO BE ADDED. Every earlier arm either
+    // changed NOTHING or changed the POSITION, so narrowing the coalescing comparison to the position
+    // alone -- which looks entirely correct -- left the whole suite GREEN, measured rather than
+    // assumed. VoiceParams::operator== is defaulted precisely so the comparison is over the WHOLE
+    // struct; these are the arms that hold it to that. A float field and a bool field, because a
+    // field-by-field comparison is where a future appended field of either kind gets forgotten.
+    world.get<AudioSource>(e)->volume = 0.25F;  // position UNTOUCHED
+    bridge.update(world, *system);
+    const int afterVolume = floodCapacity();
+    pumpBlocks(*system);
+    CHECK(afterVolume == baseline - 2);
+
+    world.get<AudioSource>(e)->spatialize = false;  // position and volume UNTOUCHED
+    bridge.update(world, *system);
+    const int afterSpatialize = floodCapacity();
+    pumpBlocks(*system);
+    CHECK(afterSpatialize == baseline - 2);
+
+    // And with nothing at all changed, back to one.
+    bridge.update(world, *system);
+    const int afterNothing = floodCapacity();
+    pumpBlocks(*system);
+    CHECK(afterNothing == baseline - 1);
 }
 
 TEST_CASE("SA16: a FINISHED non-looping voice is NOT restarted, across 100 further updates") {
     const std::unique_ptr<AudioSystem> system = AudioSystem::create();
     REQUIRE(system != nullptr);
     const Guid guid = guidOf(1);
-    REQUIRE(system->registerClip(makeClip(guid, /*frames=*/8)).valid());  // a very short one-shot
+    constexpr std::uint32_t CLIP_FRAMES = 8;
+    REQUIRE(system->registerClip(makeClip(guid, CLIP_FRAMES)).valid());  // a very short one-shot
 
     World world;
     const Entity e = world.create();
@@ -594,16 +716,23 @@ TEST_CASE("SA16: a FINISHED non-looping voice is NOT restarted, across 100 furth
     system->service();
     CHECK(system->stats().activeVoices == 0U);
 
+    // THE OBSERVATION WINDOW IS SHORTER THAN THE CLIP, AND IT HAD TO BE. The first form of this case
+    // pumped a FULL 64-frame block after each update, so a restarted 8-frame voice finished again
+    // before anything looked at it and `activeVoices == 0` held either way -- seeding the restart
+    // left the whole suite GREEN, measured rather than assumed. A 4-frame block is half the clip, so
+    // a restart is unmistakably still playing when the assertion runs.
     const std::uint64_t rejectedBefore = system->stats().rejectedPlays;
+    std::array<float, 4> small{};
+    static_assert(small.size() < CLIP_FRAMES, "the window must be shorter than the clip");
     for (int frame = 0; frame < 100; ++frame) {
         bridge.update(world, *system);
-        pumpBlocks(*system);
+        system->render(small, 1, 48000);
+        // D11: `playing` is authored state, and a one-shot that has run its course HAS. A restart
+        // would leave a live voice sitting here at frame 4 of 8.
+        CHECK(system->stats().activeVoices == 0U);
     }
-    // D11: `playing` is authored state, and a one-shot that has run its course has. NOT restarted --
-    // the binding survives, marked finished, and no new voice is ever started.
-    CHECK(system->stats().activeVoices == 0U);
     CHECK(system->stats().rejectedPlays == rejectedBefore);
-    CHECK(bridge.bindingCount() == 1U);
+    CHECK(bridge.bindingCount() == 1U);  // the binding survives, marked finished
 }
 
 TEST_CASE("SA17: destroying the entity stops its voice and erases the binding") {

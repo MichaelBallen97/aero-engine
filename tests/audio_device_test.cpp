@@ -123,7 +123,14 @@ int waitForCallback(const CallbackProbe& probe, int maxMilliseconds) {
 }  // namespace
 
 TEST_CASE("DV1: a null render callback still yields the 0.3.3 silent device") {
-    // The default config leaves render/renderUser null, so this is the pre-3.7.2 path byte for byte.
+    // WHAT THIS CASE CAN AND CANNOT SEE, STATED SO IT IS NOT MISREAD AS MORE. It asserts that a
+    // config with no callback still OPENS and RUNS -- the four 0.3.3 cases above are left
+    // byte-identical, which is the other half of AC-7. It does NOT and CANNOT assert that the device
+    // writes SILENCE on that path: the buffer belongs to miniaudio and no first-party code ever sees
+    // it when `render` is null, by construction. Seeding the silence branch away (so the callback
+    // returns leaving the buffer untouched) leaves this case and the whole suite GREEN -- measured,
+    // not assumed. That property is AUDIBLE ONLY, and it is recorded as a declared seed rather than
+    // certified here. The I96 rule: a case must not appear to cover an invariant it is blind to.
     const engine::platform::AudioDeviceConfig config = HEADLESS;
     CHECK(config.render == nullptr);
     CHECK(config.renderUser == nullptr);

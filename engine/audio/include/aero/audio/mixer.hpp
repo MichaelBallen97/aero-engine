@@ -40,6 +40,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 
 namespace engine::audio {
 
@@ -169,6 +170,16 @@ private:
         // HERE RATHER THAN HIDDEN.
         bool stopping = false;
     };
+
+    // THE CURSOR'S TYPE IS PINNED HERE, AND THIS IS WHAT MAKES A float CURSOR UNSPELLABLE RATHER
+    // THAN MERELY WRONG. MX19 proves the arithmetic claim -- that fp32 cannot even COUNT frames at
+    // MAX_COOKED_AUDIO_FRAMES, because 28 800 000 > 2^24 == 16 777 216 -- but it reads LITERALS, not
+    // this member, so it cannot see a substitution here at all. Measured rather than assumed: seeding
+    // the cursor to float reddens MX5 and MX8 and leaves MX19 GREEN. This line is what turns that
+    // substitution into a COMPILE failure, which is a stronger result than a red test.
+    static_assert(std::is_same_v<decltype(Voice::cursor), std::uint64_t>,
+                  "the read cursor is 32.32 fixed point in a u64 (D15); a float loses sub-sample "
+                  "precision INSIDE .aerowave's own legal frame range");
 
     std::array<Voice, MAX_VOICES> voices{};
 

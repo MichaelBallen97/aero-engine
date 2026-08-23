@@ -22,10 +22,18 @@ struct AERO_COMPONENT AudioSource {
     float volume AERO_RANGE(0.0f, 1.0f) = 1.0f;
 
     // THE LITERAL 4.0f MIRRORS engine::audio::MAX_PITCH AND CANNOT BE WRITTEN AS A REFERENCE:
-    // annotations.hpp requires AERO_RANGE's arguments to be numeric LITERALS and validates it. The
-    // mirror is pinned by SA1, a static_assert in tests/scene_audio_test.cpp -- the one translation
-    // unit that sees engine/scene AND engine/audio -- so drift is a COMPILE failure rather than a test
-    // failure. (The 3.5.1 JP14 shape: a constant duplicated across a boundary needs a witness.)
+    // annotations.hpp requires AERO_RANGE's arguments to be numeric LITERALS and validates it. (The
+    // 3.5.1 JP14 shape: a constant duplicated across a boundary needs a witness.)
+    //
+    // THE MIRROR TAKES TWO WITNESSES, ONE PER SIDE, AND NEITHER COVERS THE OTHER -- measured by
+    // seeding each side separately, not assumed:
+    //   * MAX_PITCH moving is caught by SA1, a static_assert in tests/scene_audio_test.cpp (the one
+    //     translation unit that sees engine/scene AND engine/audio). A COMPILE failure.
+    //   * THIS LITERAL moving is caught by tests/editor/inspector_test.cpp's AudioSource row, which
+    //     reads rangeMax off the GENERATED meta. SA1 cannot see it: no C++ expression can read an
+    //     AERO_RANGE argument, so the generated meta is structurally the only place it is visible.
+    // Reading SA1 as a pin on this literal is the mistake to avoid -- it is a one-directional drift
+    // tripwire, which is 3.7.1's A14 finding one task later.
     float pitch AERO_RANGE(0.0f, 4.0f) = 1.0f;
 
     // NO AERO_RANGE on either, and that is 1.3.3's D19 applied rather than an oversight: "min > 0

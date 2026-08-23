@@ -216,6 +216,15 @@ TEST_CASE("SY5: a STALE handle is inert on ALL FIVE entry points") {
     CHECK(second.index == first.index);
     CHECK(second.generation != first.generation);
 
+    // ARM 5 AGAIN, AND THIS TIME AGAINST A REUSED SLOT -- which is the only interesting stale case
+    // and the one this arm exists for. It had to be added: the mixer keeps its OWN generation check
+    // on Stop and SetParams, so deleting the system-side one in handleIsLive left stop/setVolume/
+    // setPitch/setPose still safe and the whole suite GREEN (measured, not assumed). isPlaying is the
+    // ONE entry point with no mixer-side counterpart, so it is where that check is independently
+    // observable at all.
+    CHECK_FALSE(system->isPlaying(first));
+    CHECK(system->isPlaying(second));
+
     // ARMS 1-4: every mutator, aimed at the stale handle.
     system->stop(first);
     system->setVolume(first, 0.0F);
@@ -326,6 +335,35 @@ TEST_CASE("SY8: droppable commands are discarded under the reserve WHILE Start a
     }
     const VoiceHandle again = system->play(clip, flatParams());
     CHECK(again.valid());
+
+    // A SetParams FLOOD IS THE OTHER HALF, AND IT HAD TO BE ADDED. The arms above flood with
+    // setMasterVolume alone, so making SetParams NON-droppable was invisible to every case in the
+    // tree -- measured, not assumed. SetParams is the highest-volume droppable command in the system
+    // (SceneAudio pushes one per moved source per frame), so it is precisely the one whose
+    // droppability the reserve exists to enforce.
+    std::array<float, 32> drain{};
+    system->render(drain, 1, 48000);
+    system->service();
+
+    const VoiceHandle victim = system->play(clip, flatParams());
+    REQUIRE(victim.valid());
+    system->render(drain, 1, 48000);
+    REQUIRE(system->isPlaying(victim));
+
+    const std::uint64_t droppedBefore = system->stats().droppedCommands;
+    VoiceParams moving = flatParams();
+    for (int i = 0; i < 4096; ++i) {
+        moving.position = engine::Vec3{static_cast<float>(i), 0.0F, 0.0F};
+        system->setParams(victim, moving);
+    }
+    // SetParams IS DROPPABLE: the reserve refuses it long before the ring is full.
+    CHECK(system->stats().droppedCommands > droppedBefore);
+
+    // And because it is, the reserve still has room for a NON-droppable Stop.
+    system->stop(victim);
+    system->render(drain, 1, 48000);
+    system->service();
+    CHECK_FALSE(system->isPlaying(victim));
 }
 
 TEST_CASE("SY9: droppedCommands counts EXACTLY the discards") {
@@ -379,21 +417,45 @@ TEST_CASE("SY10: service() reclaims finished slots, and WITHOUT it play() eventu
     }
 }
 
-TEST_CASE("SY11: the retire ring never overflows across 10 000 play/finish cycles") {
+TEST_CASE("SY11: the retire ring never overflows, INCLUDING at its proven maximum load") {
     const std::unique_ptr<AudioSystem> system = AudioSystem::create();
     REQUIRE(system != nullptr);
     const ClipHandle clip = system->registerClip(makeClip(48000, 1, 4, guidOf(1)));
     REQUIRE(clip.valid());
-
     std::array<float, 32> buffer{};
-    for (int cycle = 0; cycle < 10000; ++cycle) {
-        const VoiceHandle voice = system->play(clip, flatParams());
-        REQUIRE(voice.valid());  // a dropped retirement would exhaust the pool and fail here
-        system->render(buffer, 1, 48000);
-        system->service();
-        CHECK_FALSE(system->isPlaying(voice));
+
+    SUBCASE("10 000 single-voice cycles -- no slow leak") {
+        for (int cycle = 0; cycle < 10000; ++cycle) {
+            const VoiceHandle voice = system->play(clip, flatParams());
+            REQUIRE(voice.valid());  // a dropped retirement would exhaust the pool and fail here
+            system->render(buffer, 1, 48000);
+            system->service();
+            CHECK_FALSE(system->isPlaying(voice));
+        }
+        CHECK(system->stats().rejectedPlays == 0U);
     }
-    CHECK(system->stats().rejectedPlays == 0U);
+
+    SUBCASE("ALL 64 voices retiring in ONE block before a single service() -- the capacity's own proof") {
+        // THE ARM THE CAPACITY ARGUMENT IS ABOUT, AND IT HAD TO BE ADDED. The arm above retires ONE
+        // voice per cycle, so the ring never holds more than one entry and no capacity above 1 can
+        // ever be observed -- sizing it at 32 left the whole suite GREEN, measured rather than
+        // assumed. mixer.hpp's proof says at most MAX_VOICES (64) retirements are outstanding at any
+        // instant; this is the fixture that actually reaches that number.
+        for (int cycle = 0; cycle < 200; ++cycle) {
+            for (std::uint32_t i = 0; i < MAX_VOICES; ++i) {
+                const VoiceHandle voice = system->play(clip, flatParams());
+                REQUIRE(voice.valid());
+            }
+            // ONE block retires all 64 at once, and only THEN is the ring drained.
+            system->render(buffer, 1, 48000);
+            CHECK(system->stats().activeVoices == 0U);
+            system->service();
+        }
+        // Every slot came back every time: a dropped retirement would leak one slot per cycle and
+        // the REQUIRE above would have fired long before here.
+        CHECK(system->stats().rejectedPlays == 0U);
+        CHECK(system->stats().peakVoices == MAX_VOICES);
+    }
 }
 
 TEST_CASE("SY12: stopAll() stops every voice and is IDEMPOTENT") {
