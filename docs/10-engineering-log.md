@@ -11151,15 +11151,22 @@ the one that matters: it is the exact code that was on `main`.
 
 **Branch:** `feat/3.7.1-audio-clip-assets`, cut from `main @ 03290bc` — the plan's stated branch
 point, with no drift and no sibling task in flight, so this branch never merged `origin/main` and
-every whole-tree count on it is a single-tree reading. **Ten green commits**, counted with
-`git rev-list --count` rather than by adding up steps: nine per build step
+every whole-tree count on it is a single-tree reading. **MERGED as PR #88, merge commit `4892e65`,
+nineteen commits plus the merge**, with all six CI checks green and the green run's `headSha`
+asserted equal to `HEAD` beforehand. Nine of the nineteen are the build steps
 (`4e3aa0b` the fixture set and its external anchor, `88c437a` the `MA_NO_DECODING` drop and the
 editor's miniaudio include line, `7549cb2` the fixture regeneration at 1.0 s, `df00690` the
 `.aerowave` container, `8bc6bc2` `cookAudio`, `63f515a` the four-format decode, `fe76e8a` the cooker's
 fifth subcommand, `890f6f3` `engine/audio` and `loadAudioClip`, `96766aa` the manifest's fifth arm and
-the lossy-digest case) plus one closing a CI finding (`73421c9`, the stb_vorbis LSan suppression).
-**Complete in code; the eleven-row macOS validation pass is PENDING**
-(`editor/validation/3.7.1-audio-clip-assets.md`, written before the pass as always).
+the lossy-digest case); the rest are `73421c9` (the stb_vorbis LSan suppression), `d992e7d` (the CI
+step that makes the lossy digests readable), the two docs commits and the code-review round's six.
+**The count is re-derived with `git rev-list --count` against the tree rather than added up from the
+step list** — 3.6.2's finding 8 — which is why the *"ten commits"* this paragraph carried while the
+branch was in flight is corrected here rather than left standing.
+**The eleven-row macOS validation pass RAN on 2026-08-23: ✅ PASS on ALL 11 ROWS**
+(`editor/validation/3.7.1-audio-clip-assets.md`, written before the pass as always). Its full record
+is the last section of this entry, and **every one of its five findings is a defect in the PAGE
+rather than in the code** — one of which closes `A19` and one of which reclassifies `A23`.
 
 Since task 0.3.3 this engine could **open** an audio device and write silence into it, and it had
 never been able to say what a sound *is*. `engine/audio/` held one file — `.gitkeep`, dated 13 July
@@ -11387,8 +11394,11 @@ caution.
 
 Every seed either reddened at least one case or failed to compile. **A19, A23 and A28 were flagged
 expected-declared BEFORE the matrix ran**, so their results are confirmations rather than discoveries.
-**Two of the three are still declared and validation row 6 is their only coverage anywhere; the
-third, A28, was closed by the code-review round** — see Gap 2 below.
+**The class has since shrunk from three to ONE**: `A28` was closed by the code-review round (Gap 2
+below), `A19` was witnessed by the macOS pass once row 6's *input* was corrected, and `A23` turns out
+to be unwitnessable **by construction** rather than by luck. Both of the latter are recorded in the
+validation section at the end of this entry, and the bullets below are amended in place rather than
+left to read as current.
 
 **Four seeds are BUILD FAILURES rather than test failures, which is a stronger witness than any case**,
 and each was re-read from its own build log rather than remembered:
@@ -11405,8 +11415,8 @@ its re-seed, and both are the header-size constant being protected in a second p
 account for. `A14b` is the sample-cap tripwire working — **but only in its drifted form**, which is
 itself a correction and is recorded below.
 
-**The three seeds flagged declared before the matrix ran — and the code-review round later closed
-the third of them, so only two are still declared:**
+**The three seeds flagged declared before the matrix ran — all three since resolved, the third by
+the code-review round and the other two by the macOS pass, each amended in place below:**
 
 * **`A19`** — `audio_cook.cpp`, moving the cap checks **below** the buffer resize. Behaviourally
   identical: same status, same message, same empty `bytes`. What changes is the **peak allocation
@@ -11415,12 +11425,25 @@ the third of them, so only two are still declared:**
   correct code and, once during the matrix, on the seeded build, so the row proves a *difference*
   rather than reporting a number. With the check below the resize the peak additionally carries a
   ~115 MB output buffer that is never written.
+  **AMENDED BY THE MACOS PASS: the row's number was right and its stated INPUT was wrong, and the
+  corrected form witnesses the seed exactly.** `runAudio` hands `decodeAudioFile` the cook's own
+  caps, so a 57.6 M-frame source never reaches `cookAudio` at all — the **decode's** pre-allocation
+  check refuses it first, and the seeded peak moved 241.47 → 241.48 MB, sixteen kilobytes. On an
+  input that decodes cleanly and is then refused by `cookAudio`'s own bound (4000 Hz stereo, below
+  the rate floor) the difference is **241.19 → 356.19 MB = exactly 115.00 MB**, matching the
+  prediction to two decimals. **`A19` is a witnessed seed.**
 * **`A23`** — `audio_cook.cpp`, dropping the **zero-initialisation** of the output buffer. The writer
   covers all 64 header bytes and all `2 × sampleCount` sample bytes, so on today's format there may
   be **no observable byte at all**; the `0xCD`-fill variant was run to make any gap visible and
   reddened nothing either. **It is DECLARED, not "closed", and the zero-init stays**: it is defence
   for a field a *future* version adds and forgets to write, which is exactly the class of defect no
   current test can have an arm for. **Do not delete a defence because a seed could not see it.**
+  **AMENDED BY THE MACOS PASS: it is unwitnessable BY CONSTRUCTION, not by luck, and validation row 6
+  is NOT its coverage.** `std::vector<std::byte>(n)` value-initialises **by definition**, so the
+  `0xCD`-fill variant is not spellable at all without changing `AudioCookResult::bytes`' type; the
+  seeded build produced artifacts byte-identical to correct output on all four fixtures — including
+  against the **frozen** `tone.aerowave` — at identical peak RSS. It stays declared, and now with a
+  reason rather than a gap.
 * **`A28`** — `audio_decode.cpp`, removing the **in-loop** cap check while keeping the
   pre-allocation one. **DECLARED WHEN THE MATRIX RAN; NO LONGER DECLARED — the code-review round
   built its witness, and the justification recorded here was wrong about the mechanism.** What was
@@ -11434,17 +11457,23 @@ the third of them, so only two are still declared:**
   is now committed and **`AD21` reddens alone under `A28`**: 3 assertions, where the seed previously
   left the whole 1745-case suite green. **`A28` is a witnessed seed, not a declared one.**
 
-**Rows 6 and 6 respectively for `A19` and `A23` is not a typo**: both are about *what the refusal
-costs* rather than *what it returns*, so one peak-RSS row covers both. Validation row 7 was written as
+**Rows 6 and 6 respectively for `A19` and `A23` was the reading when the matrix ran, and the macOS
+pass refuted its second half.** Both seeds are about *what the refusal costs* rather than *what it
+returns*, so one peak-RSS row looked like it covered both — but a value-initialising `std::vector`
+makes `A23`'s seed unspellable, so **row 6 witnesses `A19` alone**. Validation row 7 was written as
 `A28`'s only coverage and is no longer that — `AD21` is — but it keeps its own job, which is the ASan
-teardown check on a truncated stream, a thing no assertion in the `AD` tier makes.
+teardown check on a truncated stream, a thing no assertion in the `AD` tier makes; the pass then found
+that row's *command* vacuous on macOS and its *mp3 expectation* wrong, both recorded at the end of
+this entry.
 
 **This task ran no shader, GPU or sample seeds, because it has none of those things** — it writes no
 shader, opens no device, renders no pixel and ships no sample. The declared class was three seeds when
-the matrix ran and **is TWO after the code-review round** — `A19` and `A23`, the smallest in the
-project so far (3.5.1 declared four, 3.5.2 three, 3.6.1 three, 3.6.3 nine) — and both survivors are
-about a *cost* rather than an output nobody can see. `A28`, the third, was closed by building the
-fixture its own justification had declared unaffordable; see the review round's Gap 2.
+the matrix ran, **TWO after the code-review round and ONE after the macOS pass** — `A23` alone, by a
+wide margin the smallest in the project so far (3.5.1 declared four, 3.5.2 three, 3.6.1 three, 3.6.3
+nine) — and the survivor is about a *defence for a future format version* rather than an output
+nobody can see. `A28` was closed by building the fixture its own justification had declared
+unaffordable (the review round's Gap 2); `A19` by correcting row 6's input (the validation section
+below).
 
 **No seed was run against `engine/platform/src/miniaudio_impl.c`, deliberately.** Removing a different
 trim would either break the build or change nothing observable, and the one line this task touches is
@@ -11566,8 +11595,9 @@ its twin exists.
 **`A19`, `A23` and `A28` reddened nothing across the whole 168-test suite, which is a confirmation
 rather than a discovery** — all three were flagged expected-declared *before* the matrix ran, and that
 flag is the whole difference between a confirmation and a gap: the same green run means one thing when
-it was predicted and something else entirely when it was not. Their only coverage anywhere is the
-validation rows named above.
+it was predicted and something else entirely when it was not. **All three have since been resolved
+rather than left standing**: `A28` by `AD21`, `A19` by the corrected row 6, and `A23` by the finding
+that its seed cannot be spelled at all.
 
 **`A29` and `A30` were not spellable as written, and their verdict comes from one lane.** Both ask for
 a decoder handle to escape an error path — and **both handles are already scope-owned**, so seeding a
@@ -11882,3 +11912,97 @@ cannot enforce a header boundary, because vcpkg installs every port into one sha
 `#include <miniaudio.h>` in `engine/audio` is a **hard compile error**, not a guard finding.
 `engine/audio/CMakeLists.txt` carries that warning in its own header, because **3.7.3 is going to be
 asked to guard exactly this and 3.7.2 is the task that can most easily void it.**
+
+#### The macOS validation pass — ✅ PASS on ALL 11 ROWS
+
+**RUN 2026-08-23 · `macos-release` at `main` @ `4892e65` · ✅ 11 / 11 ROWS PASS.** **Row 11 is
+recorded rather than judged, by its own text** — it prints the three-lane mp3/ogg digests whether or
+not they agree. This page is unlike every other one in `editor/validation/`: it has **no picture and
+no sound**, because this task renders no pixel, opens no device and ships no sample, so every row is
+a number and most are measured against an external tool.
+
+* **Row 1** — the console gate: **0 unexpected lines across 4 runs**, every exit 0.
+* **Row 2** — wav, flac and mp3 artifacts **16 064 B**, ogg **32 064 B**, and §14's identity
+  `64 + 2 × channels × frameCount` **holds 4/4**.
+* **Row 3** — `ffprobe`'s rate, channel and frame readings against the header bytes at offsets 32,
+  36 and 40: **4/4 agree**.
+* **Row 4** — all four duration deltas are **exactly 0.000000 s**, so the ±4608-frame tolerance is
+  **entirely unused slack** rather than slack being consumed. The branch measured that on its own
+  build; the pass re-measured it on the merged tree, and it is the number to watch if a future
+  fixture change starts eating into it.
+* **Row 5 — the external anchor, and the sharpest row on the page: 0 differing bytes on BOTH wav and
+  flac**, over the anchor's full 16 000 B. dr_wav and dr_flac agree with **libavcodec** byte for
+  byte — the tie 3.3.3 recorded that the texture half of the manifest has never had.
+* **Row 8** — a locally generated 3-minute stereo 44.1 kHz mp3, **never committed** (the 3.5.2
+  row-12 / 3.1.5 row-12 pattern): decode plus cook in **0.16 s** at a peak of **79.15 MB**, artifact
+  **31 752 064 B**. The identity holds on a real-world file too — 7 938 000 frames at two channels,
+  which is **180.000 s at 44.1 kHz exactly**.
+* **Row 9** — `loadAudioClip` through a real `DirectoryBackend`: **10.5 ms**, resident delta
+  **31.87 MB** against an artifact of **31.75 MB**, **+0.36 %**. **That is also a behavioural
+  witness that the sample buffer is MOVED rather than COPIED**, which nothing in the `AC` tier
+  asserts: a copy would have read ≈63.5 MB.
+* **Row 10** — **0 unexpected lines across TEN samples**, counted from `samples/` at pass time
+  rather than taken from the plan, which said nine.
+* **Row 11 — D12 IS VINDICATED BY MEASUREMENT**: mp3 agrees on Windows and Linux and **differs on
+  macOS** (2/3); ogg **differs on all three** (0/3). **Had either format been frozen into
+  `determinism.sha256` beside wav and flac, the `cook-determinism` job would be red.** The refusal
+  in `docs/09` §14.7 rested on an argument about SIMD availability and FMA contraction policy; two
+  independent readings now show the argument was correct rather than theoretical.
+
+#### The five findings the pass produced — and every one is a defect in the PAGE, never in the code
+
+**1. Row 6's stated input CANNOT witness `A19`, and the corrected input witnesses it exactly.**
+`runAudio` hands `decodeAudioFile` the cook's own caps, so a 57.6 M-frame source is refused by the
+**decode's** pre-allocation check and `cookAudio` — where `A19` lives — **is never entered**.
+Measured: the seeded peak moved **241.47 → 241.48 MB**, sixteen kilobytes, which is noise rather
+than a witness. On an input that decodes cleanly and is then refused by `cookAudio`'s own bound —
+4000 Hz stereo, below the rate floor — the difference is **241.19 → 356.19 MB = exactly 115.00 MB**,
+matching the ≈115 MB prediction to two decimals. **The row's NUMBER was right and its INPUT was
+wrong**, which is the generalizable form: **a row that measures what a refusal costs must name an
+input that reaches the code the cost belongs to** — and the branch's own Gap 1 fix, which pushed
+three of the cook's bounds down into the decode, is exactly what moved that boundary out from under
+the row. **`A19` is witnessed.**
+
+**2. Row 6 is NOT `A23`'s coverage, and `A23` is unwitnessable BY CONSTRUCTION rather than by
+luck.** `std::vector<std::byte>(n)` value-initialises **by definition**, so the `0xCD` seed is not
+spellable at all without changing `AudioCookResult::bytes`' type. The seeded build produced
+artifacts **byte-identical to correct output on all four fixtures** — including against the
+**frozen** `tone.aerowave` — at identical peak RSS. **It stays declared, and now with a reason
+rather than a gap**, which is a better outcome than a row that appears to cover it: the zero-init is
+defence for a field a future `formatVersion` adds and forgets to write, and **a defence is not
+deleted because no seed can reach it.**
+
+**3. Row 7's command was VACUOUS ON MACOS, and it is the `AD4` species one page later.**
+`ASAN_OPTIONS=detect_leaks=1` makes an ASan binary print *"detect_leaks is not supported on this
+platform"* and **abort before `main`** — so the grep returned 0 because **the program never ran**.
+Proven with a `--version` control and then re-confirmed independently. **A check that returns the
+right answer for the wrong reason is the failure mode this project keeps paying for**: `AD4` is a
+tautology that cannot fail, 3.6.3's row 1 grep matched the word it was searching for, and this one
+measured a process that never started. Every one of them reads as coverage.
+
+**4. Row 7's mp3 expectation was wrong, and the code is right.** A 40 %-truncated mp3 is
+**accepted** (1775 frames), correctly — **MP3 carries no completeness claim**, and neither does a
+truncated wav's data chunk in the shape the row used. The battery was extended to **six inputs
+covering three genuinely different error paths**, all reading **0 leak lines and 0 sanitizer
+lines**.
+
+**5. Two smaller ones, both in the page's commands.** Row 1's `^\[info\]` anchor **never matches
+this project's log format**, because a line begins with a timestamp rather than with the level — so
+the anchor could not have failed on any input. And **`timeout` does not exist on macOS**, so row 10
+ran each sample under `perl -e 'alarm shift; exec @ARGV' 12`.
+
+**THE DECLARED CLASS IS NOW ONE SEED, NOT THREE, WHICH IS A SHARPER CLOSE THAN THE TASK EXPECTED.**
+`A28` is witnessed by `AD21` (the code-review round's Gap 2), `A19` by the corrected row 6, and
+`A23` is unwitnessable by construction. The matrix ran with three seeds flagged expected-declared,
+and every one of the three was resolved by a measurement afterwards rather than left standing on its
+justification.
+
+**And the limit, stated rather than glossed: macOS has ASan but NOT LSan.** Row 7's zero proves the
+refusals are **clean**, not that a leak is **absent**. The one real leak this task found sits on
+exactly those paths — stb_vorbis, 632 B, `leak:start_decoder` — and was **only ever visible on
+Linux**. **The Linux run is what turns row 7 into evidence**, which makes the Windows and Linux rows
+matter more on this page than on any other in the directory.
+
+**Still open: the Windows and Linux rows**, which join the standing platform-validation debt: Phase
+0's gate, Phase 1's render rows, every one of the thirteen Phase 2 tasks, and every Phase 3 task,
+this one included.
