@@ -54,3 +54,11 @@ static_assert(engine::platform::AudioDeviceConfig{}.channels == 2U);
 static_assert(!engine::platform::AudioDeviceConfig{}.headless);
 static_assert(!std::is_copy_constructible_v<engine::platform::AudioDevice>);  // move-only RAII
 static_assert(std::is_move_constructible_v<engine::platform::AudioDevice>);
+
+// ---- task 3.7.2: the realtime seam, proven reachable from a TU that links ONLY aero::platform ----
+// This TU cannot see miniaudio (R12), which is exactly what makes these a statement about the PUBLIC
+// surface: AudioRenderFn is spelled in engine types and std::span alone. The two fields default to
+// null, which is 0.3.3's silence path byte for byte (AC-7).
+static_assert(engine::platform::AudioDeviceConfig{}.render == nullptr);
+static_assert(engine::platform::AudioDeviceConfig{}.renderUser == nullptr);
+static_assert(std::is_default_constructible_v<engine::platform::AudioDeviceConfig>);

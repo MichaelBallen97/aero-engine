@@ -4,9 +4,11 @@
 // is defined in src/audio_device.cpp), so no ma_ type reaches this header — the boundary rule, enforced
 // by check-platform-boundary.sh and tests/platform_boundary_probe.cpp.
 //
-// This is a STUB: it proves the device path (open -> realtime thread -> silence -> close) on all 3 OSes.
-// Clips, decoding, mixing, sources/listeners and spatialization are engine::audio, Phase 3.7 (3.7.1
-// depends on this task) and Phase 6.4 — built ON TOP of this device primitive (ADR-006 layering).
+// This proved the device path (open -> realtime thread -> silence -> close) on all 3 OSes; task 3.7.2
+// gave it a REALTIME SEAM (AudioRenderFn below), so a caller in engine::audio can fill the buffer.
+// Clips, decoding, mixing, sources/listeners and spatialization are engine::audio, Phase 3.7 and Phase
+// 6.4 — built ON TOP of this device primitive (ADR-006 layering). Nothing about the mixer, the voice
+// table or the listener lives here, and nothing here knows they exist.
 //
 // AudioDevice is INDEPENDENT of Context: miniaudio needs no SDL_Init, so a device can be opened with no
 // window (that is exactly what the null-backend unit tests do).
@@ -14,8 +16,23 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 
 namespace engine::platform {
+
+// THE REALTIME RENDER CALLBACK (task 3.7.2). Runs on miniaudio's audio thread: NO allocation, NO
+// lock, NO logging, NO exception, NO blocking call of any kind.
+//
+//   * `output` is INTERLEAVED f32 and is UNINITIALISED ON ENTRY. The callback MUST write every
+//     element, silence included -- a callback that writes only where it has something to say plays
+//     whatever was in that memory.
+//   * The frame count is output.size() / channels and is deliberately NOT a second parameter: two
+//     spellings of one number are two things that can disagree.
+//   * `sampleRate` is the device's NEGOTIATED rate and is passed EVERY call, which removes the
+//     chicken-and-egg where the rate is unknown until open() returns but open() needs the callback.
+//   * `user` is AudioDeviceConfig::renderUser, verbatim.
+using AudioRenderFn = void (*)(void* user, std::span<float> output, std::uint32_t channels,
+                               std::uint32_t sampleRate) noexcept;
 
 // What to open. Defaults request a conventional stereo/48 kHz float stream; miniaudio inserts a
 // converter if the hardware's native format differs, so the callback (and sampleRate()/channels()) sees
@@ -24,6 +41,21 @@ struct AudioDeviceConfig {
     std::uint32_t sampleRate = 48000;  // Hz; 0 is rejected (open() returns nullopt)
     std::uint32_t channels = 2;        // 0 is rejected
     bool headless = false;             // true -> miniaudio null backend: no hardware, for CI/tests
+
+    // ---- task 3.7.2, APPENDED, never inserted ---------------------------------------------------
+    // NULL render == the 0.3.3 silence path, byte for byte.
+    //
+    // SET AT open() ONLY AND NEVER MUTATED. There is deliberately no setRenderCallback(): a
+    // post-open() setter needs an atomic and an answer to "which one is running right now", and buys
+    // nothing any consumer wants. Because the pointer is written BEFORE the device thread exists and
+    // read ONLY on that thread, NO SYNCHRONISATION IS NEEDED AT ALL -- said here because the next
+    // reader will otherwise "fix" it by adding an atomic.
+    //
+    // `renderUser` must OUTLIVE THE DEVICE. Declare the device AFTER whatever it points at; ordinary
+    // reverse-order destruction then tears the device down first, and ma_device_uninit joins the
+    // audio thread before returning.
+    AudioRenderFn render = nullptr;
+    void* renderUser = nullptr;
 };
 
 class AudioDevice {
