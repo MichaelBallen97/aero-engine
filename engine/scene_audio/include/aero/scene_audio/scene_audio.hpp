@@ -90,15 +90,26 @@ private:
     // One entity <-> voice binding. `lastPushed` is what makes the params COALESCING possible, and it
     // is compared as a WHOLE VoiceParams (its defaulted operator==) rather than field by field: a
     // field-by-field comparison is exactly where a future appended field gets forgotten.
+    // THERE IS DELIBERATELY NO `finished` FLAG HERE, and its absence is a decision rather than an
+    // omission. One was written in the first draft, set on the "voice is no longer playing" arm, and
+    // READ NOWHERE: D11's no-restart behaviour is carried entirely by that arm's `continue`, so the
+    // flag documented an intent it did not carry. A field that looks like state and is not is worse
+    // than no field -- it invites the next reader to branch on it and to believe the branch means
+    // something. If a future task needs "this one-shot has run its course" as data (a `finished`
+    // observable, an animation-style event), that task adds it AND its consumer together.
     struct Binding {
         Entity entity{};
         audio::VoiceHandle voice{};
         Guid clip{};
         audio::VoiceParams lastPushed{};
-        bool finished = false;
     };
 
-    // A std::vector SORTED BY ENTITY INDEX -- the AssetBindingTable decision, for the same two
+    // A std::vector SORTED BY THE WHOLE Entity -- index THEN generation, by the single `entityOrderLess`
+    // in the .cpp that every sort and every search in this file goes through. Sorting by index ALONE
+    // was this task's blocking review finding: step 4 matched by full equality and step 5 swept by
+    // index, so a RECYCLED index orphaned a looping voice forever. One order, one rule.
+    //
+    // A std::vector rather than a node container is the AssetBindingTable decision, for the same two
     // reasons: std::unordered_map's move is not noexcept on MSVC's STL (the 3.1.2 R9 / C2607 rule),
     // and a few dozen entries binary-search faster than they hash.
     std::vector<Binding> bindings;

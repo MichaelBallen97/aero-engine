@@ -23,6 +23,7 @@
 #include <aero/scene_audio/scene_audio.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -63,6 +64,14 @@ struct Options {
     if (end == text || end == nullptr || *end != '\0') {
         return false;
     }
+    // FINITENESS IS PART OF PARSING HERE, not a later guard. strtod accepts "inf" and leaves *end at
+    // '\0', so the caller's `seconds > 0.0F` test passes for infinity -- and the dump loop then does
+    // static_cast<std::uint64_t>(inf * 48000.0F), an out-of-range float-to-integer conversion, which
+    // is UNDEFINED BEHAVIOUR and exactly what UBSan traps. It is invisible in CI because CI builds
+    // this sample and never runs it. ("nan" is already refused by `> 0.0F`; "inf" is not.)
+    if (!std::isfinite(value)) {
+        return false;
+    }
     out = static_cast<float>(value);
     return true;
 }
@@ -73,14 +82,17 @@ struct Options {
         const bool hasValue = (i + 1) < argc;
         if (arg == "--seconds" && hasValue) {
             if (!parseFloat(argv[++i], options.seconds)) {
+                std::printf("--seconds needs a FINITE number, got: %s\n", argv[i]);
                 return false;
             }
         } else if (arg == "--period" && hasValue) {
             if (!parseFloat(argv[++i], options.period)) {
+                std::printf("--period needs a FINITE number, got: %s\n", argv[i]);
                 return false;
             }
         } else if (arg == "--pitch" && hasValue) {
             if (!parseFloat(argv[++i], options.pitch)) {
+                std::printf("--pitch needs a FINITE number, got: %s\n", argv[i]);
                 return false;
             }
         } else if (arg == "--dump-pcm" && hasValue) {
@@ -97,7 +109,11 @@ struct Options {
             return false;
         }
     }
-    return options.seconds > 0.0F && options.period > 0.0F;
+    if (options.seconds <= 0.0F || options.period <= 0.0F) {
+        std::printf("--seconds and --period must both be positive\n");
+        return false;
+    }
+    return true;
 }
 
 // Loads one committed .aerowave through a real DirectoryBackend and hands it to the system.

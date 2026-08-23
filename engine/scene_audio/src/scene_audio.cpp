@@ -44,6 +44,24 @@ namespace {
     return params;
 }
 
+// THE ONE ORDER OVER Entity, USED BY EVERY SORT AND EVERY SEARCH IN THIS FILE. It orders by the
+// WHOLE handle -- index THEN generation -- and having exactly one of it is the fix for this task's
+// blocking review finding rather than an incidental tidy-up.
+//
+// WHAT WENT WRONG, because the shape recurs: step 4 matched a binding by FULL Entity equality while
+// step 5 swept presence by INDEX ALONE. Two places compared the same key by different rules, and the
+// WEAKER one silently won. A recycled entity index (destroy + create between updates, which EnTT does
+// as a matter of course) then left the old binding looking "present": the sweep kept it, its voice
+// was never stopped, and a LOOPING one played forever with nothing able to name it -- every later
+// lower_bound for that index returned the newer entry. Each churn stranded one more voice until the
+// 64-slot pool was gone and rejectedPlays climbed with no cause visible anywhere.
+//
+// With one order, the newer entity sorts AFTER the older one, the sweep sees the older is absent, and
+// it is stopped and erased in the SAME update that replaced it. SA17b is the witness.
+[[nodiscard]] bool entityOrderLess(const Entity& a, const Entity& b) noexcept {
+    return a.index != b.index ? a.index < b.index : a.generation < b.generation;
+}
+
 void warnOnce(bool& latch, const char* message) {
     if (!latch) {
         latch = true;
@@ -134,7 +152,7 @@ void SceneAudio::update(World& world, audio::AudioSystem& system) {
     for (const AudioSourceView& source : view.sources) {
         const auto position = std::lower_bound(
             bindings.begin(), bindings.end(), source.entity,
-            [](const Binding& binding, const Entity& key) { return binding.entity.index < key.index; });
+            [](const Binding& binding, const Entity& key) { return entityOrderLess(binding.entity, key); });
         const bool bound = position != bindings.end() && position->entity == source.entity;
 
         // A nil clip and an unregistered clip are the SAME ordinary in-flight state: COUNTED, never
@@ -159,11 +177,9 @@ void SceneAudio::update(World& world, audio::AudioSystem& system) {
                 // half-recorded binding would make the retry impossible.
                 continue;
             }
-            bindings.insert(position, Binding{.entity = source.entity,
-                                              .voice = voice,
-                                              .clip = source.clip,
-                                              .lastPushed = source.params,
-                                              .finished = false});
+            const Binding fresh{
+                .entity = source.entity, .voice = voice, .clip = source.clip, .lastPushed = source.params};
+            bindings.insert(position, fresh);
             continue;
         }
 
@@ -178,7 +194,6 @@ void SceneAudio::update(World& world, audio::AudioSystem& system) {
             position->voice = voice;
             position->clip = source.clip;
             position->lastPushed = source.params;
-            position->finished = false;
             continue;
         }
 
@@ -187,14 +202,23 @@ void SceneAudio::update(World& world, audio::AudioSystem& system) {
             // component says "this should be playing", and a one-shot that has run its course has.
             // Retrigger is false -> true, which drops the binding at step 5 and takes the play() arm
             // on the next update.
-            position->finished = true;
+            //
+            // THIS `continue` IS THE WHOLE MECHANISM. There is no flag: see the note on Binding.
             continue;
         }
 
         if (position->lastPushed != source.params) {
             // The comparison is over the WHOLE VoiceParams, never field by field.
-            system.setParams(position->voice, source.params);
-            position->lastPushed = source.params;
+            //
+            // AND lastPushed IS HELD BACK WHEN THE PUSH IS REFUSED. Advancing it unconditionally is
+            // what makes a dropped SetParams PERMANENT: the bridge would believe the value landed and
+            // never push it again, so a source edited once and then left alone -- at a moment when
+            // nothing is draining the ring -- keeps the stale value for life, with only
+            // droppedCommands moving. D5's "the next frame corrects it" is only true if the next
+            // frame still sees a difference. SA20 is the witness.
+            if (system.setParams(position->voice, source.params)) {
+                position->lastPushed = source.params;
+            }
         }
         // Otherwise NOTHING AT ALL. That coalescing is not an optimisation -- it is what makes the
         // command ring's capacity sound: without it a 64-source scene at 1000 fps produces 65 000
@@ -204,12 +228,11 @@ void SceneAudio::update(World& world, audio::AudioSystem& system) {
     // 5. Drop every binding whose entity is absent from the view -- dead, or `playing` went false, or
     //    the component was removed, or its clip stopped resolving. A DROPPED BINDING IS HOW
     //    false -> true BECOMES A RETRIGGER.
-    std::sort(seen.begin(), seen.end(), [](const Entity& a, const Entity& b) { return a.index < b.index; });
+    std::sort(seen.begin(), seen.end(), entityOrderLess);
     std::size_t write = 0;
     for (std::size_t read = 0; read < bindings.size(); ++read) {
         const Binding& binding = bindings[read];
-        const auto byIndex = [](const Entity& a, const Entity& b) { return a.index < b.index; };
-        const bool present = std::binary_search(seen.begin(), seen.end(), binding.entity, byIndex);
+        const bool present = std::binary_search(seen.begin(), seen.end(), binding.entity, entityOrderLess);
         if (present) {
             if (write != read) {
                 bindings[write] = bindings[read];

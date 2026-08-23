@@ -263,20 +263,25 @@ void AudioSystem::stopAll() noexcept {
     static_cast<void>(push(command));
 }
 
-void AudioSystem::setParams(VoiceHandle voice, const VoiceParams& params) noexcept {
+bool AudioSystem::setParams(VoiceHandle voice, const VoiceParams& params) noexcept {
     if (!handleIsLive(voice)) {
-        return;
+        return false;
     }
     AudioCommand command;
     command.kind = AudioCommand::Kind::SetParams;
     command.slot = voice.index;
     command.generation = voice.generation;
     command.params = sanitizeParams(params);
-    // Recorded even if the push is DROPPED under back-pressure: the game thread's view is what the
-    // caller asked for, and the next frame's push corrects the mixer. Recording only on success would
-    // make a dropped SetParams permanently invisible to a later one-field edit.
-    slots[voice.index].lastParams = command.params;
-    static_cast<void>(push(command));
+    const bool pushed = push(command);
+    if (pushed) {
+        // RECORDED ONLY ON SUCCESS, so `lastParams` mirrors what the MIXER is believed to hold rather
+        // than what the caller asked for. Recording unconditionally makes a dropped SetParams
+        // permanent: setVolume/setPitch/setPose rebuild the whole struct from this field, and the
+        // bridge compares against its own copy, so both would go on believing a value that never
+        // arrived.
+        slots[voice.index].lastParams = command.params;
+    }
+    return pushed;
 }
 
 void AudioSystem::setVolume(VoiceHandle voice, float volume) noexcept {

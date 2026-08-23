@@ -95,7 +95,16 @@ public:
     void setVolume(VoiceHandle voice, float volume) noexcept;
     void setPitch(VoiceHandle voice, float pitch) noexcept;
     void setPose(VoiceHandle voice, Vec3 worldPosition) noexcept;
-    void setParams(VoiceHandle voice, const VoiceParams& params) noexcept;
+    // RETURNS WHETHER THE COMMAND ACTUALLY LANDED, and that return is a recorded deviation from the
+    // spec's `void` signature rather than a convenience. D5 licenses dropping a SetParams under
+    // back-pressure with "the voice keeps its previous parameters and THE NEXT FRAME CORRECTS IT" --
+    // which is true only while parameters keep changing. A source edited ONCE and then left alone,
+    // pushed at a moment when nothing is draining the ring (a stopped device, which validation row 11
+    // arranges on purpose), would otherwise keep the stale value FOR LIFE with only droppedCommands
+    // moving. The caller holds its own "last pushed" back on a false, so the next frame sees a
+    // difference and re-pushes. `void` -> `bool` is source-compatible for any caller that ignores it,
+    // and it is deliberately NOT [[nodiscard]] for the same reason.
+    bool setParams(VoiceHandle voice, const VoiceParams& params) noexcept;
     [[nodiscard]] bool isPlaying(VoiceHandle voice) const noexcept;
 
     // ---- global ---------------------------------------------------------------------------------

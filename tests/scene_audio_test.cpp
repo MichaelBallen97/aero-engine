@@ -760,6 +760,127 @@ TEST_CASE("SA17: destroying the entity stops its voice and erases the binding") 
     CHECK(system->stats().activeVoices == 0U);
 }
 
+TEST_CASE("SA17b: a RECYCLED entity index stops the old voice rather than orphaning it") {
+    // THE BLOCKING FINDING OF THIS TASK'S CODE-REVIEW ROUND, AS A TEST. Step 4 matched a binding by
+    // FULL Entity equality (index AND generation) while step 5 swept presence by INDEX ALONE, so an
+    // entity whose index was RECYCLED left its old binding looking "present": the sweep kept it, the
+    // old voice was never stopped, and a looping one played forever with nothing able to name it --
+    // every later lower_bound for that index returned the newer entry. Each churn added another
+    // orphan until the 64-voice pool exhausted and rejectedPlays climbed with no cause visible.
+    //
+    // SA17 cannot see it: it destroys and updates in the SAME frame, so the index is never reused
+    // ACROSS updates. This case is the one that reuses it.
+    const std::unique_ptr<AudioSystem> system = AudioSystem::create();
+    REQUIRE(system != nullptr);
+    const Guid guid = guidOf(1);
+    REQUIRE(system->registerClip(makeClip(guid, /*frames=*/8192)).valid());
+
+    World world;
+    const Entity ear = world.create();
+    world.add<Transform>(ear, Transform{});
+    world.add<AudioListener>(ear, AudioListener{});
+
+    const Entity first = world.create();
+    world.add<Transform>(first, Transform{});
+    world.add<AudioSource>(first, AudioSource{.clip = guid, .loop = true});
+
+    SceneAudio bridge;
+    bridge.update(world, *system);
+    pumpBlocks(*system);
+    REQUIRE(bridge.bindingCount() == 1U);
+    REQUIRE(system->stats().activeVoices == 1U);
+
+    // Destroy and recreate WITHOUT an update in between, so the index is recycled behind the bridge's
+    // back. ASSERTED rather than assumed: if this World stopped recycling indices the case would pass
+    // vacuously, and that must fail loudly instead.
+    world.destroy(first);
+    const Entity second = world.create();
+    REQUIRE(second.index == first.index);
+    REQUIRE(second.generation != first.generation);
+    world.add<Transform>(second, Transform{});
+    world.add<AudioSource>(second, AudioSource{.clip = guid, .loop = true});
+
+    bridge.update(world, *system);
+    pumpBlocks(*system, 2);
+    system->service();
+
+    // ONE binding and ONE voice. The old one was stopped in the SAME update that replaced it.
+    CHECK(bridge.bindingCount() == 1U);
+    CHECK(system->stats().activeVoices == 1U);
+
+    // And it stays that way under churn: without the fix each cycle strands one more looping voice
+    // until the pool is gone.
+    Entity current = second;
+    for (int cycle = 0; cycle < 80; ++cycle) {
+        world.destroy(current);
+        current = world.create();
+        world.add<Transform>(current, Transform{});
+        world.add<AudioSource>(current, AudioSource{.clip = guid, .loop = true});
+        bridge.update(world, *system);
+        pumpBlocks(*system, 2);
+        system->service();
+        CHECK(bridge.bindingCount() == 1U);
+        CHECK(system->stats().activeVoices == 1U);
+    }
+    CHECK(system->stats().rejectedPlays == 0U);
+}
+
+TEST_CASE("SA20: a SetParams dropped under back-pressure is re-pushed, never believed") {
+    // FINDING 2 OF THIS TASK'S CODE-REVIEW ROUND, AS A TEST. D5 licenses dropping a SetParams with
+    // "the voice keeps its previous parameters and THE NEXT FRAME CORRECTS IT" -- which holds only
+    // while parameters keep changing. Edit one value ONCE, at a moment when the ring is under the
+    // reserve, and the old code advanced lastPushed anyway: the bridge believed it landed and never
+    // pushed again, so the voice kept the stale value FOR LIFE with only droppedCommands moving.
+    //
+    // Asserted END TO END through the rendered amplitude, not by inspecting a counter: the question
+    // is whether the value reached the VOICE.
+    const std::unique_ptr<AudioSystem> system = AudioSystem::create();
+    REQUIRE(system != nullptr);
+    const Guid guid = guidOf(1);
+    REQUIRE(system->registerClip(makeClip(guid, /*frames=*/8192)).valid());
+
+    World world;
+    const Entity ear = world.create();
+    world.add<Transform>(ear, Transform{});
+    world.add<AudioListener>(ear, AudioListener{});
+    const Entity e = world.create();
+    world.add<Transform>(e, Transform{});
+    world.add<AudioSource>(e, AudioSource{.clip = guid, .loop = true, .spatialize = false});
+
+    SceneAudio bridge;
+    bridge.update(world, *system);
+
+    constexpr float FULL = 16384.0F / 32768.0F;
+    std::array<float, 16> block{};
+    system->render(block, 1, 48000);
+    system->render(block, 1, 48000);
+    REQUIRE(block[0] == doctest::Approx(FULL).epsilon(1e-6));
+
+    // Push the ring under its reserve so the next droppable command is refused.
+    const std::uint64_t droppedBefore = system->stats().droppedCommands;
+    for (int i = 0; i < 4096; ++i) {
+        system->setMasterVolume(1.0F);
+    }
+    REQUIRE(system->stats().droppedCommands > droppedBefore);
+
+    // ONE edit, and then the world is left alone forever after.
+    world.get<AudioSource>(e)->volume = 0.25F;
+    bridge.update(world, *system);  // this SetParams is DROPPED
+
+    // Drain everything the flood left behind, then keep ticking with an UNCHANGED world.
+    for (int i = 0; i < 8; ++i) {
+        system->render(block, 1, 48000);
+    }
+    for (int frame = 0; frame < 4; ++frame) {
+        bridge.update(world, *system);
+        system->render(block, 1, 48000);
+    }
+    system->render(block, 1, 48000);
+
+    // The edit reached the voice. Under the defect this reads FULL forever.
+    CHECK(block[0] == doctest::Approx(FULL * 0.25F).epsilon(1e-6));
+}
+
 TEST_CASE("SA18: zero listeners and >1 listener each WARN EXACTLY ONCE across 100 updates") {
     // ASSERTED AS A SEQUENCE in one case each, because two independent cases both pass under the very
     // defect they exist to catch: a latch that never latches still fires once on the first frame.

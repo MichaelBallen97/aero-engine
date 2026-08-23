@@ -25,7 +25,6 @@ constexpr float S16_TO_FLOAT = 1.0F / 32768.0F;
 // MAX_COOKED_AUDIO_FRAMES is 28 800 000. A float frame cursor therefore loses sub-sample precision
 // INSIDE THE FORMAT'S OWN LEGAL RANGE -- not a theoretical concern, a file `aero_cooker audio` will
 // happily produce. MX19 is the arm that justifies the type.
-constexpr std::uint64_t FIXED_POINT_ONE = 1ULL << 32U;
 constexpr double FIXED_POINT_SCALE = 4294967296.0;                  // 2^32, as a double
 constexpr float FIXED_POINT_FRACTION_SCALE = 1.0F / 4294967296.0F;  // 2^-32, as a float
 constexpr std::uint64_t FIXED_POINT_FRACTION_MASK = 0xFFFFFFFFULL;
@@ -213,7 +212,19 @@ void AudioMixer::render(std::span<float> output, std::uint32_t channels, std::ui
                 // The bounds check is belt AND braces: AudioClip::frameSample is total in both
                 // dimensions, but this is the one path in the tree where an out-of-bounds read would
                 // be HEARD as well as being undefined.
-                const AudioClip* clip = voice.clip.index < published ? clipTable[voice.clip.index] : nullptr;
+                //
+                // THE HANDLE'S GENERATION IS CHECKED, NOT ONLY ITS INDEX. Handle{} is
+                // {index 0, generation 0}, so an index-only gate plays whatever is published at index
+                // 0 when handed a DEFAULT-CONSTRUCTED ClipHandle. Unreachable through
+                // AudioSystem::play (which refuses an invalid handle before allocating a slot), but
+                // AudioMixer is a PUBLIC class and applyCommand is its documented audio-thread entry
+                // point, so the invariant has to hold on its own terms. Guarded HERE rather than in
+                // the Start arm so all four unusable-clip cases -- a null handle, an index past the
+                // published count, a published null pointer and an empty clip -- RETIRE the voice by
+                // the SAME path, which is what MX17's contract says and what keeps the retire ring's
+                // accounting uniform.
+                const AudioClip* clip =
+                    voice.clip.valid() && voice.clip.index < published ? clipTable[voice.clip.index] : nullptr;
                 if (clip == nullptr || !clip->valid() || clip->frameCount() == 0) {
                     voice.active = false;
                     retire(slot, voice.generation);

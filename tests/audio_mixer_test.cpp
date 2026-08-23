@@ -345,6 +345,41 @@ TEST_CASE("MX17: an unusable clip handle retires the voice and writes silence, n
         CHECK(mixer.activeVoices() == 0U);
     }
 
+    SUBCASE("a NULL ClipHandle -- {index 0, generation 0} -- rather than an out-of-range index") {
+        // FINDING 4 OF THIS TASK'S CODE-REVIEW ROUND. render() gated on `voice.clip.index < published`
+        // alone, and Handle{} is {0, 0}, so a DEFAULT-CONSTRUCTED handle played whatever happened to
+        // be published at index 0 instead of retiring the voice. Unreachable through
+        // AudioSystem::play (which refuses an invalid handle), but AudioMixer is PUBLIC and
+        // applyCommand is its documented audio-thread entry point -- and this case's own title has
+        // always said "a null / out-of-range ClipHandle", so the null half was uncovered.
+        AudioMixer mixer;
+        REQUIRE(mixer.publishClip(0, source.get()));  // index 0 IS published and IS audible
+
+        AudioCommand start;
+        start.kind = AudioCommand::Kind::Start;
+        start.slot = 0;
+        start.generation = 1;
+        start.clip = ClipHandle{};  // NULL: index 0, generation 0
+        start.params = flatParams();
+        REQUIRE_FALSE(start.clip.valid());
+        mixer.applyCommand(start);
+
+        std::array<float, 4> buffer{};
+        poison(buffer);
+        mixer.render(buffer, 1, 48000);
+        for (const float sample : buffer) {
+            CHECK(sample == 0.0F);  // silence, NOT clip 0
+        }
+        CHECK(mixer.activeVoices() == 0U);
+
+        // And it RETIRES by the same path as every other unusable clip, so the slot comes back.
+        std::uint32_t slot = 0;
+        std::uint32_t generation = 0;
+        REQUIRE(mixer.popRetired(slot, generation));
+        CHECK(slot == 0U);
+        CHECK(generation == 1U);
+    }
+
     SUBCASE("a DEFAULT-CONSTRUCTED clip, whose frameCount is 0") {
         const AudioClip empty;
         AudioMixer mixer;
