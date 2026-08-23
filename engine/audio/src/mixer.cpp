@@ -7,6 +7,7 @@
 #include <aero/core/profiler.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -40,10 +41,43 @@ constexpr std::uint64_t FIXED_POINT_FRACTION_MASK = 0xFFFFFFFFULL;
 // RANGE, DONE RATHER THAN ASSUMED: the worst legal increment is pitch 4 x (384000 / 8000) = 192, i.e.
 // 192 * 2^32 ~= 8.2e11, and the worst cursor is 28 800 000 * 2^32 ~= 1.24e17. Both are comfortably
 // inside u64's 1.8e19. MX18 asserts it rather than trusting this paragraph.
+//
+// THE EXPLICIT FINITENESS ARM BELOW IS LOAD-BEARING AND IS NOT A BARE std::clamp. libc++'s
+// std::clamp(NaN, lo, hi) returns NaN -- measured by task 3.6.3 and recorded -- so a bare clamp here
+// produces a NaN product, and CONVERTING A NaN TO std::uint64_t IS UNDEFINED BEHAVIOUR, which UBSan
+// traps on both Debug lanes. AudioSystem sanitises pitch at the API boundary (D9's first defence),
+// but applyCommand is PUBLIC and takes a raw VoiceParams, so this is the arm that makes the mixer
+// total on its own terms. A non-finite pitch becomes the field's documented default, matching what
+// setPitch does one layer up so the two can never disagree. MX20 is its witness.
 [[nodiscard]] std::uint64_t frameIncrement(std::uint32_t clipRate, std::uint32_t outRate, float pitch) noexcept {
+    const float safePitch = std::isfinite(pitch) ? std::clamp(pitch, MIN_PITCH, MAX_PITCH) : 1.0F;
     const auto ratio = static_cast<double>(clipRate) / static_cast<double>(outRate);
-    const auto clampedPitch = static_cast<double>(std::clamp(pitch, MIN_PITCH, MAX_PITCH));
-    return static_cast<std::uint64_t>(ratio * clampedPitch * FIXED_POINT_SCALE);
+    return static_cast<std::uint64_t>(ratio * static_cast<double>(safePitch) * FIXED_POINT_SCALE);
+}
+
+// THE FINAL CLAMP, and it is deliberately NOT a bare std::clamp: libc++'s std::clamp(NaN, lo, hi)
+// returns NaN -- measured by task 3.6.3 and recorded -- so a bare clamp would let a poisoned sample
+// straight through. It also bounds a 64-voice pile-up, which is real: v0 has no limiter, so summed
+// gains can exceed 1 even with every voice at volume <= 1. A soft-knee limiter is 6.4's; hard
+// clamping is honest and is what "v0 mixer" means.
+//
+// THE AUDIO CONSEQUENCE IS WORSE THAN A WRONG POSE: a NaN or +-inf in an output buffer is a
+// FULL-SCALE DISCONTINUITY -- an audible bang, and on some backends a sustained one.
+[[nodiscard]] float finiteClamp(float value) noexcept {
+    return std::isfinite(value) ? std::clamp(value, -1.0F, 1.0F) : 0.0F;
+}
+
+// The NON-spatialized gain vector: `volume` on every output channel a straight-through mapping would
+// reach. It is file-local and appears in no public header and no signature (D-6.4).
+[[nodiscard]] ChannelGains passthroughGains(std::uint32_t clipChannels, std::uint32_t outputChannels,
+                                            float volume) noexcept {
+    ChannelGains gains{};
+    const std::uint32_t limit = std::min(outputChannels, MAX_AUDIO_OUTPUT_CHANNELS);
+    for (std::uint32_t ch = 0; ch < limit; ++ch) {
+        gains.gain[ch] = volume;
+    }
+    static_cast<void>(clipChannels);  // the fan-out/downmix decision lives in mixVoice's read path
+    return gains;
 }
 
 // The arithmetic MEAN over a clip's channels at one frame, in float.
@@ -105,7 +139,9 @@ void AudioMixer::applyCommand(const AudioCommand& command) noexcept {
             voice.clip = command.clip;
             voice.params = command.params;
             voice.cursor = 0;
+            voice.currentGain = {};  // every voice ramps UP from silence on its first block
             voice.active = true;
+            voice.stopping = false;
             return;
         }
         case AudioCommand::Kind::Stop: {
@@ -116,16 +152,13 @@ void AudioMixer::applyCommand(const AudioCommand& command) noexcept {
             if (!voice.active || voice.generation != command.generation) {
                 return;  // a stale handle is an inert no-op, never a stop of somebody else's voice
             }
-            voice.active = false;
-            retire(command.slot, voice.generation);
+            voice.stopping = true;  // D17: the ramp does the work; retirement is at the block's end
             return;
         }
         case AudioCommand::Kind::StopAll: {
-            for (std::uint32_t slot = 0; slot < MAX_VOICES; ++slot) {
-                Voice& voice = voices[slot];
+            for (Voice& voice : voices) {
                 if (voice.active) {
-                    voice.active = false;
-                    retire(slot, voice.generation);
+                    voice.stopping = true;
                 }
             }
             return;
@@ -194,6 +227,14 @@ void AudioMixer::render(std::span<float> output, std::uint32_t channels, std::ui
         }
     }
 
+    // STEP 5 OF THE PER-BLOCK SEQUENCE: the finiteness-guarded clamp, per output sample. INV-2 -- the
+    // mixer never writes a non-finite float -- is complete here, with all three of D9's defences in
+    // place: sanitising at the API boundary (AudioSystem), computeSpatialGains's single whole-input
+    // predicate, and this.
+    for (float& sample : output) {
+        sample = finiteClamp(sample);
+    }
+
     // ONE publication point, reached on EVERY exit from this function including the channels == 0 one.
     // Task 3.6.1's own review found the mirror failure -- two Tracy plots skipped on an early return,
     // left holding the previous frame's values while the accessors correctly read 0 -- so this is that
@@ -217,12 +258,37 @@ bool AudioMixer::mixVoice(Voice& voice, const AudioClip& clip, std::span<float> 
                           std::size_t frames, std::uint32_t sampleRate) noexcept {
     const std::uint32_t clipFrames = clip.frameCount();
     const std::uint32_t clipChannels = clip.channels();
-    const float gain = voice.params.volume * masterVolume;
     const std::uint64_t increment = frameIncrement(clip.sampleRate(), sampleRate, voice.params.pitch);
     const bool loop = voice.params.loop;
+    const bool spatialize = voice.params.spatialize;
     const std::uint64_t clipSpan = static_cast<std::uint64_t>(clipFrames) << 32U;
+    const std::uint32_t gainChannels = std::min(channels, MAX_AUDIO_OUTPUT_CHANNELS);
+
+    // ---- the block's TARGET gain, computed ONCE per block --------------------------------------
+    ChannelGains target{};
+    if (!voice.stopping) {
+        if (spatialize) {
+            const SpatialParams source{.position = voice.params.position,
+                                       .minDistance = voice.params.minDistance,
+                                       .maxDistance = voice.params.maxDistance,
+                                       .volume = voice.params.volume};
+            target = computeSpatialGains(listener, source, channels);
+        } else {
+            target = passthroughGains(clipChannels, channels, voice.params.volume);
+        }
+        // listener.volume and masterVolume are MIX-WIDE scalars applied uniformly to spatialized and
+        // non-spatialized voices alike. Folding either into computeSpatialGains would make
+        // passthroughGains need its own copy -- two places for one number.
+        const float mixScale = listener.volume * masterVolume;
+        for (float& value : target.gain) {
+            value *= mixScale;
+        }
+    }
+    // A stopping voice's target is the default-constructed all-zero ChannelGains: D17's "stop REUSES
+    // the ramp instead of adding a path", spelled as the absence of an else.
 
     bool alive = true;
+    const auto frameCountF = static_cast<float>(frames);
     for (std::size_t f = 0; f < frames; ++f) {
         std::uint64_t frameIndex = voice.cursor >> 32U;
         if (frameIndex >= clipFrames) {
@@ -252,27 +318,46 @@ bool AudioMixer::mixVoice(Voice& voice, const AudioClip& clip, std::span<float> 
         const auto fracBits = static_cast<float>(voice.cursor & FIXED_POINT_FRACTION_MASK);
         const float frac = fracBits * FIXED_POINT_FRACTION_SCALE;
 
+        // (f + 1) / frames, NEVER f / frames: with the latter the last frame never reaches the target
+        // and the ramp is permanently one frame short, which COMPOUNDS across blocks. Exact at both
+        // ends -- t(frames - 1) is exactly 1.
+        const float t = static_cast<float>(f + 1) / frameCountF;
+
         const std::size_t base = f * channels;
-        if (clipChannels == channels) {
-            // Straight through, per channel: a 2-channel clip's L and R stay L and R.
-            for (std::uint32_t ch = 0; ch < channels; ++ch) {
-                const float a = static_cast<float>(clip.frameSample(index, ch)) * S16_TO_FLOAT;
-                const float b = static_cast<float>(clip.frameSample(nextIndex, ch)) * S16_TO_FLOAT;
-                output[base + ch] += (a + ((b - a) * frac)) * gain;
-            }
-        } else {
-            // Channel-count mismatch: the arithmetic MEAN over the clip's channels, fanned out to
-            // every output channel.
+        if (spatialize || clipChannels != channels) {
+            // A SOURCE HAS ONE POSITION, AND TWO CHANNELS AT ONE POSITION IS A CONTRADICTION (D14):
+            // a spatialized voice is downmixed to the arithmetic MEAN before panning. Playing the
+            // clip's L into the world's L would ignore the position entirely, and duplicating each
+            // channel through the same pan is the mean with extra steps and twice the reads. The same
+            // downmix serves an ordinary channel-count mismatch, fanned out instead of panned.
             const float a = monoSample(clip, index, clipChannels);
             const float b = monoSample(clip, nextIndex, clipChannels);
             const float sample = a + ((b - a) * frac);
             for (std::uint32_t ch = 0; ch < channels; ++ch) {
-                output[base + ch] += sample * gain;
+                const float current = ch < gainChannels ? voice.currentGain[ch] : 0.0F;
+                const float goal = ch < gainChannels ? target.gain[ch] : 0.0F;
+                output[base + ch] += sample * (current + ((goal - current) * t));
+            }
+        } else {
+            // Straight through, per channel: a 2-channel clip's L and R stay L and R.
+            for (std::uint32_t ch = 0; ch < channels; ++ch) {
+                const float a = static_cast<float>(clip.frameSample(index, ch)) * S16_TO_FLOAT;
+                const float b = static_cast<float>(clip.frameSample(nextIndex, ch)) * S16_TO_FLOAT;
+                const float sample = a + ((b - a) * frac);
+                const float current = ch < gainChannels ? voice.currentGain[ch] : 0.0F;
+                const float goal = ch < gainChannels ? target.gain[ch] : 0.0F;
+                output[base + ch] += sample * (current + ((goal - current) * t));
             }
         }
         voice.cursor += increment;
     }
 
+    // COMMITTED AT THE END OF THE BLOCK, NEVER BEFORE THE FRAME LOOP. Committing first would make
+    // every block flat at its target and delete the ramp entirely.
+    voice.currentGain = target.gain;
+    if (voice.stopping) {
+        alive = false;  // the ramp reached zero within this block; retire at its end
+    }
     return alive;
 }
 

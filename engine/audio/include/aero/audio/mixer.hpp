@@ -23,6 +23,12 @@
 // EVERY MEMBER BELOW IS LABELLED WITH THE THREAD THAT MAY CALL IT. The audio-thread members
 // ALLOCATE NOTHING, LOCK NOTHING, LOG NOTHING AND THROW NOTHING. clip.hpp already establishes the
 // layer's posture on the third of those: "NOTHING IN THIS FILE LOGS."
+//
+// WHAT IS DELIBERATELY NOT FADED: THE END OF A NON-LOOPING CLIP. Per-channel gains ramp across every
+// block, and stop() reuses that ramp -- but a clip that simply runs out is played to its last sample
+// and then stops. If the content's last sample is far from zero, THAT CLICK IS IN THE CONTENT, and
+// inventing a fade there would make the engine quieter than the file it was given. No engine in this
+// class fades it either. This sentence exists to stop a future reader from "fixing" it.
 // ============================================================================================
 
 #include <aero/audio/clip.hpp>
@@ -151,7 +157,17 @@ private:
         ClipHandle clip{};
         VoiceParams params{};
         std::uint64_t cursor = 0;  // 32.32 fixed point; see mixer.cpp for why a float is a defect
+        // The per-channel gain this voice ENDED the previous block at. Every block ramps LINEARLY
+        // from here to the block's target, and `currentGain` is committed to the target at the END of
+        // the block, never before the frame loop.
+        std::array<float, MAX_AUDIO_OUTPUT_CHANNELS> currentGain{};
         bool active = false;
+        // D17: stop() REUSES the ramp instead of adding its own path. A stopped voice sets its target
+        // to zero, ramps to it across the block in which the command was drained, and is retired at
+        // that block's end. ONE UNIFORM RULE COVERS BOTH A PARAMETER CHANGE AND A STOP, and the cost
+        // is one extra block of latency on stop -- ~10 ms at a typical period, inaudible, and STATED
+        // HERE RATHER THAN HIDDEN.
+        bool stopping = false;
     };
 
     std::array<Voice, MAX_VOICES> voices{};
@@ -190,8 +206,8 @@ private:
     void retire(std::uint32_t slot, std::uint32_t generation) noexcept;
 
     // Audio thread only. Accumulates ONE voice into the block. Returns false when the voice reached
-    // the end of a non-looping clip, in which case render() retires it -- at the block's end, never
-    // mid-walk.
+    // the end of a non-looping clip, or when a stopping voice finished its ramp, in which case
+    // render() retires it -- at the block's end, never mid-walk.
     bool mixVoice(Voice& voice, const AudioClip& clip, std::span<float> output, std::uint32_t channels,
                   std::size_t frames, std::uint32_t sampleRate) noexcept;
 };

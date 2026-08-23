@@ -179,10 +179,13 @@ TEST_CASE("MX2: a matched-rate, unit-gain voice reproduces the clip's samples EX
     }
 }
 
-TEST_CASE("MX3: the block gain is applied uniformly at this commit and the second block is flat") {
+TEST_CASE("MX3: the FIRST block RAMPS 0 -> target and the SECOND is flat") {
     // ONE SEQUENCE CASE, never two independent ones -- two independent cases both pass under the very
-    // defect they exist to catch (the CD5 rule). The ramp arrives with the gain step; at this commit
-    // the assertion is that both blocks carry the same, constant gain.
+    // defect they exist to catch (the CD5 rule). It witnesses BOTH halves of the ramp at once:
+    //   * t == (f + 1) / frames rather than f / frames, so the LAST frame of block 1 reaches the
+    //     target EXACTLY. With f / frames it never does, and the shortfall COMPOUNDS across blocks.
+    //   * currentGain is committed to the target at the END of the block, never before the frame
+    //     loop. Committing first would make block 1 flat and delete the ramp entirely.
     const ClipSource source(48000, 1, std::vector<std::int16_t>(64, 16384));
     AudioMixer mixer;
     REQUIRE(mixer.publishClip(0, source.get()));
@@ -193,14 +196,24 @@ TEST_CASE("MX3: the block gain is applied uniformly at this commit and the secon
 
     const float target = 16384.0F * S16_SCALE * 0.5F;
 
-    std::array<float, 8> first{};
+    constexpr std::size_t BLOCK = 8;
+    std::array<float, BLOCK> first{};
     mixer.render(first, 1, 48000);
-    std::array<float, 8> second{};
+    std::array<float, BLOCK> second{};
     mixer.render(second, 1, 48000);
 
-    CHECK(first[first.size() - 1] == target);  // the last sample of block 1 EQUALS the target
+    CHECK(first[0] < target);  // strictly below target -- the ramp starts from silence
+    CHECK(first[0] > 0.0F);    // and is not itself zero: t(0) is 1/8, not 0
+    CHECK(first[0] == target * (1.0F / 8.0F));
+
+    for (std::size_t f = 0; f < BLOCK; ++f) {
+        const float t = static_cast<float>(f + 1) / static_cast<float>(BLOCK);
+        CHECK(first[f] == target * t);  // exact, and MONOTONE by construction
+    }
+    CHECK(first[BLOCK - 1] == target);  // THE LAST FRAME REACHES THE TARGET EXACTLY
+
     for (const float sample : second) {
-        CHECK(sample == target);  // block 2 is flat at the target
+        CHECK(sample == target);  // block 2 is flat: currentGain was committed at block 1's end
     }
 }
 
@@ -210,10 +223,17 @@ TEST_CASE("MX4: s16 scaling maps -32768 to exactly -1 and 32767 to exactly 32767
     const ClipSource source(48000, 1, samples);
     AudioMixer mixer;
     REQUIRE(mixer.publishClip(0, source.get()));
-    mixer.applyCommand(startCommand(0, 1, 0, flatParams()));
+    VoiceParams params = flatParams();
+    params.loop = true;  // so the voice survives the warm-up block and repeats the same two frames
+    mixer.applyCommand(startCommand(0, 1, 0, params));
 
+    // The gain ramps from silence across the FIRST block, so the scaling is asserted on the second,
+    // where currentGain has been committed to the target and the ramp is a no-op.
+    std::array<float, 2> warmUp{};
+    mixer.render(warmUp, 1, 48000);
     std::array<float, 2> buffer{};
     mixer.render(buffer, 1, 48000);
+
     CHECK(buffer[0] == -1.0F);                // EXACT: 1/32768 is a power of two
     CHECK(buffer[1] == 32767.0F / 32768.0F);  // EXACT, and deliberately NOT 1.0
 }
@@ -240,19 +260,25 @@ TEST_CASE("MX14: clipChannels == channels plays straight through, PER CHANNEL") 
     REQUIRE(mixer.publishClip(0, source.get()));
     mixer.applyCommand(startCommand(0, 1, 0, flatParams()));
 
+    std::array<float, 8> warmUp{};
+    mixer.render(warmUp, 2, 48000);  // let the gain ramp complete; block 2 is flat at the target
     std::array<float, 8> buffer{};
     mixer.render(buffer, 2, 48000);
+
     for (std::uint32_t f = 0; f < 4; ++f) {
+        const std::uint32_t clipFrame = 4 + f;  // block 2 starts at frame 4
         const float left = buffer[(f * 2) + 0];
         const float right = buffer[(f * 2) + 1];
-        CHECK(left == static_cast<float>(f * 10) * S16_SCALE);
-        CHECK(right == static_cast<float>((f * 10) + 1000) * S16_SCALE);
+        CHECK(left == static_cast<float>(clipFrame * 10) * S16_SCALE);
+        CHECK(right == static_cast<float>((clipFrame * 10) + 1000) * S16_SCALE);
         CHECK(right != left);
     }
 }
 
 TEST_CASE("MX15: a channel-count mismatch downmixes to the MEAN and fans out") {
-    // A 2-channel clip whose L is 1000 and R is 3000 at every frame: the mean is 2000.
+    // A 2-channel clip whose L is 1000 and R is 3000 at every frame: the mean is 2000. The clip is
+    // CONSTANT, so the only thing that varies across the second block is the gain -- which the
+    // warm-up block has already brought to the target.
     std::vector<std::int16_t> samples(64);
     for (std::size_t f = 0; f < 32; ++f) {
         samples[(f * 2) + 0] = 1000;
@@ -265,6 +291,8 @@ TEST_CASE("MX15: a channel-count mismatch downmixes to the MEAN and fans out") {
         AudioMixer mixer;
         REQUIRE(mixer.publishClip(0, source.get()));
         mixer.applyCommand(startCommand(0, 1, 0, flatParams()));
+        std::array<float, 4> warmUp{};
+        mixer.render(warmUp, 1, 48000);
         std::array<float, 4> buffer{};
         mixer.render(buffer, 1, 48000);
         for (const float sample : buffer) {
@@ -276,6 +304,8 @@ TEST_CASE("MX15: a channel-count mismatch downmixes to the MEAN and fans out") {
         AudioMixer mixer;
         REQUIRE(mixer.publishClip(0, source.get()));
         mixer.applyCommand(startCommand(0, 1, 0, flatParams()));
+        std::array<float, 16> warmUp{};
+        mixer.render(warmUp, 4, 48000);
         std::array<float, 16> buffer{};
         mixer.render(buffer, 4, 48000);
         for (const float sample : buffer) {
@@ -337,15 +367,18 @@ TEST_CASE("MX21: a buffer that is not a whole number of frames leaves its remain
     REQUIRE(mixer.publishClip(0, source.get()));
     mixer.applyCommand(startCommand(0, 1, 0, flatParams()));
 
+    std::array<float, 8> warmUp{};
+    mixer.render(warmUp, 2, 48000);  // 4 whole frames, and the gain ramp completes
+
     // 7 elements over 2 channels: 3 whole frames plus one trailing element.
     std::array<float, 7> buffer{};
     poison(buffer);
     mixer.render(buffer, 2, 48000);
 
-    CHECK(buffer[0] == 0.0F);  // frame 0, channel 0 -- the ramp's first value is 0
-    CHECK(buffer[1] == 1000.0F * S16_SCALE);
-    CHECK(buffer[6] == 0.0F);  // THE TRAILING PARTIAL FRAME, zeroed and never written past
-    CHECK(mixer.framesRendered() == 3U);
+    CHECK(buffer[0] == static_cast<float>(4 * 10) * S16_SCALE);  // block 2 starts at frame 4
+    CHECK(buffer[1] == static_cast<float>((4 * 10) + 1000) * S16_SCALE);
+    CHECK(buffer[6] == 0.0F);             // THE TRAILING PARTIAL FRAME, zeroed and never written past
+    CHECK(mixer.framesRendered() == 7U);  // 4 from the warm-up plus 3 whole frames here
 }
 
 TEST_CASE("MX22: a zero rate, zero channels or an empty span all write silence and never divide") {
@@ -395,32 +428,38 @@ TEST_CASE("MX22: a zero rate, zero channels or an empty span all write silence a
 
 TEST_CASE("MX5: a 44100 -> 48000 resample reaches the closed-form fixed-point frame index EXACTLY") {
     // Asserted through OBSERVABLE OUTPUT (which frame the mixer read) rather than by exposing the
-    // cursor: the clip is a ramp whose value IS its frame index, so the sample names the frame.
+    // cursor: the clip is a ramp whose value IS its frame index, so the sample names the frame. The
+    // FIRST block is the gain ramp's, so the closed form is checked on the second.
     const ClipSource source(44100, 1, rampSamples(512, 1));
     AudioMixer mixer;
     REQUIRE(mixer.publishClip(0, source.get()));
     mixer.applyCommand(startCommand(0, 1, 0, flatParams()));
 
     constexpr std::size_t BLOCK = 64;
-    std::array<float, BLOCK> buffer{};
-    mixer.render(buffer, 1, 48000);
+    std::array<float, BLOCK> first{};
+    mixer.render(first, 1, 48000);
+    std::array<float, BLOCK> second{};
+    mixer.render(second, 1, 48000);
 
     // The closed form, recomputed here in the SAME integer arithmetic the mixer uses -- one divide,
-    // one multiply, one convert, no libm.
+    // one multiply, one convert, NO libm call anywhere in the chain, which is exactly what makes an
+    // exact assertion legitimate.
     const auto increment = static_cast<std::uint64_t>((44100.0 / 48000.0) * 1.0 * 4294967296.0);
     std::uint64_t cursor = 0;
+    for (std::size_t f = 0; f < BLOCK; ++f) {
+        cursor += increment;  // walk past the warm-up block
+    }
     for (std::size_t f = 0; f < BLOCK; ++f) {
         const auto index = static_cast<std::uint32_t>(cursor >> 32U);
         const auto next = static_cast<std::uint32_t>(index + 1);
         const float frac = static_cast<float>(cursor & 0xFFFFFFFFULL) * (1.0F / 4294967296.0F);
         const float a = static_cast<float>(index * 10) * S16_SCALE;
         const float b = static_cast<float>(next * 10) * S16_SCALE;
-        CHECK(buffer[f] == (a + ((b - a) * frac)));  // EXACT: no libm anywhere in this chain
+        CHECK(second[f] == (a + ((b - a) * frac)));
         cursor += increment;
     }
-    // The last frame the block reached is strictly inside the clip and strictly below 64 -- a
-    // downsampling ratio, so fewer clip frames are consumed than output frames produced.
-    CHECK((cursor >> 32U) < BLOCK);
+    // A downsampling ratio: fewer clip frames are consumed than output frames produced.
+    CHECK((cursor >> 32U) < 2 * BLOCK);
 }
 
 TEST_CASE("MX6: pitch 2 consumes twice the frames per block and pitch 0.5 consumes half") {
@@ -522,18 +561,27 @@ TEST_CASE("MX8: looping WRAPS the second index, so the seam interpolates INTO fr
     params.loop = true;
     mixer.applyCommand(startCommand(0, 1, 0, params));
 
-    std::array<float, 256> buffer{};
+    constexpr std::size_t BLOCK = 256;
+    std::array<float, BLOCK> warmUp{};
+    mixer.render(warmUp, 1, 48000);  // the gain ramp completes here; the seam is read from block 2
+    std::array<float, BLOCK> buffer{};
     mixer.render(buffer, 1, 48000);
 
-    // Replicate the cursor in the same integer arithmetic the mixer uses, and find the first output
-    // frame that sits on the LAST clip frame with a NON-ZERO fraction -- the one frame whose value
-    // depends on which second index the implementation chose.
+    // Replicate the cursor in the same integer arithmetic the mixer uses, walk past the warm-up
+    // block, and find the first output frame in block 2 that sits on the LAST clip frame with a
+    // NON-ZERO fraction -- the one frame whose value depends on which second index was chosen.
     const auto increment = static_cast<std::uint64_t>((44100.0 / 48000.0) * 1.0 * 4294967296.0);
     const std::uint64_t clipSpan = static_cast<std::uint64_t>(FRAMES) << 32U;
     std::uint64_t cursor = 0;
-    std::size_t seamIndex = buffer.size();
+    for (std::size_t f = 0; f < BLOCK; ++f) {
+        if ((cursor >> 32U) >= FRAMES) {
+            cursor %= clipSpan;
+        }
+        cursor += increment;
+    }
+    std::size_t seamIndex = BLOCK;
     float seamFrac = 0.0F;
-    for (std::size_t f = 0; f < buffer.size(); ++f) {
+    for (std::size_t f = 0; f < BLOCK; ++f) {
         if ((cursor >> 32U) >= FRAMES) {
             cursor %= clipSpan;
         }
@@ -546,17 +594,17 @@ TEST_CASE("MX8: looping WRAPS the second index, so the seam interpolates INTO fr
         }
         cursor += increment;
     }
-    REQUIRE(seamIndex < buffer.size());
+    REQUIRE(seamIndex < BLOCK);
 
     const float last = static_cast<float>(samples[FRAMES - 1]) * S16_SCALE;
     const float first = static_cast<float>(samples[0]) * S16_SCALE;
     const float wrapped = last + ((first - last) * seamFrac);  // the CORRECT answer
-    const float clamped = last + ((last - last) * seamFrac);   // what a CLAMPING second index gives
+    const float clamped = last;                                // what a CLAMPING second index gives
 
     CHECK(buffer[seamIndex] == wrapped);  // exact: the same three float operations, in the same order
     CHECK(buffer[seamIndex] != clamped);  // and provably NOT the clamp's answer
     CHECK(mixer.activeVoices() == 1U);    // a LOOPING voice never retires, even after eight wraps
-    CHECK(mixer.framesRendered() == 256U);
+    CHECK(mixer.framesRendered() == 2 * BLOCK);
 }
 
 TEST_CASE("MX9: a NON-looping clip clamps its second index, retires, and is EXACTLY 0 after the end") {
@@ -569,9 +617,13 @@ TEST_CASE("MX9: a NON-looping clip clamps its second index, retires, and is EXAC
     poison(buffer);
     mixer.render(buffer, 1, 48000);
 
-    const float expected = 4000.0F * S16_SCALE;
+    // The voice retires inside this one block, so there is no warmed-up block to read: the ramp is
+    // ASSERTED here instead of being waited out. gain(f) == (f + 1) / 32 exactly, from a currentGain
+    // of 0 to a target of 1.
+    const float value = 4000.0F * S16_SCALE;
     for (std::size_t f = 0; f < 8; ++f) {
-        CHECK(buffer[f] == expected);  // the clamp keeps the last frame flat rather than wrapping to 0
+        const float t = static_cast<float>(f + 1) / 32.0F;
+        CHECK(buffer[f] == value * t);  // the clamp keeps the last frame flat rather than wrapping
     }
     for (std::size_t f = 8; f < buffer.size(); ++f) {
         CHECK(buffer[f] == 0.0F);  // EXACTLY 0 after the end
@@ -622,4 +674,272 @@ TEST_CASE("MX19: a cursor at MAX_COOKED_AUDIO_FRAMES is exact in u64 and COLLAPS
 
     // The worst legal cursor is comfortably inside u64: 28 800 000 * 2^32 ~= 1.24e17 against 1.8e19.
     CHECK(c0 / 4294967296ULL == MAX_FRAMES);
+}
+
+// ============================================================================================
+// Step 6: per-block gain ramps, spatialization, the mix-wide scalars and the finiteness-guarded
+// output clamp.
+// ============================================================================================
+
+TEST_CASE("MX11: stop() ramps to zero WITHIN the block and retires at its end") {
+    // ONE SEQUENCE, asserting both halves: the ramp reaches 0 inside the block in which the Stop was
+    // drained, AND the retirement lands on the ring at that block's end. D17's "stop REUSES the ramp
+    // instead of adding a path" is only worth anything if both are true together.
+    const ClipSource source(48000, 1, std::vector<std::int16_t>(4096, 20000));
+    AudioMixer mixer;
+    REQUIRE(mixer.publishClip(0, source.get()));
+    mixer.applyCommand(startCommand(/*slot=*/3, /*generation=*/7, 0, flatParams()));
+
+    constexpr std::size_t BLOCK = 16;
+    std::array<float, BLOCK> warmUp{};
+    mixer.render(warmUp, 1, 48000);  // the gain reaches its target here
+    const float target = 20000.0F * S16_SCALE;
+    CHECK(warmUp[BLOCK - 1] == target);
+
+    AudioCommand stop;
+    stop.kind = AudioCommand::Kind::Stop;
+    stop.slot = 3;
+    stop.generation = 7;
+    mixer.applyCommand(stop);
+
+    std::array<float, BLOCK> buffer{};
+    mixer.render(buffer, 1, 48000);
+
+    CHECK(buffer[0] < target);          // ramping DOWN from the target
+    CHECK(buffer[0] > 0.0F);            // and not instantly silent
+    CHECK(buffer[BLOCK - 1] == 0.0F);   // EXACTLY zero by the block's last frame
+    CHECK(mixer.activeVoices() == 0U);  // and gone
+
+    std::uint32_t slot = 0;
+    std::uint32_t generation = 0;
+    REQUIRE(mixer.popRetired(slot, generation));
+    CHECK(slot == 3U);
+    CHECK(generation == 7U);
+    CHECK_FALSE(mixer.popRetired(slot, generation));
+}
+
+TEST_CASE("MX13: voices SUM, and a pile-up CLAMPS to +-1 rather than exceeding it") {
+    const ClipSource loud(48000, 1, std::vector<std::int16_t>(4096, 20000));
+    const ClipSource negative(48000, 1, std::vector<std::int16_t>(4096, -20000));
+
+    SUBCASE("two voices sum") {
+        AudioMixer mixer;
+        REQUIRE(mixer.publishClip(0, loud.get()));
+        VoiceParams params = flatParams();
+        params.volume = 0.25F;
+        mixer.applyCommand(startCommand(0, 1, 0, params));
+        mixer.applyCommand(startCommand(1, 1, 0, params));
+
+        std::array<float, 8> warmUp{};
+        mixer.render(warmUp, 1, 48000);
+        std::array<float, 8> buffer{};
+        mixer.render(buffer, 1, 48000);
+
+        const float one = 20000.0F * S16_SCALE * 0.25F;
+        for (const float sample : buffer) {
+            CHECK(sample == doctest::Approx(2.0F * one).epsilon(1e-6));
+        }
+    }
+
+    SUBCASE("three full-gain voices CLAMP and never exceed 1 on either sign") {
+        AudioMixer mixer;
+        REQUIRE(mixer.publishClip(0, loud.get()));
+        REQUIRE(mixer.publishClip(1, negative.get()));
+        for (std::uint32_t slot = 0; slot < 3; ++slot) {
+            mixer.applyCommand(startCommand(slot, 1, 0, flatParams()));
+        }
+        std::array<float, 8> warmUp{};
+        mixer.render(warmUp, 1, 48000);
+        std::array<float, 8> buffer{};
+        mixer.render(buffer, 1, 48000);
+        for (const float sample : buffer) {
+            CHECK(sample <= 1.0F);
+            CHECK(sample >= -1.0F);
+        }
+        CHECK(buffer[0] == 1.0F);  // 3 x 0.61 saturates, and the clamp is what stops it
+
+        AudioMixer downward;
+        REQUIRE(downward.publishClip(0, negative.get()));
+        for (std::uint32_t slot = 0; slot < 3; ++slot) {
+            downward.applyCommand(startCommand(slot, 1, 0, flatParams()));
+        }
+        std::array<float, 8> negWarm{};
+        downward.render(negWarm, 1, 48000);
+        std::array<float, 8> negBuffer{};
+        downward.render(negBuffer, 1, 48000);
+        for (const float sample : negBuffer) {
+            CHECK(sample >= -1.0F);
+        }
+        CHECK(negBuffer[0] == -1.0F);
+    }
+}
+
+TEST_CASE("MX16: a SPATIALIZED stereo clip is downmixed to the MEAN before panning") {
+    // Distinguishes the MEAN from "play channel 0", which is what a naive downmix would leave
+    // standing. L is 1000 and R is 3000, so the mean is 2000 and channel 0 alone would read 1000.
+    std::vector<std::int16_t> samples(4096);
+    for (std::size_t f = 0; f < 2048; ++f) {
+        samples[(f * 2) + 0] = 1000;
+        samples[(f * 2) + 1] = 3000;
+    }
+    const ClipSource source(48000, 2, samples);
+
+    AudioMixer mixer;
+    REQUIRE(mixer.publishClip(0, source.get()));
+
+    // A listener at the origin, and a source dead ahead so the pan is exactly centre and the two
+    // output channels carry the same gain.
+    AudioCommand setListener;
+    setListener.kind = AudioCommand::Kind::SetListener;
+    setListener.listener.valid = true;
+    mixer.applyCommand(setListener);
+
+    VoiceParams params;
+    params.spatialize = true;
+    params.position = engine::Vec3{0.0F, 0.0F, -2.0F};
+    params.minDistance = 10.0F;  // inside minDistance -> distance gain is EXACTLY 1
+    params.maxDistance = 50.0F;
+    mixer.applyCommand(startCommand(0, 1, 0, params));
+
+    std::array<float, 8> warmUp{};
+    mixer.render(warmUp, 2, 48000);
+    std::array<float, 8> buffer{};
+    mixer.render(buffer, 2, 48000);
+
+    const float mean = 2000.0F * S16_SCALE;
+    const float channelZeroOnly = 1000.0F * S16_SCALE;
+    const float centreGain = 0.70710678F;  // constant power at x == 0
+
+    CHECK(buffer[0] == doctest::Approx(mean * centreGain).epsilon(1e-5));
+    CHECK(buffer[1] == doctest::Approx(mean * centreGain).epsilon(1e-5));
+    // And NOT the "channel 0" answer, which is what makes this case about the mean specifically.
+    CHECK(buffer[0] != doctest::Approx(channelZeroOnly * centreGain).epsilon(1e-5));
+}
+
+TEST_CASE("MX18: MAX_PITCH at the widest legal rate ratio stays inside u64") {
+    // The D15 range argument, ASSERTED rather than trusted. The worst legal increment is
+    // MAX_PITCH x (MAX rate / MIN rate) == 4 x (384000 / 8000) == 192 frames per output frame.
+    constexpr double WIDEST_RATIO = static_cast<double>(engine::assets::MAX_COOKED_AUDIO_SAMPLE_RATE) /
+                                    static_cast<double>(engine::assets::MIN_COOKED_AUDIO_SAMPLE_RATE);
+    CHECK(WIDEST_RATIO == doctest::Approx(48.0).epsilon(1e-9));
+
+    const double worstIncrement = WIDEST_RATIO * static_cast<double>(engine::audio::MAX_PITCH) * 4294967296.0;
+    CHECK(worstIncrement < static_cast<double>(std::numeric_limits<std::uint64_t>::max()));
+    CHECK(static_cast<std::uint64_t>(worstIncrement) == 824633720832ULL);  // 192 * 2^32, as a literal
+
+    // And the worst cursor: MAX_COOKED_AUDIO_FRAMES frames in 32.32.
+    const auto worstCursor = static_cast<double>(engine::assets::MAX_COOKED_AUDIO_FRAMES) * 4294967296.0;
+    CHECK(worstCursor < static_cast<double>(std::numeric_limits<std::uint64_t>::max()));
+    CHECK(worstCursor < 1.3e17);  // ~1.24e17 against u64's ~1.8e19
+
+    // Driven through the real mixer, at the widest legal ratio, so the arithmetic above is not the
+    // only thing asserted.
+    const std::vector<std::int16_t> flat(4096, 8000);
+    const ClipSource fast(engine::assets::MAX_COOKED_AUDIO_SAMPLE_RATE, 1, flat);
+    AudioMixer mixer;
+    REQUIRE(mixer.publishClip(0, fast.get()));
+    VoiceParams params = flatParams();
+    params.pitch = engine::audio::MAX_PITCH;
+    params.loop = true;
+    mixer.applyCommand(startCommand(0, 1, 0, params));
+    std::array<float, 16> buffer{};
+    mixer.render(buffer, 1, engine::assets::MIN_COOKED_AUDIO_SAMPLE_RATE);
+    for (const float sample : buffer) {
+        CHECK(std::isfinite(sample));
+    }
+}
+
+TEST_CASE("MX20: NO output element is EVER non-finite, across a matrix of poisoned inputs") {
+    const ClipSource source(48000, 1, std::vector<std::int16_t>(4096, 20000));
+    const std::array<float, 3> poisons = {std::numeric_limits<float>::quiet_NaN(),
+                                          std::numeric_limits<float>::infinity(),
+                                          -std::numeric_limits<float>::infinity()};
+
+    for (const float bad : poisons) {
+        // Twelve poisoned inputs per bad value: the three position components, both distances, the
+        // source volume, the pitch, the listener's three axes' x components, the listener position
+        // and the listener volume.
+        std::vector<VoiceParams> poisoned;
+        {
+            VoiceParams p;
+            p.spatialize = true;
+            for (int component = 0; component < 3; ++component) {
+                VoiceParams q = p;
+                const float x = component == 0 ? bad : 1.0F;
+                const float y = component == 1 ? bad : 1.0F;
+                const float z = component == 2 ? bad : 1.0F;
+                q.position = engine::Vec3{x, y, z};
+                poisoned.push_back(q);
+            }
+            VoiceParams minD = p;
+            minD.minDistance = bad;
+            poisoned.push_back(minD);
+            VoiceParams maxD = p;
+            maxD.maxDistance = bad;
+            poisoned.push_back(maxD);
+            VoiceParams vol = p;
+            vol.volume = bad;
+            poisoned.push_back(vol);
+            VoiceParams pitch = p;
+            pitch.pitch = bad;
+            poisoned.push_back(pitch);
+            VoiceParams flat = flatParams();
+            flat.volume = bad;
+            poisoned.push_back(flat);
+            VoiceParams flatPitch = flatParams();
+            flatPitch.pitch = bad;
+            poisoned.push_back(flatPitch);
+        }
+
+        const std::array<engine::audio::ListenerPose, 4> listeners = [bad] {
+            engine::audio::ListenerPose base;
+            base.valid = true;
+            engine::audio::ListenerPose position = base;
+            position.position = engine::Vec3{bad, 0.0F, 0.0F};
+            engine::audio::ListenerPose right = base;
+            right.right = engine::Vec3{bad, 0.0F, 0.0F};
+            engine::audio::ListenerPose volume = base;
+            volume.volume = bad;
+            return std::array<engine::audio::ListenerPose, 4>{base, position, right, volume};
+        }();
+
+        for (const VoiceParams& params : poisoned) {
+            for (const engine::audio::ListenerPose& pose : listeners) {
+                AudioMixer mixer;
+                REQUIRE(mixer.publishClip(0, source.get()));
+                AudioCommand setListener;
+                setListener.kind = AudioCommand::Kind::SetListener;
+                setListener.listener = pose;
+                mixer.applyCommand(setListener);
+                mixer.applyCommand(startCommand(0, 1, 0, params));
+
+                std::array<float, 8> buffer{};
+                mixer.render(buffer, 2, 48000);
+                mixer.render(buffer, 2, 48000);
+                for (const float sample : buffer) {
+                    CHECK(std::isfinite(sample));
+                    CHECK(sample <= 1.0F);
+                    CHECK(sample >= -1.0F);
+                }
+            }
+        }
+    }
+
+    // And a poisoned MASTER volume, which is the one scalar the loop above cannot reach.
+    for (const float bad : poisons) {
+        AudioMixer mixer;
+        REQUIRE(mixer.publishClip(0, source.get()));
+        AudioCommand master;
+        master.kind = AudioCommand::Kind::SetMasterVolume;
+        master.masterVolume = bad;
+        mixer.applyCommand(master);
+        mixer.applyCommand(startCommand(0, 1, 0, flatParams()));
+
+        std::array<float, 8> buffer{};
+        mixer.render(buffer, 2, 48000);
+        mixer.render(buffer, 2, 48000);
+        for (const float sample : buffer) {
+            CHECK(std::isfinite(sample));
+        }
+    }
 }
