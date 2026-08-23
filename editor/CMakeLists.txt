@@ -55,6 +55,15 @@ find_package(assimp CONFIG REQUIRED)  # task 3.2.5 (a settled ADR -- docs/01:30,
                                       # that token over vcpkg.json and editor/, and a prose mention
                                       # would turn it red for a reason that is not a violation.
 
+# task 3.7.1: the vcpkg miniaudio port is HEADER-ONLY (no CMake config, no prebuilt lib), so the
+# header is located explicitly, exactly as engine/platform/CMakeLists.txt does. SYSTEM so ~90k lines
+# of code we neither own nor may patch stay out of the warning and clang-tidy surface in a build where
+# --warnings-as-errors='*' is live; PRIVATE because no public editor header names a ma_ type.
+# THIS IS AN INCLUDE DIRECTORY, NOT A LINK: aero_editor_core already links aero::platform PUBLIC
+# (below), and that archive already carries the ONE MINIAUDIO_IMPLEMENTATION unit. A second
+# implementation TU anywhere in this tree is a duplicate-symbol link error.
+find_path(MINIAUDIO_INCLUDE_DIR NAMES miniaudio.h REQUIRED)
+
 # task 3.2.2 (D3): ufbx is in NO vcpkg registry, so it is VENDORED rather than found. aero_ufbx is a
 # STATIC target over one .c compiled with THIS project's flags -- which is what makes it
 # ASan/UBSan-instrumented in the Debug lanes. EDITOR-ONLY by docs/03's dependency-placement invariant;
@@ -131,6 +140,8 @@ add_library(aero_editor_core STATIC
     src/material_preview.cpp     # task 3.4.2 -- the only new GPU TU: target, renderer, texture cache
     src/skeleton_cook_source.cpp # task 3.5.1 -- the ImportedModel -> skeleton cook adapter; PURE
     src/animation_cook_source.cpp # task 3.5.2 -- the ImportedModel -> animation cook adapter; PURE
+    src/audio_cook_source.cpp    # task 3.7.1 -- the audio source-name predicates; PURE, no third party
+    src/audio_decode.cpp         # task 3.7.1 -- the ONLY stb_vorbis TU; the ONLY miniaudio TU outside engine/platform/src
     src/asset_drag.cpp           # task 3.1.5 -- the drag payload + the drop routing matrix; PURE, no ImGui
     src/instantiate_plan.cpp     # task 3.1.5 -- the ImportedModel -> entity-subtree planner; PURE
     src/asset_commands.cpp       # task 3.1.5 -- the sixth structural command: one undoable drop
@@ -147,6 +158,20 @@ target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/i
 # line (R12). INV-V10 is held by the §V6 grep and by review, exactly like the ImGui-free-public-header
 # rule. Do not claim enforcement that does not exist.
 target_include_directories(aero_editor_core SYSTEM PRIVATE ${Stb_INCLUDE_DIR})
+# task 3.7.1: miniaudio's DECLARATIONS, for the editor-side wav/flac/mp3 decode. Same SYSTEM/PRIVATE
+# discipline as ${Stb_INCLUDE_DIR} above, and the same non-enforcement caveat (R12): FindStb and this
+# find_path both resolve inside vcpkg's SHARED per-triplet include root, so neither confines its header
+# to one TU. Confining <miniaudio.h> to the ONE editor decode TU is held by review and by an include
+# grep, exactly like the ImGui-free-public-header rule -- and NOT by this line. Do not claim
+# enforcement that does not exist. check-platform-boundary.sh is a different guarantee again: its glob
+# is engine/*/include/*, so it polices the ENGINE's public headers and never sees editor/src at all.
+#
+# THAT TU IS DELIBERATELY NOT NAMED HERE, and the reason is a test rather than taste: AI2/AI3
+# (tests/editor/assimp_import_test.cpp) derive the editor's TU list by scanning THIS FILE's raw text
+# for `src/*.cpp` tokens -- comments included -- and then REQUIRE every name they find to be a
+# readable file. A prose mention of a source that does not exist yet turns them red for a reason that
+# is not a violation, which is the same trap the assimp block above records for its feature token.
+target_include_directories(aero_editor_core SYSTEM PRIVATE ${MINIAUDIO_INCLUDE_DIR})
 find_package(EnTT CONFIG REQUIRED)   # header-only; a manifest dependency since 1.1.3 -- no vcpkg change
 target_link_libraries(aero_editor_core
     # aero::scene is PUBLIC because panel_context.hpp / editor_app.hpp surface engine::World and

@@ -36,12 +36,15 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
 - **No `std::map`, `std::unordered_map`, `std::set` or `std::unordered_set` in `engine/assets`.** There
   must be no iteration order for the output to depend on, and MSVC's node-based containers are not
   nothrow-movable (3.1.2's R9, measured in CI as `C2607`). Grouping is a sorted vector.
-- **`tests/cooker/determinism.sha256` is FROZEN, and a red `cooker.golden_manifest` /
-  `cooker.texture_golden_manifest` / `cooker.animation_golden_manifest` is `docs/09` section 9.11's
+- **`tests/cooker/determinism.sha256` is FROZEN at 20 hash lines across FIVE arms / 40 cross-lane
+  comparisons since task 3.7.1, and a red `cooker.golden_manifest` /
+  `cooker.texture_golden_manifest` / `cooker.skeleton_golden_manifest` /
+  `cooker.animation_golden_manifest` / `cooker.audio_golden_manifest` is `docs/09` section 9.11's
   `cookerVersion` sentence firing** — the
   same input now cooks to different bytes. Regenerate **in the same commit** as the cook change and the
   matching `COOKED_MESH_COOKER_VERSION` / `COOKED_TEXTURE_COOKER_VERSION` /
-  `COOKED_ANIMATION_COOKER_VERSION` bump, with the PR saying why;
+  `COOKED_SKELETON_COOKER_VERSION` / `COOKED_ANIMATION_COOKER_VERSION` /
+  `COOKED_AUDIO_COOKER_VERSION` bump, with the PR saying why;
   the procedure is in the manifest's own header and the failing case prints every replacement line
   verbatim. **Never edit a hash to green a red run.** A vcpkg baseline bump that reds it is the tripwire
   WORKING, not flake — root-cause first, and never per-lane manifests. Lookup is by name and two names
@@ -113,9 +116,12 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
   means running Blender, which is the editor's job (task 3.2.4).
 - **Nothing is written unless the whole cook succeeded** — no partial artifact, no stale one, and not
   even the `.aero-tmp` the atomic write would have created.
-- **`aero_cooker` has FOUR subcommands since task 3.5.2** — `mesh`, `texture`, `skeleton` and
-  `animation` — and both subcommand-error message literals name all four, together with the
-  `run_case.cmake` arms that pin them. **`animation` deliberately does NOT offer `--scale`, and that
+- **`aero_cooker` has FIVE subcommands since task 3.7.1** — `mesh`, `texture`, `skeleton`,
+  `animation` and `audio` — and both subcommand-error message literals name all five, together with
+  the `run_case.cmake` arms that pin them. **The `unknown_subcommand` arm's token is `sound`, not
+  `audio`, and it must stay that way**: that arm was rewritten at 3.3.2 precisely because its old
+  token (`texture`) became a real subcommand and the case went on passing while asserting something
+  that no longer existed. **`animation` deliberately does NOT offer `--scale`, and that
   is a finding rather than a preference**: all four importers apply `ImportSettings::scale` in exactly
   three places — root node translations, mesh positions and inverse-bind translation columns — and to
   **no animation channel anywhere**, so the flag would change no byte of the output, and a flag that
@@ -341,6 +347,125 @@ existing manifest line moved.**
   mode**, driven from `tests/fixtures/assets/skinned.gltf`, which already existed. Its `KIND_PREFIX` is
   `animation-`, and the per-kind orphan check stays sound **only while exactly one arm claims each
   prefix**: a fourth arm rather than a wider tuple table, for the reason 3.5.1 recorded.
+
+## Audio clips (task 3.7.1) — the fourth first-party binary format
+
+`engine/assets` also holds the **cooked audio clip container v1** (`.aerowave`):
+`cooked_audio.{hpp,cpp}` is the format and its hostile-input parser, `audio_cook.{hpp,cpp}` is the
+producer. The **normative** specification is `docs/09-file-formats.md` section 14. It is the simplest
+of the four by a wide margin — one header, one bulk region, no record table and no code tables — and
+it shipped with all three of the others byte-untouched.
+
+- **A `.aerowave` is NEVER EMPTY** — section 12.0's asymmetry inherited a **third** time, **at
+  parse**, not by convention. `sampleRate >= 8000`, `channels >= 1` and `frameCount >= 1`. The cook is
+  per-**file**, so a source that decodes to zero frames produces no artifact at all and a CLI error.
+  A clip with no samples is the absence of a sound, not a degenerate one. Do not "relax" this to match
+  the mesh container.
+- **ZERO PADDING SITES, and that is a contract.** One bulk region, and it is **last**, so
+  `totalBytes == 64 + 2 * channels * frameCount` exactly, with no rounding term anywhere. There is no
+  padding function to write and none to check — the opposite end of the spectrum from `.aeroanim`'s
+  single checked site. Adding a region after the samples introduces the format's first padding site
+  and is a `formatVersion` bump. **The 64-byte header being 16-aligned does NOT license a typed span
+  over the sample region**: every read goes through `getU16`, for `cooked_animation.hpp`'s stated
+  reason, and `reinterpret_cast` stays one of the greps this subsystem must keep returning prose only.
+- **`formatVersion == 1` MEANS s16 interleaved.** There is no format code in the header, no
+  `--format` flag and no settings type — the same reason there is no `MeshCookSettings`. **Adding f32
+  is a `formatVersion` bump; bundle it with loop points, and never ship either alone.**
+- **FRAME-MAJOR INTERLEAVING IS NORMATIVE** (section 14.2): frame *f*, channel *c* is at sample index
+  `f * channels + c`. No planar layout, and no flag that could select one. **Channel order is the
+  source's**, unexamined — `ma_decoder`'s `pChannelMap` is left empty so no remap can occur.
+- **THIS IS THE FIRST COOK IN THIS SUBSYSTEM THAT CARRIES NO FLOATING POINT AT ALL** — not "float data
+  moved bit for bit" as `.aeromesh` and `.aeroanim` are, *absent*. The decoders emit s16 and the cook
+  validates integers and calls `putU16`. **INV-A1 is a claim about `cooked_audio.{hpp,cpp}` and
+  `audio_cook.{hpp,cpp}`**, which is exactly the scope that is true. **INV-T4 was mis-stated once
+  already as a claim about `engine/assets` as a whole**, which is and always was false —
+  `mesh_cook.cpp` includes `<cmath>`, because mesh vertex data *is* float data. State the scope, never
+  the subsystem.
+- **DETERMINISM IS CLAIMED FOR WAV AND FLAC AND NORMATIVELY REFUSED FOR MP3 AND OGG** (section 14.7).
+  dr_wav and dr_flac are integer decoders; dr_mp3 and stb_vorbis run floating-point transforms whose
+  code paths differ by SIMD availability and FMA contraction policy. Only the two wav/flac artifacts
+  enter the frozen manifest. **`cooker.audio_lossy_digests` MEASURES the other two rather than
+  freezing them, and must never assert a digest value** — its comment carries that prohibition so that
+  nobody can "finish" it by pasting the hashes in. Whatever the three-lane reading says, the two stay
+  out: agreement today at one vcpkg baseline is a fact, not a contract.
+- **THE EXTERNAL ANCHOR.** `tests/fixtures/audio/tone.s16le.pcm` is **ffmpeg's own decode** of the wav
+  fixture, and the wav and flac cooks' sample regions are asserted byte-identical to it. That is
+  dr_wav and dr_flac checked against libavcodec — genuine cross-implementation agreement that this
+  project's own parser cannot fake, and the answer to the sharpest sentence 3.3.3 recorded, *"no
+  texture line has an equivalent tie."* **If those assertions ever redden, that is a FINDING and the
+  anchor is doing its job — understand the difference and record it, NEVER regenerate the golden from
+  our own output.** The fixtures are the coverage, not the bug.
+- **THE DECODE LIVES IN `/editor`, ALL FOUR FORMATS**, for three independent reasons any one of which
+  would be sufficient: ADR-003's asset flow puts importers editor-side; `stb` is an editor/tools-only
+  dependency by the placement invariant; and **the runtime must never link a decoder** — a runtime
+  that can decode an mp3 is a runtime that can be handed one, and ADR-008 says it is handed a `.pak`
+  of cooked artifacts. `engine/assets` is given samples, never a file. **That third reason is a rule
+  about first-party SOURCE, and as of task 3.7.1 it is not yet true of the ARCHIVE:** dropping
+  `MA_NO_DECODING` compiles dr_wav, dr_flac and dr_mp3 into `aero_platform`, which reaches every
+  binary that links it — including the Phase 5 runtime. Nothing on the engine side references
+  `ma_decoder_*`, so `--gc-sections` / `/OPT:REF` are *expected* to strip them and the released cost
+  is *expected* to be zero bytes; **that expectation is UNVERIFIED**, the recorded escape hatch is a
+  decode-only implementation unit compiled with `#define MA_API static`, and the **owner is Phase 5's
+  packager** (D7, recorded in full at `engine/platform/src/miniaudio_impl.c:30-37`). Read the
+  sentence above as the rule this project intends to hold and is not yet measuring — never as a
+  guarantee to build on.
+- **THE CAPS ARE CHECKED TWICE IN BOTH BACKENDS, and there are THREE of them, not two.** `maxFrames`
+  and `maxChannels` bound one axis each; **`maxSamples` bounds the product, and it is the only one of
+  the three that bounds BYTES.** Per-axis caps alone accept 28 800 000 frames × 8 channels — four
+  times `MAX_COOKED_AUDIO_BYTES` — which `cookAudio` then refuses, so the allocation was guaranteed
+  waste. Both decoders can be *asked* their length before decoding, and both answers are derived from
+  the file's own claims. **A cap checked only against a self-reported length is not a cap** — so the
+  in-loop check is what bounds a lying header, and the pre-allocation check is what keeps an honest
+  over-long file from costing an allocation.
+- **WHICH HALF CAN FIRE DEPENDS ON THE BACKEND, and it was measured rather than reasoned about.** Both
+  miniaudio decoders bound their own reads by the same length they report, so inside that backend the
+  in-loop half is unreachable: a Wave64 whose `fact` chunk claims ten frames over eight thousand
+  frames of data decodes **ten**, and an `.mp3` whose Xing count is a low lie decodes **short**. The
+  `.ogg` path is the exception — stb_vorbis sets `total_samples` lazily and reads it only from
+  `stb_vorbis_stream_length_in_samples`, never from the pull API's decode loop — so a stream whose
+  final granule position understates its content genuinely overruns the claim.
+  `tests/fixtures/audio/tone-lying-length.ogg` is the committed witness and `AD21` is the case; the
+  generating script is recorded in that directory's `README.md` and reproduces it byte for byte.
+- **"An `.mp3` with no Xing header reports 0 frames" is FALSE, and this file used to imply it.**
+  `ma_dr_mp3_get_pcm_frame_count` caches a count only when a Xing/Info tag supplied one; without one
+  it falls through to a routine that **decodes the entire stream** to count it and seeks back, so it
+  returns the TRUE count and such a file is **decoded twice**. The counting pass allocates no PCM and
+  is bounded by the caller's read cap, but it is not bounded by `maxFrames`. Nothing in this tree
+  tests that branch, because `tests/fixtures/audio/tone.mp3` carries an `Info` tag and every arm takes
+  the fast path.
+- **`ditherMode` IS SET EXPLICITLY TO `ma_dither_mode_none` AND IS SOURCE-TEXT PINNED**, together with
+  the exact `ma_decoder_config_init(ma_format_s16, 0, 0)` call whose two zeros are miniaudio's
+  "keep the stream's own channel count and sample rate" sentinels — any other value there silently
+  engages `ma_data_converter` and resamples or remixes. This is the
+  sharpest determinism trap in the subsystem: **dither is randomised by construction**, so a dithered
+  f32-to-s16 conversion produces different bytes **on consecutive runs of the same binary on the same
+  machine** — the wav and flac manifest lines would flap with no code change at all.
+- **`stb_vorbis_decode_memory` is NOT compiled out by `STB_VORBIS_NO_STDIO`** and must never be
+  called: it `malloc`s the whole decode with no cap the caller can impose. The two-condition `#if`
+  that looks like it removes it guards `stb_vorbis_decode_filename` instead. **The prohibition is a
+  grep, not a preprocessor guarantee** — `AD18` is where it lives.
+
+## The audio layer (task 3.7.1)
+
+**`engine/audio` links `aero::core` + `aero::assets` PUBLIC and `aero::profiling` PRIVATE and NO
+vcpkg package, ever.** It is the **second** target in this tree (after `aero_assets` itself) whose
+`PRIVATE` links are a genuine compile-time boundary rather than convention-plus-grep, for R12's
+reason: a `PRIVATE` vcpkg link cannot enforce a header boundary, because vcpkg installs every port
+into one shared per-triplet `include/` root that lands on the compile line of any target linking any
+vcpkg package. `aero_audio` links none, so a stray `#include <miniaudio.h>` there is a **hard compile
+error** rather than a guard finding.
+
+**Adding a `find_package` to `engine/audio/CMakeLists.txt`, ever, voids that silently while CI stays
+green.** The CMakeLists' own comment says so. **Task 3.7.3 is going to be asked to guard exactly
+this, and 3.7.2 is the task that can most easily void it** — a playback layer that reaches for a
+miniaudio device type in `engine/audio` rather than going through `engine/platform`'s existing wrapper
+is the shape to refuse.
+
+`engine/audio` holds the **runtime resource**, not the format: `clip.{hpp,cpp}` is `AudioClip` and
+`loadAudioClip`, which reads a `.aerowave` through the VFS, parses it with `parseCookedAudio` and
+**owns** the bytes so the parsed span cannot dangle. `AudioClip` is **move-only with copy deleted**
+and holds no span of anyone else's memory — a container that wants clips by value stores them by
+`unique_ptr` or by index, which is what every other resource here already does.
 
 ## The node-hierarchy gap, decided at 3.1.5
 

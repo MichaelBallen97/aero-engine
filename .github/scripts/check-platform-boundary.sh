@@ -3,9 +3,17 @@
 # 0.3.3; docs/04's guard table).
 #
 # Rule #3 (boundary rule): no SDL or miniaudio type may cross a public engine header. engine/platform
-# links SDL3 PRIVATE (confined to engine/platform/src/platform.cpp) and miniaudio PRIVATE (confined to
-# engine/platform/src/{audio_device.cpp, miniaudio_impl.c}); tests/platform_boundary_probe.cpp is the
-# compile-time half of the guard for both backends. This script is the textual half, reaching where the
+# links SDL3 PRIVATE (confined to engine/platform/src/platform.cpp) and miniaudio PRIVATE (confined,
+# WITHIN engine/, to engine/platform/src/{audio_device.cpp, miniaudio_impl.c});
+# tests/platform_boundary_probe.cpp is the compile-time half of the guard for both backends.
+#
+# TASK 3.7.1 AMENDED THE SCOPE OF THE MINIAUDIO SENTENCE, NOT THE GUARD. miniaudio's decoders are now
+# also used editor-side, in editor/src/audio_decode.cpp, which is outside HEADER_GLOB entirely -- so
+# the guard's logic is unchanged and its scan set is unchanged. The three PRINTED strings below still
+# say "engine/platform/src/{...}" and are deliberately left byte-identical: they are advice handed to
+# somebody who has just tripped a guard whose scan set is engine/*/include/*, and for that reader the
+# sentence stays exactly true. Editing them would also change this script's OUTPUT, which is the one
+# thing the "no logic change" clause is protecting. This script is the textual half, reaching where the
 # probe cannot (vcpkg's shared per-triplet include/ root still resolves <SDL3/...> / <miniaudio.h> for
 # any target linking any vcpkg package -- risk R12, docs/08-risks.md).
 #
@@ -56,7 +64,17 @@ readonly MA_IDENTIFIER_RE='(^|[^a-zA-Z0-9_])ma_'
 # Every public engine header -- the only surface the boundary rule governs (docs/04: "public headers
 # expose only engine types"). Deliberately narrower than the clang-format file set: this guard has no
 # opinion on engine/platform/src/platform.cpp, which is SDL's one legitimate home, nor on
-# engine/platform/src/{audio_device.cpp,miniaudio_impl.c}, which are miniaudio's.
+# engine/platform/src/{audio_device.cpp,miniaudio_impl.c}, which are miniaudio's INSIDE engine/, nor
+# on editor/src/audio_decode.cpp, which is miniaudio's and stb_vorbis's editor-side home since task
+# 3.7.1 and is outside this glob by construction -- /editor is not engine/, and the boundary rule
+# governs the engine's public surface.
+#
+# The NEW engine/audio/include/aero/audio/*.hpp files DO enter this scan, and they must stay ma_-free
+# and <miniaudio.h>-free. That is true by construction rather than by this guard: aero_audio links no
+# vcpkg package at all, so a stray include there is a hard COMPILE error. Self-test 1b derives the
+# expected subsystem set from the tree, so `audio` joins both sides automatically the moment its
+# headers are git-added -- nothing here needs to learn the new subsystem's name, which is exactly why
+# that self-test was written to derive rather than to enumerate.
 readonly HEADER_GLOB='engine/*/include/*'
 
 cd "$(git rev-parse --show-toplevel)"

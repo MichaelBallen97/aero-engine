@@ -89,3 +89,55 @@ leak:libLLVM
 # its own entry, gated on its own observed CI evidence and naming its own frame — never a widened one.
 leak:Assimp::ColladaParser::ColladaParser
 leak:Assimp::STLImporter::LoadASCIIFile
+
+# stb_vorbis leaks on ITS OWN error paths when a codebook is SPARSE (task 3.7.1, run 32584140126,
+# job 97057871012 on PR #88 — the Linux Debug lane; macOS and Windows passed the SAME commit, and no
+# local run can see this at all, since LSan runs on that one lane). doctest reported 301,543
+# assertions / 0 failed and LSan then flagged 632 B in 1 allocation.
+#
+# The mechanism, read out of the pinned source (stb_vorbis v1.22, vcpkg's stb port):
+#
+#   :3739-3742  if (c->sparse) lengths = setup_temp_malloc(f, c->entries);
+#               else           lengths = c->codeword_lengths = setup_malloc(f, c->entries);
+#
+# In the SPARSE arm `lengths` is a LOCAL and nothing else; only the non-sparse arm also parks it on
+# the codebook, where vorbis_deinit could find it. We pass alloc_buffer = nullptr (correctly — an
+# arena would have to be sized by guesswork, and too small a one refuses legitimate input), so
+# setup_temp_malloc (:969-978) is a plain malloc rather than a bump allocation. The two matching
+# setup_temp_free calls sit at :3780 and :3840, both on the success path, and start_decoder has four
+# error returns between the allocation and the first of them (:3752, :3753, :3765, :3778) — so a
+# stream that is rejected mid-codebook orphans the buffer. 632 B is (entries + 7) & ~7 for a codebook
+# of 625..632 entries.
+#
+# NOTHING OF OURS CAN CLOSE IT: stb_vorbis_open_memory returns nullptr on that path, so the
+# unique_ptr guard in decodeWithStbVorbis (editor/src/audio_decode.cpp:267) is never constructed —
+# there is no handle to own. Our refusal is correct and the leak is upstream. The port is consumed
+# unmodified, since this tree does not patch third-party sources, so the fixture stays exactly as it
+# is: AD14 (tests/editor/audio_decode_test.cpp:309, the first 40 % of each of the four fixtures) is
+# the COVERAGE, not the bug. Surfaced now because AD14 is the first thing on this lane to drive an
+# Ogg Vorbis header into its rejection path at all.
+#
+# Bounded: one failed open, one allocation, no loop — and in the editor it is reachable only from a
+# corrupt or truncated .ogg, which is refused rather than decoded.
+#
+# Frame-scoped, and NEVER module-wide: leak:stb_vorbis would blind LSan to a first-party leak
+# allocated anywhere inside the library, which is the same reason leak:SDL is refused in the header
+# above and leak:assimp is refused for the entry above this one. This entry cannot create that blind
+# spot, because nothing of ours allocates inside start_decoder: we hand stb_vorbis_open_memory a byte
+# span and a null allocator, and it calls back into no code of ours. Our own conversion runs after
+# the library has returned, in our own frames, which stay unsuppressed. A future error path in a
+# different stb_vorbis function that leaks the same way needs its OWN entry, gated on its own
+# observed CI evidence and naming its own frame — never a widened one.
+#
+# A LIMITATION OF THIS ENTRY, RECORDED RATHER THAN FIXED (task 3.7.1's code-review round). Unlike the
+# two Assimp:: entries above, `start_decoder` is an UNQUALIFIED C static — stb_vorbis is a C library
+# with no namespace and the function has internal linkage — so this token is NOT library-unique. A
+# future dependency carrying a same-named static frame would inherit this suppression silently, with
+# nothing in LSan's output saying so. There is no narrower spelling available: LSan matches
+# suppressions against function, file and module names and has no "this function in this translation
+# unit" form, and both alternatives are worse — a module scope (leak:stb_vorbis) is exactly what the
+# paragraph above refuses, and dropping the entry reddens the Linux Debug lane on an upstream defect
+# this tree does not patch. If a same-named frame ever does appear, the tell is a leak that stops
+# being reported without anyone having fixed it, and the answer is to re-derive the suppression from
+# a fresh LSan report rather than to widen this one.
+leak:start_decoder

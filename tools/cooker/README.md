@@ -24,9 +24,16 @@ property of a *motion*, a rig is a property of a *skin*, and one rig has many cl
 names the other, and the binding between them is the consumer's, resolved through the node id both
 formats carry.
 
-This document is the permanent home of the frozen contracts these tasks promise (3.3.1, 3.3.2, 3.5.1
-and 3.5.2). The normative specification of the containers themselves is `docs/09-file-formats.md`; this
-file specifies the *tool*.
+**Task 3.7.1 added its fifth**: `aero_cooker audio` turns one source sound file into one `.aerowave`
+container — a 64-byte header and one bulk region of interleaved signed-16-bit samples, frame-major,
+with no padding site anywhere in the format. It is the first subcommand whose input is not a model and
+not an image, so it shares none of the model prelude: it reads the file, decodes it (miniaudio's
+decoders for `.wav`/`.flac`/`.mp3`, stb_vorbis for `.ogg`) and cooks the samples through, sample for
+sample.
+
+This document is the permanent home of the frozen contracts these tasks promise (3.3.1, 3.3.2, 3.5.1,
+3.5.2 and 3.7.1). The normative specification of the containers themselves is
+`docs/09-file-formats.md`; this file specifies the *tool*.
 
 ## Why it links the editor
 
@@ -51,7 +58,7 @@ none of them, opens no window and creates no GPU device. If that ever bites, the
 importer translation units into their own ImGui-free target, a self-contained refactor that changes no
 consumer. It is not this task's change.
 
-## The six frozen contracts
+## The seven frozen contracts
 
 ### 1. The mesh grammar
 
@@ -193,10 +200,63 @@ aero_cooker animation --input <file> --output <file.aeroanim>
   a clip with nothing left is the absence of animation rather than a degenerate animation.
 - `--guid` behaves exactly as it does for the other three subcommands.
 
-### 5. The artifact rule
+### 5. The audio grammar
+
+```
+aero_cooker audio --input <file> --output <file.aerowave>
+                  [--guid <32 hex>]
+```
+
+- **There is no subcommand-specific flag at all, and that is the whole contract.** No `--format`: s16
+  *is* format version 1, and adding f32 later is a `formatVersion` bump rather than a flag. No `--rate`
+  and no `--mono`: the cook resamples nothing and remixes nothing, so a flag naming either would have to
+  do the conversion this pipeline refuses to do. No `--normalize`, no `--trim`, no `--loop`. `--input`,
+  `--output` and `--guid` are the whole grammar, and every other token is a usage error naming it.
+- **The input is a SOUND FILE, not a model**, so this path shares nothing with the `mesh`/`skeleton`/
+  `animation` prelude: no Structure pass, no external-buffer budget, no Full import. It is
+  name-decides-before-read, capped read, decode, cook, write.
+- **The read cap is 256 MiB**, the same number as the model cap rather than the texture path's tighter
+  64 MiB. A 16-bit `.wav` is a byte-for-byte 1:1 source for a 115 MB PCM region, so the tighter ceiling
+  would refuse a legal input; the *decoded* size is bounded separately by the decoder's own frame,
+  channel and **sample-product** caps, which is what makes a generous file ceiling safe.
+- **The decoder is handed the cook's own bounds on how many SAMPLES may exist** — frames, channels and
+  their product — rather than restating them, so each of those three refusals happens one step earlier
+  and without allocating the samples first. **The product is the one that bounds bytes**: per-axis caps
+  alone would accept 28 800 000 frames × 8 channels, four times the container's own byte cap, and the
+  cook would then refuse every one of them. This is deliberately *not* every refusal the cook can make
+  — `cookAudio` also bounds the sample **rate** at both ends and rejects a sample count that is not a
+  whole number of frames, and neither is pushed down: a rate bounds nothing that gets allocated, and the
+  decoder emits whole frames by construction. All three bounds are checked **twice**: once against the
+  source's own length query, and again inside the read loop, because a length query is an answer derived
+  from the file's own claims. A cap checked only against a self-reported length is not a cap.
+- **Which of those two halves can fire depends on the backend, and it was measured.** Both miniaudio
+  decoders bound their own reads by the same length they report, so within that backend the pre-allocation
+  check always wins: a Wave64 whose `fact` chunk claims ten frames over eight thousand frames of data
+  decodes ten, and an `.mp3` whose Xing count is a low lie decodes short rather than long. **The `.ogg`
+  path is the exception** — stb_vorbis never consults its own stream length while decoding — so a stream
+  whose final granule position understates its content really does overrun the claim, and that is what
+  the in-loop check stops. `tests/fixtures/audio/tone-lying-length.ogg` is the committed witness.
+- **The `.mp3` length query costs a full extra decode when the file has no Xing/Info tag.** dr_mp3
+  caches a frame count only when such a tag supplied one; without it, it decodes the whole stream to
+  count it and seeks back, so the file is decoded twice. The counting pass allocates no PCM and is
+  bounded by the 256 MiB read cap, but it is **not** bounded by the frame cap — it happens before the
+  decoder can refuse anything. Accepted and stated rather than hidden.
+- **A `.aerowave` is never empty.** A source that decodes to zero frames produces no artifact at all and
+  exit `2`, because a clip with no samples is the absence of a sound rather than a degenerate one.
+- **The cook is integer-only, end to end.** The decoders emit s16 and the cook validates integers and
+  writes them; no floating-point arithmetic, comparison or local appears in either file. That is a
+  *stronger* property than the mesh and animation containers have, both of which bit-copy real float
+  data, and it is why `cooker.audio_determinism` needs no caveat.
+- **Determinism is claimed for `.wav` and `.flac` and normatively refused for `.mp3` and `.ogg`.** The
+  first two are decoded by integer decoders; the last two run floating-point transforms whose code paths
+  differ by SIMD availability and FMA contraction policy. Neither may ever enter
+  `tests/cooker/determinism.sha256`.
+- `--guid` behaves exactly as it does for the other four subcommands.
+
+### 6. The artifact rule
 
 **Nothing is written unless the whole cook succeeded.** The output file is opened only after `cookMesh`,
-`cookTexture` or `cookSkeleton` has returned with a complete byte vector, so a failing input leaves
+`cookTexture`, `cookSkeleton`, `cookAnimation` or `cookAudio` has returned with a complete byte vector, so a failing input leaves
 **zero** artifacts — never a partial one, never a stale one, and never the `.aero-tmp` file the atomic
 write would have created on its way to the final name.
 
@@ -216,7 +276,7 @@ Both exist because the same bytes must fall out of clang on arm64, MSVC and GCC.
 inherits them for free: every TRS component and every inverse-bind cell is *bit-copied* from the
 importer's own float, never computed.
 
-### 6. The extension tables
+### 7. The extension tables
 
 `mesh` and `skeleton` (one table — they take the same inputs and refuse them identically):
 
@@ -234,6 +294,15 @@ importer's own float, never computed.
 | `.hdr` | **Refused, by design**, with exit `2` and a message naming the reason. `stbi_load` does *not* fail on a Radiance file: it silently applies a fixed gamma-2.2 tone map and hands back 8-bit LDR bytes, so cooking one produces a plausible artifact that is quietly wrong. HDR belongs to BC6H, which v1 does not cook. |
 | `.ktx2` `.dds` | Refused with exit `2`. Neither is stb-decodable, and re-cooking a cooked artifact is not a workflow. |
 | anything else | Refused with exit `2` and a message listing the seven claimed. Nothing is read. |
+
+`audio`:
+
+| Extension | Result |
+|---|---|
+| `.wav` `.flac` `.mp3` | Accepted — miniaudio's dr_wav, dr_flac and dr_mp3, through the editor's adapter. |
+| `.ogg` | Accepted — stb_vorbis, through the same adapter's other backend. The backend is chosen by the file **name**, never by sniffing the bytes. |
+| `.aerowave` | Refused with exit `2`: re-cooking a cooked artifact is not a workflow, exactly as for `.ktx2`. |
+| anything else | Refused with exit `2` and a message listing the four claimed. Nothing is read. |
 
 The extension is tested against the file **name** before a single byte is read, for every subcommand.
 `readFileBytes` refuses an over-cap file *without opening it*, so a tool that read first would answer a
@@ -291,23 +360,42 @@ Genuinely asymmetric, and measured rather than assumed — this is the part that
   arbitrary third-party KTX2 files do not open in us.
 - **No normal-map renormalization, alpha-coverage preservation, channel packing, atlassing,
   swizzling, premultiplied alpha, vertical flip or resize-to-POT** — and no setting for any of them.
+- **No resampling, downmixing, upmixing, channel reordering, normalization, trimming, silence
+  stripping, fading, loop points or dithering** in the `.aerowave` container — and no setting for any
+  of them. Whatever the decoder produced is what lands in the file, sample for sample. Dither in
+  particular is *randomised by construction*, so a dithered conversion would produce different bytes on
+  consecutive runs of the same binary on the same machine; it is switched off explicitly rather than
+  left to a default.
+- **No `f32` samples, no 24-bit, no compressed audio in the container.** s16 *is* format version 1;
+  adding another sample format later is a `formatVersion` bump, not a flag.
+- **No streaming, no seek table, no cue points, no multi-clip container.** One source file, one
+  artifact, read whole.
 
 ## Tests
 
-`tests/cooker/run_case.cmake` drives the real binary through 59 `cooker.*` ctest entries — 24 for
-`mesh`, 15 for `texture`, 10 for `skeleton` and 10 for `animation` — argv in, exit code plus files
-out. Four of them, `cooker.golden_manifest`, `cooker.texture_golden_manifest`,
-`cooker.skeleton_golden_manifest` and `cooker.animation_golden_manifest`, cook a fixed
-eighteen-artifact matrix
-and compare every byte against the frozen `tests/cooker/determinism.sha256` (task 3.3.3). A CLI's honest test is its process
+`tests/cooker/run_case.cmake` drives the real binary through 70 `cooker.*` ctest entries — 24 for
+`mesh`, 15 for `texture`, 10 for `skeleton`, 10 for `animation` and 11 for `audio` — argv in, exit
+code plus files out. **Five** of them, `cooker.golden_manifest`, `cooker.texture_golden_manifest`,
+`cooker.skeleton_golden_manifest`, `cooker.animation_golden_manifest` and
+`cooker.audio_golden_manifest`, cook a fixed **twenty-artifact** matrix and compare every byte against
+the frozen `tests/cooker/determinism.sha256` (task 3.3.3). The eleventh audio entry,
+`cooker.audio_lossy_digests`, is the one case in the whole list that asserts **no expected value at
+all**: it cooks the mp3 and the ogg, checks exit 0 and a non-empty artifact, and *prints* each SHA-256
+so three CI logs from one push measure whether the lossy decoders agree across lanes. It must never
+assert a digest. A CLI's honest test is its process
 boundary, so there is no doctest translation unit for the tool and no tool code links into
 `aero_tests`; the pure halves it is built from (`cookMesh`, `parseCookedMesh`, `meshCookPrimitives`,
 `cookTexture`, `parseCookedTexture`, `decodeImageRgba8`, `chooseTextureFormat`, `cookSkeleton`,
 `parseCookedSkeleton`, `skeletonCookJoints`, `cookAnimation`, `parseCookedAnimation`,
-`animationCookChannels`) are covered there and
+`animationCookChannels`, `cookAudio`, `parseCookedAudio`, `decodeAudioFile`) are covered there and
 in `aero_editor_shell_test` instead. The cases are registered with **no gate flag**, so they run in
 every build configuration. The mesh and skeleton inputs are listed in
 `tests/cooker/fixtures/README.md`; the two
 texture inputs are the committed `tests/fixtures/assets/texture-rgb-5x3.png` and
 `texture-rgba-8x8.png`, and the animation input is `tests/fixtures/assets/skinned.gltf`, all three
-shared with the editor suite.
+shared with the editor suite. The audio inputs are five of the committed files
+under `tests/fixtures/audio/` — four encodings of one 1.0 s signal plus ffmpeg's own raw decode of it,
+which is the external anchor the wav and flac paths are checked against — documented in that
+directory's own `README.md`, including why the source is 1.0 s and why the `.ogg` alone is stereo. The
+other two files there are read by the doctest suites rather than by this tool: `tone.aerowave`, the
+loader golden, and `tone-lying-length.ogg`, a deliberately corrupt stream.

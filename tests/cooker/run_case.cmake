@@ -208,10 +208,10 @@ function(aero_read_manifest out_names out_hashes)
         list(APPEND hashes "${hash}")
     endforeach()
     list(LENGTH names count)
-    # A LITERAL 18, never a count derived from the file it is checking: a guard computed from its own
-    # subject cannot see a line deleted. All four cases assert it, so a deletion reddens them at once.
-    if(NOT count EQUAL 18)
-        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 18")
+    # A LITERAL 20, never a count derived from the file it is checking: a guard computed from its own
+    # subject cannot see a line deleted. All five cases assert it, so a deletion reddens them at once.
+    if(NOT count EQUAL 20)
+        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 20")
     endif()
     set(${out_names} "${names}" PARENT_SCOPE)
     set(${out_hashes} "${hashes}" PARENT_SCOPE)
@@ -347,6 +347,21 @@ set(ANIMOUT "${WORK_DIR}/out.aeroanim")
 set(ANIMATION_MAGIC_HEX "4145524f414e494d")   # "AEROANIM"
 set(SKINNED_ANIM_CLIP0_BYTES 176)
 
+# task 3.7.1: the audio subcommand and its own fixture set. The .aerowave header puts formatVersion at
+# byte 8 and the source GUID at byte 16 -- the SAME two offsets .aeromesh, .aeroskel and .aeroanim use,
+# by that format's own design, so OFFSET_FORMAT_VERSION and OFFSET_SOURCE_GUID above are REUSED here
+# rather than restated under new names; a disagreement between the four layouts would be a real defect
+# in one of them.
+#
+# tone.wav is 1.0 s, 8 kHz, MONO, 16-bit -- 8000 frames -- so the artifact's size is the format's whole
+# arithmetic in one number: 64 header + 2 x 1 x 8000 samples = 16064, with NO padding site anywhere in
+# this format. The source is 1.0 s rather than something shorter because that is the shortest length at
+# which the Vorbis round trip is frame-exact; the reason is recorded in tests/fixtures/audio/README.md.
+set(AUDIO_FIXTURES "${SOURCE_DIR}/tests/fixtures/audio")
+set(AUDIOOUT "${WORK_DIR}/out.aerowave")
+set(AUDIO_MAGIC_HEX "4145524f57415645")   # "AEROWAVE"
+set(TONE_WAV_ARTIFACT_BYTES 16064)
+
 # --- the case table -------------------------------------------------------------------------------
 
 if(CASE STREQUAL "help")
@@ -375,10 +390,11 @@ elseif(CASE STREQUAL "no_subcommand")
     aero_expect_exit("${result}" 1)
     aero_expect_non_empty("${err}" "stderr")
     # task 3.3.2 changed this literal from "(expected: mesh)", task 3.5.1 changed it again from
-    # "(expected: mesh or texture)", and task 3.5.2 a third time from "(expected: mesh, texture or
-    # skeleton)". Asserted, so the next subcommand added cannot leave the message naming a subset of
-    # what the tool actually accepts -- which is exactly what this literal caught all three times.
-    aero_expect_contains("${err}" "expected: mesh, texture, skeleton or animation" "stderr")
+    # "(expected: mesh or texture)", task 3.5.2 a third time from "(expected: mesh, texture or
+    # skeleton)" and task 3.7.1 a fourth. Asserted, so the next subcommand added cannot leave the
+    # message naming a subset of what the tool actually accepts -- which is exactly what this literal
+    # caught all four times.
+    aero_expect_contains("${err}" "expected: mesh, texture, skeleton, animation or audio" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_subcommand")
@@ -387,11 +403,16 @@ elseif(CASE STREQUAL "unknown_subcommand")
     # subcommand landed. Worse, it would have kept passing -- `texture --input x --output y` with no
     # colour-space flag is still exit 1 with "texture" in the message -- so the case would have gone
     # on looking green while asserting something that no longer existed. A genuinely unknown token,
-    # and the message that names every real one -- four of them since task 3.5.2.
+    # and the message that names every real one -- five of them since task 3.7.1.
+    #
+    # THE TOKEN STAYS `sound`, AND TASK 3.7.1 IS THE NEAR-MISS THAT MAKES THAT WORTH SAYING: had that
+    # task's subcommand been named `sound` rather than `audio`, this arm would have gone on looking
+    # green while testing a subcommand that exists -- the exact trap 3.3.2 rewrote it to escape. Do
+    # not "helpfully" change the token to match the newest subcommand.
     aero_run_tool(ARGS sound --input "${ANY_INPUT}" --output "${OUT}" OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 1)
     aero_expect_contains("${err}" "unknown subcommand 'sound'" "stderr")
-    aero_expect_contains("${err}" "expected: mesh, texture, skeleton or animation" "stderr")
+    aero_expect_contains("${err}" "expected: mesh, texture, skeleton, animation or audio" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_flag")
@@ -1025,6 +1046,138 @@ elseif(CASE STREQUAL "animation_output_dir_missing")
     aero_expect_no_files("${WORK_DIR}/nope")
     aero_verify_no_files_in("${WORK_DIR}")
 
+elseif(CASE STREQUAL "audio_happy")
+    # tone.wav is 1.0 s, 8 kHz, mono, 16-bit. The artifact's size is the format's whole arithmetic in
+    # one number (see TONE_WAV_ARTIFACT_BYTES above), and the three header fields read below are the
+    # ones a wrong offset or a wrong byte order would move.
+    aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${AUDIOOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 0)
+    # aero_expect_magic is AEROMESH-specific by construction, so the fourth container kind asserts its
+    # own magic through the generic hex helper, exactly as the skeleton and animation arms do.
+    aero_expect_hex_at("${AUDIOOUT}" 0 8 "${AUDIO_MAGIC_HEX}")
+    aero_expect_size("${AUDIOOUT}" "${TONE_WAV_ARTIFACT_BYTES}")
+    aero_expect_hex_at("${AUDIOOUT}" "${OFFSET_FORMAT_VERSION}" 4 "01000000")
+    aero_expect_hex_at("${AUDIOOUT}" 32 4 "401f0000")   # sampleRate 8000, little-endian
+    aero_expect_hex_at("${AUDIOOUT}" 36 4 "01000000")   # channels 1
+    aero_expect_hex_at("${AUDIOOUT}" 40 4 "401f0000")   # frameCount 8000
+
+elseif(CASE STREQUAL "audio_unknown_flag")
+    # Flags that are REAL ELSEWHERE, never invented ones: --scale belongs to mesh and skeleton, --skin
+    # to skeleton and --format to texture, so each is genuinely unknown under `audio` and must fall
+    # through to the arm that NAMES it. An invented token would prove only that the fallback exists,
+    # which the unknown_flag case already proves. This is also the arm that pins D21: `audio` takes no
+    # subcommand-specific flag at all, so there is nothing here to silently accept and ignore.
+    foreach(badflag "--scale;2" "--skin;0" "--format;bc1")
+        list(GET badflag 0 flagname)
+        aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${AUDIOOUT}" ${badflag}
+            OUT_RESULT result OUT_STDERR err)
+        aero_expect_exit("${result}" 1)
+        aero_expect_contains("${err}" "${flagname}" "stderr")
+    endforeach()
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "audio_missing_input")
+    aero_run_tool(ARGS audio --output "${AUDIOOUT}" OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 1)
+    aero_expect_contains("${err}" "--input is required" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "audio_bad_extension")
+    # A REAL .gltf under `audio`. The name decides before a byte is read, so this costs no read at
+    # all, and the message names the four claimed extensions rather than saying "unsupported".
+    aero_run_tool(ARGS audio --input "${ANY_INPUT}" --output "${AUDIOOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_contains("${err}" ".wav .flac .mp3 .ogg" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "audio_output_dir_missing")
+    # The tool creates NO directory, for any subcommand: a build-time tool that invents them is how a
+    # typo becomes a mystery tree.
+    aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${WORK_DIR}/nope/out.aerowave"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 3)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_expect_no_files("${WORK_DIR}/nope")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "audio_nothing_written_on_failure")
+    # A file NAMED .wav whose bytes are ASCII garbage: the name check passes, the read succeeds, and
+    # the DECODE refuses -- so the output path is never opened and the working directory is left empty
+    # of the artifact and of the .aero-tmp file writeTextFileAtomic would have created on its way to
+    # it. BEHAVIOURAL ONLY, matching the skeleton and animation arms rather than the texture one: this
+    # path's refusal is reachable end to end through the CLI, so no source-text pin is needed and none
+    # should be added.
+    set(broken "${WORK_DIR}/broken.wav")
+    file(WRITE "${broken}" "this is not a RIFF file, it is a sentence")
+    aero_run_tool(ARGS audio --input "${broken}" --output "${AUDIOOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_expect_no_files("${AUDIOOUT}" "${AUDIOOUT}.aero-tmp")
+
+elseif(CASE STREQUAL "audio_guid_written")
+    # hi then lo, each little-endian, EVERY BYTE NON-ZERO -- so this is a statement about byte ORDER
+    # and not merely about presence, and it is the same assertion the mesh, skeleton and animation
+    # guid arms make at the same offset, which is what keeps the four layouts honest about it.
+    aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${AUDIOOUT}"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result)
+    aero_expect_exit("${result}" 0)
+    aero_expect_hex_at("${AUDIOOUT}" "${OFFSET_SOURCE_GUID}" 16 "efcdab89674523011032547698badcfe")
+
+elseif(CASE STREQUAL "audio_determinism")
+    # Two processes, two directories, one byte sequence. As with all three older containers no
+    # timestamp, no path, no hostname and no build id reaches the artifact -- and here NO FLOATING
+    # POINT is touched at all, in either the decode's output or the cook's arithmetic: dr_wav emits
+    # s16 and the cook validates integers and calls putU16. That is a stronger property than the mesh
+    # and animation containers have, both of which bit-copy real float data.
+    #
+    # DELIBERATELY DRIVEN FROM tone.wav AND NOT FROM tone.mp3 OR tone.ogg: those two are decoded by
+    # floating-point transforms whose code paths differ by SIMD availability and FMA contraction
+    # policy, so no cross-lane byte claim is made about them anywhere and neither may ever enter the
+    # frozen manifest.
+    set(dir1 "${WORK_DIR}/run1")
+    set(dir2 "${WORK_DIR}/run2")
+    file(MAKE_DIRECTORY "${dir1}")
+    file(MAKE_DIRECTORY "${dir2}")
+    aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${dir1}/out.aerowave"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result1)
+    aero_expect_exit("${result1}" 0)
+    aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/tone.wav" --output "${dir2}/out.aerowave"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result2)
+    aero_expect_exit("${result2}" 0)
+    aero_expect_identical("${dir1}/out.aerowave" "${dir2}/out.aerowave")
+
+elseif(CASE STREQUAL "audio_all_four_formats")
+    # THE ARM THAT WOULD CATCH A BACKEND WIRED TO THE WRONG FORMAT, at the process tier. Its strongest
+    # single line is the last one: tone.wav and tone.flac decode through two DIFFERENT decoders in two
+    # DIFFERENT containers and must produce byte-identical artifacts, which is the CLI-tier echo of
+    # AD10/AD11's agreement with libavcodec.
+    #
+    # tone.mp3 and tone.ogg are asserted only to succeed and to be larger than a bare header: both are
+    # lossy, so their bytes are not a contract. tone.ogg is additionally STEREO -- this ffmpeg build's
+    # native Vorbis encoder refuses mono -- so its artifact is legitimately about twice the size of the
+    # other three and is deliberately not compared against them.
+    set(wavOut "${WORK_DIR}/wav.aerowave")
+    set(flacOut "${WORK_DIR}/flac.aerowave")
+    set(mp3Out "${WORK_DIR}/mp3.aerowave")
+    set(oggOut "${WORK_DIR}/ogg.aerowave")
+    foreach(pair "tone.wav;${wavOut}" "tone.flac;${flacOut}" "tone.mp3;${mp3Out}" "tone.ogg;${oggOut}")
+        list(GET pair 0 sourceName)
+        list(GET pair 1 outPath)
+        aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/${sourceName}" --output "${outPath}"
+            --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result OUT_STDERR err)
+        aero_expect_exit("${result}" 0)
+        aero_expect_hex_at("${outPath}" 0 8 "${AUDIO_MAGIC_HEX}")
+        file(SIZE "${outPath}" outSize)
+        if(NOT outSize GREATER 64)
+            message(FATAL_ERROR "case '${CASE}': '${outPath}' is ${outSize} bytes, which is the bare header")
+        endif()
+    endforeach()
+    aero_expect_size("${wavOut}" "${TONE_WAV_ARTIFACT_BYTES}")
+    aero_expect_identical("${wavOut}" "${flacOut}")
+
 elseif(CASE STREQUAL "no_skins_gltf")
     # THE ARTIFACT-LEVEL WITNESS for the flag whose README row this task had to rewrite: until the
     # glTF importer's JOINTS_0/WEIGHTS_0 reads were gated on importSkins, --no-skins changed NOTHING
@@ -1044,23 +1197,31 @@ elseif(CASE STREQUAL "no_skins_gltf")
 
 # --- task 3.3.3: the frozen cook-determinism manifest ---------------------------------------------
 #
-# Four cases, one shape (task 3.5.1 added the third, task 3.5.2 the fourth). Each cooks its tuples
-# ONCE through the real binary and requires the artifact's SHA-256 to equal the line
-# tests/cooker/determinism.sha256 records for that name. Because the cooker takes no gate flag, all
-# four register in all three build configurations, and because CI runs ctest in Debug and Release on
-# three lanes, the manifest is checked TWELVE times per push: all twelve green means every lane and
-# both configurations equal the manifest, therefore they equal each other.
+# FIVE cases, one shape (task 3.5.1 added the third, task 3.5.2 the fourth, task 3.7.1 the fifth).
+# Each cooks its tuples ONCE through the real binary and requires the artifact's SHA-256 to equal the
+# line tests/cooker/determinism.sha256 records for that name. Because the cooker takes no gate flag,
+# all five register in all three build configurations, and because CI runs ctest in Debug and Release
+# on three lanes, the five arms run 5 x 3 x 2 = THIRTY times per push -- which is SIX complete checks
+# of all twenty lines, one per lane-and-configuration. All thirty green means every lane and both
+# configurations equal the manifest, therefore they equal each other.
 #
-# A FOURTH ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
+# EVERY NUMBER IN THIS BLOCK IS RE-DERIVED WHEN AN ARM IS ADDED, NEVER INCREMENTED. Task 3.7.1's
+# code-review round found this whole header still reading "four" and "eighteen" and "TWELVE" while a
+# fifth arm sat directly beneath it -- and the twelve in particular is a PRODUCT (it was 2 arms x 3
+# lanes x 2 configurations when task 3.3.3 wrote it), so incrementing it would have been wrong even
+# if somebody had noticed the word.
+#
+# A FIFTH ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
 # arm-level SUBCOMMAND, and the KIND_PREFIX orphan check below ("every manifest line of THIS case's
 # kind was actually cooked") stays sound only while every line's prefix is claimed by exactly one arm.
 #
 # The artifacts land in ${WORK_DIR}/artifacts/ and the CI job uploads exactly that directory. The
 # perturbed re-cook lands in ${WORK_DIR}/perturbed/ so it cannot enter the upload set, which is
-# eighteen files across the four cases and nothing else.
+# twenty files across the five cases and nothing else.
 
 elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest"
-       OR CASE STREQUAL "skeleton_golden_manifest" OR CASE STREQUAL "animation_golden_manifest")
+       OR CASE STREQUAL "skeleton_golden_manifest" OR CASE STREQUAL "animation_golden_manifest"
+       OR CASE STREQUAL "audio_golden_manifest")
     set(ASSETS "${SOURCE_DIR}/tests/fixtures/assets")
     set(ARTIFACTS "${WORK_DIR}/artifacts")
     file(MAKE_DIRECTORY "${ARTIFACTS}")
@@ -1180,7 +1341,7 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # single-lane check, since our own parser reads them back in the order our writer wrote them.
         aero_manifest_tuple(skeleton-skinned.aeroskel
             --input "${FIXTURES}/skinned-quad.gltf" --guid "${TEST_GUID}")
-    else()
+    elseif(CASE STREQUAL "animation_golden_manifest")
         set(SUBCOMMAND animation)
         set(KIND_PREFIX "animation-")
         set(TUPLE_COUNT 3)              # LITERAL, beside the three calls it counts
@@ -1203,6 +1364,30 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # order our own writer wrote them and no single-lane check can see them swapped.
         aero_manifest_tuple(animation-skinned-cubic.aeroanim
             --input "${ASSETS}/skinned.gltf" --clip 2 --guid "${TEST_GUID}")
+    else()
+        set(SUBCOMMAND audio)
+        set(KIND_PREFIX "audio-")
+        set(TUPLE_COUNT 2)              # LITERAL, beside the two calls it counts
+        # task 3.7.1 -- the .aerowave format anchored cross-lane, cross-configuration and cross-time
+        # from the day it ships, rather than after the first divergence. TWO TUPLES AND EXACTLY TWO.
+        # wav and flac are INTEGER decoders (dr_wav copies a 16-bit source; dr_flac shifts), so their
+        # bytes are a cross-lane CONTRACT -- and the two must agree with each other as well, since
+        # both fixtures carry the same 8000-frame signal, which is what makes a wrong backend or a
+        # transposed sample visible here and not only in a single-decoder arm.
+        #
+        # mp3 and ogg are ABSENT AND MUST STAY ABSENT. Both run floating-point transforms -- an IMDCT
+        # and an inverse MDCT -- through code paths that differ by SIMD availability and by FMA
+        # contraction policy, so NO CROSS-LANE CLAIM IS MADE ABOUT EITHER and NEITHER MAY EVER ENTER
+        # THIS MANIFEST. docs/09 section 14.7 says so normatively, exactly as section 13.7 does for
+        # the animation SAMPLER. cooker.audio_lossy_digests MEASURES them instead, and prints.
+        #
+        # Both tuples carry a REAL --guid, the skeleton/animation posture: the header's hi/lo emit
+        # order is then pinned across lanes too, since our own parser reads those two u64s back in
+        # the order our own writer wrote them and no single-lane check can see them swapped.
+        aero_manifest_tuple(audio-tone-wav.aerowave
+            --input "${AUDIO_FIXTURES}/tone.wav" --guid "${TEST_GUID}")
+        aero_manifest_tuple(audio-tone-flac.aerowave
+            --input "${AUDIO_FIXTURES}/tone.flac" --guid "${TEST_GUID}")
     endif()
 
     # --- the mismatch report ------------------------------------------------------------------------
@@ -1296,6 +1481,52 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
     if(NOT _producedCount EQUAL TUPLE_COUNT)
         message(FATAL_ERROR "case '${CASE}': ${ARTIFACTS} holds ${_producedCount} files, expected "
                             "${TUPLE_COUNT} -- this directory IS the CI upload set")
+    endif()
+
+elseif(CASE STREQUAL "audio_lossy_digests")
+    # THE MEASUREMENT THIS PROJECT REFUSES TO FREEZE (task 3.7.1). mp3 (dr_mp3) and ogg (stb_vorbis)
+    # both run floating-point transforms whose code paths differ by SIMD availability and by FMA
+    # contraction policy, so NO CROSS-LANE CLAIM IS MADE about either and neither format appears in
+    # tests/cooker/determinism.sha256. This case cooks both, asserts EXIT 0 AND A NON-EMPTY ARTIFACT
+    # AND NOTHING ELSE, and PRINTS each SHA-256 in the manifest's own `<sha256>  <name>` format, so
+    # three CI logs from one push answer "do the lossy decoders agree across lanes?" with numbers.
+    #
+    # IT MUST NEVER ASSERT A DIGEST VALUE, AND THIS COMMENT IS THE PROHIBITION. A future contributor
+    # cannot "finish" this arm by pasting the printed hashes in: agreement today, at ONE vcpkg
+    # baseline and THREE pinned compilers, is a FACT, not a CONTRACT. Freezing it would turn the next
+    # toolchain bump into a red tripwire pointing at the wrong thing, and
+    # .claude/rules/cooked-assets.md says a red manifest means "the same input now cooks to different
+    # bytes" -- a sentence that must stay true of every line in that file.
+    #
+    # It is deliberately NOT part of the manifest disjunction above, so nothing about it can be
+    # mistaken for a frozen expectation, and it writes straight into WORK_DIR rather than into an
+    # `artifacts/` subdirectory, so the manifest arm's "this directory IS the CI upload set" count is
+    # untouched and the cook-determinism job's exact-count check cannot be confused by it.
+    set(LOSSY_RUNS 0)
+    foreach(pair "tone.mp3;audio-tone-mp3.aerowave" "tone.ogg;audio-tone-ogg.aerowave")
+        list(GET pair 0 src)
+        list(GET pair 1 name)
+        aero_run_tool(ARGS audio --input "${AUDIO_FIXTURES}/${src}" --output "${WORK_DIR}/${name}"
+            --guid 0123456789abcdeffedcba9876543210
+            OUT_RESULT result OUT_STDERR err)
+        aero_expect_exit("${result}" 0)
+        aero_expect_files("${WORK_DIR}/${name}")
+        file(SIZE "${WORK_DIR}/${name}" bytes)
+        if(bytes LESS_EQUAL 64)
+            message(FATAL_ERROR "case '${CASE}': '${name}' is ${bytes} bytes -- header only, so the "
+                                "decode produced no samples at all")
+        endif()
+        # message(NOTICE) prints its argument BYTE FOR BYTE with no prefix and no wrapping, the
+        # manifest arm's own recorded reason for using it: FATAL_ERROR and WARNING hard-wrap at ~76
+        # columns, which would break an 87-character `<sha256>  <name>` line across two lines.
+        file(SHA256 "${WORK_DIR}/${name}" digest)
+        message(NOTICE "${digest}  ${name}")
+        math(EXPR LOSSY_RUNS "${LOSSY_RUNS} + 1")
+    endforeach()
+    # The LITERAL count, beside the loop it counts: a foreach over a mis-typed list runs zero times
+    # and prints nothing, which would look exactly like a pass.
+    if(NOT LOSSY_RUNS EQUAL 2)
+        message(FATAL_ERROR "case '${CASE}': ${LOSSY_RUNS} digests printed, expected exactly 2")
     endif()
 
 else()

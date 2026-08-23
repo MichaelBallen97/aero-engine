@@ -4,6 +4,7 @@
 
 add_subdirectory(core)
 add_subdirectory(assets)     # task 3.3.1 — cooked-asset formats; depends on core and NOTHING else
+add_subdirectory(audio)      # task 3.7.1 — the runtime clip + its VFS loader; depends on core + assets
 add_subdirectory(platform)
 add_subdirectory(rhi)        # task 0.4.1
 add_subdirectory(render)     # task 0.5.1

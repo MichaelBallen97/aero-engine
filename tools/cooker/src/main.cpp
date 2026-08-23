@@ -11,11 +11,15 @@
 // (task 3.2.4's D15). The gate grep for that invariant scans tools/ for SDL's process API and the
 // three C spawn primitives by name and does NOT strip comments, so none of those tokens may be
 // written in prose anywhere under this directory -- the 3.2.4 and 3.2.5 rule, a third application.
+#include <aero/assets/audio_cook.hpp>
+#include <aero/assets/cooked_audio.hpp>
 #include <aero/assets/cooked_texture.hpp>
 #include <aero/assets/mesh_cook.hpp>
 #include <aero/assets/texture_cook.hpp>
 #include <aero/core/guid.hpp>
 #include <aero/editor/animation_cook_source.hpp>
+#include <aero/editor/audio_cook_source.hpp>
+#include <aero/editor/audio_decode.hpp>
 #include <aero/editor/import_settings.hpp>
 #include <aero/editor/mesh_cook_source.hpp>
 #include <aero/editor/model_import.hpp>
@@ -65,13 +69,17 @@ enum class ExitCode : std::uint8_t { Success = 0, UsageError = 1, CookError = 2,
 //                        [--guid <32 hex>] [--skin <index>] [--scale <float>]
 //   aero_cooker animation --input <file> --output <file.aeroanim>
 //                         [--guid <32 hex>] [--clip <index>]
+//   aero_cooker audio --input <file> --output <file.aerowave>
+//                     [--guid <32 hex>]
 //   aero_cooker --version
 //   aero_cooker --help
 //
-// SUBCOMMAND-SHAPED FROM DAY ONE, and tasks 3.3.2, 3.5.1 and 3.5.2 each filled one in with no
+// SUBCOMMAND-SHAPED FROM DAY ONE, and tasks 3.3.2, 3.5.1, 3.5.2 and 3.7.1 each filled one in with no
 // reshuffle of the mesh path: --input, --output and --guid stay in the shared prefix and the flag loop
 // splits only on the subcommand-specific arms. Any token that is none of `mesh`, `texture`,
-// `skeleton` and `animation` is a usage error naming it.
+// `skeleton`, `animation` and `audio` is a usage error naming it. `audio` takes NO subcommand-specific
+// flag at all -- no --format (s16 IS formatVersion 1), no --rate and no --mono (the cook resamples and
+// remixes nothing), no --normalize.
 //
 // EVERY FLAG IS AT-MOST-ONCE. Unlike aero_shaderc --define, this grammar has no repeatable flag at
 // all, so the check is uniform: one `have<Flag>` bool each.
@@ -89,6 +97,8 @@ void printUsage(std::ostream& out) {
         << "                       [--guid <32 hex>] [--skin <index>] [--scale <float>]\n"
         << "  aero_cooker animation --input <file> --output <file.aeroanim>\n"
         << "                        [--guid <32 hex>] [--clip <index>]\n"
+        << "  aero_cooker audio --input <file> --output <file.aerowave>\n"
+        << "                    [--guid <32 hex>]\n"
         << "  aero_cooker --version\n"
         << "  aero_cooker --help\n"
         << "\n"
@@ -97,12 +107,14 @@ void printUsage(std::ostream& out) {
         << "  texture                Cook one source image into one KTX2 container.\n"
         << "  skeleton               Cook one skin of one source model into one .aeroskel container.\n"
         << "  animation              Cook one clip of one source model into one .aeroanim container.\n"
+        << "  audio                  Cook one source sound file into one .aerowave container.\n"
         << "\n"
         << "Required (all subcommands):\n"
         << "  --input <file>         The source asset.\n"
         << "                         mesh, skeleton, animation:\n"
         << "                                         .gltf .glb .fbx .obj .mtl .dae .ply .stl\n"
         << "                         texture:        .png .jpg .jpeg .tga .bmp .gif .psd\n"
+        << "                         audio:          .wav .flac .mp3 .ogg\n"
         << "  --output <file>        The artifact path. The directory must already exist.\n"
         << "\n"
         << "Required (texture only):\n"
@@ -137,6 +149,12 @@ void printUsage(std::ostream& out) {
         << "                         naming the total. There is no --scale here: no importer applies\n"
         << "                         the uniform scale to an animation channel, so the flag would\n"
         << "                         change no byte of the output.\n"
+        << "\n"
+        << "Optional (audio only):\n"
+        << "  (nothing)              The audio cook converts NOTHING: no resample, no downmix, no\n"
+        << "                         upmix, no channel reorder, no normalize, no trim, no fade, no\n"
+        << "                         loop points, no dither. s16 IS format version 1, so there is no\n"
+        << "                         --format either; adding f32 later is a formatVersion bump.\n"
         << "\n"
         << "Optional (texture only):\n"
         << "  --format <token>       bc1, bc3, bc4, bc5, rgba8 or auto. Default: auto, which answers\n"
@@ -220,7 +238,7 @@ void printVersion(std::ostream& out) { out << "aero_cooker " << TOOL_VERSION << 
     return value;
 }
 
-enum class Subcommand : std::uint8_t { Mesh, Texture, Skeleton, Animation };
+enum class Subcommand : std::uint8_t { Mesh, Texture, Skeleton, Animation, Audio };
 
 // The six accepted --format tokens, in the order the usage text and every diagnostic list them. `auto`
 // is deliberately IN the table rather than a special case at the parse site: it is a legal value of
@@ -265,8 +283,8 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     }
 
     if (argc < 2) {
-        std::cerr << "aero_cooker: error: no subcommand given (expected: mesh, texture, skeleton or "
-                     "animation)\n";
+        std::cerr << "aero_cooker: error: no subcommand given (expected: mesh, texture, skeleton, "
+                     "animation or audio)\n";
         return std::nullopt;
     }
     const std::string_view subcommand = argv[1];
@@ -278,9 +296,11 @@ std::optional<Args> parseArgs(int argc, char** argv) {
         args.subcommand = Subcommand::Skeleton;
     } else if (subcommand == "animation") {
         args.subcommand = Subcommand::Animation;
+    } else if (subcommand == "audio") {
+        args.subcommand = Subcommand::Audio;
     } else {
         std::cerr << "aero_cooker: error: unknown subcommand '" << subcommand
-                  << "' (expected: mesh, texture, skeleton or animation)\n";
+                  << "' (expected: mesh, texture, skeleton, animation or audio)\n";
         return std::nullopt;
     }
     // EXPLICIT PER-SUBCOMMAND PREDICATES, replacing task 3.3.2's single `isTexture` discriminator: with
@@ -291,6 +311,11 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     const bool isTexture = args.subcommand == Subcommand::Texture;
     const bool isSkeleton = args.subcommand == Subcommand::Skeleton;
     const bool isAnimation = args.subcommand == Subcommand::Animation;
+    // THERE IS DELIBERATELY NO `isAudio` HERE. Task 3.7.1's subcommand takes no subcommand-specific
+    // flag at all, so it needs no predicate: every flag it accepts (--input, --output, --guid) lives
+    // in the shared prefix, and every other flag falls through to the unknown-flag arm below exactly
+    // as it should. Declaring an unused one to keep the block "uniform" would be a local nothing
+    // reads, and the honest shape is this sentence. A future audio flag adds the predicate here.
     // NOT extended to animation at task 3.5.2, and that is a FINDING rather than a preference: all
     // four importers apply ImportSettings::scale to root node translations, to mesh positions and to
     // inverse-bind translation columns, and to no animation channel anywhere -- so --scale here would
@@ -682,6 +707,96 @@ void reportWarnings(std::string_view origin, const std::vector<std::string>& war
     return imported;
 }
 
+// ---- the audio subcommand (task 3.7.1) ----------------------------------------------------------
+//
+// PLACED ABOVE runAnimation, WHICH IS ITSELF ABOVE runSkeleton AND runTexture, and for the same reason
+// their own do-not-move notes give: cooker.texture_nothing_written_on_failure pins a source-text
+// ordering inside the region between `ExitCode runTexture(...)` and `ExitCode runMain(...)`, and that
+// check requires `writeTextFileAtomic(args.outputPath` to occur EXACTLY ONCE in it. A fifth subcommand
+// written there would put a second, unrelated occurrence in that region and make "before" ambiguous.
+// This is the furthest point in the file from it. Do not move this function below runTexture.
+//
+// The audio path shares NOTHING with importModelForCook: it reads a sound file rather than a model, so
+// there is no Structure pass, no external-buffer budget and no Full pass. Its own refusal is reachable
+// end to end through the CLI (a .wav whose bytes are garbage decodes to nothing), so
+// cooker.audio_nothing_written_on_failure is BEHAVIOURAL ONLY -- the skeleton and animation arms'
+// shape, not the texture one's. No source-text pin is needed here and none should be added.
+ExitCode runAudio(const Args& args) {
+    // ---- 1. the file NAME decides what happens, before a byte is read ------------------------
+    // The runTexture rule and the runTexture reason: readFileBytes refuses an over-cap file WITHOUT
+    // OPENING IT, so reading first would answer a 300 MB .aiff with "the file is too large" instead of
+    // "no decoder claims it".
+    const std::string leaf = fs::path(args.inputPath).filename().string();
+    if (!engine::editor::isCookableAudioName(leaf)) {
+        std::cerr << "aero_cooker: error: no audio decoder claims '" << leaf << "' (expected .wav .flac .mp3 .ogg)\n";
+        return ExitCode::CookError;
+    }
+
+    // ---- 2. the source bytes ------------------------------------------------------------------
+    // MAX_AUDIO_FILE_BYTES is 256 MiB, the same number as MAX_MODEL_FILE_BYTES rather than the
+    // texture path's tighter 64 MiB: a 16-bit wav is a byte-for-byte 1:1 source for a 115 MB PCM
+    // region, so a tighter ceiling would refuse a legal input. The DECODED size is bounded separately
+    // by decodeAudioFile's own three caps -- one per axis plus, crucially, the PRODUCT -- which is what
+    // makes a generous file ceiling safe.
+    engine::editor::FileBytesResult source =
+        engine::editor::readFileBytes(args.inputPath, engine::editor::MAX_AUDIO_FILE_BYTES);
+    if (!source.bytes.has_value()) {
+        if (source.refusedByCap) {
+            std::cerr << "aero_cooker: error: '" << args.inputPath << "' is " << source.size << " bytes, above the "
+                      << engine::editor::MAX_AUDIO_FILE_BYTES << "-byte audio read limit\n";
+        } else {
+            std::cerr << "aero_cooker: error: cannot read '" << args.inputPath << "': " << source.error << '\n';
+        }
+        return ExitCode::IoError;
+    }
+
+    // ---- 3. the decode ------------------------------------------------------------------------
+    // The caps handed in are the COOK's own, so every bound that governs how many SAMPLES exist is
+    // applied one step earlier and without allocating them first: channels, frames and -- since the
+    // code-review round -- their PRODUCT, which is the only one of the three that bounds bytes.
+    // Deliberately NOT every refusal the cook can make: cookAudio additionally bounds the sample RATE
+    // (both ends) and refuses a sample count that is not a whole number of frames. The rate bounds
+    // nothing that gets allocated, so pushing them down would buy nothing and would put a second copy
+    // of that rule a layer away from its owner; the divisibility check cannot fail for this input at
+    // all, because decodeAudioFile emits whole frames by construction.
+    const engine::editor::DecodedAudio decoded = engine::editor::decodeAudioFile(
+        leaf, asBytes(*source.bytes), engine::assets::MAX_COOKED_AUDIO_FRAMES,
+        engine::assets::MAX_COOKED_AUDIO_CHANNELS, engine::assets::MAX_COOKED_AUDIO_SAMPLES);
+    if (!decoded.error.empty()) {
+        std::cerr << "aero_cooker: error: cannot decode '" << leaf << "': " << decoded.error << '\n';
+        return ExitCode::CookError;
+    }
+
+    // ---- 4. the cook -------------------------------------------------------------------------
+    engine::assets::AudioCookInput cookInput;
+    cookInput.sourceGuid = args.guid;
+    cookInput.sampleRate = decoded.sampleRate;
+    cookInput.channels = decoded.channels;
+    cookInput.samples = decoded.samples;
+    const engine::assets::AudioCookResult cooked = engine::assets::cookAudio(cookInput);
+    // FIRST, so a refusal's warnings are not swallowed by the error path below. v1's cook emits none;
+    // the call is here because the shape is the house's and because the first warning it ever grows
+    // must not need this line added.
+    reportWarnings("cook", cooked.warnings, cooked.warningTotal);
+    if (cooked.status == engine::assets::AudioCookStatus::Refused) {
+        std::cerr << "aero_cooker: error: " << cooked.message << '\n';
+        return ExitCode::CookError;
+    }
+
+    // ---- 5. the write. ONLY NOW is the output path touched -----------------------------------
+    // The same primitive, the same reason and the same refusal to create a directory as all four
+    // older subcommands: writeTextFileAtomic is std::ios::binary | std::ios::trunc on BOTH sides, so a
+    // text-mode write cannot turn a 0x0A inside a sample into 0x0D 0x0A on exactly one lane. For a
+    // 16-bit PCM region that is not theoretical -- 0x0A is an extremely common low byte.
+    const std::string_view artifact(reinterpret_cast<const char*>(cooked.bytes.data()), cooked.bytes.size());
+    const std::string writeError = engine::editor::writeTextFileAtomic(args.outputPath, artifact);
+    if (!writeError.empty()) {
+        std::cerr << "aero_cooker: error: cannot write '" << args.outputPath << "': " << writeError << '\n';
+        return ExitCode::IoError;
+    }
+    return ExitCode::Success;
+}
+
 // ---- the animation subcommand (task 3.5.2) ------------------------------------------------------
 //
 // PLACED ABOVE runSkeleton, WHICH IS ITSELF ABOVE runTexture, and for the same reason runSkeleton's
@@ -898,10 +1013,11 @@ ExitCode runMain(int argc, char** argv) {
         return ExitCode::Success;
     }
     const Args& args = *parsed;
-    // The subcommand split. Task 3.3.2 added the first branch, task 3.5.1 the second and task 3.5.2
-    // the third; the mesh path below is still the same sequence it was at 3.3.1, with steps 2-5 now
-    // living in importModelForCook so the skeleton and animation paths can share them rather than
-    // copy them.
+    // The subcommand split. Task 3.3.2 added the first branch, task 3.5.1 the second, task 3.5.2 the
+    // third and task 3.7.1 the fourth; the mesh path below is still the same sequence it was at 3.3.1,
+    // with steps 2-5 now living in importModelForCook so the skeleton and animation paths can share
+    // them rather than copy them. The audio path shares none of it -- it reads a sound file, not a
+    // model -- so it has its own short sequence.
     if (args.subcommand == Subcommand::Texture) {
         return runTexture(args);
     }
@@ -910,6 +1026,9 @@ ExitCode runMain(int argc, char** argv) {
     }
     if (args.subcommand == Subcommand::Animation) {
         return runAnimation(args);
+    }
+    if (args.subcommand == Subcommand::Audio) {
+        return runAudio(args);
     }
 
     // ---- 2-5. the name check, the capped read, Structure, the external budget, Full ----------
