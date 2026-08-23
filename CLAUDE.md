@@ -46,9 +46,23 @@ clang-tidy clean **by exit code**; the manifest **untouched at 20 hash lines**. 
 22 modified / 0 deleted**. **No dependency lands**, and **the only link-line change anywhere is
 `aero::scene_audio` joining `aero_tests`** — a test target.
 
-**Its twelve-row validation page is written and NOT RUN**
-(`editor/validation/3.7.2-playback-api-components.md`). **Nothing in this task has ever made a sound on
-any lane**: CI compiles and runs every `SP`/`MX`/`SY`/`SA`/`DV` case on all three lanes — so the
+**Its twelve-row validation page is RUN on macOS (2026-08-23): 47 of 53 records measured and ticked,
+the 6 open ones every one a row needing ears or the editor opened, and no row failed**
+(`editor/validation/3.7.2-playback-api-components.md`). The headline readings: the rolloff matches the
+sample's own printed gains to **0.0001 dB**, the pan mirrors to **0.000001 dB**, the loop seam's max
+step **equals** the in-cycle max exactly, two dumps are **byte-identical**, and `--no-spatialize`
+leaves **0 of 192 000** frames differing against 187 659 for its spatialized twin. **`A38` is
+witnessed in fact for the first time** — a real `tracy-capture 0.13.1` session exports a plot named
+exactly `audio.voices` with 801 samples matching the sample's own callback count. **`A23` remains
+uncovered by anything, as predicted.** The pass found **three defects in the page's own procedures and
+one in a test, and none in the shipped code**: row 8 omits the `render()` pass without which
+`activeVoices` cannot reach 64; **R4's mix-cost prediction is refuted** — "a few µs at 64 voices"
+measured **213.10 µs**, ~50× the prediction, though still only **2.0 % of a 10.667 ms realtime block**
+and scaling cleanly at 3.336 µs/voice; row 4 cannot be measured by band filtering at 480/240 Hz
+(that method read 4.76 dB against a true 17.50 dB) and needs power subtraction; and **the two audio
+inspector cases never called `registerEditorReflection()`**, passing only because a neighbouring case
+did — run alone they read 0 fields against an expected 8 and 1. **Nothing in this task has ever been
+HEARD on any lane**: CI compiles and runs every `SP`/`MX`/`SY`/`SA`/`DV` case on all three lanes — so the
 spatializer, the mixer, the system and the bridge **are** cross-lane covered — but CI opens the **null
 backend only**. **LSan runs on the Linux Debug lane alone**, so a green `SY20` on macOS proves the
 teardown is *clean*, not that a leak is *absent*, and unlike 3.7.1 (whose leak lived in third-party
@@ -238,7 +252,12 @@ makes that page's Linux row matter more than most.
 
 ### Next
 
-**3.7.2 is complete in code and unmerged**; its twelve-row macOS pass is unrun. **3.7.3 (the
+**3.7.2 is MERGED (PR #89, merge commit `b398d17`, fourteen commits, all six checks green with
+`headSha == HEAD` asserted) and its twelve-row macOS pass is RUN** — 47 of 53 records measured, the 6
+open ones needing ears or the editor. **Windows and Linux rows are outstanding, and the Linux one
+matters more here than on most pages**: LSan runs on that lane alone, so the macOS row-11 zero proves
+the teardown is *clean*, not that a leak is *absent*, and unlike 3.7.1 everything this task allocates
+is first-party. **3.7.3 (the
 audio-boundary CI guard) is next** and closes Epic 3.7 — note that **the link line makes that guard
 green TODAY by construction; a guard proves it STAYS green**, which is a different job. See
 `docs/tasks/phase-3.md`.
