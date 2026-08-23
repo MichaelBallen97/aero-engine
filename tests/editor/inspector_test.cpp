@@ -757,6 +757,15 @@ TEST_CASE("inspector: engine::AudioSource's eight reflected fields all resolve (
     // ALL EIGHT FIELDS, never merely "a lookup did not crash" -- 3.5.2's D16 lesson stated as a rule.
     // F9 verified inspector_panel.cpp already renders Bool, Float and Guid, so this component needs
     // NO editor work and none may be added: /editor is byte-identical across this task.
+    //
+    // THE REGISTRATION CALL IS NOT OPTIONAL, and its absence is why this case first passed for the
+    // wrong reason: `entry.fields` is populated from the entt::meta registry, which only exists once
+    // registerEditorReflection() has run. Without this line the case still passed in the full binary,
+    // because the AnimationPlayer case above happens to call it and the registry is global -- so the
+    // assertion was riding a neighbour's side effect and read 0 fields the moment it was run alone.
+    // Every case that reads reflected fields calls this itself.
+    engine::editor::registerEditorReflection();
+
     World world;
     const ComponentTypeId id = world.findComponentType("engine::AudioSource");
     REQUIRE(id.valid());
@@ -818,6 +827,10 @@ TEST_CASE("inspector: engine::AudioSource's eight reflected fields all resolve (
 }
 
 TEST_CASE("inspector: engine::AudioListener's one reflected field resolves (task 3.7.2)") {
+    // See the note in the AudioSource case above: without this call the assertions ride whichever
+    // neighbouring case registered the meta first, and read 0 fields when run alone.
+    engine::editor::registerEditorReflection();
+
     World world;
     const ComponentTypeId id = world.findComponentType("engine::AudioListener");
     REQUIRE(id.valid());
