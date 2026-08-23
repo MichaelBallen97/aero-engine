@@ -1197,20 +1197,27 @@ elseif(CASE STREQUAL "no_skins_gltf")
 
 # --- task 3.3.3: the frozen cook-determinism manifest ---------------------------------------------
 #
-# Four cases, one shape (task 3.5.1 added the third, task 3.5.2 the fourth). Each cooks its tuples
-# ONCE through the real binary and requires the artifact's SHA-256 to equal the line
-# tests/cooker/determinism.sha256 records for that name. Because the cooker takes no gate flag, all
-# four register in all three build configurations, and because CI runs ctest in Debug and Release on
-# three lanes, the manifest is checked TWELVE times per push: all twelve green means every lane and
-# both configurations equal the manifest, therefore they equal each other.
+# FIVE cases, one shape (task 3.5.1 added the third, task 3.5.2 the fourth, task 3.7.1 the fifth).
+# Each cooks its tuples ONCE through the real binary and requires the artifact's SHA-256 to equal the
+# line tests/cooker/determinism.sha256 records for that name. Because the cooker takes no gate flag,
+# all five register in all three build configurations, and because CI runs ctest in Debug and Release
+# on three lanes, the five arms run 5 x 3 x 2 = THIRTY times per push -- which is SIX complete checks
+# of all twenty lines, one per lane-and-configuration. All thirty green means every lane and both
+# configurations equal the manifest, therefore they equal each other.
 #
-# A FOURTH ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
+# EVERY NUMBER IN THIS BLOCK IS RE-DERIVED WHEN AN ARM IS ADDED, NEVER INCREMENTED. Task 3.7.1's
+# code-review round found this whole header still reading "four" and "eighteen" and "TWELVE" while a
+# fifth arm sat directly beneath it -- and the twelve in particular is a PRODUCT (it was 2 arms x 3
+# lanes x 2 configurations when task 3.3.3 wrote it), so incrementing it would have been wrong even
+# if somebody had noticed the word.
+#
+# A FIFTH ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
 # arm-level SUBCOMMAND, and the KIND_PREFIX orphan check below ("every manifest line of THIS case's
 # kind was actually cooked") stays sound only while every line's prefix is claimed by exactly one arm.
 #
 # The artifacts land in ${WORK_DIR}/artifacts/ and the CI job uploads exactly that directory. The
 # perturbed re-cook lands in ${WORK_DIR}/perturbed/ so it cannot enter the upload set, which is
-# eighteen files across the four cases and nothing else.
+# twenty files across the five cases and nothing else.
 
 elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest"
        OR CASE STREQUAL "skeleton_golden_manifest" OR CASE STREQUAL "animation_golden_manifest"

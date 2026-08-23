@@ -373,12 +373,16 @@ Genuinely asymmetric, and measured rather than assumed — this is the part that
 
 ## Tests
 
-`tests/cooker/run_case.cmake` drives the real binary through 68 `cooker.*` ctest entries — 24 for
-`mesh`, 15 for `texture`, 10 for `skeleton`, 10 for `animation` and 9 for `audio` — argv in, exit code
-plus files out. Four of them, `cooker.golden_manifest`, `cooker.texture_golden_manifest`,
-`cooker.skeleton_golden_manifest` and `cooker.animation_golden_manifest`, cook a fixed
-eighteen-artifact matrix
-and compare every byte against the frozen `tests/cooker/determinism.sha256` (task 3.3.3). A CLI's honest test is its process
+`tests/cooker/run_case.cmake` drives the real binary through 70 `cooker.*` ctest entries — 24 for
+`mesh`, 15 for `texture`, 10 for `skeleton`, 10 for `animation` and 11 for `audio` — argv in, exit
+code plus files out. **Five** of them, `cooker.golden_manifest`, `cooker.texture_golden_manifest`,
+`cooker.skeleton_golden_manifest`, `cooker.animation_golden_manifest` and
+`cooker.audio_golden_manifest`, cook a fixed **twenty-artifact** matrix and compare every byte against
+the frozen `tests/cooker/determinism.sha256` (task 3.3.3). The eleventh audio entry,
+`cooker.audio_lossy_digests`, is the one case in the whole list that asserts **no expected value at
+all**: it cooks the mp3 and the ogg, checks exit 0 and a non-empty artifact, and *prints* each SHA-256
+so three CI logs from one push measure whether the lossy decoders agree across lanes. It must never
+assert a digest. A CLI's honest test is its process
 boundary, so there is no doctest translation unit for the tool and no tool code links into
 `aero_tests`; the pure halves it is built from (`cookMesh`, `parseCookedMesh`, `meshCookPrimitives`,
 `cookTexture`, `parseCookedTexture`, `decodeImageRgba8`, `chooseTextureFormat`, `cookSkeleton`,
