@@ -240,12 +240,27 @@ Subtasks:
 - Clip asset + loader through the VFS
 
 ### 3.7.2 Playback API + components · P0 · M · depends: 3.7.1
+_(Sized up from M to L, recorded in the spec before implementation rather than discovered mid-task.
+"Positioned sound from a scene" is four layers, not one: a realtime seam on `platform::AudioDevice`
+expressed entirely in engine types, the voice pool/mixer/spatializer in `engine/audio`, two reflected
+components in `engine/scene` plus their serialization through all five generation sites, and a new
+`engine/scene_audio` bridge target — the `scene_render` shape one layer over. A phase whose gate word
+is *audible* cannot be satisfied inside any one of them.)_
 **Goal:** the public audio surface (ADR-006): engine types only.
 **Deliverable:** play/stop/volume/pitch API; reflected `AudioSource`/`AudioListener` components; basic 3D panning via the miniaudio spatializer.
 Subtasks:
 - `engine::audio` play/stop/volume/pitch
 - `AudioSource` / `AudioListener` components (reflected)
 - Basic 3D spatialization (position-driven pan/attenuation)
+
+**Recorded deviation from the deliverable text above.** The spatializer that ships is
+`engine/audio/spatial.{hpp,cpp}` — first-party pure math (a linear rolloff and a constant-power
+azimuth pan), **not** `ma_spatializer`. `ma_spatializer` **is** available at the pinned miniaudio
+0.11.25, so this is a choice rather than a workaround; the deciding ground is that `miniaudio.h` is
+`PRIVATE` to `aero_platform`, so using it would put the voice table, the mixer and the listener in
+`engine/platform` beside `miniaudio.h` — inverting ADR-006's own layer diagram and voiding the
+no-vcpkg property `engine/audio/CMakeLists.txt` spends a paragraph establishing and 3.7.3 exists to
+guard. Full reasoning in `docs/10-engineering-log.md`'s 3.7.2 entry.
 
 ### 3.7.3 Audio-boundary CI guard · P1 · S · depends: 3.7.2
 **Goal:** the docs/04 audio guard gets an owner: no miniaudio type in public headers.
