@@ -10,6 +10,8 @@
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/scene_format.hpp>
 #include <aero/scene/animation_player.hpp>
+#include <aero/scene/audio_listener.hpp>  // task 3.7.2
+#include <aero/scene/audio_source.hpp>    // task 3.7.2
 #include <aero/scene/camera.hpp>
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
@@ -612,7 +614,7 @@ TEST_CASE("scene_serialize: the committed samples/phase-1-scene/scene.json (AC-6
 TEST_CASE("scene_serialize: dispatch/registration parity (AC-3/D8)") {
     const World world;
     const std::span<const std::string_view> names = builtinComponentNames();
-    CHECK(names.size() == 6);
+    CHECK(names.size() == 8);  // task 3.7.2: AudioSource and AudioListener are the 7th and 8th
     CHECK(names.size() == world.componentTypeCount());
     for (const std::string_view name : names) {
         CHECK(world.findComponentType(name).valid());
@@ -711,9 +713,9 @@ TEST_CASE("scene_golden: full.scene.json is a byte-exact fixpoint (G2/AC-1/AC-2/
     World world;
     const SceneLoadReport report = loadScene(world, doc);
     CHECK(report.entitiesCreated == 8);
-    CHECK(report.componentsAttached == 11);
-    CHECK(report.componentsSkipped == 0);  // non-zero here means the fixture named a type this build
-    CHECK(report.componentsFailed == 0);   // cannot resolve -- i.e. the fixture degraded (E2)
+    CHECK(report.componentsAttached == 13);  // task 3.7.2: entity 8 gained AudioSource + AudioListener
+    CHECK(report.componentsSkipped == 0);    // non-zero here means the fixture named a type this build
+    CHECK(report.componentsFailed == 0);     // cannot resolve -- i.e. the fixture degraded (E2)
 
     const std::string actual = saveWorldText(world);
     INFO(scene_golden::describeMismatch(bytes, actual));
@@ -839,19 +841,19 @@ TEST_CASE("scene_golden: full.scene.json still contains everything it is for (G5
         }
     }
 
-    CHECK(emptyName == 1);        // id 5, the bare entity -- emits exactly `{ "id": 5 }`
-    CHECK(emptyComponents == 2);  // id 5, and id 7 (a name-and-parent-only record)
-    CHECK(forwardParent == 1);    // id 7 -> 8, the only forward reference in the tree's fixtures
-    CHECK(twoComponents == 5);    // ids 1, 2, 3, 4, 6
-    CHECK(grandParented == 1);    // id 4 -> 3 -> 2, the three-level chain
-    CHECK(namedProp == 2);        // duplicate names are legal, unvalidated and preserved (E4)
-    CHECK(totalComponents == 11);
+    CHECK(emptyName == 1);         // id 5, the bare entity -- emits exactly `{ "id": 5 }`
+    CHECK(emptyComponents == 2);   // id 5, and id 7 (a name-and-parent-only record)
+    CHECK(forwardParent == 1);     // id 7 -> 8, the only forward reference in the tree's fixtures
+    CHECK(twoComponents == 5);     // ids 1, 2, 3, 4, 6
+    CHECK(grandParented == 1);     // id 4 -> 3 -> 2, the three-level chain
+    CHECK(namedProp == 2);         // duplicate names are legal, unvalidated and preserved (E4)
+    CHECK(totalComponents == 13);  // task 3.7.2: entity 8 gained AudioSource and AudioListener
 
-    // All five built-in type names appear somewhere in the file. A sixth built-in arriving later
-    // reddens G8, not this -- deliberately: this asks "did the fixture lose one?", G8 asks "did the
-    // registry change?".
+    // EVERY built-in type name appears somewhere in the file. A new built-in arriving later reddens
+    // G8, not this -- deliberately: this asks "did the fixture lose one?", G8 asks "did the registry
+    // change?".
     const std::span<const std::string_view> builtins = builtinComponentNames();
-    REQUIRE(builtins.size() == 6);
+    REQUIRE(builtins.size() == 8);
     for (const std::string_view name : builtins) {
         INFO(std::string{name});
         CHECK(std::find(typeNames.begin(), typeNames.end(), std::string{name}) != typeNames.end());
@@ -1029,16 +1031,18 @@ TEST_CASE("scene_golden: registry order is pinned, and the fixture obeys it (G8/
     // order must be a SUBSEQUENCE of the registry order. A writer that sorted alphabetically, or a
     // BUILTINS table reordered, breaks one or both halves.
     const std::span<const std::string_view> builtins = builtinComponentNames();
-    REQUIRE(builtins.size() == 6);
+    REQUIRE(builtins.size() == 8);
     CHECK(builtins[0] == "engine::Transform");
     CHECK(builtins[1] == "engine::Camera");
     CHECK(builtins[2] == "engine::DirectionalLight");
     CHECK(builtins[3] == "engine::PointLight");
     CHECK(builtins[4] == "engine::MeshRenderer");
     CHECK(builtins[5] == "engine::AnimationPlayer");
-    // A sixth built-in reddens exactly here, by design (E12). The correct response is to regenerate
+    CHECK(builtins[6] == "engine::AudioSource");    // task 3.7.2
+    CHECK(builtins[7] == "engine::AudioListener");  // task 3.7.2
+    // A new built-in reddens exactly here, by design (E12). The correct response is to regenerate
     // full.scene.json to exercise the new type and update this list in the SAME pull request -- not
-    // to relax the assertion.
+    // to relax the assertion. Task 3.7.2 followed it to the letter, twice over.
     const World fresh;
     CHECK(builtins.size() == fresh.componentTypeCount());
 
@@ -1061,7 +1065,7 @@ TEST_CASE("scene_golden: registry order is pinned, and the fixture obeys it (G8/
         }
     }
     CHECK_MESSAGE(offenders.empty(), offenders);
-    CHECK(seen == 11);  // ANTI-VACUITY: the loop above must actually have inspected eleven components
+    CHECK(seen == 13);  // ANTI-VACUITY: the loop above must actually have inspected thirteen components
 }
 
 TEST_CASE("scene_golden: the committed sample scene is still canonical (G9/AC-13/D9)") {
@@ -1186,6 +1190,103 @@ TEST_CASE("scene_serialize: AnimationPlayer round-trips all four fields (G11/AC-
     CHECK(saveWorldText(reloaded) == text);
 }
 
+TEST_CASE("scene_serialize: AudioSource round-trips all eight fields, Guid included (task 3.7.2)") {
+    // The SEVENTH built-in, through the real saveWorldText/loadSceneText pair rather than through the
+    // generated serializer alone: a component that reads and writes perfectly but is missing from
+    // BUILTINS passes every reflect-gen case and fails exactly here. That is the "registered,
+    // inspectable, editable and NOT SAVED" failure mode, and it is why Step 8 is one commit.
+    World world;
+    const Entity e = world.create();
+    const Guid clip{0x3720000000000000ULL, 0x0000000000000001ULL};
+    world.add<AudioSource>(e, AudioSource{.clip = clip,
+                                          .volume = 0.8F,
+                                          .pitch = 1.25F,
+                                          .minDistance = 2.0F,
+                                          .maxDistance = 30.0F,
+                                          .loop = true,
+                                          .playing = false,
+                                          .spatialize = true});
+
+    const std::string text = saveWorldText(world);
+    // All eight keys are emitted. A bool or a Guid that silently vanished would still round-trip
+    // through a reader that leaves missing keys untouched, so THE BYTES are asserted too.
+    CHECK(text.find("\"engine::AudioSource\"") != std::string::npos);
+    // The wire form is 32 LOWERCASE hex, and this value is deliberately NON-NIL: with an all-nil Guid
+    // a test cannot see an uppercasing writer at all, because toupper('0') == '0' (3.1.5's S2).
+    CHECK(text.find("\"clip\": \"37200000000000000000000000000001\"") != std::string::npos);
+    CHECK(text.find("\"volume\": 0.8") != std::string::npos);
+    CHECK(text.find("\"pitch\": 1.25") != std::string::npos);
+    CHECK(text.find("\"minDistance\": 2") != std::string::npos);
+    CHECK(text.find("\"maxDistance\": 30") != std::string::npos);
+    CHECK(text.find("\"loop\": true") != std::string::npos);
+    CHECK(text.find("\"playing\": false") != std::string::npos);
+    CHECK(text.find("\"spatialize\": true") != std::string::npos);
+
+    World reloaded;
+    const SceneLoadResult result = loadSceneText(reloaded, text);
+    REQUIRE_FALSE(result.error.has_value());
+    CHECK(result.report.componentsAttached == 1);
+    CHECK(result.report.componentsSkipped == 0);
+    CHECK(result.report.componentsFailed == 0);
+
+    const std::vector<Entity> entities = collectEntities(reloaded);
+    REQUIRE(entities.size() == 1);
+    const AudioSource* source = reloaded.get<AudioSource>(entities[0]);
+    REQUIRE(source != nullptr);
+    CHECK(source->clip == clip);
+    CHECK(source->volume == 0.8F);
+    CHECK(source->pitch == 1.25F);
+    CHECK(source->minDistance == 2.0F);
+    CHECK(source->maxDistance == 30.0F);
+    CHECK(source->loop);
+    CHECK_FALSE(source->playing);
+    CHECK(source->spatialize);
+
+    CHECK(saveWorldText(reloaded) == text);  // canonical fixpoint
+}
+
+TEST_CASE("scene_serialize: AudioListener round-trips its one field (task 3.7.2)") {
+    World world;
+    const Entity e = world.create();
+    world.add<AudioListener>(e, AudioListener{.volume = 0.75F});
+
+    const std::string text = saveWorldText(world);
+    CHECK(text.find("\"engine::AudioListener\"") != std::string::npos);
+    CHECK(text.find("\"volume\": 0.75") != std::string::npos);
+
+    World reloaded;
+    const SceneLoadResult result = loadSceneText(reloaded, text);
+    REQUIRE_FALSE(result.error.has_value());
+    CHECK(result.report.componentsAttached == 1);
+
+    const std::vector<Entity> entities = collectEntities(reloaded);
+    REQUIRE(entities.size() == 1);
+    const AudioListener* listener = reloaded.get<AudioListener>(entities[0]);
+    REQUIRE(listener != nullptr);
+    CHECK(listener->volume == 0.75F);
+    CHECK(saveWorldText(reloaded) == text);
+}
+
+TEST_CASE("scene_serialize: both audio components emit in REGISTRATION order on one entity (3.7.2)") {
+    // The dispatch-order pin, extended to eight: save emission order is BUILTINS' declaration order,
+    // so Transform (0) must precede AudioSource (6), which must precede AudioListener (7).
+    World world;
+    const Entity e = world.create();
+    world.add<Transform>(e, Transform{});
+    world.add<AudioListener>(e, AudioListener{});  // ADDED FIRST, deliberately
+    world.add<AudioSource>(e, AudioSource{});
+
+    const std::string text = saveWorldText(world);
+    const std::size_t transformAt = text.find("\"engine::Transform\"");
+    const std::size_t sourceAt = text.find("\"engine::AudioSource\"");
+    const std::size_t listenerAt = text.find("\"engine::AudioListener\"");
+    REQUIRE(transformAt != std::string::npos);
+    REQUIRE(sourceAt != std::string::npos);
+    REQUIRE(listenerAt != std::string::npos);
+    CHECK(transformAt < sourceAt);
+    CHECK(sourceAt < listenerAt);  // registration order, NOT insertion order and NOT alphabetical
+}
+
 TEST_CASE("scene_serialize: a missing key defaults and an extra key is ignored (G12/2.3)") {
     // docs/09 section 2.3's two evolution rules, exercised on the first built-in that HAS a bool --
     // which is also what the D5 reversal (appending a clip reference here later) depends on.
@@ -1226,4 +1327,190 @@ TEST_CASE("scene_serialize: a missing key defaults and an extra key is ignored (
     const std::string resaved = saveWorldText(world);
     CHECK(resaved.find("\"clip\"") == std::string::npos);
     CHECK(resaved.find("\"loop\": true") != std::string::npos);
+}
+
+TEST_CASE("scene_serialize: section 2.3's tolerance rules on the AudioSource payload (task 3.7.2)") {
+    // The SAME three rules G12 pins for AnimationPlayer, on the first built-in that carries a Guid --
+    // the one non-numeric, non-bool field kind in either new component, and therefore the one whose
+    // wrong-kind behaviour is worth its own arm.
+    //
+    // THESE ROWS LIVE HERE RATHER THAN IN tests/scene_format_test.cpp, which the plan named: that
+    // file is a TU of aero_tests and tests the format at the DOM level with no component knowledge at
+    // all, and reaching a generated serializer from it would need aero::scene_serialize on
+    // aero_tests' link line -- a link-line change this task does not make. G12's own file is where
+    // every row of this shape already lives.
+    SUBCASE("a MISSING key is silent and leaves the field at its default") {
+        constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::AudioSource": {
+          "volume": 0.25,
+          "playing": false
+        }
+      }
+    }
+  ]
+}
+)";
+        World world;
+        const SceneLoadResult result = loadSceneText(world, TEXT);
+        REQUIRE_FALSE(result.error.has_value());
+        CHECK(result.report.componentsAttached == 1);
+        CHECK(result.report.componentsFailed == 0);
+
+        const std::vector<Entity> entities = collectEntities(world);
+        REQUIRE(entities.size() == 1);
+        const AudioSource* source = world.get<AudioSource>(entities[0]);
+        REQUIRE(source != nullptr);
+        CHECK(source->volume == 0.25F);
+        CHECK_FALSE(source->playing);
+        CHECK_FALSE(source->clip.valid());  // missing -> nil, silently
+        CHECK(source->pitch == 1.0F);       // missing -> the struct's default
+        CHECK(source->minDistance == 1.0F);
+        CHECK(source->maxDistance == 50.0F);
+        CHECK_FALSE(source->loop);
+        CHECK(source->spatialize);
+    }
+
+    SUBCASE("an EXTRA key is dropped rather than carried, and is never a FAILED field") {
+        constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::AudioSource": {
+          "volume": 0.5,
+          "rolloffMode": "logarithmic"
+        }
+      }
+    }
+  ]
+}
+)";
+        World world;
+        const SceneLoadResult result = loadSceneText(world, TEXT);
+        REQUIRE_FALSE(result.error.has_value());
+        CHECK(result.report.componentsAttached == 1);
+        CHECK(result.report.componentsFailed == 0);  // an unknown key WARNs; it never FAILS a field
+
+        const std::string resaved = saveWorldText(world);
+        CHECK(resaved.find("\"rolloffMode\"") == std::string::npos);
+        CHECK(resaved.find("\"volume\": 0.5") != std::string::npos);
+    }
+
+    SUBCASE("a WRONG-KIND Guid key leaves the field nil rather than half-parsed") {
+        constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::AudioSource": {
+          "clip": 12345,
+          "volume": 0.5
+        }
+      }
+    }
+  ]
+}
+)";
+        World world;
+        const SceneLoadResult result = loadSceneText(world, TEXT);
+        REQUIRE_FALSE(result.error.has_value());
+
+        const std::vector<Entity> entities = collectEntities(world);
+        REQUIRE(entities.size() == 1);
+        const AudioSource* source = world.get<AudioSource>(entities[0]);
+        REQUIRE(source != nullptr);
+        CHECK_FALSE(source->clip.valid());
+    }
+
+    SUBCASE("a MALFORMED Guid STRING is refused too -- 31 hex characters, not 32") {
+        // The failure mode the fixture's own digit count guards against: a 31-character Guid LOOKS
+        // right and parses to nil, which would silently defeat the point of a non-nil golden value.
+        constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::AudioSource": {
+          "clip": "3720000000000000000000000000001"
+        }
+      }
+    }
+  ]
+}
+)";
+        World world;
+        const SceneLoadResult result = loadSceneText(world, TEXT);
+        REQUIRE_FALSE(result.error.has_value());
+
+        const std::vector<Entity> entities = collectEntities(world);
+        REQUIRE(entities.size() == 1);
+        const AudioSource* source = world.get<AudioSource>(entities[0]);
+        REQUIRE(source != nullptr);
+        CHECK_FALSE(source->clip.valid());
+    }
+}
+
+TEST_CASE("scene_serialize: section 2.3's tolerance rules on the AudioListener payload (task 3.7.2)") {
+    SUBCASE("a MISSING key leaves volume at its default") {
+        constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::AudioListener": {}
+      }
+    }
+  ]
+}
+)";
+        World world;
+        const SceneLoadResult result = loadSceneText(world, TEXT);
+        REQUIRE_FALSE(result.error.has_value());
+        CHECK(result.report.componentsAttached == 1);
+
+        const std::vector<Entity> entities = collectEntities(world);
+        REQUIRE(entities.size() == 1);
+        const AudioListener* listener = world.get<AudioListener>(entities[0]);
+        REQUIRE(listener != nullptr);
+        CHECK(listener->volume == 1.0F);
+    }
+
+    SUBCASE("an EXTRA key is dropped and never fails the component") {
+        constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::AudioListener": {
+          "volume": 0.5,
+          "position": { "x": 1, "y": 2, "z": 3 }
+        }
+      }
+    }
+  ]
+}
+)";
+        World world;
+        const SceneLoadResult result = loadSceneText(world, TEXT);
+        REQUIRE_FALSE(result.error.has_value());
+        CHECK(result.report.componentsAttached == 1);
+        CHECK(result.report.componentsFailed == 0);
+
+        const std::vector<Entity> entities = collectEntities(world);
+        REQUIRE(entities.size() == 1);
+        const AudioListener* listener = world.get<AudioListener>(entities[0]);
+        REQUIRE(listener != nullptr);
+        CHECK(listener->volume == 0.5F);
+        CHECK(saveWorldText(world).find("\"position\"") == std::string::npos);
+    }
 }

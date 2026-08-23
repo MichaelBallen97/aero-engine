@@ -8,6 +8,8 @@
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/json_writer.hpp>
 #include <aero/scene/animation_player.hpp>
+#include <aero/scene/audio_listener.hpp>
+#include <aero/scene/audio_source.hpp>
 #include <aero/scene/camera.hpp>
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
@@ -26,4 +28,8 @@ void aeroWriteJson(engine::JsonWriter&, const MeshRenderer&);
 bool aeroReadJson(const engine::JsonValue&, MeshRenderer&);
 void aeroWriteJson(engine::JsonWriter&, const AnimationPlayer&);  // task 3.5.2
 bool aeroReadJson(const engine::JsonValue&, AnimationPlayer&);
+void aeroWriteJson(engine::JsonWriter&, const AudioSource&);  // task 3.7.2
+bool aeroReadJson(const engine::JsonValue&, AudioSource&);
+void aeroWriteJson(engine::JsonWriter&, const AudioListener&);  // task 3.7.2
+bool aeroReadJson(const engine::JsonValue&, AudioListener&);
 }  // namespace engine

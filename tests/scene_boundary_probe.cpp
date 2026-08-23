@@ -157,3 +157,20 @@ static_assert(noexcept(constWorld().componentTypeAt(std::size_t{0})));
 
 static_assert(std::is_same_v<decltype(mutableWorld().copyComponent(NULL_TYPE_ID, NULL_ENTITY, NULL_ENTITY)), bool>);
 static_assert(!noexcept(mutableWorld().copyComponent(NULL_TYPE_ID, NULL_ENTITY, NULL_ENTITY)));
+
+// ---- task 3.7.2 ----------------------------------------------------------------------------------
+// The seventh and eighth built-ins, reached THROUGH <aero/scene/scene.hpp> (the only include this
+// file has) on a link line that is still exactly `aero::scene`. That is what makes these a statement
+// about the PUBLIC scene surface: this TU cannot see engine/audio at all, so nothing about a voice, a
+// mixer or a device can have leaked into either component.
+static_assert(std::is_trivially_copyable_v<engine::AudioSource>);
+static_assert(std::is_standard_layout_v<engine::AudioSource>);
+static_assert(std::is_aggregate_v<engine::AudioSource>);
+// 16 (Guid clip) + 4 * 4 (four floats) + 3 * 1 (three bools) = 35, rounded to 40 by Guid's 8-align.
+static_assert(sizeof(engine::AudioSource) == 40);
+static_assert(alignof(engine::AudioSource) == 8);
+
+static_assert(std::is_trivially_copyable_v<engine::AudioListener>);
+static_assert(std::is_standard_layout_v<engine::AudioListener>);
+static_assert(std::is_aggregate_v<engine::AudioListener>);
+static_assert(sizeof(engine::AudioListener) == sizeof(float));  // one field, no padding
