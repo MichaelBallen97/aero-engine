@@ -12379,3 +12379,188 @@ entirely by placing both components on **entity 8** of `full.scene.json`, the on
 nothing but the two totals. **No dependency of any kind lands**, and **the only `target_link_libraries`
 change anywhere is `aero::scene_audio` joining `aero_tests`** — a **test** target, recorded as such
 rather than glossed.
+
+### Task 3.7.3 — Audio-boundary CI guard (Epic 3.7) — CLOSES Epic 3.7
+
+**Branch:** `feat/3.7.3-audio-boundary-ci-guard`, cut from `main @ dfa58bd`. Eight commits: a docs
+amendment first (`f5b5d53`), then `73f3991` (the audio guard), `2d63028` (the sixth probe + its
+registry block), `5cb1dbf` (the audio guard's e2e), `0e71781` (the probes guard), `a24bb70` (the
+probes guard's e2e), `931404d` (the two lint steps), and this closing docs sweep. No sibling task
+merged between the spec, the plan and the build, so every whole-tree count here is a single-tree
+reading. **Zero engine C++ ships** — the only new translation unit is a compile-time probe with no
+`TEST_CASE`, and the only `engine/**` edits are comments.
+
+**The subtask sentence was already implemented, and had been since 0.3.3.** `docs/tasks/phase-3.md`
+said *"public-header scan for miniaudio tokens"*; `check-platform-boundary.sh` scans
+`HEADER_GLOB='engine/*/include/*'` — every engine subsystem — rejects `<miniaudio.h>` and every
+code-level `ma_` token there, and its self-test 1b derives the subsystem set from the tree, so `audio`
+and `scene_audio` joined both sides automatically the moment 3.7.1's and 3.7.2's headers were tracked.
+A second header-only guard would have re-implemented a live one with a narrower glob and a more
+specific error string. **What had no owner was a different property**, and four places in the tree
+handed it to this task *by name*: `engine/audio/CMakeLists.txt`'s own header ("Task 3.7.3 is going to
+be asked to guard exactly this"), this log's 3.7.1 handoff table, `docs/08`'s R12, and
+`.claude/rules/cooked-assets.md`. So the recorded deviation is the 0.4.5-D1 species: the literal
+sentence is **subsumed**, and what ships is the no-vcpkg property plus a source-level token ban. The
+size moved **S → M** in the spec, before implementation rather than during it.
+
+**What shipped, in four artifacts plus wiring.** `.github/scripts/check-audio-boundary.sh` — **prong
+A** over `engine/assets`, `engine/audio` and `engine/scene_audio`'s CMakeLists (1a: none of
+`find_package`/`find_path`/`find_library`/`find_file`/`find_program`/`pkg_check_modules`/`pkg_search_module`/`include_directories`/`link_directories`/`link_libraries`/`add_subdirectory`,
+case-insensitively, on comment-stripped text; 1b: every `target_link_libraries` token is an `aero::`
+engine target, **including inside a multi-line call**, with `aero::scene_internal` refused by name;
+1c: every `target_include_directories` token is a target, a visibility keyword, or a
+`${CMAKE_CURRENT_SOURCE_DIR}`-rooted path; 1d: no **other** tracked CMake file carries a
+cross-directory `target_link_libraries` naming one of the three) — and **prong B**, a miniaudio token
+ban over both audio roots with **sources included**. `.github/scripts/check-boundary-probes.sh` —
+every `aero_*_boundary_probe` links exactly one `aero::` library, `PRIVATE`, with the probe set
+**derived** from `tests/CMakeLists.txt` rather than enumerated. `tests/audio_boundary_probe.cpp` — the
+sixth probe, 34 assertions across all four public audio headers, no named entity, no `TEST_CASE`, no
+`#if` of any kind. And two hermetic `cmake -P` ctest drivers.
+
+**THE MEASUREMENT THIS TASK EXISTS TO HAVE MADE, and the sentence it falsifies.** `vcpkg_installed`
+**is** on `engine/audio/src/mixer.cpp`'s compile line in `macos-release` and **is not** in
+`macos-debug` — read from both `compile_commands.json`, re-verified at implementation time. The cause
+is by-design wiring, not a bug: all three vcpkg-free targets link `aero::profiling` `PRIVATE`, and
+`cmake/profiling.cmake` makes that an `INTERFACE` library carrying `Tracy::TracyClient` — and with it
+the whole shared per-triplet include root — whenever `AERO_ENABLE_PROFILING=ON`, i.e. in every
+`*-release` preset. `PRIVATE` keeps it off **consumers'** compile lines, which is why all five older
+probes read vcpkg-free in Release (measured: all five `False`), but **a target's own `PRIVATE` usage
+requirements apply to its own compile line**. So the celebrated hard-compile-error property — "verified
+in both directions at 3.7.2's gate" — is a **profiling-OFF-configuration property**, and a stray
+`#include <miniaudio.h>` inside `engine/audio` compiles CLEAN in Release. `aero_audio_boundary_probe`
+links `aero::audio` alone, hence no profiling, so its own line is vcpkg-free in every preset: it is
+**the only compile-time enforcement the audio layer has that survives Release**. Proven through the
+real CMake target rather than a raw `c++ -I…` run — a seeded `#include <miniaudio.h>` fails
+`fatal error: 'miniaudio.h' file not found` in **both** presets, and reverting restores green in both.
+`docs/03`, `docs/08`, `CLAUDE.md`, `engine/audio/CMakeLists.txt` and `.claude/rules/cooked-assets.md`
+were all corrected to say *in which configurations*; that is now a standing rule, not a task note.
+
+**Two decisions widened the task beyond its sentence, both taken deliberately and both kept.**
+**D2 — `engine/assets` is inside prong A**, not just the two audio targets: the property is one
+invariant across three files carrying the same prohibition header and the same voiding vector, and
+`engine/assets` holds half the audio pipeline besides. Cost of inclusion, one array element; cost of
+exclusion, a permanent manual step on a check no CI runs. **D3 — `check-boundary-probes.sh` ships
+here**, taking a handoff 0.2.3 opened and 0.4.5 §7.1 routed to this task by name after it had been
+declined twice. The justification is not generic infrastructure: the D4 measurement above makes *this
+task's own probe* the only all-configuration enforcement audio has, so if its link line silently grows,
+audio's compile-time half is gone in every configuration and nothing anywhere says so. Derivation
+means it costs nothing to maintain — `script`/quickjs's probe is covered on arrival with zero edits.
+
+**The seed matrices are ctest STAGES, not plan prose, and the reason is structural:** `docs/plans/`
+and `docs/specs/` are gitignored, so a sabotage proof that lives only there **ceases to exist at
+merge** — exactly the reasoning that produced `project-no-delete.no_delete_e2e`.
+`audio-boundary.guard_e2e` runs **S0–S10 + X1–X4 + a restored-tree stage, 16 in all**;
+`boundary-probes.probe_links_e2e` runs **P0–P9 + a restored stage, 11**. Every stage asserts an
+**exact** exit code rather than a boolean; every seed is written, read back, **and** asserted present
+in the scratch index before any verdict is trusted. All 27 stages were additionally run through an
+instrumented copy of each driver that printed `expected=` and `observed=` per stage, so every code was
+**seen** rather than inferred: 0 · 1×9 · 0 · 2×4 · 0 for the audio table, 0 · 1×6 · 2 · 2 · 1 · 0 for
+the probes table. **S8 is the load-bearing one** — its seed lives under `engine/scene_audio/` and it is
+the only hermetic proof the second root is *walked* rather than *named*, the include_scan stage-3
+lesson applied one guard later. Three real-tree in-situ proofs were run as well, since the guards
+behave differently against a 53-file sweep than a 4-file scratch: a `find_package` into
+`engine/audio/CMakeLists.txt` → exit 1 at `:45`; `ma_device` into `engine/audio/src/mixer.cpp` → exit 1
+at `:394`; `doctest::doctest` onto the audio probe's link line → exit 1 at `tests/CMakeLists.txt:654`.
+Each seed was proved landed with `git diff --cached` first and each revert used
+`git checkout HEAD -- <file>`, **not** `git checkout -- <file>`: with the seed staged, the plain form
+restores the working tree from the index, which holds the seed, and reverts nothing.
+
+**THE META-PROOF, RUN FOUR WAYS, because a passing e2e proves nothing until it has been watched to
+fail.** (1) Narrowing `AUDIO_ROOTS` to `('engine/audio')` reddens **S8 alone** — and the guard stays
+**exit 0 on the real tree**, its banner still naming both roots while `scanned` silently drops 11 → 9.
+(2) Silencing Part 1c reddens **S5 alone**, likewise exit 0 on the real tree. (3) Silencing the probes
+guard's second-TLL-call arm reddens **P2 alone**, with its own self-tests still passing and the real
+tree still green — the truest silent-rot shape of the four. (4) Gutting `check_tokens` to `{ :; }`
+reddens **P0**, caught by the guard's own self-test 2 rather than by a stage. Plus **X5/X6**, run
+against the shipped script: stripping `BANNED_CMAKE_RE`'s leading `(^|[^a-zA-Z0-9_])` or
+`CROSSDIR_TLL_RE`'s trailing `([^a-zA-Z0-9_]|$)` is an **exit 2 on a clean tree** — a refusal to
+self-verify, not a red scan — and each reddens S0 accordingly. Every break was proved landed by
+`git diff` before its verdict was believed, and one X6 attempt **failed to land** because shell
+quoting mangled the pattern; the `assert t.count(old)==1` in the seeding script caught it, and the
+first (false) reading was a clean green.
+
+**TWO THINGS THE PLAN DID NOT PREDICT, both found by building it.** (1) **An e2e driver written as a
+`.cmake` file is inside the very set prong A-d sweeps.** `tests/audio-boundary/guard_e2e.cmake`'s
+fixture strings contain literal `target_link_libraries(aero_audio …)` text, and the moment the file was
+`git add`ed the guard exited 1 naming **six lines of its own driver** — textually a true positive, since
+the text really is there, even though it is fixture data that only ever reaches a throwaway scratch
+tree. Fixed by composing the command name from a `_AB_TLL` variable, which leaves no matching literal
+in the driver while the scratch file it writes stays **byte-identical** (verified by `diff -r` against
+the pre-fix run). **An exclusion list was considered and rejected**: it would have put a permanent,
+silent hole in a sweep whose whole value is being universal, and the hole would sit in the one file a
+future reader is most likely to paste a real CMake snippet into. (2) **A GitHub Actions step name
+containing `aero:: library` does not parse.** The `": "` is a YAML mapping separator, so
+`- name: Boundary probes — every probe links exactly one aero:: library` fails the *whole workflow*
+with "mapping values are not allowed here" at that line — a failure that would have taken every job
+down, not just the lint one. Quoted. Worth generalising: **quote any Actions step name containing a
+colon followed by a space**, and parse `ci.yml` locally after editing it.
+
+**`target_link_libraries(aero_audio_boundary_probe …)` is the tree's first near-miss for prong A-d's
+regex, and this task is what created it.** Only the trailing `([^a-zA-Z0-9_]|$)` separates the guard
+from reddening the commit that adds it. `tests/boundary-probes/probe_links_e2e.cmake` deliberately
+carries that literal in situ — it does **not** need the `_AB_TLL` treatment, because `aero_audio` is
+followed by `_` there — so the near-miss has a standing in-tree witness, and self-test 3 pins both
+directions against the same regex literal the sweep uses, hoisted into `CROSSDIR_TLL_RE` so the
+self-test cannot drift from the check.
+
+**The gate, measured on the tree at `931404d`.** 170/170 on both macOS presets with
+`AERO_REQUIRE_GPU=1` (Debug 236.54 s, Release 65.86 s). Fresh `-G Ninja` reduced configurations
+**78** and **91**, each having built and RUN `aero_tests`, `aero_editor_shell_test`,
+`aero_editor_imgui_test` and `aero_cooker`. **`ctest -N` 170 / 78 / 91 — `+2` in all three, in
+lockstep**, which is what proves both e2e registrations are ungated by the tools flags; a smaller move
+in a reduced configuration would have meant a registration landed inside a gate, and no test can report
+that. doctest **1169 / 1746 / 143 / 34 / 29 / 7 / 28 — UNMOVED in all seven**, with the structural
+proof beside it (the whole diff contains one occurrence of `TEST_CASE` and it is a prose line in the
+probe's header comment). **This task inverts the project's usual pattern and it is worth saying out
+loud: `ctest -N` moves while every doctest total stays put.** Eight guards exit 0 — audio
+**11 / 3 / 52**, probes **6**, math **450** (was 449, the one new tracked C-family file), platform
+**83**, scene **83**, rhi **144**, golden-rule **146**, project-no-delete **A=6 / B=75** — and
+`ls .github/scripts/ | wc -l` reads **8**, measured rather than remembered. clang-format and
+clang-tidy clean **by exit code**, the latter with `SDKROOT` pinned to `macosx15.4` on its own line.
+The manifest is untouched at **20** hash lines, `vcpkg.json` and `/vcpkg` are byte-identical,
+`tests/CMakeLists.txt` is **65 additions / 0 deletions** with the five existing probe blocks and
+`aero_tests`' link line byte-unchanged, and the three `engine/**` edits are **comment-only**, asserted
+by filtering the diff rather than by eye.
+
+**`swept` moves as this task's own files land, and that is expected rather than a fault:** 50 on
+`dfa58bd`, 50 after the guard script alone, **51** after `guard_e2e.cmake`, **52** after
+`probe_links_e2e.cmake`. Both drivers match prong A-d's `*.cmake` pathspec, exactly as
+`tests/golden-rule/include_scan_e2e.cmake` and `tests/project-no-delete/no_delete_e2e.cmake` already
+did. **The count is deliberately NOT pinned by any assertion** — not in the e2e's substrings, not in
+the real-tree checks — because a number that changes whenever any `.cmake` file is added anywhere is
+diagnostic, not contractual. Only the OK banner and the per-arm violation messages are pinned.
+
+**No validation page, on the 2.1.2 precedent** — verified: 2.1.2 and 2.5.2, the two page-less tasks in
+the whole tree, are both pure test/guard infrastructure. Nothing here needs ears, eyes, hardware or an
+OS-specific behaviour a row could measure that the e2e does not already assert on two of three lanes
+every push. The standing evidence is the e2e pair plus this entry. **The residual is Windows**: both
+drivers are `NOT WIN32` and the lint job that runs the two scripts is `ubuntu-24.04`-only, so nothing
+about either guard's behaviour is exercised under an MSYS userland at all — while coverage of the
+*invariant* is unaffected, since the guards run on every push. The macOS lane is the one that earns its
+keep here: it is the only place the `nl | sed`, `tr`-flatten and bracket-boundary pipelines meet **BSD
+userland**, where `\b` would have degraded to a literal `b` and a lesser guard would pass vacuously.
+
+**Accepted limitations, stated rather than implied away.** Textual comment handling is line-based, so a
+banned token inside `/* … */` or CMake `#[[ … ]]` false-**positives** — the fail-loud direction, and
+neither style is used in the guarded files. Untracked files are invisible until `git add`. CMake
+indirection beyond the banned list is not parsed (a variable holding a package name, a
+`target_compile_options(… -I…)`, a parent-scope `include_directories`); prong A's arms cover every
+vector with an **in-tree precedent** — the editor's `find_path` + `SYSTEM PRIVATE` shape from 3.7.1,
+and the cross-directory TLL — and a determined evasion defeats any textual guard. A vendored, renamed
+copy of miniaudio evades both regexes, though the `ma_` arm still fires on *use*. Token line
+attribution is first-stripped-occurrence, so a token appearing twice cites its first non-comment line;
+the file and the token are always exact. `PROBE_LIB_RE='^aero::[a-z_]+$'` admits no digits, so a future
+`aero::box2d` probe reads as a non-engine token — fail-loud, and a conscious one-character edit. And
+the canaries couple both guards to prose: deleting a prohibition comment or the last raw `ma_` citation
+is a loud **exit 2**, never a silent green, which is the design.
+
+**Handoffs.** The `try_compile` negative harness stays open (0.2.3 → 0.4.5 → here), now precisely
+bounded: D3's textual guard closes every *registry-edit* vector, and the residual is a compile-line
+contamination that never touches `tests/CMakeLists.txt`. **A fourth vcpkg-free target must add itself
+to `VCPKG_FREE_CMAKE` in the same commit that creates it** — intent cannot be derived from the tree, so
+an unlisted target is silently unguarded; the script's own header says so. `script`/quickjs, R12's
+named next backend, inherits the whole pattern and its probe is covered by `check-boundary-probes.sh`
+on arrival with zero edits. Runtime-purity (5.2.2) remains the other half of `docs/04`'s planned pair
+and nothing here pre-builds it. And **CLAUDE.md's FIVE-GREPS block is now FOUR**: the `find_package`
+reading over the three directories is `check-audio-boundary.sh`'s self-test 2, with those very
+prohibition comments as its anti-vacuity canaries.

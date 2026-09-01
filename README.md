@@ -91,15 +91,15 @@ git ls-files -z '*.cpp' | xargs -0 -r -n1 clang-tidy -p build/macos-debug --warn
 
 ## Status
 
-**Phase 3 (Asset Pipeline & 3D Content) is under way.** Six of its seven epics are closed — the AssetDatabase, five importers, the cooker, PBR materials, skeletal animation, and rendering essentials (culling, shadows, tonemap/gamma). Epic 3.7 (audio playback) is open: clip assets and the playback API have landed, leaving the audio-boundary CI guard.
+**Phase 3 (Asset Pipeline & 3D Content) is under way.** All seven of its epics are now closed in code — the AssetDatabase, five importers, the cooker, PBR materials, skeletal animation, rendering essentials (culling, shadows, tonemap/gamma), and audio playback: clip assets, the playback API and components, and the audio-boundary CI guard that closes epic 3.7. What remains for the phase is its deliverable gate and the outstanding on-hardware validation rows.
 
 **Phase 2 (The Editor Shell) is complete in code.** All six of its epics have landed: ImGui docking and the app shell, the five core panels (hierarchy, reflection-driven inspector, viewport, asset browser, log/console), manipulation (editor camera, picking, ImGuizmo gizmos), undo/redo, scene save/load, and the project system.
 
 - **Phase 0** — Foundations & First Triangle: complete in code, macOS-validated; Windows/Linux on-hardware sign-off pending.
 - **Phase 1** — Reflection, ECS & Serialization: complete; the `reflect-gen` codegen spine and JSON scene format are in.
 - **Phase 2** — The Editor Shell: **complete, gate met 2026-08-02.** Every epic closed, every task macOS human-validated, and the gate artifact committed at [`samples/phase-2-editor-scene/`](./samples/phase-2-editor-scene/) — a project and scene built entirely through the editor, saved and reopened.
-- **Phase 3** — Asset Pipeline & 3D Content: **open.** Epics 3.1–3.6 closed (AssetDatabase, importers, cooker, PBR materials, skeletal animation, rendering essentials); epic 3.7 open, with 3.7.1 (audio clip assets) and 3.7.2 (playback API + components) merged. Every task is CI-green on all three OSes; the on-hardware validation rows are tracked per task, and 3.7.2's are outstanding.
-- **Next:** task 3.7.3 — the audio-boundary CI guard, which closes epic 3.7.
+- **Phase 3** — Asset Pipeline & 3D Content: **open.** All seven epics closed in code — 3.1–3.6 (AssetDatabase, importers, cooker, PBR materials, skeletal animation, rendering essentials) and now 3.7, whose 3.7.1 (audio clip assets), 3.7.2 (playback API + components) and 3.7.3 (audio-boundary CI guard) have all landed. Every task is CI-green on all three OSes; the on-hardware validation rows are tracked per task, and 3.7.2's are outstanding.
+- **Next:** Phase 3's deliverable gate — a rigged glTF/FBX dropped in, producing PBR materials, shadows, a playing animation and an audible sound.
 
 Carried-forward debt: no Windows or Linux human validation pass exists yet for Phase 0's 60 fps sign-off or for any Phase 2 task. The engine builds and its full test suite runs green on all three OSes in CI; what is outstanding is the on-hardware human half.
 

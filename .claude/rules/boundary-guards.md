@@ -27,6 +27,29 @@ Five backends are linked `PRIVATE` and confined to one allowlisted TU each: **GL
 Neither is sufficient alone. The script catches identifiers a probe cannot (prose-free
 textual leaks, `.c` files); the probe catches what a grep pattern misses.
 
+The audio layer's pair is `.github/scripts/check-audio-boundary.sh` +
+`tests/audio_boundary_probe.cpp` (task 3.7.3). It is the one place where the two halves are
+**not** interchangeable, and the reason is measured rather than argued: `aero_audio` links
+`aero::profiling` PRIVATE, so in the `*-release` presets Tracy puts vcpkg's shared include
+root on `aero_audio`'s **own** compile line and a stray `#include <miniaudio.h>` there
+compiles clean. The script reddens it in every configuration; the probe, which links
+`aero::audio` alone and therefore no profiling, is the only compile-time check that survives
+Release. That script also carries a second prong the others do not: it guards the
+**CMakeLists** of `engine/assets`, `engine/audio` and `engine/scene_audio` — no dependency
+hook, no non-`aero::` link token, no include dir outside the subsystem, no cross-directory
+`target_link_libraries` from elsewhere in the tree — because their linking no vcpkg package
+is the precondition every other claim on this page rests on.
+
+**Rule 2's "exactly one" is now enforced, not merely stated.**
+`.github/scripts/check-boundary-probes.sh` (task 3.7.3, taking the handoff 0.2.3 opened and
+0.4.5 §7.1 routed there by name) reads every probe's link line and refuses anything but one
+`aero::` library, `PRIVATE` — including `PUBLIC`/`INTERFACE` visibility, an `*_internal`
+target, two libraries, zero calls, and a **second** call, which appends rather than replaces.
+The probe list is **derived** from `tests/CMakeLists.txt`'s `add_library(… OBJECT …)` lines,
+never enumerated in the script, so a new probe is covered the moment it lands and no roster
+has to be maintained. Both guards are proved red-on-violation by hermetic ctest cases
+(`audio-boundary.guard_e2e`, `boundary-probes.probe_links_e2e`).
+
 **R12 — the limitation that makes probes fragile.** vcpkg installs every port into ONE
 shared per-triplet `include/` directory. A `PRIVATE` link therefore makes a stray
 `#include` a hard error **only for targets that link no vcpkg package at all**. Inside

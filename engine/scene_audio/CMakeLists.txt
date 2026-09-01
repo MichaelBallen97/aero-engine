@@ -10,9 +10,16 @@
 # ship no World -> audio path, and the editor's future play mode and the runtime would each rewrite
 # it. scene_render exists for the same reason and the parallel is exact.
 #
-# No find_package, no boundary guard: this target wraps no third-party type and links no vcpkg
-# package directly (the 0.5.1/1.2.1/1.4.1 precedent) -- the boundary rule is satisfied by
-# construction.
+# No find_package: this target wraps no third-party type and links no vcpkg package directly (the
+# 0.5.1/1.2.1/1.4.1 precedent) -- the boundary rule is satisfied by construction, so there is no
+# third-party TOKEN here for a guard to look for.
+#
+# THE VCPKG-FREE PROPERTY OF THIS FILE IS GUARD-ENFORCED SINCE 3.7.3, though, and that is a different
+# thing from a token scan: .github/scripts/check-audio-boundary.sh reads this very file (Part 1) and
+# refuses a find_package or any other dependency-hook command, a non-aero:: link token, an include
+# directory reaching outside the subsystem, and a cross-directory target_link_libraries naming
+# aero_scene_audio from anywhere else in the tree. "Satisfied by construction" was only ever true of
+# the construction that is here today; the guard is what keeps it true tomorrow.
 add_library(aero_scene_audio STATIC
     src/scene_audio.cpp
 )

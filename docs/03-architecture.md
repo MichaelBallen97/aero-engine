@@ -62,8 +62,16 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
   /audio       graph (public) → miniaudio backend (private)
                (opened at 3.7.1 with the runtime clip; 3.7.2 added the spatializer, the
                lock-free mixer and AudioSystem. It links `aero::core`, `aero::assets` and
-               NO VCPKG PACKAGE AT ALL, which is what makes a stray `#include <miniaudio.h>`
-               there a hard compile error rather than a guard finding)
+               NO VCPKG PACKAGE AT ALL — but the "stray `#include <miniaudio.h>` is a hard
+               compile error" that follows from it is a **profiling-OFF** property, measured
+               at 3.7.3: `aero::profiling` is PRIVATE here and carries `Tracy::TracyClient`
+               when `AERO_ENABLE_PROFILING=ON`, so in the `*-release` presets vcpkg's shared
+               include root IS on this target's own compile line and the identical stray
+               include compiles clean. Enforcement is therefore in two halves, both from
+               3.7.3: `.github/scripts/check-audio-boundary.sh` reddens it textually in every
+               configuration before any compiler runs, and `tests/audio_boundary_probe.cpp`
+               — which links `aero::audio` alone, hence no profiling — is the only
+               compile-time check that survives Release)
   /scene_audio the World → audio bridge (task 3.7.2): the only code in the tree that sees
                both `scene` and `audio`, sitting above both — the `scene_render` shape one
                layer over
