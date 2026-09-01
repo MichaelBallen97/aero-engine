@@ -1065,3 +1065,27 @@ else()
     message(STATUS "project-no-delete: no_delete_e2e SKIPPED (Windows, or bash/git not found) -- the "
                    "guard itself still runs in CI's lint job on Linux")
 endif()
+
+# ---------------------------------------------------------------------------------------------
+# Seventh architecture guard: audio-boundary (task 3.7.3; epic 3.7's DoD). A hermetic proof that
+# .github/scripts/check-audio-boundary.sh actually goes RED, in golden-rule.include_scan_e2e's shape
+# exactly. This one matters more than most: the guard is green on the tree it ships into BY
+# CONSTRUCTION -- the three CMakeLists already link no vcpkg package and the audio roots already hold
+# no miniaudio token -- so "it passes" is evidence of nothing at all until a seeded violation has
+# been watched to redden it. The project-no-delete precedent applies too: sabotage proofs living only
+# in a gitignored plan die at merge; a ctest entry is what survives. Same NOT WIN32 gate and the same
+# reason (D16): the script never runs on Windows in CI (the lint job is ubuntu-24.04-only), and this
+# case's value -- proving the regexes, the `nl | sed` comment-stripping and the `tr`-flatten
+# extractor behave under BSD userland -- comes from the macOS lane. Ungated by the tools flags;
+# distinct scratch root, so ctest -j stays safe.
+if(NOT WIN32 AND AERO_BASH_EXECUTABLE AND GIT_EXECUTABLE)
+    add_test(NAME audio-boundary.guard_e2e COMMAND ${CMAKE_COMMAND}
+        -DSCRIPT=${CMAKE_SOURCE_DIR}/.github/scripts/check-audio-boundary.sh
+        -DBASH=${AERO_BASH_EXECUTABLE}
+        -DGIT=${GIT_EXECUTABLE}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/audio-boundary-scratch
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/audio-boundary/guard_e2e.cmake)
+else()
+    message(STATUS "audio-boundary: guard_e2e SKIPPED (Windows, or bash/git not found) -- the "
+                   "guard itself still runs in CI's lint job on Linux")
+endif()
