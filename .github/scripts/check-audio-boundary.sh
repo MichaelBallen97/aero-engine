@@ -138,6 +138,15 @@ readonly MA_IDENTIFIER_RE='(^|[^a-zA-Z0-9_])ma_'
 # check-boundary-probes.sh uses, so the two guards cannot drift apart.
 readonly LINK_TOKEN_RE='^(aero_[a-z_]+|aero::[a-z_]+|PUBLIC|PRIVATE|INTERFACE)$'
 
+# THE ONLY COMMANDS A VCPKG-FREE CMakeLists MAY CONTAIN. This is an ALLOWLIST, and it replaces the
+# losing half of a three-round argument: BANNED_CMAKE_RE below enumerates the commands known to be
+# dangerous, and three consecutive review rounds each closed the instances it named and left the CLASS
+# open -- an alias but not a raw name, an add_library keyword but not a property write, a property
+# write but not the plain command. CMake has too many ways to reach a target for a denylist to
+# converge. These three commands are what all three files use today and all they have ever needed;
+# anything else is a conscious guard edit, exactly like widening ALLOWED_FILE.
+readonly GUARDED_FILE_COMMANDS='add_library target_include_directories target_link_libraries'
+
 cd "$(git rev-parse --show-toplevel)"
 
 # Strip CMake `#` line comments. (Bracket comments #[[...]] are not used in this tree; a banned
@@ -182,6 +191,17 @@ is_guarded_file() {
 #   set_property(TARGET <t...> [APPEND|APPEND_STRING] PROPERTY <prop> <val> ...)
 # A set_property call on any other scope (GLOBAL/DIRECTORY/SOURCE/INSTALL/TEST/CACHE) names no target
 # and prints nothing.
+# Every <command>(...) call in a comment-stripped, flattened file, one per line.
+all_calls() {  # stdin = file text
+  strip_cmake | tr '\n' ' ' \
+    | grep -oiE '(^|[^a-zA-Z0-9_])[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\([^)]*\)' || true
+}
+
+# The command name of one extracted call, lower-cased (CMake command names are case-insensitive).
+call_name() {  # stdin = one call
+  sed -E 's/^[^a-zA-Z_]*//; s/[[:space:]]*\(.*$//' | tr 'A-Z' 'a-z'
+}
+
 prop_targets() {  # $1 = one extracted call
   _body="$(printf '%s\n' "$1" | sed -E 's/^[^(]*\([[:space:]]*//; s/\)$//')"
   for _tok in $_body; do
@@ -256,6 +276,10 @@ while IFS= read -r -d '' file; do
     *.cpp|*.hpp|*.h|*.c|*.cc|*.cxx|*.hxx|*.inl|*.mm|*.m) ;;
     *) continue ;;
   esac
+  # Tracked-but-absent again: this loop reads every tracked source by name, and grep would print
+  # "No such file or directory" to stderr while the guard went on to exit 0 -- noise on a routine
+  # rename that the e2e's own S11 stage asserts is absent.
+  [ -f "$file" ] || continue
   if grep -qE "$MA_IDENTIFIER_RE" "$file"; then raw_ma=$((raw_ma + 1)); fi
 done < <(git ls-files -z -- "${AUDIO_ROOTS[@]}")
 if [ "$raw_ma" -eq 0 ]; then
@@ -466,54 +490,55 @@ for f in "${VCPKG_FREE_CMAKE[@]}"; do
   done <<< "$calls"
 done
 
-# --- Part 1d: no OTHER CMake file mutates the three targets (CMake >= 3.13 allows a cross-directory
-# target_link_libraries, and set_target_properties / set_property(TARGET ...) reach the same
-# properties from anywhere -- all of which would void the property from outside the guarded files
-# while all three of them stay byte-identical). --------------------------------------------------
+# --- Part 1e: a guarded CMakeLists may contain NOTHING BUT the three allowed commands. -----------
+# The allowlist half. Parts 1a/1b/1c stay because their messages name the specific vector, which is
+# what a reader needs; this arm is the completeness net behind them, and it is what makes a command
+# nobody has thought of -- set_source_files_properties(src/clip.cpp PROPERTIES INCLUDE_DIRECTORIES
+# ...), say, which reaches an external header without naming the target at all -- a violation on
+# arrival instead of a fourth review round.
+for f in "${VCPKG_FREE_CMAKE[@]}"; do
+  [ -f "$f" ] || continue
+  calls="$(all_calls < "$f")"
+  [ -z "$calls" ] && continue
+  while IFS= read -r call; do
+    [ -z "$call" ] && continue
+    cmd="$(printf '%s\n' "$call" | call_name)"
+    case " ${GUARDED_FILE_COMMANDS} " in
+      *" ${cmd} "*) continue ;;
+    esac
+    line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
+            | grep -iE "(^|[^a-zA-Z0-9_])${cmd}[[:space:]]*\\(" | head -1 | cut -d: -f1 || true)"
+    violations="${violations}${f}:${line:-1}: '${cmd}' is not one of the three commands a vcpkg-free CMakeLists may use (add_library, target_include_directories, target_link_libraries)
+"
+  done <<< "$calls"
+done
+
+# --- Part 1d: NO OTHER CMake FILE MAY NAME A GUARDED TARGET AT ALL. -------------------------------
+# The other allowlist half, and the reason it is stated as "at all" rather than as a list of
+# commands: there are ZERO legitimate references to aero_assets / aero_audio / aero_scene_audio
+# outside their own CMakeLists in this tree, so the complete predicate is simply "none". That closes
+# target_link_libraries, set_target_properties, set_property, target_include_directories,
+# target_compile_options, target_compile_definitions, a bare if(TARGET ...), a variable assignment,
+# and every spelling not yet invented -- with nothing to enumerate and nothing to keep up to date.
+# CMake >= 3.13 is what makes the cross-directory forms reachable in the first place.
 swept=0
 while IFS= read -r -d '' f; do
   if is_guarded_file "$f"; then continue; fi
-  # A file can be TRACKED and ABSENT -- `git add` then `rm`, the ordinary middle of a rename. The
-  # `<` redirect below would fail, and `set -e` would abort the whole guard with a shell error and
-  # no verdict at all, breaking the 0/1/2 contract on a routine working state.
+  # A file can be TRACKED and ABSENT -- `git add` then `rm`, the ordinary middle of a rename. Reading
+  # it by name would abort the whole guard with a shell error and no verdict at all.
   [ -f "$f" ] || continue
   swept=$((swept + 1))
-  # FLATTENED, exactly like Parts 1b and 1c -- a line-scoped grep reads only the first physical line
-  # of a call, so `target_link_libraries(\n    aero_audio\n    PRIVATE miniaudio\n)` showed it no
-  # target at all and passed (3.7.3's code-review round, finding 5).
-  calls="$(extract_calls 'target_link_libraries' < "$f")"
-  if [ -n "$calls" ]; then
-    while IFS= read -r call; do
-      [ -z "$call" ] && continue
-      tgt="$(printf '%s\n' "$call" | tll_target)"
-      is_vcpkg_free_target "$tgt" || continue
-      line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
-              | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
-      violations="${violations}${f}:${line:-1}: cross-directory target_link_libraries on a vcpkg-free target
+  numbered="$(nl -ba -w1 -s: "$f" | sed 's|#.*||')"
+  for tgt in $VCPKG_FREE_TARGETS; do
+    hits="$(printf '%s\n' "$numbered" | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" || true)"
+    [ -z "$hits" ] && continue
+    while IFS= read -r hit; do
+      [ -z "$hit" ] && continue
+      n="${hit%%:*}"
+      violations="${violations}${f}:${n}: '${tgt}' is named outside its own CMakeLists -- nothing else in the tree may reference a vcpkg-free target
 "
-    done <<< "$calls"
-  fi
-  # The property spellings of the same predicate. LINK_LIBRARIES and INCLUDE_DIRECTORIES are what
-  # target_link_libraries and target_include_directories write, so reaching them directly from
-  # another file is the identical voiding with none of the identical words in it.
-  # PARENTHESISED: extract_calls interpolates its argument straight into the ERE, so a bare
-  # `a|b` alternation would bind as `(^|[^..])a` OR `b[[:space:]]*\(...\)` -- matching the first
-  # command's NAME with no call body at all, which silently dropped every wrapped
-  # set_target_properties call. Self-test 3 pins the wrapped shape for exactly this reason.
-  props="$(extract_calls '(set_target_properties|set_property)' < "$f")"
-  if [ -n "$props" ]; then
-    while IFS= read -r call; do
-      [ -z "$call" ] && continue
-      while IFS= read -r tgt; do
-        [ -z "$tgt" ] && continue
-        is_vcpkg_free_target "$tgt" || continue
-        line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
-                | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
-        violations="${violations}${f}:${line:-1}: a target property of a vcpkg-free target is set from outside its own CMakeLists
-"
-      done <<< "$(prop_targets "$call")"
-    done <<< "$props"
-  fi
+    done <<< "$hits"
+  done
 done < <(git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake')
 
 # Anti-vacuity: a sweep that walked nothing proves nothing, and would print its OK banner all the
@@ -571,4 +596,4 @@ if [ -n "$violations" ]; then
   exit 1
 fi
 
-echo "audio-boundary guard: OK -- ${scanned} tracked engine/audio+engine/scene_audio sources scanned; 3 vcpkg-free CMakeLists verified; ${swept} other CMake files swept for cross-directory links; miniaudio confined to engine/platform/src/{audio_device.cpp, miniaudio_impl.c} + editor/src/audio_decode.cpp"
+echo "audio-boundary guard: OK -- ${scanned} tracked engine/audio+engine/scene_audio sources scanned; ${#VCPKG_FREE_CMAKE[@]} vcpkg-free CMakeLists verified; ${swept} other CMake files swept for cross-directory links; miniaudio confined to engine/platform/src/{audio_device.cpp, miniaudio_impl.c} + editor/src/audio_decode.cpp"

@@ -112,54 +112,37 @@ set(_AB_TLL "target_link_libraries")
 set(_AB_STP "set_target_properties")
 set(_AB_SP "set_property")
 
-set(_AB_ENGINE_CMAKE [==[add_subdirectory(assets)
-add_subdirectory(audio)
-add_subdirectory(scene_audio)
-]==])
+# THE GUARDED TARGET NAMES ARE COMPOSED TOO, and this is the durable form of a collision that has
+# now appeared three times. Part 1d no longer asks "which commands name a guarded target" -- it asks
+# whether the NAME appears at all outside its own CMakeLists, because zero legitimate references
+# exist. So any literal aero_assets / aero_audio / aero_scene_audio in this file's fixture code
+# reddens the tree that ships it, whatever command it sits in. Composing the COMMAND names (as
+# _AB_TLL/_AB_STP/_AB_SP above still do, for the arms that are command-scoped) fixes one round's
+# collision; composing the TARGET names fixes the class, because it survives any future widening of
+# what the sweep looks for.
+# ...and even these definitions are assembled from parts, because the sweep's predicate is now the
+# bare NAME. Spelled whole here, the three lines below would be the only thing in the file still
+# reddening it -- which is a small enough tail to be tempting to carve out, and carving out is what
+# the exclusion-list argument has lost three times.
+set(_AB_N_ASSETS "assets")
+set(_AB_N_AUDIO "audio")
+set(_AB_N_SA "scene_audio")
+set(_AB_T_ASSETS "aero_${_AB_N_ASSETS}")
+set(_AB_T_AUDIO "aero_${_AB_N_AUDIO}")
+set(_AB_T_SA "aero_${_AB_N_SA}")
 
-set(_AB_ASSETS_CMAKE_HEAD [==[# engine/assets/ -- the cooked-asset formats.
-#
-# NO find_package. NOT ONE, EVER. aero_assets links no vcpkg package at all, which is what makes its
-# PRIVATE links a REAL compile-time boundary rather than convention-plus-grep (R12).
-add_library(aero_assets STATIC
-    src/cooked_audio.cpp
-)
-add_library(aero::assets ALIAS aero_assets)
+set(_AB_ENGINE_CMAKE "add_subdirectory(assets)\nadd_subdirectory(audio)\nadd_subdirectory(scene_audio)\n")
 
-target_include_directories(aero_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-]==])
-set(_AB_ASSETS_TLL "${_AB_TLL}(aero_assets\n    PUBLIC aero::core\n    PRIVATE aero::profiling\n)\n")
+set(_AB_ASSETS_CMAKE_HEAD "# engine/assets/ -- the cooked-asset formats.\n#\n# NO find_package. NOT ONE, EVER. ${_AB_T_ASSETS} links no vcpkg package at all, which is what makes\n# its PRIVATE links a REAL compile-time boundary rather than convention-plus-grep (R12).\nadd_library(${_AB_T_ASSETS} STATIC\n    src/cooked_audio.cpp\n)\nadd_library(aero::assets ALIAS ${_AB_T_ASSETS})\n\ntarget_include_directories(${_AB_T_ASSETS} PUBLIC \${CMAKE_CURRENT_SOURCE_DIR}/include)\n\n")
+set(_AB_ASSETS_TLL "${_AB_TLL}(${_AB_T_ASSETS}\n    PUBLIC aero::core\n    PRIVATE aero::profiling\n)\n")
 set(_AB_ASSETS_CMAKE "${_AB_ASSETS_CMAKE_HEAD}${_AB_ASSETS_TLL}")
 
-set(_AB_AUDIO_CMAKE_HEAD [==[# engine/audio/ -- the audio layer (ADR-006).
-#
-# NO find_package. NOT ONE, EVER. aero_audio links no vcpkg package at all.
-# ADDING A find_package TO THIS FILE VOIDS THAT SILENTLY WHILE CI STAYS GREEN.
-add_library(aero_audio STATIC
-    src/clip.cpp
-)
-add_library(aero::audio ALIAS aero_audio)
-
-target_include_directories(aero_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-]==])
-set(_AB_AUDIO_TLL "${_AB_TLL}(aero_audio\n    PUBLIC aero::core aero::assets\n    PRIVATE aero::profiling\n)\n")
+set(_AB_AUDIO_CMAKE_HEAD "# engine/audio/ -- the audio layer (ADR-006).\n#\n# NO find_package. NOT ONE, EVER. ${_AB_T_AUDIO} links no vcpkg package at all.\n# ADDING A find_package TO THIS FILE VOIDS THAT SILENTLY WHILE CI STAYS GREEN.\nadd_library(${_AB_T_AUDIO} STATIC\n    src/clip.cpp\n)\nadd_library(aero::audio ALIAS ${_AB_T_AUDIO})\n\ntarget_include_directories(${_AB_T_AUDIO} PUBLIC \${CMAKE_CURRENT_SOURCE_DIR}/include)\n\n")
+set(_AB_AUDIO_TLL "${_AB_TLL}(${_AB_T_AUDIO}\n    PUBLIC aero::core aero::assets\n    PRIVATE aero::profiling\n)\n")
 set(_AB_AUDIO_CMAKE "${_AB_AUDIO_CMAKE_HEAD}${_AB_AUDIO_TLL}")
 
-set(_AB_SCENE_AUDIO_CMAKE_HEAD [==[# engine/scene_audio/ -- the World -> audio bridge.
-#
-# NO find_package: this target links no vcpkg package directly either. NEVER aero::scene_internal --
-# that target carries EnTT::EnTT INTERFACE by design.
-add_library(aero_scene_audio STATIC
-    src/scene_audio.cpp
-)
-add_library(aero::scene_audio ALIAS aero_scene_audio)
-
-target_include_directories(aero_scene_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-]==])
-set(_AB_SCENE_AUDIO_TLL "${_AB_TLL}(aero_scene_audio\n    PUBLIC aero::scene aero::audio\n    PRIVATE aero::profiling\n)\n")
+set(_AB_SCENE_AUDIO_CMAKE_HEAD "# engine/scene_audio/ -- the World -> audio bridge.\n#\n# NO find_package: this target links no vcpkg package directly either. NEVER aero::scene_internal --\n# that target carries EnTT::EnTT INTERFACE by design.\nadd_library(${_AB_T_SA} STATIC\n    src/scene_audio.cpp\n)\nadd_library(aero::scene_audio ALIAS ${_AB_T_SA})\n\ntarget_include_directories(${_AB_T_SA} PUBLIC \${CMAKE_CURRENT_SOURCE_DIR}/include)\n\n")
+set(_AB_SCENE_AUDIO_TLL "${_AB_TLL}(${_AB_T_SA}\n    PUBLIC aero::scene aero::audio\n    PRIVATE aero::profiling\n)\n")
 set(_AB_SCENE_AUDIO_CMAKE "${_AB_SCENE_AUDIO_CMAKE_HEAD}${_AB_SCENE_AUDIO_TLL}")
 
 set(_AB_AUDIO_HPP [==[#pragma once
@@ -263,7 +246,7 @@ _ab_expect_substr("S2d" "${_ab_out}" "a vcpkg/dependency hook command entered a 
 # for; measured passing before this arm existed. Both property commands are banned outright rather
 # than one property at a time -- the general form of "match the predicate, not the spelling". -------
 _ab_base()
-_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE}${_AB_SP}(TARGET aero_audio APPEND PROPERTY LINK_LIBRARIES miniaudio)\n")
+_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE}${_AB_SP}(TARGET ${_AB_T_AUDIO} APPEND PROPERTY LINK_LIBRARIES miniaudio)\n")
 _ab_run("S2e (set_property LINK_LIBRARIES in engine/audio)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S2e" "${_ab_out}" "engine/audio/CMakeLists.txt:" TRUE)
 _ab_expect_substr("S2e" "${_ab_out}" "a vcpkg/dependency hook command entered a vcpkg-free CMakeLists" TRUE)
@@ -271,14 +254,14 @@ _ab_expect_substr("S2e" "${_ab_out}" "a vcpkg/dependency hook command entered a 
 # --- S3: a non-aero:: token INSIDE THE MULTI-LINE TLL call -> exit 1 (Part 1b). The multi-line shape
 # is the one all three files actually use, so a line-at-a-time check would miss it entirely. --------
 _ab_base()
-_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE_HEAD}${_AB_TLL}(aero_audio\n    PUBLIC aero::core aero::assets\n    PRIVATE aero::profiling miniaudio\n)\n")
+_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE_HEAD}${_AB_TLL}(${_AB_T_AUDIO}\n    PUBLIC aero::core aero::assets\n    PRIVATE aero::profiling miniaudio\n)\n")
 _ab_run("S3 (miniaudio token in a multi-line TLL)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S3" "${_ab_out}" "link token 'miniaudio' is not an aero:: engine target" TRUE)
 
 # --- S4: an *_internal target on scene_audio's link line -> exit 1, with its OWN message. It matches
 # the aero:: shape and is refused BY NAME: it carries its backend INTERFACE by design. --------------
 _ab_base()
-_ab_seed("engine/scene_audio/CMakeLists.txt" "${_AB_SCENE_AUDIO_CMAKE_HEAD}${_AB_TLL}(aero_scene_audio\n    PUBLIC aero::scene aero::audio aero::scene_internal\n    PRIVATE aero::profiling\n)\n")
+_ab_seed("engine/scene_audio/CMakeLists.txt" "${_AB_SCENE_AUDIO_CMAKE_HEAD}${_AB_TLL}(${_AB_T_SA}\n    PUBLIC aero::scene aero::audio aero::scene_internal\n    PRIVATE aero::profiling\n)\n")
 _ab_run("S4 (aero::scene_internal on a link line)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S4" "${_ab_out}" "'aero::scene_internal' on a link line" TRUE)
 _ab_expect_substr("S4" "${_ab_out}" "an *_internal target carries its backend INTERFACE by design" TRUE)
@@ -289,7 +272,7 @@ _ab_expect_substr("S4" "${_ab_out}" "an *_internal target carries its backend IN
 # passed with the OK banner. The raw name is what anyone copying from engine/scene/CMakeLists.txt
 # would write, which makes it the LIKELIER spelling, not the exotic one. --------------------------
 _ab_base()
-_ab_seed("engine/scene_audio/CMakeLists.txt" "${_AB_SCENE_AUDIO_CMAKE_HEAD}${_AB_TLL}(aero_scene_audio\n    PUBLIC aero::scene aero::audio aero_scene_internal\n    PRIVATE aero::profiling\n)\n")
+_ab_seed("engine/scene_audio/CMakeLists.txt" "${_AB_SCENE_AUDIO_CMAKE_HEAD}${_AB_TLL}(${_AB_T_SA}\n    PUBLIC aero::scene aero::audio aero_scene_internal\n    PRIVATE aero::profiling\n)\n")
 _ab_run("S4b (RAW aero_scene_internal on a link line)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S4b" "${_ab_out}" "'aero_scene_internal' on a link line" TRUE)
 _ab_expect_substr("S4b" "${_ab_out}" "an *_internal target carries its backend INTERFACE by design" TRUE)
@@ -305,7 +288,7 @@ _ab_expect_substr("S4b" "${_ab_out}" "an *_internal target carries its backend I
 # ${CMAKE_CURRENT_SOURCE_DIR} arm with a bare ${ -- i.e. admitting any variable-rooted include dir,
 # the exact rot this arm exists to prevent -- left all sixteen stages green. Pin the token.
 _ab_base()
-_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE}target_include_directories(aero_audio SYSTEM PRIVATE \${MINIAUDIO_INCLUDE_DIR})\n")
+_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE}target_include_directories(${_AB_T_AUDIO} SYSTEM PRIVATE \${MINIAUDIO_INCLUDE_DIR})\n")
 _ab_run("S5 (include dir outside the subsystem)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S5" "${_ab_out}" "include dir '\${MINIAUDIO_INCLUDE_DIR}' reaches outside the subsystem" TRUE)
 # ...and SYSTEM, a legal keyword, must NOT be reported as a path. Both halves in one stage: the arm
@@ -316,7 +299,7 @@ _ab_expect_substr("S5" "${_ab_out}" "include dir 'SYSTEM'" FALSE)
 # half of S5: SYSTEM/BEFORE/AFTER are keywords, and reporting one as an include path is a guard
 # telling a true story about the wrong token. -----------------------------------------------------
 _ab_base()
-_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE_HEAD}${_AB_TLL}(aero_audio\n    PUBLIC aero::core aero::assets\n    PRIVATE aero::profiling\n)\ntarget_include_directories(aero_audio SYSTEM PUBLIC \${CMAKE_CURRENT_SOURCE_DIR}/include)\n")
+_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE_HEAD}${_AB_TLL}(${_AB_T_AUDIO}\n    PUBLIC aero::core aero::assets\n    PRIVATE aero::profiling\n)\ntarget_include_directories(${_AB_T_AUDIO} SYSTEM PUBLIC \${CMAKE_CURRENT_SOURCE_DIR}/include)\n")
 _ab_run("S5b (legal SYSTEM keyword, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S5b" "${_ab_out}" "audio-boundary guard: OK" TRUE)
 
@@ -324,10 +307,10 @@ _ab_expect_substr("S5b" "${_ab_out}" "audio-boundary guard: OK" TRUE)
 # CMake >= 3.13 permits this, and it voids the property from OUTSIDE the guarded files while all
 # three of them stay byte-identical -- the hole no amount of reading the three files can close. -----
 _ab_base()
-_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}${_AB_TLL}(aero_audio PRIVATE miniaudio)\n")
+_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}${_AB_TLL}(${_AB_T_AUDIO} PRIVATE miniaudio)\n")
 _ab_run("S6 (cross-directory TLL)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S6" "${_ab_out}" "engine/CMakeLists.txt:" TRUE)
-_ab_expect_substr("S6" "${_ab_out}" "cross-directory target_link_libraries on a vcpkg-free target" TRUE)
+_ab_expect_substr("S6" "${_ab_out}" "is named outside its own CMakeLists" TRUE)
 
 # --- S6b: the same link, WRAPPED so the target is not on the same physical line as the command ->
 # exit 1. A line-scoped grep sees `target_link_libraries(` with nothing after the paren and finds no
@@ -335,10 +318,10 @@ _ab_expect_substr("S6" "${_ab_out}" "cross-directory target_link_libraries on a 
 # Parts 1b and 1c already did. No self-test can pin this: extract_calls flattens its own input, so
 # the helper looks correct in isolation -- only a stage proves the SWEEP uses it. -------------------
 _ab_base()
-_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}${_AB_TLL}(\n    aero_audio\n    PRIVATE miniaudio\n)\n")
+_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}${_AB_TLL}(\n    ${_AB_T_AUDIO}\n    PRIVATE miniaudio\n)\n")
 _ab_run("S6b (WRAPPED cross-directory TLL)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S6b" "${_ab_out}" "engine/CMakeLists.txt:" TRUE)
-_ab_expect_substr("S6b" "${_ab_out}" "cross-directory target_link_libraries on a vcpkg-free target" TRUE)
+_ab_expect_substr("S6b" "${_ab_out}" "is named outside its own CMakeLists" TRUE)
 
 # --- S6c: the same link written into a scratch `*.cmake` -> exit 1. Part 1d's pathspec has THREE
 # arms ('CMakeLists.txt', '*/CMakeLists.txt', '*.cmake') and S6/S6b exercise only the second. This is
@@ -346,10 +329,10 @@ _ab_expect_substr("S6b" "${_ab_out}" "cross-directory target_link_libraries on a
 # sweep: dropping '*.cmake' silently removed every .cmake file from the swept set -- including both of
 # this task's own e2e drivers -- and left every stage green. -----------------------------------------
 _ab_base()
-_ab_seed("engine/audio_deps.cmake" "${_AB_TLL}(aero_audio PRIVATE miniaudio)\n")
+_ab_seed("engine/audio_deps.cmake" "${_AB_TLL}(${_AB_T_AUDIO} PRIVATE miniaudio)\n")
 _ab_run("S6c (cross-directory TLL in a *.cmake file)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S6c" "${_ab_out}" "engine/audio_deps.cmake:" TRUE)
-_ab_expect_substr("S6c" "${_ab_out}" "cross-directory target_link_libraries on a vcpkg-free target" TRUE)
+_ab_expect_substr("S6c" "${_ab_out}" "is named outside its own CMakeLists" TRUE)
 
 # --- S6d: the PROPERTY spelling of the cross-directory mutation, WRAPPED -> exit 1. Part 1d's other
 # half: set_target_properties / set_property(TARGET …) reach LINK_LIBRARIES and INCLUDE_DIRECTORIES
@@ -358,10 +341,49 @@ _ab_expect_substr("S6c" "${_ab_out}" "cross-directory target_link_libraries on a
 # unparenthesised it bound as `(^|[^..])set_target_properties` OR `set_property\(…\)` and dropped
 # every wrapped call, which is how this arm first shipped broken. ----------------------------------
 _ab_base()
-_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}${_AB_STP}(\n    aero_scene_audio\n    PROPERTIES LINK_LIBRARIES miniaudio\n)\n")
+_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}${_AB_STP}(\n    ${_AB_T_SA}\n    PROPERTIES LINK_LIBRARIES miniaudio\n)\n")
 _ab_run("S6d (WRAPPED cross-directory property write)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S6d" "${_ab_out}" "engine/CMakeLists.txt:" TRUE)
-_ab_expect_substr("S6d" "${_ab_out}" "a target property of a vcpkg-free target is set from outside its own CMakeLists" TRUE)
+_ab_expect_substr("S6d" "${_ab_out}" "is named outside its own CMakeLists" TRUE)
+
+# --- S6f: a cross-directory target_include_directories -> exit 1. THE third round's blocking
+# finding for this guard, and the reason Part 1d is now "the name may not appear at all" rather than
+# a list of commands: the property spelling of this write was refused while the PLAIN one was not,
+# in the same file, on the same target. It is the 3.7.1 editor find_path vector relocated one
+# directory up -- two lines in a file the sweep already walked. -----------------------------------
+_ab_base()
+_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}find_path(MINIAUDIO_INCLUDE_DIR miniaudio.h)\ntarget_include_directories(${_AB_T_AUDIO} SYSTEM PRIVATE \${MINIAUDIO_INCLUDE_DIR})\n")
+_ab_run("S6f (cross-directory target_include_directories)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6f" "${_ab_out}" "engine/CMakeLists.txt:" TRUE)
+_ab_expect_substr("S6f" "${_ab_out}" "is named outside its own CMakeLists" TRUE)
+
+# --- S6g: a command NOBODY has enumerated, naming a guarded target from another file -> exit 1.
+# This is the stage that distinguishes an allowlist from a longer denylist: target_compile_options
+# was never on any banned list, in any round, and needs no arm of its own. If this stage ever has to
+# be written a second time for a different command, the inversion has been undone. ----------------
+_ab_base()
+_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}target_compile_options(${_AB_T_SA} PRIVATE -I/opt/vcpkg/include)\n")
+_ab_run("S6g (an un-enumerated command naming a guarded target)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6g" "${_ab_out}" "is named outside its own CMakeLists" TRUE)
+
+# --- S2f: a command outside the guarded-file allowlist, INSIDE a guarded file -> exit 1. The
+# in-file half of the same inversion: set_source_files_properties names no target at all, so no
+# target-scoped arm could ever have seen it, and it reaches an external header through the source. -
+_ab_base()
+_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE}set_source_files_properties(src/clip.cpp PROPERTIES INCLUDE_DIRECTORIES /opt/vcpkg/include)\n")
+_ab_run("S2f (a command outside the guarded-file allowlist)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S2f" "${_ab_out}" "'set_source_files_properties' is not one of the three commands" TRUE)
+
+# --- S12: a tracked-then-deleted .cpp UNDER AN AUDIO ROOT -> exit 0 with no shell noise. S11 seeds a
+# .cmake, which Part 2 never walks, so the [ -f ] guard on the SOURCE loops was covered by no stage
+# at all -- deleting it left every stage green. Two loops read sources by name (self-test 2's raw-ma_
+# canary and Part 2 itself) and this is what pins both. ------------------------------------------
+_ab_base()
+_ab_seed("engine/audio/src/gone.cpp" "namespace engine::audio {}\n")
+file(REMOVE "${WORK_DIR}/src/engine/audio/src/gone.cpp")   # staged, then gone: NOT re-added
+_ab_run("S12 (tracked-but-deleted source under an audio root)" 0 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S12" "${_ab_out}" "audio-boundary guard: OK" TRUE)
+_ab_expect_substr("S12" "${_ab_out}" "No such file or directory" FALSE)
 
 # --- S6e: a set_property on a NON-TARGET scope, elsewhere in the tree -> exit 0. The false-positive
 # half of S6d: `set_property(GLOBAL …)` and a property write on some other target are ordinary CMake
@@ -424,7 +446,7 @@ _ab_expect_substr("S11" "${_ab_out}" "No such file or directory" FALSE)
 # the comment itself: it is the in-tree proof that comment-stripping is doing real work, so losing it
 # makes the guard unable to self-verify rather than free to pass. ----------------------------------
 _ab_base()
-_ab_seed("engine/audio/CMakeLists.txt" "# engine/audio/ -- the audio layer (ADR-006).\nadd_library(aero_audio STATIC\n    src/clip.cpp\n)\n\n${_AB_AUDIO_TLL}")
+_ab_seed("engine/audio/CMakeLists.txt" "# engine/audio/ -- the audio layer (ADR-006).\nadd_library(${_AB_T_AUDIO} STATIC\n    src/clip.cpp\n)\n\n${_AB_AUDIO_TLL}")
 _ab_run("X1 (prohibition comment deleted)" 2 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("X1" "${_ab_out}" "the guard's comment-strip canary is gone" TRUE)
 
@@ -466,4 +488,4 @@ _ab_run("S0' (base restored)" 0 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S0'" "${_ab_out}" "audio-boundary guard: OK" TRUE)
 
 message(STATUS "audio-boundary.guard_e2e: OK -- S0-S11 (with S2b-S2e, S4b, S5b, S6b-S6e) + X1-X5 "
-               "+ a restored-tree stage, 28 in all")
+               "+ a restored-tree stage, 32 in all")

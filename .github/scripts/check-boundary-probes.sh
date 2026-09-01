@@ -81,6 +81,11 @@ prop_targets() {  # $1 = one extracted call
 
 is_probe() { printf '%s\n' "$probes" | grep -qx "$1"; }
 
+# The command name of one extracted call, lower-cased (CMake command names are case-insensitive).
+call_name() {  # stdin = one call
+  sed -E 's/^[^a-zA-Z_]*//; s/[[:space:]]*\(.*$//' | tr 'A-Z' 'a-z'
+}
+
 # Every add_library(<name> OBJECT ...) whose <name> ends in _boundary_probe -> the derived set.
 probes="$(flat | grep -oiE '(^|[^a-zA-Z0-9_])add_library[[:space:]]*\([[:space:]]*[a-zA-Z0-9_]+[[:space:]]+OBJECT' \
           | sed -E 's/.*\([[:space:]]*//; s/[[:space:]]+OBJECT.*//' | grep -E '_boundary_probe$' | sort -u || true)"
@@ -197,56 +202,88 @@ for probe in $probes; do
   fi
 done
 
-# --- The cross-file sweep. ----------------------------------------------------------------------
-# CMake >= 3.13 lets ANY CMakeLists append to a target defined elsewhere, so reading only the
-# registry left a probe's link line mutable from every other CMake file in the tree -- and CMake's
-# target_link_libraries calls ACCUMULATE, so the appended library joins the compile line without the
-# registry changing by a byte. check-audio-boundary.sh's Part 1d exists for exactly this capability;
-# this is the same sweep, scoped to the derived probe set. Without it, R-b's "exactly one aero::
-# library" claim was true of the registry rather than of the probe.
+# --- The cross-file sweep, INVERTED TO AN ALLOWLIST. ---------------------------------------------
+# A probe may legitimately be named by exactly TWO commands: its own `add_library(<probe> OBJECT ...)`
+# and its one `target_link_libraries(<probe> PRIVATE aero::x)`. ANY OTHER COMMAND, IN ANY TRACKED
+# CMAKE FILE, THAT NAMES A DERIVED PROBE IS A VIOLATION.
+#
+# That sentence is the whole check, and it replaces three review rounds of enumeration. Each round
+# closed the spellings it had been shown and left the class open: an alias but not a raw name, an
+# add_library keyword but not a property write, a property write but not the plain command --
+# `target_include_directories(<probe> PRIVATE /opt/vcpkg/.../include)` and
+# `target_compile_options(<probe> PRIVATE -I...)` both restored vcpkg's shared include root to the
+# probe's compile line while this guard printed OK. CMake has too many ways to reach a target for a
+# denylist to converge, and the allowlist is bounded, complete, and needs no maintenance: a spelling
+# nobody has thought of is a violation on arrival because it is not one of the two.
+# Every <command>(...) call in a comment-stripped, flattened file, one per line.
+all_calls_file() {  # $1 = path
+  flat_file "$1" \
+    | grep -oiE '(^|[^a-zA-Z0-9_])[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\([^)]*\)' || true
+}
+
+probe_alt="$(printf '%s\n' "$probes" | tr '\n' '|' | sed 's/|$//')"
+
 swept=0
 while IFS= read -r -d '' f; do
   # A file can be TRACKED and ABSENT (`git add` then `rm` -- the ordinary middle of a rename).
-  # Skip it rather than let a read failure take the guard down; the sibling had this crash.
   [ -f "$f" ] || continue
-  if [ "$f" != "$PROBE_REGISTRY" ]; then
-    swept=$((swept + 1))
-    calls="$(tll_calls "$f")"
-    if [ -n "$calls" ]; then
+  [ "$f" != "$PROBE_REGISTRY" ] && swept=$((swept + 1))
+  numbered="$(nl -ba -w1 -s: "$f" | sed 's|#.*||')"
+  # Cheap reject: the overwhelming majority of CMake files never mention a probe, and only the ones
+  # that do pay for call extraction.
+  printf '%s\n' "$numbered" | grep -qE "(^|[^a-zA-Z0-9_])(${probe_alt})([^a-zA-Z0-9_]|$)" || continue
+  cand="$(all_calls_file "$f" \
+          | grep -E "(^|[^a-zA-Z0-9_])(${probe_alt})([^a-zA-Z0-9_]|$)" || true)"
+  for probe in $probes; do
+    printf '%s\n' "$numbered" | grep -qE "(^|[^a-zA-Z0-9_])${probe}([^a-zA-Z0-9_]|$)" || continue
+    line="$(printf '%s\n' "$numbered" | grep -E "(^|[^a-zA-Z0-9_])${probe}([^a-zA-Z0-9_]|$)" \
+            | head -1 | cut -d: -f1 || true)"
+    named=0
+    if [ -n "$cand" ]; then
       while IFS= read -r call; do
         [ -z "$call" ] && continue
-        tgt="$(printf '%s\n' "$call" | tll_target)"
-        if is_probe "$tgt"; then
-          line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
-                  | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
-          violations="${violations}${f}:${line:-1}: a cross-directory target_link_libraries appends to ${tgt}'s link line from outside ${PROBE_REGISTRY}
-"
+        printf '%s\n' "$call" | grep -qE "(^|[^a-zA-Z0-9_])${probe}([^a-zA-Z0-9_]|$)" || continue
+        named=1
+        cmd="$(printf '%s\n' "$call" | call_name)"
+        first="$(printf '%s\n' "$call" | tll_target)"
+        # Legal iff ALL THREE hold: the call is in the REGISTRY, it is one of the two allowed
+        # commands, and the probe is its TARGET (first argument). The file condition is not
+        # decoration -- a cross-directory target_link_libraries naming the probe is CMake's
+        # accumulating append, so it is a second link line however canonical it looks in isolation;
+        # and being mentioned as an argument to somebody else's call is not a declaration either.
+        if [ "$f" = "$PROBE_REGISTRY" ] && [ "$first" = "$probe" ]; then
+          case "$cmd" in
+            add_library|target_link_libraries) continue ;;
+          esac
         fi
-      done <<< "$calls"
-    fi
-  fi
-  # The PROPERTY spellings, swept over EVERY tracked CMake file INCLUDING the registry itself.
-  # Every predicate this guard enforces has one: LINK_LIBRARIES is what target_link_libraries
-  # writes, and EXCLUDE_FROM_ALL is settable long after the add_library that the arm above reads --
-  # `set_target_properties(<probe> PROPERTIES EXCLUDE_FROM_ALL TRUE)` in the registry passed with the
-  # banner still claiming "each built by `all`" (measured, 3.7.3's second code-review round). A probe
-  # has no legitimate use for a target property, so the CALLS are refused rather than one property
-  # at a time -- the general form of "match the predicate, not the spelling in front of you".
-  props="$(prop_calls "$f")"
-  [ -z "$props" ] && continue
-  while IFS= read -r call; do
-    [ -z "$call" ] && continue
-    while IFS= read -r tgt; do
-      [ -z "$tgt" ] && continue
-      if is_probe "$tgt"; then
-        line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
-                | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
-        violations="${violations}${f}:${line:-1}: a target property is set on ${tgt} -- a probe's properties (EXCLUDE_FROM_ALL, LINK_LIBRARIES, INCLUDE_DIRECTORIES) are exactly what its guarantee rests on
+        violations="${violations}${f}:${line:-1}: ${probe} is named by ${cmd}(...) -- only its own add_library and its single target_link_libraries may name a boundary probe
 "
-      fi
-    done <<< "$(prop_targets "$call")"
-  done <<< "$props"
+      done <<< "$cand"
+    fi
+    if [ "$named" -eq 0 ]; then
+      # The name is in the file but in no call at all: a bare variable assignment, an if(), a string.
+      violations="${violations}${f}:${line:-1}: ${probe} is named outside any command -- only its own add_library and its single target_link_libraries may name a boundary probe
+"
+    fi
+  done
 done < <(git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake')
+
+# --- The directory-scoped EXCLUDE_FROM_ALL spellings, which name no probe and so are invisible to
+# the allowlist above. NOT claimed as exhaustive: a directory property set from a parent scope, or an
+# add_subdirectory(<dir> EXCLUDE_FROM_ALL) naming the registry's directory, is outside what this
+# textual guard reads and is recorded as residual in docs/10 rather than implied away. -------------
+if [ -f "$PROBE_REGISTRY" ]; then
+  dir_hits="$(nl -ba -w1 -s: "$PROBE_REGISTRY" | sed 's|#.*||' \
+              | grep -iE "(^|[^a-zA-Z0-9_])(set_directory_properties|set_property)[[:space:]]*\([^)]*EXCLUDE_FROM_ALL" || true)"
+  if [ -n "$dir_hits" ]; then
+    while IFS= read -r hit; do
+      [ -z "$hit" ] && continue
+      n="${hit%%:*}"
+      violations="${violations}${PROBE_REGISTRY}:${n}: a DIRECTORY-scoped EXCLUDE_FROM_ALL takes every probe in this file out of \`all\`
+"
+    done <<< "$dir_hits"
+  fi
+fi
 
 # Anti-vacuity: a sweep that walked nothing proves nothing and would print the OK banner anyway.
 if [ "$swept" -eq 0 ]; then
@@ -273,4 +310,4 @@ if [ -n "$violations" ]; then
   exit 1
 fi
 
-echo "boundary-probe guard: OK -- ${count} probe targets verified in ${PROBE_REGISTRY}, each built by \`all\` (no EXCLUDE_FROM_ALL in either spelling) and linking exactly one aero:: library PRIVATE; ${swept} other CMake files swept for cross-directory appends and target-property writes"
+echo "boundary-probe guard: OK -- ${count} probe targets verified in ${PROBE_REGISTRY}, each linking exactly one aero:: library PRIVATE and named by nothing but its own add_library and that one target_link_libraries; ${swept} other CMake files swept"
