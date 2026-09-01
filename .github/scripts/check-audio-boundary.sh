@@ -175,13 +175,6 @@ extract_calls() {  # $1 = case-insensitive command-name ERE fragment, stdin = fi
   strip_cmake | tr '\n' ' ' | grep -oiE "(^|[^a-zA-Z0-9_])$1[[:space:]]*\([^)]*\)" || true
 }
 
-# The TARGET token of one extracted target_link_libraries call -- i.e. its first argument. `sed -n
-# '1p'` rather than `head -1` on purpose: head closes the pipe early, and under `set -o pipefail`
-# the resulting SIGPIPE would fail the whole command substitution.
-
-# Is $1 one of the three guarded targets? Exact token equality, never a substring or a regex --
-# aero_audio_boundary_probe must not be mistaken for aero_audio.
-
 # Is $1 one of the guarded CMakeLists themselves? Derived from the one roster, so Part 1d's skip
 # list cannot drift away from the file list the way a hardcoded `case` did.
 # THE DIRECTORY-SCOPE SET: every file that can push state into the directory scope a guarded target
@@ -252,6 +245,8 @@ expand_includes() {  # stdin = newline-separated file list
 # aero_audio. Hoisted into a function so the self-test below and the sweep cannot use different text.
 target_mention_re() { printf '(^|[^a-zA-Z0-9_])%s([^a-zA-Z0-9_]|$)' "$1"; }
 
+# Is $1 one of the guarded CMakeLists themselves? Derived from the one roster, so Part 1d's skip
+# test cannot drift away from the file list the way a hardcoded `case` did.
 is_guarded_file() {
   for _g in "${VCPKG_FREE_CMAKE[@]}"; do
     [ "$1" = "$_g" ] && return 0
@@ -259,13 +254,6 @@ is_guarded_file() {
   return 1
 }
 
-# The TARGET tokens of one set_target_properties(...) or set_property(TARGET ...) call, one per line.
-# Both spellings, because both reach the same properties:
-#   set_target_properties(<t...> PROPERTIES <prop> <val> ...)
-#   set_property(TARGET <t...> [APPEND|APPEND_STRING] PROPERTY <prop> <val> ...)
-# A set_property call on any other scope (GLOBAL/DIRECTORY/SOURCE/INSTALL/TEST/CACHE) names no target
-# and prints nothing.
-# Every <command>(...) call in a comment-stripped, flattened file, one per line.
 all_calls() {  # stdin = file text
   strip_cmake | tr '\n' ' ' \
     | grep -oiE '(^|[^a-zA-Z0-9_])[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\([^)]*\)' || true
@@ -445,7 +433,20 @@ if printf '// wraps a ma_device\n' | sed 's|//.*||' | grep -qE "$MA_IDENTIFIER_R
 fi
 
 violations=""
-readonly DIR_SCOPE_FILES="$(dir_scope_files)"
+DIR_SCOPE_FILES="$(dir_scope_files)"
+readonly DIR_SCOPE_FILES
+# Two statements, not `readonly X="$(...)"`: the combined form makes the assignment's exit status
+# the BUILTIN's, so a failing dir_scope_files would be masked entirely. And an anti-vacuity assert,
+# because an empty or truncated scope set silently disables the whole directory-scope half while
+# every other arm still passes -- the sibling guard caught exactly that during its own bring-up,
+# when a deleted variable left the set empty and the guard still exited 0.
+for _need in 'CMakeLists.txt' 'engine/CMakeLists.txt'; do
+  if ! printf '%s\n' "$DIR_SCOPE_FILES" | grep -qxF "$_need"; then
+    echo "::error::audio-boundary guard: the directory-scope set is missing '${_need}', so nothing" >&2
+    echo "         checks a directory-scoped command written there. Fix dir_scope_files in $0." >&2
+    exit 2
+  fi
+done
 
 # --- Part 1a: no vcpkg hook command in the three CMakeLists. -----------------------------------
 for f in "${VCPKG_FREE_CMAKE[@]}"; do

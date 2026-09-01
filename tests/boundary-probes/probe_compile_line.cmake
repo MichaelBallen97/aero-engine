@@ -24,11 +24,17 @@
 # one asserts the flags themselves are clean, which is the same property one step earlier and costs a
 # JSON read instead of a nested configure per probe per configuration.
 #
-# GATED ON compile_commands.json EXISTING. CMAKE_EXPORT_COMPILE_COMMANDS is ON in every preset
-# (CMakePresets.json), but multi-config generators (Visual Studio, Xcode) do not write the file at
-# all, so on those lanes this case SKIPS rather than fails -- the same shape the NOT WIN32 e2e cases
-# use, and for the same reason: no coverage of the invariant is lost, since the textual guards run in
-# the lint job on every push regardless.
+# WHEN compile_commands.json IS ABSENT THIS CASE SKIPS -- AND IT SAYS SO TO CTEST, WITH EXIT 77.
+# The first version returned 0, so ctest printed "Passed" and the SKIPPED line went unread. That
+# matters more here than almost anywhere: CMAKE_EXPORT_COMPILE_COMMANDS is set by the PRESETS, and
+# the two reduced gate configurations are raw `cmake -S . -B ...` invocations that do not set it --
+# so this case, described as the thing that closes the class, was passing vacuously in two of the
+# three configurations the gate reads. Exit 77 plus SKIP_RETURN_CODE in tests/CMakeLists.txt makes
+# ctest print "Skipped" instead, which is a reading rather than a claim.
+#
+# It is NOT the same shape as the NOT WIN32 e2e cases, and the earlier comment saying so was wrong:
+# those are gated at CONFIGURE time, so they never register at all and `ctest -N` shows the
+# divergence. This one always registers and reports its own status at run time.
 
 cmake_minimum_required(VERSION 3.28)
 foreach(required DB)
@@ -39,9 +45,19 @@ endforeach()
 
 if(NOT EXISTS "${DB}")
     message(STATUS "boundary-probes.probe_compile_line: SKIPPED -- no compile_commands.json at "
-                   "${DB} (a multi-config generator, or a configure that did not export it). The "
-                   "textual guards still run in CI's lint job.")
-    return()
+                   "${DB}. Either the generator does not write one, or this configure did not set "
+                   "CMAKE_EXPORT_COMPILE_COMMANDS. The textual guards still run in CI's lint job.")
+    # Exit 77, matched by SKIP_RETURN_CODE in tests/CMakeLists.txt, so ctest reports Skipped rather
+    # than Passed. cmake_language(EXIT) needs CMake 3.29 and this project's floor is 3.28, so on an
+    # older CMake the case FAILS instead -- deliberately the loud direction: a skip that cannot be
+    # signalled must not masquerade as a pass, which is the whole point of this change.
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.29")
+        cmake_language(EXIT 77)
+    endif()
+    message(FATAL_ERROR
+        "probe_compile_line: no compile_commands.json, and this CMake (${CMAKE_VERSION}) is older "
+        "than 3.29 so the skip status cannot be signalled to ctest. Configure with "
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON (every preset already does) and re-run.")
 endif()
 
 file(READ "${DB}" _db)

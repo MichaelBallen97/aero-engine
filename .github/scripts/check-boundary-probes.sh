@@ -50,23 +50,9 @@ strip_cmake() { sed 's|#.*||'; }
 flat() { strip_cmake < "$PROBE_REGISTRY" | tr '\n' ' '; }
 flat_file() { strip_cmake < "$1" | tr '\n' ' '; }
 
-# Every target_link_libraries(...) call in a flattened CMake file, one per line.
-
-# The TARGET token of one extracted call -- its first argument. `sed -n '1p'` rather than `head -1`:
-# head closes the pipe early and the SIGPIPE would fail the command substitution under pipefail.
 tll_target() {  # stdin = one extracted call
   sed -E 's/^[^(]*\([[:space:]]*//; s/\)$//' | tr ' \t' '\n\n' | sed '/^$/d' | sed -n '1p'
 }
-
-# Every set_target_properties(...) / set_property(TARGET ...) call in a flattened CMake file.
-# PARENTHESISED alternation: interpolated bare, `a|b` would bind as `(^|[^..])a` OR `b...\)`, which
-# matches the first command's NAME with no call body and silently drops every wrapped call.
-
-# The TARGET tokens of one such call, one per line -- both spellings, since both reach the same
-# properties:
-#   set_target_properties(<t...> PROPERTIES <prop> <val> ...)
-#   set_property(TARGET <t...> [APPEND|APPEND_STRING] PROPERTY <prop> <val> ...)
-# Any other set_property scope names no target and prints nothing.
 
 
 # THE DIRECTORY-SCOPE SET: every file that can push state into the directory scope the probes are
@@ -134,7 +120,7 @@ expand_includes() {  # stdin = newline-separated file list
   printf '%s\n' "$_cur"
 }
 
-# The command name of one extracted call, lower-cased# The command name of one extracted call, lower-cased (CMake command names are case-insensitive).
+# The command name of one extracted call, lower-cased (CMake command names are case-insensitive).
 call_name() {  # stdin = one call
   sed -E 's/^[^a-zA-Z_]*//; s/[[:space:]]*\(.*$//' | tr 'A-Z' 'a-z'
 }
@@ -311,7 +297,7 @@ while IFS= read -r -d '' f; do
 "
     done
   fi
-  # Cheap reject:  # Cheap reject: the overwhelming majority of CMake files never mention a probe, and only the ones
+  # Cheap reject: the overwhelming majority of CMake files never mention a probe, and only the ones
   # that do pay for call extraction.
   printf '%s\n' "$numbered" | grep -qE "(^|[^a-zA-Z0-9_])(${probe_alt})([^a-zA-Z0-9_]|$)" || continue
   cand="$(all_calls_file "$f" \
@@ -330,6 +316,7 @@ while IFS= read -r -d '' f; do
         [ -z "$call" ] && continue
         printf '%s\n' "$call" | grep -qE "(^|[^a-zA-Z0-9_])${probe}([^a-zA-Z0-9_]|$)" || continue
         named=1
+        _seen=$((_seen + 1))
         cmd="$(printf '%s\n' "$call" | call_name)"
         first="$(printf '%s\n' "$call" | tll_target)"
         # Legal iff ALL THREE hold: the call is in the REGISTRY, it is one of the two allowed
@@ -342,9 +329,12 @@ while IFS= read -r -d '' f; do
             add_library|target_link_libraries) continue ;;
           esac
         fi
-        # Walk the mention list in step with the offending calls, so the Nth illegal call is
-        # reported at the Nth mention rather than all of them at the first.
-        _seen=$((_seen + 1))
+        # _seen advances for EVERY call naming this probe, legal ones included, because `mentions`
+        # lists every mention in line order -- the legal add_library and target_link_libraries among
+        # them. Advancing only on violations indexed the Nth illegal call at the Nth MENTION, so a
+        # bad target_compile_options at line 655 was annotated at 653, the legal add_library: exactly
+        # the defect this attribution was added to fix. (A single call naming the probe twice would
+        # still drift by one; no such call exists or would be legal.)
         _ln="$(printf '%s\n' "$mentions" | sed -n "${_seen}p" | cut -d: -f1 || true)"
         violations="${violations}${f}:${_ln:-${line:-1}}: ${probe} is named by ${cmd}(...) -- only its own add_library and its single target_link_libraries may name a boundary probe. If a probe legitimately needs another command, that is a deliberate widening of this guard: add the command to the allowlist in $0 with a comment saying why, exactly as widening ALLOWED_FILE is treated elsewhere
 "

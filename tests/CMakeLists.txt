@@ -1130,3 +1130,18 @@ endif()
 add_test(NAME boundary-probes.probe_compile_line COMMAND ${CMAKE_COMMAND}
     -DDB=${CMAKE_BINARY_DIR}/compile_commands.json
     -P ${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/probe_compile_line.cmake)
+# 77 is the driver's skip status. Without this, a configure that wrote no compile_commands.json made
+# the case report Passed with its own SKIPPED line unread -- vacuous, in the case described as what
+# closes the class. The two reduced gate configurations are raw `cmake -S . -B ...` calls that do not
+# set CMAKE_EXPORT_COMPILE_COMMANDS (only the presets do), so that was two of three configurations.
+set_tests_properties(boundary-probes.probe_compile_line PROPERTIES SKIP_RETURN_CODE 77)
+
+# The red-proof for the case above, in the same idiom as the two textual guards' e2e drivers and for
+# the same reason (plan §H): a proof living only in prose ceases to exist at merge. It feeds the
+# driver synthetic compile_commands.json files -- clean, both vcpkg layouts, both the `command` and
+# `arguments` entry forms, a malformed entry, an empty array, and no database at all -- and asserts
+# EXACT exit codes including 77 for skip. Pure CMake: no shell, no git, no build, so it is ungated.
+add_test(NAME boundary-probes.compile_line_e2e COMMAND ${CMAKE_COMMAND}
+    -DDRIVER=${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/probe_compile_line.cmake
+    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/compile-line-scratch
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/compile_line_e2e.cmake)
