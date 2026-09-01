@@ -312,12 +312,62 @@ _bp_expect_substr("P24" "${_bp_out}" "probe targets verified" TRUE)
 _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
 _bp_seed("CMakeLists.txt" "include_directories(/opt/vcpkg/installed/arm64-osx/include)\nadd_subdirectory(tests)\n")
 _bp_run("P25 (directory-scoped include_directories in an ancestor)" 1 "${BASH}" "${SCRIPT}")
-_bp_expect_substr("P25" "${_bp_out}" "reaches every probe without naming one" TRUE)
+_bp_expect_substr("P25" "${_bp_out}" "without naming one -- directory properties are inherited" TRUE)
 
 _bp_seed("CMakeLists.txt" "add_subdirectory(tests EXCLUDE_FROM_ALL)\n")
 _bp_run("P26 (add_subdirectory tests EXCLUDE_FROM_ALL)" 1 "${BASH}" "${SCRIPT}")
-_bp_expect_substr("P26" "${_bp_out}" "reaches every probe without naming one" TRUE)
+_bp_expect_substr("P26" "${_bp_out}" "without naming one -- directory properties are inherited" TRUE)
 
+_bp_seed("CMakeLists.txt" "add_subdirectory(tests)\n")
+
+# --- P27: a directory-scoped command in the REGISTRY ITSELF -> exit 1. The ancestor set was computed
+# STRICTLY, so tests/CMakeLists.txt was never checked -- and it is the likeliest file of all for
+# someone to write one in, because it is where the probes live. `link_libraries(doctest::doctest)`
+# there put doctest and vcpkg's shared root on ALL SIX probes while the banner read "6 probe targets
+# verified" (measured, 3.7.3's fourth review round). P25 seeds the root only and covered none of it. -
+_bp_seed("CMakeLists.txt" "add_subdirectory(tests)\n")
+_bp_seed("tests/CMakeLists.txt" "link_libraries(doctest::doctest)\n${_BP_REGISTRY}")
+_bp_run("P27 (directory-scoped command in the registry itself)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P27" "${_bp_out}" "tests/CMakeLists.txt:" TRUE)
+_bp_expect_substr("P27" "${_bp_out}" "without naming one -- directory properties are inherited" TRUE)
+
+# --- P28: the same, in a `.cmake` module the root include()s -> exit 1. The root includes five of
+# them BEFORE add_subdirectory(tests), so a directory-scoped command in any is inherited by every
+# probe. The ancestor set only matched `*/CMakeLists.txt`, so this whole class was open -- the
+# include() bypass one directory up, which this task's own script header calls the flagship one. ----
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
+_bp_seed("CMakeLists.txt" "include(cmake/sanitizers.cmake)\nadd_subdirectory(tests)\n")
+_bp_seed("cmake/sanitizers.cmake" "include_directories(/opt/vcpkg/installed/arm64-osx/include)\n")
+_bp_run("P28 (directory-scoped command in an include()d module)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P28" "${_bp_out}" "cmake/sanitizers.cmake:" TRUE)
+
+# --- P29: a `.cmake` file NOT reachable by include() -> exit 0. The closure is computed from real
+# include() edges, not "every .cmake in the tree": an over-approximation would redden both of this
+# task's own e2e drivers, which is the collision that has recurred every round. -------------------
+_bp_seed("cmake/sanitizers.cmake" "set(AERO_SAN OFF)\n")
+_bp_seed("cmake/unused.cmake" "include_directories(/opt/vcpkg/installed/arm64-osx/include)\n")
+_bp_run("P29 (an unreferenced .cmake, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P29" "${_bp_out}" "probe targets verified" TRUE)
+file(REMOVE "${WORK_DIR}/src/cmake/unused.cmake")
+execute_process(COMMAND "${GIT}" -C "${WORK_DIR}/src" add -A)
+
+# --- P30/P31/P32: the WRAPPED spellings of the three EXCLUDE_FROM_ALL forms -> exit 1. All three
+# greps were line-scoped in a script where every other arm flattens, so each passed wrapped and
+# failed single-line. That is .claude/rules/boundary-guards.md's lesson 3 -- "if one arm flattens,
+# they all must" -- missed inside the delta that wrote that file. ---------------------------------
+_bp_seed("CMakeLists.txt" "add_subdirectory(tests)\n")
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}set_property(DIRECTORY .\n  PROPERTY EXCLUDE_FROM_ALL TRUE)\n")
+_bp_run("P30 (WRAPPED set_property(DIRECTORY ...))" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P30" "${_bp_out}" "without naming one -- directory properties are inherited" TRUE)
+
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}set_directory_properties(\n  PROPERTIES EXCLUDE_FROM_ALL TRUE)\n")
+_bp_run("P31 (WRAPPED set_directory_properties)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P31" "${_bp_out}" "without naming one -- directory properties are inherited" TRUE)
+
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
+_bp_seed("CMakeLists.txt" "add_subdirectory(tests\n  EXCLUDE_FROM_ALL)\n")
+_bp_run("P32 (WRAPPED add_subdirectory ... EXCLUDE_FROM_ALL)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P32" "${_bp_out}" "without naming one -- directory properties are inherited" TRUE)
 _bp_seed("CMakeLists.txt" "add_subdirectory(tests)\n")
 
 # --- Restored -> exit 0. Proves every stage above was the seed talking. ---------------------------
@@ -325,4 +375,4 @@ _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
 _bp_run("P0' (registry restored)" 0 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P0'" "${_bp_out}" "probe targets verified" TRUE)
 
-message(STATUS "boundary-probes.probe_links_e2e: OK -- P0-P26 + a restored-registry stage, 28 in all")
+message(STATUS "boundary-probes.probe_links_e2e: OK -- P0-P32 + a restored-registry stage, 34 in all")

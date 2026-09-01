@@ -81,21 +81,72 @@ prop_targets() {  # $1 = one extracted call
 
 is_probe() { printf '%s\n' "$probes" | grep -qx "$1"; }
 
-# The registry's own directory, and the CMakeLists of every ancestor of it -- derived from
-# PROBE_REGISTRY so neither can drift from it.
+# THE DIRECTORY-SCOPE SET: every file that can push state into the directory scope the probes are
+# defined in. Directory properties are inherited, so include_directories() in any of these reaches
+# every probe's compile line without naming one -- the direction the naming allowlist cannot see.
+#
+# Computed, not listed, and INCLUSIVE OF THE REGISTRY'S OWN DIRECTORY. The first version computed
+# STRICT ancestors, so tests/CMakeLists.txt itself was never checked -- and it is the likeliest file
+# of all for someone to write a directory-scoped command in, because it is where the probes live:
+# `link_libraries(doctest::doctest)` prepended to it put doctest and vcpkg's shared include root on
+# all six probes' compile lines while the banner read "6 probe targets verified" (measured, 3.7.3's
+# fourth review round). The closure also follows include(), because the root includes five
+# cmake/*.cmake modules before add_subdirectory(tests) and a directory-scoped command in any of them
+# is inherited just the same. It follows REAL include() edges rather than taking every .cmake in the
+# tree: an over-approximation would redden this guard's own e2e drivers.
 REGISTRY_DIR="${PROBE_REGISTRY%/CMakeLists.txt}"
 readonly REGISTRY_DIR
-is_registry_ancestor() {
+
+dir_scope_files() {
   _d="$REGISTRY_DIR"
+  _seed="${PROBE_REGISTRY}
+"
   while case "$_d" in */*) true ;; *) false ;; esac; do
     _d="${_d%/*}"
-    [ "$1" = "${_d}/CMakeLists.txt" ] && return 0
+    _seed="${_seed}${_d}/CMakeLists.txt
+"
   done
-  [ "$1" = 'CMakeLists.txt' ] && return 0
-  return 1
+  _seed="${_seed}CMakeLists.txt
+"
+  printf '%s' "$_seed" | sed '/^$/d' | sort -u | expand_includes
 }
 
-# The command name of one extracted call, lower-cased (CMake command names are case-insensitive).
+# The transitive closure of a file set under include(). Paths are resolved by stripping the usual
+# ${...}/ prefixes and trying repo-relative first, then relative to the including file.
+expand_includes() {  # stdin = newline-separated file list
+  _cur="$(cat)"
+  while : ; do
+    _add=''
+    while IFS= read -r _f; do
+      [ -z "$_f" ] && continue
+      [ -f "$_f" ] || continue
+      _base="${_f%/*}"
+      [ "$_base" = "$_f" ] && _base='.'
+      _incs="$(strip_cmake < "$_f" | tr '\n' ' ' \
+               | grep -oiE '(^|[^a-zA-Z0-9_])include[[:space:]]*\([^)]*\)' \
+               | sed -E 's/^[^(]*\([[:space:]]*//; s/\).*$//' | awk '{print $1}' || true)"
+      for _i in $_incs; do
+        case "$_i" in
+          '${'*'}/'*) _i="${_i#*\}/}" ;;
+        esac
+        case "$_i" in *.cmake) ;; *) continue ;; esac
+        _c="$_i"
+        [ -f "$_c" ] || _c="${_base}/${_i}"
+        _c="${_c#./}"
+        [ -f "$_c" ] || continue
+        printf '%s\n' "$_cur" | grep -qxF "$_c" && continue
+        printf '%s\n' "$_add" | grep -qxF "$_c" && continue
+        _add="${_add}${_c}
+"
+      done
+    done <<< "$_cur"
+    [ -z "$_add" ] && break
+    _cur="$(printf '%s\n%s' "$_cur" "$_add" | sed '/^$/d' | sort -u)"
+  done
+  printf '%s\n' "$_cur"
+}
+
+# The command name of one extracted call, lower-cased# The command name of one extracted call, lower-cased (CMake command names are case-insensitive).
 call_name() {  # stdin = one call
   sed -E 's/^[^a-zA-Z_]*//; s/[[:space:]]*\(.*$//' | tr 'A-Z' 'a-z'
 }
@@ -181,6 +232,15 @@ fi
 
 # --- The guard. --------------------------------------------------------------------------------
 violations=""
+DIR_SCOPE_FILES="$(dir_scope_files)"
+readonly DIR_SCOPE_FILES
+# Anti-vacuity: an empty or registry-less scope set would silently disable the whole directory-scope
+# half while everything else still passed. It caught exactly that during this round's own bring-up.
+if ! printf '%s\n' "$DIR_SCOPE_FILES" | grep -qxF "$PROBE_REGISTRY"; then
+  echo "::error::boundary-probe guard: the directory-scope set does not contain ${PROBE_REGISTRY}" >&2
+  echo "         itself, so nothing checks the file the probes live in. Fix dir_scope_files in $0." >&2
+  exit 2
+fi
 count=0
 for probe in $probes; do
   count=$((count + 1))
@@ -243,28 +303,39 @@ while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
   [ "$f" != "$PROBE_REGISTRY" ] && swept=$((swept + 1))
   numbered="$(nl -ba -w1 -s: "$f" | sed 's|#.*||')"
-  # An ANCESTOR of the registry reaches every probe without naming one: directory properties are
-  # inherited, so include_directories() there puts a root on every probe's compile line, and
-  # add_subdirectory(<registry dir> EXCLUDE_FROM_ALL) takes every probe out of `all`. Neither names
-  # a probe, so the allowlist above cannot see them; both are closed here because no ancestor of
-  # tests/ uses any of these commands today.
-  if is_registry_ancestor "$f"; then
-    dhits="$(printf '%s\n' "$numbered" \
-             | grep -iE "(^|[^a-zA-Z0-9_])(include_directories|link_libraries|link_directories)[[:space:]]*\(" || true)"
-    ehits="$(printf '%s\n' "$numbered" \
-             | grep -iE "(^|[^a-zA-Z0-9_])add_subdirectory[[:space:]]*\([^)]*${REGISTRY_DIR}[^)]*EXCLUDE_FROM_ALL" || true)"
-    for hitset in dhits ehits; do
-      eval "hits=\$$hitset"
-      [ -z "$hits" ] && continue
-      while IFS= read -r hit; do
-        [ -z "$hit" ] && continue
-        n="${hit%%:*}"
-        violations="${violations}${f}:${n}: an ancestor of ${PROBE_REGISTRY} reaches every probe without naming one (a directory-scoped include/link command, or add_subdirectory ... EXCLUDE_FROM_ALL)
+  # A FILE IN THE DIRECTORY-SCOPE SET reaches every probe without naming one: directory properties
+  # are inherited, so include_directories() there puts a root on every probe's compile line, and
+  # add_subdirectory(<registry dir> EXCLUDE_FROM_ALL) takes every probe out of `all`.
+  #
+  # READ FROM THE FLATTENED FILE, like every other arm here. The first version grepped numbered
+  # lines, so all three keyword checks were line-scoped in a script where everything else flattens --
+  # `set_property(DIRECTORY .\n  PROPERTY EXCLUDE_FROM_ALL TRUE)` and both siblings passed wrapped
+  # and failed single-line. That is .claude/rules/boundary-guards.md's lesson 3, missed inside the
+  # delta that wrote it.
+  #
+  # THIS ARM IS A DENYLIST AND CANNOT BE COMPLETE -- add_compile_options(-I...), add_definitions and
+  # a CMAKE_CXX_FLAGS mutation all reach the same compile line and are not listed. Enumerating them
+  # is the game rounds 1-4 lost. What closes the class is the ctest case
+  # boundary-probes.probe_compile_line, which reads compile_commands.json and asserts the property
+  # directly. This arm stays because it names the vector at push time, before any build runs.
+  if printf '%s\n' "$DIR_SCOPE_FILES" | grep -qxF "$f"; then
+    flat="$(flat_file "$f")"
+    dhit="$(printf '%s\n' "$flat" \
+            | grep -oiE "(^|[^a-zA-Z0-9_])(include_directories|link_directories|link_libraries)[[:space:]]*\(" \
+            | head -1 || true)"
+    ehit="$(printf '%s\n' "$flat" \
+            | grep -oiE "(^|[^a-zA-Z0-9_])(set_property[[:space:]]*\([[:space:]]*DIRECTORY|set_directory_properties[[:space:]]*\(|add_subdirectory[[:space:]]*\([^)]*${REGISTRY_DIR}[^)]*)[^)]*EXCLUDE_FROM_ALL" \
+            | head -1 || true)"
+    for _hv in "$dhit" "$ehit"; do
+      [ -z "$_hv" ] && continue
+      _cmd="$(printf '%s\n' "$_hv" | sed -E 's/^[^a-zA-Z_]*//; s/[[:space:]]*\(.*$//' | tr 'A-Z' 'a-z')"
+      line="$(printf '%s\n' "$numbered" | grep -iE "(^|[^a-zA-Z0-9_])${_cmd}[[:space:]]*\(" \
+              | head -1 | cut -d: -f1 || true)"
+      violations="${violations}${f}:${line:-1}: '${_cmd}' here reaches every probe in ${PROBE_REGISTRY} without naming one -- directory properties are inherited
 "
-      done <<< "$hits"
     done
   fi
-  # Cheap reject: the overwhelming majority of CMake files never mention a probe, and only the ones
+  # Cheap reject:  # Cheap reject: the overwhelming majority of CMake files never mention a probe, and only the ones
   # that do pay for call extraction.
   printf '%s\n' "$numbered" | grep -qE "(^|[^a-zA-Z0-9_])(${probe_alt})([^a-zA-Z0-9_]|$)" || continue
   cand="$(all_calls_file "$f" \

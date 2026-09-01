@@ -1110,3 +1110,23 @@ else()
     message(STATUS "boundary-probes: probe_links_e2e SKIPPED (Windows, or bash/git not found) -- the "
                    "guard itself still runs in CI's lint job on Linux")
 endif()
+
+# ---------------------------------------------------------------------------------------------
+# The one check that reads the PROPERTY instead of a textual prediction of it (task 3.7.3, fourth
+# code-review round). Every arm of both boundary guards infers, from the CMake sources, that no
+# probe's compile line carries vcpkg's shared include root. This case reads the compile lines.
+#
+# It exists because the "reaches a target without naming it" direction cannot be inverted the way
+# the naming direction was: CMake pushes state into a directory scope through include_directories,
+# add_compile_options, add_definitions, set_property(DIRECTORY ...), a CMAKE_<LANG>_FLAGS mutation,
+# a toolchain file and a preset's cache variables -- and the last two appear in no CMakeLists at all,
+# so no textual guard can ever read them. add_compile_options(-I/opt/vcpkg/.../include) at the root
+# was measured reaching every probe's compile line while both textual guards exited 0.
+#
+# UNGATED by the tools flags and by NOT WIN32 -- it spawns no shell and no git. It self-skips when
+# compile_commands.json is absent, which is how multi-config generators (Visual Studio, Xcode) are
+# handled: CMAKE_EXPORT_COMPILE_COMMANDS is ON in every preset, but those generators do not write
+# the file.
+add_test(NAME boundary-probes.probe_compile_line COMMAND ${CMAKE_COMMAND}
+    -DDB=${CMAKE_BINARY_DIR}/compile_commands.json
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/probe_compile_line.cmake)

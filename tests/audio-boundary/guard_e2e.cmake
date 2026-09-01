@@ -174,6 +174,8 @@ function(_ab_base)
     # tools/ is not part of the base tree; S6i creates it and X5's vacuity check depends on the
     # sweep having nothing left to walk once engine/CMakeLists.txt goes.
     file(REMOVE_RECURSE "${WORK_DIR}/src/tools")
+    file(REMOVE_RECURSE "${WORK_DIR}/src/cmake")
+    file(REMOVE "${WORK_DIR}/src/CMakeLists.txt")   # S6j seeds a root; X5 needs the sweep empty
     _ab_write("engine/CMakeLists.txt"                                    "${_AB_ENGINE_CMAKE}")
     _ab_write("engine/assets/CMakeLists.txt"                             "${_AB_ASSETS_CMAKE}")
     _ab_write("engine/assets/src/cooked_audio.cpp"                       "${_AB_COOKED_AUDIO_CPP}")
@@ -378,7 +380,7 @@ _ab_base()
 _ab_seed("engine/CMakeLists.txt" "include_directories(/opt/vcpkg/installed/arm64-osx/include)\n${_AB_ENGINE_CMAKE}")
 _ab_run("S6h (directory-scoped include_directories in an ancestor)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S6h" "${_ab_out}" "engine/CMakeLists.txt:" TRUE)
-_ab_expect_substr("S6h" "${_ab_out}" "reaches it without naming it" TRUE)
+_ab_expect_substr("S6h" "${_ab_out}" "without naming it -- directory properties are inherited by everything below" TRUE)
 
 # --- S6i: the SAME command in a file that is NOT an ancestor -> exit 0. The ancestor check is
 # scoped, not a repo-wide ban: include_directories elsewhere in the tree is ordinary CMake and
@@ -387,6 +389,29 @@ _ab_base()
 _ab_seed("tools/CMakeLists.txt" "include_directories(/opt/vcpkg/installed/arm64-osx/include)\n")
 _ab_run("S6i (the same command in a NON-ancestor, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S6i" "${_ab_out}" "audio-boundary guard: OK" TRUE)
+
+# --- S6j: a directory-scoped command in a `.cmake` module the root include()s -> exit 1. The
+# ancestor set only matched `*/CMakeLists.txt`, so the five cmake/*.cmake modules the root includes
+# before add_subdirectory(engine) were outside it entirely -- the include() bypass one directory up.
+_ab_base()
+_ab_write("cmake/sanitizers.cmake" "include_directories(/opt/vcpkg/installed/arm64-osx/include)\n")
+_ab_seed("CMakeLists.txt" "include(cmake/sanitizers.cmake)\nadd_subdirectory(engine)\n")
+_ab_run("S6j (directory-scoped command in an include()d module)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6j" "${_ab_out}" "cmake/sanitizers.cmake:" TRUE)
+
+# --- S6k: a `.cmake` file NOT reachable by include() -> exit 0. The closure follows real include()
+# edges rather than taking every .cmake in the tree, which would redden this driver itself. --------
+_ab_base()
+_ab_seed("cmake/unused.cmake" "include_directories(/opt/vcpkg/installed/arm64-osx/include)\n")
+_ab_run("S6k (an unreferenced .cmake, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6k" "${_ab_out}" "audio-boundary guard: OK" TRUE)
+
+# --- S6l: the WRAPPED spelling of the directory-scoped command -> exit 1. The arm grepped numbered
+# lines while every other arm in the script flattens. ----------------------------------------------
+_ab_base()
+_ab_seed("engine/CMakeLists.txt" "include_directories(\n  /opt/vcpkg/installed/arm64-osx/include)\n${_AB_ENGINE_CMAKE}")
+_ab_run("S6l (WRAPPED directory-scoped command)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6l" "${_ab_out}" "without naming it -- directory properties are inherited by everything below" TRUE)
 
 # --- S2f: a command outside the guarded-file allowlist, INSIDE a guarded file -> exit 1. The
 # in-file half of the same inversion: set_source_files_properties names no target at all, so no
@@ -510,4 +535,4 @@ _ab_run("S0' (base restored)" 0 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S0'" "${_ab_out}" "audio-boundary guard: OK" TRUE)
 
 message(STATUS "audio-boundary.guard_e2e: OK -- S0-S11 (with S2b-S2e, S4b, S5b, S6b-S6e) + X1-X5 "
-               "+ a restored-tree stage, 34 in all")
+               "+ a restored-tree stage, 37 in all")

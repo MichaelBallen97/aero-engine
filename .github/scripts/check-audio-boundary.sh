@@ -159,6 +159,7 @@ cd "$(git rev-parse --show-toplevel)"
 # Strip CMake `#` line comments. (Bracket comments #[[...]] are not used in this tree; a banned
 # command inside one would FALSE-POSITIVE, which is the fail-loud direction for a textual guard.)
 strip_cmake() { sed 's|#.*||'; }
+flat_file_text() { strip_cmake < "$1" | tr '\n' ' '; }
 
 # Flatten a comment-stripped CMake file to one line and emit every <command>(...) call as one line.
 # The three files' calls contain no nested parens and no ')' in a string — self-test 3 pins the
@@ -185,18 +186,67 @@ is_vcpkg_free_target() {
 
 # Is $1 one of the guarded CMakeLists themselves? Derived from the one roster, so Part 1d's skip
 # list cannot drift away from the file list the way a hardcoded `case` did.
-# The CMakeLists of every ancestor directory of a guarded target -- derived from the one roster, so
-# it cannot drift. engine/audio/CMakeLists.txt yields engine/CMakeLists.txt and CMakeLists.txt.
-is_ancestor_list() {
+# THE DIRECTORY-SCOPE SET: every file that can push state into the directory scope a guarded target
+# is defined in. CMake's directory properties are inherited, so include_directories() in ANY of these
+# reaches the target without ever naming it -- the one direction the naming allowlist structurally
+# cannot see.
+#
+# It is computed, not listed, and it covers two things a hand-written list of `*/CMakeLists.txt`
+# ancestors did not (both measured escaping, 3.7.3's fourth review round):
+#   * a `.cmake` module `include()`d from an ancestor. The root CMakeLists includes five of them
+#     BEFORE add_subdirectory(engine), so `include_directories(...)` in cmake/sanitizers.cmake is
+#     inherited by all three guarded targets. That is the `include()` bypass one directory up -- the
+#     same vector this script's own header calls the flagship one.
+#   * the closure is transitive, so a module that includes another module is covered too.
+# The guarded files themselves are NOT in this set: Part 1e already allows them only three commands.
+dir_scope_files() {
+  _seed=''
   for _g in "${VCPKG_FREE_CMAKE[@]}"; do
     _d="${_g%/CMakeLists.txt}"
     while case "$_d" in */*) true ;; *) false ;; esac; do
       _d="${_d%/*}"
-      [ "$1" = "${_d}/CMakeLists.txt" ] && return 0
+      _seed="${_seed}${_d}/CMakeLists.txt
+"
     done
-    [ "$1" = 'CMakeLists.txt' ] && return 0
+    _seed="${_seed}CMakeLists.txt
+"
   done
-  return 1
+  printf '%s' "$_seed" | sed '/^$/d' | sort -u | expand_includes
+}
+
+# The transitive closure of a file set under include(). Paths are resolved by stripping the usual
+# ${...}/ prefixes and trying repo-relative first, then relative to the including file.
+expand_includes() {  # stdin = newline-separated file list
+  _cur="$(cat)"
+  while : ; do
+    _add=''
+    while IFS= read -r _f; do
+      [ -z "$_f" ] && continue
+      [ -f "$_f" ] || continue
+      _base="${_f%/*}"
+      [ "$_base" = "$_f" ] && _base='.'
+      _incs="$(strip_cmake < "$_f" | tr '\n' ' ' \
+               | grep -oiE '(^|[^a-zA-Z0-9_])include[[:space:]]*\([^)]*\)' \
+               | sed -E 's/^[^(]*\([[:space:]]*//; s/\).*$//' | awk '{print $1}' || true)"
+      for _i in $_incs; do
+        case "$_i" in
+          '${'*'}/'*) _i="${_i#*\}/}" ;;
+        esac
+        case "$_i" in *.cmake) ;; *) continue ;; esac
+        _c="$_i"
+        [ -f "$_c" ] || _c="${_base}/${_i}"
+        _c="${_c#./}"
+        [ -f "$_c" ] || continue
+        printf '%s\n' "$_cur" | grep -qxF "$_c" && continue
+        printf '%s\n' "$_add" | grep -qxF "$_c" && continue
+        _add="${_add}${_c}
+"
+      done
+    done <<< "$_cur"
+    [ -z "$_add" ] && break
+    _cur="$(printf '%s\n%s' "$_cur" "$_add" | sed '/^$/d' | sort -u)"
+  done
+  printf '%s\n' "$_cur"
 }
 
 is_guarded_file() {
@@ -447,6 +497,7 @@ if printf '// wraps a ma_device\n' | sed 's|//.*||' | grep -qE "$MA_IDENTIFIER_R
 fi
 
 violations=""
+readonly DIR_SCOPE_FILES="$(dir_scope_files)"
 
 # --- Part 1a: no vcpkg hook command in the three CMakeLists. -----------------------------------
 for f in "${VCPKG_FREE_CMAKE[@]}"; do
@@ -550,16 +601,16 @@ while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
   swept=$((swept + 1))
   numbered="$(nl -ba -w1 -s: "$f" | sed 's|#.*||')"
-  # An ancestor may not open a directory-scoped hole above the guarded targets.
-  if is_ancestor_list "$f"; then
-    dhits="$(printf '%s\n' "$numbered" | grep -iE "$DIR_SCOPED_RE" || true)"
-    if [ -n "$dhits" ]; then
-      while IFS= read -r hit; do
-        [ -z "$hit" ] && continue
-        n="${hit%%:*}"
-        violations="${violations}${f}:${n}: a directory-scoped include/link command in an ancestor of a vcpkg-free target reaches it without naming it
+  # A file in the directory-scope set may not open a directory-scoped hole above the guarded targets.
+  if printf '%s\n' "$DIR_SCOPE_FILES" | grep -qxF "$f"; then
+    # FLATTENED, like every other arm here -- a line-scoped keyword grep misses a wrapped call.
+    dhit="$(flat_file_text "$f" | grep -oiE "$DIR_SCOPED_RE" | head -1 || true)"
+    if [ -n "$dhit" ]; then
+      _cmd="$(printf '%s\n' "$dhit" | sed -E 's/^[^a-zA-Z_]*//; s/[[:space:]]*\(.*$//' | tr 'A-Z' 'a-z')"
+      line="$(printf '%s\n' "$numbered" | grep -iE "(^|[^a-zA-Z0-9_])${_cmd}[[:space:]]*\(" \
+              | head -1 | cut -d: -f1 || true)"
+      violations="${violations}${f}:${line:-1}: '${_cmd}' here reaches a vcpkg-free target without naming it -- directory properties are inherited by everything below
 "
-      done <<< "$dhits"
     fi
   fi
   for tgt in $VCPKG_FREE_TARGETS; do
