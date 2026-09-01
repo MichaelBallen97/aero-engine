@@ -171,6 +171,9 @@ namespace engine::assets {}
 # DELETIONS the X-stages make. `.git` lives beside engine/, not inside it, so it survives.
 function(_ab_base)
     file(REMOVE_RECURSE "${WORK_DIR}/src/engine")
+    # tools/ is not part of the base tree; S6i creates it and X5's vacuity check depends on the
+    # sweep having nothing left to walk once engine/CMakeLists.txt goes.
+    file(REMOVE_RECURSE "${WORK_DIR}/src/tools")
     _ab_write("engine/CMakeLists.txt"                                    "${_AB_ENGINE_CMAKE}")
     _ab_write("engine/assets/CMakeLists.txt"                             "${_AB_ASSETS_CMAKE}")
     _ab_write("engine/assets/src/cooked_audio.cpp"                       "${_AB_COOKED_AUDIO_CPP}")
@@ -366,6 +369,25 @@ _ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}target_compile_options(${_A
 _ab_run("S6g (an un-enumerated command naming a guarded target)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S6g" "${_ab_out}" "is named outside its own CMakeLists" TRUE)
 
+# --- S6h: a directory-scoped include_directories in an ANCESTOR -> exit 1. The one class the
+# name-based sweep structurally cannot see: CMake's directory properties are inherited, so this puts
+# vcpkg's root on every target defined below it while naming none of them. Closed by an ancestor
+# check derived from the roster rather than left as documented residual, because no ancestor of the
+# three guarded directories uses these commands today. -------------------------------------------
+_ab_base()
+_ab_seed("engine/CMakeLists.txt" "include_directories(/opt/vcpkg/installed/arm64-osx/include)\n${_AB_ENGINE_CMAKE}")
+_ab_run("S6h (directory-scoped include_directories in an ancestor)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6h" "${_ab_out}" "engine/CMakeLists.txt:" TRUE)
+_ab_expect_substr("S6h" "${_ab_out}" "reaches it without naming it" TRUE)
+
+# --- S6i: the SAME command in a file that is NOT an ancestor -> exit 0. The ancestor check is
+# scoped, not a repo-wide ban: include_directories elsewhere in the tree is ordinary CMake and
+# reaches nothing guarded. ------------------------------------------------------------------------
+_ab_base()
+_ab_seed("tools/CMakeLists.txt" "include_directories(/opt/vcpkg/installed/arm64-osx/include)\n")
+_ab_run("S6i (the same command in a NON-ancestor, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6i" "${_ab_out}" "audio-boundary guard: OK" TRUE)
+
 # --- S2f: a command outside the guarded-file allowlist, INSIDE a guarded file -> exit 1. The
 # in-file half of the same inversion: set_source_files_properties names no target at all, so no
 # target-scoped arm could ever have seen it, and it reaches an external header through the source. -
@@ -488,4 +510,4 @@ _ab_run("S0' (base restored)" 0 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S0'" "${_ab_out}" "audio-boundary guard: OK" TRUE)
 
 message(STATUS "audio-boundary.guard_e2e: OK -- S0-S11 (with S2b-S2e, S4b, S5b, S6b-S6e) + X1-X5 "
-               "+ a restored-tree stage, 32 in all")
+               "+ a restored-tree stage, 34 in all")

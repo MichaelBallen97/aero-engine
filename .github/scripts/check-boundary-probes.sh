@@ -81,6 +81,20 @@ prop_targets() {  # $1 = one extracted call
 
 is_probe() { printf '%s\n' "$probes" | grep -qx "$1"; }
 
+# The registry's own directory, and the CMakeLists of every ancestor of it -- derived from
+# PROBE_REGISTRY so neither can drift from it.
+REGISTRY_DIR="${PROBE_REGISTRY%/CMakeLists.txt}"
+readonly REGISTRY_DIR
+is_registry_ancestor() {
+  _d="$REGISTRY_DIR"
+  while case "$_d" in */*) true ;; *) false ;; esac; do
+    _d="${_d%/*}"
+    [ "$1" = "${_d}/CMakeLists.txt" ] && return 0
+  done
+  [ "$1" = 'CMakeLists.txt' ] && return 0
+  return 1
+}
+
 # The command name of one extracted call, lower-cased (CMake command names are case-insensitive).
 call_name() {  # stdin = one call
   sed -E 's/^[^a-zA-Z_]*//; s/[[:space:]]*\(.*$//' | tr 'A-Z' 'a-z'
@@ -229,6 +243,27 @@ while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
   [ "$f" != "$PROBE_REGISTRY" ] && swept=$((swept + 1))
   numbered="$(nl -ba -w1 -s: "$f" | sed 's|#.*||')"
+  # An ANCESTOR of the registry reaches every probe without naming one: directory properties are
+  # inherited, so include_directories() there puts a root on every probe's compile line, and
+  # add_subdirectory(<registry dir> EXCLUDE_FROM_ALL) takes every probe out of `all`. Neither names
+  # a probe, so the allowlist above cannot see them; both are closed here because no ancestor of
+  # tests/ uses any of these commands today.
+  if is_registry_ancestor "$f"; then
+    dhits="$(printf '%s\n' "$numbered" \
+             | grep -iE "(^|[^a-zA-Z0-9_])(include_directories|link_libraries|link_directories)[[:space:]]*\(" || true)"
+    ehits="$(printf '%s\n' "$numbered" \
+             | grep -iE "(^|[^a-zA-Z0-9_])add_subdirectory[[:space:]]*\([^)]*${REGISTRY_DIR}[^)]*EXCLUDE_FROM_ALL" || true)"
+    for hitset in dhits ehits; do
+      eval "hits=\$$hitset"
+      [ -z "$hits" ] && continue
+      while IFS= read -r hit; do
+        [ -z "$hit" ] && continue
+        n="${hit%%:*}"
+        violations="${violations}${f}:${n}: an ancestor of ${PROBE_REGISTRY} reaches every probe without naming one (a directory-scoped include/link command, or add_subdirectory ... EXCLUDE_FROM_ALL)
+"
+      done <<< "$hits"
+    done
+  fi
   # Cheap reject: the overwhelming majority of CMake files never mention a probe, and only the ones
   # that do pay for call extraction.
   printf '%s\n' "$numbered" | grep -qE "(^|[^a-zA-Z0-9_])(${probe_alt})([^a-zA-Z0-9_]|$)" || continue

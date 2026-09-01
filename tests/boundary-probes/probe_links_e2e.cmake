@@ -109,6 +109,7 @@ file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}/src/tests")
 execute_process(COMMAND "${GIT}" init -q . WORKING_DIRECTORY "${WORK_DIR}/src")
 _bp_seed("engine/CMakeLists.txt" "${_BP_OTHER}")
+_bp_seed("CMakeLists.txt" "add_subdirectory(tests)\n")
 _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
 
 # --- P0: clean registry -> exit 0. Also the proof that aero_not_a_probe is correctly ignored. ------
@@ -248,10 +249,12 @@ _bp_expect_substr("P17" "${_bp_out}" "probe targets verified" TRUE)
 # printed in the banner but never asserted, so a tree with no other CMake files -- or a rotted
 # pathspec -- reported "0 ... swept" and exited 0. ------------------------------------------------
 file(REMOVE "${WORK_DIR}/src/engine/CMakeLists.txt")
+file(REMOVE "${WORK_DIR}/src/CMakeLists.txt")   # the registry's ancestor counts as swept too
 execute_process(COMMAND "${GIT}" -C "${WORK_DIR}/src" add -A)
 _bp_run("P18 (sweep walked zero other CMake files)" 2 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P18" "${_bp_out}" "walked ZERO other CMake files" TRUE)
 _bp_seed("engine/CMakeLists.txt" "${_BP_OTHER}")
+_bp_seed("CMakeLists.txt" "add_subdirectory(tests)\n")
 
 # --- P19: a file that is TRACKED but ABSENT -> exit 0, not a crash. The sibling aborted outright on
 # this; both now skip it, so the two guards agree on the ordinary middle of a rename. -------------
@@ -301,9 +304,25 @@ _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}\nadd_library(aero_script_${_BP_
 _bp_run("P24 (a new probe + a filthy non-probe target, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P24" "${_bp_out}" "probe targets verified" TRUE)
 
+# --- P25/P26: an ANCESTOR of the registry reaching every probe without naming one. Directory
+# properties are inherited, so include_directories() at the root puts a root on every probe's
+# compile line; add_subdirectory(tests EXCLUDE_FROM_ALL) takes every probe out of `all`. Neither
+# names a probe, so the allowlist cannot see them -- these are what keeps the guard's claim about
+# `all` honest without asserting a spelling count. ------------------------------------------------
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
+_bp_seed("CMakeLists.txt" "include_directories(/opt/vcpkg/installed/arm64-osx/include)\nadd_subdirectory(tests)\n")
+_bp_run("P25 (directory-scoped include_directories in an ancestor)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P25" "${_bp_out}" "reaches every probe without naming one" TRUE)
+
+_bp_seed("CMakeLists.txt" "add_subdirectory(tests EXCLUDE_FROM_ALL)\n")
+_bp_run("P26 (add_subdirectory tests EXCLUDE_FROM_ALL)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P26" "${_bp_out}" "reaches every probe without naming one" TRUE)
+
+_bp_seed("CMakeLists.txt" "add_subdirectory(tests)\n")
+
 # --- Restored -> exit 0. Proves every stage above was the seed talking. ---------------------------
 _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
 _bp_run("P0' (registry restored)" 0 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P0'" "${_bp_out}" "probe targets verified" TRUE)
 
-message(STATUS "boundary-probes.probe_links_e2e: OK -- P0-P24 + a restored-registry stage, 26 in all")
+message(STATUS "boundary-probes.probe_links_e2e: OK -- P0-P26 + a restored-registry stage, 28 in all")

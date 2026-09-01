@@ -138,6 +138,13 @@ readonly MA_IDENTIFIER_RE='(^|[^a-zA-Z0-9_])ma_'
 # check-boundary-probes.sh uses, so the two guards cannot drift apart.
 readonly LINK_TOKEN_RE='^(aero_[a-z_]+|aero::[a-z_]+|PUBLIC|PRIVATE|INTERFACE)$'
 
+# Directory-scoped commands reach a target WITHOUT NAMING IT: CMake's directory properties are
+# inherited, so include_directories() / link_libraries() / link_directories() in any ANCESTOR
+# CMakeLists apply to every target defined below it. That is the one class the name-based sweep
+# cannot see, and it is closed here rather than written down as residual, because no ancestor of the
+# three guarded directories uses any of them today.
+readonly DIR_SCOPED_RE='(^|[^a-zA-Z0-9_])(include_directories|link_libraries|link_directories)[[:space:]]*\('
+
 # THE ONLY COMMANDS A VCPKG-FREE CMakeLists MAY CONTAIN. This is an ALLOWLIST, and it replaces the
 # losing half of a three-round argument: BANNED_CMAKE_RE below enumerates the commands known to be
 # dangerous, and three consecutive review rounds each closed the instances it named and left the CLASS
@@ -178,6 +185,20 @@ is_vcpkg_free_target() {
 
 # Is $1 one of the guarded CMakeLists themselves? Derived from the one roster, so Part 1d's skip
 # list cannot drift away from the file list the way a hardcoded `case` did.
+# The CMakeLists of every ancestor directory of a guarded target -- derived from the one roster, so
+# it cannot drift. engine/audio/CMakeLists.txt yields engine/CMakeLists.txt and CMakeLists.txt.
+is_ancestor_list() {
+  for _g in "${VCPKG_FREE_CMAKE[@]}"; do
+    _d="${_g%/CMakeLists.txt}"
+    while case "$_d" in */*) true ;; *) false ;; esac; do
+      _d="${_d%/*}"
+      [ "$1" = "${_d}/CMakeLists.txt" ] && return 0
+    done
+    [ "$1" = 'CMakeLists.txt' ] && return 0
+  done
+  return 1
+}
+
 is_guarded_file() {
   for _g in "${VCPKG_FREE_CMAKE[@]}"; do
     [ "$1" = "$_g" ] && return 0
@@ -529,6 +550,18 @@ while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
   swept=$((swept + 1))
   numbered="$(nl -ba -w1 -s: "$f" | sed 's|#.*||')"
+  # An ancestor may not open a directory-scoped hole above the guarded targets.
+  if is_ancestor_list "$f"; then
+    dhits="$(printf '%s\n' "$numbered" | grep -iE "$DIR_SCOPED_RE" || true)"
+    if [ -n "$dhits" ]; then
+      while IFS= read -r hit; do
+        [ -z "$hit" ] && continue
+        n="${hit%%:*}"
+        violations="${violations}${f}:${n}: a directory-scoped include/link command in an ancestor of a vcpkg-free target reaches it without naming it
+"
+      done <<< "$dhits"
+    fi
+  fi
   for tgt in $VCPKG_FREE_TARGETS; do
     hits="$(printf '%s\n' "$numbered" | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" || true)"
     [ -z "$hits" ] && continue
