@@ -43,12 +43,33 @@ is the precondition every other claim on this page rests on.
 **Rule 2's "exactly one" is now enforced, not merely stated.**
 `.github/scripts/check-boundary-probes.sh` (task 3.7.3, taking the handoff 0.2.3 opened and
 0.4.5 §7.1 routed there by name) reads every probe's link line and refuses anything but one
-`aero::` library, `PRIVATE` — including `PUBLIC`/`INTERFACE` visibility, an `*_internal`
-target, two libraries, zero calls, and a **second** call, which appends rather than replaces.
-The probe list is **derived** from `tests/CMakeLists.txt`'s `add_library(… OBJECT …)` lines,
+`aero::` library with one `PRIVATE` — `PUBLIC`/`INTERFACE` visibility, an `*_internal`
+target, two libraries, zero calls, a **second** call (which appends rather than replaces),
+**the plain keyword-less signature** (rejecting `PUBLIC` is not the same as requiring
+`PRIVATE`; the bare form is CMake's transitive one), and **`EXCLUDE_FROM_ALL`**, which leaves
+a probe never built and therefore asserting nothing. It also sweeps every other tracked CMake
+file, because CMake ≥ 3.13 lets any CMakeLists append to a target defined elsewhere. The
+probe list is **derived** from `tests/CMakeLists.txt`'s `add_library(… OBJECT …)` lines,
 never enumerated in the script, so a new probe is covered the moment it lands and no roster
 has to be maintained. Both guards are proved red-on-violation by hermetic ctest cases
 (`audio-boundary.guard_e2e`, `boundary-probes.probe_links_e2e`).
+
+**Four lessons from 3.7.3's code-review round, which found four silently evadable
+predicates and three stages that proved less than they claimed:**
+
+1. **Match the predicate, not the spelling in front of you.** An `*_internal` refusal that
+   compared against the `aero::` alias let the raw `aero_scene_internal` through — and the
+   raw name is what anyone copying from the defining `CMakeLists.txt` would write.
+2. **Ask what follows the thing you banned.** `include()` was missing from a banned-command
+   list, and *nothing* in that guard read an included file, so two lines relocated a
+   `find_package` out of the guard's reach entirely.
+3. **If one arm flattens, they all must.** A line-scoped sweep beside flattening siblings
+   missed a call wrapped between the parenthesis and the target name.
+4. **Mutate narrowly when proving a stage asserts.** A stage passed over an arm mutated to
+   admit exactly what it forbids, because its seed also tripped a *different* arm and the
+   assertion pinned only the shared message. Pin the offending **token**; and note that a
+   self-test cannot pin that a scan *uses* a helper when the helper flattens its own input —
+   only an e2e stage can.
 
 **R12 — the limitation that makes probes fragile.** vcpkg installs every port into ONE
 shared per-triplet `include/` directory. A `PRIVATE` link therefore makes a stray

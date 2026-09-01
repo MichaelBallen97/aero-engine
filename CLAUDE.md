@@ -14,8 +14,10 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 Epic 3.7 (Audio playback v0 · audio) closes with 3.7.1 MERGED (PR #88, `4892e65`, macOS-validated
 ✅ 11/11), 3.7.2 MERGED (PR #89, `b398d17`, macOS-validated — 47 of 53 records, the 6 open ones each
 needing ears or the editor) and **3.7.3 COMPLETE IN CODE on
-`feat/3.7.3-audio-boundary-ci-guard`** — eight commits, the full local gate green, the S/X/P seed
-matrices run as ctest stages, and the break-the-guard meta-proof run four ways.
+`feat/3.7.3-audio-boundary-ci-guard`** — eleven commits, the full local gate green, the S/X/P seed
+matrices run as ctest stages, the break-the-guard meta-proof run against every stage, and a
+code-review round closed (ten findings, three blocking — see below; four of the guard's predicates
+were silently evadable and three of its own stages proved less than they claimed).
 
 Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4** (PBR materials),
 **3.5** (Skeletal animation), **3.6** (Rendering essentials) and **3.7** (Audio playback v0) are all
@@ -57,12 +59,12 @@ the **only compile-time enforcement the audio layer has that survives Release**;
 read vcpkg-free in Release too, for the same reason. Proven both ways through the real CMake target:
 a seeded `#include <miniaudio.h>` fails `'miniaudio.h' file not found` in **both** presets.
 
-**The gate, measured on the tree at `931404d`:** 170/170 on both macOS presets with
-`AERO_REQUIRE_GPU=1` (Debug 236.54 s, Release 65.86 s); fresh `-G Ninja` reduced configurations
+**The gate, re-measured after the code-review round:** 170/170 on both macOS presets with
+`AERO_REQUIRE_GPU=1` (Debug 239.32 s, Release 64.59 s); fresh `-G Ninja` reduced configurations
 **78** and **91**, each having built and RUN `aero_tests`, `aero_editor_shell_test`,
 `aero_editor_imgui_test` and `aero_cooker`; **`ctest -N` 170 / 78 / 91 — `+2` in all three, in
 lockstep**; doctest **1169 / 1746 / 143 / 34 / 29 / 7 / 28 — UNMOVED in all seven**; **eight** guards
-exit 0 (audio **11 / 3 / 52**, probes **6**, math **450**, platform **83**, scene **83**, rhi 144,
+exit 0 (audio **11 / 3 / 52**, probes **6 / 54**, math **450**, platform **83**, scene **83**, rhi 144,
 golden-rule 146, project-no-delete **A=6 / B=75**); clang-format and clang-tidy clean **by exit
 code**; the manifest **untouched at 20 hash lines**. **This task INVERTS the usual pattern — `ctest
 -N` moves while every doctest total stays put** (the probe has no `TEST_CASE`, the drivers are
@@ -71,16 +73,36 @@ code**; the manifest **untouched at 20 hash lines**. **This task INVERTS the usu
 blocks are byte-unchanged. The three `engine/**` edits are **comment-only**, asserted by diff.
 
 **The proofs are ctest STAGES, not plan prose, because `docs/plans/` is gitignored and a proof that
-lives only there ceases to exist at merge.** `audio-boundary.guard_e2e` runs S0–S10 + X1–X4 + a
-restored-tree stage (16); `boundary-probes.probe_links_e2e` runs P0–P9 + a restored stage (11). Every
-stage asserts an **exact** exit code, every seed is read back **and** asserted present in the index
-before any verdict is trusted, and both were run instrumented so all 27 observed codes were seen
-rather than inferred. **The meta-proof was run four ways** and is the reason any of it is believable:
-narrowing `AUDIO_ROOTS` to one entry reddens **S8 alone** while the guard stays green on the real tree
-(scanned silently 11 → 9); silencing Part 1c reddens **S5 alone**, likewise green on the real tree;
-silencing the probes guard's second-TLL-call arm reddens **P2 alone** with its own self-tests still
-passing; gutting `check_tokens` reddens **P0** via its own self-test. Plus X5/X6: stripping either
-regex boundary is an **exit 2 on a clean tree**, not a red scan.
+lives only there ceases to exist at merge.** `audio-boundary.guard_e2e` runs 23 stages,
+`boundary-probes.probe_links_e2e` runs 14. Every stage asserts an **exact** exit code, every seed is
+read back **and** asserted present in the index before any verdict is trusted, and both were run
+instrumented so all 37 observed codes were seen rather than inferred.
+
+**THE CODE-REVIEW ROUND IS THE PART TO REMEMBER: ten findings, and four predicates were silently
+evadable while reading as complete.** An `*_internal` refusal that matched only the `aero::` alias
+while the **raw** `aero_scene_internal` (which exists, and is what anyone copying from the defining
+file would write) sailed through; `include()` missing from the banned list, with **nothing in prong A
+following an `include()`**, so two lines moved a `find_package` out of reach entirely; a
+cross-directory sweep that was **line-scoped while its siblings flattened**, so a wrapped call showed
+it no target; and a probes guard that rejected `PUBLIC`/`INTERFACE` but **never required `PRIVATE`**,
+so CMake's plain transitive signature passed under a banner claiming PRIVATE. Plus `EXCLUDE_FROM_ALL`
+on a probe, and no cross-file sweep at all in the probes guard. **The shape: each check was written
+against the spelling in front of it rather than against the predicate**, and a guard green by
+construction gives no feedback when it is merely narrow.
+
+**AND THREE E2E STAGES PROVED LESS THAN THEY CLAIMED — the 2.1.2 species inside this task's own
+proof.** Stage S5 passed over a *narrowly* mutated Part 1c (allowlisting any `${`-rooted include dir,
+the exact rot the arm prevents) because its seed also carried the keyword `SYSTEM`, which was itself
+producing a violation, so the generic "reaches outside the subsystem" assertion was satisfied by the
+**keyword** and said nothing about the **path**. The original meta-proof had used a coarse mutation
+any assertion would have caught. **The rule that outlives this: mutate the arm the way a careless edit
+would, not the way a demolition would, and pin the offending TOKEN rather than the arm's generic
+sentence.** Every stage now redden-proved alone under a one-line mutation.
+
+**One structural limit, because it looks like an oversight and is not:** a self-test can pin that
+`extract_calls | tll_target` reads a wrapped call, but can **never** pin that the sweep calls them
+rather than grepping line by line — `extract_calls` flattens its own input, so the helpers look
+correct under exactly the mutation that matters. Only stage S6b pins that.
 
 **Two things found by building it that the plan had not predicted.** (1) **A `.cmake` e2e driver is
 inside the very set prong A-d sweeps**, so `guard_e2e.cmake`'s fixture strings — literal
@@ -91,10 +113,19 @@ as a permanent hole in a sweep whose whole value is being universal. (2) **A Git
 containing `aero:: library` does not parse** — the `": "` is a YAML mapping separator and the whole
 workflow fails to load. Quote any step name containing a colon-space.
 
-**`target_link_libraries(aero_audio_boundary_probe …)` is the tree's first near-miss for prong A-d's
-regex, and this task created it.** Only the trailing `([^a-zA-Z0-9_]|$)` separates the guard from
-reddening the commit that adds it; `tests/boundary-probes/probe_links_e2e.cmake` carries the literal
-in situ as the standing witness, and self-test 3 pins both directions.
+**`target_link_libraries(aero_audio_boundary_probe …)` is the tree's first near-miss for prong A-d,
+and this task created it.** It is kept out by **exact token equality** against a three-name list, not
+by a regex name boundary — strictly better, since the regex had to be right about both ends of the
+name and the comparison only has to be right about the name. Self-test 3 pins both directions with
+the same helpers the sweep uses.
+
+**A GUARD'S OWN `.cmake` E2E DRIVER IS INSIDE THE SET IT SWEEPS, AND IT BIT TWICE.** Fixture strings
+spelling `target_link_libraries(aero_audio …)` made the audio guard exit 1 on six lines of its own
+driver; adding the probes guard's cross-file sweep later did the same on seven lines of *its* driver.
+Both fixed by composing the command name from a variable (`_AB_TLL` / `_BP_TLL`), so the scratch files
+stay byte-identical while no matching literal remains. **An exclusion list was rejected both times** —
+it would put a permanent silent hole in a universal sweep, in the one file most likely to acquire a
+real CMake snippet later. Expect this every time a guard's scan set grows to include `*.cmake`.
 
 ### 3.7.2 — rules that outlive the task (merged, PR #89 `b398d17`, macOS-validated)
 

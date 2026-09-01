@@ -12382,10 +12382,12 @@ rather than glossed.
 
 ### Task 3.7.3 — Audio-boundary CI guard (Epic 3.7) — CLOSES Epic 3.7
 
-**Branch:** `feat/3.7.3-audio-boundary-ci-guard`, cut from `main @ dfa58bd`. Eight commits: a docs
+**Branch:** `feat/3.7.3-audio-boundary-ci-guard`, cut from `main @ dfa58bd`. Eleven commits: a docs
 amendment first (`f5b5d53`), then `73f3991` (the audio guard), `2d63028` (the sixth probe + its
 registry block), `5cb1dbf` (the audio guard's e2e), `0e71781` (the probes guard), `a24bb70` (the
-probes guard's e2e), `931404d` (the two lint steps), and this closing docs sweep. No sibling task
+probes guard's e2e), `931404d` (the two lint steps) and `048b515` (the closing docs sweep), then
+the code-review round's `814c8dc` (four evadable predicates in the audio guard) and `f93aad7`
+(three more in the probes guard), plus this amendment. No sibling task
 merged between the spec, the plan and the build, so every whole-tree count here is a single-tree
 reading. **Zero engine C++ ships** — the only new translation unit is a compile-time probe with no
 `TEST_CASE`, and the only `engine/**` edits are comments.
@@ -12403,19 +12405,25 @@ be asked to guard exactly this"), this log's 3.7.1 handoff table, `docs/08`'s R1
 sentence is **subsumed**, and what ships is the no-vcpkg property plus a source-level token ban. The
 size moved **S → M** in the spec, before implementation rather than during it.
 
-**What shipped, in four artifacts plus wiring.** `.github/scripts/check-audio-boundary.sh` — **prong
-A** over `engine/assets`, `engine/audio` and `engine/scene_audio`'s CMakeLists (1a: none of
-`find_package`/`find_path`/`find_library`/`find_file`/`find_program`/`pkg_check_modules`/`pkg_search_module`/`include_directories`/`link_directories`/`link_libraries`/`add_subdirectory`,
+**What shipped, in four artifacts plus wiring** — stated as the guard finally enforces it, after the
+code-review round's ten findings, not as it was first written. `.github/scripts/check-audio-boundary.sh`
+— **prong A** over `engine/assets`, `engine/audio` and `engine/scene_audio`'s CMakeLists (1a: none of
+`find_package`/`find_path`/`find_library`/`find_file`/`find_program`/`pkg_check_modules`/`pkg_search_module`/`include_directories`/`link_directories`/`link_libraries`/`add_subdirectory`/**`include`**,
 case-insensitively, on comment-stripped text; 1b: every `target_link_libraries` token is an `aero::`
-engine target, **including inside a multi-line call**, with `aero::scene_internal` refused by name;
-1c: every `target_include_directories` token is a target, a visibility keyword, or a
-`${CMAKE_CURRENT_SOURCE_DIR}`-rooted path; 1d: no **other** tracked CMake file carries a
-cross-directory `target_link_libraries` naming one of the three) — and **prong B**, a miniaudio token
-ban over both audio roots with **sources included**. `.github/scripts/check-boundary-probes.sh` —
-every `aero_*_boundary_probe` links exactly one `aero::` library, `PRIVATE`, with the probe set
-**derived** from `tests/CMakeLists.txt` rather than enumerated. `tests/audio_boundary_probe.cpp` — the
-sixth probe, 34 assertions across all four public audio headers, no named entity, no `TEST_CASE`, no
-`#if` of any kind. And two hermetic `cmake -P` ctest drivers.
+engine target, **including inside a multi-line call**, with **any `*_internal` target refused in both
+spellings** — the `aero::…` alias and the raw `aero_…` target name; 1c: every
+`target_include_directories` token is a target, a visibility keyword, **one of the SYSTEM/BEFORE/AFTER
+keywords**, or a `${CMAKE_CURRENT_SOURCE_DIR}`-rooted path; 1d: no **other** tracked CMake file
+carries a cross-directory `target_link_libraries` naming one of the three, **read from the flattened
+file so a wrapped call cannot hide from it**, with the target compared by exact token equality) — and
+**prong B**, a miniaudio token ban over both audio roots with **sources included**.
+`.github/scripts/check-boundary-probes.sh` — every `aero_*_boundary_probe` is **built by `all`** (no
+`EXCLUDE_FROM_ALL`) and links exactly one `aero::` library with **exactly one `PRIVATE` keyword
+present**, checked in the registry **and swept for across every other tracked CMake file**, with the
+probe set **derived** from `tests/CMakeLists.txt` rather than enumerated.
+`tests/audio_boundary_probe.cpp` — the sixth probe, **35** `static_assert`s across all four public
+audio headers, no named entity, no `TEST_CASE`, no `#if` of any kind. And two hermetic `cmake -P`
+ctest drivers.
 
 **THE MEASUREMENT THIS TASK EXISTS TO HAVE MADE, and the sentence it falsifies.** `vcpkg_installed`
 **is** on `engine/audio/src/mixer.cpp`'s compile line in `macos-release` and **is not** in
@@ -12449,15 +12457,15 @@ means it costs nothing to maintain — `script`/quickjs's probe is covered on ar
 **The seed matrices are ctest STAGES, not plan prose, and the reason is structural:** `docs/plans/`
 and `docs/specs/` are gitignored, so a sabotage proof that lives only there **ceases to exist at
 merge** — exactly the reasoning that produced `project-no-delete.no_delete_e2e`.
-`audio-boundary.guard_e2e` runs **S0–S10 + X1–X4 + a restored-tree stage, 16 in all**;
-`boundary-probes.probe_links_e2e` runs **P0–P9 + a restored stage, 11**. Every stage asserts an
-**exact** exit code rather than a boolean; every seed is written, read back, **and** asserted present
-in the scratch index before any verdict is trusted. All 27 stages were additionally run through an
-instrumented copy of each driver that printed `expected=` and `observed=` per stage, so every code was
-**seen** rather than inferred: 0 · 1×9 · 0 · 2×4 · 0 for the audio table, 0 · 1×6 · 2 · 2 · 1 · 0 for
-the probes table. **S8 is the load-bearing one** — its seed lives under `engine/scene_audio/` and it is
-the only hermetic proof the second root is *walked* rather than *named*, the include_scan stage-3
-lesson applied one guard later. Three real-tree in-situ proofs were run as well, since the guards
+`audio-boundary.guard_e2e` runs **S0–S10 (with S2b/S2c/S2d, S4b, S5b, S6b/S6c) + X1–X4 + a
+restored-tree stage, 23 in all**; `boundary-probes.probe_links_e2e` runs **P0–P12 + a restored stage,
+14**. Every stage asserts an **exact** exit code rather than a boolean; every seed is written, read
+back, **and** asserted present in the scratch index before any verdict is trusted. All 37 stages were
+additionally run through an instrumented copy of each driver that printed `expected=` and `observed=`
+per stage, so every code was **seen** rather than inferred. **S8 is the load-bearing one** — its seed
+lives under `engine/scene_audio/` and it is the only hermetic proof the second root is *walked* rather
+than *named*, the include_scan stage-3 lesson applied one guard later. Three real-tree in-situ proofs
+were run as well, since the guards
 behave differently against a 53-file sweep than a 4-file scratch: a `find_package` into
 `engine/audio/CMakeLists.txt` → exit 1 at `:45`; `ma_device` into `engine/audio/src/mixer.cpp` → exit 1
 at `:394`; `doctest::doctest` onto the audio probe's link line → exit 1 at `tests/CMakeLists.txt:654`.
@@ -12465,19 +12473,39 @@ Each seed was proved landed with `git diff --cached` first and each revert used
 `git checkout HEAD -- <file>`, **not** `git checkout -- <file>`: with the seed staged, the plain form
 restores the working tree from the index, which holds the seed, and reverts nothing.
 
-**THE META-PROOF, RUN FOUR WAYS, because a passing e2e proves nothing until it has been watched to
-fail.** (1) Narrowing `AUDIO_ROOTS` to `('engine/audio')` reddens **S8 alone** — and the guard stays
-**exit 0 on the real tree**, its banner still naming both roots while `scanned` silently drops 11 → 9.
-(2) Silencing Part 1c reddens **S5 alone**, likewise exit 0 on the real tree. (3) Silencing the probes
-guard's second-TLL-call arm reddens **P2 alone**, with its own self-tests still passing and the real
-tree still green — the truest silent-rot shape of the four. (4) Gutting `check_tokens` to `{ :; }`
-reddens **P0**, caught by the guard's own self-test 2 rather than by a stage. Plus **X5/X6**, run
-against the shipped script: stripping `BANNED_CMAKE_RE`'s leading `(^|[^a-zA-Z0-9_])` or
-`CROSSDIR_TLL_RE`'s trailing `([^a-zA-Z0-9_]|$)` is an **exit 2 on a clean tree** — a refusal to
-self-verify, not a red scan — and each reddens S0 accordingly. Every break was proved landed by
-`git diff` before its verdict was believed, and one X6 attempt **failed to land** because shell
-quoting mangled the pattern; the `assert t.count(old)==1` in the seeding script caught it, and the
-first (false) reading was a clean green.
+**THE META-PROOF, because a passing e2e proves nothing until it has been watched to fail.** Narrowing
+`AUDIO_ROOTS` to `('engine/audio')` reddens **S8 alone** — and the guard stays **exit 0 on the real
+tree**, its banner still naming both roots while `scanned` silently drops 11 → 9. Silencing Part 1c
+reddens **S5 alone**, likewise exit 0 on the real tree. Silencing the probes guard's second-TLL-call
+arm reddens **P2 alone**, with its own self-tests still passing and the real tree still green — the
+truest silent-rot shape. Gutting `check_tokens` to `{ :; }` reddens **P0**, caught by the guard's own
+self-test rather than by a stage. Plus **X5/X6**: stripping `BANNED_CMAKE_RE`'s leading
+`(^|[^a-zA-Z0-9_])` is an **exit 2 on a clean tree** — a refusal to self-verify, not a red scan.
+
+**AND THE LESSON THE CODE-REVIEW ROUND TAUGHT ABOUT THAT META-PROOF: A COARSE MUTATION PROVES ALMOST
+NOTHING.** The round found that stage S5 passed over a *narrowly* mutated Part 1c — replacing the
+`${CMAKE_CURRENT_SOURCE_DIR}` allowlist arm with a bare `${`, i.e. admitting exactly the
+variable-rooted include dir the arm exists to refuse — because S5's seed also carried the keyword
+`SYSTEM`, which was itself producing a violation, so a generic "reaches outside the subsystem"
+assertion was satisfied by the *keyword* and said nothing about the *path*. The original meta-proof
+had deleted the whole `*)` branch, which any assertion would have caught. **This is the 2.1.2 species
+inside this task's own proof**, and the rule it leaves behind is: *mutate the arm the way a careless
+edit would, not the way a demolition would, and pin the offending TOKEN rather than the arm's generic
+sentence.* Every stage added afterwards is proved this way — each of S2b, S2d, S4b, S5, S5b, S6b, S6c,
+P10, P11 and P12 was watched to redden **alone** under a one-line mutation of the arm it targets,
+with the guard still exiting 0 on the real tree in every case but two (dropping the `privs` arm and
+gutting `check_tokens` both trip a self-test first, which is the louder outcome).
+
+**One structural limit found while doing it, worth stating because it looks like an oversight:** a
+self-test can pin that `extract_calls | tll_target` reads a *wrapped* call, but it can **never** pin
+that Part 1d calls them rather than grepping line by line — `extract_calls` flattens its own input, so
+the helpers look correct in isolation under exactly the mutation that matters. Stage **S6b** is the
+only thing that pins it, and it is not redundant with the self-test beside it. The script says so in
+a comment where the next reader will look.
+
+Every break was proved landed by `git diff` before its verdict was believed, and one X6 attempt
+**failed to land** because shell quoting mangled the pattern; the `assert t.count(old)==1` in the
+seeding script caught it, and the first (false) reading was a clean green.
 
 **TWO THINGS THE PLAN DID NOT PREDICT, both found by building it.** (1) **An e2e driver written as a
 `.cmake` file is inside the very set prong A-d sweeps.** `tests/audio-boundary/guard_e2e.cmake`'s
@@ -12495,16 +12523,45 @@ with "mapping values are not allowed here" at that line — a failure that would
 down, not just the lint one. Quoted. Worth generalising: **quote any Actions step name containing a
 colon followed by a space**, and parse `ci.yml` locally after editing it.
 
-**`target_link_libraries(aero_audio_boundary_probe …)` is the tree's first near-miss for prong A-d's
-regex, and this task is what created it.** Only the trailing `([^a-zA-Z0-9_]|$)` separates the guard
-from reddening the commit that adds it. `tests/boundary-probes/probe_links_e2e.cmake` deliberately
-carries that literal in situ — it does **not** need the `_AB_TLL` treatment, because `aero_audio` is
-followed by `_` there — so the near-miss has a standing in-tree witness, and self-test 3 pins both
-directions against the same regex literal the sweep uses, hoisted into `CROSSDIR_TLL_RE` so the
-self-test cannot drift from the check.
+**`target_link_libraries(aero_audio_boundary_probe …)` is the tree's first near-miss for prong A-d,
+and this task is what created it.** It is kept out by **exact token equality** — `is_vcpkg_free_target`
+compares the extracted target against a three-name list — rather than by the regex name boundary the
+first implementation used, which is strictly better: the regex had to be right about *both* ends of
+the name, and the token comparison only has to be right about the name. Self-test 3 pins both
+directions with the same helpers the sweep uses, so it cannot drift from the check.
 
-**The gate, measured on the tree at `931404d`.** 170/170 on both macOS presets with
-`AERO_REQUIRE_GPU=1` (Debug 236.54 s, Release 65.86 s). Fresh `-G Ninja` reduced configurations
+**THE FINDING THAT GENERALISES BEYOND THIS TASK: four predicates were silently evadable, and every
+one of them read as complete.** (1) The `*_internal` refusal matched the `aero::scene_internal`
+**alias** by exact string, while the **raw** `aero_scene_internal` / `aero_platform_internal` /
+`aero_rhi_internal` — all of which exist in `engine/{scene,platform,rhi}/CMakeLists.txt` — matched
+`LINK_TOKEN_RE`'s `aero_[a-z_]+` branch and passed with the OK banner. The raw name is the spelling
+anyone copying from the defining file would write, which makes it the *likelier* one. (2) `include()`
+was not in the banned list, and **nothing in prong A follows an `include()`** — Parts 1a/1b/1c read
+exactly three rostered files and 1d looked only for `target_link_libraries` — so
+`include(${CMAKE_CURRENT_SOURCE_DIR}/audio_deps.cmake)` plus a `find_package` and a foreign include
+dir in that file voided the flagship half of the guard with the banner still printing.
+`include(cmake/*.cmake)` is a live idiom in this tree, so the vector has in-tree precedent. (3) Prong
+A-d was **line-scoped while 1b and 1c flatten**, so a call wrapped between the paren and the target
+name showed it no target at all. (4) The probes guard **rejected `PUBLIC`/`INTERFACE` but never
+required `PRIVATE`**, so CMake's plain transitive signature passed while the banner claimed
+`PRIVATE` — enforcement claimed and not delivered, the one thing
+`.claude/rules/boundary-guards.md` names outright. Two more of the same species: a probe declared
+`EXCLUDE_FROM_ALL` compiled nothing and asserted nothing while every other check passed, and the
+probes guard read **only the registry**, leaving every probe's link line appendable from any other
+CMake file in the tree — the CMake ≥ 3.13 capability its own sibling's Part 1d was built for. **The
+common shape is worth naming: each check was written against the spelling in front of it rather than
+against the predicate**, and a guard that is green by construction gives no feedback when it is
+merely narrow.
+
+**And the same `.cmake`-driver collision recurred one layer over**, exactly as predicted by the first
+one: adding the probes guard's cross-file sweep made it exit 1 on **seven lines of its own e2e
+driver's fixture text**, because that driver is a tracked `*.cmake` naming derived probes. Same fix,
+same rejected alternative — compose the command name from a `_BP_TLL` variable; do not carve the file
+out of a universal sweep. Both drivers now spell `target_link_libraries` indirectly and both write
+byte-identical scratch trees (verified by `diff`).
+
+**The gate, re-measured after the code-review round.** 170/170 on both macOS presets with
+`AERO_REQUIRE_GPU=1` (Debug 239.32 s, Release 64.59 s). Fresh `-G Ninja` reduced configurations
 **78** and **91**, each having built and RUN `aero_tests`, `aero_editor_shell_test`,
 `aero_editor_imgui_test` and `aero_cooker`. **`ctest -N` 170 / 78 / 91 — `+2` in all three, in
 lockstep**, which is what proves both e2e registrations are ungated by the tools flags; a smaller move
@@ -12513,7 +12570,7 @@ that. doctest **1169 / 1746 / 143 / 34 / 29 / 7 / 28 — UNMOVED in all seven**,
 proof beside it (the whole diff contains one occurrence of `TEST_CASE` and it is a prose line in the
 probe's header comment). **This task inverts the project's usual pattern and it is worth saying out
 loud: `ctest -N` moves while every doctest total stays put.** Eight guards exit 0 — audio
-**11 / 3 / 52**, probes **6**, math **450** (was 449, the one new tracked C-family file), platform
+**11 / 3 / 52**, probes **6 / 54**, math **450** (was 449, the one new tracked C-family file), platform
 **83**, scene **83**, rhi **144**, golden-rule **146**, project-no-delete **A=6 / B=75** — and
 `ls .github/scripts/ | wc -l` reads **8**, measured rather than remembered. clang-format and
 clang-tidy clean **by exit code**, the latter with `SDKROOT` pinned to `macosx15.4` on its own line.
@@ -12544,9 +12601,12 @@ userland**, where `\b` would have degraded to a literal `b` and a lesser guard w
 banned token inside `/* … */` or CMake `#[[ … ]]` false-**positives** — the fail-loud direction, and
 neither style is used in the guarded files. Untracked files are invisible until `git add`. CMake
 indirection beyond the banned list is not parsed (a variable holding a package name, a
-`target_compile_options(… -I…)`, a parent-scope `include_directories`); prong A's arms cover every
-vector with an **in-tree precedent** — the editor's `find_path` + `SYSTEM PRIVATE` shape from 3.7.1,
-and the cross-directory TLL — and a determined evasion defeats any textual guard. A vendored, renamed
+`target_compile_options(… -I…)`, a parent-scope `include_directories` in `engine/CMakeLists.txt`), and
+a determined evasion defeats any textual guard. **This entry's first draft claimed prong A "covers
+every vector with an in-tree precedent"; that was false when written** — `include()` had in-tree
+precedent (the root `CMakeLists.txt` uses it five times) and no arm at all. It has one now, and the
+claim is not being restored in a repaired form: the honest statement is the list of commands and
+shapes actually checked, above, not an assertion of completeness. A vendored, renamed
 copy of miniaudio evades both regexes, though the `ma_` arm still fires on *use*. Token line
 attribution is first-stripped-occurrence, so a token appearing twice cites its first non-comment line;
 the file and the token are always exact. `PROBE_LIB_RE='^aero::[a-z_]+$'` admits no digits, so a future
