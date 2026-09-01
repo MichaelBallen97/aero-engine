@@ -106,6 +106,11 @@ endfunction()
 # would sit in the one file a future reader is most likely to paste a real CMake snippet into. A
 # fixture that has to spell one identifier indirectly is the cheaper price. Do not "simplify" it back.
 set(_AB_TLL "target_link_libraries")
+# The PROPERTY command names need the same treatment, for the same reason one arm over: Part 1d
+# now also sweeps set_target_properties / set_property(TARGET ...) calls naming a guarded target,
+# so a literal in a fixture below reddens the tree that ships it.
+set(_AB_STP "set_target_properties")
+set(_AB_SP "set_property")
 
 set(_AB_ENGINE_CMAKE [==[add_subdirectory(assets)
 add_subdirectory(audio)
@@ -253,6 +258,16 @@ _ab_run("S2d (include() in engine/audio)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S2d" "${_ab_out}" "engine/audio/CMakeLists.txt:" TRUE)
 _ab_expect_substr("S2d" "${_ab_out}" "a vcpkg/dependency hook command entered a vcpkg-free CMakeLists" TRUE)
 
+# --- S2e: the PROPERTY spelling of the link line, inside a guarded file -> exit 1. LINK_LIBRARIES is
+# what target_link_libraries writes, so set_property reaches it with none of the words Part 1b looks
+# for; measured passing before this arm existed. Both property commands are banned outright rather
+# than one property at a time -- the general form of "match the predicate, not the spelling". -------
+_ab_base()
+_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE}${_AB_SP}(TARGET aero_audio APPEND PROPERTY LINK_LIBRARIES miniaudio)\n")
+_ab_run("S2e (set_property LINK_LIBRARIES in engine/audio)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S2e" "${_ab_out}" "engine/audio/CMakeLists.txt:" TRUE)
+_ab_expect_substr("S2e" "${_ab_out}" "a vcpkg/dependency hook command entered a vcpkg-free CMakeLists" TRUE)
+
 # --- S3: a non-aero:: token INSIDE THE MULTI-LINE TLL call -> exit 1 (Part 1b). The multi-line shape
 # is the one all three files actually use, so a line-at-a-time check would miss it entirely. --------
 _ab_base()
@@ -336,6 +351,26 @@ _ab_run("S6c (cross-directory TLL in a *.cmake file)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S6c" "${_ab_out}" "engine/audio_deps.cmake:" TRUE)
 _ab_expect_substr("S6c" "${_ab_out}" "cross-directory target_link_libraries on a vcpkg-free target" TRUE)
 
+# --- S6d: the PROPERTY spelling of the cross-directory mutation, WRAPPED -> exit 1. Part 1d's other
+# half: set_target_properties / set_property(TARGET …) reach LINK_LIBRARIES and INCLUDE_DIRECTORIES
+# from any file in the tree, so a sweep that reads only target_link_libraries watches one of two
+# doors. Wrapped, because the extractor's alternation has to be parenthesised for that to work --
+# unparenthesised it bound as `(^|[^..])set_target_properties` OR `set_property\(…\)` and dropped
+# every wrapped call, which is how this arm first shipped broken. ----------------------------------
+_ab_base()
+_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}${_AB_STP}(\n    aero_scene_audio\n    PROPERTIES LINK_LIBRARIES miniaudio\n)\n")
+_ab_run("S6d (WRAPPED cross-directory property write)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6d" "${_ab_out}" "engine/CMakeLists.txt:" TRUE)
+_ab_expect_substr("S6d" "${_ab_out}" "a target property of a vcpkg-free target is set from outside its own CMakeLists" TRUE)
+
+# --- S6e: a set_property on a NON-TARGET scope, elsewhere in the tree -> exit 0. The false-positive
+# half of S6d: `set_property(GLOBAL …)` and a property write on some other target are ordinary CMake
+# and must stay silent, or the arm would red the tree on its first legitimate use. -----------------
+_ab_base()
+_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}${_AB_SP}(GLOBAL PROPERTY USE_FOLDERS ON)\n${_AB_STP}(aero_render PROPERTIES FOLDER engine)\n")
+_ab_run("S6e (non-target scope + another target, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6e" "${_ab_out}" "audio-boundary guard: OK" TRUE)
+
 # --- S7: a ma_ identifier used as CODE in an audio src/ file -> exit 1 (Part 2). This is the half
 # check-platform-boundary.sh does not reach: it stops at engine/*/include/*, and the shape
 # engine/audio/CMakeLists.txt's header warns about happens in src/. --------------------------------
@@ -374,6 +409,17 @@ _ab_seed("engine/audio/src/clip.cpp" "${_AB_CLIP_CPP}\n// prose only: ma_engine 
 _ab_run("S10 (comment-only citation, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S10" "${_ab_out}" "audio-boundary guard: OK" TRUE)
 
+# --- S11: a file that is TRACKED but ABSENT -> exit 0, not a crash. `git add` then `rm` is the
+# ordinary middle of a rename, and the sweep reads every tracked CMake path by name: the redirect
+# failed, `set -e` fired, and the guard exited 1 printing a shell error and NO verdict at all --
+# outside the 0/1/2 contract entirely, on a routine working state (3.7.3's second review round). --
+_ab_base()
+_ab_seed("engine/extra.cmake" "set(AERO_UNUSED 1)\n")
+file(REMOVE "${WORK_DIR}/src/engine/extra.cmake")   # staged, then gone: deliberately NOT re-added
+_ab_run("S11 (tracked-but-deleted CMake file)" 0 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S11" "${_ab_out}" "audio-boundary guard: OK" TRUE)
+_ab_expect_substr("S11" "${_ab_out}" "No such file or directory" FALSE)
+
 # --- X1: a guarded CMakeLists loses its find_package prohibition comment -> exit 2. The canary is
 # the comment itself: it is the in-tree proof that comment-stripping is doing real work, so losing it
 # makes the guard unable to self-verify rather than free to pass. ----------------------------------
@@ -404,10 +450,20 @@ _ab_seed("engine/audio/include/aero/audio/audio.hpp" "#pragma once\n// The audio
 _ab_run("X4 (every raw ma_ citation reworded away)" 2 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("X4" "${_ab_out}" "no raw ma_ citation found" TRUE)
 
+# --- X5: the cross-directory sweep walks ZERO other CMake files -> exit 2. Anti-vacuity, per
+# .claude/rules/boundary-guards.md: a sweep that traversed nothing proves nothing, and would print
+# the OK banner all the same. Removing engine/CMakeLists.txt leaves only the three guarded files,
+# which the sweep skips by construction -- so `swept` is 0 and the guard must refuse rather than
+# pass. This is the same species as X3's per-root vacuity check, one prong over. ------------------
+_ab_base()
+_ab_unseed("engine/CMakeLists.txt")
+_ab_run("X5 (sweep walked zero other CMake files)" 2 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("X5" "${_ab_out}" "walked ZERO other CMake files" TRUE)
+
 # --- Restored -> exit 0. Proves every stage above was the seed talking, not accumulated damage. ----
 _ab_base()
 _ab_run("S0' (base restored)" 0 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S0'" "${_ab_out}" "audio-boundary guard: OK" TRUE)
 
-message(STATUS "audio-boundary.guard_e2e: OK -- S0-S10 (with S2b/S2c/S2d, S4b, S5b, S6b/S6c) + X1-X4 "
-               "+ a restored-tree stage, 23 in all")
+message(STATUS "audio-boundary.guard_e2e: OK -- S0-S11 (with S2b-S2e, S4b, S5b, S6b-S6e) + X1-X5 "
+               "+ a restored-tree stage, 28 in all")

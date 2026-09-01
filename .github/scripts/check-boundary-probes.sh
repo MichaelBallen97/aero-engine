@@ -19,8 +19,10 @@
 #
 # Run it locally before pushing:
 #     bash .github/scripts/check-boundary-probes.sh
-# NOTE: it reads the TRACKED registry path from the repo root; a probe added to a working copy is
-# seen as soon as the file is saved, since the file itself is read rather than listed by git.
+# NOTE ON WHAT IS AND IS NOT TRACKED-ONLY, because this guard is now half of each. The REGISTRY is
+# read as a file, so a probe added to a working copy is seen as soon as the file is saved. The
+# CROSS-FILE SWEEP walks `git ls-files`, so it sees TRACKED files only -- `git add` a new CMake file
+# before expecting an append hidden in it to be caught.
 #
 # bash 3.2 compatible on purpose (macOS ships 3.2.57): no mapfile, no associative arrays.
 
@@ -51,6 +53,33 @@ tll_calls() {  # $1 = path
 tll_target() {  # stdin = one extracted call
   sed -E 's/^[^(]*\([[:space:]]*//; s/\)$//' | tr ' \t' '\n\n' | sed '/^$/d' | sed -n '1p'
 }
+
+# Every set_target_properties(...) / set_property(TARGET ...) call in a flattened CMake file.
+# PARENTHESISED alternation: interpolated bare, `a|b` would bind as `(^|[^..])a` OR `b...\)`, which
+# matches the first command's NAME with no call body and silently drops every wrapped call.
+prop_calls() {  # $1 = path
+  flat_file "$1" | grep -oiE "(^|[^a-zA-Z0-9_])(set_target_properties|set_property)[[:space:]]*\([^)]*\)" || true
+}
+
+# The TARGET tokens of one such call, one per line -- both spellings, since both reach the same
+# properties:
+#   set_target_properties(<t...> PROPERTIES <prop> <val> ...)
+#   set_property(TARGET <t...> [APPEND|APPEND_STRING] PROPERTY <prop> <val> ...)
+# Any other set_property scope names no target and prints nothing.
+prop_targets() {  # $1 = one extracted call
+  _body="$(printf '%s\n' "$1" | sed -E 's/^[^(]*\([[:space:]]*//; s/\)$//')"
+  for _tok in $_body; do
+    case "$_tok" in
+      TARGET) continue ;;
+      PROPERTIES|PROPERTY) return 0 ;;
+      APPEND|APPEND_STRING) continue ;;
+      GLOBAL|DIRECTORY|SOURCE|INSTALL|TEST|CACHE) return 0 ;;
+    esac
+    printf '%s\n' "$_tok"
+  done
+}
+
+is_probe() { printf '%s\n' "$probes" | grep -qx "$1"; }
 
 # Every add_library(<name> OBJECT ...) whose <name> ends in _boundary_probe -> the derived set.
 probes="$(flat | grep -oiE '(^|[^a-zA-Z0-9_])add_library[[:space:]]*\([[:space:]]*[a-zA-Z0-9_]+[[:space:]]+OBJECT' \
@@ -113,6 +142,24 @@ if [ -n "$(check_tokens t 'PRIVATE aero::audio')" ]; then
   exit 2
 fi
 
+# --- Self-test 2b: the property machinery. Both spellings reach EXCLUDE_FROM_ALL and LINK_LIBRARIES,
+# so both must be read; a non-TARGET scope must name nothing; and the extractor must survive wrapping.
+if [ "$(prop_targets 'set_target_properties(aero_audio_boundary_probe PROPERTIES EXCLUDE_FROM_ALL TRUE)')" \
+     != 'aero_audio_boundary_probe' ]; then
+  echo "::error::prop_targets in $0 no longer reads a set_target_properties target -- the property" >&2
+  echo "         spelling of EXCLUDE_FROM_ALL would pass while the banner claims 'built by all'." >&2
+  exit 2
+fi
+if [ "$(prop_targets 'set_property(TARGET aero_audio_boundary_probe APPEND PROPERTY LINK_LIBRARIES doctest::doctest)')" \
+     != 'aero_audio_boundary_probe' ]; then
+  echo "::error::prop_targets in $0 no longer reads a set_property(TARGET ...) target -- vacuous." >&2
+  exit 2
+fi
+if [ -n "$(prop_targets 'set_property(GLOBAL PROPERTY USE_FOLDERS ON)')" ]; then
+  echo "::error::prop_targets in $0 names a target for a non-TARGET scope -- over-broad." >&2
+  exit 2
+fi
+
 # --- The guard. --------------------------------------------------------------------------------
 violations=""
 count=0
@@ -159,21 +206,54 @@ done
 # library" claim was true of the registry rather than of the probe.
 swept=0
 while IFS= read -r -d '' f; do
-  [ "$f" = "$PROBE_REGISTRY" ] && continue
-  swept=$((swept + 1))
-  calls="$(tll_calls "$f")"
-  [ -z "$calls" ] && continue
+  # A file can be TRACKED and ABSENT (`git add` then `rm` -- the ordinary middle of a rename).
+  # Skip it rather than let a read failure take the guard down; the sibling had this crash.
+  [ -f "$f" ] || continue
+  if [ "$f" != "$PROBE_REGISTRY" ]; then
+    swept=$((swept + 1))
+    calls="$(tll_calls "$f")"
+    if [ -n "$calls" ]; then
+      while IFS= read -r call; do
+        [ -z "$call" ] && continue
+        tgt="$(printf '%s\n' "$call" | tll_target)"
+        if is_probe "$tgt"; then
+          line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
+                  | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
+          violations="${violations}${f}:${line:-1}: a cross-directory target_link_libraries appends to ${tgt}'s link line from outside ${PROBE_REGISTRY}
+"
+        fi
+      done <<< "$calls"
+    fi
+  fi
+  # The PROPERTY spellings, swept over EVERY tracked CMake file INCLUDING the registry itself.
+  # Every predicate this guard enforces has one: LINK_LIBRARIES is what target_link_libraries
+  # writes, and EXCLUDE_FROM_ALL is settable long after the add_library that the arm above reads --
+  # `set_target_properties(<probe> PROPERTIES EXCLUDE_FROM_ALL TRUE)` in the registry passed with the
+  # banner still claiming "each built by `all`" (measured, 3.7.3's second code-review round). A probe
+  # has no legitimate use for a target property, so the CALLS are refused rather than one property
+  # at a time -- the general form of "match the predicate, not the spelling in front of you".
+  props="$(prop_calls "$f")"
+  [ -z "$props" ] && continue
   while IFS= read -r call; do
     [ -z "$call" ] && continue
-    tgt="$(printf '%s\n' "$call" | tll_target)"
-    if printf '%s\n' "$probes" | grep -qx "$tgt"; then
-      line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
-              | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
-      violations="${violations}${f}:${line:-1}: a cross-directory target_link_libraries appends to ${tgt}'s link line from outside ${PROBE_REGISTRY}
+    while IFS= read -r tgt; do
+      [ -z "$tgt" ] && continue
+      if is_probe "$tgt"; then
+        line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
+                | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
+        violations="${violations}${f}:${line:-1}: a target property is set on ${tgt} -- a probe's properties (EXCLUDE_FROM_ALL, LINK_LIBRARIES, INCLUDE_DIRECTORIES) are exactly what its guarantee rests on
 "
-    fi
-  done <<< "$calls"
+      fi
+    done <<< "$(prop_targets "$call")"
+  done <<< "$props"
 done < <(git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake')
+
+# Anti-vacuity: a sweep that walked nothing proves nothing and would print the OK banner anyway.
+if [ "$swept" -eq 0 ]; then
+  echo "::error::boundary-probe guard: the cross-file sweep walked ZERO other CMake files -- its" >&2
+  echo "         pathspec has rotted, so nothing proves a probe's link line is unmutated elsewhere." >&2
+  exit 2
+fi
 
 if [ -n "$violations" ]; then
   echo "a boundary probe's link line rotted -- task 3.7.3 / R12 (docs/08-risks.md):" >&2
@@ -193,4 +273,4 @@ if [ -n "$violations" ]; then
   exit 1
 fi
 
-echo "boundary-probe guard: OK -- ${count} probe targets verified in ${PROBE_REGISTRY}, each built by \`all\` and linking exactly one aero:: library PRIVATE; ${swept} other CMake files swept for cross-directory appends"
+echo "boundary-probe guard: OK -- ${count} probe targets verified in ${PROBE_REGISTRY}, each built by \`all\` (no EXCLUDE_FROM_ALL in either spelling) and linking exactly one aero:: library PRIVATE; ${swept} other CMake files swept for cross-directory appends and target-property writes"

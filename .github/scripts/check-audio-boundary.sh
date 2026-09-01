@@ -62,7 +62,10 @@ set -euo pipefail
 # three (CLAUDE.md's standing find_package grep covered all three as one ritual); the guard lives
 # with the audio epic because 3.7.3 is the task the invariant's own comments hand it to.
 # A FOURTH VCPKG-FREE TARGET MUST ADD ITSELF HERE IN THE COMMIT THAT CREATES IT: intent cannot be
-# derived from the tree, so an unlisted target is silently unguarded.
+# derived from the tree, so an unlisted target is silently unguarded. THIS IS THE ONLY ROSTER --
+# VCPKG_FREE_TARGETS and Part 1d's skip test are both derived from it, deliberately, so there is no
+# second or third list to forget. Self-test 1a checks the derivation against each file's own
+# add_library, so a subsystem that breaks the naming convention cannot slip through it.
 readonly VCPKG_FREE_CMAKE=('engine/assets/CMakeLists.txt' 'engine/audio/CMakeLists.txt' 'engine/scene_audio/CMakeLists.txt')
 
 # The two audio subsystems the miniaudio token ban governs, sources included (NOT just public
@@ -91,18 +94,29 @@ readonly AUDIO_ROOTS=('engine/audio' 'engine/scene_audio')
 # without it this guard is permanently red on a clean tree. `include` needs the SAME protection twice
 # over -- from target_include_directories( and from a path ending in /include) -- and gets it from the
 # trailing [[:space:]]*\(, since neither is followed by an opening paren. Self-test 3 pins all of it.
-readonly BANNED_CMAKE_RE='(^|[^a-zA-Z0-9_])(find_package|find_path|find_library|find_file|find_program|pkg_check_modules|pkg_search_module|include_directories|link_directories|link_libraries|add_subdirectory|include)[[:space:]]*\('
+#
+# set_target_properties / set_property ARE BANNED HERE TOO, and for a reason that generalises past
+# any one property: EVERY predicate this guard enforces has a property spelling. LINK_LIBRARIES is
+# target_link_libraries' underlying property, INCLUDE_DIRECTORIES is target_include_directories', and
+# `set_property(TARGET aero_audio APPEND PROPERTY LINK_LIBRARIES miniaudio)` inside a guarded file put
+# a vcpkg package on the link line while every arm below read clean (measured, 3.7.3's second
+# code-review round). Rather than chase one property at a time, the commands themselves are refused:
+# none of the three files uses either today, and neither has a legitimate need. THIS IS THE GENERAL
+# FORM OF THE LESSON THE FIRST ROUND TAUGHT -- match the predicate, not the spelling in front of you.
+readonly BANNED_CMAKE_RE='(^|[^a-zA-Z0-9_])(find_package|find_path|find_library|find_file|find_program|pkg_check_modules|pkg_search_module|include_directories|link_directories|link_libraries|add_subdirectory|include|set_target_properties|set_property)[[:space:]]*\('
 
-# The three guarded targets by their RAW CMake names -- what a cross-directory target_link_libraries
-# (CMake >= 3.13) would have to name to void the property from OUTSIDE the guarded files while all
-# three of them stay byte-identical. Part 1d compares the EXTRACTED TARGET TOKEN against this list
-# rather than pattern-matching the raw line, because a line-scoped regex reads only the first physical
-# line of a call: `target_link_libraries(\n    aero_audio\n    PRIVATE miniaudio\n)` has nothing after
-# the paren on line one and evaded the earlier regex form entirely (measured, 3.7.3's code-review
-# round). Exact token equality also subsumes what the old regex's trailing name boundary was for:
-# aero_audio_boundary_probe -- a target THIS TASK added inside the swept set -- is simply not in the
-# list. Self-test 3 pins both directions.
-readonly VCPKG_FREE_TARGETS='aero_assets aero_audio aero_scene_audio'
+# The three guarded targets, DERIVED from VCPKG_FREE_CMAKE rather than listed a second time. A
+# separate roster is a silent-green drift direction: a fourth vcpkg-free target added to the file
+# list but not to the target list would be guarded by Parts 1a/1b/1c and INVISIBLE to Part 1d, with
+# no test able to notice. engine/<name>/CMakeLists.txt -> aero_<name> is this tree's convention, and
+# self-test 1 asserts each derived name is really declared by an add_library in its own file, so a
+# future subsystem that breaks the convention is a loud exit 2 rather than a quiet blind spot.
+VCPKG_FREE_TARGETS=''
+for _f in "${VCPKG_FREE_CMAKE[@]}"; do
+  _d="${_f%/CMakeLists.txt}"
+  VCPKG_FREE_TARGETS="${VCPKG_FREE_TARGETS}aero_${_d##*/} "
+done
+readonly VCPKG_FREE_TARGETS
 
 # A real #include of the miniaudio header (flat: the vcpkg port installs include/miniaudio.h).
 readonly MA_INCLUDE_RE='^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]miniaudio\.h'
@@ -153,12 +167,54 @@ is_vcpkg_free_target() {
   return 1
 }
 
+# Is $1 one of the guarded CMakeLists themselves? Derived from the one roster, so Part 1d's skip
+# list cannot drift away from the file list the way a hardcoded `case` did.
+is_guarded_file() {
+  for _g in "${VCPKG_FREE_CMAKE[@]}"; do
+    [ "$1" = "$_g" ] && return 0
+  done
+  return 1
+}
+
+# The TARGET tokens of one set_target_properties(...) or set_property(TARGET ...) call, one per line.
+# Both spellings, because both reach the same properties:
+#   set_target_properties(<t...> PROPERTIES <prop> <val> ...)
+#   set_property(TARGET <t...> [APPEND|APPEND_STRING] PROPERTY <prop> <val> ...)
+# A set_property call on any other scope (GLOBAL/DIRECTORY/SOURCE/INSTALL/TEST/CACHE) names no target
+# and prints nothing.
+prop_targets() {  # $1 = one extracted call
+  _body="$(printf '%s\n' "$1" | sed -E 's/^[^(]*\([[:space:]]*//; s/\)$//')"
+  for _tok in $_body; do
+    case "$_tok" in
+      TARGET) continue ;;
+      PROPERTIES|PROPERTY) return 0 ;;
+      APPEND|APPEND_STRING) continue ;;
+      GLOBAL|DIRECTORY|SOURCE|INSTALL|TEST|CACHE) return 0 ;;
+    esac
+    printf '%s\n' "$_tok"
+  done
+}
+
 # --- Self-test 1: the guarded files and roots must all exist and be tracked. -------------------
 for f in "${VCPKG_FREE_CMAKE[@]}"; do
   if ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
     echo "::error::audio-boundary guard: '$f' is not a tracked file. Was the subsystem moved or" >&2
     echo "         renamed? The guard cannot self-verify, so it is refusing to pass. Update" >&2
     echo "         VCPKG_FREE_CMAKE in $0." >&2
+    exit 2
+  fi
+done
+# Self-test 1a: every DERIVED target name is really the target its own CMakeLists declares. This is
+# what makes deriving VCPKG_FREE_TARGETS safe instead of merely tidy: a fourth vcpkg-free subsystem
+# whose target does not follow engine/<name>/ -> aero_<name> is a loud exit 2 here, rather than a
+# target that Parts 1a/1b/1c guard while Part 1d silently cannot see it.
+for f in "${VCPKG_FREE_CMAKE[@]}"; do
+  d="${f%/CMakeLists.txt}"
+  t="aero_${d##*/}"
+  if ! grep -qE "(^|[^a-zA-Z0-9_])add_library[[:space:]]*\([[:space:]]*${t}([^a-zA-Z0-9_]|$)" "$f"; then
+    echo "::error::audio-boundary guard: '$f' does not declare a target named '${t}', so the" >&2
+    echo "         derived VCPKG_FREE_TARGETS entry is wrong and Part 1d would not see it. Either" >&2
+    echo "         follow the engine/<name>/ -> aero_<name> convention or teach $0 the mapping." >&2
     exit 2
   fi
 done
@@ -248,10 +304,50 @@ if ! printf 'include(${CMAKE_CURRENT_SOURCE_DIR}/audio_deps.cmake)\n' \
   echo "         an included file is read by no part of prong A." >&2
   exit 2
 fi
-if printf 'target_include_directories(aero_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)\n' \
+# A literal in which ONLY the trailing [[:space:]]*\( is load-bearing: there is no
+# target_include_directories( here for the leading bracket to be tested by, so this arm can be the
+# one that fires. (Its first form reused the target_include_directories shape from the arm above,
+# which meant both arms matched under both mutations and this one could never fire at all -- dead
+# code that also mis-attributed the cause. 3.7.3's second code-review round, finding 3.)
+if printf 'set(AERO_INC ${CMAKE_CURRENT_SOURCE_DIR}/include)\n' \
      | strip_cmake | grep -qiE "$BANNED_CMAKE_RE"; then
-  echo "::error::BANNED_CMAKE_RE in $0 over-matches a path ending in /include) -- the trailing" >&2
+  echo "::error::BANNED_CMAKE_RE in $0 over-matches a path ending in /include -- the trailing" >&2
   echo "         [[:space:]]*\\( has been lost and this guard would red the tree it ships into." >&2
+  exit 2
+fi
+# Both property spellings must fire; both reach LINK_LIBRARIES and INCLUDE_DIRECTORIES directly.
+if ! printf 'set_property(TARGET aero_audio APPEND PROPERTY LINK_LIBRARIES miniaudio)\n' \
+     | strip_cmake | grep -qiE "$BANNED_CMAKE_RE"; then
+  echo "::error::BANNED_CMAKE_RE in $0 no longer matches set_property -- every predicate this guard" >&2
+  echo "         enforces has a property spelling, and that one is open." >&2
+  exit 2
+fi
+if ! printf 'set_target_properties(aero_audio PROPERTIES LINK_LIBRARIES miniaudio)\n' \
+     | strip_cmake | grep -qiE "$BANNED_CMAKE_RE"; then
+  echo "::error::BANNED_CMAKE_RE in $0 no longer matches set_target_properties -- vacuous." >&2
+  exit 2
+fi
+# prop_targets must read the target out of BOTH spellings, and must name none for a non-target scope.
+if [ "$(prop_targets 'set_property(TARGET aero_audio APPEND PROPERTY LINK_LIBRARIES miniaudio)')" != 'aero_audio' ]; then
+  echo "::error::prop_targets in $0 no longer reads the target of a set_property(TARGET ...) call." >&2
+  exit 2
+fi
+if [ "$(prop_targets 'set_target_properties(aero_audio PROPERTIES EXCLUDE_FROM_ALL TRUE)')" != 'aero_audio' ]; then
+  echo "::error::prop_targets in $0 no longer reads the target of a set_target_properties call." >&2
+  exit 2
+fi
+if [ -n "$(prop_targets 'set_property(GLOBAL PROPERTY USE_FOLDERS ON)')" ]; then
+  echo "::error::prop_targets in $0 names a target for a non-TARGET set_property scope -- over-broad." >&2
+  exit 2
+fi
+# The extractor must see a WRAPPED property call, with the alternation grouped. Unparenthesised it
+# bound as `(^|[^..])set_target_properties` OR `set_property\(...\)`, so a wrapped
+# set_target_properties yielded its bare name and no target at all.
+if [ "$(printf 'set_target_properties(\n    aero_audio\n    PROPERTIES LINK_LIBRARIES miniaudio\n)\n' \
+        | extract_calls '(set_target_properties|set_property)' \
+        | while IFS= read -r c; do prop_targets "$c"; done)" != 'aero_audio' ]; then
+  echo "::error::The property-call extractor in $0 no longer reads a WRAPPED set_target_properties" >&2
+  echo "         call -- check that the alternation passed to extract_calls is parenthesised." >&2
   exit 2
 fi
 if ! printf 'target_link_libraries(aero_audio\n    PUBLIC aero::core aero::assets\n    PRIVATE miniaudio\n)\n' \
@@ -370,30 +466,63 @@ for f in "${VCPKG_FREE_CMAKE[@]}"; do
   done <<< "$calls"
 done
 
-# --- Part 1d: no OTHER CMake file mutates the three targets' link lines (CMake >= 3.13 allows a
-# cross-directory target_link_libraries, which would void the property from outside the guarded
-# files). ---------------------------------------------------------------------------------------
+# --- Part 1d: no OTHER CMake file mutates the three targets (CMake >= 3.13 allows a cross-directory
+# target_link_libraries, and set_target_properties / set_property(TARGET ...) reach the same
+# properties from anywhere -- all of which would void the property from outside the guarded files
+# while all three of them stay byte-identical). --------------------------------------------------
 swept=0
 while IFS= read -r -d '' f; do
-  case "$f" in
-    engine/assets/CMakeLists.txt|engine/audio/CMakeLists.txt|engine/scene_audio/CMakeLists.txt) continue ;;
-  esac
+  if is_guarded_file "$f"; then continue; fi
+  # A file can be TRACKED and ABSENT -- `git add` then `rm`, the ordinary middle of a rename. The
+  # `<` redirect below would fail, and `set -e` would abort the whole guard with a shell error and
+  # no verdict at all, breaking the 0/1/2 contract on a routine working state.
+  [ -f "$f" ] || continue
   swept=$((swept + 1))
   # FLATTENED, exactly like Parts 1b and 1c -- a line-scoped grep reads only the first physical line
   # of a call, so `target_link_libraries(\n    aero_audio\n    PRIVATE miniaudio\n)` showed it no
   # target at all and passed (3.7.3's code-review round, finding 5).
   calls="$(extract_calls 'target_link_libraries' < "$f")"
-  [ -z "$calls" ] && continue
-  while IFS= read -r call; do
-    [ -z "$call" ] && continue
-    tgt="$(printf '%s\n' "$call" | tll_target)"
-    is_vcpkg_free_target "$tgt" || continue
-    line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
-            | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
-    violations="${violations}${f}:${line:-1}: cross-directory target_link_libraries on a vcpkg-free target
+  if [ -n "$calls" ]; then
+    while IFS= read -r call; do
+      [ -z "$call" ] && continue
+      tgt="$(printf '%s\n' "$call" | tll_target)"
+      is_vcpkg_free_target "$tgt" || continue
+      line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
+              | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
+      violations="${violations}${f}:${line:-1}: cross-directory target_link_libraries on a vcpkg-free target
 "
-  done <<< "$calls"
+    done <<< "$calls"
+  fi
+  # The property spellings of the same predicate. LINK_LIBRARIES and INCLUDE_DIRECTORIES are what
+  # target_link_libraries and target_include_directories write, so reaching them directly from
+  # another file is the identical voiding with none of the identical words in it.
+  # PARENTHESISED: extract_calls interpolates its argument straight into the ERE, so a bare
+  # `a|b` alternation would bind as `(^|[^..])a` OR `b[[:space:]]*\(...\)` -- matching the first
+  # command's NAME with no call body at all, which silently dropped every wrapped
+  # set_target_properties call. Self-test 3 pins the wrapped shape for exactly this reason.
+  props="$(extract_calls '(set_target_properties|set_property)' < "$f")"
+  if [ -n "$props" ]; then
+    while IFS= read -r call; do
+      [ -z "$call" ] && continue
+      while IFS= read -r tgt; do
+        [ -z "$tgt" ] && continue
+        is_vcpkg_free_target "$tgt" || continue
+        line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
+                | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
+        violations="${violations}${f}:${line:-1}: a target property of a vcpkg-free target is set from outside its own CMakeLists
+"
+      done <<< "$(prop_targets "$call")"
+    done <<< "$props"
+  fi
 done < <(git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake')
+
+# Anti-vacuity: a sweep that walked nothing proves nothing, and would print its OK banner all the
+# same. This tree always has other CMake files; zero means the pathspec or the roster has rotted.
+if [ "$swept" -eq 0 ]; then
+  echo "::error::audio-boundary guard: the cross-directory sweep walked ZERO other CMake files --" >&2
+  echo "         its pathspec or the guarded-file roster has rotted, so Part 1d proves nothing." >&2
+  exit 2
+fi
 
 # --- Part 2: no miniaudio token anywhere under the audio roots (sources included). -------------
 scanned=0
@@ -402,6 +531,8 @@ while IFS= read -r -d '' file; do
     *.cpp|*.hpp|*.h|*.c|*.cc|*.cxx|*.hxx|*.inl|*.mm|*.m) ;;
     *) continue ;;
   esac
+  # Same tracked-but-absent case as Part 1d: `nl` on a missing path would abort the guard.
+  [ -f "$file" ] || continue
   scanned=$((scanned + 1))
   stripped="$(nl -ba -w1 -s: "$file" | sed -E 's|//.*||')"
   hits="$(printf '%s\n' "$stripped" | grep -E "$MA_IDENTIFIER_RE" || true)"

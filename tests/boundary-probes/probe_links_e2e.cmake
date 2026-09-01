@@ -80,15 +80,25 @@ endfunction()
 # alternative -- excluding this file from the sweep -- would put a permanent hole in a universal
 # sweep, in the one file most likely to acquire a real CMake snippet later.
 set(_BP_TLL "target_link_libraries")
+# Same treatment for the PROPERTY command names: the sweep now also refuses a property write on a
+# derived probe from any file, and this file names probes in its fixtures.
+set(_BP_STP "set_target_properties")
+set(_BP_SP "set_property")
 
 set(_BP_REGISTRY_HEAD "# A minimal stand-in for the real tests/CMakeLists.txt.\nadd_library(aero_not_a_probe OBJECT helper.cpp)\n${_BP_TLL}(aero_not_a_probe PRIVATE doctest::doctest aero::core)\n\nadd_library(aero_scene_boundary_probe OBJECT scene_boundary_probe.cpp)\n${_BP_TLL}(aero_scene_boundary_probe PRIVATE aero::scene)\n\nadd_library(aero_audio_boundary_probe OBJECT audio_boundary_probe.cpp)\n")
 set(_BP_CANARY_TLL "${_BP_TLL}(aero_audio_boundary_probe PRIVATE aero::audio)\n")
 set(_BP_REGISTRY "${_BP_REGISTRY_HEAD}${_BP_CANARY_TLL}")
 
+# A second CMake file, present in EVERY stage: the cross-file sweep must have something to walk, or
+# its anti-vacuity canary (swept == 0 -> exit 2) fires everywhere and hides the real verdicts. It is
+# also what P12/P13/P15 seed their cross-directory writes into.
+set(_BP_OTHER "add_subdirectory(audio)\n")
+
 # --- Scratch-tree bootstrap ------------------------------------------------------------------------
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}/src/tests")
 execute_process(COMMAND "${GIT}" init -q . WORKING_DIRECTORY "${WORK_DIR}/src")
+_bp_seed("engine/CMakeLists.txt" "${_BP_OTHER}")
 _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
 
 # --- P0: clean registry -> exit 0. Also the proof that aero_not_a_probe is correctly ignored. ------
@@ -175,11 +185,70 @@ _bp_expect_substr("P11" "${_bp_out}" "aero_audio_boundary_probe is declared EXCL
 # the registry made R-b a claim about a FILE rather than about the PROBE; the sibling guard's Part 1d
 # exists for precisely this capability. -------------------------------------------------------------
 _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
-_bp_seed("engine/CMakeLists.txt" "add_subdirectory(audio)\n${_BP_TLL}(aero_audio_boundary_probe PRIVATE doctest::doctest)\n")
+_bp_seed("engine/CMakeLists.txt" "${_BP_OTHER}${_BP_TLL}(aero_audio_boundary_probe PRIVATE doctest::doctest)\n")
 _bp_run("P12 (cross-directory append from engine/CMakeLists.txt)" 1 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P12" "${_bp_out}" "engine/CMakeLists.txt:" TRUE)
 _bp_expect_substr("P12" "${_bp_out}" "appends to aero_audio_boundary_probe's link line from outside" TRUE)
+_bp_seed("engine/CMakeLists.txt" "${_BP_OTHER}")
+
+# --- P13: the same append, WRAPPED so the target is not on the command's physical line -> exit 1.
+# The sibling guard's finding 5, one guard over: only a flattened read sees the target here, and
+# P12 alone would have passed over a line-scoped rewrite of this sweep. ---------------------------
+_bp_seed("engine/CMakeLists.txt" "${_BP_OTHER}${_BP_TLL}(\n    aero_audio_boundary_probe\n    PRIVATE doctest::doctest\n)\n")
+_bp_run("P13 (WRAPPED cross-directory append)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P13" "${_bp_out}" "appends to aero_audio_boundary_probe's link line from outside" TRUE)
+_bp_seed("engine/CMakeLists.txt" "${_BP_OTHER}")
+
+# --- P14: the same append written into a `*.cmake` file -> exit 1. The sweep's pathspec has three
+# arms and P12/P13 exercise only 'CMakeLists.txt'-shaped ones; deleting '*.cmake' left all stages
+# green while every .cmake file in the tree -- including this driver and its sibling -- silently left
+# the swept set. The sibling guard's finding 7, one guard over. -----------------------------------
+_bp_seed("cmake/probe_extras.cmake" "${_BP_TLL}(aero_audio_boundary_probe PRIVATE doctest::doctest)\n")
+_bp_run("P14 (cross-directory append in a *.cmake file)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P14" "${_bp_out}" "cmake/probe_extras.cmake:" TRUE)
+_bp_expect_substr("P14" "${_bp_out}" "appends to aero_audio_boundary_probe's link line from outside" TRUE)
+file(REMOVE "${WORK_DIR}/src/cmake/probe_extras.cmake")
+execute_process(COMMAND "${GIT}" -C "${WORK_DIR}/src" add -A)
+
+# --- P15: EXCLUDE_FROM_ALL in its PROPERTY spelling -> exit 1. The add_library arm (P11) reads one
+# spelling of two: set_target_properties / set_property(TARGET …) set the same property at any later
+# point, and the registry with a byte-perfect add_library and this line appended passed with the
+# banner still claiming "each built by `all`" (3.7.3's second review round, the blocking finding).
+# Refusing the property CALLS rather than one property at a time is what closes it generally. -----
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}${_BP_STP}(aero_audio_boundary_probe PROPERTIES EXCLUDE_FROM_ALL TRUE)\n")
+_bp_run("P15 (EXCLUDE_FROM_ALL via set_target_properties)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P15" "${_bp_out}" "a target property is set on aero_audio_boundary_probe" TRUE)
+
+# --- P16: the link line reached through its PROPERTY, from another file -> exit 1. LINK_LIBRARIES is
+# what target_link_libraries writes, so this is P12's contaminant with none of P12's words in it. --
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
+_bp_seed("engine/CMakeLists.txt" "${_BP_OTHER}${_BP_SP}(TARGET aero_audio_boundary_probe APPEND PROPERTY LINK_LIBRARIES doctest::doctest)\n")
+_bp_run("P16 (LINK_LIBRARIES via set_property from another file)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P16" "${_bp_out}" "engine/CMakeLists.txt:" TRUE)
+_bp_expect_substr("P16" "${_bp_out}" "a target property is set on aero_audio_boundary_probe" TRUE)
+
+# --- P17: a property write on a NON-probe target, and a non-TARGET scope -> exit 0. The
+# false-positive half of P15/P16: ordinary CMake must stay silent, or the arm reds the tree on its
+# first legitimate use. ---------------------------------------------------------------------------
+_bp_seed("engine/CMakeLists.txt" "${_BP_OTHER}${_BP_SP}(GLOBAL PROPERTY USE_FOLDERS ON)\n${_BP_STP}(aero_not_a_probe PROPERTIES FOLDER tests)\n")
+_bp_run("P17 (non-probe property write, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P17" "${_bp_out}" "probe targets verified" TRUE)
+
+# --- P18: the cross-file sweep walks ZERO other CMake files -> exit 2. Anti-vacuity: `swept` was
+# printed in the banner but never asserted, so a tree with no other CMake files -- or a rotted
+# pathspec -- reported "0 ... swept" and exited 0. ------------------------------------------------
 file(REMOVE "${WORK_DIR}/src/engine/CMakeLists.txt")
+execute_process(COMMAND "${GIT}" -C "${WORK_DIR}/src" add -A)
+_bp_run("P18 (sweep walked zero other CMake files)" 2 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P18" "${_bp_out}" "walked ZERO other CMake files" TRUE)
+_bp_seed("engine/CMakeLists.txt" "${_BP_OTHER}")
+
+# --- P19: a file that is TRACKED but ABSENT -> exit 0, not a crash. The sibling aborted outright on
+# this; both now skip it, so the two guards agree on the ordinary middle of a rename. -------------
+_bp_seed("cmake/gone.cmake" "set(AERO_UNUSED 1)\n")
+file(REMOVE "${WORK_DIR}/src/cmake/gone.cmake")   # staged, then gone: deliberately NOT re-added
+_bp_run("P19 (tracked-but-deleted CMake file)" 0 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P19" "${_bp_out}" "No such file or directory" FALSE)
 execute_process(COMMAND "${GIT}" -C "${WORK_DIR}/src" add -A)
 
 # --- Restored -> exit 0. Proves every stage above was the seed talking. ---------------------------
@@ -187,4 +256,4 @@ _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
 _bp_run("P0' (registry restored)" 0 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P0'" "${_bp_out}" "probe targets verified" TRUE)
 
-message(STATUS "boundary-probes.probe_links_e2e: OK -- P0-P12 + a restored-registry stage, 14 in all")
+message(STATUS "boundary-probes.probe_links_e2e: OK -- P0-P19 + a restored-registry stage, 21 in all")
