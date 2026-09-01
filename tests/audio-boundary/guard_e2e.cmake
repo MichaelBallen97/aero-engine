@@ -406,8 +406,14 @@ _ab_seed("cmake/unused.cmake" "include_directories(/opt/vcpkg/installed/arm64-os
 _ab_run("S6k (an unreferenced .cmake, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S6k" "${_ab_out}" "audio-boundary guard: OK" TRUE)
 
-# --- S6l: the WRAPPED spelling of the directory-scoped command -> exit 1. The arm grepped numbered
-# lines while every other arm in the script flattens. ----------------------------------------------
+# --- S6l: the WRAPPED spelling of the directory-scoped command -> exit 1.
+#
+# HONEST NOTE ON WHAT THIS STAGE DOES NOT PROVE. It has no narrow mutation, and cannot: DIR_SCOPED_RE
+# matches `<command>(` and CMake never lets those two be separated, so a line-scoped version of this
+# arm passes the stage too -- reverting the flatten here reddens nothing. It is kept as a shape
+# regression, not as a flattening proof. The flattening that genuinely needed fixing is in the probes
+# guard, where EXCLUDE_FROM_ALL appears LATER in the call and wrapping really did hide it; stages
+# P30/P31/P32 are the discriminating ones. Recorded rather than left to look like coverage. --------
 _ab_base()
 _ab_seed("engine/CMakeLists.txt" "include_directories(\n  /opt/vcpkg/installed/arm64-osx/include)\n${_AB_ENGINE_CMAKE}")
 _ab_run("S6l (WRAPPED directory-scoped command)" 1 "${BASH}" "${SCRIPT}")
