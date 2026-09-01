@@ -57,10 +57,14 @@ them. Several are refused directly — a directory-scoped `include_directories()
 the registry's own file, its ancestors, or a `.cmake` module they `include()`. **That arm is a
 denylist and is not claimed to be complete**: `add_compile_options(-I…)`, `add_definitions`, a
 `CMAKE_CXX_FLAGS` mutation, a toolchain file and a preset's cache variables all reach the same
-compile line, and the last two are in no CMakeLists at all. **What closes the class is
-`boundary-probes.probe_compile_line`**, a ctest case that reads `compile_commands.json` and
-asserts the property itself: no probe's compile line carries vcpkg's shared include root.
-Prefer that shape whenever a textual guard is predicting a build fact it could instead read. The probe list is **derived** from the registry's
+compile line, and the last two are in no CMakeLists at all. **For the include-root symptom, what reads the fact
+instead of predicting it is `boundary-probes.probe_compile_line`**, a ctest case over
+`compile_commands.json`: no probe's compile line carries vcpkg's shared include root,
+whatever route put it there — including a toolchain file or preset flags that appear in no
+CMakeLists. **It covers that symptom and no other**: an `EXCLUDE_FROM_ALL` target is still
+*configured*, so it still has a database entry, and that half stays with the textual arms.
+Prefer this shape whenever a guard is predicting a build fact it could instead read — and
+say which half of the invariant it actually reads. The probe list is **derived** from the registry's
 `add_library(… OBJECT …)` lines, never enumerated, so a new probe is covered the moment it
 lands. `check-audio-boundary.sh` carries the same inversion one layer over: **no file outside
 the three guarded CMakeLists may name `aero_assets`, `aero_audio` or `aero_scene_audio` at

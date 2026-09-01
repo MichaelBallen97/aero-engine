@@ -24,6 +24,14 @@
 # one asserts the flags themselves are clean, which is the same property one step earlier and costs a
 # JSON read instead of a nested configure per probe per configuration.
 #
+# WHAT THIS CASE DOES NOT DO, stated because the first version of the surrounding docs credited it
+# with more. It detects ONE symptom: vcpkg's shared include root on a probe's compile line. It says
+# nothing about EXCLUDE_FROM_ALL (an excluded target is still configured and still has an entry), and
+# nothing at all about the audio guard's three vcpkg-free targets -- it filters to
+# *_boundary_probe.cpp, and could not read those anyway, since their own compile lines legitimately
+# carry the vcpkg root in Release through aero::profiling. Those halves are held by
+# check-boundary-probes.sh and check-audio-boundary.sh respectively.
+#
 # WHEN compile_commands.json IS ABSENT THIS CASE SKIPS -- AND IT SAYS SO TO CTEST, WITH EXIT 77.
 # The first version returned 0, so ctest printed "Passed" and the SKIPPED line went unread. That
 # matters more here than almost anywhere: CMAKE_EXPORT_COMPILE_COMMANDS is set by the PRESETS, and
@@ -113,9 +121,15 @@ endforeach()
 # not an equality -- a future probe must not have to edit this file.
 if(_checked LESS 6)
     message(FATAL_ERROR "probe_compile_line: found only ${_checked} *_boundary_probe.cpp entries in "
-                        "${DB}, expected at least 6. Either a probe stopped being built -- which is "
-                        "itself the rot this case exists to catch -- or the database is stale. "
-                        "Re-run the build, then re-run this case.")
+                        "${DB}, expected at least 6. Either a probe stopped being CONFIGURED -- its "
+                        "add_library deleted or renamed -- or the database is stale. Re-run the "
+                        "configure, then re-run this case.\n"
+                        "NOTE, because the earlier wording here overstated it: this floor does NOT "
+                        "detect EXCLUDE_FROM_ALL. A target excluded from `all` is still CONFIGURED, "
+                        "so it still has an entry in compile_commands.json and the count is "
+                        "unchanged -- measured, not assumed. The EXCLUDE_FROM_ALL half of the "
+                        "invariant is held by check-boundary-probes.sh's own arms and by stages "
+                        "P11/P15/P22/P23, not by this case.")
 endif()
 
 if(NOT _bad STREQUAL "")

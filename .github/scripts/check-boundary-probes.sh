@@ -348,24 +348,6 @@ while IFS= read -r -d '' f; do
   done
 done < <(git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake')
 
-# --- The directory-scoped EXCLUDE_FROM_ALL spellings, which name no probe and so are invisible to
-# the allowlist above. NOT claimed as exhaustive: a directory property set from a parent scope, or an
-# add_subdirectory(<dir> EXCLUDE_FROM_ALL) naming the registry's directory, IS read by the block
-# above. What is not read is a directory property pushed from somewhere with no CMake text at all --
-# a toolchain file or a preset -- which is why boundary-probes.probe_compile_line exists. -------------
-if [ -f "$PROBE_REGISTRY" ]; then
-  dir_hits="$(nl -ba -w1 -s: "$PROBE_REGISTRY" | sed 's|#.*||' \
-              | grep -iE "(^|[^a-zA-Z0-9_])(set_directory_properties|set_property)[[:space:]]*\([^)]*EXCLUDE_FROM_ALL" || true)"
-  if [ -n "$dir_hits" ]; then
-    while IFS= read -r hit; do
-      [ -z "$hit" ] && continue
-      n="${hit%%:*}"
-      violations="${violations}${PROBE_REGISTRY}:${n}: a DIRECTORY-scoped EXCLUDE_FROM_ALL takes every probe in this file out of \`all\`
-"
-    done <<< "$dir_hits"
-  fi
-fi
-
 # Anti-vacuity: a sweep that walked nothing proves nothing and would print the OK banner anyway.
 if [ "$swept" -eq 0 ]; then
   echo "::error::boundary-probe guard: the cross-file sweep walked ZERO other CMake files -- its" >&2

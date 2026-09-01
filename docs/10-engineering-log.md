@@ -12513,18 +12513,23 @@ had deleted the whole `*)` branch, which any assertion would have caught. **This
 inside this task's own proof**, and the rule it leaves behind is: *mutate the arm the way a careless
 edit would, not the way a demolition would, and pin the offending TOKEN rather than the arm's generic
 sentence.* Every stage added afterwards is proved this way, and the list is the measured one rather
-than a summary: **S2b, S2c, S2d, S2e, S2f, S4b, S5, S5b, S6b, S6c, S6d, S6e, S6f, S6g, S6h, S6i, S11,
-S12, X5, P10, P11, P12, P13, P14, P15, P16, P18, P19, P20, P21, P22, P23, P24, P25 and P26** — 35 of
-them — were each watched to redden **alone** under a one-line mutation of the arm they target, with
+than a summary: **S2b, S2c, S2d, S2e, S2f, S4b, S5, S5b, S6b, S6c, S6d, S6e, S6f, S6g, S6h, S6i, S6j,
+S6k, S11, S12, X5, P10, P11, P12, P13, P14, P15, P16, P18, P19, P20, P21, P22, P23, P24, P25, P26,
+P27, P28, P29, P30, C1, C2, C5, C6 and C8** were each watched to redden **alone** under a one-line mutation of the arm they target, with
 the guard still exiting 0 on the real tree except where the mutation is deliberately over-broad (S6e,
 S6i) or trips a self-test first (the `privs` arm, `check_tokens`), which is the louder outcome.
 **Three of those mutations had to be redone because the first attempt was too coarse** — it reddened
 an earlier stage sharing the same arm, which proves the suite asserts but not that the stage does.
 S6f and S6g needed a mutation that models "this command is not on the enumerated list" precisely
 enough that S6, S6b, S6c and S6d all still pass; P24, a false-positive proof, needed an
-over-broadening that P0's smaller fixture does not happen to contain. **S2c was missing from the first version of this list and the omission was
-claimed as completeness** — it is the only cover `add_subdirectory` has, and its mutation has since
-been run: dropping that one member of the alternation reddens S2c and nothing else.
+over-broadening that P0's smaller fixture does not happen to contain. **Two stages are named here as NOT individually proved, rather than left to look
+counted.** `S6l` has no possible narrow mutation — `DIR_SCOPED_RE` matches `<command>(` and CMake
+never separates those, so a line-scoped version passes it too; it is a shape regression and says so
+in the driver. `C3`, `C4`, `C7` and `P31`/`P32` redden only alongside a sibling stage that shares
+their arm (`C3` under the arguments-form mutation, `P30` under the flattening one), which proves the
+suite asserts rather than that each stage does. **This list has now been wrong twice by omission** —
+first `S2c`, then this round's nine — each time in a paragraph asserting completeness, which is why
+it is written as an explicit roster plus an explicit set of exceptions rather than a count.
 
 **One structural limit found while doing it, worth stating because it looks like an oversight:** a
 self-test can pin that `extract_calls | tll_target` reads a *wrapped* call, but it can **never** pin

@@ -14,8 +14,8 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 Epic 3.7 (Audio playback v0 · audio) closes with 3.7.1 MERGED (PR #88, `4892e65`, macOS-validated
 ✅ 11/11), 3.7.2 MERGED (PR #89, `b398d17`, macOS-validated — 47 of 53 records, the 6 open ones each
 needing ears or the editor) and **3.7.3 COMPLETE IN CODE on
-`feat/3.7.3-audio-boundary-ci-guard`** — thirteen commits, the full local gate green, the S/X/P seed
-matrices run as ctest stages (34 and 28), the break-the-guard meta-proof run against every one, and
+`feat/3.7.3-audio-boundary-ci-guard`** — twenty-three commits, the full local gate green, the S/X/P seed
+matrices run as ctest stages, the break-the-guard meta-proof run against them, and
 **four** code-review rounds closed (37 findings, 10 blocking — see below). Two durable outcomes: the guards were **inverted from a command denylist to an allowlist** for everything that NAMES a protected target, and for the direction that cannot be inverted — reaching one WITHOUT naming it — a ctest case now **reads `compile_commands.json` and asserts the property instead of predicting it**.
 
 Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4** (PBR materials),
@@ -72,10 +72,12 @@ code**; the manifest **untouched at 20 hash lines**. **This task INVERTS the usu
 blocks are byte-unchanged. The three `engine/**` edits are **comment-only**, asserted by diff.
 
 **The proofs are ctest STAGES, not plan prose, because `docs/plans/` is gitignored and a proof that
-lives only there ceases to exist at merge.** `audio-boundary.guard_e2e` runs 23 stages,
-`boundary-probes.probe_links_e2e` runs 14. Every stage asserts an **exact** exit code, every seed is
-read back **and** asserted present in the index before any verdict is trusted, and both were run
-instrumented so all 37 observed codes were seen rather than inferred.
+lives only there ceases to exist at merge.** `audio-boundary.guard_e2e` runs 37 stages,
+`boundary-probes.probe_links_e2e` 34, and `boundary-probes.compile_line_e2e` 9. Every stage asserts an
+**exact** exit code — 77 for skip included — every seed is read back **and** asserted present in the
+index before any verdict is trusted, and each driver was run instrumented so every observed code was
+seen rather than inferred. **Counts here are measured on the tree in front of you; they have gone
+stale twice in this task alone.**
 
 **THE CODE-REVIEW ROUNDS ARE THE PART TO REMEMBER, AND THE LESSON IS ARCHITECTURAL: A COMMAND
 DENYLIST OVER CMAKE CANNOT CONVERGE.** Three rounds, and each one's blocking finding sat inside the
@@ -111,10 +113,10 @@ any assertion would have caught. **The rule that outlives this: mutate the arm t
 would, not the way a demolition would, and pin the offending TOKEN rather than the arm's generic
 sentence.** Every stage is redden-proved alone under a one-line mutation — 35 of them, listed by name in `docs/10` rather than summarised, after the first version of that list silently dropped a stage and claimed completeness anyway. Three had to be redone: a mutation that reddens an EARLIER stage sharing the same arm proves the suite asserts, not that the stage does.
 
-**One structural limit, because it looks like an oversight and is not:** a self-test can pin that
-`extract_calls | tll_target` reads a wrapped call, but can **never** pin that the sweep calls them
-rather than grepping line by line — `extract_calls` flattens its own input, so the helpers look
-correct under exactly the mutation that matters. Only stage S6b pins that.
+**One structural limit, because it looks like an oversight and is not:** a self-test over a call
+extractor can pin that the extractor reads a wrapped call, but can **never** pin that the sweep calls
+it rather than grepping line by line — the extractor flattens its own input, so it looks correct
+under exactly the mutation that matters. Only an e2e stage pins that; S6b is the one that does.
 
 **Two things found by building it that the plan had not predicted.** (1) **A `.cmake` e2e driver is
 inside the very set prong A-d sweeps**, so `guard_e2e.cmake`'s fixture strings — literal
@@ -126,10 +128,13 @@ containing `aero:: library` does not parse** — the `": "` is a YAML mapping se
 workflow fails to load. Quote any step name containing a colon-space.
 
 **`target_link_libraries(aero_audio_boundary_probe …)` is the tree's first near-miss for prong A-d,
-and this task created it.** It is kept out by **exact token equality** against a three-name list, not
-by a regex name boundary — strictly better, since the regex had to be right about both ends of the
-name and the comparison only has to be right about the name. Self-test 3 pins both directions with
-the same helpers the sweep uses.
+and this task created it.** Part 1d sweeps for the target NAME as a whole token, and the trailing
+`([^a-zA-Z0-9_]|$)` of `target_mention_re` is what keeps `aero_audio_boundary_probe` from reading as
+`aero_audio`. Three self-tests pin that regex — it must match a real mention, must match a target on
+its own line (the wrapped shape), and must NOT match the probe — using the same function the sweep
+uses, so they cannot drift. (An earlier version compared against a three-name list by exact equality;
+that helper was deleted when Part 1d became a name sweep, and this paragraph described it for a round
+afterwards. The mechanism is the regex boundary.)
 
 **A GUARD'S OWN `.cmake` E2E DRIVER IS INSIDE THE SET IT SWEEPS, AND IT BIT TWICE.** Fixture strings
 spelling `target_link_libraries(aero_audio …)` made the audio guard exit 1 on six lines of its own
@@ -288,7 +293,10 @@ arithmetic that produces a confident wrong number.
 
 At 3.7.3's gate: **`ctest -N` 171 / 79 / 92** across tools-ON, both-tools-OFF and reflect-tools-OFF;
 doctest across **seven** binaries **1169 / 1746 / 143 / 34 / 29 / 7 / 28**. Both reduced configurations
-must be configured **FRESH with `-G Ninja`** — `CMAKE_GENERATOR` enters the shadercross bootstrap's
+must be configured **FRESH with `-G Ninja`** — and, since 3.7.3, **with
+`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`**: only the presets set it, so a raw `cmake -S . -B …` writes no
+`compile_commands.json` and `boundary-probes.probe_compile_line` skips. It reports that skip honestly
+(exit 77 → ctest "Skipped") rather than passing, but a skipped case measures nothing — `CMAKE_GENERATOR` enters the shadercross bootstrap's
 option hash, so the generator-less form reads the cached toolchain as **cold** and pays a from-source
 DXC rebuild that peaked at 7.6 GB here — and each must **name which binaries it built and ran**
 (`aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`, `aero_cooker`).

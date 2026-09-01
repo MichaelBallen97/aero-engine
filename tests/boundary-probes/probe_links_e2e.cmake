@@ -288,13 +288,13 @@ _bp_expect_substr("P21" "${_bp_out}" "is named by target_compile_options" TRUE)
 # recorded in docs/10 rather than implied away. ---------------------------------------------------
 _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}set_property(DIRECTORY . PROPERTY EXCLUDE_FROM_ALL TRUE)\n")
 _bp_run("P22 (directory-scoped EXCLUDE_FROM_ALL via set_property)" 1 "${BASH}" "${SCRIPT}")
-_bp_expect_substr("P22" "${_bp_out}" "a DIRECTORY-scoped EXCLUDE_FROM_ALL" TRUE)
+_bp_expect_substr("P22" "${_bp_out}" "without naming one -- directory properties are inherited" TRUE)
 
 # --- P23: the same through set_directory_properties -> exit 1. A fifth spelling of the same
 # property, which is why the banner stopped saying "either spelling". --------------------------
 _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}set_directory_properties(PROPERTIES EXCLUDE_FROM_ALL TRUE)\n")
 _bp_run("P23 (directory-scoped EXCLUDE_FROM_ALL via set_directory_properties)" 1 "${BASH}" "${SCRIPT}")
-_bp_expect_substr("P23" "${_bp_out}" "a DIRECTORY-scoped EXCLUDE_FROM_ALL" TRUE)
+_bp_expect_substr("P23" "${_bp_out}" "without naming one -- directory properties are inherited" TRUE)
 
 # --- P24: a NEW probe added the canonical way, and a non-probe target with a filthy link line ->
 # exit 0. The allowlist is broad by construction, so its false-positive half matters more than most:

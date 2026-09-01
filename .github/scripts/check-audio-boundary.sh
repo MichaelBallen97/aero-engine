@@ -175,8 +175,6 @@ extract_calls() {  # $1 = case-insensitive command-name ERE fragment, stdin = fi
   strip_cmake | tr '\n' ' ' | grep -oiE "(^|[^a-zA-Z0-9_])$1[[:space:]]*\([^)]*\)" || true
 }
 
-# Is $1 one of the guarded CMakeLists themselves? Derived from the one roster, so Part 1d's skip
-# list cannot drift away from the file list the way a hardcoded `case` did.
 # THE DIRECTORY-SCOPE SET: every file that can push state into the directory scope a guarded target
 # is defined in. CMake's directory properties are inherited, so include_directories() in ANY of these
 # reaches the target without ever naming it -- the one direction the naming allowlist structurally
@@ -245,6 +243,8 @@ expand_includes() {  # stdin = newline-separated file list
 # aero_audio. Hoisted into a function so the self-test below and the sweep cannot use different text.
 target_mention_re() { printf '(^|[^a-zA-Z0-9_])%s([^a-zA-Z0-9_]|$)' "$1"; }
 
+# Is $1 one of the guarded CMakeLists themselves? Derived from the one roster, so Part 1d's skip
+# test cannot drift away from the file list the way a hardcoded `case` did.
 # Is $1 one of the guarded CMakeLists themselves? Derived from the one roster, so Part 1d's skip
 # test cannot drift away from the file list the way a hardcoded `case` did.
 is_guarded_file() {
