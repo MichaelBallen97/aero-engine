@@ -16,9 +16,7 @@ Epic 3.7 (Audio playback v0 · audio) closes with 3.7.1 MERGED (PR #88, `4892e65
 needing ears or the editor) and **3.7.3 COMPLETE IN CODE on
 `feat/3.7.3-audio-boundary-ci-guard`** — thirteen commits, the full local gate green, the S/X/P seed
 matrices run as ctest stages (34 and 28), the break-the-guard meta-proof run against every one, and
-**three** code-review rounds closed (25 findings, 7 blocking — see below). The durable outcome is that
-both guards were **inverted from a command denylist to an allowlist**, which is the only shape that
-converged.
+**four** code-review rounds closed (37 findings, 10 blocking — see below). Two durable outcomes: the guards were **inverted from a command denylist to an allowlist** for everything that NAMES a protected target, and for the direction that cannot be inverted — reaching one WITHOUT naming it — a ctest case now **reads `compile_commands.json` and asserts the property instead of predicting it**.
 
 Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4** (PBR materials),
 **3.5** (Skeletal animation), **3.6** (Rendering essentials) and **3.7** (Audio playback v0) are all
@@ -60,12 +58,12 @@ the **only compile-time enforcement the audio layer has that survives Release**;
 read vcpkg-free in Release too, for the same reason. Proven both ways through the real CMake target:
 a seeded `#include <miniaudio.h>` fails `'miniaudio.h' file not found` in **both** presets.
 
-**The gate, re-measured after the code-review round:** 170/170 on both macOS presets with
+**The gate, re-measured after the fourth code-review round:** 171/171 on both macOS presets with
 `AERO_REQUIRE_GPU=1` (Debug 239.32 s, Release 64.59 s); fresh `-G Ninja` reduced configurations
 **78** and **91**, each having built and RUN `aero_tests`, `aero_editor_shell_test`,
-`aero_editor_imgui_test` and `aero_cooker`; **`ctest -N` 170 / 78 / 91 — `+2` in all three, in
-lockstep**; doctest **1169 / 1746 / 143 / 34 / 29 / 7 / 28 — UNMOVED in all seven**; **eight** guards
-exit 0 (audio **11 / 3 / 52**, probes **6 / 54**, math **450**, platform **83**, scene **83**, rhi 144,
+`aero_editor_imgui_test` and `aero_cooker`; **`ctest -N` 171 / 79 / 92 — `+3` in all three, in
+lockstep** (the third is the compile-line case, ungated); doctest **1169 / 1746 / 143 / 34 / 29 / 7 / 28 — UNMOVED in all seven**; **eight** guards
+exit 0 (audio **11 / 3 / 53**, probes **6 / 55**, math **450**, platform **83**, scene **83**, rhi 144,
 golden-rule 146, project-no-delete **A=6 / B=75**); clang-format and clang-tidy clean **by exit
 code**; the manifest **untouched at 20 hash lines**. **This task INVERTS the usual pattern — `ctest
 -N` moves while every doctest total stays put** (the probe has no `TEST_CASE`, the drivers are
@@ -100,10 +98,9 @@ and its single `target_link_libraries`. Nothing outside the three guarded CMakeL
 three commands it has ever used. Ten escape attempts spanning `target_sources`,
 `target_compile_definitions`, `target_precompile_headers`, `target_link_options`, `add_dependencies`,
 `get_target_property`, `if(TARGET …)` and a bare `set()` are refused with no arm of their own. **If a
-guard ever needs a second arm for a second spelling of one predicate, stop and invert it.** What an
+guard ever needs a second arm for a second spelling of one predicate, stop and invert it.** And where inversion is impossible — the without-naming direction, where a toolchain file or a preset can contaminate a compile line with no CMake text at all — **stop predicting the build fact and read it**: `boundary-probes.probe_compile_line` asserts directly that no probe's compile line carries vcpkg's shared include root, which is what four rounds of textual arms were approximating. What an
 allowlist cannot see is what never names the target — inherited directory properties from an ancestor
-(closed by an ancestor check) and a compile line assembled outside any CMakeLists (the standing
-residual, and what the deferred `try_compile` harness would add).
+(closed by an ancestor check computed from real include() edges). Beyond that, **the residual is not bounded by a list and is not claimed to be**: CMake pushes state into a directory scope through many commands, and through a toolchain file or a preset's cache variables which appear in no CMakeLists at all. That is why the ctest case `boundary-probes.probe_compile_line` reads `compile_commands.json` and asserts the property directly -- no probe's compile line carries vcpkg's shared include root -- which closes every such route at once, including the ones no textual guard can read. What that case in turn does not cover is stated where it lives: a configuration it never runs against (a multi-config generator writes no database, so it self-skips), and a contaminating include root that is not vcpkg's.
 
 **AND THREE E2E STAGES PROVED LESS THAN THEY CLAIMED — the 2.1.2 species inside this task's own
 proof.** Stage S5 passed over a *narrowly* mutated Part 1c (allowlisting any `${`-rooted include dir,
@@ -289,7 +286,7 @@ Read totals from **doctest's own `filters:` line**, never from a `grep -c` of ca
 count on its own page goes stale, and adding one task's delta to another task's baseline is exactly the
 arithmetic that produces a confident wrong number.
 
-At 3.7.3's gate: **`ctest -N` 170 / 78 / 91** across tools-ON, both-tools-OFF and reflect-tools-OFF;
+At 3.7.3's gate: **`ctest -N` 171 / 79 / 92** across tools-ON, both-tools-OFF and reflect-tools-OFF;
 doctest across **seven** binaries **1169 / 1746 / 143 / 34 / 29 / 7 / 28**. Both reduced configurations
 must be configured **FRESH with `-G Ninja`** — `CMAKE_GENERATOR` enters the shadercross bootstrap's
 option hash, so the generator-less form reads the cached toolchain as **cold** and pays a from-source

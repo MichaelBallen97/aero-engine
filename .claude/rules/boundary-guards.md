@@ -51,10 +51,16 @@ spelling nobody has thought of — with nothing to enumerate and nothing to keep
 link line's own shape (one `aero::` library, one `PRIVATE`, one call) is still checked
 separately, since that is about the call's *contents* rather than its existence.
 
-Two things reach a probe **without naming it**, so the allowlist cannot see them and they are
-checked directly instead: a directory-scoped `include_directories()`/`link_libraries()`/
-`link_directories()` in an ancestor of the registry, and `add_subdirectory(<registry dir>
-EXCLUDE_FROM_ALL)`. Both are refused. The probe list is **derived** from the registry's
+Some things reach a probe **without naming it**, and the allowlist structurally cannot see
+them. Several are refused directly — a directory-scoped `include_directories()` /
+`link_libraries()` / `link_directories()`, and the `EXCLUDE_FROM_ALL` spellings, anywhere in
+the registry's own file, its ancestors, or a `.cmake` module they `include()`. **That arm is a
+denylist and is not claimed to be complete**: `add_compile_options(-I…)`, `add_definitions`, a
+`CMAKE_CXX_FLAGS` mutation, a toolchain file and a preset's cache variables all reach the same
+compile line, and the last two are in no CMakeLists at all. **What closes the class is
+`boundary-probes.probe_compile_line`**, a ctest case that reads `compile_commands.json` and
+asserts the property itself: no probe's compile line carries vcpkg's shared include root.
+Prefer that shape whenever a textual guard is predicting a build fact it could instead read. The probe list is **derived** from the registry's
 `add_library(… OBJECT …)` lines, never enumerated, so a new probe is covered the moment it
 lands. `check-audio-boundary.sh` carries the same inversion one layer over: **no file outside
 the three guarded CMakeLists may name `aero_assets`, `aero_audio` or `aero_scene_audio` at
