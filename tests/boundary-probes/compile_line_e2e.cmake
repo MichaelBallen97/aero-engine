@@ -122,6 +122,22 @@ _cl_write("c5.json" [==[[
 _cl_run("C5 (fewer probes than the floor)" 1 "${WORK_DIR}/c5.json")
 _cl_expect("C5" "${_cl_out}" "expected at least 6")
 
+# --- C9: SEVEN probes, one of them new -> exit 0. The floor is a FLOOR, not an equality: a future
+# probe must land without editing the driver. Measured as uncovered before this stage existed --
+# rewriting `_checked LESS 6` as `NOT _checked EQUAL 6` reddened nothing at all, because the real
+# tree and every other fixture here happen to hold exactly six. -----------------------------------
+_cl_write("c9.json" [==[[
+{"directory":"/b","file":"/r/tests/math_boundary_probe.cpp","command":"/usr/bin/c++ -c a.cpp"},
+{"directory":"/b","file":"/r/tests/jobs_boundary_probe.cpp","command":"/usr/bin/c++ -c b.cpp"},
+{"directory":"/b","file":"/r/tests/platform_boundary_probe.cpp","command":"/usr/bin/c++ -c c.cpp"},
+{"directory":"/b","file":"/r/tests/rhi_boundary_probe.cpp","command":"/usr/bin/c++ -c d.cpp"},
+{"directory":"/b","file":"/r/tests/scene_boundary_probe.cpp","command":"/usr/bin/c++ -c e.cpp"},
+{"directory":"/b","file":"/r/tests/audio_boundary_probe.cpp","command":"/usr/bin/c++ -c f.cpp"},
+{"directory":"/b","file":"/r/tests/script_boundary_probe.cpp","command":"/usr/bin/c++ -c g.cpp"}
+]]==])
+_cl_run("C9 (a seventh probe, floor not equality)" 0 "${WORK_DIR}/c9.json")
+_cl_expect("C9" "${_cl_out}" "7 probe compile lines read")
+
 # --- C6: an entry with neither `command` nor `arguments` -> exit 1, not a silent skip of that entry.
 _cl_write("c6.json" [==[[
 {"directory":"/b","file":"/r/tests/math_boundary_probe.cpp","command":"/usr/bin/c++ -c a.cpp"},
@@ -156,4 +172,4 @@ _cl_expect("C7" "${_cl_out}" "holds no entries at all")
 _cl_run("C8 (absent database -> the skip line, not silence)" 0 "${WORK_DIR}/does-not-exist.json")
 _cl_expect("C8" "${_cl_out}" "probe_compile_line: SKIPPED")
 
-message(STATUS "boundary-probes.compile_line_e2e: OK -- C0-C8, 9 stages")
+message(STATUS "boundary-probes.compile_line_e2e: OK -- C0-C9, 10 stages")
