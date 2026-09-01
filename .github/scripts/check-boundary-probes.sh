@@ -17,6 +17,13 @@
 # edit to this file. The one hardcoded name below is a CANARY, not a roster: the audio probe this
 # guard shipped beside must be in the derived set, or derivation itself has rotted.
 #
+#
+# BRACKET COMMENTS ARE NOT STRIPPED, and that is a deliberate fail-loud choice both guards make
+# identically. `strip_cmake` removes `#` line comments only, so the continuation lines of a
+# `#[[ ... ]]` block comment are read as code and a guarded name or banned command inside one is
+# reported. Neither style is used anywhere in this tree. The alternative -- parsing bracket comments
+# -- would mean a real violation could be hidden inside one, which is the wrong direction for a
+# guard; a false positive is a two-line edit, a false negative is another review round.
 # Run it locally before pushing:
 #     bash .github/scripts/check-boundary-probes.sh
 # NOTE ON WHAT IS AND IS NOT TRACKED-ONLY, because this guard is now half of each. The REGISTRY is
@@ -44,9 +51,6 @@ flat() { strip_cmake < "$PROBE_REGISTRY" | tr '\n' ' '; }
 flat_file() { strip_cmake < "$1" | tr '\n' ' '; }
 
 # Every target_link_libraries(...) call in a flattened CMake file, one per line.
-tll_calls() {  # $1 = path
-  flat_file "$1" | grep -oiE "(^|[^a-zA-Z0-9_])target_link_libraries[[:space:]]*\([^)]*\)" || true
-}
 
 # The TARGET token of one extracted call -- its first argument. `sed -n '1p'` rather than `head -1`:
 # head closes the pipe early and the SIGPIPE would fail the command substitution under pipefail.
@@ -57,29 +61,13 @@ tll_target() {  # stdin = one extracted call
 # Every set_target_properties(...) / set_property(TARGET ...) call in a flattened CMake file.
 # PARENTHESISED alternation: interpolated bare, `a|b` would bind as `(^|[^..])a` OR `b...\)`, which
 # matches the first command's NAME with no call body and silently drops every wrapped call.
-prop_calls() {  # $1 = path
-  flat_file "$1" | grep -oiE "(^|[^a-zA-Z0-9_])(set_target_properties|set_property)[[:space:]]*\([^)]*\)" || true
-}
 
 # The TARGET tokens of one such call, one per line -- both spellings, since both reach the same
 # properties:
 #   set_target_properties(<t...> PROPERTIES <prop> <val> ...)
 #   set_property(TARGET <t...> [APPEND|APPEND_STRING] PROPERTY <prop> <val> ...)
 # Any other set_property scope names no target and prints nothing.
-prop_targets() {  # $1 = one extracted call
-  _body="$(printf '%s\n' "$1" | sed -E 's/^[^(]*\([[:space:]]*//; s/\)$//')"
-  for _tok in $_body; do
-    case "$_tok" in
-      TARGET) continue ;;
-      PROPERTIES|PROPERTY) return 0 ;;
-      APPEND|APPEND_STRING) continue ;;
-      GLOBAL|DIRECTORY|SOURCE|INSTALL|TEST|CACHE) return 0 ;;
-    esac
-    printf '%s\n' "$_tok"
-  done
-}
 
-is_probe() { printf '%s\n' "$probes" | grep -qx "$1"; }
 
 # THE DIRECTORY-SCOPE SET: every file that can push state into the directory scope the probes are
 # defined in. Directory properties are inherited, so include_directories() in any of these reaches
@@ -212,23 +200,11 @@ if [ -n "$(check_tokens t 'PRIVATE aero::audio')" ]; then
   exit 2
 fi
 
-# --- Self-test 2b: the property machinery. Both spellings reach EXCLUDE_FROM_ALL and LINK_LIBRARIES,
-# so both must be read; a non-TARGET scope must name nothing; and the extractor must survive wrapping.
-if [ "$(prop_targets 'set_target_properties(aero_audio_boundary_probe PROPERTIES EXCLUDE_FROM_ALL TRUE)')" \
-     != 'aero_audio_boundary_probe' ]; then
-  echo "::error::prop_targets in $0 no longer reads a set_target_properties target -- the property" >&2
-  echo "         spelling of EXCLUDE_FROM_ALL would pass while the banner claims 'built by all'." >&2
-  exit 2
-fi
-if [ "$(prop_targets 'set_property(TARGET aero_audio_boundary_probe APPEND PROPERTY LINK_LIBRARIES doctest::doctest)')" \
-     != 'aero_audio_boundary_probe' ]; then
-  echo "::error::prop_targets in $0 no longer reads a set_property(TARGET ...) target -- vacuous." >&2
-  exit 2
-fi
-if [ -n "$(prop_targets 'set_property(GLOBAL PROPERTY USE_FOLDERS ON)')" ]; then
-  echo "::error::prop_targets in $0 names a target for a non-TARGET scope -- over-broad." >&2
-  exit 2
-fi
+# NOTE ON A SELF-TEST THAT IS GONE, because a removed check should say so rather than vanish.
+# Self-test 2b pinned a prop_targets() helper that read the target out of set_target_properties /
+# set_property calls. Both are gone: the sweep no longer asks WHICH command names a probe, only
+# whether anything other than the two legal calls does, so there is no per-command extractor left to
+# rot. The property spellings are covered by stages P15/P16 and by the allowlist itself.
 
 # --- The guard. --------------------------------------------------------------------------------
 violations=""
@@ -342,9 +318,13 @@ while IFS= read -r -d '' f; do
           | grep -E "(^|[^a-zA-Z0-9_])(${probe_alt})([^a-zA-Z0-9_]|$)" || true)"
   for probe in $probes; do
     printf '%s\n' "$numbered" | grep -qE "(^|[^a-zA-Z0-9_])${probe}([^a-zA-Z0-9_]|$)" || continue
-    line="$(printf '%s\n' "$numbered" | grep -E "(^|[^a-zA-Z0-9_])${probe}([^a-zA-Z0-9_]|$)" \
-            | head -1 | cut -d: -f1 || true)"
+    # All mentions, so each violation is annotated at ITS OWN line rather than at the probe's
+    # canonical add_library. Under $GITHUB_ACTIONS the single-line form put a ::error marker on
+    # correct code; the audio guard already attributes per hit.
+    mentions="$(printf '%s\n' "$numbered" | grep -E "(^|[^a-zA-Z0-9_])${probe}([^a-zA-Z0-9_]|$)" || true)"
+    line="$(printf '%s\n' "$mentions" | head -1 | cut -d: -f1 || true)"
     named=0
+    _seen=0
     if [ -n "$cand" ]; then
       while IFS= read -r call; do
         [ -z "$call" ] && continue
@@ -362,7 +342,11 @@ while IFS= read -r -d '' f; do
             add_library|target_link_libraries) continue ;;
           esac
         fi
-        violations="${violations}${f}:${line:-1}: ${probe} is named by ${cmd}(...) -- only its own add_library and its single target_link_libraries may name a boundary probe
+        # Walk the mention list in step with the offending calls, so the Nth illegal call is
+        # reported at the Nth mention rather than all of them at the first.
+        _seen=$((_seen + 1))
+        _ln="$(printf '%s\n' "$mentions" | sed -n "${_seen}p" | cut -d: -f1 || true)"
+        violations="${violations}${f}:${_ln:-${line:-1}}: ${probe} is named by ${cmd}(...) -- only its own add_library and its single target_link_libraries may name a boundary probe. If a probe legitimately needs another command, that is a deliberate widening of this guard: add the command to the allowlist in $0 with a comment saying why, exactly as widening ALLOWED_FILE is treated elsewhere
 "
       done <<< "$cand"
     fi
@@ -376,8 +360,9 @@ done < <(git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake')
 
 # --- The directory-scoped EXCLUDE_FROM_ALL spellings, which name no probe and so are invisible to
 # the allowlist above. NOT claimed as exhaustive: a directory property set from a parent scope, or an
-# add_subdirectory(<dir> EXCLUDE_FROM_ALL) naming the registry's directory, is outside what this
-# textual guard reads and is recorded as residual in docs/10 rather than implied away. -------------
+# add_subdirectory(<dir> EXCLUDE_FROM_ALL) naming the registry's directory, IS read by the block
+# above. What is not read is a directory property pushed from somewhere with no CMake text at all --
+# a toolchain file or a preset -- which is why boundary-probes.probe_compile_line exists. -------------
 if [ -f "$PROBE_REGISTRY" ]; then
   dir_hits="$(nl -ba -w1 -s: "$PROBE_REGISTRY" | sed 's|#.*||' \
               | grep -iE "(^|[^a-zA-Z0-9_])(set_directory_properties|set_property)[[:space:]]*\([^)]*EXCLUDE_FROM_ALL" || true)"
