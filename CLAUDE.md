@@ -14,7 +14,7 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 Epic 3.7 (Audio playback v0 · audio) closes with 3.7.1 MERGED (PR #88, `4892e65`, macOS-validated
 ✅ 11/11), 3.7.2 MERGED (PR #89, `b398d17`, macOS-validated — 47 of 53 records, the 6 open ones each
 needing ears or the editor) and **3.7.3 COMPLETE IN CODE on
-`feat/3.7.3-audio-boundary-ci-guard`** — twenty-two commits, the full local gate green, the S/X/P seed
+`feat/3.7.3-audio-boundary-ci-guard`** — one commit per step, the full local gate green, the S/X/P seed
 matrices run as ctest stages, the break-the-guard meta-proof run against them, and
 **four** code-review rounds closed (37 findings, 10 blocking — see below). Two durable outcomes: the guards were **inverted from a command denylist to an allowlist** for everything that NAMES a protected target, and for the direction that cannot be inverted — reaching one WITHOUT naming it — a ctest case now **reads `compile_commands.json` and asserts the property instead of predicting it**.
 
