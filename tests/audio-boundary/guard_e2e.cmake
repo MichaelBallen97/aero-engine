@@ -221,6 +221,38 @@ _ab_run("S2 (FIND_PACKAGE upper-case, engine/assets)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S2" "${_ab_out}" "engine/assets/CMakeLists.txt:" TRUE)
 _ab_expect_substr("S2" "${_ab_out}" "a vcpkg/dependency hook command entered a vcpkg-free CMakeLists" TRUE)
 
+# --- S2b: find_path, the OTHER named vector -> exit 1. §B.1 singles this member out because the tree
+# itself proves it: 3.7.1 wired the editor's decode headers with exactly find_path + a SYSTEM PRIVATE
+# include dir and NO link line, so the identical edit here would void the property with the word
+# find_package never appearing. Until this stage existed, deleting find_path|find_library|find_file|
+# find_program|pkg_check_modules|pkg_search_module from the alternation left every stage green --
+# S1/S2 pin find_package and nothing pinned the rest of the list. ---------------------------------
+_ab_base()
+_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE}find_path(MINIAUDIO_INCLUDE_DIR miniaudio.h)\n")
+_ab_run("S2b (find_path in engine/audio)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S2b" "${_ab_out}" "engine/audio/CMakeLists.txt:" TRUE)
+_ab_expect_substr("S2b" "${_ab_out}" "a vcpkg/dependency hook command entered a vcpkg-free CMakeLists" TRUE)
+
+# --- S2c: add_subdirectory -> exit 1. The directory-scoped half of the banned list, and the member
+# whose boundary character the leading (^|[^a-zA-Z0-9_]) protects. ---------------------------------
+_ab_base()
+_ab_seed("engine/scene_audio/CMakeLists.txt" "${_AB_SCENE_AUDIO_CMAKE}add_subdirectory(vendor)\n")
+_ab_run("S2c (add_subdirectory in engine/scene_audio)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S2c" "${_ab_out}" "engine/scene_audio/CMakeLists.txt:" TRUE)
+_ab_expect_substr("S2c" "${_ab_out}" "a vcpkg/dependency hook command entered a vcpkg-free CMakeLists" TRUE)
+
+# --- S2d: include() -> exit 1. THE FLAGSHIP BYPASS, and the one that made every other arm of prong A
+# optional: Parts 1a/1b/1c read exactly the three rostered files and Part 1d looks only for
+# target_link_libraries, so NOTHING followed an include(). Two lines -- this one, plus a find_package
+# and a foreign include dir in the included file -- voided the entire prong while the guard printed
+# its OK banner. include(cmake/*.cmake) is a live idiom in this tree, so the vector has in-tree
+# precedent, which is the bar every other member of the banned list is held to. --------------------
+_ab_base()
+_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE}include(\${CMAKE_CURRENT_SOURCE_DIR}/audio_deps.cmake)\n")
+_ab_run("S2d (include() in engine/audio)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S2d" "${_ab_out}" "engine/audio/CMakeLists.txt:" TRUE)
+_ab_expect_substr("S2d" "${_ab_out}" "a vcpkg/dependency hook command entered a vcpkg-free CMakeLists" TRUE)
+
 # --- S3: a non-aero:: token INSIDE THE MULTI-LINE TLL call -> exit 1 (Part 1b). The multi-line shape
 # is the one all three files actually use, so a line-at-a-time check would miss it entirely. --------
 _ab_base()
@@ -228,20 +260,50 @@ _ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE_HEAD}${_AB_TLL}(aero_a
 _ab_run("S3 (miniaudio token in a multi-line TLL)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S3" "${_ab_out}" "link token 'miniaudio' is not an aero:: engine target" TRUE)
 
-# --- S4: aero::scene_internal on scene_audio's link line -> exit 1, with its OWN message. It matches
-# the aero:: shape and is refused BY NAME: it carries EnTT::EnTT INTERFACE by design. ---------------
+# --- S4: an *_internal target on scene_audio's link line -> exit 1, with its OWN message. It matches
+# the aero:: shape and is refused BY NAME: it carries its backend INTERFACE by design. --------------
 _ab_base()
 _ab_seed("engine/scene_audio/CMakeLists.txt" "${_AB_SCENE_AUDIO_CMAKE_HEAD}${_AB_TLL}(aero_scene_audio\n    PUBLIC aero::scene aero::audio aero::scene_internal\n    PRIVATE aero::profiling\n)\n")
 _ab_run("S4 (aero::scene_internal on a link line)" 1 "${BASH}" "${SCRIPT}")
-_ab_expect_substr("S4" "${_ab_out}" "carries EnTT::EnTT INTERFACE by design" TRUE)
+_ab_expect_substr("S4" "${_ab_out}" "'aero::scene_internal' on a link line" TRUE)
+_ab_expect_substr("S4" "${_ab_out}" "an *_internal target carries its backend INTERFACE by design" TRUE)
+
+# --- S4b: the SAME target by its RAW CMake name -> exit 1. The alias is not the only spelling, and
+# for a while it was the only one refused: aero_scene_internal / aero_platform_internal /
+# aero_rhi_internal all exist in this tree and all match LINK_TOKEN_RE's aero_[a-z_]+ branch, so they
+# passed with the OK banner. The raw name is what anyone copying from engine/scene/CMakeLists.txt
+# would write, which makes it the LIKELIER spelling, not the exotic one. --------------------------
+_ab_base()
+_ab_seed("engine/scene_audio/CMakeLists.txt" "${_AB_SCENE_AUDIO_CMAKE_HEAD}${_AB_TLL}(aero_scene_audio\n    PUBLIC aero::scene aero::audio aero_scene_internal\n    PRIVATE aero::profiling\n)\n")
+_ab_run("S4b (RAW aero_scene_internal on a link line)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S4b" "${_ab_out}" "'aero_scene_internal' on a link line" TRUE)
+_ab_expect_substr("S4b" "${_ab_out}" "an *_internal target carries its backend INTERFACE by design" TRUE)
 
 # --- S5: an include directory reaching outside the subsystem -> exit 1 (Part 1c). This is the 3.7.1
 # editor vector exactly: find_path + a SYSTEM PRIVATE include dir and NO link line at all, which
-# reaches an external header with the word find_package never appearing. ---------------------------
+# reaches an external header with the word find_package never appearing.
+#
+# THE ASSERTION NAMES THE VARIABLE, NOT JUST THE ARM, AND THAT IS THE WHOLE POINT OF THIS STAGE. The
+# seed also contains the keyword SYSTEM; while SYSTEM was missing from Part 1c's allowlist it
+# produced a violation of its own, so a generic "reaches outside the subsystem" assertion was
+# satisfied by the KEYWORD and said nothing at all about the PATH. Measured: replacing the allowlist's
+# ${CMAKE_CURRENT_SOURCE_DIR} arm with a bare ${ -- i.e. admitting any variable-rooted include dir,
+# the exact rot this arm exists to prevent -- left all sixteen stages green. Pin the token.
 _ab_base()
 _ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE}target_include_directories(aero_audio SYSTEM PRIVATE \${MINIAUDIO_INCLUDE_DIR})\n")
 _ab_run("S5 (include dir outside the subsystem)" 1 "${BASH}" "${SCRIPT}")
-_ab_expect_substr("S5" "${_ab_out}" "reaches outside the subsystem" TRUE)
+_ab_expect_substr("S5" "${_ab_out}" "include dir '\${MINIAUDIO_INCLUDE_DIR}' reaches outside the subsystem" TRUE)
+# ...and SYSTEM, a legal keyword, must NOT be reported as a path. Both halves in one stage: the arm
+# has to fire on the real offender and stay silent on the keyword beside it.
+_ab_expect_substr("S5" "${_ab_out}" "include dir 'SYSTEM'" FALSE)
+
+# --- S5b: a wholly LEGAL target_include_directories carrying SYSTEM -> exit 0. The false-positive
+# half of S5: SYSTEM/BEFORE/AFTER are keywords, and reporting one as an include path is a guard
+# telling a true story about the wrong token. -----------------------------------------------------
+_ab_base()
+_ab_seed("engine/audio/CMakeLists.txt" "${_AB_AUDIO_CMAKE_HEAD}${_AB_TLL}(aero_audio\n    PUBLIC aero::core aero::assets\n    PRIVATE aero::profiling\n)\ntarget_include_directories(aero_audio SYSTEM PUBLIC \${CMAKE_CURRENT_SOURCE_DIR}/include)\n")
+_ab_run("S5b (legal SYSTEM keyword, false-positive proof)" 0 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S5b" "${_ab_out}" "audio-boundary guard: OK" TRUE)
 
 # --- S6: a CROSS-DIRECTORY target_link_libraries from engine/CMakeLists.txt -> exit 1 (Part 1d).
 # CMake >= 3.13 permits this, and it voids the property from OUTSIDE the guarded files while all
@@ -251,6 +313,28 @@ _ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}${_AB_TLL}(aero_audio PRIVA
 _ab_run("S6 (cross-directory TLL)" 1 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S6" "${_ab_out}" "engine/CMakeLists.txt:" TRUE)
 _ab_expect_substr("S6" "${_ab_out}" "cross-directory target_link_libraries on a vcpkg-free target" TRUE)
+
+# --- S6b: the same link, WRAPPED so the target is not on the same physical line as the command ->
+# exit 1. A line-scoped grep sees `target_link_libraries(` with nothing after the paren and finds no
+# target at all, which is exactly how this form passed before the sweep was made to flatten like
+# Parts 1b and 1c already did. No self-test can pin this: extract_calls flattens its own input, so
+# the helper looks correct in isolation -- only a stage proves the SWEEP uses it. -------------------
+_ab_base()
+_ab_seed("engine/CMakeLists.txt" "${_AB_ENGINE_CMAKE}${_AB_TLL}(\n    aero_audio\n    PRIVATE miniaudio\n)\n")
+_ab_run("S6b (WRAPPED cross-directory TLL)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6b" "${_ab_out}" "engine/CMakeLists.txt:" TRUE)
+_ab_expect_substr("S6b" "${_ab_out}" "cross-directory target_link_libraries on a vcpkg-free target" TRUE)
+
+# --- S6c: the same link written into a scratch `*.cmake` -> exit 1. Part 1d's pathspec has THREE
+# arms ('CMakeLists.txt', '*/CMakeLists.txt', '*.cmake') and S6/S6b exercise only the second. This is
+# prong B's own "a root that contributes no seed is a root nothing proves is walked" applied to the
+# sweep: dropping '*.cmake' silently removed every .cmake file from the swept set -- including both of
+# this task's own e2e drivers -- and left every stage green. -----------------------------------------
+_ab_base()
+_ab_seed("engine/audio_deps.cmake" "${_AB_TLL}(aero_audio PRIVATE miniaudio)\n")
+_ab_run("S6c (cross-directory TLL in a *.cmake file)" 1 "${BASH}" "${SCRIPT}")
+_ab_expect_substr("S6c" "${_ab_out}" "engine/audio_deps.cmake:" TRUE)
+_ab_expect_substr("S6c" "${_ab_out}" "cross-directory target_link_libraries on a vcpkg-free target" TRUE)
 
 # --- S7: a ma_ identifier used as CODE in an audio src/ file -> exit 1 (Part 2). This is the half
 # check-platform-boundary.sh does not reach: it stops at engine/*/include/*, and the shape
@@ -325,4 +409,5 @@ _ab_base()
 _ab_run("S0' (base restored)" 0 "${BASH}" "${SCRIPT}")
 _ab_expect_substr("S0'" "${_ab_out}" "audio-boundary guard: OK" TRUE)
 
-message(STATUS "audio-boundary.guard_e2e: OK -- S0-S10 + X1-X4 + a restored-tree stage, 16 in all")
+message(STATUS "audio-boundary.guard_e2e: OK -- S0-S10 (with S2b/S2c/S2d, S4b, S5b, S6b/S6c) + X1-X4 "
+               "+ a restored-tree stage, 23 in all")

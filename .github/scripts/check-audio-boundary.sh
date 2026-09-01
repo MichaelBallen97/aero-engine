@@ -77,18 +77,32 @@ readonly AUDIO_ROOTS=('engine/audio' 'engine/scene_audio')
 # / link_directories / link_libraries (the directory-scoped forms) and add_subdirectory are banned
 # outright: none has a legitimate use in these three files, and a future legitimate need edits this
 # guard consciously (the ALLOWED_FILE precedent: widening is a design change, not a chore).
+#
+# `include` IS IN THE LIST AND IT IS NOT A ROUNDING ERROR. Parts 1a/1b/1c read exactly the three
+# rostered files, and Part 1d looks only for target_link_libraries, so NOTHING follows an
+# `include(...)`: a two-line edit -- `include(${CMAKE_CURRENT_SOURCE_DIR}/audio_deps.cmake)` here plus
+# a find_package and a foreign include dir in that file -- voided the whole of prong A while this
+# guard printed its OK banner (measured, 3.7.3's code-review round). `include(cmake/*.cmake)` is a
+# live idiom in this tree (the root CMakeLists.txt uses it five times), so the vector has in-tree
+# precedent, which is exactly the bar the other entries here are held to.
+#
 # THE LEADING (^|[^a-zA-Z0-9_]) IS LOAD-BEARING, NOT DECORATION: target_include_directories( and
 # target_link_libraries( CONTAIN the banned substrings include_directories( and link_libraries(, so
-# without it this guard is permanently red on a clean tree. Self-test 3 pins both directions.
-readonly BANNED_CMAKE_RE='(^|[^a-zA-Z0-9_])(find_package|find_path|find_library|find_file|find_program|pkg_check_modules|pkg_search_module|include_directories|link_directories|link_libraries|add_subdirectory)[[:space:]]*\('
+# without it this guard is permanently red on a clean tree. `include` needs the SAME protection twice
+# over -- from target_include_directories( and from a path ending in /include) -- and gets it from the
+# trailing [[:space:]]*\(, since neither is followed by an opening paren. Self-test 3 pins all of it.
+readonly BANNED_CMAKE_RE='(^|[^a-zA-Z0-9_])(find_package|find_path|find_library|find_file|find_program|pkg_check_modules|pkg_search_module|include_directories|link_directories|link_libraries|add_subdirectory|include)[[:space:]]*\('
 
-# A cross-directory target_link_libraries (CMake >= 3.13) naming one of the three guarded targets --
-# the form that voids the property from OUTSIDE the guarded files while all three stay byte-identical.
-# THE TRAILING ([^a-zA-Z0-9_]|$) IS LOAD-BEARING TOO: tests/CMakeLists.txt holds
-# target_link_libraries(aero_audio_boundary_probe PRIVATE aero::audio) -- a line THIS TASK added,
-# inside the swept set -- and only that boundary keeps it from matching aero_audio. Self-test 3 pins
-# both directions, using this same literal so the self-test cannot drift from the sweep.
-readonly CROSSDIR_TLL_RE='target_link_libraries[[:space:]]*\([[:space:]]*aero_(assets|audio|scene_audio)([^a-zA-Z0-9_]|$)'
+# The three guarded targets by their RAW CMake names -- what a cross-directory target_link_libraries
+# (CMake >= 3.13) would have to name to void the property from OUTSIDE the guarded files while all
+# three of them stay byte-identical. Part 1d compares the EXTRACTED TARGET TOKEN against this list
+# rather than pattern-matching the raw line, because a line-scoped regex reads only the first physical
+# line of a call: `target_link_libraries(\n    aero_audio\n    PRIVATE miniaudio\n)` has nothing after
+# the paren on line one and evaded the earlier regex form entirely (measured, 3.7.3's code-review
+# round). Exact token equality also subsumes what the old regex's trailing name boundary was for:
+# aero_audio_boundary_probe -- a target THIS TASK added inside the swept set -- is simply not in the
+# list. Self-test 3 pins both directions.
+readonly VCPKG_FREE_TARGETS='aero_assets aero_audio aero_scene_audio'
 
 # A real #include of the miniaudio header (flat: the vcpkg port installs include/miniaudio.h).
 readonly MA_INCLUDE_RE='^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]miniaudio\.h'
@@ -98,9 +112,16 @@ readonly MA_INCLUDE_RE='^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]miniaud
 readonly MA_IDENTIFIER_RE='(^|[^a-zA-Z0-9_])ma_'
 
 # Link tokens legal inside the three CMakeLists' target_link_libraries calls: the target itself,
-# a visibility keyword, or an aero:: engine target. aero::scene_internal is refused BY NAME even
-# though it matches the aero:: shape — it carries EnTT::EnTT INTERFACE by design, and
-# engine/scene_audio/CMakeLists.txt's own comment says "NEVER aero::scene_internal".
+# a visibility keyword, or an aero:: engine target.
+#
+# ANY *_internal TARGET IS REFUSED FIRST, IN BOTH SPELLINGS, and the "both" is the whole point.
+# Those targets carry their backend INTERFACE by design, so linking one restores the very include
+# root this file exists to keep off the line. Refusing only the aero::scene_internal ALIAS left the
+# RAW names -- aero_scene_internal, aero_platform_internal, aero_rhi_internal, all of which exist in
+# engine/{scene,platform,rhi}/CMakeLists.txt -- matching LINK_TOKEN_RE's aero_[a-z_]+ branch and
+# passing with the OK banner (measured, 3.7.3's code-review round). The raw name is what anyone
+# copying from engine/scene/CMakeLists.txt would write. Matched with the same *_internal glob
+# check-boundary-probes.sh uses, so the two guards cannot drift apart.
 readonly LINK_TOKEN_RE='^(aero_[a-z_]+|aero::[a-z_]+|PUBLIC|PRIVATE|INTERFACE)$'
 
 cd "$(git rev-parse --show-toplevel)"
@@ -114,6 +135,22 @@ strip_cmake() { sed 's|#.*||'; }
 # extractor against exactly the multi-line shape they use today.
 extract_calls() {  # $1 = case-insensitive command-name ERE fragment, stdin = file text
   strip_cmake | tr '\n' ' ' | grep -oiE "(^|[^a-zA-Z0-9_])$1[[:space:]]*\([^)]*\)" || true
+}
+
+# The TARGET token of one extracted target_link_libraries call -- i.e. its first argument. `sed -n
+# '1p'` rather than `head -1` on purpose: head closes the pipe early, and under `set -o pipefail`
+# the resulting SIGPIPE would fail the whole command substitution.
+tll_target() {  # stdin = one extracted call, printed by extract_calls
+  sed -E 's/^[^(]*\([[:space:]]*//; s/\)$//' | tr ' \t' '\n\n' | sed '/^$/d' | sed -n '1p'
+}
+
+# Is $1 one of the three guarded targets? Exact token equality, never a substring or a regex --
+# aero_audio_boundary_probe must not be mistaken for aero_audio.
+is_vcpkg_free_target() {
+  case " ${VCPKG_FREE_TARGETS} " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
 }
 
 # --- Self-test 1: the guarded files and roots must all exist and be tracked. -------------------
@@ -201,23 +238,58 @@ if printf 'target_link_libraries(aero_audio PUBLIC aero::core)\n' \
   echo "::error::BANNED_CMAKE_RE in $0 over-matches target_link_libraries -- same lost boundary." >&2
   exit 2
 fi
+# `include` is the flagship bypass and needs pinning in THREE directions: it must fire on a real
+# include(), and it must NOT fire on target_include_directories( (the leading bracket) or on a path
+# ending in /include) (the trailing paren) -- both of which appear in every one of the three guarded
+# files, so either over-match would red the tree permanently.
+if ! printf 'include(${CMAKE_CURRENT_SOURCE_DIR}/audio_deps.cmake)\n' \
+     | strip_cmake | grep -qiE "$BANNED_CMAKE_RE"; then
+  echo "::error::BANNED_CMAKE_RE in $0 no longer matches include() -- the flagship bypass is open:" >&2
+  echo "         an included file is read by no part of prong A." >&2
+  exit 2
+fi
+if printf 'target_include_directories(aero_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)\n' \
+     | strip_cmake | grep -qiE "$BANNED_CMAKE_RE"; then
+  echo "::error::BANNED_CMAKE_RE in $0 over-matches a path ending in /include) -- the trailing" >&2
+  echo "         [[:space:]]*\\( has been lost and this guard would red the tree it ships into." >&2
+  exit 2
+fi
 if ! printf 'target_link_libraries(aero_audio\n    PUBLIC aero::core aero::assets\n    PRIVATE miniaudio\n)\n' \
     | extract_calls 'target_link_libraries' | grep -qE '(^|[^a-zA-Z0-9_])miniaudio($|[^a-zA-Z0-9_])'; then
   echo "::error::The target_link_libraries extractor in $0 no longer sees a multi-line call --" >&2
   echo "         vacuous. Fix extract_calls." >&2
   exit 2
 fi
-# The two arms below pin CROSSDIR_TLL_RE's TRAILING name boundary, against the same literal Part 1d
-# sweeps with. tests/CMakeLists.txt -- which is inside the swept set -- holds
-# target_link_libraries(aero_audio_boundary_probe PRIVATE aero::audio), the tree's first near-miss
-# for this regex, and only that boundary separates it from a real cross-directory link.
-if ! printf 'target_link_libraries(aero_audio PRIVATE miniaudio)\n' | grep -qiE "$CROSSDIR_TLL_RE"; then
-  echo "::error::CROSSDIR_TLL_RE in $0 no longer matches a real cross-directory link -- vacuous." >&2
+# The four arms below pin Part 1d's target extraction, with the same helpers the sweep uses so the
+# self-test cannot drift from the check. The WRAPPED shape is the one that matters: a line-scoped
+# regex reads only `target_link_libraries(` on line one and sees no target at all, which is how the
+# earlier form let a real cross-directory link through. And aero_audio_boundary_probe -- a target
+# THIS TASK added inside the swept set -- is the tree's first near-miss, kept out by exact token
+# equality rather than by a regex boundary.
+#
+# NOTE WHAT THESE ARMS CANNOT DO, so the next reader does not over-trust them: extract_calls flattens
+# its own input, so a self-test can only prove the HELPERS read a wrapped call -- never that Part 1d
+# actually calls them rather than grepping line by line. Stage S6b in
+# tests/audio-boundary/guard_e2e.cmake is what pins that, and it is not redundant with these.
+if [ "$(printf 'target_link_libraries(aero_audio PRIVATE miniaudio)\n' \
+        | extract_calls 'target_link_libraries' | tll_target)" != 'aero_audio' ]; then
+  echo "::error::tll_target in $0 no longer reads the target of a single-line call -- vacuous." >&2
   exit 2
 fi
-if printf 'target_link_libraries(aero_audio_boundary_probe PRIVATE aero::audio)\n' | grep -qiE "$CROSSDIR_TLL_RE"; then
-  echo "::error::CROSSDIR_TLL_RE in $0 matches aero_audio_boundary_probe -- the trailing name" >&2
-  echo "         boundary has been lost, and this guard would red the tree it ships into." >&2
+if [ "$(printf 'target_link_libraries(\n    aero_audio\n    PRIVATE miniaudio\n)\n' \
+        | extract_calls 'target_link_libraries' | tll_target)" != 'aero_audio' ]; then
+  echo "::error::tll_target in $0 no longer reads the target of a WRAPPED call -- the cross-directory" >&2
+  echo "         sweep would go line-scoped again and a wrapped link would pass silently." >&2
+  exit 2
+fi
+if ! is_vcpkg_free_target 'aero_audio'; then
+  echo "::error::is_vcpkg_free_target in $0 does not recognise aero_audio -- the sweep is vacuous." >&2
+  exit 2
+fi
+if is_vcpkg_free_target "$(printf 'target_link_libraries(aero_audio_boundary_probe PRIVATE aero::audio)\n' \
+                           | extract_calls 'target_link_libraries' | tll_target)"; then
+  echo "::error::is_vcpkg_free_target in $0 matches aero_audio_boundary_probe -- exact token" >&2
+  echo "         equality has been lost, and this guard would red the tree it ships into." >&2
   exit 2
 fi
 if ! printf '#include <miniaudio.h>\n' | grep -qE "$MA_INCLUDE_RE"; then
@@ -254,9 +326,14 @@ for f in "${VCPKG_FREE_CMAKE[@]}"; do
   while IFS= read -r call; do
     tokens="$(printf '%s\n' "$call" | sed -E 's/^[^(]*\(//; s/\)$//' | tr ' \t' '\n\n' | sed '/^$/d')"
     while IFS= read -r tok; do
-      if [ "$tok" = "aero::scene_internal" ]; then
-        line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' | grep -F 'scene_internal' | head -1 | cut -d: -f1 || true)"
-        violations="${violations}${f}:${line:-1}: aero::scene_internal on a link line -- it carries EnTT::EnTT INTERFACE by design
+      # Both spellings, via one glob: the aero::…_internal alias AND the raw aero_…_internal target.
+      # Every one of aero_scene_internal / aero_platform_internal / aero_rhi_internal exists in this
+      # tree and matches LINK_TOKEN_RE's aero_[a-z_]+ branch, so an alias-only check waved them
+      # through -- and the raw name is the spelling anyone copying from engine/scene/CMakeLists.txt
+      # would write.
+      if case "$tok" in *_internal) true ;; *) false ;; esac; then
+        line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' | grep -F -- "$tok" | head -1 | cut -d: -f1 || true)"
+        violations="${violations}${f}:${line:-1}: '${tok}' on a link line -- an *_internal target carries its backend INTERFACE by design
 "
       elif ! printf '%s\n' "$tok" | grep -qE "$LINK_TOKEN_RE"; then
         line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' | grep -F -- "$tok" | head -1 | cut -d: -f1 || true)"
@@ -275,7 +352,13 @@ for f in "${VCPKG_FREE_CMAKE[@]}"; do
     tokens="$(printf '%s\n' "$call" | sed -E 's/^[^(]*\(//; s/\)$//' | tr ' \t' '\n\n' | sed '/^$/d')"
     while IFS= read -r tok; do
       case "$tok" in
-        aero_*|PUBLIC|PRIVATE|INTERFACE) ;;
+        # SYSTEM / BEFORE / AFTER are legal target_include_directories KEYWORDS, not paths. Without
+        # them a wholly legal `target_include_directories(aero_audio SYSTEM PUBLIC
+        # ${CMAKE_CURRENT_SOURCE_DIR}/include)` exits 1 with a message calling SYSTEM an include
+        # path -- and, worse, any seed containing SYSTEM produced a violation for a reason that had
+        # nothing to do with the path being tested, which is how this arm's e2e stage came to pass
+        # while the arm itself was mutated open (3.7.3's code-review round, finding 2).
+        aero_*|PUBLIC|PRIVATE|INTERFACE|SYSTEM|BEFORE|AFTER) ;;
         '${CMAKE_CURRENT_SOURCE_DIR}'*) ;;
         *)
           line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' | grep -F -- "$tok" | head -1 | cut -d: -f1 || true)"
@@ -296,14 +379,20 @@ while IFS= read -r -d '' f; do
     engine/assets/CMakeLists.txt|engine/audio/CMakeLists.txt|engine/scene_audio/CMakeLists.txt) continue ;;
   esac
   swept=$((swept + 1))
-  hits="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' | grep -iE "$CROSSDIR_TLL_RE" || true)"
-  if [ -n "$hits" ]; then
-    while IFS= read -r hit; do
-      n="${hit%%:*}"
-      violations="${violations}${f}:${n}: cross-directory target_link_libraries on a vcpkg-free target
+  # FLATTENED, exactly like Parts 1b and 1c -- a line-scoped grep reads only the first physical line
+  # of a call, so `target_link_libraries(\n    aero_audio\n    PRIVATE miniaudio\n)` showed it no
+  # target at all and passed (3.7.3's code-review round, finding 5).
+  calls="$(extract_calls 'target_link_libraries' < "$f")"
+  [ -z "$calls" ] && continue
+  while IFS= read -r call; do
+    [ -z "$call" ] && continue
+    tgt="$(printf '%s\n' "$call" | tll_target)"
+    is_vcpkg_free_target "$tgt" || continue
+    line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
+            | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
+    violations="${violations}${f}:${line:-1}: cross-directory target_link_libraries on a vcpkg-free target
 "
-    done <<< "$hits"
-  fi
+  done <<< "$calls"
 done < <(git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake')
 
 # --- Part 2: no miniaudio token anywhere under the audio roots (sources included). -------------
