@@ -245,8 +245,6 @@ target_mention_re() { printf '(^|[^a-zA-Z0-9_])%s([^a-zA-Z0-9_]|$)' "$1"; }
 
 # Is $1 one of the guarded CMakeLists themselves? Derived from the one roster, so Part 1d's skip
 # test cannot drift away from the file list the way a hardcoded `case` did.
-# Is $1 one of the guarded CMakeLists themselves? Derived from the one roster, so Part 1d's skip
-# test cannot drift away from the file list the way a hardcoded `case` did.
 is_guarded_file() {
   for _g in "${VCPKG_FREE_CMAKE[@]}"; do
     [ "$1" = "$_g" ] && return 0

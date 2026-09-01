@@ -32,13 +32,13 @@
 # carry the vcpkg root in Release through aero::profiling. Those halves are held by
 # check-boundary-probes.sh and check-audio-boundary.sh respectively.
 #
-# WHEN compile_commands.json IS ABSENT THIS CASE SKIPS -- AND IT SAYS SO TO CTEST, WITH EXIT 77.
-# The first version returned 0, so ctest printed "Passed" and the SKIPPED line went unread. That
-# matters more here than almost anywhere: CMAKE_EXPORT_COMPILE_COMMANDS is set by the PRESETS, and
-# the two reduced gate configurations are raw `cmake -S . -B ...` invocations that do not set it --
-# so this case, described as the thing that closes the class, was passing vacuously in two of the
-# three configurations the gate reads. Exit 77 plus SKIP_RETURN_CODE in tests/CMakeLists.txt makes
-# ctest print "Skipped" instead, which is a reading rather than a claim.
+# WHEN compile_commands.json IS ABSENT THIS CASE SKIPS -- AND CTEST IS TOLD SO, via the SKIPPED line
+# below and SKIP_REGULAR_EXPRESSION in tests/CMakeLists.txt. The first version simply returned 0, so
+# ctest printed "Passed" and the SKIPPED line went unread. That matters more here than almost
+# anywhere: CMAKE_EXPORT_COMPILE_COMMANDS is set by the PRESETS, and the two reduced gate
+# configurations are raw `cmake -S . -B ...` invocations that do not set it -- so this case,
+# described as the thing that closes the class, was passing vacuously in two of the three
+# configurations the gate reads. "Skipped" is a reading; "Passed" there was a claim.
 #
 # It is NOT the same shape as the NOT WIN32 e2e cases, and the earlier comment saying so was wrong:
 # those are gated at CONFIGURE time, so they never register at all and `ctest -N` shows the
@@ -55,17 +55,15 @@ if(NOT EXISTS "${DB}")
     message(STATUS "boundary-probes.probe_compile_line: SKIPPED -- no compile_commands.json at "
                    "${DB}. Either the generator does not write one, or this configure did not set "
                    "CMAKE_EXPORT_COMPILE_COMMANDS. The textual guards still run in CI's lint job.")
-    # Exit 77, matched by SKIP_RETURN_CODE in tests/CMakeLists.txt, so ctest reports Skipped rather
-    # than Passed. cmake_language(EXIT) needs CMake 3.29 and this project's floor is 3.28, so on an
-    # older CMake the case FAILS instead -- deliberately the loud direction: a skip that cannot be
-    # signalled must not masquerade as a pass, which is the whole point of this change.
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.29")
-        cmake_language(EXIT 77)
-    endif()
-    message(FATAL_ERROR
-        "probe_compile_line: no compile_commands.json, and this CMake (${CMAKE_VERSION}) is older "
-        "than 3.29 so the skip status cannot be signalled to ctest. Configure with "
-        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON (every preset already does) and re-run.")
+    # Returning 0 and letting ctest classify the run from the SKIPPED line above, via
+    # SKIP_REGULAR_EXPRESSION in tests/CMakeLists.txt. The previous version exited 77 through
+    # cmake_language(EXIT), which needs CMake 3.29 -- above this project's declared floor of 3.28,
+    # and above the 3.28.3 that Ubuntu 24.04 LTS ships. On the floor version the fallback branch
+    # FATAL_ERROR'd, which made the red-proof compile_line_e2e fail UNCONDITIONALLY (its absent-DB
+    # stage always takes this path) and made this case fail rather than skip in any configuration
+    # that writes no database. CI never sees it, because the runners carry a newer CMake and nothing
+    # pins one. SKIP_REGULAR_EXPRESSION has been available since 3.16 and needs no version gate.
+    return()
 endif()
 
 file(READ "${DB}" _db)

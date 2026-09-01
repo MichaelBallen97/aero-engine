@@ -1130,11 +1130,17 @@ endif()
 add_test(NAME boundary-probes.probe_compile_line COMMAND ${CMAKE_COMMAND}
     -DDB=${CMAKE_BINARY_DIR}/compile_commands.json
     -P ${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/probe_compile_line.cmake)
-# 77 is the driver's skip status. Without this, a configure that wrote no compile_commands.json made
-# the case report Passed with its own SKIPPED line unread -- vacuous, in the case described as what
-# closes the class. The two reduced gate configurations are raw `cmake -S . -B ...` calls that do not
-# set CMAKE_EXPORT_COMPILE_COMMANDS (only the presets do), so that was two of three configurations.
-set_tests_properties(boundary-probes.probe_compile_line PROPERTIES SKIP_RETURN_CODE 77)
+# Without this, a configure that wrote no compile_commands.json made the case report Passed with its
+# own SKIPPED line unread -- vacuous, in the case described as what closes the class. The two reduced
+# gate configurations are raw `cmake -S . -B ...` calls that do not set CMAKE_EXPORT_COMPILE_COMMANDS
+# (only the presets do), so that was two of three configurations.
+#
+# SKIP_REGULAR_EXPRESSION rather than SKIP_RETURN_CODE, deliberately: signalling 77 out of `cmake -P`
+# needs cmake_language(EXIT), which is CMake 3.29, above this project's declared 3.28 floor and above
+# the 3.28.3 that Ubuntu 24.04 LTS ships. This property has existed since 3.16. The pattern is
+# anchored on the driver's own prefix so no other message -- OK banner or failure text -- can match.
+set_tests_properties(boundary-probes.probe_compile_line PROPERTIES
+    SKIP_REGULAR_EXPRESSION "probe_compile_line: SKIPPED")
 
 # The red-proof for the case above, in the same idiom as the two textual guards' e2e drivers and for
 # the same reason (plan §H): a proof living only in prose ceases to exist at merge. It feeds the

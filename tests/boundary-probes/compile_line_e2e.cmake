@@ -28,15 +28,31 @@ function(_cl_run desc expect_rc db)
     endif()
 endfunction()
 
+# Whitespace runs are collapsed on BOTH sides before comparing, because message(FATAL_ERROR) WRAPS
+# its text at roughly 76 columns and the wrap point moves with ${DB}'s length. A multi-token needle
+# can therefore straddle a line break for paths of one length and not another: C5's "expected at
+# least 6" was measured failing for DB paths of 54-65 characters -- reddening this case for a reason
+# with nothing to do with the invariant, on somebody else's build root. Single-token needles were
+# never at risk; this makes the length of the path irrelevant for all of them.
 function(_cl_expect desc haystack needle)
-    string(FIND "${haystack}" "${needle}" _idx)
+    string(REGEX REPLACE "[ \t\r\n]+" " " _h "${haystack}")
+    string(REGEX REPLACE "[ \t\r\n]+" " " _n "${needle}")
+    string(FIND "${_h}" "${_n}" _idx)
     if(_idx EQUAL -1)
         message(FATAL_ERROR "compile_line_e2e: ${desc}: expected output to contain '${needle}':\n${haystack}")
     endif()
 endfunction()
 
+# Reads the write back, like the sibling drivers' _ab_seed/_bp_seed, whose comments credit exactly
+# this with catching three silent seed failures. It matters most for the stages whose verdict is not
+# self-evidently tied to the content: a garbled write still exits 1 from the driver, so an assertion
+# on exit 1 alone would pass while testing nothing.
 function(_cl_write name content)
     file(WRITE "${WORK_DIR}/${name}" "${content}")
+    file(READ "${WORK_DIR}/${name}" _back)
+    if(NOT _back STREQUAL content)
+        message(FATAL_ERROR "compile_line_e2e: _cl_write(${name}): the written content did not read back -- the fixture did not land.")
+    endif()
 endfunction()
 
 file(REMOVE_RECURSE "${WORK_DIR}")
@@ -123,12 +139,21 @@ _cl_expect("C6" "${_cl_out}" "entry 5")
 # --- C7: an empty array -> exit 1. Distinct from C5: the database is readable but says nothing. ----
 _cl_write("c7.json" "[]")
 _cl_run("C7 (empty database)" 1 "${WORK_DIR}/c7.json")
+# Naming the arm is what makes this stage discriminate. Asserting exit 1 alone did not: deleting the
+# driver's empty-database refusal leaves `foreach(RANGE -1)` and a string(JSON) read of entry 0
+# erroring with exit 1 anyway, so the stage passed over a deleted check -- the single surviving
+# mutant of eleven. The needle is short and lands on the message's first line, so no wrap can split it.
+_cl_expect("C7" "${_cl_out}" "holds no entries at all")
 
 # --- C8: no database at all -> exit 77, the SKIP status. THE stage this round exists for: the driver
 # returned 0 here, so ctest printed Passed and the SKIPPED line went unread -- in two of the three
 # gate configurations, because only the presets set CMAKE_EXPORT_COMPILE_COMMANDS. A skip that
 # cannot be told apart from a pass is the vacuity this whole task exists to prevent. --------------
-_cl_run("C8 (absent database -> skip, not pass)" 77 "${WORK_DIR}/does-not-exist.json")
-_cl_expect("C8" "${_cl_out}" "SKIPPED")
+# The driver returns 0 and PRINTS its skip; ctest turns that into "Skipped" through
+# SKIP_REGULAR_EXPRESSION. Asserting 0 here rather than 77 is what removes this driver's dependency
+# on CMake 3.29 -- cmake_language(EXIT) is 3.29, the project floor is 3.28, and Ubuntu 24.04 LTS
+# ships 3.28.3, so the previous version made THIS RED-PROOF fail unconditionally on the floor.
+_cl_run("C8 (absent database -> the skip line, not silence)" 0 "${WORK_DIR}/does-not-exist.json")
+_cl_expect("C8" "${_cl_out}" "probe_compile_line: SKIPPED")
 
 message(STATUS "boundary-probes.compile_line_e2e: OK -- C0-C8, 9 stages")
