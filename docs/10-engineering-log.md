@@ -12418,8 +12418,10 @@ carries a cross-directory `target_link_libraries` naming one of the three, **rea
 file so a wrapped call cannot hide from it**, with the target compared by exact token equality) — and
 **prong B**, a miniaudio token ban over both audio roots with **sources included**.
 `.github/scripts/check-boundary-probes.sh` — every `aero_*_boundary_probe` is **built by `all`** (no
-`EXCLUDE_FROM_ALL`) and links exactly one `aero::` library with **exactly one `PRIVATE` keyword
-present**, checked in the registry **and swept for across every other tracked CMake file**, with the
+`EXCLUDE_FROM_ALL` in **either** spelling: the `add_library` keyword or a later property write) and
+links exactly one `aero::` library with **exactly one `PRIVATE` keyword present**, with **no target
+property set on it from anywhere at all**, checked in the registry **and swept for across every other
+tracked CMake file**, with the
 probe set **derived** from `tests/CMakeLists.txt` rather than enumerated.
 `tests/audio_boundary_probe.cpp` — the sixth probe, **35** `static_assert`s across all four public
 audio headers, no named entity, no `TEST_CASE`, no `#if` of any kind. And two hermetic `cmake -P`
@@ -12491,10 +12493,14 @@ assertion was satisfied by the *keyword* and said nothing about the *path*. The 
 had deleted the whole `*)` branch, which any assertion would have caught. **This is the 2.1.2 species
 inside this task's own proof**, and the rule it leaves behind is: *mutate the arm the way a careless
 edit would, not the way a demolition would, and pin the offending TOKEN rather than the arm's generic
-sentence.* Every stage added afterwards is proved this way — each of S2b, S2d, S4b, S5, S5b, S6b, S6c,
-P10, P11 and P12 was watched to redden **alone** under a one-line mutation of the arm it targets,
-with the guard still exiting 0 on the real tree in every case but two (dropping the `privs` arm and
-gutting `check_tokens` both trip a self-test first, which is the louder outcome).
+sentence.* Every stage added afterwards is proved this way, and the list is the measured one rather
+than a summary: **S2b, S2c, S2d, S2e, S4b, S5, S5b, S6b, S6c, S6d, S6e, S11, X5, P10, P11, P12, P13,
+P14, P15, P16, P18 and P19** were each watched to redden **alone** under a one-line mutation of the
+arm they target, with the guard still exiting 0 on the real tree except where the mutation is
+deliberately over-broad (S6e) or trips a self-test first (the `privs` arm, `check_tokens`), which is
+the louder outcome. **S2c was missing from the first version of this list and the omission was
+claimed as completeness** — it is the only cover `add_subdirectory` has, and its mutation has since
+been run: dropping that one member of the alternation reddens S2c and nothing else.
 
 **One structural limit found while doing it, worth stating because it looks like an oversight:** a
 self-test can pin that `extract_calls | tll_target` reads a *wrapped* call, but it can **never** pin
@@ -12615,10 +12621,22 @@ the canaries couple both guards to prose: deleting a prohibition comment or the 
 is a loud **exit 2**, never a silent green, which is the design.
 
 **Handoffs.** The `try_compile` negative harness stays open (0.2.3 → 0.4.5 → here), now precisely
-bounded: D3's textual guard closes every *registry-edit* vector, and the residual is a compile-line
-contamination that never touches `tests/CMakeLists.txt`. **A fourth vcpkg-free target must add itself
-to `VCPKG_FREE_CMAKE` in the same commit that creates it** — intent cannot be derived from the tree, so
-an unlisted target is silently unguarded; the script's own header says so. `script`/quickjs, R12's
+bounded. **The first bounding of it was wrong and is corrected here rather than left standing:** it
+claimed the textual guard closes "every registry-edit vector, the residual being a contamination that
+never touches `tests/CMakeLists.txt`", and the second review round then demonstrated a registry edit
+in that very file — `set_property(TARGET <probe> APPEND PROPERTY LINK_LIBRARIES …)`, which reaches the
+link line without the command the guard was reading. That spelling is closed now, along with
+`set_target_properties`, in the registry and across every other tracked CMake file. **The residual is
+what neither a `target_link_libraries` call nor a target-property write can express**: a parent-scope
+`include_directories`, a directory-scoped `link_libraries`, a toolchain-injected `-I`, or an
+`add_subdirectory(tests EXCLUDE_FROM_ALL)` in a file that does not name the probe at all. That is what
+the `try_compile` harness would close, and it is a smaller residual than before but not an empty one.
+**A fourth vcpkg-free target must add itself to `VCPKG_FREE_CMAKE` in the same commit that creates
+it** — and to **nothing else**: `VCPKG_FREE_TARGETS` and Part 1d's skip test are both DERIVED from that
+one list, because the first implementation kept three parallel rosters and a target added to two of
+three would have been guarded by Parts 1a/1b/1c while Part 1d could not see it, with no test able to
+notice. Self-test 1a checks each derived name against its own file's `add_library`, so a subsystem
+that breaks the `engine/<name>/ -> aero_<name>` convention is a loud exit 2. `script`/quickjs, R12's
 named next backend, inherits the whole pattern and its probe is covered by `check-boundary-probes.sh`
 on arrival with zero edits. Runtime-purity (5.2.2) remains the other half of `docs/04`'s planned pair
 and nothing here pre-builds it. And **CLAUDE.md's FIVE-GREPS block is now FOUR**: the `find_package`

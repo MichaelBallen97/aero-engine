@@ -97,7 +97,7 @@ producing a violation, so the generic "reaches outside the subsystem" assertion 
 **keyword** and said nothing about the **path**. The original meta-proof had used a coarse mutation
 any assertion would have caught. **The rule that outlives this: mutate the arm the way a careless edit
 would, not the way a demolition would, and pin the offending TOKEN rather than the arm's generic
-sentence.** Every stage now redden-proved alone under a one-line mutation.
+sentence.** Every stage is redden-proved alone under a one-line mutation — twenty-two of them, listed by name in `docs/10` rather than summarised, after the first version of that list silently dropped a stage and claimed completeness anyway.
 
 **One structural limit, because it looks like an oversight and is not:** a self-test can pin that
 `extract_calls | tll_target` reads a wrapped call, but can **never** pin that the sweep calls them
@@ -198,7 +198,7 @@ compile line, so `mixer.cpp` carries `vcpkg_installed` in `macos-release` and no
 3.7.3 that is **guard-enforced for all three files**, not just the audio half:
 `.github/scripts/check-audio-boundary.sh` prong A, plus `tests/audio_boundary_probe.cpp` for the
 compile-time half that survives Release, plus `audio-boundary.guard_e2e` for the proof it goes red.
-**A FOURTH vcpkg-free target must add itself to `VCPKG_FREE_CMAKE` in the commit that creates it** —
+**A FOURTH vcpkg-free target must add itself to `VCPKG_FREE_CMAKE` in the commit that creates it, and to nothing else** — the target list and the sweep's skip test are DERIVED from that one roster, after three parallel lists made a target guarded by three prongs and invisible to the fourth —
 intent cannot be derived from the tree, so an unlisted target is silently unguarded.
 
 **FOUR GREPS ARE NOT LITERALLY ZERO AND MUST BE READ RATHER THAN COUNTED:**

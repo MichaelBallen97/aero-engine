@@ -46,16 +46,31 @@ is the precondition every other claim on this page rests on.
 `aero::` library with one `PRIVATE` — `PUBLIC`/`INTERFACE` visibility, an `*_internal`
 target, two libraries, zero calls, a **second** call (which appends rather than replaces),
 **the plain keyword-less signature** (rejecting `PUBLIC` is not the same as requiring
-`PRIVATE`; the bare form is CMake's transitive one), and **`EXCLUDE_FROM_ALL`**, which leaves
-a probe never built and therefore asserting nothing. It also sweeps every other tracked CMake
+`PRIVATE`; the bare form is CMake's transitive one), and **`EXCLUDE_FROM_ALL` in either spelling** — on the
+`add_library` line or set later through `set_target_properties`/`set_property` — which leaves a probe
+never built and therefore asserting nothing. More generally it refuses **any target-property write on
+a probe**, from any file: every predicate here has a property spelling, and closing them one at a time
+is how the first fix shipped with the second half still open. It also sweeps every other tracked CMake
 file, because CMake ≥ 3.13 lets any CMakeLists append to a target defined elsewhere. The
 probe list is **derived** from `tests/CMakeLists.txt`'s `add_library(… OBJECT …)` lines,
 never enumerated in the script, so a new probe is covered the moment it lands and no roster
 has to be maintained. Both guards are proved red-on-violation by hermetic ctest cases
 (`audio-boundary.guard_e2e`, `boundary-probes.probe_links_e2e`).
 
-**Four lessons from 3.7.3's code-review round, which found four silently evadable
-predicates and three stages that proved less than they claimed:**
+**Lessons from 3.7.3's two code-review rounds, which between them found seven silently
+evadable predicates and four stages that proved less than they claimed. Read 0 first — it
+produced a blocking finding in BOTH rounds, the second time inside the fix written to teach
+the first:**
+
+0. **A predicate has more spellings than the one in front of you. Enumerate them before
+   declaring it closed.** `*_internal` had an alias and a raw name. `EXCLUDE_FROM_ALL` has
+   an `add_library` keyword *and* two property-command spellings. A link line has
+   `target_link_libraries` *and* `LINK_LIBRARIES` via `set_target_properties` /
+   `set_property(TARGET …)`. An include dir has the same pair. The durable fix is usually to
+   refuse the **command class** on the protected targets — a probe and a vcpkg-free library
+   have no legitimate use for a target-property write — rather than to chase properties one
+   at a time.
+
 
 1. **Match the predicate, not the spelling in front of you.** An `*_internal` refusal that
    compared against the `aero::` alias let the raw `aero_scene_internal` through — and the
