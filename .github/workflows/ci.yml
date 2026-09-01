@@ -160,6 +160,22 @@ jobs:
         # tests/scene_boundary_probe.cpp, which links aero::scene alone.
         run: bash .github/scripts/check-scene-boundary.sh
 
+      - name: Boundary — audio layer vcpkg-free, miniaudio-free
+        shell: bash
+        # Task 3.7.3 (ADR-006; epic 3.7's DoD "no miniaudio type is public, guard-enforced"). Two
+        # halves: (1) engine/assets, engine/audio and engine/scene_audio's CMakeLists admit no
+        # find_package/find_path/etc. and no non-aero:: link token -- their linking NO vcpkg package
+        # is what makes their PRIVATE links a real compile-time boundary (R12), and adding one voids
+        # that silently while CI stays green; (2) no miniaudio token anywhere under engine/audio +
+        # engine/scene_audio, SOURCES included (check-platform-boundary.sh already covers the public
+        # headers). A script, not a grep: the audio headers cite ma_ names in // prose and the three
+        # CMakeLists carry "find_package" inside their own prohibition comments -- the script strips
+        # comments first and REQUIRES those citations to exist as its canaries. The compile-time
+        # half is tests/audio_boundary_probe.cpp, which links aero::audio alone and is the only
+        # all-configuration compile check (in Release, aero_audio's own line carries the vcpkg root
+        # via aero::profiling -> Tracy). Proven red-on-violation by audio-boundary.guard_e2e.
+        run: bash .github/scripts/check-audio-boundary.sh
+
       - name: Golden rule — /engine and /runtime must never reference /editor
         shell: bash
         # Task 2.1.2 (project rule #1, docs/00 / docs/03; docs/04 guard table). Like the platform,
@@ -193,6 +209,19 @@ jobs:
         # script's own header). Proven red-on-violation by the hermetic ctest case
         # project-no-delete.no_delete_e2e.
         run: bash .github/scripts/check-project-no-delete.sh
+
+      # Quoted: the step name contains "aero:: library", and an unquoted YAML scalar treats the
+      # ": " in it as a mapping separator -- the whole workflow then fails to parse.
+      - name: 'Boundary probes — every probe links exactly one aero:: library'
+        shell: bash
+        # Task 3.7.3, taking the handoff 0.2.3 opened and 0.4.5 §7.1 routed here by name: the ONE
+        # way a compile-time boundary probe rots is a vcpkg package (doctest, Tracy via
+        # aero::profiling, the backend itself) silently joining its link line -- the probe then
+        # passes forever while its guarantee is dead. The probe set is DERIVED from
+        # tests/CMakeLists.txt (*_boundary_probe targets), so future probes are covered on arrival.
+        # It sits here rather than beside the boundary guards because it guards tests/, not a layer.
+        # Proven red-on-violation by boundary-probes.probe_links_e2e.
+        run: bash .github/scripts/check-boundary-probes.sh
 
   build:
     name: ${{ matrix.name }}
