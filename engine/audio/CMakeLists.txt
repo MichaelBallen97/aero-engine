@@ -11,12 +11,23 @@
 # none either, so a stray `#include <miniaudio.h>` here is a HARD COMPILE ERROR rather than a guard
 # finding. ADDING A find_package TO THIS FILE VOIDS THAT SILENTLY WHILE CI STAYS GREEN.
 #
-# THIS IS A PERMANENT PROPERTY, not an accident of what 3.7.1 needed. Task 3.7.3 is going to be asked
-# to guard exactly this, and task 3.7.2 is the task that can most easily void it. The recommended
-# shape that keeps it intact: 3.7.2 extends engine/platform's AudioDevice with a callback/mix seam
-# expressed in ENGINE types, and engine/audio stays vcpkg-free, holding the graph, the sources, the
-# listener and the mixer that fills a buffer of engine-typed samples. That is a RECOMMENDATION, not a
-# constraint 3.7.1 imposes -- what 3.7.1 owes 3.7.2 is the OPTION.
+# THIS IS A PERMANENT PROPERTY, not an accident of what 3.7.1 needed. Task 3.7.3 guards exactly this
+# -- .github/scripts/check-audio-boundary.sh (Part 1: no dependency-hook command, no non-aero:: link
+# token, no include dir outside the subsystem, and no cross-directory target_link_libraries from
+# anywhere else in the tree), tests/audio_boundary_probe.cpp (the compile-time half) and the hermetic
+# ctest case audio-boundary.guard_e2e (the proof the guard actually goes red). Task 3.7.2 was the task
+# that could most easily have voided it, and it took the recommended shape: it extended
+# engine/platform's AudioDevice with a callback/mix seam expressed in ENGINE types and left
+# engine/audio vcpkg-free, holding the spatializer, the mixer and the public playback surface over
+# buffers of engine-typed samples.
+#
+# ONE QUALIFICATION MEASURED AT 3.7.3, because the "hard compile error" sentence above is not true in
+# every configuration: this target links aero::profiling PRIVATE, and in the *-release presets that
+# INTERFACE library carries Tracy::TracyClient -- and with it the whole shared vcpkg include root --
+# onto THIS target's OWN compile line. So a stray `#include <miniaudio.h>` in engine/audio is a hard
+# compile error in Debug and compiles CLEAN in Release. The textual guard reddens it in every
+# configuration, and tests/audio_boundary_probe.cpp (which links aero::audio alone, and therefore no
+# profiling) is the only compile-time check that survives Release.
 #
 # The decoders are deliberately absent too: a runtime that can decode an mp3 is a runtime that can be
 # handed one, and ADR-008 says it is handed a .pak of cooked artifacts. Every decode in this tree

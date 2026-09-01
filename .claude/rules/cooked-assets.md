@@ -453,13 +453,24 @@ vcpkg package, ever.** It is the **second** target in this tree (after `aero_ass
 reason: a `PRIVATE` vcpkg link cannot enforce a header boundary, because vcpkg installs every port
 into one shared per-triplet `include/` root that lands on the compile line of any target linking any
 vcpkg package. `aero_audio` links none, so a stray `#include <miniaudio.h>` there is a **hard compile
-error** rather than a guard finding.
+error** rather than a guard finding — **in the profiling-OFF configurations only**, which task 3.7.3
+measured and no sentence in the tree had said. `aero::profiling` is PRIVATE on this target and carries
+`Tracy::TracyClient` when `AERO_ENABLE_PROFILING=ON`, and a target's own `PRIVATE` usage requirements
+apply to its **own** compile line: `engine/audio/src/mixer.cpp` carries `vcpkg_installed` in
+`macos-release` and does not in `macos-debug`. So the identical stray include compiles clean in
+Release. Read every "hard compile error" claim about a vcpkg-free target as a Debug-lane claim.
 
 **Adding a `find_package` to `engine/audio/CMakeLists.txt`, ever, voids that silently while CI stays
-green.** The CMakeLists' own comment says so. **Task 3.7.3 is going to be asked to guard exactly
-this, and 3.7.2 is the task that can most easily void it** — a playback layer that reaches for a
-miniaudio device type in `engine/audio` rather than going through `engine/platform`'s existing wrapper
-is the shape to refuse.
+green.** The CMakeLists' own comment says so, and **task 3.7.3 guards exactly this**:
+`.github/scripts/check-audio-boundary.sh` prong A refuses any dependency-hook command, any
+non-`aero::` link token, any include directory outside the subsystem, and a cross-directory
+`target_link_libraries` naming `aero_assets`/`aero_audio`/`aero_scene_audio` from anywhere else in the
+tree; prong B bans miniaudio tokens under both audio roots with **sources included**;
+`tests/audio_boundary_probe.cpp` holds the compile-time half in every preset; and
+`audio-boundary.guard_e2e` is the hermetic proof the whole thing actually goes red. **A playback layer
+that reaches for a miniaudio device type in `engine/audio` rather than going through
+`engine/platform`'s existing wrapper is still the shape to refuse** — that advice did not expire when
+the guard landed; the guard is what makes refusing it automatic.
 
 `engine/audio` holds the **runtime resource**, not the format: `clip.{hpp,cpp}` is `AudioClip` and
 `loadAudioClip`, which reads a `.aerowave` through the VFS, parses it with `parseCookedAudio` and

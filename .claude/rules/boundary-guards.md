@@ -27,6 +27,91 @@ Five backends are linked `PRIVATE` and confined to one allowlisted TU each: **GL
 Neither is sufficient alone. The script catches identifiers a probe cannot (prose-free
 textual leaks, `.c` files); the probe catches what a grep pattern misses.
 
+The audio layer's pair is `.github/scripts/check-audio-boundary.sh` +
+`tests/audio_boundary_probe.cpp` (task 3.7.3). It is the one place where the two halves are
+**not** interchangeable, and the reason is measured rather than argued: `aero_audio` links
+`aero::profiling` PRIVATE, so in the `*-release` presets Tracy puts vcpkg's shared include
+root on `aero_audio`'s **own** compile line and a stray `#include <miniaudio.h>` there
+compiles clean. The script reddens it in every configuration; the probe, which links
+`aero::audio` alone and therefore no profiling, is the only compile-time check that survives
+Release. That script also carries a second prong the others do not: it guards the
+**CMakeLists** of `engine/assets`, `engine/audio` and `engine/scene_audio` — no dependency
+hook, no non-`aero::` link token, no include dir outside the subsystem — because their
+linking no vcpkg package is the precondition every other claim on this page rests on.
+
+**Rule 2's "exactly one" is enforced, and the enforcement is an ALLOWLIST.**
+`.github/scripts/check-boundary-probes.sh` (task 3.7.3, taking the handoff 0.2.3 opened and
+0.4.5 §7.1 routed there by name) states one bounded predicate: **a probe may be named by
+exactly two calls — its own `add_library(<probe> OBJECT …)` and its single
+`target_link_libraries(<probe> PRIVATE aero::x)`, both in `tests/CMakeLists.txt`. Any other
+command, in any tracked CMake file, that names a derived probe is a violation.** That covers
+`target_include_directories`, `target_compile_options`, `target_sources`,
+`set_target_properties`, `set_property`, a bare `set()` capturing the name, and every
+spelling nobody has thought of — with nothing to enumerate and nothing to keep current. The
+link line's own shape (one `aero::` library, one `PRIVATE`, one call) is still checked
+separately, since that is about the call's *contents* rather than its existence.
+
+Some things reach a probe **without naming it**, and the allowlist structurally cannot see
+them. Several are refused directly — a directory-scoped `include_directories()` /
+`link_libraries()` / `link_directories()`, and the `EXCLUDE_FROM_ALL` spellings, anywhere in
+the registry's own file, its ancestors, or a `.cmake` module they `include()`. **That arm is a
+denylist and is not claimed to be complete**: `add_compile_options(-I…)`, `add_definitions`, a
+`CMAKE_CXX_FLAGS` mutation, a toolchain file and a preset's cache variables all reach the same
+compile line, and the last two are in no CMakeLists at all. **For the include-root symptom, what reads the fact
+instead of predicting it is `boundary-probes.probe_compile_line`**, a ctest case over
+`compile_commands.json`: no probe's compile line carries vcpkg's shared include root,
+whatever route put it there — including a toolchain file or preset flags that appear in no
+CMakeLists. **It covers that symptom and no other**: an `EXCLUDE_FROM_ALL` target is still
+*configured*, so it still has a database entry, and that half stays with the textual arms.
+Prefer this shape whenever a guard is predicting a build fact it could instead read — and
+say which half of the invariant it actually reads. The probe list is **derived** from the registry's
+`add_library(… OBJECT …)` lines, never enumerated, so a new probe is covered the moment it
+lands. `check-audio-boundary.sh` carries the same inversion one layer over: **no file outside
+the three guarded CMakeLists may name `aero_assets`, `aero_audio` or `aero_scene_audio` at
+all**, and a guarded CMakeLists may contain **only** `add_library`,
+`target_include_directories` and `target_link_libraries`. Both guards are proved
+red-on-violation by hermetic ctest cases (`audio-boundary.guard_e2e`,
+`boundary-probes.probe_links_e2e`).
+
+**Lessons from 3.7.3's code-review rounds. Read 0 first — it produced the blocking
+finding in every round that had one, each time inside the fix written to teach the previous
+one, until the guards were inverted. The counts are deliberately left out: this heading was
+renumbered in four consecutive deltas, and the lessons do not depend on how many rounds it
+took to find them:**
+
+0. **DO NOT ENUMERATE SPELLINGS — INVERT TO AN ALLOWLIST.** This produced a blocking
+   finding in consecutive rounds, each time inside the fix written to teach the
+   previous one: an `*_internal` alias but not the raw name; `EXCLUDE_FROM_ALL` on
+   `add_library` but not its property spellings; the property spellings but not the plain
+   commands (`set_property(TARGET x APPEND PROPERTY INCLUDE_DIRECTORIES …)` refused while
+   `target_include_directories(x …)` — the same write, same file, same target — passed).
+   A denylist over CMake commands cannot converge; there are too many ways to reach a
+   target. **Ask instead what a protected thing may LEGITIMATELY be named by, confirm that
+   set is small and stable by measuring the tree, and refuse everything else.** The
+   remaining work is then the false-positive direction, which is finite and testable. If
+   you find yourself adding a second arm for a second spelling of one predicate, stop.
+   Where an allowlist genuinely is impossible, the fallback instinct is still **a predicate
+   has more spellings than the one in front of you** — `*_internal` has an alias and a raw
+   name; `EXCLUDE_FROM_ALL` has an `add_library` keyword, two target-property spellings and
+   two directory-scoped ones; a link line has `target_link_libraries` and `LINK_LIBRARIES`.
+   But treat that as the losing position, not the fix: enumerate only what you cannot
+   invert, and say in the guard's own comment which half you are in.
+
+
+1. **Match the predicate, not the spelling in front of you.** An `*_internal` refusal that
+   compared against the `aero::` alias let the raw `aero_scene_internal` through — and the
+   raw name is what anyone copying from the defining `CMakeLists.txt` would write.
+2. **Ask what follows the thing you banned.** `include()` was missing from a banned-command
+   list, and *nothing* in that guard read an included file, so two lines relocated a
+   `find_package` out of the guard's reach entirely.
+3. **If one arm flattens, they all must.** A line-scoped sweep beside flattening siblings
+   missed a call wrapped between the parenthesis and the target name.
+4. **Mutate narrowly when proving a stage asserts.** A stage passed over an arm mutated to
+   admit exactly what it forbids, because its seed also tripped a *different* arm and the
+   assertion pinned only the shared message. Pin the offending **token**; and note that a
+   self-test cannot pin that a scan *uses* a helper when the helper flattens its own input —
+   only an e2e stage can.
+
 **R12 — the limitation that makes probes fragile.** vcpkg installs every port into ONE
 shared per-triplet `include/` directory. A `PRIVATE` link therefore makes a stray
 `#include` a hard error **only for targets that link no vcpkg package at all**. Inside

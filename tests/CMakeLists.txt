@@ -634,6 +634,26 @@ add_library(aero_scene_boundary_probe OBJECT scene_boundary_probe.cpp)
 target_link_libraries(aero_scene_boundary_probe PRIVATE aero::scene)
 
 # ---------------------------------------------------------------------------------------------
+# The audio no-vcpkg-boundary COMPILE-TIME guard (task 3.7.3; ADR-006; epic 3.7's DoD).
+#
+# A DIFFERENT MECHANISM from the five probes above, and the difference is the point: aero::audio
+# links NO vcpkg package at all (as do its PUBLIC deps' propagated surfaces), so this probe's
+# compile line is vcpkg-free in EVERY preset -- including *-release, where aero_audio's OWN line is
+# NOT (its PRIVATE aero::profiling carries Tracy::TracyClient and with it the shared vcpkg include
+# root when AERO_ENABLE_PROFILING=ON; measured on this tree from both compile_commands.json). In
+# Release this probe is therefore the ONLY compile-time enforcement that a public audio header pulls
+# in no third-party header (risk R12, docs/08-risks.md); the textual half is
+# .github/scripts/check-audio-boundary.sh.
+#
+# DO NOT ADD ANY OTHER LINK LIBRARY -- not doctest, not aero::profiling (Tracy, a vcpkg package, in
+# Release), not any vcpkg package. Any of them restores the shared vcpkg include root and silently
+# reduces this guard to a no-op while CI stays green. Unlike the five siblings, that sentence is now
+# ENFORCED: .github/scripts/check-boundary-probes.sh reds the lint job if this target's link line
+# ever holds anything but exactly one aero:: library, PRIVATE.
+add_library(aero_audio_boundary_probe OBJECT audio_boundary_probe.cpp)
+target_link_libraries(aero_audio_boundary_probe PRIVATE aero::audio)
+
+# ---------------------------------------------------------------------------------------------
 # The shaderc end-to-end CTest suite (task 0.4.3; spec D9/§3.6) -- a net-new harness (no prior
 # cmake -P / external-binary add_test precedent in this repo). Each case runs the REAL aero_shaderc
 # binary through tests/shaderc/run_case.cmake, which is what actually asserts exit codes -- several
@@ -1045,3 +1065,89 @@ else()
     message(STATUS "project-no-delete: no_delete_e2e SKIPPED (Windows, or bash/git not found) -- the "
                    "guard itself still runs in CI's lint job on Linux")
 endif()
+
+# ---------------------------------------------------------------------------------------------
+# Seventh architecture guard: audio-boundary (task 3.7.3; epic 3.7's DoD). A hermetic proof that
+# .github/scripts/check-audio-boundary.sh actually goes RED, in golden-rule.include_scan_e2e's shape
+# exactly. This one matters more than most: the guard is green on the tree it ships into BY
+# CONSTRUCTION -- the three CMakeLists already link no vcpkg package and the audio roots already hold
+# no miniaudio token -- so "it passes" is evidence of nothing at all until a seeded violation has
+# been watched to redden it. The project-no-delete precedent applies too: sabotage proofs living only
+# in a gitignored plan die at merge; a ctest entry is what survives. Same NOT WIN32 gate and the same
+# reason (D16): the script never runs on Windows in CI (the lint job is ubuntu-24.04-only), and this
+# case's value -- proving the regexes, the `nl | sed` comment-stripping and the `tr`-flatten
+# extractor behave under BSD userland -- comes from the macOS lane. Ungated by the tools flags;
+# distinct scratch root, so ctest -j stays safe.
+if(NOT WIN32 AND AERO_BASH_EXECUTABLE AND GIT_EXECUTABLE)
+    add_test(NAME audio-boundary.guard_e2e COMMAND ${CMAKE_COMMAND}
+        -DSCRIPT=${CMAKE_SOURCE_DIR}/.github/scripts/check-audio-boundary.sh
+        -DBASH=${AERO_BASH_EXECUTABLE}
+        -DGIT=${GIT_EXECUTABLE}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/audio-boundary-scratch
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/audio-boundary/guard_e2e.cmake)
+else()
+    message(STATUS "audio-boundary: guard_e2e SKIPPED (Windows, or bash/git not found) -- the "
+                   "guard itself still runs in CI's lint job on Linux")
+endif()
+
+# ---------------------------------------------------------------------------------------------
+# Eighth architecture guard: boundary-probes (task 3.7.3, taking the handoff 0.2.3 opened and 0.4.5
+# §7.1 routed here by name). A hermetic proof that .github/scripts/check-boundary-probes.sh actually
+# goes RED. The invariant it guards is the one every probe block above states in prose -- exactly one
+# aero:: library, PRIVATE -- and the one way each of them can rot: a second library on the line puts
+# vcpkg's shared include root back, and the probe then compiles forever while asserting nothing.
+# A SEPARATE ctest entry from audio-boundary.guard_e2e on purpose: a math-probe regression reported
+# under "audio-boundary" would mislead, and two fixtures keep two focused failure messages. Same
+# NOT WIN32 gate and reasoning as its two siblings; ungated by the tools flags; distinct scratch root.
+if(NOT WIN32 AND AERO_BASH_EXECUTABLE AND GIT_EXECUTABLE)
+    add_test(NAME boundary-probes.probe_links_e2e COMMAND ${CMAKE_COMMAND}
+        -DSCRIPT=${CMAKE_SOURCE_DIR}/.github/scripts/check-boundary-probes.sh
+        -DBASH=${AERO_BASH_EXECUTABLE}
+        -DGIT=${GIT_EXECUTABLE}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/boundary-probes-scratch
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/probe_links_e2e.cmake)
+else()
+    message(STATUS "boundary-probes: probe_links_e2e SKIPPED (Windows, or bash/git not found) -- the "
+                   "guard itself still runs in CI's lint job on Linux")
+endif()
+
+# ---------------------------------------------------------------------------------------------
+# The one check that reads the PROPERTY instead of a textual prediction of it (task 3.7.3, fourth
+# code-review round). Every arm of both boundary guards infers, from the CMake sources, that no
+# probe's compile line carries vcpkg's shared include root. This case reads the compile lines.
+#
+# It exists because the "reaches a target without naming it" direction cannot be inverted the way
+# the naming direction was: CMake pushes state into a directory scope through include_directories,
+# add_compile_options, add_definitions, set_property(DIRECTORY ...), a CMAKE_<LANG>_FLAGS mutation,
+# a toolchain file and a preset's cache variables -- and the last two appear in no CMakeLists at all,
+# so no textual guard can ever read them. add_compile_options(-I/opt/vcpkg/.../include) at the root
+# was measured reaching every probe's compile line while both textual guards exited 0.
+#
+# UNGATED by the tools flags and by NOT WIN32 -- it spawns no shell and no git. It self-skips when
+# compile_commands.json is absent, which is how multi-config generators (Visual Studio, Xcode) are
+# handled: CMAKE_EXPORT_COMPILE_COMMANDS is ON in every preset, but those generators do not write
+# the file.
+add_test(NAME boundary-probes.probe_compile_line COMMAND ${CMAKE_COMMAND}
+    -DDB=${CMAKE_BINARY_DIR}/compile_commands.json
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/probe_compile_line.cmake)
+# Without this, a configure that wrote no compile_commands.json made the case report Passed with its
+# own SKIPPED line unread -- vacuous, in the case described as what closes the class. The two reduced
+# gate configurations are raw `cmake -S . -B ...` calls that do not set CMAKE_EXPORT_COMPILE_COMMANDS
+# (only the presets do), so that was two of three configurations.
+#
+# SKIP_REGULAR_EXPRESSION rather than SKIP_RETURN_CODE, deliberately: signalling 77 out of `cmake -P`
+# needs cmake_language(EXIT), which is CMake 3.29, above this project's declared 3.28 floor and above
+# the 3.28.3 that Ubuntu 24.04 LTS ships. This property has existed since 3.16. The pattern is
+# anchored on the driver's own prefix so no other message -- OK banner or failure text -- can match.
+set_tests_properties(boundary-probes.probe_compile_line PROPERTIES
+    SKIP_REGULAR_EXPRESSION "probe_compile_line: SKIPPED")
+
+# The red-proof for the case above, in the same idiom as the two textual guards' e2e drivers and for
+# the same reason (plan §H): a proof living only in prose ceases to exist at merge. It feeds the
+# driver synthetic compile_commands.json files -- clean, both vcpkg layouts, both the `command` and
+# `arguments` entry forms, a malformed entry, an empty array, and no database at all -- and asserts
+# EXACT exit codes including 77 for skip. Pure CMake: no shell, no git, no build, so it is ungated.
+add_test(NAME boundary-probes.compile_line_e2e COMMAND ${CMAKE_COMMAND}
+    -DDRIVER=${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/probe_compile_line.cmake
+    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/compile-line-scratch
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/compile_line_e2e.cmake)

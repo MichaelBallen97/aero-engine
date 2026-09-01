@@ -10,7 +10,8 @@
 // 0.11.25, so this is a choice rather than a workaround: miniaudio.h is PRIVATE to aero_platform, so
 // reaching it would put the voice table, the mixer and the listener in engine/platform beside
 // miniaudio.h -- inverting ADR-006's own layer diagram and voiding the no-vcpkg property
-// engine/audio/CMakeLists.txt spends a paragraph establishing and task 3.7.3 exists to guard.
+// engine/audio/CMakeLists.txt spends a paragraph establishing and task 3.7.3 guards
+// (.github/scripts/check-audio-boundary.sh).
 //
 // THE MATH IS DELIBERATELY SIMPLE AND THE SIMPLICITY IS THE POINT. A linear rolloff and a
 // constant-power pan are exactly what "v0 spatialization" means; HRTF, occlusion, reverb zones,

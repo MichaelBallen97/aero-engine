@@ -262,11 +262,36 @@ azimuth pan), **not** `ma_spatializer`. `ma_spatializer` **is** available at the
 no-vcpkg property `engine/audio/CMakeLists.txt` spends a paragraph establishing and 3.7.3 exists to
 guard. Full reasoning in `docs/10-engineering-log.md`'s 3.7.2 entry.
 
-### 3.7.3 Audio-boundary CI guard · P1 · S · depends: 3.7.2
+### 3.7.3 Audio-boundary CI guard · P1 · M · depends: 3.7.2
+_(Sized up from S to M, recorded in the spec before implementation rather than discovered mid-task.
+What ships is two lint-job scripts, a sixth compile-time probe, two hermetic e2e drivers and the
+wiring — because the literal subtask below is already live and the property that is not has no
+owner.)_
 **Goal:** the docs/04 audio guard gets an owner: no miniaudio type in public headers.
 **Deliverable:** CI-wired scan, proven against a seeded violation and cleaned.
 Subtasks:
 - Public-header scan for miniaudio tokens; wire into CI; prove + clean seed
+
+**Recorded deviation from the subtask text above.** The literal public-header miniaudio scan has been
+live since **0.3.3**: `.github/scripts/check-platform-boundary.sh` scans `engine/*/include/*` — every
+engine subsystem, `audio` and `scene_audio` included — and rejects `<miniaudio.h>` and every
+code-level `ma_` token there; its own header block names the audio headers, and its self-test 1b
+derives the subsystem set from the tree, so both roots joined the scan automatically the moment their
+headers were tracked. Re-implementing that with a narrower glob would add a more specific error string
+and nothing else. What 3.7.3 ships instead is **(a)** the **no-vcpkg property** of
+`engine/assets`, `engine/audio` and `engine/scene_audio`'s CMakeLists — no `find_package` (or any
+other dependency-hook command), no non-`aero::` link token, no include directory reaching outside the
+subsystem, and no cross-directory `target_link_libraries` from anywhere else in the tree. That is the
+property four places in the tree hand this task **by name**, and the one that *voids silently while CI
+stays green*. **(b)** A **source-level** miniaudio token ban over both audio roots, which the
+header-scoped platform guard does not reach — the shape `engine/audio/CMakeLists.txt`'s own header
+warns about (a playback layer reaching for a device type) happens in `src/`. **(c)** The sixth
+compile-time probe, `tests/audio_boundary_probe.cpp`, which links `aero::audio` alone; measured on
+this tree, that is the **only** compile-time enforcement the audio layer has in the `*-release`
+presets, where `aero_audio`'s own compile line carries vcpkg's shared include root through
+`aero::profiling` → Tracy. **(d)** `.github/scripts/check-boundary-probes.sh`, taking the handoff
+0.2.3 opened and 0.4.5 §7.1 routed here by name. Full reasoning in `docs/10-engineering-log.md`'s
+3.7.3 entry.
 
 ---
 
