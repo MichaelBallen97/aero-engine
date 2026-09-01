@@ -36,40 +36,55 @@ compiles clean. The script reddens it in every configuration; the probe, which l
 `aero::audio` alone and therefore no profiling, is the only compile-time check that survives
 Release. That script also carries a second prong the others do not: it guards the
 **CMakeLists** of `engine/assets`, `engine/audio` and `engine/scene_audio` — no dependency
-hook, no non-`aero::` link token, no include dir outside the subsystem, no cross-directory
-`target_link_libraries` from elsewhere in the tree — because their linking no vcpkg package
-is the precondition every other claim on this page rests on.
+hook, no non-`aero::` link token, no include dir outside the subsystem — because their
+linking no vcpkg package is the precondition every other claim on this page rests on.
 
-**Rule 2's "exactly one" is now enforced, not merely stated.**
+**Rule 2's "exactly one" is enforced, and the enforcement is an ALLOWLIST.**
 `.github/scripts/check-boundary-probes.sh` (task 3.7.3, taking the handoff 0.2.3 opened and
-0.4.5 §7.1 routed there by name) reads every probe's link line and refuses anything but one
-`aero::` library with one `PRIVATE` — `PUBLIC`/`INTERFACE` visibility, an `*_internal`
-target, two libraries, zero calls, a **second** call (which appends rather than replaces),
-**the plain keyword-less signature** (rejecting `PUBLIC` is not the same as requiring
-`PRIVATE`; the bare form is CMake's transitive one), and **`EXCLUDE_FROM_ALL` in either spelling** — on the
-`add_library` line or set later through `set_target_properties`/`set_property` — which leaves a probe
-never built and therefore asserting nothing. More generally it refuses **any target-property write on
-a probe**, from any file: every predicate here has a property spelling, and closing them one at a time
-is how the first fix shipped with the second half still open. It also sweeps every other tracked CMake
-file, because CMake ≥ 3.13 lets any CMakeLists append to a target defined elsewhere. The
-probe list is **derived** from `tests/CMakeLists.txt`'s `add_library(… OBJECT …)` lines,
-never enumerated in the script, so a new probe is covered the moment it lands and no roster
-has to be maintained. Both guards are proved red-on-violation by hermetic ctest cases
-(`audio-boundary.guard_e2e`, `boundary-probes.probe_links_e2e`).
+0.4.5 §7.1 routed there by name) states one bounded predicate: **a probe may be named by
+exactly two calls — its own `add_library(<probe> OBJECT …)` and its single
+`target_link_libraries(<probe> PRIVATE aero::x)`, both in `tests/CMakeLists.txt`. Any other
+command, in any tracked CMake file, that names a derived probe is a violation.** That covers
+`target_include_directories`, `target_compile_options`, `target_sources`,
+`set_target_properties`, `set_property`, a bare `set()` capturing the name, and every
+spelling nobody has thought of — with nothing to enumerate and nothing to keep current. The
+link line's own shape (one `aero::` library, one `PRIVATE`, one call) is still checked
+separately, since that is about the call's *contents* rather than its existence.
 
-**Lessons from 3.7.3's two code-review rounds, which between them found seven silently
-evadable predicates and four stages that proved less than they claimed. Read 0 first — it
-produced a blocking finding in BOTH rounds, the second time inside the fix written to teach
-the first:**
+Two things reach a probe **without naming it**, so the allowlist cannot see them and they are
+checked directly instead: a directory-scoped `include_directories()`/`link_libraries()`/
+`link_directories()` in an ancestor of the registry, and `add_subdirectory(<registry dir>
+EXCLUDE_FROM_ALL)`. Both are refused. The probe list is **derived** from the registry's
+`add_library(… OBJECT …)` lines, never enumerated, so a new probe is covered the moment it
+lands. `check-audio-boundary.sh` carries the same inversion one layer over: **no file outside
+the three guarded CMakeLists may name `aero_assets`, `aero_audio` or `aero_scene_audio` at
+all**, and a guarded CMakeLists may contain **only** `add_library`,
+`target_include_directories` and `target_link_libraries`. Both guards are proved
+red-on-violation by hermetic ctest cases (`audio-boundary.guard_e2e`,
+`boundary-probes.probe_links_e2e`).
 
-0. **A predicate has more spellings than the one in front of you. Enumerate them before
-   declaring it closed.** `*_internal` had an alias and a raw name. `EXCLUDE_FROM_ALL` has
-   an `add_library` keyword *and* two property-command spellings. A link line has
-   `target_link_libraries` *and* `LINK_LIBRARIES` via `set_target_properties` /
-   `set_property(TARGET …)`. An include dir has the same pair. The durable fix is usually to
-   refuse the **command class** on the protected targets — a probe and a vcpkg-free library
-   have no legitimate use for a target-property write — rather than to chase properties one
-   at a time.
+**Lessons from 3.7.3's three code-review rounds, which between them found ten silently
+evadable predicates and five stages that proved less than they claimed. Read 0 first — it
+produced the blocking finding in ALL THREE rounds, each time inside the fix written to teach
+the previous one:**
+
+0. **DO NOT ENUMERATE SPELLINGS — INVERT TO AN ALLOWLIST.** This produced a blocking
+   finding in three consecutive rounds, each time inside the fix written to teach the
+   previous one: an `*_internal` alias but not the raw name; `EXCLUDE_FROM_ALL` on
+   `add_library` but not its property spellings; the property spellings but not the plain
+   commands (`set_property(TARGET x APPEND PROPERTY INCLUDE_DIRECTORIES …)` refused while
+   `target_include_directories(x …)` — the same write, same file, same target — passed).
+   A denylist over CMake commands cannot converge; there are too many ways to reach a
+   target. **Ask instead what a protected thing may LEGITIMATELY be named by, confirm that
+   set is small and stable by measuring the tree, and refuse everything else.** The
+   remaining work is then the false-positive direction, which is finite and testable. If
+   you find yourself adding a second arm for a second spelling of one predicate, stop.
+   Where an allowlist genuinely is impossible, the fallback instinct is still **a predicate
+   has more spellings than the one in front of you** — `*_internal` has an alias and a raw
+   name; `EXCLUDE_FROM_ALL` has an `add_library` keyword, two target-property spellings and
+   two directory-scoped ones; a link line has `target_link_libraries` and `LINK_LIBRARIES`.
+   But treat that as the losing position, not the fix: enumerate only what you cannot
+   invert, and say in the guard's own comment which half you are in.
 
 
 1. **Match the predicate, not the spelling in front of you.** An `*_internal` refusal that

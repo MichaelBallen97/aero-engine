@@ -14,10 +14,11 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 Epic 3.7 (Audio playback v0 · audio) closes with 3.7.1 MERGED (PR #88, `4892e65`, macOS-validated
 ✅ 11/11), 3.7.2 MERGED (PR #89, `b398d17`, macOS-validated — 47 of 53 records, the 6 open ones each
 needing ears or the editor) and **3.7.3 COMPLETE IN CODE on
-`feat/3.7.3-audio-boundary-ci-guard`** — eleven commits, the full local gate green, the S/X/P seed
-matrices run as ctest stages, the break-the-guard meta-proof run against every stage, and a
-code-review round closed (ten findings, three blocking — see below; four of the guard's predicates
-were silently evadable and three of its own stages proved less than they claimed).
+`feat/3.7.3-audio-boundary-ci-guard`** — thirteen commits, the full local gate green, the S/X/P seed
+matrices run as ctest stages (34 and 28), the break-the-guard meta-proof run against every one, and
+**three** code-review rounds closed (25 findings, 7 blocking — see below). The durable outcome is that
+both guards were **inverted from a command denylist to an allowlist**, which is the only shape that
+converged.
 
 Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4** (PBR materials),
 **3.5** (Skeletal animation), **3.6** (Rendering essentials) and **3.7** (Audio playback v0) are all
@@ -78,17 +79,31 @@ lives only there ceases to exist at merge.** `audio-boundary.guard_e2e` runs 23 
 read back **and** asserted present in the index before any verdict is trusted, and both were run
 instrumented so all 37 observed codes were seen rather than inferred.
 
-**THE CODE-REVIEW ROUND IS THE PART TO REMEMBER: ten findings, and four predicates were silently
-evadable while reading as complete.** An `*_internal` refusal that matched only the `aero::` alias
-while the **raw** `aero_scene_internal` (which exists, and is what anyone copying from the defining
-file would write) sailed through; `include()` missing from the banned list, with **nothing in prong A
-following an `include()`**, so two lines moved a `find_package` out of reach entirely; a
-cross-directory sweep that was **line-scoped while its siblings flattened**, so a wrapped call showed
-it no target; and a probes guard that rejected `PUBLIC`/`INTERFACE` but **never required `PRIVATE`**,
-so CMake's plain transitive signature passed under a banner claiming PRIVATE. Plus `EXCLUDE_FROM_ALL`
-on a probe, and no cross-file sweep at all in the probes guard. **The shape: each check was written
-against the spelling in front of it rather than against the predicate**, and a guard green by
-construction gives no feedback when it is merely narrow.
+**THE CODE-REVIEW ROUNDS ARE THE PART TO REMEMBER, AND THE LESSON IS ARCHITECTURAL: A COMMAND
+DENYLIST OVER CMAKE CANNOT CONVERGE.** Three rounds, and each one's blocking finding sat inside the
+fix written to teach the previous one. Round 1: an `*_internal` refusal matching only the `aero::`
+alias while the raw `aero_scene_internal` — which exists, and is what anyone copying from the defining
+file would write — passed. Round 2: `EXCLUDE_FROM_ALL` refused on the `add_library` line while
+`set_target_properties(<probe> PROPERTIES EXCLUDE_FROM_ALL TRUE)` passed. Round 3: the property
+spellings refused while the **plain** commands passed —
+`set_property(TARGET aero_audio APPEND PROPERTY INCLUDE_DIRECTORIES …)` exit 1,
+`target_include_directories(aero_audio SYSTEM PRIVATE …)` exit 0, same write, same file, same target.
+Along the way: `include()` missing from a banned list with *nothing in the guard reading an included
+file*; a sweep line-scoped while its siblings flattened; a probes guard rejecting `PUBLIC` but never
+requiring `PRIVATE`, so CMake's plain transitive signature passed under a banner claiming PRIVATE.
+
+**THE FIX, AND THE RULE THAT OUTLIVES THE TASK: INVERT TO AN ALLOWLIST.** Ask what a protected thing
+may LEGITIMATELY be named by, confirm by measuring the tree that the set is small and stable, and
+refuse everything else. A boundary probe may be named by exactly two calls — its own `add_library`
+and its single `target_link_libraries`. Nothing outside the three guarded CMakeLists may name
+`aero_assets`/`aero_audio`/`aero_scene_audio` **at all**. A guarded CMakeLists may contain only the
+three commands it has ever used. Ten escape attempts spanning `target_sources`,
+`target_compile_definitions`, `target_precompile_headers`, `target_link_options`, `add_dependencies`,
+`get_target_property`, `if(TARGET …)` and a bare `set()` are refused with no arm of their own. **If a
+guard ever needs a second arm for a second spelling of one predicate, stop and invert it.** What an
+allowlist cannot see is what never names the target — inherited directory properties from an ancestor
+(closed by an ancestor check) and a compile line assembled outside any CMakeLists (the standing
+residual, and what the deferred `try_compile` harness would add).
 
 **AND THREE E2E STAGES PROVED LESS THAN THEY CLAIMED — the 2.1.2 species inside this task's own
 proof.** Stage S5 passed over a *narrowly* mutated Part 1c (allowlisting any `${`-rooted include dir,
@@ -97,7 +112,7 @@ producing a violation, so the generic "reaches outside the subsystem" assertion 
 **keyword** and said nothing about the **path**. The original meta-proof had used a coarse mutation
 any assertion would have caught. **The rule that outlives this: mutate the arm the way a careless edit
 would, not the way a demolition would, and pin the offending TOKEN rather than the arm's generic
-sentence.** Every stage is redden-proved alone under a one-line mutation — twenty-two of them, listed by name in `docs/10` rather than summarised, after the first version of that list silently dropped a stage and claimed completeness anyway.
+sentence.** Every stage is redden-proved alone under a one-line mutation — 35 of them, listed by name in `docs/10` rather than summarised, after the first version of that list silently dropped a stage and claimed completeness anyway. Three had to be redone: a mutation that reddens an EARLIER stage sharing the same arm proves the suite asserts, not that the stage does.
 
 **One structural limit, because it looks like an oversight and is not:** a self-test can pin that
 `extract_calls | tll_target` reads a wrapped call, but can **never** pin that the sweep calls them

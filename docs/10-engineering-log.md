@@ -12405,27 +12405,46 @@ be asked to guard exactly this"), this log's 3.7.1 handoff table, `docs/08`'s R1
 sentence is **subsumed**, and what ships is the no-vcpkg property plus a source-level token ban. The
 size moved **S → M** in the spec, before implementation rather than during it.
 
-**What shipped, in four artifacts plus wiring** — stated as the guard finally enforces it, after the
-code-review round's ten findings, not as it was first written. `.github/scripts/check-audio-boundary.sh`
-— **prong A** over `engine/assets`, `engine/audio` and `engine/scene_audio`'s CMakeLists (1a: none of
-`find_package`/`find_path`/`find_library`/`find_file`/`find_program`/`pkg_check_modules`/`pkg_search_module`/`include_directories`/`link_directories`/`link_libraries`/`add_subdirectory`/**`include`**,
-case-insensitively, on comment-stripped text; 1b: every `target_link_libraries` token is an `aero::`
-engine target, **including inside a multi-line call**, with **any `*_internal` target refused in both
-spellings** — the `aero::…` alias and the raw `aero_…` target name; 1c: every
-`target_include_directories` token is a target, a visibility keyword, **one of the SYSTEM/BEFORE/AFTER
-keywords**, or a `${CMAKE_CURRENT_SOURCE_DIR}`-rooted path; 1d: no **other** tracked CMake file
-carries a cross-directory `target_link_libraries` naming one of the three, **read from the flattened
-file so a wrapped call cannot hide from it**, with the target compared by exact token equality) — and
-**prong B**, a miniaudio token ban over both audio roots with **sources included**.
-`.github/scripts/check-boundary-probes.sh` — every `aero_*_boundary_probe` is **built by `all`** (no
-`EXCLUDE_FROM_ALL` in **either** spelling: the `add_library` keyword or a later property write) and
-links exactly one `aero::` library with **exactly one `PRIVATE` keyword present**, with **no target
-property set on it from anywhere at all**, checked in the registry **and swept for across every other
-tracked CMake file**, with the
-probe set **derived** from `tests/CMakeLists.txt` rather than enumerated.
+**What shipped, in four artifacts plus wiring** — stated as the guards finally enforce it, after
+three code-review rounds, not as any one of them was first written. `.github/scripts/check-audio-boundary.sh`
+— **prong A**, in two allowlist halves: a guarded CMakeLists (`engine/assets`, `engine/audio`,
+`engine/scene_audio`) may contain **only** `add_library`, `target_include_directories` and
+`target_link_libraries`, and **no other tracked CMake file may name `aero_assets`, `aero_audio` or
+`aero_scene_audio` at all**. Inside those calls the older per-command arms still run, because their
+messages name the specific vector a reader needs: no `find_package`/`find_path`/… hook, every link
+token an `aero::` engine target with any `*_internal` refused in both spellings, every include-dir
+token `${CMAKE_CURRENT_SOURCE_DIR}`-rooted (with `SYSTEM`/`BEFORE`/`AFTER` admitted as the keywords
+they are). A directory-scoped `include_directories`/`link_libraries`/`link_directories` in an
+**ancestor** CMakeLists is refused separately, since inherited directory properties reach a target
+without naming it. **Prong B** is unchanged: a miniaudio token ban over both audio roots, sources
+included. `.github/scripts/check-boundary-probes.sh` — the same inversion one layer over: **a probe
+may be named by exactly two calls, its own `add_library(<probe> OBJECT …)` and its single
+`target_link_libraries(<probe> PRIVATE aero::x)`, both in the registry; any other command anywhere
+naming a derived probe is a violation** — with the link call's own contents (one `aero::` library, one
+`PRIVATE`, one call) checked separately, and the two name-free vectors (an ancestor's directory-scoped
+include/link command, and `add_subdirectory(<registry dir> EXCLUDE_FROM_ALL)`) refused directly.
 `tests/audio_boundary_probe.cpp` — the sixth probe, **35** `static_assert`s across all four public
 audio headers, no named entity, no `TEST_CASE`, no `#if` of any kind. And two hermetic `cmake -P`
-ctest drivers.
+ctest drivers, now **34** and **28** stages.
+
+**THE FINDING THAT MATTERS MOST, AND IT IS NOT ANY ONE BUG: A COMMAND DENYLIST OVER CMAKE CANNOT
+CONVERGE.** Three review rounds each closed the spellings they were shown and left the class open,
+and each fix was itself written to teach that lesson. Round 1: `*_internal` refused by its `aero::`
+alias while the raw `aero_scene_internal` — which exists, and is what anyone copying from the defining
+file would write — passed. Round 2: `EXCLUDE_FROM_ALL` refused on the `add_library` line while
+`set_target_properties(<probe> PROPERTIES EXCLUDE_FROM_ALL TRUE)` passed. Round 3: the property
+spellings refused while the **plain** commands passed, measured as a single contrast —
+`set_property(TARGET aero_audio APPEND PROPERTY INCLUDE_DIRECTORIES /vcpkg/include)` exit 1,
+`target_include_directories(aero_audio SYSTEM PRIVATE ${MINIAUDIO_INCLUDE_DIR})` exit 0, same write,
+same file, same target. **The fix is architectural, not another entry: ask what a protected thing may
+LEGITIMATELY be named by, confirm by measuring the tree that the set is small and stable, and refuse
+everything else.** For a probe that set is two calls; for the three guarded targets it is *nothing*
+outside their own files; inside those files it is three commands. Ten escape attempts across
+`target_compile_definitions`, `target_sources`, `target_precompile_headers`, `target_link_options`,
+`target_compile_features`, `add_dependencies`, `get_target_property`, `if(TARGET …)`, a bare `set()`
+and a probe passed as an argument to another target are all refused with no arm of their own, and
+`tests/audio-boundary/guard_e2e.cmake`'s **S6g** and `probe_links_e2e.cmake`'s **P21** exist to say so:
+if either ever needs a sibling written for a specific command, the inversion has been undone.
 
 **THE MEASUREMENT THIS TASK EXISTS TO HAVE MADE, and the sentence it falsifies.** `vcpkg_installed`
 **is** on `engine/audio/src/mixer.cpp`'s compile line in `macos-release` and **is not** in
@@ -12494,11 +12513,16 @@ had deleted the whole `*)` branch, which any assertion would have caught. **This
 inside this task's own proof**, and the rule it leaves behind is: *mutate the arm the way a careless
 edit would, not the way a demolition would, and pin the offending TOKEN rather than the arm's generic
 sentence.* Every stage added afterwards is proved this way, and the list is the measured one rather
-than a summary: **S2b, S2c, S2d, S2e, S4b, S5, S5b, S6b, S6c, S6d, S6e, S11, X5, P10, P11, P12, P13,
-P14, P15, P16, P18 and P19** were each watched to redden **alone** under a one-line mutation of the
-arm they target, with the guard still exiting 0 on the real tree except where the mutation is
-deliberately over-broad (S6e) or trips a self-test first (the `privs` arm, `check_tokens`), which is
-the louder outcome. **S2c was missing from the first version of this list and the omission was
+than a summary: **S2b, S2c, S2d, S2e, S2f, S4b, S5, S5b, S6b, S6c, S6d, S6e, S6f, S6g, S6h, S6i, S11,
+S12, X5, P10, P11, P12, P13, P14, P15, P16, P18, P19, P20, P21, P22, P23, P24, P25 and P26** — 35 of
+them — were each watched to redden **alone** under a one-line mutation of the arm they target, with
+the guard still exiting 0 on the real tree except where the mutation is deliberately over-broad (S6e,
+S6i) or trips a self-test first (the `privs` arm, `check_tokens`), which is the louder outcome.
+**Three of those mutations had to be redone because the first attempt was too coarse** — it reddened
+an earlier stage sharing the same arm, which proves the suite asserts but not that the stage does.
+S6f and S6g needed a mutation that models "this command is not on the enumerated list" precisely
+enough that S6, S6b, S6c and S6d all still pass; P24, a false-positive proof, needed an
+over-broadening that P0's smaller fixture does not happen to contain. **S2c was missing from the first version of this list and the omission was
 claimed as completeness** — it is the only cover `add_subdirectory` has, and its mutation has since
 been run: dropping that one member of the alternation reddens S2c and nothing else.
 
@@ -12605,14 +12629,18 @@ userland**, where `\b` would have degraded to a literal `b` and a lesser guard w
 
 **Accepted limitations, stated rather than implied away.** Textual comment handling is line-based, so a
 banned token inside `/* … */` or CMake `#[[ … ]]` false-**positives** — the fail-loud direction, and
-neither style is used in the guarded files. Untracked files are invisible until `git add`. CMake
-indirection beyond the banned list is not parsed (a variable holding a package name, a
-`target_compile_options(… -I…)`, a parent-scope `include_directories` in `engine/CMakeLists.txt`), and
-a determined evasion defeats any textual guard. **This entry's first draft claimed prong A "covers
-every vector with an in-tree precedent"; that was false when written** — `include()` had in-tree
-precedent (the root `CMakeLists.txt` uses it five times) and no arm at all. It has one now, and the
-claim is not being restored in a repaired form: the honest statement is the list of commands and
-shapes actually checked, above, not an assertion of completeness. A vendored, renamed
+neither style is used in the guarded files. Untracked files are invisible until `git add`. A determined
+evasion defeats any textual guard, and what remains after the inversion is what a textual guard cannot
+see at all rather than a spelling it forgot: a **variable holding the target name** assembled at
+configure time (`set(T aero_au) ... target_link_libraries(${T}dio ...)`), a **toolchain- or
+preset-injected `-I`** that never appears in any CMakeLists, and a **vendored, renamed copy** of
+miniaudio. **Two earlier drafts of this paragraph asserted completeness and were falsified by the very
+next round** — "covers every vector with an in-tree precedent" (`include()` had one and no arm), then
+"the residual is what neither a `target_link_libraries` call nor a target-property write can express"
+(`target_include_directories` is exactly such an expression). Neither claim is restored in a repaired
+form. The honest statement is the predicate the code enforces — *only these calls may name this
+target* — which is safe to write because it is what the code does, and a list of what is checked, not
+a claim about what is missed. A vendored, renamed
 copy of miniaudio evades both regexes, though the `ma_` arm still fires on *use*. Token line
 attribution is first-stripped-occurrence, so a token appearing twice cites its first non-comment line;
 the file and the token are always exact. `PROBE_LIB_RE='^aero::[a-z_]+$'` admits no digits, so a future
@@ -12626,11 +12654,15 @@ claimed the textual guard closes "every registry-edit vector, the residual being
 never touches `tests/CMakeLists.txt`", and the second review round then demonstrated a registry edit
 in that very file — `set_property(TARGET <probe> APPEND PROPERTY LINK_LIBRARIES …)`, which reaches the
 link line without the command the guard was reading. That spelling is closed now, along with
-`set_target_properties`, in the registry and across every other tracked CMake file. **The residual is
-what neither a `target_link_libraries` call nor a target-property write can express**: a parent-scope
-`include_directories`, a directory-scoped `link_libraries`, a toolchain-injected `-I`, or an
-`add_subdirectory(tests EXCLUDE_FROM_ALL)` in a file that does not name the probe at all. That is what
-the `try_compile` harness would close, and it is a smaller residual than before but not an empty one.
+`set_target_properties`, in the registry and across every other tracked CMake file. **That bounding was then wrong a
+SECOND time, in the same way**: the third round showed `target_include_directories(<probe> PRIVATE
+/opt/vcpkg/.../include)` — a registry edit, expressible in neither of the two forms the sentence
+named. Both guards were inverted to allowlists in response, and the parent-scope `include_directories`
+/ `link_libraries` / `link_directories` and `add_subdirectory(<dir> EXCLUDE_FROM_ALL)` vectors were
+closed with an ancestor check rather than written down a third time. **What the `try_compile` harness
+would still add is what no textual guard can read: a compile line assembled outside any CMakeLists**
+— a toolchain file, a preset's `CMAKE_CXX_FLAGS`, or a target name built up from variables at
+configure time.
 **A fourth vcpkg-free target must add itself to `VCPKG_FREE_CMAKE` in the same commit that creates
 it** — and to **nothing else**: `VCPKG_FREE_TARGETS` and Part 1d's skip test are both DERIVED from that
 one list, because the first implementation kept three parallel rosters and a target added to two of
