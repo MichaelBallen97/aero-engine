@@ -14,7 +14,7 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 Epic 3.7 (Audio playback v0 · audio) closes with 3.7.1 MERGED (PR #88, `4892e65`, macOS-validated
 ✅ 11/11), 3.7.2 MERGED (PR #89, `b398d17`, macOS-validated — 47 of 53 records, the 6 open ones each
 needing ears or the editor) and **3.7.3 COMPLETE IN CODE on
-`feat/3.7.3-audio-boundary-ci-guard`** — twenty-three commits, the full local gate green, the S/X/P seed
+`feat/3.7.3-audio-boundary-ci-guard`** — twenty-two commits, the full local gate green, the S/X/P seed
 matrices run as ctest stages, the break-the-guard meta-proof run against them, and
 **four** code-review rounds closed (37 findings, 10 blocking — see below). Two durable outcomes: the guards were **inverted from a command denylist to an allowlist** for everything that NAMES a protected target, and for the direction that cannot be inverted — reaching one WITHOUT naming it — a ctest case now **reads `compile_commands.json` and asserts the property instead of predicting it**.
 
@@ -58,12 +58,12 @@ the **only compile-time enforcement the audio layer has that survives Release**;
 read vcpkg-free in Release too, for the same reason. Proven both ways through the real CMake target:
 a seeded `#include <miniaudio.h>` fails `'miniaudio.h' file not found` in **both** presets.
 
-**The gate, re-measured after the fourth code-review round:** 171/171 on both macOS presets with
+**The gate, re-measured after the fourth code-review round:** 172/172 on both macOS presets with
 `AERO_REQUIRE_GPU=1` (Debug 239.32 s, Release 64.59 s); fresh `-G Ninja` reduced configurations
 **78** and **91**, each having built and RUN `aero_tests`, `aero_editor_shell_test`,
-`aero_editor_imgui_test` and `aero_cooker`; **`ctest -N` 171 / 79 / 92 — `+3` in all three, in
-lockstep** (the third is the compile-line case, ungated); doctest **1169 / 1746 / 143 / 34 / 29 / 7 / 28 — UNMOVED in all seven**; **eight** guards
-exit 0 (audio **11 / 3 / 53**, probes **6 / 55**, math **450**, platform **83**, scene **83**, rhi 144,
+`aero_editor_imgui_test` and `aero_cooker`; **`ctest -N` 172 / 80 / 93 — `+4` in all three, in
+lockstep** (the last two are the compile-line case and its own red-proof, both ungated); doctest **1169 / 1746 / 143 / 34 / 29 / 7 / 28 — UNMOVED in all seven**; **eight** guards
+exit 0 (audio **11 / 3 / 54**, probes **6 / 56**, math **450**, platform **83**, scene **83**, rhi 144,
 golden-rule 146, project-no-delete **A=6 / B=75**); clang-format and clang-tidy clean **by exit
 code**; the manifest **untouched at 20 hash lines**. **This task INVERTS the usual pattern — `ctest
 -N` moves while every doctest total stays put** (the probe has no `TEST_CASE`, the drivers are
@@ -291,7 +291,7 @@ Read totals from **doctest's own `filters:` line**, never from a `grep -c` of ca
 count on its own page goes stale, and adding one task's delta to another task's baseline is exactly the
 arithmetic that produces a confident wrong number.
 
-At 3.7.3's gate: **`ctest -N` 171 / 79 / 92** across tools-ON, both-tools-OFF and reflect-tools-OFF;
+At 3.7.3's gate: **`ctest -N` 172 / 80 / 93** across tools-ON, both-tools-OFF and reflect-tools-OFF;
 doctest across **seven** binaries **1169 / 1746 / 143 / 34 / 29 / 7 / 28**. Both reduced configurations
 must be configured **FRESH with `-G Ninja`** — and, since 3.7.3, **with
 `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`**: only the presets set it, so a raw `cmake -S . -B …` writes no

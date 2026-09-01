@@ -12425,7 +12425,7 @@ naming a derived probe is a violation** — with the link call's own contents (o
 include/link command, and `add_subdirectory(<registry dir> EXCLUDE_FROM_ALL)`) refused directly.
 `tests/audio_boundary_probe.cpp` — the sixth probe, **35** `static_assert`s across all four public
 audio headers, no named entity, no `TEST_CASE`, no `#if` of any kind. And two hermetic `cmake -P`
-ctest drivers, now **37** and **34** stages, plus the compile-line case.
+ctest drivers, now **37** and **34** stages, plus the compile-line case and its own 9-stage red-proof.
 
 **THE FINDING THAT MATTERS MOST, AND IT IS NOT ANY ONE BUG: A COMMAND DENYLIST OVER CMAKE CANNOT
 CONVERGE.** Three review rounds each closed the spellings they were shown and left the class open,
@@ -12595,17 +12595,17 @@ same rejected alternative — compose the command name from a `_BP_TLL` variable
 out of a universal sweep. Both drivers now spell `target_link_libraries` indirectly and both write
 byte-identical scratch trees (verified by `diff`).
 
-**The gate, re-measured after the code-review round.** 171/171 on both macOS presets with
+**The gate, re-measured after the code-review round.** 172/172 on both macOS presets with
 `AERO_REQUIRE_GPU=1` (Debug 239.32 s, Release 64.59 s). Fresh `-G Ninja` reduced configurations
-**79** and **92**, each having built and RUN `aero_tests`, `aero_editor_shell_test`,
-`aero_editor_imgui_test` and `aero_cooker`. **`ctest -N` 171 / 79 / 92 — `+3` in all three, in
+**80** and **93**, each having built and RUN `aero_tests`, `aero_editor_shell_test`,
+`aero_editor_imgui_test` and `aero_cooker`. **`ctest -N` 172 / 80 / 93 — `+4` in all three, in
 lockstep**, which is what proves both e2e registrations are ungated by the tools flags; a smaller move
 in a reduced configuration would have meant a registration landed inside a gate, and no test can report
 that. doctest **1169 / 1746 / 143 / 34 / 29 / 7 / 28 — UNMOVED in all seven**, with the structural
 proof beside it (the whole diff contains one occurrence of `TEST_CASE` and it is a prose line in the
 probe's header comment). **This task inverts the project's usual pattern and it is worth saying out
 loud: `ctest -N` moves while every doctest total stays put.** Eight guards exit 0 — audio
-**11 / 3 / 53**, probes **6 / 55**, math **450** (was 449, the one new tracked C-family file), platform
+**11 / 3 / 54**, probes **6 / 56**, math **450** (was 449, the one new tracked C-family file), platform
 **83**, scene **83**, rhi **144**, golden-rule **146**, project-no-delete **A=6 / B=75** — and
 `ls .github/scripts/ | wc -l` reads **8**, measured rather than remembered. clang-format and
 clang-tidy clean **by exit code**, the latter with `SDKROOT` pinned to `macosx15.4` on its own line.
