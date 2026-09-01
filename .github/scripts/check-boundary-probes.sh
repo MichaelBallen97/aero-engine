@@ -39,6 +39,18 @@ cd "$(git rev-parse --show-toplevel)"
 
 strip_cmake() { sed 's|#.*||'; }
 flat() { strip_cmake < "$PROBE_REGISTRY" | tr '\n' ' '; }
+flat_file() { strip_cmake < "$1" | tr '\n' ' '; }
+
+# Every target_link_libraries(...) call in a flattened CMake file, one per line.
+tll_calls() {  # $1 = path
+  flat_file "$1" | grep -oiE "(^|[^a-zA-Z0-9_])target_link_libraries[[:space:]]*\([^)]*\)" || true
+}
+
+# The TARGET token of one extracted call -- its first argument. `sed -n '1p'` rather than `head -1`:
+# head closes the pipe early and the SIGPIPE would fail the command substitution under pipefail.
+tll_target() {  # stdin = one extracted call
+  sed -E 's/^[^(]*\([[:space:]]*//; s/\)$//' | tr ' \t' '\n\n' | sed '/^$/d' | sed -n '1p'
+}
 
 # Every add_library(<name> OBJECT ...) whose <name> ends in _boundary_probe -> the derived set.
 probes="$(flat | grep -oiE '(^|[^a-zA-Z0-9_])add_library[[:space:]]*\([[:space:]]*[a-zA-Z0-9_]+[[:space:]]+OBJECT' \
@@ -59,9 +71,10 @@ fi
 # --- Self-test 2: the validator fires on synthetic contamination. ------------------------------
 check_tokens() {  # $1 = probe name, $2 = whitespace-separated tokens after the target name
   libs=0
+  privs=0
   for tok in $2; do
     case "$tok" in
-      PRIVATE) ;;
+      PRIVATE) privs=$((privs + 1)) ;;
       PUBLIC|INTERFACE)
         printf '%s\n' "visibility '$tok' (must be PRIVATE: an OBJECT probe propagates nothing, and PUBLIC invites reuse that contaminates)"; return ;;
       *_internal|aero::*_internal)
@@ -72,7 +85,15 @@ check_tokens() {  # $1 = probe name, $2 = whitespace-separated tokens after the 
         fi ;;
     esac
   done
-  if [ "$libs" -ne 1 ]; then printf '%s\n' "$libs aero:: libraries (must be exactly 1)"; fi
+  if [ "$libs" -ne 1 ]; then printf '%s\n' "$libs aero:: libraries (must be exactly 1)"; return; fi
+  # PRIVATE must be PRESENT, not merely un-contradicted. Rejecting PUBLIC/INTERFACE is not the same
+  # check: the PLAIN signature -- target_link_libraries(<target> <lib>) with no keyword at all -- is
+  # CMake's transitive/all-keyword form, and it passed while the banner claimed "each linking exactly
+  # one aero:: library PRIVATE" (measured, 3.7.3's code-review round). Claiming enforcement that is
+  # not delivered is the one thing .claude/rules/boundary-guards.md names outright.
+  if [ "$privs" -ne 1 ]; then
+    printf '%s\n' "$privs PRIVATE keywords (must be exactly 1: the plain target_link_libraries(<target> <lib>) signature is transitive)"
+  fi
 }
 if [ -z "$(check_tokens t 'PRIVATE aero::rhi doctest::doctest')" ]; then
   echo "::error::check_tokens in $0 no longer flags a vcpkg package on a probe link line -- vacuous." >&2
@@ -80,6 +101,11 @@ if [ -z "$(check_tokens t 'PRIVATE aero::rhi doctest::doctest')" ]; then
 fi
 if [ -z "$(check_tokens t 'PRIVATE aero::scene_internal')" ]; then
   echo "::error::check_tokens in $0 no longer flags an *_internal target -- vacuous." >&2
+  exit 2
+fi
+if [ -z "$(check_tokens t 'aero::audio')" ]; then
+  echo "::error::check_tokens in $0 no longer flags a link line with NO PRIVATE keyword -- the plain" >&2
+  echo "         signature is transitive, and this guard's own banner claims PRIVATE." >&2
   exit 2
 fi
 if [ -n "$(check_tokens t 'PRIVATE aero::audio')" ]; then
@@ -92,6 +118,17 @@ violations=""
 count=0
 for probe in $probes; do
   count=$((count + 1))
+  # EXCLUDE_FROM_ALL is a link line that never runs: the target is not built by `all`, so it compiles
+  # nothing and asserts nothing in ANY configuration, and every other check below would still pass.
+  # Plan §B.3's P-a names this rot mode ("the 0.2.3 silent-green lesson") and it had been verified
+  # exactly once, by hand, at implementation time -- nothing noticed afterwards. It is derivable from
+  # the same add_library line the probe set comes from, so refusing it costs one grep.
+  decl="$(flat | grep -oiE "(^|[^a-zA-Z0-9_])add_library[[:space:]]*\([[:space:]]*${probe}[[:space:]][^)]*\)" || true)"
+  if printf '%s\n' "$decl" | grep -qE '(^|[^a-zA-Z0-9_])EXCLUDE_FROM_ALL([^a-zA-Z0-9_]|$)'; then
+    violations="${violations}${PROBE_REGISTRY}: ${probe} is declared EXCLUDE_FROM_ALL -- it is never built by \`all\`, so it compiles nothing and asserts nothing in any configuration
+"
+    continue
+  fi
   calls="$(flat | grep -oiE "(^|[^a-zA-Z0-9_])target_link_libraries[[:space:]]*\([[:space:]]*${probe}([^a-zA-Z0-9_][^)]*)?\)" || true)"
   ncalls="$(printf '%s' "$calls" | grep -c 'target_link_libraries' || true)"
   if [ "$ncalls" -eq 0 ]; then
@@ -113,6 +150,31 @@ for probe in $probes; do
   fi
 done
 
+# --- The cross-file sweep. ----------------------------------------------------------------------
+# CMake >= 3.13 lets ANY CMakeLists append to a target defined elsewhere, so reading only the
+# registry left a probe's link line mutable from every other CMake file in the tree -- and CMake's
+# target_link_libraries calls ACCUMULATE, so the appended library joins the compile line without the
+# registry changing by a byte. check-audio-boundary.sh's Part 1d exists for exactly this capability;
+# this is the same sweep, scoped to the derived probe set. Without it, R-b's "exactly one aero::
+# library" claim was true of the registry rather than of the probe.
+swept=0
+while IFS= read -r -d '' f; do
+  [ "$f" = "$PROBE_REGISTRY" ] && continue
+  swept=$((swept + 1))
+  calls="$(tll_calls "$f")"
+  [ -z "$calls" ] && continue
+  while IFS= read -r call; do
+    [ -z "$call" ] && continue
+    tgt="$(printf '%s\n' "$call" | tll_target)"
+    if printf '%s\n' "$probes" | grep -qx "$tgt"; then
+      line="$(nl -ba -w1 -s: "$f" | sed 's|#.*||' \
+              | grep -E "(^|[^a-zA-Z0-9_])${tgt}([^a-zA-Z0-9_]|$)" | head -1 | cut -d: -f1 || true)"
+      violations="${violations}${f}:${line:-1}: a cross-directory target_link_libraries appends to ${tgt}'s link line from outside ${PROBE_REGISTRY}
+"
+    fi
+  done <<< "$calls"
+done < <(git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake')
+
 if [ -n "$violations" ]; then
   echo "a boundary probe's link line rotted -- task 3.7.3 / R12 (docs/08-risks.md):" >&2
   echo "$violations" >&2
@@ -131,4 +193,4 @@ if [ -n "$violations" ]; then
   exit 1
 fi
 
-echo "boundary-probe guard: OK -- ${count} probe targets verified in ${PROBE_REGISTRY}, each linking exactly one aero:: library PRIVATE"
+echo "boundary-probe guard: OK -- ${count} probe targets verified in ${PROBE_REGISTRY}, each built by \`all\` and linking exactly one aero:: library PRIVATE; ${swept} other CMake files swept for cross-directory appends"

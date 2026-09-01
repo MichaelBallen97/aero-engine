@@ -69,17 +69,20 @@ endfunction()
 # false-positive proof: the derived set is filtered to names ending in _boundary_probe, so a
 # doctest-linking OBJECT library that is not a probe must be invisible to this guard. P0 exiting 0
 # with that target present is what proves the filter is not over-broad.
-set(_BP_REGISTRY_HEAD [==[# A minimal stand-in for the real tests/CMakeLists.txt.
-add_library(aero_not_a_probe OBJECT helper.cpp)
-target_link_libraries(aero_not_a_probe PRIVATE doctest::doctest aero::core)
+# THE LINK COMMAND'S NAME IS COMPOSED FROM A VARIABLE, exactly as in
+# tests/audio-boundary/guard_e2e.cmake and for the same reason one layer over. This file is a tracked
+# *.cmake, so it sits inside the set check-boundary-probes.sh's own cross-file sweep walks -- and that
+# sweep looks for a target_link_libraries naming a DERIVED PROBE in any file other than the registry.
+# Spelled literally, the fixtures below made the guard exit 1 on the tree that ships it, naming seven
+# lines of this file: textually true, since the text really is there, even though it is fixture data
+# that only ever reaches a throwaway scratch tree. Composing the name keeps every scratch file
+# byte-identical to the shape under test while leaving no matching literal here. The rejected
+# alternative -- excluding this file from the sweep -- would put a permanent hole in a universal
+# sweep, in the one file most likely to acquire a real CMake snippet later.
+set(_BP_TLL "target_link_libraries")
 
-add_library(aero_scene_boundary_probe OBJECT scene_boundary_probe.cpp)
-target_link_libraries(aero_scene_boundary_probe PRIVATE aero::scene)
-
-add_library(aero_audio_boundary_probe OBJECT audio_boundary_probe.cpp)
-]==])
-set(_BP_CANARY_TLL [==[target_link_libraries(aero_audio_boundary_probe PRIVATE aero::audio)
-]==])
+set(_BP_REGISTRY_HEAD "# A minimal stand-in for the real tests/CMakeLists.txt.\nadd_library(aero_not_a_probe OBJECT helper.cpp)\n${_BP_TLL}(aero_not_a_probe PRIVATE doctest::doctest aero::core)\n\nadd_library(aero_scene_boundary_probe OBJECT scene_boundary_probe.cpp)\n${_BP_TLL}(aero_scene_boundary_probe PRIVATE aero::scene)\n\nadd_library(aero_audio_boundary_probe OBJECT audio_boundary_probe.cpp)\n")
+set(_BP_CANARY_TLL "${_BP_TLL}(aero_audio_boundary_probe PRIVATE aero::audio)\n")
 set(_BP_REGISTRY "${_BP_REGISTRY_HEAD}${_BP_CANARY_TLL}")
 
 # --- Scratch-tree bootstrap ------------------------------------------------------------------------
@@ -95,32 +98,32 @@ _bp_expect_substr("P0" "${_bp_out}" "aero_not_a_probe" FALSE)
 
 # --- P1: a vcpkg package joins a probe's line -> exit 1. THE named rot mode: doctest drags the whole
 # shared vcpkg include root back onto the compile line and the probe asserts nothing thereafter. ----
-_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}target_link_libraries(aero_audio_boundary_probe PRIVATE aero::audio doctest::doctest)\n")
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}${_BP_TLL}(aero_audio_boundary_probe PRIVATE aero::audio doctest::doctest)\n")
 _bp_run("P1 (doctest::doctest on a probe)" 1 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P1" "${_bp_out}" "aero_audio_boundary_probe links non-engine token 'doctest::doctest'" TRUE)
 
 # --- P2: a SECOND target_link_libraries call for the same probe -> exit 1. The likeliest real-world
 # shape by far, and the one a naive "read the first call" check would miss entirely: CMake TLL calls
 # ACCUMULATE, so the second one appends rather than replacing. -------------------------------------
-_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}target_link_libraries(aero_audio_boundary_probe PRIVATE aero::profiling)\n")
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}${_BP_TLL}(aero_audio_boundary_probe PRIVATE aero::profiling)\n")
 _bp_run("P2 (a second, appending TLL call)" 1 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P2" "${_bp_out}" "target_link_libraries calls -- a second call APPENDS" TRUE)
 
 # --- P3: PRIVATE -> PUBLIC -> exit 1. An OBJECT probe propagates nothing, so PUBLIC buys nothing and
 # invites the reuse that contaminates it. ----------------------------------------------------------
-_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}target_link_libraries(aero_audio_boundary_probe PUBLIC aero::audio)\n")
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}${_BP_TLL}(aero_audio_boundary_probe PUBLIC aero::audio)\n")
 _bp_run("P3 (PUBLIC visibility)" 1 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P3" "${_bp_out}" "must be PRIVATE" TRUE)
 
 # --- P4: an *_internal target -> exit 1 with its own message. It matches the aero:: shape and is
 # refused by name: aero::scene_internal carries EnTT::EnTT INTERFACE BY DESIGN. --------------------
-_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}target_link_libraries(aero_audio_boundary_probe PRIVATE aero::scene_internal)\n")
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}${_BP_TLL}(aero_audio_boundary_probe PRIVATE aero::scene_internal)\n")
 _bp_run("P4 (aero::scene_internal on a probe)" 1 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P4" "${_bp_out}" "carries its backend INTERFACE by design" TRUE)
 
 # --- P5: TWO aero:: libraries on one probe -> exit 1. Both tokens are legal in isolation; it is the
 # COUNT that is the invariant, and a per-token check alone would pass this. ------------------------
-_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}target_link_libraries(aero_audio_boundary_probe PRIVATE aero::audio aero::core)\n")
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}${_BP_TLL}(aero_audio_boundary_probe PRIVATE aero::audio aero::core)\n")
 _bp_run("P5 (two aero:: libraries)" 1 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P5" "${_bp_out}" "aero:: libraries (must be exactly 1)" TRUE)
 
@@ -131,26 +134,57 @@ _bp_run("P6 (a probe with zero TLL calls)" 1 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P6" "${_bp_out}" "aero_scene_boundary_probe has NO target_link_libraries call" TRUE)
 
 # --- P7: the canary probe deleted -> exit 2, NOT a quiet pass over the one probe that remains. -----
-_bp_seed("tests/CMakeLists.txt" "# A minimal stand-in for the real tests/CMakeLists.txt.\nadd_library(aero_scene_boundary_probe OBJECT scene_boundary_probe.cpp)\ntarget_link_libraries(aero_scene_boundary_probe PRIVATE aero::scene)\n")
+_bp_seed("tests/CMakeLists.txt" "# A minimal stand-in for the real tests/CMakeLists.txt.\nadd_library(aero_scene_boundary_probe OBJECT scene_boundary_probe.cpp)\n${_BP_TLL}(aero_scene_boundary_probe PRIVATE aero::scene)\n")
 _bp_run("P7 (canary probe deleted)" 2 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P7" "${_bp_out}" "is not in the derived probe set" TRUE)
 
 # --- P8: every probe renamed, so DERIVATION itself yields nothing -> exit 2. Vacuity refusal: an
 # empty derived set is the shape in which a rotted extractor and a probe-less tree look identical. --
-_bp_seed("tests/CMakeLists.txt" "# A minimal stand-in for the real tests/CMakeLists.txt.\nadd_library(aero_scene_check OBJECT scene_boundary_probe.cpp)\ntarget_link_libraries(aero_scene_check PRIVATE aero::scene)\n\nadd_library(aero_audio_check OBJECT audio_boundary_probe.cpp)\ntarget_link_libraries(aero_audio_check PRIVATE aero::audio)\n")
+_bp_seed("tests/CMakeLists.txt" "# A minimal stand-in for the real tests/CMakeLists.txt.\nadd_library(aero_scene_check OBJECT scene_boundary_probe.cpp)\n${_BP_TLL}(aero_scene_check PRIVATE aero::scene)\n\nadd_library(aero_audio_check OBJECT audio_boundary_probe.cpp)\n${_BP_TLL}(aero_audio_check PRIVATE aero::audio)\n")
 _bp_run("P8 (derivation empty)" 2 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P8" "${_bp_out}" "derived an EMPTY probe set" TRUE)
 
 # --- P9: contamination inside a MULTI-LINE call -> exit 1. The registry does not use this shape
 # today, which is exactly why it is worth pinning: the flatten is what makes the check independent of
 # how the call happens to be wrapped, and nothing else in the suite exercises it. ------------------
-_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}target_link_libraries(aero_audio_boundary_probe\n    PRIVATE aero::audio\n    SDL3::SDL3\n)\n")
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}${_BP_TLL}(aero_audio_boundary_probe\n    PRIVATE aero::audio\n    SDL3::SDL3\n)\n")
 _bp_run("P9 (contamination in a multi-line TLL)" 1 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P9" "${_bp_out}" "non-engine token 'SDL3::SDL3'" TRUE)
+
+# --- P10: the PLAIN signature, with no visibility keyword at all -> exit 1. Rejecting PUBLIC and
+# INTERFACE is NOT the same check as requiring PRIVATE: target_link_libraries(<target> <lib>) is
+# CMake's transitive all-keyword form, and it passed while this guard's own banner said "each linking
+# exactly one aero:: library PRIVATE" -- enforcement claimed and not delivered, which
+# .claude/rules/boundary-guards.md names as the failure to avoid by name. ---------------------------
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY_HEAD}${_BP_TLL}(aero_audio_boundary_probe aero::audio)\n")
+_bp_run("P10 (plain signature, no PRIVATE keyword)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P10" "${_bp_out}" "0 PRIVATE keywords (must be exactly 1" TRUE)
+
+# --- P11: EXCLUDE_FROM_ALL on a probe -> exit 1. A link line that never runs. The target is not built
+# by `all`, so it compiles nothing and asserts nothing in ANY configuration, while every other check
+# in this guard still passes and the probe's link line stays perfectly canonical. Plan §B.3's P-a
+# names this rot mode -- "the 0.2.3 silent-green lesson" -- and it had been verified exactly once, by
+# hand, at implementation time; nothing noticed afterwards. -----------------------------------------
+_bp_seed("tests/CMakeLists.txt" "# A minimal stand-in for the real tests/CMakeLists.txt.\nadd_library(aero_scene_boundary_probe OBJECT scene_boundary_probe.cpp)\n${_BP_TLL}(aero_scene_boundary_probe PRIVATE aero::scene)\n\nadd_library(aero_audio_boundary_probe OBJECT EXCLUDE_FROM_ALL audio_boundary_probe.cpp)\n${_BP_CANARY_TLL}")
+_bp_run("P11 (EXCLUDE_FROM_ALL on a probe)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P11" "${_bp_out}" "aero_audio_boundary_probe is declared EXCLUDE_FROM_ALL" TRUE)
+
+# --- P12: a cross-directory append from ANOTHER CMake file -> exit 1. CMake >= 3.13 lets any
+# CMakeLists add to a target defined elsewhere, and target_link_libraries calls ACCUMULATE -- so this
+# puts doctest on the probe's compile line with the registry unchanged by a single byte. Reading only
+# the registry made R-b a claim about a FILE rather than about the PROBE; the sibling guard's Part 1d
+# exists for precisely this capability. -------------------------------------------------------------
+_bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
+_bp_seed("engine/CMakeLists.txt" "add_subdirectory(audio)\n${_BP_TLL}(aero_audio_boundary_probe PRIVATE doctest::doctest)\n")
+_bp_run("P12 (cross-directory append from engine/CMakeLists.txt)" 1 "${BASH}" "${SCRIPT}")
+_bp_expect_substr("P12" "${_bp_out}" "engine/CMakeLists.txt:" TRUE)
+_bp_expect_substr("P12" "${_bp_out}" "appends to aero_audio_boundary_probe's link line from outside" TRUE)
+file(REMOVE "${WORK_DIR}/src/engine/CMakeLists.txt")
+execute_process(COMMAND "${GIT}" -C "${WORK_DIR}/src" add -A)
 
 # --- Restored -> exit 0. Proves every stage above was the seed talking. ---------------------------
 _bp_seed("tests/CMakeLists.txt" "${_BP_REGISTRY}")
 _bp_run("P0' (registry restored)" 0 "${BASH}" "${SCRIPT}")
 _bp_expect_substr("P0'" "${_bp_out}" "probe targets verified" TRUE)
 
-message(STATUS "boundary-probes.probe_links_e2e: OK -- P0-P9 + a restored-registry stage, 11 in all")
+message(STATUS "boundary-probes.probe_links_e2e: OK -- P0-P12 + a restored-registry stage, 14 in all")
