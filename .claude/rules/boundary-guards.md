@@ -73,13 +73,14 @@ all**, and a guarded CMakeLists may contain **only** `add_library`,
 red-on-violation by hermetic ctest cases (`audio-boundary.guard_e2e`,
 `boundary-probes.probe_links_e2e`).
 
-**Lessons from 3.7.3's three code-review rounds, which between them found ten silently
-evadable predicates and five stages that proved less than they claimed. Read 0 first — it
-produced the blocking finding in ALL THREE rounds, each time inside the fix written to teach
-the previous one:**
+**Lessons from 3.7.3's code-review rounds. Read 0 first — it produced the blocking
+finding in every round that had one, each time inside the fix written to teach the previous
+one, until the guards were inverted. The counts are deliberately left out: this heading was
+renumbered in four consecutive deltas, and the lessons do not depend on how many rounds it
+took to find them:**
 
 0. **DO NOT ENUMERATE SPELLINGS — INVERT TO AN ALLOWLIST.** This produced a blocking
-   finding in three consecutive rounds, each time inside the fix written to teach the
+   finding in consecutive rounds, each time inside the fix written to teach the
    previous one: an `*_internal` alias but not the raw name; `EXCLUDE_FROM_ALL` on
    `add_library` but not its property spellings; the property spellings but not the plain
    commands (`set_property(TARGET x APPEND PROPERTY INCLUDE_DIRECTORIES …)` refused while

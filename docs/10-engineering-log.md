@@ -12425,7 +12425,7 @@ naming a derived probe is a violation** — with the link call's own contents (o
 include/link command, and `add_subdirectory(<registry dir> EXCLUDE_FROM_ALL)`) refused directly.
 `tests/audio_boundary_probe.cpp` — the sixth probe, **35** `static_assert`s across all four public
 audio headers, no named entity, no `TEST_CASE`, no `#if` of any kind. And two hermetic `cmake -P`
-ctest drivers, now **37** and **34** stages, plus the compile-line case and its own 9-stage red-proof.
+ctest drivers, now **37** and **34** stages, plus the compile-line case and its own 10-stage red-proof.
 
 **THE FINDING THAT MATTERS MOST, AND IT IS NOT ANY ONE BUG: A COMMAND DENYLIST OVER CMAKE CANNOT
 CONVERGE.** Three review rounds each closed the spellings they were shown and left the class open,
@@ -12515,7 +12515,8 @@ edit would, not the way a demolition would, and pin the offending TOKEN rather t
 sentence.* Every stage added afterwards is proved this way, and the list is the measured one rather
 than a summary: **S2b, S2c, S2d, S2e, S2f, S4b, S5, S5b, S6b, S6c, S6d, S6e, S6f, S6g, S6h, S6i, S6j,
 S6k, S11, S12, X5, P10, P11, P12, P13, P14, P15, P16, P18, P19, P20, P21, P22, P23, P24, P25, P26,
-P27, P28, P29, P30, C1, C2, C5, C6 and C8** were each watched to redden **alone** under a one-line mutation of the arm they target, with
+P27, P28, P29, P30, C0, C1, C2, C4, C5, C6, C7, C8 and C9** were each watched to redden
+**alone** under a one-line mutation of the arm they target, with
 the guard still exiting 0 on the real tree except where the mutation is deliberately over-broad (S6e,
 S6i) or trips a self-test first (the `privs` arm, `check_tokens`), which is the louder outcome.
 **Three of those mutations had to be redone because the first attempt was too coarse** — it reddened
@@ -12525,9 +12526,14 @@ enough that S6, S6b, S6c and S6d all still pass; P24, a false-positive proof, ne
 over-broadening that P0's smaller fixture does not happen to contain. **Two stages are named here as NOT individually proved, rather than left to look
 counted.** `S6l` has no possible narrow mutation — `DIR_SCOPED_RE` matches `<command>(` and CMake
 never separates those, so a line-scoped version passes it too; it is a shape regression and says so
-in the driver. `C3`, `C4`, `C7` and `P31`/`P32` redden only alongside a sibling stage that shares
-their arm (`C3` under the arguments-form mutation, `P30` under the flattening one), which proves the
-suite asserts rather than that each stage does. **This list has now been wrong twice by omission** —
+in the driver. `C3` and `P31`/`P32` redden only alongside a sibling stage that
+shares their arm (`C3` under the arguments-form mutation, `P30` under the flattening one), which
+proves the suite asserts rather than that each stage does. **`C4` and `C0` were in that group until
+this round and are not any more**: they were re-measured rather than re-described, and `C4` reddens
+alone under a driver that reads only the first element of an `arguments` array, `C0` under a driver
+that stops filtering to `*_boundary_probe.cpp`. `C9` exists because the measurement found the "the
+floor is a FLOOR" claim covered by nothing at all -- rewriting `_checked LESS 6` as an equality
+reddened no stage, since the real tree and every fixture happened to hold exactly six probes. **This list has now been wrong twice by omission** —
 first `S2c`, then this round's nine — each time in a paragraph asserting completeness, which is why
 it is written as an explicit roster plus an explicit set of exceptions rather than a count.
 

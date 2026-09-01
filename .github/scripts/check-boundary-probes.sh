@@ -277,9 +277,12 @@ while IFS= read -r -d '' f; do
   #
   # THIS ARM IS A DENYLIST AND CANNOT BE COMPLETE -- add_compile_options(-I...), add_definitions and
   # a CMAKE_CXX_FLAGS mutation all reach the same compile line and are not listed. Enumerating them
-  # is the game rounds 1-4 lost. What closes the class is the ctest case
-  # boundary-probes.probe_compile_line, which reads compile_commands.json and asserts the property
-  # directly. This arm stays because it names the vector at push time, before any build runs.
+  # is the game every enumerating round of this guard lost. What READS a fact instead of predicting one is the ctest case
+  # boundary-probes.probe_compile_line -- and it reads exactly ONE symptom, vcpkg's shared include
+  # root on a probe's compile line. It says nothing about EXCLUDE_FROM_ALL (an excluded target is
+  # still configured, so it still has a database entry) and nothing about any non-probe target. This
+  # arm stays because it names the vector at push time, before any build runs, and because it is the
+  # only thing watching the EXCLUDE_FROM_ALL half at all.
   if printf '%s\n' "$DIR_SCOPE_FILES" | grep -qxF "$f"; then
     flat="$(flat_file "$f")"
     dhit="$(printf '%s\n' "$flat" \

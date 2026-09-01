@@ -16,7 +16,7 @@ Epic 3.7 (Audio playback v0 · audio) closes with 3.7.1 MERGED (PR #88, `4892e65
 needing ears or the editor) and **3.7.3 COMPLETE IN CODE on
 `feat/3.7.3-audio-boundary-ci-guard`** — one commit per step, the full local gate green, the S/X/P seed
 matrices run as ctest stages, the break-the-guard meta-proof run against them, and
-**four** code-review rounds closed (37 findings, 10 blocking — see below). Two durable outcomes: the guards were **inverted from a command denylist to an allowlist** for everything that NAMES a protected target, and for the direction that cannot be inverted — reaching one WITHOUT naming it — a ctest case now **reads `compile_commands.json` and asserts the property instead of predicting it**.
+the code-review rounds closed — six of them, and the count is deliberately the last thing this sentence says, because it was renumbered in four consecutive deltas. Two durable outcomes: the guards were **inverted from a command denylist to an allowlist** for everything that NAMES a protected target, and for the direction that cannot be inverted — reaching one WITHOUT naming it — a ctest case now **reads `compile_commands.json` and asserts the property instead of predicting it**.
 
 Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4** (PBR materials),
 **3.5** (Skeletal animation), **3.6** (Rendering essentials) and **3.7** (Audio playback v0) are all
@@ -73,10 +73,11 @@ blocks are byte-unchanged. The three `engine/**` edits are **comment-only**, ass
 
 **The proofs are ctest STAGES, not plan prose, because `docs/plans/` is gitignored and a proof that
 lives only there ceases to exist at merge.** `audio-boundary.guard_e2e` runs 37 stages,
-`boundary-probes.probe_links_e2e` 34, and `boundary-probes.compile_line_e2e` 9. Every stage asserts an
-**exact** exit code — 77 for skip included — every seed is read back **and** asserted present in the
-index before any verdict is trusted, and each driver was run instrumented so every observed code was
-seen rather than inferred. **Counts here are measured on the tree in front of you; they have gone
+`boundary-probes.probe_links_e2e` 34, and `boundary-probes.compile_line_e2e` 10. Every stage asserts an
+**exact** exit code; the two git-backed drivers read every seed back **and** assert it present in the
+index before trusting a verdict, and the pure-CMake one reads its fixtures back (it stages nothing,
+so there is no index to check); and each driver was run instrumented so every observed code was seen
+rather than inferred. **Counts here are measured on the tree in front of you; they have gone
 stale twice in this task alone.**
 
 **THE CODE-REVIEW ROUNDS ARE THE PART TO REMEMBER, AND THE LESSON IS ARCHITECTURAL: A COMMAND
