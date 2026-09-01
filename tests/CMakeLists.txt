@@ -1089,3 +1089,24 @@ else()
     message(STATUS "audio-boundary: guard_e2e SKIPPED (Windows, or bash/git not found) -- the "
                    "guard itself still runs in CI's lint job on Linux")
 endif()
+
+# ---------------------------------------------------------------------------------------------
+# Eighth architecture guard: boundary-probes (task 3.7.3, taking the handoff 0.2.3 opened and 0.4.5
+# §7.1 routed here by name). A hermetic proof that .github/scripts/check-boundary-probes.sh actually
+# goes RED. The invariant it guards is the one every probe block above states in prose -- exactly one
+# aero:: library, PRIVATE -- and the one way each of them can rot: a second library on the line puts
+# vcpkg's shared include root back, and the probe then compiles forever while asserting nothing.
+# A SEPARATE ctest entry from audio-boundary.guard_e2e on purpose: a math-probe regression reported
+# under "audio-boundary" would mislead, and two fixtures keep two focused failure messages. Same
+# NOT WIN32 gate and reasoning as its two siblings; ungated by the tools flags; distinct scratch root.
+if(NOT WIN32 AND AERO_BASH_EXECUTABLE AND GIT_EXECUTABLE)
+    add_test(NAME boundary-probes.probe_links_e2e COMMAND ${CMAKE_COMMAND}
+        -DSCRIPT=${CMAKE_SOURCE_DIR}/.github/scripts/check-boundary-probes.sh
+        -DBASH=${AERO_BASH_EXECUTABLE}
+        -DGIT=${GIT_EXECUTABLE}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/boundary-probes-scratch
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/probe_links_e2e.cmake)
+else()
+    message(STATUS "boundary-probes: probe_links_e2e SKIPPED (Windows, or bash/git not found) -- the "
+                   "guard itself still runs in CI's lint job on Linux")
+endif()
