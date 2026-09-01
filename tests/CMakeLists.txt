@@ -634,6 +634,26 @@ add_library(aero_scene_boundary_probe OBJECT scene_boundary_probe.cpp)
 target_link_libraries(aero_scene_boundary_probe PRIVATE aero::scene)
 
 # ---------------------------------------------------------------------------------------------
+# The audio no-vcpkg-boundary COMPILE-TIME guard (task 3.7.3; ADR-006; epic 3.7's DoD).
+#
+# A DIFFERENT MECHANISM from the five probes above, and the difference is the point: aero::audio
+# links NO vcpkg package at all (as do its PUBLIC deps' propagated surfaces), so this probe's
+# compile line is vcpkg-free in EVERY preset -- including *-release, where aero_audio's OWN line is
+# NOT (its PRIVATE aero::profiling carries Tracy::TracyClient and with it the shared vcpkg include
+# root when AERO_ENABLE_PROFILING=ON; measured on this tree from both compile_commands.json). In
+# Release this probe is therefore the ONLY compile-time enforcement that a public audio header pulls
+# in no third-party header (risk R12, docs/08-risks.md); the textual half is
+# .github/scripts/check-audio-boundary.sh.
+#
+# DO NOT ADD ANY OTHER LINK LIBRARY -- not doctest, not aero::profiling (Tracy, a vcpkg package, in
+# Release), not any vcpkg package. Any of them restores the shared vcpkg include root and silently
+# reduces this guard to a no-op while CI stays green. Unlike the five siblings, that sentence is now
+# ENFORCED: .github/scripts/check-boundary-probes.sh reds the lint job if this target's link line
+# ever holds anything but exactly one aero:: library, PRIVATE.
+add_library(aero_audio_boundary_probe OBJECT audio_boundary_probe.cpp)
+target_link_libraries(aero_audio_boundary_probe PRIVATE aero::audio)
+
+# ---------------------------------------------------------------------------------------------
 # The shaderc end-to-end CTest suite (task 0.4.3; spec D9/§3.6) -- a net-new harness (no prior
 # cmake -P / external-binary add_test precedent in this repo). Each case runs the REAL aero_shaderc
 # binary through tests/shaderc/run_case.cmake, which is what actually asserts exit codes -- several
