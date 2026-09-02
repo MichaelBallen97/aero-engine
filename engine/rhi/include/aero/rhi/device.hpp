@@ -152,6 +152,35 @@ public:
     bool uploadBuffer(BufferHandle buffer, std::uint32_t dstOffset, std::span<const std::byte> data);
     bool uploadTexture(TextureHandle texture, std::uint32_t mipLevel, std::span<const std::byte> data);
 
+    // --- per-frame uploads (task E.1.1: the streaming path the D14 comment above deferred) -------
+    // Records a copy of `data` into `buffer` ON `cmd`, from byte 0, and returns WITHOUT WAITING.
+    // Ordered with `cmd`: visible to every command recorded later on it, and to every command buffer
+    // SUBMITTED after it (the ordering guarantee below). THE WHOLE BUFFER IS REPLACED and bytes past
+    // data.size() are UNDEFINED afterwards -- the backend cycles the destination's backing store when
+    // an in-flight frame still reads it (SDL's own idiom: "When cycling, all data in the resource is
+    // considered to be undefined for subsequent commands until that data is written again"), so a
+    // partial write cannot merge with last frame's contents. That is why there is no dstOffset.
+    // COMPLEMENTS uploadBuffer (init-time, offset-addressed, blocking); never replaces it.
+    // The transfer buffer is the Device's own, singular, created lazily at the first call, GROWN and
+    // never shrunk, and released at teardown -- it costs nothing until something streams.
+    // False + ERROR, recording nothing: a moved-from Device, a stale cmd or buffer, A RENDER PASS
+    // OPEN ON cmd (refused HERE, in every configuration -- SDL only checks it in debug mode), empty
+    // data, or data.size() greater than the buffer.
+    bool recordBufferUpload(CommandBufferHandle cmd, BufferHandle buffer, std::span<const std::byte> data);
+
+    // --- readback (task E.1.1) -- BLOCKING; a test-and-tooling path, never per frame -------------
+    // Copies mip `mipLevel` of `texture` into `out` and waits (uploadTexture's fence round trip, in
+    // reverse). out.size() must EQUAL textureLevelByteSize(format, mipWidth, mipHeight); rows are
+    // TIGHTLY PACKED; ROW 0 IS THE TOP of the image (the origin SDL_GPU normalises to on all three
+    // backends); texels are in the format's own byte order (RGBA8Unorm -> r,g,b,a; RGBA16Float ->
+    // four little-endian halves). ANY NON-DEPTH TEXTURE THIS DEVICE CREATED is readable, whether or
+    // not it has Sampler usage -- every backend can copy from any texture it made.
+    // False + ERROR with `out` UNTOUCHED: a moved-from Device, a stale handle, a swapchain-acquired
+    // texture (E6: write-only), a depth format (texelBlockSize == 0 -- their layout is driver
+    // business), a mip past mipLevels, or a wrong out.size(). A failed fence wait returns false with
+    // `out` UNSPECIFIED, which is the only path that does not leave it untouched.
+    bool readbackTexture(TextureHandle texture, std::uint32_t mipLevel, std::span<std::byte> out);
+
     // --- frame flow (D7) ------------------------------------------------------------------------
     // Shape of a frame:
     //     auto cmd = device.acquireCommandBuffer();

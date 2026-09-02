@@ -749,6 +749,15 @@ struct Device::Impl {
         }
     }
 
+    // task E.1.1 -- the Device's ONE upload transfer buffer, for recordBufferUpload. Created lazily
+    // at the first call, GROWN (never shrunk) when a request exceeds it, released in ~Impl after
+    // SDL_WaitForGPUIdle. Nothing pays for it until something streams: the six samples, the cooker
+    // and every test that never calls recordBufferUpload leave it null for the Device's whole life.
+    // It is deliberately NOT a SlotMap entry and NOT a handle -- a transfer buffer is wrapper
+    // machinery, never something a caller names (spec D2).
+    SDL_GPUTransferBuffer* uploadTransfer = nullptr;
+    std::uint32_t uploadTransferSize = 0;
+
     ~Impl();
 };
 
@@ -823,6 +832,15 @@ Device::Impl::~Impl() {
             AERO_LOG_WARN("rhi: ~Device releasing {} leaked buffer(s)", buffers.size());
         }
         buffers.clear();
+
+        // task E.1.1: after SDL_WaitForGPUIdle above, so nothing in flight still references it, and
+        // before SDL_DestroyGPUDevice below. NOT a leak WARN like the pools above -- this buffer is
+        // the wrapper's own, so its presence at teardown is normal, not a caller's bug.
+        if (uploadTransfer != nullptr) {
+            SDL_ReleaseGPUTransferBuffer(device, uploadTransfer);
+            uploadTransfer = nullptr;
+            uploadTransferSize = 0;
+        }
 
         SDL_DestroyGPUDevice(device);
         liveDevices.fetch_sub(1, std::memory_order_relaxed);
@@ -1701,6 +1719,224 @@ bool Device::uploadTexture(TextureHandle texture, std::uint32_t mipLevel, std::s
     SDL_ReleaseGPUFence(impl->device, fence);
     SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
     return waited;
+}
+
+// --- per-frame uploads and readback (task E.1.1) ------------------------------------------------
+
+bool Device::recordBufferUpload(CommandBufferHandle cmd, BufferHandle buffer, std::span<const std::byte> data) {
+    AERO_PROFILE_ZONE_NAMED("rhi::Device::recordBufferUpload");
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::recordBufferUpload: called on a moved-from Device");
+        return false;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::recordBufferUpload off the owning thread");
+    const CommandBufferSlot* const cmdSlot = impl->commandBuffers.get(cmd);
+    if (cmdSlot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::recordBufferUpload: stale or invalid command buffer handle");
+        return false;
+    }
+    const BufferSlot* const slot = impl->buffers.get(buffer);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::recordBufferUpload: stale or invalid buffer handle");
+        return false;
+    }
+    // OURS, not SDL's: SDL_BeginGPUCopyPass only refuses this under debug_mode (SDL_gpu.c:2748), so
+    // a Release build with the debug layer off would proceed into driver-defined behaviour. The pass
+    // is left EXACTLY as it was -- nothing is recorded and nothing is ended.
+    if (cmdSlot->openPass.valid()) {
+        AERO_LOG_ERROR("rhi: Device::recordBufferUpload: a render pass is open on this command buffer");
+        return false;
+    }
+    if (data.empty()) {
+        AERO_LOG_ERROR("rhi: Device::recordBufferUpload: data must be non-empty");
+        return false;
+    }
+    // C-10, uploadBuffer's own posture: 64-bit-safe, no narrowing, no overflow.
+    if (static_cast<std::uint64_t>(data.size()) > static_cast<std::uint64_t>(slot->size)) {
+        AERO_LOG_ERROR("rhi: Device::recordBufferUpload: data.size({}) exceeds buffer size ({})", data.size(),
+                       slot->size);
+        return false;
+    }
+
+    // --- the Device-owned transfer buffer: create, or grow. -------------------------------------
+    // 64 KiB floor, rounded up to a 64 KiB multiple, GROWS ONLY. Bounded in practice by the largest
+    // vertex buffer any caller streams into, which DebugDraw fixes at create() (spec D6's ceilings).
+    constexpr std::uint64_t TRANSFER_GRANULARITY = 65536U;
+    const std::uint64_t wanted = std::max<std::uint64_t>(data.size(), TRANSFER_GRANULARITY);
+    const std::uint64_t rounded = ((wanted + TRANSFER_GRANULARITY - 1U) / TRANSFER_GRANULARITY) * TRANSFER_GRANULARITY;
+    if (impl->uploadTransfer == nullptr || static_cast<std::uint64_t>(impl->uploadTransferSize) < rounded) {
+        SDL_GPUTransferBufferCreateInfo transferInfo{};
+        transferInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        transferInfo.size = static_cast<Uint32>(rounded);
+        transferInfo.props = 0;
+        SDL_GPUTransferBuffer* const grown = SDL_CreateGPUTransferBuffer(impl->device, &transferInfo);
+        if (grown == nullptr) {
+            AERO_LOG_ERROR("rhi: Device::recordBufferUpload: SDL_CreateGPUTransferBuffer({}) failed: {}", rounded,
+                           SDL_GetError());
+            return false;  // the OLD buffer is still ours and still usable -- nothing is released here
+        }
+        if (impl->uploadTransfer != nullptr) {
+            // SDL defers the MEMORY's free while a frame still references the backing store
+            // (referenceCount == 0 is the drain condition on all three backends); the HANDLE dies
+            // now, which is why it is overwritten in the same breath.
+            SDL_ReleaseGPUTransferBuffer(impl->device, impl->uploadTransfer);
+        }
+        impl->uploadTransfer = grown;
+        impl->uploadTransferSize = static_cast<std::uint32_t>(rounded);
+    }
+
+    // --- map (CYCLED), copy, unmap --------------------------------------------------------------
+    // cycle = true, unlike uploadBuffer's false: this path is per-frame BY DESIGN, so the previous
+    // call's contents may still be referenced by a command buffer that has not finished. All three
+    // backends cycle iff (cycle && referenceCount > 0) and take that reference at RECORD time inside
+    // their own UploadToBuffer -- so two uploads on ONE command buffer each get their own backing
+    // store and the first copy's source is never overwritten by the second.
+    void* const mapped = SDL_MapGPUTransferBuffer(impl->device, impl->uploadTransfer, true);
+    if (mapped == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::recordBufferUpload: SDL_MapGPUTransferBuffer failed: {}", SDL_GetError());
+        return false;
+    }
+    std::memcpy(mapped, data.data(), data.size());
+    SDL_UnmapGPUTransferBuffer(impl->device, impl->uploadTransfer);
+
+    // --- the copy pass, on the CALLER's command buffer -------------------------------------------
+    SDL_GPUCopyPass* const copyPass = SDL_BeginGPUCopyPass(cmdSlot->cmd);
+    if (copyPass == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::recordBufferUpload: SDL_BeginGPUCopyPass failed: {}", SDL_GetError());
+        return false;  // the destination is untouched: SDL_UploadToGPUBuffer was never reached
+    }
+    SDL_GPUTransferBufferLocation source{};
+    source.transfer_buffer = impl->uploadTransfer;
+    source.offset = 0;
+    SDL_GPUBufferRegion destination{};
+    destination.buffer = slot->buffer;
+    destination.offset = 0;
+    destination.size = static_cast<Uint32>(data.size());
+    // cycle = true on the DESTINATION too: if an in-flight frame still reads this vertex buffer, SDL
+    // hands the upload a FRESH backing store rather than stalling. That is what makes the whole
+    // buffer's contents undefined past data.size(), and why the call takes no dstOffset.
+    SDL_UploadToGPUBuffer(copyPass, &source, &destination, true);
+    SDL_EndGPUCopyPass(copyPass);
+    return true;
+}
+
+bool Device::readbackTexture(TextureHandle texture, std::uint32_t mipLevel, std::span<std::byte> out) {
+    AERO_PROFILE_ZONE_NAMED("rhi::Device::readbackTexture");
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::readbackTexture: called on a moved-from Device");
+        return false;
+    }
+    assert(std::this_thread::get_id() == impl->ownerThread && "Device::readbackTexture off the owning thread");
+    const TextureSlot* const slot = impl->textures.get(texture);
+    if (slot == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::readbackTexture: stale or invalid handle");
+        return false;
+    }
+    if (slot->swapchainOwned) {
+        AERO_LOG_ERROR("rhi: Device::readbackTexture: swapchain-acquired textures are write-only (E6)");
+        return false;
+    }
+    if (mipLevel >= slot->mipLevels) {
+        AERO_LOG_ERROR("rhi: Device::readbackTexture: mipLevel {} >= mipLevels {}", mipLevel, slot->mipLevels);
+        return false;
+    }
+    const std::uint32_t blockBytes = texelBlockSize(slot->format);
+    if (blockBytes == 0) {
+        // Depth formats (and Invalid): their layout is driver business (format.hpp).
+        AERO_LOG_ERROR("rhi: Device::readbackTexture: format {} is not CPU-readable", toString(slot->format));
+        return false;
+    }
+    // E10's rule, from uploadTexture verbatim: validate against the MIP's extent, not the base.
+    const std::uint32_t mipWidth = std::max<std::uint32_t>(1U, slot->extent.width >> mipLevel);
+    const std::uint32_t mipHeight = std::max<std::uint32_t>(1U, slot->extent.height >> mipLevel);
+    const std::uint64_t expectedBytes = textureLevelByteSize(slot->format, mipWidth, mipHeight);
+    if (out.size() != expectedBytes) {
+        AERO_LOG_ERROR(
+            "rhi: Device::readbackTexture: out.size() ({}) != expected ({}) for {}x{} {} "
+            "({}B/block, {}x{} blocks)",
+            out.size(), expectedBytes, mipWidth, mipHeight, toString(slot->format), blockBytes,
+            texelBlockWidth(slot->format), texelBlockHeight(slot->format));
+        return false;
+    }
+
+    SDL_GPUTransferBufferCreateInfo transferInfo{};
+    transferInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;  // the ONE field that differs from uploadTexture
+    transferInfo.size = static_cast<Uint32>(out.size());
+    transferInfo.props = 0;
+    SDL_GPUTransferBuffer* const transferBuffer = SDL_CreateGPUTransferBuffer(impl->device, &transferInfo);
+    if (transferBuffer == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::readbackTexture: SDL_CreateGPUTransferBuffer failed: {}", SDL_GetError());
+        return false;
+    }
+    SDL_GPUCommandBuffer* const cmd = SDL_AcquireGPUCommandBuffer(impl->device);
+    if (cmd == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::readbackTexture: SDL_AcquireGPUCommandBuffer failed: {}", SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    SDL_GPUCopyPass* const copyPass = SDL_BeginGPUCopyPass(cmd);
+    if (copyPass == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::readbackTexture: SDL_BeginGPUCopyPass failed: {}", SDL_GetError());
+        SDL_CancelGPUCommandBuffer(cmd);
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    SDL_GPUTextureRegion region{};
+    region.texture = slot->texture;
+    region.mip_level = mipLevel;
+    region.layer = 0;
+    region.x = 0;
+    region.y = 0;
+    region.z = 0;
+    region.w = mipWidth;
+    region.h = mipHeight;
+    region.d = 1;
+    SDL_GPUTextureTransferInfo destination{};
+    destination.transfer_buffer = transferBuffer;
+    destination.offset = 0;
+    // The SAME explicit, block-rounded pitch uploadTexture writes, for the same reason and with the
+    // same verified backend behaviour: the fields are in TEXELS; Vulkan forwards pixels_per_row to
+    // VkBufferImageCopy::bufferRowLength (which must be a block multiple for BC formats), D3D12 and
+    // Metal each substitute the region extent when the field is 0 and block-round what arrives. The
+    // 0.4.2 "never rely on 0-means-packed" posture is kept even though all three would accept 0.
+    const std::uint32_t pitchBlockW = texelBlockWidth(slot->format);
+    const std::uint32_t pitchBlockH = texelBlockHeight(slot->format);
+    destination.pixels_per_row = ((mipWidth + pitchBlockW - 1) / pitchBlockW) * pitchBlockW;
+    destination.rows_per_layer = ((mipHeight + pitchBlockH - 1) / pitchBlockH) * pitchBlockH;
+    SDL_DownloadFromGPUTexture(copyPass, &region, &destination);
+    SDL_EndGPUCopyPass(copyPass);
+
+    SDL_GPUFence* const fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence == nullptr) {
+        AERO_LOG_ERROR("rhi: Device::readbackTexture: SDL_SubmitGPUCommandBufferAndAcquireFence failed: {}",
+                       SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+        return false;
+    }
+    // THE WAIT IS NOT MERELY "LET THE GPU FINISH" -- ON D3D12 IT IS WHAT MOVES THE BYTES.
+    // D3D12_DownloadFromTexture caches the download and performs its 256-byte-row realignment copy
+    // in D3D12_INTERNAL_CleanCommandBuffer ("Perform deferred texture data copies"), which
+    // D3D12_WaitForFences calls for every submitted buffer whose fence has signalled. Mapping before
+    // waiting therefore reads garbage on that backend and only that backend -- a Windows-only defect
+    // shape. Release the fence AFTER the wait, never before.
+    const bool waited = SDL_WaitForGPUFences(impl->device, true, &fence, 1);
+    if (!waited) {
+        AERO_LOG_ERROR("rhi: Device::readbackTexture: SDL_WaitForGPUFences failed: {}", SDL_GetError());  // E26
+    }
+    bool copied = false;
+    if (waited) {
+        void* const mapped = SDL_MapGPUTransferBuffer(impl->device, transferBuffer, false);  // cycle=false: ours alone
+        if (mapped == nullptr) {
+            AERO_LOG_ERROR("rhi: Device::readbackTexture: SDL_MapGPUTransferBuffer failed: {}", SDL_GetError());
+        } else {
+            std::memcpy(out.data(), mapped, out.size());
+            SDL_UnmapGPUTransferBuffer(impl->device, transferBuffer);
+            copied = true;
+        }
+    }
+    SDL_ReleaseGPUFence(impl->device, fence);
+    SDL_ReleaseGPUTransferBuffer(impl->device, transferBuffer);
+    return copied;
 }
 
 // --- frame flow (D7) --------------------------------------------------------------------------
