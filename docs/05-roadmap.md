@@ -1,6 +1,6 @@
 # 05 — Roadmap & Phases
 
-> 9 phases (0–8). Every phase ends in a **usable deliverable gate** (project rule #2). Durations are part-time solo estimates — planning aids, not commitments — and sum to the ~20–32 month horizon.
+> 10 phases — 0–8, plus **Phase E** (Editor Experience) inserted between 3 and 4. Every phase ends in a **usable deliverable gate** (project rule #2). Durations are part-time solo estimates — planning aids, not commitments.
 
 ---
 
@@ -22,17 +22,20 @@ Three ways to sequence a solo engine build were considered:
 | **1** | Reflection, ECS & Serialization | 2–3 mo | Define a component → save/load a scene as JSON → it renders |
 | **2** | The Editor Shell | 2–3 mo | Create a project; create / move / edit / save entities visually |
 | **3** | Asset Pipeline & 3D Content | 3–5 mo | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + an audible sound |
+| **E** | Editor Experience | 3–4 mo | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor |
 | **4** | Scripting (language fork) | 3–5 mo | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly |
 | **5** | Export & **Ship a Game** 🎯 | 2–3 mo | A downloadable, playable 3D game made entirely in Aero Engine (desktop) |
 | **6** | Mobile Runtime & Audio Depth | 2–3 mo | The Phase 5 game running on a phone; audio buses/mixers |
 | **7** | 2D Support | 2–3 mo | A working 2D scene: Box2D physics + sprites + text |
 | **8** | Rendering Maturity & v1.0 | 2–4 mo | Tagged v1.0 release, documented, with sample projects |
 
-**Total: ~20–32 months**; budget to ~34 with slippage.
+**Total: ~23–36 months**; budget to ~38 with slippage. (Phase E added 3–4 months to the original ~20–32.)
 
 > **Note on ordering vs. the original draft:** "ship a game" was moved from Phase 4 to **Phase 5**, because you cannot ship before both scripting (Phase 4) and export (Phase 5) exist. 2D was deliberately placed at Phase 7, after the 3D foundation is proven.
 >
 > **Note on the July 2026 re-plan:** play-in-editor was placed in Phase 4 (epic 4.7); basic shadows/culling (3.6) and audio playback (3.7) were pulled forward into Phase 3 so the Phase 5 game ships with sound and shadows; Phase 2 gained the project system (2.6). Full task depth for every phase now lives in [docs/tasks/](./tasks/) — see [07 — Tasks](./07-tasks.md).
+>
+> **Note on Phase E (inserted after Phase 3 closed in code):** the editor built through Phases 2 and 3 *works*, and using it surfaced a cluster of correctness and workflow gaps that belong to no existing phase — a viewport with no ground, horizon or orientation reference; no cone light and no light gizmos, so a light's aim is invisible; a material silently ignored on primitive meshes; an asset browser that is read-only by contract; a project that never reopens the scene you were editing and does not notice a scene from a different project. Phase 8.5 is a *polish* epic scheduled after v1.0's feature set and after 8.2's quality pass — the wrong home for a missing light type or for file management. Phase 4 authors gameplay **through** this editor, so closing these before Phase 4 is cheaper than after it. It is lettered rather than fractioned because `3.5` is already taken; see [07 — Tasks](./07-tasks.md)'s numbering conventions.
 
 ---
 
@@ -95,6 +98,22 @@ Three ways to sequence a solo engine build were considered:
 - **3.7 Audio playback v0** — clip assets, play/stop/volume, basic 3D panning, `AudioSource`/`AudioListener`; buses/effects land in 6.4 *(added July 2026)*
 
 **Gate:** Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + an audible sound.
+
+---
+
+## Phase E — Editor Experience · *3–4 mo*
+
+**Goal:** the editor stops being a thing that *works* and becomes a thing that is *usable* — you can see where you are, see what your lights do, edit what you select, manage your files, and reopen your work where you left it.
+
+**Epics:**
+- **E.1 Viewport legibility** — the engine's first world-space line renderer, a grid floor and world axes, a view-axis gizmo, a silhouette selection outline replacing the bounding-box wireframe, and a restyled transform gizmo
+- **E.2 Lighting & environment** — a reflected `Environment` (gradient sky + hemispheric ambient) replacing the hardcoded 3 % constant, inverse-square point falloff, a new `SpotLight`, light gizmos and icons, and a material preview that agrees with the viewport
+- **E.3 Inspector & context routing** — axis-labelled vector fields, selection raising the panel that edits it, a searchable asset-reference picker with previews, and a redesigned material inspector
+- **E.4 Project, scene & asset management** — reopen the last scene, refuse a scene from another project, full file CRUD in the browser with `.meta` identity preserved, an extended ignore roster, and material names + rendered thumbnails
+- **E.5 Content creation UX** — a Create menu for every built-in, a named primitive selector, and the fix for materials being ignored on primitive meshes
+- **E.6 Shell identity & visual system** — the editor's first fonts, icon set and theme, a main toolbar and status bar, a panel chrome pass, and a restyled Welcome / New Project flow
+
+**Gate:** Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor.
 
 ---
 

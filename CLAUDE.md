@@ -10,6 +10,26 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
+**PHASE E (Editor Experience) IS PLANNED AND OPEN — it executes between Phase 3 and Phase 4.**
+It is **planning only so far: no Phase E code exists.** Six epics, 24 tasks, in
+`docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
+already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
+numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
+identifier. Four facts it was built on were **measured in the tree, and each contradicts a plausible
+guess**: (1) the directional light **already** derives its direction from the entity's −Z world axis
+(`scene_renderer.cpp:191-208`) — "it behaves like a point light" is an *affordance* gap, not a math
+bug, because nothing draws the direction and nothing says which of two directional lights the bridge
+picked; (2) `buildRenderView`'s **primitive arm never assigns `instance.material`**
+(`scene_renderer.cpp:99-107`), so a material dropped on a primitive is written to the component
+through the undoable command and then silently discarded at draw time — a confirmed defect, owned by
+**E.5.1**; (3) **nothing in the tree has ever drawn a world-space line** — `rhi::PrimitiveType::LineList`
+and `FillMode::Line` exist since 0.4.1 and no pipeline has ever requested one, which is why the grid
+and the light gizmos need **E.1.1** first; (4) `openSceneFile`/`saveSceneFile` perform **zero**
+containment validation against the project root, so a scene from another project loads while the
+AssetDatabase still resolves GUIDs against the open one. **`SpotLight` (E.2.2) and `Environment`
+(E.2.1) take the built-in component count from 8 to 10** — the five-generation-site rule and the
+component-count-literal sweep below both apply in full to each.
+
 **Phase 3 (Asset Pipeline & 3D Content) is OPEN, and ALL SEVEN of its epics are now CLOSED IN CODE.**
 Epic 3.7 (Audio playback v0 · audio) closes with 3.7.1 MERGED (PR #88, `4892e65`, macOS-validated
 ✅ 11/11), 3.7.2 MERGED (PR #89, `b398d17`, macOS-validated — 47 of 53 records, the 6 open ones each
@@ -176,6 +196,8 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
+| **Phase E** — Editor Experience | **OPEN — PLANNED, NO CODE.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). Nothing is implemented; nothing is validated. |
+| **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
 
@@ -362,17 +384,22 @@ MSYS userland at all. Coverage of the *invariant* is unaffected — the guards r
 
 ### Next
 
-**Epic 3.7 is closed in code and Phase 3 has no open epics.** 3.7.1 (PR #88 `4892e65`) and 3.7.2
-(PR #89 `b398d17`) are merged and macOS-validated; **3.7.3 is merged (PR #91 `0530cff`)**, its six CI
-jobs green on the merged SHA.
+**Phase E is the open front, and its first task is E.1.1.** Nothing in Phase E is implemented — the
+phase file is the plan of record and no code has been written against it. The dependency spine to
+respect: **E.1.1 (debug line renderer) blocks E.1.2 and E.2.3**, and **E.2.1 (`Environment`) blocks
+E.2.2, E.2.4 and E.4.5** — so the two enabling tasks come first and the rest fan out. **E.5.1 is an
+S-sized fix for a confirmed defect and is independent of everything**, so it can land at any point.
 
-What remains for the phase is **its deliverable gate** — a rigged glTF/FBX in, producing PBR
-materials, shadows, a playing animation and **an audible sound** — and **the validation debt above**.
-The audible half has never been heard on any platform: 3.7.2's macOS pass ticked 47 of 53 records and
-left open exactly the 6 that need ears or the editor. **Windows and Linux rows are outstanding for
-every task in every phase, and 3.7.2's Linux row matters more than most**: LSan runs on that lane
-alone, so the macOS row-11 zero proves the teardown is *clean*, not that a leak is *absent*, and unlike
-3.7.1 everything that task allocates is first-party. See `docs/tasks/phase-3.md`.
+**Phase 3 remains OPEN behind it, on its gate and its validation debt, and Phase E does not close
+either.** 3.7.1 (PR #88 `4892e65`) and 3.7.2 (PR #89 `b398d17`) are merged and macOS-validated;
+3.7.3 is merged (PR #91 `0530cff`), its six CI jobs green on the merged SHA. What remains for that
+phase is **its deliverable gate** — a rigged glTF/FBX in, producing PBR materials, shadows, a playing
+animation and **an audible sound** — and **the validation debt above**. The audible half has never
+been heard on any platform: 3.7.2's macOS pass ticked 47 of 53 records and left open exactly the 6
+that need ears or the editor. **Windows and Linux rows are outstanding for every task in every
+phase, and 3.7.2's Linux row matters more than most**: LSan runs on that lane alone, so the macOS
+row-11 zero proves the teardown is *clean*, not that a leak is *absent*, and unlike 3.7.1 everything
+that task allocates is first-party. See `docs/tasks/phase-3.md` and `docs/tasks/phase-E.md`.
 
 > **Before touching a subsystem, read its entry in `docs/10-engineering-log.md`.** That file is the full per-task history: what shipped, what was deliberately left out, the traps found, and the dead ends that must never be retried (the lavapipe LSan leak, `LD_PRELOAD`, vcpkg's `sdl3-shadercross` on macOS, …). It is deliberately *not* auto-loaded — grep it before re-deriving anything.
 
@@ -464,7 +491,7 @@ Some decisions are deliberately deferred (`docs/08-risks.md`): forward+ vs defer
 | `docs/05-roadmap.md` | Phases 0–8 with deliverable gates |
 | `docs/06-scope-and-non-goals.md` | What v1.0 is and is not |
 | `docs/07-tasks.md` | Task index: legend, numbering conventions, per-phase links |
-| `docs/tasks/phase-{0..8}.md` | Full breakdown per phase: epics → tasks → subtasks, each task with goal + deliverable |
+| `docs/tasks/phase-{0..8}.md`, `docs/tasks/phase-E.md` | Full breakdown per phase: epics → tasks → subtasks, each task with goal + deliverable. **Phase E** (Editor Experience) executes between 3 and 4 and is lettered because `3.5` is already taken — see `docs/07`'s numbering conventions |
 | `docs/08-risks.md` | Risk register, open + resolved decisions |
 | `docs/09-file-formats.md` | Scene schema v1 (entity/components/version), canonical form, versioning & evolution policy |
 | `docs/10-engineering-log.md` | **Per-task build history** — what each task shipped and deliberately did not, traps found, dead ends never to retry, and per-task build/dependency impact. Not normative; not auto-loaded. Read the relevant entry before touching a subsystem. |
