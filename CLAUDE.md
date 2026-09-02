@@ -13,8 +13,8 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 **Phase 3 (Asset Pipeline & 3D Content) is OPEN, and ALL SEVEN of its epics are now CLOSED IN CODE.**
 Epic 3.7 (Audio playback v0 · audio) closes with 3.7.1 MERGED (PR #88, `4892e65`, macOS-validated
 ✅ 11/11), 3.7.2 MERGED (PR #89, `b398d17`, macOS-validated — 47 of 53 records, the 6 open ones each
-needing ears or the editor) and **3.7.3 COMPLETE IN CODE on
-`feat/3.7.3-audio-boundary-ci-guard`** — one commit per step, the full local gate green, the S/X/P seed
+needing ears or the editor) and **3.7.3 MERGED (PR #91, merge commit `0530cff`, all six CI jobs green
+with `headSha == HEAD` asserted)** — one commit per step, the full local gate green, the S/X/P seed
 matrices run as ctest stages, the break-the-guard meta-proof run against them, and
 the code-review rounds closed — six of them, and the count is deliberately the last thing this sentence says, because it was renumbered in four consecutive deltas. Two durable outcomes: the guards were **inverted from a command denylist to an allowlist** for everything that NAMES a protected target, and for the direction that cannot be inverted — reaching one WITHOUT naming it — a ctest case now **reads `compile_commands.json` and asserts the property instead of predicting it**.
 
@@ -28,7 +28,7 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
 
-### 3.7.3 — Audio-boundary CI guard (complete in code, NOT yet merged) — CLOSES Epic 3.7
+### 3.7.3 — Audio-boundary CI guard (MERGED, PR #91 `0530cff`) — CLOSED Epic 3.7
 
 **Zero engine C++.** Two lint-job scripts, one compile-time probe, two hermetic `cmake -P` ctest
 drivers, and a docs/comment sweep. `docs/tasks/phase-3.md` records the size as **M rather than S**
@@ -174,7 +174,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 0** — Foundations & First Triangle | Complete in code. Gate **macOS-PASS**, held **OPEN** pending Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`). |
 | **Phase 1** — Reflection, ECS & Serialization | **COMPLETE.** Gate reached, macOS-validated; Windows/Linux render rows pending (`samples/phase-1-scene/VALIDATION.md`). |
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
-| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 complete in code**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
+| **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
 
 ### Engine layers, in dependency order
@@ -363,8 +363,8 @@ MSYS userland at all. Coverage of the *invariant* is unaffected — the guards r
 ### Next
 
 **Epic 3.7 is closed in code and Phase 3 has no open epics.** 3.7.1 (PR #88 `4892e65`) and 3.7.2
-(PR #89 `b398d17`) are merged and macOS-validated; **3.7.3 is complete in code on
-`feat/3.7.3-audio-boundary-ci-guard`** and not yet merged.
+(PR #89 `b398d17`) are merged and macOS-validated; **3.7.3 is merged (PR #91 `0530cff`)**, its six CI
+jobs green on the merged SHA.
 
 What remains for the phase is **its deliverable gate** — a rigged glTF/FBX in, producing PBR
 materials, shadows, a playing animation and **an audible sound** — and **the validation debt above**.
