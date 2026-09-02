@@ -51,8 +51,8 @@ constexpr float INF_F = std::numeric_limits<float>::infinity();
 // Comment-stripped shader source, the JP14/TM29 pattern, reached through AERO_SHADERS_SRC_DIR (the
 // SOURCE tree, distinct from AERO_SHADERS_DIR's build output). UNGATED: the HLSL text exists whether
 // or not AERO_SHADER_TOOLS built it.
-[[nodiscard]] std::string strippedShaderSource(std::string_view name) {
-    std::ifstream file{std::string{AERO_SHADERS_SRC_DIR} + "/" + std::string{name}};
+[[nodiscard]] std::string strippedSourceAt(std::string_view absolutePath) {
+    std::ifstream file{std::string{absolutePath}};
     std::string out;
     std::string line;
     while (std::getline(file, line)) {
@@ -65,6 +65,16 @@ constexpr float INF_F = std::numeric_limits<float>::infinity();
     }
     return out;
 }
+
+[[nodiscard]] std::string strippedShaderSource(std::string_view name) {
+    return strippedSourceAt(std::string{AERO_SHADERS_SRC_DIR} + "/" + std::string{name});
+}
+
+// The umbrella header's own path, derived from the SOURCE tree's shaders directory -- the one route
+// into the source tree this TU already has (DD26 reads the HLSL through it). Deliberately NOT a new
+// compile definition: tests/CMakeLists.txt is held to the two source lines this task added.
+constexpr std::string_view RENDER_UMBRELLA_PATH =
+    AERO_SHADERS_SRC_DIR "/../engine/render/include/aero/render/render.hpp";
 
 [[nodiscard]] bool contains(const std::string& haystack, std::string_view needle) {
     return haystack.find(needle) != std::string::npos;
@@ -601,11 +611,29 @@ TEST_CASE("render debug draw: DebugDrawConfig's defaults are what create() is ca
     CHECK(config.budget.maxBillboards == 4096U);
 }
 
-TEST_CASE("render debug draw: the umbrella header alone makes the whole surface nameable (DD23)") {
-    // The TM28/T30a shape. This TU includes <aero/render/render.hpp> and NOT debug_draw.hpp; the
-    // assertion is that the umbrella's include list carries it, which nothing else in the tree would
-    // notice. Deleting that #include makes this a COMPILE ERROR, which is the point: a missing
-    // umbrella entry is invisible to every consumer that includes the narrow header directly.
+TEST_CASE("render debug draw: the umbrella header carries debug_draw.hpp (DD23)") {
+    // TWO ARMS, AND ONLY ONE OF THEM IS A COMPILE FAILURE. Saying which is which is the whole point:
+    // TM28 ships the same shape with half of it partial and records itself as "a PARTIAL pin rather
+    // than claimed as a full one", and a half that is not a compile failure is worth nothing if it is
+    // claimed as one.
+    //
+    // (a) THE NAMING ARM BELOW IS **NOT** A GENUINE COMPILE FAILURE HERE, and that was MEASURED
+    //     rather than assumed: this TU deliberately does not include <aero/render/debug_draw.hpp>,
+    //     but it does include "../engine/render/src/debug_draw_pack.hpp" for DD20/DD21, and that
+    //     header includes debug_draw.hpp DIRECTLY -- so deleting the umbrella's line leaves the whole
+    //     aero_tests target building clean. The arm still asserts something real (the four public
+    //     names exist and are usable through the umbrella's transitive closure); it does not assert
+    //     the umbrella's own role in supplying them.
+    // (b) THE SOURCE-TEXT ARM IS THE REAL PIN, and it is stronger than the compile failure would have
+    //     been: it reads render.hpp's own COMMENT-STRIPPED text, so a commented-out include does not
+    //     satisfy it either. A missing umbrella entry is otherwise invisible to every consumer that
+    //     includes the narrow header directly.
+    const std::string umbrella = strippedSourceAt(RENDER_UMBRELLA_PATH);
+    REQUIRE_FALSE(umbrella.empty());  // non-vacuity: the path really resolved and the file was read
+    CHECK(contains(umbrella, "#include <aero/render/debug_draw.hpp>"));
+    // ...and the search can say NO, so a reader that matched everything could not fake the line above.
+    CHECK_FALSE(contains(umbrella, "#include <aero/render/does_not_exist.hpp>"));
+
     [[maybe_unused]] const engine::render::DebugDepth depth = engine::render::DebugDepth::Tested;
     const engine::render::DebugDrawBatch batch{engine::render::DebugDrawBudget{}};
     [[maybe_unused]] const engine::render::DebugDrawConfig config{};

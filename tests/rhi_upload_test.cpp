@@ -267,6 +267,28 @@ TEST_CASE("rhi readback: six refusals, each leaving `out` untouched (RU6)") {
             device->destroyTexture(depth);
         }
     }
+    SUBCASE("a depth format with an EMPTY out -- the one input the blockBytes guard protects") {
+        // NOT a duplicate of the subcase above, and the difference is the whole reason it exists.
+        // There out.size() is 64 and the SIZE rule refuses first (a depth format's expected size is
+        // 0), so the blockBytes guard is never reached and deleting it changes nothing. At
+        // out.size() == 0 the size rule AGREES, execution reaches
+        // ((mipWidth + pitchBlockW - 1) / pitchBlockW) with texelBlockWidth(D32Float) == 0, and the
+        // division by zero aborts. MEASURED: with the guard deleted this subcase SIGABRTs; with it
+        // present it returns false cleanly.
+        const engine::rhi::TextureFormat depthFormat = engine::rhi::TextureFormat::D32Float;
+        if (!device->supportsTextureFormat(depthFormat, engine::rhi::TextureUsage::DepthStencilTarget)) {
+            MESSAGE("device does not support D32Float as a depth target; the zero-length arm is unreachable");
+        } else {
+            const engine::rhi::TextureHandle depth =
+                device->createTexture({.format = depthFormat,
+                                       .usage = engine::rhi::TextureUsage::DepthStencilTarget,
+                                       .width = 4,
+                                       .height = 4});
+            REQUIRE(depth.valid());
+            CHECK_FALSE(device->readbackTexture(depth, 0, std::span<std::byte>{}));
+            device->destroyTexture(depth);
+        }
+    }
     SUBCASE("a mip past mipLevels") {
         std::vector<std::byte> out(64U, std::byte{0xAB});
         CHECK_FALSE(device->readbackTexture(color, 1, out));  // mipLevels defaults to 1

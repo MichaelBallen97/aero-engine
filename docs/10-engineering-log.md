@@ -12878,3 +12878,80 @@ startup table reading `1.00000 → raw 255 · none 255 · reinh 188 · aces 232`
 run** on any platform; it is gitignored and enters no commit. Rows 1–3 are already automated on all
 three lanes by `DG5`–`DG10` and `DG16`, which is more than any prior render task could say, but
 legibility, the editor's unchanged picture, cost, Tracy and the declared seeds are hardware-only.
+
+**The sabotage matrix, as run: 32 seeds and 5 assertion mutants, and it moved four facts.** Every
+seed was applied to a committed tree, **grep-confirmed present before any verdict was trusted**,
+built with only the affected target, run against its witness, then restored and re-verified. Twenty-
+seven of the 32 reddened their predicted witness; several reddened more (`S6` took 20 of 28 RU+DG
+cases, `S9` and `S16` took nine each). The five pixel cases were then mutated at the **assertion**
+rather than at the code — one expected byte each in `RU5`, `DG5`, `DG6`, `DG7`, `DG8` — and all five
+went red, which is what makes their greenness evidence rather than decoration.
+
+**THE DECLARED CLASS IS FIVE, MEASURED, against a predicted three or four.** `S5`, `S11` and `S27`
+landed green exactly as predicted above. **`S1` and `S2` join them**: both cycling seeds
+(`cycle = false` on the destination, and on the transfer-buffer map) leave all 28 RU+DG cases green
+on Metal, because the driver never lets frame *k* observe frame *k−1*'s backing store. They are
+**timing-dependent, not closed** — the contract rests on SDL's documented cycling model, and
+`RU12`/`DG13` observe it rather than prove it. A backend that overlaps frames more aggressively may
+well discriminate them; this machine does not.
+
+**`DG6`'s crossing arm does NOT discriminate `S11`.** The plan asked for that to be recorded either
+way, so: both lines in that arm sit at the same depth outside the cube, so a depth write from the
+Tested line changes nothing the Overlay line then reads. Validation row 6 therefore stays the **only**
+cover anywhere for `S11` and for `S21`'s picture half.
+
+**Three gaps, two closed in this commit and one recorded because it cannot be closed here.**
+
+* **`S32` — `DD23` was VACUOUS, and that is worse than having no test.** Deleting
+  `#include <aero/render/debug_draw.hpp>` from `render.hpp` **built clean**: the TU reaches
+  `debug_draw.hpp` through `"../engine/render/src/debug_draw_pack.hpp"`, which includes it directly
+  for `DD20`/`DD21`'s sake. The naming arm could therefore never fail. Closed by giving the case a
+  **real source-text arm** — it reads `render.hpp`'s own comment-stripped text through
+  `AERO_SHADERS_SRC_DIR`, the route `DD26` already uses, with **no new compile definition**. That is
+  strictly stronger than the compile failure would have been, because a commented-out include does
+  not satisfy it either. The naming arm stays, with its comment now saying precisely that it is not a
+  compile failure here and naming `debug_draw_pack.hpp` as the reason — `TM28`'s "a PARTIAL pin
+  rather than claimed as a full one" posture, with the partial half now backed by a full one.
+  **Re-seeded against the fix: the build still succeeds and `DD23` reddens** on `CHECK( false )`.
+* **`S7` — `RU6` did not cover the input the `blockBytes == 0` guard actually protects.** Its depth
+  subcase passes a 64-byte `out`, which the SIZE rule refuses first (`out.size() (64) != expected (0)
+  for 4x4 D32Float`), so the guard is never reached and deleting it changed nothing. The guard is
+  load-bearing for exactly one input: `out.size() == 0`, where the size rule AGREES and execution
+  reaches `((mipWidth + pitchBlockW - 1) / pitchBlockW)` with `texelBlockWidth(D32Float) == 0`.
+  Closed by one subcase. **Re-seeded against the fix: `RU6` SIGABRTs with the guard deleted and
+  passes with it present.**
+* **`S18` — `DD3` cannot discriminate the deleted non-finite arm, and the plan's prediction was
+  wrong.** The plan expected a **UBSan abort**. There is none, and the reason is worth writing down:
+  `std::lround(NaN)` is a **library call with an unspecified return value**, not an instrumented
+  float-to-int cast, so UBSan has no hook — the build genuinely is
+  `-fsanitize=address,undefined` and says nothing. On arm64 the returned value's low byte is 0, so
+  `channel(NaN)` yields 0 anyway and every NaN assertion passes; the two infinity arms are covered by
+  `std::clamp` regardless of the deleted arm. Measured under the seed: `CHECK( 0 == 0 )` ×4 and
+  `CHECK( 255 == 255 )`. **No better assertion closes this on this platform** — the discriminating
+  machine is one whose `lround(NaN)` has a non-zero low byte. The arm stays: its value is defined
+  behaviour and portability, not the value it happens to produce here.
+
+**Two more predictions the run corrected.**
+
+* **`S31` did NOT abort on Metal.** The plan predicted that building the viewport's `DebugDraw` from
+  the 8-bit OUTPUT format would create fine and then abort at the first flush with a format
+  mismatch. It did not: `I109` pushed a line, drew through an RGBA8-built pipeline into an
+  RGBA16Float pass, and stayed **green**, as did `I108` and `I111`. **`I110`'s create pin is the only
+  witness for the format wiring on this backend**, which strengthens the case for the textual pin
+  rather than weakening it — but nobody should expect a runtime failure there.
+* **`S3` and `S4` redden as PROCESS-LEVEL WEDGES, not as named assertions.** Deleting
+  `recordBufferUpload`'s pass-open refusal trips SDL's own
+  `'!"Cannot begin copy pass during another pass!"'` (`SDL_gpu.c:2750`) and the process hangs;
+  making the record blocking trips `'!"Command buffer already submitted!"'` (`SDL_gpu.c:3371`) the
+  same way. Both are loud, but **a CI lane would see a timeout rather than a failing case name** —
+  that is SDL's assert-and-hang behaviour, not a choice either test made. Anyone debugging a hung
+  lane on this path should start here.
+
+**And the run found a defect in its own harness, which is the trap worth remembering.** The restore
+step used `shutil.copy2`, which **preserves mtime** — so a restored file looked OLDER than its object
+file and ninja skipped the rebuild, leaving a "restored" tree running seeded code. It surfaced
+because one result was self-contradictory rather than because anything failed. No seed verdict was
+contaminated (every seed edit stamps a fresh mtime, so every seed build did recompile), but the
+lesson generalises past this task: **a revert-with-rebuild is only a rebuild if the revert changes
+the timestamp.** `shutil.copy` plus an explicit `os.utime` is the fix; `git checkout --` would have
+been correct here too, and is only forbidden while the fix under test is uncommitted.
