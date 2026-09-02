@@ -8740,6 +8740,286 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
 #endif
 }
 
+TEST_CASE("editor: the viewport owns a DebugDraw, runs the slot, and it costs NOTHING (task E.1.1, I108)") {
+    // The I103/I104/I107 harness: a real window, a real project, EditorApp::tick(), the viewport
+    // found by its frozen panel id.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "debug draw i108", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // the viewport initialises on its FIRST DRAW
+    REQUIRE(app->tick());  // ...and renderScene runs on the second
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::render::DebugDraw* const draw = viewport->debugDraw();
+    REQUIRE(draw != nullptr);
+    CHECK(draw->budget().maxLines == 32768U);
+    CHECK(draw->budget().maxBillboards == 4096U);
+    // THE SLOT RAN...
+    CHECK(draw->flushCount() >= 1U);
+    // ...AND IT COST NOTHING. "The editor's picture is byte-identical" as a MEASURED fact: no
+    // command buffer was acquired, no draw was recorded, and the frame still resolved.
+    CHECK(draw->uploadCount() == 0U);
+    CHECK(draw->lastFrameDrawCalls() == 0U);
+    CHECK(draw->lastFrameLines() == 0U);
+    CHECK(draw->lastFrameBillboards() == 0U);
+    CHECK_FALSE(draw->hasWarnedBudget());
+    CHECK_FALSE(draw->hasWarnedUploadFailure());
+    REQUIRE(viewport->postProcess() != nullptr);
+    CHECK(viewport->postProcess()->resolveCount() >= 1U);  // the frame completed after the flush
+#else
+    // -DAERO_SHADER_TOOLS=OFF: the panel latches Unavailable before it creates anything, so the
+    // seam answers null. Asserted rather than skipped (the 3.4.2 near-miss rule): a null seam is a
+    // real contract E.1.2 and E.2.3 must handle, not an absence of one.
+    CHECK(viewport->debugDraw() == nullptr);
+    CHECK(viewport->postProcess() == nullptr);
+#endif
+}
+
+TEST_CASE("editor: a pushed line and billboard are drawn and DRAINED by renderScene (task E.1.1, I109)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "debug draw i109", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    engine::render::DebugDraw* const draw = viewport->debugDraw();
+    REQUIRE(draw != nullptr);
+    REQUIRE(viewport->postProcess() != nullptr);
+    const std::size_t resolvesBefore = viewport->postProcess()->resolveCount();
+
+    // A CPU push BETWEEN ticks -- which is exactly how E.1.2 and E.2.3 will use the seam.
+    CHECK(draw->batch().line(engine::Vec3{-1.0F, 0.0F, 0.0F}, engine::Vec3{1.0F, 0.0F, 0.0F},
+                             engine::Vec4{1.0F, 1.0F, 1.0F, 1.0F}));
+    CHECK(draw->batch().billboard(engine::Vec3{0.0F, 0.0F, 0.0F}, 16.0F, engine::Vec4{1.0F, 1.0F, 1.0F, 1.0F},
+                                  engine::Vec2{0.0F, 0.0F}, engine::Vec2{1.0F, 1.0F},
+                                  engine::render::DebugDepth::Overlay));
+    CHECK(draw->batch().lineCount() == 1U);
+    REQUIRE(app->tick());
+
+    CHECK(draw->lastFrameLines() == 1U);
+    CHECK(draw->lastFrameBillboards() == 1U);
+    CHECK(draw->lastFrameDrawCalls() == 2U);  // one line draw, one billboard draw
+    CHECK(draw->uploadCount() == 1U);
+    // DRAINED: renderScene's flush cleared it, so the next tick draws nothing.
+    CHECK(draw->batch().lineCount() == 0U);
+    CHECK(draw->batch().billboardCount() == 0U);
+    CHECK(draw->batch().empty());
+    // AND THE FRAME STILL RESOLVED. Flushing AFTER endScene would record every bind and draw into a
+    // CLOSED pass: each is a logged no-op, so resolveCount still moves -- which is why I110's
+    // textual pin is the primary witness of the ORDER and this is the corroborating one.
+    CHECK(viewport->postProcess()->resolveCount() == resolvesBefore + 1U);
+#else
+    CHECK(viewport->debugDraw() == nullptr);
+    // The tools-OFF claim: the panel is Unavailable and ticking is still safe -- no crash, no
+    // dereference of the null seam anywhere in renderScene's guard chain.
+    REQUIRE(app->tick());
+    CHECK(viewport->postProcess() == nullptr);
+#endif
+}
+
+TEST_CASE("editor: the DebugDraw wiring's three source-text invariants hold (task E.1.1, I110)") {
+    // THE I60/I95/I106 PATTERN, labelled as such: a comment-stripped read of viewport_panel.cpp's own
+    // source. There is no runtime tier in this tree that can see the ORDERING violation in the
+    // general case -- flushing after endScene produces a frame that still resolves -- so the ordering
+    // is pinned as text and I109 corroborates it behaviourally. UNGATED: the source exists whether or
+    // not AERO_SHADER_TOOLS built anything.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("EXACTLY ONE flush, and it sits between render and endScene") {
+        const std::size_t flushAt = soleLineContaining(code, "debugDrawer->flush(");
+        const std::size_t renderAt = soleLineContaining(code, "sceneRenderer->render(world, *sceneFrame, &cameraView)");
+        const std::size_t endSceneAt = soleLineContaining(code, "post->endScene(std::move(*sceneFrame))");
+        CHECK(renderAt < flushAt);    // AFTER the geometry, so the depth test has something to test
+        CHECK(flushAt < endSceneAt);  // BEFORE the pass closes, so the draws land in an OPEN pass
+    }
+    SUBCASE("EXACTLY ONE create, and it names the HDR pair") {
+        // Building from target->colorFormat() (the 8-bit OUTPUT) creates fine and fails at the first
+        // draw on Metal, which no test can survive to report -- so the format source is pinned here.
+        const std::size_t createAt = soleLineContaining(code, "render::DebugDraw::create(");
+        bool namesSceneColor = false;
+        bool namesSceneDepth = false;
+        for (std::size_t i = createAt; i < std::min(createAt + 4U, code.size()); ++i) {
+            if (code[i].find("post->sceneColorFormat()") != std::string::npos) {
+                namesSceneColor = true;
+            }
+            if (code[i].find("post->sceneDepthFormat()") != std::string::npos) {
+                namesSceneDepth = true;
+            }
+            // ...and NOT the output target's formats, anywhere in the create's argument list.
+            CHECK(code[i].find("target->colorFormat()") == std::string::npos);
+        }
+        CHECK(namesSceneColor);
+        CHECK(namesSceneDepth);
+    }
+    SUBCASE("NO OTHER editor source names DebugDraw at all") {
+        // THIS TASK PUSHES NOTHING FROM THE EDITOR, and the walk is what says so. E.1.2 and E.2.3
+        // will legitimately add names here and will have to update this case when they do -- which is
+        // the point: the next task to touch it has to say so out loud.
+        //
+        // A REAL DIRECTORY WALK rather than a snapshot list: a hand-written roster of 75 files goes
+        // stale the moment a file is added, and it goes stale SILENTLY (a new file naming DebugDraw
+        // would simply not be looked at). The two anti-vacuity checks below are what make the walk
+        // trustworthy -- it must find a plausible number of files, and it must find the ONE file that
+        // really does name the type. Headers are not walked; viewport_panel.hpp names it too, by
+        // design, and that is the seam's declaration.
+        std::size_t scanned = 0;
+        std::size_t namingFiles = 0;
+        bool viewportNamesIt = false;
+        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator{AERO_EDITOR_SRC_DIR}) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
+                continue;
+            }
+            ++scanned;
+            const std::string path = entry.path().string();
+            const std::vector<std::string> lines = editorSourceCodeLines(path);
+            bool namesIt = false;
+            for (const std::string& line : lines) {
+                if (line.find("DebugDraw") != std::string::npos) {
+                    namesIt = true;
+                    break;
+                }
+            }
+            if (!namesIt) {
+                continue;
+            }
+            ++namingFiles;
+            const bool isViewportPanel = entry.path().filename() == "viewport_panel.cpp";
+            CAPTURE(path);
+            CHECK(isViewportPanel);
+            viewportNamesIt = viewportNamesIt || isViewportPanel;
+        }
+        CHECK(scanned >= 50U);   // anti-vacuity: the walk really read the directory
+        CHECK(viewportNamesIt);  // anti-vacuity: the reader really finds the token where it IS
+        CHECK(namingFiles == 1U);
+    }
+}
+
+TEST_CASE("editor: overflow in the viewport drops, counts and warns EXACTLY ONCE (task E.1.1, I111)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "debug draw i111", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    engine::render::DebugDraw* const draw = viewport->debugDraw();
+    REQUIRE(draw != nullptr);
+    const std::uint32_t budget = draw->budget().maxLines;
+    const auto pushOverBudget = [draw, budget] {
+        for (std::uint32_t i = 0; i < budget + 5U; ++i) {
+            draw->batch().line(engine::Vec3{}, engine::Vec3{1.0F, 0.0F, 0.0F}, engine::Vec4{1, 1, 1, 1});
+        }
+    };
+
+    // THE OBSERVABLE IS THE LOG, and it is read through a scoped callback rather than through an
+    // EditorApp accessor: there is no console record-count accessor on EditorApp, and adding one that
+    // exists only for a test is the thing this file's own rules forbid. The RAII guard's destructor
+    // detaches -- the bare setLogCallback form is a latent use-after-free (log.hpp:92-101 says
+    // detaching does not guarantee the captured state may be destroyed), which is why the render tier
+    // uses the same shape. The count is filtered to the ONE message under test, so nothing the editor
+    // legitimately logs between ticks can satisfy or break it.
+    struct LogCallbackGuard {
+        ~LogCallbackGuard() { engine::setLogCallback({}); }
+        LogCallbackGuard() = default;
+        LogCallbackGuard(const LogCallbackGuard&) = delete;
+        LogCallbackGuard& operator=(const LogCallbackGuard&) = delete;
+        LogCallbackGuard(LogCallbackGuard&&) = delete;
+        LogCallbackGuard& operator=(LogCallbackGuard&&) = delete;
+    };
+    std::size_t budgetWarnings = 0;
+    const LogCallbackGuard detachOnExit;
+    engine::setLogCallback([&budgetWarnings](const engine::LogRecord& record) {
+        if (record.level >= engine::LogLevel::Warn &&
+            record.message.find("budget exceeded") != std::string_view::npos) {
+            ++budgetWarnings;
+        }
+    });
+
+    pushOverBudget();
+    REQUIRE(app->tick());
+    CHECK(draw->lastFrameDroppedLines() == 5U);
+    CHECK(draw->lastFrameLines() == budget);
+    CHECK(draw->hasWarnedBudget());
+    CHECK(budgetWarnings == 1U);
+
+    pushOverBudget();
+    REQUIRE(app->tick());
+    engine::setLogCallback({});
+    CHECK(draw->lastFrameDroppedLines() == 5U);  // still counted every frame...
+    CHECK(budgetWarnings == 1U);                 // ...and NOT warned again
+#else
+    CHECK(viewport->debugDraw() == nullptr);
+#endif
+}
+
 // ================================================================================================
 // task 3.1.5 (SL1-SL10) -- the scene-asset loader, end to end against a real device.
 //
