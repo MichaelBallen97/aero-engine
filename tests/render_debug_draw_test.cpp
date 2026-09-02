@@ -5,8 +5,12 @@
 // The whole DD battery runs with NO device and NO shader toolchain -- that is the point of the pure
 // split: everything assertable without a GPU is asserted without one.
 
-#include <aero/render/debug_draw.hpp>
-#include <aero/render/render.hpp>  // the umbrella must carry the new header; DD23 uses it in commit 3
+// <aero/render/debug_draw.hpp> IS DELIBERATELY NOT INCLUDED HERE. DD23's whole claim is that the
+// UMBRELLA carries it, and with both includes present that case passes on a seeded umbrella and
+// proves nothing. Everything below is reached through render.hpp alone.
+#include <aero/render/render.hpp>
+
+#include "../engine/render/src/debug_draw_pack.hpp"
 
 #include <doctest/doctest.h>
 
@@ -541,8 +545,74 @@ TEST_CASE("render debug draw: a batch built from an out-of-range budget reports 
     CHECK(one.droppedLines() == 1U);
 }
 
-// DD20-DD23 land in commit 3 with packDebugLineView, packDebugBillboardView, DebugDrawConfig and
-// DebugDraw; the numbering stays contiguous in this file.
+TEST_CASE("render debug draw: packDebugLineView writes viewProj column-major at offset 0 (DD20)") {
+    // Sixteen DISTINCT entries, so a transpose is visible rather than symmetric.
+    Mat4 m{};
+    float* const raw = m.data();  // Mat4 is 16 contiguous floats, column-major (mat4.hpp)
+    for (int i = 0; i < 16; ++i) {
+        raw[i] = static_cast<float>(i) + 0.5F;
+    }
+    const auto block = rd::packDebugLineView(m);
+    CHECK(block.size() == 64U);
+    CHECK(rd::DEBUG_LINE_VERTEX_UNIFORM_BYTES == 64U);
+    std::array<float, 16> readBack{};
+    std::memcpy(readBack.data(), block.data(), 64U);
+    for (int i = 0; i < 16; ++i) {
+        CHECK(readBack[static_cast<std::size_t>(i)] == static_cast<float>(i) + 0.5F);  // NO TRANSPOSE
+    }
+}
+
+TEST_CASE("render debug draw: packDebugBillboardView writes the matrix, the extent, and ZERO padding (DD21)") {
+    Mat4 m{};
+    float* const raw = m.data();
+    for (int i = 0; i < 16; ++i) {
+        raw[i] = static_cast<float>(i) + 0.5F;
+    }
+    const auto block = rd::packDebugBillboardView(m, engine::rhi::Extent2D{256U, 192U});
+    CHECK(block.size() == 80U);
+    CHECK(rd::DEBUG_BILLBOARD_VERTEX_UNIFORM_BYTES == 80U);
+
+    std::array<float, 16> matrix{};
+    std::memcpy(matrix.data(), block.data(), 64U);
+    for (int i = 0; i < 16; ++i) {
+        CHECK(matrix[static_cast<std::size_t>(i)] == static_cast<float>(i) + 0.5F);
+    }
+    std::array<float, 2> extent{};
+    std::memcpy(extent.data(), block.data() + 64U, 8U);
+    CHECK(extent[0] == 256.0F);
+    CHECK(extent[1] == 192.0F);
+    // PADDING IS ZERO. An uninitialised padding byte is exactly the class of defect that is invisible
+    // everywhere else and reproduces differently per lane. Bytes 72..79 are the shader's `float2 _pad0`.
+    for (std::size_t i = 72; i < 80U; ++i) {
+        CHECK(block[i] == std::byte{0});
+    }
+}
+
+TEST_CASE("render debug draw: DebugDrawConfig's defaults are what create() is called with (DD22)") {
+    const rd::DebugDrawConfig config{};
+    CHECK((config.colorFormat == engine::rhi::TextureFormat::Invalid));  // double parens: scoped enum
+    CHECK((config.depthFormat == engine::rhi::TextureFormat::Invalid));
+    CHECK(config.lineVertexShaderPath == "res://debug_line.vert");
+    CHECK(config.lineFragmentShaderPath == "res://debug_line.frag");
+    CHECK(config.billboardVertexShaderPath == "res://debug_billboard.vert");
+    CHECK(config.billboardFragmentShaderPath == "res://debug_billboard.frag");
+    CHECK((config.budget == rd::DebugDrawBudget{}));
+    CHECK(config.budget.maxLines == 32768U);
+    CHECK(config.budget.maxBillboards == 4096U);
+}
+
+TEST_CASE("render debug draw: the umbrella header alone makes the whole surface nameable (DD23)") {
+    // The TM28/T30a shape. This TU includes <aero/render/render.hpp> and NOT debug_draw.hpp; the
+    // assertion is that the umbrella's include list carries it, which nothing else in the tree would
+    // notice. Deleting that #include makes this a COMPILE ERROR, which is the point: a missing
+    // umbrella entry is invisible to every consumer that includes the narrow header directly.
+    [[maybe_unused]] const engine::render::DebugDepth depth = engine::render::DebugDepth::Tested;
+    const engine::render::DebugDrawBatch batch{engine::render::DebugDrawBudget{}};
+    [[maybe_unused]] const engine::render::DebugDrawConfig config{};
+    engine::render::DebugDraw* const gpu = nullptr;
+    CHECK(gpu == nullptr);
+    CHECK(batch.empty());
+}
 
 TEST_CASE("render debug draw: wireBox fills a 12-line remainder exactly and the 13th drops (DD24)") {
     // The helpers push ONE SEGMENT AT A TIME through the same gate, which is what makes a partial
@@ -648,3 +718,817 @@ TEST_CASE("render debug draw: the HLSL transcribes the C++ contract, pinned as s
         CHECK(contains(billboardFrag, "* color"));
     }
 }
+
+// ================================================================================================
+// Tier 1 -- a real Device, no window. The four pipelines, the flush, and the tree's first assertions
+// about the COLOUR OF A PIXEL A PIPELINE PRODUCED.
+//
+// Gated on AERO_SHADER_TOOLS_ENABLED for the reason render_tonemap_test.cpp's own tier-1 block is:
+// DebugDraw::create loads four shaders from build/<preset>/shaders, which only exists when the
+// shader toolchain is built. The whole DD battery above runs in every configuration.
+//
+// THE FRAME OF REFERENCE, and every DG case rests on it. A 256x192 RGBA8Unorm RenderTarget WITH
+// DEPTH, quantum 1, cleared to opaque black, drawn through an IDENTITY CameraView (view = proj =
+// identity), so world coordinates ARE NDC: a point (x, y, z) lands at column (x+1)/2 * 256 and row
+// (1-y)/2 * 192, and row 0 is the TOP (fullscreen.vert.hlsl:22-23's own convention). Line cases aim
+// at PIXEL CENTRES -- row r is NDC y = 1 - (2r+1)/192 -- and assert INTERIOR pixels only, never an
+// endpoint, because a line through pixel centres is covered under both the diamond-exit rule and
+// Bresenham while a line on a pixel BOUNDARY is the one input the two rules disagree about.
+// ================================================================================================
+
+#if AERO_SHADER_TOOLS_ENABLED
+
+    #include <aero/core/log.hpp>
+    #include <aero/core/vfs.hpp>
+    #include <aero/platform/platform.hpp>
+    #include <aero/rhi/rhi.hpp>
+
+    #include "rhi_test_support.hpp"
+
+    #include <memory>
+    #include <optional>
+    #include <vector>
+
+namespace {
+
+constexpr std::uint32_t DG_W = 256;
+constexpr std::uint32_t DG_H = 192;
+
+// NDC y of the CENTRE of pixel row r.
+[[nodiscard]] constexpr float ndcYForRow(std::uint32_t row) {
+    return 1.0F - (((2.0F * static_cast<float>(row)) + 1.0F) / static_cast<float>(DG_H));
+}
+
+struct Rgba {
+    std::uint8_t r = 0;
+    std::uint8_t g = 0;
+    std::uint8_t b = 0;
+    std::uint8_t a = 0;
+    [[nodiscard]] bool operator==(const Rgba&) const = default;
+};
+
+// WITHOUT THIS every pixel assertion below would have to be written CHECK((a == b)) and would print
+// `CHECK( true )` -- which reads a green tick and tells a failure nothing at all. With it, doctest
+// decomposes the comparison and prints BOTH SIDES, so the numbers a lane actually produced are in
+// the log whether the case passes or fails. It is an operator<<, NOT a toString: an engine-side
+// toString on a public header is the ADL trap that hard-errors inside doctest.h.
+std::ostream& operator<<(std::ostream& out, const Rgba& value) {
+    out << "rgba(" << static_cast<int>(value.r) << ", " << static_cast<int>(value.g) << ", "
+        << static_cast<int>(value.b) << ", " << static_cast<int>(value.a) << ")";
+    return out;
+}
+
+[[nodiscard]] Rgba texelAt(const std::vector<std::byte>& pixels, std::uint32_t row, std::uint32_t column) {
+    const std::size_t base = ((static_cast<std::size_t>(row) * DG_W) + column) * 4U;
+    return Rgba{static_cast<std::uint8_t>(pixels[base]), static_cast<std::uint8_t>(pixels[base + 1U]),
+                static_cast<std::uint8_t>(pixels[base + 2U]), static_cast<std::uint8_t>(pixels[base + 3U])};
+}
+
+// The IDENTITY camera: world == NDC. eyePosition is BEHIND the near plane rather than at the origin
+// -- no debug shader reads it, but DG6's ForwardRenderer does (V = normalize(eye - worldPos)), and
+// an eye ON a drawn surface would make that normalize a 0/0.
+[[nodiscard]] engine::render::CameraView identityCamera() {
+    return engine::render::CameraView{
+        .view = Mat4::identity(), .proj = Mat4::identity(), .eyePosition = Vec3{0.0F, 0.0F, -1.0F}};
+}
+
+// beginFrame -> flush -> endFrame -> readback, in one call, so no case can forget the endFrame.
+[[nodiscard]] std::vector<std::byte> flushAndRead(engine::rhi::Device& device, engine::render::RenderTarget& target,
+                                                  engine::render::DebugDraw& draw,
+                                                  const engine::render::CameraView& camera) {
+    std::optional<engine::render::Frame> frame = target.beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(frame.has_value());
+    draw.flush(*frame, camera);
+    REQUIRE(target.endFrame(std::move(*frame)));
+    std::vector<std::byte> pixels(static_cast<std::size_t>(DG_W) * DG_H * 4U, std::byte{0xAB});
+    REQUIRE(device.readbackTexture(target.colorTexture(), 0, pixels));
+    return pixels;
+}
+
+// The RAII log-capture guard, copied verbatim from render_tonemap_test.cpp's PP4 -- its destructor
+// detaches, which is what a code-review round required there after the bare form was found to be a
+// latent use-after-free (log.hpp:92-101: detaching does NOT guarantee the captured state may be
+// destroyed).
+struct LogCallbackGuard {
+    ~LogCallbackGuard() { engine::setLogCallback({}); }
+    LogCallbackGuard() = default;
+    LogCallbackGuard(const LogCallbackGuard&) = delete;
+    LogCallbackGuard& operator=(const LogCallbackGuard&) = delete;
+    LogCallbackGuard(LogCallbackGuard&&) = delete;
+    LogCallbackGuard& operator=(LogCallbackGuard&&) = delete;
+};
+
+// render_tonemap_test.cpp's SingleShaderBackend under a distinct name. DG2 needs the arm where SOME
+// shaders load and others do not: with nothing mounted all four handles are invalid and destroying
+// an invalid handle is a documented no-op, so an empty mount CANNOT see a create() that forgot to
+// release the shaders it DID make.
+class SingleShaderPrefixBackend final : public engine::FileSystemBackend {
+public:
+    SingleShaderPrefixBackend(std::string_view rootDirectory, std::string_view allowedPrefix)
+        : inner(rootDirectory), prefix(allowedPrefix) {}
+
+    [[nodiscard]] bool exists(std::string_view relPath) const override {
+        return admits(relPath) && inner.exists(relPath);
+    }
+    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        return admits(relPath) ? inner.fileSize(relPath) : std::nullopt;
+    }
+    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
+        return admits(relPath) ? inner.readFile(relPath) : std::nullopt;
+    }
+
+private:
+    [[nodiscard]] bool admits(std::string_view relPath) const { return relPath.starts_with(prefix); }
+
+    engine::DirectoryBackend inner;
+    std::string prefix;
+};
+
+// The longest run of non-black texels through (row, centreColumn), along the row and down the
+// column. The predicate is "any colour channel is lit" rather than "== white", so a partially
+// covered edge texel still counts and the +/-1 tolerance stays a rasterisation allowance rather
+// than a hiding place for a real error.
+[[nodiscard]] bool litAt(const std::vector<std::byte>& pixels, std::uint32_t row, std::uint32_t column) {
+    const Rgba texel = texelAt(pixels, row, column);
+    return texel.r != 0U || texel.g != 0U || texel.b != 0U;
+}
+
+[[nodiscard]] int horizontalRun(const std::vector<std::byte>& pixels, std::uint32_t row, std::uint32_t centre) {
+    if (!litAt(pixels, row, centre)) {
+        return 0;
+    }
+    std::uint32_t left = centre;
+    while (left > 0U && litAt(pixels, row, left - 1U)) {
+        --left;
+    }
+    std::uint32_t right = centre;
+    while (right + 1U < DG_W && litAt(pixels, row, right + 1U)) {
+        ++right;
+    }
+    return static_cast<int>((right - left) + 1U);
+}
+
+[[nodiscard]] int verticalRun(const std::vector<std::byte>& pixels, std::uint32_t centre, std::uint32_t column) {
+    if (!litAt(pixels, centre, column)) {
+        return 0;
+    }
+    std::uint32_t top = centre;
+    while (top > 0U && litAt(pixels, top - 1U, column)) {
+        --top;
+    }
+    std::uint32_t bottom = centre;
+    while (bottom + 1U < DG_H && litAt(pixels, bottom + 1U, column)) {
+        ++bottom;
+    }
+    return static_cast<int>((bottom - top) + 1U);
+}
+
+// Where a world point lands, computed through the SAME viewProj the flush uses, so DG8's two
+// billboard centres are measured rather than guessed.
+struct PixelAt {
+    std::uint32_t row = 0;
+    std::uint32_t column = 0;
+};
+
+[[nodiscard]] PixelAt projectToPixel(const engine::render::CameraView& camera, Vec3 world) {
+    const engine::Vec4 clip = (camera.proj * camera.view) * engine::Vec4{world.x, world.y, world.z, 1.0F};
+    const float ndcX = clip.x / clip.w;
+    const float ndcY = clip.y / clip.w;
+    return PixelAt{static_cast<std::uint32_t>((0.5F - (ndcY * 0.5F)) * static_cast<float>(DG_H)),
+                   static_cast<std::uint32_t>(((ndcX * 0.5F) + 0.5F) * static_cast<float>(DG_W))};
+}
+
+}  // namespace
+
+    // The tier-1 preamble, written out per case exactly as render_tonemap_test.cpp does it:
+    // AERO_SKIP_OR_FAIL returns from the enclosing function, so it cannot live in a helper.
+    // NOTE `.depth = true` -- the ONE field that differs from the tonemap twin, and the reason it
+    // differs is the whole task: without depth there is nothing for a Tested line to be tested against.
+    #define AERO_DG_PREAMBLE()                                                                     \
+        const engine::platform::Context ctx{{.headless = false}};                                  \
+        if (!ctx.valid()) {                                                                        \
+            AERO_SKIP_OR_FAIL("no real video driver available");                                   \
+        }                                                                                          \
+        auto device = engine::rhi::Device::create();                                               \
+        if (!device.has_value()) {                                                                 \
+            AERO_SKIP_OR_FAIL("no GPU device available");                                          \
+        }                                                                                          \
+        engine::VirtualFileSystem vfs;                                                             \
+        vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));                   \
+        auto target = engine::render::RenderTarget::create(                                        \
+            *device, {DG_W, DG_H},                                                                 \
+            {.colorFormat = engine::rhi::TextureFormat::RGBA8Unorm, .depth = true, .quantum = 1}); \
+        REQUIRE(target.has_value())
+
+TEST_CASE("render debug draw: create succeeds against both format pairs the tree uses (DG1)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    CHECK(draw->budget().maxLines == 32768U);
+    CHECK(draw->budget().maxBillboards == 4096U);
+    CHECK(draw->flushCount() == 0U);
+    CHECK(draw->uploadCount() == 0U);
+    CHECK(draw->lastFrameLines() == 0U);
+    CHECK(draw->lastFrameDrawCalls() == 0U);
+    CHECK_FALSE(draw->hasWarnedBudget());
+    CHECK_FALSE(draw->hasWarnedUploadFailure());
+    CHECK_FALSE(draw->hasBillboardTexture());
+    CHECK(draw->batch().empty());
+
+    SUBCASE("and against the EDITOR's real pair, RGBA16Float + depth") {
+        // The pair the viewport actually builds against (post->sceneColorFormat() is RGBA16Float
+        // since 3.6.3). DG16 goes further and draws into one; this arm is the create half.
+        auto hdr = engine::render::RenderTarget::create(
+            *device, {DG_W, DG_H},
+            {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+        REQUIRE(hdr.has_value());
+        auto hdrDraw = engine::render::DebugDraw::create(
+            *device, vfs, {.colorFormat = hdr->colorFormat(), .depthFormat = hdr->depthFormat()});
+        CHECK(hdrDraw.has_value());
+    }
+}
+
+TEST_CASE("render debug draw: create refuses four ways and leaks NOTHING (DG2)") {
+    AERO_DG_PREAMBLE();
+    const engine::rhi::TextureFormat colorFormat = target->colorFormat();
+    const engine::rhi::TextureFormat depthFormat = target->depthFormat();
+
+    CHECK_FALSE(engine::render::DebugDraw::create(
+                    *device, vfs, {.colorFormat = engine::rhi::TextureFormat::Invalid, .depthFormat = depthFormat})
+                    .has_value());
+    CHECK_FALSE(
+        engine::render::DebugDraw::create(*device, vfs, {.colorFormat = depthFormat, .depthFormat = depthFormat})
+            .has_value());  // a DEPTH format as the colour target
+    CHECK_FALSE(engine::render::DebugDraw::create(
+                    *device, vfs, {.colorFormat = colorFormat, .depthFormat = engine::rhi::TextureFormat::Invalid})
+                    .has_value());
+    const engine::VirtualFileSystem emptyVfs;
+    CHECK_FALSE(
+        engine::render::DebugDraw::create(*device, emptyVfs, {.colorFormat = colorFormat, .depthFormat = depthFormat})
+            .has_value());
+
+    SUBCASE("a PARTIAL VFS -- two shaders load, two do not -- and NOTHING leaks") {
+        // The arm that matters, and the reason an empty VFS cannot replace it: with nothing mounted
+        // all four handles are invalid, and destroying an invalid handle is a documented no-op, so
+        // an empty mount CANNOT see a create() that forgot to release the shaders that DID load.
+        // ScopedShader is what makes that unspellable; this is its witness.
+        std::vector<std::string> warnings;
+        const LogCallbackGuard detachOnExit;
+        engine::setLogCallback([&warnings](const engine::LogRecord& record) {
+            if (record.level >= engine::LogLevel::Warn) {
+                warnings.emplace_back(record.message);
+            }
+        });
+        {
+            engine::VirtualFileSystem partialVfs;
+            partialVfs.mount(std::make_unique<SingleShaderPrefixBackend>(AERO_SHADERS_DIR, "debug_line"));
+            CHECK(partialVfs.exists("res://debug_line.vert.json"));
+            CHECK_FALSE(partialVfs.exists("res://debug_billboard.vert.json"));
+            CHECK_FALSE(engine::render::DebugDraw::create(*device, partialVfs,
+                                                          {.colorFormat = colorFormat, .depthFormat = depthFormat})
+                            .has_value());
+        }
+        target.reset();  // holds a Device* and must die FIRST
+        device.reset();  // ...then ~Device is what WOULD report a leak
+        engine::setLogCallback({});
+        // The exact wording comes from sdl_gpu_backend.cpp's ~Impl: "rhi: ~Device releasing N
+        // leaked <kind>(s)". A leaked shader is the one this arm exists for; the other four are
+        // asserted too because create() builds them in the same function.
+        for (const std::string& message : warnings) {
+            CHECK(message.find("leaked shader") == std::string::npos);
+            CHECK(message.find("leaked graphics pipeline") == std::string::npos);
+            CHECK(message.find("leaked texture") == std::string::npos);
+            CHECK(message.find("leaked buffer") == std::string::npos);
+            CHECK(message.find("leaked sampler") == std::string::npos);
+        }
+        return;  // `device` is reset; nothing below may run
+    }
+}
+
+TEST_CASE("render debug draw: an out-of-range budget clamps with ONE WARN and is what gets allocated (DG3)") {
+    AERO_DG_PREAMBLE();
+    std::vector<std::string> warnings;
+    const LogCallbackGuard detachOnExit;
+    engine::setLogCallback([&warnings](const engine::LogRecord& record) {
+        if (record.level >= engine::LogLevel::Warn) {
+            warnings.emplace_back(record.message);
+        }
+    });
+    auto draw = engine::render::DebugDraw::create(*device, vfs,
+                                                  {.colorFormat = target->colorFormat(),
+                                                   .depthFormat = target->depthFormat(),
+                                                   .budget = {.maxLines = 0U, .maxBillboards = 0U}});
+    engine::setLogCallback({});
+    REQUIRE(draw.has_value());
+    CHECK(draw->budget().maxLines == 1U);
+    CHECK(draw->budget().maxBillboards == 1U);
+    // EXACTLY ONE clamp WARN, naming BOTH numbers -- not one per field, not one per frame.
+    int clampWarnings = 0;
+    for (const std::string& message : warnings) {
+        if (message.find("budget clamped") != std::string::npos) {
+            ++clampWarnings;
+            CHECK(message.find("requested 0") != std::string::npos);
+            CHECK(message.find("allocated 1") != std::string::npos);
+        }
+    }
+    CHECK(clampWarnings == 1);
+    // ...and the ALLOCATED budget is what the gate uses.
+    CHECK(draw->batch().line(Vec3{}, Vec3{0.5F, 0.0F, 0.0F}, Vec4{1, 1, 1, 1}));
+    CHECK_FALSE(draw->batch().line(Vec3{}, Vec3{0.5F, 0.0F, 0.0F}, Vec4{1, 1, 1, 1}));
+}
+
+TEST_CASE("render debug draw: an EMPTY flush acquires nothing, uploads nothing and draws nothing (DG4)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+
+    // INV-3, and it is what makes "the editor's picture is byte-identical" a MEASURED fact.
+    const std::vector<std::byte> pixels = flushAndRead(*device, *target, *draw, identityCamera());
+    CHECK(draw->flushCount() == 1U);
+    CHECK(draw->uploadCount() == 0U);  // NO command buffer was acquired
+    CHECK(draw->lastFrameDrawCalls() == 0U);
+    CHECK(draw->lastFrameLines() == 0U);
+    CHECK(draw->lastFrameBillboards() == 0U);
+    CHECK(draw->lastFrameDroppedLines() == 0U);
+    CHECK(draw->lastFrameRejectedLines() == 0U);
+    CHECK_FALSE(draw->hasWarnedUploadFailure());
+    // ...and the picture is the clear colour everywhere sampled.
+    for (const auto& [row, column] : std::array<std::pair<std::uint32_t, std::uint32_t>, 5>{
+             {{0U, 0U}, {60U, 128U}, {96U, 128U}, {131U, 128U}, {191U, 255U}}}) {
+        CHECK(texelAt(pixels, row, column) == Rgba{0U, 0U, 0U, 255U});
+    }
+}
+
+TEST_CASE("render debug draw: an Overlay line lands on its row, and the image is UPRIGHT (DG5)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+
+    // Row 60, upper half. Aimed at the row's PIXEL CENTRE so both rasterisation rules agree, and the
+    // segment spans x in [-0.9, +0.9] so every column asserted below is INTERIOR.
+    constexpr std::uint32_t ROW = 60U;
+    const float y = ndcYForRow(ROW);
+    CHECK(draw->batch().line(Vec3{-0.9F, y, 0.5F}, Vec3{0.9F, y, 0.5F}, Vec4{0.0F, 1.0F, 0.0F, 1.0F},
+                             engine::render::DebugDepth::Overlay));
+    const std::vector<std::byte> pixels = flushAndRead(*device, *target, *draw, identityCamera());
+
+    CHECK(draw->lastFrameLines() == 1U);
+    CHECK(draw->uploadCount() == 1U);
+    CHECK(draw->lastFrameDrawCalls() == 1U);
+
+    // ON the row: exactly green, at five interior columns. Not "greenish" -- EXACT, because the
+    // fragment stage is a passthrough and the target is unorm, so 1.0 encodes to 255 with no curve.
+    for (const std::uint32_t column : {32U, 64U, 128U, 192U, 224U}) {
+        CHECK(texelAt(pixels, ROW, column) == Rgba{0U, 255U, 0U, 255U});
+    }
+    // OFF the row, four ways, each a different failure it would catch:
+    CHECK(texelAt(pixels, ROW + 8U, 128U) == Rgba{0U, 0U, 0U, 255U});  // a fat/offset line
+    CHECK(texelAt(pixels, ROW - 8U, 128U) == Rgba{0U, 0U, 0U, 255U});  //   "
+    CHECK(texelAt(pixels, ROW, 4U) == Rgba{0U, 0U, 0U, 255U});         // past the segment's end
+    // THE MIRROR ROW. A vertically flipped readback, or a flipped pipeline, would light THIS row
+    // instead of ROW -- and nothing else in this file would notice. 191 - 60 = 131.
+    CHECK(texelAt(pixels, 131U, 128U) == Rgba{0U, 0U, 0U, 255U});
+}
+
+TEST_CASE("render debug draw: a Tested line is hidden by geometry and an Overlay one is not (DG6)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    auto forward = engine::render::ForwardRenderer::create(
+        *device, vfs,
+        {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat(), .shadowMapResolution = 0});
+    REQUIRE(forward.has_value());
+
+    // ONE Cube primitive, flat red, under the identity camera. Everything that could vary is pinned
+    // OFF so the cube's colour is a constant this case can assert EXACTLY: shadows off, culling off,
+    // directional intensity 0 (with a UNIT direction, so nothing normalizes a zero vector),
+    // ambient = {1,1,1}, the default material (white dielectric, metallic 0, emissive black). The
+    // fragment then reduces to ambient * baseColor * instanceColor = (1, 0, 0).
+    //
+    // model puts the cube at x, y in [-0.5, +0.5] and z in [0, 0.9]. The DEPTH span is what matters
+    // and why 0.9 rather than 1: whichever of the two z-facing quads survives back-face culling
+    // writes a depth <= 0.9, so a Tested line at z = 0.99 is behind it either way and the case does
+    // not rest on which face wins.
+    const Mat4 model = engine::translation(Vec3{0.0F, 0.0F, 0.45F}) * engine::scaling(Vec3{1.0F, 1.0F, 0.9F});
+    engine::render::MeshInstance instance{};
+    instance.primitive = engine::render::PrimitiveId::Cube;
+    instance.model = model;
+    instance.mvp = model;  // viewProj is the identity, so mvp == model (the cullingEnabled contract)
+    instance.normalMatrix = Mat4::identity();
+    instance.color = Vec3{1.0F, 0.0F, 0.0F};
+
+    const engine::render::CameraView camera = identityCamera();
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = std::span{&instance, 1};
+    view.ambient = Vec3::one();
+    view.directional = {.direction = Vec3{0.0F, -1.0F, 0.0F}, .color = Vec3::one(), .intensity = 0.0F};
+    view.cullingEnabled = false;
+    view.shadowsEnabled = false;
+
+    constexpr std::uint32_t ROW = 60U;
+    const float y = ndcYForRow(ROW);
+    // Column 128 is NDC x ~ +0.004, INSIDE the cube's |x| <= 0.5 face; column 240 is ~ +0.877,
+    // outside it. Row 60 is NDC y ~ +0.370, inside |y| <= 0.5.
+    const auto renderOnce = [&](const std::vector<std::pair<Vec4, engine::render::DebugDepth>>& lines, float lineZ,
+                                float xMin, float xMax) {
+        std::optional<engine::render::Frame> frame = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+        REQUIRE(frame.has_value());
+        forward->draw(*frame, view);
+        for (const auto& [colour, depthMode] : lines) {
+            draw->batch().line(Vec3{xMin, y, lineZ}, Vec3{xMax, y, lineZ}, colour, depthMode);
+        }
+        draw->flush(*frame, camera);
+        REQUIRE(target->endFrame(std::move(*frame)));
+        std::vector<std::byte> pixels(static_cast<std::size_t>(DG_W) * DG_H * 4U, std::byte{0xAB});
+        REQUIRE(device->readbackTexture(target->colorTexture(), 0, pixels));
+        return pixels;
+    };
+
+    SUBCASE("Tested: hidden where the cube is, visible where it is not") {
+        const std::vector<std::byte> pixels =
+            renderOnce({{Vec4{0.0F, 1.0F, 0.0F, 1.0F}, engine::render::DebugDepth::Tested}}, 0.99F, -0.9F, 0.9F);
+        CHECK(texelAt(pixels, ROW, 128U) == Rgba{255U, 0U, 0U, 255U});  // HIDDEN: the cube wins
+        CHECK(texelAt(pixels, ROW, 240U) == Rgba{0U, 255U, 0U, 255U});  // VISIBLE: outside the cube
+    }
+    SUBCASE("Overlay: visible THROUGH the cube") {
+        const std::vector<std::byte> pixels =
+            renderOnce({{Vec4{0.0F, 1.0F, 0.0F, 1.0F}, engine::render::DebugDepth::Overlay}}, 0.99F, -0.9F, 0.9F);
+        CHECK(texelAt(pixels, ROW, 128U) == Rgba{0U, 255U, 0U, 255U});  // the cube does not hide it
+        CHECK(texelAt(pixels, ROW, 240U) == Rgba{0U, 255U, 0U, 255U});
+    }
+    SUBCASE("Tested and Overlay coincident: the Overlay colour wins") {
+        // Tested draws FIRST, Overlay SECOND, per primitive -- overlay content is meant to be seen
+        // over everything, INCLUDING tested lines, and drawing it last is what makes that true.
+        // Both lines sit at the same z and OUTSIDE the cube (x in [0.6, 0.95]), so the depth test
+        // does not decide the outcome. With the order inverted, the blue Tested line is drawn last,
+        // passes LessOrEqual at equal depth, and overwrites.
+        const std::vector<std::byte> pixels =
+            renderOnce({{Vec4{0.0F, 0.0F, 1.0F, 1.0F}, engine::render::DebugDepth::Tested},
+                        {Vec4{0.0F, 1.0F, 0.0F, 1.0F}, engine::render::DebugDepth::Overlay}},
+                       0.99F, 0.6F, 0.95F);
+        CHECK(texelAt(pixels, ROW, 224U) == Rgba{0U, 255U, 0U, 255U});
+        CHECK(draw->lastFrameDrawCalls() == 2U);  // one per bucket, both reached
+    }
+}
+
+TEST_CASE("render debug draw: a half-alpha white line reads mid-grey and the alpha stays 255 (DG7)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    constexpr std::uint32_t ROW = 60U;
+    const float y = ndcYForRow(ROW);
+    draw->batch().line(Vec3{-0.9F, y, 0.5F}, Vec3{0.9F, y, 0.5F}, Vec4{1.0F, 1.0F, 1.0F, 0.5F},
+                       engine::render::DebugDepth::Overlay);
+    const std::vector<std::byte> pixels = flushAndRead(*device, *target, *draw, identityCamera());
+
+    for (const std::uint32_t column : {64U, 128U, 192U}) {
+        const Rgba texel = texelAt(pixels, ROW, column);
+        // COLOUR: within +/-1 of 127.5, and the +/-1 IS the assertion. packDebugColor(0.5) is
+        // lround(127.5) = 128, so the source alpha on the wire is 128/255 = 0.50196 and the blend is
+        // 1.0*0.50196 + 0.0*0.49804 = 0.50196 -> 128. Measured 128 on Metal; 127 is allowed because
+        // UNORM rounding at almost exactly one half is backend-defined. 255 (blending off) is not.
+        CHECK(texel.r >= 127U);
+        CHECK(texel.r <= 128U);
+        CHECK(texel.g == texel.r);
+        CHECK(texel.b == texel.r);
+        // ALPHA: EXACTLY 255, no tolerance. INV-6: the clear alpha is 1, so
+        // dstA*(1-srcA) + srcA*1 = 1*(1-0.5) + 0.5*1 = 1. A srcAlphaFactor of SrcAlpha instead of
+        // One would give 1*0.5 + 0.5*0.5 = 0.75 -> 191, which this catches and the colour does not.
+        CHECK(texel.a == 255U);
+    }
+}
+
+TEST_CASE("render debug draw: two billboards at different depths measure the same width (DG8)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+
+    // A REAL perspective camera -- the identity camera cannot show this, because with no perspective
+    // divide every w is 1 and the clip.w multiply is invisible. fovY is in RADIANS (transform.hpp's
+    // D6); degrees here would put the two centres somewhere else entirely.
+    const Vec3 eye{0.0F, 0.0F, 5.0F};
+    const engine::render::CameraView camera{
+        .view = engine::lookAt(eye, Vec3{0.0F, 0.0F, 0.0F}, Vec3{0.0F, 1.0F, 0.0F}),
+        .proj = engine::perspective(engine::radians(60.0F), 4.0F / 3.0F, 0.1F, 100.0F),
+        .eyePosition = eye};
+    // Two 16 px billboards at very different distances: 2 units from the eye and 45. They are
+    // separated VERTICALLY so the two horizontal runs can never touch, and their pixel centres are
+    // PROJECTED rather than guessed.
+    const Vec3 nearCenter{0.0F, 0.5F, 3.0F};
+    const Vec3 farCenter{0.0F, -10.0F, -40.0F};
+    const PixelAt nearAt = projectToPixel(camera, nearCenter);
+    const PixelAt farAt = projectToPixel(camera, farCenter);
+    REQUIRE(nearAt.row < DG_H);
+    REQUIRE(farAt.row < DG_H);
+    REQUIRE(nearAt.column < DG_W);
+    REQUIRE(farAt.column < DG_W);
+    REQUIRE(farAt.row > nearAt.row + 32U);  // no overlap: the two runs are independent
+
+    CHECK(draw->batch().billboard(nearCenter, 16.0F, Vec4{1.0F, 1.0F, 1.0F, 1.0F}, Vec2{0.0F, 0.0F}, Vec2{1.0F, 1.0F},
+                                  engine::render::DebugDepth::Overlay));
+    CHECK(draw->batch().billboard(farCenter, 16.0F, Vec4{1.0F, 1.0F, 1.0F, 1.0F}, Vec2{0.0F, 0.0F}, Vec2{1.0F, 1.0F},
+                                  engine::render::DebugDepth::Overlay));
+    const std::vector<std::byte> pixels = flushAndRead(*device, *target, *draw, camera);
+    CHECK(draw->lastFrameBillboards() == 2U);
+
+    // BOTH read 16, within +/-1: the +/-1 is stated because a half-pixel-aligned quad edge covers 16
+    // or 17 columns depending on where the centre lands, and that is rasterisation, not a defect.
+    // Dropping the clip.w makes the FAR one collapse to about 1 px; writing 1.0 where the shader
+    // says 2.0 makes BOTH read 8. Neither is within any tolerance of 16.
+    const int nearWidth = horizontalRun(pixels, nearAt.row, nearAt.column);
+    const int farWidth = horizontalRun(pixels, farAt.row, farAt.column);
+    const int nearHeight = verticalRun(pixels, nearAt.row, nearAt.column);
+    const int farHeight = verticalRun(pixels, farAt.row, farAt.column);
+    CHECK(std::abs(nearWidth - 16) <= 1);
+    CHECK(std::abs(farWidth - 16) <= 1);
+    CHECK(std::abs(nearHeight - 16) <= 1);
+    CHECK(std::abs(farHeight - 16) <= 1);
+    CHECK(std::abs(nearWidth - farWidth) <= 1);  // THE CLAIM: the same size at any distance
+}
+
+TEST_CASE("render debug draw: a set atlas is sampled, and an invalid handle falls back to white (DG9)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+
+    // A 2x2 atlas: red, green / blue, white, uploaded row 0 first (RU10's own convention).
+    const engine::rhi::TextureHandle atlas = device->createTexture({.format = engine::rhi::TextureFormat::RGBA8Unorm,
+                                                                    .usage = engine::rhi::TextureUsage::Sampler,
+                                                                    .width = 2,
+                                                                    .height = 2});
+    REQUIRE(atlas.valid());
+    const std::array<std::uint8_t, 16> texels{255U, 0U, 0U,   255U, 0U,   255U, 0U,   255U,
+                                              0U,   0U, 255U, 255U, 255U, 255U, 255U, 255U};
+    REQUIRE(device->uploadTexture(atlas, 0, std::as_bytes(std::span{texels})));
+    // NEAREST, so the centre of a cell samples exactly that cell with no bleed from its neighbours.
+    const engine::rhi::SamplerHandle sampler =
+        device->createSampler({.minFilter = engine::rhi::Filter::Nearest,
+                               .magFilter = engine::rhi::Filter::Nearest,
+                               .mipmapMode = engine::rhi::MipmapMode::Nearest,
+                               .addressU = engine::rhi::AddressMode::ClampToEdge,
+                               .addressV = engine::rhi::AddressMode::ClampToEdge,
+                               .addressW = engine::rhi::AddressMode::ClampToEdge});
+    REQUIRE(sampler.valid());
+
+    SUBCASE("the atlas's top-right cell is GREEN") {
+        draw->setBillboardTexture(atlas, sampler);
+        CHECK(draw->hasBillboardTexture());
+        // uvMin = {0.5, 0}, uvMax = {1, 0.5} selects the TOP-RIGHT texel, which is green -- and it is
+        // green only because uvMin.y is the TOP (DD17's rule) applied consistently in the shader.
+        draw->batch().billboard(Vec3{0.0F, 0.0F, 0.5F}, 32.0F, Vec4{1.0F, 1.0F, 1.0F, 1.0F}, Vec2{0.5F, 0.0F},
+                                Vec2{1.0F, 0.5F}, engine::render::DebugDepth::Overlay);
+        const std::vector<std::byte> pixels = flushAndRead(*device, *target, *draw, identityCamera());
+        CHECK(texelAt(pixels, DG_H / 2U, DG_W / 2U) == Rgba{0U, 255U, 0U, 255U});
+    }
+    SUBCASE("an INVALID handle falls back to the built-in 1x1 white") {
+        draw->setBillboardTexture({}, {});
+        CHECK_FALSE(draw->hasBillboardTexture());
+        draw->batch().billboard(Vec3{0.0F, 0.0F, 0.5F}, 32.0F, Vec4{1.0F, 1.0F, 1.0F, 1.0F}, Vec2{0.5F, 0.0F},
+                                Vec2{1.0F, 0.5F}, engine::render::DebugDepth::Overlay);
+        const std::vector<std::byte> pixels = flushAndRead(*device, *target, *draw, identityCamera());
+        // WHITE, not green: the default texel is sampled at every UV, so the rect is irrelevant.
+        CHECK(texelAt(pixels, DG_H / 2U, DG_W / 2U) == Rgba{255U, 255U, 255U, 255U});
+    }
+    device->destroySampler(sampler);
+    device->destroyTexture(atlas);  // BORROWED: the caller destroys them, never DebugDraw
+}
+
+TEST_CASE("render debug draw: overflow drops the LATER lines and warns exactly once (DG10)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(*device, vfs,
+                                                  {.colorFormat = target->colorFormat(),
+                                                   .depthFormat = target->depthFormat(),
+                                                   .budget = {.maxLines = 8U, .maxBillboards = 4096U}});
+    REQUIRE(draw.has_value());
+    std::vector<std::string> warnings;
+    const LogCallbackGuard detachOnExit;
+    engine::setLogCallback([&warnings](const engine::LogRecord& record) {
+        if (record.level >= engine::LogLevel::Warn) {
+            warnings.emplace_back(record.message);
+        }
+    });
+
+    const auto pushOverflowing = [&draw] {
+        for (std::uint32_t row = 40U; row < 48U; ++row) {  // 8 white lines, filling the budget
+            draw->batch().line(Vec3{-0.9F, ndcYForRow(row), 0.5F}, Vec3{0.9F, ndcYForRow(row), 0.5F},
+                               Vec4{1.0F, 1.0F, 1.0F, 1.0F}, engine::render::DebugDepth::Overlay);
+        }
+        for (std::uint32_t row = 140U; row < 143U; ++row) {  // 3 green lines, past it
+            draw->batch().line(Vec3{-0.9F, ndcYForRow(row), 0.5F}, Vec3{0.9F, ndcYForRow(row), 0.5F},
+                               Vec4{0.0F, 1.0F, 0.0F, 1.0F}, engine::render::DebugDepth::Overlay);
+        }
+    };
+
+    pushOverflowing();
+    const std::vector<std::byte> first = flushAndRead(*device, *target, *draw, identityCamera());
+    // BY EFFECT: rows 40..47 are WHITE and rows 140..142 are BLACK. A `>` instead of `>=` in the
+    // gate lights row 140; a missing counter leaves the picture right and the count wrong, which is
+    // why both halves are asserted.
+    for (std::uint32_t row = 40U; row < 48U; ++row) {
+        CHECK(texelAt(first, row, 128U) == Rgba{255U, 255U, 255U, 255U});
+    }
+    for (std::uint32_t row = 140U; row < 143U; ++row) {
+        CHECK(texelAt(first, row, 128U) == Rgba{0U, 0U, 0U, 255U});
+    }
+    CHECK(draw->lastFrameDroppedLines() == 3U);
+    CHECK(draw->lastFrameLines() == 8U);
+    CHECK(draw->hasWarnedBudget());
+    const std::size_t afterFirst = warnings.size();
+    CHECK(afterFirst >= 1U);
+
+    pushOverflowing();
+    (void)flushAndRead(*device, *target, *draw, identityCamera());
+    CHECK(draw->lastFrameDroppedLines() == 3U);  // still counted every frame...
+    engine::setLogCallback({});
+    CHECK(warnings.size() == afterFirst);  // ...and NOT warned again
+}
+
+TEST_CASE("render debug draw: a NaN endpoint draws nothing, counts one, and warns NOT AT ALL (DG11)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    std::vector<std::string> warnings;
+    const LogCallbackGuard detachOnExit;
+    engine::setLogCallback([&warnings](const engine::LogRecord& record) {
+        if (record.level >= engine::LogLevel::Warn) {
+            warnings.emplace_back(record.message);
+        }
+    });
+    constexpr std::uint32_t ROW = 60U;
+    draw->batch().line(Vec3{NAN_F, ndcYForRow(ROW), 0.5F}, Vec3{0.9F, ndcYForRow(ROW), 0.5F},
+                       Vec4{0.0F, 1.0F, 0.0F, 1.0F}, engine::render::DebugDepth::Overlay);
+    const std::vector<std::byte> pixels = flushAndRead(*device, *target, *draw, identityCamera());
+    engine::setLogCallback({});
+
+    CHECK(texelAt(pixels, ROW, 128U) == Rgba{0U, 0U, 0U, 255U});  // NOTHING was drawn
+    CHECK(draw->lastFrameRejectedLines() == 1U);
+    CHECK(draw->lastFrameLines() == 0U);
+    CHECK(draw->lastFrameDroppedLines() == 0U);
+    CHECK(draw->uploadCount() == 0U);  // the batch is EMPTY after the rejection, so the flush is free
+    CHECK(warnings.empty());           // rejections are COUNTED, never warned -- a NaN storm at
+                                       // 60 Hz would otherwise be a log flood
+}
+
+TEST_CASE("render debug draw: a moved-to instance draws and a moved-from one is silent (DG12)") {
+    AERO_DG_PREAMBLE();
+    auto source = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(source.has_value());
+    std::vector<std::string> warnings;
+    const LogCallbackGuard detachOnExit;
+    engine::setLogCallback([&warnings](const engine::LogRecord& record) {
+        if (record.level >= engine::LogLevel::Warn) {
+            warnings.emplace_back(record.message);
+        }
+    });
+    {
+        engine::render::DebugDraw moved{std::move(*source)};
+        constexpr std::uint32_t ROW = 60U;
+        moved.batch().line(Vec3{-0.9F, ndcYForRow(ROW), 0.5F}, Vec3{0.9F, ndcYForRow(ROW), 0.5F},
+                           Vec4{0.0F, 1.0F, 0.0F, 1.0F}, engine::render::DebugDepth::Overlay);
+        const std::vector<std::byte> pixels = flushAndRead(*device, *target, moved, identityCamera());
+        CHECK(texelAt(pixels, ROW, 128U) == Rgba{0U, 255U, 0U, 255U});
+
+        // The moved-FROM one is inert and SILENT: flush moves flushCount and nothing else, and logs
+        // nothing at all -- a moved-from accessor in this layer never complains.
+        const std::size_t before = warnings.size();
+        std::optional<engine::render::Frame> frame = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+        REQUIRE(frame.has_value());
+        source->flush(*frame, identityCamera());  // NOLINT(bugprone-use-after-move)
+        REQUIRE(target->endFrame(std::move(*frame)));
+        CHECK(source->flushCount() == 1U);   // NOLINT(bugprone-use-after-move)
+        CHECK(source->uploadCount() == 0U);  // NOLINT(bugprone-use-after-move)
+        CHECK(warnings.size() == before);
+    }
+    // `moved` is destroyed here; a DEFAULTED move would have double-freed eight handles, and the
+    // destructor of the moved-FROM `source` (below) would be the second free.
+    source.reset();
+    target.reset();
+    device.reset();
+    engine::setLogCallback({});
+    for (const std::string& message : warnings) {
+        CHECK(message.find("leaked") == std::string::npos);
+    }
+}
+
+TEST_CASE("render debug draw: ten consecutive frames each show THEIR OWN line (DG13)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    // Ten frames back to back with NO waitIdle between them, which is what maximises the overlap a
+    // cycle=false would corrupt. The honest caveat is that a driver serialising frames makes the
+    // broken form pass too -- the CONTRACT rests on SDL's documented model, and this case is the
+    // observation, not the proof.
+    for (std::uint32_t k = 0; k < 10U; ++k) {
+        const std::uint32_t row = 20U + (10U * k);
+        draw->batch().line(Vec3{-0.9F, ndcYForRow(row), 0.5F}, Vec3{0.9F, ndcYForRow(row), 0.5F},
+                           Vec4{1.0F, 1.0F, 1.0F, 1.0F}, engine::render::DebugDepth::Overlay);
+        const std::vector<std::byte> pixels = flushAndRead(*device, *target, *draw, identityCamera());
+        CHECK(texelAt(pixels, row, 128U) == Rgba{255U, 255U, 255U, 255U});  // THIS frame's row
+        if (k > 0U) {
+            const std::uint32_t previous = 20U + (10U * (k - 1U));
+            CHECK(texelAt(pixels, previous, 128U) == Rgba{0U, 0U, 0U, 255U});  // never LAST frame's
+        }
+        CHECK(draw->lastFrameLines() == 1U);
+        CHECK(draw->uploadCount() == static_cast<std::size_t>(k) + 1U);
+    }
+}
+
+TEST_CASE("render debug draw: two instances on one device do not see each other (DG14)") {
+    AERO_DG_PREAMBLE();
+    auto a = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    auto second = engine::render::RenderTarget::create(
+        *device, {DG_W, DG_H}, {.colorFormat = engine::rhi::TextureFormat::RGBA8Unorm, .depth = true, .quantum = 1});
+    REQUIRE(a.has_value());
+    REQUIRE(second.has_value());
+    auto b = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = second->colorFormat(), .depthFormat = second->depthFormat()});
+    REQUIRE(b.has_value());
+
+    // Each owns its own vertex buffers; the DEVICE's transfer buffer is SHARED and cycled between
+    // them, which is exactly the case SDL's record-time reference count exists to make safe.
+    a->batch().line(Vec3{-0.9F, ndcYForRow(40U), 0.5F}, Vec3{0.9F, ndcYForRow(40U), 0.5F}, Vec4{1.0F, 0.0F, 0.0F, 1.0F},
+                    engine::render::DebugDepth::Overlay);
+    b->batch().line(Vec3{-0.9F, ndcYForRow(140U), 0.5F}, Vec3{0.9F, ndcYForRow(140U), 0.5F},
+                    Vec4{0.0F, 0.0F, 1.0F, 1.0F}, engine::render::DebugDepth::Overlay);
+    const std::vector<std::byte> pixelsA = flushAndRead(*device, *target, *a, identityCamera());
+    const std::vector<std::byte> pixelsB = flushAndRead(*device, *second, *b, identityCamera());
+
+    CHECK(texelAt(pixelsA, 40U, 128U) == Rgba{255U, 0U, 0U, 255U});
+    CHECK(texelAt(pixelsA, 140U, 128U) == Rgba{0U, 0U, 0U, 255U});  // NOT b's line
+    CHECK(texelAt(pixelsB, 140U, 128U) == Rgba{0U, 0U, 255U, 255U});
+    CHECK(texelAt(pixelsB, 40U, 128U) == Rgba{0U, 0U, 0U, 255U});  // NOT a's line
+}
+
+TEST_CASE("render debug draw: flush CLEARS the batch, so a second frame draws nothing (DG15)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    constexpr std::uint32_t ROW = 60U;
+    draw->batch().line(Vec3{-0.9F, ndcYForRow(ROW), 0.5F}, Vec3{0.9F, ndcYForRow(ROW), 0.5F},
+                       Vec4{1.0F, 1.0F, 1.0F, 1.0F}, engine::render::DebugDepth::Overlay);
+    const std::vector<std::byte> first = flushAndRead(*device, *target, *draw, identityCamera());
+    CHECK(texelAt(first, ROW, 128U) == Rgba{255U, 255U, 255U, 255U});
+    CHECK(draw->batch().empty());  // drained by the flush itself
+    CHECK(draw->uploadCount() == 1U);
+
+    // A flush that did not clear would draw the same line again: the SECOND frame, with NO push.
+    const std::vector<std::byte> second = flushAndRead(*device, *target, *draw, identityCamera());
+    CHECK(texelAt(second, ROW, 128U) == Rgba{0U, 0U, 0U, 255U});  // BLACK everywhere
+    CHECK(draw->lastFrameLines() == 0U);
+    CHECK(draw->lastFrameDrawCalls() == 0U);
+    CHECK(draw->uploadCount() == 1U);  // UNMOVED: an empty flush acquires nothing
+    CHECK(draw->flushCount() == 2U);
+}
+
+TEST_CASE("render debug draw: the EDITOR's RGBA16Float pair, proven by bytes (DG16)") {
+    AERO_DG_PREAMBLE();
+    // The pair the viewport really builds against. "It created" is not the claim -- building against
+    // the 8-bit OUTPUT format instead is a draw-time failure, not a create failure, so the create
+    // half proves nothing on its own. This draws into one and reads it back.
+    if (!device->supportsTextureFormat(engine::rhi::TextureFormat::RGBA16Float,
+                                       engine::rhi::TextureUsage::Sampler | engine::rhi::TextureUsage::ColorTarget)) {
+        AERO_SKIP_OR_FAIL("device does not support RGBA16Float as a sampleable color target");
+    }
+    auto hdr = engine::render::RenderTarget::create(
+        *device, {DG_W, DG_H}, {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+    REQUIRE(hdr.has_value());
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = hdr->colorFormat(), .depthFormat = hdr->depthFormat()});
+    REQUIRE(draw.has_value());
+
+    constexpr std::uint32_t ROW = 60U;
+    draw->batch().line(Vec3{-0.9F, ndcYForRow(ROW), 0.5F}, Vec3{0.9F, ndcYForRow(ROW), 0.5F},
+                       Vec4{0.0F, 1.0F, 0.0F, 1.0F}, engine::render::DebugDepth::Overlay);
+    std::optional<engine::render::Frame> frame = hdr->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(frame.has_value());
+    draw->flush(*frame, identityCamera());
+    REQUIRE(hdr->endFrame(std::move(*frame)));
+
+    std::vector<std::byte> pixels(static_cast<std::size_t>(DG_W) * DG_H * 8U, std::byte{0xAB});
+    REQUIRE(device->readbackTexture(hdr->colorTexture(), 0, pixels));
+    // RU9's half bit patterns: 0.0 -> 0x0000, 1.0 -> 0x3C00. Exact, no decode.
+    const std::size_t base = ((static_cast<std::size_t>(ROW) * DG_W) + 128U) * 8U;
+    const auto half = [&pixels](std::size_t at) {
+        return static_cast<std::uint16_t>(static_cast<std::uint8_t>(pixels[at]) |
+                                          (static_cast<std::uint8_t>(pixels[at + 1U]) << 8U));
+    };
+    CHECK(half(base + 0U) == 0x0000U);  // r
+    CHECK(half(base + 2U) == 0x3C00U);  // g
+    CHECK(half(base + 4U) == 0x0000U);  // b
+    CHECK(half(base + 6U) == 0x3C00U);  // a -- INV-6 again, on the format the editor really uses
+}
+
+#endif  // AERO_SHADER_TOOLS_ENABLED

@@ -200,4 +200,114 @@ private:
     std::uint32_t rejectedBillboardCount = 0;
 };
 
+// ---- the GPU half ----------------------------------------------------------------------------
+
+struct DebugDrawConfig {
+    // REQUIRED: the format of the colour target of the pass flush() records into. Invalid or a depth
+    // format FAILS create().
+    rhi::TextureFormat colorFormat = rhi::TextureFormat::Invalid;
+    // REQUIRED, != Invalid: the pass carries depth whether or not the pipeline TESTS it -- the
+    // pipeline's depth format must match the pass it records into (the GraphicsPipelineDesc
+    // sentinel), and both Overlay pipelines declare it too.
+    rhi::TextureFormat depthFormat = rhi::TextureFormat::Invalid;
+    DebugDrawBudget budget{};
+    // Extension-less res:// VFS paths. READ ONLY INSIDE create() and never after -- VERIFIED, not
+    // promised: the config is not stored at all, so there is no view left to dangle (the 3.6.3
+    // PostProcessConfig precision, which a code-review round required there, taken one step further).
+    std::string_view lineVertexShaderPath = "res://debug_line.vert";
+    std::string_view lineFragmentShaderPath = "res://debug_line.frag";
+    std::string_view billboardVertexShaderPath = "res://debug_billboard.vert";
+    std::string_view billboardFragmentShaderPath = "res://debug_billboard.frag";
+};
+
+class DebugDraw {
+public:
+    // nullopt + ONE ERROR naming the cause on: colorFormat Invalid or a depth format; depthFormat
+    // Invalid; any of the four shaders failing to load; any of the four pipelines failing; either
+    // vertex buffer failing; the default texture or sampler failing. DESTROYS ANYTHING IT ALREADY
+    // CREATED before returning -- no ~Device leak WARN on any failure path (DG2). All four shader
+    // handles are SCOPE-OWNED (the ScopedShader idiom), so no exit can leak one.
+    // Clamps the budget with ONE WARN naming the requested and the allocated numbers.
+    [[nodiscard]] static std::optional<DebugDraw> create(rhi::Device& device, const VirtualFileSystem& shaderVfs,
+                                                         const DebugDrawConfig& config);
+
+    ~DebugDraw();                                // no-op if moved-from
+    DebugDraw(DebugDraw&&) noexcept;             // USER-DEFINED: transfers + nulls the source
+    DebugDraw& operator=(DebugDraw&&) noexcept;  // (a defaulted move double-frees eight handles)
+    DebugDraw(const DebugDraw&) = delete;
+    DebugDraw& operator=(const DebugDraw&) = delete;
+
+    // The batch this instance owns. A consumer writes debugDraw()->batch().line(a, b, colour) and
+    // never touches a buffer, a pipeline or a frame.
+    [[nodiscard]] DebugDrawBatch& batch() noexcept;
+    [[nodiscard]] const DebugDrawBatch& batch() const noexcept;
+
+    // BORROWED, both of them -- material.hpp's ownership rule: the caller creates and destroys them,
+    // and DebugDraw never touches a TextureHandle it did not make. An INVALID handle in either
+    // position means "use the built-in default" for THAT position independently: the 1x1 white texel
+    // and the Linear/ClampToEdge sampler this instance owns. One atlas per DebugDraw, not per
+    // billboard -- a per-billboard texture would break the one-draw-per-bucket rule, and E.2.3's
+    // icons are a handful of glyphs that belong in one atlas anyway; uvMin/uvMax select the glyph.
+    void setBillboardTexture(rhi::TextureHandle texture, rhi::SamplerHandle sampler) noexcept;
+
+    // Uploads the batch on its OWN command buffer (submitted before returning), records up to four
+    // draws into `frame`'s ALREADY-OPEN pass, and CLEARS THE BATCH ON EVERY PATH including every
+    // failure, so a failed frame cannot accumulate. Best-effort and void, matching
+    // ForwardRenderer::draw. AN EMPTY BATCH IS FREE: no command buffer, no upload, no bind, no draw.
+    void flush(Frame& frame, const CameraView& camera);
+
+    // ---- diagnostics: they report, they never change behaviour -------------------------------
+    // Every per-frame counter is reset at the TOP of flush(), before any early return, so a frame
+    // that drew nothing reads zeros rather than the previous frame's numbers (3.6.1's CD5 lesson).
+    [[nodiscard]] std::uint32_t lastFrameLines() const noexcept;
+    [[nodiscard]] std::uint32_t lastFrameBillboards() const noexcept;
+    [[nodiscard]] std::uint32_t lastFrameDroppedLines() const noexcept;
+    [[nodiscard]] std::uint32_t lastFrameDroppedBillboards() const noexcept;
+    [[nodiscard]] std::uint32_t lastFrameRejectedLines() const noexcept;
+    [[nodiscard]] std::uint32_t lastFrameRejectedBillboards() const noexcept;
+    [[nodiscard]] std::uint32_t lastFrameDrawCalls() const noexcept;  // 0..4
+    [[nodiscard]] std::size_t flushCount() const noexcept;            // calls, lifetime
+    // Upload command buffers ACQUIRED, lifetime -- moved at the ACQUISITION (the shadowPassCount
+    // posture), so "acquired nothing" and "acquired and leaked" are distinguishable.
+    [[nodiscard]] std::size_t uploadCount() const noexcept;
+    [[nodiscard]] bool hasWarnedBudget() const noexcept;
+    [[nodiscard]] bool hasWarnedUploadFailure() const noexcept;
+    [[nodiscard]] bool hasBillboardTexture() const noexcept;
+    [[nodiscard]] const DebugDrawBudget& budget() const noexcept;  // ALLOCATED, after clamping
+
+private:
+    // NOT noexcept: DebugDrawBatch's constructor reserves both buckets, so this can throw
+    // bad_alloc. Marking it noexcept would turn an allocation failure into std::terminate
+    // (clang-tidy's bugprone-exception-escape says so out loud). create() is the only caller
+    // and is itself not noexcept.
+    DebugDraw(rhi::Device* owner, DebugDrawBudget allocated);
+    void destroyAll() noexcept;
+    void reset() noexcept;
+    void plotCounters() const noexcept;  // the two Tracy plots; a no-op when profiling is off
+
+    rhi::Device* device = nullptr;  // non-owning; the Device outlives the DebugDraw (contract)
+    DebugDrawBatch batchValue;      // member/accessor collision rule: batchValue / batch()
+    std::array<rhi::GraphicsPipelineHandle, DEBUG_DEPTH_COUNT> linePipelines{};
+    std::array<rhi::GraphicsPipelineHandle, DEBUG_DEPTH_COUNT> billboardPipelines{};
+    rhi::BufferHandle lineBuffer{};                      // 2 * maxLines * 16 bytes, created ONCE at create()
+    rhi::BufferHandle billboardBuffer{};                 // 6 * maxBillboards * 36 bytes, created ONCE
+    rhi::TextureHandle defaultTexture{};                 // 1x1 white RGBA8Unorm, OWNED
+    rhi::SamplerHandle defaultSampler{};                 // Linear / ClampToEdge, OWNED
+    rhi::TextureHandle billboardTexture{};               // BORROWED; invalid == use defaultTexture
+    rhi::SamplerHandle billboardSampler{};               // BORROWED; invalid == use defaultSampler
+    std::vector<DebugLineVertex> lineStaging;            // reserved to 2 * maxLines, ONCE
+    std::vector<DebugBillboardVertex> billboardStaging;  // reserved to 6 * maxBillboards, ONCE
+    std::uint32_t lastLines = 0;
+    std::uint32_t lastBillboards = 0;
+    std::uint32_t lastDroppedLines = 0;
+    std::uint32_t lastDroppedBillboards = 0;
+    std::uint32_t lastRejectedLines = 0;
+    std::uint32_t lastRejectedBillboards = 0;
+    std::uint32_t lastDrawCalls = 0;
+    std::size_t flushes = 0;
+    std::size_t uploads = 0;
+    bool warnedBudget = false;
+    bool warnedUploadFailure = false;
+};
+
 }  // namespace engine::render
