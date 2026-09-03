@@ -12955,3 +12955,360 @@ contaminated (every seed edit stamps a fresh mtime, so every seed build did reco
 lesson generalises past this task: **a revert-with-rebuild is only a rebuild if the revert changes
 the timestamp.** `shutil.copy` plus an explicit `os.utime` is the fix; `git checkout --` would have
 been correct here too, and is only forbidden while the fix under test is uncommitted.
+
+### E.1.2 — Grid floor + world axes — the first content in E.1.1's batch
+
+**What shipped, in six commits** — a pure grid emitter with a public cadence, a pixel proof, an axis
+palette, the editor wiring, a sample flag and the docs. **Six, not the seven the plan drafted:** its
+commit 1 was struck before a line of it was written, for the reason that is this task's headline.
+
+* **`render::emitDebugGrid`, `render::debugGridCadence`, `render::debugGridPow10`**
+  (`engine/render/include/aero/render/debug_grid.hpp` + `src/debug_grid.cpp`, ~400 lines together) —
+  pure, total, allocation-free, no logging, no static state, no rhi type, and reaching no libm
+  function but `sqrt`, `floor` and `ceil`, all three of which IEEE-754 requires to be correctly
+  rounded, so the emitter is bit-deterministic on every lane. `std::pow` and `std::log10` are
+  deliberately absent and `GR22` pins their absence as source text. Three decades at once with
+  weights `(a(1−f), b(1−f)+af, bf)`, radii that are a function of the **spacing alone**, and a
+  world-absolute lattice with nothing snapped, so the line at `x = 0` really is the world's `x = 0`
+  and the axes can replace it.
+* **`DG18`** — the two axes read back out of the editor's own `RGBA16Float` pair, on Metal, WARP and
+  lavapipe. The tree's first pixel assertion whose subject is *generated* rather than hand-placed
+  geometry.
+* **`editor/include/aero/editor/axis_palette.hpp`** — the axis colours the tree has never had, in
+  both spellings (linear `Vec4` for the GPU, sRGB bytes for ImGui), ImGui-free like every public
+  editor header, with the agreement between the two spellings **asserted** rather than asserted
+  about.
+* **The editor wiring** — a `Grid` checkbox **first** in the view-options row, session state
+  defaulting to on, and one `emitDebugGrid` call in `renderScene` between the forward draw and the
+  flush.
+* **`--grid` on `samples/phase-E-debug-draw`** — no eleventh sample directory.
+* **`DebugDrawConfig` did not grow a field**, and
+  `engine/render/{include/aero/render/debug_draw.hpp, src/debug_draw.cpp}` are **byte-identical**
+  after this task, asserted by diff at the gate.
+
+**THE HEADLINE IS A MEASURED NEGATIVE RESULT, AND IT IS THE ANSWER TO A QUESTION E.1.1 HANDED THIS
+TASK BY NAME: A RASTERIZER DEPTH BIAS DOES NOT APPLY TO LINE PRIMITIVES.** E.1.1 deferred the
+depth-bias knob to "E.1.2's grid is the consumer and owns the answer". The answer is that the
+mechanism does not exist for this primitive type:
+
+* **D3D12** — *"Bias is not applied to any point or line primitives, except for lines drawn in
+  wireframe mode."* That exception is `FillMode::Line` on a **triangle** topology, which a `LineList`
+  is not.
+* **Metal** — depth bias *"only influences triangle primitives, but doesn't apply to points or
+  lines."*
+* **Vulkan** — *"Depth bias is applied to triangle topology primitives received by the rasterizer
+  regardless of polygon mode. Depth bias **may** also be applied to line and point topology
+  primitives"* — permitted, never guaranteed.
+
+**And it was measured, not read.** Built against the real `DebugDraw`, a sweep of **13 line depths ×
+5 bias magnitudes** (`constant` = 0 / 256 / 1024 / 4096 / 10000) against a depth-writing quad whose
+face sits at exactly `z = 0.9`: the line wins at `z = 0.9` and the quad wins at every gap from
+`1e-5` to `0.02`, **at every magnitude**. Nothing moves. The identical sweep with the **only** change
+being a `Tested` **billboard** (`TriangleList`) through the same `create()`, the same frame and the
+same bias moves predictably — `1e-5` flips at 256, `1e-4` at 4096, `5e-4` at 10000 — which brackets
+Metal's bias unit at `2^-24 = 5.96e-8` for a D32Float target at `z ≈ 0.9` (exponent −1, the standard
+`2^(e-23)` rule), and caps the reachable offset at about `6e-4` NDC for triangles. **SDL is not
+dropping the state:** its Metal backend calls `setDepthBias:slopeScale:clamp:` unconditionally in
+`METAL_BindGraphicsPipeline` (`SDL_gpu_metal.m:2431-2433`). The rasterizer ignores it for lines.
+
+So the whole of the plan's commit 1 — `render::DebugDepthBias`, `DEBUG_DEPTH_BIAS_LIMIT`,
+`sanitizeDebugDepthBias`, `DebugDrawConfig::testedDepthBias`, `DebugDraw::depthBias()`, four
+descriptor lines, two explicit `Overlay` clears, a WARN, `DD27`, `DG17`, `DG19` and
+`VIEWPORT_DEBUG_DEPTH_BIAS` — was **struck before implementation**, and `DG17` could not have gone
+green on all three lanes even in principle. **Two alternatives were considered and rejected.**
+Shipping the knob scoped to the `billboardTested` pipeline: this task draws no billboard, so it would
+be a knob built before its consumer exists — the abstraction 3.6.3 refused. A world-space Y offset on
+the grid: it contradicts the world-lattice rule in Y, visibly floats at close grazing angles, and
+solves a problem that has **no instance in the tree**, because no `Plane` primitive exists until
+E.5.2. **Two handoffs come out of it instead:** the coplanar-`Plane` problem to **E.5.2**, with the
+validation page's row 6 rewritten to *measure* the shimmer rather than pass or fail on it; and a
+depth bias for the `billboardTested` (`TriangleList`) pipeline to **E.2.3**, where the same
+measurement shows it demonstrably works.
+
+**THE RULE THAT OUTLIVES THIS TASK MOST WIDELY: ADDING CONTENT TO A SHARED PER-FRAME BATCH REDDENS
+EVERY TEST THAT ASSERTS THE BATCH IS EMPTY.** The plan was silent about `I108`, `I109` and `I111`,
+and all three go red the moment the grid exists. Measured after the editor wiring and before any new
+test was written:
+
+```
+imgui_layer_test.cpp:8783: CHECK( draw->uploadCount() == 0U )            values: CHECK( 2 == 0 )
+imgui_layer_test.cpp:8784: CHECK( draw->lastFrameDrawCalls() == 0U )     values: CHECK( 1 == 0 )
+imgui_layer_test.cpp:8785: CHECK( draw->lastFrameLines() == 0U )         values: CHECK( 2224 == 0 )
+imgui_layer_test.cpp:8844: CHECK( draw->lastFrameLines() == 1U )         values: CHECK( 2225 == 1 )
+imgui_layer_test.cpp:8847: CHECK( draw->uploadCount() == 1U )            values: CHECK( 3 == 1 )
+imgui_layer_test.cpp:9008: CHECK( draw->lastFrameDroppedLines() == 5U )  values: CHECK( 2229 == 5 )
+imgui_layer_test.cpp:9016: CHECK( draw->lastFrameDroppedLines() == 5U )  values: CHECK( 2229 == 5 )
+```
+
+Seven assertions across three cases, each counting an **empty** batch exactly — E.1.1's slot costing
+nothing, one pushed line plus one pushed billboard, five lines dropped over budget. `2224` is exactly
+the default-pose figure `debug_grid.hpp`'s own comment predicts, so the emitter was behaving; what the
+three cases encoded was an assumption E.1.1 could make and E.1.2 cannot. **A shared batch makes "the
+batch is empty" a claim about the WHOLE EDITOR, not about the subsystem under test.**
+
+**The fix is the toggle seam, and every assertion in all three cases is byte-unchanged.** Each case
+calls `viewport->requestGridEnabled(false)` before its first tick — which required hoisting the
+`dynamic_cast` above the two warm-up ticks, because `uploadCount()` is a **lifetime** counter and a
+warm-up tick with the grid on spends it where no later toggle can undo it. Verified by diff: the only
+removed lines are six `REQUIRE(app->tick());` re-added verbatim one line lower, and **zero** counter
+assertions were removed or altered. The alternative — restating `== 0U` / `== 1U` / `== 5U` as `2224`
+/ `2225` / `2229` — was rejected: it would bake a grid line count into three E.1.1 cases, which is the
+count-literal trap, and is the thing `I112` deliberately avoids by asserting
+`lastFrameLines() <= DEBUG_GRID_MAX_LINES` instead of a magnitude. A grep confirmed the blast radius
+is exactly those three cases: **no other test in the tree reads a `DebugDraw` counter outside
+`render_debug_draw_test.cpp`.**
+
+**E.2.3 HITS THIS WALL NEXT, AGAINST ASSERTIONS THIS TASK WROTE.** The light gizmos share the same
+batch and will redden `I112`'s `lastFrameDrawCalls() == 1U` ("ONE bucket: Tested only") and
+`lastFrameBillboards() == 0U`. The fix shape is the same one: give each producer its own toggle seam
+and disable the others, rather than restating a magnitude.
+
+**THE TWO DEFECTS IN THE SPEC'S OWN PSEUDOCODE, BOTH FOUND BY MEASURING RATHER THAN BY READING.**
+Both live in one line — `for k in kMin..kMax` — and both are *hangs*, not failures.
+
+1. **`focus.x = 1e38` makes `kMin` and `kMax` both `+inf`.** `inf <= inf` is true and `inf + 1.0F` is
+   `inf`, so a float-indexed loop **never terminates**. And the obvious repair walks into a second
+   trap: `inf - inf` is `NaN`, and `std::min(NaN, 48.0F)` **returns NaN** because `min` is defined in
+   terms of `<` — the 3.7.2 `std::clamp(NaN, lo, hi)` lesson in a new place — so the cast to an
+   unsigned is UB that UBSan traps. `1e38` is merely **finite**, which is all the totality gate
+   promises to survive.
+2. **`k += 1.0F` IS A NO-OP AT `|k| >= 2^24`, AND THE POSE THAT REACHES IT IS ORDINARY.** Measured:
+   `centreAlong = 1e6` with `spacing = 0.01` gives a quotient of ~1e8, where the float spacing is 8.
+   That is "fly a million units out, then orbit something closely" — reachable in the editor, and it
+   **hangs the editor**, not a test.
+
+**The fix, and the rule that outlives it: index a float-valued loop with an INTEGER counter whose
+bound is a constant, and gate on finiteness before any subtraction.** `emitFamily` computes `kMinF`
+and `kMaxF`, refuses non-finite or empty ranges (written `!(kMinF <= kMaxF)` rather than
+`kMaxF < kMinF` so a NaN that slipped the first arm still takes the exit), clamps the span to
+`2 * DEBUG_GRID_RADIUS_CELLS`, iterates `std::uint32_t i`, and breaks at the first repeated `k`.
+That is also what makes **`DEBUG_GRID_MAX_LINES` a bound BY CONSTRUCTION** rather than by hoping two
+independent divisions round the same way. They do not: at `|centre / spacing| ~ 1e7` half an ulp is
+0.6, enough to move `ceil` at one end and `floor` at the other and produce 50 lines where 49 is the
+bound the cap is derived from.
+
+**THE MEASUREMENT THAT OUTLIVES THE TASK: `pow10(n+1) == 10.0F * pow10(n)` FOR EVERY `n` IN RANGE
+EXCEPT `n = −2`.** `debugGridPow10(-1)` is `0.100000001` (`0x3DCCCCCD`); `10.0F *
+debugGridPow10(-2)` is `0.099999994` (`0x3DCCCCCC`). One ulp, in one place, and it is enough to shift
+a whole lattice family's `k` range — which is why the self-similarity claim is exact only for
+`level >= -1`. Two corollaries worth keeping: a **running product** does not round-trip (`1.0F` down
+six decades and back is `0.99999994`, not `1.0`), which is why each spacing is a fresh call from
+`1.0F` rather than an accumulator; and the spec's own comment claiming `10.0F * pow10(-1)` is
+`1.0000000149…` is **false** — both are exactly `1.0`. `GR6` arm 3 asserts all of it, so none of it
+is a claim anyone has to take on trust.
+
+**`GR6` HAD TO BE REWRITTEN BEFORE IT WAS WRITTEN, AND THEN CORRECTED AGAIN.** The spec asked for
+"exactly the same line count, the same `k` ranges, the same emission order and the same packed RGB
+bytes" under a ×10 pose, with alpha "within 1". Measured on a prototype: alpha deviates by **15**,
+positions by **1.3 × the coarsest radius**, and the `k` range shifts — because of the ulp above. What
+is *actually* true, and what the case now asserts, is stronger where it holds and honest where it is
+not:
+
+* the **cadence state** is bit-exactly self-similar on `level >= -1` — `level' == level + 1`,
+  `f' == f`, `s'[c] == 10·s[c]`, `R'[c] == 10·R[c]`, `w'[c] == w[c]`, **no epsilon**;
+* the **vertex stream** matches on a lattice-aligned pose — identical count, identical packed **RGBA
+  including alpha** (worst Δ **0**), positions within **9.11e−08 × the coarsest radius**, asserted at
+  `1e−6` for a >10× margin;
+* and the **one decade where it is not exact is pinned as its own assertion**.
+
+Then arm 1's decade band turned out to be **off by one**: the loop's `decade` is the *view scale's*
+decade, so `decade = -1` yields `level = -2` — precisely the one-ulp exception band arm 3 pins — and
+it failed 6 of 6 rows. Measured per decade at six mantissas each: `-2` → 6/6 fail, `-1` → 6/6 fail,
+`0` through `4` → **0/6 fail**, `5` → 5/6 fail (`9e5 × 10` exceeds `DEBUG_GRID_MAX_VIEW_SCALE`, so
+the input is no longer a bit-exact ×10). The band is `{0, 1, 2, 3, 4}` with the measured range in the
+comment, and arm 1 runs 30 rows.
+
+**COORDINATE DIVISIBILITY CANNOT IDENTIFY A CADENCE, IN EITHER SCAN DIRECTION — SO `GR24` DERIVES IT
+FROM POSITION IN THE SEQUENCE INSTEAD.** The plan's `GR24` recovered each run's cadence from *which
+spacing its coordinate is an exact float multiple of*, "finest match wins". No coordinate-only
+predicate can do that, because the three lattices **nest in float32**. At the default pose,
+`spacing = (0.100000001, 1, 10)`:
+
+| `coord` | mult of `s0` | of `s1` | of `s2` | finest-first says | coarsest-first says | truth |
+|---|---|---|---|---|---|---|
+| `-2.3` | yes | no | no | 0 OK | 0 OK | 0 |
+| `-23` | **yes** | yes | no | **0 WRONG** | 1 OK | 1 |
+| **`10`** | **yes** | yes | **yes** | **0 WRONG** | **2 WRONG** | **1** |
+| `-230` | **yes** | yes | yes | **0 WRONG** | 2 OK | 2 |
+| `0` (`drawAxes == false`) | yes | yes | yes | 0 | 2 | **0, 1 AND 2** |
+
+`10.0` is the decisive row: it is a multiple of all three spacings, so it defeats **both** scan
+directions at once. The cause is that `round(k / 0.1F) * 0.1F` rounds back to **exactly** `k` for the
+integers the coarser cadences produce — for `k = -23` the product's error is `3.427e-07`, under the
+half-ulp `9.537e-07` at that magnitude. And the plan's own escape hatch, *"a coordinate that is a
+multiple of all three is attributed to cadence 0, which is the order the emitter pushes it in"*, is
+false: with `drawAxes = false` the `k == 0` line is pushed by **every** cadence, not only cadence 0.
+The replacement splits the run sequence wherever `coord` fails to **strictly ascend**, asserts
+**exactly `2 × DEBUG_GRID_CADENCES` blocks**, reads each block's family **from the geometry** (which
+axis is constant) rather than inferring it, and only then asserts divisibility *within* a block
+against `spacing[b / 2]`. That pins the block **count** as well as the order, which the divisibility
+version never did, and it runs in **both** `drawAxes` arms — the `false` arm is where the old
+mechanism was worst, and it is what proves the block scheme does not lean on the axes to separate
+anything. `GR24`'s comment states the measurement rather than the intention, because it is the only
+thing standing between the next reader and a "simplification" back to divisibility.
+
+**THE CADENCE HAD TO BECOME PUBLIC, AND THE SPEC CONTAINED BOTH REASONS WITHOUT NOTICING.** The
+sample is specified to print "the selected cadence" and `emitDebugGrid` returns only a count; and six
+of the tier-0 cases are claims about `level`, `f`, three weights, three spacings and three radii,
+none of which is recoverable from a vertex list — `GR9`'s "exactly `(minorAlpha, majorAlpha, 0)`" is
+not recoverable from an 8-bit alpha at all. So `debugGridCadence` is public and `emitDebugGrid` is
+built on it: **one decision, seen by the picture and by the tests.** The `sanitizeTonemapParams`
+posture, third application.
+
+**Two more spec claims that measurement overturned.** `GR17` ("halving `farPlane` strictly reduces
+the count") is **false at the default pose** — nothing is clamped there, so the count is identical; it
+is now two-armed, and the negative arm is what makes the positive one mean something. And `DG18`'s "a
+corner pixel beyond the coarsest radius is the clear colour" is **geometrically unreachable**: for a
+top-down view the frame corner sits at `0.962 × eye.y` while `R₂` is at least `0.9 × farPlane >
+0.9 × eye.y`, so the disc always covers the frame. Zeroing the grid alphas instead makes *every*
+non-axis texel assertable, which is strictly stronger and achievable.
+
+**THE PROJECTION AND THE RASTERIZER DISAGREE BY ONE TEXEL AT A PIXEL BOUNDARY, AND THE PLAN'S TWO
+LITERAL PIXEL ASSERTIONS WERE RED BECAUSE OF IT.** `DG18` was drafted as
+`CHECK(lit(pixels, xAxisAt.row, PROBE_COLUMN))` and its column twin. Measured on Metal:
+`xAxisAt.row = 96` but `firstLitRow = 95`; `zAxisAt.column = 128` but `firstLitColumn = 127`, with
+**exactly one** lit row and one lit column. Both lines would have failed the first CI push. The plan
+contradicted itself here — its own finding said `projectToPixel` "is used only for a `CAPTURE`", and
+the code block's comment agreed — and the resolution keeps the projection but bounds it: a **±1
+agreement on where the lit run STARTS**, which is strictly stronger than the literal (it pins
+*where*, not merely *that*) and lane-safe, because **which side of a pixel boundary lights is a
+rasterizer fill-rule convention that legitimately differs between Metal, WARP and lavapipe.** ±1 is
+the width of the genuine ambiguity, not slack. All four numbers are captured, so a failure prints both
+sides rather than needing a second run.
+
+**A FRIEND FUNCTION CANNOT BE DEFINED INSIDE A LOCAL CLASS ([class.friend]/6), SO A CASE-LOCAL
+COMPARISON STRUCT CAN CARRY NO `operator<<`.** `DG18`'s `Half4` was drafted inside the `TEST_CASE`,
+which would have made all **448** texel assertions print `{?} == {?}` on failure — the readability
+trap E.1.1 recorded, in the one place it matters most. `Half4` and its `operator<<` are hoisted into
+the file's own anonymous namespace beside `Rgba`'s, inside the same file-level `#if`; the `halfAt` and
+`lit` lambdas stay inside the case.
+
+**`AX1`'S CROSS-LANE HEADROOM IS ABOUT 120 FLOAT ULPS — REAL, BOUNDED, AND NOT UNLIMITED.** The
+tightest margin to a byte flip is `0.7605` (`AXIS_X_LINEAR.x` and `AXIS_Z_LINEAR.z`), which encodes
+to **225.996765** — **0.0032 of a byte step** from the 225.5 boundary, about 1.4e-5 relative, roughly
+**120 float ulps**. `AXIS_Y_LINEAR.y` is next at 0.0039. A cross-lane `powf` difference would have to
+exceed ~120 ulps to flip a byte, which no mainstream libm does; all nine components were measured
+before the case was written, so `AX1` was green on its first run rather than fitted to. **It has never
+run on Windows or Linux.**
+
+**A LATENT FRAGILITY IN `check-golden-rule.sh`, RECORDED SO IT IS FOUND BY READING RATHER THAN BY A
+PUZZLING FAILURE.** Its `CANARY_DIR` is `editor/include/aero/editor`, and it feeds the **first tracked
+file there** (`git ls-files`, sorted) through `INCLUDE_RE` as its inverted self-test.
+`axis_palette.hpp` sorts between `audio_decode.hpp` and `blender_service.hpp`, so
+`animation_cook_source.hpp` remains the canary and nothing moved — **but a future header in that
+directory sorting before `animation_cook_source.hpp` would silently change which file the guard
+self-tests against.** Not a defect today.
+
+**AND ONE OF THIS TASK'S OWN GATE COMMANDS WAS SILENTLY VACUOUS**, which is the standing rule firing
+against the document that restates it. The determinism-manifest check was drafted as
+`git ls-files | grep -i 'determinism.*manifest'`. That matches **nothing** — the file is
+`tests/cooker/determinism.sha256` and the word "manifest" appears nowhere in its path. The failure is
+worse than a no-op: with an empty pathspec, `git diff --stat 84f05ff -- ` **degrades to a whole-tree
+diff** and prints every changed file, which reads as a catastrophic byte-identity failure, and
+`… | xargs grep -c .` runs `grep -c .` with no file argument at all. Two corrections: use the literal
+path, and count **hash lines** rather than lines (`grep -c .` reads 81, because the file is 86 lines
+of which 61 are comments; the frozen number is **20 sha256 lines**, which
+`grep -cE '^[0-9a-f]{64}[[:space:]]'` counts). The strongest form is neither — compare the blob:
+`git rev-parse 84f05ff:tests/cooker/determinism.sha256` against the same at `HEAD`. Measured
+`bd4f13863b934b91c7f99335bbc76c8e37d0328d` at both revisions, 20 hash lines, untouched.
+
+**Two smaller corrections, each measured against a plausible guess.** The plan put
+`axis_palette.hpp`'s include "alphabetically before `asset_drag.hpp`", but `asset_drag` sorts
+**before** `axis_palette` (`s` < `x`) and `.clang-format` sets `SortIncludes: CaseSensitive`, so it
+goes **after** — and clang-format then realigned the two trailing comments, which shows as a
+whitespace-only change on the `asset_drag.hpp` line and is required for CI's format check. And a
+`CAPTURE(entry.path().string())` became a named local: doctest's `CAPTURE` expands to a lazily
+stringified `INFO` that captures **by reference**, so a temporary `std::string` dies at the end of the
+full expression and would dangle exactly when a failure tries to print it.
+
+**What it deliberately did NOT ship, each with its owner and its trigger.**
+
+* **An analytic shader grid with `SV_Depth`.** The better-looking technique, and three firsts at once
+  in this tree — first fragment-stage depth write, first analytic-coverage pass, first pipeline
+  contradicting E.1.1's INV-5. E.1.1's own rule is that a first-use task adds one first, not three.
+  Unowned; the trigger is a legibility complaint the radial fade cannot answer.
+* **Thick or anti-aliased lines.** SDL_GPU exposes no line width on any backend. Still E.1.1's
+  standing unowned handoff, and **row 2 of this task's validation page is its stated trigger** — the
+  first row anywhere that could fire it.
+* **Frustum culling the grid.** A camera looking at the sky emits ≈2 300 lines the hardware clips.
+  Bounded and cheap; culling it is a second copy of the disc logic. Unowned; the trigger is a Tracy
+  measurement showing the emit inside a frame budget.
+* **A movable or rotatable grid plane, and a Y axis line.** The deliverable is *the ground plane*, and
+  a vertical line through the origin describes nothing. The palette defines `AXIS_Y` anyway, for
+  E.3.1's `Vec3` rows.
+* **Persisting the toggle.** E.4.1 owns per-project state and a viewport display preference is not
+  project state; inventing a second store for one boolean is the abstraction this project refuses.
+  Handed off to whichever task introduces a per-user preferences file.
+* **A separate axis toggle.** The grid and its two axes are one piece of chrome, and a second checkbox
+  for two lines is not worth a slot on the overlay strip. `drawAxes` stays a parameter of the emitter,
+  so a test and the sample drive both arms.
+* **Adaptive density by viewport size.** The cap is what makes the line count a *property*; making it
+  depend on the viewport makes it a variable.
+
+**Build & dependency impact: none.** No dependency lands, `vcpkg.json` and `/vcpkg` are untouched, no
+`find_package`, no shader, no pipeline object, no RHI change, no component, no scene-format change,
+**`docs/09` untouched** — nothing here is serialized — and the determinism manifest untouched at 20
+hash lines. `engine/render`'s link line is byte-identical. The whole CMake delta is **one source line**
+in `engine/render/CMakeLists.txt` and **two** in `tests/CMakeLists.txt` — no `add_test`, no new
+compile definition (`AERO_SHADERS_SRC_DIR` was already target-wide).
+
+**Handoffs, each with an owner and a trigger.**
+
+| Handoff | Trigger | Owner |
+|---|---|---|
+| Coplanar geometry at `y = 0` z-fighting the grid, with a mechanism that works on **line** primitives | E.5.2 creates the `Plane` primitive at `y = 0` | **E.5.2** |
+| A depth bias for the `billboardTested` (`TriangleList`) pipeline, where the sweep shows it demonstrably works | E.2.3's light-gizmo icons z-fight on a surface | **E.2.3** |
+| Re-spelling `I112`'s `lastFrameDrawCalls() == 1U` / `lastFrameBillboards() == 0U` via a per-producer toggle | E.2.3 pushes into the shared batch | **E.2.3** |
+| Adopt `AXIS_{X,Y,Z}` on the Inspector's `Vec3`/`Quat` rows | E.3.1 starts | **E.3.1** |
+| Adopt the same trio on ImGuizmo's style config | E.1.5 starts | **E.1.5** |
+| Fold the trio into `EditorTheme` | E.6.1 builds the theme | **E.6.1** |
+| Move the Grid checkbox into the view-options popover | E.2.4 moves exposure/tonemap there | **E.2.4** |
+| Persisting the grid toggle per user | a per-user preferences store exists | unowned |
+| Thick / AA debug lines | a legibility complaint on HiDPI (validation row 2) | unowned (E.1.1's) |
+| Frustum-culling the grid | a Tracy measurement showing the emit in a frame budget | unowned |
+| An analytic shader grid | a legibility complaint the fade cannot answer | unowned |
+
+**The gate, as measured on macOS.** Both presets build; `AERO_REQUIRE_GPU=1 ctest` green on both,
+**172/172** each. **`ctest -N` is UNMOVED at 172 on both presets while the doctest totals MOVE** —
+`aero_tests` **1223 → 1249** (`GR1`–`GR25` + `DG18`), `aero_editor_shell_test` **1746 → 1748**
+(`AX1`, `AX2`) and `aero_editor_imgui_test` **147 → 149** (`I112`, `I113`; `I110` gained a subcase,
+which moves no total), with the other four unmoved at **34 / 29 / 7 / 28**. That repeats E.1.1's
+signature and is the exact inverse of 3.7.3's: two new TUs ride existing binaries, a sample registers
+no ctest entry, so a moved `ctest -N` here would have meant a CMakeLists copied from the wrong
+template. All eight guards exit 0 — math **461**, platform **85**, rhi **149**, scene **85**,
+golden-rule **151**, project-no-delete **A = 6 / B = 75** unmoved (this task adds no
+`editor/src/*.cpp`), audio **11 / 3 / 55**, probes **6 / 57**. `debug_draw.hpp`, `debug_draw.cpp` and
+`tests/cooker/determinism.sha256` are byte-identical to the branch point, asserted by diff and by
+blob id.
+
+**What is NOT validated.** `editor/validation/E.1.2-grid-floor-world-axes.md` is written (gitignored,
+so it enters no commit) with twelve numbered steps, eight of them carrying measurement blanks in bold.
+**It is not run on any platform.** Rows 1, 5 and 10's mechanical halves are already automated on all
+three lanes by `GR13`–`GR16`, `GR5` and `DG18`, which is more than most render tasks can say. What
+stays hardware-only: HiDPI legibility (row 2 — E.1.1's thick-line handoff's stated trigger), the
+cadence at four dolly distances (row 3), the crossfade's pacing under a linear fraction (row 4 — the
+only cover for `S12`), the picture half of occlusion (row 5), **the size of the coplanar shimmer
+(row 6, which now measures the problem for E.5.2 rather than judging a bias that does not exist)**,
+cost (row 7), the strip's click ownership after a widget was inserted at its front (row 8 — `S26`'s
+only cover), the unchanged picture against a branch-point build (row 9), and the axes agreeing with
+ImGuizmo (row 10, which E.1.5 inherits).
+
+**The sabotage matrix is NOT run as a batch, and that is stated rather than implied.** §7 of the plan
+declares **27 seeds** (31 drafted, less `S20`–`S23`, which named the struck depth-bias code) and
+**7 assertion mutants** (8 drafted, less `M7`, which named `DG17`). What *was* run, one at a time and
+recorded above where each belongs, is: the 13 × 5 depth-bias sweep in both primitive topologies;
+`M6`'s faithful equivalent — the plan's wording does not match the shipped test, because the `AxisPair`
+table references `ed::AXIS_X_SRGB` rather than spelling literal bytes, so there is no local byte
+literal to mutate, and replacing the whole table entry with `{227U, 65U, 73U}` took `AX1` **red**;
+`GR24` proved red under a swapped family order **and** under a reversed cadence order; `GR6` arm 1's
+band measured per decade at six mantissas each; and the seven `I108`/`I109`/`I111` failures above,
+which were discovered rather than seeded. **The remaining seeds and mutants are open work before the
+PR**, along with the two reduced configurations and the sample run for row 11.
+
+**Two procedure notes that cost time here.** `check-math-boundary.sh` counts `git ls-files`, i.e.
+**tracked** files only, so running a per-commit guard step before `git add` shows an unmoved count and
+reads as "the guard missed the new files" — stage first, then measure. And the sample's real target is
+**`aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before the E — which the plan misspelled
+as `aero_sample_phase_E_debug_draw` in every gate command and in validation row 11. A wrong binary
+name in a validation row makes the row unrunnable at exactly the moment someone is trying to follow
+it.

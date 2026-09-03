@@ -11,7 +11,9 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 ## Current state — read this first
 
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
-**E.1.1 (Debug line renderer) is MERGED (PR #92, merge commit `15bf58b`, all six CI jobs green with `headSha == HEAD` asserted); the other 23 tasks are planning only.** Six epics, 24
+**E.1.1 (Debug line renderer) is MERGED (PR #92, merge commit `15bf58b`) and E.1.2 (Grid floor +
+world axes) is COMPLETE IN CODE on `feat/E.1.2-grid-floor-world-axes` — six commits, the full local
+gate green on both macOS presets; the other 22 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
@@ -24,7 +26,9 @@ picked; (2) `buildRenderView`'s **primitive arm never assigns `instance.material
 through the undoable command and then silently discarded at draw time — a confirmed defect, owned by
 **E.5.1**; (3) `rhi::PrimitiveType::LineList` and `FillMode::Line` existed since 0.4.1 with **no consumer at
 all** until **E.1.1**, which is now the tree's first and only `LineList` pipeline set — `FillMode::Line`
-is still unexercised and named as such in a comment, and wireframe-of-meshes remains an unowned handoff; (4) `openSceneFile`/`saveSceneFile` perform **zero**
+is still unexercised and named as such in a comment, and wireframe-of-meshes remains an unowned handoff.
+**E.1.2 is the first CONTENT in that pipeline set**, and it is what established that a rasterizer
+depth bias does not reach a line primitive at all (see below); (4) `openSceneFile`/`saveSceneFile` perform **zero**
 containment validation against the project root, so a scene from another project loads while the
 AssetDatabase still resolves GUIDs against the open one. **`SpotLight` (E.2.2) and `Environment`
 (E.2.1) take the built-in component count from 8 to 10** — the five-generation-site rule and the
@@ -47,6 +51,57 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > summary of *where the position is* and of the rules that still govern new work. It is **rewritten**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
+
+### E.1.2 — Grid floor + world axes (complete in code) — and a MEASURED NEGATIVE RESULT
+
+**The viewport has a floor.** A pure `render::emitDebugGrid` turns a camera pose into world-space
+lines for a ground grid on the XZ plane, drawn through E.1.1's batch behind a `Grid` checkbox that
+defaults on and is never persisted. Six commits, no new shader, no new pipeline, no dependency, no
+component, no scene-format change, `docs/09` untouched. Full detail in `docs/10`; what governs new
+work is below.
+
+**A RASTERIZER DEPTH BIAS DOES NOT APPLY TO LINE PRIMITIVES, AND THIS IS THE ANSWER TO E.1.1'S
+HANDOFF.** E.1.1 assigned this task "a depth-bias field on the debug pipelines" by name. It was
+built, then **measured inert**: the debug `Tested` pipelines are `PrimitiveType::LineList`, and D3D12
+("Bias is not applied to any point or line primitives, except for lines drawn in wireframe mode") and
+Metal (bias "only influences triangle primitives") both exclude lines outright, while Vulkan permits
+without guaranteeing. A sweep of 13 line depths x 5 bias magnitudes moved a line at **no** gap down to
+`1e-5`; the identical sweep with a `TriangleList` billboard moved predictably and bracketed Metal's
+unit at **`2^-24`** for a `D32Float` target. SDL is not dropping the state — its Metal backend calls
+`setDepthBias:slopeScale:clamp:` unconditionally. **So `DebugDrawConfig` did NOT grow a bias field and
+`debug_draw.{hpp,cpp}` are byte-identical after this task.** Coplanar geometry at `y = 0` passes to
+**E.5.2** (the task that first creates a `Plane` there); a bias for the **billboard** pipeline, where
+it demonstrably works, passes to **E.2.3**. **Never add a depth bias to a line pipeline in this tree
+and expect it to do anything.**
+
+**ADDING CONTENT TO THE SHARED BATCH REDDENS EVERY TEST THAT ASSERTS THE BATCH IS EMPTY.** `I108`,
+`I109` and `I111` each counted an empty batch *exactly* — and all three went red at `2224 == 0`,
+`2225 == 1`, `2229 == 5` the moment the grid existed. They were fixed with
+`requestGridEnabled(false)` before their first tick, **every assertion byte-unchanged**; restating the
+magnitudes would have baked a grid line count into three E.1.1 cases. `uploadCount()` is a
+**lifetime** counter, so the toggle must precede the warm-up ticks. **`E.2.3` shares this batch and
+hits the identical wall** against `I112`'s `lastFrameDrawCalls() == 1U` and
+`lastFrameBillboards() == 0U`, which this task wrote. A shared per-frame batch makes "the batch is
+empty" a claim about the whole editor, not about the subsystem under test.
+
+**THREE FLOAT FACTS, EACH MEASURED AND EACH COUNTER-INTUITIVE.** (1) **A float-indexed lattice loop
+does not terminate**: at `focus.x = 1e38` both ends are `+inf`, and at the ordinary pose
+`focus = 1e6, spacing = 0.01` the quotient reaches ~1e8 where `k += 1.0F` is a no-op — and the naive
+repair traps, because `inf - inf` is NaN and `std::min(NaN, 48.0F)` **returns NaN**. Use an integer
+counter and clamp the span. (2) **Decade lattices NEST in float32, so coordinate divisibility cannot
+identify a cadence**: `round(-23F / 0.1F) * 0.1F` is exactly `-23F` (error 3.427e-07 under the
+9.537e-07 half-ulp) and `10.0` is an exact multiple of all three spacings, defeating finest-first and
+coarsest-first at once. `GR24` derives the cadence from **position in the sequence**. (3) **`pow10(n)`
+must be computed FRESH from `1.0F`, never as `10 * pow10(n-1)`** — a running product corrupts the
+lattice in the last bits.
+
+**AND THE PROJECTION DISAGREES WITH THE RASTERIZER BY ONE TEXEL.** Under a centred top-down camera an
+axis lands on a **pixel boundary**, not a centre: Metal lights row 95 / column 127 where the
+projection names 96 / 128, with exactly one lit row and one lit column. `DG18` asserts a **+/-1 bound
+on where the lit run starts** — that is the width of the genuine fill-rule ambiguity, not slack, and a
+single-pixel probe there is a coin flip. **A test-local comparison struct cannot carry an
+`operator<<` if it is declared inside the `TEST_CASE`** ([class.friend]/6 forbids defining a friend in
+a local class), and without one every texel assertion prints `{?} == {?}` on failure.
 
 ### E.1.1 — Debug line renderer (MERGED, PR #92 `15bf58b`) — the first Phase E task
 
@@ -85,133 +140,49 @@ while the picture silently loses every line.
 
 ### 3.7.3 — Audio-boundary CI guard (MERGED, PR #91 `0530cff`) — CLOSED Epic 3.7
 
-**Zero engine C++.** Two lint-job scripts, one compile-time probe, two hermetic `cmake -P` ctest
-drivers, and a docs/comment sweep. `docs/tasks/phase-3.md` records the size as **M rather than S**
-and why the shipped guard is broader than its subtask sentence.
+**Zero engine C++** — two lint scripts, one compile-time probe, two hermetic `cmake -P` ctest drivers.
+Full detail, all 35 redden-proofs and every dead end are in `docs/10`. Four things still govern new
+work:
 
-**The subtask sentence — "public-header scan for miniaudio tokens" — was already live, and has been
-since 0.3.3.** `check-platform-boundary.sh` scans `engine/*/include/*`, which is every subsystem, and
-its self-test 1b derives the subsystem set from the tree, so both audio roots joined it automatically.
-What had **no owner** was the **no-vcpkg property** of `engine/assets`, `engine/audio` and
-`engine/scene_audio`'s CMakeLists — the thing four places in the tree handed 3.7.3 *by name*, and the
-thing that voids silently while CI stays green. So what ships is: **prong A** (no dependency-hook
-command, no non-`aero::` link token, no include dir outside the subsystem, and no cross-directory
-`target_link_libraries` from any other tracked CMake file — all three files, `engine/assets`
-included), **prong B** (a miniaudio token ban over both audio roots with **sources included**, which
-the header-scoped platform guard cannot reach), **`tests/audio_boundary_probe.cpp`** (the sixth
-probe), and **`check-boundary-probes.sh`**, taking the handoff 0.2.3 opened and 0.4.5 §7.1 routed here.
+**A COMMAND DENYLIST OVER CMAKE CANNOT CONVERGE — INVERT TO AN ALLOWLIST.** Three review rounds, and
+each one's blocking finding sat inside the fix written to teach the previous one: an `*_internal`
+refusal matching only the `aero::` alias while the raw name passed; `EXCLUDE_FROM_ALL` refused on the
+`add_library` line while `set_target_properties(… EXCLUDE_FROM_ALL TRUE)` passed; the property
+spellings refused while the **plain** commands passed. **If a guard ever needs a second arm for a
+second spelling of one predicate, stop and invert it**: ask what a protected thing may legitimately be
+named by, measure that the set is small, and refuse everything else.
 
-**THE MEASUREMENT THAT OUTLIVES THE TASK, AND THAT NO SENTENCE IN THE TREE HAD MADE:**
-`vcpkg_installed` **is** on `engine/audio/src/mixer.cpp`'s compile line in `macos-release` and **is
-not** in `macos-debug` — read from both `compile_commands.json`. The cause is by design:
+**AND WHERE INVERSION IS IMPOSSIBLE, READ THE BUILD FACT INSTEAD OF PREDICTING IT.** Reaching a target
+*without naming it* — via a toolchain file or a preset's cache variables, which appear in no
+CMakeLists at all — is not bounded by any list. `boundary-probes.probe_compile_line` therefore reads
+`compile_commands.json` and asserts directly that no probe's compile line carries vcpkg's shared
+include root. Its own limits are stated where it lives: a multi-config generator writes no database
+(it self-skips, exit 77), and a contaminating include root that is not vcpkg's is invisible to it.
+
+**THE MEASUREMENT THAT OUTLIVES IT:** `vcpkg_installed` **is** on `engine/audio/src/mixer.cpp`'s
+compile line in `macos-release` and **is not** in `macos-debug`, read from both databases — because
 `aero::profiling` is `PRIVATE` on all three vcpkg-free targets and carries `Tracy::TracyClient` when
 `AERO_ENABLE_PROFILING=ON`, and a target's own `PRIVATE` usage requirements apply to its **own**
-compile line. **Every "a stray `#include <miniaudio.h>` there is a hard compile error" claim in this
-tree is therefore a profiling-OFF claim**, and any future sentence making one must say in which
-configurations. `aero_audio_boundary_probe` links `aero::audio` alone — hence no profiling — and is
-the **only compile-time enforcement the audio layer has that survives Release**; all five older probes
-read vcpkg-free in Release too, for the same reason. Proven both ways through the real CMake target:
-a seeded `#include <miniaudio.h>` fails `'miniaudio.h' file not found` in **both** presets.
-
-**The gate, re-measured after the fourth code-review round:** 172/172 on both macOS presets with
-`AERO_REQUIRE_GPU=1` (Debug 239.32 s, Release 64.59 s); fresh `-G Ninja` reduced configurations
-**78** and **91**, each having built and RUN `aero_tests`, `aero_editor_shell_test`,
-`aero_editor_imgui_test` and `aero_cooker`; **`ctest -N` 172 / 80 / 93 — `+4` in all three, in
-lockstep** (the last two are the compile-line case and its own red-proof, both ungated); doctest **1169 / 1746 / 143 / 34 / 29 / 7 / 28 — UNMOVED in all seven**; **eight** guards
-exit 0 (audio **11 / 3 / 54**, probes **6 / 56**, math **450**, platform **83**, scene **83**, rhi 144,
-golden-rule 146, project-no-delete **A=6 / B=75**); clang-format and clang-tidy clean **by exit
-code**; the manifest **untouched at 20 hash lines**. **This task INVERTS the usual pattern — `ctest
--N` moves while every doctest total stays put** (the probe has no `TEST_CASE`, the drivers are
-`cmake -P`). No dependency lands, `vcpkg.json` and `/vcpkg` are untouched, `tests/CMakeLists.txt` is
-**65 additions / 0 deletions**, `aero_tests`' link line is byte-unchanged, and the five existing probe
-blocks are byte-unchanged. The three `engine/**` edits are **comment-only**, asserted by diff.
-
-**The proofs are ctest STAGES, not plan prose, because `docs/plans/` is gitignored and a proof that
-lives only there ceases to exist at merge.** `audio-boundary.guard_e2e` runs 37 stages,
-`boundary-probes.probe_links_e2e` 34, and `boundary-probes.compile_line_e2e` 10. Every stage asserts an
-**exact** exit code; the two git-backed drivers read every seed back **and** assert it present in the
-index before trusting a verdict, and the pure-CMake one reads its fixtures back (it stages nothing,
-so there is no index to check); and each driver was run instrumented so every observed code was seen
-rather than inferred. **Counts here are measured on the tree in front of you; they have gone
-stale twice in this task alone.**
-
-**THE CODE-REVIEW ROUNDS ARE THE PART TO REMEMBER, AND THE LESSON IS ARCHITECTURAL: A COMMAND
-DENYLIST OVER CMAKE CANNOT CONVERGE.** Three rounds, and each one's blocking finding sat inside the
-fix written to teach the previous one. Round 1: an `*_internal` refusal matching only the `aero::`
-alias while the raw `aero_scene_internal` — which exists, and is what anyone copying from the defining
-file would write — passed. Round 2: `EXCLUDE_FROM_ALL` refused on the `add_library` line while
-`set_target_properties(<probe> PROPERTIES EXCLUDE_FROM_ALL TRUE)` passed. Round 3: the property
-spellings refused while the **plain** commands passed —
-`set_property(TARGET aero_audio APPEND PROPERTY INCLUDE_DIRECTORIES …)` exit 1,
-`target_include_directories(aero_audio SYSTEM PRIVATE …)` exit 0, same write, same file, same target.
-Along the way: `include()` missing from a banned list with *nothing in the guard reading an included
-file*; a sweep line-scoped while its siblings flattened; a probes guard rejecting `PUBLIC` but never
-requiring `PRIVATE`, so CMake's plain transitive signature passed under a banner claiming PRIVATE.
-
-**THE FIX, AND THE RULE THAT OUTLIVES THE TASK: INVERT TO AN ALLOWLIST.** Ask what a protected thing
-may LEGITIMATELY be named by, confirm by measuring the tree that the set is small and stable, and
-refuse everything else. A boundary probe may be named by exactly two calls — its own `add_library`
-and its single `target_link_libraries`. Nothing outside the three guarded CMakeLists may name
-`aero_assets`/`aero_audio`/`aero_scene_audio` **at all**. A guarded CMakeLists may contain only the
-three commands it has ever used. Ten escape attempts spanning `target_sources`,
-`target_compile_definitions`, `target_precompile_headers`, `target_link_options`, `add_dependencies`,
-`get_target_property`, `if(TARGET …)` and a bare `set()` are refused with no arm of their own. **If a
-guard ever needs a second arm for a second spelling of one predicate, stop and invert it.** And where inversion is impossible — the without-naming direction, where a toolchain file or a preset can contaminate a compile line with no CMake text at all — **stop predicting the build fact and read it**: `boundary-probes.probe_compile_line` asserts directly that no probe's compile line carries vcpkg's shared include root, which is what four rounds of textual arms were approximating. What an
-allowlist cannot see is what never names the target — inherited directory properties from an ancestor
-(closed by an ancestor check computed from real include() edges). Beyond that, **the residual is not bounded by a list and is not claimed to be**: CMake pushes state into a directory scope through many commands, and through a toolchain file or a preset's cache variables which appear in no CMakeLists at all. That is why the ctest case `boundary-probes.probe_compile_line` reads `compile_commands.json` and asserts the property directly -- no probe's compile line carries vcpkg's shared include root -- which closes every such route at once, including the ones no textual guard can read. What that case in turn does not cover is stated where it lives: a configuration it never runs against (a multi-config generator writes no database, so it self-skips), and a contaminating include root that is not vcpkg's.
-
-**AND THREE E2E STAGES PROVED LESS THAN THEY CLAIMED — the 2.1.2 species inside this task's own
-proof.** Stage S5 passed over a *narrowly* mutated Part 1c (allowlisting any `${`-rooted include dir,
-the exact rot the arm prevents) because its seed also carried the keyword `SYSTEM`, which was itself
-producing a violation, so the generic "reaches outside the subsystem" assertion was satisfied by the
-**keyword** and said nothing about the **path**. The original meta-proof had used a coarse mutation
-any assertion would have caught. **The rule that outlives this: mutate the arm the way a careless edit
-would, not the way a demolition would, and pin the offending TOKEN rather than the arm's generic
-sentence.** Every stage is redden-proved alone under a one-line mutation — 35 of them, listed by name in `docs/10` rather than summarised, after the first version of that list silently dropped a stage and claimed completeness anyway. Three had to be redone: a mutation that reddens an EARLIER stage sharing the same arm proves the suite asserts, not that the stage does.
-
-**One structural limit, because it looks like an oversight and is not:** a self-test over a call
-extractor can pin that the extractor reads a wrapped call, but can **never** pin that the sweep calls
-it rather than grepping line by line — the extractor flattens its own input, so it looks correct
-under exactly the mutation that matters. Only an e2e stage pins that; S6b is the one that does.
-
-**Two things found by building it that the plan had not predicted.** (1) **A `.cmake` e2e driver is
-inside the very set prong A-d sweeps**, so `guard_e2e.cmake`'s fixture strings — literal
-`target_link_libraries(aero_audio …)` — made the guard exit 1 on the tree that ships it, naming six
-lines of its own driver. Fixed by composing the command name from a variable, so the scratch file
-stays byte-identical while no matching literal remains; **an exclusion list was deliberately rejected**
-as a permanent hole in a sweep whose whole value is being universal. (2) **A GitHub Actions step name
-containing `aero:: library` does not parse** — the `": "` is a YAML mapping separator and the whole
-workflow fails to load. Quote any step name containing a colon-space.
-
-**`target_link_libraries(aero_audio_boundary_probe …)` is the tree's first near-miss for prong A-d,
-and this task created it.** Part 1d sweeps for the target NAME as a whole token, and the trailing
-`([^a-zA-Z0-9_]|$)` of `target_mention_re` is what keeps `aero_audio_boundary_probe` from reading as
-`aero_audio`. Three self-tests pin that regex — it must match a real mention, must match a target on
-its own line (the wrapped shape), and must NOT match the probe — using the same function the sweep
-uses, so they cannot drift. (An earlier version compared against a three-name list by exact equality;
-that helper was deleted when Part 1d became a name sweep, and this paragraph described it for a round
-afterwards. The mechanism is the regex boundary.)
+compile line. **Never write "a stray include there is a hard compile error" without saying in which
+configurations.**
 
 **A GUARD'S OWN `.cmake` E2E DRIVER IS INSIDE THE SET IT SWEEPS, AND IT BIT TWICE.** Fixture strings
-spelling `target_link_libraries(aero_audio …)` made the audio guard exit 1 on six lines of its own
-driver; adding the probes guard's cross-file sweep later did the same on seven lines of *its* driver.
-Both fixed by composing the command name from a variable (`_AB_TLL` / `_BP_TLL`), so the scratch files
-stay byte-identical while no matching literal remains. **An exclusion list was rejected both times** —
-it would put a permanent silent hole in a universal sweep, in the one file most likely to acquire a
-real CMake snippet later. Expect this every time a guard's scan set grows to include `*.cmake`.
+spelling `target_link_libraries(aero_audio …)` made the guard exit 1 on its own driver, twice. Both
+fixed by composing the command name from a variable so the scratch file stays byte-identical while no
+matching literal remains. **An exclusion list was rejected both times** — a permanent silent hole in a
+universal sweep, in the file most likely to acquire a real CMake snippet later. Expect this whenever a
+guard's scan set grows to include `*.cmake`. Related, and the same species: **mutate an arm the way a
+careless edit would, not the way a demolition would, and pin the offending TOKEN rather than the arm's
+generic sentence** — a coarse mutation is caught by any assertion and proves nothing about the one
+under test.
 
 ### 3.7.2 — rules that outlive the task (merged, PR #89 `b398d17`, macOS-validated)
 
-**Four rules.** (1) **`--dump-pcm` runs the SAME code path a speaker
-hears** — both modes call the same `SceneAudio::update` and `AudioSystem::render`, which is what makes
-the validation page's numbers evidence rather than analogy. (2) **The increment conversion reaches no
-libm function**, so the whole path is bit-exact on every lane; contrast `render::sampleAnimation`,
-which `docs/09` §13.7 excludes from the determinism contract by name. (3) **`std::clamp(NaN, lo, hi)`
-returns NaN on libc++**, which made a pitch conversion `static_cast<std::uint64_t>(NaN)` — UB that
-UBSan trapped; every clamp on a value that can be non-finite needs an explicit finiteness arm.
-(4) **Two places must never compare the same key by different rules** — the review round's blocking
-finding was a binding matched on full `Entity` identity and swept by index alone, so a recycled entity
-index orphaned a looping voice permanently and unreachably. One comparator, one place.
+**Two rules still worth carrying; the rest is in `docs/10`.** (1) **`std::clamp(NaN, lo, hi)` returns
+NaN on libc++** — every clamp on a value that can be non-finite needs an explicit finiteness arm
+*first* (E.1.2 hit the same shape again with `std::min(NaN, 48.0F)`). (2) **Two places must never
+compare the same key by different rules** — a binding matched on full `Entity` identity and swept by
+index alone orphaned a looping voice permanently. One comparator, one place.
 
 **Nothing in 3.7.2 has ever been HEARD on any lane**: CI compiles and runs every `SP`/`MX`/`SY`/`SA`/`DV`
 case on all three lanes — so the spatializer, the mixer, the system and the bridge **are** cross-lane
@@ -231,7 +202,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`); 23 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`); E.1.2 complete in code, PR pending; 22 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2's page is written and NOT RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -269,13 +240,34 @@ pass open, in every configuration**: that refusal is OURS, not SDL's, which only
 `D3D12_INTERNAL_CleanCommandBuffer`. Map before the wait and you read garbage **on Windows alone**.
 Release the fence **after** the wait, never before.
 
-**THE TREE ASSERTS PIXELS NOW.** `RU5` was the first; `DG5`–`DG16` and `I108`–`I111` followed, on
-Metal, WARP and lavapipe, on every push. **A later visual task that settles for "no backend error" is
+**THE TREE ASSERTS PIXELS NOW.** `RU5` was the first; `DG5`–`DG16`, `DG18` and `I108`–`I113`
+followed, on Metal, WARP and lavapipe, on every push. **But a pixel assertion on GENERATED geometry
+must not name a single pixel**: E.1.2 measured that under a centred camera an axis lands on a pixel
+*boundary*, where Metal lights row 95 while the projection names 96, so `DG18` bounds where the lit
+**run** starts to **+/-1** — the width of the genuine fill-rule ambiguity. **A comparison struct
+declared inside a `TEST_CASE` cannot carry an `operator<<` at all** ([class.friend]/6 forbids defining
+a friend in a local class); hoist it to the file's anonymous namespace or every assertion prints
+`{?} == {?}` on failure. **A later visual task that settles for "no backend error" is
 choosing to, not forced to** — `readbackTexture` plus a `RenderTarget` under an identity camera makes
 "which pixel" arithmetic rather than judgement. And a test-local `operator<<` is not optional there:
 `CHECK((a == b))` prints `CHECK( true )` on a FAILURE as well as a pass, which makes the assertion
 carrying the deliverable unreadable at exactly the wrong moment. An `operator<<` on the test's own
 comparison type, never a `toString` (that is the ADL trap that hard-errors inside `doctest.h`).
+
+**A DEPTH BIAS DOES NOTHING TO A LINE PRIMITIVE.** Measured at E.1.2 on the real `DebugDraw`: the
+`Tested` line pipelines are `PrimitiveType::LineList`, and D3D12 and Metal both exclude point and line
+primitives from rasterizer depth bias by specification while Vulkan permits without guaranteeing. A
+13 x 5 sweep moved a line at no gap down to `1e-5`; the same bias moved a `TriangleList` billboard
+predictably, bracketing Metal's unit at `2^-24` for `D32Float`. **`DebugDrawConfig` therefore has no
+bias field, and adding one for lines would be inert on two of three backends.** The remaining
+consumers are triangle topologies: the shadow pass (`forward_renderer.cpp`, the tree's only live
+consumer) and, when it wants one, E.2.3's billboard icons.
+
+**THE DEBUG BATCH IS SHARED, SO "THE BATCH IS EMPTY" IS A WHOLE-EDITOR CLAIM.** Any task that adds a
+producer to `render::DebugDraw` reddens every case that counts the batch exactly — E.1.2's grid took
+`I108`/`I109`/`I111` red at `2224 == 0`, `2225 == 1`, `2229 == 5`. **Fix it with the producer's own
+toggle seam, never by restating the magnitude**, and remember `uploadCount()` is a *lifetime* counter
+so the toggle must precede the warm-up ticks. **E.2.3 hits this against `I112` next.**
 
 **THE `find_package` BOUNDARY.** `aero_assets`, `aero_audio` and `aero_scene_audio` link **no vcpkg
 package at all**, which makes their `PRIVATE` links a **real compile-time boundary** rather than
@@ -367,12 +359,17 @@ Read totals from **doctest's own `filters:` line**, never from a `grep -c` of ca
 count on its own page goes stale, and adding one task's delta to another task's baseline is exactly the
 arithmetic that produces a confident wrong number.
 
-At E.1.1's gate: **`ctest -N` 172** (tools-ON, measured on both presets; the two reduced
-configurations were **not** re-measured for this task and their 80 / 93 remain 3.7.3's numbers);
-doctest across **seven** binaries **1223 / 1746 / 147 / 34 / 29 / 7 / 28**. **E.1.1 is the exact
-INVERSE of 3.7.3's signature: the doctest totals MOVE while `ctest -N` does NOT** — `aero_tests`
-1169 → 1223 and `aero_editor_imgui_test` 143 → 147, because three new TUs ride existing binaries and
-a sample registers no ctest entry. A moved `ctest -N` on a task like that means a CMakeLists copied
+At E.1.2's gate: **`ctest -N` 172** (tools-ON, measured on both presets; the two reduced
+configurations' 80 / 93 remain 3.7.3's numbers and were re-measured at neither E.1.1 nor E.1.2);
+doctest across **seven** binaries **1249 / 1748 / 149 / 34 / 29 / 7 / 28**. **E.1.2 repeats E.1.1's
+signature and it is the INVERSE of 3.7.3's: the doctest totals MOVE while `ctest -N` does NOT** —
+`aero_tests` 1223 → 1249 (`GR1`–`GR25` + `DG18`), `aero_editor_shell_test` 1746 → 1748 (`AX1`, `AX2`)
+and `aero_editor_imgui_test` 147 → 149 (`I112`, `I113`; `I110` gained a subcase, which moves no
+total), because new TUs ride existing binaries and a sample registers no ctest entry. The eight guard
+counts at that gate: math **461**, platform **85**, rhi **149**, scene **85**, golden-rule **151**,
+project-no-delete **A=6/B=75**, audio **11/3/55**, probes **6/57**. **`check-math-boundary.sh` counts
+`git ls-files`, so it reads a STALE number until new files are `git add`ed** — stage first, then
+measure. A moved `ctest -N` on a task like that means a CMakeLists copied
 from the wrong template. Both reduced configurations
 must be configured **FRESH with `-G Ninja`** — and, since 3.7.3, **with
 `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`**: only the presets set it, so a raw `cmake -S . -B …` writes no
@@ -450,17 +447,31 @@ build at the branch point, the cost A/B, Tracy's zone and plots, and the declare
 (depth write on the Tested pipelines) and `S21`'s picture half (a mirrored atlas cell whose centre
 still reads the right colour) have their ONLY coverage anywhere in that page's row 6.**
 
+**E.1.2 adds a full page and it is NOT RUN on any platform.**
+`editor/validation/E.1.2-grid-floor-world-axes.md` — twelve numbered steps, nine measurement blanks,
+gitignored. **Rows 1, 3 and 5 are partly automated** by `GR7`, `GR17`, `DG18` and `I112`; what stays
+hardware-only is HiDPI legibility (still one-pixel lines — E.1.1's thick-line handoff and this is its
+stated trigger), whether the crossfade *paces* well with a linear fraction, the cost A/B in Tracy, the
+picture being unchanged against a branch-point build, and that the grid axes agree with ImGuizmo's
+handles. **Row 6 is deliberately a MEASUREMENT, not a pass/fail**: no `Plane` primitive exists until
+E.5.2, and a shimmer where geometry is coplanar with the grid is **expected**, because debug lines
+carry no depth bias and cannot. **The sample binary is `aero_sample_phaseE_debug_draw`** — `phaseE`,
+no underscore before the E.
+
 ### Next
 
-**Phase E is the open front, and E.1.2 (grid floor + world axes) is the next task.** E.1.1 is
-merged, so the mechanism the grid needs exists: `ViewportPanel::debugDraw()->batch()` is the seam,
-and the flush already runs in the HDR scene pass every frame with an empty batch. E.1.2 also owns
-the question E.1.1 deliberately left open — **a depth-bias field on the debug pipelines**, because
-`LessOrEqual` wins on a bit-identical depth but an interpolated one across a large polygon can still
-shimmer, and building the knob before its consumer existed is the abstraction 3.6.3 refused. The
-rest of the spine: **E.2.1 (`Environment`) blocks E.2.2, E.2.4 and E.4.5**, and **E.2.3 (light
-gizmos) is now unblocked** alongside E.1.2. **E.5.1 is an S-sized fix for a confirmed defect and is
-independent of everything**, so it can land at any point.
+**Phase E is the open front. E.1.2 is complete in code and its PR is the immediate next step**; its
+macOS validation page is written and unrun. After it, the epic's remaining tasks are **E.1.3**
+(view-axis gizmo — it owns "which way is up", which E.1.2 deliberately does not answer), **E.1.4**
+and **E.1.5** (the gizmo restyle, which adopts `AXIS_{X,Y,Z}` from the palette E.1.2 created).
+
+**The spine, unchanged except where E.1.2 moved it:** **E.2.1 (`Environment`) blocks E.2.2, E.2.4 and
+E.4.5**; **E.2.3 (light gizmos) is unblocked** — and it now inherits two things by name, the
+**shared-batch empty-assertion wall** against `I112`, and a **billboard-pipeline depth bias**, which
+is the only topology where a bias actually works. **E.3.1** adopts the axis palette on its `Vec3`
+rows. **E.5.1 is an S-sized fix for a confirmed defect and is independent of everything**, so it can
+land at any point. **E.5.2 now owns the coplanar-geometry problem** — it creates the first `Plane` at
+`y = 0`, and E.1.2 established that a rasterizer bias cannot be the answer for lines.
 
 **Phase 3 remains OPEN behind it, on its gate and its validation debt, and Phase E does not close
 either.** 3.7.1 (PR #88 `4892e65`) and 3.7.2 (PR #89 `b398d17`) are merged and macOS-validated;
