@@ -175,10 +175,11 @@ public:
     // backends); texels are in the format's own byte order (RGBA8Unorm -> r,g,b,a; RGBA16Float ->
     // four little-endian halves). ANY NON-DEPTH TEXTURE THIS DEVICE CREATED is readable, whether or
     // not it has Sampler usage -- every backend can copy from any texture it made.
-    // False + ERROR with `out` UNTOUCHED: a moved-from Device, a stale handle, a swapchain-acquired
-    // texture (E6: write-only), a depth format (texelBlockSize == 0 -- their layout is driver
-    // business), a mip past mipLevels, or a wrong out.size(). A failed fence wait returns false with
-    // `out` UNSPECIFIED, which is the only path that does not leave it untouched.
+    // False + ERROR with `out` UNTOUCHED, checked IN THIS ORDER: a moved-from Device, a stale handle,
+    // a swapchain-acquired texture (E6: write-only), a mip past mipLevels, a depth format
+    // (texelBlockSize == 0 -- their layout is driver business), or a wrong out.size(). A failed
+    // fence wait returns false with `out` UNSPECIFIED, the only path that does not leave it
+    // untouched.
     bool readbackTexture(TextureHandle texture, std::uint32_t mipLevel, std::span<std::byte> out);
 
     // --- frame flow (D7) ------------------------------------------------------------------------
