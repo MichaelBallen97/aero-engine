@@ -1,9 +1,12 @@
 #pragma once
 // Aero Engine — render::emitDebugGrid (task E.1.2): the editor's ground grid, as world-space lines.
 //
-// PURE ARITHMETIC. No GPU, no rhi type, no logging, no allocation, no static state, and the only
-// libm functions it reaches are sqrt, floor and ceil -- all three of which IEEE-754 requires to be
-// CORRECTLY ROUNDED, so this emitter is bit-deterministic on every lane. std::log10 and std::pow are
+// PURE ARITHMETIC. No GPU, no rhi type, no logging, no allocation, no static state. The only
+// ROUNDING libm functions it reaches are sqrt, floor and ceil -- all three of which IEEE-754
+// requires to be CORRECTLY ROUNDED -- alongside fabs and isfinite, which perform no rounding at all
+// (fabs clears a sign bit, isfinite classifies a bit pattern) and so cannot differ between libm
+// implementations either. That is the whole list, and it is why this emitter is bit-deterministic on
+// every lane; GR22 pins all five as source text. std::log10 and std::pow are
 // deliberately absent (GR22 pins that as source text): neither is required to be correctly rounded,
 // so their results differ between libm implementations, and every exact assertion in GR7, GR12 and
 // GR6 would become a three-lane tolerance argument. docs/09 §13.7 already excludes
@@ -65,6 +68,13 @@ inline constexpr float DEBUG_GRID_FADE_INNER = 0.55F;         // the fade starts
 inline constexpr float DEBUG_GRID_FAR_FRACTION = 0.9F;        // radius ceiling as a fraction of farPlane
 inline constexpr float DEBUG_GRID_MIN_VIEW_SCALE = 1.0e-3F;
 inline constexpr float DEBUG_GRID_MAX_VIEW_SCALE = 1.0e6F;
+// These two bound the pow10 iteration so the emitter terminates whatever `reference` is; they are
+// deliberately WIDER than the reachable range (MAX_VIEW_SCALE / TARGET_DIVISIONS caps reference at
+// 1e5, so `level` tops out at 5 and `level + 2` at 7). THEY ARE THEREFORE COUPLED TO
+// DEBUG_GRID_MAX_VIEW_SCALE, quietly: debugGridPow10 CLAMPS its exponent, so if MAX_VIEW_SCALE were
+// raised far enough that `level + 2` exceeded MAX_LEVEL, two cadences would receive the SAME spacing
+// and the grid would draw those lines twice at two different alphas. Raise MAX_LEVEL with it.
+// GR3 asserts the headroom so a retune of either constant cannot land silently.
 inline constexpr int DEBUG_GRID_MIN_LEVEL = -6;
 inline constexpr int DEBUG_GRID_MAX_LEVEL = 9;
 inline constexpr float DEBUG_GRID_PLANE_HEIGHT = 0.0F;  // world Y of the ground plane

@@ -163,6 +163,32 @@ TEST_CASE("render debug grid: the constants' relationships hold and the cap is D
     CHECK(rd::DEBUG_GRID_MIN_LEVEL < rd::DEBUG_GRID_MAX_LEVEL);
     CHECK(rd::DEBUG_GRID_MIN_VIEW_SCALE < rd::DEBUG_GRID_MAX_VIEW_SCALE);
     CHECK(rd::DEBUG_GRID_MIN_VIEW_SCALE > 0.0F);
+
+    // THE LEVEL BOUNDS ARE COUPLED TO THE VIEW-SCALE BOUNDS, and nothing else says so. debugGridPow10
+    // CLAMPS its exponent, so if the reachable `level + CADENCES - 1` ever exceeded MAX_LEVEL, two
+    // cadences would receive the SAME spacing and the grid would draw those lines TWICE at two
+    // different alphas -- silently, with every other case in this file still green. Walk the ladder
+    // the emitter walks, from the largest reference the clamps admit, and require real headroom.
+    // A retune of MAX_VIEW_SCALE without a matching MAX_LEVEL reddens HERE, which is the only place
+    // it can.
+    const float highestReference = rd::DEBUG_GRID_MAX_VIEW_SCALE / rd::DEBUG_GRID_TARGET_DIVISIONS;
+    int highestLevel = rd::DEBUG_GRID_MIN_LEVEL;
+    while (highestLevel < rd::DEBUG_GRID_MAX_LEVEL && rd::debugGridPow10(highestLevel + 1) <= highestReference) {
+        ++highestLevel;
+    }
+    CAPTURE(highestLevel);
+    const int coarsestExponent = highestLevel + static_cast<int>(rd::DEBUG_GRID_CADENCES) - 1;
+    CAPTURE(coarsestExponent);
+    CHECK(coarsestExponent <= rd::DEBUG_GRID_MAX_LEVEL);
+    // ...and the three spacings really are DISTINCT at that extreme, which is the effect the bound
+    // above exists to protect. Asserting the effect as well as the arithmetic, per the house rule.
+    rd::DebugGridParams extreme{};
+    extreme.eye = engine::Vec3{0.0F, rd::DEBUG_GRID_MAX_VIEW_SCALE, 0.0F};
+    extreme.farPlane = 1.0e9F;
+    const rd::DebugGridCadence extremeCadence = rd::debugGridCadence(extreme);
+    REQUIRE(extremeCadence.valid);
+    CHECK(extremeCadence.spacing[0] < extremeCadence.spacing[1]);
+    CHECK(extremeCadence.spacing[1] < extremeCadence.spacing[2]);
     CHECK(rd::DEBUG_GRID_FADE_SEGMENTS >= 2U);  // one segment cannot express a fade ALONG a line
     CHECK(rd::DEBUG_GRID_RADIUS_CELLS >= 1U);
     CHECK(rd::DEBUG_GRID_PLANE_HEIGHT == 0.0F);
@@ -884,11 +910,16 @@ TEST_CASE("render debug grid: the emitter reaches NO libm function but sqrt/floo
     CHECK_FALSE(contains(source, "std::sin"));
     CHECK_FALSE(contains(source, "std::cos"));
 
-    // (b) non-vacuity, second direction: the three ADMITTED ones ARE present, so a reader that
-    //     matched nothing could not fake the six lines above.
+    // (b) non-vacuity, second direction: the ADMITTED ones ARE present, so a reader that matched
+    //     nothing could not fake the six lines above. fabs and isfinite are on this list rather than
+    //     the banned one deliberately: neither ROUNDS -- fabs clears a sign bit and isfinite
+    //     classifies a bit pattern -- so neither can differ between libm implementations the way
+    //     pow and log10 can. The banner names all five, and this is what keeps that sentence true.
     CHECK(contains(source, "std::sqrt"));
     CHECK(contains(source, "std::floor"));
     CHECK(contains(source, "std::ceil"));
+    CHECK(contains(source, "std::fabs"));
+    CHECK(contains(source, "std::isfinite"));
 
     // (c) ...and the search can say NO to something that is genuinely absent, which is the third
     //     direction and the one a stripped-to-empty reader would still pass without.

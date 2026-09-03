@@ -189,8 +189,11 @@ DebugGridCadence debugGridCadence(const DebugGridParams& params) noexcept {
     out.weight[1] = (b * (1.0F - f)) + (a * f);
     out.weight[2] = b * f;
 
-    // THE RADII -- a function of the SPACING ALONE. Never of the level, never of viewScale: that is
-    // what carries continuity to the extent as well as to the alpha (INV-3).
+    // THE RADII -- a function of the SPACING and the FAR PLANE, and of NOTHING ELSE. Never of the
+    // level, never of viewScale: that is what carries continuity to the extent as well as to the
+    // alpha (INV-3). The far-plane term does not weaken it, because farPlane is the SAME on both
+    // sides of a decade boundary, so a given world spacing keeps the same radius across the change --
+    // which is the property INV-3 actually needs. GR6 scales farPlane with the pose for that reason.
     for (std::uint32_t c = 0; c < DEBUG_GRID_CADENCES; ++c) {
         out.radius[c] = std::min(static_cast<float>(DEBUG_GRID_RADIUS_CELLS) * out.spacing[c],
                                  DEBUG_GRID_FAR_FRACTION * params.farPlane);
