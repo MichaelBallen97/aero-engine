@@ -1,6 +1,9 @@
 // tests/render_debug_draw_test.cpp — task E.1.1: the debug-draw vocabulary, the pure batch, the
-// packers, the shader source pin (DD1-DD26, every configuration), and the GPU DebugDraw (DG1-DG16,
-// gated).
+// packers, the shader source pin (DD1-DD26, every configuration), and the GPU DebugDraw (DG1-DG16
+// and DG18, gated). E.1.2 added DG18, the ground grid's own pixel case, at the bottom of that same
+// gate. DG17 IS SKIPPED DELIBERATELY, not missed: it was to be the depth-bias case, and the bias
+// was struck once a rasterizer depth bias turned out not to apply to line primitives at all on
+// Metal or D3D12 and to be merely optional on Vulkan -- so the id is never allocated.
 //
 // The whole DD battery runs with NO device and NO shader toolchain -- that is the point of the pure
 // split: everything assertable without a GPU is asserted without one.
@@ -812,6 +815,30 @@ std::ostream& operator<<(std::ostream& out, const Rgba& value) {
                 static_cast<std::uint8_t>(pixels[base + 2U]), static_cast<std::uint8_t>(pixels[base + 3U])};
 }
 
+// Rgba's RGBA16Float twin: one texel as four RAW half bit patterns, never decoded, so every
+// comparison against 0x0000 / 0x3C00 is exact (RU9's convention, DG16's reading, DG18's subject).
+// It lives HERE and not inside DG18 for one hard reason: a friend function may not be DEFINED
+// inside a local class, so a type declared in a case body cannot carry the operator<< below --
+// and without it every DG18 assertion would print `{?} == {?}` on the one run that matters.
+struct Half4 {
+    std::uint16_t r = 0;
+    std::uint16_t g = 0;
+    std::uint16_t b = 0;
+    std::uint16_t a = 0;
+    [[nodiscard]] bool operator==(const Half4&) const = default;
+};
+
+// Rgba's operator<< reason, verbatim, on the other texel type: doctest decomposes the comparison
+// and prints BOTH SIDES, so the bit patterns a lane actually produced are in the log whether the
+// case passes or fails. HEX, because these are bit patterns rather than numbers, and the two
+// values every DG18 assertion is about are spelled 0x0000 and 0x3C00 everywhere else in this file.
+// An operator<<, NOT a toString: a toString is the ADL trap that hard-errors inside doctest.h.
+std::ostream& operator<<(std::ostream& out, const Half4& value) {
+    out << "half4(0x" << std::hex << value.r << ", 0x" << value.g << ", 0x" << value.b << ", 0x" << value.a << ")"
+        << std::dec;
+    return out;
+}
+
 // The IDENTITY camera: world == NDC. eyePosition is BEHIND the near plane rather than at the origin
 // -- no debug shader reads it, but DG6's ForwardRenderer does (V = normalize(eye - worldPos)), and
 // an eye ON a drawn surface would make that normalize a 0/0.
@@ -1557,6 +1584,215 @@ TEST_CASE("render debug draw: the EDITOR's RGBA16Float pair, proven by bytes (DG
     CHECK(half(base + 2U) == 0x3C00U);  // g
     CHECK(half(base + 4U) == 0x0000U);  // b
     CHECK(half(base + 6U) == 0x3C00U);  // a -- INV-6 again, on the format the editor really uses
+}
+
+// ------------------------------------------------------------------------------------------------
+// Task E.1.2. The first pixel assertion in this tree whose subject is GENERATED geometry: everything
+// above draws lines a case spelled out by hand, this one draws whatever render::emitDebugGrid
+// decided to emit and asserts that the picture agrees with the projection.
+// ------------------------------------------------------------------------------------------------
+
+TEST_CASE("render debug grid: the two axes land on the pixels the projection names (DG18)") {
+    AERO_DG_PREAMBLE();
+    // THE EDITOR'S REAL PAIR, RGBA16Float + depth -- DG16's guard and DG16's reason: building
+    // against the 8-bit OUTPUT format instead creates fine and fails at the first draw on Metal.
+    if (!device->supportsTextureFormat(engine::rhi::TextureFormat::RGBA16Float,
+                                       engine::rhi::TextureUsage::Sampler | engine::rhi::TextureUsage::ColorTarget)) {
+        AERO_SKIP_OR_FAIL("device does not support RGBA16Float as a sampleable color target");
+    }
+    auto hdr = engine::render::RenderTarget::create(
+        *device, {DG_W, DG_H}, {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+    REQUIRE(hdr.has_value());
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = hdr->colorFormat(), .depthFormat = hdr->depthFormat()});
+    REQUIRE(draw.has_value());
+
+    // A TOP-DOWN camera: eye 10 above the origin, looking down, up = -Z. With that basis world +X
+    // maps to screen right and world +Z to screen DOWN, so the X axis is the horizontal centre band
+    // and the Z axis the vertical one. Derived, not guessed: forward = (0,-1,0), up = (0,0,-1),
+    // right = forward x up = (1,0,0).
+    const Vec3 eye{0.0F, 10.0F, 0.0F};
+    const engine::render::CameraView camera{
+        .view = engine::lookAt(eye, Vec3{0.0F, 0.0F, 0.0F}, Vec3{0.0F, 0.0F, -1.0F}),
+        .proj = engine::perspective(engine::radians(60.0F), static_cast<float>(DG_W) / static_cast<float>(DG_H), 0.1F,
+                                    100.0F),
+        .eyePosition = eye};
+
+    // PURE red and PURE blue at alpha 1, so an RGBA16Float readback is exact half bit patterns with
+    // no decode -- 0x0000 and 0x3C00, RU9's own convention, reused by DG16.
+    engine::render::DebugGridParams params{.eye = eye, .focus = Vec3::zero(), .farPlane = 100.0F};
+    params.style.axisXColor = Vec4{1.0F, 0.0F, 0.0F, 1.0F};
+    params.style.axisZColor = Vec4{0.0F, 0.0F, 1.0F, 1.0F};
+
+    const auto renderAndRead = [&](const engine::render::DebugGridParams& p) {
+        const std::uint32_t emitted = engine::render::emitDebugGrid(draw->batch(), p);
+        REQUIRE(emitted > 0U);
+        std::optional<engine::render::Frame> frame = hdr->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+        REQUIRE(frame.has_value());
+        draw->flush(*frame, camera);
+        REQUIRE(hdr->endFrame(std::move(*frame)));
+        std::vector<std::byte> pixels(static_cast<std::size_t>(DG_W) * DG_H * 8U, std::byte{0xAB});
+        REQUIRE(device->readbackTexture(hdr->colorTexture(), 0, pixels));
+        return pixels;
+    };
+    // One RGBA16Float texel as four raw half bit patterns -- no decode, so the comparison is exact.
+    const auto halfAt = [](const std::vector<std::byte>& pixels, std::uint32_t row, std::uint32_t column) {
+        const std::size_t base = (((static_cast<std::size_t>(row) * DG_W) + column) * 8U);
+        const auto at = [&pixels](std::size_t index) {
+            return static_cast<std::uint16_t>(static_cast<std::uint8_t>(pixels[index]) |
+                                              (static_cast<std::uint8_t>(pixels[index + 1U]) << 8U));
+        };
+        return Half4{at(base), at(base + 2U), at(base + 4U), at(base + 6U)};
+    };
+    const auto lit = [&halfAt](const std::vector<std::byte>& pixels, std::uint32_t row, std::uint32_t column) {
+        const Half4 texel = halfAt(pixels, row, column);
+        return texel.r != 0U || texel.g != 0U || texel.b != 0U;
+    };
+
+    constexpr Half4 CLEAR{0x0000U, 0x0000U, 0x0000U, 0x3C00U};  // black, alpha 1 (INV-6)
+    constexpr Half4 RED{0x3C00U, 0x0000U, 0x0000U, 0x3C00U};
+    constexpr Half4 BLUE{0x0000U, 0x0000U, 0x3C00U, 0x3C00U};
+    constexpr std::uint32_t PROBE_COLUMN = 200U;
+    constexpr std::uint32_t PROBE_ROW = 40U;
+
+    SUBCASE("with the grid alphas at ZERO, the picture is the two axes and NOTHING else") {
+        // THE ANTI-VACUITY LEVER, and the reason it is this rather than "a corner is background":
+        // for a top-down grid the coarsest disc ALWAYS covers the frame -- the frame's corner sits at
+        // world radius 0.962 * eye.y while the radius is at least 0.9 * farPlane > 0.9 * eye.y -- so
+        // no sane pose shows the rim in a corner. Zeroing the grid alphas makes every non-axis texel
+        // the clear colour instead, which is a STRONGER statement and an achievable one.
+        engine::render::DebugGridParams flat = params;
+        flat.style.minorAlpha = 0.0F;
+        flat.style.majorAlpha = 0.0F;
+
+        // THE FIRST FAILURE MODE, WIRED IN RATHER THAN LEFT FOR A SECOND RUN: a run count of 0 means
+        // the disc never reached the probe line. At this pose viewScale is 10, so the spacings are
+        // (1, 10, 100) and every radius is min(24*s, 0.9*100) -- radius[2] is 90 world units against
+        // a frame half-width of 7.7, which is why the axes cross both probe lines at all.
+        const engine::render::DebugGridCadence cadence = engine::render::debugGridCadence(flat);
+        CAPTURE(cadence.viewScale);
+        CAPTURE(cadence.level);
+        CAPTURE(cadence.spacing[0]);
+        CAPTURE(cadence.radius[0]);
+        CAPTURE(cadence.radius[2]);
+
+        const std::vector<std::byte> pixels = renderAndRead(flat);
+
+        // Scan a COLUMN well away from the centre. Exactly one contiguous lit run: the X axis.
+        // A RUN, never a predicted row: the axis passes through NDC y = 0, which is the boundary
+        // between rows 95 and 96, and this file's own frame-of-reference comment names a line on a
+        // pixel BOUNDARY as the one input the diamond-exit and Bresenham rules disagree about.
+        std::uint32_t runs = 0;
+        std::uint32_t litRows = 0;
+        std::uint32_t firstLitRow = DG_H;
+        bool inRun = false;
+        for (std::uint32_t row = 0; row < DG_H; ++row) {
+            const bool on = lit(pixels, row, PROBE_COLUMN);
+            if (on) {
+                ++litRows;
+                if (firstLitRow == DG_H) {
+                    firstLitRow = row;
+                }
+                CHECK(halfAt(pixels, row, PROBE_COLUMN) == RED);  // the X axis IS red
+            } else {
+                CHECK(halfAt(pixels, row, PROBE_COLUMN) == CLEAR);  // and everything else is clear
+            }
+            if (on && !inRun) {
+                ++runs;
+            }
+            inRun = on;
+        }
+        CHECK(runs == 1U);     // exactly one axis crosses this column
+        CHECK(litRows >= 1U);  // ...and it really is there
+        CHECK(litRows <= 2U);  // ...one or two texels wide; both are correct rasterisation
+
+        // Scan a ROW well away from the centre. Exactly one lit run: the Z axis, blue.
+        runs = 0;
+        std::uint32_t litColumns = 0;
+        std::uint32_t firstLitColumn = DG_W;
+        inRun = false;
+        for (std::uint32_t column = 0; column < DG_W; ++column) {
+            const bool on = lit(pixels, PROBE_ROW, column);
+            if (on) {
+                ++litColumns;
+                if (firstLitColumn == DG_W) {
+                    firstLitColumn = column;
+                }
+                CHECK(halfAt(pixels, PROBE_ROW, column) == BLUE);
+            } else {
+                CHECK(halfAt(pixels, PROBE_ROW, column) == CLEAR);
+            }
+            if (on && !inRun) {
+                ++runs;
+            }
+            inRun = on;
+        }
+        CHECK(runs == 1U);
+        CHECK(litColumns >= 1U);
+        CHECK(litColumns <= 2U);
+
+        // ...and the projection AGREES with where the runs are, measured through the SAME viewProj
+        // the flush used (DG8's idiom). WITHIN ONE TEXEL, never on the nose, and that bound is
+        // MEASURED rather than defensive: the X axis lands on screen y = 96.0 EXACTLY and the Z axis
+        // on screen x = 128.0 EXACTLY, both pixel BOUNDARIES, so which of the two neighbours a
+        // backend lights is its rasteriser's tie-break and not a property of this emitter. Metal
+        // lights row 95 and column 127 while the two casts below name row 96 and column 128 -- so
+        // `CHECK(lit(pixels, xAxisAt.row, PROBE_COLUMN))` is not merely fragile, it is RED on this
+        // lane today, with exactly one lit row and one lit column to be off by one against. "The run
+        // starts where the arithmetic said, +/- one" is the claim that is really about the
+        // projection, and it prints both numbers side by side when it fails.
+        const PixelAt xAxisAt = projectToPixel(camera, Vec3{4.0F, 0.0F, 0.0F});
+        const PixelAt zAxisAt = projectToPixel(camera, Vec3{0.0F, 0.0F, 4.0F});
+        CAPTURE(xAxisAt.row);
+        CAPTURE(xAxisAt.column);
+        CAPTURE(zAxisAt.row);
+        CAPTURE(zAxisAt.column);
+        CAPTURE(firstLitRow);
+        CAPTURE(firstLitColumn);
+        const int rowDelta = static_cast<int>(firstLitRow) - static_cast<int>(xAxisAt.row);
+        const int columnDelta = static_cast<int>(firstLitColumn) - static_cast<int>(zAxisAt.column);
+        CHECK(rowDelta >= -1);
+        CHECK(rowDelta <= 1);
+        CHECK(columnDelta >= -1);
+        CHECK(columnDelta <= 1);
+    }
+
+    SUBCASE("with the grid alphas RESTORED, the same scan lines carry MANY runs and the axis SURVIVES") {
+        // The other half: the grid is really being drawn, and it did NOT overwrite the axis. D8's
+        // "the axes replace the k == 0 line" observed rather than asserted.
+        //
+        // THE SECOND FAILURE MODE, WIRED IN: if `sawRed` fails, the reddest texel on the probe line
+        // is printed. A BLENDED red there is the radial fade, not the push order -- the axis is
+        // emitted last and at alpha 1, so nothing can overpaint it, but its alpha is multiplied by
+        // radialFade, which is exactly 1 only inside FADE_INNER * radius[2]. That inner radius is
+        // captured below; the whole frame lies within 7.7 world units of the centre at this pose, so
+        // an inner radius under that is the cause and the ordering is not.
+        const engine::render::DebugGridCadence cadence = engine::render::debugGridCadence(params);
+        const float fadeInnerRadius = engine::render::DEBUG_GRID_FADE_INNER * cadence.radius[2];
+        CAPTURE(cadence.radius[2]);
+        CAPTURE(fadeInnerRadius);
+
+        const std::vector<std::byte> pixels = renderAndRead(params);
+        std::uint32_t runs = 0;
+        bool inRun = false;
+        bool sawRed = false;
+        Half4 reddest{};
+        for (std::uint32_t row = 0; row < DG_H; ++row) {
+            const bool on = lit(pixels, row, PROBE_COLUMN);
+            if (on && !inRun) {
+                ++runs;
+            }
+            const Half4 texel = halfAt(pixels, row, PROBE_COLUMN);
+            sawRed = sawRed || (texel == RED);
+            if (texel.r > reddest.r) {
+                reddest = texel;
+            }
+            inRun = on;
+        }
+        CAPTURE(reddest);
+        CHECK(runs > 3U);  // the grid is visible: many lines cross this column now
+        CHECK(sawRed);     // ...and the X axis is STILL pure red -- nothing overpainted it
+    }
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED
