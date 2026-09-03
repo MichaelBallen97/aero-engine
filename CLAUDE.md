@@ -11,7 +11,7 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 ## Current state — read this first
 
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
-**E.1.1 (Debug line renderer) is CLOSED IN CODE, its PR open and not yet merged; the other 23 tasks are planning only.** Six epics, 24
+**E.1.1 (Debug line renderer) is MERGED (PR #92, merge commit `15bf58b`, all six CI jobs green with `headSha == HEAD` asserted); the other 23 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
@@ -48,7 +48,7 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
 
-### E.1.1 — Debug line renderer (closed in code) — the first Phase E task
+### E.1.1 — Debug line renderer (MERGED, PR #92 `15bf58b`) — the first Phase E task
 
 **The engine can draw a world-space line, which it never could**, and **the tree now asserts
 pixels**. Six commits: two additive RHI calls, a pure `render::DebugDrawBatch`, a
@@ -231,7 +231,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 closed in code, PR open; 23 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **Nothing in the phase is validated on any platform**: E.1.1's page is written and not run. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`); 23 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **Nothing in the phase is validated on any platform**: E.1.1's page is written and not run. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -453,7 +453,7 @@ still reads the right colour) have their ONLY coverage anywhere in that page's r
 ### Next
 
 **Phase E is the open front, and E.1.2 (grid floor + world axes) is the next task.** E.1.1 is
-closed in code, so the mechanism the grid needs exists: `ViewportPanel::debugDraw()->batch()` is the seam,
+merged, so the mechanism the grid needs exists: `ViewportPanel::debugDraw()->batch()` is the seam,
 and the flush already runs in the HDR scene pass every frame with an empty batch. E.1.2 also owns
 the question E.1.1 deliberately left open — **a depth-bias field on the debug pipelines**, because
 `LessOrEqual` wins on a bit-identical depth but an interpolated one across a large polygon can still
