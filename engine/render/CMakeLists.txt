@@ -17,6 +17,7 @@ add_library(aero_render STATIC
     src/tonemap.cpp           # task 3.6.3 -- the transfer chain: exposure, curve, sRGB OETF
     src/post_process.cpp      # task 3.6.3 -- the owned HDR target and the fullscreen resolve
     src/debug_draw.cpp        # task E.1.1 -- the pure batch, four pipelines, the flush
+    src/debug_grid.cpp        # task E.1.2 -- the pure ground-grid emitter and its cadence
 )
 add_library(aero::render ALIAS aero_render)
 
